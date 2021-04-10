@@ -1291,3 +1291,13 @@ The following commands are available when the
 the points specified in the config and then make independent
 adjustments to each Z stepper to compensate for tilt. See the PROBE
 command for details on the optional probe parameters.
+
+## Frame Expansion Compensation
+
+The following commands are available when the [frame_expansion_compensation
+config section](Config_Reference.md#frame_expansion_compensation) is enabled:
+- `SET_FRAME_EXPANSION ENABLE=[<0:1>]`: enable or disable frame expansion
+  compensation. When disabled, the last computed compensation value will remain
+  applied until next homing.
+- `QUERY_FRAME_EXPANSION`: report current state and key parameters of the frame
+  expansion compensation.
