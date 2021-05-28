@@ -300,6 +300,23 @@ Also provided is the following extended G-Code command:
   setting the supplied `MSG` as the current display message.  If
   `MSG` is omitted the display will be cleared.
 
+# ⚠️ [dockable_probe]
+
+In addition to the normal commands available for a [probe], the following
+commands are available when an
+[dockable_probe config section](Config_Reference.md#dockable_probe) is enabled
+(also see the [Dockable Probe guide](Dockable_Probe.md)):
+
+- `ATTACH_PROBE`: Move to dock and attach probe to the toolhead, the toolhead
+  will return to its previous position after attaching.
+- `DETACH_PROBE`: Move to dock and detach probe from the toolhead, the toolhead
+  will return to its previous position after detaching.
+- `GET_PROBE_STATUS`: Respond with current probe state. This is useful for
+  verifying configuration settings are working as intended.
+- `SET_PROBE_STATUS STATE=UNKNOWN|ATTACHED|DOCKED`: If configured, this allows
+  the probe state to be set manually in the event automated probe verification
+  methods cannot be used.
+
 ### [dual_carriage]
 
 The following command is available when the
