@@ -70,6 +70,14 @@ class FrameExpansionCompensator:
         self.toolhead = self.printer.lookup_object('toolhead')
         gcode_move = self.printer.lookup_object('gcode_move')
 
+        _warn_msg = '''This Klipper branch is deprecated and will no longer be
+        maintained.
+        Please use the Moonraker plug-in version available at
+        https://github.com/alchemyEngine/klipper_frame_expansion_comp
+        '''
+        self.config.deprecate('frame_expansion_compensation', 'temp_coeff',
+                              msg=_warn_msg)
+
         # Detect old temp sensor config section
         try:
             self.config.get('sensor_pin')
