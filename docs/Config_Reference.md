@@ -2811,7 +2811,19 @@ pin:
 #   commands on a button release.
 ```
 
-### [output_pin]
+## [estop_button]
+
+perform an emergency stop when a button is pressed (or when a pin
+changes state).
+
+```
+[estop_button]
+pin:
+#   The pin on which the button is connected. This parameter must be
+#   provided.
+```
+
+## [output_pin]
 
 Run-time configurable output pins (one may define any number of
 sections with an "output_pin" prefix). Pins configured here will be
