@@ -47,6 +47,7 @@ class MCU_stepper:
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._mcu.register_stepqueue(self._stepqueue)
         self._stepper_kinematics = None
+        self._input_shaper_sk = None
         self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
@@ -67,9 +68,25 @@ class MCU_stepper:
         if self._step_pulse_duration is None:
             self._step_pulse_duration = pulse_duration
         self._req_step_both_edge = step_both_edge
+    def setup_input_shaping(self, input_shaper_sk):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        orig_sk = self.set_stepper_kinematics(input_shaper_sk)
+        res = ffi_lib.input_shaper_set_sk(input_shaper_sk, orig_sk)
+        if res == 0:
+            self._orig_sk = orig_sk
+            self._input_shaper_sk = input_shaper_sk
+        else:
+            self.set_stepper_kinematics(orig_sk)
+        return res
     def setup_itersolve(self, alloc_func, *params):
         ffi_main, ffi_lib = chelper.get_ffi()
         sk = ffi_main.gc(getattr(ffi_lib, alloc_func)(*params), ffi_lib.free)
+        if self._input_shaper_sk:
+            self.set_stepper_kinematics(self._input_shaper_sk)
+            res = ffi_lib.input_shaper_set_sk(self._input_shaper_sk, sk)
+            if res == 0:
+                self._orig_sk = sk
+                return
         self.set_stepper_kinematics(sk)
     def _build_config(self):
         if self._step_pulse_duration is None:
