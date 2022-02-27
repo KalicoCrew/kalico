@@ -136,7 +136,6 @@ class InputShaper:
             AxisInputShaper("y", config),
         ]
         self.stepper_kinematics = []
-        self.orig_stepper_kinematics = []
         # Register gcode commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -156,13 +155,10 @@ class InputShaper:
         steppers = kin.get_steppers()
         for s in steppers:
             sk = ffi_main.gc(ffi_lib.input_shaper_alloc(), ffi_lib.free)
-            orig_sk = s.set_stepper_kinematics(sk)
-            res = ffi_lib.input_shaper_set_sk(sk, orig_sk)
+            res = s.setup_input_shaping(sk)
             if res < 0:
-                s.set_stepper_kinematics(orig_sk)
                 continue
             self.stepper_kinematics.append(sk)
-            self.orig_stepper_kinematics.append(orig_sk)
         # Configure initial values
         self.old_delay = 0.0
         self._update_input_shaping(error=self.printer.config_error)
