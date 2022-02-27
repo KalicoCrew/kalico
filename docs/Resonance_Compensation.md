@@ -418,10 +418,28 @@ if necessary.
 
 ### Is dual carriage setup supported with input shapers?
 
-There is no dedicated support for dual carriages with input shapers, but it does
-not mean this setup will not work. One should run the tuning twice for each
-of the carriages, and calculate the ringing frequencies for X and Y axes for
-each of the carriages independently. Then put the values for carriage 0 into
+Yes. One should run the tuning twice for each of the carriages, and calculate
+the ringing frequencies for each of the carriages independently.
+
+Afterwards, put the values for carriage 0 and carriage 1 into [input_shaper]
+section as follows. Let's assume that dual_carriage (carriage 1) moves along
+axis `<dc_axis>` (as configured by `[dual_carriage]` section). We assume that
+the frequency and the shaper for carriage 0 and carriage 1 may differ for
+`<dc_axis>`, but they are more or less equal for both carriages for the other
+axis (check the belts tension if they aren't equal). Then, put the following
+into your config:
+```
+[input_shaper]
+shaper_type_x: <carriage_0_x_shaper>
+shaper_freq_x: <carriage_0_x_frequency>
+shaper_type_y: <carriage_0_y_shaper>
+shaper_freq_y: <carriage_0_y_frequency>
+shaper_type_dc: <carriage_1_dc_axis_shaper>
+shaper_freq_dc: <carriage_1_dc_axis_frequency>
+```
+
+If you must configure both X and Y axes shapers independently for both
+carriages, then you can put the values for carriage 0 into
 [input_shaper] section, and change the values on the fly when changing
 carriages, e.g. as a part of some macro:
 ```
@@ -429,7 +447,8 @@ SET_DUAL_CARRIAGE CARRIAGE=1
 SET_INPUT_SHAPER SHAPER_FREQ_X=... SHAPER_FREQ_Y=...
 ```
 
-And similarly when switching back to carriage 0.
+And similarly when switching back to carriage 0. However, this will
+not work for IDEX setups in copy or mirror modes.
 
 ### Does input_shaper affect print time?
 

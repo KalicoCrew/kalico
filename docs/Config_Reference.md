@@ -1561,6 +1561,13 @@ the [command reference](G-Codes.md#input_shaper).
 #   to improve vibration suppression. Default value is 0.1 which is a
 #   good all-round value for most printers. In most circumstances this
 #   parameter requires no tuning and should not be changed.
+#shaper_type_dc:
+#shaper_freq_dc:
+#damping_ratio_dc: 0.1
+#   Shaper parameters for the [dual_carriage] on its <axis>, can only
+#   be configured if [dual_carriage] is enabled. If not set, these
+#   parameters are taken as shaper_type_<axis>, shaper_freq_<axis> and
+#   damping_ratio_<axis>.
 ```
 
 ### [adxl345]

@@ -268,6 +268,33 @@ probe_points: ...
 Then the commands `TEST_RESONANCES AXIS=X` and `TEST_RESONANCES AXIS=Y`
 will use the correct accelerometer for each axis.
 
+### Dual carriage
+
+If your printer has a dual carriage, you will need to measure the resonances
+for both of them on the axis that corresponds to the dual carriage axis, i.e.
+```
+[dual_carriage]
+axis: <dual_carriage_axis>
+```
+In order to do that, the accelerometer must either be moved between the two
+toolheads for the test, or two accelerometers could be connected simultaneously,
+similar to a bed-slinger printers.
+
+First, run `TEST_RESONANCES AXIS=<dual_carriage_axis>` with the first (0)
+carriage activated, then re-mount the accelerometer or configure the second
+accelerometer, active the second (1) carriage, and repeat the test
+`TEST_RESONANCES AXIS=<dual_carriage_axis>`. The test for the other (non-dual)
+axis can be run with either of the carriages activated.
+
+Process both results independently, and put the results for the first (0)
+carriage as usual, and for the second (1) carriage as follows:
+```
+[input_shaper]
+...
+shaper_type_dc: ...
+shaper_freq_dc: ...
+```
+
 ### Max smoothing
 
 Keep in mind that the input shaper can create some smoothing in parts.
