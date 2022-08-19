@@ -16,6 +16,7 @@ TextGlyphs = {"right_arrow": b"\x7e"}
 
 class hd44780_spi:
     def __init__(self, config):
+        # this is a change
         self.printer = config.get_printer()
         self.hd44780_protocol_init = config.getboolean(
             "hd44780_protocol_init", True
