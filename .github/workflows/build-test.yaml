@@ -1,6 +1,6 @@
 # Perform continuous integration tests on updates and pull requests
 name: Build test
-on: push
+on: pull_request
 
 jobs:
   black:
