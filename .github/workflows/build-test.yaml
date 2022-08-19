@@ -19,16 +19,13 @@ jobs:
         id: changes
         with:
           filters: |
-            klippy:
+            paths:
               - 'klippy/**'
-            src:
               - 'src/**'
-            lib:
               - 'lib/**'
-            test:
               - 'test/**'
-              
-      - if: steps.changes.outputs.mypath == 'true' && github.event.review.state == 'approved'
+
+      - if: steps.changes.outputs.paths == 'true' && github.event.review.state == 'approved'
         run: |
           echo "::set-output name=run_test::true"
 
