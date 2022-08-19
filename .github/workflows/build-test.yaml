@@ -25,22 +25,23 @@ jobs:
               - 'lib/**'
               - 'test/**'
 
-      - if: steps.changes.outputs.paths == 'true' && github.event.review.state == 'approved'
+      - id: should_test
+        if: steps.changes.outputs.paths == 'true' && github.event.review.state == 'approved'
         run: |
           echo "::set-output name=run_test::true"
 
 
-      - run: echo "${{ steps.changes.outputs.run_test }}"
+      - run: echo "${{ steps.should_test.outputs.run_test }}"
       - name: Prepare tests
         if: steps.changes.outputs.run_test == 'true'
         run: ./scripts/ci-install.sh
 
       - name: Test
-        if: steps.changes.outputs.run_test == 'true'
+        if: steps.should_test.outputs.run_test == 'true'
         run: ./scripts/ci-build.sh 2>&1
 
       - name: Upload micro-controller data dictionaries
-        if: steps.changes.outputs.run_test == 'true'
+        if: steps.should_test.outputs.run_test == 'true'
         uses: actions/upload-artifact@v2
         with:
           name: data-dict
