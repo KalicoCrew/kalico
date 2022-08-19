@@ -3,6 +3,22 @@ name: Build test
 on: [push, pull_request]
 
 jobs:
+  black:
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.10
+          cache: "pip"
+      - name: Pip install
+        run: pip install -r scripts/requirements_dev.txt
+      - name: Black
+        run: |
+          echo "running black..."
+          black --version
+          black klippy --check
   build:
     runs-on: ubuntu-18.04
     steps:
