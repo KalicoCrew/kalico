@@ -30,7 +30,7 @@ jobs:
           echo "::set-output name=run_test::true"
 
 
-
+      - run: echo "${{ steps.changes.outputs.run_test }}"
       - name: Prepare tests
         if: steps.changes.outputs.run_test == 'true'
         run: ./scripts/ci-install.sh
