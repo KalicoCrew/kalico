@@ -1,44 +1,48 @@
 # Perform continuous integration tests on updates and pull requests
 name: Build test
-on: pull_request
-
+on:
+  pull_request_review:
+    types: [submitted]
 jobs:
-  black:
-    runs-on: ubuntu-18.04
-    steps:
-      - uses: actions/checkout@v2
-      - name: Setup python
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.10.3
-          cache-dependency-path: klippy/requirements_dev.txt
-          cache: "pip"
-      - name: Pip install
-        run: pip install -r scripts/requirements_dev.txt
-      - name: Black
-        run: |
-          echo "running black..."
-          black --version
-          black klippy --check
   build:
     runs-on: ubuntu-18.04
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v2
 
-    - name: Setup cache
-      uses: actions/cache@v2
-      with:
-        path: ci_cache
-        key: ${{ runner.os }}-build-${{ hashFiles('scripts/ci-install.sh') }}
+      - name: Setup cache
+        uses: actions/cache@v2
+        with:
+          path: ci_cache
+          key: ${{ runner.os }}-build-${{ hashFiles('scripts/ci-install.sh') }}
+          
+      - uses: dorny/paths-filter@v2
+          id: changes
+          with:
+            filters: |
+              klippy:
+                - 'klippy/**'
+              src:
+                - 'src/**'
+              lib:
+                - 'lib/**'
+              test:
+                - 'test/**'
+        - if: steps.changes.outputs.mypath == 'true' && github.event.review.state == 'approved'
+          run: |
+            echo "::set-output name=run_test::true"
 
-    - name: Prepare tests
-      run: ./scripts/ci-install.sh
 
-    - name: Test
-      run: ./scripts/ci-build.sh 2>&1
+      - name: Prepare tests
+        if: steps.changes.outputs.run_test == 'true'
+        run: ./scripts/ci-install.sh
 
-    - name: Upload micro-controller data dictionaries
-      uses: actions/upload-artifact@v2
-      with:
-        name: data-dict
-        path: ci_build/dict
+      - name: Test
+        if: steps.changes.outputs.run_test == 'true'
+        run: ./scripts/ci-build.sh 2>&1
+
+      - name: Upload micro-controller data dictionaries
+        if: steps.changes.outputs.run_test == 'true'
+        uses: actions/upload-artifact@v2
+        with:
+          name: data-dict
+          path: ci_build/dict
