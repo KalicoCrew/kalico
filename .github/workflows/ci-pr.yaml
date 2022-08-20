@@ -1,6 +1,6 @@
 # Perform continuous integration tests on pull requests
 name: black
-on: [pull_request,push]
+on: pull_request
 jobs:
   black:
     runs-on: ubuntu-20.04
@@ -20,17 +20,17 @@ jobs:
           black --version
           black klippy --check 
   flake8:
-  runs-on: ubuntu-20.04
-  steps:
-    - uses: actions/checkout@v2
-    - name: Setup python
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.10.3
-        cache: "pip"
-    - name: Pip install
-      run: pip install -r scripts/requirements_dev.txt
-    - name: Flake8
-      run: |
-        echo "running flake8..."
-        flake8 --config .flake8
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.10.3
+          cache: "pip"
+      - name: Pip install
+        run: pip install -r scripts/requirements_dev.txt
+      - name: Flake8
+        run: |
+          echo "running flake8..."
+          flake8 --config .flake8
