@@ -60,6 +60,9 @@ jobs:
     - name: lint + format filtered branch
       if: steps.sync.outputs.has_new_commits == 'true'
       run: |
+        git config --global user.name 'GitHub Action'
+        git config --global user.email 'action@github.com'
+        git fetch
         git checkout master -- .flake8
         git checkout master -- pyproject.toml
         black klippy
@@ -68,5 +71,5 @@ jobs:
         black klippy
         git add .
         git commit -m "autoformatting + linting"
-        git push
+        git push origin pure-klipper-filtered
 
