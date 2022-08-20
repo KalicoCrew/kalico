@@ -13,6 +13,15 @@ jobs:
     name: Sync latest commits from upstream repo
 
     steps:
+    - uses: actions/checkout@v2
+    - name: Setup python
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.10.3
+        cache-dependency-path: scripts/requirements_dev.txt
+        cache: "pip"
+    - name: Pip install
+      run: pip install -r scripts/requirements_dev.txt
     # REQUIRED step
     # Step 1: run a standard checkout action, provided by github
     - name: Checkout target repo
@@ -40,12 +49,24 @@ jobs:
         # Set test_mode true to run tests instead of the true action!!
         test_mode: false
       
-    # Step 3: Display a sample message based on the sync output var 'has_new_commits'
-    - name: New commits found
+    - name: create pure-klipper-filtered branch
       if: steps.sync.outputs.has_new_commits == 'true'
       uses: peterjgrainger/action-create-branch@v2.2.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         branch: 'pure-klipper-filtered'
-      
+        
+    - name: lint + format filtered branch
+      if: steps.sync.outputs.has_new_commits == 'true'
+      run: |
+        git checkout master -- .flake8
+        git checkout master -- pyproject.toml
+        black klippy
+        autoflake --recursive --in-place klippy
+        autopep8 --recursive --in-place klippy -a -a
+        black klippy
+        git add .
+        git commit -m "autoformatting + linting"
+        git push
+
