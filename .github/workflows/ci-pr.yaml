@@ -1,6 +1,6 @@
 # Perform continuous integration tests on pull requests
 name: black
-on: pull_request
+on: [pull_request,push]
 jobs:
   black:
     runs-on: ubuntu-20.04
