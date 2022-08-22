@@ -12,5 +12,8 @@ exclude = '''
 )
 ''' 
 
-[pep8]
+[tool.autopep8]
 ignore = 'E401,E203,W503,C901,E501,E722,E302,E303,E306,E741,F841,W605,E721'
+in-place = true
+recursive = true
+aggressive = 3
