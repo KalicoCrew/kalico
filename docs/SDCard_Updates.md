@@ -74,9 +74,11 @@ the default location it can be done by specifying the `-f` option:
 ./scripts/flash-sdcard.sh -f ~/downloads/klipper.bin /dev/ttyAMA0 btt-skr-v1.3
 ```
 
-Note that when upgrading a MKS Robin E3 it is not necessary to manually run
-`update_mks_robin.py` and supply the resulting binary to `flash-sdcard.sh`.
-This procedure is automated during the upload process.
+!!! tip: "Tip: MKS Robin E3 updates'
+    Note that when upgrading a MKS Robin E3 it is not necessary to manually
+    run `update_mks_robin.py` and supply the resulting binary to
+    `flash-sdcard.sh`. This procedure is automated during the upload
+    process.
 
 ## Caveats
 

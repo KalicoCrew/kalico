@@ -80,12 +80,12 @@ need to be configured in the micro-controller (during **make
 menuconfig**) and that updated code will need to be compiled and
 flashed to the micro-controller. The Klipper printer.cfg file will
 also need to be updated to match that baud rate (see the
-[config reference](Config_Reference.md#mcu) for details).  For
-example:
-```
-[mcu]
-baud: 250000
-```
+[config reference](Config_Reference.md#mcu) for details).
+!!! example
+    ```
+    [mcu]
+    baud: 250000
+    ```
 
 The baud rate shown on the OctoPrint web page has no impact on the
 internal Klipper micro-controller baud rate. Always set the OctoPrint
@@ -132,12 +132,13 @@ computing task (such as defragmenting a hard drive, 3d rendering,
 heavy swapping, etc.), then it may cause Klipper to report print
 errors.
 
-Note: If you are not using an OctoPi image, be aware that several
-Linux distributions enable a "ModemManager" (or similar) package that
-can disrupt serial communication. (Which can cause Klipper to report
-seemingly random "Lost communication with MCU" errors.) If you install
-Klipper on one of these distributions you may need to disable that
-package.
+!!! important "Important: ModemManager and serial"
+    If you are not using an OctoPi image, be aware that several Linux
+    distributions enable a "ModemManager" (or similar) package that can
+    disrupt serial communication. (Which can cause Klipper to report
+    seemingly random "Lost communication with MCU" errors.) If you install
+    Klipper on one of these distributions you may need to disable that
+    package.
 
 ## Can I run multiple instances of Klipper on the same host machine?
 
@@ -149,10 +150,11 @@ scripts ultimately cause the following Unix command to be run:
 ```
 One can run multiple instances of the above command as long as each
 instance has its own printer config file, its own log file, and its
-own pseudo-tty. For example:
-```
-~/klippy-env/bin/python ~/klipper/klippy/klippy.py ~/printer2.cfg -l /tmp/klippy2.log -I /tmp/printer2
-```
+own pseudo-tty.
+!!! example
+    ```
+    ~/klippy-env/bin/python ~/klipper/klippy/klippy.py ~/printer2.cfg -l /tmp/klippy2.log -I /tmp/printer2
+    ```
 
 If you choose to do this, you will need to implement the necessary
 start, stop, and installation scripts (if any). The
@@ -390,12 +392,13 @@ accelerations and speeds without needing to actually print something
 and waste filament: just run some high-speed moves in between the
 `GET_POSITION` commands.
 
-Note that endstop switches themselves tend to trigger at slightly
-different positions, so a difference of a couple of microsteps is
-likely the result of endstop inaccuracies. A stepper motor itself can
-only lose steps in increments of 4 full steps. (So, if one is using 16
-microsteps, then a lost step on the stepper would result in the "mcu:"
-step counter being off by a multiple of 64 microsteps.)
+!!! note
+    Endstop switches themselves tend to trigger at slightly different
+    positions, so a difference of a couple of microsteps is likely the
+    result of endstop inaccuracies. A stepper motor itself can only lose
+    steps in increments of 4 full steps. (So, if one is using 16
+    microsteps, then a lost step on the stepper would result in the "mcu:"
+    step counter being off by a multiple of 64 microsteps.)
 
 ## Why does Klipper report errors? I lost my print!
 
@@ -444,18 +447,17 @@ git pull
 ~/klipper/scripts/install-octopi.sh
 ```
 
-Then one can recompile and flash the micro-controller code. For
-example:
+Then one can recompile and flash the micro-controller code.
+!!! example
+    ```
+    make menuconfig
+    make clean
+    make
 
-```
-make menuconfig
-make clean
-make
-
-sudo service klipper stop
-make flash FLASH_DEVICE=/dev/ttyACM0
-sudo service klipper start
-```
+    sudo service klipper stop
+    make flash FLASH_DEVICE=/dev/ttyACM0
+    sudo service klipper start
+    ```
 
 However, it's often the case that only the host software changes. In
 this case, one can update and restart just the host software with:
@@ -474,9 +476,10 @@ If any errors persist then double check the
 [config changes](Config_Changes.md) document, as you may need to
 modify the printer configuration.
 
-Note that the RESTART and FIRMWARE_RESTART g-code commands do not load
-new software - the above "sudo service klipper restart" and "make
-flash" commands are needed for a software change to take effect.
+!!! important
+    RESTART and FIRMWARE_RESTART g-code commands do not load new software -
+    the above "sudo service klipper restart" and "make flash" commands are
+    needed for a software change to take effect.
 
 ## How do I uninstall Klipper?
 
@@ -484,9 +487,9 @@ On the firmware end, nothing special needs to happen. Just follow the
 flashing directions for the new firmware.
 
 On the raspberry pi end, an uninstall script is available in
-[scripts/klipper-uninstall.sh](../scripts/klipper-uninstall.sh). For
-example:
-```
-sudo ~/klipper/scripts/klipper-uninstall.sh
-rm -rf ~/klippy-env ~/klipper
-```
+[scripts/klipper-uninstall.sh](../scripts/klipper-uninstall.sh).
+!!! example
+    ```
+    sudo ~/klipper/scripts/klipper-uninstall.sh
+    rm -rf ~/klippy-env ~/klipper
+    ```

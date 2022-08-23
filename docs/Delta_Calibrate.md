@@ -245,6 +245,7 @@ is important to obtain good delta calibration prior to enabling a bed
 mesh. Running bed mesh with poor delta calibration will result in
 confusing and poor results.
 
-Note that performing delta calibration will invalidate any previously
-obtained bed mesh. After performing a new delta calibration be sure to
-rerun BED_MESH_CALIBRATE.
+!!! note
+    Performing delta calibration will invalidate any previously obtained
+    bed mesh. After performing a new delta calibration be sure to rerun
+    BED_MESH_CALIBRATE.

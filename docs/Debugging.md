@@ -88,10 +88,11 @@ Klipper supports logging its internal motion history, which can be
 later analyzed. To use this feature, Klipper must be started with the
 [API Server](API_Server.md) enabled.
 
-Data logging is enabled with the `data_logger.py` tool. For example:
-```
-~/klipper/scripts/motan/data_logger.py /tmp/klippy_uds mylog
-```
+Data logging is enabled with the `data_logger.py` tool.
+!!! example
+    ```
+    ~/klipper/scripts/motan/data_logger.py /tmp/klippy_uds mylog
+    ```
 
 This command will connect to the Klipper API Server, subscribe to
 status and motion information, and log the results. Two files are
@@ -115,27 +116,30 @@ a recent version of [Python](https://python.org) and
 [Matplotlib](https://matplotlib.org/) installed.
 
 Graphs can be generated with a command like the following:
-```
-~/klipper/scripts/motan/motan_graph.py mylog -o mygraph.png
-```
+!!! example
+    ```
+    ~/klipper/scripts/motan/motan_graph.py mylog -o mygraph.png
+    ```
 
 One can use the `-g` option to specify the datasets to graph (it takes
-a Python literal containing a list of lists). For example:
-```
-~/klipper/scripts/motan/motan_graph.py mylog -g '[["trapq(toolhead,velocity)"], ["trapq(toolhead,accel)"]]'
-```
+a Python literal containing a list of lists).
+!!! example
+    ```
+    ~/klipper/scripts/motan/motan_graph.py mylog -g '[["trapq(toolhead,velocity)"], ["trapq(toolhead,accel)"]]'
+    ```
 
-The list of available datasets can be found using the `-l` option -
-for example:
-```
-~/klipper/scripts/motan/motan_graph.py -l
-```
+The list of available datasets can be found using the `-l` option.
+!!! example
+    ```
+    ~/klipper/scripts/motan/motan_graph.py -l
+    ```
 
 It is also possible to specify matplotlib plot options for each
 dataset:
-```
-~/klipper/scripts/motan/motan_graph.py mylog -g '[["trapq(toolhead,velocity)?color=red&alpha=0.4"]]'
-```
+!!! example
+    ```
+    ~/klipper/scripts/motan/motan_graph.py mylog -g '[["trapq(toolhead,velocity)?color=red&alpha=0.4"]]'
+    ```
 Many matplotlib options are available; some examples are "color",
 "label", "alpha", and "linestyle".
 
@@ -244,11 +248,12 @@ Klipper (run `make`) and then start the simulation with:
 ```
 PYTHONPATH=/path/to/simulavr/build/pysimulavr/ ./scripts/avrsim.py out/klipper.elf
 ```
-Note that if you have installed python3-simulavr system-wide, you do
-not need to set `PYTHONPATH`, and can simply run the simulator as
-```
-./scripts/avrsim.py out/klipper.elf
-```
+!!! note
+    If you have installed python3-simulavr system-wide, you do not need to
+    set `PYTHONPATH`, and can simply run the simulator as
+    ```
+    ./scripts/avrsim.py out/klipper.elf
+    ```
 
 Then, with simulavr running in another window, one can run the
 following to read gcode from a file (eg, "test.gcode"), process it

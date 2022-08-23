@@ -84,10 +84,12 @@ First, measure the **ringing frequency**.
     velocity, so the frequency is 100 * 6 / 12.14 ≈ 49.4 Hz.
 11. Do (8) - (10) for Y mark as well.
 
-Note that ringing on the test print should follow the pattern of the curved
-notches, as in the picture above. If it doesn't, then this defect is not really
-a ringing and has a different origin - either mechanical, or an extruder issue.
-It should be fixed first before enabling and tuning input shapers.
+!!! important "Possible confusion with other ringing like artifacts"
+    Ringing on the test print should follow the pattern of the curved
+    notches, as in the picture above. If it doesn't, then this defect is
+    not really a ringing and has a different origin - either mechanical, or
+    an extruder issue. It should be fixed first before enabling and tuning
+    input shapers.
 
 If the measurements are not reliable because, say, the distance
 between the oscillations is not stable, it might mean that the printer has
@@ -102,25 +104,30 @@ differences in frequencies at different positions along the sides of the test
 model and at different heights. You can calculate the average ringing
 frequencies over X and Y axes if that is the case.
 
-If the measured ringing frequency is very low (below approx 20-25 Hz), it might
-be a good idea to invest into stiffening the printer or decreasing the moving
-mass - depending on what is applicable in your case - before proceeding with
-further input shaping tuning, and re-measuring the frequencies afterwards. For
-many popular printer models there are often some solutions available already.
+!!! tip "Tip: Low ringing frequency"
+    If the measured ringing frequency is very low (below approx 20-25 Hz),
+    it might be a good idea to invest into stiffening the printer or
+    decreasing the moving mass - depending on what is applicable in your
+    case - before proceeding with further input shaping tuning, and
+    re-measuring the frequencies afterwards. For many popular printer
+    models there are often some solutions available already.
 
-Note that the ringing frequencies can change if the changes are made to the
-printer that affect the moving mass or change the stiffness of the system,
-for example:
+!!! important "Important: Effects of hardware modifications"
+    Ringing frequencies can change if the changes are made to the printer
+    that affect the moving mass or change the stiffness of the system, for
+    example:
 
-* Some tools are installed, removed or replaced on the toolhead that change
- its mass, e.g. a new (heavier or lighter) stepper motor for direct extruder
- or a new hotend is installed, heavy fan with a duct is added, etc.
-* Belts are tightened.
-* Some addons to increase frame rigidity are installed.
-* Different bed is installed on a bed-slinger printer, or glass added, etc.
+    * Some tools are installed, removed or replaced on the toolhead that
+    change its mass, e.g. a new (heavier or lighter) stepper motor for
+    direct extruder or a new hotend is installed, heavy fan with a duct is
+    added, etc.
+    * Belts are tightened.
+    * Some addons to increase frame rigidity are installed.
+    * Different bed is installed on a bed-slinger printer, or glass added,
+    etc.
 
-If such changes are made, it is a good idea to at least measure the ringing
-frequencies to see if they have changed.
+    **If such changes are made, it is a good idea to at least measure the
+    ringing frequencies to see if they have changed.**
 
 ### Input shaper configuration
 
@@ -180,21 +187,24 @@ shaper_freq_y: ...
 shaper_type: mzv
 ```
 
-A few notes on shaper selection:
 
-* EI shaper may be more suited for bed slinger printers (if the resonance
- frequency and resulting smoothing allows): as more filament is deposited
- on the moving bed, the mass of the bed increases and the resonance frequency
- will decrease. Since EI shaper is more robust to resonance frequency
- changes, it may work better when printing large parts.
-* Due to the nature of delta kinematics, resonance frequencies can differ a
- lot in different parts of the build volume. Therefore, EI shaper can be a
- better fit for delta printers rather than MZV or ZV, and should be
- considered for the use. If the resonance frequency is sufficiently large
- (more than 50-60 Hz), then one can even attempt to test 2HUMP_EI shaper
- (by running the suggested test above with
- `SET_INPUT_SHAPER SHAPER_TYPE=2HUMP_EI`), but check the considerations in
- the [section below](#selecting-max_accel) before enabling it.
+!!! note "Note: Bed slingers"
+    EI shaper may be more suited for bed slinger printers (if the resonance
+    frequency and resulting smoothing allows): as more filament is
+    deposited on the moving bed, the mass of the bed increases and the
+    resonance frequency will decrease. Since EI shaper is more robust to
+    resonance frequency changes, it may work better when printing large
+    parts.
+
+!!! note "Note: Delta kinematics"
+    Due to the nature of delta kinematics, resonance frequencies can differ
+    a lot in different parts of the build volume. Therefore, EI shaper can
+    be a better fit for delta printers rather than MZV or ZV, and should be
+    considered for the use. If the resonance frequency is sufficiently
+    large (more than 50-60 Hz), then one can even attempt to test 2HUMP_EI
+    shaper (by running the suggested test above with `SET_INPUT_SHAPER
+    SHAPER_TYPE=2HUMP_EI`), but check the considerations in the [section
+    below](#selecting-max_accel) before enabling it.
 
 ### Selecting max_accel
 
@@ -239,22 +249,25 @@ a good idea to check that too.
 Choose the minimum out of the two acceleration values (from ringing and
 smoothing), and put it as `max_accel` into printer.cfg.
 
+!!! note "Note: Smoothing with EI and MZV shappers"
+    It may happen - especially at low ringing frequencies - that EI shaper
+    will cause too much smoothing even at lower accelerations. In this
+    case, MZV may be a better choice, because it may allow higher
+    acceleration values.
 
-As a note, it may happen - especially at low ringing frequencies - that EI
-shaper will cause too much smoothing even at lower accelerations. In this case,
-MZV may be a better choice, because it may allow higher acceleration values.
+    At very low ringing frequencies (~25 Hz and below) even MZV shaper may create
+    too much smoothing. If that is the case, you can also try to repeat the
+    steps in [Choosing input shaper](#choosing-input-shaper) section with ZV shaper,
+    by using `SET_INPUT_SHAPER SHAPER_TYPE=ZV` command instead. ZV shaper should
+    show even less smoothing than MZV, but is more sensitive to errors in measuring
+    the ringing frequencies.
 
-At very low ringing frequencies (~25 Hz and below) even MZV shaper may create
-too much smoothing. If that is the case, you can also try to repeat the
-steps in [Choosing input shaper](#choosing-input-shaper) section with ZV shaper,
-by using `SET_INPUT_SHAPER SHAPER_TYPE=ZV` command instead. ZV shaper should
-show even less smoothing than MZV, but is more sensitive to errors in measuring
-the ringing frequencies.
-
-Another consideration is that if a resonance frequency is too low (below 20-25
-Hz), it might be a good idea to increase the printer stiffness or reduce the
-moving mass. Otherwise, acceleration and printing speed may be limited due too
-much smoothing now instead of ringing.
+!!! tip "Tip: Mechanical optimizations"
+    Another consideration is that if a resonance frequency is too low
+    (below 20-25 Hz), it might be a good idea to increase the printer
+    stiffness or reduce the moving mass. Otherwise, acceleration and
+    printing speed may be limited due too much smoothing now instead of
+    ringing.
 
 
 ### Fine-tuning resonance frequencies
@@ -295,12 +308,14 @@ Repeat these steps for the Y axis in the same manner, replacing references to X
 axis with the axis Y (e.g. replace `shaper_freq_x` with `shaper_freq_y` in
 the formulae and in the `TUNING_TOWER` command).
 
-As an example, let's assume you have had measured the ringing frequency for one
-of the axis equal to 45 Hz. This gives start = 45 * 83 / 132 = 28.30
-and factor = 45 / 66 = 0.6818 values for `TUNING_TOWER` command.
-Now let's assume that after printing the test model, the fourth band from the
-bottom gives the least ringing. This gives the updated shaper_freq_? value
-equal to 45 * (39 + 5 * 4) / 66 ≈ 40.23.
+
+!!! example
+    Let's assume you have had measured the ringing frequency for one of the
+    axis equal to 45 Hz. This gives start = 45 * 83 / 132 = 28.30 and
+    factor = 45 / 66 = 0.6818 values for `TUNING_TOWER` command. Now let's
+    assume that after printing the test model, the fourth band from the
+    bottom gives the least ringing. This gives the updated shaper_freq_?
+    value equal to 45 * (39 + 5 * 4) / 66 ≈ 40.23.
 
 After both new `shaper_freq_x` and `shaper_freq_y` parameters have been
 calculated, you can update `[input_shaper]` section in `printer.cfg` with the

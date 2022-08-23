@@ -138,8 +138,9 @@ found in other firmwares or in the example configuration files often
 work poorly).
 
 To calibrate the extruder, navigate to the OctoPrint terminal tab and
-run the PID_CALIBRATE command. For example: `PID_CALIBRATE
-HEATER=extruder TARGET=170`
+run the PID_CALIBRATE command.
+!!! example
+    `PID_CALIBRATE HEATER=extruder TARGET=170`
 
 At the completion of the tuning test run `SAVE_CONFIG` to update the
 printer.cfg file the new PID settings.

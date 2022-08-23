@@ -39,8 +39,9 @@ iface can0 can static
     up ifconfig $IFACE txqueuelen 128
 ```
 
-Note that the "Raspberry Pi CAN hat" also requires
-[changes to config.txt](https://www.waveshare.com/wiki/RS485_CAN_HAT).
+!!! note "Note: Raspberry Pi CAN hat"
+  The "Raspberry Pi CAN hat" also requires [changes to
+  config.txt](https://www.waveshare.com/wiki/RS485_CAN_HAT).
 
 ## Terminating Resistors
 
@@ -86,11 +87,12 @@ will no longer appear in the list.
 ## Configuring Klipper
 
 Update the Klipper [mcu configuration](Config_Reference.md#mcu) to use
-the CAN bus to communicate with the device - for example:
-```
-[mcu my_can_mcu]
-canbus_uuid: 11aa22bb33cc
-```
+the CAN bus to communicate with the device.
+!!! example
+    ```
+    [mcu my_can_mcu]
+    canbus_uuid: 11aa22bb33cc
+    ```
 
 ## USB to CAN bus bridge mode
 

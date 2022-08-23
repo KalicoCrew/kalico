@@ -4,9 +4,10 @@ This document contains guidelines for contributing an example Klipper
 configuration to the Klipper github repository (located in the
 [config directory](../config/)).
 
-Note that the
-[Klipper Community Discourse server](https://community.klipper3d.org)
-is also a useful resource for finding and sharing config files.
+!!! tip
+    The [Klipper Community Discourse
+    server](https://community.klipper3d.org) is also a useful resource for
+    finding and sharing config files.
 
 ## Guidelines
 

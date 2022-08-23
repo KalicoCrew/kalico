@@ -338,9 +338,10 @@ is small (eg, less than 5) then it may result in unstable homing. A
 faster homing speed may increase the range and make the operation more
 stable.
 
-Note that if any change is made to driver current, homing speed, or a
-notable change is made to the printer hardware, then it will be
-necessary to run the tuning process again.
+!!! important
+    If any change is made to driver current, homing speed, or a notable
+    change is made to the printer hardware, then it will be necessary to
+    run the tuning process again.
 
 #### Using Macros when Homing
 
@@ -383,8 +384,9 @@ The resulting macro can be called from a
 [homing_override config section](Config_Reference.md#homing_override)
 or from a [START_PRINT macro](Slicers.md#klipper-gcode_macro).
 
-Note that if the driver current during homing is changed, then the
-tuning process should be run again.
+!!! important
+    If the driver current during homing is changed, then the tuning process
+    should be run again.
 
 ### Tips for sensorless homing on CoreXY
 
@@ -435,14 +437,14 @@ Each of these fields is defined in the Trinamic datasheet for each
 driver. These datasheets can be found on the
 [Trinamic website](https://www.trinamic.com/).
 
-Note that the Trinamic datasheets sometime use wording that can
-confuse a high-level setting (such as "hysteresis end") with a
-low-level field value (eg, "HEND"). In Klipper, `driver_XXX` and
-SET_TMC_FIELD always set the low-level field value that is actually
-written to the driver. So, for example, if the Trinamic datasheet
-states that a value of 3 must be written to the HEND field to obtain a
-"hysteresis end" of 0, then set `driver_HEND=3` to obtain the
-high-level value of 0.
+!!!note
+    The Trinamic datasheets sometime use wording that can confuse a
+    high-level setting (such as "hysteresis end") with a low-level field
+    value (eg, "HEND"). In Klipper, `driver_XXX` and SET_TMC_FIELD always
+    set the low-level field value that is actually written to the driver.
+    So, for example, if the Trinamic datasheet states that a value of 3
+    must be written to the HEND field to obtain a "hysteresis end" of 0,
+    then set `driver_HEND=3` to obtain the high-level value of 0.
 
 ## Common Questions
 
@@ -488,17 +490,17 @@ Otherwise, this error is typically the result of incorrect SPI wiring,
 an incorrect Klipper configuration of the SPI settings, or an
 incomplete configuration of devices on an SPI bus.
 
-Note that if the driver is on a shared SPI bus with multiple devices
-then be sure to fully configure every device on that shared SPI bus in
-Klipper. If a device on a shared SPI bus is not configured, then it
-may incorrectly respond to commands not intended for it and corrupt
-the communication to the intended device. If there is a device on a
-shared SPI bus that can not be configured in Klipper, then use a
-[static_digital_output config section](Config_Reference.md#static_digital_output)
-to set the CS pin of the unused device high (so that it will not
-attempt to use the SPI bus). The board's schematic is often a useful
-reference for finding which devices are on an SPI bus and their
-associated pins.
+!!! important "Important: Shared SPI bus"
+    If the driver is on a shared SPI bus with multiple devices then be sure
+    to fully configure every device on that shared SPI bus in Klipper. If a
+    device on a shared SPI bus is not configured, then it may incorrectly
+    respond to commands not intended for it and corrupt the communication
+    to the intended device. If there is a device on a shared SPI bus that
+    can not be configured in Klipper, then use a [static_digital_output
+    config section](Config_Reference.md#static_digital_output) to set the
+    CS pin of the unused device high (so that it will not attempt to use
+    the SPI bus). The board's schematic is often a useful reference for
+    finding which devices are on an SPI bus and their associated pins.
 
 ### Why did I get a "TMC reports error: ..." error?
 

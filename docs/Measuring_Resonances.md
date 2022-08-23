@@ -63,15 +63,17 @@ An example of mounting ADXL345 on the SmartEffector:
 
 ![ADXL345 on SmartEffector](img/adxl345-mount.jpg)
 
-Note that on a bed slinger printer one must design 2 mounts: one for the
-toolhead and one for the bed, and run the measurements twice. See the
-corresponding [section](#bed-slinger-printers) for more details.
+!!! note
+    On a bed slinger printer one must design 2 mounts: one for the toolhead
+    and one for the bed, and run the measurements twice. See the
+    corresponding [section](#bed-slinger-printers) for more details.
 
-**Attention:** make sure the accelerometer and any screws that hold it in
-place do not touch any metal parts of the printer. Basically, the mount must
-be designed such as to ensure the electrical isolation of the accelerometer
-from the printer frame. Failing to ensure that can create a ground loop in
-the system that may damage the electronics.
+!!! danger
+    Make sure the accelerometer and any screws that hold it in place do not
+    touch any metal parts of the printer. Basically, the mount must be
+    designed such as to ensure the electrical isolation of the
+    accelerometer from the printer frame. Failing to ensure that can create
+    a ground loop in the system that may damage the electronics.
 
 ### Software installation
 
@@ -87,10 +89,11 @@ Next, in order to install NumPy in the Klipper environment, run the command:
 ```
 ~/klippy-env/bin/pip install -v numpy
 ```
-Note that, depending on the performance of the CPU, it may take *a lot*
-of time, up to 10-20 minutes. Be patient and wait for the completion of
-the installation. On some occasions, if the board has too little RAM
-the installation may fail and you will need to enable swap.
+!!! note
+    Depending on the performance of the CPU, it may take *a lot* of time,
+    up to 10-20 minutes. Be patient and wait for the completion of the
+    installation. On some occasions, if the board has too little RAM the
+    installation may fail and you will need to enable swap.
 
 Afterwards, check and follow the instructions in the
 [RPi Microcontroller document](RPi_microcontroller.md) to setup the
@@ -170,21 +173,24 @@ Now you can run some real-life tests. Run the following command:
 ```
 TEST_RESONANCES AXIS=X
 ```
-Note that it will create vibrations on X axis. It will also disable input
-shaping if it was enabled previously, as it is not valid to run the resonance
-testing with the input shaper enabled.
+!!! info
+    It will create vibrations on X axis. It will also disable input shaping
+    if it was enabled previously, as it is not valid to run the resonance
+    testing with the input shaper enabled.
 
-**Attention!** Be sure to observe the printer for the first time, to make sure
-the vibrations do not become too violent (`M112` command can be used to abort
-the test in case of emergency; hopefully it will not come to this though).
-If the vibrations do get too strong, you can attempt to specify a lower than the
-default value for `accel_per_hz` parameter in `[resonance_tester]` section, e.g.
-```
-[resonance_tester]
-accel_chip: adxl345
-accel_per_hz: 50  # default is 75
-probe_points: ...
-```
+!!! warning
+    Be sure to observe the printer for the first time, to make sure the
+    vibrations do not become too violent (`M112` command can be used to
+    abort the test in case of emergency; hopefully it will not come to this
+    though). If the vibrations do get too strong, you can attempt to
+    specify a lower than the default value for `accel_per_hz` parameter in
+    `[resonance_tester]` section, e.g.
+    ```
+    [resonance_tester]
+    accel_chip: adxl345
+    accel_per_hz: 50  # default is 75
+    probe_points: ...
+    ```
 
 If it works for X axis, run for Y axis as well:
 ```
@@ -233,10 +239,11 @@ or you can choose some other configuration yourself based on the generated
 charts: peaks in the power spectral density on the charts correspond to
 the resonance frequencies of the printer.
 
-Note that alternatively you can run the input shaper autocalibration
-from Klipper [directly](#input-shaper-auto-calibration), which can be
-convenient, for example, for the input shaper
-[re-calibration](#input-shaper-re-calibration).
+!!! info
+    Alternatively you can run the input shaper autocalibration from Klipper
+    [directly](#input-shaper-auto-calibration), which can be convenient,
+    for example, for the input shaper
+    [re-calibration](#input-shaper-re-calibration).
 
 ### Bed-slinger printers
 
@@ -295,13 +302,16 @@ Fitted shaper '3hump_ei' frequency = 48.0 Hz (vibrations = 0.0%, smoothing ~= 0.
 To avoid too much smoothing with '3hump_ei', suggested max_accel <= 1500 mm/sec^2
 Recommended shaper is 2hump_ei @ 45.2 Hz
 ```
-Note that the reported `smoothing` values are some abstract projected values.
-These values can be used to compare different configurations: the higher the
-value, the more smoothing a shaper will create. However, these smoothing scores
-do not represent any real measure of smoothing, because the actual smoothing
-depends on [`max_accel`](#selecting-max-accel) and `square_corner_velocity`
-parameters. Therefore, you should print some test prints to see how much
-smoothing exactly a chosen configuration creates.
+
+!!! tip
+    The reported `smoothing` values are some abstract projected values.
+    These values can be used to compare different configurations: the
+    higher the value, the more smoothing a shaper will create. However,
+    these smoothing scores do not represent any real measure of smoothing,
+    because the actual smoothing depends on
+    [`max_accel`](#selecting-max-accel) and `square_corner_velocity`
+    parameters. Therefore, you should print some test prints to see how
+    much smoothing exactly a chosen configuration creates.
 
 In the example above the suggested shaper parameters are not bad, but what if
 you want to get less smoothing on the X axis? You can try to limit the maximum
@@ -341,17 +351,18 @@ at the lowest resonance frequencies (which are, typically, also more prominently
 visible in prints). So, always double-check the projected remaining vibrations
 reported by the script and make sure they are not too high.
 
-Note that if you chose a good `max_smoothing` value for both of your axes, you
-can store it in the `printer.cfg` as
-```
-[resonance_tester]
-accel_chip: ...
-probe_points: ...
-max_smoothing: 0.25  # an example
-```
-Then, if you [rerun](#input-shaper-re-calibration) the input shaper auto-tuning
-using `SHAPER_CALIBRATE` Klipper command in the future, it will use the stored
-`max_smoothing` value as a reference.
+!!! tip
+    If you chose a good `max_smoothing` value for both of your axes, you
+    can store it in the `printer.cfg` as
+    ```
+    [resonance_tester]
+    accel_chip: ...
+    probe_points: ...
+    max_smoothing: 0.25  # an example
+    ```
+    Then, if you [rerun](#input-shaper-re-calibration) the input shaper
+    auto-tuning using `SHAPER_CALIBRATE` Klipper command in the future, it
+    will use the stored `max_smoothing` value as a reference.
 
 ### Selecting max_accel
 
@@ -473,21 +484,25 @@ supplying `AXIS=` parameter, like
 SHAPER_CALIBRATE AXIS=X
 ```
 
-**Warning!** It is not advisable to run the shaper autocalibration very
-frequently (e.g. before every print, or every day). In order to determine
-resonance frequencies, autocalibration creates intensive vibrations on each of
-the axes. Generally, 3D printers are not designed to withstand a prolonged
-exposure to vibrations near the resonance frequencies. Doing so may increase
-wear of the printer components and reduce their lifespan. There is also an
-increased risk of some parts unscrewing or becoming loose. Always check that
-all parts of the printer (including the ones that may normally not move) are
-securely fixed in place after each auto-tuning.
+!!! warning
+    It is not advisable to run the shaper autocalibration very frequently
+    (e.g. before every print, or every day). In order to determine
+    resonance frequencies, autocalibration creates intensive vibrations on
+    each of the axes. Generally, 3D printers are not designed to withstand
+    a prolonged exposure to vibrations near the resonance frequencies.
+    Doing so may increase wear of the printer components and reduce their
+    lifespan. There is also an increased risk of some parts unscrewing or
+    becoming loose. Always check that all parts of the printer (including
+    the ones that may normally not move) are securely fixed in place after
+    each auto-tuning.
 
-Also, due to some noise in measurements, it is possible that the tuning results
-will be slightly different from one calibration run to another one. Still, it
-is not expected that the noise will affect the print quality too much.
-However, it is still advised to double-check the suggested parameters, and
-print some test prints before using them to confirm they are good.
+!!! info
+    Also, due to some noise in measurements, it is possible that the tuning
+    results will be slightly different from one calibration run to another
+    one. Still, it is not expected that the noise will affect the print
+    quality too much. However, it is still advised to double-check the
+    suggested parameters, and print some test prints before using them to
+    confirm they are good.
 
 ## Offline processing of the accelerometer data
 
@@ -526,8 +541,9 @@ mode. The graph_accelerometer.py script supports several modes of operation:
   `-a x`, `-a y` or `-a z` parameter (if none specified, the sum of vibrations
   for all axes is used).
 
-Note that graph_accelerometer.py script supports only the raw_data\*.csv files
-and not resonances\*.csv or calibration_data\*.csv files.
+!!! important
+    graph_accelerometer.py script supports only the raw_data\*.csv files
+    and not resonances\*.csv or calibration_data\*.csv files.
 
 For example,
 ```

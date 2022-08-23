@@ -12,31 +12,33 @@ the BL-Touch documentation or your MCU documentation. Using the
 original wiring, the yellow wire from the triple is the `control_pin`
 and the white wire from the pair is the `sensor_pin`. You need to
 configure these pins according to your wiring. Most BL-Touch devices
-require a pullup on the sensor pin (prefix the pin name with "^"). For
-example:
+require a pullup on the sensor pin (prefix the pin name with "^").
 
-```
-[bltouch]
-sensor_pin: ^P1.24
-control_pin: P1.26
-```
+!!! example
+    ```
+    [bltouch]
+    sensor_pin: ^P1.24
+    control_pin: P1.26
+    ```
 
 If the BL-Touch will be used to home the Z axis then set `endstop_pin:
 probe:z_virtual_endstop` and remove `position_endstop` in the `[stepper_z]` config section,
 then add a `[safe_z_home]` config section to raise the z axis, home the xy axes,
-move to the center of the bed, and home the z axis. For example:
+move to the center of the bed, and home the z axis.
 
-```
-[safe_z_home]
-home_xy_position: 100, 100 # Change coordinates to the center of your print bed
-speed: 50
-z_hop: 10                 # Move up 10mm
-z_hop_speed: 5
-```
+!!! example
+    ```
+    [safe_z_home]
+    home_xy_position: 100, 100 # Change coordinates to the center of your print bed
+    speed: 50
+    z_hop: 10                 # Move up 10mm
+    z_hop_speed: 5
+    ```
 
-It's important that the z_hop movement in safe_z_home is high enough
-that the probe doesn't hit anything even if the probe pin happens to
-be in its lowest state.
+!!! important
+    It's important that the z_hop movement in safe_z_home is high enough
+    that the probe doesn't hit anything even if the probe pin happens to be
+    in its lowest state.
 
 ## Initial tests
 
@@ -112,11 +114,12 @@ the `QUERY_PROBE` command and some "clone" devices may require
 configuration of `pin_up_reports_not_triggered` or
 `pin_up_touch_mode_reports_triggered`.
 
-Important! Do not configure `pin_up_reports_not_triggered` or
-`pin_up_touch_mode_reports_triggered` to False without first following
-these directions. Do not configure either of these to False on a
-genuine BL-Touch. Incorrectly setting these to False can increase
-probing time and can increase the risk of damaging the printer.
+!!! important
+    Do not configure `pin_up_reports_not_triggered` or
+    `pin_up_touch_mode_reports_triggered` to False without first following
+    these directions. Do not configure either of these to False on a
+    genuine BL-Touch. Incorrectly setting these to False can increase
+    probing time and can increase the risk of damaging the printer.
 
 Some "clone" devices do not support `touch_mode` and as a result the
 `QUERY_PROBE` command does not work. Despite this, it may still be
@@ -172,12 +175,13 @@ successfully contacts the bed. Klipper should clear this error
 automatically and it is generally harmless. However, one may set
 `probe_with_touch_mode` in the config file to avoid this issue.
 
-Important! Some "clone" devices and the BL-Touch v2.0 (and earlier)
-may have reduced accuracy when `probe_with_touch_mode` is set to True.
-Setting this to True also increases the time it takes to deploy the
-probe. If configuring this value on a "clone" or older BL-Touch
-device, be sure to test the probe accuracy before and after setting
-this value (use the `PROBE_ACCURACY` command to test).
+!!! important
+    Some "clone" devices and the BL-Touch v2.0 (and earlier) may have
+    reduced accuracy when `probe_with_touch_mode` is set to True. Setting
+    this to True also increases the time it takes to deploy the probe. If
+    configuring this value on a "clone" or older BL-Touch device, be sure
+    to test the probe accuracy before and after setting this value (use the
+    `PROBE_ACCURACY` command to test).
 
 ## Multi-probing without stowing
 
@@ -189,19 +193,21 @@ leaving the probe deployed between consecutive probes, which can
 reduce the total time of probing. This mode is enabled by configuring
 `stow_on_each_sample` to False in the config file.
 
-Important! Setting `stow_on_each_sample` to False can lead to Klipper
-making horizontal toolhead movements while the probe is deployed. Be
-sure to verify all probing operations have sufficient Z clearance
-prior to setting this value to False. If there is insufficient
-clearance then a horizontal move may cause the pin to catch on an
-obstruction and result in damage to the printer.
+!!! important
+    Setting `stow_on_each_sample` to False can lead to Klipper making
+    horizontal toolhead movements while the probe is deployed. Be sure to
+    verify all probing operations have sufficient Z clearance prior to
+    setting this value to False. If there is insufficient clearance then a
+    horizontal move may cause the pin to catch on an obstruction and result
+    in damage to the printer.
 
-Important! It is recommended to use `probe_with_touch_mode` configured
-to True when using `stow_on_each_sample` configured to False. Some
-"clone" devices may not detect a subsequent bed contact if
-`probe_with_touch_mode` is not set. On all devices, using the
-combination of these two settings simplifies the device signaling,
-which can improve overall stability.
+!!! important
+    It is recommended to use `probe_with_touch_mode` configured to True
+    when using `stow_on_each_sample` configured to False. Some "clone"
+    devices may not detect a subsequent bed contact if
+    `probe_with_touch_mode` is not set. On all devices, using the
+    combination of these two settings simplifies the device signaling,
+    which can improve overall stability.
 
 Note, however, that some "clone" devices and the BL-Touch v2.0 (and
 earlier) may have reduced accuracy when `probe_with_touch_mode` is set

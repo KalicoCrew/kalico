@@ -13,9 +13,10 @@ directly use the GPIOs and the buses (i2c, spi) of the RPi inside
 klipper without using Octoprint plugins (if used) or external programs
 giving the ability to control everything within the print GCODE.
 
-**Warning**: If your platform is a _Beaglebone_ and you have correctly
-followed the installation steps, the linux mcu is already installed
-and configured for your system.
+!!! important
+    If your platform is a _Beaglebone_ and you have correctly followed the
+    installation steps, the linux mcu is already installed and configured
+    for your system.
 
 ## Install the rc script
 
@@ -109,8 +110,9 @@ The chosen pin can thus be used within the configuration as
 `gpiodetect` command and **o** is the line number seen by the`
 gpioinfo` command.
 
-***Warning:*** only gpio marked as `unused` can be used. It is not
-possible for a _line_ to be used by multiple processes simultaneously.
+!!! warning
+    Only gpio marked as `unused` can be used. It is not possible for a
+    _line_ to be used by multiple processes simultaneously.
 
 For example on a RPi 3B+ where klipper use the GPIO20 for a switch:
 ```

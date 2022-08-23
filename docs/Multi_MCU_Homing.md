@@ -35,8 +35,9 @@ Should Klipper detect a communication issue between micro-controllers
 during multi-mcu homing then it will raise a "Communication timeout
 during homing" error.
 
-Note that an axis with multiple steppers (eg, `stepper_z` and
-`stepper_z1`) need to be on the same micro-controller in order to use
-multi-mcu homing. For example, if an endstop is on a separate
-micro-controller from `stepper_z` then `stepper_z1` must be on the
-same micro-controller as `stepper_z`.
+!!! important "Axis with multiple steppers"
+    Axis with multiple steppers (eg, `stepper_z` and `stepper_z1`) need to
+    be on the same micro-controller in order to use multi-mcu homing. For
+    example, if an endstop is on a separate micro-controller from
+    `stepper_z` then `stepper_z1` must be on the same micro-controller as
+    `stepper_z`.

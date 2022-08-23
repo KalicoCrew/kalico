@@ -29,9 +29,10 @@ resistor should be enabled for the pin. If the micro-controller
 supports pull-down resistors then an input pin may alternatively be
 preceded by `~`.
 
-Note, some config sections may "create" additional pins. Where this
-occurs, the config section defining the pins must be listed in the
-config file before any sections using those pins.
+!!! note: "Note: Additional pins"
+    Some config sections may "create" additional pins. Where this occurs,
+    the config section defining the pins must be listed in the config file
+    before any sections using those pins.
 
 ### [mcu]
 
@@ -1153,7 +1154,10 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 Moving gantry leveling using 4 independently controlled Z motors.
 Corrects hyperbolic parabola effects (potato chip) on moving gantry
 which is more flexible.
-WARNING: Using this on a moving bed may lead to undesirable results.
+
+!!! warning
+    Using this on a moving bed may lead to undesirable results.
+
 If this section is present then a QUAD_GANTRY_LEVEL extended G-Code
 command becomes available. This routine assumes the following Z motor
 configuration:
@@ -2326,12 +2330,12 @@ sensor_pin:
 ### BMP280/BME280/BME680 temperature sensor
 
 BMP280/BME280/BME680 two wire interface (I2C) environmental sensors.
-Note that these sensors are not intended for use with extruders and
-heater beds, but rather for monitoring ambient temperature (C),
-pressure (hPa), relative humidity and in case of the BME680 gas level.
-See [sample-macros.cfg](../config/sample-macros.cfg) for a gcode_macro
-that may be used to report pressure and humidity in addition to
-temperature.
+!!! note
+    These sensors are not intended for use with extruders and heater beds,
+    but rather for monitoring ambient temperature (C), pressure (hPa),
+    relative humidity and in case of the BME680 gas level. See
+    [sample-macros.cfg](../config/sample-macros.cfg) for a gcode_macro that
+    may be used to report pressure and humidity in addition to temperature.
 
 ```
 sensor_type: BME280
@@ -2741,11 +2745,11 @@ Neopixel (aka WS2812) LED support (one may define any number of
 sections with a "neopixel" prefix). See the
 [command reference](G-Codes.md#led) for more information.
 
-Note that the [linux mcu](RPi_microcontroller.md) implementation does
-not currently support directly connected neopixels. The current design
-using the Linux kernel interface does not allow this scenario because
-the kernel GPIO interface is not fast enough to provide the required
-pulse rates.
+!!! note "Note: [Linux mcu](RPi_microcontroller.md)"
+    [Linux mcu](RPi_microcontroller.md) implementation does not currently
+    support directly connected neopixels. The current design using the
+    Linux kernel interface does not allow this scenario because the kernel
+    GPIO interface is not fast enough to provide the required pulse rates.
 
 ```
 [neopixel my_neopixel]
@@ -4311,12 +4315,13 @@ SPI bus.
 The following parameters are generally available for devices using an
 I2C bus.
 
-Note that Klipper's current micro-controller support for i2c is
-generally not tolerant to line noise. Unexpected errors on the i2c
-wires may result in Klipper raising a run-time error. Klipper's
-support for error recovery varies between each micro-controller type.
-It is generally recommended to only use i2c devices that are on the
-same printed circuit board as the micro-controller.
+!!! note "Note: Line noise"
+    Klipper's current micro-controller support for i2c is generally not
+    tolerant to line noise. Unexpected errors on the i2c wires may result
+    in Klipper raising a run-time error. Klipper's support for error
+    recovery varies between each micro-controller type. It is generally
+    recommended to only use i2c devices that are on the same printed
+    circuit board as the micro-controller.
 
 Most Klipper micro-controller implementations only support an
 `i2c_speed` of 100000. The Klipper "linux" micro-controller supports a

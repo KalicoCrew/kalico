@@ -79,11 +79,13 @@ If the actual_extrude_distance differs from requested_extrude_distance
 by more than about 2mm then it is a good idea to perform the steps
 above a second time.
 
-Note: Do *not* use a "measure and trim" type of method to calibrate x,
-y, or z type axes. The "measure and trim" method is not accurate
-enough for those axes and will likely lead to a worse configuration.
-Instead, if needed, those axes can be determined by
-[measuring the belts, pulleys, and lead screw hardware](#obtaining-rotation_distance-by-inspecting-the-hardware).
+!!! important
+    Do *not* use a "measure and trim" type of method to calibrate x, y, or
+    z type axes. The "measure and trim" method is not accurate enough for
+    those axes and will likely lead to a worse configuration. Instead, if
+    needed, those axes can be determined by [measuring the belts, pulleys,
+    and lead screw
+    hardware](#obtaining-rotation_distance-by-inspecting-the-hardware).
 
 ## Obtaining rotation_distance by inspecting the hardware
 
@@ -162,13 +164,14 @@ with 80 teeth then one would use `gear_ratio: 80:16`. Indeed, one
 could open a common off the shelf "gear box" and count the teeth in it
 to confirm its gear ratio.
 
-Note that sometimes a gearbox will have a slightly different gear
-ratio than what it is advertised as. The common BMG extruder motor
-gears are an example of this - they are advertised as "3:1" but
-actually use "50:17" gearing. (Using teeth numbers without a common
-denominator may improve overall gear wear as the teeth don't always
-mesh the same way with each revolution.) The common "5.18:1 planetary
-gearbox", is more accurately configured with `gear_ratio: 57:11`.
+!!! note
+    Sometimes a gearbox will have a slightly different gear ratio than what
+    it is advertised as. The common BMG extruder motor gears are an example
+    of this - they are advertised as "3:1" but actually use "50:17"
+    gearing. (Using teeth numbers without a common denominator may improve
+    overall gear wear as the teeth don't always mesh the same way with each
+    revolution.) The common "5.18:1 planetary gearbox", is more accurately
+    configured with `gear_ratio: 57:11`.
 
 If several gears are used on an axis then it is possible to provide a
 comma separated list to gear_ratio. For example, a "5:1" gear box

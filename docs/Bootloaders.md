@@ -102,12 +102,13 @@ To flash an application use something like:
 avrdude -carduino -patmega1284p -P/dev/ttyACM0 -b115200 -D -Uflash:w:out/klipper.elf.hex:i
 ```
 
-Note that a number of "Melzi" style boards come preloaded with a
-bootloader that uses a baud rate of 57600. In this case, to flash an
-application use something like this instead:
-```
-avrdude -carduino -patmega1284p -P/dev/ttyACM0 -b57600 -D -Uflash:w:out/klipper.elf.hex:i
-```
+!!! note "Note: Melzi boards"
+    A number of "Melzi" style boards come preloaded with a bootloader that
+    uses a baud rate of 57600. In this case, to flash an application use
+    something like this instead:
+    ```
+    avrdude -carduino -patmega1284p -P/dev/ttyACM0 -b57600 -D -Uflash:w:out/klipper.elf.hex:i
+    ```
 
 ### At90usb1286
 
@@ -263,11 +264,12 @@ to flash the device using something like:
 stm32flash -w out/klipper.bin -v -g 0 /dev/ttyAMA0
 ```
 
-Note that if one is using a Raspberry Pi for the 3.3V serial, the
-stm32flash protocol uses a serial parity mode which the Raspberry Pi's
-"mini UART" does not support. See
-[https://www.raspberrypi.com/documentation/computers/configuration.html#configuring-uarts](https://www.raspberrypi.com/documentation/computers/configuration.html#configuring-uarts)
-for details on enabling the full uart on the Raspberry Pi GPIO pins.
+!!! note "Note: Raspberry Pi's mini UART"
+    If one is using a Raspberry Pi for the 3.3V serial, the stm32flash
+    protocol uses a serial parity mode which the Raspberry Pi's "mini UART"
+    does not support. See
+    [https://www.raspberrypi.com/documentation/computers/configuration.html#configuring-uarts](https://www.raspberrypi.com/documentation/computers/configuration.html#configuring-uarts)
+    for details on enabling the full uart on the Raspberry Pi GPIO pins.
 
 After flashing, set both "boot 0" and "boot 1" back to low so that
 future resets boot from flash.
@@ -329,30 +331,31 @@ finally, you can flash with commands similar to:
 stm32f1x mass_erase 0
 program hid_btt_skr_mini_e3.bin verify 0x08000000
 ```
-NOTES:
-- The example above erases the chip then programs the bootloader.  Regardless
-  of the method chosen to flash it is recommended to erase the chip prior to
-  flashing.
-- Prior flashing the SKR Mini E3 with this bootloader you should be aware
-  that you will no longer be able to update firmware via the sdcard.
-- You may need to hold down the reset button on the board while launching
-  OpenOCD.  It should display something like:
-  ```
-  Open On-Chip Debugger 0.10.0+dev-01204-gc60252ac-dirty (2020-04-27-16:00)
-  Licensed under GNU GPL v2
-  For bug reports, read
-          http://openocd.org/doc/doxygen/bugs.html
-  DEPRECATED! use 'adapter speed' not 'adapter_khz'
-  Info : BCM2835 GPIO JTAG/SWD bitbang driver
-  Info : JTAG and SWD modes enabled
-  Info : clock speed 40 kHz
-  Info : SWD DPIDR 0x1ba01477
-  Info : stm32f1x.cpu: hardware has 6 breakpoints, 4 watchpoints
-  Info : stm32f1x.cpu: external reset detected
-  Info : starting gdb server for stm32f1x.cpu on 3333
-  Info : Listening on port 3333 for gdb connections
-  ```
-  After which you can release the reset button.
+!!! note
+    - The example above erases the chip then programs the bootloader.
+      Regardless of the method chosen to flash it is recommended to erase
+      the chip prior to flashing.
+    - Prior flashing the SKR Mini E3 with this bootloader you should be
+      aware that you will no longer be able to update firmware via the
+      sdcard.
+    - You may need to hold down the reset button on the board while
+      launching OpenOCD.  It should display something like:
+      ```
+      Open On-Chip Debugger 0.10.0+dev-01204-gc60252ac-dirty (2020-04-27-16:00)
+      Licensed under GNU GPL v2
+      For bug reports, read
+              http://openocd.org/doc/doxygen/bugs.html
+      DEPRECATED! use 'adapter speed' not 'adapter_khz'
+      Info : BCM2835 GPIO JTAG/SWD bitbang driver
+      Info : JTAG and SWD modes enabled
+      Info : clock speed 40 kHz
+      Info : SWD DPIDR 0x1ba01477
+      Info : stm32f1x.cpu: hardware has 6 breakpoints, 4 watchpoints
+      Info : stm32f1x.cpu: external reset detected
+      Info : starting gdb server for stm32f1x.cpu on 3333
+      Info : Listening on port 3333 for gdb connections
+      ```
+      After which you can release the reset button.
 
 
 This bootloader requires 2KiB of flash space (the application
@@ -461,12 +464,12 @@ board, a [build for the SKR Pro 1.1 is available here](
 Unless your board is DFU capable the most accessable flashing method
 is likely via 3.3v serial, which follows the same procedure as
 [flashing the STM32F103 using stm32flash](#stm32f103-micro-controllers-blue-pill-devices).
-For example:
-```
-wget https://github.com/Arksine/STM32_HID_Bootloader/releases/download/v0.5-beta/hid_bootloader_SKR_PRO.bin
+!!! example
+    ```
+    wget https://github.com/Arksine/STM32_HID_Bootloader/releases/download/v0.5-beta/hid_bootloader_SKR_PRO.bin
 
-stm32flash -w hid_bootloader_SKR_PRO.bin -v -g 0 /dev/ttyAMA0
-```
+    stm32flash -w hid_bootloader_SKR_PRO.bin -v -g 0 /dev/ttyAMA0
+    ```
 
 This bootloader requires 16Kib of flash space on the STM32F4 (the application
 must be compiled with a start address of 16KiB).

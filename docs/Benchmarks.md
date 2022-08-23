@@ -74,8 +74,9 @@ cut-and-paste into the console.py window.
 To produce the benchmarks found in the [Features](Features.md) document, the total
 number of steps per second is calculated by multiplying the number of
 active steppers with the nominal mcu frequency and dividing by the
-final ticks parameter. The results are rounded to the nearest K. For
-example, with three active steppers:
+final ticks parameter. The results are rounded to the nearest K.
+
+!!! example "Example with three active steppers:
 ```
 ECHO Test result is: {"%.0fK" % (3. * freq / ticks / 1000.)}
 ```
@@ -392,12 +393,12 @@ When the test completes, determine the difference between the clocks
 reported in the two "uptime" response messages. The total number of
 commands per second is then `100000 * mcu_frequency / clock_diff`.
 
-Note that this test may saturate the USB/CPU capacity of a Raspberry
-Pi. If running on a Raspberry Pi, Beaglebone, or similar host computer
-then increase the delay (eg, `DELAY {clock + 20*freq} get_uptime`).
-Where applicable, the benchmarks below are with console.py running on
-a desktop class machine with the device connected via a high-speed
-hub.
+!!! note
+    This test may saturate the USB/CPU capacity of a Raspberry Pi. If
+    running on a Raspberry Pi, Beaglebone, or similar host computer then
+    increase the delay (eg, `DELAY {clock + 20*freq} get_uptime`). Where
+    applicable, the benchmarks below are with console.py running on a
+    desktop class machine with the device connected via a high-speed hub.
 
 | MCU                 | Rate | Build    | Build compiler      |
 | ------------------- | ---- | -------- | ------------------- |
@@ -422,7 +423,8 @@ It is possible to run timing tests on the host software using the
 "batch mode" processing mechanism (described in
 [Debugging.md](Debugging.md)). This is typically done by choosing a
 large and complex G-Code file and timing how long it takes for the
-host software to process it. For example:
-```
-time ~/klippy-env/bin/python ./klippy/klippy.py config/example-cartesian.cfg -i something_complex.gcode -o /dev/null -d out/klipper.dict
-```
+host software to process it.
+!!! example
+    ```
+    time ~/klippy-env/bin/python ./klippy/klippy.py config/example-cartesian.cfg -i something_complex.gcode -o /dev/null -d out/klipper.dict
+    ```

@@ -59,14 +59,14 @@ bed is a set distance from the nozzle. Klipper has a tool to assist
 with this. In order to use the tool it is necessary to specify each
 screw XY location.
 
-This is done by creating a `[bed_screws]` config section. For example,
-it might look something similar to:
-```
-[bed_screws]
-screw1: 100, 50
-screw2: 100, 150
-screw3: 150, 100
-```
+This is done by creating a `[bed_screws]` config section.
+!!! example
+    ```
+    [bed_screws]
+    screw1: 100, 50
+    screw2: 100, 150
+    screw3: 150, 100
+    ```
 
 If a bed screw is under the bed, then specify the XY position directly
 above the screw. If the screw is outside the bed then specify an XY
@@ -122,17 +122,17 @@ directly at C. It is thus possible to make an improved C screw
 adjustment when the nozzle is at position D.
 
 To enable this feature, one would determine the additional nozzle
-coordinates and add them to the config file. For example, it might
-look like:
-```
-[bed_screws]
-screw1: 100, 50
-screw1_fine_adjust: 0, 0
-screw2: 100, 150
-screw2_fine_adjust: 300, 300
-screw3: 150, 100
-screw3_fine_adjust: 0, 100
-```
+coordinates and add them to the config file.
+!!! example
+    ```
+    [bed_screws]
+    screw1: 100, 50
+    screw1_fine_adjust: 0, 0
+    screw2: 100, 150
+    screw2_fine_adjust: 300, 300
+    screw3: 150, 100
+    screw3_fine_adjust: 0, 100
+    ```
 
 When this feature is enabled, the `BED_SCREWS_ADJUST` tool will first
 prompt for coarse adjustments directly above each screw position, and
@@ -147,38 +147,39 @@ use it you must have a Z probe (BL Touch, Inductive sensor, etc).
 
 To enable this feature, one would determine the nozzle coordinates
 such that the Z probe is above the screws, and then add them to the
-config file. For example, it might look like:
-
-```
-[screws_tilt_adjust]
-screw1: -5, 30
-screw1_name: front left screw
-screw2: 155, 30
-screw2_name: front right screw
-screw3: 155, 190
-screw3_name: rear right screw
-screw4: -5, 190
-screw4_name: rear left screw
-horizontal_move_z: 10.
-speed: 50.
-screw_thread: CW-M3
-```
+config file.
+!!! example
+    ```
+    [screws_tilt_adjust]
+    screw1: -5, 30
+    screw1_name: front left screw
+    screw2: 155, 30
+    screw2_name: front right screw
+    screw3: 155, 190
+    screw3_name: rear right screw
+    screw4: -5, 190
+    screw4_name: rear left screw
+    horizontal_move_z: 10.
+    speed: 50.
+    screw_thread: CW-M3
+    ```
 
 The screw1 is always the reference point for the others, so the system
 assumes that screw1 is at the correct height. Always run `G28` first
 and then run `SCREWS_TILT_CALCULATE` - it should produce output
 similar to:
-```
-Send: G28
-Recv: ok
-Send: SCREWS_TILT_CALCULATE
-Recv: // 01:20 means 1 full turn and 20 minutes, CW=clockwise, CCW=counter-clockwise
-Recv: // front left screw (base) : x=-5.0, y=30.0, z=2.48750
-Recv: // front right screw : x=155.0, y=30.0, z=2.36000 : adjust CW 01:15
-Recv: // rear right screw : y=155.0, y=190.0, z=2.71500 : adjust CCW 00:50
-Recv: // read left screw : x=-5.0, y=190.0, z=2.47250 : adjust CW 00:02
-Recv: ok
-```
+!!! example
+    ```
+    Send: G28
+    Recv: ok
+    Send: SCREWS_TILT_CALCULATE
+    Recv: // 01:20 means 1 full turn and 20 minutes, CW=clockwise, CCW=counter-clockwise
+    Recv: // front left screw (base) : x=-5.0, y=30.0, z=2.48750
+    Recv: // front right screw : x=155.0, y=30.0, z=2.36000 : adjust CW 01:15
+    Recv: // rear right screw : y=155.0, y=190.0, z=2.71500 : adjust CCW 00:50
+    Recv: // read left screw : x=-5.0, y=190.0, z=2.47250 : adjust CW 00:02
+    Recv: ok
+    ```
 
 This means that:
 - front left screw is the reference point you must not change it.

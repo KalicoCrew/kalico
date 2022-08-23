@@ -72,9 +72,9 @@ results to the config file with:
 SAVE_CONFIG
 ```
 
-Note that if a change is made to the printer's motion system, hotend
-position, or probe location then it will invalidate the results of
-PROBE_CALIBRATE.
+!!! important
+    If a change is made to the printer's motion system, hotend position, or
+    probe location then it will invalidate the results of PROBE_CALIBRATE.
 
 If the probe has an X or Y offset and the bed tilt is changed (eg, by
 adjusting bed screws, running DELTA_CALIBRATE, running Z_TILT_ADJUST,

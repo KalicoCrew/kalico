@@ -70,7 +70,8 @@ The first step of the paper test is to inspect the printer's nozzle
 and bed. Make sure there is no plastic (or other debris) on the nozzle
 or bed.
 
-**Inspect the nozzle and bed to ensure no plastic is present!**
+!!! important
+    Inspect the nozzle and bed to ensure no plastic is present!
 
 If one always prints on a particular tape or printing surface then one
 may perform the paper test with that tape/surface in place. However,
@@ -134,10 +135,11 @@ down on the bed when moving the paper back and forth.)
 ![paper-test](img/paper-test.jpg)
 
 Use the TESTZ command to request the nozzle to move closer to the
-paper. For example:
-```
-TESTZ Z=-.1
-```
+paper.
+!!! example
+    ```
+    TESTZ Z=-.1
+    ```
 
 The TESTZ command will move the nozzle a relative distance from the
 nozzle's current position. (So, `Z=-.1` requests the nozzle to move
@@ -150,11 +152,12 @@ the paper.
 If too much friction is found then one can use a positive Z value to
 move the nozzle up. It is also possible to use `TESTZ Z=+` or `TESTZ
 Z=-` to "bisect" the last position - that is to move to a position
-half way between two positions. For example, if one received the
-following prompt from a TESTZ command:
-```
-Recv: // Z position: 0.130 --> 0.230 <-- 0.280
-```
+half way between two positions.
+!!! example
+    If one received the following prompt from a TESTZ command:
+    ```
+    Recv: // Z position: 0.130 --> 0.230 <-- 0.280
+    ```
 Then a `TESTZ Z=-` would move the nozzle to a Z position of 0.180
 (half way between 0.130 and 0.230). One can use this feature to help
 rapidly narrow down to a consistent friction. It is also possible to
