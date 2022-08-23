@@ -1,8 +1,10 @@
-out
+/out/
+/site/
+/docs/_klipper3d/mkdocs-main.yml
 *.so
 *.pyc
-.config
-.config.old
-klippy/.version
+__pycache__
+/.config*
+/klippy/.version
 .history/
 .DS_Store
