@@ -68,6 +68,12 @@ follows the section names specified in the
 [printer configuration file](Config_Reference.md). Note that some
 modules are automatically loaded.
 
+!!! warning "Compatibility"
+    All command sections prefixed with a ⚠️ symbol are specific to Danger
+    Klipper. Be aware that if you use these commands in your macro or
+    slicer startup gcode, your setup will no longer work with mainline
+    Klipper.
+
 ### [adxl345]
 
 The following commands are available when an

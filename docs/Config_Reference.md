@@ -8,6 +8,12 @@ to cut-and-paste them into a printer config file. See the
 [installation document](Installation.md) for information on setting up
 Klipper and choosing an initial config file.
 
+!!! warning "Compatibility"
+    All sections and settings with descriptions prefixed with a ⚠️ symbol
+    are specific to Danger Klipper. Be aware that if you use these modules
+    and settings, your configuration will no longer work with mainline
+    Klipper.
+
 ## Micro-controller configuration
 
 ### Format of micro-controller pin names
@@ -1796,8 +1802,8 @@ z_offset:
 #   issue any commands here that move the toolhead. The default is to
 #   not run any special G-Code commands on deactivation.
 #drop_first_result: False
-#   Set to `True` will probe one extra time and remove the first
-#   sample from calculation. This can improve probe accuracy for 
+#   ⚠️ Set to `True` will probe one extra time and remove the first
+#   sample from calculation. This can improve probe accuracy for
 #   printers that have an outlier first sample.
 ```
 
