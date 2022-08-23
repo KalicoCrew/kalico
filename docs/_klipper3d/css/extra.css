@@ -24,3 +24,23 @@ img {
     margin: 0 auto;
     display: block;
 }
+
+.md-typeset :is(.admonition, details) {
+    font-size: 0.7rem;
+}
+
+.md-typeset :is(.admonition, details):is(.warning, .caution, .attention, .important, .danger, .error) {
+    font-size: 0.748rem; /* sqrt(0.7/0.8)*0.8 */
+}
+
+.md-typeset :is(.admonition, details):is(.important) {
+    border-color: #ff9100;
+}
+
+.md-typeset :is(.important)> :is(.admonition-title, summary)::before {
+    background-color: #ff9100;
+}
+
+.md-typeset :is(.important)> :is(.admonition-title, summary) {
+    background-color: rgba(255, 145, 0, .1);
+}
