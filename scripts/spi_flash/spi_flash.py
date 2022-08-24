@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Module supporting uploads Klipper firmware to an SD Card via SPI
 #
 # Copyright (C) 2021 Eric Callahan <arksine.code@gmail.com>
