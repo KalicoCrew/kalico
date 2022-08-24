@@ -5,7 +5,7 @@
 # Copyright (C) 2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-from __future__ import print_function
+
 import importlib, optparse, os, sys
 from textwrap import wrap
 import numpy as np, matplotlib
