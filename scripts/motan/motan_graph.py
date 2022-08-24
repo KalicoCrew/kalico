@@ -8,10 +8,7 @@ import sys, optparse, ast
 import matplotlib
 import readlog, analyzers
 
-try:
-    import urlparse
-except:
-    import urllib.parse as urlparse
+import urllib.parse as urlparse
 
 
 ######################################################################

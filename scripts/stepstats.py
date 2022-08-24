@@ -21,18 +21,18 @@ def main():
         parts = line.split()
         if not parts:
             continue
-        args = dict([p.split("=", 1) for p in parts[1:]])
-        if parts[0] == "config_stepper":
+        args = dict([p.split(b"=", 1) for p in parts[1:]])
+        if parts[0] == b"config_stepper":
             # steppers[oid] = [dir_cmds, dir, queue_cmds, pos steps, neg steps]
-            steppers[args["oid"]] = [0, 0, 0, 0, 0]
-        elif parts[0] == "set_next_step_dir":
-            so = steppers[args["oid"]]
+            steppers[args[b"oid"]] = [0, 0, 0, 0, 0]
+        elif parts[0] == b"set_next_step_dir":
+            so = steppers[args[b"oid"]]
             so[0] += 1
-            so[1] = args["dir"]
-        elif parts[0] == "queue_step":
-            so = steppers[args["oid"]]
+            so[1] = args[b"dir"]
+        elif parts[0] == b"queue_step":
+            so = steppers[args[b"oid"]]
             so[2] += 1
-            so[{"0": 3, "1": 4}[so[1]]] += int(args["count"])
+            so[{b"0": 3, b"1": 4}[so[1]]] += int(args[b"count"])
     for oid, so in sorted([(int(i[0]), i[1]) for i in steppers.items()]):
         print(
             "oid:%3d dir_cmds:%6d queue_cmds:%7d (%8d -%8d = %8d)"
