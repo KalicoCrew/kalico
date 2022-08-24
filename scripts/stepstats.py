@@ -34,8 +34,11 @@ def main():
             so[2] += 1
             so[{b"0": 3, b"1": 4}[so[1]]] += int(args[b"count"])
     for oid, so in sorted([(int(i[0]), i[1]) for i in steppers.items()]):
-        print("oid:%3d dir_cmds:%6d queue_cmds:%7d (%8d -%8d = %8d)" % (
-            oid, so[0], so[2], so[4], so[3], so[4]-so[3]))
+        print(
+            "oid:%3d dir_cmds:%6d queue_cmds:%7d (%8d -%8d = %8d)"
+            % (oid, so[0], so[2], so[4], so[3], so[4] - so[3])
+        )
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

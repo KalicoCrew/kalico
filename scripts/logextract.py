@@ -46,7 +46,7 @@ class GatherConfig:
             self.comments.append(comment)
 
     def write_file(self):
-        f = open(self.filename, 'w')
+        f = open(self.filename, "w")
         f.write("\n".join(self.comments + self.config_lines).strip() + "\n")
         f.close()
 
@@ -465,7 +465,7 @@ class GCodeStream:
         # Produce output gcode stream
         if self.gcode_stream:
             data = [ast.literal_eval(gc) for gc in self.gcode_commands]
-            f = open(self.gcode_filename, 'w')
+            f = open(self.gcode_filename, "w")
             f.write(self.gcode_state + "".join(data))
             f.close()
         return self.gcode_stream
@@ -676,7 +676,7 @@ class GatherShutdown:
         out = [i for s in streams for i in s]
         out.sort()
         out = [i[2] for i in out]
-        f = open(self.filename, 'w')
+        f = open(self.filename, "w")
         f.write("\n".join(self.comments + out))
         f.close()
 
@@ -693,7 +693,7 @@ def main():
     handler = None
     recent_lines = collections.deque([], 200)
     # Parse log file
-    f = open(logname, 'r')
+    f = open(logname, "r")
     for line_num, line in enumerate(f):
         line = line.rstrip()
         line_num += 1
