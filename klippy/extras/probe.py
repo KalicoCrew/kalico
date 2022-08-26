@@ -106,7 +106,7 @@ class PrinterProbe:
     def _handle_command_error(self):
         try:
             self.multi_probe_end()
-        except:
+        except BaseException:
             logging.exception("Multi-probe end")
 
     def multi_probe_begin(self):
@@ -491,7 +491,7 @@ class ProbePointsHelper:
         if self.horizontal_move_z < self.probe_offsets[2]:
             raise gcmd.error("horizontal_move_z can't be less than" " probe's z_offset")
         probe.multi_probe_begin()
-        while 1:
+        while True:
             done = self._move_next()
             if done:
                 break

@@ -3,13 +3,15 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math
+import math
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = 0.000015
 ENDSTOP_SAMPLE_COUNT = 4
 
 # Return a completion that completes when all completions in a list complete
+
+
 def multi_complete(printer, completions):
     if len(completions) == 1:
         return completions[0]

@@ -3,14 +3,20 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging, importlib
-import mcu, chelper, kinematics.extruder
+import math
+import logging
+import importlib
+import chelper
+import kinematics.extruder
+import mcu
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
 #   seconds), _r is ratio (scalar between 0.0 and 1.0)
 
 # Class to track each move request
+
+
 class Move:
     def __init__(self, toolhead, start_pos, end_pos, speed):
         self.toolhead = toolhead
@@ -120,6 +126,8 @@ LOOKAHEAD_FLUSH_TIME = 0.250
 
 # Class to track a list of pending move requests and to facilitate
 # "look-ahead" across moves to reduce acceleration between moves.
+
+
 class MoveQueue:
     def __init__(self, toolhead):
         self.toolhead = toolhead
@@ -281,7 +289,7 @@ class ToolHead:
             raise
         except self.printer.lookup_object("pins").error as e:
             raise
-        except:
+        except BaseException:
             msg = "Error loading kinematics '%s'" % (kin_name,)
             logging.exception(msg)
             raise config.error(msg)
@@ -311,7 +319,7 @@ class ToolHead:
         batch_time = MOVE_BATCH_TIME
         kin_flush_delay = self.kin_flush_delay
         lkft = self.last_kin_flush_time
-        while 1:
+        while True:
             self.print_time = min(self.print_time + batch_time, next_print_time)
             sg_flush_time = max(lkft, self.print_time - kin_flush_delay)
             for sg in self.step_generators:
@@ -417,7 +425,7 @@ class ToolHead:
             self.need_check_stall = -1.0
             self.reactor.update_timer(self.flush_timer, eventtime + 0.100)
         # Check if there are lots of queued moves and stall if so
-        while 1:
+        while True:
             est_print_time = self.mcu.estimated_print_time(eventtime)
             buffer_time = self.print_time - est_print_time
             stall_time = buffer_time - self.buffer_time_high
@@ -442,7 +450,7 @@ class ToolHead:
             self.flush_step_generation()
             if print_time != self.print_time:
                 self.idle_flush_print_time = self.print_time
-        except:
+        except BaseException:
             logging.exception("Exception in flush_handler")
             self.printer.invoke_shutdown("Exception in flush_handler")
         return self.reactor.NEVER

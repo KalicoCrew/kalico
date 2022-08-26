@@ -91,7 +91,8 @@ class PrinterDotstar:
             toolhead = self.printer.lookup_object("toolhead")
             toolhead.register_lookahead_callback(lookahead_bgfunc)
         else:
-            # Send update now (so as not to wake toolhead and reset idle_timeout)
+            # Send update now (so as not to wake toolhead and reset
+            # idle_timeout)
             lookahead_bgfunc(None)
 
     def get_status(self, eventtime):

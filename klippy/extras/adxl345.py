@@ -3,7 +3,12 @@
 # Copyright (C) 2020-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, time, collections, threading, multiprocessing, os
+import logging
+import time
+import collections
+import threading
+import multiprocessing
+import os
 from . import bus, motion_report
 
 # ADXL345 registers
@@ -37,6 +42,8 @@ Accel_Measurement = collections.namedtuple(
 )
 
 # Helper class to obtain measurements
+
+
 class ADXL345QueryHelper:
     def __init__(self, printer, cconn):
         self.printer = printer
@@ -101,7 +108,7 @@ class ADXL345QueryHelper:
             try:
                 # Try to re-nice writing process
                 os.nice(20)
-            except:
+            except BaseException:
                 pass
             f = open(filename, "w")
             f.write("#time,accel_x,accel_y,accel_z\n")
@@ -275,6 +282,8 @@ BYTES_PER_SAMPLE = 5
 SAMPLES_PER_BLOCK = 10
 
 # Printer class that controls ADXL345 chip
+
+
 class ADXL345:
     def __init__(self, config):
         self.printer = config.get_printer()

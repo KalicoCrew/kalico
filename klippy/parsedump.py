@@ -4,7 +4,9 @@
 # Copyright (C) 2016  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, sys, logging
+import os
+import sys
+import logging
 import msgproto
 
 
@@ -26,12 +28,12 @@ def main():
     f = open(data_filename, "rb")
     fd = f.fileno()
     data = ""
-    while 1:
+    while True:
         newdata = os.read(fd, 4096)
         if not newdata:
             break
         data += newdata
-        while 1:
+        while True:
             l = mp.check_packet(data)
             if l == 0:
                 break

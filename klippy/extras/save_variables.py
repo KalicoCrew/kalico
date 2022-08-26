@@ -4,7 +4,10 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, logging, ast, configparser
+import os
+import logging
+import ast
+import configparser
 
 
 class SaveVariables:
@@ -29,7 +32,7 @@ class SaveVariables:
             if varfile.has_section("Variables"):
                 for name, val in varfile.items("Variables"):
                     allvars[name] = ast.literal_eval(val)
-        except:
+        except BaseException:
             msg = "Unable to parse existing variable file"
             logging.exception(msg)
             raise self.printer.command_error(msg)
@@ -55,7 +58,7 @@ class SaveVariables:
             f = open(self.filename, "w")
             varfile.write(f)
             f.close()
-        except:
+        except BaseException:
             msg = "Unable to save variable"
             logging.exception(msg)
             raise gcmd.error(msg)

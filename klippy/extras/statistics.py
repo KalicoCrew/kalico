@@ -3,7 +3,9 @@
 # Copyright (C) 2018-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, time, logging
+import os
+import time
+import logging
 
 
 class PrinterSysStats:
@@ -15,7 +17,7 @@ class PrinterSysStats:
         self.mem_file = None
         try:
             self.mem_file = open("/proc/meminfo", "r")
-        except:
+        except BaseException:
             pass
         printer.register_event_handler("klippy:disconnect", self._disconnect)
 
@@ -46,7 +48,7 @@ class PrinterSysStats:
                         self.last_mem_avail = int(line.split()[1])
                         msg = "%s memavail=%d" % (msg, self.last_mem_avail)
                         break
-            except:
+            except BaseException:
                 pass
         return (False, msg)
 

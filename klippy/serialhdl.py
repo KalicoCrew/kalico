@@ -3,10 +3,14 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, threading, os
+import logging
+import threading
+import os
 import serial
 
-import msgproto, chelper, util
+import msgproto
+import chelper
+import util
 
 
 class error(Exception):
@@ -40,7 +44,7 @@ class SerialReader:
 
     def _bg_thread(self):
         response = self.ffi_main.new("struct pull_queue_message *")
-        while 1:
+        while True:
             self.ffi_lib.serialqueue_pull(self.serialqueue, response)
             count = response.len
             if count < 0:
@@ -61,7 +65,7 @@ class SerialReader:
                 with self.lock:
                     hdl = self.handlers.get(hdl, self.handle_default)
                     hdl(params)
-            except:
+            except BaseException:
                 logging.exception("%sException in serial callback", self.warn_prefix)
 
     def _error(self, msg, *params):
@@ -70,7 +74,7 @@ class SerialReader:
     def _get_identify_data(self, eventtime):
         # Query the "data dictionary" from the micro-controller
         identify_data = b""
-        while 1:
+        while True:
             msg = "identify offset=%d count=%d" % (len(identify_data), 40)
             try:
                 params = self.send_with_response(msg, "identify_response")
@@ -139,7 +143,7 @@ class SerialReader:
         # Start connection attempt
         logging.info("%sStarting CAN connect", self.warn_prefix)
         start_time = self.reactor.monotonic()
-        while 1:
+        while True:
             if self.reactor.monotonic() > start_time + 90.0:
                 self._error("Unable to connect")
             try:
@@ -161,7 +165,7 @@ class SerialReader:
                 got_uuid = bytearray(params["canbus_uuid"])
                 if got_uuid == bytearray(uuid):
                     break
-            except:
+            except BaseException:
                 logging.exception("%sError in canbus_uuid check", self.warn_prefix)
             logging.info("%sFailed to match canbus_uuid - retrying..", self.warn_prefix)
             self.disconnect()
@@ -169,7 +173,7 @@ class SerialReader:
     def connect_pipe(self, filename):
         logging.info("%sStarting connect", self.warn_prefix)
         start_time = self.reactor.monotonic()
-        while 1:
+        while True:
             if self.reactor.monotonic() > start_time + 90.0:
                 self._error("Unable to connect")
             try:
@@ -187,7 +191,7 @@ class SerialReader:
         # Initial connection
         logging.info("%sStarting serial connect", self.warn_prefix)
         start_time = self.reactor.monotonic()
-        while 1:
+        while True:
             if self.reactor.monotonic() > start_time + 90.0:
                 self._error("Unable to connect")
             try:
@@ -358,7 +362,7 @@ class SerialRetryCommand:
     def get_response(self, cmds, cmd_queue, minclock=0, reqclock=0):
         retries = 5
         retry_delay = 0.010
-        while 1:
+        while True:
             for cmd in cmds[:-1]:
                 self.serial.raw_send(cmd, minclock, reqclock, cmd_queue)
             self.serial.raw_send_wait_ack(cmds[-1], minclock, reqclock, cmd_queue)

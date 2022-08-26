@@ -3,7 +3,8 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging, collections
+import collections
+import math
 import chelper
 
 
@@ -18,6 +19,8 @@ class error(Exception):
 MIN_BOTH_EDGE_DURATION = 0.000000200
 
 # Interface to low-level mcu and chelper code
+
+
 class MCU_stepper:
     def __init__(
         self,

@@ -3,7 +3,8 @@
 # Copyright (C) 2017-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging, collections
+import logging
+import math
 import mathutil
 from . import probe
 
@@ -13,6 +14,8 @@ from . import probe
 # to be described independent of the software parameters.
 
 # Load a stable position from a config entry
+
+
 def load_config_stable(config, option):
     return config.getfloatlist(option, count=3)
 
@@ -32,6 +35,8 @@ MEASURE_WEIGHT = 0.5
 
 # Convert distance measurements made on the calibration object to
 # 3-tuples of (actual_distance, stable_position1, stable_position2)
+
+
 def measurements_to_distances(measured_params, delta_params):
     # Extract params
     mp = measured_params
@@ -195,6 +200,7 @@ class DeltaCalibrate:
         if distances:
             z_weight = len(distances) / (MEASURE_WEIGHT * len(probe_positions))
         # Perform coordinate descent
+
         def delta_errorfunc(params):
             try:
                 # Build new delta_params for params under test
@@ -311,7 +317,7 @@ class DeltaCalibrate:
                 continue
             try:
                 parts = list(map(float, data.split(",")))
-            except:
+            except BaseException:
                 raise gcmd.error("Unable to parse parameter '%s'" % (name,))
             if len(parts) != count:
                 raise gcmd.error("Parameter '%s' must have %d values" % (name, count))

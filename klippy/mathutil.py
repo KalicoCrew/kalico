@@ -3,7 +3,10 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging, multiprocessing, traceback
+import math
+import logging
+import multiprocessing
+import traceback
 import queuelogger
 
 
@@ -56,7 +59,7 @@ def background_coordinate_descent(printer, adj_params, params, error_func):
         queuelogger.clear_bg_logging()
         try:
             res = coordinate_descent(adj_params, params, error_func)
-        except:
+        except BaseException:
             child_conn.send((True, traceback.format_exc()))
             child_conn.close()
             return

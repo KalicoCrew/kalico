@@ -3,8 +3,10 @@
 # Copyright (C) 2017-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, os
-import pins, mcu
+import logging
+import os
+import pins
+import mcu
 from . import bus
 
 REPLICAPE_MAX_CURRENT = 3.84
@@ -163,7 +165,7 @@ class servo_pwm:
                     "/sys/devices/platform/ocp/48302000.epwmss/48302200.pwm/pwm/"
                 )
                 pwmchip = [pc for pc in pwmdev if pc.startswith("pwmchip")][0]
-            except:
+            except BaseException:
                 raise pins.error("Replicape unable to determine pwmchip")
         pwm_pin, resv1, resv2 = SERVO_PINS[config_name]
         pin_params = dict(pin_params)

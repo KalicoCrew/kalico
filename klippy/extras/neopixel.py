@@ -138,6 +138,7 @@ class PrinterNeoPixel:
         transmit = gcmd.get_int("TRANSMIT", 1)
         sync = gcmd.get_int("SYNC", 1)
         # Update and transmit data
+
         def reactor_bgfunc(print_time):
             with self.mutex:
                 self.update_color_data(red, green, blue, white, index)
@@ -153,7 +154,8 @@ class PrinterNeoPixel:
             toolhead = self.printer.lookup_object("toolhead")
             toolhead.register_lookahead_callback(lookahead_bgfunc)
         else:
-            # Send update now (so as not to wake toolhead and reset idle_timeout)
+            # Send update now (so as not to wake toolhead and reset
+            # idle_timeout)
             lookahead_bgfunc(None)
 
     def get_status(self, eventtime):

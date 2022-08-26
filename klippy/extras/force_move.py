@@ -3,7 +3,8 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
+import math
+import logging
 import chelper
 
 BUZZ_DISTANCE = 1.0
@@ -13,6 +14,8 @@ BUZZ_RADIANS_VELOCITY = BUZZ_RADIANS_DISTANCE / 0.250
 STALL_TIME = 0.100
 
 # Calculate a move's accel_t, cruise_t, and cruise_v
+
+
 def calc_move_time(dist, speed, accel):
     axis_r = 1.0
     if dist < 0.0:

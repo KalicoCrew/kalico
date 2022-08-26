@@ -3,7 +3,10 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import collections, importlib, logging, math, multiprocessing
+import collections
+import importlib
+import math
+import multiprocessing
 
 shaper_defs = importlib.import_module(".shaper_defs", "extras")
 
@@ -94,7 +97,7 @@ class ShaperCalibrate:
             queuelogger.clear_bg_logging()
             try:
                 res = method(*args)
-            except:
+            except BaseException:
                 child_conn.send((True, traceback.format_exc()))
                 child_conn.close()
                 return

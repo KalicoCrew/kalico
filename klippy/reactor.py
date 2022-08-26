@@ -3,9 +3,16 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, gc, select, math, time, logging, queue
+import os
+import gc
+import select
+import math
+import time
+import logging
+import queue
 import greenlet
-import chelper, util
+import chelper
+import util
 
 _NOW = 0.0
 _NEVER = 9999999999999999.0
@@ -92,7 +99,7 @@ class ReactorMutex:
             return
         g = greenlet.getcurrent()
         self.queue.append(g)
-        while 1:
+        while True:
             self.reactor.pause(self.reactor.NEVER)
             if self.next_pending and self.queue[0] is g:
                 self.next_pending = False
@@ -212,7 +219,7 @@ class SelectReactor:
             os.read(self._pipe_fds[0], 4096)
         except os.error:
             pass
-        while 1:
+        while True:
             try:
                 func, args = self._async_queue.get_nowait()
             except queue.Empty:
@@ -313,7 +320,7 @@ class SelectReactor:
         for g in self._all_greenlets:
             try:
                 g.throw()
-            except:
+            except BaseException:
                 logging.exception("reactor finalize greenlet terminate")
         self._all_greenlets = []
         if self._pipe_fds is not None:
@@ -408,5 +415,5 @@ class EPollReactor(SelectReactor):
 try:
     select.poll
     Reactor = PollReactor
-except:
+except BaseException:
     Reactor = SelectReactor

@@ -3,7 +3,9 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, os, time
+import math
+import os
+import time
 from . import shaper_calibrate
 
 
@@ -45,7 +47,7 @@ def _parse_axis(gcmd, raw_axis):
     try:
         dir_x = float(dirs[0].strip())
         dir_y = float(dirs[1].strip())
-    except:
+    except BaseException:
         raise gcmd.error("Unable to parse axis direction '%s'" % (raw_axis,))
     return TestAxis(vib_dir=(dir_x, dir_y))
 

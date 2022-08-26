@@ -3,8 +3,17 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, pty, fcntl, termios, signal, logging, json, time
-import subprocess, traceback, shlex
+import sys
+import os
+import pty
+import fcntl
+import termios
+import signal
+import logging
+import json
+import time
+import subprocess
+import traceback
 
 
 ######################################################################
@@ -19,6 +28,8 @@ def fix_sigint():
 fix_sigint()
 
 # Set a file-descriptor as non-blocking
+
+
 def set_nonblock(fd):
     fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
 
@@ -62,7 +73,7 @@ def dump_file_stats(build_dir, filename):
         fsize = os.path.getsize(fname)
         timestr = time.asctime(time.localtime(mtime))
         logging.info("Build file %s(%d): %s", fname, fsize, timestr)
-    except:
+    except BaseException:
         logging.info("No build file %s", fname)
 
 
@@ -79,7 +90,7 @@ def dump_mcu_build():
             "========= Last MCU build config =========\n%s" "=======================",
             data,
         )
-    except:
+    except BaseException:
         pass
     # Try to log last mcu build version
     dump_file_stats(build_dir, "out/klipper.dict")
@@ -92,7 +103,7 @@ def dump_mcu_build():
         logging.info("Last MCU build tools: %s", data.get("build_versions", ""))
         cparts = ["%s=%s" % (k, v) for k, v in data.get("config", {}).items()]
         logging.info("Last MCU build config: %s", " ".join(cparts))
-    except:
+    except BaseException:
         pass
     dump_file_stats(build_dir, "out/klipper.elf")
 
@@ -106,7 +117,11 @@ def setup_python2_wrappers():
     if sys.version_info.major >= 3:
         return
     # Add module hacks so that common Python3 module imports work in Python2
-    import ConfigParser, Queue, io, StringIO, time
+    import ConfigParser
+    import Queue
+    import io
+    import StringIO
+    import time
 
     sys.modules["configparser"] = ConfigParser
     sys.modules["queue"] = Queue
@@ -160,7 +175,7 @@ def get_git_version(from_file=True):
             return str(ver.strip().decode())
         else:
             logging.debug("Error getting git version: %s", err)
-    except:
+    except BaseException:
         logging.debug("Exception on run: %s", traceback.format_exc())
 
     if from_file:

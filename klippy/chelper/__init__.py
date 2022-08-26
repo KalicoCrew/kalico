@@ -3,7 +3,8 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, logging
+import os
+import logging
 import cffi
 
 
@@ -241,6 +242,8 @@ defs_all = [
 ]
 
 # Update filenames to an absolute path
+
+
 def get_abs_files(srcdir, filelist):
     return [os.path.join(srcdir, fname) for fname in filelist]
 
@@ -285,6 +288,8 @@ FFI_lib = None
 pyhelper_logging_callback = None
 
 # Hepler invoked from C errorf() code to log errors
+
+
 def logging_callback(msg):
     logging.error(FFI_main.string(msg))
 

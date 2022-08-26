@@ -4,7 +4,10 @@
 # Copyright (C) 2018-2019 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, json, collections
+import logging
+import math
+import json
+import collections
 from . import probe
 
 PROFILE_VERSION = 1
@@ -77,7 +80,7 @@ def parse_config_pair(config, option, default, minval=None, maxval=None):
 def parse_gcmd_pair(gcmd, name, minval=None, maxval=None):
     try:
         pair = [int(v.strip()) for v in gcmd.get(name).split(",")]
-    except:
+    except BaseException:
         raise gcmd.error("Unable to parse parameter '%s'" % (name,))
     if len(pair) != 2:
         if len(pair) != 1:
@@ -100,7 +103,7 @@ def parse_gcmd_pair(gcmd, name, minval=None, maxval=None):
 def parse_gcmd_coord(gcmd, name):
     try:
         v1, v2 = [float(v.strip()) for v in gcmd.get(name).split(",")]
-    except:
+    except BaseException:
         raise gcmd.error("Unable to parse parameter '%s'" % (name,))
     return v1, v2
 

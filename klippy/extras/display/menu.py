@@ -4,7 +4,10 @@
 # Copyright (C) 2020  Janar Sööt <janar.soot@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, logging, ast, re
+import os
+import logging
+import ast
+import re
 from string import Template
 from . import menu_keys
 
@@ -20,7 +23,7 @@ class error(Exception):
 # Scriptable menu element abstract baseclass
 class MenuElement(object):
     def __init__(self, manager, config, **kwargs):
-        if type(self) is MenuElement:
+        if isinstance(self, MenuElement):
             raise error("Abstract MenuElement cannot be instantiated directly")
         self._manager = manager
         self._cursor = ">"
@@ -231,7 +234,7 @@ class MenuContainer(MenuElement):
     """Menu container abstract class"""
 
     def __init__(self, manager, config, **kwargs):
-        if type(self) is MenuContainer:
+        if isinstance(self, MenuContainer):
             raise error("Abstract MenuContainer cannot be instantiated directly")
         super(MenuContainer, self).__init__(manager, config, **kwargs)
         self._populate_cb = kwargs.get("populate", None)

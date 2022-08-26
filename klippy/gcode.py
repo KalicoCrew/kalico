@@ -3,7 +3,11 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, re, logging, collections, shlex
+import os
+import re
+import logging
+import collections
+import shlex
 
 
 class CommandError(Exception):
@@ -83,7 +87,7 @@ class GCodeCommand:
             return default
         try:
             value = parser(value)
-        except:
+        except BaseException:
             raise self.error(
                 "Error on '%s': unable to parse %s" % (self._commandline, value)
             )
@@ -165,7 +169,7 @@ class GCodeDispatch:
             cmd = cmd.upper().split()[0]
             val = float(cmd[1:])
             return cmd[0].isupper() and cmd[1].isdigit()
-        except:
+        except BaseException:
             return False
 
     def register_command(self, cmd, func, when_not_ready=False, desc=None):
@@ -182,7 +186,10 @@ class GCodeDispatch:
             )
         if not self.is_traditional_gcode(cmd):
             origfunc = func
-            func = lambda params: origfunc(self._get_extended_params(params))
+
+            def func(params):
+                return origfunc(self._get_extended_params(params))
+
         self.ready_gcode_handlers[cmd] = func
         if when_not_ready:
             self.base_gcode_handlers[cmd] = func
@@ -192,7 +199,10 @@ class GCodeDispatch:
     def register_mux_command(self, cmd, key, value, func, desc=None):
         prev = self.mux_commands.get(cmd)
         if prev is None:
-            handler = lambda gcmd: self._cmd_mux(cmd, gcmd)
+
+            def handler(gcmd):
+                return self._cmd_mux(cmd, gcmd)
+
             self.register_command(cmd, handler, desc=desc)
             self.mux_commands[cmd] = prev = (key, {})
         prev_key, prev_values = prev
@@ -260,7 +270,7 @@ class GCodeDispatch:
                 self.printer.send_event("gcode:command_error")
                 if not need_ack:
                     raise
-            except:
+            except BaseException:
                 msg = 'Internal error on command:"%s"' % (cmd,)
                 logging.exception(msg)
                 self.printer.invoke_shutdown(msg)
@@ -371,7 +381,8 @@ class GCodeDispatch:
             raise gcmd.error("The value '%s' is not valid for %s" % (key_param, key))
         values[key_param](gcmd)
 
-    # Low-level G-Code commands that are needed before the config file is loaded
+    # Low-level G-Code commands that are needed before the config file is
+    # loaded
     def cmd_M110(self, gcmd):
         # Set Current Line Number
         pass
@@ -479,7 +490,7 @@ class GCodeIO:
         if self.is_fileinput:
             self.printer.request_exit("error_exit")
 
-    m112_r = re.compile("^(?:[nN][0-9]+)?\s*[mM]112(?:\s|$)")
+    m112_r = re.compile("^(?:[nN][0-9]+)?\\s*[mM]112(?:\\s|$)")
 
     def _process_data(self, eventtime):
         # Read input, separate by newline, and add to pending_commands

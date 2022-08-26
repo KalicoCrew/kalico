@@ -52,7 +52,7 @@ class IdleTimeout:
         try:
             script = self.idle_gcode.render()
             res = self.gcode.run_script(script)
-        except:
+        except BaseException:
             logging.exception("idle timeout gcode execution")
             self.state = "Ready"
             return eventtime + 1.0

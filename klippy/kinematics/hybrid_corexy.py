@@ -3,11 +3,12 @@
 # Copyright (C) 2021  Fabrice Gallet <tircown@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging
 import stepper
 from . import idex_modes
 
 # The hybrid-corexy kinematic is also known as Markforged kinematics
+
+
 class HybridCoreXYKinematics:
     def __init__(self, toolhead, config):
         self.printer = config.get_printer()

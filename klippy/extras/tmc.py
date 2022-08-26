@@ -3,7 +3,8 @@
 # Copyright (C) 2018-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, collections
+import logging
+import collections
 import stepper
 
 
@@ -140,7 +141,7 @@ class TMCErrorCheck:
         last_value, reg_name, mask, err_mask, cs_actual_mask = reg_info
         cleared_flags = 0
         count = 0
-        while 1:
+        while True:
             try:
                 val = self.mcu_tmc.get_register(reg_name)
             except self.printer.command_error as e:
@@ -412,9 +413,15 @@ class TMCCommandHelper:
 
     def _handle_stepper_enable(self, print_time, is_enable):
         if is_enable:
-            cb = lambda ev: self._do_enable(print_time)
+
+            def cb(ev):
+                return self._do_enable(print_time)
+
         else:
-            cb = lambda ev: self._do_disable(print_time)
+
+            def cb(ev):
+                return self._do_disable(print_time)
+
         self.printer.get_reactor().register_callback(cb)
 
     def _handle_connect(self):

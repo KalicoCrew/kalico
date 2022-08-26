@@ -3,7 +3,8 @@
 # Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, bisect
+import logging
+import bisect
 
 
 ######################################################################
@@ -16,6 +17,8 @@ REPORT_TIME = 0.300
 RANGE_CHECK_COUNT = 4
 
 # Interface between ADC and heater temperature callbacks
+
+
 class PrinterADCtoTemperature:
     def __init__(self, config, adc_convert):
         self.adc_convert = adc_convert
@@ -605,14 +608,16 @@ def load_config(config):
     # Register default sensors
     pheaters = config.get_printer().load_object(config, "heaters")
     for sensor_type, params in DefaultVoltageSensors:
-        func = lambda config, params=params: PrinterADCtoTemperature(
-            config, LinearVoltage(config, params)
-        )
+
+        def func(config, params=params):
+            return PrinterADCtoTemperature(config, LinearVoltage(config, params))
+
         pheaters.add_sensor_factory(sensor_type, func)
     for sensor_type, params in DefaultResistanceSensors:
-        func = lambda config, params=params: PrinterADCtoTemperature(
-            config, LinearResistance(config, params)
-        )
+
+        def func(config, params=params):
+            return PrinterADCtoTemperature(config, LinearResistance(config, params))
+
         pheaters.add_sensor_factory(sensor_type, func)
 
 

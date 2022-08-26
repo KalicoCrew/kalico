@@ -3,12 +3,15 @@
 # Copyright (C) 2016-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
+import math
+import logging
 from . import adc_temperature
 
 KELVIN_TO_CELSIUS = -273.15
 
 # Analog voltage to temperature converter for thermistors
+
+
 class Thermistor:
     def __init__(self, pullup, inline_resistor):
         self.pullup = pullup

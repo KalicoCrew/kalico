@@ -3,12 +3,15 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
+import math
+import logging
 import stepper
 
 TRINAMIC_DRIVERS = ["tmc2130", "tmc2208", "tmc2209", "tmc2660", "tmc5160"]
 
 # Calculate the trigger phase of a stepper motor
+
+
 class PhaseCalc:
     def __init__(self, printer, name, phases=None):
         self.printer = printer

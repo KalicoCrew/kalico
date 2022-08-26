@@ -27,6 +27,8 @@ Commands = {
 }
 
 # BLTouch "endstop" wrapper
+
+
 class BLTouchEndstopWrapper:
     def __init__(self, config):
         self.printer = config.get_printer()

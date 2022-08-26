@@ -3,7 +3,6 @@
 # Copyright (C) 2018-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging
 
 
 ######################################################################
@@ -87,6 +86,8 @@ TMC_BAUD_RATE = 40000
 TMC_BAUD_RATE_AVR = 9000
 
 # Code for sending messages on a TMC uart
+
+
 class MCU_TMC_uart_bitbang:
     def __init__(self, rx_pin_params, tx_pin_params, select_pins_desc):
         self.mcu = rx_pin_params["chip"]

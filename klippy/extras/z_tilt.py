@@ -45,8 +45,7 @@ class ZAdjustHelper:
         for s in self.z_steppers:
             s.set_trapq(None)
         # Move each z stepper (sorted from lowest to highest) until they match
-        positions = [(-a, s) for a, s in zip(adjustments, self.z_steppers)]
-        positions.sort()
+        positions = sorted([(-a, s) for a, s in zip(adjustments, self.z_steppers)])
         first_stepper_offset, first_stepper = positions[0]
         z_low = curpos[2] - first_stepper_offset
         for i in range(len(positions) - 1):
@@ -58,7 +57,7 @@ class ZAdjustHelper:
             try:
                 toolhead.move(curpos, speed)
                 toolhead.set_position(curpos)
-            except:
+            except BaseException:
                 logging.exception("ZAdjustHelper adjust_steppers")
                 toolhead.flush_step_generation()
                 for s in self.z_steppers:
@@ -178,6 +177,7 @@ class ZTilt:
         logging.info("Calculating bed tilt with: %s", positions)
         params = {"x_adjust": 0.0, "y_adjust": 0.0, "z_adjust": z_offset}
         # Perform coordinate descent
+
         def adjusted_height(pos, params):
             x, y, z = pos
             return (

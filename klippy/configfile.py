@@ -3,7 +3,14 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, glob, re, time, logging, configparser, io
+import sys
+import os
+import glob
+import re
+import time
+import logging
+import configparser
+import io
 
 error = configparser.Error
 
@@ -51,7 +58,7 @@ class ConfigWrapper:
             v = parser(self.section, option)
         except self.error as e:
             raise
-        except:
+        except BaseException:
             raise error(
                 "Unable to parse option '%s' in section '%s'" % (option, self.section)
             )
@@ -123,7 +130,7 @@ class ConfigWrapper:
         )
 
     def getchoice(self, option, choices, default=sentinel, note_valid=True):
-        if choices and type(list(choices.keys())[0]) == int:
+        if choices and isinstance(list(choices.keys())[0], int):
             c = self.getint(option, default, note_valid=note_valid)
         else:
             c = self.get(option, default, note_valid=note_valid)
@@ -249,7 +256,7 @@ class PrinterConfig:
             f = open(filename, "r")
             data = f.read()
             f.close()
-        except:
+        except BaseException:
             msg = "Unable to open config file %s" % (filename,)
             logging.exception(msg)
             raise error(msg)
@@ -513,7 +520,7 @@ class PrinterConfig:
             f.close()
             os.rename(cfgname, backup_name)
             os.rename(temp_name, cfgname)
-        except:
+        except BaseException:
             msg = "Unable to write config file during SAVE_CONFIG"
             logging.exception(msg)
             raise gcode.error(msg)

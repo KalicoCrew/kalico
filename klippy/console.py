@@ -4,8 +4,17 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, optparse, os, re, logging
-import util, reactor, serialhdl, pins, msgproto, clocksync
+import sys
+import optparse
+import os
+import re
+import logging
+import util
+import reactor
+import serialhdl
+import pins
+import msgproto
+import clocksync
 
 help_txt = """
   This is a debugging console for the Klipper micro-controller.
@@ -193,17 +202,17 @@ class KeyboardReader:
             try:
                 for i in range(1, len(evalparts), 2):
                     e = eval(evalparts[i], dict(self.eval_globals))
-                    if type(e) == type(0.0):
+                    if isinstance(e, type(0.0)):
                         e = int(e)
                     evalparts[i] = str(e)
-            except:
+            except BaseException:
                 self.output("Unable to evaluate: %s" % (line,))
                 return None
             line = "".join(evalparts)
             self.output("Eval: %s" % (line,))
         try:
             line = self.pins.update_command(line).strip()
-        except:
+        except BaseException:
             self.output("Unable to map pin: %s" % (line,))
             return None
         if line:

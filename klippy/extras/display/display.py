@@ -5,7 +5,9 @@
 # Copyright (C) 2018  Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, os, ast
+import logging
+import os
+import ast
 from . import hd44780, hd44780_spi, st7920, uc1701, menu
 
 # Normal time between each screen redraw
@@ -24,6 +26,8 @@ LCD_chips = {
 }
 
 # Storage of [display_template my_template] config sections
+
+
 class DisplayTemplate:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -64,7 +68,7 @@ class DisplayGroup:
             pos = c.get("position")
             try:
                 row, col = [int(v.strip()) for v in pos.split(",")]
-            except:
+            except BaseException:
                 raise config.error(
                     "Unable to parse 'position' in section '%s'" % (c.get_name(),)
                 )
@@ -236,7 +240,7 @@ class PrinterLCD:
         # Update normal display
         try:
             self.show_data_group.show(self, self.display_templates, eventtime)
-        except:
+        except BaseException:
             logging.exception("Error during display screen update")
         self.lcd_chip.flush()
         return eventtime + REDRAW_TIME

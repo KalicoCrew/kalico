@@ -78,6 +78,7 @@ class BedTiltCalibrate:
         }
         logging.info("Initial bed_tilt parameters: %s", params)
         # Perform coordinate descent
+
         def adjusted_height(pos, params):
             x, y, z = pos
             return (

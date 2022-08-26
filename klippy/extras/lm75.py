@@ -62,7 +62,7 @@ class LM75:
         try:
             prodid = self.read_register("PRODID", 1)[0]
             logging.info("lm75: Chip ID %#x" % prodid)
-        except:
+        except BaseException:
             pass
 
     def _sample_lm75(self, eventtime):
@@ -91,7 +91,7 @@ class LM75:
         return bytearray(params["response"])
 
     def write_register(self, reg_name, data):
-        if type(data) is not list:
+        if not isinstance(data, list):
             data = [data]
         reg = LM75_REGS[reg_name]
         data.insert(0, reg)

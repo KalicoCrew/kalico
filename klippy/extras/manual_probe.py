@@ -3,7 +3,7 @@
 # Copyright (C) 2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, bisect
+import bisect
 
 
 class ManualProbe:
@@ -88,6 +88,8 @@ Z_BOB_MINIMUM = 0.500
 BISECT_MAX = 0.200
 
 # Helper script to determine a Z height
+
+
 class ManualProbeHelper:
     def __init__(self, printer, gcmd, finalize_callback):
         self.printer = printer

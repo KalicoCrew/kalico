@@ -9,6 +9,8 @@ import chelper
 API_UPDATE_INTERVAL = 0.500
 
 # Helper to periodically transmit data to a set of API clients
+
+
 class APIDumpHelper:
     def __init__(
         self, printer, data_cb, startstop_cb=None, update_interval=API_UPDATE_INTERVAL
@@ -16,7 +18,10 @@ class APIDumpHelper:
         self.printer = printer
         self.data_cb = data_cb
         if startstop_cb is None:
-            startstop_cb = lambda is_start: None
+
+            def startstop_cb(is_start):
+                return None
+
         self.startstop_cb = startstop_cb
         self.is_started = False
         self.update_interval = update_interval
@@ -129,7 +134,7 @@ class DumpStepper:
     def get_step_queue(self, start_clock, end_clock):
         mcu_stepper = self.mcu_stepper
         res = []
-        while 1:
+        while True:
             data, count = mcu_stepper.dump_steps(128, start_clock, end_clock)
             if not count:
                 break
@@ -195,6 +200,8 @@ class DumpStepper:
 NEVER_TIME = 9999999999999999.0
 
 # Extract trapezoidal motion queue (trapq)
+
+
 class DumpTrapQ:
     def __init__(self, printer, name, trapq):
         self.printer = printer
@@ -210,7 +217,7 @@ class DumpTrapQ:
     def extract_trapq(self, start_time, end_time):
         ffi_main, ffi_lib = chelper.get_ffi()
         res = []
-        while 1:
+        while True:
             data = ffi_main.new("struct pull_move[128]")
             count = ffi_lib.trapq_extract_old(
                 self.trapq, data, len(data), start_time, end_time

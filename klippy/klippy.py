@@ -4,9 +4,24 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, gc, optparse, logging, time, collections, importlib
-import util, reactor, queuelogger, msgproto
-import gcode, configfile, pins, mcu, toolhead, webhooks
+import sys
+import os
+import gc
+import optparse
+import logging
+import time
+import collections
+import importlib
+import util
+import reactor
+import queuelogger
+import msgproto
+import gcode
+import configfile
+import pins
+import mcu
+import toolhead
+import webhooks
 
 message_ready = "Printer is ready"
 
@@ -161,7 +176,7 @@ class Printer:
             ]
             parts.insert(0, "host=%s" % (self.start_args["software_version"],))
             return "\nKnown versions: %s\n" % (", ".join(parts),)
-        except:
+        except BaseException:
             logging.exception("Error in _get_versions()")
             return ""
 
@@ -227,14 +242,14 @@ class Printer:
         # Enter main reactor loop
         try:
             self.reactor.run()
-        except:
+        except BaseException:
             msg = "Unhandled exception during run"
             logging.exception(msg)
             # Exception from a reactor callback - try to shutdown
             try:
                 self.reactor.register_callback((lambda e: self.invoke_shutdown(msg)))
                 self.reactor.run()
-            except:
+            except BaseException:
                 logging.exception("Repeat unhandled exception during run")
                 # Another exception - try to exit
                 self.run_result = "error_exit"
@@ -245,7 +260,7 @@ class Printer:
                 for n, m in self.lookup_objects(module="mcu"):
                     m.microcontroller_restart()
             self.send_event("klippy:disconnect")
-        except:
+        except BaseException:
             logging.exception("Unhandled exception during post run")
         return run_result
 
@@ -264,7 +279,7 @@ class Printer:
         for cb in self.event_handlers.get("klippy:shutdown", []):
             try:
                 cb()
-            except:
+            except BaseException:
                 logging.exception("Exception during shutdown handler")
         logging.info("Reactor garbage collection: %s", self.reactor.get_gc_stats())
 
@@ -407,7 +422,7 @@ def main():
     gc.disable()
 
     # Start Printer() class
-    while 1:
+    while True:
         if bglogger is not None:
             bglogger.clear_rollover_info()
             bglogger.set_rollover_info("versions", versions)
