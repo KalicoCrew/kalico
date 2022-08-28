@@ -268,7 +268,7 @@ probe_points: ...
 Then the commands `TEST_RESONANCES AXIS=X` and `TEST_RESONANCES AXIS=Y`
 will use the correct accelerometer for each axis.
 
-### Dual carriage
+### ⚠️Dual carriage
 
 If your printer has a dual carriage, you will need to measure the resonances
 for both of them on the axis that corresponds to the dual carriage axis, i.e.

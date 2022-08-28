@@ -683,16 +683,16 @@ been enabled (also see the
 [SHAPER_FREQ_Y=<shaper_freq_y>] [DAMPING_RATIO_X=<damping_ratio_x>]
 [DAMPING_RATIO_Y=<damping_ratio_y>] [SHAPER_TYPE=<shaper>]
 [SHAPER_TYPE_X=<shaper_type_x>] [SHAPER_TYPE_Y=<shaper_type_y>]
-[SHAPER_FREQ_DC=<shaper_freq_dc>] [DAMPING_RATIO_DC=<damping_ratio_dc>]
-[SHAPER_TYPE_DC=<shaper_type_dc>]`:
+⚠️[SHAPER_FREQ_DC=<shaper_freq_dc>] ⚠️[DAMPING_RATIO_DC=<damping_ratio_dc>]
+⚠️[SHAPER_TYPE_DC=<shaper_type_dc>]`:
 Modify input shaper parameters. Note that SHAPER_TYPE parameter resets
 input shaper for both X and Y axes even if different shaper types have
 been configured in [input_shaper] section. SHAPER_TYPE cannot be used
 together with either of SHAPER_TYPE_X and SHAPER_TYPE_Y parameters.
 See [config reference](Config_Reference.md#input_shaper) for more
-details on each of these parameters. Note that `SHAPER_FREQ_DC`,
-`SHAPER_TYPE_DC` and `DAMPING_RATIO_DC` parameters that change the input
-shaper for the dual carriage are available only if `shaper_freq_dc`
+details on each of these parameters. ⚠️Note that `SHAPER_FREQ_DC`,
+⚠️`SHAPER_TYPE_DC` and ⚠️`DAMPING_RATIO_DC` parameters that change the input
+shaper for the dual carriage are available only if ⚠️`shaper_freq_dc`
 was set in `[input_shaper]` section.
 
 ### [manual_probe]

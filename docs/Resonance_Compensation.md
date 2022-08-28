@@ -416,7 +416,7 @@ good idea to check and re-measure the ringing frequencies as described in
 [Ringing frequency](#ringing-frequency) section and update your config file
 if necessary.
 
-### Is dual carriage setup supported with input shapers?
+### ⚠️Is dual carriage setup supported with input shapers?
 
 Yes. One should run the tuning twice for each of the carriages, and calculate
 the ringing frequencies for each of the carriages independently.
