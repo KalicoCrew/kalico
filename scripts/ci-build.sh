@@ -30,15 +30,6 @@ finish_test()
 
 
 ######################################################################
-# Check for whitespace errors
-######################################################################
-
-start_test check_whitespace "Check whitespace"
-./scripts/check_whitespace.sh
-finish_test check_whitespace "Check whitespace"
-
-
-######################################################################
 # Run compile tests for several different MCU types
 ######################################################################
 
@@ -52,7 +43,7 @@ for TARGET in test/configs/*.config ; do
     unset CC
     cp ${TARGET} .config
     make olddefconfig
-    make V=1
+    make V=1 -j2
     size out/*.elf
     finish_test mcu_compile "$TARGET"
     cp out/klipper.dict ${DICTDIR}/$(basename ${TARGET} .config).dict

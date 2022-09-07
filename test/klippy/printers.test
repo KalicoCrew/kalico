@@ -75,10 +75,6 @@ DICTIONARY stm32g0b1.dict
 # Printers using the rp2040
 DICTIONARY rp2040.dict
 
-# Printers using the PRU
-DICTIONARY pru.dict host=linuxprocess.dict
-CONFIG ../../config/generic-replicape.cfg
-
 # Tests with multiple mcus
 DICTIONARY atmega2560.dict zboard=atmega2560.dict auxboard=atmega2560.dict
 CONFIG ../../config/sample-multi-mcu.cfg

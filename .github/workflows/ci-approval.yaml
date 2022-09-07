@@ -3,18 +3,12 @@ name: Build test
 on:
   pull_request_review:
     types: [submitted]
-  
+
 jobs:
   build:
     runs-on: ubuntu-18.04
     steps:
       - uses: actions/checkout@v2
-
-      - name: Setup cache
-        uses: actions/cache@v2
-        with:
-          path: ci_cache
-          key: ${{ runner.os }}-build-${{ hashFiles('scripts/ci-install.sh') }}
 
       - uses: dorny/paths-filter@v2
         id: changes
@@ -30,7 +24,6 @@ jobs:
         if: steps.changes.outputs.paths == 'true' && github.event.review.state == 'approved'
         run: |
           echo "::set-output name=run_test::true"
-
 
       - name: Prepare tests
         if: steps.should_test.outputs.run_test == 'true'
