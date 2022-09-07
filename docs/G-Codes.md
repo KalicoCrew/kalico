@@ -1287,7 +1287,7 @@ The following commands are available when the
 [z_thermal_adjust config section](Config_Reference.md#z_thermal_adjust)
 is enabled.
 
-#### SET_Z_THERMAL_ADJUST
+#### ⚠️ SET_Z_THERMAL_ADJUST
 `SET_Z_THERMAL_ADJUST [ENABLE=<0:1>] [TEMP_COEFF=<value>] [REF_TEMP=<value>]`:
 Enable or disable the Z thermal adjustment with `ENABLE`. Disabling does not
 remove any adjustment already applied, but will freeze the current adjustment
@@ -1309,13 +1309,3 @@ The following commands are available when the
 the points specified in the config and then make independent
 adjustments to each Z stepper to compensate for tilt. See the PROBE
 command for details on the optional probe parameters.
-
-## Frame Expansion Compensation
-
-The following commands are available when the [frame_expansion_compensation
-config section](Config_Reference.md#frame_expansion_compensation) is enabled:
-- `SET_FRAME_COMP ENABLE=[<0:1>]`: enable or disable frame expansion
-  compensation. When disabled, the last computed compensation value will remain
-  applied until next homing.
-- `QUERY_FRAME_COMP`: report current state and key parameters of the frame
-  expansion compensation.

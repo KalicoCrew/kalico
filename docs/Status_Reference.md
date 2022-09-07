@@ -484,7 +484,7 @@ object is always available):
 - `state_message`: A human readable string giving additional context
   on the current Klipper state.
 
-## z_thermal_adjust
+## ⚠️ z_thermal_adjust
 
 The following information is available in the `z_thermal_adjust` object (this
 object is available if [z_thermal_adjust](Config_Reference.md#z_thermal_adjust)

@@ -1205,7 +1205,7 @@ the nature of skew correction these lengths are set via gcode. See
 [skew_correction]
 ```
 
-### [z_thermal_adjust]
+### ⚠️ [z_thermal_adjust]
 
 Temperature-dependant toolhead Z position adjustment. Compensate for vertical
 toolhead movement caused by thermal expansion of the printer's frame in
