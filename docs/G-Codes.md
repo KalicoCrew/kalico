@@ -1212,7 +1212,7 @@ profile matching the supplied name from persistent memory. Note that
 after SAVE or REMOVE operations have been run the SAVE_CONFIG gcode
 must be run to make the changes to persistent memory permanent.
 
-### [smart_effector]
+### ⚠️ [smart_effector]
 
 Several commands are available when a
 [smart_effector config section](Config_Reference.md#smart_effector) is enabled.
@@ -1397,7 +1397,7 @@ the config. `REF_TEMP` manually overrides the reference temperature typically
 set during homing (for use in e.g. non-standard homing routines) - will be reset
 automatically upon homing.
 
-### [z_calibration]
+### ⚠️ [z_calibration]
 
 The following commands are available when a
 [z_calibration config section](Config_Reference.md#z_calibration) is enabled

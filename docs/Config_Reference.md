@@ -2071,7 +2071,7 @@ calibrate_y: 112.5
 #   be near the center of the bed
 ```
 
-### [z_calibration]
+### ⚠️ [z_calibration]
 
 Automatic Z offset calibration. One may define this section if the printer
 is able to calibrate the nozzle's offset automatically. See
