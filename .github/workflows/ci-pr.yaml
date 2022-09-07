@@ -18,7 +18,7 @@ jobs:
         run: |
           echo "running black..."
           black --version
-          black klippy --check 
+          black klippy --check
       - name: Flake8
         run: |
           echo "running flake8..."
