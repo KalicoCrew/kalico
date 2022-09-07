@@ -2084,18 +2084,18 @@ information.
 nozzle_xy_position:
 #   A X, Y coordinate (e.g. 100,100) of the nozzle, clicking on the Z endstop.
 switch_xy_position:
-#   A X, Y coordinate (e.g. 100,100) of the probe's switchbody, clicking on
+#   A X, Y coordinate (e.g. 100,100) of the probe's switch body, clicking on
 #   the Z endstop.
 bed_xy_position: default from relative_reference_index of bed_mesh
 #   a X, Y coordinate (e.g. 100,100) where the print surface (e.g. the center
 #   point) is probed. These coordinates will be adapted by the
 #   probe's X and Y offsets. The default is the relative_reference_index
-#   of the configured bed_mesh. It will raise an error if there is no
-#   probe_bed site and no bed_mesh with a relative_reference_index
-#   configured.
+#   of the configured bed_mesh, if configured. It's possible to change the relative
+#   reference index at runtime or use the GCode argument BED_POSITION of CALIBRATE_Z.
 switch_offset:
 #   The trigger point offset of the used mag-probe switch.
-#   This needs to be fined out manually. More on this later
+#   Larger values will position the nozzle closer to the bed.
+#   This needs to be find out manually. More on this later
 #   in this section..
 max_deviation: 1.0
 #   The maximum allowed deviation of the calculated offset.
@@ -2107,7 +2107,7 @@ samples: default from "probe:samples" section
 samples_tolerance: default from "probe:samples_tolerance" section
 #   The maximum Z distance (in mm) that a sample may differ from other
 #   samples. The default is from the probe's configuration.
-samples_tolerance_retries: default from "probe:samples_tolerance_retries"
+samples_tolerance_retries: default from "probe:samples_tolerance_retries" section
 #   The number of times to retry if a sample is found that exceeds
 #   samples_tolerance. The default is from the probe's configuration.
 samples_result: default from "probe:samples_result" section
@@ -2116,7 +2116,7 @@ samples_result: default from "probe:samples_result" section
 clearance: 2 * z_offset from the "probe:z_offset" section
 #   The distance in mm to move up before moving to the next
 #   position. The default is two times the z_offset from the probe's
-#   configuration or 20mm if it is still zero.
+#   configuration.
 position_min: default from "stepper_z:position_min" section.
 #   Minimum valid distance (in mm) used for probing move. The
 #   default is from the Z rail configuration.
@@ -2126,14 +2126,14 @@ lift_speed: default from "probe:lift_speed" section
 #   Speed (in mm/s) of the Z axis when lifting the probe between
 #   samples and clearance moves. The default is from the probe's
 #   configuration.
-probing_speed: default from "stepper_z:second_homing_speed" section.
-#   The slower speed (in mm/s) for probing the recorded samples.
-#   The default is second_homing_speed of the Z rail configuration.
-fast_probing_speed: default from "stepper_z:homing_speed" section.
+probing_speed: default from "stepper_z:homing_speed" section.
 #   The fast probing speed (in mm/s) used, when probing_first_fast
 #   is activated. The default is from the Z rail configuration.
+probing_second_speed: default from "stepper_z:second_homing_speed" section.
+#   The slower speed (in mm/s) for probing the recorded samples.
+#   The default is second_homing_speed of the Z rail configuration.
 probing_retract_dist: default from "stepper_z:homing_retract_dist" section.
-#   Distance to backoff (in mm) before probing the next sample.
+#   Distance to retract (in mm) before probing the next sample.
 #   The default is homing_retract_dist from the Z rail configuration.
 probing_first_fast: false
 #   If true, the first probing is done faster by the probing speed.
