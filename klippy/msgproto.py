@@ -21,7 +21,7 @@ MESSAGE_TRAILER_SYNC = 1
 MESSAGE_PAYLOAD_MAX = MESSAGE_MAX - MESSAGE_MIN
 MESSAGE_SEQ_MASK = 0x0F
 MESSAGE_DEST = 0x10
-MESSAGE_SYNC = "\x7E"
+MESSAGE_SYNC = 0x7E
 
 
 class error(Exception):
@@ -31,12 +31,10 @@ class error(Exception):
 def crc16_ccitt(buf):
     crc = 0xFFFF
     for data in buf:
-        data = ord(data)
         data ^= crc & 0xFF
         data ^= (data & 0x0F) << 4
         crc = ((data << 8) | (crc >> 8)) ^ (data >> 4) ^ (data << 3)
-    crc = chr(crc >> 8) + chr(crc & 0xFF)
-    return crc
+    return [crc >> 8, crc & 0xFF]
 
 
 class PT_uint32:
@@ -176,7 +174,7 @@ def lookup_params(msgformat, enumerations={}):
 def lookup_output_params(msgformat):
     param_types = []
     args = msgformat
-    while True:
+    while 1:
         pos = args.find("%")
         if pos < 0:
             break
@@ -298,10 +296,10 @@ class MessageParser:
     def check_packet(self, s):
         if len(s) < MESSAGE_MIN:
             return 0
-        msglen = ord(s[MESSAGE_POS_LEN])
+        msglen = s[MESSAGE_POS_LEN]
         if msglen < MESSAGE_MIN or msglen > MESSAGE_MAX:
             return -1
-        msgseq = ord(s[MESSAGE_POS_SEQ])
+        msgseq = s[MESSAGE_POS_SEQ]
         if (msgseq & ~MESSAGE_SEQ_MASK) != MESSAGE_DEST:
             return -1
         if len(s) < msglen:
@@ -313,7 +311,7 @@ class MessageParser:
             msglen - MESSAGE_TRAILER_CRC : msglen - MESSAGE_TRAILER_CRC + 2
         ]
         crc = crc16_ccitt(s[: msglen - MESSAGE_TRAILER_SIZE])
-        if crc != msgcrc:
+        if crc != list(msgcrc):
             # logging.debug("got crc %s vs %s", repr(crc), repr(msgcrc))
             return -1
         return msglen
@@ -322,7 +320,7 @@ class MessageParser:
         msgseq = s[MESSAGE_POS_SEQ]
         out = ["seq: %02x" % (msgseq,)]
         pos = MESSAGE_HEADER_SIZE
-        while True:
+        while 1:
             msgid = s[pos]
             mid = self.messages_by_id.get(msgid, self.unknown)
             params, pos = mid.parse(s, pos)
@@ -353,10 +351,10 @@ class MessageParser:
     def encode(self, seq, cmd):
         msglen = MESSAGE_MIN + len(cmd)
         seq = (seq & MESSAGE_SEQ_MASK) | MESSAGE_DEST
-        out = [chr(msglen), chr(seq), cmd]
-        out.append(crc16_ccitt("".join(out)))
+        out = [msglen, seq] + cmd
+        out.append(crc16_ccitt(out))
         out.append(MESSAGE_SYNC)
-        return "".join(out)
+        return out
 
     def _parse_buffer(self, value):
         if not value:
@@ -418,7 +416,7 @@ class MessageParser:
         for add_name, add_enums in enumerations.items():
             enums = self.enumerations.setdefault(add_name, {})
             for enum, value in add_enums.items():
-                if isinstance(value, type(0)):
+                if type(value) == type(0):
                     # Simple enumeration
                     enums[str(enum)] = value
                     continue

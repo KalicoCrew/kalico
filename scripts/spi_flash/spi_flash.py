@@ -902,6 +902,13 @@ class SDCardSPI:
                 raise OSError("\n".join(err_msgs))
 
 
+SDIO_WARNING = """
+This board requires a manual reboot to complete the flash process.
+If the board's bootloader uses SDIO mode for its SDCard, then a full
+power cycle is required.  Please perform the power cycle now and then
+rerun this utility with the 'check' option to verify flash.
+"""
+
 class MCUConnection:
     def __init__(self, k_reactor, device, baud, board_cfg):
         self.reactor = k_reactor
@@ -1119,6 +1126,9 @@ class MCUConnection:
         return sd_chksm
 
     def verify_flash(self, req_chksm, old_dictionary, req_dictionary):
+        if bool(self.board_config.get('skip_verify', False)):
+            output_line(SDIO_WARNING)
+            return
         output("Verifying Flash...")
         validation_passed = False
         msgparser = self._serial.get_msgparser()
@@ -1202,6 +1212,7 @@ class SPIFlash:
         self.firmware_checksum = None
         self.task_complete = False
         self.need_upload = True
+        self.need_verify = True
         self.old_dictionary = None
         self.new_dictionary = None
         if args["klipper_dict_path"] is not None:
@@ -1233,7 +1244,7 @@ class SPIFlash:
                 raise SPIFlashError("Unable to reconnect")
         output_line("Done")
 
-    def run_reset(self, eventtime):
+    def run_reset_upload(self, eventtime):
         # Reset MCU to default state if necessary
         self.mcu_conn.connect()
         if self.mcu_conn.check_need_restart():
@@ -1242,6 +1253,16 @@ class SPIFlash:
         else:
             self.need_upload = False
             self.run_sdcard_upload(eventtime)
+
+    def run_reset_verify(self, eventtime):
+        # Reset MCU to default state if necessary
+        self.mcu_conn.connect()
+        if self.mcu_conn.check_need_restart():
+            self.mcu_conn.reset()
+            self.task_complete = True
+        else:
+            self.need_verify = False
+            self.run_verify(eventtime)
 
     def run_sdcard_upload(self, eventtime):
         # Reconnect and upload
@@ -1262,6 +1283,7 @@ class SPIFlash:
 
     def run_verify(self, eventtime):
         # Reconnect and verify
+        if not self.mcu_conn.connected:
         self.mcu_conn.connect()
         self.mcu_conn.configure_mcu()
         self.mcu_conn.verify_flash(
@@ -1291,12 +1313,18 @@ class SPIFlash:
             self.mcu_conn = k_reactor = None
 
     def run(self):
-        self.run_reactor_task(self.run_reset)
+        if not bool(self.board_config.get('verify_only', False)):
+            self.run_reactor_task(self.run_reset_upload)
         self._wait_for_reconnect()
         if self.need_upload:
             self.run_reactor_task(self.run_sdcard_upload)
             self._wait_for_reconnect()
         self.run_reactor_task(self.run_verify)
+        else:
+            self.run_reactor_task(self.run_reset_verify)
+            if self.need_verify:
+                self._wait_for_reconnect()
+                self.run_reactor_task(self.run_verify)
 
 
 def main():
@@ -1335,10 +1363,15 @@ def main():
     parser.add_argument("device", metavar="<device>", help="Device Serial Port")
     parser.add_argument("board", metavar="<board>", help="Board Type")
     parser.add_argument(
-        "klipper_bin_path",
-        metavar="<klipper.bin>",
-        help="Klipper firmware binary",
-    )
+        "-c", "--check", action="store_true",
+        help="Perform flash check/verify only")
+    parser.add_argument(
+        "device", metavar="<device>", help="Device Serial Port")
+    parser.add_argument(
+        "board", metavar="<board>", help="Board Type")
+    parser.add_argument(
+        "klipper_bin_path", metavar="<klipper.bin>",
+        help="Klipper firmware binary")
     args = parser.parse_args()
     log_level = logging.DEBUG if args.verbose else logging.CRITICAL
     logging.basicConfig(level=log_level)
@@ -1346,10 +1379,14 @@ def main():
     if flash_args is None:
         output_line("Unable to find defintion for board: %s" % (args.board,))
         sys.exit(-1)
-    flash_args["device"] = args.device
-    flash_args["baud"] = args.baud
-    flash_args["klipper_bin_path"] = args.klipper_bin_path
-    flash_args["klipper_dict_path"] = args.dict_path
+    flash_args['device'] = args.device
+    flash_args['baud'] = args.baud
+    flash_args['klipper_bin_path'] = args.klipper_bin_path
+    flash_args['klipper_dict_path'] = args.dict_path
+    flash_args['verify_only'] = args.check
+    if args.check:
+        # override board_defs setting when doing verify-only:
+        flash_args['skip_verify'] = False
     check_need_convert(args.board, flash_args)
     fatfs_lib.check_fatfs_build(output)
     try:

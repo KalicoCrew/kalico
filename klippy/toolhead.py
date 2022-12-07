@@ -6,6 +6,7 @@
 import math, logging, importlib
 import chelper
 import kinematics.extruder
+import mcu
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -18,6 +19,7 @@ class Move:
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
         self.accel = toolhead.max_accel
+        self.junction_deviation = toolhead.junction_deviation
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
@@ -83,11 +85,7 @@ class Move:
             return
         junction_cos_theta = max(junction_cos_theta, -0.999999)
         sin_theta_d2 = math.sqrt(0.5 * (1.0 - junction_cos_theta))
-        R = (
-            self.toolhead.junction_deviation
-            * sin_theta_d2
-            / (1.0 - sin_theta_d2)
-        )
+        R_jd = sin_theta_d2 / (1.0 - sin_theta_d2)
         # Approximated circle must contact moves no further away than mid-move
         tan_theta_d2 = sin_theta_d2 / math.sqrt(
             0.5 * (1.0 + junction_cos_theta)
@@ -98,8 +96,8 @@ class Move:
         )
         # Apply limits
         self.max_start_v2 = min(
-            R * self.accel,
-            R * prev_move.accel,
+            R_jd * self.junction_deviation * self.accel,
+            R_jd * prev_move.junction_deviation * prev_move.accel,
             move_centripetal_v2,
             prev_move_centripetal_v2,
             extruder_v2,
@@ -340,7 +338,7 @@ class ToolHead:
         batch_time = MOVE_BATCH_TIME
         kin_flush_delay = self.kin_flush_delay
         lkft = self.last_kin_flush_time
-        while True:
+        while 1:
             self.print_time = min(self.print_time + batch_time, next_print_time)
             sg_flush_time = max(lkft, self.print_time - kin_flush_delay)
             for sg in self.step_generators:
@@ -449,7 +447,7 @@ class ToolHead:
             self.need_check_stall = -1.0
             self.reactor.update_timer(self.flush_timer, eventtime + 0.100)
         # Check if there are lots of queued moves and stall if so
-        while True:
+        while 1:
             est_print_time = self.mcu.estimated_print_time(eventtime)
             buffer_time = self.print_time - est_print_time
             stall_time = buffer_time - self.buffer_time_high

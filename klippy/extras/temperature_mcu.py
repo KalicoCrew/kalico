@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+import mcu
 
 SAMPLE_TIME = 0.001
 SAMPLE_COUNT = 8
@@ -68,11 +69,11 @@ class PrinterTemperatureMCU:
 
     def _mcu_identify(self):
         # Obtain mcu information
-        _mcu = self.mcu_adc.get_mcu()
-        self.debug_read_cmd = _mcu.lookup_query_command(
+        mcu = self.mcu_adc.get_mcu()
+        self.debug_read_cmd = mcu.lookup_query_command(
             "debug_read order=%c addr=%u", "debug_result val=%u"
         )
-        self.mcu_type = _mcu.get_constants().get("MCU", "")
+        self.mcu_type = mcu.get_constants().get("MCU", "")
         # Run MCU specific configuration
         cfg_funcs = [
             ("rp2040", self.config_rp2040),
@@ -81,6 +82,7 @@ class PrinterTemperatureMCU:
             ("same70", self.config_same70),
             ("samd21", self.config_samd21),
             ("samd51", self.config_samd51),
+            ("same5", self.config_samd51),
             ("stm32f1", self.config_stm32f1),
             ("stm32f2", self.config_stm32f2),
             ("stm32f4", self.config_stm32f4),
@@ -88,6 +90,9 @@ class PrinterTemperatureMCU:
             ("stm32f070", self.config_stm32f070),
             ("stm32f072", self.config_stm32f0x2),
             ("stm32g0", self.config_stm32g0),
+            ("stm32g4", self.config_stm32g0),
+            ("stm32l4", self.config_stm32g0),
+            ("stm32h723", self.config_stm32h723),
             ("stm32h7", self.config_stm32h7),
             ("", self.config_unknown),
         ]
@@ -97,7 +102,7 @@ class PrinterTemperatureMCU:
                 break
         logging.info(
             "mcu_temperature '%s' nominal base=%.6f slope=%.6f",
-            _mcu.get_name(),
+            mcu.get_name(),
             self.base_temperature,
             self.slope,
         )
@@ -182,6 +187,12 @@ class PrinterTemperatureMCU:
     def config_stm32g0(self):
         cal_adc_30 = self.read16(0x1FFF75A8) * 3.0 / (3.3 * 4095.0)
         cal_adc_130 = self.read16(0x1FFF75CA) * 3.0 / (3.3 * 4095.0)
+        self.slope = (130.0 - 30.0) / (cal_adc_130 - cal_adc_30)
+        self.base_temperature = self.calc_base(30.0, cal_adc_30)
+
+    def config_stm32h723(self):
+        cal_adc_30 = self.read16(0x1FF1E820) / 4095.0
+        cal_adc_130 = self.read16(0x1FF1E840) / 4095.0
         self.slope = (130.0 - 30.0) / (cal_adc_130 - cal_adc_30)
         self.base_temperature = self.calc_base(30.0, cal_adc_30)
 
