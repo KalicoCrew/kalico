@@ -35,29 +35,33 @@
 // complicated function for non-linear pressure advance models.
 
 // Calculate the definitive integral of extruder for a given move
-static double
-pa_move_integrate(struct move *m, int axis, double pressure_advance
-                  , double base, double start, double end, double time_offset)
+static void
+pa_move_integrate(struct move *m, int axis
+                  , double base, double start, double end, double time_offset
+                  , double *pos_integral, double *pa_velocity_integral)
 {
     // Calculate base position and velocity with pressure advance
     int can_pressure_advance = m->axes_r.x > 0. || m->axes_r.y > 0.;
-    if (!can_pressure_advance)
-        pressure_advance = 0.;
     double axis_r = m->axes_r.axis[axis - 'x'];
     double start_v = m->start_v * axis_r;
     double ha = m->half_accel * axis_r;
-    base += pressure_advance * start_v;
-    start_v += pressure_advance * 2. * ha;
     // Calculate definitive integral
     double iext = extruder_integrate(base, start_v, ha, start, end);
     double wgt_ext = extruder_integrate_time(base, start_v, ha, start, end);
-    return wgt_ext - time_offset * iext;
+    *pos_integral = wgt_ext - time_offset * iext;
+    if (!can_pressure_advance) {
+        *pa_velocity_integral = 0.;
+    } else {
+        double ivel = extruder_integrate(start_v, 2. * ha, 0., start, end);
+        double wgt_vel = extruder_integrate(0., start_v, 2. * ha, start, end);
+        *pa_velocity_integral = wgt_vel - time_offset * ivel;
+    }
 }
 
 // Calculate the definitive integral of the extruder over a range of moves
-static double
-pa_range_integrate(struct move *m, int axis, double move_time
-                   , double pressure_advance, double hst)
+static void
+pa_range_integrate(struct move *m, int axis, double move_time, double hst
+                   , double *pos_integral, double *pa_velocity_integral)
 {
     move_time += sm->t_offs;
     while (unlikely(move_time < 0.)) {
@@ -69,20 +73,28 @@ pa_range_integrate(struct move *m, int axis, double move_time
         m = list_next_entry(m, node);
     }
     // Calculate integral for the current move
-    double res = 0., start = move_time - hst, end = move_time + hst;
+    *pos_integral = *pa_velocity_integral = 0.;
+    double m_pos_int, m_pa_vel_int;
+    double start = move_time - hst, end = move_time + hst;
     double start_base = m->start_pos.axis[axis - 'x'];
-    res += pa_move_integrate(m, axis, pressure_advance, 0.
-                             , start, move_time, start);
-    res -= pa_move_integrate(m, axis, pressure_advance, 0.
-                             , move_time, end, end);
+    pa_move_integrate(m, axis, 0., start, move_time, start,
+                      &m_pos_int, &m_pa_vel_int);
+    *pos_integral += m_pos_int;
+    *pa_velocity_integral += m_pa_vel_int;
+    pa_move_integrate(m, axis, 0., move_time, end, end,
+                      &m_pos_int, &m_pa_vel_int);
+    *pos_integral -= m_pos_int;
+    *pa_velocity_integral -= m_pa_vel_int;
     // Integrate over previous moves
     const struct move *prev = m;
     while (likely(start < 0.)) {
         prev = list_prev_entry(prev, node);
         start += prev->move_t;
         double base = prev->start_pos.axis[axis - 'x'] - start_base;
-        res += pa_move_integrate(prev, axis, pressure_advance, base, start
-                                 , prev->move_t, start);
+        pa_move_integrate(prev, axis, base, start, prev->move_t, start,
+                          &m_pos_int, &m_pa_vel_int);
+        *pos_integral += m_pos_int;
+        *pa_velocity_integral += m_pa_vel_int;
     }
     // Integrate over future moves
     t0 = move_time;
@@ -91,9 +103,11 @@ pa_range_integrate(struct move *m, int axis, double move_time
         t0 -= m->move_t;
         m = list_next_entry(m, node);
         double base = m->start_pos.axis[axis - 'x'] - start_base;
-        res -= pa_move_integrate(m, axis, pressure_advance, base, 0., end, end);
+        pa_move_integrate(m, axis, base, 0., end, end,
+                          &m_pos_int, &m_pa_vel_int);
+        *pos_integral -= m_pos_int;
+        *pa_velocity_integral -= m_pa_vel_int;
     }
-    *pos_integral += start_base;
 }
 
 static void
@@ -182,19 +196,26 @@ extruder_calc_position(struct stepper_kinematics *sk, struct move *m
     }
     double hst = es->half_smooth_time;
     int i;
-    struct coord e_pos;
+    struct coord e_pos, pa_vel;
     double move_dist = move_get_distance(m, move_time);
     for (i = 0; i < 3; ++i) {
         if (!hst) {
             e_pos.axis[i] = m->axes_r.axis[i] * move_dist;
+            pa_vel.axis[i] = 0.;
         } else {
-            double area = pa_range_integrate(m, 'x' + i, move_time,
-                                             es->pressure_advance, hst);
-            e_pos.axis[i] = area * es->inv_half_smooth_time2;
+            pa_range_integrate(m, 'x' + i, move_time, hst,
+                               &e_pos.axis[i], &pa_vel.axis[i]);
+            e_pos.axis[i] *= es->inv_half_smooth_time2;
+            pa_vel.axis[i] *= es->inv_half_smooth_time2;
         }
         e_pos.axis[i] += m->start_pos.axis[i];
     }
-    return e_pos.x + e_pos.y + e_pos.z;
+    double position = e_pos.x + e_pos.y + e_pos.z;
+    double pa_velocity = pa_vel.x + pa_vel.y + pa_vel.z;
+    if (hst) {
+        position += es->pressure_advance * pa_velocity;
+    }
+    return position;
 }
 
 static void
@@ -219,53 +240,12 @@ extruder_set_pressure_advance(struct stepper_kinematics *sk
     es->half_smooth_time = hst;
     es->time_offset = time_offset;
     extruder_note_generation_time(es);
-    if (! hst)
+    if (! hst) {
+        es->pressure_advance = 0.;
         return;
-    memcpy(&es->pa_params, params, n_params * sizeof(params[0]));
-}
-
-void __visible
-extruder_set_pressure_advance_model_func(struct stepper_kinematics *sk
-                                         , pressure_advance_func func)
-{
-    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    memset(&es->pa_params, 0, sizeof(es->pa_params));
-    es->pa_func = func;
-}
-
-int __visible
-extruder_set_shaper_params(struct stepper_kinematics *sk, char axis
-                           , int n, double a[], double t[])
-{
-    if (axis != 'x' && axis != 'y')
-        return -1;
-    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    struct shaper_pulses *sp = &es->sp[axis-'x'];
-    int status = init_shaper(n, a, t, sp);
-    extruder_note_generation_time(es);
-    return status;
-}
-
-int __visible
-extruder_set_smoothing_params(struct stepper_kinematics *sk, char axis
-                              , int n, double a[], double t_sm, double t_offs)
-{
-    if (axis != 'x' && axis != 'y' && axis != 'z')
-        return -1;
-    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    struct smoother *sm = &es->sm[axis-'x'];
-    int status = init_smoother(n, a, t_sm, sm);
-    sm->t_offs = t_offs;
-    extruder_note_generation_time(es);
-    return status;
-}
-
-double __visible
-extruder_get_step_gen_window(struct stepper_kinematics *sk)
-{
-    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    return es->sk.gen_steps_pre_active > es->sk.gen_steps_post_active
-         ? es->sk.gen_steps_pre_active : es->sk.gen_steps_post_active;
+    }
+    es->inv_half_smooth_time2 = 1. / (hst * hst);
+    es->pressure_advance = pressure_advance;
 }
 
 struct stepper_kinematics * __visible
