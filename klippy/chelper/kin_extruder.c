@@ -131,11 +131,8 @@ typedef double (*pressure_advance_func)(
 
 struct extruder_stepper {
     struct stepper_kinematics sk;
-    struct shaper_pulses sp[3];
-    struct smoother sm[3];
-    struct pressure_advance_params pa_params;
-    pressure_advance_func pa_func;
-    double time_offset;
+    double pressure_advance, time_offset;
+    double half_smooth_time, inv_half_smooth_time2;
 };
 
 double __visible
@@ -174,6 +171,15 @@ extruder_calc_position(struct stepper_kinematics *sk, struct move *m
                        , double move_time)
 {
     struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
+    move_time += es->time_offset;
+    while (unlikely(move_time < 0.)) {
+        m = list_prev_entry(m, node);
+        move_time += m->move_t;
+    }
+    while (unlikely(move_time >= m->move_t)) {
+        move_time -= m->move_t;
+        m = list_next_entry(m, node);
+    }
     double hst = es->half_smooth_time;
     int i;
     struct coord e_pos;
@@ -191,16 +197,29 @@ extruder_calc_position(struct stepper_kinematics *sk, struct move *m
     return e_pos.x + e_pos.y + e_pos.z;
 }
 
+static void
+extruder_note_generation_time(struct extruder_stepper *es)
+{
+    double pre_active = 0., post_active = 0.;
+    pre_active += es->half_smooth_time + es->time_offset;
+    if (pre_active < 0.) pre_active = 0.;
+    post_active += es->half_smooth_time - es->time_offset;
+    if (post_active < 0.) post_active = 0.;
+    es->sk.gen_steps_pre_active = pre_active;
+    es->sk.gen_steps_post_active = post_active;
+}
+
 void __visible
 extruder_set_pressure_advance(struct stepper_kinematics *sk
-                              , int n_params, double params[]
+                              , double pressure_advance, double smooth_time
                               , double time_offset)
 {
     struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
+    double hst = smooth_time * .5;
+    es->half_smooth_time = hst;
     es->time_offset = time_offset;
-    memset(&es->pa_params, 0, sizeof(es->pa_params));
     extruder_note_generation_time(es);
-    if (n_params < 0 || n_params > ARRAY_SIZE(es->pa_params.params))
+    if (! hst)
         return;
     memcpy(&es->pa_params, params, n_params * sizeof(params[0]));
 }
