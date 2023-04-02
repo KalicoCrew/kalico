@@ -293,10 +293,10 @@ class ExtruderStepper:
             return
         extruder = self.printer.lookup_object(extruder_name, None)
         if extruder is None or not isinstance(extruder, PrinterExtruder):
-            raise self.printer.command_error(
-                "'%s' is not a valid extruder." % (extruder_name,)
-            )
-        extruder.link_extruder_stepper(self)
+            raise self.printer.command_error("'%s' is not a valid extruder."
+                                             % (extruder_name,))
+        self.stepper.set_position(extruder.last_position)
+        self.stepper.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
         self.extruder = extruder
 
@@ -448,7 +448,7 @@ class PrinterExtruder:
     def __init__(self, config, extruder_num):
         self.printer = config.get_printer()
         self.name = config.get_name()
-        self.last_position = [0.0, 0.0, 0.0]
+        self.last_position = [0., 0., 0.]
         # Setup hotend heater
         shared_heater = config.get("shared_heater", None)
         pheaters = self.printer.load_object(config, "heaters")
@@ -608,27 +608,15 @@ class PrinterExtruder:
             extr_r = [math.copysign(r * r, axis_r) for r in move.axes_r[:3]]
         else:
             # Extrude-only move, do not apply pressure advance
-            extr_r = [0.0, 0.0, axis_r]
-        self.trapq_append(
-            self.trapq,
-            print_time,
-            move.accel_t,
-            move.cruise_t,
-            move.decel_t,
-            extr_pos[0],
-            extr_pos[1],
-            extr_pos[2],
-            extr_r[0],
-            extr_r[1],
-            extr_r[2],
-            start_v,
-            cruise_v,
-            accel,
-        )
+            extr_r = [0., 0., axis_r]
+        self.trapq_append(self.trapq, print_time,
+                          move.accel_t, move.cruise_t, move.decel_t,
+                          extr_pos[0], extr_pos[1], extr_pos[2],
+                          extr_r[0], extr_r[1], extr_r[2],
+                          start_v, cruise_v, accel)
         extr_d = abs(move.axes_d[3])
         for i in range(3):
             self.last_position[i] += extr_d * extr_r[i]
-
     def find_past_position(self, print_time):
         if not self.extruder_steppers:
             return 0.0
