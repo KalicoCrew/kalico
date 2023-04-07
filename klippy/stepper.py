@@ -21,17 +21,11 @@ MIN_BOTH_EDGE_DURATION = 0.000000200
 
 # Interface to low-level mcu and chelper code
 class MCU_stepper:
-    def __init__(
-        self,
-        name,
-        step_pin_params,
-        dir_pin_params,
-        rotation_dist,
-        steps_per_rotation,
-        step_pulse_duration=None,
-        units_in_radians=False,
-    ):
+    def __init__(self, name, high_precision_steps, step_pin_params,
+                 dir_pin_params, rotation_dist, steps_per_rotation,
+                 step_pulse_duration=None, units_in_radians=False):
         self._name = name
+        self._high_precision_steps = high_precision_steps
         self._rotation_dist = rotation_dist
         self._steps_per_rotation = steps_per_rotation
         self._step_pulse_duration = step_pulse_duration
@@ -53,9 +47,12 @@ class MCU_stepper:
         self._reset_cmd_tag = self._get_position_cmd = None
         self._active_callbacks = []
         ffi_main, ffi_lib = chelper.get_ffi()
-        self._stepqueue = ffi_main.gc(
-            ffi_lib.stepcompress_alloc(oid), ffi_lib.stepcompress_free
-        )
+        if high_precision_steps:
+            self._stepqueue = ffi_main.gc(ffi_lib.stepcompress_hp_alloc(oid),
+                                          ffi_lib.stepcompress_free)
+        else:
+            self._stepqueue = ffi_main.gc(ffi_lib.stepcompress_alloc(oid),
+                                          ffi_lib.stepcompress_free)
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._mcu.register_stepqueue(self._stepqueue)
         self._stepper_kinematics = None
@@ -115,21 +112,18 @@ class MCU_stepper:
         step_pulse_ticks = self._mcu.seconds_to_clock(self._step_pulse_duration)
         self._mcu.add_config_cmd(
             "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
-            " step_pulse_ticks=%u"
-            % (
-                self._oid,
-                self._step_pin,
-                self._dir_pin,
-                invert_step,
-                step_pulse_ticks,
-            )
-        )
-        self._mcu.add_config_cmd(
-            "reset_step_clock oid=%d clock=0" % (self._oid,), on_restart=True
-        )
-        step_cmd_tag = self._mcu.lookup_command(
-            "queue_step oid=%c interval=%u count=%hu add=%hi"
-        ).get_command_tag()
+            " step_pulse_ticks=%u" % (self._oid, self._step_pin, self._dir_pin,
+                                      invert_step, step_pulse_ticks))
+        self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
+                                 % (self._oid,), on_restart=True)
+        if self._high_precision_steps:
+            step_cmd_tag = self._mcu.lookup_command(
+                "queue_step_hp oid=%c interval=%u count=%hu "
+                "add=%hi add2=%hi shift=%hi").get_command_tag()
+        else:
+            step_cmd_tag = self._mcu.lookup_command(
+                "queue_step oid=%c interval=%u count=%hu "
+                "add=%hi").get_command_tag()
         dir_cmd_tag = self._mcu.lookup_command(
             "set_next_step_dir oid=%c dir=%c"
         ).get_command_tag()
@@ -313,20 +307,13 @@ def PrinterStepper(config, units_in_radians=False):
     dir_pin = config.get("dir_pin")
     dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
     rotation_dist, steps_per_rotation = parse_step_distance(
-        config, units_in_radians, True
-    )
-    step_pulse_duration = config.getfloat(
-        "step_pulse_duration", None, minval=0.0, maxval=0.001
-    )
-    mcu_stepper = MCU_stepper(
-        name,
-        step_pin_params,
-        dir_pin_params,
-        rotation_dist,
-        steps_per_rotation,
-        step_pulse_duration,
-        units_in_radians,
-    )
+        config, units_in_radians, True)
+    step_pulse_duration = config.getfloat('step_pulse_duration', None,
+                                          minval=0., maxval=.001)
+    high_precision_steps = config.getboolean('high_precision_steps', False)
+    mcu_stepper = MCU_stepper(name, high_precision_steps, step_pin_params,
+                              dir_pin_params, rotation_dist, steps_per_rotation,
+                              step_pulse_duration, units_in_radians)
     # Register with helper modules
     for mname in ["stepper_enable", "force_move", "motion_report"]:
         m = printer.load_object(config, mname)
