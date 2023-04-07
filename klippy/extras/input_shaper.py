@@ -88,71 +88,13 @@ class CustomInputShaperParams:
 
     def __init__(self, axis, config):
         self.axis = axis
-        self.n, self.A, self.T = 0, [], []
-        if config is not None:
-            shaper_a_str = config.get("shaper_a_" + axis)
-            shaper_t_str = config.get("shaper_t_" + axis)
-            self.n, self.A, self.T = self._parse_custom_shaper(
-                shaper_a_str, shaper_t_str, config.error
-            )
-
-    def get_type(self):
-        return self.SHAPER_TYPE
-
+        self.params = InputShaperParams(axis, config)
+        self.n, self.A, self.T = self.params.get_shaper()
+        self.saved = None
+    def get_name(self):
+        return 'shaper_' + self.axis
     def get_axis(self):
         return self.axis
-
-    def update(self, shaper_type, gcmd):
-        if shaper_type != self.SHAPER_TYPE:
-            raise gcmd.error("Unsupported shaper type: %s" % (shaper_type,))
-        axis = self.axis.upper()
-        shaper_a_str = gcmd.get("SHAPER_A_" + axis, None)
-        shaper_t_str = gcmd.get("SHAPER_T_" + axis, None)
-        if (shaper_a_str is None) != (shaper_t_str is None):
-            raise gcmd.error(
-                "Both SHAPER_A_%s and SHAPER_T_%s parameters"
-                " must be provided" % (axis, axis)
-            )
-        if shaper_a_str is not None:
-            self.n, self.A, self.T = self._parse_custom_shaper(
-                shaper_a_str, shaper_t_str, gcmd.error
-            )
-
-    def _parse_custom_shaper(self, custom_a_str, custom_t_str, parse_error):
-        A = parse_float_list(custom_a_str)
-        if A is None:
-            raise parse_error("Invalid shaper A string: '%s'" % (custom_a_str,))
-        if min([abs(a) for a in A]) < 0.001:
-            raise parse_error("All shaper A coefficients must be non-zero")
-        if sum(A) < 0.001:
-            raise parse_error(
-                "Shaper A parameter must sum up to a positive number"
-            )
-        T = parse_float_list(custom_t_str)
-        if T is None:
-            raise parse_error("Invalid shaper T string: '%s'" % (custom_t_str,))
-        if T != sorted(T):
-            raise parse_error("Shaper T parameter is not ordered: %s" % (T,))
-        if len(A) != len(T):
-            raise parse_error(
-                "Shaper A and T parameters must have the same length:"
-                " %d vs %d"
-                % (
-                    len(A),
-                    len(T),
-                )
-            )
-        dur = T[-1] - T[0]
-        if len(T) > 1 and dur < 0.001:
-            raise parse_error(
-                "Shaper duration is too small (%.6f sec)" % (dur,)
-            )
-        if dur > 0.2:
-            raise parse_error(
-                "Shaper duration is too large (%.6f sec)" % (dur,)
-            )
-        return len(A), A, T
-
     def get_shaper(self):
         return self.n, self.A, self.T
 
@@ -191,8 +133,6 @@ class AxisInputShaper:
     def update(self, shaper_type, gcmd):
         self.params.update(shaper_type, gcmd)
         self.n, self.A, self.T = self.params.get_shaper()
-        self.t_offs = shaper_defs.get_shaper_offset(self.A, self.T)
-
     def update_stepper_kinematics(self, sk):
         ffi_main, ffi_lib = chelper.get_ffi()
         axis = self.get_axis().encode()
@@ -208,45 +148,15 @@ class AxisInputShaper:
                 sk, axis, self.n, self.A, self.T
             )
         return success
-
-    def update_extruder_kinematics(self, sk, exact_mode):
+    def update_extruder_kinematics(self, sk):
         ffi_main, ffi_lib = chelper.get_ffi()
-        axis = self.get_axis().encode()
-        if not self.is_extruder_smoothing(exact_mode):
-            # Make sure to disable any active input smoothing
-            coeffs, smooth_time = [], 0.0
-            success = (
-                ffi_lib.extruder_set_smoothing_params(
-                    sk, axis, len(coeffs), coeffs, smooth_time, 0.0
-                )
-                == 0
-            )
-            success = (
-                ffi_lib.extruder_set_shaper_params(
-                    sk, axis, self.n, self.A, self.T
-                )
-                == 0
-            )
-        else:
-            shaper_type = self.get_type()
-            extr_smoother_func = shaper_defs.EXTRUDER_SMOOTHERS.get(
-                shaper_type, shaper_defs.EXTRUDER_SMOOTHERS["default"]
-            )
-            C_e, t_sm = extr_smoother_func(
-                self.T[-1] - self.T[0], normalize_coeffs=False
-            )
-            smoother_offset = self.t_offs - 0.5 * (self.T[0] + self.T[-1])
-            success = (
-                ffi_lib.extruder_set_smoothing_params(
-                    sk, axis, len(C_e), C_e, t_sm, smoother_offset
-                )
-                == 0
-            )
+        success = ffi_lib.extruder_set_shaper_params(
+                sk, self.axis.encode(), self.n, self.A, self.T) == 0
         if not success:
             self.disable_shaping()
-            ffi_lib.extruder_set_shaper_params(sk, axis, self.n, self.A, self.T)
+            ffi_lib.extruder_set_shaper_params(
+                    sk, self.axis.encode(), self.n, self.A, self.T)
         return success
-
     def disable_shaping(self):
         was_enabled = False
         if self.saved is None and self.n:
@@ -255,7 +165,6 @@ class AxisInputShaper:
         A, T = shaper_defs.get_none_shaper()
         self.n, self.A, self.T = len(A), A, T
         return was_enabled
-
     def enable_shaping(self):
         if self.saved is None:
             # Input shaper was not disabled
@@ -263,7 +172,6 @@ class AxisInputShaper:
         self.n, self.A, self.T = self.saved
         self.saved = None
         return True
-
     def report(self, gcmd):
         info = " ".join(
             [
@@ -534,33 +442,22 @@ class InputShaper:
         self.printer.register_event_handler("klippy:connect", self.connect)
         self.toolhead = None
         self.extruders = []
-        self.exact_mode = 0
-        self.config_extruder_names = config.getlist("enabled_extruders", [])
-        self.shaper_factory = ShaperFactory()
-        self.shapers = [
-            self.shaper_factory.create_shaper("x", config),
-            self.shaper_factory.create_shaper("y", config),
-        ]
+        self.config_extruder_names = config.getlist('enabled_extruders', [])
+        self.shapers = [AxisInputShaper('x', config),
+                        AxisInputShaper('y', config)]
         self.input_shaper_stepper_kinematics = []
         self.orig_stepper_kinematics = []
         # Register gcode commands
-        gcode = self.printer.lookup_object("gcode")
-        gcode.register_command(
-            "SET_INPUT_SHAPER",
-            self.cmd_SET_INPUT_SHAPER,
-            desc=self.cmd_SET_INPUT_SHAPER_help,
-        )
-        gcode.register_command(
-            "ENABLE_INPUT_SHAPER",
-            self.cmd_ENABLE_INPUT_SHAPER,
-            desc=self.cmd_ENABLE_INPUT_SHAPER_help,
-        )
-        gcode.register_command(
-            "DISABLE_INPUT_SHAPER",
-            self.cmd_DISABLE_INPUT_SHAPER,
-            desc=self.cmd_DISABLE_INPUT_SHAPER_help,
-        )
-
+        gcode = self.printer.lookup_object('gcode')
+        gcode.register_command("SET_INPUT_SHAPER",
+                               self.cmd_SET_INPUT_SHAPER,
+                               desc=self.cmd_SET_INPUT_SHAPER_help)
+        gcode.register_command("ENABLE_INPUT_SHAPER",
+                               self.cmd_ENABLE_INPUT_SHAPER,
+                               desc=self.cmd_ENABLE_INPUT_SHAPER_help)
+        gcode.register_command("DISABLE_INPUT_SHAPER",
+                               self.cmd_DISABLE_INPUT_SHAPER,
+                               desc=self.cmd_DISABLE_INPUT_SHAPER_help)
     def get_shapers(self):
         return self.shapers
 
@@ -568,10 +465,9 @@ class InputShaper:
         self.toolhead = self.printer.lookup_object("toolhead")
         for en in self.config_extruder_names:
             extruder = self.printer.lookup_object(en)
-            if not hasattr(extruder, "get_extruder_steppers"):
+            if not hasattr(extruder, 'get_extruder_steppers'):
                 raise self.printer.config_error(
-                    "Invalid extruder '%s' in [input_shaper]" % (en,)
-                )
+                        "Invalid extruder '%s' in [input_shaper]" % (en,))
             self.extruders.append(extruder)
         # Configure initial values
         self._update_input_shaping(error=self.printer.config_error)
@@ -614,14 +510,11 @@ class InputShaper:
                     failed_shapers.append(shaper)
             new_delay = ffi_lib.input_shaper_get_step_gen_window(is_sk)
             if old_delay != new_delay:
-                self.toolhead.note_step_generation_scan_time(
-                    new_delay, old_delay
-                )
+                self.toolhead.note_step_generation_scan_time(new_delay,
+                                                             old_delay)
         for e in self.extruders:
             for es in e.get_extruder_steppers():
-                failed_shapers.extend(
-                    es.update_input_shaping(self.shapers, self.exact_mode)
-                )
+                failed_shapers.extend(es.update_input_shaping(self.shapers))
         if failed_shapers:
             error = error or self.printer.command_error
             raise error(
@@ -650,6 +543,75 @@ class InputShaper:
             self._update_input_shaping()
         for shaper in self.shapers:
             shaper.report(gcmd)
+    cmd_ENABLE_INPUT_SHAPER_help = "Enable input shaper for given objects"
+    def cmd_ENABLE_INPUT_SHAPER(self, gcmd):
+        self.toolhead.flush_step_generation()
+        axes = gcmd.get('AXIS', '')
+        msg = ''
+        for axis_str in axes.split(','):
+            axis = axis_str.strip().lower()
+            if not axis:
+                continue
+            shapers = [s for s in self.shapers if s.get_axis() == axis]
+            if not shapers:
+                raise gcmd.error("Invalid AXIS='%s'" % (axis_str,))
+            for s in shapers:
+                if s.enable_shaping():
+                    msg += "Enabled input shaper for AXIS='%s'\n" % (axis_str,)
+                else:
+                    msg += ("Cannot enable input shaper for AXIS='%s': "
+                            "was not disabled\n" % (axis_str,))
+        extruders = gcmd.get('EXTRUDER', '')
+        for en in extruders.split(','):
+            extruder_name = en.strip()
+            if not extruder_name:
+                continue
+            extruder = self.printer.lookup_object(extruder_name)
+            if not hasattr(extruder, 'get_extruder_steppers'):
+                raise gcmd.error("Invalid EXTRUDER='%s'" % (en,))
+            if extruder not in self.extruders:
+                self.extruders.append(extruder)
+                msg += "Enabled input shaper for '%s'\n" % (en,)
+            else:
+                msg += "Input shaper already enabled for '%s'\n" % (en,)
+        self._update_input_shaping()
+        gcmd.respond_info(msg)
+    cmd_DISABLE_INPUT_SHAPER_help = "Disable input shaper for given objects"
+    def cmd_DISABLE_INPUT_SHAPER(self, gcmd):
+        self.toolhead.flush_step_generation()
+        axes = gcmd.get('AXIS', '')
+        msg = ''
+        for axis_str in axes.split(','):
+            axis = axis_str.strip().lower()
+            if not axis:
+                continue
+            shapers = [s for s in self.shapers if s.get_axis() == axis]
+            if not shapers:
+                raise gcmd.error("Invalid AXIS='%s'" % (axis_str,))
+            for s in shapers:
+                if s.disable_shaping():
+                    msg += "Disabled input shaper for AXIS='%s'\n" % (axis_str,)
+                else:
+                    msg += ("Cannot disable input shaper for AXIS='%s': not "
+                            "enabled or was already disabled\n" % (axis_str,))
+        extruders = gcmd.get('EXTRUDER', '')
+        for en in extruders.split(','):
+            extruder_name = en.strip()
+            if not extruder_name:
+                continue
+            extruder = self.printer.lookup_object(extruder_name)
+            if extruder in self.extruders:
+                to_re_enable = [s for s in self.shapers if s.disable_shaping()]
+                for es in extruder.get_extruder_steppers():
+                    es.update_input_shaping(self.shapers)
+                for shaper in to_re_enable:
+                    shaper.enable_shaping()
+                self.extruders.remove(extruder)
+                msg += "Disabled input shaper for '%s'\n" % (en,)
+            else:
+                msg += "Input shaper not enabled for '%s'\n" % (en,)
+        self._update_input_shaping()
+        gcmd.respond_info(msg)
 
     cmd_ENABLE_INPUT_SHAPER_help = "Enable input shaper for given objects"
 
