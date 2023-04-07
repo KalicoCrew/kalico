@@ -21,27 +21,11 @@ COMPILE_ARGS = (
 SSE_FLAGS = "-mfpmath=sse -msse2"
 NEON_FLAGS = "-mfpu=neon"
 SOURCE_FILES = [
-    "pyhelper.c",
-    "serialqueue.c",
-    "stepcompress.c",
-    "stepcompress_hp.c",
-    "itersolve.c",
-    "trapq.c",
-    "pollreactor.c",
-    "msgblock.c",
-    "trdispatch.c",
-    "kin_cartesian.c",
-    "kin_corexy.c",
-    "kin_corexz.c",
-    "kin_delta.c",
-    "kin_deltesian.c",
-    "kin_polar.c",
-    "kin_rotary_delta.c",
-    "kin_winch.c",
-    "kin_extruder.c",
-    "kin_shaper.c",
-    "kin_idex.c",
-    "integrate.c",
+    'pyhelper.c', 'serialqueue.c', 'stepcompress.c', 'stepcompress_hp.c',
+    'itersolve.c', 'trapq.c', 'pollreactor.c', 'msgblock.c', 'trdispatch.c',
+    'kin_cartesian.c', 'kin_corexy.c', 'kin_corexz.c', 'kin_delta.c',
+    'kin_deltesian.c', 'kin_polar.c', 'kin_rotary_delta.c', 'kin_winch.c',
+    'kin_extruder.c', 'kin_shaper.c', 'kin_idex.c',
 ]
 DEST_LIB = "c_helper.so"
 OTHER_FILES = [
