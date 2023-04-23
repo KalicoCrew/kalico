@@ -5,9 +5,8 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
-#include "compiler.h" // unlikely
+#include "compiler.h"
 #include "integrate.h"
-#include "trapq.h" // struct move
 
 #include <string.h>
 
@@ -20,50 +19,53 @@ static double coeffs[] = {
     1./11., 1./12., 1./13., 1./14., 1./15., 1./16., 1./17., 1./18., 1./19.,
 };
 
-inline smoother_antiderivatives
-calc_antiderivatives(const struct smoother* sm, double t)
+inline static double
+integrate_nth_order(int n, const double c[], double start, double end
+                    , double a0, double a1, double a2)
 {
-    int n = sm->n, i;
-    double it0 = (sm->c0[0] * t + sm->c0[1]) * t;
-    double it1 = (sm->c1[0] * t + sm->c1[1]) * t;
-    double it2 = (sm->c2[0] * t + sm->c2[1]) * t;
+    double u = start + end;
+    double v = u * .5;
+    double end_n = end;
+    // First 2 iterations with i == 0 and 1
+    double sum0 = c[0] + c[1] * v, sum1 = c[0] * v, sum2 = 0.;
+    int i;
     for (i = 2; i < n; ++i) {
-        it0 = (it0 + sm->c0[i]) * t;
-        it1 = (it1 + sm->c1[i]) * t;
-        it2 = (it2 + sm->c2[i]) * t;
+        end_n *= end;
+        u = u * start + end_n;
+        v = u * coeffs[i];
+        sum2 += c[i-2] * v;
+        sum1 += c[i-1] * v;
+        sum0 += c[i] * v;
     }
-    it1 *= t;
-    it2 *= t * t;
-    return (smoother_antiderivatives) {
-        .it0 = it0, .it1 = it1, .it2 = it2 };
+    // Remainging 2 iterations with i == n and n+1
+    end_n *= end;
+    u = u * start + end_n;
+    v = u * coeffs[n];
+    sum2 += c[n-2] * v;
+    sum1 += c[n-1] * v;
+
+    end_n *= end;
+    u = u * start + end_n;
+    v = u * coeffs[n+1];
+    sum2 += c[n-1] * v;
+
+    double delta_t = end - start;
+    double avg_val = a0 * sum0 + a1 * sum1 + a2 * sum2;
+    return avg_val * delta_t;
 }
 
-inline smoother_antiderivatives
-diff_antiderivatives(const smoother_antiderivatives* ad1
-                     , const smoother_antiderivatives* ad2)
-{
-    return (smoother_antiderivatives) {
-        .it0 = ad2->it0 - ad1->it0,
-        .it1 = ad2->it1 - ad1->it1,
-        .it2 = ad2->it2 - ad1->it2 };
-}
-
+// Integrate (pos + start_v*t + half_accel*t^2) with smoothing weight function
+// w(t0 - t) over the range [start; end]
 inline double
-integrate_move(const struct move* m, int axis, double base, double t0
-               , const smoother_antiderivatives* s
-               , double* smooth_velocity)
+integrate_weighted(const struct smoother *sm, double pos
+                   , double start_v, double half_accel
+                   , double start, double end, double t0)
 {
-    double axis_r = m->axes_r.axis[axis - 'x'];
-    double start_v = m->start_v * axis_r;
-    double half_accel = m->half_accel * axis_r;
     // Substitute the integration variable tnew = t0 - t to simplify integrals
-    double accel = 2. * half_accel;
-    base += (half_accel * t0 + start_v) * t0;
-    start_v += accel * t0;
-    double smooth_pos = base * s->it0 - start_v * s->it1 + half_accel * s->it2;
-    if (smooth_velocity)
-        *smooth_velocity = start_v * s->it0 - accel * s->it1;
-    return smooth_pos;
+    pos += (half_accel * t0 + start_v) * t0;
+    start_v = -(start_v + 2. * half_accel * t0);
+    return integrate_nth_order(sm->n, sm->c, t0 - end, t0 - start
+                               , pos, start_v, half_accel);
 }
 
 /****************************************************************
@@ -73,34 +75,23 @@ integrate_move(const struct move* m, int axis, double base, double t0
 int
 init_smoother(int n, const double a[], double t_sm, struct smoother* sm)
 {
-    if ((t_sm && n < 2) || n > ARRAY_SIZE(sm->c0))
+    if (n < 0 || n > ARRAY_SIZE(sm->c))
         return -1;
-    memset(sm, 0, sizeof(*sm));
+    memset(sm->c, 0, sizeof(sm->c));
     sm->n = n;
     sm->hst = 0.5 * t_sm;
     if (!t_sm) return 0;
     double inv_t_sm = 1. / t_sm;
     double inv_t_sm_n = inv_t_sm;
-    int i, symm = n & 1;
+    int i;
     for (i = 0; i < n; ++i) {
-        if ((i & 1) && a[i]) symm = 0;
-        double c = a[i] * inv_t_sm_n;
-        sm->c0[n-1-i] = c * coeffs[i];
-        sm->c1[n-1-i] = c * coeffs[i+1];
-        sm->c2[n-1-i] = c * coeffs[i+2];
+        sm->c[i] = a[i] * inv_t_sm_n;
         inv_t_sm_n *= inv_t_sm;
     }
-    sm->symm = symm;
-    double inv_norm = 1. / (calc_antiderivatives(sm, sm->hst).it0
-                            - calc_antiderivatives(sm, -sm->hst).it0);
-    for (i = 0; i < n; ++i) {
-        sm->c0[i] *= inv_norm;
-        sm->c1[i] *= inv_norm;
-        sm->c2[i] *= inv_norm;
-    }
-    sm->p_hst = calc_antiderivatives(sm, sm->hst);
-    sm->m_hst = calc_antiderivatives(sm, -sm->hst);
-    sm->pm_diff = diff_antiderivatives(&sm->m_hst, &sm->p_hst);
-    sm->t_offs = sm->pm_diff.it1;
+    double inv_norm = 1. / integrate_nth_order(n, sm->c, -sm->hst, sm->hst
+                                               , 1., 0., 0.);
+    for (i = 0; i < n; ++i)
+        sm->c[i] *= inv_norm;
+    sm->t_offs = integrate_nth_order(n, sm->c, -sm->hst, sm->hst, 0., 1., 0.);
     return 0;
 }
