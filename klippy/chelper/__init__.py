@@ -12,12 +12,10 @@ import cffi
 ######################################################################
 
 GCC_CMD = "gcc"
-COMPILE_ARGS = (
-    "-Wall -g -O3 -shared -fPIC"
-    " -flto -fwhole-program -fno-use-linker-plugin"
-    " -march=native -mcpu=native -mtune=native"
-    " -o %s %s"
-)
+COMPILE_ARGS = ("-Wall -g -O3 -shared -fPIC"
+                " -flto -fwhole-program -fno-use-linker-plugin"
+                " -march=native -mcpu=native -mtune=native"
+                " -o %s %s")
 SSE_FLAGS = "-mfpmath=sse -msse2"
 NEON_FLAGS = "-mfpu=neon"
 SOURCE_FILES = [
