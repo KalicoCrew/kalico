@@ -107,12 +107,10 @@ class PATest:
     def handle_shutdown(self):
         # Nothing to do, no resources to free
         pass
-
     def get_stats(self, eventtime):
         if not self.is_active():
-            return False, ""
-        return True, "Printing PA tower"
-
+            return False, ''
+        return True, 'Printing PA tower'
     def get_status(self, eventtime):
         return {
             "file_path": self.get_name(),
