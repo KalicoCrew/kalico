@@ -14,12 +14,16 @@ serve the 3D printing community better. Follow them on
 [Facebook](https://www.facebook.com/BIGTREETECH) or
 [Twitter](https://twitter.com/BigTreeTech).
 
+## Sponsors
+
+[<img src="./img/sponsors/obico-light-horizontal.png" width="200" />](https://obico.io/klipper.html?source=klipper_sponsor)
+
 ## Klipper Developers
 
 ### Kevin O'Connor
 
-Kevin is the original author and current maintainer of Klipper.  Kevin
-has a Patreon page at:
+Kevin is the original author and current maintainer of Klipper. Donate
+at: [https://ko-fi.com/koconnor](https://ko-fi.com/koconnor) or
 [https://www.patreon.com/koconnor](https://www.patreon.com/koconnor)
 
 ### Eric Callahan

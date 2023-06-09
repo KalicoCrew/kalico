@@ -13,6 +13,8 @@ class SaveVariables:
         self.filename = os.path.expanduser(config.get("filename"))
         self.allVariables = {}
         try:
+            if not os.path.exists(self.filename):
+                open(self.filename, "w").close()
             self.loadVariables()
         except self.printer.command_error as e:
             raise config.error(str(e))
@@ -61,7 +63,6 @@ class SaveVariables:
             msg = "Unable to save variable"
             logging.exception(msg)
             raise gcmd.error(msg)
-        gcmd.respond_info("Variable Saved")
         self.loadVariables()
 
     def get_status(self, eventtime):
