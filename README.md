@@ -74,6 +74,8 @@ If you're feeling adventurous, take a peek at the extra features in the bleeding
 
 - [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
+- [core: non critical mcus](https://github.com/DangerKlippers/danger-klipper/pull/42)
+
 ## Switch to Danger Klipper
 
 > [!NOTE]
