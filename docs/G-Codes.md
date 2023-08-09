@@ -509,15 +509,18 @@ will be disabled, if set to 1 it is enabled.
 
 The following standard G-Code commands are available when the
 [firmware_retraction config section](Config_Reference.md#firmware_retraction)
-is enabled. These commands allow you to utilize the firmware
-retraction feature available in many slicers, to reduce stringing
-during non-extrusion moves from one part of the print to another.
-Appropriately configuring pressure advance reduces the length of
-retraction required.
-- `G10`: Retracts the extruder using the currently configured
-  parameters.
-- `G11`: Unretracts the extruder using the currently configured
-  parameters.
+is enabled. These commands allow utilizing the firmware
+retraction feature available in many slicers. Retraction is a strategy to
+reduce stringing during travel moves (non-extrusion) from one part of the
+print to another. Note that pressure advance should be properly configured
+before retraction parameters are tuned to ensure optimal results.
+- `G10`: Retracts the filament using the currently configured
+  parameters. If z_hop_height is set to a value greater zero,
+  besides retracting the filament, the nozzle is lifted by set value.
+- `G11`: Unretracts the filament using the currently configured
+  parameters. If z_hop_height is set to a value greater zero,
+  besides unretracting the filament, the nozzle is lowered back on the print
+  with a vertical movement.
 
 The following additional commands are also available.
 
