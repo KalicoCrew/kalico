@@ -1035,7 +1035,7 @@ class MenuManager:
     def lookup_children(self, ns):
         if ns in self.children:
             return list(self.children[ns])
-        return list()
+        return []
 
     def load_config(self, *args):
         cfg = None
