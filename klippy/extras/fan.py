@@ -18,8 +18,27 @@ class Fan:
             "kick_start_time", 0.1, minval=0.0
         )
         self.min_power = config.getfloat(
-            "min_power", default=0.0, minval=0.0, maxval=1.0
+            "min_power", default=None, minval=0.0, maxval=1.0
         )
+        self.off_below = config.getfloat(
+            "off_below", default=None, minval=0.0, maxval=1.0
+        )
+
+        # handles switchover of variable
+        # if new var is not set, and old var is, set new var to old var
+        # if new var is not set and neither is old var, set new var to default of 0.0
+        # if new var is set, use new var
+        if self.min_power is not None and self.off_below is not None:
+            raise config.error(
+                "min_power and off_below are both set. Remove one!"
+            )
+        if self.min_power is None:
+            if self.off_below is None:
+                # both unset, set to 0.0
+                self.min_power = 0.0
+            else:
+                self.min_power = self.off_below
+
         self.max_power = config.getfloat(
             "max_power", 1.0, above=0.0, maxval=1.0
         )
