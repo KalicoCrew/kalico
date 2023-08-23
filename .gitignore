@@ -6,3 +6,5 @@ out
 klippy/.version
 .history/
 .DS_Store
+ci_build/
+ci_cache/
