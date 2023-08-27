@@ -6,6 +6,18 @@ Our goal is to support features and behavior that could be "risky" if used incor
 
 If I want my printer to light itself on fire, I should be able to make my printer light itself on fire.
 
+Features merged into the master branch:
+
+- [No Python2 tests; No PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
+
+- [Normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
+
+- [Velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
+
+- [Jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
+
+- [Dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
+
 "Dangerous Klipper for dangerous users"
 
 [![Klipper](docs/img/klipper-logo-small.png)](https://DangerKlippers.github.io/danger-klipper/)
