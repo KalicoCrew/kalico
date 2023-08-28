@@ -53,6 +53,10 @@ class Printer:
     command_error = gcode.CommandError
 
     def __init__(self, main_reactor, bglogger, start_args):
+        if sys.version_info[0] < 3:
+            logging.error("DangerKlipper requires Python 3")
+            sys.exit(1)
+
         self.bglogger = bglogger
         self.start_args = start_args
         self.reactor = main_reactor
