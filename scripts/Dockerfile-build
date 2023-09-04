@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -10,3 +10,5 @@ COPY . /klipper
 WORKDIR /klipper
 
 RUN ./scripts/ci-install.sh
+ENV PATH="/klipper/ci_build/python-env/bin:$PATH"
+RUN pip install -r ./scripts/requirements_dev.txt
