@@ -925,7 +925,7 @@ test.
 
 #### SET_HEATER_PID
 `SET_HEATER_PID HEATER=<config_name> KP=<kp> KI=<ki> KD=<kd>`: Will
-allow one to manually change PID parameters of heaters without a 
+allow one to manually change PID parameters of heaters without a
 reload of the firmware.
 
 ### [pause_resume]
@@ -1408,3 +1408,21 @@ command will probe the points specified in the config and then make independent
 adjustments to each Z stepper to compensate for tilt. See the PROBE command for
 details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
 value overrides the `horizontal_move_z` option specified in the config file.
+The follwing commands are availabe when the parameter "extra_points" is
+configured in the z_tilt_section:
+- `Z_TILT_CALIBRATE [AVGLEN=<value>]`: This command does multiple probe
+  runs similar to Z_TILT_ADJUST, but with the additional points given in
+  "extra_points". This leads to a more balanced bed adjustment in case the
+  bed is not perfectly flat. The command averages the error over multiple
+  runs and continues until the error does not decrease any further. It
+  calculates values for the z_offsets config parameter, which will in turn
+  be used by T_TILT_ADJUST to achieve the same accuracy without the extra
+  points.
+- `Z_TILT_AUTODETECT [AVGLEN=<value>] [DELTA=<value>]`: This command
+  determines the positions of the pivot points for each stepper motor.
+  It works silimar to Z_TILT_CALIBRATE, but it probes the bed with intential
+  small misalgnments of the steppers. The amount of misalignment can be
+  configured with the DELTA paramter. It iterates until the calculated
+  positions cannot be improved any further. This is can be lengthy procedure.
+IMPORTANT: For the Z_TILT_CALIBRATE and Z_TILT_AUTODETECT commands to work
+the numpy package has to be installed via ~/klippy-env/bin/pip install -v numpy.
