@@ -1,6 +1,6 @@
-# Klipper plugin for a selfcalibrating Z offset.
+# Klipper plugin for a self-calibrating Z offset.
 #
-# Copyright (C) 2021-2022  Titus Meyer <info@protoloft.org>
+# Copyright (C) 2021-2023  Titus Meyer <info@protoloft.org>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
@@ -14,12 +14,21 @@ class ZCalibrationHelper:
         self.z_homing = None
         self.last_state = False
         self.last_z_offset = 0.0
+        self.position_z_endstop = None
         self.config = config
         self.printer = config.get_printer()
         self.switch_offset = config.getfloat("switch_offset", 0.0, above=0.0)
-        self.max_deviation = config.getfloat("max_deviation", 1.0, above=0.0)
+        # max_deviation is deprecated
+        self.max_deviation = config.getfloat("max_deviation", None, above=0.0)
+        config.deprecate("max_deviation")
+        self.offset_margins = self._get_offset_margins(
+            "offset_margins", "-1.0,1.0"
+        )
         self.speed = config.getfloat("speed", 50.0, above=0.0)
+        # clearance is deprecated
         self.clearance = config.getfloat("clearance", None, above=0.0)
+        config.deprecate("clearance")
+        self.safe_z_height = config.getfloat("safe_z_height", None, above=0.0)
         self.samples = config.getint("samples", None, minval=1)
         self.tolerance = config.getfloat("samples_tolerance", None, above=0.0)
         self.retries = config.getint(
@@ -37,9 +46,11 @@ class ZCalibrationHelper:
         )
         self.position_min = config.getfloat("position_min", None)
         self.first_fast = config.getboolean("probing_first_fast", False)
-        self.nozzle_site = self._get_site("nozzle_xy_position", "probe_nozzle")
-        self.switch_site = self._get_site("switch_xy_position", "probe_switch")
-        self.bed_site = self._get_site("bed_xy_position", "probe_bed", True)
+        self.nozzle_site = self._get_xy("nozzle_xy_position", True)
+        self.switch_site = self._get_xy("switch_xy_position", True)
+        self.switch_xy_offsets = self._get_xy("switch_xy_offsets", True)
+        self.bed_site = self._get_xy("bed_xy_position", True)
+        self.wiggle_offsets = self._get_xy("wiggle_xy_offsets", True)
         gcode_macro = self.printer.load_object(config, "gcode_macro")
         self.start_gcode = gcode_macro.load_template(config, "start_gcode", "")
         self.switch_gcode = gcode_macro.load_template(
@@ -62,6 +73,11 @@ class ZCalibrationHelper:
             self.cmd_PROBE_Z_ACCURACY,
             desc=self.cmd_PROBE_Z_ACCURACY_help,
         )
+        self.gcode.register_command(
+            "CALCULATE_SWITCH_OFFSET",
+            self.cmd_CALCULATE_SWITCH_OFFSET,
+            desc=self.cmd_CALCULATE_SWITCH_OFFSET_help,
+        )
 
     def get_status(self, eventtime):
         return {
@@ -70,7 +86,7 @@ class ZCalibrationHelper:
         }
 
     def handle_connect(self):
-        # get z-endstop
+        # get z-endstop object
         for endstop, name in self.query_endstops.endstops:
             if name == "z":
                 # check for virtual endstops..
@@ -80,6 +96,33 @@ class ZCalibrationHelper:
                         " is not supported for %s" % (self.config.get_name())
                     )
                 self.z_endstop = EndstopWrapper(self.config, endstop)
+        # get z-endstop position from safe_z_home
+        if self.nozzle_site is None:
+            safe_z_home = self.printer.lookup_object(
+                "safe_z_home", default=None
+            )
+            if safe_z_home is None:
+                raise self.printer.config_error(
+                    "No nozzle position"
+                    " configured for %s" % (self.config.get_name())
+                )
+            self.nozzle_site = [
+                safe_z_home.home_x_pos,
+                safe_z_home.home_y_pos,
+                None,
+            ]
+        # check/calculate switch position by offsets
+        if self.switch_site is None:
+            if self.switch_xy_offsets is None:
+                raise self.printer.config_error(
+                    "No switch position"
+                    " configured for %s" % (self.config.get_name())
+                )
+            self.switch_site = [
+                self.nozzle_site[0] + self.switch_xy_offsets[0],
+                self.nozzle_site[1] + self.switch_xy_offsets[1],
+                None,
+            ]
         # get probing settings
         probe = self.printer.lookup_object("probe", default=None)
         if probe is None:
@@ -94,10 +137,13 @@ class ZCalibrationHelper:
             self.retries = probe.samples_retries
         if self.lift_speed is None:
             self.lift_speed = probe.lift_speed
-        if self.clearance is None:
-            self.clearance = probe.z_offset * 2
-        if self.clearance == 0:
+        # clearance is deprecated
+        if self.clearance is not None and self.clearance == 0:
             self.clearance = 20  # defaults to 20mm
+        if self.safe_z_height is None:
+            self.safe_z_height = probe.z_offset * 2
+        if self.safe_z_height < 3:
+            self.safe_z_height = 20  # defaults to 20mm
         if self.samples_result is None:
             self.samples_result = probe.samples_result
 
@@ -115,6 +161,7 @@ class ZCalibrationHelper:
                     self.retract_dist = rail.homing_retract_dist
                 if self.position_min is None:
                     self.position_min = rail.position_min
+                self.position_z_endstop = rail.position_endstop
 
     def _build_config(self):
         pass
@@ -129,19 +176,23 @@ class ZCalibrationHelper:
         site_attr = gcmd.get("BED_POSITION", None)
         if site_attr is not None:
             # set bed site from BED_POSITION parameter
-            self.bed_site = self._parse_site("BED_POSITION", site_attr)
-        elif self._get_site("bed_xy_position", "probe_bed", True) is not None:
+            self.bed_site = self._parse_xy("BED_POSITION", site_attr)
+        elif self._get_xy("bed_xy_position", True) is not None:
             # set bed site from configuration
-            self.bed_site = self._get_site(
-                "bed_xy_position", "probe_bed", False
-            )
+            self.bed_site = self._get_xy("bed_xy_position", False)
         else:
-            # else get the mesh's relative reference index point
-            # a round mesh/bed would not work here so far...
+            # else get the mesh's zero reference position
             try:
                 mesh = self.printer.lookup_object("bed_mesh", default=None)
-                rri = mesh.bmc.relative_reference_index
-                self.bed_site = mesh.bmc.points[rri]
+                if (
+                    hasattr(mesh.bmc, "zero_ref_pos")
+                    and mesh.bmc.zero_ref_pos is not None
+                ):
+                    self.bed_site = mesh.bmc.zero_ref_pos
+                else:
+                    # trying to read the deprecated rri
+                    rri = mesh.bmc.relative_reference_index
+                    self.bed_site = mesh.bmc.points[rri]
                 logging.debug(
                     "Z-CALIBRATION probe bed_x=%.3f bed_y=%.3f"
                     % (self.bed_site[0], self.bed_site[1])
@@ -150,7 +201,7 @@ class ZCalibrationHelper:
                 raise gcmd.error(
                     "Either use the BED_POSITION parameter,"
                     " configure a bed_xy_position or define"
-                    " a mesh with a relative_reference_index"
+                    " a mesh with a zero_reference_position"
                     " for %s" % (self.config.get_name())
                 )
         self._log_config()
@@ -172,9 +223,7 @@ class ZCalibrationHelper:
         )
         toolhead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
-        if pos[2] < self.clearance:
-            # no clearance, better to move up
-            self._move([None, None, pos[2] + self.clearance], lift_speed)
+        self._move_safe_z(pos, lift_speed)
         # move to z-endstop position
         self._move(list(self.nozzle_site), self.speed)
         pos = toolhead.get_position()
@@ -219,21 +268,41 @@ class ZCalibrationHelper:
             % (max_value, min_value, range_value, avg_value, median, sigma)
         )
 
-    def _get_site(self, name, legacy_prefix, optional=False):
-        legacy_x = self.config.getfloat("%s_x" % (legacy_prefix), -1.0)
-        legacy_y = self.config.getfloat("%s_y" % (legacy_prefix), -1.0)
-        if (
-            optional
-            and self.config.get(name, None) is None
-            and (legacy_x < 0 or legacy_y < 0)
-        ):
-            return None
-        if legacy_x >= 0 and legacy_y >= 0:
-            return [legacy_x, legacy_y, None]
-        else:
-            return self._parse_site(name, self.config.get(name))
+    cmd_CALCULATE_SWITCH_OFFSET_help = (
+        "Calculates a switch_offset based on" " the current z position"
+    )
 
-    def _parse_site(self, name, site):
+    def cmd_CALCULATE_SWITCH_OFFSET(self, gcmd):
+        if self.last_z_offset is None:
+            raise gcmd.error("Must run CALIBRATE_Z first")
+        toolhead = self.printer.lookup_object("toolhead")
+        pos = toolhead.get_position()
+        new_switch_offset = self.switch_offset - (pos[2] - self.last_z_offset)
+        if new_switch_offset > 0.0:
+            gcmd.respond_info(
+                "switch_offset=%.3f - (current_z=%.3f - z_offset=%.3f"
+                ") --> new switch_offset=%.3f"
+                % (
+                    self.switch_offset,
+                    pos[2],
+                    self.last_z_offset,
+                    new_switch_offset,
+                )
+            )
+        else:
+            gcmd.respond_info(
+                "The resulting switch offset is negative! Either"
+                " the nozzle is still too far away or something"
+                " else is wrong..."
+            )
+
+    def _get_xy(self, name, optional=False):
+        if optional and self.config.get(name, None) is None:
+            return None
+        else:
+            return self._parse_xy(name, self.config.get(name))
+
+    def _parse_xy(self, name, site):
         try:
             x_pos, y_pos = site.split(",")
             return [float(x_pos), float(y_pos), None]
@@ -242,7 +311,22 @@ class ZCalibrationHelper:
                 "Unable to parse %s in %s" % (name, self.config.get_name())
             )
 
-    def _probe(self, mcu_endstop, z_position, speed):
+    def _get_offset_margins(self, name, default):
+        try:
+            margins = self.config.get(name, default).split(",")
+            for i, val in enumerate(margins):
+                margins[i] = float(val)
+            if len(margins) == 1:
+                val = abs(margins[0])
+                margins[0] = -val
+                margins.append(val)
+            return margins
+        except:
+            raise self.config.error(
+                "Unable to parse %s in %s" % (name, self.config.get_name())
+            )
+
+    def _probe(self, mcu_endstop, z_position, speed, wiggle=False):
         toolhead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
         pos[2] = z_position
@@ -251,6 +335,16 @@ class ZCalibrationHelper:
         curpos = phoming.probing_move(mcu_endstop, pos, speed)
         # retract
         self._move([None, None, curpos[2] + self.retract_dist], self.lift_speed)
+        if wiggle and self.wiggle_offsets is not None:
+            self._move(
+                [
+                    curpos[0] + self.wiggle_offsets[0],
+                    curpos[1] + self.wiggle_offsets[1],
+                    None,
+                ],
+                self.speed,
+            )
+            self._move([curpos[0], curpos[1], None], self.speed)
         self.gcode.respond_info(
             "probe at %.3f,%.3f is z=%.6f" % (curpos[0], curpos[1], curpos[2])
         )
@@ -258,6 +352,17 @@ class ZCalibrationHelper:
 
     def _move(self, coord, speed):
         self.printer.lookup_object("toolhead").manual_move(coord, speed)
+
+    def _move_safe_z(self, pos, lift_speed):
+        # clearance is deprecated
+        if self.clearance is not None:
+            if pos[2] < self.clearance:
+                # no clearance, better to move up (relative)
+                self._move([None, None, pos[2] + self.clearance], lift_speed)
+        else:
+            if pos[2] < self.safe_z_height:
+                # no safe z position, better to move up (absolute)
+                self._move([None, None, self.safe_z_height], lift_speed)
 
     def _calc_mean(self, positions):
         count = float(len(positions))
@@ -274,24 +379,27 @@ class ZCalibrationHelper:
 
     def _log_config(self):
         logging.debug(
-            "Z-CALIBRATION: switch_offset=%.3f, max_deviation=%.3f,"
-            " speed=%.3f, samples=%i, tolerance=%.3f, retries=%i,"
-            " samples_result=%s, lift_speed=%.3f, clearance=%.3f,"
-            " probing_speed=%.3f, second_speed=%.3f,"
-            " retract_dist=%.3f, position_min=%.3f,"
-            " probe_nozzle_x=%.3f, probe_nozzle_y=%.3f,"
-            " probe_switch_x=%.3f, probe_switch_y=%.3f,"
-            " probe_bed_x=%.3f, probe_bed_y=%.3f"
+            "Z-CALIBRATION: switch_offset=%.3f,"
+            " offset_margins=%.3f,%.3f, speed=%.3f,"
+            " samples=%i, tolerance=%.3f, retries=%i,"
+            " samples_result=%s, lift_speed=%.3f,"
+            " safe_z_height=%.3f, probing_speed=%.3f,"
+            " second_speed=%.3f, retract_dist=%.3f,"
+            " position_min=%.3f, probe_nozzle_x=%.3f,"
+            " probe_nozzle_y=%.3f, probe_switch_x=%.3f,"
+            " probe_switch_y=%.3f, probe_bed_x=%.3f,"
+            " probe_bed_y=%.3f"
             % (
                 self.switch_offset,
-                self.max_deviation,
+                self.offset_margins[0],
+                self.offset_margins[1],
                 self.speed,
                 self.samples,
                 self.tolerance,
                 self.retries,
                 self.samples_result,
                 self.lift_speed,
-                self.clearance,
+                self.safe_z_height,
                 self.probing_speed,
                 self.second_speed,
                 self.retract_dist,
@@ -327,17 +435,20 @@ class CalibrationState:
         self.probe = helper.printer.lookup_object("probe")
         self.toolhead = helper.printer.lookup_object("toolhead")
         self.gcode_move = helper.printer.lookup_object("gcode_move")
+        self.max_deviation = helper.max_deviation
+        self.offset_margins = helper.offset_margins
 
-    def _probe_on_site(self, endstop, site, check_probe=False):
+    def _probe_on_site(
+        self, endstop, site, check_probe=False, split_xy=False, wiggle=False
+    ):
         pos = self.toolhead.get_position()
-        if pos[2] < self.helper.clearance:
-            # no clearance, better to move up
-            self.helper._move(
-                [None, None, pos[2] + self.helper.clearance],
-                self.helper.lift_speed,
-            )
+        self.helper._move_safe_z(pos, self.helper.lift_speed)
         # move to position
-        self.helper._move(list(site), self.helper.speed)
+        if split_xy:
+            self.helper._move([site[0], pos[1], None], self.helper.speed)
+            self.helper._move([site[0], site[1], site[2]], self.helper.speed)
+        else:
+            self.helper._move(site, self.helper.speed)
         if check_probe:
             # check if probe is attached and switch is closed
             time = self.toolhead.get_last_move_time()
@@ -348,14 +459,20 @@ class CalibrationState:
         if self.helper.first_fast:
             # first probe just to get down faster
             self.helper._probe(
-                endstop, self.helper.position_min, self.helper.probing_speed
+                endstop,
+                self.helper.position_min,
+                self.helper.probing_speed,
+                wiggle=wiggle,
             )
         retries = 0
         positions = []
         while len(positions) < self.helper.samples:
             # probe with second probing speed
             curpos = self.helper._probe(
-                endstop, self.helper.position_min, self.helper.second_speed
+                endstop,
+                self.helper.position_min,
+                self.helper.second_speed,
+                wiggle=wiggle,
             )
             positions.append(curpos[:3])
             # check tolerance
@@ -398,40 +515,67 @@ class CalibrationState:
         self.helper.start_gcode.run_gcode_from_command()
         # probe the nozzle
         nozzle_zero = self._probe_on_site(
-            self.z_endstop, self.helper.nozzle_site
+            self.z_endstop,
+            self.helper.nozzle_site,
+            check_probe=False,
+            split_xy=True,
+            wiggle=True,
         )
         # probe the probe-switch
         self.helper.switch_gcode.run_gcode_from_command()
         # probe the body of the switch
         switch_zero = self._probe_on_site(
-            self.z_endstop, self.helper.switch_site, True
+            self.z_endstop, self.helper.switch_site, check_probe=True
         )
         # probe position on bed
         probe_site = self._add_probe_offset(self.helper.bed_site)
-        probe_zero = self._probe_on_site(self.probe.mcu_probe, probe_site, True)
+        probe_zero = self._probe_on_site(
+            self.probe.mcu_probe, probe_site, check_probe=True
+        )
         # calculate the offset
         offset = probe_zero - (
             switch_zero - nozzle_zero + self.helper.switch_offset
         )
         # print result
         self.gcmd.respond_info(
-            "Z-CALIBRATION: ENDSTOP=%.3f NOZZLE=%.3f"
-            " SWITCH=%.3f PROBE=%.3f --> OFFSET=%.6f"
+            "Z-CALIBRATION: probe=%.3f - (switch=%.3f"
+            " - nozzle=%.3f + switch_offset=%.3f) -->"
+            " new offset=%.6f"
             % (
-                self.helper.z_homing,
-                nozzle_zero,
-                switch_zero,
                 probe_zero,
+                switch_zero,
+                nozzle_zero,
+                self.helper.switch_offset,
                 offset,
             )
         )
-        # check max deviation
-        if abs(offset) > self.helper.max_deviation:
+        self.gcmd.respond_info(
+            "HINT: z position_endstop=%.3f - offset=%.6f"
+            " --> possible z position_endstop=%.3f"
+            % (
+                self.helper.position_z_endstop,
+                offset,
+                self.helper.position_z_endstop - offset,
+            )
+        )
+        # check offset margins
+        if (
+            self.max_deviation is not None  # deprecated
+            and abs(offset) > self.max_deviation
+        ):
             self.helper.end_gcode.run_gcode_from_command()
             raise self.helper.printer.command_error(
-                "Offset is larger as"
-                " allowed: OFFSET=%.3f"
-                " MAX_DEVIATION=%.3f" % (offset, self.helper.max_deviation)
+                "Offset is greater than"
+                " allowed: offset=%.3f"
+                " > max_deviation=%.3f" % (offset, self.max_deviation)
+            )
+        elif offset < self.offset_margins[0] or offset > self.offset_margins[1]:
+            self.helper.end_gcode.run_gcode_from_command()
+            raise self.helper.printer.command_error(
+                "Offset %.3f is outside"
+                " the configured range of"
+                " min=%.3f and max=%.3f"
+                % (offset, self.offset_margins[0], self.offset_margins[1])
             )
         # set new offset
         self._set_new_gcode_offset(offset)
