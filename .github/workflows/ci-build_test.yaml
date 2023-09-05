@@ -16,6 +16,7 @@ jobs:
             klippy:
               - 'klippy/**'
               - 'test/**'
+              - 'scripts/**'
             klipper:
               - 'src/**'
               - 'lib/**'
