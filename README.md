@@ -8,15 +8,19 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 Features merged into the master branch:
 
-- [No Python2 tests; No PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
+- [core: No Python2 tests; No PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
 
-- [Normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
+- [fan: Normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
-- [Velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
+- [heater: Modify PID without reload](https://github.com/DangerKlippers/danger-klipper/pull/35)
 
-- [Jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
+- [heater: Velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
 
-- [Dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
+- [gcode: Jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
+
+- [probe: Dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
+
+- [probe: Drop the first result](https://github.com/DangerKlippers/danger-klipper/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
 
 "Dangerous Klipper for dangerous users"
 
