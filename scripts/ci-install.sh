@@ -6,8 +6,8 @@
 set -eux
 
 MAIN_DIR=${PWD}
-BUILD_DIR=${PWD}/ci_build
-CACHE_DIR=${PWD}/ci_cache
+BUILD_DIR=/ci_build
+CACHE_DIR=/ci_cache
 mkdir -p ${BUILD_DIR} ${CACHE_DIR}
 
 

@@ -1,37 +1,31 @@
 # Perform continuous integration tests on updates and pull requests
 name: Build test
 on:
-  pull_request:
-    types: [synchronize]
+  push:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - uses: dorny/paths-filter@v2
         id: changes
         with:
           filters: |
-            paths:
+            klippy:
               - 'klippy/**'
+              - 'test/**'
+              - 'scripts/**'
+            klipper:
               - 'src/**'
               - 'lib/**'
               - 'test/**'
 
-      - id: should_test
-        if: steps.changes.outputs.paths == 'true' && github.event.review.state == 'approved'
-        run: |
-          echo "::set-output name=run_test::true"
+      - name: Test Klippy Only
+        if: steps.changes.outputs.klippy == 'true' && steps.changes.outputs.klipper == 'false'
+        run: docker run -v $PWD:/klipper ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest "./scripts/ci-build.sh" 2>&1
 
-      - name: Test
-        if: steps.should_test.outputs.run_test == 'true'
-        run: docker run ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest "./scripts/ci-build.sh" 2>&1
-
-      - name: Upload micro-controller data dictionaries
-        if: steps.should_test.outputs.run_test == 'true'
-        uses: actions/upload-artifact@v2
-        with:
-          name: data-dict
-          path: ci_build/dict
+      - name: Test Klipper Full
+        if: steps.changes.outputs.klippy == 'true' && steps.changes.outputs.klipper == 'true'
+        run: docker run -v $PWD:/klipper ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest "./scripts/ci-build.sh" compile 2>&1

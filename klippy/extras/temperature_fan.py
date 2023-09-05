@@ -139,15 +139,22 @@ class TemperatureFan:
 class ControlBangBang:
     def __init__(self, temperature_fan, config):
         self.temperature_fan = temperature_fan
+        self.reverse = config.getboolean("reverse", False)
         self.max_delta = config.getfloat("max_delta", 2.0, above=0.0)
         self.heating = False
 
     def temperature_callback(self, read_time, temp):
         current_temp, target_temp = self.temperature_fan.get_temp(read_time)
-        if self.heating and temp >= target_temp + self.max_delta:
-            self.heating = False
-        elif not self.heating and temp <= target_temp - self.max_delta:
-            self.heating = True
+        if (
+            self.heating != self.reverse
+            and temp >= target_temp + self.max_delta
+        ):
+            self.heating = self.reverse
+        elif (
+            not self.heating == self.reverse
+            and temp <= target_temp - self.max_delta
+        ):
+            self.heating = not self.reverse
         if self.heating:
             self.temperature_fan.set_speed(read_time, 0.0)
         else:
@@ -167,13 +174,15 @@ PID_SETTLE_SLOPE = 0.1
 class ControlPID:
     def __init__(self, temperature_fan, config):
         self.temperature_fan = temperature_fan
+        self.reverse = config.getboolean("reverse", False)
         self.Kp = config.getfloat("pid_Kp") / PID_PARAM_BASE
         self.Ki = config.getfloat("pid_Ki") / PID_PARAM_BASE
         self.Kd = config.getfloat("pid_Kd") / PID_PARAM_BASE
         self.min_deriv_time = config.getfloat("pid_deriv_time", 2.0, above=0.0)
-        self.temp_integ_max = 0.0
-        if self.Ki:
-            self.temp_integ_max = self.temperature_fan.get_max_speed() / self.Ki
+        imax = config.getfloat(
+            "pid_integral_max", self.temperature_fan.get_max_speed(), minval=0.0
+        )
+        self.temp_integ_max = imax / self.Ki
         self.prev_temp = AMBIENT_TEMP
         self.prev_temp_time = 0.0
         self.prev_temp_deriv = 0.0
@@ -198,13 +207,18 @@ class ControlPID:
         # Calculate output
         co = self.Kp * temp_err + self.Ki * temp_integ - self.Kd * temp_deriv
         bounded_co = max(0.0, min(self.temperature_fan.get_max_speed(), co))
-        self.temperature_fan.set_speed(
-            read_time,
-            max(
-                self.temperature_fan.get_min_speed(),
-                self.temperature_fan.get_max_speed() - bounded_co,
-            ),
-        )
+        if not self.reverse:
+            self.temperature_fan.set_speed(
+                read_time,
+                max(
+                    self.temperature_fan.get_min_speed(),
+                    self.temperature_fan.get_max_speed() - bounded_co,
+                ),
+            )
+        else:
+            self.temperature_fan.set_speed(
+                read_time, max(self.temperature_fan.get_min_speed(), bounded_co)
+            )
         # Store state for next measurement
         self.prev_temp = temp
         self.prev_temp_time = read_time
