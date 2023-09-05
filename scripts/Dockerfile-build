@@ -10,5 +10,6 @@ COPY . /klipper
 WORKDIR /klipper
 
 RUN ./scripts/ci-install.sh
+RUN ./scripts/ci-build.sh
 ENV PATH="/klipper/ci_build/python-env/bin:$PATH"
 RUN pip install -r ./scripts/requirements_dev.txt
