@@ -462,16 +462,22 @@ class ProbeEndstopWrapper:
 # Helper code that can probe a series of points and report the
 # position at each point.
 class ProbePointsHelper:
-    def __init__(self, config, finalize_callback, default_points=None):
+    def __init__(
+        self,
+        config,
+        finalize_callback,
+        default_points=None,
+        option_name="points",
+    ):
         self.printer = config.get_printer()
         self.finalize_callback = finalize_callback
         self.probe_points = default_points
         self.name = config.get_name()
         self.gcode = self.printer.lookup_object("gcode")
         # Read config settings
-        if default_points is None or config.get("points", None) is not None:
+        if default_points is None or config.get(option_name, None) is not None:
             self.probe_points = config.getlists(
-                "points", seps=(",", "\n"), parser=float, count=2
+                option_name, seps=(",", "\n"), parser=float, count=2
             )
         def_move_z = config.getfloat("horizontal_move_z", 5.0)
         self.default_horizontal_move_z = def_move_z
@@ -481,6 +487,9 @@ class ProbePointsHelper:
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
         self.results = []
+
+    def get_probe_points(self):
+        return self.probe_points
 
     def minimum_points(self, n):
         if len(self.probe_points) < n:
