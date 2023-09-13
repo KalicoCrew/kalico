@@ -1,5 +1,6 @@
 # Perform continuous integration tests on pull requests
 name: black
+
 on: pull_request
 
 jobs:

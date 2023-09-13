@@ -1,8 +1,6 @@
 name: klipper3d deploy
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *"
   push:
     branches:
       - master
@@ -20,7 +18,7 @@ jobs:
         with:
           python-version: '3.8'
 
-      - uses: actions/cache@v2
+      - uses: actions/cache@v3
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('docs/_klipper3d/mkdocs-requirements.txt') }}
@@ -34,7 +32,7 @@ jobs:
         run: docs/_klipper3d/build-translations.sh
 
       - name: Deploy
-        uses: JamesIves/github-pages-deploy-action@v4.2.5
+        uses: JamesIves/github-pages-deploy-action@v4.4.3
         with:
           branch: gh-pages # The branch the action should deploy to.
           folder: site # The folder the action should deploy.
