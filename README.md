@@ -1,3 +1,7 @@
+<p align="center"><a href="https://DangerKlippers.github.io/danger-klipper/"><img align="center" src="docs/img/klipper-logo.png" alt="Danger-Klipper Logo"></a></p>
+
+[![Action Status](https://github.com/DangerKlippers/danger-klipper/actions/workflows/ci-build_test.yaml/badge.svg?branch=master)](https://github.com/DangerKlippers/danger-klipper/actions/workflows/ci-build_test.yaml)
+
 Welcome to the Danger Klipper project!
 
 This is a community-maintained fork of the [Klipper](https://github.com/Klipper3d/klipper) firmware.
@@ -27,10 +31,6 @@ Features merged into the master branch:
 - [probe: z_calibration](https://github.com/DangerKlippers/danger-klipper/pull/31) ([klipper#4614](https://github.com/Klipper3d/klipper/pull/4614) / [protoloft/z_calibration](https://github.com/protoloft/klipper_z_calibration))
 
 "Dangerous Klipper for dangerous users"
-
-[![Klipper](docs/img/klipper-logo-small.png)](https://DangerKlippers.github.io/danger-klipper/)
-
-https://DangerKlippers.github.io/danger-klipper/
 
 Klipper is a 3d-Printer firmware. It combines the power of a general
 purpose computer with one or more micro-controllers. See the
