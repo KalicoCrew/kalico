@@ -1,0 +1,17 @@
+# Test case for z_tilt and quad_gantry_level
+CONFIG sensorless_homing_helper.cfg
+DICTIONARY atmega2560.dict
+
+# Start by homing the printer.
+G28
+G1 Z5 X10 Y10 F6000
+M400
+GET_POSITION
+
+_HOME_X
+_HOME_Y
+
+# Report position
+G1 Z5 X10 Y10 F6000
+M400
+GET_POSITION

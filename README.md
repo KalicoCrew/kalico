@@ -30,6 +30,8 @@ Features merged into the master branch:
 
 - [probe: z_calibration](https://github.com/DangerKlippers/danger-klipper/pull/31) ([klipper#4614](https://github.com/Klipper3d/klipper/pull/4614) / [protoloft/z_calibration](https://github.com/protoloft/klipper_z_calibration))
 
+- [stepper: Sensorless Homing Helper](https://github.com/DangerKlippers/danger-klipper/pull/61) ([eamars/sensorless_homing_helper](https://github.com/eamars/sensorless_homing_helper))
+
 "Dangerous Klipper for dangerous users"
 
 Klipper is a 3d-Printer firmware. It combines the power of a general

@@ -1810,7 +1810,7 @@ pins:
 
 ## Bed probing hardware
 
-### [probe]
+### ⚠️ [probe]
 
 Z height probe. One may define this section to enable Z height probing
 hardware. When this section is enabled, PROBE and QUERY_PROBE extended
@@ -1943,7 +1943,7 @@ control_pin:
 #   See the "probe" section for information on these parameters.
 ```
 
-### [dockable_probe]
+### ⚠️ [dockable_probe]
 
 Certain probes are magnetically coupled to the toolhead and stowed
 in a dock when not in use. One should define this section instead
@@ -2185,6 +2185,54 @@ end_gcode:
 #   A list of G-Code commands to execute after each calibration command.
 #   See docs/Command_Templates.md for G-Code format. This can be used to
 #   detach the probe afterwards.
+```
+
+### ⚠️ [sensorless_homing_helper]
+
+Sensorless Homing Helper with additional retraction along XY axis when
+ - X or Y is not homed or
+ - The last known location of the toolhead is too closed to the gantry.
+
+The sensorless homing requires certain speed while hitting the gantry to
+get repeatable XY coordinate. The additional XY retraction allows the carriage to
+accelerate to the calibrated speed during the calibration.
+
+```
+[sensorless_homing_helper]
+tmc_stepper_y_name: tmc2209 stepper_y
+#   The TMC stepper section name for Y.
+#   This parameter is required.
+tmc_stepper_x_name: tmc2209 stepper_x
+#   The TMC stepper section name for X.
+#   This parameter is required.
+home_current: 0.5
+#   The current while running the sensorless homing.
+#   This parameter is required.
+minimum_homing_distance: 10
+#   The minimum distance (in mm) to achieve the repeatible sensorless homing.
+#   The default is 10
+retract_distance: 10
+#   The retract distance (in mm) after the axis is homed. The default is 10
+retract_speed: 20
+#   The speed (in mm/s) while running the retraction (both before and after homing).
+#   The default is 20
+stallguard_reset_time: 1
+#   The time (in secs) for stallguard to reset before the next homing move.
+#   The default is 1
+```
+
+Additional Macros might be needed for 3rd-party plugins (e.g. Klicky) to use the sensorless routine.
+
+```
+[gcode_macro _HOME_X]
+rename_existing: __HOME_X
+gcode:
+    __HOME_X
+
+[gcode_macro _HOME_Y]
+rename_existing: __HOME_Y
+gcode:
+    __HOME_Y
 ```
 
 ## Additional stepper motors and extruders
