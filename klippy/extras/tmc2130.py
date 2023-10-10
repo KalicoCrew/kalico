@@ -203,20 +203,28 @@ class TMCCurrentHelper:
         self.name = config.get_name().split()[-1]
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
-        run_current = config.getfloat(
+        self.run_current = config.getfloat(
             "run_current", above=0.0, maxval=MAX_CURRENT
         )
-        hold_current = config.getfloat(
+        self.hold_current = config.getfloat(
             "hold_current", MAX_CURRENT, above=0.0, maxval=MAX_CURRENT
         )
-        self.req_hold_current = hold_current
+        self._home_current = config.getfloat(
+            "home_current", self.run_current, above=0.0, maxval=MAX_CURRENT
+        )
+        self.req_hold_current = self.hold_current
         self.sense_resistor = config.getfloat(
             "sense_resistor", 0.110, above=0.0
         )
-        vsense, irun, ihold = self._calc_current(run_current, hold_current)
+        vsense, irun, ihold = self._calc_current(
+            self.run_current, self.hold_current
+        )
         self.fields.set_field("vsense", vsense)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
+
+    def set_home_current(self, new_home_current):
+        self._home_current = new_home_current
 
     def _calc_current_bits(self, current, vsense):
         sense_resistor = self.sense_resistor + 0.020
@@ -256,7 +264,13 @@ class TMCCurrentHelper:
         vsense = self.fields.get_field("vsense")
         run_current = self._calc_current_from_bits(irun, vsense)
         hold_current = self._calc_current_from_bits(ihold, vsense)
-        return run_current, hold_current, self.req_hold_current, MAX_CURRENT
+        return (
+            run_current,
+            hold_current,
+            self.req_hold_current,
+            MAX_CURRENT,
+            self._home_current,
+        )
 
     def set_current(self, run_current, hold_current, print_time):
         self.req_hold_current = hold_current
@@ -267,6 +281,12 @@ class TMCCurrentHelper:
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
+
+    def set_current_for_homing(self, print_time):
+        self.set_current(self._home_current, self.hold_current, print_time)
+
+    def set_current_for_normal(self, print_time):
+        self.set_current(self.run_current, self.hold_current, print_time)
 
 
 ######################################################################

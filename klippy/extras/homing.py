@@ -3,11 +3,13 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 import math
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = 0.000015
 ENDSTOP_SAMPLE_COUNT = 4
+
 
 # Return a completion that completes when all completions in a list complete
 def multi_complete(printer, completions):
@@ -116,6 +118,7 @@ class HomingMove:
             )
             endstop_triggers.append(wait)
         all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
+
         self.toolhead.dwell(HOMING_START_DELAY)
         # Issue move
         error = None
@@ -228,7 +231,27 @@ class Homing:
         endstops = [es for rail in rails for es in rail.get_endstops()]
         hi = rails[0].get_homing_info()
         hmove = HomingMove(self.printer, endstops)
+        print_time = self.toolhead.get_last_move_time()
+        affected_rails = set()
+        for axis in homing_axes:
+            axis_name = "xyz"[axis]  # only works for cartesian
+            partial_rails = self.toolhead.get_active_rails_for_axis(axis_name)
+            affected_rails = affected_rails | set(partial_rails)
+        for rail in affected_rails:
+            ch = rail.get_tmc_current_helper()
+            if ch is not None:
+                ch.set_current_for_homing(print_time)
+                self.toolhead.dwell(0.5)
+
         hmove.homing_move(homepos, hi.speed)
+
+        print_time = self.toolhead.get_last_move_time()
+        for rail in affected_rails:
+            ch = rail.get_tmc_current_helper()
+            if ch is not None:
+                ch.set_current_for_normal(print_time)
+                self.toolhead.dwell(0.5)
+
         # Perform second home
         if hi.retract_dist:
             # Retract
@@ -241,18 +264,19 @@ class Homing:
                 hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
             ]
             self.toolhead.move(retractpos, hi.retract_speed)
-            # Home again
-            startpos = [
-                rp - ad * retract_r for rp, ad in zip(retractpos, axes_d)
-            ]
-            self.toolhead.set_position(startpos)
-            hmove = HomingMove(self.printer, endstops)
-            hmove.homing_move(homepos, hi.second_homing_speed)
-            if hmove.check_no_movement() is not None:
-                raise self.printer.command_error(
-                    "Endstop %s still triggered after retract"
-                    % (hmove.check_no_movement(),)
-                )
+            if not hi.use_sensorless_homing:
+                # Home again
+                startpos = [
+                    rp - ad * retract_r for rp, ad in zip(retractpos, axes_d)
+                ]
+                self.toolhead.set_position(startpos)
+                hmove = HomingMove(self.printer, endstops)
+                hmove.homing_move(homepos, hi.second_homing_speed)
+                if hmove.check_no_movement() is not None:
+                    raise self.printer.command_error(
+                        "Endstop %s still triggered after retract"
+                        % (hmove.check_no_movement(),)
+                    )
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {

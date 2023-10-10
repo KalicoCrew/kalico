@@ -32,6 +32,10 @@ Features merged into the master branch:
 
 - [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
 
+- [stepper: home_current](https://github.com/DangerKlippers/danger-klipper/pull/65)
+
+- [homing: sensorless post-home retract](https://github.com/DangerKlippers/danger-klipper/pull/65)
+
 "Dangerous Klipper for dangerous users"
 
 Klipper is a 3d-Printer firmware. It combines the power of a general

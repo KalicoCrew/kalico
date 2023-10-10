@@ -272,17 +272,27 @@ class TMC2240CurrentHelper:
             "rref", 12000.0, minval=12000.0, maxval=60000.0
         )
         max_cur = self._get_ifs_rms(3)
-        run_current = config.getfloat("run_current", above=0.0, maxval=max_cur)
-        hold_current = config.getfloat(
+        self.run_current = config.getfloat(
+            "run_current", above=0.0, maxval=max_cur
+        )
+        self.hold_current = config.getfloat(
             "hold_current", max_cur, above=0.0, maxval=max_cur
         )
-        self.req_hold_current = hold_current
-        current_range = self._calc_current_range(run_current)
+        self._home_current = config.getfloat(
+            "home_current", self.run_current, above=0.0, maxval=max_cur
+        )
+        self.req_hold_current = self.hold_current
+        current_range = self._calc_current_range(self.run_current)
         self.fields.set_field("current_range", current_range)
-        gscaler, irun, ihold = self._calc_current(run_current, hold_current)
+        gscaler, irun, ihold = self._calc_current(
+            self.run_current, self.hold_current
+        )
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
+
+    def set_home_current(self, new_home_current):
+        self._home_current = new_home_current
 
     def _get_ifs_rms(self, current_range=None):
         if current_range is None:
@@ -331,7 +341,13 @@ class TMC2240CurrentHelper:
         ifs_rms = self._get_ifs_rms()
         run_current = self._calc_current_from_field("irun")
         hold_current = self._calc_current_from_field("ihold")
-        return (run_current, hold_current, self.req_hold_current, ifs_rms)
+        return (
+            run_current,
+            hold_current,
+            self.req_hold_current,
+            ifs_rms,
+            self._home_current,
+        )
 
     def set_current(self, run_current, hold_current, print_time):
         self.req_hold_current = hold_current
@@ -341,6 +357,12 @@ class TMC2240CurrentHelper:
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
+
+    def set_current_for_homing(self, print_time):
+        self.set_current(self._home_current, self.hold_current, print_time)
+
+    def set_current_for_normal(self, print_time):
+        self.set_current(self.run_current, self.hold_current, print_time)
 
 
 ######################################################################

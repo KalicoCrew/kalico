@@ -123,6 +123,9 @@ class TMC2660CurrentHelper:
         self.current = config.getfloat(
             "run_current", minval=0.1, maxval=MAX_CURRENT
         )
+        self._home_current = config.getfloat(
+            "home_current", self.current, above=0.0, maxval=MAX_CURRENT
+        )
         self.sense_resistor = config.getfloat("sense_resistor")
         vsense, cs = self._calc_current(self.current)
         self.fields.set_field("cs", cs)
@@ -139,6 +142,9 @@ class TMC2660CurrentHelper:
             self.printer.register_event_handler(
                 "idle_timeout:ready", self._handle_ready
             )
+
+    def set_home_current(self, new_home_current):
+        self._home_current = new_home_current
 
     def _calc_current_bits(self, current, vsense):
         vref = 0.165 if vsense else 0.310
@@ -185,16 +191,29 @@ class TMC2660CurrentHelper:
             self.mcu_tmc.set_register("DRVCONF", val, print_time)
 
     def get_current(self):
-        return self.current, None, None, MAX_CURRENT
+        return (
+            self.current,
+            None,
+            None,
+            MAX_CURRENT,
+            self._home_current,
+        )
 
     def set_current(self, run_current, hold_current, print_time):
         self.current = run_current
         self._update_current(run_current, print_time)
 
+    def set_current_for_homing(self, print_time):
+        self.set_current(self._home_current, None, print_time)
+
+    def set_current_for_normal(self, print_time):
+        self.set_current(self.current, None, print_time)
+
 
 ######################################################################
 # TMC2660 SPI
 ######################################################################
+
 
 # Helper code for working with TMC2660 devices via SPI
 class MCU_TMC2660_SPI:

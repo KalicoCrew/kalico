@@ -334,6 +334,17 @@ class ToolHead:
         for module_name in modules:
             self.printer.load_object(config, module_name)
 
+    def get_active_rails_for_axis(self, axis):
+        # axis is 'x,y,z'
+        active_rails = []
+        rails = self.kin.rails
+        for rail in rails:
+            for stepper in rail.get_steppers():
+                if stepper.is_active_axis(axis):
+                    active_rails.append(rail)
+                    break
+        return active_rails
+
     # Print time tracking
     def _update_move_time(self, next_print_time):
         batch_time = MOVE_BATCH_TIME

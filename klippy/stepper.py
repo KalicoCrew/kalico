@@ -18,6 +18,7 @@ class error(Exception):
 
 MIN_BOTH_EDGE_DURATION = 0.000000200
 
+
 # Interface to low-level mcu and chelper code
 class MCU_stepper:
     def __init__(
@@ -64,6 +65,13 @@ class MCU_stepper:
         self._mcu.get_printer().register_event_handler(
             "klippy:connect", self._query_mcu_position
         )
+        self._tmc_current_helper = None
+
+    def get_tmc_current_helper(self):
+        return self._tmc_current_helper
+
+    def set_tmc_current_helper(self, tmc_current_helper):
+        self._tmc_current_helper = tmc_current_helper
 
     def get_mcu(self):
         return self._mcu
@@ -374,6 +382,7 @@ def parse_step_distance(config, units_in_radians=None, note_valid=False):
 # Stepper controlled rails
 ######################################################################
 
+
 # A motor control "rail" with one (or more) steppers and one (or more)
 # endstops.
 class PrinterRail:
@@ -394,6 +403,7 @@ class PrinterRail:
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
+        self.get_tmc_current_helper = mcu_stepper.get_tmc_current_helper
         # Primary endstop position
         mcu_endstop = self.endstops[0][0]
         if hasattr(mcu_endstop, "get_position_endstop"):
@@ -404,6 +414,12 @@ class PrinterRail:
             self.position_endstop = config.getfloat(
                 "position_endstop", default_position_endstop
             )
+        endstop_pin = config.get("endstop_pin")
+        # check for ":virtual_endstop" to make sure we don't detect ":z_virtual_endstop"
+        endstop_is_virtual = (
+            endstop_pin is not None and ":virtual_endstop" in endstop_pin
+        )
+
         # Axis range
         if need_position_minmax:
             self.position_min = config.getfloat("position_min", 0.0)
@@ -435,6 +451,10 @@ class PrinterRail:
         self.homing_positive_dir = config.getboolean(
             "homing_positive_dir", None
         )
+        self.use_sensorless_homing = config.getboolean(
+            "use_sensorless_homing", endstop_is_virtual
+        )
+
         if self.homing_positive_dir is None:
             axis_len = self.position_max - self.position_min
             if self.position_endstop <= self.position_min + axis_len / 4.0:
@@ -472,6 +492,7 @@ class PrinterRail:
                 "retract_dist",
                 "positive_dir",
                 "second_homing_speed",
+                "use_sensorless_homing",
             ],
         )(
             self.homing_speed,
@@ -480,6 +501,7 @@ class PrinterRail:
             self.homing_retract_dist,
             self.homing_positive_dir,
             self.second_homing_speed,
+            self.use_sensorless_homing,
         )
         return homing_info
 
