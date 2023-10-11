@@ -8,3 +8,4 @@ klippy/.version
 .DS_Store
 ci_build/
 ci_cache/
+_test_.*
