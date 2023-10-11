@@ -170,9 +170,7 @@ class HomingMove:
                 rail_name: steps_moved.get(rail_name, 0)
                 for rail_name in [rail.get_name() for rail in kin.rails]
             }
-            logging.info("steps_moved: %s", filled_steps_moved)
             self.distance_elapsed = kin.calc_position(filled_steps_moved)
-            logging.info("total_movepos: %s", self.distance_elapsed)
             if any(over_steps.values()):
                 self.toolhead.set_position(movepos)
                 halt_kin_spos = {
