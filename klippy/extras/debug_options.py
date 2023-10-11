@@ -8,7 +8,9 @@ class DebugOptions:
             "log_bed_mesh_at_startup", True
         )
         self.log_shutdown_info = config.getboolean("log_shutdown_info", True)
+        self.error_on_unused_config_options = config.getboolean(
+            "error_on_unused_config_options", True
+        )
 
-
-def load_config_prefix(config):
+def load_config(config):
     return DebugOptions(config)

@@ -154,7 +154,7 @@ class Printer:
     def _read_config(self):
         self.objects["configfile"] = pconfig = configfile.PrinterConfig(self)
         config = pconfig.read_main_config()
-        debug_options = self.load_object(config, "debug_options", None)
+        debug_options = self.load_object(config, "debug_options")
         if (
             self.bglogger is not None
             and debug_options.log_config_file_at_startup
@@ -168,7 +168,8 @@ class Printer:
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
-        pconfig.check_unused_options(config)
+        error_on_unused = debug_options.error_on_unused_config_options
+        pconfig.check_unused_options(config, error_on_unused)
 
     def _build_protocol_error_message(self, e):
         host_version = self.start_args["software_version"]
@@ -432,6 +433,7 @@ def main():
         bglogger = queuelogger.setup_bg_logging(options.logfile, debuglevel)
     else:
         logging.getLogger().setLevel(debuglevel)
+    logging.info("=======================")
     logging.info("Starting Klippy...")
     git_info = util.get_git_version()
     git_vers = git_info["version"]
