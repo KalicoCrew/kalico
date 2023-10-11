@@ -126,6 +126,7 @@ class TMC2660CurrentHelper:
         self._home_current = config.getfloat(
             "home_current", self.current, above=0.0, maxval=MAX_CURRENT
         )
+        self._prev_current = self.current
         self.sense_resistor = config.getfloat("sense_resistor")
         vsense, cs = self._calc_current(self.current)
         self.fields.set_field("cs", cs)
@@ -144,7 +145,7 @@ class TMC2660CurrentHelper:
             )
 
     def set_home_current(self, new_home_current):
-        self._home_current = new_home_current
+        self._home_current = min(MAX_CURRENT, new_home_current)
 
     def _calc_current_bits(self, current, vsense):
         vref = 0.165 if vsense else 0.310
@@ -204,10 +205,12 @@ class TMC2660CurrentHelper:
         self._update_current(run_current, print_time)
 
     def set_current_for_homing(self, print_time):
+        prev_run_cur, _, _, _, _ = self.get_current()
+        self._prev_current = prev_run_cur
         self.set_current(self._home_current, None, print_time)
 
     def set_current_for_normal(self, print_time):
-        self.set_current(self.current, None, print_time)
+        self.set_current(self._prev_current, None, print_time)
 
 
 ######################################################################

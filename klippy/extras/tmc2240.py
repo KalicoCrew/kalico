@@ -271,16 +271,17 @@ class TMC2240CurrentHelper:
         self.Rref = config.getfloat(
             "rref", 12000.0, minval=12000.0, maxval=60000.0
         )
-        max_cur = self._get_ifs_rms(3)
+        self.max_cur = self._get_ifs_rms(3)
         self.run_current = config.getfloat(
-            "run_current", above=0.0, maxval=max_cur
+            "run_current", above=0.0, maxval=self.max_cur
         )
         self.hold_current = config.getfloat(
-            "hold_current", max_cur, above=0.0, maxval=max_cur
+            "hold_current", self.max_cur, above=0.0, maxval=self.max_cur
         )
         self._home_current = config.getfloat(
-            "home_current", self.run_current, above=0.0, maxval=max_cur
+            "home_current", self.run_current, above=0.0, maxval=self.max_cur
         )
+        self.prev_current = self.run_current
         self.req_hold_current = self.hold_current
         current_range = self._calc_current_range(self.run_current)
         self.fields.set_field("current_range", current_range)
@@ -292,7 +293,7 @@ class TMC2240CurrentHelper:
         self.fields.set_field("irun", irun)
 
     def set_home_current(self, new_home_current):
-        self._home_current = new_home_current
+        self._home_current = min(self.max_cur, new_home_current)
 
     def _get_ifs_rms(self, current_range=None):
         if current_range is None:
@@ -359,10 +360,12 @@ class TMC2240CurrentHelper:
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
 
     def set_current_for_homing(self, print_time):
+        prev_run_cur, _, _, _, _ = self.get_current()
+        self._prev_current = prev_run_cur
         self.set_current(self._home_current, self.hold_current, print_time)
 
     def set_current_for_normal(self, print_time):
-        self.set_current(self.run_current, self.hold_current, print_time)
+        self.set_current(self._prev_current, self.hold_current, print_time)
 
 
 ######################################################################

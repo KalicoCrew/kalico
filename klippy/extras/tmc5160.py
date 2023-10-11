@@ -265,6 +265,7 @@ class TMC5160CurrentHelper:
         self._home_current = config.getfloat(
             "home_current", self.run_current, above=0.0, maxval=MAX_CURRENT
         )
+        self._prev_current = self.run_current
         self.req_hold_current = self.hold_current
         self.sense_resistor = config.getfloat(
             "sense_resistor", 0.075, above=0.0
@@ -277,7 +278,7 @@ class TMC5160CurrentHelper:
         self.fields.set_field("irun", irun)
 
     def set_home_current(self, new_home_current):
-        self._home_current = new_home_current
+        self._home_current = min(MAX_CURRENT, new_home_current)
 
     def _calc_globalscaler(self, current):
         globalscaler = int(
@@ -339,10 +340,12 @@ class TMC5160CurrentHelper:
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
 
     def set_current_for_homing(self, print_time):
+        prev_run_cur, _, _, _, _ = self.get_current()
+        self._prev_current = prev_run_cur
         self.set_current(self._home_current, self.hold_current, print_time)
 
     def set_current_for_normal(self, print_time):
-        self.set_current(self.run_current, self.hold_current, print_time)
+        self.set_current(self._prev_current, self.hold_current, print_time)
 
 
 ######################################################################
