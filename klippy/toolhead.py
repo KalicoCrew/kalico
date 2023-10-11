@@ -11,6 +11,7 @@ import kinematics.extruder
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
 #   seconds), _r is ratio (scalar between 0.0 and 1.0)
 
+
 # Class to track each move request
 class Move:
     def __init__(self, toolhead, start_pos, end_pos, speed):
@@ -127,6 +128,7 @@ class Move:
 
 
 LOOKAHEAD_FLUSH_TIME = 0.250
+
 
 # Class to track a list of pending move requests and to facilitate
 # "look-ahead" across moves to reduce acceleration between moves.

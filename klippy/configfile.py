@@ -266,6 +266,8 @@ class PrinterConfig:
         self.status_save_pending = {}
         self.status_settings = {}
         self.status_warnings = []
+        self.unused_sections = []
+        self.unused_options = []
         self.save_config_pending = False
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -426,7 +428,7 @@ class PrinterConfig:
         cfg = self._build_config_wrapper(regular_data + autosave_data, filename)
         return cfg
 
-    def check_unused_options(self, config):
+    def check_unused_options(self, config, error_on_unused):
         fileconfig = config.fileconfig
         objects = dict(self.printer.lookup_objects())
         # Determine all the fields that have been accessed
@@ -439,16 +441,23 @@ class PrinterConfig:
         for section_name in fileconfig.sections():
             section = section_name.lower()
             if section not in valid_sections and section not in objects:
-                raise error(
-                    "Section '%s' is not a valid config section" % (section,)
-                )
+                if error_on_unused:
+                    raise error(
+                        "Section '%s' is not a valid config section"
+                        % (section,)
+                    )
+                else:
+                    self.unused_sections.append(section)
             for option in fileconfig.options(section_name):
                 option = option.lower()
                 if (section, option) not in access_tracking:
-                    raise error(
-                        "Option '%s' is not valid in section '%s'"
-                        % (option, section)
-                    )
+                    if error_on_unused:
+                        raise error(
+                            "Option '%s' is not valid in section '%s'"
+                            % (option, section)
+                        )
+                    else:
+                        self.unused_options.append((section, option))
         # Setup get_status()
         self._build_status(config)
 
@@ -482,6 +491,20 @@ class PrinterConfig:
             res["message"] = msg
             res["section"] = section
             res["option"] = option
+            self.status_warnings.append(res)
+        for section, option in self.unused_options:
+            res = {"type": "unused_option"}
+            res["message"] = "Option '%s' in section '%s' is invalid" % (
+                option,
+                section,
+            )
+            res["section"] = section
+            res["option"] = option
+            self.status_warnings.append(res)
+        for section in self.unused_sections:
+            res = {"type": "unused_section"}
+            res["message"] = "Section '%s' is invalid" % (section,)
+            res["section"] = section
             self.status_warnings.append(res)
 
     def get_status(self, eventtime):
