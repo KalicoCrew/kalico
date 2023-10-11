@@ -154,7 +154,11 @@ class Printer:
     def _read_config(self):
         self.objects["configfile"] = pconfig = configfile.PrinterConfig(self)
         config = pconfig.read_main_config()
-        if self.bglogger is not None:
+        debug_options = self.load_object(config, "debug_options", None)
+        if (
+            self.bglogger is not None
+            and debug_options.log_config_file_at_startup
+        ):
             pconfig.log_config(config)
         # Create printer components
         for m in [pins, mcu]:

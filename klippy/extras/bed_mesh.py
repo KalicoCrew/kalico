@@ -161,7 +161,9 @@ class BedMesh:
 
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
-        self.bmc.print_generated_points(logging.info)
+        self.debug_options = self.printer.lookup_object("debug_options")
+        if self.debug_options.log_bed_mesh_at_startup:
+            self.bmc.print_generated_points(logging.info)
 
     def set_mesh(self, mesh):
         if mesh is not None and self.fade_end != self.FADE_DISABLE:
