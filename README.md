@@ -34,7 +34,9 @@ Features merged into the master branch:
 
 - [stepper: home_current](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
-- [homing: sensorless post-home retract](https://github.com/DangerKlippers/danger-klipper/pull/65)
+- [homing: post-home retract](https://github.com/DangerKlippers/danger-klipper/pull/65)
+
+- [homing: sensorless minimum home distance](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
 "Dangerous Klipper for dangerous users"
 
