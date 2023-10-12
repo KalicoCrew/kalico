@@ -73,6 +73,31 @@ pins such as "extra_mcu:ar9" may then be used elsewhere in the config
 [mcu my_extra_mcu]
 # See the "mcu" section for configuration parameters.
 ```
+## ⚠️ Danger Options
+A collection of DangerKlipper-specific system options
+```
+[danger_options]
+
+# If an unused config option or section should cause an error
+# if False, will warn but allow klipper to still run
+error_on_unused_config_options: True
+
+# If statistics should be logged 
+# (helpful for keeping the log clean during development)
+log_statistics: True 
+
+# If the config file should be logged at startup
+log_config_file_at_startup: True 
+
+# If the bed mesh should be logged on startup 
+# (helpful for keeping the log clean during development)
+log_bed_mesh_at_startup: True
+
+# If we should log detailed crash info when an exception occurs
+# Most of it is overly-verbose and fluff and we still get a stack trace
+# for normal exceptions, so setting to False can help save time while developing
+log_shutdown_info: True
+```
 
 ## Common kinematic settings
 
