@@ -61,7 +61,7 @@ class PrinterSysStats:
 class PrinterStats:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.debug_options = self.printer.lookup_object("debug_options")
+        self.danger_options = self.printer.lookup_object("danger_options")
         reactor = self.printer.get_reactor()
         self.stats_timer = reactor.register_timer(self.generate_stats)
         self.stats_cb = []
@@ -79,7 +79,7 @@ class PrinterStats:
 
     def generate_stats(self, eventtime):
         stats = [cb(eventtime) for cb in self.stats_cb]
-        if max([s[0] for s in stats]) and self.debug_options.log_statistics:
+        if max([s[0] for s in stats]) and self.danger_options.log_statistics:
             logging.info(
                 "Stats %.1f: %s", eventtime, " ".join([s[1] for s in stats])
             )

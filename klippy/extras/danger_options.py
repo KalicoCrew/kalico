@@ -1,4 +1,4 @@
-class DebugOptions:
+class DangerOptions:
     def __init__(self, config):
         self.log_statistics = config.getboolean("log_statistics", True)
         self.log_config_file_at_startup = config.getboolean(
@@ -14,4 +14,4 @@ class DebugOptions:
 
 
 def load_config(config):
-    return DebugOptions(config)
+    return DangerOptions(config)

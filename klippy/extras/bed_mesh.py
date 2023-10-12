@@ -161,8 +161,8 @@ class BedMesh:
 
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
-        self.debug_options = self.printer.lookup_object("debug_options")
-        if self.debug_options.log_bed_mesh_at_startup:
+        self.danger_options = self.printer.lookup_object("danger_options")
+        if self.danger_options.log_bed_mesh_at_startup:
             self.bmc.print_generated_points(logging.info)
 
     def set_mesh(self, mesh):

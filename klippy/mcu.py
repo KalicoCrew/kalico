@@ -745,7 +745,7 @@ class MCU:
 
     def __init__(self, config, clocksync):
         self._printer = printer = config.get_printer()
-        self.debug_options = printer.lookup_object("debug_options")
+        self.danger_options = printer.lookup_object("danger_options")
         self._clocksync = clocksync
         self._reactor = printer.get_reactor()
         self._name = config.get_name()
@@ -835,7 +835,7 @@ class MCU:
         if clock is not None:
             self._shutdown_clock = self.clock32_to_clock64(clock)
         self._shutdown_msg = msg = params["static_string_id"]
-        if self.debug_options.log_shutdown_info:
+        if self.danger_options.log_shutdown_info:
             logging.info(
                 "MCU '%s' %s: %s\n%s\n%s",
                 self._name,

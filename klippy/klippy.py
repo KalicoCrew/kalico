@@ -154,10 +154,10 @@ class Printer:
     def _read_config(self):
         self.objects["configfile"] = pconfig = configfile.PrinterConfig(self)
         config = pconfig.read_main_config()
-        debug_options = self.load_object(config, "debug_options")
+        danger_options = self.load_object(config, "danger_options")
         if (
             self.bglogger is not None
-            and debug_options.log_config_file_at_startup
+            and danger_options.log_config_file_at_startup
         ):
             pconfig.log_config(config)
         # Create printer components
@@ -168,7 +168,7 @@ class Printer:
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
-        error_on_unused = debug_options.error_on_unused_config_options
+        error_on_unused = danger_options.error_on_unused_config_options
         pconfig.check_unused_options(config, error_on_unused)
 
     def _build_protocol_error_message(self, e):
