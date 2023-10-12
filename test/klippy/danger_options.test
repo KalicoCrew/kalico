@@ -1,4 +1,4 @@
-CONFIG no_stat_logging.cfg
+CONFIG danger_options.cfg
 DICTIONARY atmega2560.dict
 
 # Start by homing the printer.
