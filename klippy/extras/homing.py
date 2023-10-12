@@ -167,8 +167,8 @@ class HomingMove:
                 for sp in self.stepper_positions
             }
             filled_steps_moved = {
-                rail_name: steps_moved.get(rail_name, 0)
-                for rail_name in [rail.get_name() for rail in kin.rails]
+                sname: steps_moved.get(sname, 0)
+                for sname in [s.get_name() for s in kin.get_steppers()]
             }
             self.distance_elapsed = kin.calc_position(filled_steps_moved)
             if any(over_steps.values()):
