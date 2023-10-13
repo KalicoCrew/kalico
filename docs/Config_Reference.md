@@ -82,14 +82,14 @@ A collection of DangerKlipper-specific system options
 # if False, will warn but allow klipper to still run
 error_on_unused_config_options: True
 
-# If statistics should be logged 
+# If statistics should be logged
 # (helpful for keeping the log clean during development)
-log_statistics: True 
+log_statistics: True
 
 # If the config file should be logged at startup
-log_config_file_at_startup: True 
+log_config_file_at_startup: True
 
-# If the bed mesh should be logged on startup 
+# If the bed mesh should be logged on startup
 # (helpful for keeping the log clean during development)
 log_bed_mesh_at_startup: True
 
@@ -1521,6 +1521,8 @@ path:
 #   be provided.
 #on_error_gcode:
 #   A list of G-Code commands to execute when an error is reported.
+#with_subdirs: False
+#   Enable scanning of subdirectories for the menu and for the M20 and M23 commands. The default is False.
 
 ```
 

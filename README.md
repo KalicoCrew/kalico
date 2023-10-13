@@ -38,6 +38,8 @@ Features merged into the master branch:
 
 - [homing: sensorless minimum home distance](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
+- [virtual_sdcard: scanning of subdirectories](https://github.com/DangerKlippers/danger-klipper/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
+
 "Dangerous Klipper for dangerous users"
 
 Klipper is a 3d-Printer firmware. It combines the power of a general

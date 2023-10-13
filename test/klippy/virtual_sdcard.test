@@ -1,0 +1,7 @@
+; Virtual SD card unit tests
+
+DICTIONARY atmega2560.dict
+CONFIG virtual_sdcard.cfg
+
+G28
+M20
