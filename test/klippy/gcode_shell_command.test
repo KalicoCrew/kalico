@@ -1,0 +1,5 @@
+# Test case for gcode_shell_command
+CONFIG gcode_shell_command.cfg
+DICTIONARY atmega2560.dict
+
+HELLO_WORLD
