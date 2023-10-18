@@ -12,7 +12,7 @@ class SDCardLoop:
         printer = config.get_printer()
         self.sdcard = sdcard = printer.load_object(config, "virtual_sdcard")
         self.sdcard_gcode_provider = sdcard.get_virtual_sdcard_gcode_provider()
-        self.gcode = printer.lookup_object('gcode')
+        self.gcode = printer.lookup_object("gcode")
         self.gcode.register_command(
             "SDCARD_LOOP_BEGIN",
             self.cmd_SDCARD_LOOP_BEGIN,
@@ -50,17 +50,22 @@ class SDCardLoop:
             raise gcmd.error("Only permitted outside of a SD file.")
 
     def loop_begin(self, count):
-        if (not self.sdcard.is_cmd_from_sd() or
-                not self.sdcard_gcode_provider.is_active()):
+        if (
+            not self.sdcard.is_cmd_from_sd()
+            or not self.sdcard_gcode_provider.is_active()
+        ):
             # Can only run inside of an SD file
             return False
         self.loop_stack.append(
-                (count, self.sdcard_gcode_provider.get_file_position()))
+            (count, self.sdcard_gcode_provider.get_file_position())
+        )
         return True
 
     def loop_end(self):
-        if (not self.sdcard.is_cmd_from_sd() or
-                not self.sdcard_gcode_provider.is_active()):
+        if (
+            not self.sdcard.is_cmd_from_sd()
+            or not self.sdcard_gcode_provider.is_active()
+        ):
             # Can only run inside of an SD file
             return False
         # If the stack is empty, no need to skip back
@@ -68,7 +73,7 @@ class SDCardLoop:
             return True
         # Get iteration count and return position
         count, position = self.loop_stack.pop()
-        if count == 0: # Infinite loop
+        if count == 0:  # Infinite loop
             self.sdcard_gcode_provider.set_file_position(position)
             self.loop_stack.append((0, position))
         elif count == 1:  # Last repeat
@@ -82,8 +87,10 @@ class SDCardLoop:
         return True
 
     def loop_desist(self):
-        if (self.sdcard.is_cmd_from_sd() and
-                self.sdcard_gcode_provider.is_active()):
+        if (
+            self.sdcard.is_cmd_from_sd()
+            and self.sdcard_gcode_provider.is_active()
+        ):
             # Can only run outside of an SD file
             return False
         logging.info("Desisting existing SD loops")

@@ -38,6 +38,20 @@ Features merged into the master branch:
 
 - [homing: sensorless minimum home distance](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
+If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
+
+- [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)
+
+  - [stepper: high precision stepping protocol]()
+
+  - [extruder: sync extruder motion with input shaper]()
+
+  - [extruder: new print_pa_tower utility]()
+
+  - [input_shaper: smooth input shapers]()
+
+  - [input_shaper: new print_ringing_tower utility]()
+
 "Dangerous Klipper for dangerous users"
 
 Klipper is a 3d-Printer firmware. It combines the power of a general

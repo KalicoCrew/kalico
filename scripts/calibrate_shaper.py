@@ -110,22 +110,30 @@ def plot_freq_response(
     best_shaper_vals = None
     for shaper in shapers:
         label = "%s (%.1f Hz, vibr=%.1f%%, sm~=%.2f, accel<=%.f)" % (
-                shaper.name.upper(), shaper.freq,
-                shaper.vibrs * 100., shaper.smoothing,
-                round(shaper.max_accel / 100.) * 100.)
-        linestyle = 'dotted' if shaper.name.startswith('smooth') else 'dashed'
+            shaper.name.upper(),
+            shaper.freq,
+            shaper.vibrs * 100.0,
+            shaper.smoothing,
+            round(shaper.max_accel / 100.0) * 100.0,
+        )
+        linestyle = "dotted" if shaper.name.startswith("smooth") else "dashed"
         linewidth = 1.0
         if shaper.name == selected_shaper:
-            linestyle = 'dashdot'
+            linestyle = "dashdot"
             linewidth = 2.0
             best_shaper_vals = shaper.vals
-        ax2.plot(freqs, shaper.vals, label=label, linestyle=linestyle,
-                 linewidth=linewidth)
+        ax2.plot(
+            freqs,
+            shaper.vals,
+            label=label,
+            linestyle=linestyle,
+            linewidth=linewidth,
+        )
     vibr_thresh = (psd[freqs > 0] / freqs[freqs > 0]).max() * (freqs + 5) / 33.3
-    ax.plot(freqs, vibr_thresh,
-            label='Acceptable\nvibrations', color='lightgrey')
-    ax.plot(freqs, psd * best_shaper_vals,
-            label='After\nshaper', color='cyan')
+    ax.plot(
+        freqs, vibr_thresh, label="Acceptable\nvibrations", color="lightgrey"
+    )
+    ax.plot(freqs, psd * best_shaper_vals, label="After\nshaper", color="cyan")
     # A hack to add a human-readable shaper recommendation to legend
     ax2.plot(
         [], [], " ", label="Recommended shaper: %s" % (selected_shaper.upper())
