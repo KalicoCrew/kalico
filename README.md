@@ -50,3 +50,5 @@ To begin using Klipper start by
 
 Klipper is Free Software. See the [license](COPYING) or read the
 [documentation](https://DangerKlippers.github.io/danger-klipper/Overview.html).
+
+[![Join me on Discord](https://discord.com/api/guilds/1029426383614648421/widget.png?style=banner2)](https://discord.gg/armchairengineeringsux)
