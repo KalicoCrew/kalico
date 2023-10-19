@@ -1,0 +1,28 @@
+# Tests for limited_cartesian
+DICTIONARY atmega2560.dict
+CONFIG limited_cartesian.cfg
+
+; Start by homing the printer.
+G28
+G90
+G1 F6000
+
+M204 S1000
+
+; Z / X / Y moves
+G1 Z1
+G1 X1
+G1 Y1
+
+; test SET_KINEMATICS_LIMIT
+M204 S15000
+SET_KINEMATICS_LIMIT X_ACCEL=12000 Y_ACCEL=900 X_VELOCITY=300 Y_VELOCITY=200 SCALE=0
+SET_KINEMATICS_LIMIT
+
+; diagonal moves
+G1 X0 Y0
+G1 X1 Z2
+G1 X0 Y1 Z1
+
+; regular extrude move
+G1 X0 Y0 E.01
