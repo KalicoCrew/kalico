@@ -78,6 +78,8 @@ If you're feeling adventurous, take a peek at the extra features in the bleeding
 
 - [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
+- [Independent X & Y Acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
+
 ## Switch to Danger Klipper
 
 > [!NOTE]

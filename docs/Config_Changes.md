@@ -8,6 +8,12 @@ All dates in this document are approximate.
 
 ## Changes
 
+20240128: `printer.kinematics` now accepts `limited_cartesian` and
+`limited_cartesian` and `limited_corexy` that enables `max_{x,y}_accel` and
+`max_{x,y}_velocity` (only for `limited_cartesian`). In the future, this
+functionality may be moved into the original kinematics module (as optional
+settings).
+
 20240123: The output_pin SET_PIN CYCLE_TIME parameter has been
 removed. Use the new
 [pwm_cycle_time](Config_Reference.md#pwm_cycle_time) module if it is

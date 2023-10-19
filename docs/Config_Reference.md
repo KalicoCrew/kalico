@@ -292,21 +292,11 @@ max_z_accel:
 [stepper_z]
 ```
 
-### Cartesian Kinematics with limits for X and Y axes
+### ⚠️ Cartesian Kinematics with limits for X and Y axes
 
 Behaves exactly the as cartesian kinematics, but allows to set a velocity and
-acceleration limit for X and Y axis.
+acceleration limit for X and Y axis. This also makes command [`SET_KINEMATICS_LIMIT`](./G-Codes.md#⚠️-set_kinematics_limit) available to sets these limits at runtime.
 
-If you set accelerations per feature type in the slicer, and have tuned your
-acceleration to get similar resonance amplitudes and level of smoothing on X and
-Y, you may want to enable `scale_xy_accel: true`. This will scale the X and Y
-accelerations by the ratio `M204 acceleration / config.max_accel`. For example,
-if you have `max_accel: 10000` in your config and set in the slicer an
-acceleration of 5000 mm/s² (`M204 S5000`), effective `max_x_accel` and
-`max_y_accel` values will be halved compared to their original values set in the
-`[printer]` config. Otherwise, with `scale_xy_accel: false` (the default) they
-behave as machine limits, like `max_z_accel` and `max_z_velocity` always do.
-Gcode velocities under the limits are never scaled per axis and stay isotropic.
 
 ```
 [printer]
@@ -338,28 +328,34 @@ max_y_accel:
 max_z_accel:
 # See cartesian above.
 max_accel:
-#   In order to get maximum acceleration gains on diagonals, this should be
-#   equal or greater than the hypotenuse (sqrt(x*x + y*y)) of max_x_accel and
-#   max_y_accel.
-scale_xy_accel:
-#   If scale_xy_accel is False, `max_accel`, set by M204 or SET_VELOCITY_LIMIT,
-#   acts as a third limit. This means that moves with an acceleration lower
-#   than max_x_accel and max_y_accel, have no per-axis limits applied. When set
-#   to True, max_x_accel and max_y_accel are scaled by the ratio of the
-#   acceleration set at runtime and the max_accel value from the config. Then
-#   the actual acceleration will always depend on the orientation.
+# See cartesian above.
+scale_xy_accel: False
+#   When true, scales the XY limits by the current tool head acceleration.
+#   The factor is: slicer accel / hypot(max_x_accel, max_y_accel).
+#   See below.
 ```
 
-### Linear Delta Kinematics
+If scale_xy_accel is `False`, the acceleration set by `max_accel`, M204 or
+SET_VELOCITY_LIMIT, acts as a third limit. In that case, this module doesn't
+apply limitations on moves having an acceleration lower than `max_x_accel`` and
+`max_y_accel`. When scale_xy_accel is `True`, `max_x_accel` and `max_y_accel`
+are scaled by the ratio of the dynamically set acceleration and the hypotenuse
+of max_x_accel and `max_y_accel`, as reported from `SET_KINEMATICS_LIMIT`. This
+implies that the actual acceleration will always depend on the direction. For
+example, these settings:
 
-See [example-delta.cfg](../config/example-delta.cfg) for an example
-linear delta kinematics config file. See the
-[delta calibrate guide](Delta_Calibrate.md) for information on
-calibration.
+```
+[printer]
+max_x_accel: 12000
+max_y_accel: 9000
+scale_xy_accel: true
+```
 
-Only parameters specific to linear delta printers are described here -
-see [common kinematic settings](#common-kinematic-settings) for
-available parameters.
+`SET_KINEMATICS_LIMIT` will report a maximum acceleration of 15000 mm/s^2 on 37°
+diagonals. If the slicer emit `M204 S3000` (3000 mm/s^2 accel). On these 37° and
+143° diagonals, the toolhead will accelerate at 3000 mm/s^2. On the X axis, the
+acceleration will be  12000 * 3000 / 15000 = 2400 mm/s^2, and 18000 mm/s^2 for
+pure Y moves.
 
 ```
 [printer]
@@ -546,7 +542,7 @@ max_z_accel:
 [stepper_z]
 ```
 
-### :warning: CoreXY Kinematics with limits for X and Y axes
+### ⚠️ CoreXY Kinematics with limits for X and Y axes
 
 Behaves exactly the as CoreXY kinematics, but allows to set a acceleration limit
 for X and Y axis.
@@ -554,24 +550,12 @@ for X and Y axis.
 There is no velocity limits for X and Y, since on a CoreXY the pull-out velocity
 are identical on both axes.
 
-If you set accelerations per feature type in the slicer, and have tuned your
-acceleration to get similar resonance amplitudes and level of smoothing on X and
-Y, you may want to enable `scale_xy_accel: true`. This will scale the X and Y
-accelerations by the ratio `M204 acceleration / config.max_accel`. For example,
-if you have `max_accel: 10000` in your config and set in the slicer an
-acceleration of 5000 mm/s² (`M204 S5000`), effective `max_x_accel` and
-`max_y_accel` values will be halved compared to their original values set in the
-`[printer]` config. Otherwise, with `scale_xy_accel: false` (the default) they
-behave as machine limits, like `max_z_accel` always does.
-
-!!! warning
-    Note that there are **print quality concerns** with anisotropic accelerations and velocities. This is the main reason that previous attempts to upstream something like this failed.
 
 ```
 [printer]
 kinematics: limited_corexy
 max_z_velocity:
-#   See cartesian above.
+#   See CoreXY above.
 max_x_accel:
 #   This sets the maximum acceleration (in mm/s^2) of movement along
 #   the x axis. It limits the acceleration of the x stepper motor. The
@@ -581,18 +565,12 @@ max_y_accel:
 #   the y axis. It limits the acceleration of the y stepper motor. The
 #   default is to use max_accel for max_y_accel.
 max_z_accel:
-# See cartesian above.
+# See CoreXY above.
 max_accel:
-#   In order to get maximum acceleration gains on diagonals, this should be
-#   equal or greater than the hypotenuse (sqrt(x*x + y*y)) of max_x_accel and
-#   max_y_accel.
+# See CoreXY above..
 scale_xy_accel:
-#   If scale_xy_accel is False, `max_accel`, set by M204 or SET_VELOCITY_LIMIT,
-#   acts as a third limit. This means that moves with an acceleration lower
-#   than max_x_accel and max_y_accel, have no per-axis limits applied. When set
-#   to True, max_x_accel and max_y_accel are scaled by the ratio of the
-#   acceleration set at runtime and the max_accel value from the config. Then
-#   the actual acceleration will always depend on the orientation.
+#   When True, scales the XY limits by the current tool head acceleration.
+#   The factor is: slicer accel / max(max_x_accel, max_y_accel).
 ```
 
 ### CoreXZ Kinematics
