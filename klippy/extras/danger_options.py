@@ -12,6 +12,10 @@ class DangerOptions:
             "error_on_unused_config_options", True
         )
 
+        self.allow_plugin_override = config.getboolean(
+            "allow_plugin_override", False
+        )
+
 
 def load_config(config):
     return DangerOptions(config)
