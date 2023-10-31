@@ -97,6 +97,10 @@ log_bed_mesh_at_startup: True
 # Most of it is overly-verbose and fluff and we still get a stack trace
 # for normal exceptions, so setting to False can help save time while developing
 log_shutdown_info: True
+
+# Allows modules in `plugins` to override modules of the same name in `extras`
+allow_plugin_override: False
+
 ```
 
 ## Common kinematic settings
