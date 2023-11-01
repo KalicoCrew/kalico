@@ -42,6 +42,8 @@ Features merged into the master branch:
 
 - [virtual_sdcard: scanning of subdirectories](https://github.com/DangerKlippers/danger-klipper/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
 
+- [retraction: z_hop while retracting](https://github.com/DangerKlippers/danger-klipper/pull/83) ([klipper#6311](https://github.com/Klipper3d/klipper/pull/6311))
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
 
 - [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)

@@ -8,7 +8,7 @@
 class PrintStats:
     def __init__(self, config):
         printer = self.printer = config.get_printer()
-        self.gcode_move = printer.load_object(config, 'gcode_move')
+        self.gcode_move = printer.load_object(config, "gcode_move")
         self.reactor = printer.get_reactor()
         self.reset()
         # Register commands
@@ -56,16 +56,19 @@ class PrintStats:
         if self.state != "error":
             self.state = "paused"
             self.printer.send_event("print_stats:paused_printing")
+
     def note_complete(self):
         self._note_finish("complete")
         self.printer.send_event("print_stats:complete_printing")
+
     def note_error(self, message):
         self._note_finish("error", message)
 
     def note_cancel(self):
         self._note_finish("cancelled")
         self.printer.send_event("print_stats:cancelled_printing")
-    def _note_finish(self, state, error_message = ""):
+
+    def _note_finish(self, state, error_message=""):
         if self.print_start_time is None:
             return
         self.state = state
