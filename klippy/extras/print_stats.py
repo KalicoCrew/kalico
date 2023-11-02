@@ -7,12 +7,12 @@
 
 class PrintStats:
     def __init__(self, config):
-        printer = self.printer = config.get_printer()
-        self.gcode_move = printer.load_object(config, "gcode_move")
-        self.reactor = printer.get_reactor()
+        self.printer = config.get_printer()
+        self.gcode_move = self.printer.load_object(config, "gcode_move")
+        self.reactor = self.printer.get_reactor()
         self.reset()
         # Register commands
-        self.gcode = printer.lookup_object("gcode")
+        self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
             "SET_PRINT_STATS_INFO",
             self.cmd_SET_PRINT_STATS_INFO,
