@@ -89,6 +89,14 @@ config USB_SERIAL_NUMBER
     string "USB serial number" if !USB_SERIAL_NUMBER_CHIPID
 endmenu
 
+menu "CAN bus UUID"
+    depends on CANBUS && LOW_LEVEL_OPTIONS
+config CAN_UUID_USE_CHIPID
+    bool "CAN bus UUID Hash from CHIPID" if HAVE_CHIPID
+config CAN_UUID_CUSTOM
+    string "CAN bus UUID Hash" if !CAN_UUID_USE_CHIPID
+endmenu
+
 # Optional features that can be disabled (for devices with small flash sizes)
 config WANT_GPIO_BITBANGING
     bool
@@ -152,6 +160,11 @@ config CANBUS_FREQUENCY
 config CANBUS_FILTER
     bool
     default y if CANSERIAL
+config CAN_UUID_USE_CHIPID
+    depends on CANBUS && HAVE_CHIPID
+    default y
+config CAN_UUID_CUSTOM
+    default "abc1234"
 
 # Support setting gpio state at startup
 config INITIAL_PINS
