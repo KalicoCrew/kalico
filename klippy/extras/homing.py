@@ -240,7 +240,7 @@ class Homing:
 
         for rail in affected_rails:
             ch = rail.get_tmc_current_helper()
-            if ch is not None:
+            if ch is not None and ch._home_current != ch.run_current:
                 ch.set_current_for_homing(print_time)
                 self.toolhead.dwell(0.5)
 
@@ -254,7 +254,7 @@ class Homing:
 
         for rail in affected_rails:
             ch = rail.get_tmc_current_helper()
-            if ch is not None:
+            if ch is not None and ch._home_current != ch.run_current:
                 ch.set_current_for_normal(print_time)
                 self.toolhead.dwell(0.5)
 
@@ -299,7 +299,8 @@ class Homing:
             ]
             self.toolhead.move(retractpos, hi.retract_speed)
             if not hi.use_sensorless_homing or needs_rehome:
-                self.toolhead.dwell(0.5)
+                if hi.use_sensorless_homing:
+                    self.toolhead.dwell(0.5)
                 # Home again
                 startpos = [
                     rp - ad * retract_r for rp, ad in zip(retractpos, axes_d)
