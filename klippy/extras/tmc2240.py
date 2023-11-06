@@ -281,6 +281,9 @@ class TMC2240CurrentHelper:
         self._home_current = config.getfloat(
             "home_current", self.run_current, above=0.0, maxval=self.max_cur
         )
+        self.current_change_dwell_time = config.getfloat(
+            "current_change_dwell_time", 0.5, above=0.0
+        )
         self.prev_current = self.run_current
         self.req_hold_current = self.hold_current
         current_range = self._calc_current_range(self.run_current)
@@ -291,6 +294,9 @@ class TMC2240CurrentHelper:
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
+
+    def needs_home_current_change(self):
+        return self._home_current != self.run_current
 
     def set_home_current(self, new_home_current):
         self._home_current = min(self.max_cur, new_home_current)

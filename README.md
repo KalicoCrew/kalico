@@ -54,27 +54,33 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [temperature_mcu: add reference_voltage](https://github.com/DangerKlippers/danger-klipper/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
 
+- [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
+
+- [homing: min_home_dist](https://github.com/DangerKlippers/danger-klipper/pull/90)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
 
-  - [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)
+- [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)
 
-  - [stepper: high precision stepping protocol](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [stepper: high precision stepping protocol](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
-  - [extruder: sync extruder motion with input shaper](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [extruder: sync extruder motion with input shaper](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
-  - [extruder: new print_pa_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [extruder: new print_pa_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
-  - [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
-  - [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
 ## Switch to Danger Klipper
+
 > [!NOTE]
 > Any add-on modules you are using will need to be reinstalled after switching to Danger Klipper. This includes things like Beacon support, led-effect, etc.
 >
 > Any data in ~/printer_data such as printer configs and macros will be unaffected.
 
 ### Manually clone the repository
+
 If desired, make a backup copy of your existing Klipper installation by running:
 
 ```bash
@@ -89,6 +95,7 @@ sudo systemctl restart klipper
 ```
 
 ### Using KIAUH
+
 For users that are not comfortable using Git directly, [KIAUH](https://github.com/dw-0/kiauh) is able to use custom repositories.
 
 To do this, add the Danger Klipper repo to KIAUH's repo list and run the script with the following commands:
@@ -99,6 +106,7 @@ echo "DangerKlippers/danger-klipper" >> ~/kiauh/klipper_repos.txt
 ```
 
 From the KIAUH menu select:
+
 - 6 ) Settings
 - 1 ) Set custom Klipper repository
 - Select the number corresponding to DangerKlipper from the list shown
@@ -107,6 +115,7 @@ From the KIAUH menu select:
 - 'Q' to quit
 
 ### Adding a git-remote to the existing installation
+
 ```bash
 cd ~/klipper
 git remote add danger https://github.com/DangerKlippers/danger-klipper.git
@@ -118,6 +127,7 @@ sudo systemctl restart moonraker
 ```
 
 ---
+
 "Dangerous Klipper for dangerous users"
 
 Klipper is a 3d-Printer firmware. It combines the power of a general

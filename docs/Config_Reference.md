@@ -218,6 +218,11 @@ position_max:
 #   Speed to use on the retract move after homing in case this should
 #   be different from the homing speed, which is the default for this
 #   parameter
+#min_home_dist:
+#   Minimum distance (in mm) for toolhead before sensorless homing. If closer
+#   than `min_home_dist` to endstop, it moves away to this distance, then homes.
+#   If further, it directly homes and retracts to `homing_retract_dist`.
+#   The default is equal to `homing_retract_dist`.
 #second_homing_speed:
 #   Velocity (in mm/s) of the stepper when performing the second home.
 #   The default is homing_speed/2.
@@ -3481,6 +3486,9 @@ run_current:
 #home_current:
 #   The amount of current (in amps RMS) to configure the driver to use
 #   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
 #sense_resistor: 0.110
 #   The resistance (in ohms) of the motor sense resistor. The default
 #   is 0.110 ohms.
@@ -3577,6 +3585,9 @@ run_current:
 #home_current:
 #   The amount of current (in amps RMS) to configure the driver to use
 #   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
 #sense_resistor: 0.110
 #   The resistance (in ohms) of the motor sense resistor. The default
 #   is 0.110 ohms.
@@ -3621,6 +3632,7 @@ uart_pin:
 run_current:
 #hold_current:
 #home_current:
+#current_change_dwell_time:
 #sense_resistor: 0.110
 #stealthchop_threshold: 0
 #   See the "tmc2208" section for the definition of these parameters.
@@ -3692,6 +3704,9 @@ run_current:
 #home_current:
 #   The amount of current (in amps RMS) to configure the driver to use
 #   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
 #sense_resistor:
 #   The resistance (in ohms) of the motor sense resistor. This
 #   parameter must be provided.
@@ -3775,6 +3790,9 @@ run_current:
 #home_current:
 #   The amount of current (in amps RMS) to configure the driver to use
 #   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
 #rref: 12000
 #   The resistance (in ohms) of the resistor between IREF and GND. The
 #   default is 12000.
@@ -3899,6 +3917,9 @@ run_current:
 #home_current:
 #   The amount of current (in amps RMS) to configure the driver to use
 #   during homing procedures. The default is to not reduce the current.
+#current_change_dwell_time:
+#   The amount of time (in seconds) to wait after changing homing current.
+#   The default is 0.5 seconds.
 #sense_resistor: 0.075
 #   The resistance (in ohms) of the motor sense resistor. The default
 #   is 0.075 ohms.
