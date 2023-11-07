@@ -48,6 +48,8 @@ Features merged into the master branch:
 
 - [danger_options: allow plugins to override conflicting extras](https://github.com/DangerKlippers/danger-klipper/pull/82)
 
+- [danger_options: expose the multi mcu homing timeout as a parameter](https://github.com/DangerKlippers/danger-klipper/pull/93)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
 
   - [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)

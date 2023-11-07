@@ -101,6 +101,8 @@ log_shutdown_info: True
 # Allows modules in `plugins` to override modules of the same name in `extras`
 allow_plugin_override: False
 
+# The timeout (in seconds) for MCU synchronization during the homing process when multiple MCUs are in use.
+multi_mcu_trsync_timeout: 0.025
 ```
 
 ## Common kinematic settings
