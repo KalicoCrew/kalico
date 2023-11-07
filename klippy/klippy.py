@@ -210,7 +210,7 @@ class Printer:
         msg_update = []
         msg_updated = []
 
-        for n, mcu_obj in self.lookup_objects("mcu"):
+        for mcu_name, mcu_obj in self.lookup_objects("mcu"):
             try:
                 mcu_version = mcu_obj.get_status()["mcu_version"]
             except:
@@ -220,15 +220,21 @@ class Printer:
             if mcu_version != host_version:
                 msg_update.append(
                     "%s: Current version %s"
-                    % (n.split()[-1], mcu_obj.get_status()["mcu_version"])
+                    % (
+                        mcu_name.split()[-1],
+                        mcu_obj.get_status()["mcu_version"],
+                    )
                 )
             else:
                 msg_updated.append(
                     "%s: Current version %s"
-                    % (n.split()[-1], mcu_obj.get_status()["mcu_version"])
+                    % (
+                        mcu_name.split()[-1],
+                        mcu_obj.get_status()["mcu_version"],
+                    )
                 )
 
-        if len(msg_updated) == 0:
+        if not len(msg_updated):
             msg_updated.append("<none>")
 
         version_msg = [
