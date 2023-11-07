@@ -22,6 +22,8 @@ command to reload the config and restart the host software.
 Printer is halted
 """
 
+message_protocol_error = """MCU Protocol error"""
+
 message_protocol_error1 = """
 This is frequently caused by running an older version of the
 firmware on the MCU(s). Fix by recompiling and flashing the
@@ -204,36 +206,49 @@ class Printer:
 
     def _build_protocol_error_message(self, e):
         host_version = self.start_args["software_version"]
+
         msg_update = []
         msg_updated = []
-        for mcu_name, _mcu in self.lookup_objects("mcu"):
+
+        for n, mcu_obj in self.lookup_objects("mcu"):
             try:
-                mcu_version = _mcu.get_status()["mcu_version"]
+                mcu_version = mcu_obj.get_status()["mcu_version"]
             except:
-                logging.exception("Unable to retrieve mcu_version from mcu")
+                logging.exception("Unable to retrieve mcu_version from mcu_obj")
                 continue
+
             if mcu_version != host_version:
                 msg_update.append(
                     "%s: Current version %s"
-                    % (mcu_name.split()[-1], mcu_version)
+                    % (n.split()[-1], mcu_obj.get_status()["mcu_version"])
                 )
             else:
                 msg_updated.append(
                     "%s: Current version %s"
-                    % (mcu_name.split()[-1], mcu_version)
+                    % (n.split()[-1], mcu_obj.get_status()["mcu_version"])
                 )
-        if not msg_update:
-            msg_update.append("<none>")
-        if not msg_updated:
+
+        if len(msg_updated) == 0:
             msg_updated.append("<none>")
-        msg = [
-            "MCU Protocol error",
-            message_protocol_error1,
-            "Your Klipper version is: %s" % (host_version,),
+
+        version_msg = [
+            "\nYour Klipper version is: %s\n" % host_version,
             "MCU(s) which should be updated:",
+            "\n%s\n" % "\n".join(msg_update),
+            "Up-to-date MCU(s):",
+            "\n%s\n" % "\n".join(msg_updated),
         ]
-        msg += msg_update + ["Up-to-date MCU(s):"] + msg_updated
-        msg += [message_protocol_error2, str(e)]
+
+        msg = [
+            message_protocol_error,
+            "",
+            " ".join(message_protocol_error1.splitlines())[1:],
+            "\n".join(version_msg),
+            " ".join(message_protocol_error2.splitlines())[1:],
+            "",
+            str(e),
+        ]
+
         return "\n".join(msg)
 
     def _connect(self, eventtime):
