@@ -692,6 +692,9 @@ software (see
 `FIRMWARE_RESTART`: This is similar to a RESTART command, but it also
 clears any error state from the micro-controller.
 
+#### HEATER_INTERRUPT
+`HEATER_INTERRUPT`: Interrupts a TEMPERATURE_WAIT command.
+
 #### STATUS
 `STATUS`: Report the Klipper host software status.
 

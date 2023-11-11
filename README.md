@@ -38,6 +38,8 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [gcode: expose math functions to gcode macros](https://github.com/DangerKlippers/danger-klipper/pull/173) ([klipper#4072](https://github.com/Klipper3d/klipper/pull/4072))
 
+- [gcode: HEATER_INTERRUPT gcode command](https://github.com/DangerKlippers/danger-klipper/pull/94)
+
 - [probe: dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
 
 - [probe: drop the first result](https://github.com/DangerKlippers/danger-klipper/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
