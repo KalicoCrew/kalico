@@ -59,6 +59,13 @@ BOARD_DEFS = {
         "spi_pins": "PA6,PB5,PA5",
         "cs_pin": "PA4",
     },
+    "btt-gtr": {"mcu": "stm32f407xx", "spi_bus": "spi1", "cs_pin": "PA4"},
+    "fysetc-spider": {
+        "mcu": "stm32f446xx",
+        "spi_bus": "spi1",
+        "cs_pin": "PA4",
+        "current_firmware_path": "OLD.BIN",
+    },
     "btt-skr-se-bx": {
         "mcu": "stm32h743xx",
         "spi_bus": "spi3a",

@@ -288,7 +288,6 @@ class MCU_trsync:
         return params["trigger_reason"]
 
 
-TRSYNC_TIMEOUT = 0.025
 TRSYNC_SINGLE_MCU_TIMEOUT = 0.250
 
 
@@ -308,6 +307,9 @@ class MCU_endstop:
         ffi_main, ffi_lib = chelper.get_ffi()
         self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
+        self.danger_options = self._mcu.get_printer().lookup_object(
+            "danger_options"
+        )
 
     def get_mcu(self):
         return self._mcu
@@ -370,7 +372,7 @@ class MCU_endstop:
         self._rest_ticks = rest_ticks
         reactor = self._mcu.get_printer().get_reactor()
         self._trigger_completion = reactor.completion()
-        expire_timeout = TRSYNC_TIMEOUT
+        expire_timeout = self.danger_options.multi_mcu_trsync_timeout
         if len(self._trsyncs) == 1:
             expire_timeout = TRSYNC_SINGLE_MCU_TIMEOUT
         for trsync in self._trsyncs:
