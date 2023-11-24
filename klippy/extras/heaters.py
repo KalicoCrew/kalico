@@ -194,8 +194,8 @@ class Heater:
     cmd_SET_HEATER_PID_help = "Sets a heater PID parameter"
 
     def cmd_SET_HEATER_PID(self, gcmd):
-        if not isinstance(self.control, ControlPID):
-            raise gcmd.error("Not a PID controlled heater")
+        if not isinstance(self.control, (ControlPID, ControlVelocityPID)):
+            raise gcmd.error("Not a PID/PID_V controlled heater")
         kp = gcmd.get_float("KP", None)
         if kp is not None:
             self.control.Kp = kp / PID_PARAM_BASE

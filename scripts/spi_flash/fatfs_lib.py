@@ -3,12 +3,13 @@
 # Copyright (C) 2021 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import chelper
 import os
 import sys
 
 KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 sys.path.append(os.path.join(KLIPPER_DIR, "klippy"))
+
+import chelper  # noqa: E402
 
 DEST_LIB = "fatfs.so"
 FATFS_DIR = os.path.join(KLIPPER_DIR, "lib/fatfs")

@@ -173,10 +173,20 @@ objects:
 
 The following information is available in the
 [firmware_retraction](Config_Reference.md#firmware_retraction) object:
-- `retract_length`, `retract_speed`, `unretract_extra_length`,
-  `unretract_speed`: The current settings for the firmware_retraction
-  module. These settings may differ from the config file if a
-  `SET_RETRACTION` command alters them.
+- `retract_length`: Current setting for length of filament retract moves.
+- `retract_speed`: Current setting for speed of filament retract moves.
+- `unretract_extra_length`: Current setting for additional length of filament
+  unretract moves (positive values will result in filament extrusion, while
+  negative values up to 1 mm (2.41 mm3 for 1.75 mm filament) will result in
+  lagging extrusion of filament).
+- `unretract_speed`: Current setting for speed of unretract moves of filament.
+- `unretract_length`: Unretract move length (sum of retract and extra unretract
+   length).
+- `z_hop_height`: Current setting for the height of nozzle lifting move (Z-Hop).
+- Above settings for the firmware_retraction module may differ from the
+  config file if a `SET_RETRACTION` command altered them. Additional information
+  available is as follows.
+- `retract_state`: Returns 'True' if filament is retracted.
 
 ## gcode_button
 
@@ -328,7 +338,8 @@ is defined):
 ## output_pin
 
 The following information is available in
-[output_pin some_name](Config_Reference.md#output_pin) objects:
+[output_pin some_name](Config_Reference.md#output_pin) and
+[pwm_tool some_name](Config_Reference.md#pwm_tool) objects:
 - `value`: The "value" of the pin, as set by a `SET_PIN` command.
 
 ## palette2
