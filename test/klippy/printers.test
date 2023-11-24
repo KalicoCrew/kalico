@@ -69,6 +69,10 @@ DICTIONARY stm32f405.dict
 # Printers using the stm32f407
 DICTIONARY stm32f407.dict
 
+# Printers using the stm32f429
+DICTIONARY stm32f429.dict
+CONFIG ../../config/generic-bigtreetech-octopus-v1.1.cfg
+
 # Printers using the stm32f446
 DICTIONARY stm32f446.dict
 
