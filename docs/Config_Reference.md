@@ -5842,6 +5842,36 @@ i2c_address:
 #   above parameters.
 ```
 
+### [tla2518]
+
+Configure a TLA2518 8-channel 12-bit ADC. These can be used as `sensor pin`s
+within `[temperature_sensor]` blocks. Any number of TLA2518 chips can be
+interfaced. Each TLA2518 provides 8 analog inputs, named `adc0` through `adc7`.
+The chip name will be `tla2518_<name>`.
+
+```
+[tla2518 my_tla2518]
+cs_pin:
+#   The pin corresponding to the TLA2518 chip select line. This pin
+#   will be set to low at the start of SPI messages and raised to high
+#   after the message completes. This parameter must be provided.
+#spi_speed:
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section for a description of the
+#   above parameters.
+```
+
+A configured TLA2518 can be used as a temperature sensor input, e.g.:
+```
+[temperature_sensor chamber]
+sensor_type: PT1000
+sensor_pin: tla2518_my_tla2518:adc3
+pullup_resistor: 2200
+```
+
 ### [samd_sercom]
 
 SAMD SERCOM configuration to specify which pins to use on a given
