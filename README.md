@@ -12,25 +12,27 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 ## Features merged into the master branch:
 
-- [core: No Python2 tests; No PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
+- [core: no Python2 tests; no PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
 
-- [fan: Normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
+- [fan: normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
-- [fan: Reverse FAN](https://github.com/DangerKlippers/danger-klipper/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
+- [fan: reverse FAN](https://github.com/DangerKlippers/danger-klipper/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
 
-- [heater: Modify PID without reload](https://github.com/DangerKlippers/danger-klipper/pull/35)
+- [heater: modify PID without reload](https://github.com/DangerKlippers/danger-klipper/pull/35)
 
-- [heater: Velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
+- [heater: velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
 
-- [gcode: Jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
+- [gcode: jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
 
 - [gcode: gcode_shell_command](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#2173](https://github.com/Klipper3d/klipper/pull/2173) / [kiuah](https://github.com/dw-0/kiauh/blob/master/resources/gcode_shell_command.py) )
 
-- [probe: Dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
+- [probe: dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
 
-- [probe: Drop the first result](https://github.com/DangerKlippers/danger-klipper/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
+- [probe: drop the first result](https://github.com/DangerKlippers/danger-klipper/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
 
 - [probe: z_calibration](https://github.com/DangerKlippers/danger-klipper/pull/31) ([klipper#4614](https://github.com/Klipper3d/klipper/pull/4614) / [protoloft/z_calibration](https://github.com/protoloft/klipper_z_calibration))
+
+- [z_tilt: z-tilt calibration](https://github.com/DangerKlippers/danger-klipper/pull/105) ([klipper3d#4083](https://github.com/Klipper3d/klipper/pull/4083) / [dk/ztilt_calibration](https://github.com/DangerKlippers/danger-klipper/pull/54))
 
 - [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
 
@@ -65,7 +67,7 @@ If you're feeling adventurous, take a peek at the extra features in the bleeding
   - [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
   - [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
- 
+
 ## Switch to Danger Klipper
 > [!NOTE]
 > Any add-on modules you are using will need to be reinstalled after switching to Danger Klipper. This includes things like Beacon support, led-effect, etc.

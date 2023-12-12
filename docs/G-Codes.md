@@ -1464,7 +1464,7 @@ adjustments to each Z stepper to compensate for tilt. See the PROBE command for
 details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
 value overrides the `horizontal_move_z` option specified in the config file.
 The follwing commands are availabe when the parameter "extra_points" is
-configured in the z_tilt_section:
+configured in the z_tilt_ng section:
 - `Z_TILT_CALIBRATE [AVGLEN=<value>]`: This command does multiple probe
   runs similar to Z_TILT_ADJUST, but with the additional points given in
   "extra_points". This leads to a more balanced bed adjustment in case the

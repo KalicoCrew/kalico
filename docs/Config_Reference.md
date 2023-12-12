@@ -1162,15 +1162,7 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   stepper. It is described using nozzle coordinates (the X, Y position
 #   of the nozzle if it could move directly above the point). The
 #   first entry corresponds to stepper_z, the second to stepper_z1,
-#   the third to stepper_z2, etc. This parameter must be provided,
-#   unless the parameter "extra_points" is provided. In that case only
-#   the command Z_TILT_AUTODETECT can be run to automatically determine
-#   the z_positions. See 'extra_points' below.
-#z_offsets:
-#   A list of Z offsets for each z_position. The z_offset is added to each
-#   probed value during Z_TILT_ADJUST to offset for unevenness of the bed.
-#   This values can also be automatically detected by running
-#   Z_TILT_CALIBRATE. See "extra_points" below.
+#   the third to stepper_z2, etc. This parameter must be provided.
 #points:
 #   A list of X, Y coordinates (one per line; subsequent lines
 #   indented) that should be probed during a Z_TILT_ADJUST command.
@@ -1193,6 +1185,30 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   more points than steppers then you will likely have a fixed
 #   minimum value for the range of probed points which you can learn
 #   by observing command output.
+```
+
+```
+[z_tilt_ng]
+#z_positions:
+# See [z_tilt]. This parameter must be provided,
+#   unless the parameter "extra_points" is provided. In that case only
+#   the command Z_TILT_AUTODETECT can be run to automatically determine
+#   the z_positions. See 'extra_points' below.
+#z_offsets:
+#   A list of Z offsets for each z_position. The z_offset is added to each
+#   probed value during Z_TILT_ADJUST to offset for unevenness of the bed.
+#   This values can also be automatically detected by running
+#   Z_TILT_CALIBRATE. See "extra_points" below.
+#points:
+# See [z_tilt]
+#speed: 50
+# See [z_tilt]
+#horizontal_move_z: 5
+# See [z_tilt]
+#retries: 0
+# See [z_tilt]
+#retry_tolerance: 0
+# See [z_tilt]
 #extra_points:
 #   A list in the same format as "points" above. This list contains
 #   additional points to be probed during the two calibration commands
@@ -1219,6 +1235,7 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   bed is tilted in a way that the nozzle touched the bed before the probe.
 #   The default is conservative.
 ```
+
 
 ### [quad_gantry_level]
 
