@@ -65,7 +65,7 @@ If you're feeling adventurous, take a peek at the extra features in the bleeding
   - [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
   - [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
- 
+
 ## Switch to Danger Klipper
 > [!NOTE]
 > Any add-on modules you are using will need to be reinstalled after switching to Danger Klipper. This includes things like Beacon support, led-effect, etc.
@@ -74,23 +74,28 @@ If you're feeling adventurous, take a peek at the extra features in the bleeding
 
 ### Manually clone the repository
 If desired, make a backup copy of your existing Klipper installation by running:
-```
+
+```bash
 mv ~/klipper ~/klipper_old
 ```
+
 Then clone the Danger Klipper repo and restart the klipper service:
-```
+
+```bash
 git clone https://github.com/DangerKlippers/danger-klipper.git ~/klipper
 sudo systemctl restart klipper
 ```
+
 ### Using KIAUH
 For users that are not comfortable using Git directly, [KIAUH](https://github.com/dw-0/kiauh) is able to use custom repositories.
 
 To do this, add the Danger Klipper repo to KIAUH's repo list and run the script with the following commands:
 
-```
+```bash
 echo "DangerKlippers/danger-klipper" >> ~/kiauh/klipper_repos.txt
 ~/kiauh/kiauh.sh
 ```
+
 From the KIAUH menu select:
 - 6 ) Settings
 - 1 ) Set custom Klipper repository
@@ -98,6 +103,17 @@ From the KIAUH menu select:
 - Select 'Y' to confirm replacing your existing Klipper install
 - Enter 'B' for back twice
 - 'Q' to quit
+
+### Adding a git-remote to the existing installation
+```bash
+cd ~/klipper
+git remote add danger https://github.com/DangerKlippers/danger-klipper.git
+git checkout -b upstream-master origin/master
+git branch -D master
+git checkout -b master danger/master
+sudo systemctl restart klipper
+sudo systemctl restart moonraker
+```
 
 ---
 "Dangerous Klipper for dangerous users"

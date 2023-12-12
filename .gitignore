@@ -11,3 +11,4 @@ ci_cache/
 _test_.*
 klippy/plugins/*
 !klippy/plugins/__init__.py
+.vscode
