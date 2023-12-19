@@ -280,17 +280,15 @@ class Homing:
             for i, dist in enumerate(hmove.distance_elapsed)
             if i in homing_axes
         ]
-
+        needs_rehome = False
+        retract_dist = hi.retract_dist
+        if any(
+            [abs(dist) < hi.min_home_dist for dist in homing_axis_distances]
+        ):
+            needs_rehome = True
+            retract_dist = hi.min_home_dist
         # Perform second home
-        if hi.retract_dist:
-            needs_rehome = False
-            retract_dist = hi.retract_dist
-            if any(
-                [abs(dist) < hi.min_home_dist for dist in homing_axis_distances]
-            ):
-                needs_rehome = True
-                retract_dist = hi.min_home_dist
-
+        if retract_dist:
             logging.info("needs rehome: %s", needs_rehome)
             # Retract
             startpos = self._fill_coord(forcepos)
