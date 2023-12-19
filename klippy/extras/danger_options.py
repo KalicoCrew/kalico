@@ -19,6 +19,9 @@ class DangerOptions:
         self.multi_mcu_trsync_timeout = config.getfloat(
             "multi_mcu_trsync_timeout", 0.025, minval=0.0
         )
+        self.homing_elapsed_distance_tolerance = config.getfloat(
+            "homing_elapsed_distance_tolerance", 0.5, minval=0.0
+        )
 
 
 def load_config(config):

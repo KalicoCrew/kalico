@@ -52,6 +52,8 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [danger_options: expose the multi mcu homing timeout as a parameter](https://github.com/DangerKlippers/danger-klipper/pull/93)
 
+- [danger_options: option to configure the homing elapsed distance tolerance](https://github.com/DangerKlippers/danger-klipper/pull/110)
+
 - [temperature_mcu: add reference_voltage](https://github.com/DangerKlippers/danger-klipper/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
 
 - [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)

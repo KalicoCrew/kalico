@@ -73,36 +73,43 @@ pins such as "extra_mcu:ar9" may then be used elsewhere in the config
 [mcu my_extra_mcu]
 # See the "mcu" section for configuration parameters.
 ```
+
 ## ⚠️ Danger Options
+
 A collection of DangerKlipper-specific system options
+
 ```
 [danger_options]
-
-# If an unused config option or section should cause an error
-# if False, will warn but allow klipper to still run
-error_on_unused_config_options: True
-
-# If statistics should be logged
-# (helpful for keeping the log clean during development)
-log_statistics: True
-
-# If the config file should be logged at startup
-log_config_file_at_startup: True
-
-# If the bed mesh should be logged on startup
-# (helpful for keeping the log clean during development)
-log_bed_mesh_at_startup: True
-
-# If we should log detailed crash info when an exception occurs
-# Most of it is overly-verbose and fluff and we still get a stack trace
-# for normal exceptions, so setting to False can help save time while developing
-log_shutdown_info: True
-
-# Allows modules in `plugins` to override modules of the same name in `extras`
-allow_plugin_override: False
-
-# The timeout (in seconds) for MCU synchronization during the homing process when multiple MCUs are in use.
-multi_mcu_trsync_timeout: 0.025
+#error_on_unused_config_options: True
+#   If an unused config option or section should cause an error
+#   if False, will warn but allow klipper to still run.
+#   The default is True.
+#log_statistics: True
+#   If statistics should be logged
+#   (helpful for keeping the log clean during development)
+#   The default is True.
+#log_config_file_at_startup: True
+#   If the config file should be logged at startup
+#   The default is True.
+#log_bed_mesh_at_startup: True
+#   If the bed mesh should be logged on startup
+#   (helpful for keeping the log clean during development)
+#   The default is True.
+#log_shutdown_info: True
+#   If we should log detailed crash info when an exception occurs
+#   Most of it is overly-verbose and fluff and we still get a stack trace
+#   for normal exceptions, so setting to False can help save time while developing
+#   The default is True.
+#allow_plugin_override: False
+#   Allows modules in `plugins` to override modules of the same name in `extras`
+#   The default is False.
+#multi_mcu_trsync_timeout: 0.025
+#   The timeout (in seconds) for MCU synchronization during the homing process when
+#   multiple MCUs are in use. The default is 0.025
+#homing_elapsed_distance_tolerance: 0.5
+#   Tolerance (in mm) for distance moved in the second homing. Ensures the
+#   second homing distance closely matches the `min_home_dist` when using
+#   sensorless homing. The default is 0.5mm.
 ```
 
 ## Common kinematic settings
@@ -365,7 +372,7 @@ example deltesian kinematics config file.
 
 Only parameters specific to deltesian printers are described here - see
 [common kinematic settings](#common-kinematic-settings) for available
- parameters.
+parameters.
 
 ```
 [printer]
@@ -914,6 +921,7 @@ See the [bed mesh guide](Bed_Mesh.md) and
 [command reference](G-Codes.md#bed_mesh) for additional information.
 
 Visual Examples:
+
 ```
  rectangular bed, probe_count = 3, 3:
              x---x---x (max_point)
@@ -1241,7 +1249,6 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   The default is conservative.
 ```
 
-
 ### [quad_gantry_level]
 
 Moving gantry leveling using 4 independently controlled Z motors.
@@ -1251,6 +1258,7 @@ WARNING: Using this on a moving bed may lead to undesirable results.
 If this section is present then a QUAD_GANTRY_LEVEL extended G-Code
 command becomes available. This routine assumes the following Z motor
 configuration:
+
 ```
  ----------------
  |Z1          Z2|
@@ -1261,6 +1269,7 @@ configuration:
  |Z           Z3|
  ----------------
 ```
+
 Where x is the 0, 0 point on the bed
 
 ```
@@ -1669,6 +1678,7 @@ Enable the "M118" and "RESPOND" extended
 ```
 
 ### [exclude_object]
+
 Enables support to exclude or cancel individual objects during the printing
 process.
 
@@ -1885,7 +1895,7 @@ aliases_<name>:
 
 Include file support. One may include additional config file from the
 main printer config file. Wildcards may also be used (eg,
-"configs/*.cfg").
+"configs/\*.cfg").
 
 ```
 [include my_other_config.cfg]
@@ -4890,8 +4900,8 @@ Octoprint as they will conflict, and 1 will fail to initialize
 properly likely aborting your print.
 
 If you use Octoprint and stream gcode over the serial port instead of
-printing from virtual_sd, then remo **M1** and **M0** from *Pausing commands*
-in *Settings > Serial Connection > Firmware & protocol* will prevent
+printing from virtual_sd, then remo **M1** and **M0** from _Pausing commands_
+in _Settings > Serial Connection > Firmware & protocol_ will prevent
 the need to start print on the Palette 2 and unpausing in Octoprint
 for your print to begin.
 
@@ -4914,7 +4924,7 @@ serial:
 ### [angle]
 
 Magnetic hall angle sensor support for reading stepper motor angle
-shaft measurements using a1333, as5047d, or tle5012b SPI chips.  The
+shaft measurements using a1333, as5047d, or tle5012b SPI chips. The
 measurements are available via the [API Server](API_Server.md) and
 [motion analysis tool](Debugging.md#motion-analysis-and-data-logging).
 See the [G-Code reference](G-Codes.md#angle) for available commands.
@@ -4982,8 +4992,8 @@ It is generally recommended to only use I2C devices that are on the
 same printed circuit board as the micro-controller.
 
 Most Klipper micro-controller implementations only support an
-`i2c_speed` of 100000 (*standard mode*, 100kbit/s). The Klipper "Linux"
-micro-controller supports a 400000 speed (*fast mode*, 400kbit/s), but it must be
+`i2c_speed` of 100000 (_standard mode_, 100kbit/s). The Klipper "Linux"
+micro-controller supports a 400000 speed (_fast mode_, 400kbit/s), but it must be
 [set in the operating system](RPi_microcontroller.md#optional-enabling-i2c)
 and the `i2c_speed` parameter is otherwise ignored. The Klipper
 "RP2040" micro-controller and ATmega AVR family support a rate of 400000
