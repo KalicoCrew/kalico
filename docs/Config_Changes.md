@@ -8,6 +8,18 @@ All dates in this document are approximate.
 
 ## Changes
 
+20231216: The `[hall_filament_width_sensor]` is changed to trigger filament runout
+when the thickness of the filament exceeds `max_diameter`. The maximum diameter
+defaults to `default_nominal_filament_diameter + max_difference`. See
+[[hall_filament_width_sensor] configuration
+reference](./Config_Reference.md#hall_filament_width_sensor) for more details.
+
+20231207: Several undocumented config parameters in the `[printer]`
+config section have been removed (the buffer_time_low,
+buffer_time_high, buffer_time_start, and move_flush_time parameters).
+
+20231110: Klipper v0.12.0 released.
+
 20230826: If `safe_distance` is set or calculated to be 0 in `[dual_carriage]`,
 the carriages proximity checks will be disabled as per documentation. A user
 may wish to configure `safe_distance` explicitly to prevent accidental crashes

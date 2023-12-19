@@ -79,7 +79,7 @@ class SensorBase:
         self._callback(last_read_time, temp)
 
     def report_fault(self, msg):
-        logging.warn(msg)
+        logging.warning(msg)
 
 
 ######################################################################

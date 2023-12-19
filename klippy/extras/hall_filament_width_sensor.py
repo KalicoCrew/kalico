@@ -34,7 +34,8 @@ class HallFilamentWidthSensor:
         )
         self.diameter = self.nominal_filament_dia
         self.is_active = config.getboolean("enable", False)
-        self.runout_dia = config.getfloat("min_diameter", 1.0)
+        self.runout_dia_min = config.getfloat("min_diameter", 1.0)
+        self.runout_dia_max = config.getfloat("max_diameter", self.max_diameter)
         self.is_log = config.getboolean("logging", False)
         # Use the current diameter instead of nominal while the first
         # measurement isn't in place
@@ -150,7 +151,7 @@ class HallFilamentWidthSensor:
         self.update_filament_array(last_epos)
         # Check runout
         self.runout_helper.note_filament_present(
-            self.diameter > self.runout_dia
+            self.runout_dia_min <= self.diameter <= self.runout_dia_max
         )
         # Does filament exists
         if self.diameter > 0.5:

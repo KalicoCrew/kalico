@@ -71,10 +71,8 @@ class ClockSync:
         self.queries_pending = 0
         # Extend clock to 64bit
         last_clock = self.last_clock
-        clock = (last_clock & ~0xFFFFFFFF) | params["clock"]
-        if clock < last_clock:
-            clock += 0x100000000
-        self.last_clock = clock
+        clock_delta = (params["clock"] - last_clock) & 0xFFFFFFFF
+        self.last_clock = clock = last_clock + clock_delta
         # Check if this is the best round-trip-time seen so far
         sent_time = params["#sent_time"]
         if not sent_time:
@@ -177,10 +175,9 @@ class ClockSync:
     # misc commands
     def clock32_to_clock64(self, clock32):
         last_clock = self.last_clock
-        clock_diff = (last_clock - clock32) & 0xFFFFFFFF
-        if clock_diff & 0x80000000:
-            return last_clock + 0x100000000 - clock_diff
-        return last_clock - clock_diff
+        clock_diff = (clock32 - last_clock) & 0xFFFFFFFF
+        clock_diff -= (clock_diff & 0x80000000) << 1
+        return last_clock + clock_diff
 
     def is_active(self):
         return self.queries_pending <= 4

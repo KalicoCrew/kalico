@@ -107,7 +107,7 @@ class LinearVoltage:
         for temp, volt in params:
             adc = (volt - voltage_offset) / adc_voltage
             if adc < 0.0 or adc > 1.0:
-                logging.warn(
+                logging.warning(
                     "Ignoring adc sample %.3f/%.3f in heater %s",
                     temp,
                     volt,

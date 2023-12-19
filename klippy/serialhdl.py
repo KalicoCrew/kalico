@@ -158,7 +158,7 @@ class SerialReader:
                 )
                 bus.send(set_id_msg)
             except (can.CanError, os.error) as e:
-                logging.warn(
+                logging.warning(
                     "%sUnable to open CAN port: %s", self.warn_prefix, e
                 )
                 self.reactor.pause(self.reactor.monotonic() + 5.0)
