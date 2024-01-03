@@ -400,10 +400,12 @@ class PrinterRail:
         self.endstop_map = {}
         self.add_extra_stepper(config)
         mcu_stepper = self.steppers[0]
+        self._tmc_current_helpers = [
+            s.get_tmc_current_helper() for s in self.steppers
+        ]
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
-        self.get_tmc_current_helper = mcu_stepper.get_tmc_current_helper
         # Primary endstop position
         mcu_endstop = self.endstops[0][0]
         if hasattr(mcu_endstop, "get_position_endstop"):
@@ -481,6 +483,9 @@ class PrinterRail:
                 "Invalid homing_positive_dir / position_endstop in '%s'"
                 % (config.get_name(),)
             )
+
+    def get_tmc_current_helpers(self):
+        return self._tmc_current_helpers
 
     def get_range(self):
         return self.position_min, self.position_max
