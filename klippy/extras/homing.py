@@ -266,7 +266,8 @@ class Homing:
                     if dwell_time is None:
                         dwell_time = ch.current_change_dwell_time
                     ch.set_current_for_homing(print_time)
-            self.toolhead.dwell(dwell_time)
+            if dwell_time:
+                self.toolhead.dwell(dwell_time)
 
     def _set_current_post_homing(self, homing_axes):
         print_time = self.toolhead.get_last_move_time()
@@ -280,12 +281,12 @@ class Homing:
             chs = rail.get_tmc_current_helpers()
             dwell_time = None
             for ch in chs:
-                print("current helping")
                 if ch is not None and ch.needs_home_current_change():
                     if dwell_time is None:
                         dwell_time = ch.current_change_dwell_time
                     ch.set_current_for_normal(print_time)
-            self.toolhead.dwell(dwell_time)
+            if dwell_time:
+                self.toolhead.dwell(dwell_time)
 
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation

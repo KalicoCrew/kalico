@@ -400,9 +400,7 @@ class PrinterRail:
         self.endstop_map = {}
         self.add_extra_stepper(config)
         mcu_stepper = self.steppers[0]
-        self._tmc_current_helpers = [
-            s.get_tmc_current_helper() for s in self.steppers
-        ]
+        self._tmc_current_helpers = None
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
@@ -485,6 +483,10 @@ class PrinterRail:
             )
 
     def get_tmc_current_helpers(self):
+        if self._tmc_current_helpers is None:
+            self._tmc_current_helpers = [
+                s.get_tmc_current_helper() for s in self.steppers
+            ]
         return self._tmc_current_helpers
 
     def get_range(self):
