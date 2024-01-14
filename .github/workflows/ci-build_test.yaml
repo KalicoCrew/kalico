@@ -27,8 +27,8 @@ jobs:
 
       - name: Test Klippy Only
         if: steps.changes.outputs.klippy == 'true' && steps.changes.outputs.klipper == 'false'
-        run: docker run -v $PWD:/klipper ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest "./scripts/ci-build.sh" 2>&1
+        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest "./scripts/ci-build.sh" 2>&1
 
       - name: Test Klipper Full
         if: steps.changes.outputs.klippy == 'true' && steps.changes.outputs.klipper == 'true'
-        run: docker run -v $PWD:/klipper ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest "./scripts/ci-build.sh" compile 2>&1
+        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest "./scripts/ci-build.sh" compile 2>&1

@@ -20,7 +20,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build
-        run: docker build -f scripts/Dockerfile-build -t ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest .
+        run: docker build -f scripts/Dockerfile-build -t dangerklippers/klipper-build:latest .
 
       - name: Push
-        run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/klipper-build:latest
+        run: docker push dangerklippers/klipper-build:latest
