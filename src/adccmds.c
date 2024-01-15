@@ -43,13 +43,15 @@ analog_in_event(struct timer *timer)
         a->timer.waketime += a->sample_time;
         return SF_RESCHEDULE;
     }
-    if (likely(a->value >= a->min_value && a->value <= a->max_value)) {
-        a->invalid_count = 0;
-    } else {
-        a->invalid_count++;
-        if (a->invalid_count >= a->range_check_count) {
-            try_shutdown("ADC out of range");
+    if (a->range_check_count > 0) {
+        if (likely(a->value >= a->min_value && a->value <= a->max_value)) {
             a->invalid_count = 0;
+        } else {
+            a->invalid_count++;
+            if (a->invalid_count >= a->range_check_count) {
+                try_shutdown("ADC out of range");
+                a->invalid_count = 0;
+            }
         }
     }
     sched_wake_task(&analog_wake);

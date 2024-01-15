@@ -110,6 +110,11 @@ A collection of DangerKlipper-specific system options
 #   Tolerance (in mm) for distance moved in the second homing. Ensures the
 #   second homing distance closely matches the `min_home_dist` when using
 #   sensorless homing. The default is 0.5mm.
+#adc_ignore_limits: False
+#   When set to true, this parameter ignores the min_value and max_value
+#   limits for ADC temperature sensors. It prevents shutdowns due to
+#   'ADC out of range' errors by allowing readings outside the specified
+#   range without triggering a shutdown. Default is False.
 ```
 
 ## Common kinematic settings

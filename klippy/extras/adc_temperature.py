@@ -15,6 +15,7 @@ SAMPLE_COUNT = 8
 REPORT_TIME = 0.300
 RANGE_CHECK_COUNT = 4
 
+
 # Interface between ADC and heater temperature callbacks
 class PrinterADCtoTemperature:
     def __init__(self, config, adc_convert):
@@ -24,6 +25,9 @@ class PrinterADCtoTemperature:
         self.mcu_adc.setup_adc_callback(REPORT_TIME, self.adc_callback)
         query_adc = config.get_printer().load_object(config, "query_adc")
         query_adc.register_adc(config.get_name(), self.mcu_adc)
+        self.danger_options = config.get_printer().lookup_object(
+            "danger_options"
+        )
 
     def setup_callback(self, temperature_callback):
         self.temperature_callback = temperature_callback
@@ -36,19 +40,26 @@ class PrinterADCtoTemperature:
         self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
 
     def setup_minmax(self, min_temp, max_temp):
+        if self.danger_options.adc_ignore_limits:
+            danger_check_count = 0
+        else:
+            danger_check_count = RANGE_CHECK_COUNT
+
         adc_range = [self.adc_convert.calc_adc(t) for t in [min_temp, max_temp]]
+
         self.mcu_adc.setup_minmax(
             SAMPLE_TIME,
             SAMPLE_COUNT,
             minval=min(adc_range),
             maxval=max(adc_range),
-            range_check_count=RANGE_CHECK_COUNT,
+            range_check_count=danger_check_count,
         )
 
 
 ######################################################################
 # Linear interpolation
 ######################################################################
+
 
 # Helper code to perform linear interpolation
 class LinearInterpolate:
@@ -98,6 +109,7 @@ class LinearInterpolate:
 # Linear voltage to temperature converter
 ######################################################################
 
+
 # Linear style conversion chips calibrated from temperature measurements
 class LinearVoltage:
     def __init__(self, config, params):
@@ -145,6 +157,7 @@ class CustomLinearVoltage:
 ######################################################################
 # Linear resistance to temperature converter
 ######################################################################
+
 
 # Linear resistance calibrated from temperature measurements
 class LinearResistance:

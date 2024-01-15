@@ -54,11 +54,15 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [danger_options: option to configure the homing elapsed distance tolerance](https://github.com/DangerKlippers/danger-klipper/pull/110)
 
+- [danger_options: option to ignore ADC out of range](https://github.com/DangerKlippers/danger-klipper/pull/129)
+
 - [temperature_mcu: add reference_voltage](https://github.com/DangerKlippers/danger-klipper/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
 
 - [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
 
 - [homing: min_home_dist](https://github.com/DangerKlippers/danger-klipper/pull/90)
+
+- [adxl345: improve ACCELEROMETER_QUERY command](https://github.com/DangerKlippers/danger-klipper/pull/124)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
 
@@ -73,8 +77,6 @@ If you're feeling adventurous, take a peek at the extra features in the bleeding
 - [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
 
 - [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
-
-- [adxl345: improve ACCELEROMETER_QUERY command](https://github.com/DangerKlippers/danger-klipper/pull/124)
 
 ## Switch to Danger Klipper
 
