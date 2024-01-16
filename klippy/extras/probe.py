@@ -217,6 +217,7 @@ class PrinterProbe:
         first_probe = True
         while len(positions) < sample_count:
             # Probe position
+            logging.info("probing!")
             pos = self._probe(speed)
             if self.drop_first_result and first_probe:
                 first_probe = False
@@ -234,6 +235,7 @@ class PrinterProbe:
                 positions = []
             # Retract
             if len(positions) < sample_count:
+                logging.info("retracting!")
                 self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
         if must_notify_multi_probe:
             self.multi_probe_end()

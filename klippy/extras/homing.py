@@ -82,6 +82,13 @@ class HomingMove:
         for stepper in kin.get_steppers():
             sname = stepper.get_name()
             kin_spos[sname] += offsets.get(sname, 0) * stepper.get_step_dist()
+            logging.info("step dist: %s", stepper.get_step_dist())
+            logging.info("kin_spos: %s", kin_spos)
+        cs = [
+            (s.get_name(), s.get_commanded_position())
+            for s in kin.get_steppers()
+        ]
+        logging.info("commanded_poses: %s", cs)
         thpos = self.toolhead.get_position()
         return list(kin.calc_position(kin_spos))[:3] + thpos[3:]
 
@@ -154,8 +161,11 @@ class HomingMove:
                 for sp in self.stepper_positions
             }
             haltpos = trigpos = self.calc_toolhead_pos(kin_spos, trig_steps)
+            logging.info("probe trigpos: %s", trigpos)
             if trig_steps != halt_steps:
+                logging.info("using halt steps")
                 haltpos = self.calc_toolhead_pos(kin_spos, halt_steps)
+            logging.info("probe haltpos: %s", haltpos)
         else:
             haltpos = trigpos = movepos
             over_steps = {
@@ -173,12 +183,15 @@ class HomingMove:
             }
             self.distance_elapsed = kin.calc_position(filled_steps_moved)
             if any(over_steps.values()):
+                logging.info("movepos: %s", movepos)
+
                 self.toolhead.set_position(movepos)
                 halt_kin_spos = {
                     s.get_name(): s.get_commanded_position()
                     for s in kin.get_steppers()
                 }
                 haltpos = self.calc_toolhead_pos(halt_kin_spos, over_steps)
+                logging.info("haltpos: %s", haltpos)
         self.toolhead.set_position(haltpos)
         # Signal homing/probing move complete
         try:
@@ -194,6 +207,10 @@ class HomingMove:
         if self.printer.get_start_args().get("debuginput") is not None:
             return None
         for sp in self.stepper_positions:
+            logging.info("sp endstop name: %s", sp.endstop_name)
+            logging.info("sp stepper name: %s", sp.stepper_name)
+            logging.info("sp start_pos: %s", sp.start_pos)
+            logging.info("sp halt_pos: %s", sp.halt_pos)
             if sp.start_pos == sp.trig_pos:
                 return sp.endstop_name
         return None

@@ -104,6 +104,7 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
                 continue;
             }
         }
+
         // Found next step - submit it
         int ret = stepcompress_append(sk->sc, sdir, m->print_time, guess.time);
         if (ret)

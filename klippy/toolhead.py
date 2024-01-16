@@ -15,6 +15,8 @@ import kinematics.extruder
 # Class to track each move request
 class Move:
     def __init__(self, toolhead, start_pos, end_pos, speed):
+        print("start_pos", start_pos)
+        print("end_pos", end_pos)
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -23,8 +25,12 @@ class Move:
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
-        self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
-        self.move_d = move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
+        self.axes_d = axes_d = [
+            end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)
+        ]  # distance of each axis
+        self.move_d = move_d = math.sqrt(
+            sum([d * d for d in axes_d[:3]])
+        )  # total move distance
         if move_d < 0.000000001:
             # Extrude only move
             self.end_pos = (
@@ -44,6 +50,8 @@ class Move:
         else:
             inv_move_d = 1.0 / move_d
         self.axes_r = [d * inv_move_d for d in axes_d]
+        # logging.info('axes_d', self.axes_d)
+        # logging.info('axes_r', self.axes_r)
         self.min_move_t = move_d / velocity
         # Junction speeds are tracked in velocity squared.  The
         # delta_v2 is the maximum amount of this squared-velocity that
@@ -122,9 +130,19 @@ class Move:
         self.end_v = end_v = math.sqrt(end_v2)
         # Determine time spent in each portion of move (time is the
         # distance divided by average velocity)
-        self.accel_t = accel_d / ((start_v + cruise_v) * 0.5)
-        self.cruise_t = cruise_d / cruise_v
-        self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
+        # logging.info("start_v: %f, cruise_v: %f, end_v: %f", start_v, cruise_v, end_v)
+        if (start_v + cruise_v) == 0:
+            self.accel_t = 0
+        else:
+            self.accel_t = accel_d / ((start_v + cruise_v) * 0.5)
+        if cruise_v == 0:
+            self.cruise_t = 0
+        else:
+            self.cruise_t = cruise_d / cruise_v
+        if end_v + cruise_v == 0:
+            self.decel_t = 0
+        else:
+            self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
 
 
 LOOKAHEAD_FLUSH_TIME = 0.250
@@ -164,6 +182,7 @@ class MoveQueue:
             move = queue[i]
             reachable_start_v2 = next_end_v2 + move.delta_v2
             start_v2 = min(move.max_start_v2, reachable_start_v2)
+
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
             if smoothed_v2 < reachable_smoothed_v2:
@@ -186,6 +205,9 @@ class MoveQueue:
                         if not update_flush_count and i < flush_count:
                             mc_v2 = peak_cruise_v2
                             for m, ms_v2, me_v2 in reversed(delayed):
+                                # logging.info("cruise_v2: %f", mc_v2)
+                                # logging.info("start_v2: %f", ms_v2)
+                                # logging.info("m: %f", m.__dict__)
                                 mc_v2 = min(mc_v2, ms_v2)
                                 m.set_junction(
                                     min(ms_v2, mc_v2), mc_v2, min(me_v2, mc_v2)
@@ -221,6 +243,7 @@ class MoveQueue:
         move.calc_junction(self.queue[-2])
         self.junction_flush -= move.min_move_t
         if self.junction_flush <= 0.0:
+            # logging.info('flushing...')
             # Enough moves have been queued to reach the target flush time.
             self.flush(lazy=True)
 
@@ -477,6 +500,7 @@ class ToolHead:
             if not self.can_pause:
                 self.need_check_pause = self.reactor.NEVER
                 return
+            logging.info("stalling...")
             eventtime = self.reactor.pause(eventtime + min(1.0, pause_time))
             est_print_time = self.mcu.estimated_print_time(eventtime)
             buffer_time = self.print_time - est_print_time
@@ -540,15 +564,29 @@ class ToolHead:
         self.printer.send_event("toolhead:set_position")
 
     def move(self, newpos, speed):
+        # logging.info('commanded_pos: %s', self.commanded_pos)
+        # logging.info('newpos: %s', newpos)
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
-        if move.is_kinematic_move:
-            self.kin.check_move(move)
-        if move.axes_d[3]:
-            self.extruder.check_move(move)
-        self.commanded_pos[:] = move.end_pos
-        self.move_queue.add_move(move)
+        moves = [move]
+        if hasattr(self.kin, "segment_move"):
+            move_positions = self.kin.segment_move(move)
+            if move_positions is None:
+                moves = []
+            elif move_positions:
+                # logging.info("move_positions: %s", move_positions)
+                moves = [
+                    Move(self, move[0], move[1], speed)
+                    for move in move_positions
+                ]
+        for move in moves:
+            if move.is_kinematic_move:
+                self.kin.check_move(move)
+            if move.axes_d[3]:
+                self.extruder.check_move(move)
+            self.commanded_pos[:] = move.end_pos
+            self.move_queue.add_move(move)
         if self.print_time > self.need_check_pause:
             self._check_pause()
 
@@ -615,6 +653,7 @@ class ToolHead:
         self.drip_completion = drip_completion
         # Submit move
         try:
+            # logging.info('drip newpos: %s', newpos)
             self.move(newpos, speed)
         except self.printer.command_error as e:
             self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
@@ -737,6 +776,12 @@ class ToolHead:
         requested_accel_to_decel = gcmd.get_float(
             "ACCEL_TO_DECEL", None, above=0.0
         )
+        requested_rotational_accel = gcmd.get_float(
+            "ROTATIONAL_ACCEL", None, above=0.0
+        )
+        requested_rotational_velocity = gcmd.get_float(
+            "ROTATIONAL_VELOCITY", None, above=0.0
+        )
         if max_velocity is not None:
             self.max_velocity = max_velocity
         if max_accel is not None:
@@ -745,6 +790,12 @@ class ToolHead:
             self.square_corner_velocity = square_corner_velocity
         if requested_accel_to_decel is not None:
             self.requested_accel_to_decel = requested_accel_to_decel
+        if requested_rotational_accel is not None:
+            self.kin.max_rotational_accel = requested_rotational_accel
+        if requested_rotational_velocity is not None:
+            self.kin.max_rotational_velocity = math.radians(
+                requested_rotational_velocity
+            )
         self._calc_junction_deviation()
         msg = (
             "max_velocity: %.6f\n"

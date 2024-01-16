@@ -33,6 +33,8 @@ SOURCE_FILES = [
     "kin_delta.c",
     "kin_deltesian.c",
     "kin_polar.c",
+    "kin_polarxz.c",
+    "kin_polarbed.c",
     "kin_rotary_delta.c",
     "kin_winch.c",
     "kin_extruder.c",
@@ -149,6 +151,14 @@ defs_kin_polar = """
     struct stepper_kinematics *polar_stepper_alloc(char type);
 """
 
+defs_kin_polarxz = """
+    struct stepper_kinematics *polarxz_stepper_alloc(char type);
+"""
+
+defs_kin_polarbed = """
+    struct stepper_kinematics *polarbed_stepper_alloc(char type);
+"""
+
 defs_kin_rotary_delta = """
     struct stepper_kinematics *rotary_delta_stepper_alloc(
         double shoulder_radius, double shoulder_height
@@ -251,12 +261,15 @@ defs_all = [
     defs_kin_delta,
     defs_kin_deltesian,
     defs_kin_polar,
+    defs_kin_polarxz,
+    defs_kin_polarbed,
     defs_kin_rotary_delta,
     defs_kin_winch,
     defs_kin_extruder,
     defs_kin_shaper,
     defs_kin_idex,
 ]
+
 
 # Update filenames to an absolute path
 def get_abs_files(srcdir, filelist):
@@ -304,6 +317,7 @@ def do_build_code(cmd):
 FFI_main = None
 FFI_lib = None
 pyhelper_logging_callback = None
+
 
 # Hepler invoked from C errorf() code to log errors
 def logging_callback(msg):

@@ -434,6 +434,7 @@ class PrinterConfig:
     def check_unused_options(self, config, error_on_unused):
         fileconfig = config.fileconfig
         objects = dict(self.printer.lookup_objects())
+        logging.info("objects: %s", objects)
         # Determine all the fields that have been accessed
         access_tracking = dict(config.access_tracking)
         for section in self.autosave.fileconfig.sections():

@@ -12,6 +12,7 @@ BUZZ_RADIANS_DISTANCE = math.radians(1.0)
 BUZZ_RADIANS_VELOCITY = BUZZ_RADIANS_DISTANCE / 0.250
 STALL_TIME = 0.100
 
+
 # Calculate a move's accel_t, cruise_t, and cruise_v
 def calc_move_time(dist, speed, accel):
     axis_r = 1.0
@@ -29,6 +30,36 @@ def calc_move_time(dist, speed, accel):
     return axis_r, accel_t, cruise_t, speed
 
 
+def calc_move_time_polar(dist, speed, accel):
+    # dist in degs, speed in deg/s and accel in deg/s/s
+    # except i think the math is the same no matter what, so extra func is not needed
+    axis_r = 1.0
+    if dist < 0.0:
+        axis_r = -1.0
+        dist = -dist
+    if not accel or not dist:
+        return axis_r, 0.0, dist / speed, speed
+    max_cruise_v2 = dist * accel
+    if max_cruise_v2 < speed**2:
+        speed = math.sqrt(max_cruise_v2)
+    accel_t = speed / accel
+    accel_decel_d = accel_t * speed
+    cruise_t = (dist - accel_decel_d) / speed
+    return axis_r, accel_t, cruise_t, speed
+
+
+def distance(p1, p2):
+    return math.sqrt(((p2[0] - p1[0]) ** 2) + ((p2[1] - p1[1]) ** 2))
+
+
+def cartesian_to_polar(x, y):
+    return (math.sqrt(x**2 + y**2), math.atan2(y, x))
+
+
+def polar_to_cartesian(r, theta):
+    return (r * math.cos(theta), r * math.sin(theta))
+
+
 class ForceMove:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -40,6 +71,9 @@ class ForceMove:
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         self.stepper_kinematics = ffi_main.gc(
             ffi_lib.cartesian_stepper_alloc(b"x"), ffi_lib.free
+        )
+        self.polar_bed_stepper_kinematics = ffi_main.gc(
+            ffi_lib.polarbed_stepper_alloc(b"a"), ffi_lib.free
         )
         # Register commands
         gcode = self.printer.lookup_object("gcode")
@@ -89,6 +123,12 @@ class ForceMove:
 
     def manual_move(self, stepper, dist, speed, accel=0.0):
         toolhead = self.printer.lookup_object("toolhead")
+        if stepper.units_in_radians:
+            # convert convert radians to degrees
+            dist = math.radians(dist)
+            speed = math.radians(speed)
+            accel = math.radians(accel)
+
         toolhead.flush_step_generation()
         prev_sk = stepper.set_stepper_kinematics(self.stepper_kinematics)
         prev_trapq = stepper.set_trapq(self.trapq)
@@ -114,10 +154,10 @@ class ForceMove:
         print_time = print_time + accel_t + cruise_t + accel_t
         stepper.generate_steps(print_time)
         self.trapq_finalize_moves(self.trapq, print_time + 99999.9)
-        stepper.set_trapq(prev_trapq)
-        stepper.set_stepper_kinematics(prev_sk)
         toolhead.note_kinematic_activity(print_time)
         toolhead.dwell(accel_t + cruise_t + accel_t)
+        stepper.set_trapq(prev_trapq)
+        stepper.set_stepper_kinematics(prev_sk)
 
     def _lookup_stepper(self, gcmd):
         name = gcmd.get("STEPPER")

@@ -328,7 +328,12 @@ def PrinterStepper(config, units_in_radians=False):
         units_in_radians,
     )
     # Register with helper modules
-    for mname in ["stepper_enable", "force_move", "motion_report"]:
+    for mname in [
+        "stepper_enable",
+        "force_move",
+        "motion_report",
+        "polar_alignment",
+    ]:
         m = printer.load_object(config, mname)
         m.register_stepper(config, mcu_stepper)
     return mcu_stepper

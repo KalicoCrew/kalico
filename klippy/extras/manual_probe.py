@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import bisect
+import logging
 
 
 class ManualProbe:
@@ -153,6 +154,7 @@ def verify_no_manual_probe(printer):
 Z_BOB_MINIMUM = 0.500
 BISECT_MAX = 0.200
 
+
 # Helper script to determine a Z height
 class ManualProbeHelper:
     def __init__(self, printer, gcmd, finalize_callback):
@@ -211,6 +213,7 @@ class ManualProbeHelper:
     def report_z_status(self, warn_no_change=False, prev_pos=None):
         # Get position
         kin_pos = self.get_kinematics_pos()
+        logging.info("kinematics pos: %s", kin_pos)
         z_pos = kin_pos[2]
         if warn_no_change and z_pos == prev_pos:
             self.gcode.respond_info(

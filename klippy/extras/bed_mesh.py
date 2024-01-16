@@ -26,6 +26,19 @@ class BedMeshError(Exception):
     pass
 
 
+def linear_interpolate(start, stop, n):
+    """
+    Linearly interpolate from start to stop over n steps.
+    """
+    interp_values = []
+    if n == 1:
+        return [(start + stop) / 2]
+    for i in range(n):
+        interp = start + (stop - start) * (i / (n - 1))
+        interp_values.append(interp)
+    return interp_values
+
+
 # PEP 485 isclose()
 def isclose(a, b, rel_tol=1e-09, abs_tol=0.0):
     return abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
@@ -411,25 +424,58 @@ class BedMeshCalibrate:
             max_x = min_x + x_dist * (x_cnt - 1)
         pos_y = min_y
         points = []
-        for i in range(y_cnt):
-            for j in range(x_cnt):
-                if not i % 2:
-                    # move in positive directon
-                    pos_x = min_x + j * x_dist
-                else:
-                    # move in negative direction
-                    pos_x = max_x - j * x_dist
-                if self.radius is None:
-                    # rectangular bed, append
-                    points.append((pos_x, pos_y))
-                else:
-                    # round bed, check distance from origin
-                    dist_from_origin = math.sqrt(pos_x * pos_x + pos_y * pos_y)
-                    if dist_from_origin <= self.radius:
-                        points.append(
-                            (self.origin[0] + pos_x, self.origin[1] + pos_y)
+
+        if self.polar is True:
+            radius_points = x_cnt // 2
+            radius = self.radius
+            spacing = radius // radius_points
+            radius_steps = []
+            for i in range(radius_points):
+                radius_steps.append(radius)
+                radius -= spacing
+
+            num_points_per_quadrant = radius_points
+            polar_points = []
+            for radius_step in radius_steps:
+                total_points = num_points_per_quadrant * 4
+                angle = 0
+                for i in range(total_points):
+                    polar_point = (radius_step, angle)
+                    polar_points.append(polar_point)
+                    angle += (math.pi / 2) / num_points_per_quadrant
+                    if angle > (math.pi * 2):
+                        angle = angle - (math.pi * 2)
+                num_points_per_quadrant -= 1
+            polar_points.append((0, 0))
+            for polar_point in polar_points:
+                radius = polar_point[0]
+                angle = polar_point[1]
+                x = radius * math.cos(angle)
+                y = radius * math.sin(angle)
+                points.append((x, y))
+        else:
+            # rectangular bed logic
+            for i in range(y_cnt):
+                for j in range(x_cnt):
+                    if not i % 2:
+                        # move in positive directon
+                        pos_x = min_x + j * x_dist
+                    else:
+                        # move in negative direction
+                        pos_x = max_x - j * x_dist
+                    if self.radius is None:
+                        # rectangular bed, append
+                        points.append((pos_x, pos_y))
+                    else:
+                        # round bed, check distance from origin
+                        dist_from_origin = math.sqrt(
+                            pos_x * pos_x + pos_y * pos_y
                         )
-            pos_y += y_dist
+                        if dist_from_origin <= self.radius:
+                            points.append(
+                                (self.origin[0] + pos_x, self.origin[1] + pos_y)
+                            )
+                pos_y += y_dist
         self.points = points
         rri = self.relative_reference_index
         if self.zero_ref_pos is None and rri is not None:
@@ -546,6 +592,7 @@ class BedMeshCalibrate:
         mesh_cfg = self.mesh_config
         orig_cfg = self.orig_config
         self.radius = config.getfloat("mesh_radius", None, above=0.0)
+        self.polar = config.getboolean("polar", False)
         if self.radius is not None:
             self.origin = config.getfloatlist(
                 "mesh_origin", (0.0, 0.0), count=2
@@ -772,6 +819,60 @@ class BedMeshCalibrate:
                 % (ref_pos[0], ref_pos[1], ref_pos[2])
             )
             z_offset = ref_pos[2]
+        kin = self.bedmesh.toolhead.get_kinematics()
+        if self.polar:
+            # polar! need to re-order points
+            x_cnt = self.mesh_config["x_count"]
+            y_cnt = self.mesh_config["y_count"]
+            min_x, min_y = self.mesh_min
+            max_x, max_y = self.mesh_max
+            x_dist = (max_x - min_x) / (x_cnt - 1)
+            y_dist = (max_y - min_y) / (y_cnt - 1)
+            # floor distances down to next hundredth
+            x_dist = math.floor(x_dist * 100) / 100
+            y_dist = math.floor(y_dist * 100) / 100
+            pos_y = min_y
+            new_positions = []
+            expected_points = []
+            # build list of expected points
+
+            for i in range(y_cnt):
+                for j in range(x_cnt):
+                    if not i % 2:
+                        # move in positive directon
+                        pos_x = min_x + j * x_dist
+                    else:
+                        # move in negative direction
+                        pos_x = max_x - j * x_dist
+                    # round bed, check distance from origin
+                    dist_from_origin = math.sqrt(pos_x * pos_x + pos_y * pos_y)
+                    if dist_from_origin <= self.radius:
+                        expected_points.append(
+                            (self.origin[0] + pos_x, self.origin[1] + pos_y)
+                        )
+                pos_y += y_dist
+            # reorder the points to be from bottom up like klipper wants
+            # find next_point in positions
+            for expected_point in expected_points:
+                for p in positions:
+                    if isclose(p[0], expected_point[0]) and isclose(
+                        p[1], expected_point[1]
+                    ):
+                        new_positions.append(p)
+                        break
+                    elif expected_point[0] == 0 and expected_point[1] == 0:
+                        zero_cross_rounded = round(kin.zero_crossing_radius, 2)
+                        if (
+                            abs(p[0]) <= zero_cross_rounded
+                            and abs(p[1]) <= zero_cross_rounded
+                        ):
+                            p[0] = 0
+                            p[1] = 0
+                            new_positions.append(p)
+            logging.info("expected_points: %s", expected_points)
+            logging.info("original_positions: %s", positions)
+            logging.info("new_positions: %s", new_positions)
+            positions = new_positions
         params = dict(self.mesh_config)
         params["min_x"] = min(positions, key=lambda p: p[0])[0] + x_offset
         params["max_x"] = max(positions, key=lambda p: p[0])[0] + x_offset
@@ -827,6 +928,11 @@ class BedMeshCalibrate:
                     )
             positions = corrected_pts
 
+        if self.relative_reference_index is not None:
+            # zero out probe z offset and
+            # set offset relative to reference index
+            z_offset = positions[self.relative_reference_index][2]
+
         probed_matrix = []
         row = []
         prev_pos = positions[0]
@@ -855,8 +961,146 @@ class BedMeshCalibrate:
                 % (len(probed_matrix), str(probed_matrix))
             )
 
-        if self.radius is not None:
-            # round bed, extrapolate probed values to create a square mesh
+        if self.polar:
+            """
+            interpolate each "ring" of numbers in the matrix
+            """
+            x_cnt = len(probed_matrix)
+            for row in probed_matrix:
+                row_size = len(row)
+                if not row_size & 1:
+                    # an even number of points in a row shouldn't be possible
+                    msg = "bed_mesh: incorrect number of points sampled on X\n"
+                    msg += "Probed Table:\n"
+                    msg += str(probed_matrix)
+                    raise self.gcode.error(msg)
+                buf_cnt = (x_cnt - row_size) // 2
+                if buf_cnt == 0:
+                    continue
+                left_buffer = [0] * buf_cnt
+                right_buffer = [0] * buf_cnt
+                row[0:0] = left_buffer
+                row.extend(right_buffer)
+            logging.info(
+                "bed_mesh: zero-padded matrix: %s" % str(probed_matrix)
+            )
+            n = x_cnt
+            center = n // 2
+            # i'm sorry.
+            for r in range(center, 0, -1):
+                row_depth = center - r
+                mid_top = probed_matrix[row_depth][center]
+                mid_bottom = probed_matrix[n - row_depth - 1][center]
+                mid_left = probed_matrix[center][row_depth]
+                mid_right = probed_matrix[center][n - row_depth - 1]
+                # fill in top left corner interpolation
+                probed_matrix[row_depth][row_depth] = (mid_top + mid_left) / 2
+                # fill in top right corner interpolation
+                probed_matrix[row_depth][n - row_depth - 1] = (
+                    mid_top + mid_right
+                ) / 2
+                # fill in bottom left corner interpolation
+                probed_matrix[n - row_depth - 1][row_depth] = (
+                    mid_bottom + mid_left
+                ) / 2
+                # fill in bottom right corner interpolation
+                probed_matrix[n - row_depth - 1][n - row_depth - 1] = (
+                    mid_bottom + mid_right
+                ) / 2
+
+                interpolations_left_in_each_row = (r * 2) - 2
+                left_in_each_side = interpolations_left_in_each_row // 2
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[row_depth][row_depth]
+                stop_val = mid_top
+                left_top_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in left side of top row of probed_matrix with left_top_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[row_depth][row_depth + i + 1] = left_top_vals[
+                        i
+                    ]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[row_depth][n - row_depth - 1]
+                stop_val = mid_top
+                right_top_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in right side of top row of probed_matrix with right_top_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[row_depth][
+                        n - row_depth - 1 - i - 1
+                    ] = right_top_vals[i]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[n - row_depth - 1][row_depth]
+                stop_val = mid_bottom
+                left_bottom_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in left side of bottom row of probed_matrix with left_bottom_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[n - row_depth - 1][
+                        row_depth + i + 1
+                    ] = left_bottom_vals[i]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[n - row_depth - 1][n - row_depth - 1]
+                stop_val = mid_bottom
+                right_bottom_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in right side of bottom row of probed_matrix with right_bottom_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[n - row_depth - 1][
+                        n - row_depth - 1 - i - 1
+                    ] = right_bottom_vals[i]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[row_depth][row_depth]
+                stop_val = mid_left
+                top_left_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in top side of left row of probed_matrix with top_left_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[row_depth + i + 1][row_depth] = top_left_vals[
+                        i
+                    ]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[row_depth][n - row_depth - 1]
+                stop_val = mid_right
+                top_right_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in top side of right row of probed_matrix with top_right_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[row_depth + i + 1][
+                        n - row_depth - 1
+                    ] = top_right_vals[i]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[n - row_depth - 1][row_depth]
+                stop_val = mid_left
+                bottom_left_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in bottom side of left row of probed_matrix with bottom_left_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[n - row_depth - 1 - i - 1][
+                        row_depth
+                    ] = bottom_left_vals[i]
+                # interpolate from corner to mid value over the length of left_in_each_side
+                start_val = probed_matrix[n - row_depth - 1][n - row_depth - 1]
+                stop_val = mid_right
+                bottom_right_vals = linear_interpolate(
+                    start_val, stop_val, left_in_each_side
+                )
+                # fill in bottom side of right row of probed_matrix with bottom_right_vals
+                for i in range(left_in_each_side):
+                    probed_matrix[n - row_depth - 1 - i - 1][
+                        n - row_depth - 1
+                    ] = bottom_right_vals[i]
+            logging.info("probed_matrix: %s", probed_matrix)
+        elif self.radius is not None:
+            # nonpolar round bed, extrapolate probed values to create a square mesh
             for row in probed_matrix:
                 row_size = len(row)
                 if not row_size & 1:
