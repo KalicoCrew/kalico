@@ -11,15 +11,16 @@ Klipper and choosing an initial config file.
 ## High precision stepping and stepcompress protocol
 
 The configuration for this feature is done during klipper firmware compile 
-by selecting "High Precision Stepping Support" option during the "make menuconfig" 
-command. There are no configuration parameters required for this feature.
+by selecting "High-precision stepping support" option when making the klipper
+firmware. There are no configuration parameters required for this feature.
 
-ADD PHOTO OF MENU
+![make_menuconfig](img/high-precision-menu-makeconfig.jpg)
 
 ## Input shaper
 
 ### [input_shaper] 
-Syncronisation of extruder motion with the input shaper to improve the quality of extrusion relative to toolhead motion.
+Syncronisation of extruder motion with the input shaper to improve the quality 
+of extrusion relative to toolhead motion.
 
 See the bleed edge feature guide (ADD LINK) for information on this feature.
 
@@ -28,9 +29,12 @@ See the bleed edge feature guide (ADD LINK) for information on this feature.
 #enabled_extruders: extruder
 ```
 
-Smooth input shaper can be used to mitigate the effect of resonant frequency vibrations on print quality.
+Smooth input shapers can be used to mitigate the effect of resonant frequency 
+vibrations on print quality. They 
+are a more complex alternative to the standard klipper input shapers.
 
-See the bleed edge feature guide (ADD LINK) for information on the function of smooth input shaper types.
+See the bleed edge feature guide (ADD LINK) for information on the function of 
+smooth input shaper types.
 
 ```
 [input_shaper]
@@ -60,7 +64,8 @@ See the bleed edge feature guide (ADD LINK) for information on the function of s
 ### [ringing_tower]
 Ringing tower print utility which isolates vibrations to one axis at a time.
 
-See the bleed edge feature guide (ADD LINK) for information on running this test print.
+See the bleed edge feature guide (ADD LINK) for information on running this 
+test print.
 
 ```
 [ringing_tower]
@@ -100,7 +105,8 @@ See the bleed edge feature guide (ADD LINK) for information on running this test
 ### [pa_test]
 Pressure advance tower print utility
 
-See the bleed edge feature guide (ADD LINK) for information on running this test print.
+See the bleed edge feature guide (ADD LINK) for information on running this 
+test print.
 
 ```
 [pa_test]
