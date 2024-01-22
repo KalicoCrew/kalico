@@ -10,11 +10,20 @@ Klipper and choosing an initial config file.
 
 ## High precision stepping and new stepcompress protocol
 
-The configuration for this feature is done during klipper firmware compile 
-by selecting "High-precision stepping support" option when making the klipper
-firmware. There are no configuration parameters required for this feature.
+This feature is enabled during klipper firmware compile 
+by selecting "High-precision stepping support" option in menuconfig. 
+The firmware then needs to be flashed to the MCU.
 
 ![make_menuconfig](img/high-precision-menu-makeconfig.jpg)
+
+The following configuration line should be added to each stepper using this feature. 
+For example in a CoreXY system the config line would be added to [stepper_x] and [stepper_y] 
+so that it is enabled in both steppers controlling the X-Y movement of the toolhead.
+```
+[stepper_... ]
+high_precision_step_compress: True
+```
+Note that enabling this feature in the config without recompiling and flashing the firmware will give an error.
 
 ## Input shaper
 
@@ -24,7 +33,7 @@ firmware. There are no configuration parameters required for this feature.
 
 ```
 [input_shaper] 
-#enabled_extruders: extruder
+enabled_extruders: extruder
 ```
 
 **Smooth Input Shapers**
@@ -32,7 +41,7 @@ firmware. There are no configuration parameters required for this feature.
 
 ```
 [input_shaper]
-#shaper_type: 
+shaper_type: 
 #   A type of the input shaper to use for both X and Y axes. Supported
 #   shapers are smooth_zv, smooth_mzv, smooth_ei, smooth_2hump_ei, smooth_zvd_ei,
 #   smooth_si, mzv, ei, 2hump_ei.
@@ -41,9 +50,9 @@ firmware. There are no configuration parameters required for this feature.
 #   If shaper_type is not set, these two parameters can be used to
 #   configure different input shapers for X and Y axes. The same
 #   values are supported as for shaper_type parameter.
-#smoother_freq_x: 0
+smoother_freq_x: 0
 #  A frequency (in Hz) of the smooth input shaper for X axis.
-#smoother_freq_y: 0
+smoother_freq_y: 0
 #  A frequency (in Hz) of the smooth input shaper for Y axis.
 #damping_ratio_x: 0.1
 #damping_ratio_y: 0.1
@@ -61,22 +70,22 @@ Ringing tower test print utility which isolates vibrations to one axis at a time
 
 ```
 [ringing_tower]
-#size: 100
-#height: 60
-#band: 5
-#perimeters: 2
-#velocity: 80
+size: 100
+height: 60
+band: 5
+perimeters: 2
+velocity: 80
 #   Is the velocity one must use as V in a formula V * N / D when
 #   calculating the resonance frequency. N and D are the number of
 #   oscillations and the distance between them as usual:
-#brim_velocity: 30
-#accel_start: 1500
+brim_velocity: 30
+accel_start: 1500
 #   The acceleration of the start of the test
-#accel_step: 500
+accel_step: 500
 #   The increment of the acceleration every `band` mm
-#layer_height: 0.2
-#first_layer_height: 0.2
-#filament_diameter: 1.75
+layer_height: 0.2
+first_layer_height: 0.2
+filament_diameter: 1.75
 
 #   Parameters that are computed automatically, but may be adjusted if necessary
 #center_x:
@@ -100,19 +109,19 @@ Pressure advance tower test print utility
 
 ```
 [pa_test]
-#size_x: 100
-#size_y: 50
-#height: 50
-#origin_x:
+size_x: 100
+size_y: 50
+height: 50
+origin_x:
 #   Center of the bed in x
-#origin_y:
+origin_y:
 #   Center of the bed in y
-#layer_height: 0.2
-#first_layer_height: 0.3
-#perimeters: 2
-#brim_width: 10
-#slow_velocity: 20
-#fast_velocity: 80
-#filament_diameter: 1.75
+layer_height: 0.2
+first_layer_height: 0.3
+perimeters: 2
+brim_width: 10
+slow_velocity: 20
+fast_velocity: 80
+filament_diameter: 1.75
 ```
 
