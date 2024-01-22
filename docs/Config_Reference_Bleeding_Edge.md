@@ -8,7 +8,7 @@ to cut-and-paste them into a printer config file. See the
 [installation document](Installation.md) for information on setting up
 Klipper and choosing an initial config file.
 
-## High precision stepping and stepcompress protocol
+## High precision stepping and new stepcompress protocol
 
 The configuration for this feature is done during klipper firmware compile 
 by selecting "High-precision stepping support" option when making the klipper
@@ -19,29 +19,23 @@ firmware. There are no configuration parameters required for this feature.
 ## Input shaper
 
 ### [input_shaper] 
-Syncronisation of extruder motion with the input shaper to improve the quality 
-of extrusion relative to toolhead motion.
+**Extruder PA Synchronization with Input Shaping**
 
-See the bleed edge feature guide (ADD LINK) for information on this feature.
 
 ```
 [input_shaper] 
 #enabled_extruders: extruder
 ```
 
-Smooth input shapers can be used to mitigate the effect of resonant frequency 
-vibrations on print quality. They 
-are a more complex alternative to the standard klipper input shapers.
+**Smooth Input Shapers**
 
-See the bleed edge feature guide (ADD LINK) for information on the function of 
-smooth input shaper types.
 
 ```
 [input_shaper]
-#shaper_type: smooth_mzv
+#shaper_type: 
 #   A type of the input shaper to use for both X and Y axes. Supported
 #   shapers are smooth_zv, smooth_mzv, smooth_ei, smooth_2hump_ei, smooth_zvd_ei,
-#   smooth_si, mzv, ei, 2hump_ei. ?The default is smooth_mzv input shaper?
+#   smooth_si, mzv, ei, 2hump_ei.
 #shaper_type_x:
 #shaper_type_y:
 #   If shaper_type is not set, these two parameters can be used to
@@ -62,10 +56,8 @@ smooth input shaper types.
 ## Test print utilities
 
 ### [ringing_tower]
-Ringing tower print utility which isolates vibrations to one axis at a time.
+Ringing tower test print utility which isolates vibrations to one axis at a time.
 
-See the bleed edge feature guide (ADD LINK) for information on running this 
-test print.
 
 ```
 [ringing_tower]
@@ -87,26 +79,24 @@ test print.
 #filament_diameter: 1.75
 
 #   Parameters that are computed automatically, but may be adjusted if necessary
-#center_x: ...
+#center_x:
 #   Center of the bed by default (if detected correctly)
-#center_y: ...
+#center_y:
 #   Center of the bed by default (if detected correctly)
-#brim_width: ...
+#brim_width:
 #   Computed based on the model size, but may be increased
 
 #   Parameters that are better left at their default values
 #notch: 1
 #   Size of the notch in mm
-#notch_offset: ...
+#notch_offset: 
 #   0.275 * size by default
 #deceleration_points: 100
 ```
 
 ### [pa_test]
-Pressure advance tower print utility
+Pressure advance tower test print utility
 
-See the bleed edge feature guide (ADD LINK) for information on running this 
-test print.
 
 ```
 [pa_test]
@@ -114,9 +104,9 @@ test print.
 #size_y: 50
 #height: 50
 #origin_x:
-#   bed_center_x
+#   Center of the bed in x
 #origin_y:
-#   bed_center_y
+#   Center of the bed in y
 #layer_height: 0.2
 #first_layer_height: 0.3
 #perimeters: 2

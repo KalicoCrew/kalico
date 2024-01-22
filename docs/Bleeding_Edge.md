@@ -7,7 +7,7 @@ The following are experimental features found in the bleeding edge branch of dan
 https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 
 ### Overview
-The "Stepcompress and Precision" feature in Klipper represents a significant advancement in the control and accuracy of stepper motor movements. This feature enhances the step compression algorithm, crucial for transmitting stepper commands efficiently and accurately in 3D printing.
+The "Stepcompress and Precision" feature in Klipper is a proposed improvement in the control and accuracy of stepper motor movements. This feature enhances the step compression algorithm, crucial for transmitting stepper commands efficiently and accurately in 3D printing.
 
 ### Existing Step Compression Mechanism
 - Process: Initially, an iterative solver generates step timings based on movement and kinematics. These steps are then compressed for transmission, and the MCU executes the compressed steps.
@@ -33,7 +33,7 @@ The "Stepcompress and Precision" feature in Klipper represents a significant adv
 https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 
 ### Overview
-The "Smooth Input Shaper" is an advanced feature in Klipper's advanced-features branch, designed to enhance 3D printing quality by employing polynomial smooth functions for input shaping. This feature aims to provide a smoother acceleration profile, similar to an S-curve, though with distinct characteristics due to its fixed timing.
+The "Smooth Input Shaper" employs a polynomial smooth functions for input shaping. This feature aims to provide a smoother acceleration profile, similar to an S-curve, though with distinct characteristics due to its fixed timing.
 
 ### Key Features
 - **Polynomial smooth functions:** Unlike traditional discrete input shapers, Smooth Input Shaper uses polynomial smooth functions for more effective smoothing of the toolhead motion.
@@ -59,7 +59,7 @@ The "Smooth Input Shaper" is an advanced feature in Klipper's advanced-features 
 https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843
 
 ### Overview
-Klipper's new feature, "Extruder PA Synchronization with Input Shaping," is an advanced implementation designed to enhance 3D printing quality by synchronizing filament extrusion (Pressure Advance - PA) with the toolhead's motion. This synchronization aims to reduce artifacts by compensating for changes in toolhead motion, especially in scenarios where input shaping is employed to minimize vibration and ringing.
+"Extruder PA Synchronization with Input Shaping," synchronizes filament extrusion (Pressure Advance - PA) with the toolhead's motion. This synchronization aims to reduce artifacts by compensating for changes in toolhead motion, especially in scenarios where input shaping is employed to minimize vibration and ringing.
 
 ### Background
 Input shaping is a technique used to alter toolhead motion to reduce vibrations. While Klipper's existing pressure advance algorithm helps in synchronizing filament extrusion with toolhead motion, it is not fully aligned with the input shaping alterations. This misalignment can be particularly noticeable in scenarios where X and Y axes have different resonance frequencies, or the PA smooth time significantly deviates from the input shaper duration.
@@ -92,7 +92,7 @@ The feature has been tested over several months, showing modest improvements in 
 https://klipper.discourse.group/t/alternative-ringing-tower-print-for-input-shaping-calibration/4517
 
 ### Overview
-The new test methodology for input shaper calibration in Klipper addresses a critical limitation of the existing ringing_tower test. This improvement is centered around isolating the vibrations on each axis during the calibration process, thereby providing more accurate and reliable results.
+The new test methodology for input shaper calibration addresses a critical limitation of the existing ringing_tower test. This improvement is centered around isolating the vibrations on each axis during the calibration process, thereby providing more accurate and reliable results.
 
 ### Limitation of Current Ringing Tower Test
 - Simultaneous Axis Movement: The current ringing_tower test alters the velocity of both axes due to unavoidable diagonal moves, leading to potential interference in vibration measurements.
