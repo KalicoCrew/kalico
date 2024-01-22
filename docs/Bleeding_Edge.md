@@ -6,6 +6,29 @@ The following are experimental features found in the bleeding edge branch of dan
 ## High precision stepping and new stepcompress protocol
 https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 
+### Overview
+The "Stepcompress and Precision" feature in Klipper represents a significant advancement in the control and accuracy of stepper motor movements. This feature enhances the step compression algorithm, crucial for transmitting stepper commands efficiently and accurately in 3D printing.
+
+### Existing Step Compression Mechanism
+- Process: Initially, an iterative solver generates step timings based on movement and kinematics. These steps are then compressed for transmission, and the MCU executes the compressed steps.
+- Standard Compression: The format used for compression is step[i] = step[0] + interval * i + add * i * (i-1) / 2. Only interval, add, and count are transmitted, making this a lossy compression with each step falling within a specific range relative to the true step.
+### Limitations of Current Method
+- Systematic Artifacts: The existing method introduces systematic artifacts in acceleration profiles, particularly at junctions of different velocities.
+- Approximation Limitation: The current compression effectively uses only the first term of the Taylor series expansion, leading to inaccuracies in step timings.
+### Improved Step Compression Schema
+- New Format: The improved formula is step[i] = step[0] + (interval * i + add * i * (i-1) / 2 + add2 * i * (i-1) * (i-2) / 6) >> shift. This adds a second term to the Taylor expansion and employs fixed-point arithmetic for higher precision.
+- Implementation: Implemented with a consideration for rounding and remainder, leading to a more precise match with the actual step timings.
+### Advantages of New Method
+- Reduced Error Margin: The new method reduces the error margin to approximately +/- 1.5% from the true step.
+- Smooth Acceleration Profiles: Ensures smoother acceleration profiles, essential for effective input shaping and reducing vibration artifacts.
+### Computational Considerations
+- Increased Computational Demand: The new protocol is more computationally intensive and increases the data volume transmitted to the MCU.
+- Performance Impact: While performance at high speeds is maintained in most cases, there may be a slight reduction in maximum achievable speeds, especially on less powerful MCUs.
+### Real-World Testing and Results
+- Benchmarks and Tests: Various tests, including printing complex shapes at high speeds, were conducted to assess the practical impact of the new step compression method.
+- Performance on Different Hardware: The performance impact varies based on the MCU, with minimal impact on 32-bit MCUs and more significant impact on 8-bit MCUs.
+
+
 ## Smooth Input Shapers
 https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 
