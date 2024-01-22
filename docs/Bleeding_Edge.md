@@ -1,5 +1,7 @@
-Bleeding Edge Features Documentation:
+# Bleeding Edge Features Documentation
 https://github.com/dmbutyugin/klipper/commits/advanced-features
+
+The following are experimental features found in the bleeding edge branch of danger klipper and should be used at your own caution. The support for these features is limited and your experience may vary! If you do use the features and find them usefull, discover bugs, or have improvements please use the klipper discourse forums or discord to discuss your findings.
 
 ## High precision stepping and new stepcompress protocol
 https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
@@ -11,23 +13,24 @@ https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 The "Smooth Input Shaper" is an advanced feature in Klipper's advanced-features branch, designed to enhance 3D printing quality by employing polynomial smooth functions for input shaping. This feature aims to provide a smoother acceleration profile, similar to an S-curve, though with distinct characteristics due to its fixed timing.
 
 ### Key Features
-Polynomial Smooth Functions: Unlike traditional discrete input shapers, Smooth Input Shaper uses polynomial smooth functions for more effective smoothing of the toolhead motion.
-Similar to S-Curve Acceleration: Offers an acceleration profile that is akin to S-curve acceleration, but with fixed timing instead of spanning the entire acceleration/deceleration phase.
-Improved Effectiveness: Generally more effective than corresponding discrete input shapers, providing slightly more smoothing.
+- **Polynomial smooth functions:** Unlike traditional discrete input shapers, Smooth Input Shaper uses polynomial smooth functions for more effective smoothing of the toolhead motion.
+
+- **Similar to s-curve acceleration:** Offers an acceleration profile that is akin to S-curve acceleration, but with fixed timing instead of spanning the entire acceleration/deceleration phase.
+
+- **Improved effectiveness:** Generally more effective than corresponding discrete input shapers, providing slightly more smoothing.
 
 ### Hardware Requirements
-Computational Intensity: This feature is computationally more demanding.
-Minimum Hardware: Raspberry Pi 3 is the minimum required hardware. It runs effectively on Ender 3 up to speeds of approximately 250 mm/sec with 127 microsteps on a Raspberry Pi 3B+.
-Ideal Hardware: Raspberry Pi 4 or Orange Pi 4 are recommended for optimal performance.
+- **Computational intensity:** This feature is computationally more demanding. Users should consider the capabilities of their hardware and system when implementing this feature.
+
+- **Minimum hardware:** Raspberry Pi 3 is the minimum required hardware. It runs effectively on Ender 3 up to speeds of approximately 250 mm/sec with 127 microsteps on a Raspberry Pi 3B+.
+
+- **Ideal hardware:** Raspberry Pi 4 or Orange Pi 4 are recommended for optimal performance.
 
 ### Configuration and Usage
-Configuration: Configuration is similar to regular input shapers, but with some differences in parameters.
-smoother_freq_? Parameter: This parameter doesn't correspond exactly to previous settings. It represents the minimum frequency that the smoother cancels or, more precisely, the smallest frequency of the pole it cancels. This distinction is particularly relevant for smooth_ei and smooth_2hump_ei shapers.
-Calibration Support: The scripts/calibrate_shapers.py in the advanced-features branch supports the calibration and overview of available smoothers.
-Recommendations and Considerations
-Performance vs. Hardware Limitations: Given the computational demands, users should consider the capabilities of their hardware when implementing this feature.
-Testing and Feedback: Extensive testing and adjustments may be necessary to achieve optimal results. User feedback based on different hardware configurations and printing scenarios is valuable.
+- **Configuration:** Configuration is similar to regular input shapers, but with some differences in parameters.
+- **smoother_freq_? Parameter:** This parameter doesn't correspond exactly to previous settings. It represents the minimum frequency that the smoother cancels or, more precisely, the smallest frequency of the pole it cancels. This distinction is particularly relevant for smooth_ei and smooth_2hump_ei shapers.
 
+- **Calibration support:** The scripts/calibrate_shapers.py in the advanced-features branch supports the calibration and overview of available smoothers.
 
 ## Extruder PA Synchronization with Input Shaping
 https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843
@@ -39,36 +42,65 @@ Klipper's new feature, "Extruder PA Synchronization with Input Shaping," is an a
 Input shaping is a technique used to alter toolhead motion to reduce vibrations. While Klipper's existing pressure advance algorithm helps in synchronizing filament extrusion with toolhead motion, it is not fully aligned with the input shaping alterations. This misalignment can be particularly noticeable in scenarios where X and Y axes have different resonance frequencies, or the PA smooth time significantly deviates from the input shaper duration.
 
 ### Implementation
-The feature is implemented in Klipper branch 85. It involves:
+The feature involves:
 
-Calculating toolhead motion across X, Y, and Z axes.
-Applying input shaping to the X and Y axes.
-Using linearization to project this motion onto the E (extruder) axis.
+1. Calculating toolhead motion across X, Y, and Z axes.
+2. Applying input shaping to the X and Y axes.
+3. Using linearization to project this motion onto the E (extruder) axis.
+
 If the input shaper is consistent for both X and Y axes, the synchronization is precise for XY motion. In other cases, the feature provides a linear approximation over X/Y deviations, which is an improvement over the previous state.
 
 ### Observations and Improvements
-Extrusion Moves: The implementation shows less erratic behavior in PA during extrusion moves, with fewer retractions and deretractions.
-Stable Extruder Velocity: The extruder velocity becomes more stable, reflecting the steadier toolhead velocity due to input shaping.
-Wiping Behavior: Improved wiping behavior with more consistent retraction velocity.
-Testing and Results
+- **Extrusion Moves:** The implementation shows less erratic behavior in PA during extrusion moves, with fewer retractions and deretractions.
+- **Stable Extruder Velocity:** The extruder velocity becomes more stable, reflecting the steadier toolhead velocity due to input shaping.
+- **Wiping Behavior:** Improved wiping behavior with more consistent retraction velocity.
+
+### Hardware Requirements
+- **Computational intensity:** This feature is computationally more demanding. Users should consider the capabilities of their hardware and system when implementing this feature and monitor for any issues.
+
+### Testing and Results
 The feature has been tested over several months, showing modest improvements in the quality of real prints. It is particularly effective for direct drive extruders with short filament paths. The impact on bowden extruders is expected to be neutral.
 
 ### Usage Recommendations
-Retuning PA: It is advisable to retune the pressure advance settings when using this branch. Specifically, reducing the pressure_advance_smooth_time from the default 0.04 to around 0.02 or 0.01 is recommended for direct drive extruders using non-flex filaments.
-Areas to Monitor: Pay attention to areas where toolhead velocity changes, such as corners, bridges, and infill connections to perimeters, for quality improvements or degradations.
-### Conclusion
-This feature offers an innovative approach to synchronize extruder motion with input shaping, leading to improved print quality. Users are encouraged to experiment with this feature and provide feedback based on their printing experiences.
+- **Retuning PA:** It is advisable to retune the pressure advance settings when using this branch. Specifically, reducing the pressure_advance_smooth_time from the default 0.04 to around 0.02 or 0.01 is recommended for direct drive extruders using non-flex filaments.
+- **Areas to Monitor:** Pay attention to areas where toolhead velocity changes, such as corners, bridges, and infill connections to perimeters, for quality improvements or degradations.
 
-
-## New ringing tower test print
+## Ringing tower test print
 https://klipper.discourse.group/t/alternative-ringing-tower-print-for-input-shaping-calibration/4517
 
-sample command: 
+### Overview
+The new test methodology for input shaper calibration in Klipper addresses a critical limitation of the existing ringing_tower test. This improvement is centered around isolating the vibrations on each axis during the calibration process, thereby providing more accurate and reliable results.
+
+### Limitation of Current Ringing Tower Test
+- Simultaneous Axis Movement: The current ringing_tower test alters the velocity of both axes due to unavoidable diagonal moves, leading to potential interference in vibration measurements.
+- Parasitic Waves: The test can produce parasitic waves, making it challenging to measure resonance frequencies accurately, especially when one axis vibrates more than the other.
+### New Test Methodology Concept
+- Isolated Axis Vibration: The new test is designed to excite vibrations on only one axis at a time, thus overcoming the interference issue.
+- GCode Generation Requirement: Direct GCode generation is necessary for this test, focusing on controlled acceleration and deceleration of the axes.
+- Initial Acceleration: Both axes are accelerated during a diagonal move.
+Deceleration of Tested Axis: Only the axis being tested is decelerated to a complete stop, while the other maintains its original speed.
+- Embossed Axis Letters: The test includes embossed letters on the sides, indicating where measurements should be taken. These letters also serve as indicators of the smoothing magnitude post-calibration.
+### Advantages
+- Reliable Calibration: Allows for more reliable input shaper calibration by measuring wave distances and numbers in specific test areas.
+- Versatility: Though primarily tested on Ender 3 Pro, the method is adaptable to different printer types like CoreXY or Delta.
+### Considerations
+- Comparison with Accelerometer Data: The results may not fully correspond with accelerometer data due to multiple resonances on each axis, but they are still effective, especially with EI input shapers.
+- Confirmation of Accelerometer Calibration: This test serves as a valuable tool for confirming accelerometer-based calibration results.
+- User-Specific Configuration: Users are encouraged to add their specific configurations (e.g., heating, homing, bed meshing) to the start GCode sequences.
+
+
+
+### Sample command:
 RUN_RINGING_TEST NOZZLE=0.4 TARGET_TEMP=210 BED_TEMP=55.
 
+Note, it is not reccomended to run the command directly without the helper macros below.
+
+### Sample Gcode
+This sample Gcode can be included in **printer.cfg** or it's own ***.cfg** file and included in the **printer.cfg**. Specific start/end printing Gcode for the printer should be added to ensure it aligned with the standard printing process such as the appropriate heating, homing and bed meshing sequences and additional functions such as enabling fan, additional purge lines, pressure advance setup, or adjusting the flow rate.
+
+```
 [ringing_test]
 
-'''
 [delayed_gcode start_ringing_test]
 
 gcode:
@@ -85,7 +117,6 @@ gcode:
     {% set layer_height = vars.nozzle * 0.5 %}
     {% set first_layer_height = layer_height * 1.25 %}
     PRINT_RINGING_TOWER {vars.rawparams} LAYER_HEIGHT={layer_height} FIRST_LAYER_HEIGHT={first_layer_height} FINAL_GCODE_ID=end_ringing_test
-'''
 
 [delayed_gcode end_ringing_test]
 gcode:
@@ -121,14 +152,39 @@ gcode:
     SET_GCODE_VARIABLE MACRO=RUN_RINGING_TEST VARIABLE=rawparams VALUE="'{rawparams}'"
     SAVE_GCODE_STATE NAME=RINGING_TEST_STATE
     UPDATE_DELAYED_GCODE ID=start_ringing_test DURATION=0.01
+```
 
-
-## New PA tower test print
+## PA tower test print
 https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843/27
 
-sample command:
+### Overview
+The features introduces a new module for printing a Pressure Advance (PA) calibration tower directly from the firmware. This module simplifies the process of calibrating the PA settings, enhancing the precision and ease of tuning for optimal print quality.
+
+### Key Features
+- Integrated PA Test Print: Allows users to print a PA calibration tower directly from Klipper, bypassing the need for external GCode generation.
+- Configurable Parameters: Default parameters are set, but users can override these or add specifics such as NOZZLE size and TARGET_TEMP.
+### Configuration
+- Basic Setup: Simply adding [pa_test] in the printer configuration may suffice for standard setups.
+- Customization Options: Users can override parameters in the printer.cfg file or specify them in the PRINT_PA_TOWER command, such as BRIM_WIDTH, NOZZLE, and TARGET_TEMP.
+- Critical Parameters: NOZZLE size and TARGET_TEMP are essential for accurate PA testing and must be specified each time.
+- Manual Positioning for Exotic Kinematics: For printers with non-standard kinematics (like polar or delta), manual specification of the tower's position and size may be necessary.
+### Operation
+- Command to Initiate Print: Use PRINT_PA_TOWER command to start printing the PA tower.
+- Pre-Heating Requirement: The extruder must be pre-heated separately as PRINT_PA_TOWER does not heat the extruder. TARGET_TEMP is used for sanity checking the configured extruder temperature.
+- Integration with Virtual SDCard: Modified virtual_sdcard module supports printing from sources other than the virtual SD card, allowing progress tracking and standard print control commands like PAUSE, RESUME, and CANCEL_PRINT.
+### Advantages Over Other Methods
+- Smooth Transition of PA Values: Unlike the Marlin test, which can be sensitive to first layer calibration and has limited PA value testing, the Klipper PA tower allows for a smooth transition of PA values from layer to layer.
+- User-Friendly Calibration: This method provides a more user-friendly and less fiddly approach to fine-tuning the PA value.
+
+### Sample command:
 RUN_PA_TEST NOZZLE=0.4 TARGET_TEMP=205 BED_TEMP=55
 
+Note, it is not reccomended to run the command directly without the helper macros below.
+
+### Sample Gcode
+This sample Gcode can be included in **printer.cfg** or it's own ***.cfg** file and included in the **printer.cfg**. Specific start/end printing Gcode for the printer should be added to ensure it aligned with the standard printing process such as the appropriate heating, homing and bed meshing sequences and additional functions such as enabling fan, additional purge lines, pressure advance setup, or adjusting the flow rate.
+
+```
 [delayed_gcode start_pa_test]
 gcode:
     {% set vars = printer["gcode_macro RUN_PA_TEST"] %}
@@ -177,6 +233,6 @@ gcode:
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=rawparams VALUE="'{rawparams}'"
     SAVE_GCODE_STATE NAME=PA_TEST_STATE
     UPDATE_DELAYED_GCODE ID=start_pa_test DURATION=0.01
-
+```
 
 
