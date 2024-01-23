@@ -1,10 +1,11 @@
 # Bleeding Edge Features Documentation
+The following are experimental features found in the bleeding edge branch of danger klipper and should be used at your own caution. The support for these features is limited and your experience may vary! If you do use the features and find them useful, discover bugs, or have improvements please use the klipper discourse forums or discord to discuss your findings.
 https://github.com/dmbutyugin/klipper/commits/advanced-features
 
-The following are experimental features found in the bleeding edge branch of danger klipper and should be used at your own caution. The support for these features is limited and your experience may vary! If you do use the features and find them usefull, discover bugs, or have improvements please use the klipper discourse forums or discord to discuss your findings.
+Refer to the [Bleeding Edge Configuration Reference](Config_Reference_Bleeding_Edge.md) for details on printer configurations for these features.
 
 ## High precision stepping and new stepcompress protocol
-https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
+Reference Discussion of this feature: https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 
 ### Overview
 The new stepcompress protocol and precision stepping feature is a proposed improvement in the control and accuracy of stepper motor movements. This feature enhances the step compression algorithm, crucial for transmitting stepper commands efficiently and accurately.
@@ -30,7 +31,7 @@ The new stepcompress protocol and precision stepping feature is a proposed impro
 
 
 ## Smooth Input Shapers
-https://klipper.discourse.group/t/scurve-pa-branch/7621/3
+Reference Discussion of this feature: https://klipper.discourse.group/t/scurve-pa-branch/7621/3
 
 ### Overview
 The Smooth Input Shaper feature employs polynomial smooth functions for input shaping. This feature aims to provide a smoother acceleration profile for the shaping input, similar to an S-curve, though with distinct characteristics due to its fixed timing.
@@ -67,7 +68,7 @@ The Smooth Input Shaper feature employs polynomial smooth functions for input sh
 - **Calibration support:** The scripts/calibrate_shapers.py supports the calibration and overview of available smoothers automatically with no additional user input required.
 
 ## Extruder PA Synchronization with Input Shaping
-https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843
+Reference Discussion of this feature: https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843
 
 ### Overview
 The Extruder PA Synchronization with Input Shaping feature synchronizes filament extrusion (Pressure Advance - PA) with the toolhead's motion. This synchronization aims to reduce artifacts by compensating for changes in toolhead motion, especially in scenarios where input shaping is employed to minimize vibration and ringing.
@@ -100,7 +101,7 @@ The feature has been tested over several months, showing modest improvements in 
 - **Areas to Monitor:** Pay attention to areas where toolhead velocity changes, such as corners, bridges, and infill connections to perimeters, for quality improvements or degradations.
 
 ## Ringing tower test print
-https://klipper.discourse.group/t/alternative-ringing-tower-print-for-input-shaping-calibration/4517
+Reference Discussion of this feature: https://klipper.discourse.group/t/alternative-ringing-tower-print-for-input-shaping-calibration/4517
 
 ### Overview
 The new test methodology for input shaper calibration addresses a critical limitation of the existing ringing_tower test. This improvement is centered around isolating the vibrations on each axis during the calibration process, thereby providing more accurate and reliable results.
@@ -187,7 +188,7 @@ gcode:
 ```
 
 ## PA tower test print
-https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843/27
+Reference Discussion of this feature:  https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843/27
 
 ### Overview
 The features introduces a new module for printing a Pressure Advance (PA) calibration tower directly from the firmware. This module simplifies the process of calibrating the PA settings, enhancing the precision and ease of tuning for optimal print quality.
