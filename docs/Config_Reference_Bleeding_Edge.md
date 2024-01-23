@@ -12,11 +12,11 @@ Klipper and choosing an initial config file.
 
 This feature is enabled during klipper firmware compile 
 by selecting "High-precision stepping support" option in menuconfig. 
-The firmware then needs to be flashed to the MCU.
+The firmware then needs to be flashed to all MCU(s) using this feature.
 
 ![make_menuconfig](img/high-precision-menu-makeconfig.jpg)
 
-The following configuration line should be added to each stepper using this feature. 
+The following configuration line should be added to each stepper in **printer.cfg**. 
 For example in a CoreXY system the config line would be added to [stepper_x] and [stepper_y] 
 so that it is enabled in both steppers controlling the X-Y movement of the toolhead.
 ```
@@ -71,23 +71,29 @@ Ringing tower test print utility which isolates vibrations to one axis at a time
 ```
 [ringing_tower]
 size: 100
+#   X-Y Size of tower footprint (mm) 
 height: 60
+#   Height of of tower (mm)
 band: 5
+#   Height for each ringing step in ?(mm)? or ?# layers? (!!CONFIRM!!)
 perimeters: 2
+#   Number of perimeters to be printed for the tower
 velocity: 80
 #   Is the velocity one must use as V in a formula V * N / D when
 #   calculating the resonance frequency. N and D are the number of
 #   oscillations and the distance between them as usual:
 brim_velocity: 30
+#   Speed for brim printing in (mm/s)
 accel_start: 1500
 #   The acceleration of the start of the test
 accel_step: 500
-#   The increment of the acceleration every `band` mm
+#   The increment of the acceleration every `band` (mm/s^2)
 layer_height: 0.2
 first_layer_height: 0.2
 filament_diameter: 1.75
 
 #   Parameters that are computed automatically, but may be adjusted if necessary
+
 #center_x:
 #   Center of the bed by default (if detected correctly)
 #center_y:
@@ -96,6 +102,7 @@ filament_diameter: 1.75
 #   Computed based on the model size, but may be increased
 
 #   Parameters that are better left at their default values
+
 #notch: 1
 #   Size of the notch in mm
 #notch_offset: 
@@ -110,8 +117,11 @@ Pressure advance tower test print utility
 ```
 [pa_test]
 size_x: 100
+#    X dimension tower size  (mm)
 size_y: 50
+#    Y dimension tower size  (mm)
 height: 50
+#   Height of tower (mm)
 origin_x:
 #   Center of the bed in x
 origin_y:
@@ -119,9 +129,13 @@ origin_y:
 layer_height: 0.2
 first_layer_height: 0.3
 perimeters: 2
+#   Number of perimeters to be printed for the tower (!!CONFIRM!!)
 brim_width: 10
+#   Width of brim (mm)
 slow_velocity: 20
+#   Start velocity for PA test segment (mm/s) (!!CONFIRM!!)
 fast_velocity: 80
+#   End velocity for PA test segment (mm/s) (!!CONFIRM!!)
 filament_diameter: 1.75
 ```
 

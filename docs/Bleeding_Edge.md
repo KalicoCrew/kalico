@@ -7,7 +7,7 @@ The following are experimental features found in the bleeding edge branch of dan
 https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
 
 ### Overview
-The "Stepcompress and Precision" feature in Klipper is a proposed improvement in the control and accuracy of stepper motor movements. This feature enhances the step compression algorithm, crucial for transmitting stepper commands efficiently and accurately in 3D printing.
+The new stepcompress protocol and precision stepping feature is a proposed improvement in the control and accuracy of stepper motor movements. This feature enhances the step compression algorithm, crucial for transmitting stepper commands efficiently and accurately.
 
 ### Existing Step Compression Mechanism
 - Process: Initially, an iterative solver generates step timings based on movement and kinematics. These steps are then compressed for transmission, and the MCU executes the compressed steps.
@@ -17,10 +17,10 @@ The "Stepcompress and Precision" feature in Klipper is a proposed improvement in
 - Approximation Limitation: The current compression effectively uses only the first term of the Taylor series expansion, leading to inaccuracies in step timings.
 ### Improved Step Compression Schema
 - New Format: The improved formula is step[i] = step[0] + (interval * i + add * i * (i-1) / 2 + add2 * i * (i-1) * (i-2) / 6) >> shift. This adds a second term to the Taylor expansion and employs fixed-point arithmetic for higher precision.
-- Implementation: Implemented with a consideration for rounding and remainder, leading to a more precise match with the actual step timings.
+- Implementation: Implemented with a consideration for rounding and remainders, leading to a more precise match with the actual step timings.
 ### Advantages of New Method
 - Reduced Error Margin: The new method reduces the error margin to approximately +/- 1.5% from the true step.
-- Smooth Acceleration Profiles: Ensures smoother acceleration profiles, essential for effective input shaping and reducing vibration artifacts.
+- Smooth Acceleration Profiles: Ensures smoother acceleration profiles, potentially making for more effective input shaping and reducing vibration artifacts.
 ### Computational Considerations
 - Increased Computational Demand: The new protocol is more computationally intensive and increases the data volume transmitted to the MCU.
 - Performance Impact: While performance at high speeds is maintained in most cases, there may be a slight reduction in maximum achievable speeds, especially on less powerful MCUs.
@@ -30,10 +30,10 @@ The "Stepcompress and Precision" feature in Klipper is a proposed improvement in
 
 
 ## Smooth Input Shapers
-https://klipper.discourse.group/t/improved-stepcompress-implementation/3203
+https://klipper.discourse.group/t/scurve-pa-branch/7621/3
 
 ### Overview
-The "Smooth Input Shaper" employs a polynomial smooth functions for input shaping. This feature aims to provide a smoother acceleration profile, similar to an S-curve, though with distinct characteristics due to its fixed timing.
+The Smooth Input Shaper feature employs polynomial smooth functions for input shaping. This feature aims to provide a smoother acceleration profile for the shaping input, similar to an S-curve, though with distinct characteristics due to its fixed timing.
 
 ### Key Features
 - **Polynomial smooth functions:** Unlike traditional discrete input shapers, Smooth Input Shaper uses polynomial smooth functions for more effective smoothing of the toolhead motion.
@@ -41,6 +41,17 @@ The "Smooth Input Shaper" employs a polynomial smooth functions for input shapin
 - **Similar to s-curve acceleration:** Offers an acceleration profile that is akin to S-curve acceleration, but with fixed timing instead of spanning the entire acceleration/deceleration phase.
 
 - **Improved effectiveness:** Generally more effective than corresponding discrete input shapers, providing slightly more smoothing.
+
+### Smooth shapers avaliable
+- **smooth_zv** - Smooth version of zv input shaper
+- **smooth_mzv** - Smooth version of mzv input shaper
+- **smooth_ei** - Smooth version of ei input shaper
+- **smooth_2hump_ei** - Smooth version of 2hump_ei input shaper
+- **smooth_zvd_ei** - Zero Vibration Derivative - Extra-Insensitive Smooth Shaper *(Documentation and use cases currently limited)*
+- **smooth_si** - Specified Insensitivity Smooth Shaper *(Documentation and use cases currently limited)*
+
+### Custom smooth shapers
+-   Custom smooth shapers can be defined and used. *(Documentation and use cases currently limited)*
 
 ### Hardware Requirements
 - **Computational intensity:** This feature is computationally more demanding. Users should consider the capabilities of their hardware and system when implementing this feature.
@@ -51,15 +62,15 @@ The "Smooth Input Shaper" employs a polynomial smooth functions for input shapin
 
 ### Configuration and Usage
 - **Configuration:** Configuration is similar to regular input shapers, but with some differences in parameters.
-- **smoother_freq_? Parameter:** This parameter doesn't correspond exactly to previous settings. It represents the minimum frequency that the smoother cancels or, more precisely, the smallest frequency of the pole it cancels. This distinction is particularly relevant for smooth_ei and smooth_2hump_ei shapers.
+- **smoother_freq_? Parameter:** This parameter doesn't correspond exactly to the current mainline Klipper input shaper settings. It represents the minimum frequency that the smoother cancels or, more precisely, the smallest frequency of the pole it cancels. This distinction is particularly relevant for smooth_ei and smooth_2hump_ei shapers.
 
-- **Calibration support:** The scripts/calibrate_shapers.py in the advanced-features branch supports the calibration and overview of available smoothers.
+- **Calibration support:** The scripts/calibrate_shapers.py supports the calibration and overview of available smoothers automatically with no additional user input required.
 
 ## Extruder PA Synchronization with Input Shaping
 https://klipper.discourse.group/t/extruder-pa-synchronization-with-input-shaping/3843
 
 ### Overview
-"Extruder PA Synchronization with Input Shaping," synchronizes filament extrusion (Pressure Advance - PA) with the toolhead's motion. This synchronization aims to reduce artifacts by compensating for changes in toolhead motion, especially in scenarios where input shaping is employed to minimize vibration and ringing.
+The Extruder PA Synchronization with Input Shaping feature synchronizes filament extrusion (Pressure Advance - PA) with the toolhead's motion. This synchronization aims to reduce artifacts by compensating for changes in toolhead motion, especially in scenarios where input shaping is employed to minimize vibration and ringing.
 
 ### Background
 Input shaping is a technique used to alter toolhead motion to reduce vibrations. While Klipper's existing pressure advance algorithm helps in synchronizing filament extrusion with toolhead motion, it is not fully aligned with the input shaping alterations. This misalignment can be particularly noticeable in scenarios where X and Y axes have different resonance frequencies, or the PA smooth time significantly deviates from the input shaper duration.
@@ -111,15 +122,13 @@ Deceleration of Tested Axis: Only the axis being tested is decelerated to a comp
 - Confirmation of Accelerometer Calibration: This test serves as a valuable tool for confirming accelerometer-based calibration results.
 - User-Specific Configuration: Users are encouraged to add their specific configurations (e.g., heating, homing, bed meshing) to the start GCode sequences.
 
+### Sample run command:
+Note, it is not reccomended to run the command directly without the helper macros configured.
 
+*RUN_RINGING_TEST NOZZLE=0.4 TARGET_TEMP=210 BED_TEMP=55.*
 
-### Sample command:
-RUN_RINGING_TEST NOZZLE=0.4 TARGET_TEMP=210 BED_TEMP=55.
-
-Note, it is not reccomended to run the command directly without the helper macros below.
-
-### Sample Gcode
-This sample Gcode can be included in **printer.cfg** or it's own ***.cfg** file and included in the **printer.cfg**. Specific start/end printing Gcode for the printer should be added to ensure it aligned with the standard printing process such as the appropriate heating, homing and bed meshing sequences and additional functions such as enabling fan, additional purge lines, pressure advance setup, or adjusting the flow rate.
+### Sample helper macros
+This sample Gcode can be included in **printer.cfg** or s seperate ***.cfg** file and #included in **printer.cfg**. Specific start/end printing Gcode for the printer should be added to ensure it aligned with the standard printing process such as the appropriate heating, homing and bed meshing sequences and additional functions such as enabling fan, additional purge lines, pressure advance setup, or adjusting the flow rate.
 
 ```
 [ringing_test]
@@ -128,11 +137,11 @@ This sample Gcode can be included in **printer.cfg** or it's own ***.cfg** file 
 
 gcode:
     {% set vars = printer["gcode_macro RUN_RINGING_TEST"] %}
-    ; Add your start GCode here, for example:
-    G28
-    M190 S{vars.bed_temp}
-    M109 S{vars.hotend_temp}
-    M106 S255
+    # Add your start GCode here, for example:
+    # G28
+    # M190 S{vars.bed_temp}
+    # M109 S{vars.hotend_temp}
+    # M106 S255
     {% set flow_percent = vars.flow_rate|float * 100.0 %}
     {% if flow_percent > 0 %}
     M221 S{flow_percent}
@@ -143,15 +152,15 @@ gcode:
 
 [delayed_gcode end_ringing_test]
 gcode:
-    ; Add your end GCode here, for example:
-    M104 S0 ; turn off temperature
-    M140 S0 ; turn off heatbed
-    M107 ; turn off fan
-    G91 ; relative positioning
-    G1 Z5 ; raise Z
-    G90 ; absolute positioning
-    G1 X0 Y200 ; present print
-    M84 ; disable steppers
+    # Add your end GCode here, for example:
+    # M104 S0 ; turn off temperature
+    # M140 S0 ; turn off heatbed
+    # M107 ; turn off fan
+    # G91 ; relative positioning
+    # G1 Z5 ; raise Z
+    # G90 ; absolute positioning
+    # G1 X0 Y200 ; present print
+    # M84 ; disable steppers
     RESTORE_GCODE_STATE NAME=RINGING_TEST_STATE
 
 [gcode_macro RUN_RINGING_TEST]
@@ -199,22 +208,22 @@ The features introduces a new module for printing a Pressure Advance (PA) calibr
 - Smooth Transition of PA Values: Unlike the Marlin test, which can be sensitive to first layer calibration and has limited PA value testing, the Klipper PA tower allows for a smooth transition of PA values from layer to layer.
 - User-Friendly Calibration: This method provides a more user-friendly and less fiddly approach to fine-tuning the PA value.
 
-### Sample command:
-RUN_PA_TEST NOZZLE=0.4 TARGET_TEMP=205 BED_TEMP=55
+### Sample run command:
+Note, it is not reccomended to run the command directly without the helper macros configured.
 
-Note, it is not reccomended to run the command directly without the helper macros below.
+*RUN_PA_TEST NOZZLE=0.4 TARGET_TEMP=205 BED_TEMP=55*
 
-### Sample Gcode
-This sample Gcode can be included in **printer.cfg** or it's own ***.cfg** file and included in the **printer.cfg**. Specific start/end printing Gcode for the printer should be added to ensure it aligned with the standard printing process such as the appropriate heating, homing and bed meshing sequences and additional functions such as enabling fan, additional purge lines, pressure advance setup, or adjusting the flow rate.
+### Sample helper macros
+This sample Gcode can be included in **printer.cfg** or s seperate ***.cfg** file and #included in **printer.cfg**. Specific start/end printing Gcode for the printer should be added to ensure it aligned with the standard printing process such as the appropriate heating, homing and bed meshing sequences and additional functions such as enabling fan, additional purge lines, pressure advance setup, or adjusting the flow rate.
 
 ```
 [delayed_gcode start_pa_test]
 gcode:
     {% set vars = printer["gcode_macro RUN_PA_TEST"] %}
-    ; Add your start GCode here, for example:
-    G28
-    M190 S{vars.bed_temp}
-    M109 S{vars.hotend_temp}
+    # Add your start GCode here, for example:
+    # G28
+    # M190 S{vars.bed_temp}
+    # M109 S{vars.hotend_temp}
     {% set flow_percent = vars.flow_rate|float * 100.0 %}
     {% if flow_percent > 0 %}
     M221 S{flow_percent}
@@ -226,15 +235,15 @@ gcode:
 
 [delayed_gcode end_pa_test]
 gcode:
-    ; Add your end GCode here, for example:
-    M104 S0 ; turn off temperature
-    M140 S0 ; turn off heatbed
-    M107 ; turn off fan
-    G91 ; relative positioning
-    G1 Z5 ; raise Z
-    G90 ; absolute positioning
-    G1 X0 Y200 ; present print
-    M84 ; disable steppers
+    # Add your end GCode here, for example:
+    # M104 S0 ; turn off temperature
+    # M140 S0 ; turn off heatbed
+    # M107 ; turn off fan
+    # G91 ; relative positioning
+    # G1 Z5 ; raise Z
+    # G90 ; absolute positioning
+    # G1 X0 Y200 ; present print
+    # M84 ; disable steppers
     RESTORE_GCODE_STATE NAME=PA_TEST_STATE
 
 [gcode_macro RUN_PA_TEST]
