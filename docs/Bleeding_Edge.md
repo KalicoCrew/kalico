@@ -106,6 +106,8 @@ Reference Discussion of this feature: https://klipper.discourse.group/t/alternat
 ### Overview
 The new test methodology for input shaper calibration addresses a critical limitation of the existing ringing_tower test. This improvement is centered around isolating the vibrations on each axis during the calibration process, thereby providing more accurate and reliable results.
 
+![ringing_tower_cube](img/ringing_tower_cube.jpg)
+
 ### Limitation of Current Ringing Tower Test
 - Simultaneous Axis Movement: The current ringing_tower test alters the velocity of both axes due to unavoidable diagonal moves, leading to potential interference in vibration measurements.
 - Parasitic Waves: The test can produce parasitic waves, making it challenging to measure resonance frequencies accurately, especially when one axis vibrates more than the other.
@@ -193,9 +195,12 @@ Reference Discussion of this feature:  https://klipper.discourse.group/t/extrude
 ### Overview
 The features introduces a new module for printing a Pressure Advance (PA) calibration tower directly from the firmware. This module simplifies the process of calibrating the PA settings, enhancing the precision and ease of tuning for optimal print quality.
 
+![pa_tower_annotated](img/pa_tower_annotated.jpg)
+
 ### Key Features
 - Integrated PA Test Print: Allows users to print a PA calibration tower directly from Klipper, bypassing the need for external GCode generation.
 - Configurable Parameters: Default parameters are set, but users can override these or add specifics such as NOZZLE size and TARGET_TEMP.
+- Velocity Transitions: Creates several velocity transitions across the test pattern to potentiall determine different optimal PA based on these transitions.
 ### Configuration
 - Basic Setup: Simply adding [pa_test] in the printer configuration may suffice for standard setups.
 - Customization Options: Users can override parameters in the printer.cfg file or specify them in the PRINT_PA_TOWER command, such as BRIM_WIDTH, NOZZLE, and TARGET_TEMP.
@@ -208,6 +213,7 @@ The features introduces a new module for printing a Pressure Advance (PA) calibr
 ### Advantages Over Other Methods
 - Smooth Transition of PA Values: Unlike the Marlin test, which can be sensitive to first layer calibration and has limited PA value testing, the Klipper PA tower allows for a smooth transition of PA values from layer to layer.
 - User-Friendly Calibration: This method provides a more user-friendly and less fiddly approach to fine-tuning the PA value.
+- Range of Velocity Tests: Optimal PA likely varies on the acceleration and velocity. Ideal PA values are likely to be specific to these different velocity transitions.
 
 ### Sample run command:
 Note, it is not reccomended to run the command directly without the helper macros configured.
