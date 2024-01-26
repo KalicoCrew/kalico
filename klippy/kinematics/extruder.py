@@ -216,6 +216,7 @@ class ExtruderStepper:
 class PrinterExtruder:
     def __init__(self, config, extruder_num):
         self.printer = config.get_printer()
+        self.danger_options = self.printer.lookup_object("danger_options")
         self.name = config.get_name()
         self.last_position = 0.0
         # Setup hotend heater
@@ -357,9 +358,12 @@ class PrinterExtruder:
         accel = move.accel * axis_r
         start_v = move.start_v * axis_r
         cruise_v = move.cruise_v * axis_r
-        can_pressure_advance = False
+        pressure_advance = 0.0
         if axis_r > 0.0 and (move.axes_d[0] or move.axes_d[1]):
-            can_pressure_advance = True
+            pressure_advance = self.extruder_stepper.pressure_advance
+        use_pa_from_trapq = (
+            1.0 if self.danger_options.store_pa_in_trapq else 0.0
+        )
         # Queue movement (x is extruder movement, y is pressure advance flag)
         self.trapq_append(
             self.trapq,
@@ -371,8 +375,8 @@ class PrinterExtruder:
             0.0,
             0.0,
             1.0,
-            can_pressure_advance,
-            0.0,
+            pressure_advance,
+            use_pa_from_trapq,
             start_v,
             cruise_v,
             accel,

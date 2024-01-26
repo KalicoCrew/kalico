@@ -23,6 +23,7 @@ class DangerOptions:
             "homing_elapsed_distance_tolerance", 0.5, minval=0.0
         )
         self.adc_ignore_limits = config.getboolean("adc_ignore_limits", False)
+        self.store_pa_in_trapq = config.getboolean("store_pa_in_trapq", False)
 
 
 def load_config(config):
