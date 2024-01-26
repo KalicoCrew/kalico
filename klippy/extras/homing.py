@@ -313,7 +313,7 @@ class Homing:
 
         # Perform second home
         if retract_dist:
-            logging.info("needs rehome: %s", needs_rehome)
+            logging.info("homing:needs rehome: %s", needs_rehome)
             # Retract
             startpos = self._fill_coord(forcepos)
             homepos = self._fill_coord(movepos)
