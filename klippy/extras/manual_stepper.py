@@ -92,9 +92,13 @@ class ManualStepper:
         )
         self.next_cmd_time = self.next_cmd_time + accel_t + cruise_t + accel_t
         self.rail.generate_steps(self.next_cmd_time)
-        self.trapq_finalize_moves(self.trapq, self.next_cmd_time + 99999.9)
+        self.trapq_finalize_moves(
+            self.trapq,
+            self.next_cmd_time + 99999.9,
+            self.next_cmd_time + 99999.9,
+        )
         toolhead = self.printer.lookup_object("toolhead")
-        toolhead.note_kinematic_activity(self.next_cmd_time)
+        toolhead.note_mcu_movequeue_activity(self.next_cmd_time)
         if sync:
             self.sync_print_time()
 
