@@ -49,7 +49,7 @@ class ForceMove:
             self.cmd_STEPPER_BUZZ,
             desc=self.cmd_STEPPER_BUZZ_help,
         )
-        if config.getboolean("enable_force_move", False):
+        if config.getboolean("enable_force_move", True):
             gcode.register_command(
                 "FORCE_MOVE", self.cmd_FORCE_MOVE, desc=self.cmd_FORCE_MOVE_help
             )
