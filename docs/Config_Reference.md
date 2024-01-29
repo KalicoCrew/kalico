@@ -1684,7 +1684,9 @@ file for a Marlin compatible M808 G-Code macro.
 [sdcard_loop]
 ```
 
-### [force_move]
+### ⚠ [force_move]
+
+This module is enabled by default in DangerKlipper!
 
 Support manually moving stepper motors for diagnostic purposes. Note,
 using this feature may place the printer in an invalid state - see the
@@ -1692,9 +1694,9 @@ using this feature may place the printer in an invalid state - see the
 
 ```
 [force_move]
-#enable_force_move: False
+#enable_force_move: True
 #   Set to true to enable FORCE_MOVE and SET_KINEMATIC_POSITION
-#   extended G-Code commands. The default is false.
+#   extended G-Code commands. The default is true.
 ```
 
 ### [pause_resume]
