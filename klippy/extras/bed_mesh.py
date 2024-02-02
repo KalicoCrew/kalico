@@ -131,6 +131,9 @@ class BedMesh:
         # setup persistent storage
         self.pmgr = ProfileManager(config, self)
         self.save_profile = self.pmgr.save_profile
+        self.default_mesh_name = config.get("bed_mesh_default", None)
+        if self.default_mesh_name:
+            self.load_default_mesh(config.error)
         # register gcodes
         self.gcode.register_command(
             "BED_MESH_OUTPUT",
@@ -158,6 +161,12 @@ class BedMesh:
         # initialize status dict
         self.update_status()
 
+    def load_default_mesh(self, error):
+        if self.default_mesh_name in self.pmgr.get_profiles():
+                self.pmgr.load_profile(self.default_mesh_name)
+        else:
+            raise error(f"Default bed mesh '{self.default_mesh_name}' not found in available profiles.")
+        
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
         self.danger_options = self.printer.lookup_object("danger_options")
