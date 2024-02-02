@@ -113,7 +113,7 @@ class BedMesh:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
-        config_file = self.printer.lookup_object('configfile')
+        config_file = self.printer.lookup_object("configfile")
         self.last_position = [0.0, 0.0, 0.0, 0.0]
         self.bmc = BedMeshCalibrate(config, self)
         self.z_mesh = None
@@ -137,7 +137,11 @@ class BedMesh:
             if self.default_mesh_name in self.pmgr.get_profiles():
                 self.pmgr.load_profile(self.default_mesh_name)
             else:
-                config_file.warn("config", f"Selected default bed mesh profile '{self.default_mesh_name}' not found in available profiles.", "Invalid profile name")
+                config_file.warn(
+                    "config",
+                    f"Selected default bed mesh profile '{self.default_mesh_name}' not found in available profiles.",
+                    "Invalid profile name",
+                )
         # register gcodes
         self.gcode.register_command(
             "BED_MESH_OUTPUT",
@@ -164,7 +168,7 @@ class BedMesh:
         gcode_move.set_move_transform(self)
         # initialize status dict
         self.update_status()
-        
+
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
         self.danger_options = self.printer.lookup_object("danger_options")
@@ -1334,9 +1338,11 @@ class ZMesh:
         y_mult = self.y_mult
         self.mesh_matrix = [
             [
-                0.0
-                if ((i % x_mult) or (j % y_mult))
-                else z_matrix[j // y_mult][i // x_mult]
+                (
+                    0.0
+                    if ((i % x_mult) or (j % y_mult))
+                    else z_matrix[j // y_mult][i // x_mult]
+                )
                 for i in range(self.mesh_x_count)
             ]
             for j in range(self.mesh_y_count)
@@ -1396,9 +1402,11 @@ class ZMesh:
         c = self.mesh_params["tension"]
         self.mesh_matrix = [
             [
-                0.0
-                if ((i % x_mult) or (j % y_mult))
-                else z_matrix[j // y_mult][i // x_mult]
+                (
+                    0.0
+                    if ((i % x_mult) or (j % y_mult))
+                    else z_matrix[j // y_mult][i // x_mult]
+                )
                 for i in range(self.mesh_x_count)
             ]
             for j in range(self.mesh_y_count)
@@ -1518,9 +1526,9 @@ class ProfileManager:
             self.profiles[name] = {}
             zvals = profile.getlists("points", seps=(",", "\n"), parser=float)
             self.profiles[name]["points"] = zvals
-            self.profiles[name][
-                "mesh_params"
-            ] = params = collections.OrderedDict()
+            self.profiles[name]["mesh_params"] = params = (
+                collections.OrderedDict()
+            )
             for key, t in PROFILE_OPTIONS.items():
                 if t is int:
                     params[key] = profile.getint(key)
