@@ -508,7 +508,7 @@ class PrinterConfig:
             self.warn(_type, msg, section, option)
         for section in self.unused_sections:
             _type = "unused_section"
-            msg = "Section '{section}' is invalid"
+            msg = f"Section '{section}' is invalid"
             self.warn(_type, msg, section)
 
     def get_status(self, eventtime):
