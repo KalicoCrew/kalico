@@ -113,6 +113,7 @@ class BedMesh:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
+        config_file = self.printer.lookup_object('configfile')
         self.last_position = [0.0, 0.0, 0.0, 0.0]
         self.bmc = BedMeshCalibrate(config, self)
         self.z_mesh = None
@@ -133,7 +134,9 @@ class BedMesh:
         self.save_profile = self.pmgr.save_profile
         self.default_mesh_name = config.get("bed_mesh_default", None)
         if self.default_mesh_name:
-            self.load_default_mesh(config.error)
+            if self.default_mesh_name in self.pmgr.get_profiles():
+                self.pmgr.load_profile(self.default_mesh_name)
+            else: config_file.warn("config", f"Selected default bed mesh profile '{self.default_mesh_name}' not found in available profiles.", "Invalid profile name")
         # register gcodes
         self.gcode.register_command(
             "BED_MESH_OUTPUT",
@@ -160,12 +163,6 @@ class BedMesh:
         gcode_move.set_move_transform(self)
         # initialize status dict
         self.update_status()
-
-    def load_default_mesh(self, error):
-        if self.default_mesh_name in self.pmgr.get_profiles():
-                self.pmgr.load_profile(self.default_mesh_name)
-        else:
-            raise error(f"Default bed mesh '{self.default_mesh_name}' not found in available profiles.")
         
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
