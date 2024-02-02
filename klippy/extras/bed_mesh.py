@@ -136,7 +136,8 @@ class BedMesh:
         if self.default_mesh_name:
             if self.default_mesh_name in self.pmgr.get_profiles():
                 self.pmgr.load_profile(self.default_mesh_name)
-            else: config_file.warn("config", f"Selected default bed mesh profile '{self.default_mesh_name}' not found in available profiles.", "Invalid profile name")
+            else:
+                config_file.warn("config", f"Selected default bed mesh profile '{self.default_mesh_name}' not found in available profiles.", "Invalid profile name")
         # register gcodes
         self.gcode.register_command(
             "BED_MESH_OUTPUT",
