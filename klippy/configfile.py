@@ -476,6 +476,19 @@ class PrinterConfig:
     def deprecate(self, section, option, value=None, msg=None):
         self.deprecated[(section, option, value)] = msg
 
+    def warn(self, type, msg, section=None, option=None, value=None):
+        res = {
+            "type": type,
+            "message": msg,
+        }
+        if section is not None:
+            res["section"] = section
+        if option is not None:
+            res["option"] = option
+        if value is not None:
+            res["value"] = value
+        self.status_warnings.append(res)
+
     def _build_status(self, config):
         self.status_raw_config.clear()
         for section in config.get_prefix_sections(""):
@@ -485,30 +498,18 @@ class PrinterConfig:
         self.status_settings = {}
         for (section, option), value in config.access_tracking.items():
             self.status_settings.setdefault(section, {})[option] = value
-        self.status_warnings = []
         for (section, option, value), msg in self.deprecated.items():
-            if value is None:
-                res = {"type": "deprecated_option"}
-            else:
-                res = {"type": "deprecated_value", "value": value}
-            res["message"] = msg
-            res["section"] = section
-            res["option"] = option
-            self.status_warnings.append(res)
+            _type = "deprecated_value"
+            self.warn(_type, msg, section, option, value)
+
         for section, option in self.unused_options:
-            res = {"type": "unused_option"}
-            res["message"] = "Option '%s' in section '%s' is invalid" % (
-                option,
-                section,
-            )
-            res["section"] = section
-            res["option"] = option
-            self.status_warnings.append(res)
+            _type = "unused_option"
+            msg = f"Option '{option}' in section '{section}' is invalid"
+            self.warn(_type, msg, section, option)
         for section in self.unused_sections:
-            res = {"type": "unused_section"}
-            res["message"] = "Section '%s' is invalid" % (section,)
-            res["section"] = section
-            self.status_warnings.append(res)
+            _type = "unused_section"
+            msg = f"Section '{section}' is invalid"
+            self.warn(_type, msg, section)
 
     def get_status(self, eventtime):
         return {
