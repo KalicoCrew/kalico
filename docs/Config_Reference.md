@@ -1141,7 +1141,7 @@ Visual Examples:
 #   the defined print objects when generating an adaptive mesh.
 #bed_mesh_default:
 #   Optionally provide the name of a profile you would like loaded on init.
-#	By default, no profile is loaded.
+#   By default, no profile is loaded.
 ```
 
 ### [bed_tilt]
