@@ -28,6 +28,7 @@ class WinchKinematics:
         self.axes_min = toolhead.Coord(*[min(a) for a in acoords], e=0.0)
         self.axes_max = toolhead.Coord(*[max(a) for a in acoords], e=0.0)
         self.set_position([0.0, 0.0, 0.0], ())
+        self.supports_dual_carriage = False
 
     def get_steppers(self):
         return list(self.steppers)

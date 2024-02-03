@@ -314,6 +314,14 @@ class ToolHead:
             msg = "Error loading kinematics '%s'" % (kin_name,)
             logging.exception(msg)
             raise config.error(msg)
+        if (
+            config.has_section("dual_carriage")
+            and not self.kin.supports_dual_carriage
+        ):
+            raise config.error(
+                "dual_carriage not compatible with '%s' kinematics system"
+                % (kin_name,)
+            )
         # Register commands
         gcode.register_command("G4", self.cmd_G4)
         gcode.register_command("M400", self.cmd_M400)
