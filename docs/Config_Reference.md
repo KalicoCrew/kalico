@@ -1139,6 +1139,9 @@ Visual Examples:
 #adaptive_margin:
 #   An optional margin (in mm) to be added around the bed area used by
 #   the defined print objects when generating an adaptive mesh.
+#bed_mesh_default:
+#   Optionally provide the name of a profile you would like loaded on init.
+#   By default, no profile is loaded.
 ```
 
 ### [bed_tilt]
