@@ -32,6 +32,8 @@ class Heater:
     def __init__(self, config, sensor):
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
+        self.config = config
+        self.configfile = self.printer.lookup_object('configfile')
         # Setup sensor
         self.sensor = sensor
         self.min_temp = config.getfloat("min_temp", minval=KELVIN_TO_CELSIUS)
