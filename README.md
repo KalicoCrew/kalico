@@ -72,21 +72,17 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [config: CONFIG_SAVE updates included files](https://github.com/DangerKlippers/danger-klipper/pull/153)
 
-If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
+- [kinematics: independent X & Y acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
 
-- [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)
+If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch [feature documentation](docs/Bleeding_Edge.md)
+and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
-- [stepper: high precision stepping protocol](https://github.com/DangerKlippers/danger-klipper/pull/69)
-
-- [extruder: sync extruder motion with input shaper](https://github.com/DangerKlippers/danger-klipper/pull/69)
-
-- [extruder: new print_pa_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
-
-- [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
-
-- [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
-
-- [Independent X & Y Acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
+- [dmbutyugin's advanced-features branch - Pull Request #69](https://github.com/DangerKlippers/danger-klipper/pull/69)
+  - stepper: high precision stepping protocol
+  - extruder: sync extruder motion with input shaper
+  - extruder: new print_pa_tower utility
+  - input_shaper: smooth input shapers
+  - input_shaper: new print_ringing_tower utility
 
 ## Switch to Danger Klipper
 

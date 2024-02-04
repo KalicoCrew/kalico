@@ -8,42 +8,41 @@ to cut-and-paste them into a printer config file. See the
 [installation document](Installation.md) for information on setting up
 Klipper and choosing an initial config file.
 
-
-
 ## High precision stepping and new stepcompress protocol
 
-This feature is enabled during klipper firmware compile 
-by selecting "High-precision stepping support" option in menuconfig. 
+This feature is enabled during klipper firmware compile
+by selecting "High-precision stepping support" option in menuconfig.
 The firmware then needs to be flashed to all MCU(s) using this feature.
 
 ![make_menuconfig](img/high-precision-menu-makeconfig.jpg)
 
-The following configuration line should be added to each stepper in **printer.cfg**. 
-For example in a CoreXY system the config line would be added to [stepper_x] and [stepper_y] 
+The following configuration line should be added to each stepper in **printer.cfg**.
+For example in a CoreXY system the config line would be added to [stepper_x] and [stepper_y]
 so that it is enabled in both steppers controlling the X-Y movement of the toolhead.
+
 ```
 [stepper_... ]
 high_precision_step_compress: True
 ```
+
 Note that enabling this feature in the config without recompiling and flashing the firmware will give an error.
 
 ## Input shaper
 
-### [input_shaper] 
+### [input_shaper]
+
 **Extruder PA Synchronization with Input Shaping**
 
-
 ```
-[input_shaper] 
+[input_shaper]
 enabled_extruders: extruder
 ```
 
 **Smooth Input Shapers**
 
-
 ```
 [input_shaper]
-shaper_type: 
+shaper_type:
 #   A type of the input shaper to use for both X and Y axes. Supported
 #   shapers are smooth_zv, smooth_mzv, smooth_ei, smooth_2hump_ei, smooth_zvd_ei,
 #   smooth_si, mzv, ei, 2hump_ei.
@@ -62,22 +61,23 @@ smoother_freq_y: 0
 #   to improve vibration suppression. Default value is 0.1 which is a
 #   good all-round value for most printers. In most circumstances this
 #   parameter requires no tuning and should not be changed.
+#   Note: Damping ratios are not currently supported for input smoothers.
 ```
 
 ## Test print utilities
 
 ### [ringing_tower]
-Ringing tower test print utility which isolates vibrations to one axis at a time.
 
+Ringing tower test print utility which isolates vibrations to one axis at a time.
 
 ```
 [ringing_tower]
 size: 100
-#   X-Y Size of tower footprint (mm) 
+#   X-Y Size of tower footprint (mm)
 height: 60
 #   Height of of tower (mm)
 band: 5
-#   Height for each ringing step in ?(mm)? or ?# layers? (!!CONFIRM!!)
+#   Height for each ringing step (mm)
 perimeters: 2
 #   Number of perimeters to be printed for the tower
 velocity: 80
@@ -107,14 +107,14 @@ filament_diameter: 1.75
 
 #notch: 1
 #   Size of the notch in mm
-#notch_offset: 
+#notch_offset:
 #   0.275 * size by default
 #deceleration_points: 100
 ```
 
 ### [pa_test]
-Pressure advance tower test print utility
 
+Pressure advance tower test print utility
 
 ```
 [pa_test]
@@ -131,13 +131,14 @@ origin_y:
 layer_height: 0.2
 first_layer_height: 0.3
 perimeters: 2
-#   Number of perimeters to be printed for the tower (!!CONFIRM!!)
+#   Number of perimeters to be printed for the tower
 brim_width: 10
 #   Width of brim (mm)
 slow_velocity: 20
-#   Start velocity for PA test segment (mm/s) (!!CONFIRM!!)
+#   Start velocity for PA test segment (mm/s)
+medium_velocity: 50
+#   Medium velocity for PA test segment (mm/s)
 fast_velocity: 80
-#   End velocity for PA test segment (mm/s) (!!CONFIRM!!)
+#   End velocity for PA test segment (mm/s)
 filament_diameter: 1.75
 ```
-
