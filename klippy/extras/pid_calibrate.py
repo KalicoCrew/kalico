@@ -24,7 +24,7 @@ class PIDCalibrate:
         target = gcmd.get_float("TARGET")
         write_file = gcmd.get_int("WRITE_FILE", 0)
         tolerance = gcmd.get_float("TOLERANCE", TUNE_PID_TOL, above=0.0)
-        profile_name = gcmd.get('PROFILE', 'default')
+        profile_name = gcmd.get("PROFILE", "default")
         pheaters = self.printer.lookup_object("heaters")
         try:
             heater = pheaters.lookup_heater(heater_name)
@@ -52,17 +52,20 @@ class PIDCalibrate:
             "Heater: %s\n"
             "Tolerance: %.4f\n"
             "Profile: %s"
-            % (target, Kp, Ki, Kd, heater_name, tolerance, profile_name))
-        control = 'pid_v' if old_control.get_type() == 'pid_v' else 'pid'
+            % (target, Kp, Ki, Kd, heater_name, tolerance, profile_name)
+        )
+        control = "pid_v" if old_control.get_type() == "pid_v" else "pid"
 
-        profile = {'pid_target': target,
-                   'pid_tolerance': tolerance,
-                   'control': control,
-                   'pid_kp': Kp,
-                   'pid_ki': Ki,
-                   'pid_kd': Kd,
-                   'smooth_time': None,
-                   'name': profile_name}
+        profile = {
+            "pid_target": target,
+            "pid_tolerance": tolerance,
+            "control": control,
+            "pid_kp": Kp,
+            "pid_ki": Ki,
+            "pid_kd": Kd,
+            "smooth_time": None,
+            "name": profile_name,
+        }
 
         heater.set_control(heater.lookup_control(profile, True), False)
         heater.pmgr.save_profile(profile_name=profile_name, verbose=False)
