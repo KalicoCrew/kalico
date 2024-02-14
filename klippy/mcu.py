@@ -938,6 +938,8 @@ class MCU:
         if self._oid_count == 0 and len(self._config_cmds) != 0:
             unique_oids = set()
             for cmd in self._config_cmds:
+                if "oid=" not in cmd:
+                    continue
                 oid = cmd.split(" oid=")[1][0]
                 unique_oids.add(oid)
             self._oid_count = len(unique_oids)
