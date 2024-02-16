@@ -23,6 +23,7 @@ class DangerOptions:
             "homing_elapsed_distance_tolerance", 0.5, minval=0.0
         )
         self.adc_ignore_limits = config.getboolean("adc_ignore_limits", False)
+        self.autosave_includes = config.getboolean("autosave_includes", False)
 
 
 def load_config(config):

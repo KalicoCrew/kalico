@@ -70,6 +70,7 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [bed_mesh: add bed_mesh_default config option](https://github.com/DangerKlippers/danger-klipper/pull/143)
 
+- [config: CONFIG_SAVE updates included files](https://github.com/DangerKlippers/danger-klipper/pull/153)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
 
