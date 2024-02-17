@@ -74,6 +74,8 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [kinematics: independent X & Y acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
 
+- [canbus: custom CAN bus uuid hash for deterministic uuids](https://github.com/DangerKlippers/danger-klipper/pull/156)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
