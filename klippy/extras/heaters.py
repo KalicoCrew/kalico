@@ -562,7 +562,7 @@ class Heater:
                 section_name = self._compute_section_name(profile_name)
                 self.outer_instance.configfile.remove_section(section_name)
                 profiles = dict(self.profiles)
-                del profiles[self.outer_instance.name][profile_name]
+                del profiles[profile_name]
                 self.profiles = profiles
                 self.outer_instance.gcode.respond_info(
                     "Profile [%s] for heater [%s] "
