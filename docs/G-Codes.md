@@ -982,7 +982,7 @@ The PID_PROFILE module is automatically loaded if a heater is defined
 in the config file.
 
 #### PID_PROFILE
-`PID_PROFILE LOAD=<profile_name> HEATER=<config_name> [DEFAULT=<profile_name>]
+`PID_PROFILE LOAD=<profile_name> HEATER=<heater_name> [DEFAULT=<profile_name>]
 [VERBOSE=<verbosity>] [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
 the Profile specified in DEFAULT will be loaded when then given Profile for LOAD
@@ -1005,8 +1005,8 @@ the given name.
 `PID_PROFILE REMOVE=<profile_name> HEATER=<config_name>`:
 Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
 
-`PID_PROFILE SET_VALUES=<profile_name> TARGET=<target_temp> TOLERANCE=<tolerance>
-CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1]`:
+`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
+CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Creates a new profile with the given PID values, CONTROL must either be `pid` or
 `pid_v`, TOLERANCE and TARGET must be specified to create a valid profile,
 though the values themselves don't matter.
@@ -1018,6 +1018,9 @@ If LOAD_CLEAN is set to 1, the profile would be loaded as if the printer just
 started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
+
+`PID_PROFILE HEATER=<heater_name>`:
+Outputs the values of the current loaded pid_profile of the given heater to the console.
 
 ### [pause_resume]
 
