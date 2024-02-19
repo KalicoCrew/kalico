@@ -14,6 +14,10 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [core: no Python2 tests; no PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
 
+- [core: git-untracked folder, plugins for user-plugins](https://github.com/DangerKlippers/danger-klipper/pull/82)
+
+- [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
+
 - [fan: normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
 - [fan: reverse FAN](https://github.com/DangerKlippers/danger-klipper/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
@@ -21,6 +25,8 @@ If I want my printer to light itself on fire, I should be able to make my printe
 - [heater: modify PID without reload](https://github.com/DangerKlippers/danger-klipper/pull/35)
 
 - [heater: velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
+
+- [heater: PID-Profiles](https://github.com/DangerKlippers/danger-klipper/pull/145)
 
 - [gcode: jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
 
@@ -34,19 +40,19 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [z_tilt: z-tilt calibration](https://github.com/DangerKlippers/danger-klipper/pull/105) ([klipper3d#4083](https://github.com/Klipper3d/klipper/pull/4083) / [dk/ztilt_calibration](https://github.com/DangerKlippers/danger-klipper/pull/54))
 
-- [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
-
 - [stepper: home_current](https://github.com/DangerKlippers/danger-klipper/pull/65)
+
+- [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
 
 - [homing: post-home retract](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
 - [homing: sensorless minimum home distance](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
+- [homing: min_home_dist](https://github.com/DangerKlippers/danger-klipper/pull/90)
+
 - [virtual_sdcard: scanning of subdirectories](https://github.com/DangerKlippers/danger-klipper/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
 
 - [retraction: z_hop while retracting](https://github.com/DangerKlippers/danger-klipper/pull/83) ([klipper#6311](https://github.com/Klipper3d/klipper/pull/6311))
-
-- [core: git-untracked folder, plugins for user-plugins](https://github.com/DangerKlippers/danger-klipper/pull/82)
 
 - [danger_options: allow plugins to override conflicting extras](https://github.com/DangerKlippers/danger-klipper/pull/82)
 
@@ -57,10 +63,6 @@ If I want my printer to light itself on fire, I should be able to make my printe
 - [danger_options: option to ignore ADC out of range](https://github.com/DangerKlippers/danger-klipper/pull/129)
 
 - [temperature_mcu: add reference_voltage](https://github.com/DangerKlippers/danger-klipper/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
-
-- [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
-
-- [homing: min_home_dist](https://github.com/DangerKlippers/danger-klipper/pull/90)
 
 - [adxl345: improve ACCELEROMETER_QUERY command](https://github.com/DangerKlippers/danger-klipper/pull/124)
 
