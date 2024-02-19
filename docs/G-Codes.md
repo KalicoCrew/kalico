@@ -1019,7 +1019,7 @@ started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
 
-`PID_PROFILE HEATER=<heater_name>`:
+`PID_PROFILE GET_VALUES HEATER=<heater_name>`:
 Outputs the values of the current loaded pid_profile of the given heater to the console.
 
 ### [pause_resume]
