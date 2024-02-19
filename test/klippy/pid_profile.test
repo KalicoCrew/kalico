@@ -1,0 +1,26 @@
+# Pid hot modify tests
+DICTIONARY atmega2560.dict
+CONFIG pid_profile.cfg
+
+# Extrude only
+G1 E5
+G1 E-2
+G1 E7
+
+# Home and extrusion moves
+G28
+G1 X20 Y20 Z1
+G1 X25 Y25 E7.5
+
+
+# create a new profile and save it
+PID_PROFILE SAVE=TESTPROFILE HEATER=extruder
+PID_PROFILE LOAD=TESTPROFILE HEATER=extruder
+
+# set the smooth time and save to the profile
+SET_SMOOTH_TIME HEATER=extruder SMOOTH_TIME=1 SAVE_TO_PROFILE=1
+
+# remove an existing profile
+PID_PROFILE REMOVE=FROM_CONFIG HEATER=extruder
+
+# PID_PROFILE SET_VALUES cant be tested
