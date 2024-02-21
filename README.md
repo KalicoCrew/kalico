@@ -26,7 +26,7 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [heater: velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
 
-- [heater: PID-Profiles](https://github.com/DangerKlippers/danger-klipper/pull/145)
+- [heater: PID-Profiles](https://github.com/DangerKlippers/danger-klipper/pull/162)
 
 - [gcode: jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
 
