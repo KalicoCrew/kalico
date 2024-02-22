@@ -1649,7 +1649,8 @@ explicit idle_timeout config section to change the default settings.
 #   "TURN_OFF_HEATERS" and "M84".
 #timeout: 600
 #   Idle time (in seconds) to wait before running the above G-Code
-#   commands. The default is 600 seconds.
+#   commands. Set it to 0 to disable the timeout feature.
+#   The default is 600 seconds.
 ```
 
 ## Optional G-Code features
