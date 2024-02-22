@@ -678,7 +678,7 @@ class PrinterConfig:
 
         self.danger_options = self.printer.lookup_object("danger_options")
         if self.danger_options.autosave_includes:
-            self._save_includes(cfgname, data, gcode, set())
+            self._save_includes(cfgname, data, set(), gcode)
 
         # NOW we're safe to check for conflicts
         self._disallow_include_conflicts(regular_data, cfgname, gcode)
