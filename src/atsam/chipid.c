@@ -77,7 +77,7 @@ chipid_init(void)
         if (CONFIG_CAN_UUID_USE_CHIPID) {
             canserial_set_uuid((void*)id, CHIP_UID_LEN);
         } else {
-            canserial_set_uuid(CONFIG_CAN_UUID_CUSTOM, CHIP_UID_LEN);
+            canserial_set_uuid((uint8_t *)CONFIG_CAN_UUID_CUSTOM, CHIP_UID_LEN);
         }
     }
 }
