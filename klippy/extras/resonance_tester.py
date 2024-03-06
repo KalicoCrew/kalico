@@ -1,6 +1,6 @@
 # A utility class to test resonances of the printer
 #
-# Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
+# Copyright (C) 2020-2024  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
@@ -59,15 +59,11 @@ class VibrationPulseTest:
         self.min_freq = config.getfloat("min_freq", 5.0, minval=1.0)
         # Defaults are such that max_freq * accel_per_hz == 10000 (max_accel)
         self.max_freq = config.getfloat(
-            "max_freq", 10000.0 / 75.0, minval=self.min_freq, maxval=200.0
+            "max_freq", 10000.0 / 75.0, minval=self.min_freq, maxval=300.0
         )
         self.accel_per_hz = config.getfloat("accel_per_hz", 75.0, above=0.0)
         self.hz_per_sec = config.getfloat(
             "hz_per_sec", 1.0, minval=0.1, maxval=2.0
-        )
-
-        self.probe_points = config.getlists(
-            "probe_points", seps=(",", "\n"), parser=float, count=3
         )
 
     def get_start_test_points(self):
@@ -78,7 +74,7 @@ class VibrationPulseTest:
             "FREQ_START", self.min_freq, minval=1.0
         )
         self.freq_end = gcmd.get_float(
-            "FREQ_END", self.max_freq, minval=self.freq_start, maxval=200.0
+            "FREQ_END", self.max_freq, minval=self.freq_start, maxval=300.0
         )
         self.hz_per_sec = gcmd.get_float(
             "HZ_PER_SEC", self.hz_per_sec, above=0.0, maxval=2.0
@@ -134,6 +130,9 @@ class VibrationPulseTest:
         if input_shaper is not None:
             input_shaper.enable_shaping()
             gcmd.respond_info("Re-enabled [input_shaper]")
+
+    def get_max_freq(self):
+        return self.freq_end
 
 
 class ResonanceTester:
@@ -260,6 +259,9 @@ class ResonanceTester:
             parsed_chips.append(chip)
         return parsed_chips
 
+    def _get_max_calibration_freq(self):
+        return 1.5 * self.test.get_max_freq()
+
     cmd_TEST_RESONANCES_help = "Runs the resonance test for a specifed axis"
 
     def cmd_TEST_RESONANCES(self, gcmd):
@@ -316,7 +318,13 @@ class ResonanceTester:
         )[axis]
         if csv_output:
             csv_name = self.save_calibration_data(
-                "resonances", name_suffix, helper, axis, data, point=test_point
+                "resonances",
+                name_suffix,
+                helper,
+                axis,
+                data,
+                point=test_point,
+                max_freq=self._get_max_calibration_freq(),
             )
             gcmd.respond_info(
                 "Resonances data written to %s file" % (csv_name,)
@@ -363,8 +371,17 @@ class ResonanceTester:
                 % (axis_name,)
             )
             calibration_data[axis].normalize_to_frequencies()
+            systime = self.printer.get_reactor().monotonic()
+            toolhead = self.printer.lookup_object("toolhead")
+            toolhead_info = toolhead.get_status(systime)
+            scv = toolhead_info["square_corner_velocity"]
+            max_freq = self._get_max_calibration_freq()
             best_shaper, all_shapers = helper.find_best_shaper(
-                calibration_data[axis], max_smoothing, gcmd.respond_info
+                calibration_data[axis],
+                max_smoothing=max_smoothing,
+                scv=scv,
+                max_freq=max_freq,
+                logger=gcmd.respond_info,
             )
             gcmd.respond_info(
                 "Recommended shaper_type_%s = %s, shaper_freq_%s = %.1f Hz"
@@ -384,6 +401,7 @@ class ResonanceTester:
                 axis,
                 calibration_data[axis],
                 all_shapers,
+                max_freq=max_freq,
             )
             gcmd.respond_info(
                 "Shaper calibration data written to %s file" % (csv_name,)
@@ -446,10 +464,11 @@ class ResonanceTester:
         calibration_data,
         all_shapers=None,
         point=None,
+        max_freq=None,
     ):
         output = self.get_filename(base_name, name_suffix, axis, point)
         shaper_calibrate.save_calibration_data(
-            output, calibration_data, all_shapers
+            output, calibration_data, all_shapers, max_freq
         )
         return output
 

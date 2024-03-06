@@ -346,8 +346,6 @@ class PrinterHeaters:
             raise self.printer.config_error(
                 "Unknown temperature sensor '%s'" % (sensor_type,)
             )
-        if sensor_type == "NTC 100K beta 3950":
-            config.deprecate("sensor_type", "NTC 100K beta 3950")
         return self.sensor_factories[sensor_type](config)
 
     def register_sensor(self, config, psensor, gcode_id=None):
