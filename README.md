@@ -32,6 +32,8 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [gcode: gcode_shell_command](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#2173](https://github.com/Klipper3d/klipper/pull/2173) / [kiuah](https://github.com/dw-0/kiauh/blob/master/resources/gcode_shell_command.py) )
 
+- [gcode: expose math functions to gcode macros](https://github.com/DangerKlippers/danger-klipper/pull/173) ([klipper#4072](https://github.com/Klipper3d/klipper/pull/4072))
+
 - [probe: dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
 
 - [probe: drop the first result](https://github.com/DangerKlippers/danger-klipper/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
