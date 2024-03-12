@@ -2218,12 +2218,28 @@ detach_position: 0,0,0
 #   If Z is specified the toolhead will move to the Z location before the X, Y
 #   coordinates.
 #   This parameter is required.
+#extract_position: 0,0,0
+#   Similar to the approach_position, the extract_position is the coordinates
+#   where the toolhead is moved to extract the probe from the dock.
+#   If Z is specified the toolhead will move to the Z location before the X, Y
+#   coordinates.
+#   The default value is approach_probe value.
+#insert_position: 0,0,0
+#   Similar to the extract_position, the insert_position is the coordinates
+#   where the toolhead is moved before inserting the probe into the dock.
+#   If Z is specified the toolhead will move to the Z location before the X, Y
+#   coordinates.
+#   The default value is extract_probe value.
 #z_hop: 15.0
 #   Distance (in mm) to lift the Z axis prior to attaching/detaching the probe.
 #   If the Z axis is already homed and the current Z position is less
 #   than `z_hop`, then this will lift the head to a height of `z_hop`. If
 #   the Z axis is not already homed the head is lifted by `z_hop`.
 #   The default is to not implement Z hop.
+#restore_toolhead: True
+#   While True, the position of the toolhead is restored to the position prior 
+#   to the attach/detach movements.
+#   The default value is True.
 #dock_retries:
 #   The number of times to attempt to attach/dock the probe before raising
 #   an error and aborting probing.

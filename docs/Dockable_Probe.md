@@ -73,6 +73,16 @@ detach_position:
   away from the probe dock such that the magnets on the probe body are not
   attracted to the magnets on the toolhead.
 
+- `extract_position: 295, 250, 0`\
+  _Default Value: approach\_position_\
+  Euclid probe requires the toolhead to move to a different direction to extract
+  or dock mag_probe.
+
+- `insert_position: 295, 250, 0`\
+  _Default Value: extract\_position_\
+  Usually the same as extract position for Euclid probe when the dock is on the
+  gantry.
+
 - `z_hop: 15.0`\
   _Default Value: None_\
   Distance (in mm) to lift the Z axis prior to attaching/detaching the probe.
@@ -80,6 +90,11 @@ detach_position:
   than `z_hop`, then this will lift the head to a height of `z_hop`. If
   the Z axis is not already homed the head is lifted by `z_hop`.
   The default is to not implement Z hop.
+
+- `restore_toolhead: False|True`\
+  _Default Value: True_\
+  While True, the position of the toolhead is restored to the position prior to 
+  the attach/detach movements.
 
 ## Position Examples
 
@@ -145,9 +160,7 @@ z_hop: 15
 Euclid style probe that requires the attach and detach movements to happen in
 opposite order. Attach: approach, move to dock, extract. Detach: move to
 extract position, move to dock, move to approach position. The approach and
-detach positions are the same, as are the extract and insert positions. The
-movements can be reordered as necessary by overriding the commands for
-extract/insert and using the same coordinates for approach and detach.
+detach positions are the same, as are the extract and insert positions.
 
 ```
 Attach:
@@ -167,18 +180,9 @@ Detach:
 ```
 approach_position: 50, 150
 dock_position: 10, 150
+extract_position: 10, 130
 detach_position: 50, 150
 z_hop: 15
-```
-
-```
-[gcode_macro MOVE_TO_EXTRACT_PROBE]
-gcode:
-    G1 X10 Y130
-
-[gcode_macro MOVE_TO_INSERT_PROBE]
-gcode:
-    G1 X10 Y130
 ```
 
 ### Homing
@@ -294,13 +298,11 @@ This command will move the toolhead to the `dock_position`.
 
 `MOVE_TO_EXTRACT_PROBE`
 
-This command will move the toolhead away from the dock after attaching the probe.
-By default it's an alias for `MOVE_TO_APPROACH_PROBE`.
+This command will move the toolhead to the `extract_position`.
 
 `MOVE_TO_INSERT_PROBE`
 
-This command will move the toolhead near the dock before detaching the probe.
-By default it's an alias for `MOVE_TO_APPROACH_PROBE`.
+This command will move the toolhead to the `insert_position`.
 
 `MOVE_TO_DETACH_PROBE`
 
