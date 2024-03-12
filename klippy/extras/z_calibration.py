@@ -513,6 +513,7 @@ class CalibrationState:
 
     def calibrate_z(self):
         self.helper.start_gcode.run_gcode_from_command()
+        self.probe.multi_probe.begin()
         # probe the nozzle
         nozzle_zero = self._probe_on_site(
             self.z_endstop,
@@ -532,6 +533,7 @@ class CalibrationState:
         probe_zero = self._probe_on_site(
             self.probe.mcu_probe, probe_site, check_probe=True
         )
+        self.probe.multi_probe_end()
         # calculate the offset
         offset = probe_zero - (
             switch_zero - nozzle_zero + self.helper.switch_offset
