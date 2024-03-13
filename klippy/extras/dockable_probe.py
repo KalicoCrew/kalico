@@ -31,6 +31,7 @@ At least one of the following must be specified:
 Please see {0}.md and config_Reference.md.
 """
 
+
 # Helper class to handle polling pins for probe attachment states
 class PinPollingHelper:
     def __init__(self, config, endstop):
@@ -184,8 +185,12 @@ class DockableProbe:
         # Positions (approach, detach, etc)
         self.approach_position = self._parse_coord(config, "approach_position")
         self.detach_position = self._parse_coord(config, "detach_position")
-        self.extract_position = self._parse_coord(config, "extract_position", self.approach_position)
-        self.insert_position = self._parse_coord(config, "insert_position", self.extract_position)
+        self.extract_position = self._parse_coord(
+            config, "extract_position", self.approach_position
+        )
+        self.insert_position = self._parse_coord(
+            config, "insert_position", self.extract_position
+        )
         self.dock_position = self._parse_coord(config, "dock_position")
         self.z_hop = config.getfloat("z_hop", 0.0, above=0.0)
 
