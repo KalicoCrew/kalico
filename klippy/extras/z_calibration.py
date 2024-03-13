@@ -523,7 +523,7 @@ class CalibrationState:
         )
         # probe the probe-switch
         self.helper.switch_gcode.run_gcode_from_command()
-        self.probe.multi_probe.begin()
+        self.probe.multi_probe_begin()
         # probe the body of the switch
         switch_zero = self._probe_on_site(
             self.z_endstop, self.helper.switch_site, check_probe=True
