@@ -25,6 +25,10 @@ class DangerOptions:
         self.adc_ignore_limits = config.getboolean("adc_ignore_limits", False)
         self.autosave_includes = config.getboolean("autosave_includes", False)
 
+        self.bgflush_extra_time = config.getfloat(
+            "bgflush_extra_time", 0.250, minval=0.0
+        )
+
 
 def load_config(config):
     return DangerOptions(config)

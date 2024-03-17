@@ -230,7 +230,6 @@ BUFFER_TIME_HIGH = 2.0
 BUFFER_TIME_START = 0.250
 BGFLUSH_LOW_TIME = 0.200
 BGFLUSH_BATCH_TIME = 0.200
-BGFLUSH_EXTRA_TIME = 0.250
 MIN_KIN_TIME = 0.100
 MOVE_BATCH_TIME = 0.500
 STEPCOMPRESS_FLUSH_TIME = 0.050
@@ -249,6 +248,7 @@ class DripModeEndSignal(Exception):
 class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.danger_options = self.printer.lookup_object("danger_options")
         self.reactor = self.printer.get_reactor()
         self.all_mcus = [
             m for n, m in self.printer.lookup_objects(module="mcu")
@@ -533,7 +533,10 @@ class ToolHead:
                     self.check_stall_time = self.print_time
             # In "NeedPrime"/"Priming" state - flush queues if needed
             while 1:
-                end_flush = self.need_flush_time + BGFLUSH_EXTRA_TIME
+                end_flush = (
+                    self.need_flush_time
+                    + self.danger_options.bgflush_extra_time
+                )
                 if self.last_flush_time >= end_flush:
                     self.do_kick_flush_timer = True
                     return self.reactor.NEVER
