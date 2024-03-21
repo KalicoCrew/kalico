@@ -34,13 +34,6 @@ struct step_move {
     int16_t add;
 };
 
-struct history_steps {
-    struct list_node node;
-    uint64_t first_clock, last_clock;
-    int64_t start_position;
-    int step_count, interval, add;
-};
-
 /****************************************************************
  * Step compression
  ****************************************************************/
