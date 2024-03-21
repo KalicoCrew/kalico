@@ -706,6 +706,7 @@ class MCU:
     error = error
 
     def __init__(self, config, clocksync):
+        self._config = config
         self._printer = printer = config.get_printer()
         self.danger_options = printer.lookup_object("danger_options")
         self._clocksync = clocksync
@@ -715,7 +716,9 @@ class MCU:
             self._name = self._name[4:]
         # Serial port
         wp = "mcu '%s': " % (self._name)
-        self._serial = serialhdl.SerialReader(self._reactor, warn_prefix=wp)
+        self._serial = serialhdl.SerialReader(
+            self._reactor, warn_prefix=wp, mcu=self
+        )
         self._baud = 0
         self._canbus_iface = None
         canbus_uuid = config.get("canbus_uuid", None)
@@ -768,6 +771,17 @@ class MCU:
         self._mcu_tick_avg = 0.0
         self._mcu_tick_stddev = 0.0
         self._mcu_tick_awake = 0.0
+
+        # noncritical mcus
+        self.non_critical_recon_timer = self._reactor.register_timer(
+            self.non_critical_recon_event
+        )
+        self.is_non_critical = config.getboolean("is_non_critical", False)
+        self.non_critical_disconnected = False
+        self.reconnect_interval = (
+            config.getfloat("reconnect_interval", 2.0) + 0.12
+        )  # add small change to not collide with other events
+        self.gcode = printer.lookup_object("gcode")
         # Register handlers
         printer.register_event_handler(
             "klippy:firmware_restart", self._firmware_restart
@@ -813,7 +827,7 @@ class MCU:
         self._printer.invoke_async_shutdown(prefix + msg + error_help(msg))
 
     def _handle_starting(self, params):
-        if not self._is_shutdown:
+        if not self._is_shutdown and not self.is_non_critical:
             self._printer.invoke_async_shutdown(
                 "MCU '%s' spontaneous restart" % (self._name,)
             )
@@ -853,13 +867,44 @@ class MCU:
 
             self.estimated_print_time = dummy_estimated_print_time
 
+    def handle_non_critical_disconnect(self):
+        self.non_critical_disconnected = True
+        self._clocksync.disconnect()
+        self._disconnect()
+        self._reactor.update_timer(
+            self.non_critical_recon_timer,
+            self._reactor.NOW + self.reconnect_interval,
+        )
+        self.gcode.respond_info(f"mcu: '{self._name}' disconnected!", log=True)
+
+    def non_critical_recon_event(self, eventtime):
+        success = self.recon_mcu()
+        if success:
+            self.gcode.respond_info(
+                f"mcu: '{self._name}' reconnected!", log=True
+            )
+            return self._reactor.NEVER
+        else:
+            return eventtime + self.reconnect_interval
+
     def _send_config(self, prev_crc):
         # Build config commands
         for cb in self._config_callbacks:
             cb()
+        # oid count is 0, but we have config cmds.
+        # figure out the oid count from the config cmds
+        if self._oid_count == 0 and len(self._config_cmds) != 0:
+            unique_oids = set()
+            for cmd in self._config_cmds:
+                if "oid=" not in cmd:
+                    continue
+                oid = cmd.split(" oid=")[1][0]
+                unique_oids.add(oid)
+            self._oid_count = len(unique_oids)
         self._config_cmds.insert(
             0, "allocate_oids count=%d" % (self._oid_count,)
         )
+
         # Resolve pin names
         mcu_type = self._serial.get_msgparser().get_constant("MCU")
         ppins = self._printer.lookup_object("pins")
@@ -867,6 +912,7 @@ class MCU:
         for cmdlist in (self._config_cmds, self._restart_cmds, self._init_cmds):
             for i, cmd in enumerate(cmdlist):
                 cmdlist[i] = pin_resolver.update_command(cmd)
+                logging.info("command: %s", cmdlist[i])
         # Calculate config CRC
         encoded_config = "\n".join(self._config_cmds).encode()
         config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
@@ -936,12 +982,37 @@ class MCU:
         ]
         return "\n".join(log_info)
 
+    def recon_mcu(self):
+        res = self._mcu_identify()
+        if not res:
+            return False
+        self.reset_to_initial_state()
+        self.non_critical_disconnected = False
+        self._connect()
+        return True
+
+    def reset_to_initial_state(self):
+        self._oid_count = 0
+        self._config_cmds = []
+        self._restart_cmds = []
+        self._init_cmds = []
+        self._reserved_move_slots = 0
+        self._stepqueues = []
+        self._steppersync = None
+
     def _connect(self):
+        if self.non_critical_disconnected:
+            self._reactor.update_timer(
+                self.non_critical_recon_timer,
+                self._reactor.NOW + self.reconnect_interval,
+            )
+            return
         config_params = self._send_get_config()
         if not config_params["is_config"]:
             if self._restart_method == "rpi_usb":
                 # Only configure mcu after usb power reset
                 self._check_restart("full reset before config")
+            logging.info("not configured, sending config...")
             # Not configured - send config and issue get_config again
             self._send_config(None)
             config_params = self._send_get_config()
@@ -976,7 +1047,16 @@ class MCU:
         log_info = self._log_info() + "\n" + move_msg
         self._printer.set_rollover_info(self._name, log_info, log=False)
 
+    def _check_serial_exists(self):
+        rts = self._restart_method != "cheetah"
+        return self._serial.check_connect(self._serialport, self._baud, rts)
+
     def _mcu_identify(self):
+        if self.is_non_critical and not self._check_serial_exists():
+            self.non_critical_disconnected = True
+            return False
+        else:
+            self.non_critical_disconnected = False
         if self.is_fileoutput():
             self._connect_file()
         else:
@@ -1030,6 +1110,7 @@ class MCU:
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
+        return True
 
     # Config creation helpers
     def setup_pin(self, pin_type, pin_params):
@@ -1177,7 +1258,9 @@ class MCU:
         chelper.run_hub_ctrl(1)
 
     def _firmware_restart(self, force=False):
-        if self._is_mcu_bridge and not force:
+        if (
+            self._is_mcu_bridge and not force
+        ) or self.non_critical_disconnected:
             return
         if self._restart_method == "rpi_usb":
             self._restart_rpi_usb()
@@ -1230,6 +1313,9 @@ class MCU:
             or self.is_fileoutput()
             or self._is_timeout
         ):
+            return
+        if self.is_non_critical:
+            self.handle_non_critical_disconnect()
             return
         self._is_timeout = True
         logging.info(

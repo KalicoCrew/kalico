@@ -36,6 +36,7 @@ SAMPLES_PER_BLOCK = bulk_sensor.MAX_BULK_MSG_SIZE // BYTES_PER_SAMPLE
 BATCH_UPDATES = 0.100
 
 
+
 # Printer class that controls LIS2DW chip
 class LIS2DW:
     def __init__(self, config):
@@ -78,6 +79,13 @@ class LIS2DW:
         )
 
     def _build_config(self):
+        self.mcu.add_config_cmd(
+            "config_lis2dw oid=%d spi_oid=%d" % (self.oid, self.spi.get_oid())
+        )
+        self.mcu.add_config_cmd(
+            "query_lis2dw oid=%d clock=0 rest_ticks=0" % (self.oid,),
+            on_restart=True,
+        )
         cmdqueue = self.spi.get_command_queue()
         self.query_lis2dw_cmd = self.mcu.lookup_command(
             "query_lis2dw oid=%c rest_ticks=%u", cq=cmdqueue
