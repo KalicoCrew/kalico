@@ -399,6 +399,7 @@ class MCU_TMC_SPI:
         self.name_to_reg = name_to_reg
         self.fields = fields
         self.tmc_frequency = tmc_frequency
+        self.mcu = self.tmc_spi.spi.get_mcu()
 
     def get_fields(self):
         return self.fields

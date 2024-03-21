@@ -48,33 +48,15 @@ class PrinterTemperatureMCU:
         self.printer.register_event_handler(
             "klippy:mcu_identify", self._mcu_identify
         )
+        self.mcu_adc.get_mcu().register_config_callback(self._build_config)
 
-    def setup_callback(self, temperature_callback):
-        self.temperature_callback = temperature_callback
-
-    def get_report_time_delta(self):
-        return REPORT_TIME
-
-    def adc_callback(self, read_time, read_value):
-        temp = self.base_temperature + read_value * self.slope
-        self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
-
-    def setup_minmax(self, min_temp, max_temp):
-        self.min_temp = min_temp
-        self.max_temp = max_temp
-
-    def calc_adc(self, temp):
-        return (temp - self.base_temperature) / self.slope
-
-    def calc_base(self, temp, adc):
-        return temp - adc * self.slope
-
-    def _mcu_identify(self):
-        # Obtain mcu information
-        _mcu = self.mcu_adc.get_mcu()
-        self.debug_read_cmd = _mcu.lookup_query_command(
+    def _build_config(self):
+        self.debug_read_cmd = self.mcu_adc.get_mcu().lookup_query_command(
             "debug_read order=%c addr=%u", "debug_result val=%u"
         )
+
+        # Obtain mcu information
+        _mcu = self._mcu = self.mcu_adc.get_mcu()
         self.mcu_type = _mcu.get_constants().get("MCU", "")
         # Run MCU specific configuration
         cfg_funcs = [
@@ -122,6 +104,29 @@ class PrinterTemperatureMCU:
             maxval=max(adc_range),
             range_check_count=RANGE_CHECK_COUNT,
         )
+
+    def setup_callback(self, temperature_callback):
+        self.temperature_callback = temperature_callback
+
+    def get_report_time_delta(self):
+        return REPORT_TIME
+
+    def adc_callback(self, read_time, read_value):
+        temp = self.base_temperature + read_value * self.slope
+        self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
+
+    def setup_minmax(self, min_temp, max_temp):
+        self.min_temp = min_temp
+        self.max_temp = max_temp
+
+    def calc_adc(self, temp):
+        return (temp - self.base_temperature) / self.slope
+
+    def calc_base(self, temp, adc):
+        return temp - adc * self.slope
+
+    def _mcu_identify(self):
+        pass
 
     def config_unknown(self):
         raise self.printer.config_error(

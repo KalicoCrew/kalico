@@ -511,7 +511,14 @@ class TMCCommandHelper:
             )
         # Send init
         try:
-            self._init_registers()
+            if self.mcu_tmc.mcu.non_critical_disconnected:
+                logging.info(
+                    "TMC %s failed to init - non_critical_mcu: %s is disconnected!",
+                    self.name,
+                    self.mcu_tmc.mcu.get_name(),
+                )
+            else:
+                self._init_registers()
         except self.printer.command_error as e:
             logging.info("TMC %s failed to init: %s", self.name, str(e))
 
