@@ -20,10 +20,10 @@ class SoftwareI2C:
             self.scl_main = scl_params["class"] = self
             self.scl_oid = self.mcu.create_oid()
             self.cmd_queue = self.mcu.alloc_command_queue()
+            self.mcu.register_config_callback(self.build_config)
         else:
             self.scl_oid = self.scl_main.scl_oid
             self.cmd_queue = self.scl_main.cmd_queue
-        self.mcu.register_config_callback(self.build_config)
         sda_params = ppins.lookup_pin(config.get("sda_pin"))
         self.sda_oid = self.mcu.create_oid()
         if sda_params["chip"] != self.mcu:
@@ -31,27 +31,24 @@ class SoftwareI2C:
                 "%s: scl_pin and sda_pin must be on same mcu"
                 % (config.get_name(),)
             )
-        self.sda_params = sda_params
+        self.mcu.add_config_cmd(
+            "config_digital_out oid=%d pin=%s"
+            " value=%d default_value=%d max_duration=%d"
+            % (self.sda_oid, sda_params["pin"], 1, 1, 0)
+        )
 
     def get_mcu(self):
         return self.mcu
 
     def build_config(self):
         self.mcu.add_config_cmd(
-            "config_digital_out oid=%d pin=%s"
-            " value=%d default_value=%d max_duration=%d"
-            % (self.sda_oid, self.sda_params["pin"], 1, 1, 0)
+            "config_digital_out oid=%d pin=%s value=%d"
+            " default_value=%d max_duration=%d"
+            % (self.scl_oid, self.scl_pin, 1, 1, 0)
         )
-
-        if self.scl_main is self:
-            self.mcu.add_config_cmd(
-                "config_digital_out oid=%d pin=%s value=%d"
-                " default_value=%d max_duration=%d"
-                % (self.scl_oid, self.scl_pin, 1, 1, 0)
-            )
-            self.update_pin_cmd = self.mcu.lookup_command(
-                "update_digital_out oid=%c value=%c", cq=self.cmd_queue
-            )
+        self.update_pin_cmd = self.mcu.lookup_command(
+            "update_digital_out oid=%c value=%c", cq=self.cmd_queue
+        )
 
     def i2c_write(self, msg, minclock=0, reqclock=0):
         msg = [self.addr] + msg

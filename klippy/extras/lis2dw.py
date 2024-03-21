@@ -41,7 +41,6 @@ MIN_MSG_TIME = 0.100
 BYTES_PER_SAMPLE = 6
 SAMPLES_PER_BLOCK = 8
 
-
 # Printer class that controls LIS2DW chip
 class LIS2DW:
     def __init__(self, config):
@@ -70,7 +69,12 @@ class LIS2DW:
         self.oid = oid = mcu.create_oid()
         self.query_lis2dw_cmd = self.query_lis2dw_end_cmd = None
         self.query_lis2dw_status_cmd = None
-
+        mcu.add_config_cmd(
+            "config_lis2dw oid=%d spi_oid=%d" % (oid, self.spi.get_oid())
+        )
+        mcu.add_config_cmd(
+            "query_lis2dw oid=%d clock=0 rest_ticks=0" % (oid,), on_restart=True
+        )
         mcu.register_config_callback(self._build_config)
         mcu.register_response(self._handle_lis2dw_data, "lis2dw_data", oid)
         # Clock tracking
@@ -88,13 +92,6 @@ class LIS2DW:
         )
 
     def _build_config(self):
-        self.mcu.add_config_cmd(
-            "config_lis2dw oid=%d spi_oid=%d" % (self.oid, self.spi.get_oid())
-        )
-        self.mcu.add_config_cmd(
-            "query_lis2dw oid=%d clock=0 rest_ticks=0" % (self.oid,),
-            on_restart=True,
-        )
         cmdqueue = self.spi.get_command_queue()
         self.query_lis2dw_cmd = self.mcu.lookup_command(
             "query_lis2dw oid=%c clock=%u rest_ticks=%u", cq=cmdqueue

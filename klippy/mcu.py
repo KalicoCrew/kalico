@@ -758,9 +758,7 @@ class MCU:
             self._name = self._name[4:]
         # Serial port
         wp = "mcu '%s': " % (self._name)
-        self._serial = serialhdl.SerialReader(
-            self._reactor, warn_prefix=wp, mcu=self
-        )
+        self._serial = serialhdl.SerialReader(self._reactor, warn_prefix=wp)
         self._baud = 0
         self._canbus_iface = None
         canbus_uuid = config.get("canbus_uuid", None)
@@ -819,11 +817,12 @@ class MCU:
             self.non_critical_recon_event
         )
         self.is_non_critical = config.getboolean("is_non_critical", False)
-        self.non_critical_disconnected = False
+        self._non_critical_disconnected = False
+        # self.last_noncrit_recon_eventtime = None
         self.reconnect_interval = (
             config.getfloat("reconnect_interval", 2.0) + 0.12
         )  # add small change to not collide with other events
-        self.gcode = printer.lookup_object("gcode")
+
         # Register handlers
         printer.register_event_handler(
             "klippy:firmware_restart", self._firmware_restart
@@ -910,39 +909,22 @@ class MCU:
             self.estimated_print_time = dummy_estimated_print_time
 
     def handle_non_critical_disconnect(self):
-        self.non_critical_disconnected = True
+        self._non_critical_disconnected = True
         self._clocksync.disconnect()
         self._disconnect()
         self._reactor.update_timer(
-            self.non_critical_recon_timer,
-            self._reactor.NOW + self.reconnect_interval,
+            self.non_critical_recon_timer, self._reactor.NOW
         )
-        self.gcode.respond_info(f"mcu: '{self._name}' disconnected!", log=True)
+        logging.info("mcu: %s disconnected", self._name)
 
     def non_critical_recon_event(self, eventtime):
-        success = self.recon_mcu()
-        if success:
-            self.gcode.respond_info(
-                f"mcu: '{self._name}' reconnected!", log=True
-            )
-            return self._reactor.NEVER
-        else:
-            return eventtime + self.reconnect_interval
+        self.recon_mcu()
+        return eventtime + self.reconnect_interval
 
     def _send_config(self, prev_crc):
         # Build config commands
         for cb in self._config_callbacks:
             cb()
-        # oid count is 0, but we have config cmds.
-        # figure out the oid count from the config cmds
-        if self._oid_count == 0 and len(self._config_cmds) != 0:
-            unique_oids = set()
-            for cmd in self._config_cmds:
-                if "oid=" not in cmd:
-                    continue
-                oid = cmd.split(" oid=")[1][0]
-                unique_oids.add(oid)
-            self._oid_count = len(unique_oids)
         self._config_cmds.insert(
             0, "allocate_oids count=%d" % (self._oid_count,)
         )
@@ -1027,11 +1009,15 @@ class MCU:
     def recon_mcu(self):
         res = self._mcu_identify()
         if not res:
-            return False
+            return
         self.reset_to_initial_state()
-        self.non_critical_disconnected = False
         self._connect()
-        return True
+        self._reactor.update_timer(
+            self.non_critical_recon_timer, self._reactor.NEVER
+        )
+        self._reactor.unregister_timer(self.non_critical_recon_timer)
+        self.last_noncrit_recon_eventtime = None
+        logging.info("mcu: %s reconnected", self._name)
 
     def reset_to_initial_state(self):
         self._oid_count = 0
@@ -1043,9 +1029,9 @@ class MCU:
         self._steppersync = None
 
     def _connect(self):
-        if self.non_critical_disconnected:
-            self._reactor.update_timer(
-                self.non_critical_recon_timer,
+        if self._non_critical_disconnected:
+            self.non_critical_recon_timer = self._reactor.register_timer(
+                self.non_critical_recon_event,
                 self._reactor.NOW + self.reconnect_interval,
             )
             return
@@ -1054,7 +1040,6 @@ class MCU:
             if self._restart_method == "rpi_usb":
                 # Only configure mcu after usb power reset
                 self._check_restart("full reset before config")
-            logging.info("not configured, sending config...")
             # Not configured - send config and issue get_config again
             self._send_config(None)
             config_params = self._send_get_config()
@@ -1095,10 +1080,10 @@ class MCU:
 
     def _mcu_identify(self):
         if self.is_non_critical and not self._check_serial_exists():
-            self.non_critical_disconnected = True
+            self._non_critical_disconnected = True
             return False
         else:
-            self.non_critical_disconnected = False
+            self._non_critical_disconnected = False
         if self.is_fileoutput():
             self._connect_file()
         else:
@@ -1302,7 +1287,7 @@ class MCU:
     def _firmware_restart(self, force=False):
         if (
             self._is_mcu_bridge and not force
-        ) or self.non_critical_disconnected:
+        ) or self._non_critical_disconnected:
             return
         if self._restart_method == "rpi_usb":
             self._restart_rpi_usb()
