@@ -478,10 +478,9 @@ class PrinterExtruder:
             desc=self.cmd_ACTIVATE_EXTRUDER_help,
         )
 
-<<<<<<< HEAD
     def update_move_time(self, flush_time, clear_history_time):
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
-=======
+
     def link_extruder_stepper(self, extruder_stepper):
         if extruder_stepper not in self.extruder_steppers:
             self.extruder_steppers.append(extruder_stepper)
@@ -495,10 +494,6 @@ class PrinterExtruder:
 
     def get_extruder_steppers(self):
         return self.extruder_steppers
-
-    def update_move_time(self, flush_time):
-        self.trapq_finalize_moves(self.trapq, flush_time)
->>>>>>> bleeding-edge
 
     def get_status(self, eventtime):
         sts = self.heater.get_status(eventtime)

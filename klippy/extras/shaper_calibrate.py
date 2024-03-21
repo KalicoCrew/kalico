@@ -428,26 +428,11 @@ class ShaperCalibrate:
             vals = estimate_shaper(self.numpy, shaper, dr, test_freq_bins)
             test_shaper_vals = np.maximum(test_shaper_vals, vals)
 
-        damping_ratio = damping_ratio or shaper_defs.DEFAULT_DAMPING_RATIO
-        test_damping_ratios = test_damping_ratios or TEST_DAMPING_RATIOS
-
-        if not shaper_freqs:
-            shaper_freqs = (None, None, None)
-        if isinstance(shaper_freqs, tuple):
-            freq_end = shaper_freqs[1] or MAX_SHAPER_FREQ
-            freq_start = min(
-                shaper_freqs[0] or shaper_cfg.min_freq, freq_end - 1e-7
-            )
-            freq_step = shaper_freqs[2] or 0.2
-            test_freqs = np.arange(freq_start, freq_end, freq_step)
-        else:
-            test_freqs = np.array(shaper_freqs)
-
-        max_freq = max(max_freq or MAX_FREQ, test_freqs.max())
+        test_freqs = np.arange(shaper_cfg.min_freq, MAX_SHAPER_FREQ, 0.2)
 
         freq_bins = calibration_data.freq_bins
-        psd = calibration_data.psd_sum[freq_bins <= max_freq]
-        freq_bins = freq_bins[freq_bins <= max_freq]
+        psd = calibration_data.psd_sum[freq_bins <= MAX_FREQ]
+        freq_bins = freq_bins[freq_bins <= MAX_FREQ]
 
         best_res = None
         results = []
