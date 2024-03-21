@@ -16,39 +16,31 @@ class SamdSERCOM:
 
         ppins = self.printer.lookup_object("pins")
         tx_pin_params = ppins.lookup_pin(self.tx_pin)
-        self.tx_pin_params = tx_pin_params
         self.mcu = tx_pin_params["chip"]
+        self.mcu.add_config_cmd(
+            "set_sercom_pin bus=%s sercom_pin_type=tx pin=%s"
+            % (self.sercom, tx_pin_params["pin"])
+        )
 
         clk_pin_params = ppins.lookup_pin(self.clk_pin)
-        self.clk_pin_params = clk_pin_params
         if self.mcu is not clk_pin_params["chip"]:
             raise ppins.error(
                 "%s: SERCOM pins must be on same mcu" % (config.get_name(),)
             )
+        self.mcu.add_config_cmd(
+            "set_sercom_pin bus=%s sercom_pin_type=clk pin=%s"
+            % (self.sercom, clk_pin_params["pin"])
+        )
 
         if self.rx_pin:
             rx_pin_params = ppins.lookup_pin(self.rx_pin)
-            self.rx_pin_params = rx_pin_params
             if self.mcu is not rx_pin_params["chip"]:
                 raise ppins.error(
                     "%s: SERCOM pins must be on same mcu" % (config.get_name(),)
                 )
-
-        self.mcu.register_config_callback()
-
-    def _build_config(self):
-        self.mcu.add_config_cmd(
-            "set_sercom_pin bus=%s sercom_pin_type=tx pin=%s"
-            % (self.sercom, self.tx_pin_params["pin"])
-        )
-        self.mcu.add_config_cmd(
-            "set_sercom_pin bus=%s sercom_pin_type=clk pin=%s"
-            % (self.sercom, self.clk_pin_params["pin"])
-        )
-        if self.rx_pin:
             self.mcu.add_config_cmd(
                 "set_sercom_pin bus=%s sercom_pin_type=rx pin=%s"
-                % (self.sercom, self.rx_pin_params["pin"])
+                % (self.sercom, rx_pin_params["pin"])
             )
 
 

@@ -508,7 +508,6 @@ class Angle:
         }
         sensor_type = config.getchoice("sensor_type", {s: s for s in sensors})
         sensor_class = sensors[sensor_type]
-        self.sensor_type = sensor_type
         self.spi = bus.MCU_SPI_from_config(
             config, sensor_class.SPI_MODE, default_speed=sensor_class.SPI_SPEED
         )
@@ -516,10 +515,18 @@ class Angle:
         self.oid = oid = mcu.create_oid()
         self.sensor_helper = sensor_class(config, self.spi, oid)
         # Setup mcu sensor_spi_angle bulk query code
-        self.query_spi_angle_cmd = None
+        self.query_spi_angle_cmd = self.query_spi_angle_end_cmd = None
         mcu.add_config_cmd(
             "config_spi_angle oid=%d spi_oid=%d spi_angle_type=%s"
             % (oid, self.spi.get_oid(), sensor_type)
+        )
+        mcu.add_config_cmd(
+            "query_spi_angle oid=%d clock=0 rest_ticks=0 time_shift=0" % (oid,),
+            on_restart=True,
+        )
+        mcu.register_config_callback(self._build_config)
+        mcu.register_response(
+            self._handle_spi_angle_data, "spi_angle_data", oid
         )
         mcu.add_config_cmd(
             "query_spi_angle oid=%d clock=0 rest_ticks=0 time_shift=0" % (oid,),
@@ -542,16 +549,6 @@ class Angle:
         )
 
     def _build_config(self):
-        self.mcu.add_config_cmd(
-            "config_spi_angle oid=%d spi_oid=%d spi_angle_type=%s"
-            % (self.oid, self.spi.get_oid(), self.sensor_type)
-        )
-        self.mcu.add_config_cmd(
-            "query_spi_angle oid=%d clock=0 rest_ticks=0 time_shift=0"
-            % (self.oid,),
-            on_restart=True,
-        )
-
         freq = self.mcu.seconds_to_clock(1.0)
         while float(TCODE_ERROR << self.time_shift) / freq < 0.002:
             self.time_shift += 1

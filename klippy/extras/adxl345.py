@@ -37,7 +37,6 @@ Accel_Measurement = collections.namedtuple(
     "Accel_Measurement", ("time", "accel_x", "accel_y", "accel_z")
 )
 
-
 # Helper class to obtain measurements
 class AccelQueryHelper:
     def __init__(self, printer):
@@ -264,7 +263,6 @@ SAMPLES_PER_BLOCK = bulk_sensor.MAX_BULK_MSG_SIZE // BYTES_PER_SAMPLE
 
 BATCH_UPDATES = 0.100
 
-
 # Printer class that controls ADXL345 chip
 class ADXL345:
     def __init__(self, config):
@@ -309,13 +307,6 @@ class ADXL345:
         )
 
     def _build_config(self):
-        self.mcu.add_config_cmd(
-            "config_adxl345 oid=%d spi_oid=%d" % (self.oid, self.spi.get_oid())
-        )
-        self.mcu.add_config_cmd(
-            "query_adxl345 oid=%d clock=0 rest_ticks=0" % (self.oid,),
-            on_restart=True,
-        )
         cmdqueue = self.spi.get_command_queue()
         self.query_adxl345_cmd = self.mcu.lookup_command(
             "query_adxl345 oid=%c rest_ticks=%u", cq=cmdqueue

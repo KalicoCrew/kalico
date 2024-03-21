@@ -14,13 +14,7 @@ class error(Exception):
 
 
 class SerialReader:
-    def __init__(
-        self,
-        reactor,
-        warn_prefix="",
-        mcu=None,
-    ):
-        self.mcu = mcu
+    def __init__(self, reactor, warn_prefix=""):
         self.reactor = reactor
         self.warn_prefix = warn_prefix
         # Serial port
@@ -299,13 +293,8 @@ class SerialReader:
             else:
                 self.handlers[name, oid] = callback
 
-    def _check_noncritical_disconnected(self):
-        if self.mcu is not None and self.mcu.non_critical_disconnected:
-            self._error("non-critical MCU is disconnected")
-
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
-        self._check_noncritical_disconnected()
         if self.serialqueue is None:
             logging.info(
                 "%sSerial connection closed, cmd: %s",
@@ -318,7 +307,6 @@ class SerialReader:
         )
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
-        self._check_noncritical_disconnected()
         if self.serialqueue is None:
             logging.info(
                 "%sSerial connection closed, in wait ack, cmd: %s",

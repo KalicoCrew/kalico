@@ -38,7 +38,6 @@ def resolve_bus_name(mcu, param, bus):
 # SPI
 ######################################################################
 
-
 # Helper code for working with devices connected to an MCU via an SPI bus
 class MCU_SPI:
     def __init__(
@@ -46,11 +45,15 @@ class MCU_SPI:
     ):
         self.mcu = mcu
         self.bus = bus
-        self.pin = pin
-        self.cs_active_high = cs_active_high
         # Config SPI object (set all CS pins high before spi_set_bus commands)
         self.oid = mcu.create_oid()
-
+        if pin is None:
+            mcu.add_config_cmd("config_spi_without_cs oid=%d" % (self.oid,))
+        else:
+            mcu.add_config_cmd(
+                "config_spi oid=%d pin=%s cs_active_high=%d"
+                % (self.oid, pin, cs_active_high)
+            )
         # Generate SPI bus config message
         if sw_pins is not None:
             self.config_fmt = (
@@ -63,7 +66,7 @@ class MCU_SPI:
                 "spi_set_bus oid=%d spi_bus=%%s mode=%d rate=%d"
                 % (self.oid, mode, speed)
             )
-
+        self.cmd_queue = mcu.alloc_command_queue()
         mcu.register_config_callback(self.build_config)
         self.spi_send_cmd = self.spi_transfer_cmd = None
 
@@ -84,16 +87,6 @@ class MCU_SPI:
         return self.cmd_queue
 
     def build_config(self):
-        self.cmd_queue = self.mcu.alloc_command_queue()
-        if self.pin is None:
-            self.mcu.add_config_cmd(
-                "config_spi_without_cs oid=%d" % (self.oid,)
-            )
-        else:
-            self.mcu.add_config_cmd(
-                "config_spi oid=%d pin=%s cs_active_high=%d"
-                % (self.oid, self.pin, self.cs_active_high)
-            )
         if "%" in self.config_fmt:
             bus = resolve_bus_name(self.mcu, "spi_bus", self.bus)
             self.config_fmt = self.config_fmt % (bus,)
@@ -183,7 +176,6 @@ def MCU_SPI_from_config(
 # I2C
 ######################################################################
 
-
 # Helper code for working with devices connected to an MCU via an I2C bus
 class MCU_I2C:
     def __init__(self, mcu, bus, addr, speed, sw_pins=None):
@@ -191,7 +183,7 @@ class MCU_I2C:
         self.bus = bus
         self.i2c_address = addr
         self.oid = self.mcu.create_oid()
-
+        mcu.add_config_cmd("config_i2c oid=%d" % (self.oid,))
         # Generate I2C bus config message
         if sw_pins is not None:
             self.config_fmt = (
@@ -221,7 +213,6 @@ class MCU_I2C:
         return self.cmd_queue
 
     def build_config(self):
-        self.mcu.add_config_cmd("config_i2c oid=%d" % (self.oid,))
         if "%" in self.config_fmt:
             bus = resolve_bus_name(self.mcu, "i2c_bus", self.bus)
             self.config_fmt = self.config_fmt % (bus,)
@@ -306,7 +297,6 @@ def MCU_I2C_from_config(config, default_addr=None, default_speed=100000):
 # Bus synchronized digital outputs
 ######################################################################
 
-
 # Helper code for a gpio that updates on a cmd_queue
 class MCU_bus_digital_out:
     def __init__(self, mcu, pin_desc, cmd_queue=None, value=0):
@@ -314,13 +304,15 @@ class MCU_bus_digital_out:
         self.oid = mcu.create_oid()
         ppins = mcu.get_printer().lookup_object("pins")
         pin_params = ppins.lookup_pin(pin_desc)
-        self.pin_params = pin_params
-        self.value = value
         if pin_params["chip"] is not mcu:
             raise ppins.error(
                 "Pin %s must be on mcu %s" % (pin_desc, mcu.get_name())
             )
-
+        mcu.add_config_cmd(
+            "config_digital_out oid=%d pin=%s value=%d"
+            " default_value=%d max_duration=%d"
+            % (self.oid, pin_params["pin"], value, value, 0)
+        )
         mcu.register_config_callback(self.build_config)
         if cmd_queue is None:
             cmd_queue = mcu.alloc_command_queue()
@@ -337,11 +329,6 @@ class MCU_bus_digital_out:
         return self.cmd_queue
 
     def build_config(self):
-        self.mcu.add_config_cmd(
-            "config_digital_out oid=%d pin=%s value=%d"
-            " default_value=%d max_duration=%d"
-            % (self.oid, self.pin_params["pin"], self.value, self.value, 0)
-        )
         self.update_pin_cmd = self.mcu.lookup_command(
             "update_digital_out oid=%c value=%c", cq=self.cmd_queue
         )

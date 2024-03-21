@@ -21,16 +21,15 @@ class MCU_analog_mux:
         self.oids = [self.mcu.create_oid() for pp in select_pin_params]
         self.pins = [pp["pin"] for pp in select_pin_params]
         self.pin_values = tuple([-1 for pp in select_pin_params])
-
-        self.update_pin_cmd = None
-        self.mcu.register_config_callback(self.build_config)
-
-    def build_config(self):
         for oid, pin in zip(self.oids, self.pins):
             self.mcu.add_config_cmd(
                 "config_digital_out oid=%d pin=%s"
                 " value=0 default_value=0 max_duration=0" % (oid, pin)
             )
+        self.update_pin_cmd = None
+        self.mcu.register_config_callback(self.build_config)
+
+    def build_config(self):
         self.update_pin_cmd = self.mcu.lookup_command(
             "update_digital_out oid=%c value=%c", cq=self.cmd_queue
         )
@@ -63,7 +62,6 @@ class MCU_analog_mux:
 # TMC uart communication
 ######################################################################
 
-
 # Share mutexes so only one active tmc_uart command on a single mcu at
 # a time. This helps limit cpu usage on slower micro-controllers.
 class PrinterTMCUartMutexes:
@@ -86,7 +84,6 @@ def lookup_tmc_uart_mutex(mcu):
 
 TMC_BAUD_RATE = 40000
 TMC_BAUD_RATE_AVR = 9000
-
 
 # Code for sending messages on a TMC uart
 class MCU_TMC_uart_bitbang:
