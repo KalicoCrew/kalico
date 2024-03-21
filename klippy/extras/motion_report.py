@@ -124,11 +124,17 @@ class DumpStepper:
         self.printer = printer
         self.mcu_stepper = mcu_stepper
         self.last_batch_clock = 0
-        self.batch_bulk = bulk_sensor.BatchBulkHelper(printer,
-                                                      self._process_batch)
-        api_resp = {'header': ('interval', 'count', 'add', 'add2', 'shift')}
-        self.batch_bulk.add_mux_endpoint("motion_report/dump_stepper", "name",
-                                         mcu_stepper.get_name(), api_resp)
+        self.batch_bulk = bulk_sensor.BatchBulkHelper(
+            printer, self._process_batch
+        )
+        api_resp = {"header": ("interval", "count", "add", "add2", "shift")}
+        self.batch_bulk.add_mux_endpoint(
+            "motion_report/dump_stepper",
+            "name",
+            mcu_stepper.get_name(),
+            api_resp,
+        )
+
     def get_step_queue(self, start_clock, end_clock):
         mcu_stepper = self.mcu_stepper
         res = []
@@ -156,12 +162,23 @@ class DumpStepper:
             )
         )
         for i, s in enumerate(data):
-            out.append("queue_step %d: t=%d p=%d i=%d c=%d a=%d a2=%d s=%d"
-                       % (i, s.first_clock, s.start_position, s.interval,
-                          s.step_count, s.add, s.add2, s.shift))
-        logging.info('\n'.join(out))
+            out.append(
+                "queue_step %d: t=%d p=%d i=%d c=%d a=%d a2=%d s=%d"
+                % (
+                    i,
+                    s.first_clock,
+                    s.start_position,
+                    s.interval,
+                    s.step_count,
+                    s.add,
+                    s.add2,
+                    s.shift,
+                )
+            )
+        logging.info("\n".join(out))
+
     def _process_batch(self, eventtime):
-        data, cdata = self.get_step_queue(self.last_batch_clock, 1<<63)
+        data, cdata = self.get_step_queue(self.last_batch_clock, 1 << 63)
         if not data:
             return {}
         clock_to_print_time = self.mcu_stepper.get_mcu().clock_to_print_time
@@ -176,10 +193,16 @@ class DumpStepper:
         if self.mcu_stepper.get_dir_inverted()[0]:
             step_dist = -step_dist
         d = [(s.interval, s.step_count, s.add, s.add2, s.shift) for s in data]
-        return {"data": d, "start_position": start_position,
-                "start_mcu_position": mcu_pos, "step_distance": step_dist,
-                "first_clock": first_clock, "first_step_time": first_time,
-                "last_clock": last_clock, "last_step_time": last_time}
+        return {
+            "data": d,
+            "start_position": start_position,
+            "start_mcu_position": mcu_pos,
+            "step_distance": step_dist,
+            "first_clock": first_clock,
+            "first_step_time": first_time,
+            "last_clock": last_clock,
+            "last_step_time": last_time,
+        }
 
     def _add_api_client(self, web_request):
         self.api_dump.add_client(web_request)

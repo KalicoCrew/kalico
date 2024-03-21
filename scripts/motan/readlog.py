@@ -15,11 +15,13 @@ class error(Exception):
 # Log data handlers
 ######################################################################
 
+
 def shift_interval(interval, shift):
     if shift <= 0:
         return interval << -shift
     else:
-        return (interval + (1 << (shift-1))) >> shift
+        return (interval + (1 << (shift - 1))) >> shift
+
 
 # Log data handlers: {name: class, ...}
 LogHandlers = {}
@@ -244,21 +246,23 @@ class HandleStepQ:
             if req_time <= last_time:
                 break
         # Process block into (time, half_position, position) 3-tuples
-        first_time = step_time = jmsg['first_step_time']
-        first_clock = jmsg['first_clock']
-        step_clock = first_clock - shift_interval(jmsg['data'][0][0],
-                                                  jmsg['data'][0][4])
-        cdiff = jmsg['last_clock'] - first_clock
+        first_time = step_time = jmsg["first_step_time"]
+        first_clock = jmsg["first_clock"]
+        step_clock = first_clock - shift_interval(
+            jmsg["data"][0][0], jmsg["data"][0][4]
+        )
+        cdiff = jmsg["last_clock"] - first_clock
         tdiff = last_time - first_time
         inv_freq = 0.0
         if cdiff:
             inv_freq = tdiff / cdiff
-        step_dist = jmsg['step_distance']
-        step_pos = jmsg['start_position'] - (step_dist if jmsg['data'][0][1] > 0
-                                             else -step_dist)
+        step_dist = jmsg["step_distance"]
+        step_pos = jmsg["start_position"] - (
+            step_dist if jmsg["data"][0][1] > 0 else -step_dist
+        )
         if not step_data[0][0]:
-            step_data[0] = (0., step_pos, step_pos)
-        for interval, raw_count, add, add2, shift in jmsg['data']:
+            step_data[0] = (0.0, step_pos, step_pos)
+        for interval, raw_count, add, add2, shift in jmsg["data"]:
             qs_dist = step_dist
             count = raw_count
             if count < 0:
@@ -360,20 +364,22 @@ class HandleStepPhase:
             if req_time <= last_time:
                 break
         # Process block into (time, position) 2-tuples
-        first_time = step_time = jmsg['first_step_time']
-        first_clock = jmsg['first_clock']
-        step_clock = first_clock - shift_interval(jmsg['data'][0][0],
-                                                  jmsg['data'][0][4])
-        cdiff = jmsg['last_clock'] - first_clock
+        first_time = step_time = jmsg["first_step_time"]
+        first_clock = jmsg["first_clock"]
+        step_clock = first_clock - shift_interval(
+            jmsg["data"][0][0], jmsg["data"][0][4]
+        )
+        cdiff = jmsg["last_clock"] - first_clock
         tdiff = last_time - first_time
         inv_freq = 0.0
         if cdiff:
             inv_freq = tdiff / cdiff
-        step_pos = jmsg['start_mcu_position'] - (1 if jmsg['data'][0][1] > 0
-                                                 else -1)
+        step_pos = jmsg["start_mcu_position"] - (
+            1 if jmsg["data"][0][1] > 0 else -1
+        )
         if not step_data[0][0]:
-            step_data[0] = (0., step_pos)
-        for interval, raw_count, add, add2, shift in jmsg['data']:
+            step_data[0] = (0.0, step_pos)
+        for interval, raw_count, add, add2, shift in jmsg["data"]:
             qs_dist = 1
             count = raw_count
             if count < 0:
