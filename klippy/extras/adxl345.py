@@ -265,7 +265,6 @@ SAMPLES_PER_BLOCK = bulk_sensor.MAX_BULK_MSG_SIZE // BYTES_PER_SAMPLE
 BATCH_UPDATES = 0.100
 
 
-
 # Printer class that controls ADXL345 chip
 class ADXL345:
     def __init__(self, config):
