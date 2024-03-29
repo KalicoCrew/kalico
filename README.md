@@ -18,6 +18,8 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
 
+- [core: rotate log file at every restart](https://github.com/DangerKlippers/danger-klipper/pull/181)
+
 - [fan: normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
 - [fan: reverse FAN](https://github.com/DangerKlippers/danger-klipper/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
