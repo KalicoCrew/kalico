@@ -810,7 +810,30 @@ class MCU:
         prefix = "MCU '%s' shutdown: " % (self._name,)
         if params["#name"] == "is_shutdown":
             prefix = "Previous MCU '%s' shutdown: " % (self._name,)
-        self._printer.invoke_async_shutdown(prefix + msg + error_help(msg))
+
+        append_msgs = []
+        if (
+            msg.startswith("ADC out of range")
+            and not self.danger_options.adc_ignore_limits
+        ):
+            pheaters = self._printer.lookup_object("heaters")
+            heaters = [
+                pheaters.lookup_heater(n) for n in pheaters.available_heaters
+            ]
+            for heater in heaters:
+                if heater.is_adc_faulty():
+                    append_msgs.append(
+                        {
+                            "heater": heater.name,
+                            "last_temp": "{:.2f}".format(heater.last_temp),
+                            "min_temp": heater.min_temp,
+                            "max_temp": heater.max_temp,
+                        }
+                    )
+
+        self._printer.invoke_async_shutdown(
+            prefix + msg + error_help(msg=msg, append_msgs=append_msgs)
+        )
 
     def _handle_starting(self, params):
         if not self._is_shutdown:
@@ -1304,10 +1327,21 @@ or in response to an internal error in the host software.""",
 }
 
 
-def error_help(msg):
+def error_help(msg, append_msgs=[]):
     for prefixes, help_msg in Common_MCU_errors.items():
         for prefix in prefixes:
             if msg.startswith(prefix):
+                if append_msgs:
+                    for append in append_msgs:
+                        line = append
+                        if isinstance(append, dict):
+                            line = ", ".join(
+                                [
+                                    f"{str(k)}: {str(v)}"
+                                    for k, v in append.items()
+                                ]
+                            )
+                        help_msg = "\n".join([help_msg, str(line)])
                 return help_msg
     return ""
 

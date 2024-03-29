@@ -233,6 +233,11 @@ class Heater:
             "pid_profile": self.get_control().get_profile()["name"],
         }
 
+    def is_adc_faulty(self):
+        if self.last_temp > self.max_temp or self.last_temp < self.min_temp:
+            return True
+        return False
+
     cmd_SET_HEATER_TEMPERATURE_help = "Sets a heater temperature"
 
     def cmd_SET_HEATER_TEMPERATURE(self, gcmd):
