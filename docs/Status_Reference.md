@@ -558,6 +558,14 @@ on a cartesian, hybrid_corexy or hybrid_corexz robot
 - `carriage_1`: The mode of the carriage 1. Possible values are:
   "INACTIVE", "PRIMARY", "COPY", and "MIRROR".
 
+## trad_rack
+
+The following informatin is available in the
+[trad_rack](Config_Reference.md#trad_rack) object:
+- `curr_lane`: The lane the selector is currently positioned at.
+- `active_lane`: The lane currently loaded in the toolhead.
+- `selector_homed`: Whether or not the selector axis is homed.
+
 ## virtual_sdcard
 
 The following information is available in the
