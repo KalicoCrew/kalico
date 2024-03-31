@@ -38,6 +38,8 @@ class ScrewsTiltAdjust:
             "CCW-M5": 5,
             "CW-M6": 6,
             "CCW-M6": 7,
+            "CW-M8": 8,
+            "CCW-M8": 9,
         }
         self.thread = config.getchoice(
             "screw_thread", self.threads, default="CW-M3"
@@ -97,6 +99,8 @@ class ScrewsTiltAdjust:
             5: 0.8,
             6: 1.0,
             7: 1.0,
+            8: 1.25,
+            9: 1.25,
         }
         is_clockwise_thread = (self.thread & 1) == 0
         screw_diff = []
