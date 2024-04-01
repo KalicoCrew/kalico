@@ -188,9 +188,8 @@ class Belay:
         self.gcode.respond_info("belay {}: {}".format(self.name, state_info))
 
     cmd_BELAY_SET_MULTIPLIER_help = (
-        "Sets multiplier_high and/or "
-        "multiplier_low. Does not persist across "
-        "restarts."
+        "Sets multiplier_high and/or multiplier_low. Does not persist across"
+        " restarts."
     )
 
     def cmd_BELAY_SET_MULTIPLIER(self, gcmd):
@@ -202,7 +201,7 @@ class Belay:
         )
 
     cmd_BELAY_SET_STEPPER_help = (
-        "Select the extruder_stepper object to be " "controlled by the Belay"
+        "Select the extruder_stepper object to be controlled by the Belay"
     )
 
     def cmd_BELAY_SET_STEPPER(self, gcmd):
