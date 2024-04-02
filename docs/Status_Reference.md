@@ -39,6 +39,15 @@ the following strings: "adjust", "fine".
 - `current_screw`: The index for the current screw being adjusted.
 - `accepted_screws`: The number of accepted screws.
 
+## belay
+
+The following information is available in
+[belay some_name](Config_Reference.md#belay) objects:
+- `printer["belay <config_name>"].last_state`: Returns True if the belay's
+  sensor is in a triggered state (indicating its slider is compressed).
+- `printer["belay <config_name>"].enabled`: Returns True if the belay is
+  currently enabled.
+
 ## configfile
 
 The following information is available in the `configfile` object
