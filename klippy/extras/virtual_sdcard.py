@@ -5,8 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, sys, logging, io
 
-VALID_GCODE_EXTS = ["gcode", "g", "gco"]
-
 
 class VirtualSD:
     def __init__(self, config):
