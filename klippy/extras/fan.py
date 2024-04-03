@@ -13,31 +13,17 @@ class Fan:
         self.printer = config.get_printer()
         self.last_fan_value = 0.0
         self.last_fan_time = 0.0
+        self.last_pwm_value = 0.0
         # Read config
         self.kick_start_time = config.getfloat(
             "kick_start_time", 0.1, minval=0.0
         )
         self.min_power = config.getfloat(
-            "min_power", default=None, minval=0.0, maxval=1.0
+            "min_power", default=0.0, minval=0.0, maxval=1.0
         )
         self.off_below = config.getfloat(
-            "off_below", default=None, minval=0.0, maxval=1.0
+            "off_below", default=0.0, minval=0.0, maxval=1.0
         )
-
-        # handles switchover of variable
-        # if new var is not set, and old var is, set new var to old var
-        # if new var is not set and neither is old var, set new var to default of 0.0
-        # if new var is set, use new var
-        if self.min_power is not None and self.off_below is not None:
-            raise config.error(
-                "min_power and off_below are both set. Remove one!"
-            )
-        if self.min_power is None:
-            if self.off_below is None:
-                # both unset, set to 0.0
-                self.min_power = 0.0
-            else:
-                self.min_power = self.off_below
 
         self.max_power = config.getfloat(
             "max_power", 1.0, above=0.0, maxval=1.0
@@ -85,6 +71,8 @@ class Fan:
         return self.mcu_fan.get_mcu()
 
     def set_speed(self, print_time, value):
+        if value < self.off_below:
+            value = 0
         if value == self.last_fan_value:
             return
         if value > 0:
@@ -103,7 +91,7 @@ class Fan:
                 self.enable_pin.set_digital(print_time, 0)
         if (
             value
-            and value < self.max_power
+            and pwm_value < self.max_power
             and self.kick_start_time
             and (not self.last_fan_value or value - self.last_fan_value > 0.5)
         ):
@@ -112,6 +100,7 @@ class Fan:
             print_time += self.kick_start_time
         self.mcu_fan.set_pwm(print_time, pwm_value)
         self.last_fan_time = print_time
+        self.last_pwm_value = pwm_value
         self.last_fan_value = value
 
     def set_speed_from_command(self, value):
@@ -126,6 +115,7 @@ class Fan:
     def get_status(self, eventtime):
         tachometer_status = self.tachometer.get_status(eventtime)
         return {
+            "power": self.last_pwm_value,
             "speed": self.last_fan_value,
             "rpm": tachometer_status["rpm"],
         }

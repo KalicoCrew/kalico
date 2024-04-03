@@ -157,6 +157,7 @@ The following information is available in
 [controller_fan some_name](Config_Reference.md#controller_fan)
 objects:
 - `speed`: The fan speed as a float between 0.0 and 1.0.
+- `power`: The fan power as a float between 0|`min_power` and `max_power`.
 - `rpm`: The measured fan speed in rotations per minute if the fan has
   a tachometer_pin defined.
 

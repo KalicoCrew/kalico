@@ -3318,6 +3318,10 @@ pin:
 #   input. In such a case, the PWM pin can be used normally, and e.g. a
 #   ground-switched FET(standard fan pin) can be used to control power to
 #   the fan.
+#off_below:
+#   The minimum input speed which will power the fan (expressed as a
+#   value from 0.0 to 1.0). When a speed lower than off_below is
+#   requested the fan will instead be turned off. The default is 0.0.
 ```
 
 ### [heated_fan]
