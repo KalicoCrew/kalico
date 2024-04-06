@@ -52,6 +52,8 @@ DANGER_OPTIONS: DangerOptions = None
 
 def get_danger_options():
     global DANGER_OPTIONS
+    if DANGER_OPTIONS is None:
+        raise Exception("DangerOptions has not been loaded yet!")
     return DANGER_OPTIONS
 
 
