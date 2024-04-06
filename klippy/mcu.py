@@ -963,7 +963,6 @@ class MCU:
         local_config_cmds.insert(
             0, "allocate_oids count=%d" % (self._oid_count,)
         )
-        logging.info("config_cmds: %s", local_config_cmds)
 
         # Resolve pin names
         mcu_type = self._serial.get_msgparser().get_constant("MCU")
@@ -972,7 +971,6 @@ class MCU:
         for cmdlist in (local_config_cmds, self._restart_cmds, self._init_cmds):
             for i, cmd in enumerate(cmdlist):
                 cmdlist[i] = pin_resolver.update_command(cmd)
-                logging.info("command: %s", cmdlist[i])
         # Calculate config CRC
         encoded_config = "\n".join(local_config_cmds).encode()
         config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
