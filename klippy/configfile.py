@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, glob, re, time, logging, configparser, io
+from extras.danger_options import get_danger_options
 
 error = configparser.Error
 
@@ -676,8 +677,7 @@ class PrinterConfig:
             raise gcode.error(msg)
         regular_data = self._strip_duplicates(regular_data, self.autosave)
 
-        self.danger_options = self.printer.lookup_object("danger_options")
-        if self.danger_options.autosave_includes:
+        if get_danger_options().autosave_includes:
             self._save_includes(cfgname, data, set(), gcode)
 
         # NOW we're safe to check for conflicts

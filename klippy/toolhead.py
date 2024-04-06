@@ -6,6 +6,7 @@
 import math, logging, importlib
 import chelper
 import kinematics.extruder
+from extras.danger_options import get_danger_options
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -248,7 +249,6 @@ class DripModeEndSignal(Exception):
 class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.danger_options = self.printer.lookup_object("danger_options")
         self.reactor = self.printer.get_reactor()
         self.all_mcus = [
             m for n, m in self.printer.lookup_objects(module="mcu")
@@ -535,7 +535,7 @@ class ToolHead:
             while 1:
                 end_flush = (
                     self.need_flush_time
-                    + self.danger_options.bgflush_extra_time
+                    + get_danger_options().bgflush_extra_time
                 )
                 if self.last_flush_time >= end_flush:
                     self.do_kick_flush_timer = True

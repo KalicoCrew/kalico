@@ -7,6 +7,7 @@
 import sys, os, gc, optparse, logging, time, collections, importlib, importlib.util
 import util, reactor, queuelogger, msgproto
 import gcode, configfile, pins, mcu, toolhead, webhooks
+from extras.danger_options import get_danger_options
 
 message_ready = "Printer is ready"
 
@@ -68,7 +69,6 @@ class Printer:
         self.run_result = None
         self.event_handlers = {}
         self.objects = collections.OrderedDict()
-        self.danger_options = None
         # Init printer components that must be setup prior to config
         for m in [gcode, webhooks]:
             m.add_early_printer_objects(self)
@@ -158,7 +158,7 @@ class Printer:
         if (
             found_in_extras
             and found_in_plugins
-            and not self.danger_options.allow_plugin_override
+            and not get_danger_options().allow_plugin_override
         ):
             raise self.config_error(
                 "Module '%s' found in both extras and plugins!" % (section,)
@@ -187,10 +187,10 @@ class Printer:
     def _read_config(self):
         self.objects["configfile"] = pconfig = configfile.PrinterConfig(self)
         config = pconfig.read_main_config()
-        self.danger_options = self.load_object(config, "danger_options")
+        self.load_object(config, "danger_options", None)
         if (
             self.bglogger is not None
-            and self.danger_options.log_config_file_at_startup
+            and get_danger_options().log_config_file_at_startup
         ):
             pconfig.log_config(config)
         # Create printer components
@@ -204,7 +204,7 @@ class Printer:
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
-        error_on_unused = self.danger_options.error_on_unused_config_options
+        error_on_unused = get_danger_options().error_on_unused_config_options
         pconfig.check_unused_options(config, error_on_unused)
 
     def _build_protocol_error_message(self, e):

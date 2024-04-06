@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license
 import logging, socket, os, sys, errno, json, collections
 import gcode
+from extras.danger_options import get_danger_options
 
 REQUEST_LOG_SIZE = 20
 
@@ -407,10 +408,11 @@ class WebHooks:
         template = web_request.get_dict("response_template")
         method = web_request.get_str("remote_method")
         new_conn = web_request.get_client_connection()
-        logging.info(
-            "webhooks: registering remote method '%s' "
-            "for connection id: %d" % (method, id(new_conn))
-        )
+        if get_danger_options().log_webhook_method_register_messages:
+            logging.info(
+                "webhooks: registering remote method '%s' "
+                "for connection id: %d" % (method, id(new_conn))
+            )
         self._remote_methods.setdefault(method, {})[new_conn] = template
 
     def get_connection(self):

@@ -8,6 +8,7 @@ import math
 import os
 import zlib
 import serialhdl, msgproto, pins, chelper, clocksync
+from extras.danger_options import get_danger_options
 
 
 class error(Exception):
@@ -312,9 +313,6 @@ class MCU_endstop:
         ffi_main, ffi_lib = chelper.get_ffi()
         self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
-        self.danger_options = self._mcu.get_printer().lookup_object(
-            "danger_options"
-        )
 
     def get_mcu(self):
         return self._mcu
@@ -377,7 +375,7 @@ class MCU_endstop:
         self._rest_ticks = rest_ticks
         reactor = self._mcu.get_printer().get_reactor()
         self._trigger_completion = reactor.completion()
-        expire_timeout = self.danger_options.multi_mcu_trsync_timeout
+        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
         if len(self._trsyncs) == 1:
             expire_timeout = TRSYNC_SINGLE_MCU_TIMEOUT
         for i, trsync in enumerate(self._trsyncs):
@@ -707,7 +705,7 @@ class MCU:
 
     def __init__(self, config, clocksync):
         self._printer = printer = config.get_printer()
-        self.danger_options = printer.lookup_object("danger_options")
+        self.gcode = printer.lookup_object("gcode")
         self._clocksync = clocksync
         self._reactor = printer.get_reactor()
         self._name = config.get_name()
@@ -798,7 +796,7 @@ class MCU:
         if clock is not None:
             self._shutdown_clock = self.clock32_to_clock64(clock)
         self._shutdown_msg = msg = params["static_string_id"]
-        if self.danger_options.log_shutdown_info:
+        if get_danger_options().log_shutdown_info:
             logging.info(
                 "MCU '%s' %s: %s\n%s\n%s",
                 self._name,
@@ -814,7 +812,7 @@ class MCU:
         append_msgs = []
         if (
             msg.startswith("ADC out of range")
-            and not self.danger_options.adc_ignore_limits
+            and not get_danger_options.adc_ignore_limits
         ):
             pheaters = self._printer.lookup_object("heaters")
             heaters = [
@@ -1024,7 +1022,8 @@ class MCU:
                 self._clocksync.connect(self._serial)
             except serialhdl.error as e:
                 raise error(str(e))
-        logging.info(self._log_info())
+        if get_danger_options().log_startup_info:
+            logging.info(self._log_info())
         ppins = self._printer.lookup_object("pins")
         pin_resolver = ppins.get_pin_resolver(self._name)
         for cname, value in self.get_constants().items():
