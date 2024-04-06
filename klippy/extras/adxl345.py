@@ -37,6 +37,7 @@ Accel_Measurement = collections.namedtuple(
     "Accel_Measurement", ("time", "accel_x", "accel_y", "accel_z")
 )
 
+
 # Helper class to obtain measurements
 class AccelQueryHelper:
     def __init__(self, printer, cconn):
@@ -192,17 +193,20 @@ class AccelCommandHelper:
     cmd_ACCELEROMETER_QUERY_help = "Query accelerometer for the current values"
 
     def cmd_ACCELEROMETER_QUERY(self, gcmd):
-        aclient = self.chip.start_internal_client()
-        self.printer.lookup_object("toolhead").dwell(1.0)
-        aclient.finish_measurements()
-        values = aclient.get_samples()
-        if not values:
-            raise gcmd.error("No accelerometer measurements found")
-        _, accel_x, accel_y, accel_z = values[-1]
-        gcmd.respond_info(
-            "accelerometer values (x, y, z): %.6f, %.6f, %.6f"
-            % (accel_x, accel_y, accel_z)
-        )
+        try:
+            aclient = self.chip.start_internal_client()
+            self.printer.lookup_object("toolhead").dwell(1.0)
+            aclient.finish_measurements()
+            values = aclient.get_samples()
+            if not values:
+                raise gcmd.error("No accelerometer measurements found")
+            _, accel_x, accel_y, accel_z = values[-1]
+            gcmd.respond_info(
+                "accelerometer values (x, y, z): %.6f, %.6f, %.6f"
+                % (accel_x, accel_y, accel_z)
+            )
+        except Exception as e:
+            raise gcmd.error("Failed to query accelerometer: %s" % (e,))
 
     cmd_ACCELEROMETER_DEBUG_READ_help = "Query register (for debugging)"
 
@@ -282,6 +286,7 @@ MIN_MSG_TIME = 0.100
 
 BYTES_PER_SAMPLE = 5
 SAMPLES_PER_BLOCK = 10
+
 
 # Printer class that controls ADXL345 chip
 class ADXL345:
