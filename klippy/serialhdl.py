@@ -36,6 +36,9 @@ class SerialReader:
         # Sent message notification tracking
         self.last_notify_id = 0
         self.pending_notifications = {}
+        self.danger_options = self.mcu.get_printer().lookup_object(
+            "danger_options"
+        )
 
     def _bg_thread(self):
         response = self.ffi_main.new("struct pull_queue_message *")
@@ -472,7 +475,8 @@ class SerialReader:
         )
 
     def handle_default(self, params):
-        logging.warn("%sgot %s", self.warn_prefix, params)
+        if self.danger_options.disable_serial_reader_warnings:
+            logging.warn("%sgot %s", self.warn_prefix, params)
 
 
 # Class to send a query command and return the received response

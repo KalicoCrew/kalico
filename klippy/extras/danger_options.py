@@ -22,6 +22,9 @@ class DangerOptions:
         self.homing_elapsed_distance_tolerance = config.getfloat(
             "homing_elapsed_distance_tolerance", 0.5, minval=0.0
         )
+        self.disable_serial_reader_warnings = config.getboolean(
+            "disable_serial_reader_warnings", False
+        )
 
 
 def load_config(config):
