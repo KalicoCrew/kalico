@@ -71,7 +71,7 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping):
     old_minimum_cruise_ratio = toolhead_info["minimum_cruise_ratio"]
     old_max_velocity = toolhead_info["max_velocity"]
     gcode.run_script_from_command(
-        "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=1 VELOCITY=%.3f"
+        "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=0 VELOCITY=%.3f"
         % (max_accel, max_velocity)
     )
     kin = toolhead.get_kinematics()
