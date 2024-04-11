@@ -166,23 +166,6 @@ class VibrationPulseTest:
         X, Y, Z, E = toolhead.get_position()
         sign = 1.0
         freq = self.freq_start
-        # Override maximum acceleration and acceleration to
-        # deceleration based on the maximum test frequency
-        systime = self.printer.get_reactor().monotonic()
-        toolhead_info = toolhead.get_status(systime)
-        old_max_accel = toolhead_info["max_accel"]
-        old_minimum_cruise_ratio = toolhead_info["minimum_cruise_ratio"]
-        max_accel = self.freq_end * self.accel_per_hz
-        self.gcode.run_script_from_command(
-            "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=0"
-            % (max_accel,)
-        )
-        input_shaper = self.printer.lookup_object("input_shaper", None)
-        if input_shaper is not None and not gcmd.get_int("INPUT_SHAPING", 0):
-            input_shaper.disable_shaping()
-            gcmd.respond_info("Disabled [input_shaper] for resonance testing")
-        else:
-            input_shaper = None
         gcmd.respond_info("Testing frequency %.0f Hz" % (freq,))
         while freq <= self.freq_end + 0.000001:
             t_seg = 0.25 / freq
@@ -202,15 +185,6 @@ class VibrationPulseTest:
             freq += 2.0 * t_seg * self.hz_per_sec
             if math.floor(freq) > math.floor(old_freq):
                 gcmd.respond_info("Testing frequency %.0f Hz" % (freq,))
-        # Restore the original acceleration values
-        self.gcode.run_script_from_command(
-            "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=%.3f"
-            % (old_max_accel, old_minimum_cruise_ratio)
-        )
-        # Restore input shaper if it was disabled for resonance testing
-        if input_shaper is not None:
-            input_shaper.enable_shaping()
-            gcmd.respond_info("Re-enabled [input_shaper]")
 
     def get_max_freq(self):
         return self.freq_end
