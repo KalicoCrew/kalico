@@ -14,6 +14,12 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [core: no Python2 tests; no PRU boards](https://github.com/DangerKlippers/danger-klipper/pull/39)
 
+- [core: git-untracked folder, plugins for user-plugins](https://github.com/DangerKlippers/danger-klipper/pull/82)
+
+- [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
+
+- [core: rotate log file at every restart](https://github.com/DangerKlippers/danger-klipper/pull/181)
+
 - [fan: normalising Fan PWM power](https://github.com/DangerKlippers/danger-klipper/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
 - [fan: reverse FAN](https://github.com/DangerKlippers/danger-klipper/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
@@ -22,9 +28,17 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [heater: velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
 
+- [heater: PID-Profiles](https://github.com/DangerKlippers/danger-klipper/pull/162)
+
+- [heater: expose heater thermistor out of min/max](https://github.com/DangerKlippers/danger-klipper/pull/182)
+
 - [gcode: jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
 
 - [gcode: gcode_shell_command](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#2173](https://github.com/Klipper3d/klipper/pull/2173) / [kiuah](https://github.com/dw-0/kiauh/blob/master/resources/gcode_shell_command.py) )
+
+- [gcode: expose math functions to gcode macros](https://github.com/DangerKlippers/danger-klipper/pull/173) ([klipper#4072](https://github.com/Klipper3d/klipper/pull/4072))
+
+- [gcode: HEATER_INTERRUPT gcode command](https://github.com/DangerKlippers/danger-klipper/pull/94)
 
 - [probe: dockable Probe](https://github.com/DangerKlippers/danger-klipper/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
 
@@ -34,19 +48,19 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [z_tilt: z-tilt calibration](https://github.com/DangerKlippers/danger-klipper/pull/105) ([klipper3d#4083](https://github.com/Klipper3d/klipper/pull/4083) / [dk/ztilt_calibration](https://github.com/DangerKlippers/danger-klipper/pull/54))
 
-- [core: danger_options](https://github.com/DangerKlippers/danger-klipper/pull/67)
-
 - [stepper: home_current](https://github.com/DangerKlippers/danger-klipper/pull/65)
+
+- [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
 
 - [homing: post-home retract](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
 - [homing: sensorless minimum home distance](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
+- [homing: min_home_dist](https://github.com/DangerKlippers/danger-klipper/pull/90)
+
 - [virtual_sdcard: scanning of subdirectories](https://github.com/DangerKlippers/danger-klipper/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
 
 - [retraction: z_hop while retracting](https://github.com/DangerKlippers/danger-klipper/pull/83) ([klipper#6311](https://github.com/Klipper3d/klipper/pull/6311))
-
-- [core: git-untracked folder, plugins for user-plugins](https://github.com/DangerKlippers/danger-klipper/pull/82)
 
 - [danger_options: allow plugins to override conflicting extras](https://github.com/DangerKlippers/danger-klipper/pull/82)
 
@@ -58,31 +72,39 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [temperature_mcu: add reference_voltage](https://github.com/DangerKlippers/danger-klipper/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
 
-- [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
-
-- [homing: min_home_dist](https://github.com/DangerKlippers/danger-klipper/pull/90)
-
 - [adxl345: improve ACCELEROMETER_QUERY command](https://github.com/DangerKlippers/danger-klipper/pull/124)
 
 - [extruder: add flag to use the PA constant from a trapq move vs a cached value](https://github.com/DangerKlippers/danger-klipper/pull/132)
 
 - [force_move: turn on by default](https://github.com/DangerKlippers/danger-klipper/pull/135)
 
-If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch:
+- [bed_mesh: add bed_mesh_default config option](https://github.com/DangerKlippers/danger-klipper/pull/143)
 
-- [dmbutyugin's advanced-features branch](https://github.com/DangerKlippers/danger-klipper/pull/69) [dmbutyugin/advanced-features](https://github.com/dmbutyugin/klipper/commits/advanced-features)
+- [config: CONFIG_SAVE updates included files](https://github.com/DangerKlippers/danger-klipper/pull/153)
 
-- [stepper: high precision stepping protocol](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [kinematics: independent X & Y acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
 
-- [extruder: sync extruder motion with input shaper](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [idle_timeout: allow the idle timeout to be disabled](https://github.com/DangerKlippers/danger-klipper/issues/165)
 
-- [extruder: new print_pa_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [canbus: custom CAN bus uuid hash for deterministic uuids](https://github.com/DangerKlippers/danger-klipper/pull/156)
 
-- [input_shaper: smooth input shapers](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [filament_switch|motion_sensor:  runout distance, smart and runout gcode](https://github.com/DangerKlippers/danger-klipper/pull/158)
 
-- [input_shaper: new print_ringing_tower utility](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [z_tilt|qgl: custom threshold for probe_points_increasing check](https://github.com/DangerKlippers/danger-klipper/pull/189)
 
-- [Independent X & Y Acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
+- [save_config: save without restarting the firmware](https://github.com/DangerKlippers/danger-klipper/pull/191)
+
+- [configfile: recursive globs](https://github.com/DangerKlippers/danger-klipper/pull/200) / ([klipper#6375](https://github.com/Klipper3d/klipper/pull/6375))
+
+If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch [feature documentation](docs/Bleeding_Edge.md)
+and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
+
+- [dmbutyugin's advanced-features branch - Pull Request #69](https://github.com/DangerKlippers/danger-klipper/pull/69)
+  - stepper: high precision stepping protocol
+  - extruder: sync extruder motion with input shaper
+  - extruder: new print_pa_tower utility
+  - input_shaper: smooth input shapers
+  - input_shaper: new print_ringing_tower utility
 
 ## Switch to Danger Klipper
 

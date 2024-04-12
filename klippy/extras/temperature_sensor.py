@@ -45,6 +45,11 @@ class PrinterSensorGeneric:
             "measured_max_temp": round(self.measured_max, 2),
         }
 
+    def is_adc_faulty(self):
+        if self.last_temp > self.max_temp or self.last_temp < self.min_temp:
+            return True
+        return False
+
 
 def load_config_prefix(config):
     return PrinterSensorGeneric(config)

@@ -120,6 +120,7 @@ class DeltesianKinematics:
         self.axes_max = toolhead.Coord(*[l[1] for l in self.limits], e=0.0)
         self.homed_axis = [False] * 3
         self.set_position([0.0, 0.0, 0.0], ())
+        self.supports_dual_carriage = False
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]

@@ -7,6 +7,7 @@
 import sys, os, gc, optparse, logging, time, collections, importlib, importlib.util
 import util, reactor, queuelogger, msgproto
 import gcode, configfile, pins, mcu, toolhead, webhooks
+from extras.danger_options import get_danger_options
 
 message_ready = "Printer is ready"
 
@@ -68,7 +69,6 @@ class Printer:
         self.run_result = None
         self.event_handlers = {}
         self.objects = collections.OrderedDict()
-        self.danger_options = None
         # Init printer components that must be setup prior to config
         for m in [gcode, webhooks]:
             m.add_early_printer_objects(self)
@@ -158,7 +158,7 @@ class Printer:
         if (
             found_in_extras
             and found_in_plugins
-            and not self.danger_options.allow_plugin_override
+            and not get_danger_options().allow_plugin_override
         ):
             raise self.config_error(
                 "Module '%s' found in both extras and plugins!" % (section,)
@@ -187,10 +187,10 @@ class Printer:
     def _read_config(self):
         self.objects["configfile"] = pconfig = configfile.PrinterConfig(self)
         config = pconfig.read_main_config()
-        self.danger_options = self.load_object(config, "danger_options")
+        self.load_object(config, "danger_options", None)
         if (
             self.bglogger is not None
-            and self.danger_options.log_config_file_at_startup
+            and get_danger_options().log_config_file_at_startup
         ):
             pconfig.log_config(config)
         # Create printer components
@@ -204,7 +204,7 @@ class Printer:
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
-        error_on_unused = self.danger_options.error_on_unused_config_options
+        error_on_unused = get_danger_options().error_on_unused_config_options
         pconfig.check_unused_options(config, error_on_unused)
 
     def _build_protocol_error_message(self, e):
@@ -376,6 +376,20 @@ class Printer:
             self.run_result = result
         self.reactor.end()
 
+    def wait_while(self, condition_cb):
+        """
+        receives a callback
+        waits until callback returns False
+            (or is interrupted, or printer shuts down)
+        """
+        gcode = self.lookup_object("gcode")
+        counter = gcode.get_interrupt_counter()
+        eventtime = self.reactor.monotonic()
+        while condition_cb(eventtime):
+            if self.is_shutdown() or counter != gcode.get_interrupt_counter():
+                return
+            eventtime = self.reactor.pause(eventtime + 1.0)
+
 
 ######################################################################
 # Startup
@@ -437,6 +451,11 @@ def main():
         help="write log to file instead of stderr",
     )
     opts.add_option(
+        "--rotate-log-at-restart",
+        action="store_true",
+        help="rotate the log file at every restart",
+    )
+    opts.add_option(
         "-v", action="store_true", dest="verbose", help="enable debug messages"
     )
     opts.add_option(
@@ -485,7 +504,13 @@ def main():
     bglogger = None
     if options.logfile:
         start_args["log_file"] = options.logfile
-        bglogger = queuelogger.setup_bg_logging(options.logfile, debuglevel)
+        bglogger = queuelogger.setup_bg_logging(
+            filename=options.logfile,
+            debuglevel=debuglevel,
+            rotate_log_at_restart=options.rotate_log_at_restart,
+        )
+        if options.rotate_log_at_restart:
+            bglogger.doRollover()
     else:
         logging.getLogger().setLevel(debuglevel)
     logging.info("=======================")
@@ -532,6 +557,8 @@ def main():
         main_reactor = printer = None
         logging.info("Restarting printer")
         start_args["start_reason"] = res
+        if options.rotate_log_at_restart and bglogger is not None:
+            bglogger.doRollover()
 
     if bglogger is not None:
         bglogger.stop()

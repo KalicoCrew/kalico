@@ -4,12 +4,13 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import traceback, logging, ast, copy, json
-import jinja2
+import jinja2, math
 
 
 ######################################################################
 # Template handling
 ######################################################################
+
 
 # Wrapper for access to printer object get_status() methods
 class GetStatusWrapper:
@@ -120,6 +121,7 @@ class PrinterGCodeMacro:
             "action_respond_info": self._action_respond_info,
             "action_raise_error": self._action_raise_error,
             "action_call_remote_method": self._action_call_remote_method,
+            "math": math,
         }
 
 

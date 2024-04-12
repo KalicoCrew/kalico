@@ -1,7 +1,7 @@
 #!/usr/bin/env python2
 # Script to handle build time requests embedded in C code.
 #
-# Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, subprocess, optparse, logging, shlex, socket, time, traceback
@@ -32,6 +32,7 @@ Handlers = []
 ######################################################################
 # C call list generation
 ######################################################################
+
 
 # Create dynamic C functions that call a list of other C functions
 class HandleCallList:
@@ -75,6 +76,7 @@ Handlers.append(HandleCallList())
 ######################################################################
 
 STATIC_STRING_MIN = 2
+
 
 # Generate a dynamic string to integer mapping
 class HandleEnumerations:
@@ -138,6 +140,7 @@ Handlers.append(HandlerEnumerations)
 ######################################################################
 # Constants
 ######################################################################
+
 
 # Allow adding build time constants to the data dictionary
 class HandleConstants:
@@ -232,6 +235,7 @@ Handlers.append(HandleInitialPins())
 # ARM IRQ vector table generation
 ######################################################################
 
+
 # Create ARM IRQ vector table from interrupt handler declarations
 class Handle_arm_irq:
     def __init__(self):
@@ -281,6 +285,7 @@ Handlers.append(Handle_arm_irq())
 ######################################################################
 # Wire protocol commands and responses
 ######################################################################
+
 
 # Dynamic command and response registration
 class HandleCommandGeneration:
@@ -529,6 +534,7 @@ Handlers.append(HandleCommandGeneration())
 # Version generation
 ######################################################################
 
+
 # Run program and return the specified output
 def check_output(prog):
     logging.debug("Running %s" % (repr(prog),))
@@ -615,6 +621,8 @@ class HandleVersions:
     def update_data_dictionary(self, data):
         data["version"] = self.version
         data["build_versions"] = self.toolstr
+        data["app"] = "Klipper"
+        data["license"] = "GNU GPLv3"
 
     def generate_code(self, options):
         cleanbuild, self.toolstr = tool_versions(options.tools)
@@ -632,6 +640,7 @@ Handlers.append(HandleVersions())
 ######################################################################
 # Identify data dictionary generation
 ######################################################################
+
 
 # Automatically generate the wire protocol data dictionary
 class HandleIdentify:

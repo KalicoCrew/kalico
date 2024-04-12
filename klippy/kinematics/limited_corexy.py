@@ -47,6 +47,7 @@ class LimitedCoreXYKinematics(corexy.CoreXYKinematics):
             self.cmd_SET_KINEMATICS_LIMIT,
             desc=self.cmd_SET_KINEMATICS_LIMIT_help,
         )
+        self.supports_dual_carriage = False
 
     cmd_SET_KINEMATICS_LIMIT_help = "Set/get CoreXY per axis velocity limits"
 

@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
 import logging
+from extras.danger_options import get_danger_options
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = 0.000015
@@ -50,7 +51,6 @@ class HomingMove:
         self.toolhead = toolhead
         self.stepper_positions = []
         self.distance_elapsed = []
-        self.danger_options = printer.lookup_object("danger_options")
 
     def get_mcu_endstops(self):
         return [es for es, name in self.endstops]
@@ -205,7 +205,7 @@ class HomingMove:
             if i in homing_axes
         ]
         distance_tolerance = (
-            self.danger_options.homing_elapsed_distance_tolerance
+            get_danger_options().homing_elapsed_distance_tolerance
         )
         if any(
             [

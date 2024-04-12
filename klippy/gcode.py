@@ -154,6 +154,7 @@ class GCodeDispatch:
         self.mux_commands = {}
         self.gcode_help = {}
         self.status_commands = {}
+        self._interrupt_counter = 0
         # Register commands needed before config file is loaded
         handlers = [
             "M110",
@@ -164,11 +165,18 @@ class GCodeDispatch:
             "ECHO",
             "STATUS",
             "HELP",
+            "HEATER_INTERRUPT",
         ]
         for cmd in handlers:
             func = getattr(self, "cmd_" + cmd)
             desc = getattr(self, "cmd_" + cmd + "_help", None)
             self.register_command(cmd, func, True, desc)
+
+    def get_interrupt_counter(self):
+        return self._interrupt_counter
+
+    def increment_interrupt_counter(self):
+        self._interrupt_counter += 1
 
     def is_traditional_gcode(self, cmd):
         # A "traditional" g-code command is a letter and followed by a number
@@ -306,8 +314,11 @@ class GCodeDispatch:
         self._process_commands(script.split("\n"), need_ack=False)
 
     def run_script(self, script):
-        with self.mutex:
+        if "INTERRUPT" in script:
             self._process_commands(script.split("\n"), need_ack=False)
+        else:
+            with self.mutex:
+                self._process_commands(script.split("\n"), need_ack=False)
 
     def get_mutex(self):
         return self.mutex
@@ -474,6 +485,9 @@ class GCodeDispatch:
             if cmd in self.gcode_help:
                 cmdhelp.append("%-10s: %s" % (cmd, self.gcode_help[cmd]))
         gcmd.respond_info("\n".join(cmdhelp), log=False)
+
+    def cmd_HEATER_INTERRUPT(self, gcmd):
+        self.increment_interrupt_counter()
 
 
 # Support reading gcode from a pseudo-tty interface

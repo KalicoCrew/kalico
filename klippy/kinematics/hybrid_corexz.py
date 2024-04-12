@@ -27,6 +27,7 @@ class HybridCoreXZKinematics:
         self.axes_min = toolhead.Coord(*[r[0] for r in ranges], e=0.0)
         self.axes_max = toolhead.Coord(*[r[1] for r in ranges], e=0.0)
         self.dc_module = None
+        self.supports_dual_carriage = True
         if config.has_section("dual_carriage"):
             dc_config = config.getsection("dual_carriage")
             # dummy for cartesian config users

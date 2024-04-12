@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, bisect
 
+from extras.danger_options import get_danger_options
 
 ######################################################################
 # Interface between MCU adc and heater temperature callbacks
@@ -25,9 +26,6 @@ class PrinterADCtoTemperature:
         self.mcu_adc.setup_adc_callback(REPORT_TIME, self.adc_callback)
         query_adc = config.get_printer().load_object(config, "query_adc")
         query_adc.register_adc(config.get_name(), self.mcu_adc)
-        self.danger_options = config.get_printer().lookup_object(
-            "danger_options"
-        )
 
     def setup_callback(self, temperature_callback):
         self.temperature_callback = temperature_callback
@@ -40,7 +38,7 @@ class PrinterADCtoTemperature:
         self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
 
     def setup_minmax(self, min_temp, max_temp):
-        if self.danger_options.adc_ignore_limits:
+        if get_danger_options().adc_ignore_limits:
             danger_check_count = 0
         else:
             danger_check_count = RANGE_CHECK_COUNT

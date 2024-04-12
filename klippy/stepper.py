@@ -414,7 +414,7 @@ class PrinterRail:
             self.position_endstop = config.getfloat(
                 "position_endstop", default_position_endstop
             )
-        endstop_pin = config.get("endstop_pin")
+        endstop_pin = config.get("endstop_pin", None)
         # check for ":virtual_endstop" to make sure we don't detect ":z_virtual_endstop"
         endstop_is_virtual = (
             endstop_pin is not None and ":virtual_endstop" in endstop_pin

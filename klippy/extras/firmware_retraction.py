@@ -36,6 +36,29 @@ class FirmwareRetraction:
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
+        # Register new G-code commands for setting/retrieving retraction
+        # parameters as well as clearing retraction state
+        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_command(
+            "SET_RETRACTION",
+            self.cmd_SET_RETRACTION,
+            desc=self.cmd_SET_RETRACTION_help,
+        )
+        self.gcode.register_command(
+            "GET_RETRACTION",
+            self.cmd_GET_RETRACTION,
+            desc=self.cmd_GET_RETRACTION_help,
+        )
+        self.gcode.register_command(
+            "CLEAR_RETRACTION",
+            self.cmd_CLEAR_RETRACTION,
+            desc=self.cmd_CLEAR_RETRACTION_help,
+        )
+
+        # Register new G-code commands for firmware retraction/unretraction
+        self.gcode.register_command("G10", self.cmd_G10)
+        self.gcode.register_command("G11", self.cmd_G11)
+
     # Helper method to get retraction parameters from config
     def _get_config_params(self):
         self.retract_length = self.config_ref.getfloat(
@@ -57,31 +80,9 @@ class FirmwareRetraction:
 
     # Helper method to register commands and instantiate required objects
     def _handle_ready(self):
-        self.gcode = self.printer.lookup_object("gcode")
+
         self.gcode_move = self.printer.lookup_object("gcode_move")
         self.toolhead = self.printer.lookup_object("toolhead")
-
-        # Register new G-code commands for setting/retrieving retraction
-        # parameters as well as clearing retraction state
-        self.gcode.register_command(
-            "SET_RETRACTION",
-            self.cmd_SET_RETRACTION,
-            desc=self.cmd_SET_RETRACTION_help,
-        )
-        self.gcode.register_command(
-            "GET_RETRACTION",
-            self.cmd_GET_RETRACTION,
-            desc=self.cmd_GET_RETRACTION_help,
-        )
-        self.gcode.register_command(
-            "CLEAR_RETRACTION",
-            self.cmd_CLEAR_RETRACTION,
-            desc=self.cmd_CLEAR_RETRACTION_help,
-        )
-
-        # Register new G-code commands for firmware retraction/unretraction
-        self.gcode.register_command("G10", self.cmd_G10)
-        self.gcode.register_command("G11", self.cmd_G11)
 
         # Register Events to clear retraction when a new print is started, an
         # ongoing print is canceled or a print is finished

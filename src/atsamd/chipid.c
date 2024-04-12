@@ -45,7 +45,12 @@ chipid_init(void)
     if (CONFIG_USB_SERIAL_NUMBER_CHIPID)
         usb_fill_serial(&cdc_chipid.desc, ARRAY_SIZE(cdc_chipid.data), id);
 
-    if (CONFIG_CANBUS)
-        canserial_set_uuid((void*)id, CHIP_UID_LEN);
+    if (CONFIG_CANBUS) {
+        if (CONFIG_CAN_UUID_USE_CHIPID) {
+            canserial_set_uuid((void*)id, CHIP_UID_LEN);
+        } else {
+            canserial_set_uuid((uint8_t *)CONFIG_CAN_UUID_CUSTOM, CHIP_UID_LEN);
+        }
+    }
 }
 DECL_INIT(chipid_init);

@@ -8,6 +8,7 @@ import math
 import os
 import zlib
 import serialhdl, msgproto, pins, chelper, clocksync
+from extras.danger_options import get_danger_options
 
 
 class error(Exception):
@@ -316,9 +317,6 @@ class MCU_endstop:
         ffi_main, ffi_lib = chelper.get_ffi()
         self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
-        self.danger_options = self._mcu.get_printer().lookup_object(
-            "danger_options"
-        )
 
     def get_mcu(self):
         return self._mcu
@@ -381,7 +379,7 @@ class MCU_endstop:
         self._rest_ticks = rest_ticks
         reactor = self._mcu.get_printer().get_reactor()
         self._trigger_completion = reactor.completion()
-        expire_timeout = self.danger_options.multi_mcu_trsync_timeout
+        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
         if len(self._trsyncs) == 1:
             expire_timeout = TRSYNC_SINGLE_MCU_TIMEOUT
         for i, trsync in enumerate(self._trsyncs):
@@ -715,7 +713,7 @@ class MCU:
 
     def __init__(self, config, clocksync):
         self._printer = printer = config.get_printer()
-        self.danger_options = printer.lookup_object("danger_options")
+        self.gcode = printer.lookup_object("gcode")
         self._clocksync = clocksync
         self._reactor = printer.get_reactor()
         self._name = config.get_name()
@@ -786,6 +784,7 @@ class MCU:
         printer.register_event_handler("klippy:connect", self._connect)
         printer.register_event_handler("klippy:shutdown", self._shutdown)
         printer.register_event_handler("klippy:disconnect", self._disconnect)
+        printer.register_event_handler("klippy:ready", self._ready)
 
     # Serial callbacks
     def _handle_mcu_stats(self, params):
@@ -806,7 +805,7 @@ class MCU:
         if clock is not None:
             self._shutdown_clock = self.clock32_to_clock64(clock)
         self._shutdown_msg = msg = params["static_string_id"]
-        if self.danger_options.log_shutdown_info:
+        if get_danger_options().log_shutdown_info:
             logging.info(
                 "MCU '%s' %s: %s\n%s\n%s",
                 self._name,
@@ -818,7 +817,49 @@ class MCU:
         prefix = "MCU '%s' shutdown: " % (self._name,)
         if params["#name"] == "is_shutdown":
             prefix = "Previous MCU '%s' shutdown: " % (self._name,)
-        self._printer.invoke_async_shutdown(prefix + msg + error_help(msg))
+
+        append_msgs = []
+        if (
+            msg.startswith("ADC out of range")
+            or msg.startswith("Thermocouple reader fault")
+        ) and not get_danger_options.adc_ignore_limits:
+            pheaters = self._printer.lookup_object("heaters")
+            heaters = [
+                pheaters.lookup_heater(n) for n in pheaters.available_heaters
+            ]
+            for heater in heaters:
+                if heater.is_adc_faulty():
+                    append_msgs.append(
+                        {
+                            "heater": heater.name,
+                            "last_temp": "{:.2f}".format(heater.last_temp),
+                            "min_temp": heater.min_temp,
+                            "max_temp": heater.max_temp,
+                        }
+                    )
+            sensor_names = [
+                sensor
+                for sensor in self._printer.objects
+                if (
+                    sensor.startswith("temperature_sensor")
+                    or sensor.startswith("temperature_fan")
+                )
+            ]
+            for sensor_name in sensor_names:
+                sensor = self._printer.lookup_object(sensor_name)
+                if sensor.is_adc_faulty():
+                    append_msgs.append(
+                        {
+                            sensor_name.split(" ")[0]: sensor.name,
+                            "last_temp": "{:.2f}".format(sensor.last_temp),
+                            "min_temp": sensor.min_temp,
+                            "max_temp": sensor.max_temp,
+                        }
+                    )
+
+        self._printer.invoke_async_shutdown(
+            prefix + msg + error_help(msg=msg, append_msgs=append_msgs)
+        )
 
     def _handle_starting(self, params):
         if not self._is_shutdown:
@@ -1009,7 +1050,8 @@ class MCU:
                 self._clocksync.connect(self._serial)
             except serialhdl.error as e:
                 raise error(str(e))
-        logging.info(self._log_info())
+        if get_danger_options().log_startup_info:
+            logging.info(self._log_info())
         ppins = self._printer.lookup_object("pins")
         pin_resolver = ppins.get_pin_resolver(self._name)
         for cname, value in self.get_constants().items():
@@ -1038,6 +1080,25 @@ class MCU:
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
+
+    def _ready(self):
+        if self.is_fileoutput():
+            return
+        # Check that reported mcu frequency is in range
+        mcu_freq = self._mcu_freq
+        systime = self._reactor.monotonic()
+        get_clock = self._clocksync.get_clock
+        calc_freq = get_clock(systime + 1) - get_clock(systime)
+        mcu_freq_mhz = int(mcu_freq / 1000000.0 + 0.5)
+        calc_freq_mhz = int(calc_freq / 1000000.0 + 0.5)
+        if mcu_freq_mhz != calc_freq_mhz:
+            pconfig = self._printer.lookup_object("configfile")
+            msg = "MCU '%s' configured for %dMhz but running at %dMhz!" % (
+                self._name,
+                mcu_freq_mhz,
+                calc_freq_mhz,
+            )
+            pconfig.runtime_warning(msg)
 
     # Config creation helpers
     def setup_pin(self, pin_type, pin_params):
@@ -1296,6 +1357,7 @@ This is generally indicative of an intermittent
 communication failure between micro-controller and host.""",
     (
         "ADC out of range",
+        "Thermocouple reader fault",
     ): """
 This generally occurs when a heater temperature exceeds
 its configured min_temp or max_temp.""",
@@ -1314,10 +1376,21 @@ or in response to an internal error in the host software.""",
 }
 
 
-def error_help(msg):
+def error_help(msg, append_msgs=[]):
     for prefixes, help_msg in Common_MCU_errors.items():
         for prefix in prefixes:
             if msg.startswith(prefix):
+                if append_msgs:
+                    for append in append_msgs:
+                        line = append
+                        if isinstance(append, dict):
+                            line = ", ".join(
+                                [
+                                    f"{str(k)}: {str(v)}"
+                                    for k, v in append.items()
+                                ]
+                            )
+                        help_msg = "\n".join([help_msg, str(line)])
                 return help_msg
     return ""
 

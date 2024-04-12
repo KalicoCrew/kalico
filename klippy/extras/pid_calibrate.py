@@ -24,6 +24,7 @@ class PIDCalibrate:
         target = gcmd.get_float("TARGET")
         write_file = gcmd.get_int("WRITE_FILE", 0)
         tolerance = gcmd.get_float("TOLERANCE", TUNE_PID_TOL, above=0.0)
+        profile_name = gcmd.get("PROFILE", "default")
         pheaters = self.printer.lookup_object("heaters")
         try:
             heater = pheaters.lookup_heater(heater_name)
@@ -31,13 +32,13 @@ class PIDCalibrate:
             raise gcmd.error(str(e))
         self.printer.lookup_object("toolhead").get_last_move_time()
         calibrate = ControlAutoTune(heater, target, tolerance)
-        old_control = heater.set_control(calibrate)
+        old_control = heater.set_control(calibrate, False)
         try:
             pheaters.set_temperature(heater, target, True)
         except self.printer.command_error as e:
-            heater.set_control(old_control)
+            heater.set_control(old_control, False)
             raise
-        heater.set_control(old_control)
+        heater.set_control(old_control, False)
         if write_file:
             calibrate.write_file("/tmp/heattest.csv")
         if calibrate.check_busy(0.0, 0.0, 0.0):
@@ -46,17 +47,30 @@ class PIDCalibrate:
         Kp, Ki, Kd = calibrate.calc_pid()
         logging.info("Autotune: final: Kp=%f Ki=%f Kd=%f", Kp, Ki, Kd)
         gcmd.respond_info(
-            "PID parameters: pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
+            "PID parameters for %.2f\xb0C: "
+            "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
+            "Heater: %s\n"
+            "Tolerance: %.4f\n"
+            "Profile: %s\n"
             "The SAVE_CONFIG command will update the printer config file\n"
-            "with these parameters and restart the printer." % (Kp, Ki, Kd)
+            "with these parameters and restart the printer."
+            % (target, Kp, Ki, Kd, heater_name, tolerance, profile_name)
         )
-        # Store results for SAVE_CONFIG
-        configfile = self.printer.lookup_object("configfile")
         control = "pid_v" if old_control.get_type() == "pid_v" else "pid"
-        configfile.set(heater_name, "control", control)
-        configfile.set(heater_name, "pid_Kp", "%.3f" % (Kp,))
-        configfile.set(heater_name, "pid_Ki", "%.3f" % (Ki,))
-        configfile.set(heater_name, "pid_Kd", "%.3f" % (Kd,))
+
+        profile = {
+            "pid_target": target,
+            "pid_tolerance": tolerance,
+            "control": control,
+            "pid_kp": Kp,
+            "pid_ki": Ki,
+            "pid_kd": Kd,
+            "smooth_time": None,
+            "name": profile_name,
+        }
+
+        heater.set_control(heater.lookup_control(profile, True), False)
+        heater.pmgr.save_profile(profile_name=profile_name, verbose=False)
 
 
 TUNE_PID_DELTA = 5.0
@@ -119,7 +133,7 @@ class ControlAutoTune:
             return
         else:
             self.started = True
-        # ensure the test doesn't run to long
+        # ensure the test doesn't run too long
         if float(len(self.peaks)) > TUNE_PID_MAX_PEAKS:
             self.errored = True
             self.finish(read_time)
@@ -305,6 +319,15 @@ class ControlAutoTune:
         Ki = Kp / Ti
         Kd = Kp * Td
         return Kp, Ki, Kd
+
+    def update_smooth_time(self, write_to_profile):
+        return
+
+    def get_profile(self):
+        return {"name": "autotune"}
+
+    def get_type(self):
+        return "autotune"
 
 
 def load_config(config):

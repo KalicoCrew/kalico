@@ -146,6 +146,17 @@ Writes raw "value" into register "register". Both "value" and
 and refer to sensor data sheet for the reference. This is only
 available for tle5012b chips.
 
+### [axis_twist_compensation]
+
+The following commands are available when the
+[axis_twist_compensation config
+section](Config_Reference.md#axis_twist_compensation) is enabled.
+
+#### AXIS_TWIST_COMPENSATION_CALIBRATE
+`AXIS_TWIST_COMPENSATION_CALIBRATE [SAMPLE_COUNT=<value>]`: Initiates the X
+twist calibration wizard. `SAMPLE_COUNT` specifies the number of points along
+the X axis to calibrate at and defaults to 3.
+
 ### [bed_mesh]
 
 The following commands are available when the
@@ -153,15 +164,21 @@ The following commands are available when the
 (also see the [bed mesh guide](Bed_Mesh.md)).
 
 #### BED_MESH_CALIBRATE
-`BED_MESH_CALIBRATE [METHOD=manual] [HORIZONTAL_MOVE_Z=<value>]
-[<probe_parameter>=<value>] [<mesh_parameter>=<value>]`: This command probes
-the bed using generated points specified by the parameters in the config. After
-probing, a mesh is generated and z-movement is adjusted according to the mesh.
+`BED_MESH_CALIBRATE [PROFILE=<name>] [METHOD=manual] [HORIZONTAL_MOVE_Z=<value>]
+[<probe_parameter>=<value>] [<mesh_parameter>=<value>] [ADAPTIVE=1]
+[ADAPTIVE_MARGIN=<value>]`: This command probes the bed using generated points
+specified by the parameters in the config. After probing, a mesh is generated
+and z-movement is adjusted according to the mesh.
+The mesh will be saved into a profile specified by the `PROFILE` parameter,
+or `default` if unspecified.
 See the PROBE command for details on the optional probe parameters. If
 METHOD=manual is specified then the manual probing tool is activated - see the
 MANUAL_PROBE command above for details on the additional commands available
 while this tool is active. The optional `HORIZONTAL_MOVE_Z` value overrides the
-`horizontal_move_z` option specified in the config file.
+`horizontal_move_z` option specified in the config file. If ADAPTIVE=1 is
+specified then the objects defined by the Gcode file being printed will be used
+to define the probed area. The optional `ADAPTIVE_MARGIN` value overrides the
+`adaptive_margin` option specified in the config file.
 
 #### BED_MESH_OUTPUT
 `BED_MESH_OUTPUT PGP=[<0:1>]`: This command outputs the current probed
@@ -191,10 +208,12 @@ SAVE_CONFIG gcode must be run to make the changes to persistent memory
 permanent.
 
 #### BED_MESH_OFFSET
-`BED_MESH_OFFSET [X=<value>] [Y=<value>]`: Applies X and/or Y offsets
-to the mesh lookup. This is useful for printers with independent
-extruders, as an offset is necessary to produce correct Z adjustment
-after a tool change.
+`BED_MESH_OFFSET [X=<value>] [Y=<value>] [ZFADE=<value]`: Applies X, Y,
+and/or ZFADE offsets to the mesh lookup. This is useful for printers with
+independent extruders, as an offset is necessary to produce correct Z
+adjustment after a tool change.  Note that a ZFADE offset does not apply
+additional z-adjustment directly, it is used to correct the `fade`
+calculation when a `gcode offset` has been applied to the Z axis.
 
 ### [bed_screws]
 
@@ -224,6 +243,32 @@ command above for details on the additional commands available while this tool
 is active. The optional `HORIZONTAL_MOVE_Z` value overrides the
 `horizontal_move_z` option specified in the config file.
 
+### [belay]
+
+The following commands are available when a
+[belay config section](Config_Reference.md#belay) is enabled.
+
+#### QUERY_BELAY
+`QUERY_BELAY BELAY=<config_name>`: Queries the state of the belay
+specified by `BELAY`.
+
+#### BELAY_SET_MULTIPLIER
+`BELAY_SET_MULTIPLIER BELAY=<config_name> [HIGH=<multiplier_high>]
+[LOW=<multiplier_low>]`: Sets the values of multiplier_high and/or
+multiplier_low for the belay specified by `BELAY`, overriding their
+values from the corresponding
+[belay config section](Config_Reference.md#belay). Values set by this
+command will not persist across restarts.
+
+#### BELAY_SET_STEPPER
+`BELAY_SET_STEPPER BELAY=<config_name> STEPPER=<extruder_stepper_name>`: Selects
+the extruder_stepper whose multiplier will be controlled by the belay specified
+by `BELAY`. The multiplier for the previous stepper will be reset back
+to 1 before switching to the new stepper. Stepper selections made by this
+command will not persist across restarts. This command is only available if
+extruder_type is set to 'extruder_stepper' in the corresponding
+[belay config section](Config_Reference.md#belay).
+
 ### [bltouch]
 
 The following command is available when a
@@ -246,10 +291,11 @@ EEPROM of a BLTouch V3.1 Available output_modes are: `5V`, `OD`
 The configfile module is automatically loaded.
 
 #### SAVE_CONFIG
-`SAVE_CONFIG`: This command will overwrite the main printer config
+`SAVE_CONFIG [RESTART=0|1]`: This command will overwrite the main printer config
 file and restart the host software. This command is used in
 conjunction with other calibration commands to store the results of
 calibration tests.
+If RESTART is set to 0, no restart will be performed !!USE WITH CAUTION!!.
 
 ### [delayed_gcode]
 
@@ -478,12 +524,6 @@ MOTION_QUEUE (as defined in an [extruder](Config_Reference.md#extruder)
 config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.
 
-#### SET_EXTRUDER_STEP_DISTANCE
-This command is deprecated and will be removed in the near future.
-
-#### SYNC_STEPPER_TO_EXTRUDER
-This command is deprecated and will be removed in the near future.
-
 ### [fan_generic]
 
 The following command is available when a
@@ -508,9 +548,36 @@ status of the filament sensor. The data displayed on the terminal will
 depend on the sensor type defined in the configuration.
 
 #### SET_FILAMENT_SENSOR
-`SET_FILAMENT_SENSOR SENSOR=<sensor_name> ENABLE=[0|1]`: Sets the
-filament sensor on/off. If ENABLE is set to 0, the filament sensor
-will be disabled, if set to 1 it is enabled.
+###### For filament_switch_sensor:
+`SET_FILAMENT_SENSOR SENSOR=<sensor_name> [ENABLE=0|1] [RESET=0|1]
+[RUNOUT_DISTANCE=<mm>] [SMART=0|1] [ALWAYS_FIRE_EVENTS=0|1] [CHECK_ON_PRINT_START=0|1]`:
+Sets values for the filament sensor.
+If all parameters are omitted, the current stats will be reported. <br>
+ENABLE sets the filament sensor on/off. If ENABLE is set to 0, the
+filament sensor will be disabled, if set to 1 it is enabled. If the state
+of the sensor changes, a reset will be triggered. <br>
+RESET removes all pending runout_gcodes and pauses and force a reevaluation
+of the sensor state. <br>
+RUNOUT_DISTANCE sets the runout_distance. <br>
+SMART sets the smart parameter. <br>
+ALWAYS_FIRE_EVENTS sets the always_fire_events parameter, if set to true,
+a reset of the sensor will be triggered. <br>
+CHECK_ON_PRINT_START sets the check_on_print_start parameter.
+
+###### For filament_motion_sensor:
+`SET_FILAMENT_SENSOR SENSOR=<sensor_name> [ENABLE=0|1] [RESET=0|1]
+[DETECTION_LENGTH=<mm>] [SMART=0|1] [ALWAYS_FIRE_EVENTS=0|1]`:
+Sets values for the filament sensor.
+If all parameters are omitted, the current stats will be reported. <br>
+ENABLE sets the filament sensor on/off. If ENABLE is set to 0, the
+filament sensor will be disabled, if set to 1 it is enabled. If the sensor
+was previously disabled and gets enabled, a reset will be triggered. <br>
+RESET resets the state of the sensor and sets it to filament detected. <br>
+DETECTION_LENGTH sets the detection_length, if the new detection length is
+different from the old one, a reset will be triggered. <br>
+SMART sets the smart parameter. <br>
+ALWAYS_FIRE_EVENTS sets the always_fire_events parameter, no reset will
+be triggered.
 
 ### [firmware_retraction]
 
@@ -630,6 +697,9 @@ software (see
 #### FIRMWARE_RESTART
 `FIRMWARE_RESTART`: This is similar to a RESTART command, but it also
 clears any error state from the micro-controller.
+
+#### HEATER_INTERRUPT
+`HEATER_INTERRUPT`: Interrupts a TEMPERATURE_WAIT command.
 
 #### STATUS
 `STATUS`: Report the Klipper host software status.
@@ -756,6 +826,14 @@ above the supplied MINIMUM and/or at or below the supplied MAXIMUM.
 `SET_HEATER_TEMPERATURE HEATER=<heater_name>
 [TARGET=<target_temperature>]`: Sets the target temperature for a
 heater. If a target temperature is not supplied, the target is 0.
+
+#### SET_SMOOTH_TIME
+`SET_SMOOTH_TIME HEATER=<heater_name> [SMOOTH_TIME=<smooth_time>]
+[SAVE_TO_PROFILE=0|1]`: Sets the smooth_time of the specified heater.
+If SMOOTH_TIME is omitted, the smooth_time will be reset to the value
+from the config.
+If SAVE_TO_PROFILE is set to 1, the new value will be written to the
+current PID_PROFILE.
 
 ### [idle_timeout]
 
@@ -967,6 +1045,52 @@ require a value of 0.03 or higher.
 `SET_HEATER_PID HEATER=<config_name> KP=<kp> KI=<ki> KD=<kd>`: Will
 allow one to manually change PID parameters of heaters without a
 reload of the firmware.
+
+### [pid_profile]
+
+The PID_PROFILE module is automatically loaded if a heater is defined
+in the config file.
+
+#### PID_PROFILE
+`PID_PROFILE LOAD=<profile_name> HEATER=<heater_name> [DEFAULT=<profile_name>]
+[VERBOSE=<verbosity>] [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
+Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
+the Profile specified in DEFAULT will be loaded when then given Profile for LOAD
+can't be found (like a getOrDefault method). If VERBOSE is set to LOW, minimal
+info will be written in console.
+If set to NONE, no console outputs will be given.
+If KEEP_TARGET is set to 1, the heater will keep it's target temperature,
+if set to 0, the target temperature will be set to 0.
+By default the target temperature of the heater will be set to 0 so the
+algorithm has time to settle in.
+If LOAD_CLEAN is set to 1, the profile would be loaded as if the printer just
+started up, if set to 0, the profile will retain previous heating information.
+By default the information will be kept to reduce overshoot, change this value
+if you encounter weird behaviour while switching profiles.
+
+`PID_PROFILE SAVE=<profile_name> HEATER=<config_name>`:
+Saves the currently loaded profile of the specified heater to the config under
+the given name.
+
+`PID_PROFILE REMOVE=<profile_name> HEATER=<config_name>`:
+Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
+
+`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
+CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
+Creates a new profile with the given PID values, CONTROL must either be `pid` or
+`pid_v`, TOLERANCE and TARGET must be specified to create a valid profile,
+though the values themselves don't matter.
+If KEEP_TARGET is set to 1, the heater will keep it's target temperature,
+if set to 0, the target temperature will be set to 0.
+By default the target temperature of the heater will be set to 0 so the
+algorithm has time to settle in.
+If LOAD_CLEAN is set to 1, the profile would be loaded as if the printer just
+started up, if set to 0, the profile will retain previous heating information.
+By default the information will be kept to reduce overshoot, change this value
+if you encounter weird behaviour while switching profiles.
+
+`PID_PROFILE GET_VALUES HEATER=<heater_name>`:
+Outputs the values of the current loaded pid_profile of the given heater to the console.
 
 ### [pause_resume]
 
@@ -1364,7 +1488,7 @@ The toolhead module is automatically loaded.
 
 #### SET_VELOCITY_LIMIT
 `SET_VELOCITY_LIMIT [VELOCITY=<value>] [ACCEL=<value>]
-[ACCEL_TO_DECEL=<value>] [SQUARE_CORNER_VELOCITY=<value>]`: This
+[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]`: This
 command can alter the velocity limits that were specified in the
 printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
@@ -1382,6 +1506,202 @@ or
 The velocity argument is not available on CoreXY. With no arguments, this
 command responds with the movement direction with the most acceleration or
 velocity.
+
+### [trad_rack]
+
+The following commands are available when the
+[trad_rack config section](Config_Reference.md#trad_rack) is enabled.
+
+#### TR_HOME
+`TR_HOME`: Homes the selector.
+
+#### TR_GO_TO_LANE
+`TR_GO_TO_LANE LANE=<lane index>`: Moves the selector to the specified
+lane.
+
+#### TR_LOAD_LANE
+`TR_LOAD_LANE LANE=<lane index> [RESET_SPEED=<0|1>]`: Ensures filament
+is loaded into the module for the specified lane by prompting the user
+to insert filament, loading filament from the module into the
+selector, and retracting the filament back into the module.
+If RESET_SPEED is 1, the bowden move speed used for the
+specified LANE will be reset to spool_pull_speed from the
+[trad_rack config section](Config_Reference.md#trad_rack)
+(see [bowden speeds](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Tuning.md#bowden-speeds)
+for details on how the bowden speed settings are used). If not
+specified, RESET_SPEED defaults to 1.
+
+#### TR_LOAD_TOOLHEAD
+`TR_LOAD_TOOLHEAD LANE=<lane index>|TOOL=<tool index>
+[MIN_TEMP=<temperature>] [EXACT_TEMP=<temperature>]
+[BOWDEN_LENGTH=<mm>] [EXTRUDER_LOAD_LENGTH=<mm>]
+[HOTEND_LOAD_LENGTH=<mm>]`: Loads filament from the specified lane or
+tool into the toolhead*. Either LANE or TOOL must be specified. If
+both are specified, then LANE takes precedence. If there is already an
+"active lane" because the toolhead has been loaded beforehand, it will
+be unloaded before loading the new filament. If `MIN_TEMP` is
+specified and it is higher than the extruder's current temperature,
+then the extruder will be heated to at least `MIN_TEMP` before
+unloading/loading; the current extruder temperature target may be used
+instead if it is higher than `MIN_TEMP`, and if not then
+[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md)
+may be used. If `EXACT_TEMP` is specified, the extruder will be heated
+to `EXACT_TEMP` before unloading/loading, regardless of any other
+temperature setting. If any of the optional length parameters are
+specified, they override the corresponding settings in the
+[trad_rack config section](Config_Reference.md#trad_rack).
+
+\* see the [Tool Mapping document](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Tool_Mapping.md)
+for details on the difference between lanes and tools and how they
+relate to each other.
+
+#### T0, T1, T2, etc.
+`T<tool index>`: Equivalent to calling 
+`TR_LOAD_TOOLHEAD TOOL=<tool index>`. All of the optional parameters
+accepted by the TR_LOAD_TOOLHEAD command can also be used with these
+commands.
+
+#### TR_UNLOAD_TOOLHEAD
+`TR_UNLOAD_TOOLHEAD [MIN_TEMP=<temperature>]
+[EXACT_TEMP=<temperature>]`: Unloads filament from the toolhead and
+back into its module. If `MIN_TEMP` is specified and it is higher than
+the extruder's current temperature, then the extruder will be heated
+to at least `MIN_TEMP` before unloading; the current extruder
+temperature target may be used instead if it is higher than
+`MIN_TEMP`, and if not then
+[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md)
+may be used. If `EXACT_TEMP` is specified, the extruder will be heated
+to `EXACT_TEMP` before unloading/loading, regardless of any other
+temperature setting.
+
+#### TR_SERVO_DOWN
+`TR_SERVO_DOWN [FORCE=<0|1>]`: Moves the servo to bring the drive gear
+down. The selector must be moved to a valid lane before using this
+command, unless FORCE is 1. If not specified, FORCE defaults to 0. The
+FORCE parameter is unsafe for normal use and should only be used when
+the servo is not attached to Trad Rack's carriage.
+
+#### TR_SERVO_UP
+`TR_SERVO_UP`: Moves the servo to bring the drive gear up.
+
+#### TR_SET_ACTIVE_LANE
+`TR_SET_ACTIVE_LANE LANE=<lane index>`: Tells Trad Rack to assume the
+toolhead has been loaded with filament from the specified lane. The
+selector's position will also be inferred from this lane, and the
+selector motor will be enabled if it isn't already.
+
+#### TR_RESET_ACTIVE_LANE
+`TR_RESET_ACTIVE_LANE`: Tells Trad Rack to assume the toolhead has
+not been loaded.
+
+#### TR_RESUME
+`TR_RESUME`: Retries loading the last lane, loads the next filament
+into the toolhead, and resumes the print. The user will be prompted
+to use this command if Trad Rack has paused the print due to a failed
+load or unload.
+
+#### TR_LOCATE_SELECTOR
+`TR_LOCATE_SELECTOR`: Ensures the position of Trad Rack's selector is
+known so that it is ready for a print. If the user needs to take an
+action, they will be prompted to do so and the print will be paused
+(for example if the selector sensor is triggered but no active lane is
+set). The user_wait_time config option from the
+[trad_rack config section](Config_Reference.md#trad_rack) determines
+how long Trad Rack will wait for user action before automatically
+unloading the toolhead and resuming. In addition, the save_active_lane
+config option determines whether this command can infer the "active
+lane" from a value saved before the last restart if the selector
+filament sensor is triggered but no active lane is currently set.
+It is recommended to call this command in the print start gcode.
+
+#### TR_NEXT
+`TR_NEXT`: You will be prompted to use this command if Trad Rack
+requires user confirmation before continuing an action.
+
+#### TR_SYNC_TO_EXTRUDER
+`TR_SYNC_TO_EXTRUDER`: Syncs Trad Rack's filament driver to the
+extruder during printing, as well as during any extrusion moves within
+toolhead loading or unloading that would normally involve only the
+extruder. See the
+[Extruder syncing document](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Extruder_Syncing.md)
+for more details. If you want the filament driver to be synced to the extruder
+on every startup without having to call this command, you can set
+sync_to_extruder to True in the
+[trad_rack config section](Config_Reference.md#trad_rack).
+
+#### TR_UNSYNC_FROM_EXTRUDER
+`TR_UNSYNC_FROM_EXTRUDER`: Unsyncs Trad Rack's filament driver from
+the extruder during printing, as well as during any extrusion moves
+within toolhead loading or unloading that normally involve only the
+extruder. This is the default behavior unless you have set
+sync_to_extruder to True in the
+[trad_rack config section](Config_Reference.md#trad_rack).
+
+#### TR_SERVO_TEST
+`TR_SERVO_TEST [ANGLE=<degrees>]`: Moves the servo to the specified
+ANGLE relative to the down position. If ANGLE is not specified, the
+servo will be moved to the up position defined by servo_up_angle from
+the [trad_rack config section](Config_Reference.md#trad_rack).
+This command is meant for testing different servo angles in order
+to find the correct value for servo_up_angle.
+
+#### TR_CALIBRATE_SELECTOR
+`TR_CALIBRATE_SELECTOR`: Initiates the process of calibrating
+lane_spacing, as well as the min, endstop, and max positions of the
+selector motor. You will be guided through the selector calibration
+process via messages in the console.
+
+#### TR_SET_HOTEND_LOAD_LENGTH
+`TR_SET_HOTEND_LOAD_LENGTH VALUE=<value>|ADJUST=<adjust>`: Sets the
+value of hotend_load_length, overriding its value from the
+[trad_rack config section](Config_Reference.md#trad_rack). Does not
+persist across restarts. If the VALUE parameter is used,
+hotend_load_length will be set to the value passed in. If the ADJUST
+parameter is used, the adjustment will be added to the current value
+of hotend_load_length.
+
+### TR_DISCARD_BOWDEN_LENGTHS
+`TR_DISCARD_BOWDEN_LENGTHS [MODE=[ALL|LOAD|UNLOAD]]`: Discards saved
+values for "bowden_load_length" and/or "bowden_unload_length" (see
+[bowden lengths](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Tuning.md#bowden-lengths)
+for details on how these settings are used). These settings will each
+be reset to the value of `bowden_length` from the
+[trad_rack config section](Config_Reference.md#trad_rack), and empty
+dictionaries will be saved for
+[tr_calib_bowden_load_length and tr_calib_bowden_unload_length](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md).
+"bowden_load_length" and tr_calib_bowden_load_length will be
+affected if MODE=LOAD is specified, "bowden_unload_length" and
+tr_calib_bowden_unload_length will be affected if MODE=UNLOAD is
+specified, and all 4 will be affected if MODE=ALL is specified. If not
+specified, MODE defaults to ALL.
+
+#### TR_ASSIGN_LANE
+`TR_ASSIGN_LANE LANE=<lane index> TOOL=<tool index>
+[SET_DEFAULT=<0|1>]`:
+Assigns the specified LANE to the specified TOOL. If SET_DEFAULT is 1,
+LANE will become the default lane for the tool. If not specified,
+SET_DEFAULT defaults to 0.
+
+#### TR_SET_DEFAULT_LANE
+`TR_SET_DEFAULT_LANE LANE=<lane index> [TOOL=<tool index>]`: If TOOL
+is specified, LANE will be set as the default lane for the tool. If
+TOOL is not specified, LANE will be set as the default lane for its
+currently-assigned tool.
+
+#### TR_RESET_TOOL_MAP
+`TR_RESET_TOOL_MAP`: Resets lane/tool mapping. Each tool will be
+mapped to a lane group consisting of a single lane with the same index
+as the tool.
+
+#### TR_PRINT_TOOL_MAP
+`TR_PRINT_TOOL_MAP`: Prints a table of the lane/tool mapping to the
+console, with rows corresponding to tools and columns corresponding to
+lanes.
+
+#### TR_PRINT_TOOL_GROUPS
+`TR_PRINT_TOOL_GROUPS`: Prints a list of lanes assigned to each tool
+to the console. If a tool has multiple lanes assigned to it, the
+default lane will be indicated.
 
 ### [tuning_tower]
 
@@ -1439,17 +1759,6 @@ print.
 #### SDCARD_RESET_FILE
 `SDCARD_RESET_FILE`: Unload file and clear SD state.
 
-### [axis_twist_compensation]
-
-The following commands are available when the
-[axis_twist_compensation config
-section](Config_Reference.md#axis_twist_compensation) is enabled.
-
-#### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [SAMPLE_COUNT=<value>]`: Initiates the X
-twist calibration wizard. `SAMPLE_COUNT` specifies the number of points along
-the X axis to calibrate at and defaults to 3.
-
 ### [z_thermal_adjust]
 
 The following commands are available when the
@@ -1490,11 +1799,13 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
-`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This
+`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]
+[INCREASING_THRESHOLD=<value>]`: This
 command will probe the points specified in the config and then make independent
 adjustments to each Z stepper to compensate for tilt. See the PROBE command for
 details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
 value overrides the `horizontal_move_z` option specified in the config file.
+INCREASING_THRESHOLD sets the increasing_threshold parameter of z_tilt.
 The follwing commands are availabe when the parameter "extra_points" is
 configured in the z_tilt_ng section:
 - `Z_TILT_CALIBRATE [AVGLEN=<value>]`: This command does multiple probe
