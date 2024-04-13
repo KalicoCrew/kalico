@@ -198,7 +198,9 @@ class FirmwareRetraction:
     def cmd_CLEAR_RETRACTION(self, gcmd):
         if self.is_retracted:
             self._execute_clear_retraction()
-            self.is_retracted = False  # Reset retract flag to enable G10 command
+            self.is_retracted = (
+                False  # Reset retract flag to enable G10 command
+            )
             gcmd.respond_info(
                 "Retraction was cleared. zhop is undone on next move."
             )
@@ -216,7 +218,9 @@ class FirmwareRetraction:
             self._re_register_G1()
             self.actual_z_hop = 0.0  # prevent nozzle crash if G11 occurs
         if self.reset_on_events:
-            self.is_retracted = False  # Reset retract flag to enable G10 command
+            self.is_retracted = (
+                False  # Reset retract flag to enable G10 command
+            )
             self._get_config_params()  # Reset retraction parameters to config values
 
     # Gcode Command G10 to perform firmware retraction
