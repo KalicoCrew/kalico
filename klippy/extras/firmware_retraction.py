@@ -23,9 +23,6 @@ class FirmwareRetraction:
             self.retract_length + self.unretract_extra_length
         )
         self.currentPos = []
-        self.currentZ = 0.0
-        self.z_hop_Z = 0.0  # Z coordinate of zhop move
-
         self.is_retracted = False  # Retract state flag
         self.vsdcard_paused = False  # VSDCard pause flag
         self.G1_toggle_state = False  # G1 toggle state flag
@@ -74,8 +71,11 @@ class FirmwareRetraction:
             "unretract_speed", 10.0, minval=1
         )
         # Zero min. and stand. zhop valueto ensure compatibility with macros
-        self.z_hop_height = self.config_ref.getfloat(
+        self.z_hop_height = self.actual_z_hop = self.config_ref.getfloat(
             "z_hop_height", 0.0, minval=0.0
+        )
+        self.reset_on_events = self.config_ref.getboolean(
+            "reset_on_events", False
         )
 
     # Helper method to register commands and instantiate required objects
@@ -153,16 +153,6 @@ class FirmwareRetraction:
     cmd_SET_RETRACTION_help = "Set firmware retraction parameters"
 
     def cmd_SET_RETRACTION(self, gcmd):
-        if not self.is_retracted:  # Only execute command when unretracted
-            self._execute_set_retraction(gcmd)  # Execute command immediately
-        else:
-            self.gcode.respond_info(
-                "WARNING: Printer in retract state. SET_RETRACTION will not be\
-                    executed!"
-            )
-
-    # Helper to set retraction parameters if command is called
-    def _execute_set_retraction(self, gcmd):
         self.retract_length = gcmd.get_float(
             "RETRACT_LENGTH", self.retract_length, minval=0.0
         )
@@ -208,9 +198,9 @@ class FirmwareRetraction:
     def cmd_CLEAR_RETRACTION(self, gcmd):
         if self.is_retracted:
             self._execute_clear_retraction()
+            self.is_retracted = False  # Reset retract flag to enable G10 command
             gcmd.respond_info(
-                "Retraction was cleared and reset to config \
-                values. zhop is undone on next move."
+                "Retraction was cleared. zhop is undone on next move."
             )
         else:
             gcmd.respond_info(
@@ -220,107 +210,105 @@ class FirmwareRetraction:
 
     # Helper to clear retraction
     def _execute_clear_retraction(self):
-        if self.z_hop_height > 0.0:
+        if self.actual_z_hop > 0.0:
             # Re-establish regular G1 command if zhop enabled.
             # zhop will be reversed on next move with z coordinate
             self._re_register_G1()
-            self.G1_toggle_state = False  # Prevent repeat re-register
-        self.is_retracted = False  # Reset retract flag to enable G10 command
-        self._get_config_params()  # Reset retraction parameters to config values
+            self.actual_z_hop = 0.0  # prevent nozzle crash if G11 occurs
+        if self.reset_on_events:
+            self.is_retracted = False  # Reset retract flag to enable G10 command
+            self._get_config_params()  # Reset retraction parameters to config values
 
     # Gcode Command G10 to perform firmware retraction
     def cmd_G10(self, gcmd):
         retract_gcode = ""  # Reset retract string
         zhop_gcode = ""  # Reset zhop move string
 
-        if self.retract_length == 0.0:  # Check if FW retraction enabled
-            gcmd.respond_info(
-                "Retraction length zero. Firmware retraction \
-                disabled. Command ignored!"
-            )
-        elif not self.is_retracted:  # If filament isn't retracted, build G-Code
-            # Incl move command if z_hop_height > 0
-            if self.z_hop_height > 0.0:
-                # Determine z coordinate for zhop move
-                self._set_zhop_move_params()
-                # Set zhop gcode move
-                zhop_gcode = ("G1 Z{:.5f} F{}\n").format(
-                    self.z_hop_Z,
-                    int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
+        if not self.is_retracted:  # If filament isn't retracted
+            # Store z_hop_height for moves when retracted until next G11
+            self.actual_zhop = self.z_hop_height
+            # Check if FW retraction enabled
+            if self.retract_length == 0.0 and self.z_hop_height == 0.0:
+                gcmd.respond_info(
+                    "Retraction length and z_hop zero. Firmware retraction \
+                    disabled. Command ignored!"
+                )
+            else:
+                if self.retract_length > 0.0:
+                    retract_gcode = ("G1 E-{:.5f} F{}\n").format(
+                        self.retract_length, int(self.retract_speed * 60)
+                    )
+                # Incl move command if z_hop_height > 0
+                if self.z_hop_height > 0.0:
+                    # Set zhop gcode move
+                    zhop_gcode = ("G1 Z{:.5f} F{}\n").format(
+                        self.z_hop_height,
+                        int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
+                    )
+
+                moves_gcode = (
+                    "SAVE_GCODE_STATE NAME=_retract_state\n"
+                    "G91\n"  # always relative moves
+                    "{}"  # retract
+                    "{}"  # Zhop
+                    "RESTORE_GCODE_STATE NAME=_retract_state"
+                ).format(
+                    retract_gcode,
+                    zhop_gcode,
                 )
 
-            retract_gcode = (
-                "SAVE_GCODE_STATE NAME=_retract_state\n"
-                "G91\n"
-                "G1 E-{:.5f} F{}\n"  # Retract filament at retract speed
-                "G90\n"  # Switch to absolute mode (just in case)
-                "{}"
-                "RESTORE_GCODE_STATE NAME=_retract_state"
-            ).format(
-                self.retract_length, int(self.retract_speed * 60), zhop_gcode
-            )
+                self.gcode.run_script_from_command(moves_gcode)
+                self.is_retracted = True
 
-            self.gcode.run_script_from_command(retract_gcode)
-            self.is_retracted = True
-
-            if self.z_hop_height > 0.0:
-                # Swap original G1 handlers if z_hop enabled to offset following
-                # moves in eiter absolute or relative mode
-                self._unregister_G1()
-                self.G1_toggle_state = (
-                    True  # Prevent repeat unregister with flag
-                )
+                if self.z_hop_height > 0.0:
+                    # Swap original G1 handlers if z_hop enabled to offset following
+                    # moves in eiter absolute or relative mode
+                    self._unregister_G1()
 
         else:
             gcmd.respond_info("Printer is already retracted. Command ignored!")
-
-    # Helper to determine zhop coordinate
-    def _set_zhop_move_params(self):
-        self.currentPos = self._get_gcode_pos()
-        self.currentZ = self.currentPos[2]
-        self.z_hop_Z = self.currentZ + self.z_hop_height
-
-    # Helper to get current gcode position
-    def _get_gcode_pos(self):
-        # Get current gcode position for z_hop move if enabled
-        gcodestatus = self.gcode_move.get_status()
-        currentPos = gcodestatus["gcode_position"]
-        return currentPos
 
     # GCode Command G11 to perform filament unretraction
     def cmd_G11(self, gcmd):
         unretract_gcode = ""  # Reset unretract string
         unzhop_gcode = ""  # Reset un-zhop move string
 
-        if self.retract_length == 0.0:  # Check if FW retraction enabled
-            gcmd.respond_info(
-                "Retraction length zero. Firmware retraction \
-                disabled. Command ignored!"
-            )
-        elif self.is_retracted:  # Check if the filament is retracted
-            if self.z_hop_height > 0.0:
-                self._re_register_G1()  # Restore G1 handlers if z_hop on
-                self.G1_toggle_state = False  # Prevent repeat re-register
-                # Set unzhop gcode move
-                unzhop_gcode = ("G1 Z-{:.5f} F{}\n").format(
-                    self.z_hop_height,
-                    int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
+        if self.is_retracted:  # Check if the filament is retracted
+            if (
+                self.unretract_length == 0.0 and self.actual_zhop == 0.0
+            ):  # Check if FW retraction enabled
+                gcmd.respond_info(
+                    "Retraction length zero. Firmware retraction \
+                    disabled. Command ignored!"
+                )
+            else:
+                if self.unretract_length > 0.0:
+                    unretract_gcode = ("G1 E{:.5f} F{}\n").format(
+                        self.unretract_length, int(self.unretract_speed * 60)
+                    )
+                if self.actual_zhop > 0.0:
+                    self._re_register_G1()  # Restore G1 handlers if z_hop on
+                    # Set unzhop gcode move
+                    unzhop_gcode = ("G1 Z-{:.5f} F{}\n").format(
+                        self.actual_zhop,
+                        int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
+                    )
+
+                moves_gcode = (
+                    "SAVE_GCODE_STATE NAME=_unretract_state\n"
+                    "G91\n"
+                    "{}"  # Unzhop
+                    "{}"  # Unretract filament
+                    "RESTORE_GCODE_STATE NAME=_unretract_state"
+                ).format(
+                    unzhop_gcode,
+                    unretract_gcode,
                 )
 
-            unretract_gcode = (
-                "SAVE_GCODE_STATE NAME=_unretract_state\n"
-                "G91\n"
-                "{}"
-                "G1 E{:.5f} F{}\n"  # Unretract filament
-                "RESTORE_GCODE_STATE NAME=_unretract_state"
-            ).format(
-                unzhop_gcode,
-                self.unretract_length,
-                int(self.unretract_speed * 60),
-            )
-
-            self.gcode.run_script_from_command(unretract_gcode)
-            self.is_retracted = False  # Set the flag to filament unretracted
+                self.gcode.run_script_from_command(moves_gcode)
+                self.is_retracted = (
+                    False  # Set the flag to filament unretracted
+                )
         else:
             gcmd.respond_info("Printer is not retracted. Command ignored!")
 
@@ -342,6 +330,7 @@ class FirmwareRetraction:
                 "G0 command that accounts for z hop when retracted",
                 self.G1_toggle_state,
             )
+            self.G1_toggle_state = True  # Prevent repeat unregister with flag
 
     # Helper to toggle/untoggle command handlers and methods
     def _toggle_gcode_comms(
@@ -376,7 +365,7 @@ class FirmwareRetraction:
 
         if "Z" in params and not is_relative:
             # In absolute, adjust Z param to account for Z-hop offset
-            params["Z"] = str(float(params["Z"]) + self.z_hop_height)
+            params["Z"] = str(float(params["Z"]) + self.actual_zhop)
             # In relative, don't adjust as Z-hop offset considered before
 
         new_g1_command = "G1.20140114"
@@ -402,6 +391,7 @@ class FirmwareRetraction:
             self._toggle_gcode_comms(
                 "G0", "G0.20140114", None, "cmd_G1_help", self.G1_toggle_state
             )
+            self.G1_toggle_state = False  # Prevent repeat re_register
 
 
 def load_config(config):
