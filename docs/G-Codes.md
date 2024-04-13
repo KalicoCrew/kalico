@@ -617,6 +617,9 @@ the filament unretract move to reduce blobbing at seams (the minimum value is
 Z_HOP_HEIGHT determines the vertical height by which the nozzle is lifted from
 the print to prevent collisions with the print during travel moves (the
 minimum value is 0 mm, the standard value is 0 mm, which disables Z-Hop moves).
+If Z_HOP_HEIGHT is set when retracted, the new value will be taken into
+account
+only after G11 or CLEAR_RETRACTION event.  
 SET_RETRACTION is commonly set as part of slicer per-filament configuration, as
 different filaments require different parameter settings. The command can be
 issued at runtime.
@@ -630,23 +633,22 @@ retracted) are displayed on the terminal.
 #### CLEAR_RETRACTION
 `CLEAR_RETRACTION`: Clears the current retract state without extruder or
 motion system movement. All flags related to the retract state are reset to
-False and all changes to retraction parameters made via previous SET_RETRACTION
-commands are reset to config values.
+False. If `reset_on_events` is set to True, all changes to retraction
+parameters made via previous `SET_RETRACTION` commands are reset to
+config values.
 NOTE: The Module contains a lot of redundancy for safety to prevent undesired
-behavior. When printing from virtual SD Card, the printer state is monitored and
-retraction state is cleared if a print is started, canceled or finished or if a
-virtual SD card file is reset. When printing via GCode streaming (e.g. using
-OctoPrint), the retract state is cleared when the steppers are disabled (M84,
-typically part of end gcode and standard behavior of OctoPrint if a print is
-canceled) or the printer is homed (G28, typically part of start gcode). Hence,
+behavior. When printing from virtual SD Card, in retracted state, the printer
+state is monitored and zhop moves are cancelled if a print is started, canceled
+or finished or if a virtual SD card file is reset until next unretract. When
+printing via GCode streaming (e.g. using OctoPrint), the zhop moves are
+cancelled when the steppers are disabled (M84, typically part of end gcode and
+standard behavior of OctoPrint if a print is canceled) or the printer is homed
+(G28, typically part of start gcode). Hence,
 upon ending or canceling a print as well as starting a new print via GCode
-streaming or virtual SD card, the printer should always be in unretracted state.
+streaming or virtual SD card, the toolhead will not apply `z_hop_height` until
+next G11 if filament is retracted.
 Nevertheless, it is recommended to add `CLEAR_RETRACTION` to your start and end
-gcode to make sure the retract state is reset before and after each print. If a
-print is finished or canceled while retracted and the retract state is not
-cleared, either via `CLEAR_RETRACTION` without filament or motion system
-movement or G11, the nozzle will stay above the requested z coordinate by the
-set z_hop_height.
+gcode to make sure the retract state is reset before and after each print.
 
 ### [force_move]
 
