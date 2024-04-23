@@ -6,11 +6,11 @@
 import stepper
 from . import idex_modes
 
+
 # The hybrid-corexy kinematic is also known as Markforged kinematics
 class HybridCoreXYKinematics:
     def __init__(self, toolhead, config):
         self.printer = config.get_printer()
-        printer_config = config.getsection("printer")
         # itersolve parameters
         self.rails = [
             stepper.PrinterRail(config.getsection("stepper_x")),

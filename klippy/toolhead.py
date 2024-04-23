@@ -699,7 +699,6 @@ class ToolHead:
 
     def note_step_generation_scan_time(self, delay, old_delay=0.0):
         self.flush_step_generation()
-        cur_delay = self.kin_flush_delay
         if old_delay:
             self.kin_flush_times.pop(self.kin_flush_times.index(old_delay))
         if delay:

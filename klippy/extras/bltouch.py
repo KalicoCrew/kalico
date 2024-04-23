@@ -26,6 +26,7 @@ Commands = {
     "output_mode_store": 0.001884,
 }
 
+
 # BLTouch "endstop" wrapper
 class BLTouchEndstopWrapper:
     def __init__(self, config):
@@ -216,6 +217,10 @@ class BLTouchEndstopWrapper:
         self.verify_raise_probe()
         self.sync_print_time()
         self.multi = "OFF"
+
+    def probing_move(self, pos, speed):
+        phoming = self.printer.lookup_object("homing")
+        return phoming.probing_move(self, pos, speed)
 
     def probe_prepare(self, hmove):
         if self.multi == "OFF" or self.multi == "FIRST":

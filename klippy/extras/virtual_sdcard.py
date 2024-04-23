@@ -6,6 +6,13 @@
 import os, sys, logging, io
 
 
+DEFAULT_ERROR_GCODE = """
+{% if 'heaters' in printer %}
+   TURN_OFF_HEATERS
+{% endif %}
+"""
+
+
 class VirtualSD:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -27,7 +34,7 @@ class VirtualSD:
         # Error handling
         gcode_macro = self.printer.load_object(config, "gcode_macro")
         self.on_error_gcode = gcode_macro.load_template(
-            config, "on_error_gcode", ""
+            config, "on_error_gcode", DEFAULT_ERROR_GCODE
         )
         # Register commands
         self.gcode = self.printer.lookup_object("gcode")
