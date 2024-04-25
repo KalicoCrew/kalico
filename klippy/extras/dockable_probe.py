@@ -673,6 +673,8 @@ class DockableProbe:
         # will complete the probing next to the dock.
         return_pos = self.toolhead.get_position()
         self.auto_attach_probe(return_pos)
+        if not self.restore_toolhead :
+            self.toolhead.manual_move(return_pos, self.travel_speed)
 
     def multi_probe_end(self):
         self.multi = MULTI_OFF
