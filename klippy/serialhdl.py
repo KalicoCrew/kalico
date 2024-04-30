@@ -369,7 +369,7 @@ class SerialReader:
 
     def handle_default(self, params):
         if get_danger_options().log_serial_reader_warnings:
-            logging.warn("%sgot %s", self.warn_prefix, params)
+            logging.warn("%s got %s", self.warn_prefix, params)
 
 
 # Class to send a query command and return the received response

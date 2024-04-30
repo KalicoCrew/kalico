@@ -6,6 +6,8 @@
 import logging
 from . import bus
 
+from extras.danger_options import get_danger_options
+
 REPORT_TIME = 0.8
 BME280_CHIP_ADDR = 0x76
 
@@ -356,7 +358,9 @@ class BME280:
         if self.chip_type == "BME280":
             humid_raw = (data[6] << 8) | data[7]
             self.humidity = self._compensate_humidity_bme280(humid_raw)
-        if self.temp < self.min_temp or self.temp > self.max_temp:
+        if (
+            self.temp < self.min_temp or self.temp > self.max_temp
+        ) and not get_danger_options().temp_ignore_limits:
             self.printer.invoke_shutdown(
                 "BME280 temperature %0.1f outside range of %0.1f:%.01f"
                 % (self.temp, self.min_temp, self.max_temp)
