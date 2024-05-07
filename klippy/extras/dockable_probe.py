@@ -206,6 +206,14 @@ class DockableProbe:
             self.dock_position, self.insert_position
         )
 
+        gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.activate_gcode = gcode_macro.load_template(
+            config, "activate_gcode", ""
+        )
+        self.deactivate_gcode = gcode_macro.load_template(
+            config, "deactivate_gcode", ""
+        )
+
         # Pins
         ppins = self.printer.lookup_object("pins")
         pin = config.get("pin")
@@ -661,6 +669,23 @@ class DockableProbe:
     #######################################################################
     # Probe Wrappers
     #######################################################################
+    def _raise_probe(self):
+        toolhead = self.printer.lookup_object("toolhead")
+        start_pos = toolhead.get_position()
+        self.deactivate_gcode.run_gcode_from_command()
+        if toolhead.get_position()[:3] != start_pos[:3]:
+            raise self.printer.command_error(
+                "Toolhead moved during probe activate_gcode script"
+            )
+
+    def _lower_probe(self):
+        toolhead = self.printer.lookup_object("toolhead")
+        start_pos = toolhead.get_position()
+        self.activate_gcode.run_gcode_from_command()
+        if toolhead.get_position()[:3] != start_pos[:3]:
+            raise self.printer.command_error(
+                "Toolhead moved during probe deactivate_gcode script"
+            )
 
     def multi_probe_begin(self):
         self.multi = MULTI_FIRST
@@ -674,7 +699,9 @@ class DockableProbe:
         return_pos = self.toolhead.get_position()
         self.auto_attach_probe(return_pos)
         if not self.restore_toolhead:
-            self.toolhead.manual_move(return_pos, self.travel_speed)
+            self.toolhead.manual_move(
+                [return_pos[0], return_pos[1], None], self.travel_speed
+            )
 
     def multi_probe_end(self):
         self.multi = MULTI_OFF
@@ -686,9 +713,11 @@ class DockableProbe:
             [None, None, return_pos[2] + 2], self.travel_speed
         )
         self.auto_detach_probe(return_pos)
+        self._raise_probe()
 
     def probe_prepare(self, hmove):
         if self.multi == MULTI_OFF or self.multi == MULTI_FIRST:
+            self._lower_probe()
             return_pos = self.toolhead.get_position()
             self.auto_attach_probe(return_pos)
         if self.multi == MULTI_FIRST:
@@ -704,6 +733,7 @@ class DockableProbe:
                 [None, None, return_pos[2] + 2], self.travel_speed
             )
             self.auto_detach_probe(return_pos)
+            self._raise_probe()
 
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
