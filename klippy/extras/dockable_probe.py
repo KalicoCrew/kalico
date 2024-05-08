@@ -476,6 +476,8 @@ class DockableProbe:
         self.detach_probe(return_pos)
 
     def attach_probe(self, return_pos=None):
+        self._lower_probe()
+
         retry = 0
         while (
             self.get_probe_state() != PROBE_ATTACHED
@@ -543,6 +545,7 @@ class DockableProbe:
                 self.toolhead.manual_move(
                     [None, None, return_pos[2]], self.travel_speed
                 )
+        self._raise_probe()
 
     def auto_detach_probe(self, return_pos=None):
         if self.get_probe_state() == PROBE_DOCKED:
@@ -713,11 +716,9 @@ class DockableProbe:
             [None, None, return_pos[2] + 2], self.travel_speed
         )
         self.auto_detach_probe(return_pos)
-        self._raise_probe()
 
     def probe_prepare(self, hmove):
         if self.multi == MULTI_OFF or self.multi == MULTI_FIRST:
-            self._lower_probe()
             return_pos = self.toolhead.get_position()
             self.auto_attach_probe(return_pos)
         if self.multi == MULTI_FIRST:
@@ -733,7 +734,6 @@ class DockableProbe:
                 [None, None, return_pos[2] + 2], self.travel_speed
             )
             self.auto_detach_probe(return_pos)
-            self._raise_probe()
 
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
