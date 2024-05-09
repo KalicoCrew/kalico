@@ -100,18 +100,13 @@ heater_power: 500
 cooling_fan: fan
 ```
 
-
-
-
 # Calibration
-The MPC calibration routine takes the following steps:
+The MPC default calibration routine takes the following steps:
 - Move to the center and close to bed so that tuning is done close to a surface to best emulate the conditions while printing.
 - Cool to ambient: The calibration routine needs to know the approximate ambient temperature. It switches the part cooling fan on and waits until the hotend temperature stops decreasing relative to ambient.
 - Heat past 200°C: Measure the point where the temperature is increasing most rapidly, and the time and temperature at that point. Also, three temperature measurements are needed at some point after the initial latency has taken effect. The tuning algorithm heats the hotend to over 200°C.
 - Hold temperature while measuring ambient heat-loss: At this point enough is known for the MPC algorithm to engage. The calibration routine makes a best guess at the overshoot past 200°C which will occur and targets this temperature for about a minute while ambient heat-loss is measured without (and optionally with) the fan.  (*Q* does klipper MPC use the fan??)
-- MPC calibration routine creates the appropriate model constants and saves them for use. At this time the model parameters are temporate and not yet saved to the printer configuration. SAVE_CONFIG.  
-> [!NOTE]
-> Note that MPC calibration default to Asymptotic Tuning method intitially and if that fails it will use Differential Tuning.  (Q: too much detail?).
+- MPC calibration routine creates the appropriate model constants and saves them for use. At this time the model parameters are temporate and not yet saved to the printer configuration via SAVE_CONFIG.  
 
 ## Hotend or Bed Calibration
 The MPC calibration routine has to be run intially for each heater to be controlled using MPC. In order for MPC to be functional an extruder must be able to reach 200C and a bed to reach 90C.
