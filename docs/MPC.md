@@ -26,7 +26,7 @@ To use MPC as the temperature controller set the following configuration paramet
 ```
 [extruder] OR [heater_bed]
 control: mpc
-heater_power:
+heater_power: {watts}
   # Advertised heater power in watts. 
   # Note that for a PTC, a non-linear heater, MPC is not guarenteed to work.
   # Setting this value to the heater power at the expected print temperature, for a PTC type heater
@@ -34,10 +34,10 @@ heater_power:
 part_cooling_fan: fan 
   # this is the fan that is cooling extruded filament and the hotend
   # "fan" will automatically find the part_cooling_fan  (Q??)
-ambient_temp_sensor: [temperature_sensor {name} ]  
-  # example: temperature_sensor beacon_coil   
-  # Optional. This parameter can use any sensor but it should be a temperature sensor in proximity to the hotend or
-  # measuring the ambient of the hotend such as a chamber sensor. If this is not given MPC will give an estimate.
+ambient_temp_sensor: {temperature_sensor sensor_name} 
+  # Example: temperature_sensor beacon_coil   
+  # This parameter is optional. It can use any sensor but it should be a temperature sensor in proximity to the hotend or
+  # measuring the ambient air surrounding the hotend such as a chamber sensor. If this is not given MPC will give an estimate.
   # This is used for initial state temperature and calibration but not for actual control.  
 ```
 
@@ -47,39 +47,39 @@ ambient_temp_sensor: [temperature_sensor {name} ]
 Filament parameters that can be set to improve the accuracy of the model. In general MPC is capable of controlling the hotend without accounting for the heat required to melt filament. The accuracy and responsiveness of MPC can be improved by accounting for the filament.   
 *(Q: Why not set the defaults to some reasonable neutral value for ABS/ASA/PETG/PLA... density = 1.1 and heat_capacity 1.3.  Close enough is good enough for MPC?)*  
 ```
-filament_diameter
-  # default=1.75  
-filament_density
-  # default=0.0  
-filament_heat_capacity
-  # default=0.0  
+filament_diameter:
+  # default=1.75 (mm) 
+filament_density:
+  # default=0.0  (g/mm^2)
+filament_heat_capacity:
+  # default=0.0  (J/g/K)
 ```
 
 The following are optional parameters that can be tuned but should not need changing from the default.
 ```
-target_reach_time  
-  # default=2.0    
-smoothing  
-  # default=0.25  
-min_ambient_change
-  # default=1.0  
+target_reach_time:  
+  # default=2.0   (sec) 
+smoothing:  
+  # default=0.25  (sec)
+min_ambient_change:
+  # default=1.0   (deg C)
   # Larger values of MIN_AMBIENT_CHANGE will result in faster convergence but will also cause
   # the simulated ambient temperature to flutter somewhat chaotically around the ideal value.  
-steady_state_rate
-  # default=0.5 //  (Q- this is 1 deg/s in marlin??)  
+steady_state_rate:
+  # default=0.5  (deg C/s) //  (Q- this is 1 deg/s in marlin??)  
 ```
 
 ## Calibrated Configuration Parameters
 Calibrated parameters and not suitable for pre-configuration or not explicetly determinable. Advanced users could tweak based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
 ```
-block_heat_capacity 
-  # Units of J/K
-ambient_transfer 
-  # Units of W/K
-sensor_responsiveness  
-  # Units of K/s/K 
-fan_ambient_transfer  
-  # Units of W/K
+block_heat_capacity: 
+  # Units of (J/K)
+ambient_transfer: 
+  # Units of (W/K)
+sensor_responsiveness:  
+  # Units of (K/s/K) 
+fan_ambient_transfer:  
+  # Units of (W/K)
 ```
 
 # Initial Calibration Method
@@ -96,7 +96,7 @@ The MPC calibration routine takes the following steps:
 The MPC calibration routine has to be run intially for each heater to be controlled using MPC.
 ```
 MPC_CALIBRATE HEATER={heater} TARGET={temperature}
-  # TARGET is a parameter only used for tuning beds and
+  # TARGET (deg C) is a parameter only used for tuning beds and
   # should not be specified during hotend calibration.   
 ```
 
