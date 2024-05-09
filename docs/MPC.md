@@ -86,7 +86,7 @@ These can be tuned but should not need changing from the default values.
   # default=0.5 (deg C/s) 
 ```
 
-An example configuration block is:
+## Example configuration block
 
 ```
 [extruder]
