@@ -25,13 +25,19 @@ To use MPC as the temperature controller set the following configuration paramet
 
 ```
 [extruder] OR [heater_bed]
-control: mpc  
+control: mpc
+heater_power:
+  # Advertised heater power in watts. 
+  # Note that for a PTC, a non-linear heater, MPC is not guarenteed to work.
+  # Setting this value to the heater power at the expected print temperature is a good initial value to start tuning.
 part_cooling_fan: fan 
-#this is the fan that is cooling extruded filament and the hotend
-# "fan" will automatically find the part_cooling_fan  (Q??)
+  # this is the fan that is cooling extruded filament and the hotend
+  # "fan" will automatically find the part_cooling_fan  (Q??)
 ambient_temp_sensor: [temperature_sensor {name} ]  
-#example: temperature_sensor beacon_coil   
-#Optional. This parameter can use any sensor but it should be a temperature sensor in proximity to the hotend or measuring the ambient of the hotend such as a chamber sensor. If this is not given MPC will give an estimate. This is used for initial state temperature and calibration but not for actual control.  
+  # example: temperature_sensor beacon_coil   
+  # Optional. This parameter can use any sensor but it should be a temperature sensor in proximity to the hotend or
+  # measuring the ambient of the hotend such as a chamber sensor. If this is not given MPC will give an estimate.
+  # This is used for initial state temperature and calibration but not for actual control.  
 ```
 
 (Q: Does bed functionality work in it's own model. Can i use bed_fans as the part_cooling_fan in it's configuration)?
@@ -41,37 +47,37 @@ Filament parameters that can be set to improve the accuracy of the model. In gen
 *(Q: Why not set the defaults to some reasonable neutral value for ABS/ASA/PETG/PLA... density = 1.1 and heat_capacity 1.3.  Close enough is good enough for MPC?)*  
 ```
 filament_diameter
-#default=1.75  
+  #default=1.75  
 filament_density
-#default=0.0  
+  #default=0.0  
 filament_heat_capacity
-#default=0.0  
+  #default=0.0  
 ```
 
 The following are optional parameters that can be tuned but should not need changing from the default.
 ```
 target_reach_time  
-#default=2.0    
+  # default=2.0    
 smoothing  
-#default=0.25  
+  # default=0.25  
 min_ambient_change
-#default=1.0  
-#Larger values of MIN_AMBIENT_CHANGE will result in faster convergence but will also cause the simulated ambient temperature to flutter somewhat chaotically around the ideal value.  
+  # default=1.0  
+  # Larger values of MIN_AMBIENT_CHANGE will result in faster convergence but will also cause the simulated ambient temperature to flutter somewhat chaotically around the ideal value.  
 steady_state_rate
-#default=0.5 //  (Q- this is 1 deg/s in marlin??)  
+  # default=0.5 //  (Q- this is 1 deg/s in marlin??)  
 ```
 
 ## Calibrated Configuration Parameters
 Calibrated parameters and not suitable for pre-configuration or not explicetly determinable. Advanced users could tweak based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
 ```
 block_heat_capacity 
-#Add Details
+  # Units of J/K
 ambient_transfer 
-#Add Details
+  # Units of W/K
 sensor_responsiveness  
-#Add Details  
+  # Units of K/s/K 
 fan_ambient_transfer  
-#Add Details
+  # Units of W/K
 ```
 
 # Initial Calibration Method
@@ -88,7 +94,8 @@ The MPC calibration routine takes the following steps:
 The MPC calibration routine has to be run intially for each heater to be controlled using MPC.
 ```
 MPC_CALIBRATE HEATER={heater} TARGET={temperature}
-#TARGET is a parameter only used for tuning beds and should not be specified during hotend calibration.   
+  # TARGET is a parameter only used for tuning beds and
+  # should not be specified during hotend calibration.   
 ```
 
 For example initial calibration of the hotend would be. 
@@ -102,7 +109,9 @@ MPC_CALIBRATE HEATER=bed_heater TARGET=100
 ```
 
 > [!NOTE]
-> After calibration the routine will generate the key model parameters for use in the printer session. A *SAVE_CONFIG* command is then required to commit these calibrated parameters to the config for future session use.  
+> After calibration the routine will generate the key model parameters for use in the printer session. A *SAVE_CONFIG* command is then required to commit these calibrated parameters to the printer config.  
+
+![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
 
 
 ## Filament Feed Forward
@@ -135,6 +144,15 @@ PA12    1.02                1.8
 PC      1.20                1.2
 ```
 (Q: Wild amount of variation for these parameters based on online references. I think it is important to know what order of effect this has. That is if you print ABS with PLA params loaded. Is it a big deal? My feeling is that it is not.)  
+
+# Real-Time Model State
+The realtime temperatures and model states can be viewed from a browser by entering the following local address for your computer:
+```
+https://192.168.xxx.xxx:7125/printer/objects/query?extruder
+```
+
+![Calibration](/docs/img/MPC_realtime_ouput.png)
+
 
 # BACKGROUND:
 
