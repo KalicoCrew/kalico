@@ -107,13 +107,16 @@ The MPC calibration routine takes the following steps:
 > Note that MPC calibration default to Asymptotic Tuning method intitially and if that fails it will use Differential Tuning.  (Q: too much detail?).
 
 ## Hotend or Bed Calibration
-The MPC calibration routine has to be run intially for each heater to be controlled using MPC.
+The MPC calibration routine has to be run intially for each heater to be controlled using MPC. In order for MPC to be functional an extruder must be able to reach 200C and a bed to reach 90C.
 ```
 MPC_CALIBRATE HEATER={heater} TARGET={temperature} FAN_BREAKPOINTS={value]
-  # TARGET (deg C) is a parameter only used for tuning beds.
-  # TARGET must be above 90 and the bed should be able to reach this temperature.
+  # TARGET (deg C) sets the calibration temperature. 
+  # TARGET default is 200C for extruder and 90C for beds.
+  # Note that MPC calibration is temperature independent so
+  # calibration the extruder at higher temperatures hasnt been
+  # shown to produce better model parameters. 
   # 
-  # FAN_BREAKPOINTS defaults to three fan powers (0%, 50%, 100%) for calibration.
+  # FAN_BREAKPOINTS defaults to three fan powers (0%, 50%, 100%) for extruder calibration.
   # Arbitrary number breakpoints can be specified e.g 7 breakpoints would
   # result in (0, 16%, 33%, 50%, 66%, 83%, 100%) fan speeds. Each breakpoint adds
   # about 20s to the calibration.
