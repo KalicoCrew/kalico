@@ -209,7 +209,7 @@ The realtime temperatures and model states can be viewed from a browser by enter
 https://192.168.xxx.xxx:7125/printer/objects/query?extruder
 ```  
 
-![Calibration](/docs/img/MPC_realtime_ouput.png)
+![Calibration](/docs/img/MPC_realtime_output.png)
 
 
 # BACKGROUND
