@@ -47,11 +47,11 @@ Filament parameters that can be set to improve the accuracy of the model. In gen
 *(Q: Why not set the defaults to some reasonable neutral value for ABS/ASA/PETG/PLA... density = 1.1 and heat_capacity 1.3.  Close enough is good enough for MPC?)*  
 ```
 filament_diameter
-  #default=1.75  
+  # default=1.75  
 filament_density
-  #default=0.0  
+  # default=0.0  
 filament_heat_capacity
-  #default=0.0  
+  # default=0.0  
 ```
 
 The following are optional parameters that can be tuned but should not need changing from the default.
