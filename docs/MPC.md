@@ -17,13 +17,14 @@ MPC has many advantages over PID control:
 > This feature controls the portions of the 3D printer that can get very hot. All standard DangerKlipper warnings apply while using this. Please report all issues and bugs.
 
 # Configuration
-To use MPC as the temperature controller set the following configuration in the appropriate heater section of the config. 
+To use MPC as the temperature controller set the following configuration parameters in the appropriate heater section of the config. 
 
 > [!NOTE]
 > Currently only [extruder] and [heater_bed] heater types are supported.  
 > That this only works on extruders that can reach 200C. (Q: Obvious? required?)
 
 ```
+[extruder] OR [heater_bed]
 control: mpc  
 part_cooling_fan: fan 
 #this is the fan that is cooling extruded filament and the hotend
@@ -35,6 +36,7 @@ ambient_temp_sensor: [temperature_sensor {name} ]
 
 (Q: Does bed functionality work in it's own model. Can i use bed_fans as the part_cooling_fan in it's configuration)?
 
+## Optional Configuration Parameters
 Filament parameters that can be set to improve the accuracy of the model. In general MPC is capable of controlling the hotend without accounting for the heat required to melt filament. The accuracy and responsiveness of MPC can be improved by accounting for the filament.   
 *(Q: Why not set the defaults to some reasonable neutral value for ABS/ASA/PETG/PLA... density = 1.1 and heat_capacity 1.3.  Close enough is good enough for MPC?)*  
 ```
@@ -59,6 +61,7 @@ steady_state_rate
 #default=0.5 //  (Q- this is 1 deg/s in marlin??)  
 ```
 
+## Calibrated Configuration Parameters
 Calibrated parameters and not suitable for pre-configuration or not explicetly determinable. Advanced users could tweak based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
 ```
 block_heat_capacity 
@@ -84,7 +87,7 @@ The MPC calibration routine takes the following steps:
 ## Hotend or Bed Calibration
 The MPC calibration routine has to be run intially for each heater to be controlled using MPC.
 ```
-MPC_CALIBRATE HEATER={heater} TARGET={TEMPERATURE}
+MPC_CALIBRATE HEATER={heater} TARGET={temperature}
 #TARGET is a parameter only used for tuning beds and should not be specified during hotend calibration.   
 ```
 
@@ -116,10 +119,10 @@ MPC_SET HEATER=extruder FILAMENT_DENSITY=1.09 FILAMENT_HEAT_CAPACITY=1.3
 ```
 
 ## Filament Feed Forward Physical Properties
-MPC likes to know how much energy (in Joules) it takes to heat 1mm of filament by 1°C (or 1 Kelvin, which is the same thing). This can be calculated from the specific heat capacity and the density of the material parameters. The parameters from the table below should be sufficent to allow MPC to accomodate for this effect.   
+MPC likes to know how much energy (in Joules) it takes to heat 1mm of filament by 1°C (or 1 Kelvin, which is the same thing). The parameters from the table below should be sufficent to allow MPC to accomodate for this in the model.   
 > [!NOTE]
-> - Note that specific heat is not a typical value provided by any filament manufactures so we rely on typical polymer raw material values.  
-> - Note that filled filaments or polymer alloys will have different values for density and specific heat. Again, close enough is good enough.
+> - Specific heat is not a typical value provided by any filament manufactures so we rely on typical polymer raw material values.  
+> - Filled filaments or polymer alloys will have different values for density and specific heat. Again, close enough is good enough.
 
 ```
         Density [g/cm³]     Specifc heat [J/g/K]
