@@ -17,8 +17,7 @@ MPC has many advantages over PID control:
 > This feature controls the portions of the 3D printer that can get very hot. All standard DangerKlipper warnings apply. Please report all issues and bugs to github or discord.
 
 # Installation
-
-After installing DangerKlipper switch to the MPC feature branch by issuing the following console commands:
+After installing DangerKlipper you can switch to the MPC feature branch by issuing the following console commands:
 
 ```
 git fetch feature/mpc_experimental
