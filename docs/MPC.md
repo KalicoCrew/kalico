@@ -20,6 +20,8 @@ MPC has many advantages over PID control:
 After installing DangerKlipper you can switch to the MPC feature branch by issuing the following console commands:
 
 ```
+cd ~
+cd klipper
 git fetch
 git switch feature/mpc_experimental
 ```
