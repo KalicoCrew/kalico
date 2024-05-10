@@ -90,14 +90,12 @@ These can be tuned but should not need changing from the default values.
 
 ```
 [extruder]
-control: mpc
 heater_power: 70  
 cooling_fan: fan
 filament_density: 1.1
 filament_heat_capacity: 1.3
 
 [heater_bed]
-control: mpc
 heater_power: 500  
 cooling_fan: fan
 ```
