@@ -38,7 +38,6 @@ Currently only [extruder] and [heater_bed] heater types are supported.
 
 ```
 [extruder] OR [heater_bed]
-control: mpc
 heater_power: {watts}
   # Advertised heater power in watts. 
   # Note that for a PTC, a non-linear heater, MPC is not guarenteed to work.
@@ -92,14 +91,12 @@ These can be tuned but should not need changing from the default values.
 
 ```
 [extruder]
-control: mpc
 heater_power: 70  
 cooling_fan: fan
 filament_density: 1.1
 filament_heat_capacity: 1.3
 
 [heater_bed]
-control: mpc
 heater_power: 500  
 cooling_fan: fan
 ```
