@@ -44,7 +44,7 @@ heater_power: {watts}
   # is a good initial value to start tuning.
 cooling_fan: fan 
   # This is the fan that is cooling extruded filament and the hotend.
-  # cooling_fan is currently not supported for bed_heater.
+  # cooling_fan is currently not supported for [heater_bed].
   # "fan" will automatically find the part_cooling_fan  (Q??)
 #ambient_temp_sensor: {temperature_sensor sensor_name} 
   # Optional. If this is not given MPC will estimate this parameter (reccomended).
@@ -57,7 +57,7 @@ cooling_fan: fan
 ## Filament Configuration
 In general MPC is capable of controlling the hotend without accounting for the heat required to melt filament. MPC can look forward to changes in extrusion rates which could require more or less heat input to maintain target temperatures.  This improves the accuracy and responsiveness of the model. Filament feed forward is not enabled by default unless the density and heat capacity are specified.  
 
-These should only be set under [extruder] and are not valid for [bed_heater]. 
+These should only be set under [extruder] and are not valid for [heater_bed]. 
 
 ```
 filament_diameter: 1.75
@@ -148,7 +148,7 @@ MPC_CALIBRATE HEATER=extruder
 For example default calibration of the bed would be. 
 
 ```
-MPC_CALIBRATE HEATER=bed_heater TARGET=100  
+MPC_CALIBRATE HEATER=heater_bed TARGET=100  
 ```
 
 After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future refernce.  
