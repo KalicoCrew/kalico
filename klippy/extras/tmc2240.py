@@ -264,7 +264,7 @@ FieldFormatters.update(
 ######################################################################
 
 
-class TMC2240CurrentHelper:
+class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
@@ -273,35 +273,35 @@ class TMC2240CurrentHelper:
         self.Rref = config.getfloat(
             "rref", 12000.0, minval=12000.0, maxval=60000.0
         )
-        self.max_cur = self._get_ifs_rms(3)
-        self.run_current = config.getfloat(
-            "run_current", above=0.0, maxval=self.max_cur
+        self.max_current = self._get_ifs_rms(3)
+        self.config_run_current = config.getfloat(
+            "run_current", above=0.0, maxval=self.max_current
         )
-        self.hold_current = config.getfloat(
-            "hold_current", self.max_cur, above=0.0, maxval=self.max_cur
+        self.config_hold_current = config.getfloat(
+            "hold_current", self.max_current, above=0.0, maxval=self.max_current
         )
-        self._home_current = config.getfloat(
-            "home_current", self.run_current, above=0.0, maxval=self.max_cur
+        self.config_home_current = config.getfloat(
+            "home_current",
+            self.config_run_current,
+            above=0.0,
+            maxval=self.max_current,
         )
         self.current_change_dwell_time = config.getfloat(
             "current_change_dwell_time", 0.5, above=0.0
         )
-        self._prev_current = self.run_current
-        self.req_hold_current = self.hold_current
-        current_range = self._calc_current_range(self.run_current)
+        self.req_run_current = self.config_run_current
+        self.req_hold_current = self.config_hold_current
+        self.req_home_current = self.config_home_current
+
+        self.actual_current = self.req_run_current
+        current_range = self._calc_current_range(self.actual_current)
         self.fields.set_field("current_range", current_range)
         gscaler, irun, ihold = self._calc_current(
-            self.run_current, self.hold_current
+            self.req_run_current, self.req_hold_current
         )
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
-
-    def needs_home_current_change(self):
-        return self._home_current != self.run_current
-
-    def set_home_current(self, new_home_current):
-        self._home_current = min(self.max_cur, new_home_current)
 
     def _get_ifs_rms(self, current_range=None):
         if current_range is None:
@@ -355,31 +355,18 @@ class TMC2240CurrentHelper:
             hold_current,
             self.req_hold_current,
             ifs_rms,
-            self._home_current,
+            self.req_home_current,
         )
 
-    def set_current(self, run_current, hold_current, print_time, force=False):
-        if (
-            run_current == self._prev_current
-            and hold_current == self.req_hold_current
-            and not force
-        ):
-            return
-        self.req_hold_current = hold_current
-        gscaler, irun, ihold = self._calc_current(run_current, hold_current)
+    def apply_current(self, print_time):
+        gscaler, irun, ihold = self._calc_current(
+            self.actual_current, self.req_hold_current
+        )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
-
-    def set_current_for_homing(self, print_time):
-        prev_run_cur, _, _, _, _ = self.get_current()
-        self._prev_current = prev_run_cur
-        self.set_current(self._home_current, self.hold_current, print_time)
-
-    def set_current_for_normal(self, print_time):
-        self.set_current(self._prev_current, self.hold_current, print_time)
 
 
 ######################################################################
