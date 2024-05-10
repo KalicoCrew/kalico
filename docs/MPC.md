@@ -90,12 +90,14 @@ These can be tuned but should not need changing from the default values.
 
 ```
 [extruder]
+control: mpc
 heater_power: 70  
 cooling_fan: fan
 filament_density: 1.1
 filament_heat_capacity: 1.3
 
 [heater_bed]
+control: mpc
 heater_power: 500  
 cooling_fan: fan
 ```
@@ -107,10 +109,10 @@ In preperation for a **SAVE_CONFIG** command after calibration the previous extr
 #*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
 #*#
 #*# [heater_bed]
-#*# control: mpc
+#*# control = mpc
 #*#
 #*# [extruder]
-#*# control: mpc
+#*# control = mpc
 ```
 
 
