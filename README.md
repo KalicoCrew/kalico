@@ -115,7 +115,7 @@ and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 >
 > Any data in ~/printer_data such as printer configs and macros will be unaffected.
 
-### Manually clone the repository
+### Option 1. Manually clone the repository
 
 If desired, make a backup copy of your existing Klipper installation by running:
 
@@ -130,7 +130,7 @@ git clone https://github.com/DangerKlippers/danger-klipper.git ~/klipper
 sudo systemctl restart klipper
 ```
 
-### Using KIAUH
+### Option 2. Using KIAUH
 
 For users that are not comfortable using Git directly, [KIAUH](https://github.com/dw-0/kiauh) is able to use custom repositories.
 
@@ -150,7 +150,8 @@ From the KIAUH menu select:
 - Enter 'B' for back twice
 - 'Q' to quit
 
-### Adding a git-remote to the existing installation
+### Option 3. Adding a git-remote to the existing installation
+Can switch back to mainline klipper at any time via a `git checkout upstream_master`
 
 ```bash
 cd ~/klipper
