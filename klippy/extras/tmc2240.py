@@ -300,9 +300,6 @@ class TMC2240CurrentHelper:
     def needs_home_current_change(self):
         return self._home_current != self.run_current
 
-    def needs_run_current_change(self):
-        return self._prev_current != self.run_current
-
     def set_home_current(self, new_home_current):
         self._home_current = min(self.max_cur, new_home_current)
 
@@ -363,7 +360,7 @@ class TMC2240CurrentHelper:
 
     def set_current(self, run_current, hold_current, print_time, force=False):
         if (
-            run_current == self.run_current
+            run_current == self._prev_current
             and hold_current == self.req_hold_current
             and not force
         ):
