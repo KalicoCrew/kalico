@@ -100,7 +100,8 @@ heater_power: 500
 cooling_fan: fan
 ```
 
-In preperation for a SAVE_CONFIG command after calibration the previous extruder or heater_bed parameters should be removed or commented out. If " control: pid_v " is present in the save_config block there will be a conflict error when committing the changes.
+In preperation for a **SAVE_CONFIG** command after calibration the previous extruder or heater_bed parameters should be removed or commented out. If *control: pid_v* is present in the save config block there will be a conflict error when committing the changes. A save config block ready for MPC calibartion looks like this:
+
 ```
 #*# <---------------------- SAVE_CONFIG ---------------------->
 #*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
@@ -153,9 +154,7 @@ MPC_CALIBRATE HEATER=bed_heater TARGET=100
 After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future refernce.  
 ![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
 
-A *SAVE_CONFIG* command is then required to commit these calibrated parameters to the printer config.
-If you have previously been using PID, PID_V, PID_P you will have to remove or comment these values out of the config section before issuing the *SAVE_CONFIG* command.
-The config block should then have the following parameters:
+A **SAVE_CONFIG** command is then required to commit these calibrated parameters to the printer config. The save config block should then look similar to the below: 
 
 ```
 #*# [extruder]
