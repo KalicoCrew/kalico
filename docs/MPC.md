@@ -1,37 +1,37 @@
 # Model Predictive Control
 
-Model Predictive Control (MPC) control is an alternaive temperature control method to PID. MPC uses a system model to simulate hotend temperature and adjust the heater power to match the target.  
+Model Predictive Control (MPC) is an advanced temperature control method that offers an alternative to traditional PID control. MPC leverages a system model to simulate the temperature of the hotend and adjusts the heater power to align with the target temperature.  
 
-MPC operates as a forward-looking model, making compensations prior to actual temperature fluctuations. It uses a model of the hotend accounting for the thermal masses of the system, heater power, heat loss to ambient air and fans, heat transfer into filament. This model enables MPC to determine the quantity of heat energy that will be dissipated from the hotend over a specified duration and accounts for it by adjusting the heater power. MPC can accurately calculate the necessary heat energy input required to maintain a consistent temperature or to adjust to a new temperature.  
+Unlike reactive methods, MPC operates proactively, making adjustments in anticipation of temperature fluctuations. It utilizes a model of the hotend, taking into account factors such as the thermal masses of the system, heater power, heat loss to ambient air and fans, and heat transfer into the filament. This model allows MPC to predict the amount of heat energy that will be dissipated from the hotend over a given duration, and it compensates for this by adjusting the heater power accordingly. As a result, MPC can accurately calculate the necessary heat energy input to maintain a steady temperature or to transition to a new temperature.
 
-MPC has many advantages over PID control:  
-- Faster response and better response to temperature  
-- Single calibration is function over a wide range of print temperatures  
-- Easier to calibrate  
-- Works with all hotend sensor types including noisy temperature sensors  
-- Works equally well with standard cartridge and PTC heater types
-- MPC work equally well for hotends and beds
-- Equally functional for high and low flow hotends     
+MPC offers several advantages over PID control:
+- **Faster and more responsive temperature control:** MPC’s proactive approach allows it to respond more quickly and accurately to changes in temperature. 
+- **Broad functionality with single calibration:** Once calibrated, MPC functions effectively across a wide range of print temperatures.  
+- **Simplified calibration process:** MPC is easier to calibrate compared to traditional PID control. 
+- **Compatibility with all hotend sensor types:** MPC works with all types of hotend sensors, including those that produce noisy temperature readings
+- **Versatility with heater types:** MPC performs equally well with standard cartridge heaters and PTC heaters.
+- **Applicable to both hotends and beds:** MPC can be used to control the temperature of both hotends and beds.
+- **Effective for high and low flow hotends:** Regardless of the flow rate of the hotend, MPC maintains effective temperature control.     
 
 > [!CAUTION]
-> This feature controls the portions of the 3D printer that can get very hot. All standard DangerKlipper warnings apply. Please report all issues and bugs to github or discord.
+> This feature controls the portions of the 3D printer that can get very hot. All standard Danger Klipper warnings apply. Please report all issues and bugs to github or discord.
 
 # Installation
 
-##Installation Outline
-- Install DangerKlipper
-- Change DK to MPC feature branch and restart klipper
-- Setup [extruder], [heater_bed], and SAVE_CONFIG block as required.
+## Installation Outline
+- Install Danger Klipper (DK)
+- Change DK to MPC feature branch and restart klipper service
+- Setup [extruder], [heater_bed], and SAVE_CONFIG block
 - Restart firmware to enable mpc control
-- Calibrate extruder and heater_bed MPC
-- SAVE_CONFIG command to commit MPC calibration parameters printer.cfg
+- MPC Calibrate extruder and/or heater_bed
+- Commit MPC calibration parameters to printer.cfg using SAVE_CONFIG command
 
 
-## Install DangerKlipper
-ADD: Link to DangerKlipper Page
+## Install Danger Klipper
+Follow the **Switch to Danger Klipper** instrucions on [https://github.com/DangerKlippers/danger-klipper]
 
 ## Switching Branches
-After installing DangerKlipper you can switch to the MPC feature branch by issuing the following console commands:
+After installing Danger Klipper you can switch to the MPC feature branch by issuing the following console commands:
 
 ```
 cd ~
@@ -78,10 +78,10 @@ These should only be set under [extruder] and are not valid for [heater_bed].
 filament_diameter: 1.75
   # default=1.75 (mm) 
 filament_density: 1.1
-  # An initial setting of 1.1 (g/mm^2) should work well for most filaments.
+  # An initial setting of 1.1 (g/mm^2) could be a good starting point for tuning.
   # The Default, if not specified, is 0.0 
 filament_heat_capacity: 1.3
-  # A initial setting of 1.3 (J/g/K) should work well for most filaments.
+  # A initial setting of 1.3 (J/g/K) could be a good starting point for tuning.
   # The Default, if not specified, is 0.0
 ```
 
@@ -116,7 +116,7 @@ cooling_fan: fan
 ```
 
 ## Example SAVE_CONFIG block
-In preperation for a **SAVE_CONFIG** command after calibration the previous extruder or heater_bed parameters should be removed or commented out. If *control: pid_v* is present in the save config block there will be a conflict error when committing the changes. A save config block ready for MPC calibartion looks like this:
+In preperation for a **SAVE_CONFIG** command after calibration the previous extruder or heater_bed parameters, such as PID details, should be removed or commented out. If **control: pid_v** is present in the save config block there will be a conflict error when committing the changes. A save config block ready for MPC calibration looks like this:
 
 ```
 #*# <---------------------- SAVE_CONFIG ---------------------->
@@ -136,7 +136,7 @@ The MPC default calibration routine takes the following steps:
 - Move to the center and close to bed so that tuning is done close to a surface to best emulate the conditions while printing.
 - Cool to ambient: The calibration routine needs to know the approximate ambient temperature. It switches the part cooling fan on and waits until the hotend temperature stops decreasing relative to ambient.
 - Heat past 200°C: Measure the point where the temperature is increasing most rapidly, and the time and temperature at that point. Also, three temperature measurements are needed at some point after the initial latency has taken effect. The tuning algorithm heats the hotend to over 200°C.
-- Hold temperature while measuring ambient heat-loss: At this point enough is known for the MPC algorithm to engage. The calibration routine makes a best guess at the overshoot past 200°C which will occur and targets this temperature for about a minute while ambient heat-loss is measured without (and optionally with) the fan.  (*Q* does klipper MPC use the fan??)
+- Hold temperature while measuring ambient heat-loss: At this point enough is known for the MPC algorithm to engage. The calibration routine makes a best guess at the overshoot past 200°C which will occur and targets this temperature for about a minute while ambient heat-loss is measured without (and optionally with) the fan.
 - MPC calibration routine creates the appropriate model constants and saves them for use. At this time the model parameters are temporate and not yet saved to the printer configuration via SAVE_CONFIG.  
 
 ## Hotend or Bed Calibration
@@ -168,7 +168,7 @@ For example default calibration of the bed would be.
 MPC_CALIBRATE HEATER=heater_bed TARGET=100  
 ```
 
-After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future refernce.  
+After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future reference.  
 ![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
 
 A **SAVE_CONFIG** command is then required to commit these calibrated parameters to the printer config. The save config block should then look similar to the below: 
@@ -218,7 +218,7 @@ MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filam
 
 - Specific heat is not a typical value provided by any filament manufactures so we rely on typical polymer raw material values.  
 - Filled filaments or polymer alloys will have different values for density and specific heat.
-- Close enough is good enough for MPC.
+- Tuning this parameter will improve the MPC model.
 
 ```
         Density [g/cm³]     Specifc heat [J/g/K]
