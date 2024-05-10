@@ -17,6 +17,20 @@ MPC has many advantages over PID control:
 > This feature controls the portions of the 3D printer that can get very hot. All standard DangerKlipper warnings apply. Please report all issues and bugs to github or discord.
 
 # Installation
+
+##Installation Outline
+- Install DangerKlipper
+- Change DK to MPC feature branch and restart klipper
+- Setup [extruder], [heater_bed], and SAVE_CONFIG block as required.
+- Restart firmware to enable mpc control
+- Calibrate extruder and heater_bed MPC
+- SAVE_CONFIG command to commit MPC calibration parameters printer.cfg
+
+
+## Install DangerKlipper
+ADD: Link to DangerKlipper Page
+
+## Switching Branches
 After installing DangerKlipper you can switch to the MPC feature branch by issuing the following console commands:
 
 ```
@@ -101,6 +115,7 @@ heater_power: 500
 cooling_fan: fan
 ```
 
+## Example SAVE_CONFIG block
 In preperation for a **SAVE_CONFIG** command after calibration the previous extruder or heater_bed parameters should be removed or commented out. If *control: pid_v* is present in the save config block there will be a conflict error when committing the changes. A save config block ready for MPC calibartion looks like this:
 
 ```
@@ -114,6 +129,7 @@ In preperation for a **SAVE_CONFIG** command after calibration the previous extr
 #*# control = mpc
 ```
 
+Restart Firmware to enable MPC and proceed to calibratrion.
 
 # Calibration
 The MPC default calibration routine takes the following steps:
