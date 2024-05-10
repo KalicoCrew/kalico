@@ -100,6 +100,19 @@ heater_power: 500
 cooling_fan: fan
 ```
 
+In preperation for a SAVE_CONFIG command after calibration the previous extruder or heater_bed parameters should be removed or commented out. If " control: pid_v " is present in the save_config block there will be a conflict error when committing the changes.
+```
+#*# <---------------------- SAVE_CONFIG ---------------------->
+#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
+#*#
+#*# [heater_bed]
+#*# control: mpc
+#*#
+#*# [extruder]
+#*# control: mpc
+```
+
+
 # Calibration
 The MPC default calibration routine takes the following steps:
 - Move to the center and close to bed so that tuning is done close to a surface to best emulate the conditions while printing.
