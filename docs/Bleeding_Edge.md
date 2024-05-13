@@ -289,7 +289,27 @@ gcode:
     {% if flow_percent > 0 %}
     M221 S{flow_percent}
     {% endif %}
-    TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START=0 FACTOR=.005
+    {% if  vars.pa_value == 0 %}
+        TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START=0 FACTOR=.005
+    {% endif %}
+        {% set height = printer.configfile.settings.pa_test.height %}  
+        {% set pavalue = vars.pa_value %}
+        ; If pa_value is 0 then we test the full vars.pa_range starting from 0
+        {% if  vars.pa_value == 0 %} 
+            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START=0 FACTOR=.005
+        {% else %}
+        ; make sure that delta and start can not be lower then 0
+        {% if vars.pa_value - vars.pa_range <= 0%} 
+           {% set delta = vars.pa_range %}
+           {% set start = 0 %}
+        {% else %}
+            ; Calculate the pa vars.pa_range that we want to test
+            {% set delta = (vars.pa_value + vars.pa_range)  - (vars.pa_value - vars.pa_range)  %} 
+            ; calculat the pa start vars.pa_range
+            {% set start = vars.pa_value - vars.pa_range %} 
+        {% endif %}
+        TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START={start} FACTOR={delta / height}
+    {% endif %}
     ; PRINT_PA_TOWER must be the last command in the start_pa_test script:
     ; it starts a print and then immediately returns without waiting for the print to finish
     PRINT_PA_TOWER {vars.rawparams} FINAL_GCODE_ID=end_pa_test
@@ -310,6 +330,8 @@ gcode:
 [gcode_macro RUN_PA_TEST]
 variable_bed_temp: -1
 variable_hotend_temp: -1
+variable_pa_value: 0             # Used for further tuning of pa value. If value is not 0 then the tested pa value will only be +/- (determined by the start_pa_test.range variable) around of the pavalue variable
+variable_pa_range: 0.01          # Only use if pa_value is set to heigher then 0. Used to set the +/- area around pa_value that should be tested
 variable_flow_rate: -1
 variable_rawparams: ''
 gcode:
@@ -322,6 +344,8 @@ gcode:
     {% endif %}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=bed_temp VALUE={params.BED_TEMP|default(60)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=hotend_temp VALUE={params.TARGET_TEMP}
+    SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=pa_value VALUE={params.PA_VALUE|default(0)}
+    SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=pa_range VALUE={params.PA_RANGE|default(0.01)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=flow_rate VALUE={params.FLOW_RATE|default(-1)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=rawparams VALUE="'{rawparams}'"
     SAVE_GCODE_STATE NAME=PA_TEST_STATE
