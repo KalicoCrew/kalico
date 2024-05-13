@@ -21,7 +21,7 @@ MPC offers several advantages over PID control:
 
 ## Installation Outline
 
-- Install Danger Klipper (DK)
+- Take a deep breath and install Danger Klipper (DK). It's really not *that* dangerous.
 - Change DK to MPC feature branch and restart klipper service
 - Setup [extruder], [heater_bed], and SAVE_CONFIG block
 - Restart firmware to enable MPC control
@@ -58,18 +58,21 @@ Currently only [extruder] and [heater_bed] heater types are supported.
 [extruder] OR [heater_bed]
 heater_power:
 #   Advertised cartridge heater power in watts. 
-#   Note that for a PTC, a non-linear heater, MPC is not guarenteed to 
-#   work.
-#   Setting this value to the heater power at the expected print 
-#   temperature, for a PTC type heater is a good initial value to 
-#   start tuning.
+#   Note that for a PTC, a non-linear heater, MPC may not work
+#   optimally due to the change in power output relative to temperature
+#   for this style of heater. Setting this value to the heater power
+#   at the expected print temperature, for a PTC type heater is a
+#   good initial value to start tuning.
 #   If a max_power parameter is set for the heater ensure that
 #   heater_power reflects this e.g. max_power=0.8 for a 100w cartidge
 #   heater then heater_power should be 80 (0.8 * 100).
 cooling_fan: fan 
 #   This is the fan that is cooling extruded filament and the hotend.
-#   cooling_fan is currently not supported for [heater_bed].
+#   cooling_fan is supported for [heater_bed] but accurate performance has
+#   not been verifed.
 #   Specifying "fan" will automatically use the part cooling fan.
+#   Bed fans could be used for the [heater_bed]
+#   by specifying <fan_generic BedFans> for example.
 #ambient_temp_sensor: <temperature_sensor sensor_name>
 #   Optional. If this is not given MPC will estimate this parameter 
 #   (reccomended).
@@ -108,7 +111,7 @@ These can be tuned but should not need changing from the default values.
 #smoothing: 0.25
 #   (sec)
 #   This parameter affects how quickly the model learns. 
-#   Higher value will make it learn faster. 
+#   Higher value will make it learn faster.
 #min_ambient_change: 1.0
 #   (deg C)
 #   Larger values of MIN_AMBIENT_CHANGE will result in faster 
