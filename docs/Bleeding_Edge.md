@@ -331,7 +331,7 @@ gcode:
 variable_bed_temp: -1
 variable_hotend_temp: -1
 variable_pa_value: 0             # Used for further tuning of pa value. If value is not 0 then the tested pa value will only be +/- (determined by the start_pa_test.range variable) around of the pavalue variable
-variable_pa_range: 0.01          # Only use if pa_value is set to heigher then 0. Used to set the +/- area around pa_value that should be tested
+variable_pa_range: 0.03          # Only use if pa_value is set to heigher then 0. Used to set the +/- area around pa_value that should be tested
 variable_flow_rate: -1
 variable_rawparams: ''
 gcode:
