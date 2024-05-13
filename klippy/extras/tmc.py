@@ -761,7 +761,7 @@ def TMCtstepHelper(mcu_tmc, velocity, pstepper=None, config=None):
 
 
 # Helper to configure stealthChop-spreadCycle transition velocity
-def TMCStealthchopHelper(config, mcu_tmc, tmc_freq):
+def TMCStealthchopHelper(config, mcu_tmc):
     fields = mcu_tmc.get_fields()
     en_pwm_mode = False
     velocity = config.getfloat("stealthchop_threshold", None, minval=0.0)
