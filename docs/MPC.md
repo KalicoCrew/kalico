@@ -57,15 +57,11 @@ Currently only [extruder] and [heater_bed] heater types are supported.
 ```
 [extruder] OR [heater_bed]
 heater_power:
-#   Advertised cartridge heater power in watts. 
+#   Nameplate heater power in watts. 
 #   Note that for a PTC, a non-linear heater, MPC may not work
 #   optimally due to the change in power output relative to temperature
-#   for this style of heater. Setting this value to the heater power
-#   at the expected print temperature, for a PTC type heater is a
-#   good initial value to start tuning.
-#   If a max_power parameter is set for the heater ensure that
-#   heater_power reflects this e.g. max_power=0.8 for a 100w cartidge
-#   heater then heater_power should be 80 (0.8 * 100).
+#   for this style of heater. Setting heater_power to the power
+#   output at the expected printing temperature is reccomended.
 cooling_fan: fan 
 #   This is the fan that is cooling extruded filament and the hotend.
 #   cooling_fan is supported for [heater_bed] but accurate performance has
