@@ -233,6 +233,8 @@ class MCU_TMC_uart_bitbang:
             self.analog_mux.activate(instance_id)
         msg = self._encode_write(0xF5, addr, reg | 0x80, val)
         self.tmcuart_send_cmd.send([self.oid, msg, 0], minclock=minclock)
+    def get_mcu(self):
+        return self.mcu
 
 
 # Lookup a (possibly shared) tmc uart
@@ -323,3 +325,5 @@ class MCU_TMC_uart:
 
     def get_tmc_frequency(self):
         return self.tmc_frequency
+    def get_mcu(self):
+        return self.mcu_uart.get_mcu()

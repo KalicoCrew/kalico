@@ -252,6 +252,8 @@ class MCU_TMC2660_SPI:
 
     def get_tmc_frequency(self):
         return None
+    def get_mcu(self):
+        return self.spi.get_mcu()
 
 
 ######################################################################

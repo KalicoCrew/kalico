@@ -338,6 +338,8 @@ class MCU_TMC_SPI_chain:
             * 5
         ]
         return (pr[1] << 24) | (pr[2] << 16) | (pr[3] << 8) | pr[4]
+    def get_mcu(self):
+        return self.spi.get_mcu()
 
 
 # Helper to setup an spi daisy chain bus from settings in a config section
@@ -409,6 +411,8 @@ class MCU_TMC_SPI:
 
     def get_tmc_frequency(self):
         return self.tmc_frequency
+    def get_mcu(self):
+        return self.tmc_spi.get_mcu()
 
 
 ######################################################################
