@@ -843,7 +843,7 @@ class MCU:
         if (
             msg.startswith("ADC out of range")
             or msg.startswith("Thermocouple reader fault")
-        ) and not get_danger_options.adc_ignore_limits:
+        ) and not get_danger_options().adc_ignore_limits:
             pheaters = self._printer.lookup_object("heaters")
             heaters = [
                 pheaters.lookup_heater(n) for n in pheaters.available_heaters
