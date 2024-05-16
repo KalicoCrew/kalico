@@ -475,7 +475,7 @@ class DockableProbe:
         return_pos = self.toolhead.get_position()
         self.detach_probe(return_pos)
 
-    def attach_probe(self, return_pos=None):
+    def attach_probe(self, return_pos=None, always_restore_toolhead=False):
         self._lower_probe()
 
         retry = 0
@@ -504,7 +504,7 @@ class DockableProbe:
         if self.get_probe_state() != PROBE_ATTACHED:
             raise self.printer.command_error("Probe attach failed!")
 
-        if return_pos and self.restore_toolhead:
+        if return_pos and (self.restore_toolhead or always_restore_toolhead):
             if not self._check_distance(return_pos, self.approach_distance):
                 self.toolhead.manual_move(
                     [return_pos[0], return_pos[1], None], self.travel_speed
@@ -553,7 +553,7 @@ class DockableProbe:
         if self.auto_attach_detach:
             self.detach_probe(return_pos)
 
-    def auto_attach_probe(self, return_pos=None):
+    def auto_attach_probe(self, return_pos=None, always_restore_toolhead=False):
         if self.get_probe_state() == PROBE_ATTACHED:
             return
         if not self.auto_attach_detach:
@@ -561,7 +561,7 @@ class DockableProbe:
                 "Cannot probe, probe is not "
                 "attached and auto-attach is disabled"
             )
-        self.attach_probe(return_pos)
+        self.attach_probe(return_pos, always_restore_toolhead)
 
     #######################################################################
     # Functions for calculating points and moving the toolhead
@@ -690,7 +690,7 @@ class DockableProbe:
                 "Toolhead moved during probe activate_gcode script"
             )
 
-    def multi_probe_begin(self):
+    def multi_probe_begin(self, always_restore_toolhead=False):
         self.multi = MULTI_FIRST
 
         # Attach probe before moving to the first probe point and
@@ -700,11 +700,7 @@ class DockableProbe:
         # If the toolhead is not returned to the current position it
         # will complete the probing next to the dock.
         return_pos = self.toolhead.get_position()
-        self.auto_attach_probe(return_pos)
-        if not self.restore_toolhead:
-            self.toolhead.manual_move(
-                [return_pos[0], return_pos[1], None], self.travel_speed
-            )
+        self.auto_attach_probe(return_pos, always_restore_toolhead)
 
     def multi_probe_end(self):
         self.multi = MULTI_OFF
