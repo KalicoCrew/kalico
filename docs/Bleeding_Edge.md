@@ -287,25 +287,22 @@ gcode:
     # M109 S{vars.hotend_temp}
     {% set flow_percent = vars.flow_rate|float * 100.0 %}
     {% if flow_percent > 0 %}
-    M221 S{flow_percent}
+        M221 S{flow_percent}
     {% endif %}
-    {% if  vars.pa_value == 0 %}
+    {% set height = printer.configfile.settings.pa_test.height %}  
+    {% set pavalue = vars.pa_value %}
+    ; If pa_value is 0 then we test the full pa range starting from 0
+    {% if  vars.pa_value == 0 %} 
         TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START=0 FACTOR=.005
-    {% endif %}
-        {% set height = printer.configfile.settings.pa_test.height %}  
-        {% set pavalue = vars.pa_value %}
-        ; If pa_value is 0 then we test the full vars.pa_range starting from 0
-        {% if  vars.pa_value == 0 %} 
-            TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START=0 FACTOR=.005
-        {% else %}
+    {% else %}
         ; make sure that delta and start can not be lower then 0
         {% if vars.pa_value - vars.pa_range <= 0%} 
-           {% set delta = vars.pa_range %}
-           {% set start = 0 %}
+            {% set delta = vars.pa_range %}
+            {% set start = 0 %}
         {% else %}
-            ; Calculate the pa vars.pa_range that we want to test
+            ; calculate the pa range that we want to test
             {% set delta = (vars.pa_value + vars.pa_range)  - (vars.pa_value - vars.pa_range)  %} 
-            ; calculat the pa start vars.pa_range
+            ; calculate the pa start value
             {% set start = vars.pa_value - vars.pa_range %} 
         {% endif %}
         TUNING_TOWER COMMAND=SET_PRESSURE_ADVANCE PARAMETER=ADVANCE START={start} FACTOR={delta / height}
@@ -330,8 +327,8 @@ gcode:
 [gcode_macro RUN_PA_TEST]
 variable_bed_temp: -1
 variable_hotend_temp: -1
-variable_pa_value: 0             # Used for further tuning of pa value. If value is not 0 then the tested pa value will only be +/- (determined by the start_pa_test.range variable) around of the pavalue variable
-variable_pa_range: 0.03          # Only use if pa_value is set to heigher then 0. Used to set the +/- area around pa_value that should be tested
+variable_pa_value: 0             # Used for further tuning of pa value. If value is not 0 than the tested pa value will only be +/- (determined by the pa_range variable) around of the pa_value variable
+variable_pa_range: 0.03          # Only use if pa_value is set to heigher than 0. Used to set the +/- area around pa_value that should be tested
 variable_flow_rate: -1
 variable_rawparams: ''
 gcode:
