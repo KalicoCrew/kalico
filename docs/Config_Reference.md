@@ -84,22 +84,6 @@ A collection of DangerKlipper-specific system options
 #   If an unused config option or section should cause an error
 #   if False, will warn but allow klipper to still run.
 #   The default is True.
-#log_statistics: True
-#   If statistics should be logged
-#   (helpful for keeping the log clean during development)
-#   The default is True.
-#log_config_file_at_startup: True
-#   If the config file should be logged at startup
-#   The default is True.
-#log_bed_mesh_at_startup: True
-#   If the bed mesh should be logged on startup
-#   (helpful for keeping the log clean during development)
-#   The default is True.
-#log_shutdown_info: True
-#   If we should log detailed crash info when an exception occurs
-#   Most of it is overly-verbose and fluff and we still get a stack trace
-#   for normal exceptions, so setting to False can help save time while developing
-#   The default is True.
 #allow_plugin_override: False
 #   Allows modules in `plugins` to override modules of the same name in `extras`
 #   The default is False.
@@ -110,11 +94,11 @@ A collection of DangerKlipper-specific system options
 #   Tolerance (in mm) for distance moved in the second homing. Ensures the
 #   second homing distance closely matches the `min_home_dist` when using
 #   sensorless homing. The default is 0.5mm.
-#adc_ignore_limits: False
+#temp_ignore_limits: False
 #   When set to true, this parameter ignores the min_value and max_value
-#   limits for ADC temperature sensors. It prevents shutdowns due to
-#   'ADC out of range' errors by allowing readings outside the specified
-#   range without triggering a shutdown. Default is False.
+#   limits for temperature sensors. It prevents shutdowns due to
+#   'ADC out of range' and similar errors by allowing readings outside the
+#   specified range without triggering a shutdown. The default is False.
 #autosave_includes: False
 #   When set to true, SAVE_CONFIG will recursively read [include ...] blocks
 #   for conflicts to autosave data. Any configurations updated will be backed
@@ -123,6 +107,30 @@ A collection of DangerKlipper-specific system options
 #   This allows to set extra flush time (in seconds). Under certain conditions,
 #   a low value will result in an error if message is not get flushed, a high value
 #   (0.250) will result in homing/probing latency. The default is 0.250
+
+# Logging options
+
+#minimal_logging: False
+#   Set all log parameters log options to False. The default is False.
+#log_statistics: True
+#   If statistics should be logged
+#   (helpful for keeping the log clean during development)
+#   The default is True.
+#log_config_file_at_startup: True
+#   If the config file should be logged at startup
+#   The default is True.
+#log_bed_mesh_at_startup: True
+#   If the bed mesh should be logged at startup
+#   (helpful for keeping the log clean during development)
+#   The default is True.
+#log_shutdown_info: True
+#   If we should log detailed crash info when an exception occurs
+#   Most of it is overly-verbose and fluff and we still get a stack trace
+#   for normal exceptions, so setting to False can help save time while developing
+#   The default is True.
+#log_serial_reader_warnings: True
+#log_startup_info: True
+#log_webhook_method_register_messages: False
 ```
 
 ## Common kinematic settings
@@ -2237,7 +2245,7 @@ detach_position: 0,0,0
 #   the Z axis is not already homed the head is lifted by `z_hop`.
 #   The default is to not implement Z hop.
 #restore_toolhead: True
-#   While True, the position of the toolhead is restored to the position prior 
+#   While True, the position of the toolhead is restored to the position prior
 #   to the attach/detach movements.
 #   The default value is True.
 #dock_retries:
@@ -2911,9 +2919,9 @@ sensor_pin:
 #   name in the above list.
 ```
 
-### BMP180/BMP280/BME280/BME680 temperature sensor
+### BMP180/BMP280/BME280/BMP388/BME680 temperature sensor
 
-BMP180/BMP280/BME280/BME680 two wire interface (I2C) environmental sensors.
+BMP180/BMP280/BME280/BMP388/BME680 two wire interface (I2C) environmental sensors.
 Note that these sensors are not intended for use with extruders and
 heater beds, but rather for monitoring ambient temperature (C),
 pressure (hPa), relative humidity and in case of the BME680 gas level.
@@ -2924,8 +2932,8 @@ temperature.
 ```
 sensor_type: BME280
 #i2c_address:
-#   Default is 118 (0x76). The BMP180 and some BME280 sensors have an address of 119
-#   (0x77).
+#   Default is 118 (0x76). The BMP180, BMP388 and some BME280 sensors
+#   have an address of 119 (0x77).
 #i2c_mcu:
 #i2c_bus:
 #i2c_software_scl_pin:

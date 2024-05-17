@@ -5,6 +5,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+from extras.danger_options import get_danger_options
+
 REPORT_TIME = 0.300
 
 
@@ -75,7 +77,9 @@ class PrinterSensorCombined:
             values.append(sensor_temperature)
 
         # check if values are out of max_deviation range
-        if (max(values) - min(values)) > self.max_deviation:
+        if (
+            max(values) - min(values)
+        ) > self.max_deviation and not get_danger_options().temp_ignore_limits:
             self.printer.invoke_shutdown(
                 "COMBINED SENSOR maximum deviation exceeded limit of %0.1f, "
                 "max sensor value %0.1f, min sensor value %0.1f."

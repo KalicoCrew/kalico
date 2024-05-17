@@ -843,13 +843,13 @@ class MCU:
         if (
             msg.startswith("ADC out of range")
             or msg.startswith("Thermocouple reader fault")
-        ) and not get_danger_options.adc_ignore_limits:
+        ) and not get_danger_options().temp_ignore_limits:
             pheaters = self._printer.lookup_object("heaters")
             heaters = [
                 pheaters.lookup_heater(n) for n in pheaters.available_heaters
             ]
             for heater in heaters:
-                if heater.is_adc_faulty():
+                if hasattr(heater, "is_adc_faulty") and heater.is_adc_faulty():
                     append_msgs.append(
                         {
                             "heater": heater.name,
@@ -868,7 +868,7 @@ class MCU:
             ]
             for sensor_name in sensor_names:
                 sensor = self._printer.lookup_object(sensor_name)
-                if sensor.is_adc_faulty():
+                if hasattr(sensor, "is_adc_faulty") and sensor.is_adc_faulty():
                     append_msgs.append(
                         {
                             sensor_name.split(" ")[0]: sensor.name,
