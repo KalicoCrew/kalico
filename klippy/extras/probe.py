@@ -421,7 +421,7 @@ class ProbeEndstopWrapper:
         self.deactivate_gcode.run_gcode_from_command()
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
-                "Toolhead moved during probe activate_gcode script"
+                "Toolhead moved during probe deactivate_gcode script"
             )
 
     def _lower_probe(self):
@@ -430,7 +430,7 @@ class ProbeEndstopWrapper:
         self.activate_gcode.run_gcode_from_command()
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
-                "Toolhead moved during probe deactivate_gcode script"
+                "Toolhead moved during probe activate_gcode script"
             )
 
     def multi_probe_begin(self):
