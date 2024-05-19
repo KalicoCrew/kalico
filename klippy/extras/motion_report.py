@@ -17,7 +17,7 @@ class DumpStepper:
         self.batch_bulk = bulk_sensor.BatchBulkHelper(
             printer, self._process_batch
         )
-        api_resp = {"header": ("interval", "count", "add")}
+        api_resp = {"header": ("interval", "count", "add", "add2", "shift")}
         self.batch_bulk.add_mux_endpoint(
             "motion_report/dump_stepper",
             "name",
@@ -53,7 +53,7 @@ class DumpStepper:
         )
         for i, s in enumerate(data):
             out.append(
-                "queue_step %d: t=%d p=%d i=%d c=%d a=%d"
+                "queue_step %d: t=%d p=%d i=%d c=%d a=%d a2=%d s=%d"
                 % (
                     i,
                     s.first_clock,
@@ -61,6 +61,8 @@ class DumpStepper:
                     s.interval,
                     s.step_count,
                     s.add,
+                    s.add2,
+                    s.shift,
                 )
             )
         logging.info("\n".join(out))
@@ -78,7 +80,7 @@ class DumpStepper:
         mcu_pos = first.start_position
         start_position = self.mcu_stepper.mcu_to_commanded_position(mcu_pos)
         step_dist = self.mcu_stepper.get_step_dist()
-        d = [(s.interval, s.step_count, s.add) for s in data]
+        d = [(s.interval, s.step_count, s.add, s.add2, s.shift) for s in data]
         return {
             "data": d,
             "start_position": start_position,
@@ -89,9 +91,6 @@ class DumpStepper:
             "last_clock": last_clock,
             "last_step_time": last_time,
         }
-
-
-NEVER_TIME = 9999999999999999.0
 
 
 # Extract trapezoidal motion queue (trapq)
