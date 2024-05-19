@@ -262,6 +262,7 @@ class PATest:
             last_z = first_layer_height
             z = first_layer_height + layer_height
             x_switching_pos = size_x / 3.0
+            fast_notch_size = size_y - 2.0 * SLOW_NOTCH_SIZE
             while z < height - 0.00000001:
                 line_width = nozzle
                 perimeter_x_offset = 0.5 * inner_size_x
@@ -361,21 +362,28 @@ class PATest:
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
-                        origin_y - 0.5 * SLOW_NOTCH_SIZE,
-                        (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
-                        fast_velocity * 60.0,
-                    )
-                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
-                        origin_x + perimeter_x_offset,
-                        origin_y + 0.5 * SLOW_NOTCH_SIZE,
-                        SLOW_NOTCH_SIZE * extr_r,
+                        origin_y - 0.5 * fast_notch_size,
+                        (perimeter_y_offset - 0.5 * fast_notch_size) * extr_r,
                         medium_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
-                        origin_y + perimeter_y_offset,
-                        (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
+                        origin_y,
+                        0.5 * fast_notch_size * extr_r,
                         fast_velocity * 60.0,
+                    )
+                    yield "G4 P0.001"
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x + perimeter_x_offset,
+                        origin_y + 0.5 * fast_notch_size,
+                        0.5 * fast_notch_size * extr_r,
+                        fast_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x + perimeter_x_offset,
+                        origin_y + perimeter_y_offset,
+                        (perimeter_y_offset - 0.5 * fast_notch_size) * extr_r,
+                        medium_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + x_switching_pos,
