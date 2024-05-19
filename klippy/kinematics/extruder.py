@@ -10,21 +10,18 @@ import stepper, chelper
 class PALinearModel:
     name = "linear"
 
-    def __init__(self, config=None, other=None):
-        self.pressure_advance = 0.0
+    def __init__(self, config=None):
         if config:
             self.pressure_advance = config.getfloat(
-                "pressure_advance", self.pressure_advance, minval=0.0
+                "pressure_advance", 0.0, minval=0.0
             )
-        elif other:
-            self.pressure_advance = other.pressure_advance
+        else:
+            self.pressure_advance = 0.0
 
-    def get_from_gcmd(self, gcmd):
-        new_model = PALinearModel(config=None, other=self)
-        new_model.pressure_advance = gcmd.get_float(
+    def update(self, gcmd):
+        self.pressure_advance = gcmd.get_float(
             "ADVANCE", self.pressure_advance, minval=0.0
         )
-        return new_model
 
     def enabled(self):
         return self.pressure_advance > 0.0
@@ -44,10 +41,7 @@ class PALinearModel:
 
 
 class PANonLinearModel:
-    def __init__(self, config=None, other=None):
-        self.linear_advance = 0.0
-        self.linear_offset = 0.0
-        self.linearization_velocity = 0.0
+    def __init__(self, config=None):
         if config:
             self.linear_advance = config.getfloat(
                 "linear_advance", 0.0, minval=0.0
@@ -63,28 +57,26 @@ class PANonLinearModel:
                 self.linearization_velocity = config.getfloat(
                     "linearization_velocity", 0.0, minval=0.0
                 )
-        elif other:
-            self.linear_advance = other.linear_advance
-            self.linear_offset = other.linear_offset
-            self.linearization_velocity = other.linearization_velocity
+        else:
+            self.linear_advance = 0.0
+            self.linear_offset = 0.0
+            self.linearization_velocity = 0.0
 
-    def get_from_gcmd(self, gcmd):
-        new_model = self.__class__(config=None, other=self)
-        new_model.linear_advance = gcmd.get_float(
+    def update(self, gcmd):
+        self.linear_advance = gcmd.get_float(
             "ADVANCE", self.linear_advance, minval=0.0
         )
-        new_model.linear_offset = gcmd.get_float(
+        self.linear_offset = gcmd.get_float(
             "OFFSET", self.linear_offset, minval=0.0
         )
-        new_model.linearization_velocity = gcmd.get_float(
+        self.linearization_velocity = gcmd.get_float(
             "VELOCITY", self.linearization_velocity
         )
-        if new_model.linear_offset and new_model.linearization_velocity <= 0.0:
+        if self.linear_offset and self.linearization_velocity <= 0.0:
             raise gcmd.error(
                 "VELOCITY must be set to a positive value "
                 "when OFFSET is non-zero"
             )
-        return new_model
 
     def enabled(self):
         return self.linear_advance > 0.0 or self.linear_offset > 0.0
@@ -124,8 +116,8 @@ class PANonLinearModel:
 class PATanhModel(PANonLinearModel):
     name = "tanh"
 
-    def __init__(self, config=None, other=None):
-        PANonLinearModel.__init__(self, config, other)
+    def __init__(self, config=None):
+        PANonLinearModel.__init__(self, config)
 
     def get_func(self):
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -135,8 +127,8 @@ class PATanhModel(PANonLinearModel):
 class PAReciprModel(PANonLinearModel):
     name = "recipr"
 
-    def __init__(self, config=None, other=None):
-        PANonLinearModel.__init__(self, config, other)
+    def __init__(self, config=None):
+        PANonLinearModel.__init__(self, config)
 
     def get_func(self):
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -156,12 +148,10 @@ class ExtruderStepper:
         self.pa_model = config.getchoice(
             "pressure_advance_model", self.pa_models, PALinearModel.name
         )(config)
-        self.pressure_advance_smooth_time = 0.0
-        self.pressure_advance_time_offset = 0.0
-        self.config_smooth_time = config.getfloat(
+        self.pressure_advance_smooth_time = config.getfloat(
             "pressure_advance_smooth_time", 0.040, above=0.0, maxval=0.200
         )
-        self.config_time_offset = config.getfloat(
+        self.pressure_advance_time_offset = config.getfloat(
             "pressure_advance_time_offset", 0.0, minval=-0.2, maxval=0.2
         )
         # Setup stepper
@@ -175,6 +165,7 @@ class ExtruderStepper:
             self.sk_extruder, self.pa_model.get_func()
         )
         self.motion_queue = None
+        self.extruder = None
         # Register commands
         self.printer.register_event_handler(
             "klippy:connect", self._handle_connect
@@ -211,10 +202,12 @@ class ExtruderStepper:
         )
 
     def _handle_connect(self):
-        toolhead = self.printer.lookup_object("toolhead")
-        toolhead.register_step_generator(self.stepper.generate_steps)
+        self.toolhead = self.printer.lookup_object("toolhead")
+        self.toolhead.register_step_generator(self.stepper.generate_steps)
         self._update_pressure_advance(
-            self.pa_model, self.config_smooth_time, self.config_time_offset
+            self.pa_model,
+            self.pressure_advance_smooth_time,
+            self.pressure_advance_time_offset,
         )
 
     def get_status(self, eventtime):
@@ -232,35 +225,26 @@ class ExtruderStepper:
         return self.stepper.mcu_to_commanded_position(mcu_pos)
 
     def sync_to_extruder(self, extruder_name):
-        toolhead = self.printer.lookup_object("toolhead")
-        toolhead.flush_step_generation()
+        self.toolhead.flush_step_generation()
         if not extruder_name:
-            self.stepper.set_trapq(None)
+            if self.extruder is not None:
+                self.extruder.unlink_extruder_stepper(self)
             self.motion_queue = None
+            self.extruder = None
             return
         extruder = self.printer.lookup_object(extruder_name, None)
         if extruder is None or not isinstance(extruder, PrinterExtruder):
             raise self.printer.command_error(
                 "'%s' is not a valid extruder." % (extruder_name,)
             )
-        self.stepper.set_position(extruder.last_position)
-        self.stepper.set_trapq(extruder.get_trapq())
+        extruder.link_extruder_stepper(self)
         self.motion_queue = extruder_name
+        self.extruder = extruder
 
     def _update_pressure_advance(self, pa_model, smooth_time, time_offset):
-        old_smooth_time = self.pressure_advance_smooth_time
-        if not self.pa_model.enabled():
-            old_smooth_time = 0.0
-        old_time_offset = self.pressure_advance_time_offset
-        new_smooth_time = smooth_time
-        if not pa_model.enabled():
-            new_smooth_time = 0.0
-        toolhead = self.printer.lookup_object("toolhead")
-        toolhead.note_step_generation_scan_time(
-            new_smooth_time * 0.5 + abs(time_offset),
-            old_delay=(old_smooth_time * 0.5 + abs(old_time_offset)),
-        )
+        self.toolhead.flush_step_generation()
         ffi_main, ffi_lib = chelper.get_ffi()
+        old_delay = ffi_lib.extruder_get_step_gen_window(self.sk_extruder)
         if self.pa_model.name != pa_model.name:
             pa_func = pa_model.get_func()
             ffi_lib.extruder_set_pressure_advance_model_func(
@@ -271,32 +255,49 @@ class ExtruderStepper:
             self.sk_extruder,
             len(pa_params),
             pa_params,
-            new_smooth_time,
+            smooth_time,
             time_offset,
         )
+        new_delay = ffi_lib.extruder_get_step_gen_window(self.sk_extruder)
+        if old_delay != new_delay:
+            self.toolhead.note_step_generation_scan_time(new_delay, old_delay)
         self.pa_model = pa_model
         self.pressure_advance_smooth_time = smooth_time
         self.pressure_advance_time_offset = time_offset
+
+    def update_input_shaping(self, shapers):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        old_delay = ffi_lib.extruder_get_step_gen_window(self.sk_extruder)
+        failed_shapers = []
+        for shaper in self.shapers:
+            if not shaper.update_extruder_kinematics(self.sk_extruder):
+                failed_shapers.append(shaper)
+        new_delay = ffi_lib.extruder_get_step_gen_window(self.sk_extruder)
+        if old_delay != new_delay:
+            self.toolhead.note_step_generation_scan_time(new_delay, old_delay)
+        return failed_shapers
 
     cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
 
     def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
         extruder = self.printer.lookup_object("toolhead").get_extruder()
-        if extruder.extruder_stepper is None:
+        extruder_steppers = extruder.get_extruder_steppers()
+        if not extruder_steppers:
             raise gcmd.error("Active extruder does not have a stepper")
-        strapq = extruder.extruder_stepper.stepper.get_trapq()
-        if strapq is not extruder.get_trapq():
-            raise gcmd.error("Unable to infer active extruder stepper")
-        extruder.extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
+        for extruder_stepper in extruder_steppers:
+            strapq = extruder_stepper.stepper.get_trapq()
+            if strapq is not extruder.get_trapq():
+                raise gcmd.error("Unable to infer active extruder stepper")
+            extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
 
     def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
         pa_model_name = gcmd.get("MODEL", self.pa_model.name)
         if pa_model_name not in self.pa_models:
             raise gcmd.error("Invalid MODEL='%s' choice" % (pa_model_name,))
+        pa_model = self.pa_model
         if pa_model_name != self.pa_model.name:
-            pa_model = self.pa_models[pa_model_name]().get_from_gcmd(gcmd)
-        else:
-            pa_model = self.pa_model.get_from_gcmd(gcmd)
+            pa_model = self.pa_models[pa_model_name]()
+        pa_model.update(gcmd)
         smooth_time = gcmd.get_float(
             "SMOOTH_TIME",
             self.pressure_advance_smooth_time,
@@ -407,14 +408,13 @@ class PrinterExtruder:
         )
 
         # Setup extruder stepper
-        self.extruder_stepper = None
+        self.extruder_steppers = []
         if (
             config.get("step_pin", None) is not None
             or config.get("dir_pin", None) is not None
             or config.get("rotation_distance", None) is not None
         ):
-            self.extruder_stepper = ExtruderStepper(config)
-            self.extruder_stepper.stepper.set_trapq(self.trapq)
+            self.link_extruder_stepper(ExtruderStepper(config))
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         if self.name == "extruder":
@@ -429,14 +429,28 @@ class PrinterExtruder:
             desc=self.cmd_ACTIVATE_EXTRUDER_help,
         )
 
+    def link_extruder_stepper(self, extruder_stepper):
+        if extruder_stepper not in self.extruder_steppers:
+            self.extruder_steppers.append(extruder_stepper)
+            extruder_stepper.stepper.set_position(self.last_position)
+            extruder_stepper.stepper.set_trapq(self.trapq)
+
+    def unlink_extruder_stepper(self, extruder_stepper):
+        if extruder_stepper in self.extruder_steppers:
+            self.extruder_steppers.remove(extruder_stepper)
+            extruder_stepper.stepper.set_trapq(None)
+
+    def get_extruder_steppers(self):
+        return self.extruder_steppers
+
     def update_move_time(self, flush_time, clear_history_time):
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
 
     def get_status(self, eventtime):
         sts = self.heater.get_status(eventtime)
         sts["can_extrude"] = self.heater.can_extrude
-        if self.extruder_stepper is not None:
-            sts.update(self.extruder_stepper.get_status(eventtime))
+        if self.extruder_steppers:
+            sts.update(self.extruder_steppers[0].get_status(eventtime))
         return sts
 
     def get_name(self):
@@ -529,9 +543,9 @@ class PrinterExtruder:
             self.last_position[i] += extr_d * extr_r[i]
 
     def find_past_position(self, print_time):
-        if self.extruder_stepper is None:
+        if not self.extruder_steppers:
             return 0.0
-        return self.extruder_stepper.find_past_position(print_time)
+        return self.extruder_steppers[0].find_past_position(print_time)
 
     def cmd_M104(self, gcmd, wait=False):
         # Set Extruder Temperature
@@ -587,6 +601,9 @@ class DummyExtruder:
 
     def get_name(self):
         return ""
+
+    def get_extruder_steppers(self):
+        return []
 
     def get_heater(self):
         raise self.printer.command_error("Extruder not configured")
