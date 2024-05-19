@@ -23,8 +23,9 @@ class RingingTest:
         self.notch = config.getfloat("notch", 1.0, above=0.0)
         self.notch_offset = config.getfloat("notch_offset", 0.0)
         self.velocity = config.getfloat("velocity", 80.0, above=0.0)
+        self.velocity_step = config.getfloat("velocity_step", 0.0)
         self.accel_start = config.getfloat("accel_start", 1500.0, above=0.0)
-        self.accel_step = config.getfloat("accel_step", 500.0, above=0.0)
+        self.accel_step = config.getfloat("accel_step", 500.0)
         self.center_x = config.getfloat("center_x", None)
         self.center_y = config.getfloat("center_y", None)
         self.layer_height = config.getfloat("layer_height", 0.2, above=0.0)
@@ -167,9 +168,10 @@ class RingingTest:
             above=2.0,
             maxval=0.5 * size,
         )
-        velocity = gcmd.get_float("VELOCITY", self.velocity, above=0.0)
+        velocity_start = gcmd.get_float("VELOCITY", self.velocity, above=0.0)
+        velocity_step = gcmd.get_float("VELOCITY_STEP", self.velocity_step)
         accel_start = gcmd.get_float("ACCEL_START", self.accel_start, above=0.0)
-        accel_step = gcmd.get_float("ACCEL_STEP", self.accel_step, above=0.0)
+        accel_step = gcmd.get_float("ACCEL_STEP", self.accel_step)
         brim_width = gcmd.get_float("BRIM_WIDTH", self.brim_width)
         min_brim_width = (notch_offset - notch) / (1.0 + 1.0 / TAN_TEST_ANGLE)
         brim_width = max(
@@ -188,7 +190,42 @@ class RingingTest:
         inner_brim_size = inner_size - 2.0 * min_brim_width
 
         recipr_cos = math.sqrt(1.0 + TAN_TEST_ANGLE**2)
-        max_velocity = velocity * recipr_cos
+
+        def get_top_velocity():
+            z = first_layer_height
+            top_velocity = velocity_start
+            while z < height - 0.00000001:
+                band_part = math.fmod(z, band) / band
+                notch_pos = notch_offset - notch / (1.0 - math.sqrt(0.75)) * (
+                    1.0 - math.sqrt(1.0 - (band_part - 0.5) ** 2)
+                )
+                max_accel = accel_start + accel_step * math.floor(z / band)
+                if max_accel < 0.1:
+                    msg = "All accelerations must be positive"
+                    logging.warning(msg)
+                    raise gcmd.error(msg)
+                velocity = velocity_start + velocity_step * math.floor(z / band)
+                if velocity < 0.1:
+                    msg = "All velocities must be positive"
+                    logging.warning(msg)
+                    raise gcmd.error(msg)
+                top_velocity = max(top_velocity, velocity)
+                v_y = velocity * TAN_TEST_ANGLE
+                t_y = v_y / max_accel
+                d_x = velocity * t_y
+                min_accel_dist_x = 0.5 * velocity**2 / max_accel * recipr_cos
+                accel_dist_x = notch_pos - d_x - 1.0 - 0.5 * (size - inner_size)
+                if accel_dist_x < min_accel_dist_x:
+                    msg = (
+                        "Too high velocity %.2f mm/sec for %.0f mm/sec^2"
+                        " acceleration" % (velocity, max_accel)
+                    )
+                    logging.warning(msg)
+                    raise gcmd.error(msg)
+                z += layer_height
+            return top_velocity
+
+        max_velocity = recipr_cos * get_top_velocity()
         if max_velocity > old_max_velocity:
             yield "SET_VELOCITY_LIMIT VELOCITY=%.3f" % (max_velocity,)
 
@@ -260,16 +297,13 @@ class RingingTest:
                     1.0 - math.sqrt(1.0 - (band_part - 0.5) ** 2)
                 )
                 max_accel = accel_start + accel_step * math.floor(z / band)
+                velocity = velocity_start + velocity_step * math.floor(z / band)
                 v_y = velocity * TAN_TEST_ANGLE
                 t_y = v_y / max_accel
                 d_y = 0.5 * v_y * t_y
                 d_x = velocity * t_y
                 notch_other_side = (notch_pos - d_x) * TAN_TEST_ANGLE + d_y
                 perimeter_offset = 0.5 * inner_size
-                yield "SET_VELOCITY_LIMIT ACCEL=%.3f ACCEL_TO_DECEL=%.3f" % (
-                    max_accel,
-                    0.5 * max_accel,
-                )
                 for i in range(perimeters):
                     # Move to the start of the perimeter
                     next_y_offset = (
@@ -299,6 +333,10 @@ class RingingTest:
                                 v * 60.0,
                             )
 
+                        yield (
+                            "SET_VELOCITY_LIMIT ACCEL=%.3f "
+                            "ACCEL_TO_DECEL=%.3f" % (max_accel, max_accel)
+                        )
                         # The extrusion flow of the lines at an agle is reduced
                         # by cos(angle) to maintain the correct spacing between
                         # the perimeters formed by those lines
@@ -312,7 +350,7 @@ class RingingTest:
                                 - 0.5 * size
                                 + perimeter_offset
                             ),
-                            max_velocity,
+                            recipr_cos * velocity,
                         )
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.6f"
@@ -322,7 +360,7 @@ class RingingTest:
                             notch_pos - d_x - 0.5 * size,
                             perimeter_offset - d_y,
                             1.0,
-                            max_velocity,
+                            recipr_cos * velocity,
                         )
                         old_x, old_y = d_x, d_y
                         for j in range(deceleration_points):
