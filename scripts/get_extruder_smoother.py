@@ -5,7 +5,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import optparse, importlib, math, os, sys
+import optparse, importlib, os, sys
 import numpy as np, matplotlib
 
 sys.path.append(

@@ -154,7 +154,7 @@ def get_extruder_smoother(
     try:
         np = importlib.import_module("numpy")
     except ImportError:
-        raise self.error(
+        raise Exception(
             "Failed to import `numpy` module, make sure it was "
             "installed via `~/klippy-env/bin/pip install` (refer to "
             "docs/Measuring_Resonances.md for more details)."

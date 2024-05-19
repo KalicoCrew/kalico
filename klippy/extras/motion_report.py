@@ -177,7 +177,7 @@ class DumpTrapQ:
 
     def _process_batch(self, eventtime):
         qtime = self.last_batch_msg[0] + min(self.last_batch_msg[1], 0.100)
-        data, cdata = self.extract_trapq(qtime, NEVER_TIME)
+        data, cdata = self.extract_trapq(qtime, NEVER_TIME)  # noqa: F821
         d = [
             (
                 m.print_time,
@@ -245,7 +245,7 @@ class PrinterMotionReport:
     # Shutdown handling
     def _dump_shutdown(self, eventtime):
         # Log stepper queue_steps on mcu that started shutdown (if any)
-        shutdown_time = NEVER_TIME
+        shutdown_time = NEVER_TIME  # noqa: F821
         for dstepper in self.steppers.values():
             mcu = dstepper.mcu_stepper.get_mcu()
             sc = mcu.get_shutdown_clock()
@@ -257,7 +257,7 @@ class PrinterMotionReport:
             end_clock = sc + clock_100ms
             data, cdata = dstepper.get_step_queue(start_clock, end_clock)
             dstepper.log_steps(data)
-        if shutdown_time >= NEVER_TIME:
+        if shutdown_time >= NEVER_TIME:  # noqa: F821
             return
         # Log trapqs around time of shutdown
         for dtrapq in self.trapqs.values():
