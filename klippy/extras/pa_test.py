@@ -12,7 +12,7 @@ MAX_YX_SIZE_RATIO = 0.8
 SLOW_NOTCH_SIZE = 10.0
 SEAM_GAP_RATIO = 0.10
 SEAM_EXTRA_WIPE_RATIO = 1.1
-VERY_SLOW_SEG = 0.01
+VERY_SLOW_SEG = 0.20
 
 
 class PATest:
@@ -308,19 +308,31 @@ class PATest:
                         origin_x - perimeter_x_offset,
                         origin_y + 0.5 * SLOW_NOTCH_SIZE,
                         (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
-                        fast_velocity * 60.0,
+                        medium_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x - perimeter_x_offset,
+                        origin_y + 0.5 * VERY_SLOW_SEG,
+                        0.5 * (SLOW_NOTCH_SIZE - VERY_SLOW_SEG) * extr_r,
+                        slow_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x - perimeter_x_offset,
+                        origin_y - 0.5 * VERY_SLOW_SEG,
+                        VERY_SLOW_SEG * extr_r,
+                        scv_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - perimeter_x_offset,
                         origin_y - 0.5 * SLOW_NOTCH_SIZE,
-                        SLOW_NOTCH_SIZE * extr_r,
+                        0.5 * (SLOW_NOTCH_SIZE - VERY_SLOW_SEG) * extr_r,
                         slow_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - perimeter_x_offset,
                         origin_y - perimeter_y_offset,
                         (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
-                        fast_velocity * 60.0,
+                        medium_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - x_switching_pos,
@@ -328,7 +340,7 @@ class PATest:
                         (perimeter_x_offset - x_switching_pos) * extr_r,
                         fast_velocity * 60.0,
                     )
-                    yield "G4 P0.001"
+                    yield "G4 P40"
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - 0.5 * SLOW_NOTCH_SIZE,
                         origin_y - perimeter_y_offset,
@@ -364,26 +376,26 @@ class PATest:
                         origin_x + perimeter_x_offset,
                         origin_y - 0.5 * fast_notch_size,
                         (perimeter_y_offset - 0.5 * fast_notch_size) * extr_r,
-                        medium_velocity * 60.0,
+                        fast_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
                         origin_y,
                         0.5 * fast_notch_size * extr_r,
-                        fast_velocity * 60.0,
+                        medium_velocity * 60.0,
                     )
-                    yield "G4 P0.001"
+                    yield "G4 P40"
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
                         origin_y + 0.5 * fast_notch_size,
                         0.5 * fast_notch_size * extr_r,
-                        fast_velocity * 60.0,
+                        medium_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
                         origin_y + perimeter_y_offset,
                         (perimeter_y_offset - 0.5 * fast_notch_size) * extr_r,
-                        medium_velocity * 60.0,
+                        fast_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + x_switching_pos,
