@@ -6,7 +6,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
 import chelper
-from . import shaper_defs
+from . import extruder_smoother, shaper_defs
 
 
 def parse_float_list(list_str):
@@ -229,13 +229,18 @@ class AxisInputShaper:
             )
         else:
             shaper_type = self.get_type()
-            extr_smoother_func = shaper_defs.EXTURDER_SMOOTHERS.get(
-                shaper_type, shaper_defs.EXTURDER_SMOOTHERS["default"]
+            status = self.params.get_status()
+            damping_ratio = float(
+                status.get("damping_ratio", shaper_defs.DEFAULT_DAMPING_RATIO)
             )
-            C_e, t_sm = extr_smoother_func(
-                self.T[-1] - self.T[0], normalize_coeffs=False
+
+            C_e, t_sm = extruder_smoother.get_extruder_smoother(
+                shaper_type,
+                self.T[-1] - self.T[0],
+                damping_ratio,
+                normalize_coeffs=False,
             )
-            smoother_offset = self.t_offs - 0.5 * (self.T[0] + self.T[-1])
+            smoother_offset = self.t_offs - 0.5 * t_sm
             success = (
                 ffi_lib.extruder_set_smoothing_params(
                     sk, axis, len(C_e), C_e, t_sm, smoother_offset
@@ -385,7 +390,7 @@ class AxisInputSmoother:
         self.saved_smooth_time = 0.0
 
     def get_name(self):
-        return "smoother_" + self.axis
+        return "smoother_" + self.get_axis()
 
     def get_type(self):
         return self.params.get_type()
@@ -437,11 +442,11 @@ class AxisInputSmoother:
             )
         else:
             smoother_type = self.get_type()
-            extr_smoother_func = shaper_defs.EXTURDER_SMOOTHERS.get(
-                smoother_type, shaper_defs.EXTURDER_SMOOTHERS["default"]
-            )
-            C_e, t_sm = extr_smoother_func(
-                self.smooth_time, normalize_coeffs=False
+            C_e, t_sm = extruder_smoother.get_extruder_smoother(
+                smoother_type,
+                self.smooth_time,
+                shaper_defs.DEFAULT_DAMPING_RATIO,
+                normalize_coeffs=False,
             )
             success = (
                 ffi_lib.extruder_set_smoothing_params(
@@ -452,7 +457,7 @@ class AxisInputSmoother:
         if not success:
             self.disable_shaping()
             ffi_lib.extruder_set_smoothing_params(
-                sk, axis, self.n, self.coeffs, self.smooth_time
+                sk, axis, self.n, self.coeffs, self.smooth_time, 0.0
             )
         return success
 
