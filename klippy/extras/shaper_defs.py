@@ -105,6 +105,12 @@ def get_3hump_ei_shaper(shaper_freq, damping_ratio):
     return (A, T)
 
 
+def get_shaper_offset(A, T):
+    if not A:
+        return 0.0
+    return sum([a * t for a, t in zip(A, T)]) / sum(A)
+
+
 def init_smoother(coeffs, smooth_time, normalize_coeffs):
     if not normalize_coeffs:
         return (list(reversed(coeffs)), smooth_time)
@@ -389,6 +395,24 @@ def get_extr_si_smoother(smooth_time, normalize_coeffs=True):
         1.5225295066412017,
     ]
     return init_smoother(coeffs, smooth_time, normalize_coeffs)
+
+
+def get_smoother_offset(C, t_sm, normalized=True):
+    int_t0 = int_t1 = 0.0
+    if normalized:
+        for i, c in enumerate(C):
+            if i & 1:
+                int_t1 += c * t_sm ** (i + 2) / (2 ** (i + 1) * (i + 2))
+            else:
+                int_t0 += c * t_sm ** (i + 1) / (2**i * (i + 1))
+    else:
+        for i, c in enumerate(C):
+            if i & 1:
+                int_t1 += c / (2 ** (i + 1) * (i + 2))
+            else:
+                int_t0 += c / (2**i * (i + 1))
+        int_t1 *= t_sm
+    return int_t1 / int_t0
 
 
 # min_freq for each shaper is chosen to have projected max_accel ~= 1500
