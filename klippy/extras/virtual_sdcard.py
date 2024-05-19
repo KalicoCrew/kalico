@@ -53,8 +53,8 @@ class VirtualSDGCodeProvider:
                 repr(data[readcount:]),
             )
 
-    def stats(self, eventtime):
-        return "sd_pos=%d" % (self.file_position,)
+    def get_stats(self, eventtime):
+        return True, "sd_pos=%d" % (self.file_position,)
 
     def get_status(self, eventtime):
         return {
@@ -275,7 +275,7 @@ class VirtualSD:
     def stats(self, eventtime):
         if self.work_timer is None:
             return False, ""
-        return True, self.gcode_provider.stats(eventtime)
+        return self.gcode_provider.get_stats(eventtime)
 
     def get_status(self, eventtime):
         sts = {"is_active": self.is_active()}
