@@ -6,9 +6,12 @@
 import logging, math
 
 FIRST_LAYER_WIDTH_MULTIPLIER = 1.2
-DEFAULT_X_SIZE = 100.0
-DEFAULT_Y_SIZE = 50.0
+DEFAULT_X_SIZE = 60.0
+DEFAULT_Y_SIZE = 40.0
 MAX_YX_SIZE_RATIO = 0.8
+SLOW_NOTCH_SIZE = 2.0
+SEAM_GAP_RATIO = 0.15
+SEAM_EXTRA_WIPE_RATIO = 1.1
 
 
 class PATest:
@@ -36,7 +39,7 @@ class PATest:
         )
         self.perimeters = config.getint("perimeters", 2, minval=1)
         self.brim_width = config.getfloat("brim_width", 10.0, minval=2.0)
-        self.slow_velocity = config.getfloat("slow_velocity", 20.0, above=0.0)
+        self.slow_velocity = config.getfloat("slow_velocity", 30.0, above=0.0)
         self.fast_velocity = config.getfloat(
             "fast_velocity", 80.0, above=self.slow_velocity
         )
@@ -137,6 +140,7 @@ class PATest:
                 "gcode_macro prior to calling PRINT_PA_TOWER)"
                 % (heater_status["target"], target_temp)
             )
+        toolhead_status = toolhead.get_status(systime)
 
         # Get tower params with overrides from the GCode command
         origin_x = gcmd.get_float("ORIGIN_X", self.origin_x)
@@ -151,6 +155,9 @@ class PATest:
         )
         fast_velocity = gcmd.get_float(
             "FAST_VELOCITY", self.fast_velocity, above=slow_velocity
+        )
+        scv_velocity = gcmd.get_float(
+            "SCV_VELOCITY", toolhead_status["square_corner_velocity"], above=0.0
         )
         filament_diameter = gcmd.get_float(
             "FILAMENT_DIAMETER", self.filament_diameter, above=0.0
@@ -236,7 +243,7 @@ class PATest:
 
         def gen_tower():
             z = first_layer_height + layer_height
-            x_switching_pos = 0.25 * size_x
+            x_switching_pos = size_x / 3.0
             extr_r = (
                 4.0 * layer_height * nozzle / (math.pi * filament_diameter**2)
             )
@@ -254,27 +261,27 @@ class PATest:
                 for i in range(perimeters):
                     # Print the perimiter loop alternating velocities
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
-                        origin_x - x_switching_pos,
-                        origin_y + perimeter_y_offset,
-                        x_switching_pos * extr_r,
-                        slow_velocity * 60.0,
-                    )
-                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - perimeter_x_offset,
                         origin_y + perimeter_y_offset,
-                        (perimeter_x_offset - x_switching_pos) * extr_r,
+                        perimeter_x_offset * extr_r,
                         fast_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - perimeter_x_offset,
-                        origin_y,
-                        perimeter_y_offset * extr_r,
-                        fast_velocity * 60.0,
+                        origin_y + 0.5 * SLOW_NOTCH_SIZE,
+                        (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
+                        slow_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x - perimeter_x_offset,
+                        origin_y - 0.5 * SLOW_NOTCH_SIZE,
+                        SLOW_NOTCH_SIZE * extr_r,
+                        0.5 * scv_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x - perimeter_x_offset,
                         origin_y - perimeter_y_offset,
-                        perimeter_y_offset * extr_r,
+                        (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
                         slow_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
@@ -282,11 +289,23 @@ class PATest:
                         origin_y - perimeter_y_offset,
                         (perimeter_x_offset - x_switching_pos) * extr_r,
                         slow_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x - 0.5 * SLOW_NOTCH_SIZE,
+                        origin_y - perimeter_y_offset,
+                        (x_switching_pos - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
+                        fast_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x + 0.5 * SLOW_NOTCH_SIZE,
+                        origin_y - perimeter_y_offset,
+                        SLOW_NOTCH_SIZE * extr_r,
+                        scv_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + x_switching_pos,
                         origin_y - perimeter_y_offset,
-                        2 * x_switching_pos * extr_r,
+                        (x_switching_pos - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
                         fast_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
@@ -297,27 +316,27 @@ class PATest:
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
-                        origin_y,
-                        perimeter_y_offset * extr_r,
-                        slow_velocity * 60.0,
+                        origin_y - 0.5 * SLOW_NOTCH_SIZE,
+                        (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
+                        fast_velocity * 60.0,
+                    )
+                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
+                        origin_x + perimeter_x_offset,
+                        origin_y + 0.5 * SLOW_NOTCH_SIZE,
+                        SLOW_NOTCH_SIZE * extr_r,
+                        2.0 * scv_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
                         origin_x + perimeter_x_offset,
                         origin_y + perimeter_y_offset,
-                        perimeter_y_offset * extr_r,
+                        (perimeter_y_offset - 0.5 * SLOW_NOTCH_SIZE) * extr_r,
                         fast_velocity * 60.0,
                     )
                     yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
-                        origin_x + x_switching_pos,
+                        origin_x + nozzle * SEAM_GAP_RATIO,
                         origin_y + perimeter_y_offset,
-                        (perimeter_x_offset - x_switching_pos) * extr_r,
+                        (perimeter_x_offset - nozzle * SEAM_GAP_RATIO) * extr_r,
                         fast_velocity * 60.0,
-                    )
-                    yield "G1 X%.3f Y%.3f E%.6f F%.f" % (
-                        origin_x,
-                        origin_y + perimeter_y_offset,
-                        x_switching_pos * extr_r,
-                        slow_velocity * 60.0,
                     )
                     if i < perimeters - 1:
                         # Switch to the next perimeter
@@ -326,14 +345,14 @@ class PATest:
                         yield "G1 X%.3f Y%.3f F%.f" % (
                             origin_x,
                             origin_y + perimeter_y_offset,
-                            slow_velocity * 60.0,
+                            fast_velocity * 60.0,
                         )
                     else:
                         # Hide the seam a bit
                         yield "G1 X%.3f Y%.3f F%.f" % (
-                            origin_x - 2.0 * nozzle,
+                            origin_x - nozzle * SEAM_EXTRA_WIPE_RATIO,
                             origin_y + perimeter_y_offset,
-                            slow_velocity * 60.0,
+                            fast_velocity * 60.0,
                         )
                 self.progress = z / height
                 z += layer_height
