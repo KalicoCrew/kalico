@@ -2238,6 +2238,15 @@ detach_position: 0,0,0
 #   If Z is specified the toolhead will move to the Z location before the X, Y
 #   coordinates.
 #   The default value is extract_probe value.
+#safe_dock_distance :
+#   This setting defines a security area around dock during ATTACH/DETACH_PROBE
+#   commands. While inside the area, the toolhead move away prior to reach the 
+#   approach or insert position.
+#   Default is the smallest distance to the dock of approach, detach, insert 
+#   position. It could be only lower than the Default value.
+#safe_position : approach_position
+#   A safe position to ensure MOVE_AVOIDING_DOCK travel does not move the 
+#   toolhead out of range.   
 #z_hop: 15.0
 #   Distance (in mm) to lift the Z axis prior to attaching/detaching the probe.
 #   If the Z axis is already homed and the current Z position is less

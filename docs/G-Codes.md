@@ -379,6 +379,8 @@ commands are available when a
   with the probe attached.
 - `MOVE_TO_DETACH_PROBE`: Move away from the dock to disconnect the probe
   from the toolhead.
+- `MOVE_AVOIDING_DOCK [X=<value>] [Y=<value>] [SPEED=<value>]`: Move to the
+  defined point (absolute coordinates) avoiding the safe dock area 
 
 ### [dual_carriage]
 
