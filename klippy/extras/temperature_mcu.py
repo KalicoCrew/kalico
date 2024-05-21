@@ -136,7 +136,7 @@ class PrinterTemperatureMCU:
         return temp - adc * self.slope
 
     def _mcu_identify(self):
-        pass
+        self._build_config()
 
     def config_unknown(self):
         raise self.printer.config_error(

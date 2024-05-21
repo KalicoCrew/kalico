@@ -378,7 +378,7 @@ class SerialReader:
         self._check_noncritical_disconnected()
         if self.serialqueue is None:
             logging.info(
-                "%sSerial connection closed, cmd: %s",
+                "%s Serial connection closed, cmd: %s",
                 self.warn_prefix,
                 repr(cmd),
             )
@@ -391,7 +391,7 @@ class SerialReader:
         self._check_noncritical_disconnected()
         if self.serialqueue is None:
             logging.info(
-                "%sSerial connection closed, in wait ack, cmd: %s",
+                "%s Serial connection closed, in wait ack, cmd: %s",
                 self.warn_prefix,
                 repr(cmd),
             )
@@ -478,8 +478,8 @@ class SerialReader:
         )
 
     def handle_default(self, params):
-        if self.danger_options.disable_serial_reader_warnings:
-            logging.warn("%sgot %s", self.warn_prefix, params)
+        if get_danger_options().log_serial_reader_warnings:
+            logging.warning("%s got %s", self.warn_prefix, params)
 
 
 # Class to send a query command and return the received response
