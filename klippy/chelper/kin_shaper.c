@@ -120,7 +120,7 @@ range_integrate(const struct move *m, int axis, double move_time
     double t0 = move_time;
     if (unlikely(start >= 0. && end <= m->move_t))
         return integrate_move(m, axis, m->start_pos.axis[axis - 'x'],
-                              t0, &sm->pm_diff, NULL);
+                              t0, &sm->pm_diff);
     smoother_antiderivatives left =
         likely(start < 0.) ? calc_antiderivatives(sm, t0) : sm->p_hst;
     smoother_antiderivatives right =
@@ -128,7 +128,7 @@ range_integrate(const struct move *m, int axis, double move_time
                                 : sm->m_hst;
     smoother_antiderivatives diff = diff_antiderivatives(&right, &left);
     double res = integrate_move(m, axis, m->start_pos.axis[axis - 'x'],
-                                t0, &diff, NULL);
+                                t0, &diff);
     // Integrate over previous moves
     const struct move *prev = m;
     while (likely(start < 0.)) {
@@ -140,7 +140,7 @@ range_integrate(const struct move *m, int axis, double move_time
                                   : sm->p_hst;
         diff = diff_antiderivatives(&r, &left);
         res += integrate_move(prev, axis, prev->start_pos.axis[axis - 'x'],
-                              t0, &diff, NULL);
+                              t0, &diff);
     }
     // Integrate over future moves
     t0 = move_time;
@@ -154,7 +154,7 @@ range_integrate(const struct move *m, int axis, double move_time
                                         : sm->m_hst;
         diff = diff_antiderivatives(&right, &l);
         res += integrate_move(m, axis, m->start_pos.axis[axis - 'x'],
-                              t0, &diff, NULL);
+                              t0, &diff);
     }
     return res;
 }
