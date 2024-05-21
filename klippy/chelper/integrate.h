@@ -17,8 +17,9 @@ struct move;
 int init_smoother(int n, const double a[], double t_sm, struct smoother* sm);
 
 double integrate_move(const struct move* m, int axis, double base, double t0
-                      , const smoother_antiderivatives* s
-                      , double* smooth_velocity);
+                      , const smoother_antiderivatives* s);
+double integrate_velocity(const struct move* m, int axis, double t0
+                          , const smoother_antiderivatives* s);
 
 smoother_antiderivatives
 calc_antiderivatives(const struct smoother* sm, double t);
