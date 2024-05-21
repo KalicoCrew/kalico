@@ -79,6 +79,12 @@ class LIS2DW:
             "query_lis2dw_status oid=%c", oid=self.oid, cq=cmdqueue
         )
 
+    def check_connected(self):
+        if self.mcu.non_critical_disconnected:
+            raise self.printer.command_error(
+                f"LIS2DW: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
+            )
+
     def read_reg(self, reg):
         params = self.spi.spi_transfer([reg | REG_MOD_READ, 0x00])
         response = bytearray(params["response"])
@@ -96,6 +102,7 @@ class LIS2DW:
             )
 
     def start_internal_client(self):
+        self.check_connected()
         aqh = adxl345.AccelQueryHelper(self.printer)
         self.batch_bulk.add_client(aqh.handle_batch)
         return aqh

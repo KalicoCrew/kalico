@@ -7,7 +7,7 @@
 - [`[exclude_object]`](./Config_Reference.md#exclude_object) is enabled by default. Use `[exclude_object] enable_exclude_object: False` to disable it
 
 ## Additional configuration options
-
+- [`[mcu] is_non_critical`](./Config_Reference.md#mcu) enables marking of an mcu as optional - it can be freely disconnected and connected at will. (useful for MCU-based accelerometer boards, mcu-based probes that shut down in hot chambers, etc...)
 - [`[danger_options]`](./Config_Reference.md#danger-options) - New configuration options to adjust klipper values that were previously hidden
 - Additional kinematics versions enabled per-axis acceleration, see [limited_cartesian](./Config_Reference.md#⚠️-cartesian-kinematics-with-limits-for-x-and-y-axes) and [limited_corexy](./Config_Reference.md#⚠️-corexy-kinematics-with-limits-for-x-and-y-axes)
 - `--rotate-log-at-restart` can be added to your klipper start script or service to force log rotation every restart.

@@ -58,6 +58,10 @@ serial:
 #   sending a Klipper command to the micro-controller so that it can
 #   reset itself. The default is 'arduino' if the micro-controller
 #   communicates over a serial port, 'command' otherwise.
+#is_non_critical: False
+#   Setting this to True will allow the mcu to be disconnected and 
+#   reconnected at will without errors. Helpful for USB-accelerometer boards
+#   and USB-probes
 ```
 
 ### [mcu my_extra_mcu]
