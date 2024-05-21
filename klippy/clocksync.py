@@ -29,6 +29,9 @@ class ClockSync:
         self.prediction_variance = 0.0
         self.last_prediction_time = 0.0
 
+    def disconnect(self):
+        self.reactor.update_timer(self.get_clock_timer, self.reactor.NEVER)
+
     def connect(self, serial):
         self.serial = serial
         self.mcu_freq = serial.msgparser.get_constant_float("CLOCK_FREQ")

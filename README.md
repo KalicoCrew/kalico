@@ -108,6 +108,8 @@ and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
   - input_shaper: smooth input shapers
   - input_shaper: new print_ringing_tower utility
 
+- [core: non critical mcus](https://github.com/DangerKlippers/danger-klipper/pull/42)
+
 ## Switch to Danger Klipper
 
 > [!NOTE]
