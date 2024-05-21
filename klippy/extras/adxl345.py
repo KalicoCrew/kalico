@@ -195,38 +195,20 @@ class AccelCommandHelper:
     cmd_ACCELEROMETER_QUERY_help = "Query accelerometer for the current values"
 
     def cmd_ACCELEROMETER_QUERY(self, gcmd):
-        num_samples = gcmd.get_int("SAMPLES", 1)
-        samples = []
-        while num_samples > 0:
+        try:
             aclient = self.chip.start_internal_client()
             self.printer.lookup_object("toolhead").dwell(1.0)
             aclient.finish_measurements()
             values = aclient.get_samples()
             if not values:
                 raise gcmd.error("No accelerometer measurements found")
-            take = min(len(values), num_samples)
-            num_samples -= take
-            samples.extend(values[-take:])
-
-        accel_x = sum([x for (_, x, y, z) in samples]) / len(samples)
-        accel_y = sum([y for (_, x, y, z) in samples]) / len(samples)
-        accel_z = sum([z for (_, x, y, z) in samples]) / len(samples)
-
-        return_type = gcmd.get("RETURN", "vector")
-        if return_type == "tilt":
-            tilt_x = math.degrees(math.atan2(accel_x, accel_z))
-            tilt_y = math.degrees(math.atan2(accel_y, accel_z))
-            gcmd.respond_info(
-                "accelerometer plane tilt degrees (x, y): %.6f, %.6f"
-                % (tilt_x, tilt_y)
-            )
-        elif return_type == "vector":
+            _, accel_x, accel_y, accel_z = values[-1]
             gcmd.respond_info(
                 "accelerometer values (x, y, z): %.6f, %.6f, %.6f"
                 % (accel_x, accel_y, accel_z)
             )
-        else:
-            raise gcmd.error("Unknown 'return' type '%s'" % (return_type,))
+        except Exception as e:
+            raise gcmd.error("Failed to query accelerometer: %s" % (e,))
 
     cmd_ACCELEROMETER_DEBUG_READ_help = "Query register (for debugging)"
 

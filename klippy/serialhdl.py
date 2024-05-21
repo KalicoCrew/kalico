@@ -15,9 +15,10 @@ class error(Exception):
 
 
 class SerialReader:
-    def __init__(self, reactor, warn_prefix=""):
+    def __init__(self, reactor, warn_prefix="", mcu=None):
         self.reactor = reactor
         self.warn_prefix = warn_prefix
+        self.mcu = mcu
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
@@ -36,6 +37,9 @@ class SerialReader:
         # Sent message notification tracking
         self.last_notify_id = 0
         self.pending_notifications = {}
+        self.danger_options = self.mcu.get_printer().lookup_object(
+            "danger_options"
+        )
 
     def _bg_thread(self):
         response = self.ffi_main.new("struct pull_queue_message *")
@@ -123,6 +127,75 @@ class SerialReader:
                 self.serialqueue, receive_window
             )
         return True
+
+    def check_canbus_connect(
+        self, canbus_uuid, canbus_nodeid, canbus_iface="can0"
+    ):
+        import can  # XXX
+
+        logging.getLogger("can").setLevel(logging.WARN)
+        txid = canbus_nodeid * 2 + 256
+        filters = [{"can_id": txid + 1, "can_mask": 0x7FF, "extended": False}]
+        # Prep for SET_NODEID command
+        try:
+            uuid = int(canbus_uuid, 16)
+        except ValueError:
+            uuid = -1
+        if uuid < 0 or uuid > 0xFFFFFFFFFFFF:
+            self._error("Invalid CAN uuid")
+
+        CANBUS_ID_ADMIN = 0x3F0
+        CMD_QUERY_UNASSIGNED = 0x00
+        RESP_NEED_NODEID = 0x20
+        filters = [
+            {
+                "can_id": CANBUS_ID_ADMIN + 1,
+                "can_mask": 0x7FF,
+                "extended": False,
+            }
+        ]
+
+        msg = can.Message(
+            arbitration_id=CANBUS_ID_ADMIN,
+            data=[CMD_QUERY_UNASSIGNED],
+            is_extended_id=False,
+        )
+        try:
+            bus = can.interface.Bus(
+                channel=canbus_iface,
+                can_filters=filters,
+                bustype="socketcan",
+            )
+            bus.send(msg)
+        except (can.CanError, os.error) as e:
+            logging.warning("%scan issue: %s", self.warn_prefix, e)
+            return False
+
+        start_time = curtime = self.reactor.monotonic()
+        while 1:
+            tdiff = start_time + 1.0 - curtime
+            if tdiff <= 0.0:
+                break
+            msg = bus.recv(tdiff)
+            curtime = self.reactor.monotonic()
+            if (
+                msg is None
+                or msg.arbitration_id != CANBUS_ID_ADMIN + 1
+                or msg.dlc < 7
+                or msg.data[0] != RESP_NEED_NODEID
+            ):
+                continue
+            found_uuid = sum(
+                [v << ((5 - i) * 8) for i, v in enumerate(msg.data[1:7])]
+            )
+            logging.info(f"found_uuid: {found_uuid}")
+            if found_uuid == uuid:
+                self.disconnect()
+                bus.close = bus.shutdown  # XXX
+                return True
+        bus.close = bus.shutdown  # XXX
+        # logging.info(f"couldn't find uuid: {uuid}")
+        return False
 
     def connect_canbus(self, canbus_uuid, canbus_nodeid, canbus_iface="can0"):
         import can  # XXX
@@ -296,8 +369,13 @@ class SerialReader:
             else:
                 self.handlers[name, oid] = callback
 
+    def _check_noncritical_disconnected(self):
+        if self.mcu is not None and self.mcu.non_critical_disconnected:
+            self._error("non-critical MCU is disconnected")
+
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
+        self._check_noncritical_disconnected()
         if self.serialqueue is None:
             logging.info(
                 "%sSerial connection closed, cmd: %s",
@@ -310,6 +388,7 @@ class SerialReader:
         )
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
+        self._check_noncritical_disconnected()
         if self.serialqueue is None:
             logging.info(
                 "%sSerial connection closed, in wait ack, cmd: %s",
@@ -399,8 +478,8 @@ class SerialReader:
         )
 
     def handle_default(self, params):
-        if get_danger_options().log_serial_reader_warnings:
-            logging.warning("%s got %s", self.warn_prefix, params)
+        if self.danger_options.disable_serial_reader_warnings:
+            logging.warn("%sgot %s", self.warn_prefix, params)
 
 
 # Class to send a query command and return the received response
