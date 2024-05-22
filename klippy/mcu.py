@@ -735,7 +735,6 @@ class MCU:
     def __init__(self, config, clocksync):
         self._config = config
         self._printer = printer = config.get_printer()
-        self.danger_options = printer.lookup_object("danger_options")
         self.gcode = printer.lookup_object("gcode")
         self._clocksync = clocksync
         self._reactor = printer.get_reactor()
