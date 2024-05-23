@@ -55,6 +55,7 @@ Currently only [extruder] and [heater_bed] heater types are supported.
 
 ```
 [extruder] OR [heater_bed]
+control: mpc
 heater_power:
 #   Nameplate heater power in watts. 
 #   Note that for a PTC, a non-linear heater, MPC may not work
@@ -124,28 +125,15 @@ These can be tuned but should not need changing from the default values.
 
 ```
 [extruder]
+control: mpc
 heater_power: 70  
 cooling_fan: fan
 filament_density: 1.20
 filament_heat_capacity: 1.8
 
 [heater_bed]
+control: mpc
 heater_power: 500  
-```
-
-## Example SAVE_CONFIG block
-
-In preperation for a **SAVE_CONFIG** command after calibration the previous extruder or heater_bed parameters, such as PID details, should be removed or commented out. If **control: pid_v** is present in the save config block there will be a conflict error when committing the changes. A save config block ready for MPC calibration looks like this:
-
-```
-#*# <---------------------- SAVE_CONFIG ---------------------->
-#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
-#*#
-#*# [heater_bed]
-#*# control = mpc
-#*#
-#*# [extruder]
-#*# control = mpc
 ```
 
 > [!IMPORTANT]
