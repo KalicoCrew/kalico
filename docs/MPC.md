@@ -90,7 +90,7 @@ These should only be set under [extruder] and are not valid for [heater_bed].
 #   (mm)
 #filament_density: 0.0
 #   (g/mm^2)
-#   An initial setting of 1.25 is reccomended as a starting value.
+#   An initial setting of 1.20 is reccomended as a starting value.
 #filament_heat_capacity: 0.0
 #   (J/g/K)
 #   A initial setting of 1.8 is reccomended as a starting value.
@@ -126,7 +126,7 @@ These can be tuned but should not need changing from the default values.
 [extruder]
 heater_power: 70  
 cooling_fan: fan
-filament_density: 1.25
+filament_density: 1.20
 filament_heat_capacity: 1.8
 
 [heater_bed]
@@ -149,8 +149,7 @@ In preperation for a **SAVE_CONFIG** command after calibration the previous extr
 ```
 
 > [!IMPORTANT]
-> 
-> Restart the firmware to enable MPC and proceed to calibratration.
+> Restart the firmware to enable MPC and proceed to calibration.
 
 # Calibration
 
@@ -181,7 +180,7 @@ The MPC calibration routine has to be run intially for each heater to be control
 
 
 
-For example default calibration of the hotend would be. 
+Default calibration of the hotend:
 
 ```
 MPC_CALIBRATE HEATER=extruder  
@@ -189,7 +188,7 @@ MPC_CALIBRATE HEATER=extruder
 
 
 
-For example default calibration of the bed would be. 
+Default calibration of the bed: 
 
 ```
 MPC_CALIBRATE HEATER=heater_bed TARGET=100  
@@ -198,11 +197,12 @@ MPC_CALIBRATE HEATER=heater_bed TARGET=100
 
 
 After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future reference.  
+
 ![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
 
 
 
-A **SAVE_CONFIG** command is then required to commit these calibrated parameters to the printer config. The save config block should then look similar to the below: 
+A **SAVE_CONFIG** command is then required to commit these calibrated parameters to the printer config. The save config block should then look similar to: 
 
 ```
 #*# [extruder]
@@ -259,7 +259,7 @@ MPC_SET HEATER=extruder FILAMENT_DENSITY=1.09 FILAMENT_HEAT_CAPACITY=1.3
 
 ## Filament Feed Forward Physical Properties
 
-MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The values from the table below should be sufficent references to allow MPC to accomodate for specific filaments.  Advanced users could tune the specific heat parameter for best result.
+MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The material values from the tables below have been curated from popular filament manufacturers and material data references. These values are sufficent for MPC to implement the filament feed forward feature.  Advanced users could tune the filament_density and filament_heat_capacity parameters based on manufacturers datasheets. Note that specific heat increases with material temperature and most specific heats are specified at a temperature well below 3D printing temperatures. For most polymers the printing temperature specific heat will be 1.2x - 1.5x compared to the room temperature value.
 
 ### Common Materials
  
@@ -277,7 +277,7 @@ MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filam
 | TPU-90A  | 1.15            |                       |                                       |              |
 | TPU-95A  | 1.22            |                       |                                       |              |
 
-### Common Carbon Fibre Filled Materials
+### Common Carbon Fiber Filled Materials
 
 | Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
 | -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
@@ -299,22 +299,18 @@ https://192.168.xxx.xxx:7125/printer/objects/query?extruder
 
 ![Calibration](/docs/img/MPC_realtime_output.png)
 
-# USEAGE NOTES AND QUESTIONS
+# USEAGE NOTES, KNOWN ISSUES, AND QUESTIONS
 
-- Over/undershoot for the temperature sensor may be seen. MPC controls for the temperature of the heater block. The modeled temperature of the block where heat is applied to the filament and thus the most important parameter for melting filament.
+- Over/undershoot for the temperature sensor may be noted. MPC controls for the temperature of the heater block and not the temperature sensor like PID. The modeled temperature of the block where heat is applied to the filament. Thus, block temperature, is the most important parameter for melting filament. For some systems print macros may need a larger window for the temperature start to account for sensor over/undershoot. Try adjust the smoothing factor to 0.4375 to reduce over/undershoot.
 
-- Overshoot/undershoot happens because the ambient transfer coefficient can't be determined perfectly and so the power balance makes the system settle slightly off the target. The ambient temperature then slowly gets corrected until balance is achieved.
+- Overshoot/undershoot can occur because the ambient transfer coefficient can't be determined perfectly. This small error in the modeled power balance makes the system settle slightly off the target. MPC slowly corrects the ambient temperature temp until balance is achieved.
 
-- Bed calibration parameters appear not to be repeatable. It is curently unknown if this materially affect performance of MPC for bed_heaters.
+- Bed calibration parameters can vary between calibration runs. It is curently unknown if this materially affect performance of MPC for bed heaters.
 
 - Does the hotend need to be close to the bed during calibration?
 
-- Should the bed and chamber be at printing temperature for best calibration?
-
-- Print macros will need a larger start window to account for sensor over/undershoot. A reccomend macro for this.
-
-
-
+- Systems with powerful part cooling fans and underpowered heaters can be challenging for MPC to control.
+  
 # BACKGROUND
 
 ## MPC Algorithm
@@ -344,9 +340,9 @@ Finally, armed with a new set of temperatures, the MPC algorithm calculates how 
 
 ## Possible Feature Expansions
 
-- Skipped steps might be detectable as the block temp will increases relative to the model. 
+- Skipped steps might be detectable as the block temp could increases relative to the model. 
 
-- You could also possibly detect extrusion issues such as if filament is hitting the nozzle, blobs, or spaghetti. For these the heating requirements may be detectable against the expected model operation.
+- Extrusion issues possibly could be detected. Issue like filament hitting the nozzle, blobs, or spaghetti. For these, the heating requirements may be detectable against the expected model operation.
 
 ## Additional Details
 
