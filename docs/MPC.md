@@ -2,14 +2,14 @@
 
 Model Predictive Control (MPC) is an advanced temperature control method that offers an alternative to traditional PID control. MPC leverages a system model to simulate the temperature of the hotend and adjusts the heater power to align with the target temperature.  
 
-Unlike reactive methods, MPC operates proactively, making adjustments in anticipation of temperature fluctuations. It utilizes a model of the hotend, taking into account factors such as the thermal masses of the system, heater power, heat loss to ambient air and fans, and heat transfer into the filament. This model allows MPC to predict the amount of heat energy that will be dissipated from the hotend over a given duration, and it compensates for this by adjusting the heater power accordingly. As a result, MPC can accurately calculate the necessary heat energy input to maintain a steady temperature or to transition to a new temperature.
+Unlike reactive methods, MPC operates proactively, making adjustments in anticipation of temperature fluctuations. It utilizes a model of the hotend, taking into account factors such as the thermal masses of the system, heater power, heat loss to ambient air, and fans, and heat transfer into the filament. This model allows MPC to predict the amount of heat energy that will be dissipated from the hotend over a given duration, and it compensates for this by adjusting the heater power accordingly. As a result, MPC can accurately calculate the necessary heat energy input to maintain a steady temperature or to transition to a new temperature.
 
 MPC offers several advantages over PID control:
 
 - **Faster and more responsive temperature control:** MPC’s proactive approach allows it to respond more quickly and accurately to changes in temperature. 
-- **Broad functionality with single calibration:** Once calibrated, MPC functions effectively across a wide range of print temperatures.  
+- **Broad functionality with single calibration:** Once calibrated, MPC functions effectively across a wide range of printing temperatures.  
 - **Simplified calibration process:** MPC is easier to calibrate compared to traditional PID control. 
-- **Compatibility with all hotend sensor types:** MPC works with all types of hotend sensors, including those that produce noisy temperature readings
+- **Compatibility with all hotend sensor types:** MPC works with all types of hotend sensors, including those that produce noisy temperature readings.
 - **Versatility with heater types:** MPC performs equally well with standard cartridge heaters and PTC heaters.
 - **Applicable to both hotends and beds:** MPC can be used to control the temperature of both hotends and beds.
 - **Effective for high and low flow hotends:** Regardless of the flow rate of the hotend, MPC maintains effective temperature control.     
@@ -21,32 +21,31 @@ MPC offers several advantages over PID control:
 
 ## Installation Outline
 
-- Take a deep breath and install Danger Klipper (DK). It's really not *that* dangerous.
-- Change DK to MPC feature branch and restart klipper service
-- Setup [extruder], [heater_bed], and SAVE_CONFIG block
-- Restart firmware to enable MPC control
-- MPC Calibrate extruder and/or heater_bed
-- Commit MPC calibration parameters to printer.cfg using SAVE_CONFIG command
+- Change DK to the bleeding-edge-v2 feature branch and restart the Klipper service.
+- Set up [extruder], [heater_bed], and SAVE_CONFIG block.
+- Restart firmware to enable MPC control.
+- Calibrate extruder and/or heater_bed.
+- Commit MPC calibration parameters to printer.cfg using SAVE_CONFIG command.
 
 ## Install Danger Klipper
 
-Follow the **Switch to Danger Klipper** instrucions on [https://github.com/DangerKlippers/danger-klipper]
+If Danger Klipper is not already installed follow the **Switch to Danger Klipper** instructions on [https://github.com/DangerKlippers/danger-klipper]
 
 ## Switching Branches
 
-After installing Danger Klipper you can switch to the MPC feature branch by issuing the following console commands:
+After installing Danger Klipper you can switch to the bleeding edge V2 branch containing MPC functionality by issuing the following console commands:
 
 ```
 cd ~
 cd klipper
-git fetch
-git switch feature/mpc_experimental
+git fetch -a
+git checkout bleeding-edge-v2
 ```
 
-After installation of the branch the klipper service should be restarted with:
+After installation of the branch the Klipper service should be restarted with:
 
 ```
-systemctl restart klipper
+sudo systemctl restart klipper
 ```
 
 # Configuration
@@ -91,10 +90,10 @@ These should only be set under [extruder] and are not valid for [heater_bed].
 #   (mm)
 #filament_density: 0.0
 #   (g/mm^2)
-#   An initial setting of 1.1 could be a good starting point for tuning.
+#   An initial setting of 1.25 is reccomended as a starting value.
 #filament_heat_capacity: 0.0
 #   (J/g/K)
-#   A initial setting of 1.3 could be a good starting point for tuning.
+#   A initial setting of 1.8 is reccomended as a starting value.
 ```
 
 ## Optional model parameters
@@ -119,9 +118,7 @@ These can be tuned but should not need changing from the default values.
 
 >  [!note]
 > 
-> DEV COMMENT: Smoothing =  .25 value is from Marlin, I think it actually needs to be higher because Marlin runs their MPC at higher refresh rate. try 0.4375 maybe.
-> 
-> Marlin updates it's model at 6hz and klipper at 3.3hz.
+> DEV COMMENT: The smoothing parameter is set to .25 by default which is inherited from Marlin. The current reccomendation is to set smoothing: 0.4375 to allow for faster model updates.
 
 ## Example configuration block
 
@@ -129,8 +126,8 @@ These can be tuned but should not need changing from the default values.
 [extruder]
 heater_power: 70  
 cooling_fan: fan
-filament_density: 1.1
-filament_heat_capacity: 1.3
+filament_density: 1.25
+filament_heat_capacity: 1.8
 
 [heater_bed]
 heater_power: 500  
@@ -292,17 +289,17 @@ https://192.168.xxx.xxx:7125/printer/objects/query?extruder
 
 # USEAGE NOTES AND QUESTIONS
 
-Over/undershoot for the temperature sensor may be seen. MPC controls for the temperature of the heater block. The modeled temperature of the block where heat is applied to the filament and thus the most important parameter for melting filament.
+- Over/undershoot for the temperature sensor may be seen. MPC controls for the temperature of the heater block. The modeled temperature of the block where heat is applied to the filament and thus the most important parameter for melting filament.
 
 - Overshoot/undershoot happens because the ambient transfer coefficient can't be determined perfectly and so the power balance makes the system settle slightly off the target. The ambient temperature then slowly gets corrected until balance is achieved.
 
-Bed calibration parameters appear not to be repeatable. It is curently unknown if this materially affect performance of MPC for bed_heaters.
+- Bed calibration parameters appear not to be repeatable. It is curently unknown if this materially affect performance of MPC for bed_heaters.
 
-Does the hotend need to be close to the bed during calibration?
+- Does the hotend need to be close to the bed during calibration?
 
-Should the bed and chamber be at printing temperature for best calibration?
+- Should the bed and chamber be at printing temperature for best calibration?
 
-Print macros will need a larger start window to account for sensor over/undershoot. A reccomend macro for this.
+- Print macros will need a larger start window to account for sensor over/undershoot. A reccomend macro for this.
 
 
 
