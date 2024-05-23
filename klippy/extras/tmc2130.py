@@ -302,8 +302,7 @@ class MCU_TMC_SPI_chain:
         params = self.spi.spi_transfer(cmd)
         pr = bytearray(params["response"])
         pr = pr[
-            (self.chain_len - chain_pos)
-            * 5 : (self.chain_len - chain_pos + 1)
+            (self.chain_len - chain_pos) * 5 : (self.chain_len - chain_pos + 1)
             * 5
         ]
         return (pr[1] << 24) | (pr[2] << 16) | (pr[3] << 8) | pr[4]
@@ -329,8 +328,7 @@ class MCU_TMC_SPI_chain:
         )
         pr = bytearray(params["response"])
         pr = pr[
-            (self.chain_len - chain_pos)
-            * 5 : (self.chain_len - chain_pos + 1)
+            (self.chain_len - chain_pos) * 5 : (self.chain_len - chain_pos + 1)
             * 5
         ]
         return (pr[1] << 24) | (pr[2] << 16) | (pr[3] << 8) | pr[4]

@@ -14,6 +14,7 @@ import readlog
 # Analyzer handlers: {name: class, ...}
 AHandlers = {}
 
+
 # Calculate a derivative (position to velocity, or velocity to accel)
 class GenDerivative:
     ParametersMin = ParametersMax = 1
@@ -51,6 +52,7 @@ class GenDerivative:
 
 
 AHandlers["derivative"] = GenDerivative
+
 
 # Calculate an integral (accel to velocity, or velocity to position)
 class GenIntegral:
@@ -119,6 +121,7 @@ class GenIntegral:
 
 
 AHandlers["integral"] = GenIntegral
+
 
 # Calculate a pointwise 2-norm of several datasets (e.g. compute velocity or
 # accel from its x, y,... components)
@@ -232,6 +235,7 @@ class GenSmoothed:
 
 AHandlers["smooth"] = GenSmoothed
 
+
 # Calculate a kinematic stepper position from the toolhead requested position
 class GenKinematicPosition:
     ParametersMin = ParametersMax = 1
@@ -285,6 +289,7 @@ class GenKinematicPosition:
 
 AHandlers["kin"] = GenKinematicPosition
 
+
 # Calculate a toolhead x/y position from corexy stepper positions
 class GenCorexyPosition:
     ParametersMin = ParametersMax = 3
@@ -319,6 +324,7 @@ class GenCorexyPosition:
 
 
 AHandlers["corexy"] = GenCorexyPosition
+
 
 # Calculate a position deviation
 class GenDeviation:
@@ -355,6 +361,7 @@ AHandlers["deviation"] = GenDeviation
 ######################################################################
 # Analyzer management and data generation
 ######################################################################
+
 
 # Return a description of available analyzers
 def list_datasets():

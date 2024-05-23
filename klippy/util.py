@@ -12,12 +12,14 @@ import traceback
 # Low-level Unix commands
 ######################################################################
 
+
 # Return the SIGINT interrupt handler back to the OS default
 def fix_sigint():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
 fix_sigint()
+
 
 # Set a file-descriptor as non-blocking
 def set_nonblock(fd):

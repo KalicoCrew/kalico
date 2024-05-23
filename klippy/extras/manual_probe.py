@@ -153,6 +153,7 @@ def verify_no_manual_probe(printer):
 Z_BOB_MINIMUM = 0.500
 BISECT_MAX = 0.200
 
+
 # Helper script to determine a Z height
 class ManualProbeHelper:
     def __init__(self, printer, gcmd, finalize_callback):

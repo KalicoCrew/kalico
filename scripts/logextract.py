@@ -198,6 +198,7 @@ sent_r = re.compile(
     + ","
 )
 
+
 # MCU "Sent" shutdown message parsing
 class MCUSentStream:
     def __init__(self, mcu, count):
@@ -237,6 +238,7 @@ receive_r = re.compile(
     + shortseq_s
     + ","
 )
+
 
 # MCU "Receive" shutdown message parsing
 class MCUReceiveStream:
@@ -279,6 +281,7 @@ repl_uart_r = re.compile(
     + r" (?:read|write)=b?(?P<msg>(?:'[^']*'"
     + r'|"[^"]*"))'
 )
+
 
 # MCU shutdown message parsing
 class MCUStream:
@@ -345,6 +348,7 @@ stepper_move_r = re.compile(
     r"^queue_step " + count_s + r": t=" + clock_s + r" "
 )
 
+
 # Kinematic "trapq" shutdown message parsing
 class StepperStream:
     def __init__(self, name, mcu_name, mcus):
@@ -375,6 +379,7 @@ class StepperStream:
 
 
 trapq_move_r = re.compile(r"^move " + count_s + r": pt=" + time_s)
+
 
 # Kinematic "trapq" shutdown message parsing
 class TrapQStream:
@@ -410,6 +415,7 @@ class TrapQStream:
 
 gcode_cmd_r = re.compile(r"^Read " + time_s + r": (?P<gcode>['\"].*)$")
 varlist_split_r = re.compile(r"([^ ]+)=")
+
 
 # G-Code shutdown message parsing
 class GCodeStream:
@@ -474,6 +480,7 @@ class GCodeStream:
 
 api_cmd_r = re.compile(r"^Received " + time_s + r": \{.*\}$")
 
+
 # API server shutdowm message parsing
 class APIStream:
     def __init__(self):
@@ -510,6 +517,7 @@ api_r = re.compile(
     + r"(?P<client>[0-9]+)"
     + r"$"
 )
+
 
 # Stats message parsing and high-level message dispatch
 class StatsStream:

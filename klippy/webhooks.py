@@ -19,7 +19,6 @@ json_loads_byteify = None
 if sys.version_info.major < 3:
 
     def json_loads_byteify(data, ignore_dicts=False):
-
         if isinstance(data, bytes):
             return data.decode("utf-8")
         if isinstance(data, list):

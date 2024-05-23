@@ -360,9 +360,7 @@ class MAX31865(SensorBase):
         #  R_div_nominal = 1. + CVD_A * temp + CVD_B * temp**2
         # Solve for temp using quadratic equation:
         #  temp = (-b +- sqrt(b**2 - 4ac)) / 2a
-        discriminant = math.sqrt(
-            CVD_A**2 - 4.0 * CVD_B * (1.0 - R_div_nominal)
-        )
+        discriminant = math.sqrt(CVD_A**2 - 4.0 * CVD_B * (1.0 - R_div_nominal))
         temp = (-CVD_A + discriminant) / (2.0 * CVD_B)
         return temp
 

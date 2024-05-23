@@ -23,6 +23,7 @@ LCD_chips = {
     "hd44780_spi": hd44780_spi.hd44780_spi,
 }
 
+
 # Storage of [display_template my_template] config sections
 class DisplayTemplate:
     def __init__(self, config):

@@ -243,6 +243,7 @@ STA_NO_DISK = 1 << 1
 STA_WRITE_PROTECT = 1 << 2
 SECTOR_SIZE = 512
 
+
 # FAT16/32 File System Support
 class FatFS:
     def __init__(self, ser, spi=True):
@@ -624,7 +625,7 @@ class SDCardSPI:
             resp = self._send_command_with_response(
                 "SEND_IF_COND", (1 << 8) | check_pattern
             )
-            resp = resp.strip(b"\xFF")
+            resp = resp.strip(b"\xff")
             if resp and resp[0] & (1 << 2):
                 # CMD8 is illegal, this is a version 1.0 card
                 self.sd_version = 1
@@ -658,7 +659,7 @@ class SDCardSPI:
                     )
             # Read OCR Register (CMD58)
             resp = self._send_command_with_response("READ_OCR", 0)
-            resp = resp.strip(b"\xFF")
+            resp = resp.strip(b"\xff")
             # If 'READ_OCR' is illegal then this is likely MMC.
             # At this time MMC is not supported
             if len(resp) == 5:
@@ -726,7 +727,7 @@ class SDCardSPI:
             resp, rt = func(cmd, args, get_rt=True)
             # logging.info("flash_sdcard: Check cmd %s, response: %s"
             #              % (cmd, repr(resp)))
-            resp = resp.strip(b"\xFF")
+            resp = resp.strip(b"\xff")
             if resp and expected == resp[0]:
                 return True
             tries -= 1
@@ -953,7 +954,7 @@ class SDCardSPI:
                 )
             else:
                 status = self._send_command_with_response("SEND_STATUS", 0)
-                status = status.strip(b"\xFF")
+                status = status.strip(b"\xff")
                 if len(status) == 2:
                     if status[1] != 0:
                         err_msgs.append(
@@ -1009,7 +1010,7 @@ class SDCardSDIO:
             resp = self._send_command_with_response(
                 "SEND_IF_COND", (1 << 8) | check_pattern
             )
-            resp = resp.strip(b"\xFF")
+            resp = resp.strip(b"\xff")
             if len(resp) != 4:
                 # CMD8 is illegal, this is a version 1.0 card
                 self.sd_version = 1
@@ -1021,7 +1022,6 @@ class SDCardSDIO:
                         "compatible voltage range"
                     )
             if self.sd_version == 2:
-
                 # Init card and come out of idle (ACMD41)
                 # Version 2 Cards may init before checking the OCR
                 # Allow vor LVDS card with 1.8v, too.
@@ -1330,7 +1330,7 @@ class SDCardSDIO:
                 raise OSError(
                     "flash_sdcard: Write error."
                     " Card is not in transfer state: 0x%02X"
-                    % (((status[3] >> 1) & 0x0F))
+                    % ((status[3] >> 1) & 0x0F)
                 )
 
 
