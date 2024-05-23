@@ -261,7 +261,7 @@ MPC_SET HEATER=extruder FILAMENT_DENSITY=1.09 FILAMENT_HEAT_CAPACITY=1.3
 
 MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The values from the table below should be sufficent references to allow MPC to accomodate for specific filaments.  Advanced users could tune the specific heat parameter for best result.
 
-# Common Materials
+### Common Materials
  
 | Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
 | -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
@@ -277,7 +277,7 @@ MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filam
 | TPU-90A  | 1.15            |                       |                                       |              |
 | TPU-95A  | 1.22            |                       |                                       |              |
 
-# Common Carbon Fibre Filled Materials
+### Common Carbon Fibre Filled Materials
 
 | Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
 | -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
