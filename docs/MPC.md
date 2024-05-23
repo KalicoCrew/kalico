@@ -219,9 +219,7 @@ A **SAVE_CONFIG** command is then required to commit these calibrated parameters
 #*# ambient_transfer = 15.6868
 ```
 
-
-
-Calibrated parameters and not suitable for pre-configuration or not explicetly determinable. Advanced users could tweak these post calibration based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
+The calibrated parameters are not suitable for pre-configuration or are not explicetly determinable. Advanced users could tweak these post calibration based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
 
 ```
 #block_heat_capacity:
