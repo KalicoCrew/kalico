@@ -106,8 +106,7 @@ class DeltaKinematics:
             return (
                 ratio
                 * math.sqrt(
-                    min_arm_length**2 / (ratio**2 + 1.0)
-                    - half_min_step_dist**2
+                    min_arm_length**2 / (ratio**2 + 1.0) - half_min_step_dist**2
                 )
                 + half_min_step_dist
                 - radius
@@ -283,9 +282,7 @@ class DeltaCalibration:
                 self.stepdists, self.towers, self.abs_endstops, stable_position
             )
         ]
-        return mathutil.trilateration(
-            sphere_coords, [a**2 for a in self.arms]
-        )
+        return mathutil.trilateration(sphere_coords, [a**2 for a in self.arms])
 
     def calc_stable_position(self, coord):
         # Return a stable_position from a cartesian coordinate

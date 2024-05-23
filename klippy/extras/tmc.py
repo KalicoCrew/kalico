@@ -368,12 +368,17 @@ class TMCCommandHelper:
             or hold_current is not None
             or home_current is not None
         ):
-            if run_current is None:
+            if run_current is not None:
+                ch.set_run_current(run_current)
+            else:
                 run_current = prev_cur
+
             if hold_current is None:
                 hold_current = req_hold_cur
+
             if home_current is not None:
                 ch.set_home_current(home_current)
+
             toolhead = self.printer.lookup_object("toolhead")
             print_time = toolhead.get_last_move_time()
             ch.set_current(run_current, hold_current, print_time)
@@ -744,3 +749,103 @@ def TMCStealthchopHelper(config, mcu_tmc, tmc_freq):
     else:
         # TMC2208 uses en_spreadCycle
         fields.set_field("en_spreadcycle", not en_pwm_mode)
+
+
+class BaseTMCCurrentHelper:
+    def __init__(self, config, mcu_tmc, max_current):
+        self.printer = config.get_printer()
+        self.name = config.get_name().split()[-1]
+        self.mcu_tmc = mcu_tmc
+        self.fields = mcu_tmc.get_fields()
+
+        # config_{run|hold|home}_current
+        # represents an initial value set via config file
+        self.config_run_current = config.getfloat(
+            "run_current", above=0.0, maxval=max_current
+        )
+        self.config_hold_current = config.getfloat(
+            "hold_current", max_current, above=0.0, maxval=max_current
+        )
+        self.config_home_current = config.getfloat(
+            "home_current",
+            self.config_run_current,
+            above=0.0,
+            maxval=max_current,
+        )
+        self.current_change_dwell_time = config.getfloat(
+            "current_change_dwell_time", 0.5, above=0.0
+        )
+
+        # req_{run|hold|home}_current
+        # represents a requested value, which starts with
+        # the configured value but can change during runtime
+        # e.g. SET_TMC_CURRENT
+        self.req_run_current = self.config_run_current
+        self.req_hold_current = self.config_hold_current
+        self.req_home_current = self.config_home_current
+
+        # actual_current represents the actual current set to a stepper
+        # It fluctuates between req_run_current and req_home_current
+        # during homing
+        self.actual_current = self.req_run_current
+
+        self.max_current = max_current
+
+    def needs_home_current_change(self):
+        needs = self.actual_current != self.req_home_current
+        logging.info(f"tmc {self.name}: needs_home_current_change {needs}")
+        return needs
+
+    def needs_run_current_change(self):
+        needs = self.actual_current != self.req_run_current
+        logging.info(f"tmc {self.name}: needs_run_current_change {needs}")
+        return needs
+
+    def needs_hold_current_change(self, hold_current):
+        needs = hold_current != self.req_run_current
+        logging.info(f"tmc {self.name}: needs_hold_current_change {needs}")
+        return needs
+
+    def set_home_current(self, new_home_current):
+        self.req_home_current = min(self.max_current, new_home_current)
+
+    def set_run_current(self, new_run_current):
+        self.req_run_current = min(self.max_current, new_run_current)
+
+    def set_hold_current(self, new_hold_current):
+        self.req_hold_current = new_hold_current
+
+    def set_actual_current(self, current):
+        self.actual_current = current
+        logging.info(
+            f"tmc {self.name}: set_actual_current() new actual_current: {self.actual_current}"
+        )
+
+    def set_current_for_homing(self, print_time):
+        self.set_current(
+            self.req_home_current, self.req_hold_current, print_time
+        )
+
+    def set_current_for_normal(self, print_time):
+        self.set_current(
+            self.req_run_current, self.req_hold_current, print_time
+        )
+
+    def needs_current_changes(self, run_current, hold_current, force=False):
+        if (
+            run_current == self.actual_current
+            and hold_current == self.req_hold_current
+            and not force
+        ):
+            return False
+        return True
+
+    def set_current(self, new_current, hold_current, print_time, force=False):
+        if not self.needs_current_changes(new_current, hold_current, force):
+            return
+
+        if self.needs_hold_current_change(hold_current):
+            self.set_hold_current(hold_current)
+
+        self.set_actual_current(new_current)
+        self.apply_current(print_time)

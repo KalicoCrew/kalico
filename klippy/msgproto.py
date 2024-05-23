@@ -156,6 +156,7 @@ MessageTypes = {
     "%*s": PT_buffer(),
 }
 
+
 # Lookup the message types for a format string
 def lookup_params(msgformat, enumerations={}):
     out = []

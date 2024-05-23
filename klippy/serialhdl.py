@@ -192,7 +192,9 @@ class SerialReader:
             try:
                 fd = os.open(filename, os.O_RDWR | os.O_NOCTTY)
             except OSError as e:
-                logging.warn("%sUnable to open port: %s", self.warn_prefix, e)
+                logging.warning(
+                    "%sUnable to open port: %s", self.warn_prefix, e
+                )
                 self.reactor.pause(self.reactor.monotonic() + 5.0)
                 continue
             serial_dev = os.fdopen(fd, "rb+", 0)
@@ -215,7 +217,7 @@ class SerialReader:
                 serial_dev.rts = rts
                 serial_dev.open()
             except (OSError, IOError, serial.SerialException) as e:
-                logging.warn(
+                logging.warning(
                     "%sUnable to open serial port: %s", self.warn_prefix, e
                 )
                 self.reactor.pause(self.reactor.monotonic() + 5.0)
@@ -355,7 +357,7 @@ class SerialReader:
         )
 
     def handle_unknown(self, params):
-        logging.warn(
+        logging.warning(
             "%sUnknown message type %d: %s",
             self.warn_prefix,
             params["#msgid"],
@@ -369,7 +371,7 @@ class SerialReader:
 
     def handle_default(self, params):
         if get_danger_options().log_serial_reader_warnings:
-            logging.warn("%sgot %s", self.warn_prefix, params)
+            logging.warning("%s got %s", self.warn_prefix, params)
 
 
 # Class to send a query command and return the received response

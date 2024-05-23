@@ -7,6 +7,7 @@
 import math, logging
 from . import bus
 
+from extras.danger_options import get_danger_options
 
 ######################################################################
 # SensorBase
@@ -54,6 +55,12 @@ class SensorBase:
         )
         clock = self.mcu.get_query_slot(self.oid)
         self._report_clock = self.mcu.seconds_to_clock(REPORT_TIME)
+
+        if get_danger_options().temp_ignore_limits:
+            danger_check_count = 0
+        else:
+            danger_check_count = MAX_INVALID_COUNT
+
         self.mcu.add_config_cmd(
             "query_thermocouple oid=%u clock=%u rest_ticks=%u"
             " min_value=%u max_value=%u max_invalid_count=%u"
@@ -63,7 +70,7 @@ class SensorBase:
                 self._report_clock,
                 self.min_sample_value,
                 self.max_sample_value,
-                MAX_INVALID_COUNT,
+                danger_check_count,
             ),
             is_init=True,
         )
@@ -353,9 +360,7 @@ class MAX31865(SensorBase):
         #  R_div_nominal = 1. + CVD_A * temp + CVD_B * temp**2
         # Solve for temp using quadratic equation:
         #  temp = (-b +- sqrt(b**2 - 4ac)) / 2a
-        discriminant = math.sqrt(
-            CVD_A**2 - 4.0 * CVD_B * (1.0 - R_div_nominal)
-        )
+        discriminant = math.sqrt(CVD_A**2 - 4.0 * CVD_B * (1.0 - R_div_nominal))
         temp = (-CVD_A + discriminant) / (2.0 * CVD_B)
         return temp
 

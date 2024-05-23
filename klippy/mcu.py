@@ -843,13 +843,13 @@ class MCU:
         if (
             msg.startswith("ADC out of range")
             or msg.startswith("Thermocouple reader fault")
-        ) and not get_danger_options.adc_ignore_limits:
+        ) and not get_danger_options().temp_ignore_limits:
             pheaters = self._printer.lookup_object("heaters")
             heaters = [
                 pheaters.lookup_heater(n) for n in pheaters.available_heaters
             ]
             for heater in heaters:
-                if heater.is_adc_faulty():
+                if hasattr(heater, "is_adc_faulty") and heater.is_adc_faulty():
                     append_msgs.append(
                         {
                             "heater": heater.name,
@@ -868,7 +868,7 @@ class MCU:
             ]
             for sensor_name in sensor_names:
                 sensor = self._printer.lookup_object(sensor_name)
-                if sensor.is_adc_faulty():
+                if hasattr(sensor, "is_adc_faulty") and sensor.is_adc_faulty():
                     append_msgs.append(
                         {
                             sensor_name.split(" ")[0]: sensor.name,
@@ -1361,16 +1361,12 @@ class MCU:
 
 
 Common_MCU_errors = {
-    (
-        "Timer too close",
-    ): """
+    ("Timer too close",): """
 This often indicates the host computer is overloaded. Check
 for other processes consuming excessive CPU time, high swap
 usage, disk errors, overheating, unstable voltage, or
 similar system problems on the host computer.""",
-    (
-        "Missed scheduling of next ",
-    ): """
+    ("Missed scheduling of next ",): """
 This is generally indicative of an intermittent
 communication failure between micro-controller and host.""",
     (
@@ -1386,9 +1382,7 @@ its configured min_temp or max_temp.""",
 This generally occurs when the micro-controller has been
 requested to step at a rate higher than it is capable of
 obtaining.""",
-    (
-        "Command request",
-    ): """
+    ("Command request",): """
 This generally occurs in response to an M112 G-Code command
 or in response to an internal error in the host software.""",
 }

@@ -52,6 +52,7 @@ struct ds18_s {
     uint8_t status;
     uint8_t error_count;
     uint8_t max_error_count;
+    uint8_t ignore_limits;
 };
 
 // Lock ds18_s mutex, set error status, unlock mutex.
@@ -157,6 +158,7 @@ command_config_ds18b20(uint32_t *args)
     struct ds18_s *d = oid_alloc(args[0], command_config_ds18b20, sizeof(*d));
     d->max_error_count = args[3];
     d->error_count = 0;
+    d->ignore_limits = args[4];
     d->timer.func = ds18_event;
     d->fd = fd;
     d->status = W1_IDLE;
@@ -188,7 +190,7 @@ fail5:
     shutdown("Could not start DS18B20 reader thread");
 }
 DECL_COMMAND(command_config_ds18b20,
-             "config_ds18b20 oid=%c serial=%*s max_error_count=%c");
+             "config_ds18b20 oid=%c serial=%*s max_error_count=%c ignore_limits=%c");
 
 void
 command_query_ds18b20(uint32_t *args)
@@ -240,10 +242,12 @@ ds18_send_and_request(struct ds18_s *d, uint32_t next_begin_time, uint8_t oid)
         // Report the previous temperature and request a new one.
         sendf("ds18b20_result oid=%c next_clock=%u value=%i fault=%u"
               , oid, next_begin_time, d->temperature, 0);
-        if (d->temperature < d->min_value || d->temperature > d->max_value) {
-            pthread_mutex_unlock(&d->lock);
-            try_shutdown("DS18B20 out of range");
-            return;
+        if (d->ignore_limits == 0) {
+            if (d->temperature < d->min_value || d->temperature > d->max_value) {
+                pthread_mutex_unlock(&d->lock);
+                try_shutdown("DS18B20 out of range");
+                return;
+            }
         }
         d->request_time = request_time;
         d->status = W1_READ_REQUESTED;

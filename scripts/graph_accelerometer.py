@@ -86,6 +86,7 @@ def plot_accel(datas, lognames):
 # Frequency graphing
 ######################################################################
 
+
 # Calculate estimated "power spectral density"
 def calc_freq_response(data, max_freq):
     if isinstance(data, shaper_calibrate.CalibrationData):

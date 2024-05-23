@@ -6,6 +6,8 @@
 
 import logging
 
+from extras.danger_options import get_danger_options
+
 HOST_REPORT_TIME = 1.0
 RPI_PROC_TEMP_FILE = "/sys/class/thermal/thermal_zone0/temp"
 
@@ -58,21 +60,12 @@ class Temperature_HOST:
             self.temp = 0.0
             return self.reactor.NEVER
 
-        if self.temp < self.min_temp:
+        if (
+            self.temp < self.min_temp or self.temp > self.max_temp
+        ) and not get_danger_options().temp_ignore_limits:
             self.printer.invoke_shutdown(
-                "HOST temperature %0.1f below minimum temperature of %0.1f."
-                % (
-                    self.temp,
-                    self.min_temp,
-                )
-            )
-        if self.temp > self.max_temp:
-            self.printer.invoke_shutdown(
-                "HOST temperature %0.1f above maximum temperature of %0.1f."
-                % (
-                    self.temp,
-                    self.max_temp,
-                )
+                "HOST temperature %0.1f outside range of %0.1f:%.01f"
+                % (self.temp, self.min_temp, self.max_temp)
             )
 
         mcu = self.printer.lookup_object("mcu")

@@ -87,6 +87,7 @@ def get_acc_pos_ao6(rel_t, start_v, accel, move_t):
 get_acc_pos = get_acc_pos_ao2
 get_acc = get_accel
 
+
 # Calculate positions based on 'Moves' list
 def gen_positions():
     out = []
@@ -150,6 +151,7 @@ def trim_lists(*lists):
 # Common data filters
 ######################################################################
 
+
 # Generate estimated first order derivative
 def gen_deriv(data):
     return [0.0] + [
@@ -211,7 +213,7 @@ def calc_weighted4(positions, smooth_time):
     out = [0.0] * len(positions)
     for i in indexes(positions):
         weighted_data = [
-            positions[j] * ((offset**2 - (j - i) ** 2)) ** 2
+            positions[j] * (offset**2 - (j - i) ** 2) ** 2
             for j in range(i - offset, i + offset)
         ]
         out[i] = sum(weighted_data) * weight

@@ -8,6 +8,7 @@ from . import adc_temperature
 
 KELVIN_TO_CELSIUS = -273.15
 
+
 # Analog voltage to temperature converter for thermistors
 class Thermistor:
     def __init__(self, pullup, inline_resistor):

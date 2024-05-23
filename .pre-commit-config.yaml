@@ -1,4 +1,4 @@
-exclude: '^docs/|config/|lib/'
+exclude: "^docs/|config/|lib/"
 default_stages: [commit]
 
 repos:
@@ -17,17 +17,9 @@ repos:
       - id: end-of-file-fixer
       - id: check-builtin-literals
 
-  - repo: https://github.com/psf/black
-    rev: 22.6.0
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.5
     hooks:
-      - id: black
-
-  - repo: https://github.com/PyCQA/flake8
-    rev: 5.0.4
-    hooks:
-      - id: flake8
-
-  - repo: https://github.com/pre-commit/mirrors-autopep8
-    rev: v1.7.0
-    hooks:
-    - id: autopep8
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

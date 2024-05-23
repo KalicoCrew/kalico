@@ -189,7 +189,7 @@ class TMC2208:
         )
         self.fields.set_field("pdn_disable", True)
         # Register commands
-        current_helper = tmc2130.TMCCurrentHelper(config, self.mcu_tmc)
+        current_helper = tmc2130.TMC2130CurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters, self.read_translate)
         self.get_phase_offset = cmdhelper.get_phase_offset

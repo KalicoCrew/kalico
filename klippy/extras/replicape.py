@@ -96,7 +96,10 @@ class pca9685_pwm:
             self._is_enable = is_enable
             self._reactor.register_async_callback(
                 (
-                    lambda e, s=self, pt=print_time, ie=is_enable: s._replicape.note_pwm_enable(
+                    lambda e,
+                    s=self,
+                    pt=print_time,
+                    ie=is_enable: s._replicape.note_pwm_enable(
                         pt, s._channel, ie
                     )
                 )

@@ -47,6 +47,7 @@ def parse_log(logname):
 # Shaper calibration
 ######################################################################
 
+
 # Find the best shaper parameters
 def calibrate_shaper(
     datas,
@@ -58,7 +59,7 @@ def calibrate_shaper(
     shaper_freqs,
     max_smoothing,
     test_damping_ratios,
-    max_freq
+    max_freq,
 ):
     helper = shaper_calibrate.ShaperCalibrate(printer=None)
     if isinstance(datas[0], shaper_calibrate.CalibrationData):
