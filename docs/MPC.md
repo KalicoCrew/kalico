@@ -261,21 +261,33 @@ MPC_SET HEATER=extruder FILAMENT_DENSITY=1.09 FILAMENT_HEAT_CAPACITY=1.3
 
 MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The values from the table below should be sufficent references to allow MPC to accomodate for specific filaments.  Advanced users could tune the specific heat parameter for best result.
 
-- Specific heat is not a typical value provided by any filament manufactures so we rely on polymer raw material values.  
-- Filled filaments or polymer alloys will have different values for density and specific heat.
+# Common Materials
+ 
+| Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
+| -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
+| PLA      | 1.25            |                       | 1.8 cited in research paper (source?) |              |
+| PETG     | 1.27            | xxx                   |                                       |              |
+| PC+ABS   | 1.15            | xxx                   | Dalias                                | discord note |
+| ABS      | 1.06            | xxx                   |                                       |              |
+| ASA      | 1.07            | xxx                   |                                       |              |
+| PA6      | 1.12            | xxx                   |                                       |              |
+| PA       | 1.15            | xxx                   |                                       |              |
+| PC       | 1.20            | xxx                   |                                       |              |
+| TPU      | 1.21            |                       |                                       |              |
+| TPU-90A  | 1.15            |                       |                                       |              |
+| TPU-95A  | 1.22            |                       |                                       |              |
+
+# Common Carbon Fibre Filled Materials
 
 | Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
 | -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
-| PLA      | 1.25            | 1.2                   | 1.8 cited in research paper (source?) |              |
-| PETG     | 1.23            | 1.3                   |                                       |              |
-| PET      | 1.38            | 2.2                   | Dalias                                | discord note |
-| ABS      | 1.04            | 2.0                   |                                       |              |
-| ASA      | 1.09            | 1.3                   |                                       |              |
-| PA6      | 1.14            | 1.7                   |                                       |              |
-| PA12     | 1.02            | 1.8                   |                                       |              |
-| PC       | 1.20            | 1.2                   |                                       |              |
-| ezPC     | 1.20            | 1.30                  | Rough Value                           |              |
-|          |                 |                       |                                       |              |
+| ABS-CF   | 1.11            |                       |                                       |              |
+| ASA-CF   | 1.11            | xxx                   |                                       |              |
+| PA6-CF   | 1.19            | xxx                   |                                       |              |
+| PC+ABS-CF| 1.22            | xxx                   |                                       |              |
+| PC+CF    | 1.36            | xxx                   |                                       |              |
+| PLA-CF   | 1.29            | xxx                   |                                       |              |
+| PETG-CF  | 1.30            | xxx                   |                                       |              |
 
 # Real-Time Model State
 
