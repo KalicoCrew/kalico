@@ -51,7 +51,7 @@ cooling_fan: fan
 
 ## Filament Feed Forward Configuration
 
-MPC can look forward to changes in extrusion rates which could require more or less heat input to maintain target temperatures. This substantially improves the accuracy and responsiveness of the model. Thusly specifying these parameters is highly reccomended for best performance. Note that filament feed forward is not enabled by default unless the density and heat capacity are specified.  
+MPC can look forward to changes in extrusion rates which could require more or less heat input to maintain target temperatures. This substantially improves the accuracy and responsiveness of the model. Thusly specifying these parameters is highly reccomended for best performance. Note that filament feed forward is not enabled by default unless the density and heat capacity are specified.
 
 These should only be set under [extruder] and are not valid for [heater_bed]. 
 
@@ -64,6 +64,22 @@ These should only be set under [extruder] and are not valid for [heater_bed].
 #filament_heat_capacity: 0.0
 #   (J/g/K)
 #   A initial setting of 1.8 is reccomended as a starting value.
+```
+
+Filament feed forward parameters can be set, for the printer session, via the command line or custom G-Code with the following command.
+
+`MPC_SET HEATER=<heater> FILAMENT_DENSITY=<value> FILAMENT_HEAT_CAPACITY=<value>`
+
+`HEATER=<heater>`: Only [extruder] is supported.
+
+`FILAMENT_DENSITY=<value> `:  Filament density in g/mm^2
+
+`FILAMENT_HEAT_CAPACITY=<value>`: Filament heat capacity in J/g/K
+
+For example, updating the filament material properties for ASA would be:   
+
+```
+MPC_SET HEATER=extruder FILAMENT_DENSITY=1.07 FILAMENT_HEAT_CAPACITY=1.8  
 ```
 
 ## Optional model parameters
@@ -180,24 +196,6 @@ The calibrated parameters are not suitable for pre-configuration or are not expl
 #fan_ambient_transfer:
 #   Heat transfer from heater block to ambient in with fan
 #   enabled in (W/K).
-```
-
-# Filament Feed Forward
-
-Filament feed forward parameters can be set, for the printer session, via the command line or custom G-Code with the following command.
-
-`MPC_SET HEATER=<heater> FILAMENT_DENSITY=<value> FILAMENT_HEAT_CAPACITY=<value>`
-
-`HEATER=<heater>`: Only [extruder] is supported.
-
-`FILAMENT_DENSITY=<value> `:  Filament density in g/mm^2
-
-`FILAMENT_HEAT_CAPACITY=<value>`: Filament heat capacity in J/g/K
-
-For example, updating the filament material properties for ASA would be:   
-
-```
-MPC_SET HEATER=extruder FILAMENT_DENSITY=1.07 FILAMENT_HEAT_CAPACITY=1.8  
 ```
 
 ## Filament Feed Forward Physical Properties
