@@ -102,9 +102,7 @@ These can be tuned but should not need changing from the default values.
 #   (deg C/s) 
 ```
 
->  [!note]
-> 
-> DEV COMMENT: The smoothing parameter is set to .25 by default which is inherited from Marlin. The current reccomendation is to set smoothing: 0.4375 to allow for faster model updates.
+
 
 ## Example configuration block
 
@@ -121,8 +119,12 @@ control: mpc
 heater_power: 400  
 ```
 
+
+
 > [!IMPORTANT]
 > Restart the firmware to enable MPC and proceed to calibration.
+
+
 
 # Calibration
 
@@ -145,9 +147,13 @@ The MPC calibration routine has to be run intially for each heater to be control
 
 `[FAN_BREAKPOINTS=<value>]` : Sets the number off fan setpoint to test during calibration. Three fan powers (0%, 50%, 100%) are tested by default. An arbitrary number breakpoints can be specified e.g 7 breakpoints would result in (0, 16%, 33%, 50%, 66%, 83%, 100%) fan speeds. Each breakpoint adds about 20s to the calibration.
 
+
+
 > [!NOTE]
 > 
 > Ensure that the part cooling fan is off before starting calibration.
+
+
 
 Default calibration of the hotend:
 
@@ -203,37 +209,38 @@ The calibrated parameters are not suitable for pre-configuration or are not expl
 MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The material values from the tables below have been curated from popular filament manufacturers and material data references. These values are sufficent for MPC to implement the filament feed forward feature.  Advanced users could tune the filament_density and filament_heat_capacity parameters based on manufacturers datasheets. 
 
 ### Common Materials
- 
-| Material | Density [g/cm³] | Specific heat [J/g/K] | 
-| -------- | --------------- | --------------------- | 
-| PLA      | 1.25            | 1.8 - 2.2             |  
-| PETG     | 1.27            | 1.7 - 2.2             | 
-| PC+ABS   | 1.15            | 1.5 - 2.2             |  
-| ABS      | 1.06            | 1.25 - 2.4            |  
-| ASA      | 1.07            | 1.3 - 2.1             | 
-| PA6      | 1.12            | 2 - 2.5               |  
-| PA       | 1.15            | 2 - 2.5               |  
-| PC       | 1.20            | 1.1 - 1.9             |     
-| TPU      | 1.21            | 1.5 - 2               |    
-| TPU-90A  | 1.15            | 1.5 - 2               |    
-| TPU-95A  | 1.22            | 1.5 - 2               |                   
+
+| Material | Density [g/cm³] | Specific heat [J/g/K] |
+| -------- | --------------- | --------------------- |
+| PLA      | 1.25            | 1.8 - 2.2             |
+| PETG     | 1.27            | 1.7 - 2.2             |
+| PC+ABS   | 1.15            | 1.5 - 2.2             |
+| ABS      | 1.06            | 1.25 - 2.4            |
+| ASA      | 1.07            | 1.3 - 2.1             |
+| PA6      | 1.12            | 2 - 2.5               |
+| PA       | 1.15            | 2 - 2.5               |
+| PC       | 1.20            | 1.1 - 1.9             |
+| TPU      | 1.21            | 1.5 - 2               |
+| TPU-90A  | 1.15            | 1.5 - 2               |
+| TPU-95A  | 1.22            | 1.5 - 2               |
 
 ### Common Carbon Fiber Filled Materials
 
-| Material | Density [g/cm³] | Specific heat [J/g/K] | 
-| -------- | --------------- | --------------------- | 
-| ABS-CF   | 1.11            | *                     |
-| ASA-CF   | 1.11            | *                     | 
-| PA6-CF   | 1.19            | *                     |
-| PC+ABS-CF| 1.22            | *                     |
-| PC+CF    | 1.36            | *                     | 
-| PLA-CF   | 1.29            | *                     |
-| PETG-CF  | 1.30            | *                     | 
-* Use the specific heat from the base polymer
+| Material  | Density [g/cm³] | Specific heat [J/g/K] |
+| --------- | --------------- | --------------------- |
+| ABS-CF    | 1.11            | **                    |
+| ASA-CF    | 1.11            | **                    |
+| PA6-CF    | 1.19            | **                    |
+| PC+ABS-CF | 1.22            | **                    |
+| PC+CF     | 1.36            | **                    |
+| PLA-CF    | 1.29            | **                    |
+| PETG-CF   | 1.30            | **                    |
+
+**Use the specific heat from the base polymer
 
 # Real-Time Model State
 
-The realtime temperatures and model states can be viewed from a browser by entering the following local address for your computer.
+The real-time temperatures and model states can be viewed from a browser by entering the following local address for your computer.
 
 ```
 https://192.168.xxx.xxx:7125/printer/objects/query?extruder
@@ -241,18 +248,8 @@ https://192.168.xxx.xxx:7125/printer/objects/query?extruder
 
 ![Calibration](/docs/img/MPC_realtime_output.png)
 
-# USEAGE NOTES, KNOWN ISSUES, AND QUESTIONS
 
-- Over/undershoot for the temperature sensor may be noted. MPC controls for the temperature of the heater block and not the temperature sensor like PID. The modeled temperature of the block where heat is applied to the filament. Thus, block temperature, is the most important parameter for melting filament. For some systems print macros may need a larger window for the temperature start to account for sensor over/undershoot. Try adjust the smoothing factor to 0.4375 to reduce over/undershoot.
 
-- Overshoot/undershoot can occur because the ambient transfer coefficient can't be determined perfectly. This small error in the modeled power balance makes the system settle slightly off the target. MPC slowly corrects the ambient temperature temp until balance is achieved.
-
-- Bed calibration parameters can vary between calibration runs. It is curently unknown if this materially affect performance of MPC for bed heaters.
-
-- Does the hotend need to be close to the bed during calibration?
-
-- Systems with powerful part cooling fans and underpowered heaters can be challenging for MPC to control.
-  
 # BACKGROUND
 
 ## MPC Algorithm
@@ -272,19 +269,13 @@ SMOOTHING is the factor applied to the difference between simulated and measured
 
 No simulation is perfect and, anyway, real life ambient temperature changes. So MPC also maintains a best guess estimate of ambient temperature. When the simulated system is close to steady state the simulated ambient temperature is continually adjusted. Steady state is determined to be when the MPC algorithm is not driving the hotend at its limits (i.e., full or zero heater power) or when it is at its limit but temperatures are still not changing very much - which will occur at asymptotic temperature (usually when target temperature is zero and the hotend is at ambient).  
 
-steady_state_rate is used to recognize the asymptotic condition. Whenever the simulated hotend temperature changes at an absolute rate less than steady_state_rate between two successive runs of the algorithm, the steady state logic is applied. Since the algorithm runs frequently, even a small amount of noise can result in a fairly high instantaneous rate of change of hotend temperature. In practice 1°C/s seems to work well for steady_state_rate.  
+Steady_state_rate is used to recognize the asymptotic condition. Whenever the simulated hotend temperature changes at an absolute rate less than steady_state_rate between two successive runs of the algorithm, the steady state logic is applied. Since the algorithm runs frequently, even a small amount of noise can result in a fairly high instantaneous rate of change of hotend temperature. In practice 1°C/s seems to work well for steady_state_rate.  
 
 When in steady state, the difference between real and simulated sensor temperatures is used to drive the changes to ambient temperature. However when the temperatures are really close min_ambient_change ensures that the simulated ambient temperature converges relatively quickly. Larger values of min_ambient_change will result in faster convergence but will also cause the simulated ambient temperature to flutter somewhat chaotically around the ideal value. This is not a problem because the effect of ambient temperature is fairly small and short term variations of even 10°C or more will not have a noticeable effect.  
 
 It is important to note that the simulated ambient temperature will only converge on real world ambient temperature if the ambient heat transfer coefficients are exactly accurate. In practice this will not be the case and the simulated ambient temperature therefore also acts a correction to these inaccuracies.  
 
 Finally, armed with a new set of temperatures, the MPC algorithm calculates how much power must be applied to get the heater block to target temperature in the next two seconds. This calculation takes into account the heat that is expected to be lost to ambient air and filament heating. This power value is then converted to a PWM output.  
-
-## Possible Feature Expansions
-
-- Skipped steps might be detectable as the block temp could increases relative to the model. 
-
-- Extrusion issues possibly could be detected. Issue like filament hitting the nozzle, blobs, or spaghetti. For these, the heating requirements may be detectable against the expected model operation.
 
 ## Additional Details
 
@@ -297,6 +288,3 @@ This feature is a port of the Marlin MPC implementation and all credit goes to t
 - Marlin MPC Documentation: [https://marlinfw.org/docs/features/model_predictive_control.html]
 - GITHUB PR that implemented MPC in Marlin: [https://github.com/MarlinFirmware/Marlin/pull/23751]
 - Marlin Source Code: [https://github.com/MarlinFirmware/Marlin]
-
-# ToDo:
-- Add "exotic" filament densities and specific heat
