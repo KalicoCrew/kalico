@@ -160,13 +160,9 @@ The MPC calibration routine has to be run intially for each heater to be control
 
 `[FAN_BREAKPOINTS=<value>]` : Sets the number off fan setpoint to test during calibration. Three fan powers (0%, 50%, 100%) are tested by default. An arbitrary number breakpoints can be specified e.g 7 breakpoints would result in (0, 16%, 33%, 50%, 66%, 83%, 100%) fan speeds. Each breakpoint adds about 20s to the calibration.
 
-
-
 > [!NOTE]
 > 
 > Ensure that the part cooling fan is off before starting calibration.
-
-
 
 Default calibration of the hotend:
 
@@ -174,21 +170,15 @@ Default calibration of the hotend:
 MPC_CALIBRATE HEATER=extruder  
 ```
 
-
-
 Default calibration of the bed: 
 
 ```
 MPC_CALIBRATE HEATER=heater_bed TARGET=100  
 ```
 
-
-
 After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future reference.  
 
 ![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
-
-
 
 A **SAVE_CONFIG** command is then required to commit these calibrated parameters to the printer config. The save config block should then look similar to: 
 
@@ -235,12 +225,10 @@ Filament feed forward parameters can be set, for the printer session, via the co
 
 `FILAMENT_HEAT_CAPACITY=<value>`: Filament heat capacity in J/g/K
 
-
-
 For example, updating the filament material properties for ASA would be:   
 
 ```
-MPC_SET HEATER=extruder FILAMENT_DENSITY=1.09 FILAMENT_HEAT_CAPACITY=1.3  
+MPC_SET HEATER=extruder FILAMENT_DENSITY=1.07 FILAMENT_HEAT_CAPACITY=1.8  
 ```
 
 ## Filament Feed Forward Physical Properties
@@ -341,3 +329,9 @@ This feature is a port of the Marlin MPC implementation and all credit goes to t
 - Marlin MPC Documentation: [https://marlinfw.org/docs/features/model_predictive_control.html]
 - GITHUB PR that implemented MPC in Marlin: [https://github.com/MarlinFirmware/Marlin/pull/23751]
 - Marlin Source Code: [https://github.com/MarlinFirmware/Marlin]
+
+# ToDo:
+- Add "exotic" filament densities
+- Add specific heats for filaments
+- Remote DK and branch switch instructions
+
