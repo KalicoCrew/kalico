@@ -17,37 +17,6 @@ MPC offers several advantages over PID control:
 > [!CAUTION]
 > This feature controls the portions of the 3D printer that can get very hot. All standard Danger Klipper warnings apply. Please report all issues and bugs to github or discord.
 
-# Installation
-
-## Installation Outline
-
-- Change DK to the bleeding-edge-v2 feature branch and restart the Klipper service.
-- Set up [extruder], [heater_bed], and SAVE_CONFIG block.
-- Restart firmware to enable MPC control.
-- Calibrate extruder and/or heater_bed.
-- Commit MPC calibration parameters to printer.cfg using SAVE_CONFIG command.
-
-## Install Danger Klipper
-
-If Danger Klipper is not already installed follow the **Switch to Danger Klipper** instructions on [https://github.com/DangerKlippers/danger-klipper]
-
-## Switching Branches
-
-After installing Danger Klipper you can switch to the bleeding edge V2 branch containing MPC functionality by issuing the following console commands:
-
-```
-cd ~
-cd klipper
-git fetch -a
-git checkout bleeding-edge-v2
-```
-
-After installation of the branch the Klipper service should be restarted with:
-
-```
-sudo systemctl restart klipper
-```
-
 # Configuration
 
 To use MPC as the temperature controller set the following configuration parameters in the appropriate heater section of the config.   
@@ -333,5 +302,4 @@ This feature is a port of the Marlin MPC implementation and all credit goes to t
 # ToDo:
 - Add "exotic" filament densities
 - Add specific heats for filaments
-- Remote DK and branch switch instructions
 
