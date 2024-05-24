@@ -200,35 +200,36 @@ The calibrated parameters are not suitable for pre-configuration or are not expl
 
 ## Filament Feed Forward Physical Properties
 
-MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The material values from the tables below have been curated from popular filament manufacturers and material data references. These values are sufficent for MPC to implement the filament feed forward feature.  Advanced users could tune the filament_density and filament_heat_capacity parameters based on manufacturers datasheets. Note that specific heat increases with material temperature and most specific heats are specified at a temperature well below 3D printing temperatures. For most polymers the printing temperature specific heat will be 1.2x - 1.5x compared to the room temperature value.
+MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The material values from the tables below have been curated from popular filament manufacturers and material data references. These values are sufficent for MPC to implement the filament feed forward feature.  Advanced users could tune the filament_density and filament_heat_capacity parameters based on manufacturers datasheets. 
 
 ### Common Materials
  
-| Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
-| -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
-| PLA      | 1.25            |                       | 1.8 cited in research paper (source?) |              |
-| PETG     | 1.27            | xxx                   |                                       |              |
-| PC+ABS   | 1.15            | xxx                   | Dalias                                | discord note |
-| ABS      | 1.06            | xxx                   |                                       |              |
-| ASA      | 1.07            | xxx                   |                                       |              |
-| PA6      | 1.12            | xxx                   |                                       |              |
-| PA       | 1.15            | xxx                   |                                       |              |
-| PC       | 1.20            | xxx                   |                                       |              |
-| TPU      | 1.21            |                       |                                       |              |
-| TPU-90A  | 1.15            |                       |                                       |              |
-| TPU-95A  | 1.22            |                       |                                       |              |
+| Material | Density [g/cm³] | Specific heat [J/g/K] | 
+| -------- | --------------- | --------------------- | 
+| PLA      | 1.25            | 1.8 - 2.2             |  
+| PETG     | 1.27            | 1.7 - 2.2             | 
+| PC+ABS   | 1.15            | 1.5 - 2.2             |  
+| ABS      | 1.06            | 1.25 - 2.4            |  
+| ASA      | 1.07            | 1.3 - 2.1             | 
+| PA6      | 1.12            | 2 - 2.5               |  
+| PA       | 1.15            | 2 - 2.5               |  
+| PC       | 1.20            | 1.1 - 1.9             |     
+| TPU      | 1.21            | 1.5 - 2               |    
+| TPU-90A  | 1.15            | 1.5 - 2               |    
+| TPU-95A  | 1.22            | 1.5 - 2               |                   
 
 ### Common Carbon Fiber Filled Materials
 
-| Material | Density [g/cm³] | Specific heat [J/g/K] | Note                                  | Reference    |
-| -------- | --------------- | --------------------- | ------------------------------------- | ------------ |
-| ABS-CF   | 1.11            |                       |                                       |              |
-| ASA-CF   | 1.11            | xxx                   |                                       |              |
-| PA6-CF   | 1.19            | xxx                   |                                       |              |
-| PC+ABS-CF| 1.22            | xxx                   |                                       |              |
-| PC+CF    | 1.36            | xxx                   |                                       |              |
-| PLA-CF   | 1.29            | xxx                   |                                       |              |
-| PETG-CF  | 1.30            | xxx                   |                                       |              |
+| Material | Density [g/cm³] | Specific heat [J/g/K] | 
+| -------- | --------------- | --------------------- | 
+| ABS-CF   | 1.11            | *                     |
+| ASA-CF   | 1.11            | *                     | 
+| PA6-CF   | 1.19            | *                     |
+| PC+ABS-CF| 1.22            | *                     |
+| PC+CF    | 1.36            | *                     | 
+| PLA-CF   | 1.29            | *                     |
+| PETG-CF  | 1.30            | *                     | 
+* Use the specific heat from the base polymer
 
 # Real-Time Model State
 
@@ -298,6 +299,4 @@ This feature is a port of the Marlin MPC implementation and all credit goes to t
 - Marlin Source Code: [https://github.com/MarlinFirmware/Marlin]
 
 # ToDo:
-- Add "exotic" filament densities
-- Add specific heats for filaments
-
+- Add "exotic" filament densities and specific heat
