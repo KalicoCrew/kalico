@@ -356,12 +356,12 @@ class Heater:
                     "filament_diameter", above=0.0, default=1.75
                 )
                 temp_profile["filament_density"] = config_section.getfloat(
-                    "filament_density", above=0.0, default=0.0
+                    "filament_density", above=0.0, default=1.2
                 )
                 temp_profile[
                     "filament_heat_capacity"
                 ] = config_section.getfloat(
-                    "filament_heat_capacity", above=0.0, default=0.0
+                    "filament_heat_capacity", above=0.0, default=1.8
                 )
 
                 ambient_sensor_name = config_section.get(
