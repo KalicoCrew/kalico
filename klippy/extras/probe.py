@@ -195,6 +195,12 @@ class PrinterProbe:
         # even number of samples
         return self._calc_mean(z_sorted[middle - 1 : middle + 1])
 
+    @property
+    def _drop_first_result(self):
+        if hasattr(self, "drop_first_result"):
+            return self.drop_first_result
+        return False
+
     def run_probe(self, gcmd):
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         lift_speed = self.get_lift_speed(gcmd)
@@ -220,7 +226,7 @@ class PrinterProbe:
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(speed)
-            if self.drop_first_result and first_probe:
+            if self._drop_first_result and first_probe:
                 first_probe = False
                 liftpos = [None, None, pos[2] + sample_retract_dist]
                 self._move(liftpos, lift_speed)
@@ -300,7 +306,7 @@ class PrinterProbe:
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(speed)
-            if self.drop_first_result and first_probe:
+            if self._drop_first_result and first_probe:
                 first_probe = False
                 liftpos = [None, None, pos[2] + sample_retract_dist]
                 self._move(liftpos, lift_speed)
