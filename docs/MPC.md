@@ -27,43 +27,46 @@ Currently only [extruder] and [heater_bed] heater types are supported.
 control: mpc
 heater_power:
 #   Nameplate heater power in watts. 
-#   Note that for a PTC, a non-linear heater, MPC may not work
-#   optimally due to the change in power output relative to temperature
-#   for this style of heater. Setting heater_power to the power
-#   output at the expected printing temperature is reccomended.
+
+#   Note that for a PTC, a non-linear heater, MPC may not work optimally due
+#   to the change in power output relative to temperature for this style of
+#   heater. Setting heater_power to the power output at the expected printing
+#   temperature is recommended.
 cooling_fan: fan 
 #   This is the fan that is cooling extruded filament and the hotend.
 #   cooling_fan is supported for [heater_bed] but accurate performance has
-#   not been verifed.
+#   not been verified.
 #   Specifying "fan" will automatically use the part cooling fan.
-#   Bed fans could be used for the [heater_bed]
-#   by specifying <fan_generic BedFans> for example.
+#   Bed fans could be used for the [heater_bed] by specifying
+#   <fan_generic BedFans> for example.
 #ambient_temp_sensor: <temperature_sensor sensor_name>
-#   Optional. If this is not given MPC will estimate this parameter 
+#   Optional. If this is not given MPC will estimate this parameter
 #   (reccomended).
-#   It can use any sensor but it should be a temperature sensor 
-#   in proximity to the hotend or measuring the ambient air surrounding 
-#   the hotend such as a chamber sensor. 
-#   This is used for initial state temperature and calibration but 
-#   not for actual control.
+#   It can use any sensor, but it should be a temperature sensor in proximity
+#   to the hotend or measuring the ambient air surrounding the hotend such as
+#   a chamber sensor. 
+#   This is used for initial state temperature and calibration but not for
+#   actual control.
 #   Example sensor: temperature_sensor beacon_coil
 ```
 
 ## Filament Feed Forward Configuration
 
-MPC can look forward to changes in extrusion rates which could require more or less heat input to maintain target temperatures. This substantially improves the accuracy and responsiveness of the model. Thusly specifying these parameters is highly reccomended for best performance. Note that filament feed forward is not enabled by default unless the density and heat capacity are specified.
+
+MPC can look forward to changes in extrusion rates which could require more or less heat input to maintain target temperatures. This substantially improves the accuracy and responsiveness of the model during printing. 
+
 
 These should only be set under [extruder] and are not valid for [heater_bed]. 
 
 ```
 #filament_diameter: 1.75
 #   (mm)
-#filament_density: 0.0
-#   (g/mm^2)
-#   An initial setting of 1.20 is reccomended as a starting value.
-#filament_heat_capacity: 0.0
-#   (J/g/K)
-#   A initial setting of 1.8 is reccomended as a starting value.
+#filament_density: 1.2
+#   1.2 (g/mm^3) is the default to cover a wide range of standard
+#   materials including ABS, ASA, PLA, PETG.
+#filament_heat_capacity: 1.8
+#   1.8 (J/g/K) is the default to cover a wide range of standard
+#   materials including ABS, ASA, PLA, PETG.
 ```
 
 Filament feed forward parameters can be set, for the printer session, via the command line or custom G-Code with the following command.
@@ -72,14 +75,14 @@ Filament feed forward parameters can be set, for the printer session, via the co
 
 `HEATER=<heater>`: Only [extruder] is supported.
 
-`FILAMENT_DENSITY=<value> `:  Filament density in g/mm^2
+`FILAMENT_DENSITY=<value> `:  Filament density in g/mm^3
 
 `FILAMENT_HEAT_CAPACITY=<value>`: Filament heat capacity in J/g/K
 
 For example, updating the filament material properties for ASA would be:   
 
 ```
-MPC_SET HEATER=extruder FILAMENT_DENSITY=1.07 FILAMENT_HEAT_CAPACITY=1.8  
+MPC_SET HEATER=extruder FILAMENT_DENSITY=1.07 FILAMENT_HEAT_CAPACITY=1.7  
 ```
 
 ## Optional model parameters
@@ -89,20 +92,19 @@ These can be tuned but should not need changing from the default values.
 ```
 #target_reach_time: 2.0
 #   (sec) 
-#smoothing: 0.25
+#smoothing: 0.83
 #   (sec)
-#   This parameter affects how quickly the model learns. 
-#   Higher value will make it learn faster.
+#   This parameter affects how quickly the model learns and it represents
+#   the ratio of temperature difference applied per second.
+#   A value of 1.0 represents no smoothing used in the model.
 #min_ambient_change: 1.0
 #   (deg C)
-#   Larger values of MIN_AMBIENT_CHANGE will result in faster 
-#   convergence but will also cause the simulated ambient temperature 
-#   to flutter somewhat chaotically around the ideal value.  
+#   Larger values of MIN_AMBIENT_CHANGE will result in faster convergence
+#   but will also cause the simulated ambient temperature to flutter
+#   somewhat chaotically around the ideal value.  
 #steady_state_rate: 0.5
-#   (deg C/s) 
+#   (deg C/s)
 ```
-
-
 
 ## Example configuration block
 
@@ -119,12 +121,8 @@ control: mpc
 heater_power: 400  
 ```
 
-
-
 > [!IMPORTANT]
 > Restart the firmware to enable MPC and proceed to calibration.
-
-
 
 # Calibration
 
@@ -133,27 +131,22 @@ The MPC default calibration routine takes the following steps:
 - Cool to ambient: The calibration routine needs to know the approximate ambient temperature. It switches the part cooling fan on and waits until the hotend temperature stops decreasing relative to ambient.
 - Heat past 200°C: Measure the point where the temperature is increasing most rapidly, and the time and temperature at that point. Also, three temperature measurements are needed at some point after the initial latency has taken effect. The tuning algorithm heats the hotend to over 200°C.
 - Hold temperature while measuring ambient heat-loss: At this point enough is known for the MPC algorithm to engage. The calibration routine makes a best guess at the overshoot past 200°C which will occur and targets this temperature for about a minute while ambient heat-loss is measured without (and optionally with) the fan.
-- MPC calibration routine creates the appropriate model constants and saves them for use. At this time the model parameters are temporate and not yet saved to the printer configuration via SAVE_CONFIG.  
+- MPC calibration routine creates the appropriate model constants and saves them for use. At this time the model parameters are temporary and not yet saved to the printer configuration via SAVE_CONFIG.  
 
 ## Hotend or Bed Calibration
 
-The MPC calibration routine has to be run intially for each heater to be controlled using MPC. In order for MPC to be functional an extruder must be able to reach 200C and a bed to reach 90C.
+The MPC calibration routine has to be run initially for each heater to be controlled using MPC. In order for MPC to be functional an extruder must be able to reach 200C and a bed to reach 90C.
 
 `MPC_CALIBRATE HEATER=<heater> [TARGET=<temperature>] [FAN_BREAKPOINTS=<value>]`
 
 `HEATER=<heater>` :The heater to be calibrated. [extruder] or [heater_bed] supported.
 
-`[TARGET=<temperature>]` : Sets the calibration temperature in degrees C. TARGET default is 200C for extruder and 90C for beds. MPC calibration is temperature independent so calibration the extruder at higher temperatures will not necessarly produce better model parameters. This is an area of exploration for advanced users
+`[TARGET=<temperature>]` : Sets the calibration temperature in degrees C. TARGET default is 200C for extruder and 90C for beds. MPC calibration is temperature independent so calibration the extruder at higher temperatures will not necessarily produce better model parameters. This is an area of exploration for advanced users
 
-`[FAN_BREAKPOINTS=<value>]` : Sets the number off fan setpoint to test during calibration. Three fan powers (0%, 50%, 100%) are tested by default. An arbitrary number breakpoints can be specified e.g 7 breakpoints would result in (0, 16%, 33%, 50%, 66%, 83%, 100%) fan speeds. Each breakpoint adds about 20s to the calibration.
-
-
+`[FAN_BREAKPOINTS=<value>]` : Sets the number off fan setpoint to test during calibration. Three fan powers (0%, 50%, 100%) are tested by default. An arbitrary number breakpoints can be specified e.g. 7 breakpoints would result in (0, 16%, 33%, 50%, 66%, 83%, 100%) fan speeds. Each breakpoint adds about 20s to the calibration.
 
 > [!NOTE]
-> 
 > Ensure that the part cooling fan is off before starting calibration.
-
-
 
 Default calibration of the hotend:
 
@@ -167,7 +160,7 @@ Default calibration of the bed:
 MPC_CALIBRATE HEATER=heater_bed TARGET=100  
 ```
 
-After calibration the routine will generate the key model parameters which will be avaliable for use in that printer session and are avaliable in the log for future reference.  
+After calibration the routine will generate the key model parameters which will be available for use in that printer session and are available in the log for future reference.  
 
 ![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
 
@@ -188,7 +181,10 @@ A **SAVE_CONFIG** command is then required to commit these calibrated parameters
 #*# ambient_transfer = 15.6868
 ```
 
-The calibrated parameters are not suitable for pre-configuration or are not explicetly determinable. Advanced users could tweak these post calibration based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
+> [!NOTE]
+> If the [extruder] and [heater_bed] sections are located in a cfg file other than printer.cfg the SAVE_CONFIG command may not be able to write the calibration parameters and klippy will provide an error. 
+
+The calibrated parameters are not suitable for pre-configuration or are not explicitly determinable. Advanced users could tweak these post calibration based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
 
 ```
 #block_heat_capacity:
@@ -196,17 +192,15 @@ The calibrated parameters are not suitable for pre-configuration or are not expl
 #ambient_transfer:
 #   Heat transfer from heater block to ambient in (W/K).
 #sensor_responsiveness:
-#   A single constant representing the coefficient of heat transfer 
-#   from heater block to sensor and heat capacity of the sensor 
-#   in (K/s/K). 
+#   A single constant representing the coefficient of heat transfer from
+#   heater block to sensor and heat capacity of the sensor in (K/s/K).
 #fan_ambient_transfer:
-#   Heat transfer from heater block to ambient in with fan
-#   enabled in (W/K).
+#   Heat transfer from heater block to ambient in with fan enabled in (W/K).
 ```
 
 ## Filament Feed Forward Physical Properties
 
-MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The material values from the tables below have been curated from popular filament manufacturers and material data references. These values are sufficent for MPC to implement the filament feed forward feature.  Advanced users could tune the filament_density and filament_heat_capacity parameters based on manufacturers datasheets. 
+MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filament by 1°C. The material values from the tables below have been curated from popular filament manufacturers and material data references. These values are sufficient for MPC to implement the filament feed forward feature.  Advanced users could tune the filament_density and filament_heat_capacity parameters based on manufacturers datasheets. 
 
 ### Common Materials
 
@@ -248,13 +242,11 @@ https://192.168.xxx.xxx:7125/printer/objects/query?extruder
 
 ![Calibration](/docs/img/MPC_realtime_output.png)
 
-
-
 # BACKGROUND
 
 ## MPC Algorithm
 
-MPC models the hotend system as four thermal masses: ambient air, the filament, the heater block and the sensor. Heater power heats the modeled heater block directly. Ambient air heats or cools the heater block. Filament cools the heater block. The heater block heats or cools the sensor.  
+MPC models the hotend system as four thermal masses: ambient air, the filament, the heater block and the sensor. Heater power heats the modelled heater block directly. Ambient air heats or cools the heater block. Filament cools the heater block. The heater block heats or cools the sensor.  
 
 Every time the MPC algorithm runs it uses the following information to calculate a new temperature for the simulated hotend and sensor:  
 
@@ -263,7 +255,7 @@ Every time the MPC algorithm runs it uses the following information to calculate
 - The effect of the fan on heat-loss to the ambient air.  
 - The effect of filament feedrate on heat-loss to the filament. Filament is assumed to be at the same temperature as the ambient air.  
 
-Once this calculation is done, the simulated sensor temperature is compared to the measured temperature and a fraction of the difference is added to the modeled sensor and heater block temperatures. This drags the simulated system in the direction of the real system. Because only a fraction of the difference is applied, sensor noise is diminished and averages out to zero over time. Both the simulated and the real sensor exhibit the same (or very similar) latency. Consequently the effects of latency are eliminated when these values are compared to each other. So the simulated hotend is only minimally affected by sensor noise and latency.   
+Once this calculation is done, the simulated sensor temperature is compared to the measured temperature and a fraction of the difference is added to the modelled sensor and heater block temperatures. This drags the simulated system in the direction of the real system. Because only a fraction of the difference is applied, sensor noise is diminished and averages out to zero over time. Both the simulated and the real sensor exhibit the same (or very similar) latency. Consequently, the effects of latency are eliminated when these values are compared to each other. So, the simulated hotend is only minimally affected by sensor noise and latency.   
 
 SMOOTHING is the factor applied to the difference between simulated and measured sensor temperature. At its maximum value of 1, the simulated sensor temperature is continually set equal to the measured sensor temperature. A lower value will result in greater stability in MPC output power but also in decreased responsiveness. A value around 0.25 seems to work quite well.  
 
@@ -271,7 +263,7 @@ No simulation is perfect and, anyway, real life ambient temperature changes. So 
 
 Steady_state_rate is used to recognize the asymptotic condition. Whenever the simulated hotend temperature changes at an absolute rate less than steady_state_rate between two successive runs of the algorithm, the steady state logic is applied. Since the algorithm runs frequently, even a small amount of noise can result in a fairly high instantaneous rate of change of hotend temperature. In practice 1°C/s seems to work well for steady_state_rate.  
 
-When in steady state, the difference between real and simulated sensor temperatures is used to drive the changes to ambient temperature. However when the temperatures are really close min_ambient_change ensures that the simulated ambient temperature converges relatively quickly. Larger values of min_ambient_change will result in faster convergence but will also cause the simulated ambient temperature to flutter somewhat chaotically around the ideal value. This is not a problem because the effect of ambient temperature is fairly small and short term variations of even 10°C or more will not have a noticeable effect.  
+When in steady state, the difference between real and simulated sensor temperatures is used to drive the changes to ambient temperature. However when the temperatures are really close min_ambient_change ensures that the simulated ambient temperature converges relatively quickly. Larger values of min_ambient_change will result in faster convergence but will also cause the simulated ambient temperature to flutter somewhat chaotically around the ideal value. This is not a problem because the effect of ambient temperature is fairly small and short-term variations of even 10°C or more will not have a noticeable effect.  
 
 It is important to note that the simulated ambient temperature will only converge on real world ambient temperature if the ambient heat transfer coefficients are exactly accurate. In practice this will not be the case and the simulated ambient temperature therefore also acts a correction to these inaccuracies.  
 
@@ -279,11 +271,11 @@ Finally, armed with a new set of temperatures, the MPC algorithm calculates how 
 
 ## Additional Details
 
-Please refer to that the excellent Marlin MPC Documentation for information on the model derivations, tuning methods, and heat transfer coefficents used in this feature.   
+Please refer to that the excellent Marlin MPC Documentation for information on the model derivations, tuning methods, and heat transfer coefficients used in this feature.   
 
 # Acknowledgements
 
-This feature is a port of the Marlin MPC implementation and all credit goes to their team and community for pioneering this feature for open source 3D printing. The Marlin MPC documentation and github pages were heavily referenced and in some cases directly copied and edited to create this document.  
+This feature is a port of the Marlin MPC implementation, and all credit goes to their team and community for pioneering this feature for open source 3D printing. The Marlin MPC documentation and github pages were heavily referenced and, in some cases directly copied and edited to create this document.  
 
 - Marlin MPC Documentation: [https://marlinfw.org/docs/features/model_predictive_control.html]
 - GITHUB PR that implemented MPC in Marlin: [https://github.com/MarlinFirmware/Marlin/pull/23751]
