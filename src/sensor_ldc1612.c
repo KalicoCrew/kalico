@@ -98,12 +98,6 @@ check_home(struct ldc1612 *ld, uint32_t data)
     uint8_t homing_flags = ld->homing_flags;
     if (!(homing_flags & LH_CAN_TRIGGER))
         return;
-    if (data > 0x0fffffff) {
-        // Sensor reports an issue - cancel homing
-        ld->homing_flags = 0;
-        trsync_do_trigger(ld->ts, ld->error_reason);
-        return;
-    }
     uint32_t time = timer_read_time();
     if ((homing_flags & LH_AWAIT_HOMING)
         && timer_is_before(time, ld->homing_clock))
@@ -161,21 +155,8 @@ ldc1612_query(struct ldc1612 *ld, uint8_t oid)
     ld->sb.data_count += BYTES_PER_SAMPLE;
 
     // Check for endstop trigger
-    uint8_t homing_flags = ld->homing_flags;
-    if (homing_flags & LH_CAN_TRIGGER) {
-        uint32_t time = timer_read_time();
-        if (!(homing_flags & LH_AWAIT_HOMING)
-            || !timer_is_before(time, ld->homing_clock)) {
-            homing_flags &= ~LH_AWAIT_HOMING;
-            uint32_t data = (d[0] << 24L) | (d[1] << 16L) | (d[2] << 8) | d[3];
-            if (data > ld->trigger_threshold) {
-                homing_flags = 0;
-                ld->homing_clock = time;
-                trsync_do_trigger(ld->ts, ld->trigger_reason);
-            }
-            ld->homing_flags = homing_flags;
-        }
-    }
+    uint32_t data = (d[0] << 24L) | (d[1] << 16L) | (d[2] << 8) | d[3];
+    check_home(ld, data);
 
     // Flush local buffer if needed
     if (ld->sb.data_count + BYTES_PER_SAMPLE > ARRAY_SIZE(ld->sb.data))
