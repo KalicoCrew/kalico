@@ -119,6 +119,12 @@ check_home(struct ldc1612 *ld, uint32_t data)
     uint8_t homing_flags = ld->homing_flags;
     if (!(homing_flags & LH_CAN_TRIGGER))
         return;
+    if (data > 0x0fffffff) {
+        // Sensor reports an issue - cancel homing
+        ld->homing_flags = 0;
+        trsync_do_trigger(ld->ts, ld->error_reason);
+        return;
+    }
     uint32_t time = timer_read_time();
     if ((homing_flags & LH_AWAIT_HOMING)
         && timer_is_before(time, ld->homing_clock))
@@ -164,9 +170,6 @@ ldc1612_query(struct ldc1612 *ld, uint8_t oid)
     irq_disable();
     ld->flags &= ~LDC_PENDING;
     irq_enable();
-
-    // Check if data available
-    uint16_t status = read_reg_status(ld);
     if (!(status & 0x08))
         return;
 
