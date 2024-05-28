@@ -129,7 +129,7 @@ Fields["DRV_STATUS"] = {
     "s2vsb": 0x01 << 13,
     "stealth": 0x01 << 14,
     "fsactive": 0x01 << 15,
-    "csactual": 0xFF << 16,
+    "cs_actual": 0x1F << 16,
     "stallguard": 0x01 << 24,
     "ot": 0x01 << 25,
     "otpw": 0x01 << 26,
@@ -139,6 +139,7 @@ Fields["DRV_STATUS"] = {
     "olb": 0x01 << 30,
     "stst": 0x01 << 31,
 }
+Fields["FACTORY_CONF"] = {"factory_conf": 0x1F << 0}
 Fields["FACTORY_CONF"] = {"factory_conf": 0x1F << 0}
 Fields["GCONF"] = {
     "recalibrate": 0x01 << 0,
