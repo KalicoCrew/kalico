@@ -239,7 +239,7 @@ class EddyEndstopWrapper:
         if self._is_sampling:
             return
         self._is_sampling = True
-        self._is_from_home = is_home
+        self._start_from_home = is_home
         self._sensor_helper.add_client(self._add_measurement)
 
     def _stop_measurements(self, is_home=False):
