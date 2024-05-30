@@ -151,7 +151,7 @@ config MACH_N32G45x
 config HAVE_STM32_USBFS
     bool
     default y if MACH_STM32F0x2 || MACH_STM32G0Bx || MACH_STM32L4 || MACH_STM32G4 || MACH_AT32F403
-    default y if (MACH_STM32F103 || MACH_STM32F070) && !STM32_CLOCK_REF_INTERNAL
+    default y if (MACH_STM32F1 || MACH_STM32F070) && !STM32_CLOCK_REF_INTERNAL
 config HAVE_STM32_USBOTG
     bool
     default y if MACH_STM32F2 || MACH_STM32F4 || MACH_STM32F7 || MACH_STM32H7
@@ -192,6 +192,7 @@ config MCU
     default "stm32h743xx" if MACH_STM32H743
     default "stm32h750xx" if MACH_STM32H750
     default "stm32l412xx" if MACH_STM32L412
+    default "stm32f103xe" if MACH_N32G45x
     default "AT32F403Axx" if MACH_AT32F403
 
 config CLOCK_FREQ
@@ -209,6 +210,8 @@ config CLOCK_FREQ
     default 170000000 if MACH_STM32G474
     default 400000000 if MACH_STM32H7 # 400Mhz is max Klipper currently supports
     default 80000000 if MACH_STM32L412
+    default 64000000 if MACH_N32G45x && STM32_CLOCK_REF_INTERNAL
+    default 128000000 if MACH_N32G45x
     default 240000000 if MACH_AT32F403
 
 config FLASH_SIZE
@@ -271,7 +274,7 @@ config STM32_DFU_ROM_ADDRESS
     default 0 if !USB
     default 0x1fffc400 if MACH_STM32F042
     default 0x1fffc800 if MACH_STM32F072
-    default 0x1fff0000 if MACH_STM32F4 || MACH_STM32G0 || MACH_STM32G4 || MACH_STM32L4
+    default 0x1fff0000 if MACH_STM32F4 || MACH_STM32F7 || MACH_STM32G0 || MACH_STM32G4 || MACH_STM32L4
     default 0x1fffb000 if MACH_AT32F403
     default 0x1ff09800 if MACH_STM32H7
     default 0
