@@ -189,7 +189,6 @@ config MCU
     default "stm32h743xx" if MACH_STM32H743
     default "stm32h750xx" if MACH_STM32H750
     default "stm32l412xx" if MACH_STM32L412
-    default "stm32f103xe" if MACH_N32G45x
 
 config CLOCK_FREQ
     int
@@ -267,7 +266,8 @@ config STM32_DFU_ROM_ADDRESS
     default 0 if !USB
     default 0x1fffc400 if MACH_STM32F042
     default 0x1fffc800 if MACH_STM32F072
-    default 0x1fff0000 if MACH_STM32F4 || MACH_STM32F7 || MACH_STM32G0 || MACH_STM32G4 || MACH_STM32L4
+    default 0x1fff0000 if MACH_STM32F4 || MACH_STM32G0 || MACH_STM32G4 || MACH_STM32L4
+    default 0x1fffb000 if MACH_AT32F403
     default 0x1ff09800 if MACH_STM32H7
     default 0
 

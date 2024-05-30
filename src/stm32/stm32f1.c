@@ -90,14 +90,6 @@ clock_setup(void)
             cfgr |= (1 << 31); // PLLRANGE
             cfgr |= (1 << 28); // ADCDIV UPPER /16 total
 	}
-
-	if (CONFIG_CLOCK_FREQ > 192000000) { // at32 and needs hick for usb
-            RCC->APB2ENR |= REG_CRM_APB2EN_ACCEN; // enable ACC clock domain
-            RCC->CR |= RCC_CR_HSION; // turn on hick aka HSI for f1
-            *((uint32_t *)REG_ACC_CTRL1_ADDR) |= REG_ACC_CTRL1_ENTRIM | REG_ACC_CTRL1_CALON; // enable clock recovery
-            *((uint32_t *)REG_CRM_MISC1_ADDR) |= REG_CRM_MISC1_HICKDIV; // set to 48mhz output
-            *((uint32_t *)REG_CRM_MISC3_ADDR) |= REG_CRM_MISC3_HICK_TO_USB; // drive hick to usb
-	}
     } else {
         // Configure 72Mhz PLL from internal 8Mhz oscillator (HSI)
         uint32_t div2 = (CONFIG_CLOCK_FREQ / 8000000) * 2;
@@ -109,7 +101,8 @@ clock_setup(void)
     RCC->CR |= RCC_CR_PLLON;
 
     // Set flash latency
-    FLASH->ACR = (2 << FLASH_ACR_LATENCY_Pos) | FLASH_ACR_PRFTBE;
+    if (!CONFIG_MACH_AT32F403)
+        FLASH->ACR = (2 << FLASH_ACR_LATENCY_Pos) | FLASH_ACR_PRFTBE;
 
     // Wait for PLL lock
     while (!(RCC->CR & RCC_CR_PLLRDY))
@@ -280,6 +273,7 @@ bootloader_request(void)
         usb_hid_bootloader();
     else if (CONFIG_STM32_FLASH_START_2000)
         usb_stm32duino_bootloader();
+    dfu_reboot();
 }
 
 
@@ -291,6 +285,7 @@ bootloader_request(void)
 void
 armcm_main(void)
 {
+    dfu_reboot_check();
     // Run SystemInit() and then restore VTOR
     SystemInit();
     SCB->VTOR = (uint32_t)VectorTable;
