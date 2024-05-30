@@ -77,19 +77,29 @@ clock_setup(void)
         RCC->CR |= RCC_CR_HSEON;
         uint32_t div = CONFIG_CLOCK_FREQ / (CONFIG_CLOCK_REF_FREQ / 2);
         cfgr = 1 << RCC_CFGR_PLLSRC_Pos;
+
         if ((div & 1) && div <= 16)
             cfgr |= RCC_CFGR_PLLXTPRE_HSE_DIV2;
         else
             div /= 2;
-	if (div <= 16) {
+
+        if (div <= 16) {
             cfgr |= (div - 2) << RCC_CFGR_PLLMULL_Pos;
-	} else { // only at32f4 exceeds 16
+        } else { // only at32f4 exceeds 16
             cfgr |= ((div - 1) & 0xF) << RCC_CFGR_PLLMULL_Pos;
             cfgr |= ((div - 1) & 0x30) << (29-4); // PLLMULT UPPER
             cfgr |= (2 << 22) | (1 << 27); // usb /4, USBDIV
             cfgr |= (1 << 31); // PLLRANGE
             cfgr |= (1 << 28); // ADCDIV UPPER /16 total
-	}
+        }
+
+        if (CONFIG_CLOCK_FREQ > 192000000) { // at32 and needs hick for usb
+            RCC->APB2ENR |= REG_CRM_APB2EN_ACCEN; // enable ACC clock domain
+            RCC->CR |= RCC_CR_HSION; // turn on hick aka HSI for f1
+            *((uint32_t *)REG_ACC_CTRL1_ADDR) |= REG_ACC_CTRL1_ENTRIM | REG_ACC_CTRL1_CALON; // enable clock recovery
+            *((uint32_t *)REG_CRM_MISC1_ADDR) |= REG_CRM_MISC1_HICKDIV; // set to 48mhz output
+            *((uint32_t *)REG_CRM_MISC3_ADDR) |= REG_CRM_MISC3_HICK_TO_USB; // drive hick to usb
+        }
     } else {
         // Configure 72Mhz PLL from internal 8Mhz oscillator (HSI)
         uint32_t div2 = (CONFIG_CLOCK_FREQ / 8000000) * 2;
@@ -101,8 +111,7 @@ clock_setup(void)
     RCC->CR |= RCC_CR_PLLON;
 
     // Set flash latency
-    if (!CONFIG_MACH_AT32F403)
-        FLASH->ACR = (2 << FLASH_ACR_LATENCY_Pos) | FLASH_ACR_PRFTBE;
+    //FLASH->ACR = (2 << FLASH_ACR_LATENCY_Pos) | FLASH_ACR_PRFTBE;
 
     // Wait for PLL lock
     while (!(RCC->CR & RCC_CR_PLLRDY))
