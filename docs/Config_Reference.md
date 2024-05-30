@@ -1332,6 +1332,8 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   To disable the validation, set this parameter to a high value.
 ```
 
+#### [z_tilt_ng]
+
 ```
 [z_tilt_ng]
 #z_positions:
