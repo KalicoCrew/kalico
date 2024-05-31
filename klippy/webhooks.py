@@ -386,6 +386,7 @@ class WebHooks:
         src_path = os.path.dirname(__file__)
         klipper_path = os.path.normpath(os.path.join(src_path, ".."))
         response = {
+            "app": "Danger-Klipper",
             "state": state,
             "state_message": state_message,
             "hostname": socket.gethostname(),
