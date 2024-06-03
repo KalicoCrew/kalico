@@ -58,11 +58,12 @@ class TMC2209:
         self.fields.set_field("pdn_disable", True)
         self.fields.set_field("senddelay", 2)  # Avoid tx errors on shared uart
         # Allow virtual pins to be created
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        pin_helper = tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
         # Register commands
         current_helper = tmc2130.TMC2130CurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters)
+        cmdhelper.setup_pin_helper_commands(pin_helper)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
         # Setup basic register values
