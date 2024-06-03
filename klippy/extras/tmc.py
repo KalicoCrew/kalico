@@ -318,12 +318,14 @@ class TMCCommandHelper:
             desc=self.cmd_SET_TMC_CURRENT_help,
         )
         gcode.register_mux_command(
-            "TEST_SG",
+            "ENABLE_STALLGUARD",
             "STEPPER",
             self.name,
-            self.cmd_TEST_SG,
+            self.cmd_ENABLE_STALLGUARD,
             desc=self.cmd_SET_TMC_CURRENT_help,
         )
+        self.enable_stallguard_fn = None
+        self.disable_stallguard_fn = None
 
     def _init_registers(self, print_time=None):
         # Send registers
@@ -419,13 +421,14 @@ class TMCCommandHelper:
                 % (prev_cur, prev_hold_cur, prev_home_cur)
             )
 
-    def cmd_TEST_SG(self, gcmd):
-        start = gcmd.get_int("START", 0)
-        if start:
-            self.printer.send_event("danger:homing_move_begin", None)
+    def cmd_ENABLE_STALLGUARD(self, gcmd):
+        enable = gcmd.get_int("ENABLE", 0)
+        if enable == 1:
+            logging.info("enabling stallguard!")
+            self.enable_stallguard_fn()
         else:
-            self.printer.send_event("danger:homing_move_end", None)
-        gcmd.respond_info("sent event.")
+            logging.info("disabling stallguard!")
+            self.disable_stallguard_fn()
 
     # Stepper phase tracking
     def _get_phases(self):
@@ -581,6 +584,10 @@ class TMCCommandHelper:
             desc=self.cmd_DUMP_TMC_help,
         )
 
+    def setup_pin_helper_commands(self, pin_helper):
+        self.enable_stallguard_fn = pin_helper.handle_homing_move_begin
+        self.disable_stallguard_fn = pin_helper.handle_homing_move_end
+
     cmd_DUMP_TMC_help = "Read and display TMC stepper driver registers"
 
     def cmd_DUMP_TMC(self, gcmd):
@@ -658,18 +665,13 @@ class TMCVirtualPinHelper:
         self.printer.register_event_handler(
             "homing:homing_move_end", self.handle_homing_move_end
         )
-        self.printer.register_event_handler(
-            "danger:homing_move_begin", self.handle_homing_move_begin
-        )
-        self.printer.register_event_handler(
-            "danger:homing_move_end", self.handle_homing_move_end
-        )
         self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
         return self.mcu_endstop
 
-    def handle_homing_move_begin(self, hmove):
-        # if self.mcu_endstop not in hmove.get_mcu_endstops():
-        #     return
+    def handle_homing_move_begin(self, hmove=None):
+        if hmove is not None:
+            if self.mcu_endstop not in hmove.get_mcu_endstops():
+                return
         logging.info("handle_homing_move_begin")
         self.pwmthrs = self.fields.get_field("tpwmthrs")
         reg = self.fields.lookup_register("en_pwm_mode", None)
@@ -697,10 +699,11 @@ class TMCVirtualPinHelper:
             th_val = self.fields.set_field("thigh", 0)
             self.mcu_tmc.set_register(reg, th_val)
 
-    def handle_homing_move_end(self, hmove):
+    def handle_homing_move_end(self, hmove=None):
+        if hmove is not None:
+            if self.mcu_endstop not in hmove.get_mcu_endstops():
+                return
         logging.info("handle_homing_move_end")
-        # if self.mcu_endstop not in hmove.get_mcu_endstops():
-        #     return
         reg = self.fields.lookup_register("en_pwm_mode", None)
         if reg is None:
             tp_val = self.fields.set_field("tpwmthrs", self.pwmthrs)
