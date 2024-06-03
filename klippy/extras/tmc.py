@@ -317,6 +317,11 @@ class TMCCommandHelper:
             self.cmd_SET_TMC_CURRENT,
             desc=self.cmd_SET_TMC_CURRENT_help,
         )
+        gcode.register_mux_command(
+            "TEST_SG",
+            self.cmd_SET_TMC_CURRENT,
+            desc=self.cmd_SET_TMC_CURRENT_help,
+        )
 
     def _init_registers(self, print_time=None):
         # Send registers
@@ -411,6 +416,14 @@ class TMCCommandHelper:
                 "Run Current: %0.2fA Hold Current: %0.2fA Home Current: %0.2fA"
                 % (prev_cur, prev_hold_cur, prev_home_cur)
             )
+
+    def cmd_TEST_SG(self, gcmd):
+        start = gcmd.get_int("START", 0)
+        if start:
+            self.printer.send_event("danger:homing_move_begin", None)
+        else:
+            self.printer.send_event("danger:homing_move_end", None)
+        gcmd.respond_info("sent event.")
 
     # Stepper phase tracking
     def _get_phases(self):
@@ -643,13 +656,19 @@ class TMCVirtualPinHelper:
         self.printer.register_event_handler(
             "homing:homing_move_end", self.handle_homing_move_end
         )
+        self.printer.register_event_handler(
+            "danger:homing_move_begin", self.handle_homing_move_begin
+        )
+        self.printer.register_event_handler(
+            "danger:homing_move_end", self.handle_homing_move_end
+        )
         self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
         return self.mcu_endstop
 
     def handle_homing_move_begin(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
-        # Enable/disable stealthchop
+        # if self.mcu_endstop not in hmove.get_mcu_endstops():
+        #     return
+        logging.info("handle_homing_move_begin")
         self.pwmthrs = self.fields.get_field("tpwmthrs")
         reg = self.fields.lookup_register("en_pwm_mode", None)
         if reg is None:
@@ -677,9 +696,9 @@ class TMCVirtualPinHelper:
             self.mcu_tmc.set_register(reg, th_val)
 
     def handle_homing_move_end(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
-        # Restore stealthchop/spreadcycle
+        logging.info("handle_homing_move_end")
+        # if self.mcu_endstop not in hmove.get_mcu_endstops():
+        #     return
         reg = self.fields.lookup_register("en_pwm_mode", None)
         if reg is None:
             tp_val = self.fields.set_field("tpwmthrs", self.pwmthrs)
