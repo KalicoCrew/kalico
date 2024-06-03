@@ -317,8 +317,10 @@ class TMCCommandHelper:
             self.cmd_SET_TMC_CURRENT,
             desc=self.cmd_SET_TMC_CURRENT_help,
         )
-        gcode.register_command(
+        gcode.register_mux_command(
             "TEST_SG",
+            "STEPPER",
+            self.name,
             self.cmd_TEST_SG,
             desc=self.cmd_SET_TMC_CURRENT_help,
         )
