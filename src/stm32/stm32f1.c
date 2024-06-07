@@ -109,7 +109,7 @@ clock_setup(void)
     RCC->CR |= RCC_CR_PLLON;
 
     // Set flash latency
-    if (! CONFIG_MACH_AT32F403)
+    if (!CONFIG_MACH_AT32F403)
         FLASH->ACR = (2 << FLASH_ACR_LATENCY_Pos) | FLASH_ACR_PRFTBE;
 
     // Wait for PLL lock
