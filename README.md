@@ -1,4 +1,4 @@
-<p align="center"><a href="https://DangerKlippers.github.io/danger-klipper/"><img align="center" src="docs/img/klipper-logo.png" alt="Danger-Klipper Logo"></a></p>
+<p align="center"><a href="https://dangerklipper.io"><img align="center" src="docs/img/klipper-logo.png" alt="Danger-Klipper Logo"></a></p>
 
 [![Action Status](https://github.com/DangerKlippers/danger-klipper/actions/workflows/ci-build_test.yaml/badge.svg?branch=master)](https://github.com/DangerKlippers/danger-klipper/actions/workflows/ci-build_test.yaml)
 
@@ -9,6 +9,8 @@ This is a community-maintained fork of the [Klipper](https://github.com/Klipper3
 Our goal is to support features and behavior that could be "risky" if used incorrectly.
 
 If I want my printer to light itself on fire, I should be able to make my printer light itself on fire.
+
+See the [Danger Features document](https://dangerklipper.io/Danger_Features.html) for more information on *some* of the differences from Klipper.
 
 ## Features merged into the master branch:
 
@@ -100,10 +102,16 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 - [temperature_fan: curve control algorithm](https://github.com/DangerKlippers/danger-klipper/pull/193)
 
-If you're feeling adventurous, take a peek at the extra features in the bleeding-edge branch [feature documentation](docs/Bleeding_Edge.md)
+If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
-- [dmbutyugin's advanced-features branch - Pull Request #69](https://github.com/DangerKlippers/danger-klipper/pull/69)
+- [heaters: mpc temperature control](https://github.com/DangerKlippers/danger-klipper/pull/268)
+
+- [extruder/pa: do not smooth base extruder position, only advance](https://github.com/DangerKlippers/danger-klipper/pull/266)
+
+- [core: non-critical-mcus](https://github.com/DangerKlippers/danger-klipper/pull/265)
+
+- [dmbutyugin's advanced-features branch - Pull Request #262](https://github.com/DangerKlippers/danger-klipper/pull/262)
   - stepper: high precision stepping protocol
   - extruder: sync extruder motion with input shaper
   - extruder: new print_pa_tower utility
@@ -171,13 +179,13 @@ sudo systemctl restart moonraker
 
 Klipper is a 3d-Printer firmware. It combines the power of a general
 purpose computer with one or more micro-controllers. See the
-[features document](https://DangerKlippers.github.io/danger-klipper/Features.html) for more
+[features document](https://dangerklipper.io/Features.html) for more
 information on why you should use Klipper.
 
 To begin using Klipper start by
-[installing](https://DangerKlippers.github.io/danger-klipper/Installation.html) it.
+[installing](https://dangerklipper.io/Installation.html) it.
 
 Klipper is Free Software. See the [license](COPYING) or read the
-[documentation](https://DangerKlippers.github.io/danger-klipper/Overview.html).
+[documentation](https://dangerklipper.io/Overview.html).
 
 [![Join me on Discord](https://discord.com/api/guilds/1029426383614648421/widget.png?style=banner2)](https://discord.gg/armchairengineeringsux)
