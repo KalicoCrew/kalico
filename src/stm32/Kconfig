@@ -28,11 +28,11 @@ config BOARD_DIRECTORY
 
 choice
     prompt "Processor model"
-    config MACH_STM32F103
-        bool "STM32F103"
-        select MACH_STM32F1
     config MACH_AT32F403
         bool "AT32F403"
+        select MACH_STM32F1
+    config MACH_STM32F103
+        bool "STM32F103"
         select MACH_STM32F1
     config MACH_STM32F207
         bool "STM32F207"
@@ -287,19 +287,19 @@ config STM32_DFU_ROM_ADDRESS
 choice
     prompt "Bootloader offset"
     config STM32_FLASH_START_2000
-        bool "8KiB bootloader" if MACH_STM32F1 || MACH_STM32F070 || MACH_STM32G0 || MACH_STM32F0x2
+        bool "8KiB bootloader" if (MACH_STM32F1 || MACH_STM32F070 || MACH_STM32G0 || MACH_STM32F0x2) && !MACH_AT32F403
     config STM32_FLASH_START_5000
         bool "20KiB bootloader" if MACH_STM32F103
     config STM32_FLASH_START_7000
-        bool "28KiB bootloader" if MACH_STM32F1
+        bool "28KiB bootloader" if MACH_STM32F1 && !MACH_AT32F403
     config STM32_FLASH_START_8000
-        bool "32KiB bootloader" if MACH_STM32F1 || MACH_STM32F2 || MACH_STM32F4 || MACH_STM32F7
+        bool "32KiB bootloader" if (MACH_STM32F1 || MACH_STM32F2 || MACH_STM32F4 || MACH_STM32F7) && !MACH_AT32F403
     config STM32_FLASH_START_8800
         bool "34KiB bootloader" if MACH_STM32F103
     config STM32_FLASH_START_20200
         bool "128KiB bootloader with 512 byte offset" if MACH_STM32F4x5
     config STM32_FLASH_START_9000
-        bool "36KiB bootloader" if MACH_STM32F1
+        bool "36KiB bootloader" if MACH_STM32F1 && !MACH_AT32F403
     config STM32_FLASH_START_C000
         bool "48KiB bootloader" if MACH_STM32F4x5 || MACH_STM32F401
     config STM32_FLASH_START_10000
@@ -308,7 +308,7 @@ choice
     config STM32_FLASH_START_800
         bool "2KiB bootloader" if MACH_STM32F103
     config STM32_FLASH_START_1000
-        bool "4KiB bootloader" if MACH_STM32F1 || MACH_STM32F0
+        bool "4KiB bootloader" if (MACH_STM32F1 || MACH_STM32F0) && !MACH_AT32F403
     config STM32_FLASH_START_4000
         bool "16KiB bootloader" if MACH_STM32F207 || MACH_STM32F401 || MACH_STM32F4x5 || MACH_STM32F103 || MACH_STM32F072
     config STM32_FLASH_START_20000

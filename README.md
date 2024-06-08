@@ -102,6 +102,10 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [temperature_fan: curve control algorithm](https://github.com/DangerKlippers/danger-klipper/pull/193)
 
+- [shaper_calibrate: store and expose accel_per_hz](https://github.com/DangerKlippers/danger-klipper/pull/224)
+
+- [mcu: support for AT32F403](https://github.com/DangerKlippers/danger-klipper/pull/284)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
