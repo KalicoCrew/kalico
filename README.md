@@ -86,7 +86,9 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [config: CONFIG_SAVE updates included files](https://github.com/DangerKlippers/danger-klipper/pull/153)
 
-- [kinematics: independent X & Y acceleration and velocity settings](https://github.com/DangerKlippers/danger-klipper/pull/4)
+- [kinematics: independent X&Y accel/velocity for corexy and cartesian](https://github.com/DangerKlippers/danger-klipper/pull/4)
+
+- [kinematics: independent X&Y accel/velocity for corexz](https://github.com/DangerKlippers/danger-klipper/pull/267)
 
 - [idle_timeout: allow the idle timeout to be disabled](https://github.com/DangerKlippers/danger-klipper/issues/165)
 

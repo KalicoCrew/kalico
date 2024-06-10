@@ -632,6 +632,52 @@ max_z_accel:
 [stepper_z]
 ```
 
+### ⚠️ CoreXZ Kinematics with limits for X and Y axes
+
+```
+[printer]
+kinematics: limited_corexz
+max_velocity: 500 # Hypotenuse of the two values bellow
+max_x_velocity: 400
+max_y_velocity: 300
+max_z_velocity: 5
+max_accel: 1500 # Default acceleration of your choice
+max_x_accel: 12000
+max_y_accel: 9000
+max_z_accel: 100
+scale_xy_accel: [True/False, default False]
+```
+
+`max_velocity` is usually the hypotenuses of X and Y velocity, For example:
+with `max_x_velocity: 300` and `max_y_velocity: 400`, the recommended value
+is `max_velocity: 500`.
+
+If `scale_xy_accel` is False, `max_accel`, set by `M204` or
+`SET_VELOCITY_LIMIT`, acts as a third limit. In that case, this module
+doesn't apply limitations to moves with an acceleration lower than
+`max_x_accel` and `max_y_accel`.
+
+When `scale_xy_accel` is `True`, `max_x_accel` and `max_y_accel` are scaled by
+the ratio of the dynamically set acceleration and the hypotenuse of
+`max_x_accel` and `max_y_accel`, as reported from `SET_KINEMATICS_LIMIT`.
+This means that the actual acceleration will always depend on the
+direction.
+
+For example with these settings:
+```
+[printer]
+max_x_accel: 12000
+max_y_accel: 9000
+scale_xy_accel: True
+```
+
+SET_KINEMATICS_LIMIT will report a maximum acceleration of 15000 mm/s^2
+on 37 degrees diagonals. Thus, setting an acceleration of 3000 mm/s^2 in
+the slicer will make the toolhead accelerate at 3000 mm/s^2 on these 37
+and 143 degrees diagonals, but only 12000 * 3000 / 15000 = 2400 mm/s^2
+for moves aligned with the X axis and 18000 mm/s^2 for pure Y moves.
+
+
 ### Hybrid-CoreXY Kinematics
 
 See [example-hybrid-corexy.cfg](../config/example-hybrid-corexy.cfg)
