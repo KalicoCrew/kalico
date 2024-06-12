@@ -3,6 +3,7 @@
 ## Changes to Klipper defaults
 
 - [`[force_move]`](./Config_Reference.md#⚠-force_move) is enabled by default. Use `[force_move] enable_force_move: False` to disable it
+- [`[respond]`](./Config_Reference.md#respond) is enabled by default. Use `[respond] enable_respond: False` to disable it
 
 ## Additional configuration options
 
@@ -16,7 +17,7 @@
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Klipper
 
-## Sensorless Homing 
+## Sensorless Homing
 
 - [`[tmcXXXX] home_current`](./Config_Reference.md#tmc-stepper-driver-configuration) automatically sets a different current for homing
 - [`[tmcXXXX] current_change_dwell_time`](./Config_Reference.md#tmc-stepper-driver-configuration) will add a delay before homing
@@ -35,7 +36,7 @@
 
 - [Velocity PID](./PID.md) can be more accurate than positional PID, but is more susceptible to noisy sensors and may require larger smoothing times
 - [`PID_PROFILE [LOAD/SAVE]`](./G-Codes.md#pid_profile) allows you to calibrate and save PID profiles at multiple temperatures and fan speeds, and later restore them. With some clever macros, automatic per-material pid tuning is within reach!
-- [`SET_HEATER_PID HEATER= KP= KI= KD=`](./G-Codes.md#set_heater_pid) can update your PID parameters without a reload. 
+- [`SET_HEATER_PID HEATER= KP= KI= KD=`](./G-Codes.md#set_heater_pid) can update your PID parameters without a reload.
 - [`HEATER_INTERRUPT`](./G-Codes.md#heater_interrupt) will interrupt a `TEMPERATURE_WAIT`.
 - ADC out of range errors now include which heater, and additional information to assist in troubleshooting
 

@@ -1805,6 +1805,8 @@ Support for gcode arc (G2/G3) commands.
 
 ### [respond]
 
+This module is enabled by default in DangerKlipper!
+
 Enable the "M118" and "RESPOND" extended
 [commands](G-Codes.md#respond).
 
@@ -1819,6 +1821,9 @@ Enable the "M118" and "RESPOND" extended
 #default_prefix: echo:
 #   Directly sets the default prefix. If present, this value will
 #   override the "default_type".
+#enable_respond: True
+#   Set to true to enable M118 and RESPOND
+#   extended G-Code commands. The default is true.
 ```
 
 ### [exclude_object]
@@ -2242,13 +2247,13 @@ detach_position: 0,0,0
 #   The default value is extract_probe value.
 #safe_dock_distance :
 #   This setting defines a security area around dock during ATTACH/DETACH_PROBE
-#   commands. While inside the area, the toolhead move away prior to reach the 
+#   commands. While inside the area, the toolhead move away prior to reach the
 #   approach or insert position.
-#   Default is the smallest distance to the dock of approach, detach, insert 
+#   Default is the smallest distance to the dock of approach, detach, insert
 #   position. It could be only lower than the Default value.
 #safe_position : approach_position
-#   A safe position to ensure MOVE_AVOIDING_DOCK travel does not move the 
-#   toolhead out of range.   
+#   A safe position to ensure MOVE_AVOIDING_DOCK travel does not move the
+#   toolhead out of range.
 #z_hop: 15.0
 #   Distance (in mm) to lift the Z axis prior to attaching/detaching the probe.
 #   If the Z axis is already homed and the current Z position is less
