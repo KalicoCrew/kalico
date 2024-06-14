@@ -75,7 +75,9 @@ class KeyboardReader:
         message_count = len(msgparser.get_messages())
         app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
-        self.output(f"Loaded {message_count} commands ({app} {version} / {build_versions})")
+        self.output(
+            f"Loaded {message_count} commands ({app} {version} / {build_versions})"
+        )
         self.output(
             "MCU config: %s"
             % (

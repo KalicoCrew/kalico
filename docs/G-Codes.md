@@ -380,7 +380,7 @@ commands are available when a
 - `MOVE_TO_DETACH_PROBE`: Move away from the dock to disconnect the probe
   from the toolhead.
 - `MOVE_AVOIDING_DOCK [X=<value>] [Y=<value>] [SPEED=<value>]`: Move to the
-  defined point (absolute coordinates) avoiding the safe dock area 
+  defined point (absolute coordinates) avoiding the safe dock area
 
 ### [dual_carriage]
 
@@ -741,6 +741,12 @@ enabled (also see the
 `SET_GCODE_VARIABLE MACRO=<macro_name> VARIABLE=<name> VALUE=<value>`:
 This command allows one to change the value of a gcode_macro variable
 at run-time. The provided VALUE is parsed as a Python literal.
+
+#### RELOAD_GCODE_MACROS
+`RELOAD_GCODE_MACROS`: This command reads the config files and reloads
+all previously loaded gcode templates. It does not load new `[gcode_macro]`
+objects or unload deleted ones. Variables modified with SET_GCODE_VARIABLE
+remain unaffected.
 
 ### [gcode_move]
 

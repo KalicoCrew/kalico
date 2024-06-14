@@ -49,6 +49,7 @@
 
 - The jinja `do` extension has been enabled. You can now call functions in your macros without resorting to dirty hacks: `{% do array.append(5) %}`
 - The python [`math`](https://docs.python.org/3/library/math.html) library is available to macros. `{math.sin(math.pi * variable)}` and more!
+- New [`RELOAD_GCODE_MACROS`](./G-Codes.md#reload_gcode_macros) G-Code command to reload `[gcode_macro]` templates without requiring a restart.
 
 ## [Plugins](./Plugins.md)
 Extend your Danger Klipper installation with custom plugins.
