@@ -868,6 +868,7 @@ class MCU:
         self._init_cmds_post_inits = []
         self._restart_cmds_post_inits = []
         # Register handlers
+        printer.load_object(config, "error_mcu")
         printer.register_event_handler(
             "klippy:firmware_restart", self._firmware_restart
         )
@@ -898,62 +899,21 @@ class MCU:
         if clock is not None:
             self._shutdown_clock = self.clock32_to_clock64(clock)
         self._shutdown_msg = msg = params["static_string_id"]
+        event_type = params["#name"]
+        self._printer.invoke_async_shutdown(
+            "MCU shutdown",
+            {"reason": msg, "mcu": self._name, "event_type": event_type},
+        )
         if get_danger_options().log_shutdown_info:
             logging.info(
                 "MCU '%s' %s: %s\n%s\n%s\n%s",
                 self._name,
-                params["#name"],
+                event_type,
                 self._shutdown_msg,
                 self.dump_debug(),
                 self._clocksync.dump_debug(),
                 self._serial.dump_debug(),
             )
-        prefix = "MCU '%s' shutdown: " % (self._name,)
-        if params["#name"] == "is_shutdown":
-            prefix = "Previous MCU '%s' shutdown: " % (self._name,)
-
-        append_msgs = []
-        if (
-            msg.startswith("ADC out of range")
-            or msg.startswith("Thermocouple reader fault")
-        ) and not get_danger_options().temp_ignore_limits:
-            pheaters = self._printer.lookup_object("heaters")
-            heaters = [
-                pheaters.lookup_heater(n) for n in pheaters.available_heaters
-            ]
-            for heater in heaters:
-                if hasattr(heater, "is_adc_faulty") and heater.is_adc_faulty():
-                    append_msgs.append(
-                        {
-                            "heater": heater.name,
-                            "last_temp": "{:.2f}".format(heater.last_temp),
-                            "min_temp": heater.min_temp,
-                            "max_temp": heater.max_temp,
-                        }
-                    )
-            sensor_names = [
-                sensor
-                for sensor in self._printer.objects
-                if (
-                    sensor.startswith("temperature_sensor")
-                    or sensor.startswith("temperature_fan")
-                )
-            ]
-            for sensor_name in sensor_names:
-                sensor = self._printer.lookup_object(sensor_name)
-                if hasattr(sensor, "is_adc_faulty") and sensor.is_adc_faulty():
-                    append_msgs.append(
-                        {
-                            sensor_name.split(" ")[0]: sensor.name,
-                            "last_temp": "{:.2f}".format(sensor.last_temp),
-                            "min_temp": sensor.min_temp,
-                            "max_temp": sensor.max_temp,
-                        }
-                    )
-
-        self._printer.invoke_async_shutdown(
-            prefix + msg + error_help(msg=msg, append_msgs=append_msgs)
-        )
 
     def _handle_starting(self, params):
         if not self._is_shutdown and not self.is_non_critical:
@@ -1589,55 +1549,6 @@ class MCU:
         last_stats = {k: (float(v) if "." in v else int(v)) for k, v in parts}
         self._get_status_info["last_stats"] = last_stats
         return False, "%s: %s" % (self._name, stats)
-
-
-Common_MCU_errors = {
-    ("Timer too close",): """
-This often indicates the host computer is overloaded. Check
-for other processes consuming excessive CPU time, high swap
-usage, disk errors, overheating, unstable voltage, or
-similar system problems on the host computer.""",
-    ("Missed scheduling of next ",): """
-This is generally indicative of an intermittent
-communication failure between micro-controller and host.""",
-    (
-        "ADC out of range",
-        "Thermocouple reader fault",
-    ): """
-This generally occurs when a heater temperature exceeds
-its configured min_temp or max_temp.""",
-    (
-        "Rescheduled timer in the past",
-        "Stepper too far in past",
-    ): """
-This generally occurs when the micro-controller has been
-requested to step at a rate higher than it is capable of
-obtaining.""",
-    ("Command request",): """
-This generally occurs in response to an M112 G-Code command
-or in response to an internal error in the host software.""",
-}
-
-
-def error_help(msg, append_msgs=None):
-    if append_msgs is None:
-        append_msgs = []
-    for prefixes, help_msg in Common_MCU_errors.items():
-        for prefix in prefixes:
-            if msg.startswith(prefix):
-                if append_msgs:
-                    for append in append_msgs:
-                        line = append
-                        if isinstance(append, dict):
-                            line = ", ".join(
-                                [
-                                    f"{str(k)}: {str(v)}"
-                                    for k, v in append.items()
-                                ]
-                            )
-                        help_msg = "\n".join([help_msg, str(line)])
-                return help_msg
-    return ""
 
 
 def add_printer_objects(config):

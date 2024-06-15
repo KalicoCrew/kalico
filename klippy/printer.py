@@ -72,13 +72,6 @@ config, and restart the host software.
 Error configuring printer
 """
 
-message_shutdown = """
-Once the underlying issue is corrected, use the
-"FIRMWARE_RESTART" command to reset the firmware, reload the
-config, and restart the host software.
-Printer is shutdown
-"""
-
 
 class WaitInterruption(gcode.CommandError):
     pass
@@ -266,6 +259,16 @@ class Printer:
             and self.start_args.get("debuginput") is not None
         ):
             self.request_exit("error_exit")
+
+    def update_error_msg(self, oldmsg, newmsg):
+        if (
+            self.state_message != oldmsg
+            or self.state_message in (message_ready, message_startup)
+            or newmsg in (message_ready, message_startup)
+        ):
+            return
+        self.state_message = newmsg
+        logging.error(newmsg)
 
     def add_object(self, name, obj):
         if name in self.objects:
@@ -497,12 +500,14 @@ class Printer:
         if self.bglogger is not None:
             self.bglogger.set_rollover_info(name, info)
 
-    def invoke_shutdown(self, msg):
+    def invoke_shutdown(self, msg, details=None):
         if self.in_shutdown_state:
             return
+        if details is None:
+            details = {}
         logging.error("Transition to shutdown state: %s", msg)
         self.in_shutdown_state = True
-        self._set_state("%s%s" % (msg, message_shutdown))
+        self._set_state(msg)
         with self.reactor.assert_no_pause():
             for cb in self.event_handlers.get("klippy:shutdown", []):
                 try:
@@ -512,10 +517,11 @@ class Printer:
         logging.info(
             "Reactor garbage collection: %s", self.reactor.get_gc_stats()
         )
+        self.send_event("klippy:notify_mcu_shutdown", msg, details)
 
-    def invoke_async_shutdown(self, msg):
+    def invoke_async_shutdown(self, msg, details=None):
         self.reactor.register_async_callback(
-            (lambda e: self.invoke_shutdown(msg))
+            (lambda e: self.invoke_shutdown(msg, details))
         )
 
     def register_event_handler(self, event, callback):
