@@ -14,6 +14,10 @@ class ExcludeObject:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode_move = self.printer.load_object(config, "gcode_move")
+
+        if not config.getboolean("enable_exclude_object", True):
+            return
+
         self.printer.register_event_handler(
             "klippy:connect", self._handle_connect
         )

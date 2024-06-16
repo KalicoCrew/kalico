@@ -84,6 +84,8 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [respond: turn on by default](https://github.com/DangerKlippers/danger-klipper/pull/296)
 
+- [exclude_object: turn on by default](https://github.com/DangerKlippers/danger-klipper/pull/306)
+
 - [bed_mesh: add bed_mesh_default config option](https://github.com/DangerKlippers/danger-klipper/pull/143)
 
 - [config: CONFIG_SAVE updates included files](https://github.com/DangerKlippers/danger-klipper/pull/153)

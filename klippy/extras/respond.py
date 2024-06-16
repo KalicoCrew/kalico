@@ -23,12 +23,15 @@ class HostResponder:
             "default_type", respond_types, "echo"
         )
         self.default_prefix = config.get("default_prefix", self.default_prefix)
+
+        if not config.getboolean("enable_respond", True):
+            return
+
         gcode = self.printer.lookup_object("gcode")
-        if config.getboolean("enable_respond", True):
-            gcode.register_command("M118", self.cmd_M118, True)
-            gcode.register_command(
-                "RESPOND", self.cmd_RESPOND, True, desc=self.cmd_RESPOND_help
-            )
+        gcode.register_command("M118", self.cmd_M118, True)
+        gcode.register_command(
+            "RESPOND", self.cmd_RESPOND, True, desc=self.cmd_RESPOND_help
+        )
 
     def cmd_M118(self, gcmd):
         msg = gcmd.get_raw_command_parameters()

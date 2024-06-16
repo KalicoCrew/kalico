@@ -4,6 +4,7 @@
 
 - [`[force_move]`](./Config_Reference.md#⚠-force_move) is enabled by default. Use `[force_move] enable_force_move: False` to disable it
 - [`[respond]`](./Config_Reference.md#respond) is enabled by default. Use `[respond] enable_respond: False` to disable it
+- [`[exclude_object]`](./Config_Reference.md#exclude_object) is enabled by default. Use `[exclude_object] enable_exclude_object: False` to disable it
 
 ## Additional configuration options
 

@@ -1777,8 +1777,8 @@ using this feature may place the printer in an invalid state - see the
 ```
 [force_move]
 #enable_force_move: True
-#   Set to true to enable FORCE_MOVE and SET_KINEMATIC_POSITION
-#   extended G-Code commands. The default is true.
+#   Set to `True` to enable FORCE_MOVE and SET_KINEMATIC_POSITION
+#   extended G-Code commands. The default is `True`.
 ```
 
 ### [pause_resume]
@@ -1868,11 +1868,13 @@ Enable the "M118" and "RESPOND" extended
 #   Directly sets the default prefix. If present, this value will
 #   override the "default_type".
 #enable_respond: True
-#   Set to true to enable M118 and RESPOND
-#   extended G-Code commands. The default is true.
+#   Set to `True` to enable M118 and RESPOND
+#   extended G-Code commands. The default is `True`.
 ```
 
 ### [exclude_object]
+
+This module is enabled by default in DangerKlipper!
 
 Enables support to exclude or cancel individual objects during the printing
 process.
@@ -1885,6 +1887,9 @@ Marlin/RepRapFirmware compatible M486 G-Code macro.
 
 ```
 [exclude_object]
+#enable_exclude_object: True
+#   Set to `True` to enable `EXCLUDE_OBJECT_*` extended G-Code commands.
+#   The default is `True`.
 ```
 
 ## Resonance compensation
