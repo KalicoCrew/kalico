@@ -265,12 +265,12 @@ class Homing:
         for rail in affected_rails:
             chs = rail.get_tmc_current_helpers()
             for ch in chs:
-                if ch is not None and ch.needs_home_current_change():
-                    dwell_time = max(dwell_time, ch.current_change_dwell_time)
+                if ch is not None:
                     if pre_homing:
-                        ch.set_current_for_homing(print_time)
+                        dwell_time = ch.set_current_for_homing(print_time)
                     else:
-                        ch.set_current_for_normal(print_time)
+                        dwell_time = ch.set_current_for_normal(print_time)
+
         if dwell_time:
             self.toolhead.dwell(dwell_time)
 

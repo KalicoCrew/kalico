@@ -833,15 +833,21 @@ class BaseTMCCurrentHelper:
             f"tmc {self.name}: set_actual_current() new actual_current: {self.actual_current}"
         )
 
-    def set_current_for_homing(self, print_time):
-        self.set_current(
-            self.req_home_current, self.req_hold_current, print_time
-        )
+    def set_current_for_homing(self, print_time) -> float:
+        if self.needs_home_current_change:
+            self.set_current(
+                self.req_home_current, self.req_hold_current, print_time
+            )
+            return self.current_change_dwell_time
+        return 0.0
 
-    def set_current_for_normal(self, print_time):
-        self.set_current(
-            self.req_run_current, self.req_hold_current, print_time
-        )
+    def set_current_for_normal(self, print_time) -> float:
+        if self.needs_run_current_change:
+            self.set_current(
+                self.req_run_current, self.req_hold_current, print_time
+            )
+            return self.current_change_dwell_time
+        return 0.0
 
     def needs_current_changes(self, run_current, hold_current, force=False):
         if (
