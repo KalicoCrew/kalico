@@ -73,6 +73,7 @@ class HX71xBase(LoadCellSensor):
         )
         # Command Configuration
         self.query_hx71x_cmd = None
+        self.attach_probe_cmd = None
         mcu.add_config_cmd(
             "config_hx71x oid=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
             % (self.oid, self.gain_channel, self.dout_pin, self.sclk_pin)
@@ -86,6 +87,9 @@ class HX71xBase(LoadCellSensor):
     def _build_config(self):
         self.query_hx71x_cmd = self.mcu.lookup_command(
             "query_hx71x oid=%c rest_ticks=%u"
+        )
+        self.attach_probe_cmd = self.mcu.lookup_command(
+            "hx71x_attach_load_cell_probe oid=%c load_cell_probe_oid=%c"
         )
         self.ffreader.setup_query_command(
             "query_hx71x_status oid=%c",
@@ -107,6 +111,9 @@ class HX71xBase(LoadCellSensor):
     # add_client interface, direct pass through to bulk_sensor API
     def add_client(self, callback: BulkAdcDataCallback):
         self.batch_bulk.add_client(callback)
+
+    def attach_load_cell_probe(self, load_cell_probe_oid: int):
+        self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     # Measurement decoding
     def _convert_samples(self, samples):
