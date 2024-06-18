@@ -704,7 +704,7 @@ class MCU_adc:
     def get_mcu(self):
         return self._mcu
 
-    def setup_minmax(
+    def setup_adc_sample(
         self,
         sample_time,
         sample_count,

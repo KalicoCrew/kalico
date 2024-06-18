@@ -44,13 +44,12 @@ class PrinterADCtoTemperature:
         else:
             danger_check_count = RANGE_CHECK_COUNT
 
-        adc_range = [self.adc_convert.calc_adc(t) for t in [min_temp, max_temp]]
-
-        self.mcu_adc.setup_minmax(
+        arange = [self.adc_convert.calc_adc(t) for t in [min_temp, max_temp]]
+        self.mcu_adc.setup_adc_sample(
             SAMPLE_TIME,
             SAMPLE_COUNT,
-            minval=min(adc_range),
-            maxval=max(adc_range),
+            minval=min(arange),
+            maxval=max(arange),
             range_check_count=danger_check_count,
         )
 

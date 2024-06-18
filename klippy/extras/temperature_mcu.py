@@ -49,27 +49,25 @@ class PrinterTemperatureMCU:
 
         # Register callbacks
         if self.printer.get_start_args().get("debugoutput") is not None:
-            self.mcu_adc.setup_minmax(
-                SAMPLE_TIME,
-                SAMPLE_COUNT,
-                range_check_count=self._danger_check_count,
-            )
+            self.mcu_adc.setup_adc_sample(SAMPLE_TIME, SAMPLE_COUNT)
             return
         self.mcu_adc.get_mcu().register_config_callback(self._build_config)
 
+    # Temperature interface
     def setup_callback(self, temperature_callback):
         self.temperature_callback = temperature_callback
 
     def get_report_time_delta(self):
         return REPORT_TIME
 
-    def adc_callback(self, read_time, read_value):
-        temp = self.base_temperature + read_value * self.slope
-        self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
-
     def setup_minmax(self, min_temp, max_temp):
         self.min_temp = min_temp
         self.max_temp = max_temp
+
+    # Internal code
+    def adc_callback(self, read_time, read_value):
+        temp = self.base_temperature + read_value * self.slope
+        self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
 
     def calc_adc(self, temp):
         return (temp - self.base_temperature) / self.slope
@@ -125,12 +123,12 @@ class PrinterTemperatureMCU:
                 self.slope = (self.temp2 - self.temp1) / (self.adc2 - self.adc1)
             self.base_temperature = self.calc_base(self.temp1, self.adc1)
         # Setup min/max checks
-        adc_range = [self.calc_adc(t) for t in [self.min_temp, self.max_temp]]
-        self.mcu_adc.setup_minmax(
+        arange = [self.calc_adc(t) for t in [self.min_temp, self.max_temp]]
+        self.mcu_adc.setup_adc_sample(
             SAMPLE_TIME,
             SAMPLE_COUNT,
-            minval=min(adc_range),
-            maxval=max(adc_range),
+            minval=min(arange),
+            maxval=max(arange),
             range_check_count=self._danger_check_count,
         )
         self.mcu_adc._build_config()

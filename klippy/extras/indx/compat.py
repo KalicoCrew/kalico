@@ -74,7 +74,7 @@ def register_adc_callback(adc, callback):
     """
     # Old klipper and Kalico ADC callback style
     adc.setup_adc_callback(0.3, callback)
-    adc.setup_minmax(0.001, 8)
+    adc.setup_adc_sample(0.001, 8)
 
 
 def get_tmc_current_helper(stepper):
