@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license
 import logging, socket, os, sys, errno, json, collections
 import gcode
+from klippy import APP_NAME
 from extras.danger_options import get_danger_options
 
 REQUEST_LOG_SIZE = 20
@@ -386,7 +387,7 @@ class WebHooks:
         src_path = os.path.dirname(__file__)
         klipper_path = os.path.normpath(os.path.join(src_path, ".."))
         response = {
-            "app": "Danger-Klipper",
+            "app": APP_NAME,
             "state": state,
             "state_message": state_message,
             "hostname": socket.gethostname(),
