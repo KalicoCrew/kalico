@@ -241,6 +241,7 @@ class ResonanceTester:
         raw_name_suffix=None,
         accel_chips=None,
         test_point=None,
+        test_accel_per_hz=None,
     ):
         toolhead = self.printer.lookup_object("toolhead")
         calibration_data = {axis: None for axis in axes}
@@ -251,6 +252,9 @@ class ResonanceTester:
             test_points = [test_point]
         else:
             test_points = self.test.get_start_test_points()
+
+        if test_accel_per_hz is not None:
+            self.test.accel_per_hz=test_accel_per_hz
 
         for point in test_points:
             toolhead.manual_move(point, self.move_speed)
@@ -327,6 +331,7 @@ class ResonanceTester:
         axis = _parse_axis(gcmd, gcmd.get("AXIS").lower())
         chips_str = gcmd.get("CHIPS", None)
         test_point = gcmd.get("POINT", None)
+        test_accel_per_hz = gcmd.get("ACCEL_PER_HZ", None, above=0.0)
 
         if test_point:
             test_coords = test_point.split(",")
@@ -339,6 +344,12 @@ class ResonanceTester:
                     "Invalid POINT parameter, must be 'x,y,z'"
                     " where x, y and z are valid floating point numbers"
                 )
+
+        if test_accel_per_hz:
+            try:
+                test_accel_per_hz = float(test_accel_per_hz)
+            except ValueError:
+                raise gcmd.error("Accel Per Hz value has to be larger than 0")
 
         accel_chips = self._parse_chips(chips_str) if chips_str else None
 
@@ -373,6 +384,7 @@ class ResonanceTester:
             raw_name_suffix=name_suffix if raw_output else None,
             accel_chips=accel_chips,
             test_point=test_point,
+            test_accel_per_hz=test_accel_per_hz,
         )[axis]
         if csv_output:
             csv_name = self.save_calibration_data(

@@ -110,6 +110,8 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [shaper_calibrate: store and expose accel_per_hz](https://github.com/DangerKlippers/danger-klipper/pull/224)
 
+- [resonance_tester: accepts ACCEL_PER_HZ in TEST_RESONANCES](https://github.com/DangerKlippers/danger-klipper/pull/312)
+
 - [mcu: support for AT32F403](https://github.com/DangerKlippers/danger-klipper/pull/284)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
