@@ -254,7 +254,7 @@ class ResonanceTester:
             test_points = self.test.get_start_test_points()
 
         if test_accel_per_hz is not None:
-            self.test.accel_per_hz=test_accel_per_hz
+            self.test.accel_per_hz = test_accel_per_hz
 
         for point in test_points:
             toolhead.manual_move(point, self.move_speed)
@@ -331,7 +331,7 @@ class ResonanceTester:
         axis = _parse_axis(gcmd, gcmd.get("AXIS").lower())
         chips_str = gcmd.get("CHIPS", None)
         test_point = gcmd.get("POINT", None)
-        test_accel_per_hz = gcmd.get("ACCEL_PER_HZ", None, above=0.0)
+        test_accel_per_hz = gcmd.get_float("ACCEL_PER_HZ", None, above=0.0)
 
         if test_point:
             test_coords = test_point.split(",")
@@ -344,12 +344,6 @@ class ResonanceTester:
                     "Invalid POINT parameter, must be 'x,y,z'"
                     " where x, y and z are valid floating point numbers"
                 )
-
-        if test_accel_per_hz:
-            try:
-                test_accel_per_hz = float(test_accel_per_hz)
-            except ValueError:
-                raise gcmd.error("Accel Per Hz value has to be larger than 0")
 
         accel_chips = self._parse_chips(chips_str) if chips_str else None
 
