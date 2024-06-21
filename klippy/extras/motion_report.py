@@ -93,6 +93,9 @@ class DumpStepper:
         }
 
 
+NEVER_TIME = 9999999999999999.0
+
+
 # Extract trapezoidal motion queue (trapq)
 class DumpTrapQ:
     def __init__(self, printer, name, trapq):
