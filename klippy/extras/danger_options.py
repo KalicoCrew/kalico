@@ -19,20 +19,28 @@ class DangerOptions:
         self.error_on_unused_config_options = config.getboolean(
             "error_on_unused_config_options", True
         )
-
         self.allow_plugin_override = config.getboolean(
             "allow_plugin_override", False
         )
-
         self.multi_mcu_trsync_timeout = config.getfloat(
             "multi_mcu_trsync_timeout", 0.025, minval=0.0
         )
         self.homing_elapsed_distance_tolerance = config.getfloat(
             "homing_elapsed_distance_tolerance", 0.5, minval=0.0
         )
-        self.adc_ignore_limits = config.getboolean("adc_ignore_limits", False)
-        self.autosave_includes = config.getboolean("autosave_includes", False)
 
+        temp_ignore_limits = False
+        if config.getboolean("temp_ignore_limits", None) is None:
+            adc_ignore_limits = config.getboolean("adc_ignore_limits", None)
+            if adc_ignore_limits is not None:
+                config.deprecate("adc_ignore_limits")
+                temp_ignore_limits = adc_ignore_limits
+
+        self.temp_ignore_limits = config.getboolean(
+            "temp_ignore_limits", temp_ignore_limits
+        )
+
+        self.autosave_includes = config.getboolean("autosave_includes", False)
         self.bgflush_extra_time = config.getfloat(
             "bgflush_extra_time", 0.250, minval=0.0
         )

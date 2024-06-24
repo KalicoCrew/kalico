@@ -1,0 +1,73 @@
+# Test case for trad_rack
+DICTIONARY atmega2560.dict
+CONFIG trad_rack.cfg
+
+# Home and move selector between lanes
+TR_HOME
+TR_GO_TO_LANE LANE=0
+TR_GO_TO_LANE LANE=4
+TR_GO_TO_LANE LANE=1
+
+# Load lanes
+TR_LOAD_LANE LANE=0
+TR_LOAD_LANE LANE=2
+
+# Run toolchanges
+M109 S210
+TR_LOAD_TOOLHEAD LANE=0
+TR_LOAD_TOOLHEAD LANE=2
+TR_LOAD_TOOLHEAD TOOL=1
+T1
+T3
+
+# Enable extruder syncing
+TR_SYNC_TO_EXTRUDER
+
+# Disable extruder syncing
+TR_UNSYNC_FROM_EXTRUDER
+
+# Unload toolhead
+TR_UNLOAD_TOOLHEAD
+
+# Move servo
+TR_SERVO_DOWN
+TR_SERVO_UP
+
+# Locate selector (location already known)
+TR_LOCATE_SELECTOR
+
+# Locate selector (home selector)
+M84
+TR_LOCATE_SELECTOR
+
+# Test servo angles
+TR_SERVO_TEST ANGLE=110
+TR_SERVO_TEST ANGLE=121
+
+# Calibrate selector
+TR_CALIBRATE_SELECTOR
+TR_NEXT
+TR_NEXT
+
+# Set hotend_load_length
+TR_SET_HOTEND_LOAD_LENGTH VALUE=7.0
+TR_SET_HOTEND_LOAD_LENGTH ADJUST=-7.1
+TR_SET_HOTEND_LOAD_LENGTH ADJUST=3
+
+# Discard bowden lengths
+TR_DISCARD_BOWDEN_LENGTHS
+
+# Modify lane/tool mapping
+TR_PRINT_TOOL_MAP
+TR_PRINT_TOOL_GROUPS
+TR_ASSIGN_LANE LANE=2 TOOL=1
+TR_ASSIGN_LANE LANE=1 TOOL=0
+TR_SET_DEFAULT_LANE TOOL=0 LANE=1
+TR_SET_DEFAULT_LANE TOOL=4 LANE=3
+TR_PRINT_TOOL_MAP
+TR_PRINT_TOOL_GROUPS
+
+# Reset lane/tool mapping
+TR_RESET_TOOL_MAP
+TR_PRINT_TOOL_MAP
+TR_PRINT_TOOL_GROUPS

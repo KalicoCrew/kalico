@@ -129,7 +129,7 @@ Fields["DRV_STATUS"] = {
     "s2vsb": 0x01 << 13,
     "stealth": 0x01 << 14,
     "fsactive": 0x01 << 15,
-    "csactual": 0xFF << 16,
+    "cs_actual": 0x1F << 16,
     "stallguard": 0x01 << 24,
     "ot": 0x01 << 25,
     "otpw": 0x01 << 26,
@@ -139,6 +139,7 @@ Fields["DRV_STATUS"] = {
     "olb": 0x01 << 30,
     "stst": 0x01 << 31,
 }
+Fields["FACTORY_CONF"] = {"factory_conf": 0x1F << 0}
 Fields["FACTORY_CONF"] = {"factory_conf": 0x1F << 0}
 Fields["GCONF"] = {
     "recalibrate": 0x01 << 0,
@@ -250,41 +251,19 @@ VREF = 0.325
 MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
 
 
-class TMC5160CurrentHelper:
+class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
-        self.printer = config.get_printer()
-        self.name = config.get_name().split()[-1]
-        self.mcu_tmc = mcu_tmc
-        self.fields = mcu_tmc.get_fields()
-        self.run_current = config.getfloat(
-            "run_current", above=0.0, maxval=MAX_CURRENT
-        )
-        self.hold_current = config.getfloat(
-            "hold_current", MAX_CURRENT, above=0.0, maxval=MAX_CURRENT
-        )
-        self._home_current = config.getfloat(
-            "home_current", self.run_current, above=0.0, maxval=MAX_CURRENT
-        )
-        self.current_change_dwell_time = config.getfloat(
-            "current_change_dwell_time", 0.5, above=0.0
-        )
-        self._prev_current = self.run_current
-        self.req_hold_current = self.hold_current
+        super().__init__(config, mcu_tmc, MAX_CURRENT)
+
         self.sense_resistor = config.getfloat(
             "sense_resistor", 0.075, above=0.0
         )
         gscaler, irun, ihold = self._calc_current(
-            self.run_current, self.hold_current
+            self.req_run_current, self.req_hold_current
         )
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", irun)
-
-    def needs_home_current_change(self):
-        return self._home_current != self.run_current
-
-    def set_home_current(self, new_home_current):
-        self._home_current = min(MAX_CURRENT, new_home_current)
 
     def _calc_globalscaler(self, current):
         globalscaler = int(
@@ -333,31 +312,18 @@ class TMC5160CurrentHelper:
             hold_current,
             self.req_hold_current,
             MAX_CURRENT,
-            self._home_current,
+            self.req_home_current,
         )
 
-    def set_current(self, run_current, hold_current, print_time, force=False):
-        if (
-            run_current == self._prev_current
-            and hold_current == self.req_hold_current
-            and not force
-        ):
-            return
-        self.req_hold_current = hold_current
-        gscaler, irun, ihold = self._calc_current(run_current, hold_current)
+    def apply_current(self, print_time):
+        gscaler, irun, ihold = self._calc_current(
+            self.actual_current, self.req_hold_current
+        )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
         self.fields.set_field("ihold", ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
-
-    def set_current_for_homing(self, print_time):
-        prev_run_cur, _, _, _, _ = self.get_current()
-        self._prev_current = prev_run_cur
-        self.set_current(self._home_current, self.hold_current, print_time)
-
-    def set_current_for_normal(self, print_time):
-        self.set_current(self._prev_current, self.hold_current, print_time)
 
 
 ######################################################################

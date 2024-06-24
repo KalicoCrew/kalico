@@ -71,7 +71,7 @@ extra:
   # https://squidfunk.github.io/mkdocs-material/setup/setting-up-site-analytics/#site-search-tracking
   analytics:
     provider: google
-    property: UA-138371409-1
+    property: G-3YZJ9658GV
   # Language Selection
   alternate:
     - name: English
@@ -82,6 +82,7 @@ extra:
 # Navigation hierarchy (this should mimic the layout of Overview.md)
 nav:
   - Overview.md
+  - Danger_Features.md
   - Features.md
   - FAQ.md
   - Releases.md

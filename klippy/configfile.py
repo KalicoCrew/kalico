@@ -273,9 +273,12 @@ class PrinterConfig:
         self.unused_options = []
         self.save_config_pending = False
         gcode = self.printer.lookup_object("gcode")
-        gcode.register_command(
-            "SAVE_CONFIG", self.cmd_SAVE_CONFIG, desc=self.cmd_SAVE_CONFIG_help
-        )
+        if "SAVE_CONFIG" not in gcode.ready_gcode_handlers:
+            gcode.register_command(
+                "SAVE_CONFIG",
+                self.cmd_SAVE_CONFIG,
+                desc=self.cmd_SAVE_CONFIG_help,
+            )
 
     def get_printer(self):
         return self.printer
@@ -479,7 +482,7 @@ class PrinterConfig:
 
     # Status reporting
     def runtime_warning(self, msg):
-        logging.warn(msg)
+        logging.warning(msg)
         res = {"type": "runtime_warning", "message": msg}
         self.runtime_warnings.append(res)
         self.status_warnings = self.runtime_warnings + self.deprecate_warnings

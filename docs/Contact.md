@@ -1,22 +1,15 @@
 # Contact
 
-This document provides contact information for Klipper.
-
-## Discourse Forum
-
-There is a
-[Klipper Community Discourse server](https://community.klipper3d.org)
-for "forum" style discussions on Klipper. Note that Discourse is not
-Discord.
+This document provides contact information for Danger-Klipper.
+Danger-Klipper a community-maintained fork of the Klipper firmware.
 
 ## Discord Chat
 
-There is a Discord server dedicated to Klipper at:
-[https://discord.klipper3d.org](https://discord.klipper3d.org). Note
-that Discord is not Discourse.
+Danger-Klipper has a channel in the ArmchairEngineering Discord Server at
+[Armchair Heavy Industries](https://discord.gg/armchairengineeringsux)
 
-This server is run by a community of Klipper enthusiasts dedicated to
-discussions on Klipper. It allows users to chat with other users in
+This server is run by a community of 3D printing enthusiasts and it is not dedicated to
+discussions about Danger-Klipper. It allows users to chat with other users in
 real-time.
 
 ## I have a question about Klipper
@@ -25,14 +18,9 @@ Many questions we receive are already answered in the
 [Danger Klipper](Overview.md). Please be sure to to read the
 documentation and follow the directions provided there.
 
-It is also possible to search for similar questions in the
-[Klipper Discourse Forum](#discourse-forum).
-
 If you are interested in sharing your knowledge and experience with
-other Klipper users then you can join the
-[Klipper Discourse Forum](#discourse-forum) or
-[Klipper Discord Chat](#discord-chat). Both are communities where
-Klipper users can discuss Klipper with other users.
+other Danger-Klipper users then you can join the
+[#danger-klipper Discord channel](#discord-chat).
 
 If you have a general question or are experiencing general printing
 problems, then also consider a general 3d-printing forum or a forum
@@ -42,10 +30,9 @@ dedicated to the printer hardware.
 
 All new features require someone interested and able to implement that
 feature. If you are interested in helping to implement or test a new
-feature, you can search for ongoing developments in the
-[Klipper Discourse Forum](#discourse-forum). There is also
-[Klipper Discord Chat](#discord-chat) for discussions between
-collaborators.
+feature, you can search for ongoing developments in
+[#danger-klipper Discord channel](#discord-chat).
+There is also discussions between collaborators over there.
 
 ## Help! It doesn't work!
 
@@ -60,37 +47,27 @@ are not related to the Klipper software. If you do find a problem with
 the printer hardware then consider searching general 3d-printing
 forums or forums dedicated to the printer hardware.
 
-It is also possible to search for similar issues in the
-[Klipper Discourse Forum](#discourse-forum).
+## I found a bug in the Danger-Klipper software
 
-If you are interested in sharing your knowledge and experience with
-other Klipper users then you can join the
-[Klipper Discourse Forum](#discourse-forum) or
-[Klipper Discord Chat](#discord-chat). Both are communities where
-Klipper users can discuss Klipper with other users.
-
-## I found a bug in the Klipper software
-
-Klipper is an open-source project and we appreciate when collaborators
+Danger-Klipper is an open-source project and we appreciate when collaborators
 diagnose errors in the software.
 
-Problems should be reported in the
-[Klipper Discourse Forum](#discourse-forum).
+Problems should be reported in the [#danger-klipper Discord channel](#discord-chat).
 
 There is important information that will be needed in order to fix a
 bug. Please follow these steps:
 1. Make sure you are running unmodified code from
-   [https://github.com/Klipper3d/klipper](https://github.com/Klipper3d/klipper).
+   [https://github.com/DangerKlippers/danger-klipper](https://github.com/DangerKlippers/danger-klipper).
    If the code has been modified or is obtained from another source,
    then you should reproduce the problem on the unmodified code from
-   [https://github.com/Klipper3d/klipper](https://github.com/Klipper3d/klipper)
+   [https://github.com/DangerKlippers/danger-klipper](https://github.com/DangerKlippers/danger-klipper)
    prior to reporting.
 2. If possible, run an `M112` command immediately after the
    undesirable event occurs. This causes Klipper to go into a
    "shutdown state" and it will cause additional debugging information
    to be written to the log file.
 3. Obtain the Klipper log file from the event. The log file has been
-   engineered to answer common questions the Klipper developers have
+   engineered to answer common questions the Danger-Klipper developers have
    about the software and its environment (software version, hardware
    type, configuration, event timing, and hundreds of other
    questions).
@@ -115,20 +92,19 @@ bug. Please follow these steps:
       of the log. Only the full unmodified log file provides the
       necessary information.
    4. It is a good idea to compress the log file with zip or gzip.
-5. Open a new topic on the [Klipper Discourse Forum](#discourse-forum)
-   and provide a clear description of the problem. Other Klipper
+5. Open a new thread on the [#danger-klipper Discord channel](#discord-chat)
+   and provide a clear description of the problem. Other Danger-Klipper
    contributors will need to understand what steps were taken, what
    the desired outcome was, and what outcome actually occurred. The
    compressed Klipper log file should be attached to that topic.
 
-## I am making changes that I'd like to include in Klipper
+## I am making changes that I'd like to include in Danger-Klipper
 
-Klipper is open-source software and we appreciate new contributions.
+Danger-Klipper is open-source software and we appreciate new contributions.
 
 See the [CONTRIBUTING document](CONTRIBUTING.md) for information.
 
 There are several
 [documents for developers](Overview.md#developer-documentation). If
 you have questions on the code then you can also ask in the
-[Klipper Discourse Forum](#discourse-forum) or on the
-[Klipper Discord Chat](#discord-chat).
+[#danger-klipper Discord channel](#discord-chat).

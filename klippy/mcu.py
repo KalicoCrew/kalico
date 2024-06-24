@@ -132,9 +132,9 @@ class CommandWrapper:
 
 class MCU_trsync:
     REASON_ENDSTOP_HIT = 1
-    REASON_COMMS_TIMEOUT = 2
-    REASON_HOST_REQUEST = 3
-    REASON_PAST_END_TIME = 4
+    REASON_HOST_REQUEST = 2
+    REASON_PAST_END_TIME = 3
+    REASON_COMMS_TIMEOUT = 4
 
     def __init__(self, mcu, trdispatch):
         self._mcu = mcu
@@ -236,7 +236,7 @@ class MCU_trsync:
             if tc is not None:
                 self._trigger_completion = None
                 reason = params["trigger_reason"]
-                is_failure = reason == self.REASON_COMMS_TIMEOUT
+                is_failure = reason >= self.REASON_COMMS_TIMEOUT
                 self._reactor.async_complete(tc, is_failure)
         elif self._home_end_clock is not None:
             clock = self._mcu.clock32_to_clock64(params["clock"])
@@ -363,8 +363,9 @@ class TriggerDispatch:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trdispatch_stop(self._trdispatch)
         res = [trsync.stop() for trsync in self._trsyncs]
-        if any([r == MCU_trsync.REASON_COMMS_TIMEOUT for r in res]):
-            return MCU_trsync.REASON_COMMS_TIMEOUT
+        err_res = [r for r in res if r >= MCU_trsync.REASON_COMMS_TIMEOUT]
+        if err_res:
+            return err_res[0]
         return res[0]
 
 
@@ -443,8 +444,9 @@ class MCU_endstop:
         self._dispatch.wait_end(home_end_time)
         self._home_cmd.send([self._oid, 0, 0, 0, 0, 0, 0, 0])
         res = self._dispatch.stop()
-        if res == MCU_trsync.REASON_COMMS_TIMEOUT:
-            return -1.0
+        if res >= MCU_trsync.REASON_COMMS_TIMEOUT:
+            cmderr = self._mcu.get_printer().command_error
+            raise cmderr("Communication timeout during homing")
         if res != MCU_trsync.REASON_ENDSTOP_HIT:
             return 0.0
         if self._mcu.is_fileoutput():
@@ -843,13 +845,13 @@ class MCU:
         if (
             msg.startswith("ADC out of range")
             or msg.startswith("Thermocouple reader fault")
-        ) and not get_danger_options.adc_ignore_limits:
+        ) and not get_danger_options().temp_ignore_limits:
             pheaters = self._printer.lookup_object("heaters")
             heaters = [
                 pheaters.lookup_heater(n) for n in pheaters.available_heaters
             ]
             for heater in heaters:
-                if heater.is_adc_faulty():
+                if hasattr(heater, "is_adc_faulty") and heater.is_adc_faulty():
                     append_msgs.append(
                         {
                             "heater": heater.name,
@@ -868,7 +870,7 @@ class MCU:
             ]
             for sensor_name in sensor_names:
                 sensor = self._printer.lookup_object(sensor_name)
-                if sensor.is_adc_faulty():
+                if hasattr(sensor, "is_adc_faulty") and sensor.is_adc_faulty():
                     append_msgs.append(
                         {
                             sensor_name.split(" ")[0]: sensor.name,
@@ -990,11 +992,11 @@ class MCU:
 
     def _log_info(self):
         msgparser = self._serial.get_msgparser()
+        app = msgparser.get_app_info()
         message_count = len(msgparser.get_messages())
         version, build_versions = msgparser.get_version_info()
         log_info = [
-            "Loaded MCU '%s' %d commands (%s / %s)"
-            % (self._name, message_count, version, build_versions),
+            f"Loaded MCU '{self._name}' {message_count} commands ({app} {version} / {build_versions})",
             "MCU '%s' config: %s"
             % (
                 self._name,
@@ -1093,7 +1095,9 @@ class MCU:
             self._printer.register_event_handler(
                 "klippy:firmware_restart", self._firmware_restart_bridge
             )
+        app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
+        self._get_status_info["app"] = app
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
@@ -1361,16 +1365,12 @@ class MCU:
 
 
 Common_MCU_errors = {
-    (
-        "Timer too close",
-    ): """
+    ("Timer too close",): """
 This often indicates the host computer is overloaded. Check
 for other processes consuming excessive CPU time, high swap
 usage, disk errors, overheating, unstable voltage, or
 similar system problems on the host computer.""",
-    (
-        "Missed scheduling of next ",
-    ): """
+    ("Missed scheduling of next ",): """
 This is generally indicative of an intermittent
 communication failure between micro-controller and host.""",
     (
@@ -1386,9 +1386,7 @@ its configured min_temp or max_temp.""",
 This generally occurs when the micro-controller has been
 requested to step at a rate higher than it is capable of
 obtaining.""",
-    (
-        "Command request",
-    ): """
+    ("Command request",): """
 This generally occurs in response to an M112 G-Code command
 or in response to an internal error in the host software.""",
 }

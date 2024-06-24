@@ -790,8 +790,11 @@ class BedMeshCalibrate:
                 self.origin = adapted_origin
                 self.mesh_min = (-self.radius, -self.radius)
                 self.mesh_max = (self.radius, self.radius)
-                self.mesh_config["x_count"] = self.mesh_config["y_count"] = max(
-                    new_x_probe_count, new_y_probe_count
+                new_probe_count = max(new_x_probe_count, new_y_probe_count)
+                # Adaptive meshes require odd number of points
+                new_probe_count += 1 - (new_probe_count % 2)
+                self.mesh_config["x_count"] = self.mesh_config["y_count"] = (
+                    new_probe_count
                 )
         else:
             self.mesh_min = adjusted_mesh_min
@@ -1501,9 +1504,9 @@ class ProfileManager:
             self.profiles[name] = {}
             zvals = profile.getlists("points", seps=(",", "\n"), parser=float)
             self.profiles[name]["points"] = zvals
-            self.profiles[name][
-                "mesh_params"
-            ] = params = collections.OrderedDict()
+            self.profiles[name]["mesh_params"] = params = (
+                collections.OrderedDict()
+            )
             for key, t in PROFILE_OPTIONS.items():
                 if t is int:
                     params[key] = profile.getint(key)

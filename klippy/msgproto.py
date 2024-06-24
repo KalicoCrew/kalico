@@ -156,6 +156,7 @@ MessageTypes = {
     "%*s": PT_buffer(),
 }
 
+
 # Lookup the message types for a format string
 def lookup_params(msgformat, enumerations={}):
     out = []
@@ -474,6 +475,7 @@ class MessageParser:
                 all_messages, commands.values(), output.values()
             )
             self.config.update(data.get("config", {}))
+            self.app = data.get("app", "")
             self.version = data.get("version", "")
             self.build_versions = data.get("build_versions", "")
         except error as e:
@@ -484,6 +486,9 @@ class MessageParser:
 
     def get_raw_data_dictionary(self):
         return self.raw_identify_data
+
+    def get_app_info(self):
+        return self.app
 
     def get_version_info(self):
         return self.version, self.build_versions

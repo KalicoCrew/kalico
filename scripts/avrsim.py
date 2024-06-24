@@ -10,6 +10,7 @@ import pysimulavr
 SERIALBITS = 10  # 8N1 = 1 start, 8 data, 1 stop
 SIMULAVR_FREQ = 10**9
 
+
 # Class to read serial data from AVR serial transmit pin.
 class SerialRxPin(pysimulavr.PySimulationMember, pysimulavr.Pin):
     def __init__(self, baud, terminal):

@@ -38,7 +38,7 @@ class PrinterADCtoTemperature:
         self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
 
     def setup_minmax(self, min_temp, max_temp):
-        if get_danger_options().adc_ignore_limits:
+        if get_danger_options().temp_ignore_limits:
             danger_check_count = 0
         else:
             danger_check_count = RANGE_CHECK_COUNT

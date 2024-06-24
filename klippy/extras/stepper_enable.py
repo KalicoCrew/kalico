@@ -7,6 +7,7 @@ import logging
 
 DISABLE_STALL_TIME = 0.100
 
+
 # Tracking of shared stepper enable pins
 class StepperEnablePin:
     def __init__(self, mcu_enable, enable_count):

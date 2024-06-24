@@ -379,6 +379,8 @@ commands are available when a
   with the probe attached.
 - `MOVE_TO_DETACH_PROBE`: Move away from the dock to disconnect the probe
   from the toolhead.
+- `MOVE_AVOIDING_DOCK [X=<value>] [Y=<value>] [SPEED=<value>]`: Move to the
+  defined point (absolute coordinates) avoiding the safe dock area
 
 ### [dual_carriage]
 
@@ -523,6 +525,18 @@ to become synchronized to the movement of an extruder specified by
 MOTION_QUEUE (as defined in an [extruder](Config_Reference.md#extruder)
 config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.
+
+### [heated_fan]
+
+The following command is available when a
+[heated_fan](Config_Reference.md#heated_fan) is
+enabled.
+
+### SET_HEATED_FAN_TARGET
+`SET_HEATED_FAN_TARGET TARGET=<temperature>`: Override the `heater_temp`
+setting in the [heated_fan config section]((Config_Reference.md#heated_fan))
+until Klipper is restarted. Useful for slicers to set different heated fan
+temperatures at different layers.
 
 ### [fan_generic]
 
@@ -729,6 +743,12 @@ enabled (also see the
 `SET_GCODE_VARIABLE MACRO=<macro_name> VARIABLE=<name> VALUE=<value>`:
 This command allows one to change the value of a gcode_macro variable
 at run-time. The provided VALUE is parsed as a Python literal.
+
+#### RELOAD_GCODE_MACROS
+`RELOAD_GCODE_MACROS`: This command reads the config files and reloads
+all previously loaded gcode templates. It does not load new `[gcode_macro]`
+objects or unload deleted ones. Variables modified with SET_GCODE_VARIABLE
+remain unaffected.
 
 ### [gcode_move]
 
@@ -1044,18 +1064,23 @@ noise readings might allow 0.01, to be used, while noisy reading might
 require a value of 0.03 or higher.
 
 #### SET_HEATER_PID
-`SET_HEATER_PID HEATER=<config_name> KP=<kp> KI=<ki> KD=<kd>`: Will
+`SET_HEATER_PID HEATER=<heater_name> KP=<kp> KI=<ki> KD=<kd>`: Will
 allow one to manually change PID parameters of heaters without a
 reload of the firmware.
+HEATER takes the short name (so for `heater_generic chamber` you would only
+write `chamber`)
 
 ### [pid_profile]
 
 The PID_PROFILE module is automatically loaded if a heater is defined
 in the config file.
 
+HEATER generally takes the short name (so for `heater_generic chamber` you would
+only write `chamber`)
+
 #### PID_PROFILE
 `PID_PROFILE LOAD=<profile_name> HEATER=<heater_name> [DEFAULT=<profile_name>]
-[VERBOSE=<verbosity>] [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
+[VERBOSE=<verbosity>] [KEEP_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Loads the given PID_PROFILE for the specified heater. If DEFAULT is specified,
 the Profile specified in DEFAULT will be loaded when then given Profile for LOAD
 can't be found (like a getOrDefault method). If VERBOSE is set to LOW, minimal
@@ -1070,11 +1095,11 @@ started up, if set to 0, the profile will retain previous heating information.
 By default the information will be kept to reduce overshoot, change this value
 if you encounter weird behaviour while switching profiles.
 
-`PID_PROFILE SAVE=<profile_name> HEATER=<config_name>`:
+`PID_PROFILE SAVE=<profile_name> HEATER=<heater_name>`:
 Saves the currently loaded profile of the specified heater to the config under
 the given name.
 
-`PID_PROFILE REMOVE=<profile_name> HEATER=<config_name>`:
+`PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
 Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
 
 `PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
@@ -1247,8 +1272,8 @@ all enabled accelerometer chips.
 `TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
 [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [INPUT_SHAPING=[<0:1>]]`: Runs the resonance
-test in all configured probe points for the requested "axis" and
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=[<0:1>]]`: Runs
+the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
@@ -1257,10 +1282,10 @@ point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
 more configured adxl345 chip,delimited with comma, for example
 `CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT is specified it will override the point(s)
-configured in `[resonance_tester]`. If `INPUT_SHAPING=0` or not set(default),
-disables input shaping for the resonance testing, because
-it is not valid to run the resonance testing with the input shaper
+named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+they will override the corresponding fields configured in `[resonance_tester]`.
+If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
+testing, because it is not valid to run the resonance testing with the input shaper
 enabled. `OUTPUT` parameter is a comma-separated list of which outputs
 will be written. If `raw_data` is requested, then the raw
 accelerometer data is written into a file or a series of files
@@ -1580,7 +1605,7 @@ for details on the difference between lanes and tools and how they
 relate to each other.
 
 #### T0, T1, T2, etc.
-`T<tool index>`: Equivalent to calling 
+`T<tool index>`: Equivalent to calling
 `TR_LOAD_TOOLHEAD TOOL=<tool index>`. All of the optional parameters
 accepted by the TR_LOAD_TOOLHEAD command can also be used with these
 commands.

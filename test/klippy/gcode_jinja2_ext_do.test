@@ -22,3 +22,9 @@ NONE_TEST
 
 # Move again
 G1 Z9
+
+# Reload macros command
+RELOAD_GCODE_MACROS
+
+# test again
+NONE_TEST

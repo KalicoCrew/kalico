@@ -1,13 +1,23 @@
-[tool.black]
+[tool.ruff]
 line-length = 80
-include = '\.pyi?$'
-exclude = '''
-(
-      \.github/
-    | \.history/
-    | config/
-    | docs/
-    | lib/
-    | src/
-)
-'''
+indent-width = 4
+exclude = [
+  ".github",
+  ".history",
+  "config",
+  "docs",
+  "lib",
+  "src"
+]
+
+[tool.ruff.lint]
+ignore = [
+  "E401", # Multiple imports on one line
+  "C901", # Function is too complex
+  "E501", # Line too long (82 > 79 characters)
+  "E302", # Expected 2 blank lines, found 0
+  "E722", # Do not use bare except, specify exception instead
+  "E741", # Do not use variables named 'I', 'O', or 'l'
+  "F841", # Local variable name is assigned to but never used
+  "E721", # Do not compare types, use 'isinstance()'
+]

@@ -11,6 +11,7 @@ import queuelogger
 # Coordinate descent
 ######################################################################
 
+
 # Helper code that implements coordinate descent
 def coordinate_descent(adj_params, params, error_func):
     # Define potential changes
@@ -90,6 +91,7 @@ def background_coordinate_descent(printer, adj_params, params, error_func):
 ######################################################################
 # Trilateration
 ######################################################################
+
 
 # Trilateration finds the intersection of three spheres.  See the
 # wikipedia article for the details of the algorithm.

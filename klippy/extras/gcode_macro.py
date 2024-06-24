@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import traceback, logging, ast, copy, json
 import jinja2, math
-
+import configfile
 
 ######################################################################
 # Template handling
@@ -79,6 +79,25 @@ class TemplateWrapper:
         self.gcode.run_script_from_command(self.render(context))
 
 
+class Template:
+    def __init__(self, printer, env, name, script) -> None:
+        self.name = name
+        self.printer = printer
+        self.env = env
+        self.function = TemplateWrapper(self.printer, self.env, name, script)
+
+    def __call__(self, context=None):
+        return self.function(context)
+
+    def __getattr__(self, name):
+        return getattr(self.function, name)
+
+    def reload(self, script):
+        self.function = TemplateWrapper(
+            self.printer, self.env, self.name, script
+        )
+
+
 # Main gcode macro template tracking
 class PrinterGCodeMacro:
     def __init__(self, config):
@@ -87,13 +106,18 @@ class PrinterGCodeMacro:
             "{%", "%}", "{", "}", extensions=["jinja2.ext.do"]
         )
 
+        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode.register_command(
+            "RELOAD_GCODE_MACROS", self.cmd_RELOAD_GCODE_MACROS
+        )
+
     def load_template(self, config, option, default=None):
         name = "%s:%s" % (config.get_name(), option)
         if default is None:
             script = config.get(option)
         else:
             script = config.get(option, default)
-        return TemplateWrapper(self.printer, self.env, name, script)
+        return Template(self.printer, self.env, name, script)
 
     def _action_emergency_stop(self, msg="action_emergency_stop"):
         self.printer.invoke_shutdown("Shutdown due to %s" % (msg,))
@@ -123,6 +147,23 @@ class PrinterGCodeMacro:
             "action_call_remote_method": self._action_call_remote_method,
             "math": math,
         }
+
+    def cmd_RELOAD_GCODE_MACROS(self, gcmd):
+        pconfig = configfile.PrinterConfig(self.printer)
+        new_config = pconfig.read_main_config()
+        for name, obj in self.printer.lookup_objects("gcode_macro"):
+            try:
+                new_section = new_config.getsection(name)
+            except:
+                continue
+
+            if name in [
+                s.get_name()
+                for s in new_config.get_prefix_sections("gcode_macro")
+            ]:
+                template = obj.template
+                new_script = new_section.get("gcode").strip()
+                template.reload(new_script)
 
 
 def load_config(config):

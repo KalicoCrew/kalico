@@ -62,6 +62,7 @@ class MCU_analog_mux:
 # TMC uart communication
 ######################################################################
 
+
 # Share mutexes so only one active tmc_uart command on a single mcu at
 # a time. This helps limit cpu usage on slower micro-controllers.
 class PrinterTMCUartMutexes:
@@ -84,6 +85,7 @@ def lookup_tmc_uart_mutex(mcu):
 
 TMC_BAUD_RATE = 40000
 TMC_BAUD_RATE_AVR = 9000
+
 
 # Code for sending messages on a TMC uart
 class MCU_TMC_uart_bitbang:
