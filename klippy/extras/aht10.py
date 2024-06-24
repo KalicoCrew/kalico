@@ -6,6 +6,8 @@
 import logging
 from . import bus
 
+from extras.danger_options import get_danger_options
+
 ######################################################################
 # Compatible Sensors:
 #       AHT10      -    Tested w/ BTT GTR 1.0 MCU on i2c3
@@ -150,7 +152,11 @@ class AHT10:
             self.temp = self.humidity = 0.0
             return self.reactor.NEVER
 
-        if self.temp < self.min_temp or self.temp > self.max_temp:
+        if (
+            self.temp < self.min_temp
+            or self.temp > self.max_temp
+            and not get_danger_options().temp_ignore_limits
+        ):
             self.printer.invoke_shutdown(
                 "AHT10 temperature %0.1f outside range of %0.1f:%.01f"
                 % (self.temp, self.min_temp, self.max_temp)

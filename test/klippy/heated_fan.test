@@ -1,0 +1,18 @@
+# Pid hot modify tests
+DICTIONARY atmega2560.dict
+CONFIG heated_fan.cfg
+
+# Extrude only
+G1 E5
+G1 E-2
+G1 E7
+
+# Home and extrusion moves
+G28
+G1 X20 Y20 Z1
+G1 X25 Y25 E7.5
+
+SET_HEATED_FAN_TARGET TARGET=60
+
+M106 S255
+M107

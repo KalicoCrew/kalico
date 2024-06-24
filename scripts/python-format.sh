@@ -25,10 +25,7 @@ fi
 
 set +e # Formatters are allowed to fail
 
-black $BLACK_ARGS "${PYFILES[@]}"
-autoflake --in-place "${PYFILES[@]}"
-autopep8 --in-place -a -a "${PYFILES[@]}"
-black $BLACK_ARGS "${PYFILES[@]}"
+ruff check --fix "${PYFILES[@]}"
 
 if [ "$AMEND" ]; then
     git add -u "${PYFILES[@]}"

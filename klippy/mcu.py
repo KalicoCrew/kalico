@@ -132,9 +132,9 @@ class CommandWrapper:
 
 class MCU_trsync:
     REASON_ENDSTOP_HIT = 1
-    REASON_COMMS_TIMEOUT = 2
-    REASON_HOST_REQUEST = 3
-    REASON_PAST_END_TIME = 4
+    REASON_HOST_REQUEST = 2
+    REASON_PAST_END_TIME = 3
+    REASON_COMMS_TIMEOUT = 4
 
     def __init__(self, mcu, trdispatch):
         self._mcu = mcu
@@ -236,7 +236,7 @@ class MCU_trsync:
             if tc is not None:
                 self._trigger_completion = None
                 reason = params["trigger_reason"]
-                is_failure = reason == self.REASON_COMMS_TIMEOUT
+                is_failure = reason >= self.REASON_COMMS_TIMEOUT
                 self._reactor.async_complete(tc, is_failure)
         elif self._home_end_clock is not None:
             clock = self._mcu.clock32_to_clock64(params["clock"])
@@ -297,25 +297,19 @@ class MCU_trsync:
 TRSYNC_SINGLE_MCU_TIMEOUT = 0.250
 
 
-class MCU_endstop:
-    RETRY_QUERY = 1.000
-
-    def __init__(self, mcu, pin_params):
+class TriggerDispatch:
+    def __init__(self, mcu):
         self._mcu = mcu
-        self._pin = pin_params["pin"]
-        self._pullup = pin_params["pullup"]
-        self._invert = pin_params["invert"]
-        self._oid = self._mcu.create_oid()
-        self._home_cmd = self._query_cmd = None
-        self._mcu.register_config_callback(self._build_config)
         self._trigger_completion = None
-        self._rest_ticks = 0
         ffi_main, ffi_lib = chelper.get_ffi()
         self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
 
-    def get_mcu(self):
-        return self._mcu
+    def get_oid(self):
+        return self._trsyncs[0].get_oid()
+
+    def get_command_queue(self):
+        return self._trsyncs[0].get_command_queue()
 
     def add_stepper(self, stepper):
         trsyncs = {trsync.get_mcu(): trsync for trsync in self._trsyncs}
@@ -339,6 +333,63 @@ class MCU_endstop:
     def get_steppers(self):
         return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
 
+    def start(self, print_time):
+        reactor = self._mcu.get_printer().get_reactor()
+        self._trigger_completion = reactor.completion()
+        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
+        if len(self._trsyncs) == 1:
+            expire_timeout = TRSYNC_SINGLE_MCU_TIMEOUT
+        for i, trsync in enumerate(self._trsyncs):
+            report_offset = float(i) / len(self._trsyncs)
+            trsync.start(
+                print_time,
+                report_offset,
+                self._trigger_completion,
+                expire_timeout,
+            )
+        etrsync = self._trsyncs[0]
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
+        return self._trigger_completion
+
+    def wait_end(self, end_time):
+        etrsync = self._trsyncs[0]
+        etrsync.set_home_end_time(end_time)
+        if self._mcu.is_fileoutput():
+            self._trigger_completion.complete(True)
+        self._trigger_completion.wait()
+
+    def stop(self):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.trdispatch_stop(self._trdispatch)
+        res = [trsync.stop() for trsync in self._trsyncs]
+        err_res = [r for r in res if r >= MCU_trsync.REASON_COMMS_TIMEOUT]
+        if err_res:
+            return err_res[0]
+        return res[0]
+
+
+class MCU_endstop:
+    def __init__(self, mcu, pin_params):
+        self._mcu = mcu
+        self._pin = pin_params["pin"]
+        self._pullup = pin_params["pullup"]
+        self._invert = pin_params["invert"]
+        self._oid = self._mcu.create_oid()
+        self._home_cmd = self._query_cmd = None
+        self._mcu.register_config_callback(self._build_config)
+        self._rest_ticks = 0
+        self._dispatch = TriggerDispatch(mcu)
+
+    def get_mcu(self):
+        return self._mcu
+
+    def add_stepper(self, stepper):
+        self._dispatch.add_stepper(stepper)
+
+    def get_steppers(self):
+        return self._dispatch.get_steppers()
+
     def _build_config(self):
         # Setup config
         self._mcu.add_config_cmd(
@@ -352,7 +403,7 @@ class MCU_endstop:
             on_restart=True,
         )
         # Lookup commands
-        cmd_queue = self._trsyncs[0].get_command_queue()
+        cmd_queue = self._dispatch.get_command_queue()
         self._home_cmd = self._mcu.lookup_command(
             "endstop_home oid=%c clock=%u sample_ticks=%u sample_count=%c"
             " rest_ticks=%u pin_value=%c trsync_oid=%c trigger_reason=%c",
@@ -373,22 +424,7 @@ class MCU_endstop:
             self._mcu.print_time_to_clock(print_time + rest_time) - clock
         )
         self._rest_ticks = rest_ticks
-        reactor = self._mcu.get_printer().get_reactor()
-        self._trigger_completion = reactor.completion()
-        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
-        if len(self._trsyncs) == 1:
-            expire_timeout = TRSYNC_SINGLE_MCU_TIMEOUT
-        for i, trsync in enumerate(self._trsyncs):
-            report_offset = float(i) / len(self._trsyncs)
-            trsync.start(
-                print_time,
-                report_offset,
-                self._trigger_completion,
-                expire_timeout,
-            )
-        etrsync = self._trsyncs[0]
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
+        trigger_completion = self._dispatch.start(print_time)
         self._home_cmd.send(
             [
                 self._oid,
@@ -397,26 +433,21 @@ class MCU_endstop:
                 sample_count,
                 rest_ticks,
                 triggered ^ self._invert,
-                etrsync.get_oid(),
-                etrsync.REASON_ENDSTOP_HIT,
+                self._dispatch.get_oid(),
+                MCU_trsync.REASON_ENDSTOP_HIT,
             ],
             reqclock=clock,
         )
-        return self._trigger_completion
+        return trigger_completion
 
     def home_wait(self, home_end_time):
-        etrsync = self._trsyncs[0]
-        etrsync.set_home_end_time(home_end_time)
-        if self._mcu.is_fileoutput():
-            self._trigger_completion.complete(True)
-        self._trigger_completion.wait()
+        self._dispatch.wait_end(home_end_time)
         self._home_cmd.send([self._oid, 0, 0, 0, 0, 0, 0, 0])
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_stop(self._trdispatch)
-        res = [trsync.stop() for trsync in self._trsyncs]
-        if any([r == etrsync.REASON_COMMS_TIMEOUT for r in res]):
-            return -1.0
-        if res[0] != etrsync.REASON_ENDSTOP_HIT:
+        res = self._dispatch.stop()
+        if res >= MCU_trsync.REASON_COMMS_TIMEOUT:
+            cmderr = self._mcu.get_printer().command_error
+            raise cmderr("Communication timeout during homing")
+        if res != MCU_trsync.REASON_ENDSTOP_HIT:
             return 0.0
         if self._mcu.is_fileoutput():
             return home_end_time
@@ -814,13 +845,13 @@ class MCU:
         if (
             msg.startswith("ADC out of range")
             or msg.startswith("Thermocouple reader fault")
-        ) and not get_danger_options.adc_ignore_limits:
+        ) and not get_danger_options().temp_ignore_limits:
             pheaters = self._printer.lookup_object("heaters")
             heaters = [
                 pheaters.lookup_heater(n) for n in pheaters.available_heaters
             ]
             for heater in heaters:
-                if heater.is_adc_faulty():
+                if hasattr(heater, "is_adc_faulty") and heater.is_adc_faulty():
                     append_msgs.append(
                         {
                             "heater": heater.name,
@@ -839,7 +870,7 @@ class MCU:
             ]
             for sensor_name in sensor_names:
                 sensor = self._printer.lookup_object(sensor_name)
-                if sensor.is_adc_faulty():
+                if hasattr(sensor, "is_adc_faulty") and sensor.is_adc_faulty():
                     append_msgs.append(
                         {
                             sensor_name.split(" ")[0]: sensor.name,
@@ -902,7 +933,6 @@ class MCU:
             0, "allocate_oids count=%d" % (self._oid_count,)
         )
         # Resolve pin names
-        mcu_type = self._serial.get_msgparser().get_constant("MCU")
         ppins = self._printer.lookup_object("pins")
         pin_resolver = ppins.get_pin_resolver(self._name)
         for cmdlist in (self._config_cmds, self._restart_cmds, self._init_cmds):
@@ -962,11 +992,11 @@ class MCU:
 
     def _log_info(self):
         msgparser = self._serial.get_msgparser()
+        app = msgparser.get_app_info()
         message_count = len(msgparser.get_messages())
         version, build_versions = msgparser.get_version_info()
         log_info = [
-            "Loaded MCU '%s' %d commands (%s / %s)"
-            % (self._name, message_count, version, build_versions),
+            f"Loaded MCU '{self._name}' {message_count} commands ({app} {version} / {build_versions})",
             "MCU '%s' config: %s"
             % (
                 self._name,
@@ -1065,7 +1095,9 @@ class MCU:
             self._printer.register_event_handler(
                 "klippy:firmware_restart", self._firmware_restart_bridge
             )
+        app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
+        self._get_status_info["app"] = app
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
@@ -1333,16 +1365,12 @@ class MCU:
 
 
 Common_MCU_errors = {
-    (
-        "Timer too close",
-    ): """
+    ("Timer too close",): """
 This often indicates the host computer is overloaded. Check
 for other processes consuming excessive CPU time, high swap
 usage, disk errors, overheating, unstable voltage, or
 similar system problems on the host computer.""",
-    (
-        "Missed scheduling of next ",
-    ): """
+    ("Missed scheduling of next ",): """
 This is generally indicative of an intermittent
 communication failure between micro-controller and host.""",
     (
@@ -1358,9 +1386,7 @@ its configured min_temp or max_temp.""",
 This generally occurs when the micro-controller has been
 requested to step at a rate higher than it is capable of
 obtaining.""",
-    (
-        "Command request",
-    ): """
+    ("Command request",): """
 This generally occurs in response to an M112 G-Code command
 or in response to an internal error in the host software.""",
 }

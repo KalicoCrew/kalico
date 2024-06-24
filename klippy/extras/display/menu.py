@@ -311,9 +311,9 @@ class MenuContainer(MenuElement):
             self._parents.append(parents)
 
     def assert_recursive_relation(self, parents=None):
-        assert self not in (
-            parents or self._parents
-        ), "Recursive relation of '%s' container" % (self.get_ns(),)
+        assert self not in (parents or self._parents), (
+            "Recursive relation of '%s' container" % (self.get_ns(),)
+        )
 
     def insert_item(self, s, index=None):
         self._insert_item(s, index)

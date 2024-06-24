@@ -9,6 +9,7 @@ from .display import display
 # Time between each led template update
 RENDER_TIME = 0.500
 
+
 # Helper code for common LED initialization and control
 class LEDHelper:
     def __init__(self, config, update_func, led_count=1):
@@ -66,6 +67,7 @@ class LEDHelper:
         transmit = gcmd.get_int("TRANSMIT", 1)
         sync = gcmd.get_int("SYNC", 1)
         color = (red, green, blue, white)
+
         # Update and transmit data
         def lookahead_bgfunc(print_time):
             self.set_color(index, color)
@@ -204,6 +206,7 @@ class PrinterLED:
 
 PIN_MIN_TIME = 0.100
 MAX_SCHEDULE_TIME = 5.0
+
 
 # Handler for PWM controlled LEDs
 class PrinterPWMLED:

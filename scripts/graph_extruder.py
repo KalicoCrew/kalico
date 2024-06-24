@@ -80,6 +80,7 @@ def trim_lists(*lists):
 # Common data filters
 ######################################################################
 
+
 # Generate estimated first order derivative
 def gen_deriv(data):
     return [0.0] + [
@@ -126,6 +127,7 @@ def calc_weighted(positions, smooth_time):
 
 SMOOTH_TIME = 0.040
 PRESSURE_ADVANCE = 0.045
+
 
 # Calculate raw pressure advance positions
 def calc_pa_raw(positions):

@@ -38,6 +38,7 @@ def resolve_bus_name(mcu, param, bus):
 # SPI
 ######################################################################
 
+
 # Helper code for working with devices connected to an MCU via an SPI bus
 class MCU_SPI:
     def __init__(
@@ -176,6 +177,7 @@ def MCU_SPI_from_config(
 # I2C
 ######################################################################
 
+
 # Helper code for working with devices connected to an MCU via an I2C bus
 class MCU_I2C:
     def __init__(self, mcu, bus, addr, speed, sw_pins=None):
@@ -296,6 +298,7 @@ def MCU_I2C_from_config(config, default_addr=None, default_speed=100000):
 ######################################################################
 # Bus synchronized digital outputs
 ######################################################################
+
 
 # Helper code for a gpio that updates on a cmd_queue
 class MCU_bus_digital_out:

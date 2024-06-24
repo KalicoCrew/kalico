@@ -17,7 +17,6 @@ FIL_DRIVER_STEPPER_NAME = "stepper_tr_fil_driver"
 
 
 class TradRack:
-
     VARS_CALIB_BOWDEN_LOAD_LENGTH = "tr_calib_bowden_load_length"
     VARS_CALIB_BOWDEN_UNLOAD_LENGTH = "tr_calib_bowden_unload_length"
     VARS_CONFIG_BOWDEN_LENGTH = "tr_config_bowden_length"
@@ -120,11 +119,9 @@ class TradRack:
         self.eject_length = config.getfloat(
             "eject_length", default=30.0, above=0.0
         )
-        self.config_bowden_length = (
-            self.bowden_load_length
-        ) = self.bowden_unload_length = config.getfloat(
-            "bowden_length", above=0.0
-        )
+        self.config_bowden_length = self.bowden_load_length = (
+            self.bowden_unload_length
+        ) = config.getfloat("bowden_length", above=0.0)
         self.extruder_load_length = config.getfloat(
             "extruder_load_length", above=0.0
         )
@@ -2281,12 +2278,12 @@ class TradRackToolHead(toolhead.ToolHead, object):
         # Flush tracking
         self.flush_timer = self.reactor.register_timer(self._flush_handler)
         self.do_kick_flush_timer = True
-        self.last_flush_time = (
-            self.last_sg_flush_time
-        ) = self.min_restart_time = 0.0
-        self.need_flush_time = (
-            self.step_gen_time
-        ) = self.clear_history_time = 0.0
+        self.last_flush_time = self.last_sg_flush_time = (
+            self.min_restart_time
+        ) = 0.0
+        self.need_flush_time = self.step_gen_time = self.clear_history_time = (
+            0.0
+        )
         # Kinematic step generation scan window time tracking
         self.kin_flush_delay = toolhead.SDS_CHECK_TIME
         self.kin_flush_times = []

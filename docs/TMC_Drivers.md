@@ -198,11 +198,6 @@ homing_speed: 20
 
 #### Configure printer.cfg for sensorless homing
 
-The `homing_retract_dist` setting must be set to zero in the
-`stepper_x` config section to disable the second homing move. The
-second homing attempt does not add value when using sensorless homing,
-it will not work reliably, and it will confuse the tuning process.
-
 Be sure that a `hold_current` setting is not specified in the TMC
 driver section of the config. (If a hold_current is set then after
 contact is made, the motor stops while the carriage is pressed against
@@ -217,11 +212,12 @@ configuration for an X axis might look like:
 [tmc2209 stepper_x]
 diag_pin: ^PA1      # Set to MCU pin connected to TMC DIAG pin
 driver_SGTHRS: 255  # 255 is most sensitive value, 0 is least sensitive
+home_current: 1
 ...
 
 [stepper_x]
 endstop_pin: tmc2209_stepper_x:virtual_endstop
-homing_retract_dist: 0
+homing_retract_dist: 10 # Must be greater than 0 or set use_sensorless_homing: True
 ...
 ```
 
@@ -230,11 +226,12 @@ An example tmc2130 or tmc5160 config might look like:
 [tmc2130 stepper_x]
 diag1_pin: ^!PA1 # Pin connected to TMC DIAG1 pin (or use diag0_pin / DIAG0 pin)
 driver_SGT: -64  # -64 is most sensitive value, 63 is least sensitive
+home_current: 1
 ...
 
 [stepper_x]
 endstop_pin: tmc2130_stepper_x:virtual_endstop
-homing_retract_dist: 0
+homing_retract_dist: 10 
 ...
 ```
 
@@ -242,11 +239,13 @@ An example tmc2660 config might look like:
 ```
 [tmc2660 stepper_x]
 driver_SGT: -64     # -64 is most sensitive value, 63 is least sensitive
+home_current: 1
 ...
 
 [stepper_x]
 endstop_pin: ^PA1   # Pin connected to TMC SG_TST pin
-homing_retract_dist: 0
+use_sensorless_homing: True # Required if endstop_pin is not a virtual_endstop
+homing_retract_dist: 10
 ...
 ```
 
@@ -345,47 +344,12 @@ necessary to run the tuning process again.
 
 #### Using Macros when Homing
 
-After sensorless homing completes the carriage will be pressed against
-the end of the rail and the stepper will exert a force on the frame
-until the carriage is moved away. It is a good idea to create a macro
-to home the axis and immediately move the carriage away from the end
-of the rail.
-
-It is a good idea for the macro to pause at least 2 seconds prior to
-starting sensorless homing (or otherwise ensure that there has been no
-movement on the stepper for 2 seconds). Without a delay it is possible
-for the driver's internal stall flag to still be set from a previous
-move.
-
-It can also be useful to have that macro set the driver current before
-homing and set a new current after the carriage has moved away.
-
-An example macro might look something like:
-```
-[gcode_macro SENSORLESS_HOME_X]
-gcode:
-    {% set HOME_CUR = 0.700 %}
-    {% set driver_config = printer.configfile.settings['tmc2209 stepper_x'] %}
-    {% set RUN_CUR = driver_config.run_current %}
-    # Set current for sensorless homing
-    SET_TMC_CURRENT STEPPER=stepper_x CURRENT={HOME_CUR}
-    # Pause to ensure driver stall flag is clear
-    G4 P2000
-    # Home
-    G28 X0
-    # Move away
-    G90
-    G1 X5 F1200
-    # Set current during print
-    SET_TMC_CURRENT STEPPER=stepper_x CURRENT={RUN_CUR}
-```
-
-The resulting macro can be called from a
-[homing_override config section](Config_Reference.md#homing_override)
-or from a [START_PRINT macro](Slicers.md#klipper-gcode_macro).
-
-Note that if the driver current during homing is changed, then the
-tuning process should be run again.
+Unlike stock Klipper, in Danger Klipper, you do not need macros for
+sensorless homing management. Homing current is handled by the TMC block, 
+homing retract distance is used to define a minimum homing distance
+(which can also be manually configured) which is used for sensorless
+homing verification as well as post home retract. In depth guide
+for sensorless setup coming soon.
 
 ### Tips for sensorless homing on CoreXY
 

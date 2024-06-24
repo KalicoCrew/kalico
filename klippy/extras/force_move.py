@@ -49,15 +49,17 @@ class ForceMove:
             self.cmd_STEPPER_BUZZ,
             desc=self.cmd_STEPPER_BUZZ_help,
         )
-        if config.getboolean("enable_force_move", True):
-            gcode.register_command(
-                "FORCE_MOVE", self.cmd_FORCE_MOVE, desc=self.cmd_FORCE_MOVE_help
-            )
-            gcode.register_command(
-                "SET_KINEMATIC_POSITION",
-                self.cmd_SET_KINEMATIC_POSITION,
-                desc=self.cmd_SET_KINEMATIC_POSITION_help,
-            )
+        if not config.getboolean("enable_force_move", True):
+            return
+
+        gcode.register_command(
+            "FORCE_MOVE", self.cmd_FORCE_MOVE, desc=self.cmd_FORCE_MOVE_help
+        )
+        gcode.register_command(
+            "SET_KINEMATIC_POSITION",
+            self.cmd_SET_KINEMATIC_POSITION,
+            desc=self.cmd_SET_KINEMATIC_POSITION_help,
+        )
 
     def register_stepper(self, config, mcu_stepper):
         self.steppers[mcu_stepper.get_name()] = mcu_stepper

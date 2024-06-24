@@ -109,7 +109,7 @@ class PrinterProbe:
     def _handle_home_rails_begin(self, homing_state, rails):
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
         if self.mcu_probe in endstops:
-            self.multi_probe_begin()
+            self.multi_probe_begin(always_restore_toolhead=True)
 
     def _handle_home_rails_end(self, homing_state, rails):
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
@@ -122,8 +122,11 @@ class PrinterProbe:
         except:
             logging.exception("Multi-probe end")
 
-    def multi_probe_begin(self):
-        self.mcu_probe.multi_probe_begin()
+    def multi_probe_begin(self, always_restore_toolhead=False):
+        try:
+            self.mcu_probe.multi_probe_begin(always_restore_toolhead)
+        except:
+            self.mcu_probe.multi_probe_begin()
         self.multi_probe_pending = True
 
     def multi_probe_end(self):
@@ -151,11 +154,10 @@ class PrinterProbe:
         curtime = self.printer.get_reactor().monotonic()
         if "z" not in toolhead.get_status(curtime)["homed_axes"]:
             raise self.printer.command_error("Must home before probe")
-        phoming = self.printer.lookup_object("homing")
         pos = toolhead.get_position()
         pos[2] = self.z_position
         try:
-            epos = phoming.probing_move(self.mcu_probe, pos, speed)
+            epos = self.mcu_probe.probing_move(pos, speed)
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -193,6 +195,12 @@ class PrinterProbe:
         # even number of samples
         return self._calc_mean(z_sorted[middle - 1 : middle + 1])
 
+    @property
+    def _drop_first_result(self):
+        if hasattr(self, "drop_first_result"):
+            return self.drop_first_result
+        return False
+
     def run_probe(self, gcmd):
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         lift_speed = self.get_lift_speed(gcmd)
@@ -209,7 +217,7 @@ class PrinterProbe:
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
         must_notify_multi_probe = not self.multi_probe_pending
         if must_notify_multi_probe:
-            self.multi_probe_begin()
+            self.multi_probe_begin(always_restore_toolhead=True)
         probexy = self.printer.lookup_object("toolhead").get_position()[:2]
         retries = 0
         positions = []
@@ -218,7 +226,7 @@ class PrinterProbe:
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(speed)
-            if self.drop_first_result and first_probe:
+            if self._drop_first_result and first_probe:
                 first_probe = False
                 liftpos = [None, None, pos[2] + sample_retract_dist]
                 self._move(liftpos, lift_speed)
@@ -291,14 +299,14 @@ class PrinterProbe:
             )
         )
         # Probe bed sample_count times
-        self.multi_probe_begin()
+        self.multi_probe_begin(always_restore_toolhead=True)
         positions = []
 
         first_probe = True
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(speed)
-            if self.drop_first_result and first_probe:
+            if self._drop_first_result and first_probe:
                 first_probe = False
                 liftpos = [None, None, pos[2] + sample_retract_dist]
                 self._move(liftpos, lift_speed)
@@ -416,22 +424,22 @@ class ProbeEndstopWrapper:
             if stepper.is_active_axis("z"):
                 self.add_stepper(stepper)
 
-    def raise_probe(self):
+    def _raise_probe(self):
         toolhead = self.printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
         self.deactivate_gcode.run_gcode_from_command()
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
-                "Toolhead moved during probe activate_gcode script"
+                "Toolhead moved during probe deactivate_gcode script"
             )
 
-    def lower_probe(self):
+    def _lower_probe(self):
         toolhead = self.printer.lookup_object("toolhead")
         start_pos = toolhead.get_position()
         self.activate_gcode.run_gcode_from_command()
         if toolhead.get_position()[:3] != start_pos[:3]:
             raise self.printer.command_error(
-                "Toolhead moved during probe deactivate_gcode script"
+                "Toolhead moved during probe activate_gcode script"
             )
 
     def multi_probe_begin(self):
@@ -442,18 +450,22 @@ class ProbeEndstopWrapper:
     def multi_probe_end(self):
         if self.stow_on_each_sample:
             return
-        self.raise_probe()
+        self._raise_probe()
         self.multi = "OFF"
+
+    def probing_move(self, pos, speed):
+        phoming = self.printer.lookup_object("homing")
+        return phoming.probing_move(self, pos, speed)
 
     def probe_prepare(self, hmove):
         if self.multi == "OFF" or self.multi == "FIRST":
-            self.lower_probe()
+            self._lower_probe()
             if self.multi == "FIRST":
                 self.multi = "ON"
 
     def probe_finish(self, hmove):
         if self.multi == "OFF":
-            self.raise_probe()
+            self._raise_probe()
 
     def get_position_endstop(self):
         return self.position_endstop

@@ -80,7 +80,6 @@ class FirmwareRetraction:
 
     # Helper method to register commands and instantiate required objects
     def _handle_ready(self):
-
         self.gcode_move = self.printer.lookup_object("gcode_move")
         self.toolhead = self.printer.lookup_object("toolhead")
 

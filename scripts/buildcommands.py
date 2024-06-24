@@ -621,7 +621,7 @@ class HandleVersions:
     def update_data_dictionary(self, data):
         data["version"] = self.version
         data["build_versions"] = self.toolstr
-        data["app"] = "Klipper"
+        data["app"] = "Danger-Klipper"
         data["license"] = "GNU GPLv3"
 
     def generate_code(self, options):

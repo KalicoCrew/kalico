@@ -1,0 +1,54 @@
+# Test case for belay
+DICTIONARY atmega2560.dict
+CONFIG belay.cfg
+
+# Query belay state
+QUERY_BELAY BELAY=belay_trad_rack
+QUERY_BELAY BELAY=belay_extruder_stepper
+
+# Extrude only
+M83
+G1 E5
+G1 E-2
+G1 E7
+
+# Home and extrusion moves
+G28
+G1 X20 Y20 Z1
+G1 X25 Y25 E0.5
+
+# Switch extruder stepper to sync to
+BELAY_SET_STEPPER BELAY=belay_extruder_stepper STEPPER=extruder_stepper1
+
+# Extrude only
+G1 E5
+G1 E-2
+G1 E7
+
+# Switch back extruder stepper to sync to
+BELAY_SET_STEPPER BELAY=belay_extruder_stepper STEPPER=extruder_stepper0
+
+# Extrude only
+G1 E5
+G1 E-2
+G1 E7
+
+# Set multiplier for belay_trad_rack
+BELAY_SET_MULTIPLIER BELAY=belay_trad_rack HIGH=1.1 LOW=0.9
+BELAY_SET_MULTIPLIER BELAY=belay_trad_rack HIGH=1.2
+BELAY_SET_MULTIPLIER BELAY=belay_trad_rack LOW=0.8
+
+# Extrude only
+G1 E5
+G1 E-2
+G1 E7
+
+# Set multiplier for belay_extruder_stepper
+BELAY_SET_MULTIPLIER BELAY=belay_extruder_stepper HIGH=1.1 LOW=0.9
+BELAY_SET_MULTIPLIER BELAY=belay_extruder_stepper HIGH=1.2
+BELAY_SET_MULTIPLIER BELAY=belay_extruder_stepper LOW=0.8
+
+# Extrude only
+G1 E5
+G1 E-2
+G1 E7
