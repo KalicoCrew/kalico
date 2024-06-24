@@ -229,7 +229,7 @@ class FirmwareRetraction:
 
         if not self.is_retracted:  # If filament isn't retracted
             # Store z_hop_height for moves when retracted until next G11
-            self.actual_zhop = self.z_hop_height
+            self.actual_z_hop = self.z_hop_height
             # Check if FW retraction enabled
             if self.retract_length == 0.0 and self.z_hop_height == 0.0:
                 gcmd.respond_info(
@@ -275,7 +275,7 @@ class FirmwareRetraction:
 
         if self.is_retracted:  # Check if the filament is retracted
             if (
-                self.unretract_length == 0.0 and self.actual_zhop == 0.0
+                self.unretract_length == 0.0 and self.actual_z_hop == 0.0
             ):  # Check if FW retraction enabled
                 gcmd.respond_info(
                     "Retraction length and z_hop zero. Firmware retraction \
@@ -286,11 +286,11 @@ class FirmwareRetraction:
                     unretract_gcode = ("G1 E{:.5f} F{}\n").format(
                         self.unretract_length, int(self.unretract_speed * 60)
                     )
-                if self.actual_zhop > 0.0:
+                if self.actual_z_hop > 0.0:
                     self._re_register_G1()  # Restore G1 handlers if z_hop on
                     # Set unzhop gcode move
                     unzhop_gcode = ("G1 Z-{:.5f} F{}\n").format(
-                        self.actual_zhop,
+                        self.actual_z_hop,
                         int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
                     )
 
@@ -363,7 +363,7 @@ class FirmwareRetraction:
 
         if "Z" in params and not is_relative:
             # In absolute, adjust Z param to account for Z-hop offset
-            params["Z"] = str(float(params["Z"]) + self.actual_zhop)
+            params["Z"] = str(float(params["Z"]) + self.actual_z_hop)
             # In relative, don't adjust as Z-hop offset considered before
 
         new_g1_command = "G1.20140114"
