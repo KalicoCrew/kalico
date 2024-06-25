@@ -365,7 +365,7 @@ class FirmwareRetraction:
     # Offsets are not touched to prevent incompatibility issues with user macros
     def _G1_zhop(self, gcmd):
         params = gcmd.get_command_parameters()
-        th_status = self._toolhead_status()
+        is_relative = self._toolhead_is_relative()
         
         new_g1_command = "G1.20140114"
         
@@ -373,12 +373,12 @@ class FirmwareRetraction:
             # Clear Z_hop on z moves
             if self.clear_zhop:
                 # Relative moves, first, remove last zhop
-                if th_status["relative"]:
+                if is_relative:
                     params["Z"] = str(float(params["Z"]) - self.actual_z_hop)
                 self._execute_clear_z_hop()
                 # Restored G1 command
                 new_g1_command = "G1"
-            elif not th_status["relative"]:
+            elif not is_relative:
                 # In absolute, adjust Z param to account for Z-hop offset
                 params["Z"] = str(float(params["Z"]) + self.actual_z_hop)
                 # In relative, don't adjust as Z-hop offset considered before
@@ -389,13 +389,11 @@ class FirmwareRetraction:
         # Run originl G1 (renamed G1.20140114) with adjusted parameters
         self.gcode.run_script_from_command(new_g1_command)
 
-    # Helper to get absolute/relative mode, Z gcode_position
-    def _toolhead_status(self):
+    # Helper to get absolute/relative mode
+    def _toolhead_is_relative(self):
         gcodestatus = self.gcode_move.get_status()
-        relative = not gcodestatus["absolute_coordinates"]
-        z_pos = gcodestatus["gcode_position"][2]
-
-        return {"relative": relative, "z_pos": z_pos}
+        movemode = gcodestatus["absolute_coordinates"]
+        return not movemode
 
     # Re-register old G1 command handler
     def _re_register_G1(self):
