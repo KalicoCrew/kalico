@@ -77,6 +77,9 @@ class FirmwareRetraction:
         self.reset_on_events = self.config_ref.getboolean(
             "reset_on_events", False
         )
+        self.clear_zhop = self.config_ref.getboolean(
+            "clear_zhop_on_z_moves", False
+        )
 
     # Helper method to register commands and instantiate required objects
     def _handle_ready(self):
@@ -211,16 +214,19 @@ class FirmwareRetraction:
 
     # Helper to clear retraction
     def _execute_clear_retraction(self):
-        if self.actual_z_hop > 0.0:
-            # Re-establish regular G1 command if zhop enabled.
-            # zhop will be reversed on next move with z coordinate
-            self._re_register_G1()
-            self.actual_z_hop = 0.0  # prevent nozzle crash if G11 occurs
+        self._execute_clear_z_hop() #clear z_hop
         if self.reset_on_events:
             self.is_retracted = (
                 False  # Reset retract flag to enable G10 command
             )
             self._get_config_params()  # Reset retraction parameters to config values
+    
+    # Helper to clear z_hop
+    def _execute_clear_z_hop(self):
+        # Re-establish regular G1 command.
+        # zhop will be reversed on next move with z coordinate
+        self._re_register_G1()
+        self.actual_z_hop = 0.0  # prevent nozzle crash if G11 occurs
 
     # Gcode Command G10 to perform firmware retraction
     def cmd_G10(self, gcmd):
@@ -282,12 +288,12 @@ class FirmwareRetraction:
                     disabled. G11 Command ignored!"
                 )
             else:
+                self._re_register_G1()  # Restore G1 handlers
                 if self.unretract_length > 0.0:
                     unretract_gcode = ("G1 E{:.5f} F{}\n").format(
                         self.unretract_length, int(self.unretract_speed * 60)
                     )
                 if self.actual_z_hop > 0.0:
-                    self._re_register_G1()  # Restore G1 handlers if z_hop on
                     # Set unzhop gcode move
                     unzhop_gcode = ("G1 Z-{:.5f} F{}\n").format(
                         self.actual_z_hop,
@@ -359,25 +365,37 @@ class FirmwareRetraction:
     # Offsets are not touched to prevent incompatibility issues with user macros
     def _G1_zhop(self, gcmd):
         params = gcmd.get_command_parameters()
-        is_relative = self._toolhead_is_relative()
-
-        if "Z" in params and not is_relative:
-            # In absolute, adjust Z param to account for Z-hop offset
-            params["Z"] = str(float(params["Z"]) + self.actual_z_hop)
-            # In relative, don't adjust as Z-hop offset considered before
-
+        th_status = self._toolhead_status()
+        
         new_g1_command = "G1.20140114"
+        
+        if "Z" in params:
+            # Clear Z_hop on z moves
+            if self.clear_zhop:
+                # Relative moves, first, remove last zhop
+                if th_status["relative"]:
+                    params["Z"] = str(float(params["Z"]) - self.actual_z_hop)
+                self._execute_clear_z_hop()
+                # Restored G1 command
+                new_g1_command = "G1"
+            elif not th_status["relative"]:
+                # In absolute, adjust Z param to account for Z-hop offset
+                params["Z"] = str(float(params["Z"]) + self.actual_z_hop)
+                # In relative, don't adjust as Z-hop offset considered before
+
         for key, value in params.items():
             new_g1_command += " {0}{1}".format(key, value)
 
         # Run originl G1 (renamed G1.20140114) with adjusted parameters
         self.gcode.run_script_from_command(new_g1_command)
 
-    # Helper to get absolute/relative mode
-    def _toolhead_is_relative(self):
+    # Helper to get absolute/relative mode, Z gcode_position
+    def _toolhead_status(self):
         gcodestatus = self.gcode_move.get_status()
-        movemode = gcodestatus["absolute_coordinates"]
-        return not movemode
+        relative = not gcodestatus["absolute_coordinates"]
+        z_pos = gcodestatus["gcode_position"][2]
+
+        return {"relative": relative, "z_pos": z_pos}
 
     # Re-register old G1 command handler
     def _re_register_G1(self):
