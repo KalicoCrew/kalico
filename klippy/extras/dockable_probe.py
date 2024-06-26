@@ -589,8 +589,11 @@ class DockableProbe:
         end_point = end_point[:2]
         dock = self.dock_position[:2]
         radius = self.safe_dock_distance
+        if radius == 0:
+            self.toolhead.manual_move([end_point[0], end_point[1], None], speed)
+            return
 
-        # redefine star_point outside safe dock area
+        # redefine start_point outside safe dock area
         coords = []
         if radius > self._get_distance(dock, start_point):
             start_point = self._get_closest_exitpoint(start_point)
@@ -667,7 +670,8 @@ class DockableProbe:
         d = hypot(dx, dy)
         if d == 0:
             return self.detach_position
-        magnitude = self.safe_dock_distance
+        # Ensure exit point is outside dock area.
+        magnitude = self.safe_dock_distance + 10e-8
         x1 = cx + magnitude * dx / d
         y1 = cy + magnitude * dy / d
         x2 = cx - magnitude * dx / d
