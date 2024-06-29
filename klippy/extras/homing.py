@@ -253,7 +253,7 @@ class Homing:
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
 
-    def _set_current_homing(self, homing_axes):
+    def _set_current_homing(self, homing_axes, pre_homing):
         print_time = self.toolhead.get_last_move_time()
         affected_rails = set()
         for axis in homing_axes:
@@ -261,35 +261,18 @@ class Homing:
             partial_rails = self.toolhead.get_active_rails_for_axis(axis_name)
             affected_rails = affected_rails | set(partial_rails)
 
+        dwell_time = 0.0
         for rail in affected_rails:
             chs = rail.get_tmc_current_helpers()
-            dwell_time = None
             for ch in chs:
-                if ch is not None and ch.needs_home_current_change():
-                    if dwell_time is None:
-                        dwell_time = ch.current_change_dwell_time
-                    ch.set_current_for_homing(print_time)
-            if dwell_time:
-                self.toolhead.dwell(dwell_time)
+                if ch is not None:
+                    current_dwell_time = ch.set_current_for_homing(
+                        print_time, pre_homing
+                    )
+                    dwell_time = max(dwell_time, current_dwell_time)
 
-    def _set_current_post_homing(self, homing_axes):
-        print_time = self.toolhead.get_last_move_time()
-        affected_rails = set()
-        for axis in homing_axes:
-            axis_name = "xyz"[axis]  # only works for cartesian
-            partial_rails = self.toolhead.get_active_rails_for_axis(axis_name)
-            affected_rails = affected_rails | set(partial_rails)
-
-        for rail in affected_rails:
-            chs = rail.get_tmc_current_helpers()
-            dwell_time = None
-            for ch in chs:
-                if ch is not None and ch.needs_run_current_change():
-                    if dwell_time is None:
-                        dwell_time = ch.current_change_dwell_time
-                    ch.set_current_for_normal(print_time)
-            if dwell_time:
-                self.toolhead.dwell(dwell_time)
+        if dwell_time:
+            self.toolhead.dwell(dwell_time)
 
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
@@ -304,7 +287,7 @@ class Homing:
         hi = rails[0].get_homing_info()
         hmove = HomingMove(self.printer, endstops)
 
-        self._set_current_homing(homing_axes)
+        self._set_current_homing(homing_axes, pre_homing=True)
 
         hmove.homing_move(homepos, hi.speed)
 
@@ -341,21 +324,24 @@ class Homing:
                     endstop[0].query_endstop(print_time)
                 hmove = HomingMove(self.printer, endstops)
                 hmove.homing_move(homepos, hi.second_homing_speed)
-                if hmove.check_no_movement() is not None:
-                    raise self.printer.command_error(
-                        "Endstop %s still triggered after retract"
-                        % (hmove.check_no_movement(),)
-                    )
-                if (
-                    hi.use_sensorless_homing
-                    and needs_rehome
-                    and hmove.moved_less_than_dist(
-                        hi.min_home_dist, homing_axes
-                    )
-                ):
-                    raise self.printer.command_error(
-                        "Early homing trigger on second home!"
-                    )
+                try:
+                    if hmove.check_no_movement() is not None:
+                        raise self.printer.command_error(
+                            "Endstop %s still triggered after retract"
+                            % (hmove.check_no_movement(),)
+                        )
+                    if (
+                        hi.use_sensorless_homing
+                        and needs_rehome
+                        and hmove.moved_less_than_dist(
+                            hi.min_home_dist, homing_axes
+                        )
+                    ):
+                        raise self.printer.command_error(
+                            "Early homing trigger on second home!"
+                        )
+                finally:
+                    self._set_current_homing(homing_axes, pre_homing=False)
                 if hi.retract_dist:
                     # Retract (again)
                     startpos = self._fill_coord(forcepos)
@@ -367,7 +353,8 @@ class Homing:
                         hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
                     ]
                     self.toolhead.move(retractpos, hi.retract_speed)
-        self._set_current_post_homing(homing_axes)
+
+        self._set_current_homing(homing_axes, pre_homing=False)
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {

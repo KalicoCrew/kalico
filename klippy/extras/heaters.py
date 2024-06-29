@@ -990,6 +990,8 @@ class PrinterHeaters:
         return self.available_heaters
 
     def lookup_heater(self, heater_name):
+        if " " in heater_name:
+            heater_name = heater_name.split(" ", 1)[1]
         if heater_name not in self.heaters:
             raise self.printer.config_error(
                 "Unknown heater '%s'" % (heater_name,)

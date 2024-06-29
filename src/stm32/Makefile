@@ -29,6 +29,7 @@ CFLAGS-$(CONFIG_MACH_STM32G0) += -mcpu=cortex-m0plus -Ilib/stm32g0/include
 CFLAGS-$(CONFIG_MACH_STM32G4) += -mcpu=cortex-m4 -Ilib/stm32g4/include
 CFLAGS-$(CONFIG_MACH_STM32H7) += -mcpu=cortex-m7 -Ilib/stm32h7/include
 CFLAGS-$(CONFIG_MACH_STM32L4) += -mcpu=cortex-m4 -Ilib/stm32l4/include
+CFLAGS-$(CONFIG_MACH_AT32F403) = -mcpu=cortex-m4 -Ilib/stm32f1/include
 CFLAGS += $(CFLAGS-y) -D$(MCU_UPPER) -mthumb -Ilib/cmsis-core -Ilib/fast-hash
 
 CFLAGS_klipper.elf += --specs=nano.specs --specs=nosys.specs
@@ -45,6 +46,8 @@ src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0.c stm32/gpioperiph.c
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0_adc.c stm32/stm32f0_i2c.c
 src-$(CONFIG_MACH_STM32F103) += ../lib/stm32f1/system_stm32f1xx.c
 src-$(CONFIG_MACH_STM32F103) += stm32/adc.c
+src-$(CONFIG_MACH_AT32F403) += ../lib/stm32f1/system_stm32f1xx.c
+src-$(CONFIG_MACH_AT32F403) += stm32/adc.c
 src-$(CONFIG_MACH_N32G45x) += ../lib/stm32f1/system_stm32f1xx.c
 src-$(CONFIG_MACH_N32G45x) += ../lib/n32g45x/n32g45x_adc.c stm32/n32g45x_adc.c
 src-$(CONFIG_MACH_STM32F1) += stm32/stm32f1.c generic/armcm_timer.c stm32/i2c.c

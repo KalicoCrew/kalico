@@ -23,7 +23,7 @@ def parse_log(logname):
         for header in f:
             if not header.startswith("#"):
                 break
-        if not header.startswith("freq,psd_x,psd_y,psd_z,psd_xyz"):
+        if not header.startswith("freq,psd_x,psd_y,psd_z,psd_xyz,accel_per_hz"):
             # Raw accelerometer data
             return np.loadtxt(logname, comments="#", delimiter=",")
     # Parse power spectral density data
@@ -41,6 +41,20 @@ def parse_log(logname):
     if "mzv" not in header:
         calibration_data.normalize_to_frequencies()
     return calibration_data
+
+
+def parse_accel_per_hz(logname):
+    with open(logname) as f:
+        for header in f:
+            if not header.startswith("#"):
+                break
+        if not header.startswith("freq,psd_x,psd_y,psd_z,psd_xyz,accel_per_hz"):
+            return None  # TODO
+
+    data = np.loadtxt(
+        logname, skiprows=1, comments="#", delimiter=",", max_rows=2
+    )
+    return data[0][5].item()
 
 
 ######################################################################
@@ -102,7 +116,12 @@ def calibrate_shaper(
 
 
 def plot_freq_response(
-    lognames, calibration_data, shapers, selected_shaper, max_freq
+    lognames,
+    calibration_data,
+    shapers,
+    selected_shaper,
+    max_freq,
+    accels_per_hz,
 ):
     freqs = calibration_data.freq_bins
     psd = calibration_data.psd_sum[freqs <= max_freq]
@@ -164,6 +183,13 @@ def plot_freq_response(
     # A hack to add a human-readable shaper recommendation to legend
     ax2.plot(
         [], [], " ", label="Recommended shaper: %s" % (selected_shaper.upper())
+    )
+
+    ax2.plot(
+        [],
+        [],
+        " ",
+        label="accels_per_hz: %s" % (", ".join(str(e) for e in accels_per_hz)),
     )
 
     ax.legend(loc="upper left", prop=fontP)
@@ -324,6 +350,7 @@ def main():
 
     # Parse data
     datas = [parse_log(fn) for fn in args]
+    accels_per_hz = [parse_accel_per_hz(fn) for fn in args]
 
     # Calibrate shaper and generate outputs
     selected_shaper, shapers, calibration_data = calibrate_shaper(
@@ -345,7 +372,12 @@ def main():
         setup_matplotlib(options.output is not None)
 
         fig = plot_freq_response(
-            args, calibration_data, shapers, selected_shaper, max_freq
+            args,
+            calibration_data,
+            shapers,
+            selected_shaper,
+            max_freq,
+            accels_per_hz,
         )
 
         # Show graph

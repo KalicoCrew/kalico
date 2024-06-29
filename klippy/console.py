@@ -73,10 +73,10 @@ class KeyboardReader:
             self.ser.connect_pipe(self.serialport)
         msgparser = self.ser.get_msgparser()
         message_count = len(msgparser.get_messages())
+        app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
         self.output(
-            "Loaded %d commands (%s / %s)"
-            % (message_count, version, build_versions)
+            f"Loaded {message_count} commands ({app} {version} / {build_versions})"
         )
         self.output(
             "MCU config: %s"

@@ -9,6 +9,8 @@ import util, reactor, queuelogger, msgproto
 import gcode, configfile, pins, mcu, toolhead, webhooks
 from extras.danger_options import get_danger_options
 
+APP_NAME = "Danger-Klipper"
+
 message_ready = "Printer is ready"
 
 message_startup = """
@@ -203,7 +205,7 @@ class Printer:
         for section_config in config.get_prefix_sections(""):
             self.load_object(config, section_config.get_name(), None)
         # dangerklipper on-by-default extras
-        for section_config in ["force_move"]:
+        for section_config in ["force_move", "respond", "exclude_object"]:
             self.load_object(config, section_config, None)
         for m in [toolhead]:
             m.add_printer_objects(config)
@@ -536,11 +538,11 @@ def main():
     if bglogger is not None:
         versions = "\n".join(
             [
-                "Args: %s" % (sys.argv,),
-                "Git version: %s%s"
-                % (repr(start_args["software_version"]), extra_git_desc),
-                "CPU: %s" % (start_args["cpu_info"],),
-                "Python: %s" % (repr(sys.version),),
+                f"Args: {sys.argv}",
+                f"App Name: {APP_NAME}",
+                f"Git version: {repr(start_args['software_version'])}{extra_git_desc}",
+                f"CPU: {start_args['cpu_info']}",
+                f"Python: {repr(sys.version)}",
             ]
         )
         logging.info(versions)

@@ -380,7 +380,7 @@ commands are available when a
 - `MOVE_TO_DETACH_PROBE`: Move away from the dock to disconnect the probe
   from the toolhead.
 - `MOVE_AVOIDING_DOCK [X=<value>] [Y=<value>] [SPEED=<value>]`: Move to the
-  defined point (absolute coordinates) avoiding the safe dock area 
+  defined point (absolute coordinates) avoiding the safe dock area
 
 ### [dual_carriage]
 
@@ -741,6 +741,12 @@ enabled (also see the
 `SET_GCODE_VARIABLE MACRO=<macro_name> VARIABLE=<name> VALUE=<value>`:
 This command allows one to change the value of a gcode_macro variable
 at run-time. The provided VALUE is parsed as a Python literal.
+
+#### RELOAD_GCODE_MACROS
+`RELOAD_GCODE_MACROS`: This command reads the config files and reloads
+all previously loaded gcode templates. It does not load new `[gcode_macro]`
+objects or unload deleted ones. Variables modified with SET_GCODE_VARIABLE
+remain unaffected.
 
 ### [gcode_move]
 
@@ -1264,8 +1270,8 @@ all enabled accelerometer chips.
 `TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
 [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [INPUT_SHAPING=[<0:1>]]`: Runs the resonance
-test in all configured probe points for the requested "axis" and
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=[<0:1>]]`: Runs
+the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
@@ -1274,10 +1280,10 @@ point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
 more configured adxl345 chip,delimited with comma, for example
 `CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT is specified it will override the point(s)
-configured in `[resonance_tester]`. If `INPUT_SHAPING=0` or not set(default),
-disables input shaping for the resonance testing, because
-it is not valid to run the resonance testing with the input shaper
+named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+they will override the corresponding fields configured in `[resonance_tester]`.
+If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
+testing, because it is not valid to run the resonance testing with the input shaper
 enabled. `OUTPUT` parameter is a comma-separated list of which outputs
 will be written. If `raw_data` is requested, then the raw
 accelerometer data is written into a file or a series of files

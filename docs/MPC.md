@@ -41,7 +41,7 @@ cooling_fan: fan
 #   <fan_generic BedFans> for example.
 #ambient_temp_sensor: <temperature_sensor sensor_name>
 #   Optional. If this is not given MPC will estimate this parameter
-#   (reccomended).
+#   (recommended).
 #   It can use any sensor, but it should be a temperature sensor in proximity
 #   to the hotend or measuring the ambient air surrounding the hotend such as
 #   a chamber sensor. 
@@ -231,6 +231,59 @@ MPC works best knowing how much energy (in Joules) it takes to heat 1mm of filam
 | PETG-CF   | 1.30            | **                    |
 
 **Use the specific heat from the base polymer
+
+### An example macro for automatically setting these values
+
+These values are copied from the above tables, heat capacities are the middle of the range.
+
+Your slicer must be configured to pass the current material type to your `PRINT_START`, for PrusaSlicer and family you may use `PRINT_START MATERIAL=[filament_type[initial_extruder]] # and other values...`
+
+Then, in your `PRINT_START` macro, call `_SET_MPC_MATERIAL MATERIAL={params.MATERIAL}`
+
+```ini
+[gcode_macro SET_MPC_MATERIAL]
+description: Set heater MPC parameters for a given material
+variable_filament_table:
+    ## Update this table to adjust material settings
+    {
+        ## ( density, heat capacity )  # suggested heat capacity range
+        "PLA"       : ( 1.25, 2.20 ),  # 1.80 - 2.20
+        "PETG"      : ( 1.27, 2.20 ),  # 1.70 - 2.20
+        "PC+ABS"    : ( 1.15, 2.20 ),  # 1.50 - 2.20
+        "ABS"       : ( 1.06, 2.40 ),  # 1.25 - 2.40
+        "ASA"       : ( 1.07, 2.10 ),  # 1.30 - 2.10
+        "PA6"       : ( 1.12, 2.50 ),  # 2.00 - 2.50
+        "PA"        : ( 1.15, 2.50 ),  # 2.00 - 2.50
+        "PC"        : ( 1.20, 1.90 ),  # 1.10 - 1.90
+        "TPU"       : ( 1.21, 2.00 ),  # 1.50 - 2.00
+        "TPU-90A"   : ( 1.15, 2.00 ),  # 1.50 - 2.00
+        "TPU-95A"   : ( 1.22, 2.00 ),  # 1.50 - 2.00
+        "ABS-CF"    : ( 1.11, 2.40 ),  # 1.25 - 2.40
+        "ASA-CF"    : ( 1.11, 2.10 ),  # 1.30 - 2.10
+        "PA6-CF"    : ( 1.19, 2.50 ),  # 2.00 - 2.50
+        "PC+ABS-CF" : ( 1.22, 2.20 ),  # 1.50 - 2.20
+        "PC+CF"     : ( 1.36, 1.90 ),  # 1.10 - 1.90
+        "PLA-CF"    : ( 1.29, 2.20 ),  # 1.80 - 2.20
+        "PETG-CF"   : ( 1.30, 2.20 ),  # 1.70 - 2.20
+    }
+gcode:
+    {% set material = params.MATERIAL | upper %}
+    {% set heater = params.HEATER | default('extruder') %}
+    {% set extruder_config = printer.configfile.settings[heater] %}
+
+    {% if material in filament_table %}
+        {% set (density, heat_capacity) = filament_table[material] %}
+
+        RESPOND PREFIX=🔥 MSG="Configured {heater} MPC for {material}. Density: {density}, Heat Capacity: {heat_capacity}"
+    {% else %}
+        {% set density = extruder_config.filament_density %}
+        {% set heat_capacity=extruder_config.filament_heat_capacity %}
+
+        RESPOND PREFIX=🔥 MSG="Unknown material '{material}', using default mpc parameters for {heater}"
+    {% endif %}
+
+    MPC_SET HEATER={heater} FILAMENT_DENSITY={density} FILAMENT_HEAT_CAPACITY={heat_capacity}
+```
 
 # Real-Time Model State
 

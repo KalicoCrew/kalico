@@ -82,6 +82,7 @@ extra:
 # Navigation hierarchy (this should mimic the layout of Overview.md)
 nav:
   - Overview.md
+  - Danger_Features.md
   - Features.md
   - FAQ.md
   - Releases.md

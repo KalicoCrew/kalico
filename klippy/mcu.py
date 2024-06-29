@@ -1053,11 +1053,11 @@ class MCU:
 
     def _log_info(self):
         msgparser = self._serial.get_msgparser()
+        app = msgparser.get_app_info()
         message_count = len(msgparser.get_messages())
         version, build_versions = msgparser.get_version_info()
         log_info = [
-            "Loaded MCU '%s' %d commands (%s / %s)"
-            % (self._name, message_count, version, build_versions),
+            f"Loaded MCU '{self._name}' {message_count} commands ({app} {version} / {build_versions})",
             "MCU '%s' config: %s"
             % (
                 self._name,
@@ -1198,7 +1198,9 @@ class MCU:
             self._printer.register_event_handler(
                 "klippy:firmware_restart", self._firmware_restart_bridge
             )
+        app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
+        self._get_status_info["app"] = app
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()

@@ -122,8 +122,9 @@ spi_prepare(struct spi_config config)
 {
     SPI_TypeDef *spi = config.spi;
     uint32_t cr1 = spi->CR1;
-    if (cr1 == config.spi_cr1)
-        return;
+    if (!CONFIG_MACH_AT32F403)
+        if (cr1 == config.spi_cr1)
+            return;
     // The SPE bit must be disabled before changing CPOL/CPHA bits
     spi->CR1 = cr1 & ~SPI_CR1_SPE;
     spi->CR1; // Force flush of previous write

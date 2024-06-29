@@ -189,6 +189,9 @@ class VibrationPulseTest:
     def get_max_freq(self):
         return self.freq_end
 
+    def get_accel_per_hz(self):
+        return self.accel_per_hz
+
 
 class ResonanceTester:
     def __init__(self, config):
@@ -238,6 +241,7 @@ class ResonanceTester:
         raw_name_suffix=None,
         accel_chips=None,
         test_point=None,
+        test_accel_per_hz=None,
     ):
         toolhead = self.printer.lookup_object("toolhead")
         calibration_data = {axis: None for axis in axes}
@@ -248,6 +252,9 @@ class ResonanceTester:
             test_points = [test_point]
         else:
             test_points = self.test.get_start_test_points()
+
+        if test_accel_per_hz is not None:
+            self.test.accel_per_hz = test_accel_per_hz
 
         for point in test_points:
             toolhead.manual_move(point, self.move_speed)
@@ -324,6 +331,7 @@ class ResonanceTester:
         axis = _parse_axis(gcmd, gcmd.get("AXIS").lower())
         chips_str = gcmd.get("CHIPS", None)
         test_point = gcmd.get("POINT", None)
+        test_accel_per_hz = gcmd.get_float("ACCEL_PER_HZ", None, above=0.0)
 
         if test_point:
             test_coords = test_point.split(",")
@@ -370,6 +378,7 @@ class ResonanceTester:
             raw_name_suffix=name_suffix if raw_output else None,
             accel_chips=accel_chips,
             test_point=test_point,
+            test_accel_per_hz=test_accel_per_hz,
         )[axis]
         if csv_output:
             csv_name = self.save_calibration_data(
@@ -380,6 +389,7 @@ class ResonanceTester:
                 data,
                 point=test_point,
                 max_freq=self._get_max_calibration_freq(),
+                accel_per_hz=self.test.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Resonances data written to %s file" % (csv_name,)
@@ -457,6 +467,7 @@ class ResonanceTester:
                 calibration_data[axis],
                 all_shapers,
                 max_freq=max_freq,
+                accel_per_hz=self.test.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Shaper calibration data written to %s file" % (csv_name,)
@@ -520,10 +531,11 @@ class ResonanceTester:
         all_shapers=None,
         point=None,
         max_freq=None,
+        accel_per_hz=None,
     ):
         output = self.get_filename(base_name, name_suffix, axis, point)
         shaper_calibrate.save_calibration_data(
-            output, calibration_data, all_shapers, max_freq
+            output, calibration_data, all_shapers, max_freq, accel_per_hz
         )
         return output
 

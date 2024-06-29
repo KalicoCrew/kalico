@@ -1,14 +1,14 @@
-# Contributing to Klipper
+# Contributing to Danger-Klipper
 
-Thank you for contributing to Klipper! This document describes the
-process for contributing changes to Klipper.
+Thank you for contributing to Danger-Klipper! This document describes the
+process for contributing changes to Danger-Klipper.
 
 Please see the [contact page](Contact.md) for information on reporting
 an issue or for details on contacting the developers.
 
 ## Overview of Contribution Process
 
-Contributions to Klipper generally follow a high-level process:
+Contributions to Danger-Klipper generally follow a high-level process:
 
 1. A submitter starts by creating a
    [GitHub Pull Request](https://github.com/DangerKlippers/danger-klipper/pulls)
@@ -20,18 +20,18 @@ Contributions to Klipper generally follow a high-level process:
    follows documented guidelines.
 3. After a successful review, the reviewer will "approve the review"
    on GitHub and a [maintainer](#reviewers) will commit the change to
-   the Klipper master branch.
+   the Danger-Klipper master branch.
 
 When working on enhancements, consider starting (or contributing to) a
-topic on [Klipper Discourse](Contact.md). An ongoing discussion on the
-forum can improve visibility of development work and may attract
-others interested in testing new work.
+thread on [#danger-klipper Discord channel](Contact.md).
+An ongoing discussion on the forum can improve visibility of development
+work and may attract others interested in testing new work.
 
 ## What to expect in a review
 
-Contributions to Klipper are reviewed before merging. The primary goal
+Contributions to Danger-Klipper are reviewed before merging. The primary goal
 of the review process is to check for defects and to check that the
-submission follows guidelines specified in the Klipper documentation.
+submission follows guidelines specified in the Danger-Klipper documentation.
 
 It is understood that there are many ways to accomplish a task; it is
 not the intent of the review to discuss the "best" implementation.
@@ -53,12 +53,12 @@ Common things a reviewer will look for:
    of printers within a few weeks of acceptance. Quality of
    submissions is therefore considered a priority.
 
-   The main [Klipper3d/klipper](https://github.com/DangerKlippers/danger-klipper)
-   GitHub repository does not accept experimental work. Submitters
-   should perform experimentation, debugging, and testing in their own
-   repositories. The [Klipper Discourse](Contact.md) server is a good
-   place to raise awareness of new work and to find users interested
-   in providing real-world feedback.
+   The main [DangerKlippers/danger-klipper](https://github.com/DangerKlippers/danger-klipper)
+   GitHub repository might accept experimental work, but we encourage
+   submitters should perform experimentation, debugging, and testing in
+   their own repositories. The [#danger-klipper Discord channel](Contact.md)
+   is a good place to raise awareness of new work and to find users
+   interested in providing real-world feedback.
 
    Submissions must pass all [regression test cases](Debugging.md).
 
@@ -87,7 +87,7 @@ Common things a reviewer will look for:
    cases this will be obvious to both the submitter and the reviewer,
    and it is not explicitly stated during a review.
 
-   Submissions to the master Klipper branch are expected to have a
+   Submissions to the master Danger-Klipper branch are expected to have a
    noteworthy target audience. As a general "rule of thumb",
    submissions should target a user base of at least a 100 real-world
    users.
@@ -182,9 +182,9 @@ Common things a reviewer will look for:
    [preferred format](#format-of-commit-messages).
 
    Commits must not have a merge conflict. New additions to the
-   Klipper master branch are always done via a "rebase" or "squash and
+   Danger- master branch are always done via a "rebase" or "squash and
    rebase". It is generally not necessary for submitters to re-merge
-   their submission on every update to the Klipper master repository.
+   their submission on every update to the Danger-Klipper master repository.
    However, if there is a merge conflict, then submitters are
    recommended to use `git rebase` to address the conflict.
 
@@ -197,12 +197,9 @@ Common things a reviewer will look for:
    general, gratuitous whitespace changes are not accepted unless they
    are from the established "owner" of the code being modified.
 
-Klipper does not implement a strict "coding style guide", but
-modifications to existing code should follow the high-level code flow,
-code indentation style, and format of that existing code. Submissions
-of new modules and systems have more flexibility in coding style, but
-it is preferable for that new code to follow an internally consistent
-style and to generally follow industry wide coding norms.
+Danger-Klipper implements a soft-strict "coding style guide" on the
+Python code. Modifications to existing code should follow the high-level
+code flow, code indentation style, and format of that existing code.
 
 It is not a goal of a review to discuss "better implementations".
 However, if a reviewer struggles to understand the implementation of a
@@ -247,24 +244,23 @@ good".
 
 ### Reviewers
 
-The Klipper "reviewers" are:
+The Danger-Klipper "reviewers" are:
 
 | Name                   | GitHub Id         | Areas of interest |
 | ---------------------- | ----------------- | ----------------- |
-| Dmitry Butyugin        | @dmbutyugin       | Input shaping, resonance testing, kinematics |
-| Eric Callahan          | @Arksine          | Bed leveling, MCU flashing |
-| James Hartley          | @JamesH1978       | Configuration files |
-| Kevin O'Connor         | @KevinOConnor     | Core motion system, Micro-controller code |
+
+*TODO*
 
 Please do not "ping" any of the reviewers and please do not direct
 submissions at them. All of the reviewers monitor the forums and PRs,
 and will take on reviews when they have time to.
 
-The Klipper "maintainers" are:
+The Danger-Klipper "maintainers" are:
 
 | Name                   | GitHub name       |
 | ---------------------- | ----------------- |
-| Kevin O'Connor         | @KevinOConnor     |
+| Bea Nance              | @bwnance          |
+| Rogerio Goncalves      | @rogerlz          |
 
 ## Format of commit messages
 
@@ -297,39 +293,3 @@ certifies that you agree to the
 [developer certificate of origin](developer-certificate-of-origin). It
 must contain your real name (sorry, no pseudonyms or anonymous
 contributions) and contain a current email address.
-
-## Contributing to Klipper Translations
-
-[Klipper-translations Project](https://github.com/DangerKlippers/danger-klipper-translations)
-is a project dedicated to translating Klipper to different languages.
-[Weblate](https://hosted.weblate.org/projects/klipper/) hosts all the
-Gettext strings for translating and reviewing. Locales can be displayed on
-[klipper3d.org](https://DangerKlippers.github.io/danger-klipper) once they satisfy the following requirements:
-
-- [ ] 75% Total coverage
-- [ ] All titles (H1) are translated
-- [ ] An updated navigation hierarchy PR in klipper-translations.
-
-To reduce the frustration of translating domain-specific terms and
-gain awareness of the ongoing translations, you can submit a PR
-modifying the
-[Klipper-translations Project](https://github.com/DangerKlippers/danger-klipper-translations)
-`readme.md`. Once a translation is ready, the corresponding
-modification to the Klipper project can be made.
-
-If a translation already exists in the Klipper repository and no
-longer meets the checklist above, it will be marked out-of-date after
-a month without updates.
-
-Once the requirements are met, you need to:
-
-1. update klipper-tranlations repository
-[active_translations](https://github.com/DangerKlippers/danger-klipper-translations/blob/translations/active_translations)
-2. Optional: add a manual-index.md file in klipper-translations repository's
-`docs\locals\<lang>` folder to replace the language specific index.md (generated
-index.md does not render correctly).
-
-Known Issues:
-1. Currently, there isn't a method for correctly translating pictures in
-the documentation
-2. It is impossible to translate titles in mkdocs.yml.
