@@ -357,7 +357,9 @@ class TypedInputSmootherParams:
         )
 
         if not self.smoother_freq:
-
+            self.smoother_freq = config.getfloat(
+                "smoother_freq_" + axis, self.smoother_freq, minval=0.0
+            )
 
     def get_type(self):
         return self.smoother_type
