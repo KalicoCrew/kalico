@@ -669,7 +669,7 @@ class DockableProbe:
         dx, dy = x1 - cx, y1 - cy
         d = hypot(dx, dy)
         if d == 0:
-            return self.detach_position
+            return point1[:2] # Unable to determine exit point 
         # Ensure exit point is outside dock area.
         magnitude = self.safe_dock_distance + 10e-8
         x1 = cx + magnitude * dx / d
