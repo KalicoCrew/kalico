@@ -111,7 +111,7 @@ class CommandWrapper:
         if cmd_queue is None:
             cmd_queue = serial.get_default_command_queue()
         self._cmd_queue = cmd_queue
-        self._msgtag = msgparser.lookup_msgtag(msgformat) & 0xFFFFFFFF
+        self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)

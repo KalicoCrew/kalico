@@ -238,7 +238,9 @@ class SecondarySync(ClockSync):
     # clock frequency conversions
     def print_time_to_clock(self, print_time):
         if self.clock_adj[1] == 1.0:
-            logging.warning("Clock not yet synchronized, clock is untrustworthy")
+            logging.warning(
+                "Clock not yet synchronized, clock is untrustworthy"
+            )
             for line in traceback.format_stack():
                 logging.warning(line.strip())
         adjusted_offset, adjusted_freq = self.clock_adj
@@ -246,7 +248,9 @@ class SecondarySync(ClockSync):
 
     def clock_to_print_time(self, clock):
         if self.clock_adj[1] == 1.0:
-            logging.warning("Clock not yet synchronized, print time is untrustworthy")
+            logging.warning(
+                "Clock not yet synchronized, print time is untrustworthy"
+            )
             for line in traceback.format_stack():
                 logging.warning(line.strip())
         adjusted_offset, adjusted_freq = self.clock_adj
