@@ -584,16 +584,19 @@ class DockableProbe:
     # Move to position avoiding the dock
     def _move_avoiding_dock(self, end_point, speed):
         start_point = self.toolhead.get_position()[:2]
-        if not start_point:
-            return
         end_point = end_point[:2]
         dock = self.dock_position[:2]
+        if not start_point or start_point == end_point:
+            return
         radius = self.safe_dock_distance
+        if radius == 0:
+            self.toolhead.manual_move([end_point[0], end_point[1], None], speed)
+            return
 
-        # redefine star_point outside safe dock area
+        # redefine start_point outside safe dock area
         coords = []
         if radius > self._get_distance(dock, start_point):
-            start_point = self._get_closest_exitpoint(start_point)
+            start_point = self._get_closest_exitpoint(start_point, end_point)
             coords.append(start_point)
 
         # Check if trajectory intersect safe dock area
@@ -660,20 +663,28 @@ class DockableProbe:
         return [(x_tangent1, y_tangent1), (x_tangent2, y_tangent2)]
 
     # determine closest exit point X or Y while toolhead inside safe_dock_zone
-    def _get_closest_exitpoint(self, point1):
+    def _get_closest_exitpoint(self, point1, point2):
         cx, cy = self.dock_position[:2]
-        x1, y1 = point1[:2]
-        dx, dy = x1 - cx, y1 - cy
+        # Choose point2 if point1 is the dock position
+        if point1[:2] != (cx, cy):
+            dx, dy = point1[0] - cx, point1[1] - cy
+            reference_point = point1[:2]
+        elif point2[:2] != (cx, cy):
+            dx, dy = point2[0] - cx, point2[1] - cy
+            reference_point = point2[:2]
+        else:
+            raise self.printer.command_error(
+                "_move_avoiding_dock : Unable to determine exit point"
+            )
         d = hypot(dx, dy)
-        if d == 0:
-            return self.detach_position
-        magnitude = self.safe_dock_distance
+        # Ensure exit point is outside dock area.
+        magnitude = self.safe_dock_distance + 10e-8
         x1 = cx + magnitude * dx / d
         y1 = cy + magnitude * dy / d
         x2 = cx - magnitude * dx / d
         y2 = cy - magnitude * dy / d
 
-        return self._get_closest_point(point1, [(x1, y1), (x2, y2)])
+        return self._get_closest_point(reference_point, [(x1, y1), (x2, y2)])
 
     # determine intersect points between a line and a circle
     def _get_intersect_points(self, point1, point2):
