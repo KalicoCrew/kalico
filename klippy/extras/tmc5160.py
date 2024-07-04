@@ -6,6 +6,7 @@
 import math
 from . import tmc
 from . import tmc2130
+from configfile import PrinterConfig
 
 TMC_FREQUENCY = 12000000.0
 
@@ -254,6 +255,19 @@ MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
+        pconfig: PrinterConfig = self.printer.lookup_object("configfile")
+
+        self.sense_resistor = config.get("sense_resistor", None)
+        if self.sense_resistor is None:
+            pconfig.warn(
+                "config",
+                f"""[{self.name}] sense_resistor not specified; using default = 0.075.
+                If this value is wrong, it might burn your house down.
+                This parameter will be mandatory in future versions.
+                Specify the parameter to resolve this warning""",
+                self.name,
+                "sense_resistor",
+            )
 
         self.sense_resistor = config.getfloat(
             "sense_resistor", 0.075, above=0.0
