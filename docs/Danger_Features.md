@@ -34,7 +34,7 @@
 - [`[z_tilt/quad_gantry_level] increasing_threshold`](./Config_Reference.md#z_tilt) allows you to customize the allowed variation when probing multiple times
 
 ## Heaters, Fans, and PID changes
-
+- [Model Predictive Control](./MPC.md) is an advanced temperature control method that offers an alternative to traditional PID control.
 - [Velocity PID](./PID.md) can be more accurate than positional PID, but is more susceptible to noisy sensors and may require larger smoothing times
 - [`PID_PROFILE [LOAD/SAVE]`](./G-Codes.md#pid_profile) allows you to calibrate and save PID profiles at multiple temperatures and fan speeds, and later restore them. With some clever macros, automatic per-material pid tuning is within reach!
 - [`SET_HEATER_PID HEATER= KP= KI= KD=`](./G-Codes.md#set_heater_pid) can update your PID parameters without a reload.
