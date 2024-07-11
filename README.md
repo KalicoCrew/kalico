@@ -118,6 +118,8 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [mcu: support for AT32F403](https://github.com/DangerKlippers/danger-klipper/pull/284)
 
+- [z_tilt, quad_gantry_level: adaptive horizontal move z](https://github.com/DangerKlippers/danger-klipper/pull/336)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 

@@ -32,7 +32,7 @@
 - [`[z_calibration]`](./Config_Reference.md#⚠️-z_calibration) enables automatic probe Z offset calibration using a reference endstop like the Voron 2.4 nozzle endstop.
 - [`[z_tilt_ng]`](./Config_Reference.md#z_tilt_ng) adds enforced 3-point z tilt calibration
 - [`[z_tilt/quad_gantry_level] increasing_threshold`](./Config_Reference.md#z_tilt) allows you to customize the allowed variation when probing multiple times
-
+- [`[z_tilt/quad_gantry_level] adaptive_horizontal_move_z`](./Config_Reference.md#z_tilt) adaptively decrease horizontal_move_z based on resulting error - z_tilt and QGL faster and safer!
 ## Heaters, Fans, and PID changes
 - [Model Predictive Control](./MPC.md) is an advanced temperature control method that offers an alternative to traditional PID control.
 - [Velocity PID](./PID.md) can be more accurate than positional PID, but is more susceptible to noisy sensors and may require larger smoothing times
