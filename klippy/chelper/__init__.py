@@ -171,18 +171,19 @@ defs_kin_winch = """
 """
 
 defs_kin_extruder = """
-    struct stepper_kinematics *extruder_stepper_alloc(void);
-    void extruder_set_pressure_advance(struct stepper_kinematics *sk
-        , int n_params, double params[], double time_offset);
     struct pressure_advance_params;
+    struct stepper_kinematics *extruder_stepper_alloc(void);
+    void extruder_stepper_free(struct stepper_kinematics *sk);
+    void extruder_set_pressure_advance(struct stepper_kinematics *sk
+        , double print_time, int n_params, double params[]
+        , double (*func)(double, double, struct pressure_advance_params *)
+        , double time_offset);
     double pressure_advance_linear_model_func(double position
         , double pa_velocity, struct pressure_advance_params *pa_params);
     double pressure_advance_tanh_model_func(double position
         , double pa_velocity, struct pressure_advance_params *pa_params);
     double pressure_advance_recipr_model_func(double position
         , double pa_velocity, struct pressure_advance_params *pa_params);
-    void extruder_set_pressure_advance_model_func(struct stepper_kinematics *sk
-        , double (*func)(double, double, struct pressure_advance_params *));
     int extruder_set_shaper_params(struct stepper_kinematics *sk, char axis
         , int n, double a[], double t[]);
     int extruder_set_smoothing_params(struct stepper_kinematics *sk, char axis
