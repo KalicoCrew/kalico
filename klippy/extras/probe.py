@@ -538,12 +538,13 @@ class ProbePointsHelper:
     def _move_next(self):
         toolhead = self.printer.lookup_object("toolhead")
         # Check if done probing
+        done = False
         if len(self.results) >= len(self.probe_points):
             toolhead.get_last_move_time()
             res = self.finalize_callback(self.probe_offsets, self.results)
             if isinstance(res, (int, float)):
                 if res == 0:
-                    return True
+                    done = True
                 if self.adaptive_horizontal_move_z:
                     # then res is error
                     error = math.ceil(res)
@@ -552,9 +553,11 @@ class ProbePointsHelper:
                         self.min_horizontal_move_z,
                     )
             elif res != "retry":
-                return True
+                done = True
             self.results = []
         self._lift_toolhead()
+        if done:
+            return True
         # Move to next XY probe point
         nextpos = list(self.probe_points[len(self.results)])
         if self.use_offsets:
