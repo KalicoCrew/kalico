@@ -75,7 +75,7 @@ These can be specified in the config but should not need to be changed from the 
   This parameter affects how quickly the model learns and it represents the ratio of temperature difference applied per second. A value of 1.0 represents no smoothing used in the model.  
   
 - `min_ambient_change:`  
-  _Default Value: 1.0 (deg C)_  
+  _Default Value: 1.0 (deg C/s)_  
   Larger values of MIN_AMBIENT_CHANGE will result in faster convergence but will also cause the simulated ambient temperature to flutter somewhat chaotically around the ideal value.  
   
 - `steady_state_rate:`  
