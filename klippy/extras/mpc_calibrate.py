@@ -1,8 +1,6 @@
 import math
 import logging
 
-from .heaters import ControlMPC
-
 PIN_MIN_TIME = 0.100
 
 

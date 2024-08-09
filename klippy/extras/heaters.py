@@ -5,7 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
 import os
-import logging
 import threading
 import math
 from extras.pid_profile_manager import ProfileManager
