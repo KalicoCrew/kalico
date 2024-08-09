@@ -9,10 +9,10 @@ class ProfileManager:
         self.incompatible_profiles = []
         # Fetch stored profiles from Config
         stored_profs = self.outer_instance.config.get_prefix_sections(
-            "heater_profile %s" % self.outer_instance.sensor_name
+            "heater_profile %s" % self.outer_instance.name
         )
         for profile in stored_profs:
-            if len(self.outer_instance.sensor_name.split(" ")) > 1:
+            if len(self.outer_instance.name.split(" ")) > 1:
                 name = profile.get_name().split(" ", 3)[-1]
             else:
                 name = profile.get_name().split(" ", 2)[-1]
@@ -28,7 +28,7 @@ class ProfileManager:
             raise self.outer_instance.printer.config_error(
                 "Unknown control type '%s' "
                 "in [heater_profile %s %s]."
-                % (control, self.outer_instance.sensor_name, name)
+                % (control, self.outer_instance.name, name)
             )
         temp_profile["control"] = control
         temp_profile["name"] = name
@@ -48,7 +48,7 @@ class ProfileManager:
                 "specified in [heater_profile %s %s]."
                 % (
                     key,
-                    self.outer_instance.sensor_name,
+                    self.outer_instance.name,
                     config_section.get_name(),
                 )
             )
@@ -56,10 +56,10 @@ class ProfileManager:
 
     def _compute_section_name(self, profile_name):
         return (
-            self.outer_instance.sensor_name
+            self.outer_instance.name
             if profile_name == "default"
             else (
-                "heater_profile " + self.outer_instance.sensor_name + " " + profile_name
+                "heater_profile " + self.outer_instance.name + " " + profile_name
             )
         )
 
@@ -200,7 +200,7 @@ class ProfileManager:
             if verbose == "high" or verbose == "low":
                 self.outer_instance.gcode.respond_info(
                     "Heater Profile [%s] already loaded for heater [%s]."
-                    % (profile_name, self.outer_instance.sensor_name)
+                    % (profile_name, self.outer_instance.name)
                 )
             return
         keep_target = self._check_value_gcmd(
@@ -213,7 +213,7 @@ class ProfileManager:
             if default is None:
                 raise self.outer_instance.gcode.error(
                     "heater_profile: Unknown profile [%s] for heater [%s]."
-                    % (profile_name, self.outer_instance.sensor_name)
+                    % (profile_name, self.outer_instance.name)
                 )
             profile = self.profiles.get(default, None)
             defaulted = True
@@ -221,7 +221,7 @@ class ProfileManager:
                 raise self.outer_instance.gcode.error(
                     "heater_profile: Unknown default "
                     "profile [%s] for heater [%s]."
-                    % (default, self.outer_instance.sensor_name)
+                    % (default, self.outer_instance.name)
                 )
         control = self.outer_instance.lookup_control(profile, load_clean)
         self.outer_instance.set_control(control, keep_target)
@@ -233,11 +233,11 @@ class ProfileManager:
                 "Couldn't find profile "
                 "[%s] for heater [%s]"
                 ", defaulted to [%s]."
-                % (profile_name, self.outer_instance.sensor_name, default)
+                % (profile_name, self.outer_instance.name, default)
             )
         self.outer_instance.gcode.respond_info(
             "Heater Profile [%s] loaded for heater [%s].\n"
-            % (profile["name"], self.outer_instance.sensor_name)
+            % (profile["name"], self.outer_instance.name)
         )
         if verbose == "high":
             smooth_time = (
@@ -283,7 +283,7 @@ class ProfileManager:
                 "removed from storage for this session.\n"
                 "The SAVE_CONFIG command will update the printer\n"
                 "configuration and restart the printer"
-                % (profile_name, self.outer_instance.sensor_name)
+                % (profile_name, self.outer_instance.name)
             )
         else:
             self.outer_instance.gcode.respond_info(
