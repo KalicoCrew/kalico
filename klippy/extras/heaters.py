@@ -447,8 +447,8 @@ class ControlPID:
                 )
         temp_profile["name"] = profile_name
         pmgr.profiles[profile_name] = temp_profile
-        if verbose:
-            pmgr.outer_instance.gcode.respond_info(
+        if verbose and gcmd is not None:
+            gcmd.respond_info(
                 "Current PID profile for heater [%s] "
                 "has been saved to profile [%s] "
                 "for the current session.  The SAVE_CONFIG command will\n"
@@ -563,7 +563,7 @@ class ControlVelocityPID:
                 )
         temp_profile["name"] = profile_name
         pmgr.profiles[profile_name] = temp_profile
-        if verbose:
+        if verbose and gcmd is not None:
             gcmd.respond_info(
                 "Current PID profile for heater [%s] "
                 "has been saved to profile [%s] "
@@ -830,7 +830,7 @@ class ControlMPC:
         )
         temp_profile["name"] = profile_name
         pmgr.profiles[profile_name] = temp_profile
-        if verbose:
+        if verbose and gcmd is not None:
             gcmd.respond_info(
                 "Current PID profile for heater [%s] "
                 "has been saved to profile [%s] "
