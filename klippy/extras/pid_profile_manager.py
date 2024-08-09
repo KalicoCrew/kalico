@@ -86,7 +86,7 @@ class ProfileManager:
         return value.lower() if type == "lower" else value
 
     def init_default_profile(self):
-        return self._init_profile(self.outer_instance.sensor_config, "default")
+        return self._init_profile(self.outer_instance.config, "default")
 
     def set_values(self, profile_name, gcmd, verbose):
         current_profile = self.outer_instance.get_control().get_profile()
