@@ -111,6 +111,8 @@ class Heater:
         }
         self.pmgr = ProfileManager(self, control_types)
         self.control = self.lookup_control(self.pmgr.init_default_profile(), True)
+        if self.control is None:
+            raise self.config.error("Default PID Profile could not be loaded.")
         self.gcode.register_mux_command(
             "SET_HEATER_TEMPERATURE",
             "HEATER",
@@ -350,7 +352,7 @@ class ControlBangBang:
                     "of heater_profile.  Profile Version: %d Current Version: %d "
                     % (name, profile_version, PID_PROFILE_VERSION)
                 )
-                return
+                return None
         temp_profile = {
             "max_delta": config_section.getfloat("max_delta", 2.0, above=0.0)
         }
@@ -414,7 +416,7 @@ class ControlPID:
                     "of heater_profile.  Profile Version: %d Current Version: %d "
                     % (name, profile_version, PID_PROFILE_VERSION)
                 )
-                return
+                return None
         temp_profile = {}
         for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
             can_be_none = key != "pid_kp" and key != "pid_ki" and key != "pid_kd"
@@ -665,7 +667,7 @@ class ControlMPC:
                     "of heater_profile.  Profile Version: %d Current Version: %d "
                     % (name, profile_version, PID_PROFILE_VERSION)
                 )
-                return
+                return None
         temp_profile = {
             "block_heat_capacity": config_section.getfloat(
                 "block_heat_capacity", above=0.0, default=None

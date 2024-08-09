@@ -24,9 +24,10 @@ class ProfileManager:
             temp_profile = self.control_types[control].init_profile(
                 config_section, name, self
             )
-            temp_profile["control"] = control
-            temp_profile["name"] = name
-            self.profiles[name] = temp_profile
+            if temp_profile is not None:
+                temp_profile["control"] = control
+                temp_profile["name"] = name
+                self.profiles[name] = temp_profile
             return temp_profile
         else:
             raise self.outer_instance.printer.config_error(
