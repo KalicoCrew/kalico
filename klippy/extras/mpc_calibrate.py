@@ -29,11 +29,11 @@ class MPCCalibrate:
 
 
 class MpcCalibrate:
-    def __init__(self, printer, heater, config, pmgr):
+    def __init__(self, printer, heater, config):
         self.printer = printer
         self.config = config
         self.heater = heater
-        self.pmgr = pmgr
+        self.pmgr = heater.pmgr
         self.orig_control = heater.get_control()
         self.ambient_sensor_name = self.config.get("ambient_temp_sensor", None)
 
