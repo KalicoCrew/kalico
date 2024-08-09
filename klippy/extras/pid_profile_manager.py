@@ -9,10 +9,10 @@ class ProfileManager:
         self.incompatible_profiles = []
         # Fetch stored profiles from Config
         stored_profs = self.outer_instance.config.get_prefix_sections(
-            "pid_profile %s" % self.outer_instance.name
+            "pid_profile %s" % self.outer_instance.short_name
         )
         for profile in stored_profs:
-            if len(self.outer_instance.name.split(" ")) > 1:
+            if len(self.outer_instance.short_name.split(" ")) > 1:
                 name = profile.get_name().split(" ", 3)[-1]
             else:
                 name = profile.get_name().split(" ", 2)[-1]
@@ -33,7 +33,7 @@ class ProfileManager:
             raise self.outer_instance.printer.config_error(
                 "Unknown control type '%s' "
                 "in [pid_profile %s %s]."
-                % (control, self.outer_instance.name, name)
+                % (control, self.outer_instance.short_name, name)
             )
 
     def _check_value_config(self, key, config_section, type, can_be_none):
@@ -49,7 +49,7 @@ class ProfileManager:
                 "specified in [pid_profile %s %s]."
                 % (
                     key,
-                    self.outer_instance.name,
+                    self.outer_instance.short_name,
                     config_section.get_name(),
                 )
             )
@@ -57,10 +57,10 @@ class ProfileManager:
 
     def _compute_section_name(self, profile_name):
         return (
-            self.outer_instance.name
+            self.outer_instance.short_name
             if profile_name == "default"
             else (
-                "pid_profile " + self.outer_instance.name + " " + profile_name
+                "pid_profile " + self.outer_instance.short_name + " " + profile_name
             )
         )
 
@@ -201,7 +201,7 @@ class ProfileManager:
             if verbose == "high" or verbose == "low":
                 self.outer_instance.gcode.respond_info(
                     "Heater Profile [%s] already loaded for heater [%s]."
-                    % (profile_name, self.outer_instance.name)
+                    % (profile_name, self.outer_instance.short_name)
                 )
             return
         keep_target = self._check_value_gcmd(
@@ -214,7 +214,7 @@ class ProfileManager:
             if default is None:
                 raise self.outer_instance.gcode.error(
                     "pid_profile: Unknown profile [%s] for heater [%s]."
-                    % (profile_name, self.outer_instance.name)
+                    % (profile_name, self.outer_instance.short_name)
                 )
             profile = self.profiles.get(default, None)
             defaulted = True
@@ -222,7 +222,7 @@ class ProfileManager:
                 raise self.outer_instance.gcode.error(
                     "pid_profile: Unknown default "
                     "profile [%s] for heater [%s]."
-                    % (default, self.outer_instance.name)
+                    % (default, self.outer_instance.short_name)
                 )
         control = self.outer_instance.lookup_control(profile, load_clean)
         self.outer_instance.set_control(control, keep_target)
@@ -234,11 +234,11 @@ class ProfileManager:
                 "Couldn't find profile "
                 "[%s] for heater [%s]"
                 ", defaulted to [%s]."
-                % (profile_name, self.outer_instance.name, default)
+                % (profile_name, self.outer_instance.short_name, default)
             )
         self.outer_instance.gcode.respond_info(
             "Heater Profile [%s] loaded for heater [%s].\n"
-            % (profile["name"], self.outer_instance.name)
+            % (profile["name"], self.outer_instance.short_name)
         )
         if verbose == "high":
             smooth_time = (
@@ -284,7 +284,7 @@ class ProfileManager:
                 "removed from storage for this session.\n"
                 "The SAVE_CONFIG command will update the printer\n"
                 "configuration and restart the printer"
-                % (profile_name, self.outer_instance.name)
+                % (profile_name, self.outer_instance.short_name)
             )
         else:
             self.outer_instance.gcode.respond_info(
