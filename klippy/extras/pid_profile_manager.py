@@ -184,7 +184,7 @@ class ProfileManager:
     def save_profile(self, profile_name=None, gcmd=None, verbose=True):
         temp_profile = self.outer_instance.get_control().get_profile()
         self.control_types[temp_profile["control"]].save_profile(
-            self, temp_profile, profile_name, gcmd, verbose
+            pmgr=self, profile_name=profile_name, gcmd=gcmd, verbose=verbose
         )
 
     def load_profile(self, profile_name, gcmd, verbose):
