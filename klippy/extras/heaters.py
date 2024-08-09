@@ -218,9 +218,7 @@ class Heater:
             self.target_temp = degrees
 
     def get_temp(self, eventtime):
-        print_time = (
-            self.mcu_pwm.get_mcu().estimated_print_time(eventtime) - 5.0
-        )
+        print_time = self.mcu_pwm.get_mcu().estimated_print_time(eventtime) - 5.0
         with self.lock:
             if self.last_temp_time < print_time:
                 return 0.0, self.target_temp
@@ -343,7 +341,16 @@ class Heater:
 
 class ControlBangBang:
     @staticmethod
-    def init_profile(config_section, name=None, pmgr=None):
+    def init_profile(config_section, name, pmgr=None):
+        if name != "default":
+            profile_version = config_section.getint("pid_version", 0)
+            if PID_PROFILE_VERSION != profile_version:
+                logging.info(
+                    "heater_profile: Profile [%s] not compatible with this version\n"
+                    "of heater_profile.  Profile Version: %d Current Version: %d "
+                    % (name, profile_version, PID_PROFILE_VERSION)
+                )
+                return
         temp_profile = {
             "max_delta": config_section.getfloat("max_delta", 2.0, above=0.0)
         }
@@ -399,14 +406,15 @@ PID_SETTLE_SLOPE = 0.1
 class ControlPID:
     @staticmethod
     def init_profile(config_section, name, pmgr):
-        profile_version = config_section.getint("profile_version", None)
-        if PID_PROFILE_VERSION != profile_version:
-            logging.info(
-                "pid_profile: Profile [%s] not compatible with this version\n"
-                "of pid_profile.  Profile Version: %d Current Version: %d "
-                % (name, profile_version, PID_PROFILE_VERSION)
-            )
-            return
+        if name != "default":
+            profile_version = config_section.getint("pid_version", 0)
+            if PID_PROFILE_VERSION != profile_version:
+                logging.info(
+                    "heater_profile: Profile [%s] not compatible with this version\n"
+                    "of heater_profile.  Profile Version: %d Current Version: %d "
+                    % (name, profile_version, PID_PROFILE_VERSION)
+                )
+                return
         temp_profile = {}
         for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
             can_be_none = key != "pid_kp" and key != "pid_ki" and key != "pid_kd"
@@ -476,8 +484,7 @@ class ControlPID:
             temp_deriv = temp_diff / time_diff
         else:
             temp_deriv = (
-                self.prev_temp_deriv * (self.min_deriv_time - time_diff)
-                + temp_diff
+                self.prev_temp_deriv * (self.min_deriv_time - time_diff) + temp_diff
             ) / self.min_deriv_time
         # Calculate accumulated temperature "error"
         temp_err = target_temp - temp
@@ -577,9 +584,7 @@ class ControlVelocityPID:
         self.temps = (
             ([AMBIENT_TEMP] * 3)
             if load_clean
-            else (
-                [self.heater.get_temp(self.heater.reactor.monotonic())[0]] * 3
-            )
+            else ([self.heater.get_temp(self.heater.reactor.monotonic())[0]] * 3)
         )
         self.times = [0.0] * 3  # temperature reading times
         self.d1 = 0.0  # previous smoothed 1st derivative
@@ -628,9 +633,7 @@ class ControlVelocityPID:
 
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         temp_diff = target_temp - smoothed_temp
-        return (
-            abs(temp_diff) > PID_SETTLE_DELTA or abs(self.d1) > PID_SETTLE_SLOPE
-        )
+        return abs(temp_diff) > PID_SETTLE_DELTA or abs(self.d1) > PID_SETTLE_SLOPE
 
     def update_smooth_time(self):
         self.smooth_time = self.heater.get_smooth_time()  # smoothing window
@@ -650,17 +653,19 @@ class ControlVelocityPID:
     def get_type(self):
         return "pid_v"
 
+
 class ControlMPC:
     @staticmethod
     def init_profile(config_section, name, pmgr=None):
-        profile_version = config_section.getint("profile_version", None)
-        if PID_PROFILE_VERSION != profile_version:
-            logging.info(
-                "pid_profile: Profile [%s] not compatible with this version\n"
-                "of pid_profile.  Profile Version: %d Current Version: %d "
-                % (name, profile_version, PID_PROFILE_VERSION)
-            )
-            return
+        if name != "default":
+            profile_version = config_section.getint("pid_version", 0)
+            if PID_PROFILE_VERSION != profile_version:
+                logging.info(
+                    "heater_profile: Profile [%s] not compatible with this version\n"
+                    "of heater_profile.  Profile Version: %d Current Version: %d "
+                    % (name, profile_version, PID_PROFILE_VERSION)
+                )
+                return
         temp_profile = {
             "block_heat_capacity": config_section.getfloat(
                 "block_heat_capacity", above=0.0, default=None
@@ -698,11 +703,7 @@ class ControlMPC:
             "maximum_retract": (
                 config_section.getfloat("maximum_retract", above=0.0, default=2.0)
             ),
-            "heater_power": (
-                config_section.getfloat(
-                    "heater_power", above=0.0
-                )
-            )
+            "heater_power": (config_section.getfloat("heater_power", above=0.0)),
         }
 
         filament_temp_src_raw = config_section.get(
@@ -1069,10 +1070,7 @@ class ControlMPC:
         src = self.filament_temp_src
         if src[0] == FILAMENT_TEMP_SRC_FIXED:
             return src[1]
-        elif (
-                src[0] == FILAMENT_TEMP_SRC_SENSOR
-                and self.ambient_sensor is not None
-        ):
+        elif src[0] == FILAMENT_TEMP_SRC_SENSOR and self.ambient_sensor is not None:
             return self.ambient_sensor.get_temp(read_time)[0]
         else:
             return ambient_temp
@@ -1169,9 +1167,7 @@ class PrinterHeaters:
         if " " in heater_name:
             heater_name = heater_name.split(" ", 1)[1]
         if heater_name not in self.heaters:
-            raise self.printer.config_error(
-                "Unknown heater '%s'" % (heater_name,)
-            )
+            raise self.printer.config_error("Unknown heater '%s'" % (heater_name,))
         return self.heaters[heater_name]
 
     def setup_sensor(self, config):
@@ -1267,9 +1263,7 @@ class PrinterHeaters:
         max_temp = gcmd.get_float("MAXIMUM", float("inf"), above=min_temp)
         error_on_cancel = gcmd.get("ALLOW_CANCEL", None) is None
         if min_temp == float("-inf") and max_temp == float("inf"):
-            raise gcmd.error(
-                "Error on 'TEMPERATURE_WAIT': missing MINIMUM or MAXIMUM."
-            )
+            raise gcmd.error("Error on 'TEMPERATURE_WAIT': missing MINIMUM or MAXIMUM.")
         if self.printer.get_start_args().get("debugoutput") is not None:
             return
         if sensor_name in self.heaters:
