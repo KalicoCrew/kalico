@@ -453,7 +453,7 @@ class ControlPID:
                 "has been saved to profile [%s] "
                 "for the current session.  The SAVE_CONFIG command will\n"
                 "update the printer config file and restart the printer."
-                % (pmgr.outer_instance.sensor_name, profile_name)
+                % (pmgr.outer_instance.name, profile_name)
             )
 
     def __init__(self, profile, heater, load_clean=False):
@@ -569,7 +569,7 @@ class ControlVelocityPID:
                 "has been saved to profile [%s] "
                 "for the current session.  The SAVE_CONFIG command will\n"
                 "update the printer config file and restart the printer."
-                % (pmgr.outer_instance.sensor_name, profile_name)
+                % (pmgr.outer_instance.name, profile_name)
             )
 
     def __init__(self, profile, heater, load_clean=False):
@@ -836,7 +836,7 @@ class ControlMPC:
                 "has been saved to profile [%s] "
                 "for the current session.  The SAVE_CONFIG command will\n"
                 "update the printer config file and restart the printer."
-                % (pmgr.outer_instance.sensor_name, profile_name)
+                % (pmgr.outer_instance.name, profile_name)
             )
 
     def __init__(self, profile, heater, load_clean=False):
