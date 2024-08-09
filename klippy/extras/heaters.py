@@ -344,6 +344,9 @@ class Heater:
 class ControlBangBang:
     @staticmethod
     def init_profile(config_section, name, pmgr=None):
+        temp_profile = {
+            "max_delta": config_section.getfloat("max_delta", 2.0, above=0.0)
+        }
         if name != "default":
             profile_version = config_section.getint("pid_version", 0)
             if PID_PROFILE_VERSION != profile_version:
@@ -353,9 +356,6 @@ class ControlBangBang:
                     % (name, profile_version, PID_PROFILE_VERSION)
                 )
                 return None
-        temp_profile = {
-            "max_delta": config_section.getfloat("max_delta", 2.0, above=0.0)
-        }
         return temp_profile
 
     @staticmethod
@@ -408,15 +408,6 @@ PID_SETTLE_SLOPE = 0.1
 class ControlPID:
     @staticmethod
     def init_profile(config_section, name, pmgr):
-        if name != "default":
-            profile_version = config_section.getint("pid_version", 0)
-            if PID_PROFILE_VERSION != profile_version:
-                logging.info(
-                    "heater_profile: Profile [%s] not compatible with this version\n"
-                    "of heater_profile.  Profile Version: %d Current Version: %d "
-                    % (name, profile_version, PID_PROFILE_VERSION)
-                )
-                return None
         temp_profile = {}
         for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
             can_be_none = key != "pid_kp" and key != "pid_ki" and key != "pid_kd"
@@ -425,6 +416,15 @@ class ControlPID:
             )
         if name == "default":
             temp_profile["smooth_time"] = None
+        else:
+            profile_version = config_section.getint("pid_version", 0)
+            if PID_PROFILE_VERSION != profile_version:
+                logging.info(
+                    "heater_profile: Profile [%s] not compatible with this version\n"
+                    "of heater_profile.  Profile Version: %d Current Version: %d "
+                    % (name, profile_version, PID_PROFILE_VERSION)
+                )
+                return None
         return temp_profile
 
     @staticmethod
@@ -659,15 +659,6 @@ class ControlVelocityPID:
 class ControlMPC:
     @staticmethod
     def init_profile(config_section, name, pmgr=None):
-        if name != "default":
-            profile_version = config_section.getint("pid_version", 0)
-            if PID_PROFILE_VERSION != profile_version:
-                logging.info(
-                    "heater_profile: Profile [%s] not compatible with this version\n"
-                    "of heater_profile.  Profile Version: %d Current Version: %d "
-                    % (name, profile_version, PID_PROFILE_VERSION)
-                )
-                return None
         temp_profile = {
             "block_heat_capacity": config_section.getfloat(
                 "block_heat_capacity", above=0.0, default=None
@@ -758,6 +749,15 @@ class ControlMPC:
         temp_profile["fan_ambient_transfer"] = config_section.getfloatlist(
             "fan_ambient_transfer", []
         )
+        if name != "default":
+            profile_version = config_section.getint("pid_version", 0)
+            if PID_PROFILE_VERSION != profile_version:
+                logging.info(
+                    "heater_profile: Profile [%s] not compatible with this version\n"
+                    "of heater_profile.  Profile Version: %d Current Version: %d "
+                    % (name, profile_version, PID_PROFILE_VERSION)
+                )
+                return None
         return temp_profile
 
     @staticmethod
