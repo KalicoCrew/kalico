@@ -9,7 +9,7 @@ class ProfileManager:
         self.incompatible_profiles = []
         # Fetch stored profiles from Config
         stored_profs = self.outer_instance.config.get_prefix_sections(
-            "heater_profile %s" % self.outer_instance.name
+            "pid_profile %s" % self.outer_instance.name
         )
         for profile in stored_profs:
             if len(self.outer_instance.name.split(" ")) > 1:
@@ -27,7 +27,7 @@ class ProfileManager:
         else:
             raise self.outer_instance.printer.config_error(
                 "Unknown control type '%s' "
-                "in [heater_profile %s %s]."
+                "in [pid_profile %s %s]."
                 % (control, self.outer_instance.name, name)
             )
         temp_profile["control"] = control
@@ -44,8 +44,8 @@ class ProfileManager:
             value = config_section.get(key, None)
         if not can_be_none and value is None:
             raise self.outer_instance.gcode.error(
-                "heater_profile: '%s' has to be "
-                "specified in [heater_profile %s %s]."
+                "pid_profile: '%s' has to be "
+                "specified in [pid_profile %s %s]."
                 % (
                     key,
                     self.outer_instance.name,
@@ -59,7 +59,7 @@ class ProfileManager:
             self.outer_instance.name
             if profile_name == "default"
             else (
-                "heater_profile " + self.outer_instance.name + " " + profile_name
+                "pid_profile " + self.outer_instance.name + " " + profile_name
             )
         )
 
@@ -81,7 +81,7 @@ class ProfileManager:
             value = gcmd.get(name, default)
         if not can_be_none and value is None:
             raise self.outer_instance.gcode.error(
-                "heater_profile: '%s' has to be specified." % name
+                "pid_profile: '%s' has to be specified." % name
             )
         return value.lower() if type == "lower" else value
 
@@ -212,14 +212,14 @@ class ProfileManager:
         if profile is None:
             if default is None:
                 raise self.outer_instance.gcode.error(
-                    "heater_profile: Unknown profile [%s] for heater [%s]."
+                    "pid_profile: Unknown profile [%s] for heater [%s]."
                     % (profile_name, self.outer_instance.name)
                 )
             profile = self.profiles.get(default, None)
             defaulted = True
             if profile is None:
                 raise self.outer_instance.gcode.error(
-                    "heater_profile: Unknown default "
+                    "pid_profile: Unknown default "
                     "profile [%s] for heater [%s]."
                     % (default, self.outer_instance.name)
                 )
@@ -290,9 +290,9 @@ class ProfileManager:
                 "No profile named [%s] to remove" % profile_name
             )
 
-    cmd_HEATER_PROFILE_help = "Heater Profile Persistent Storage management"
+    cmd_PID_PROFILE_help = "Heater Profile Persistent Storage management"
 
-    def cmd_HEATER_PROFILE(self, gcmd):
+    def cmd_PID_PROFILE(self, gcmd):
         options = collections.OrderedDict(
             {
                 "LOAD": self.load_profile,
@@ -307,10 +307,10 @@ class ProfileManager:
             if profile_name is not None:
                 if not profile_name.strip():
                     raise self.outer_instance.gcode.error(
-                        "heater_profile: Profile must be specified"
+                        "pid_profile: Profile must be specified"
                     )
                 options[key](profile_name, gcmd, True)
                 return
         raise self.outer_instance.gcode.error(
-            "heater_profile: Invalid syntax '%s'" % (gcmd.get_commandline(),)
+            "pid_profile: Invalid syntax '%s'" % (gcmd.get_commandline(),)
         )
