@@ -71,6 +71,7 @@ class Heater:
         self.last_pwm_value = 0.0
         # Those are necessary so the klipper config check does not complain
         config.get("control", None)
+        config.getint("pid_version", None)
         config.getfloat("pid_kp", None)
         config.getfloat("pid_ki", None)
         config.getfloat("pid_kd", None)
@@ -405,7 +406,6 @@ class ControlPID:
             )
         if name == "default":
             temp_profile["smooth_time"] = None
-            temp_profile["smoothing_elements"] = None
         return temp_profile
 
     @staticmethod
@@ -531,7 +531,6 @@ class ControlVelocityPID:
             )
         if name == "default":
             temp_profile["smooth_time"] = None
-            temp_profile["smoothing_elements"] = None
         return temp_profile
 
     @staticmethod
