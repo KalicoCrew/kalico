@@ -30,6 +30,7 @@ PID_PROFILE_OPTIONS = {
     "pid_ki": (float, "%.3f"),
     "pid_kd": (float, "%.3f"),
 }
+FILAMENT_TEMP_SRC_AMBIENT = "ambient"
 FILAMENT_TEMP_SRC_FIXED = "fixed"
 FILAMENT_TEMP_SRC_SENSOR = "sensor"
 
@@ -690,39 +691,12 @@ class ControlMPC:
             "maximum_retract": (
                 config_section.getfloat("maximum_retract", above=0.0, default=2.0)
             ),
+            "heater_power": (
+                config_section.getfloat(
+                    "heater_power", above=0.0
+                )
+            )
         }
-
-        heater_power = config_section.getfloat("heater_power", above=0.0, default=None)
-        heater_powers = config_section.getlists(
-            "heater_powers",
-            seps=(",", "\n"),
-            parser=float,
-            count=2,
-            default=None,
-        )
-        if heater_power is None and heater_powers is None:
-            raise config_section.error(
-                "Option 'heater_power' or 'heater_powers' "
-                "in section '%s' must be specified"
-                % (config_section.get_name() + " " + name)
-            )
-        if heater_power is not None and heater_powers is not None:
-            raise config_section.error(
-                "Option 'heater_power' and 'heater_powers' "
-                "in section '%s' can not be specified both" % config_section.get_name()
-                + " "
-                + name
-            )
-        temp_profile["heater_power"] = config_section.getfloat(
-            "heater_power", above=0.0, default=None
-        )
-        temp_profile["heater_powers"] = config_section.getlists(
-            "heater_powers",
-            seps=(",", "\n"),
-            parser=float,
-            count=2,
-            default=None,
-        )
 
         filament_temp_src_raw = config_section.get(
             "filament_temperature_source", "ambient"
@@ -813,9 +787,6 @@ class ControlMPC:
             section_name, "heater_power", temp_profile["heater_power"]
         )
         pmgr.outer_instance.configfile.set(
-            section_name, "heater_powers", temp_profile["heater_powers"]
-        )
-        pmgr.outer_instance.configfile.set(
             section_name,
             "sensor_responsiveness",
             "%.6f" % temp_profile["sensor_responsiveness"],
@@ -859,11 +830,7 @@ class ControlMPC:
         self.profile = profile
         self._load_profile()
         self.heater = heater
-        if self.const_heater_power is None:
-            heater_power = self.const_heater_powers[0][1]
-        else:
-            heater_power = self.const_heater_powers
-        self.heater_max_power = heater.get_max_power() * heater_power
+        self.heater_max_power = heater.get_max_power() * self.const_heater_powers
         self.max_power = heater.get_max_power()
 
         self.want_ambient_refresh = self.ambient_sensor is not None
@@ -1065,30 +1032,7 @@ class ControlMPC:
         else:
             power = 0
 
-        if self.const_heater_power is None:
-            if temp < self.const_heater_powers[0][0]:
-                heater_power = self.const_heater_powers[0][1]
-            elif temp > self.const_heater_powers[-1][0]:
-                heater_power = self.const_heater_powers[-1][1]
-            else:
-                below = [
-                    self.const_heater_powers[0][0],
-                    self.const_heater_powers[0][1],
-                ]
-                above = [
-                    self.const_heater_powers[-1][0],
-                    self.const_heater_powers[-1][1],
-                ]
-                for config_temp in self.const_heater_powers:
-                    if config_temp[0] < temp:
-                        below = config_temp
-                    else:
-                        above = config_temp
-                        break
-                heater_power = self._interpolate(below, above, temp)
-        else:
-            heater_power = self.const_heater_power
-        duty = max(0.0, min(self.max_power, power / heater_power))
+        duty = max(0.0, min(self.max_power, power / self.const_heater_power))
 
         # logging.info(
         #     "mpc: [%.3f/%.3f] %.2f => %.2f / %.2f / %.2f = %.2f[%.2f+%.2f+%.2f] / %.2f, dT %.2f, E %.2f=>%.2f",
@@ -1114,16 +1058,14 @@ class ControlMPC:
         self.last_temp_time = read_time
         self.heater.set_pwm(read_time, duty)
 
-    def _interpolate(self, below, above, temp):
-        return ((below[1] * (above[0] - temp)) + (above[1] * (temp - below[0]))) / (
-            above[0] - below[0]
-        )
-
     def filament_temp(self, read_time, ambient_temp):
         src = self.filament_temp_src
         if src[0] == FILAMENT_TEMP_SRC_FIXED:
             return src[1]
-        elif src[0] == FILAMENT_TEMP_SRC_SENSOR and self.ambient_sensor is not None:
+        elif (
+                src[0] == FILAMENT_TEMP_SRC_SENSOR
+                and self.ambient_sensor is not None
+        ):
             return self.ambient_sensor.get_temp(read_time)[0]
         else:
             return ambient_temp
