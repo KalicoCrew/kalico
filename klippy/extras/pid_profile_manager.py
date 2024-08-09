@@ -9,14 +9,12 @@ class ProfileManager:
         self.incompatible_profiles = []
         # Fetch stored profiles from Config
         stored_profs = self.outer_instance.config.get_prefix_sections(
-            "pid_profile %s" % self.outer_instance.name
+            "pid_profile %s" % self.outer_instance.short_name
         )
         for profile in stored_profs:
-            if len(self.outer_instance.name.split(" ")) > 1:
-                name = profile.get_name().split(" ", 3)[-1]
-            else:
-                name = profile.get_name().split(" ", 2)[-1]
-            self._init_profile(profile, name)
+            self._init_profile(
+                profile, profile.get_name().split(" ", 2)[-1]
+            )
 
     def _init_profile(self, config_section, name):
         control = self._check_value_config("control", config_section, str, False)

@@ -112,7 +112,10 @@ class Heater:
         self.pmgr = ProfileManager(self, control_types)
         self.control = self.lookup_control(self.pmgr.init_default_profile(), True)
         if self.control is None:
-            raise self.config.error("Default PID Profile could not be loaded.")
+            raise self.config.error(
+                "Default PID Profile for heater %s could not be loaded."
+                % self.short_name
+            )
         self.gcode.register_mux_command(
             "SET_HEATER_TEMPERATURE",
             "HEATER",
