@@ -105,7 +105,10 @@ class ZAdjustStatus:
         )
 
     def check_retry_result(self, retry_result):
-        if (retry_result and retry_result.isdigit() and int(retry_result) == 0) or retry_result == "done":
+        if retry_result and (
+            (isinstance(retry_result, str) and retry_result == "done")
+            or (isinstance(retry_result, float) and int(retry_result) == 0)
+        ):
             self.applied = True
         return retry_result
 
