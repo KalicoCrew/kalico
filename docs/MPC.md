@@ -47,7 +47,7 @@ filament_heat_capacity: 1.8
   This is the fan that is cooling extruded filament and the hotend. 
   Specifying "fan" will automatically use the part cooling fan.
   
-- `filament_diameter: fan`  
+- `filament_diameter: 1.75`  
   _Default Value: 1.75 (mm)_  
   This is the filament diameter.  
   
