@@ -1,18 +1,15 @@
 # Printer cooling fan
 #
-# Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-from . import pulse_counter
-
-FAN_MIN_TIME = 0.100
+from . import output_pin, pulse_counter
 
 
 class Fan:
     def __init__(self, config, default_shutdown_speed=0.0):
         self.printer = config.get_printer()
         self.last_fan_value = 0.0
-        self.last_fan_time = 0.0
         self.last_pwm_value = 0.0
         # Read config
         self.kick_start_time = config.getfloat(
@@ -79,6 +76,11 @@ class Fan:
             self.enable_pin = ppins.setup_pin("digital_out", enable_pin)
             self.enable_pin.setup_max_duration(0.0)
 
+        # Create gcode request queue
+        self.gcrq = output_pin.GCodeRequestQueue(
+            config, self.mcu_fan.get_mcu(), self._apply_speed
+        )
+
         # Setup tachometer
         self.tachometer = FanTachometer(config)
 
@@ -91,42 +93,44 @@ class Fan:
     def get_mcu(self):
         return self.mcu_fan.get_mcu()
 
-    def set_speed(self, print_time, value):
-        if value == self.last_fan_value:
-            return
+    def _apply_speed(self, print_time, value):
+        # Scale value between min_power and max_power
         if value > 0:
-            # Scale value between min_power and max_power
             value = min(value, 1.0)
             pwm_value = (
                 value * (self.max_power - self.min_power) + self.min_power
             )
         else:
-            pwm_value = 0
-        print_time = max(self.last_fan_time + FAN_MIN_TIME, print_time)
+            pwm_value = 0.0
+        if pwm_value == self.last_pwm_value:
+            return "discard", 0.0
         if self.enable_pin:
-            if value > 0 and self.last_fan_value == 0:
+            if pwm_value > 0 and self.last_pwm_value == 0:
                 self.enable_pin.set_digital(print_time, 1)
-            elif value == 0 and self.last_fan_value > 0:
+            elif pwm_value == 0 and self.last_pwm_value > 0:
                 self.enable_pin.set_digital(print_time, 0)
         if (
-            value
-            and value < self.max_power
+            pwm_value
+            and pwm_value < self.max_power
             and self.kick_start_time
-            and (not self.last_fan_value or value - self.last_fan_value > 0.5)
+            and (
+                not self.last_pwm_value or pwm_value - self.last_pwm_value > 0.5
+            )
         ):
             # Run fan at full speed for specified kick_start_time
+            self.last_fan_value = value
+            self.last_pwm_value = self.max_power
             self.mcu_fan.set_pwm(print_time, self.max_power)
-            print_time += self.kick_start_time
-        self.mcu_fan.set_pwm(print_time, pwm_value)
-        self.last_pwm_value = pwm_value
-        self.last_fan_time = print_time
+            return "delay", self.kick_start_time
         self.last_fan_value = value
+        self.last_pwm_value = pwm_value
+        self.mcu_fan.set_pwm(print_time, pwm_value)
+
+    def set_speed(self, print_time, value):
+        self.gcrq.send_async_request(print_time, value)
 
     def set_speed_from_command(self, value):
-        toolhead = self.printer.lookup_object("toolhead")
-        toolhead.register_lookahead_callback(
-            (lambda pt: self.set_speed(pt, value))
-        )
+        self.gcrq.queue_gcode_request(value)
 
     def _handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.0)
