@@ -367,7 +367,7 @@ class Heater:
                 )
                 temp_profile["filament_heat_capacity"] = (
                     config_section.getfloat(
-                        "filament_heat_capacity", above=0.0, default=0.0
+                        "filament_heat_capacity", above=0.0, default=1.8
                     )
                 )
                 temp_profile["maximum_retract"] = config_section.getfloat(
