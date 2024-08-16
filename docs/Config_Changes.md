@@ -47,6 +47,19 @@ default config values anymore, a [`RESET_RETRACTION`](./G-Codes.md#reset_retract
 command was added to achieve this. Automatic resetting behavior on
 events was removed.
 
+20240912: `SET_PIN`, `SET_SERVO`, `SET_FAN_SPEED`, `M106`, and `M107`
+commands are now collated. Previously, if many updates to the same
+object were issued faster than the minimum scheduling time (typically
+100ms) then actual updates could be queued far into the future. Now if
+many updates are issued in rapid succession then it is possible that
+only the latest request will be applied. If the previous behavior is
+required then consider adding explicit `G4` delay commands between
+updates.
+
+20240912: Support for `maximum_mcu_duration` and `static_value`
+parameters in `[output_pin]` config sections have been removed. These
+options have been deprecated since 20240123.
+
 20240430: The `adc_ignore_limits` parameter in the `[danger_options]`
 config section has been renamed to `temp_ignore_limits` and it now
 covers all possible temperature sensors.
