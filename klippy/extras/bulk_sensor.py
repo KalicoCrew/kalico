@@ -235,7 +235,7 @@ class ClockSyncRegression:
         return base_time, base_chip, inv_freq
 
 
-MAX_BULK_MSG_SIZE = 52
+MAX_BULK_MSG_SIZE = 51
 
 
 # Read sensor_bulk_data and calculate timestamps for devices that take

@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import pins
+import math
 from . import manual_probe
 
 HINT_TIMEOUT = """
@@ -46,7 +47,7 @@ class PrinterProbe:
         self.sample_retract_dist = config.getfloat(
             "sample_retract_dist", 2.0, above=0.0
         )
-        atypes = {"median": "median", "average": "average"}
+        atypes = ["median", "average"]
         self.samples_result = config.getchoice(
             "samples_result", atypes, "average"
         )
@@ -493,6 +494,12 @@ class ProbePointsHelper:
             )
         def_move_z = config.getfloat("horizontal_move_z", 5.0)
         self.default_horizontal_move_z = def_move_z
+        self.adaptive_horizontal_move_z = config.getboolean(
+            "adaptive_horizontal_move_z", False
+        )
+        self.min_horizontal_move_z = config.getfloat(
+            "min_horizontal_move_z", 1.0
+        )
         self.speed = config.getfloat("speed", 50.0, above=0.0)
         self.use_offsets = False
         # Internal probing state
@@ -519,7 +526,7 @@ class ProbePointsHelper:
     def get_lift_speed(self):
         return self.lift_speed
 
-    def _move_next(self):
+    def _lift_toolhead(self):
         toolhead = self.printer.lookup_object("toolhead")
         # Lift toolhead
         speed = self.lift_speed
@@ -527,13 +534,30 @@ class ProbePointsHelper:
             # Use full speed to first probe position
             speed = self.speed
         toolhead.manual_move([None, None, self.horizontal_move_z], speed)
+
+    def _move_next(self):
+        toolhead = self.printer.lookup_object("toolhead")
         # Check if done probing
+        done = False
         if len(self.results) >= len(self.probe_points):
             toolhead.get_last_move_time()
             res = self.finalize_callback(self.probe_offsets, self.results)
-            if res != "retry":
-                return True
+            if isinstance(res, (int, float)):
+                if res == 0:
+                    done = True
+                if self.adaptive_horizontal_move_z:
+                    # then res is error
+                    error = math.ceil(res)
+                    self.horizontal_move_z = max(
+                        error + self.probe_offsets[2],
+                        self.min_horizontal_move_z,
+                    )
+            elif res != "retry":
+                done = True
             self.results = []
+        self._lift_toolhead()
+        if done:
+            return True
         # Move to next XY probe point
         nextpos = list(self.probe_points[len(self.results)])
         if self.use_offsets:
@@ -548,8 +572,10 @@ class ProbePointsHelper:
         probe = self.printer.lookup_object("probe", None)
         method = gcmd.get("METHOD", "automatic").lower()
         self.results = []
+
         def_move_z = self.default_horizontal_move_z
         self.horizontal_move_z = gcmd.get_float("HORIZONTAL_MOVE_Z", def_move_z)
+
         if probe is None or method != "automatic":
             # Manual probe
             self.lift_speed = self.speed

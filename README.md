@@ -26,15 +26,17 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [fan: reverse FAN](https://github.com/DangerKlippers/danger-klipper/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
 
-- [heater: modify PID without reload](https://github.com/DangerKlippers/danger-klipper/pull/35)
+- [heaters: modify PID without reload](https://github.com/DangerKlippers/danger-klipper/pull/35)
 
-- [heater: velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
+- [heaters: MPC temperature control](https://github.com/DangerKlippers/danger-klipper/pull/333)
 
-- [heater: PID-Profiles](https://github.com/DangerKlippers/danger-klipper/pull/162)
+- [heaters: velocity PID](https://github.com/DangerKlippers/danger-klipper/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
 
-- [heater: expose heater thermistor out of min/max](https://github.com/DangerKlippers/danger-klipper/pull/182)
+- [heaters: PID-Profiles](https://github.com/DangerKlippers/danger-klipper/pull/162)
 
-- [heater/fan: new heated_fan module](https://github.com/DangerKlippers/danger-klipper/pull/259)
+- [heaters: expose heater thermistor out of min/max](https://github.com/DangerKlippers/danger-klipper/pull/182)
+
+- [heaters/fan: new heated_fan module](https://github.com/DangerKlippers/danger-klipper/pull/259)
 
 - [gcode: jinja2.ext.do extension](https://github.com/DangerKlippers/danger-klipper/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
 
@@ -116,10 +118,10 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [mcu: support for AT32F403](https://github.com/DangerKlippers/danger-klipper/pull/284)
 
+- [z_tilt, quad_gantry_level: adaptive horizontal move z](https://github.com/DangerKlippers/danger-klipper/pull/336)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
-
-- [heaters: mpc temperature control](https://github.com/DangerKlippers/danger-klipper/pull/268)
 
 - [extruder/pa: do not smooth base extruder position, only advance](https://github.com/DangerKlippers/danger-klipper/pull/266)
 

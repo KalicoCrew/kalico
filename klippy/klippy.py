@@ -53,6 +53,10 @@ Printer is shutdown
 """
 
 
+class WaitInterruption(gcode.CommandError):
+    pass
+
+
 class Printer:
     config_error = configfile.error
     command_error = gcode.CommandError
@@ -152,14 +156,16 @@ class Printer:
             extras_py_dirname
         )
         found_in_plugins = os.path.exists(plugins_py_name)
-        if not found_in_extras and not found_in_plugins:
+        found_in_plugins_dir = os.path.exists(plugins_py_dirname)
+
+        if not any([found_in_extras, found_in_plugins, found_in_plugins_dir]):
             if default is not configfile.sentinel:
                 return default
             raise self.config_error("Unable to load module '%s'" % (section,))
 
         if (
             found_in_extras
-            and found_in_plugins
+            and (found_in_plugins or found_in_plugins_dir)
             and not get_danger_options().allow_plugin_override
         ):
             raise self.config_error(
@@ -169,6 +175,12 @@ class Printer:
         if found_in_plugins:
             mod_spec = importlib.util.spec_from_file_location(
                 "extras." + module_name, plugins_py_name
+            )
+            mod = importlib.util.module_from_spec(mod_spec)
+            mod_spec.loader.exec_module(mod)
+        elif found_in_plugins_dir:
+            mod_spec = importlib.util.spec_from_file_location(
+                "plugins." + module_name, plugins_py_dirname
             )
             mod = importlib.util.module_from_spec(mod_spec)
             mod_spec.loader.exec_module(mod)
@@ -378,7 +390,9 @@ class Printer:
             self.run_result = result
         self.reactor.end()
 
-    def wait_while(self, condition_cb):
+    wait_interrupted = WaitInterruption
+
+    def wait_while(self, condition_cb, error_on_cancel=True, interval=1.0):
         """
         receives a callback
         waits until callback returns False
@@ -389,8 +403,11 @@ class Printer:
         eventtime = self.reactor.monotonic()
         while condition_cb(eventtime):
             if self.is_shutdown() or counter != gcode.get_interrupt_counter():
-                return
-            eventtime = self.reactor.pause(eventtime + 1.0)
+                if error_on_cancel:
+                    raise WaitInterruption("Command interrupted")
+                else:
+                    return
+            eventtime = self.reactor.pause(eventtime + interval)
 
 
 ######################################################################

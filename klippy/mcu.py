@@ -111,7 +111,7 @@ class CommandWrapper:
         if cmd_queue is None:
             cmd_queue = serial.get_default_command_queue()
         self._cmd_queue = cmd_queue
-        self._msgtag = msgparser.lookup_msgtag(msgformat) & 0xFFFFFFFF
+        self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
@@ -764,9 +764,8 @@ class MCU:
         restart_methods = [None, "arduino", "cheetah", "command", "rpi_usb"]
         self._restart_method = "command"
         if self._baud:
-            rmethods = {m: m for m in restart_methods}
             self._restart_method = config.getchoice(
-                "restart_method", rmethods, None
+                "restart_method", restart_methods, None
             )
         self._reset_cmd = self._config_reset_cmd = None
         self._is_mcu_bridge = False

@@ -26,7 +26,7 @@ class CartKinematics:
         self.supports_dual_carriage = True
         if config.has_section("dual_carriage"):
             dc_config = config.getsection("dual_carriage")
-            dc_axis = dc_config.getchoice("axis", {"x": "x", "y": "y"})
+            dc_axis = dc_config.getchoice("axis", ["x", "y"])
             self.dual_carriage_axis = {"x": 0, "y": 1}[dc_axis]
             # setup second dual carriage rail
             self.rails.append(stepper.LookupMultiRail(dc_config))
