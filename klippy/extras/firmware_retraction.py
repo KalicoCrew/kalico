@@ -29,7 +29,7 @@ class FirmwareRetraction:
 
         # Get maximum printer move velocity for zhop moves
         printer_config = config.getsection("printer")
-        self.max_vel = printer_config.getfloat("max_velocity")
+        self.max_z_vel = printer_config.getfloat("max_z_velocity")
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -208,19 +208,19 @@ class FirmwareRetraction:
             )
         else:
             gcmd.respond_info(
-                "WARNING: Printer is not retracted. \
-                Command has been ignored!"
+                "WARNING: Printer is not retracted. "
+                "Command has been ignored!"
             )
 
     # Helper to clear retraction
     def _execute_clear_retraction(self):
-        self._execute_clear_z_hop() #clear z_hop
+        self._execute_clear_z_hop()  # clear z_hop
         if self.reset_on_events:
             self.is_retracted = (
                 False  # Reset retract flag to enable G10 command
             )
             self._get_config_params()  # Reset retraction parameters to config values
-    
+
     # Helper to clear z_hop
     def _execute_clear_z_hop(self):
         # Re-establish regular G1 command.
@@ -239,8 +239,8 @@ class FirmwareRetraction:
             # Check if FW retraction enabled
             if self.retract_length == 0.0 and self.z_hop_height == 0.0:
                 gcmd.respond_info(
-                    "Retraction length and z_hop zero. Firmware retraction \
-                    disabled. G10 Command ignored!"
+                    "Retraction length and z_hop zero. Firmware retraction "
+                    "disabled. G10 Command ignored!"
                 )
             else:
                 if self.retract_length > 0.0:
@@ -252,7 +252,7 @@ class FirmwareRetraction:
                     # Set zhop gcode move
                     zhop_gcode = ("G1 Z{:.5f} F{}\n").format(
                         self.z_hop_height,
-                        int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
+                        int(ZHOP_MOVE_SPEED_FRACTION * self.max_z_vel * 60),
                     )
 
                 moves_gcode = (
@@ -284,8 +284,8 @@ class FirmwareRetraction:
                 self.unretract_length == 0.0 and self.actual_z_hop == 0.0
             ):  # Check if FW retraction enabled
                 gcmd.respond_info(
-                    "Retraction length and z_hop zero. Firmware retraction \
-                    disabled. G11 Command ignored!"
+                    "Retraction length and z_hop zero. Firmware retraction "
+                    "disabled. G11 Command ignored!"
                 )
             else:
                 self._re_register_G1()  # Restore G1 handlers
@@ -297,7 +297,7 @@ class FirmwareRetraction:
                     # Set unzhop gcode move
                     unzhop_gcode = ("G1 Z-{:.5f} F{}\n").format(
                         self.actual_z_hop,
-                        int(ZHOP_MOVE_SPEED_FRACTION * self.max_vel * 60),
+                        int(ZHOP_MOVE_SPEED_FRACTION * self.max_z_vel * 60),
                     )
 
                 moves_gcode = (
@@ -366,22 +366,20 @@ class FirmwareRetraction:
     def _G1_zhop(self, gcmd):
         params = gcmd.get_command_parameters()
         is_relative = self._toolhead_is_relative()
-        
+
         new_g1_command = "G1.20140114"
-        
-        if "Z" in params:
+
+        # In relative, don't adjust as Z-hop offset considered before.
+        if "Z" in params and not is_relative:
             # Clear Z_hop on z moves
             if self.clear_zhop:
                 # Relative moves, first, remove last zhop
-                if is_relative:
-                    params["Z"] = str(float(params["Z"]) - self.actual_z_hop)
                 self._execute_clear_z_hop()
-                # Restored G1 command
+                # Restored G1 command as clear z_hop re_register G1
                 new_g1_command = "G1"
-            elif not is_relative:
+            else:
                 # In absolute, adjust Z param to account for Z-hop offset
                 params["Z"] = str(float(params["Z"]) + self.actual_z_hop)
-                # In relative, don't adjust as Z-hop offset considered before
 
         for key, value in params.items():
             new_g1_command += " {0}{1}".format(key, value)

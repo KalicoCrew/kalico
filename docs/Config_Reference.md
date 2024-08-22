@@ -1878,9 +1878,9 @@ allowing per-filament settings and runtime tuning.
 #   While False, after events (homing, motor_off, start print, end print,
 #   cancel) zhop moves are cancelled until unreretract occurs.
 #clear_zhop_on_z_moves: False
-#   If True, when a command in Z is sent while toolhead is retracted, z_hop
-#   is cancelled until next retraction. Otherwise, `z_hop_height` is applied
-#   as an offset to all movements.
+#   If True, in absolute movements, when a command in Z is sent while toolhead
+#   is retracted, z_hop is cancelled until next retraction. Otherwise,
+#   `z_hop_height` is applied as an offset to all movements.
 ```
 
 ### [gcode_arcs]
