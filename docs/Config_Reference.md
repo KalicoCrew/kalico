@@ -5224,6 +5224,9 @@ extruder_stepper_name:
 #   example, if the config section for the secondary extruder is
 #   [extruder_stepper my_extruder_stepper], this parameter's value
 #   would be 'my_extruder_stepper'.
+sensor_pin:
+#   Input pin connected to the sensor. This parameter must be
+#   provided.
 #multiplier_high: 1.05
 #   High multiplier to set for the secondary extruder when extruding
 #   forward and Belay is compressed or when extruding backward and
