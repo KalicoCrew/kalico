@@ -69,6 +69,13 @@ class SmartEffectorEndstopWrapper:
         self.query_endstop = self.probe_wrapper.query_endstop
         self.multi_probe_begin = self.probe_wrapper.multi_probe_begin
         self.multi_probe_end = self.probe_wrapper.multi_probe_end
+        self.get_position_endstop = self.probe_wrapper.get_position_endstop
+        # Common probe implementation helpers
+        self.cmd_helper = probe.ProbeCommandHelper(
+            config, self, self.probe_wrapper.query_endstop
+        )
+        self.probe_offsets = probe.ProbeOffsetsHelper(config)
+        self.probe_session = probe.ProbeSessionHelper(config, self)
         # SmartEffector control
         control_pin = config.get("control_pin", None)
         if control_pin:
