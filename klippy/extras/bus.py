@@ -245,6 +245,11 @@ class MCU_I2C:
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
 
+    def i2c_write_wait_ack(self, data, minclock=0, reqclock=0):
+        self.i2c_write_cmd.send_wait_ack(
+            [self.oid, data], minclock=minclock, reqclock=reqclock
+        )
+
     def i2c_read(self, write, read_len):
         return self.i2c_read_cmd.send([self.oid, write, read_len])
 
