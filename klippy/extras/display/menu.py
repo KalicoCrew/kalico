@@ -4,6 +4,8 @@
 # Copyright (C) 2020  Janar Sööt <janar.soot@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import os, logging, ast, re
 from string import Template
 from . import menu_keys
@@ -28,6 +30,7 @@ class MenuElement(object):
         self._index = kwargs.get("index", None)
         self._enable = kwargs.get("enable", True)
         self._name = kwargs.get("name", None)
+        self._context = kwargs.get("context", None)
         self._enable_tpl = self._name_tpl = None
         if config is not None:
             # overwrite class attributes from config
@@ -109,6 +112,8 @@ class MenuElement(object):
     def get_context(self, cxt=None):
         # get default menu context
         context = self.manager.get_context(cxt)
+        if self._context:
+            context.update(self._context)
         context["menu"].update({"ns": self.get_ns()})
         return context
 
@@ -174,7 +179,10 @@ class MenuElement(object):
         name = str(name).strip()
         if name.startswith(".."):
             name = " ".join(
-                [(" ".join(str(self._ns).split(" ")[:-1])), name[2:]]
+                [
+                    (" ".join(str(self._ns).split(" ")[:-1])),
+                    name[2:],
+                ]
             )
         elif name.startswith("."):
             name = " ".join([str(self._ns), name[1:]])
@@ -226,7 +234,7 @@ class MenuElement(object):
         return str(self._cursor)[:1]
 
     @property
-    def manager(self):
+    def manager(self) -> MenuManager:
         return self._manager
 
     @property
@@ -684,12 +692,15 @@ class MenuList(MenuContainer):
 
 
 class MenuVSDList(MenuList):
-    def __init__(self, manager, config, **kwargs):
-        super(MenuVSDList, self).__init__(manager, config, **kwargs)
-
     def _populate(self):
         super(MenuVSDList, self)._populate()
         sdcard = self.manager.printer.lookup_object("virtual_sdcard", None)
+
+        def _cb(el: MenuElement, context):
+            if "gcode" in context:
+                el.manager.queue_gcode(context["gcode"])
+            el.manager.exit()
+
         if sdcard is not None:
             files = sdcard.get_file_list(sdcard.with_subdirs)
             for fname, fsize in files:
@@ -697,7 +708,11 @@ class MenuVSDList(MenuList):
                     self.manager.menuitem_from(
                         "command",
                         name=repr(fname),
-                        gcode="M23 /%s" % str(fname),
+                        gcode=_cb,
+                        context={
+                            "gcode": "SDCARD_PRINT_FILE FILENAME='/%s'"
+                            % str(fname)
+                        },
                     )
                 )
 
