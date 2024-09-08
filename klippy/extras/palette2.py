@@ -437,7 +437,7 @@ class Palette2:
         else:
             self.files = [
                 file
-                for (file, size) in self.virtual_sdcard.get_file_list(
+                for (file, size, mtime) in self.virtual_sdcard.get_file_list(
                     check_subdirs=True
                 )
                 if ".mcf.gcode" in file
