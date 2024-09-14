@@ -60,10 +60,10 @@ class PrinterServo:
         return {"value": self.last_value}
 
     def _set_pwm(self, print_time, value):
-        if value != self.last_value:
-            self.last_value = value
-            self.mcu_servo.set_pwm(print_time, value)
-        return (True, 0.0)
+        if value == self.last_value:
+            return "discard", 0.0
+        self.last_value = value
+        self.mcu_servo.set_pwm(print_time, value)
 
     def _get_pwm_from_angle(self, angle):
         angle = max(0.0, min(self.max_angle, angle))
