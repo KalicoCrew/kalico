@@ -111,7 +111,6 @@ class Fan:
                 self.enable_pin.set_digital(print_time, 0)
         if (
             pwm_value
-            and pwm_value < self.max_power
             and self.kick_start_time
             and (
                 not self.last_pwm_value or pwm_value - self.last_pwm_value > 0.5
