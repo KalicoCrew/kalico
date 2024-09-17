@@ -7,6 +7,7 @@
 - [`[exclude_object]`](./Config_Reference.md#exclude_object) is enabled by default. Use `[exclude_object] enable_exclude_object: False` to disable it
 
 ## Additional configuration options
+
 - [`[mcu] is_non_critical`](./Config_Reference.md#mcu) enables marking of an mcu as optional - it can be freely disconnected and connected at will. (useful for MCU-based accelerometer boards, mcu-based probes that shut down in hot chambers, etc...)
 - [`[danger_options]`](./Config_Reference.md#danger-options) - New configuration options to adjust klipper values that were previously hidden
 - Additional kinematics versions enabled per-axis acceleration, see [limited_cartesian](./Config_Reference.md#⚠️-cartesian-kinematics-with-limits-for-x-and-y-axes) and [limited_corexy](./Config_Reference.md#⚠️-corexy-kinematics-with-limits-for-x-and-y-axes)
@@ -33,7 +34,9 @@
 - [`[z_tilt_ng]`](./Config_Reference.md#z_tilt_ng) adds enforced 3-point z tilt calibration
 - [`[z_tilt/quad_gantry_level] increasing_threshold`](./Config_Reference.md#z_tilt) allows you to customize the allowed variation when probing multiple times
 - [`[z_tilt/quad_gantry_level] adaptive_horizontal_move_z`](./Config_Reference.md#z_tilt) adaptively decrease horizontal_move_z based on resulting error - z_tilt and QGL faster and safer!
+
 ## Heaters, Fans, and PID changes
+
 - [Model Predictive Control](./MPC.md) is an advanced temperature control method that offers an alternative to traditional PID control.
 - [Velocity PID](./PID.md) can be more accurate than positional PID, but is more susceptible to noisy sensors and may require larger smoothing times
 - [`PID_PROFILE [LOAD/SAVE]`](./G-Codes.md#pid_profile) allows you to calibrate and save PID profiles at multiple temperatures and fan speeds, and later restore them. With some clever macros, automatic per-material pid tuning is within reach!
@@ -45,6 +48,10 @@
 - [`[temperature_fan] reverse: True`](./Config_Reference.md#temperature_fan) will let you control a fan in reverse to temperature control. The lower the temperature, the higher the fan runs.
 - Fans now normalize PWM power within `off_below` and `max_power`, so setting a fan to 10% will get you 10% fan speed within your configured off/max range.
 
+## Steppers / TMC Drivers
+
+- [`[tmc5160] driver_cs`](./Config_Reference.html#tmc5160) allows you to tune the CS (Current Scale) value.
+
 ## Macros
 
 - The jinja `do` extension has been enabled. You can now call functions in your macros without resorting to dirty hacks: `{% do array.append(5) %}`
@@ -52,6 +59,7 @@
 - New [`RELOAD_GCODE_MACROS`](./G-Codes.md#reload_gcode_macros) G-Code command to reload `[gcode_macro]` templates without requiring a restart.
 
 ## [Plugins](./Plugins.md)
+
 Extend your Danger Klipper installation with custom plugins.
 
 Your python plugins can now extend [`klippy/extras`](https://github.com/DangerKlippers/danger-klipper/tree/master/klippy/extras) adding new modules to klipper without causing updates to fail due to a "dirty" git tree.

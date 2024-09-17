@@ -59,7 +59,7 @@ serial:
 #   reset itself. The default is 'arduino' if the micro-controller
 #   communicates over a serial port, 'command' otherwise.
 #is_non_critical: False
-#   Setting this to True will allow the mcu to be disconnected and 
+#   Setting this to True will allow the mcu to be disconnected and
 #   reconnected at will without errors. Helpful for USB-accelerometer boards
 #   and USB-probes
 ```
@@ -1383,12 +1383,12 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
 #min_horizontal_move_z: 1.0
-#   minimum value for horizontal move z 
+#   minimum value for horizontal move z
 #   (only used when adaptive_horizontal_move_z is True)
 #adaptive_horizontal_move_z: False
 #   if we should adjust horizontal move z after the first adjustment round,
 #   based on error.
-#   when set to True, initial horizontal_move_z is the config value, 
+#   when set to True, initial horizontal_move_z is the config value,
 #   subsequent iterations will set horizontal_move_z to
 #   the ceil of error, or min_horizontal_move_z - whichever is greater.
 #retries: 0
@@ -1506,12 +1506,12 @@ Where x is the 0, 0 point on the bed
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
 #min_horizontal_move_z: 1.0
-#   minimum value for horizontal move z 
+#   minimum value for horizontal move z
 #   (only used when adaptive_horizontal_move_z is True)
 #adaptive_horizontal_move_z: False
 #   if we should adjust horizontal move z after the first adjustment round,
 #   based on error.
-#   when set to True, initial horizontal_move_z is the config value, 
+#   when set to True, initial horizontal_move_z is the config value,
 #   subsequent iterations will set horizontal_move_z to
 #   the ceil of error, or min_horizontal_move_z - whichever is greater.
 #max_adjust: 4
@@ -4450,6 +4450,10 @@ run_current:
 #   chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
 #   above list.
+#driver_cs: 31
+#   Set the CS (Current Scale) value during the configuration of
+#   the TMC5160 chip. The tuning range is 0-31 and the default is 31.
+#   See the [tmc5160 "Calculation Sheet"](https://www.analog.com/media/en/engineering-tools/design-tools/tmc5160_calculations.xlsx) for more information.
 #diag0_pin:
 #diag1_pin:
 #   The micro-controller pin attached to one of the DIAG lines of the

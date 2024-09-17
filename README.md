@@ -60,6 +60,8 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [stepper: current_change_dwell_time](https://github.com/DangerKlippers/danger-klipper/pull/90)
 
+- [tmc5160: expose driver_cs](https://github.com/DangerKlippers/danger-klipper/pull/337)
+
 - [homing: post-home retract](https://github.com/DangerKlippers/danger-klipper/pull/65)
 
 - [homing: sensorless minimum home distance](https://github.com/DangerKlippers/danger-klipper/pull/65)
