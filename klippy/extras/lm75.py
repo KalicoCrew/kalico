@@ -6,7 +6,7 @@
 import logging
 from . import bus
 
-from extras.danger_options import get_danger_options
+from .danger_options import get_danger_options
 
 LM75_CHIP_ADDR = 0x48
 LM75_I2C_SPEED = 100000

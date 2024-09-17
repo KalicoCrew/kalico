@@ -6,13 +6,10 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, optparse
 
+KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
+sys.path.append(KLIPPER_DIR)
 
-def import_msgproto():
-    global msgproto
-    # Load msgproto.py module
-    kdir = os.path.join(os.path.dirname(__file__), "..", "klippy")
-    sys.path.append(kdir)
-    import msgproto
+from klippy import msgproto  # noqa: E402
 
 
 def read_dictionary(filename):

@@ -5,14 +5,15 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import importlib, optparse, os, sys
+import optparse, os, sys
 from textwrap import wrap
 import numpy as np, matplotlib
 
-sys.path.append(
-    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "klippy")
-)
-shaper_calibrate = importlib.import_module(".shaper_calibrate", "extras")
+KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
+sys.path.append(KLIPPER_DIR)
+
+from klippy.extras import shaper_calibrate  # noqa:E402
+
 
 MAX_TITLE_LENGTH = 65
 

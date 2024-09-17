@@ -5,9 +5,6 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import clocksync
-import serialhdl
-import reactor
 import sys
 import argparse
 import os
@@ -15,6 +12,11 @@ import traceback
 import logging
 
 KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
+sys.path.append(KLIPPER_DIR)
+
+from klippy import clocksync, serialhdl, reactor  # noqa: E402
+
+
 sys.path.append(os.path.join(KLIPPER_DIR, "klippy"))
 
 ###########################################################

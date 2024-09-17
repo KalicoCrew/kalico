@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import traceback, logging, ast, copy, json, threading
 import jinja2, math
-import configfile
+from klippy import configfile
 
 PYTHON_SCRIPT_PREFIX = "!"
 

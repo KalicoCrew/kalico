@@ -3,9 +3,10 @@
 # Copyright (C) 2020 Alan Lord <alanslists@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, mcu
+import logging
 
-from extras.danger_options import get_danger_options
+from klippy import mcu
+from .danger_options import get_danger_options
 
 DS18_REPORT_TIME = 3.0
 # Temperature can be sampled at any time but conversion time is ~750ms, so

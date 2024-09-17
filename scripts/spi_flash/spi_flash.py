@@ -17,10 +17,7 @@ import traceback
 import json
 import board_defs
 import fatfs_lib
-import reactor
-import serialhdl
-import clocksync
-import mcu
+from klippy import reactor, serialhdl, clocksync, mcu
 
 ###########################################################
 #
