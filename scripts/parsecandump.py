@@ -140,7 +140,6 @@ def main():
     canfilename, canid, dictfilename = args
     canid = int(canid, 16)
 
-    import_msgproto()
     dictionary = read_dictionary(dictfilename)
 
     canfile = open(canfilename, "r")
