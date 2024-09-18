@@ -356,7 +356,7 @@ Also provided is the following extended G-Code command:
   setting the supplied `MSG` as the current display message.  If
   `MSG` is omitted the display will be cleared.
 
-## [dockable_probe]
+### [dockable_probe]
 
 In addition to the normal commands available for a `[probe]`, the following
 commands are available when a
@@ -532,7 +532,7 @@ The following command is available when a
 [heated_fan](Config_Reference.md#heated_fan) is
 enabled.
 
-### SET_HEATED_FAN_TARGET
+#### SET_HEATED_FAN_TARGET
 `SET_HEATED_FAN_TARGET TARGET=<temperature>`: Override the `heater_temp`
 setting in the [heated_fan config section]((Config_Reference.md#heated_fan))
 until Klipper is restarted. Useful for slicers to set different heated fan
@@ -631,9 +631,8 @@ the filament unretract move to reduce blobbing at seams (the minimum value is
 Z_HOP_HEIGHT determines the vertical height by which the nozzle is lifted from
 the print to prevent collisions with the print during travel moves (the
 minimum value is 0 mm, the standard value is 0 mm, which disables Z-Hop moves).
-If Z_HOP_HEIGHT is set when retracted, the new value will be taken into
-account
-only after G11 or CLEAR_RETRACTION event.  
+If a parameter is set when retracted, the new value will be taken into
+account only after G11 or CLEAR_RETRACTION event.  
 SET_RETRACTION is commonly set as part of slicer per-filament configuration, as
 different filaments require different parameter settings. The command can be
 issued at runtime.
@@ -641,28 +640,32 @@ issued at runtime.
 #### GET_RETRACTION
 `GET_RETRACTION`: Queries the current parameters used by the firmware retraction
 module as well as the retract state. RETRACT_LENGTH, RETRACT_SPEED,
-UNRETRACT_EXTRA_LENGTH, UNRETRACT_SPEED, Z_HOP_HEIGHT and RETRACTED (True, if
-retracted) are displayed on the terminal.
+UNRETRACT_EXTRA_LENGTH, UNRETRACT_SPEED, Z_HOP_HEIGHT, RETRACT_STATE (True, if
+retracted), ZHOP_STATE (True, if zhop offset currently applied) are displayed on
+the terminal.
 
 #### CLEAR_RETRACTION
 `CLEAR_RETRACTION`: Clears the current retract state without extruder or
 motion system movement. All flags related to the retract state are reset to
-False. If `reset_on_events` is set to True, all changes to retraction
-parameters made via previous `SET_RETRACTION` commands are reset to
-config values.
-NOTE: The Module contains a lot of redundancy for safety to prevent undesired
-behavior. When printing from virtual SD Card, in retracted state, the printer
-state is monitored and zhop moves are cancelled if a print is started, canceled
-or finished or if a virtual SD card file is reset until next unretract. When
-printing via GCode streaming (e.g. using OctoPrint), the zhop moves are
-cancelled when the steppers are disabled (M84, typically part of end gcode and
-standard behavior of OctoPrint if a print is canceled) or the printer is homed
-(G28, typically part of start gcode). Hence,
+False.
+
+NOTE: The zhop state is also reset to False when the steppers are disabled (M84,
+typically part of end gcode and standard behavior of OctoPrint if a print is
+canceled) or the printer is homed (G28, typically part of start gcode). Hence,
 upon ending or canceling a print as well as starting a new print via GCode
 streaming or virtual SD card, the toolhead will not apply `z_hop_height` until
 next G11 if filament is retracted.
+
 Nevertheless, it is recommended to add `CLEAR_RETRACTION` to your start and end
 gcode to make sure the retract state is reset before and after each print.
+
+#### RESET_RETRACTION
+`RESET_RETRACTION`: All changes to retraction parameters made via previous
+SET_RETRACTION commands are reset to config values.
+
+NOTE: It is recommended to add `RESET_RETRACTION` to your start and end gcode
+(with a possible override in your filament start gcode to set filament-specific
+overrides of firmware retraction defaults via `SET_RETRACTION`). 
 
 ### [force_move]
 
