@@ -190,6 +190,7 @@ Available "action" commands:
 - `action_respond_info(msg)`: Write the given `msg` to the
   /tmp/printer pseudo-terminal. Each line of `msg` will be sent with a
   "// " prefix.
+- `action_log(msg)`: Write the given msg to the klippy.log
 - `action_raise_error(msg)`: Abort the current macro (and any calling
   macros) and write the given `msg` to the /tmp/printer
   pseudo-terminal. The first line of `msg` will be sent with a "!! "

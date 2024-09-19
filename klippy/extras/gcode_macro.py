@@ -127,6 +127,10 @@ class PrinterGCodeMacro:
         self.printer.lookup_object("gcode").respond_info(msg)
         return ""
 
+    def _action_log(self, msg):
+        logging.info(msg)
+        return ""
+
     def _action_raise_error(self, msg):
         raise self.printer.command_error(msg)
 
@@ -143,6 +147,7 @@ class PrinterGCodeMacro:
             "printer": GetStatusWrapper(self.printer, eventtime),
             "action_emergency_stop": self._action_emergency_stop,
             "action_respond_info": self._action_respond_info,
+            "action_log": self._action_log,
             "action_raise_error": self._action_raise_error,
             "action_call_remote_method": self._action_call_remote_method,
             "math": math,

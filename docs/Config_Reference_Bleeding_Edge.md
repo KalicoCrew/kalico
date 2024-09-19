@@ -66,12 +66,12 @@ smoother_freq_y: 0
 
 ## Test print utilities
 
-### [ringing_tower]
+### [ringing_test]
 
 Ringing tower test print utility which isolates vibrations to one axis at a time.
 
 ```
-[ringing_tower]
+[ringing_test]
 size: 100
 #   X-Y Size of tower footprint (mm)
 height: 60

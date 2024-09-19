@@ -90,15 +90,15 @@ These can be specified in the config but should not need to be changed from the 
 
 The `heater power:` for PTC style heaters is recommended to be set at the normal print temperature for the printer. Some common PTC heaters are given below for reference. If your heater is not listed the manufacturer should be able to provide a temperature and power curve.
 
-| Heater Temp (C) | Rapido 2 (W) | Rapido 1 (W) | Dragon Ace (W) | Revo 40 (W) |Revo 60 (W) |
-|:---------------:|:------------:|:------------:|:--------------:|:-----------:|:----------:|
-| 180             | 72           | 52           | 51             | 30          |45          |
-| 200             | 70           | 51           | 48             | 29          |44          |
-| 220             | 67           | 50           | 46             | 28          |43          |
-| 240             | 65           | 49           | 44             | 28          |42          |
-| 260             | 64           | 48           | 43             | 27          |40          |
-| 280             | 62           | 47           | 41             | 27          |39          |
-| 300             | 60           | 46           | 39             | 26          |38          |
+| Heater Temp (C) | Rapido 2 (W) | Rapido 1 (W) | Dragon Ace old (W) | Dragon Ace new (W) | Revo 40 (W) |Revo 60 (W) |
+|:---------------:|:------------:|:------------:|:------------------:|:------------------:|:-----------:|:----------:|
+| 180             | 72           | 52           | 51                 | 66                 | 30          |45          |
+| 200             | 70           | 51           | 48                 | 63                 | 29          |44          |
+| 220             | 67           | 50           | 46                 | 60                 | 28          |43          |
+| 240             | 65           | 49           | 44                 | 58                 | 28          |42          |
+| 260             | 64           | 48           | 43                 | 55                 | 27          |40          |
+| 280             | 62           | 47           | 41                 | 53                 | 27          |39          |
+| 300             | 60           | 46           | 39                 | 51                 | 26          |38          |
 
 ## Filament Feed Forward Configuration
 

@@ -1,0 +1,5 @@
+# Test case for action_log
+CONFIG action_log.cfg
+DICTIONARY atmega2560.dict
+
+ACTION_LOG
