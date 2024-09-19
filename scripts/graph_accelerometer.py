@@ -5,12 +5,11 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import optparse, os, sys
+import optparse, os, pathlib, sys
 from textwrap import wrap
 import numpy as np, matplotlib
 
-KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
-sys.path.append(KLIPPER_DIR)
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from klippy.extras import shaper_calibrate  # noqa:E402
 

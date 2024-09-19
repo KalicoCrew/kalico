@@ -6,14 +6,13 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import print_function
-import optparse, os, sys
+import optparse, sys, pathlib
 from textwrap import wrap
 import numpy as np, matplotlib
 
-KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
-sys.path.append(KLIPPER_DIR)
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from klippy.extras import shaper_calibrate  # noqa: E402
+from klippy.extras import shaper_calibrate
 
 MAX_TITLE_LENGTH = 65
 

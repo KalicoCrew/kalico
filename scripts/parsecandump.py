@@ -4,12 +4,11 @@
 # Copyright (C) 2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, optparse
+import sys, pathlib, optparse
 
-KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
-sys.path.append(KLIPPER_DIR)
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from klippy import msgproto  # noqa: E402
+from klippy import msgproto
 
 
 def read_dictionary(filename):

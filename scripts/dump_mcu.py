@@ -10,14 +10,12 @@ import argparse
 import os
 import traceback
 import logging
+import pathlib
 
-KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
-sys.path.append(KLIPPER_DIR)
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from klippy import clocksync, serialhdl, reactor  # noqa: E402
+from klippy import clocksync, serialhdl, reactor
 
-
-sys.path.append(os.path.join(KLIPPER_DIR, "klippy"))
 
 ###########################################################
 #
