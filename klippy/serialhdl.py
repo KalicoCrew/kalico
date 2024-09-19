@@ -15,9 +15,10 @@ class error(Exception):
 
 
 class SerialReader:
-    def __init__(self, reactor, warn_prefix=""):
+    def __init__(self, reactor, warn_prefix="", mcu=None):
         self.reactor = reactor
         self.warn_prefix = warn_prefix
+        self.mcu = mcu
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
@@ -124,6 +125,82 @@ class SerialReader:
             )
         return True
 
+    def check_canbus_connect(
+        self, canbus_uuid, canbus_nodeid, canbus_iface="can0"
+    ):
+        # this doesn't work
+        # because we don't have a way to query for the _existence_ of a device
+        # on the network, without "assigning" the device.
+        # if we query for unassigned, we get a response from the device
+        # but then klipper can't connect to it.
+        # same reason we klipper can't connect to a can device after we
+        # do a ~/scripts/canbus_query.py command
+        import can  # XXX
+
+        logging.getLogger("can").setLevel(logging.WARN)
+        txid = canbus_nodeid * 2 + 256
+        filters = [{"can_id": txid + 1, "can_mask": 0x7FF, "extended": False}]
+        # Prep for SET_NODEID command
+        try:
+            uuid = int(canbus_uuid, 16)
+        except ValueError:
+            uuid = -1
+        if uuid < 0 or uuid > 0xFFFFFFFFFFFF:
+            self._error("Invalid CAN uuid")
+
+        CANBUS_ID_ADMIN = 0x3F0
+        CMD_QUERY_UNASSIGNED = 0x00
+        RESP_NEED_NODEID = 0x20
+        filters = [
+            {
+                "can_id": CANBUS_ID_ADMIN + 1,
+                "can_mask": 0x7FF,
+                "extended": False,
+            }
+        ]
+
+        msg = can.Message(
+            arbitration_id=CANBUS_ID_ADMIN,
+            data=[CMD_QUERY_UNASSIGNED],
+            is_extended_id=False,
+        )
+        try:
+            bus = can.interface.Bus(
+                channel=canbus_iface,
+                can_filters=filters,
+                bustype="socketcan",
+            )
+            bus.send(msg)
+        except (can.CanError, os.error) as e:
+            logging.warning("%scan issue: %s", self.warn_prefix, e)
+            return False
+
+        start_time = curtime = self.reactor.monotonic()
+        while True:
+            tdiff = start_time + 1.0 - curtime
+            if tdiff <= 0.0:
+                break
+            msg = bus.recv(tdiff)
+            curtime = self.reactor.monotonic()
+            if (
+                msg is None
+                or msg.arbitration_id != CANBUS_ID_ADMIN + 1
+                or msg.dlc < 7
+                or msg.data[0] != RESP_NEED_NODEID
+            ):
+                continue
+            found_uuid = sum(
+                [v << ((5 - i) * 8) for i, v in enumerate(msg.data[1:7])]
+            )
+            logging.info(f"found_uuid: {found_uuid}")
+            if found_uuid == uuid:
+                self.disconnect()
+                bus.close = bus.shutdown  # XXX
+                return True
+        bus.close = bus.shutdown  # XXX
+        # logging.info(f"couldn't find uuid: {uuid}")
+        return False
+
     def connect_canbus(self, canbus_uuid, canbus_nodeid, canbus_iface="can0"):
         import can  # XXX
 
@@ -206,7 +283,11 @@ class SerialReader:
         # Initial connection
         logging.info("%sStarting serial connect", self.warn_prefix)
         start_time = self.reactor.monotonic()
-        while True:
+        while 1:
+            if (
+                self.serialqueue is not None
+            ):  # if we're already connected, don't recon
+                break
             if self.reactor.monotonic() > start_time + 90.0:
                 self._error("Unable to connect")
             try:
@@ -226,6 +307,17 @@ class SerialReader:
             ret = self._start_session(serial_dev)
             if ret:
                 break
+
+    def check_connect(self, serialport, baud, rts=True):
+        serial_dev = serial.Serial(baudrate=baud, timeout=0, exclusive=False)
+        serial_dev.port = serialport
+        serial_dev.rts = rts
+        try:
+            serial_dev.open()
+        except Exception:
+            return False
+        serial_dev.close()
+        return True
 
     def connect_file(self, debugoutput, dictionary, pace=False):
         self.serial_dev = debugoutput
@@ -281,13 +373,23 @@ class SerialReader:
             else:
                 self.handlers[name, oid] = callback
 
+    def _check_noncritical_disconnected(self):
+        if self.mcu is not None and self.mcu.non_critical_disconnected:
+            self._error("non-critical MCU is disconnected")
+
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
+        self._check_noncritical_disconnected()
+        if self.serialqueue is None:
+            return
         self.ffi_lib.serialqueue_send(
             self.serialqueue, cmd_queue, cmd, len(cmd), minclock, reqclock, 0
         )
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
+        self._check_noncritical_disconnected()
+        if self.serialqueue is None:
+            return
         self.last_notify_id += 1
         nid = self.last_notify_id
         completion = self.reactor.completion()

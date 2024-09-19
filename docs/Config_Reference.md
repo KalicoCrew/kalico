@@ -58,6 +58,10 @@ serial:
 #   sending a Klipper command to the micro-controller so that it can
 #   reset itself. The default is 'arduino' if the micro-controller
 #   communicates over a serial port, 'command' otherwise.
+#is_non_critical: False
+#   Setting this to True will allow the mcu to be disconnected and 
+#   reconnected at will without errors. Helpful for USB-accelerometer boards
+#   and USB-probes
 ```
 
 ### [mcu my_extra_mcu]
@@ -5234,6 +5238,9 @@ extruder_stepper_name:
 #   example, if the config section for the secondary extruder is
 #   [extruder_stepper my_extruder_stepper], this parameter's value
 #   would be 'my_extruder_stepper'.
+sensor_pin:
+#   Input pin connected to the sensor. This parameter must be
+#   provided.
 #multiplier_high: 1.05
 #   High multiplier to set for the secondary extruder when extruding
 #   forward and Belay is compressed or when extruding backward and

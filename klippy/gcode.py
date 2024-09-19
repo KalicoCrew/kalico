@@ -537,7 +537,7 @@ class GCodeIO:
         if self.is_fileinput:
             self.printer.request_exit("error_exit")
 
-    m112_r = re.compile("^(?:[nN][0-9]+)?\s*[mM]112(?:\s|$)")
+    m112_r = re.compile(r"^(?:[nN][0-9]+)?\s*[mM]112(?:\s|$)")
 
     def _process_data(self, eventtime):
         # Read input, separate by newline, and add to pending_commands

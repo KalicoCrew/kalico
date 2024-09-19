@@ -58,6 +58,7 @@ class PrinterTemperatureMCU:
         self.printer.register_event_handler(
             "klippy:mcu_identify", self._mcu_identify
         )
+        self.mcu_adc.get_mcu().register_config_callback(self._build_config)
 
     def setup_callback(self, temperature_callback):
         self.temperature_callback = temperature_callback
@@ -80,6 +81,9 @@ class PrinterTemperatureMCU:
         return temp - adc * self.slope
 
     def _mcu_identify(self):
+        self._build_config()
+
+    def _build_config(self):
         # Obtain mcu information
         _mcu = self.mcu_adc.get_mcu()
         self.debug_read_cmd = _mcu.lookup_query_command(
