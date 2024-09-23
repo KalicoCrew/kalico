@@ -821,6 +821,8 @@ class MenuManager:
             else:  # No menu changes were needed
                 self.stack_peek().update_items(keep_pointer=True)
 
+            self.display.request_redraw()
+
     def timer_event(self, eventtime):
         self.timeout_check(eventtime)
         return eventtime + TIMER_DELAY
