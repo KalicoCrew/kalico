@@ -6,7 +6,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import os, logging, ast, re
+import os, logging, ast, re, typing
 from string import Template
 from . import menu_keys
 
@@ -245,6 +245,10 @@ class MenuElement(object):
 class MenuContainer(MenuElement):
     """Menu container abstract class"""
 
+    _allitems: typing.List[typing.Tuple[MenuElement, str]]
+    _items: typing.List[MenuElement]
+    _names: typing.List[str]
+
     def __init__(self, manager, config, **kwargs):
         if type(self) is MenuContainer:
             raise error(
@@ -358,11 +362,19 @@ class MenuContainer(MenuElement):
         # send populate event
         self.send_event("populate", self)
 
-    def update_items(self):
+    def update_items(self, keep_pointer=False):
+        if keep_pointer:
+            selection = self.selected_item()
+
         _a = [
             (item, name) for item, name in self._allitems if item.is_enabled()
         ]
         self._items, self._names = zip(*_a) or ([], [])
+
+        if keep_pointer and selection in self._items:
+            self.select_item(selection)
+        else:
+            self.init_selection()
 
     # select methods
     def init_selection(self):
@@ -733,7 +745,7 @@ class MenuManager:
     def __init__(self, config, display):
         self.running = False
         self.menuitems = {}
-        self.menustack = []
+        self.menustack: typing.List[MenuContainer] = []
         self.children = {}
         self.display = display
         self.printer = config.get_printer()
@@ -755,6 +767,27 @@ class MenuManager:
         # register itself for printer callbacks
         self.printer.add_object("menu", self)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        # register other printer event handlers
+        for event in (
+            "filament:insert",
+            "filament:runout",
+            "print_stats:reset",
+            "print_stats:start_printing",
+            "print_stats:paused_printing",
+            "print_stats:error_printing",
+            "print_stats:complete_printing",
+            "print_stats:cancelled_printing",
+            "idle_timeout:idle",
+            "idle_timeout:ready",
+            "idle_timeout:printing",
+            "virtual_sdcard:load_file",
+            "virtual_sdcard:reset_file",
+        ):
+            self.printer.register_event_handler(
+                event,
+                self._handle_printer_event,
+            )
+
         # register for key events
         menu_keys.MenuKeys(config, self.key_event)
         # Load local config file in same directory as current module
@@ -770,6 +803,23 @@ class MenuManager:
         # start timer
         reactor = self.printer.get_reactor()
         reactor.register_timer(self.timer_event, reactor.NOW)
+
+    def _handle_printer_event(self, *args):
+        if self.is_running():
+            # iterate the stack from lowest to highest (starting with the root)
+            #   if the entry is enabled, update it
+            #   else, clear the stack from this point and break
+            for idx in range(self.stack_size()):
+                entry = self.menustack[idx]
+
+                if not (entry and entry.is_enabled()):
+                    while self.stack_size() > idx:
+                        self.stack_pop(update=True)
+
+                    break
+
+            else:  # No menu changes were needed
+                self.stack_peek().update_items(keep_pointer=True)
 
     def timer_event(self, eventtime):
         self.timeout_check(eventtime)
