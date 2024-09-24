@@ -850,7 +850,6 @@ class MenuDialog(MenuList):
         # Stores dialog state for child inputs
         self._values = {}
 
-        logging.info("%s name is %s" % (self._ns, self._name))
         self._title_text = kwargs.get("title", self._name)
         self._confirm_text = kwargs.get("confirm_text", "Confirm")
         self._cancel_text = kwargs.get("cancel_text", "Cancel")
@@ -898,11 +897,9 @@ class MenuDialog(MenuList):
         self.manager.back()
 
     def _on_confirm(self, el, context):
-        logging.info("confirm! %r, %r" % (self, self.get_context()))
         self.run_script("gcode")
 
     def _on_cancel(self, el, context):
-        logging.info("cancel! %r" % self)
         el.manager.back()
 
     def get_values(self):
@@ -913,7 +910,7 @@ class MenuDialog(MenuList):
 
     def set_value(self, ns, value):
         self._values[ns] = value
-        logging.info(repr(self._values))
+
         self.update_items(keep_pointer=True)
 
     def _populate(self):
@@ -950,8 +947,6 @@ class MenuDialog(MenuList):
 
             else:
                 self._values[item._id] = None
-
-        logging.info(repr(self._values))
 
 
 menu_items = {
