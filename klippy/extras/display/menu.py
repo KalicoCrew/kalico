@@ -6,9 +6,10 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import os, logging, ast, re, typing
+import os, logging, ast, pathlib, re, typing
 from string import Template
 from . import menu_keys
+from .. import virtual_sdcard
 
 
 class sentinel:
@@ -617,6 +618,8 @@ class MenuInput(MenuCommand):
 
 
 class MenuList(MenuContainer):
+    suffix = ">"
+
     def __init__(self, manager, config, **kwargs):
         super(MenuList, self).__init__(manager, config, **kwargs)
         self._viewport_top = 0
@@ -672,10 +675,10 @@ class MenuList(MenuContainer):
                         prefix = " "
                     # add suffix (folder indicator)
                     if isinstance(current, MenuList):
-                        suffix += ">"
+                        suffix += current.suffix
                 # draw to display
                 plen = len(prefix)
-                slen = len(suffix)
+                slen = len(re.sub(r"~\w+~", "~~", suffix))
                 width = self.manager.cols - plen - slen
                 # draw item prefix (cursor)
                 ppos = display.draw_text(y, 0, prefix, eventtime)
@@ -729,12 +732,94 @@ class MenuVSDList(MenuList):
                 )
 
 
+class MenuFileBrowser(MenuList):
+    suffix = "~folder~"
+
+    def __init__(self, manager, config, **kwargs):
+        super().__init__(manager, config, **kwargs)
+
+        self._sort_by = (config or self._context or {}).get(
+            "sort_by", "last_modified"
+        )
+
+        sdcard = self.manager.printer.lookup_object("virtual_sdcard", None)
+        self.root_dir = pathlib.Path(sdcard.sdcard_dirname)
+        self.path = self.root_dir
+
+        if "path" in (self._context or {}):
+            self.path = pathlib.Path(self._context["path"])
+            self.prefix = ""
+
+            # create back item
+            self._itemBack = self.manager.menuitem_from(
+                "command",
+                name="~folder_up~ {}".format(self.path.name),
+                gcode=lambda el, context: el.manager.back(),
+            )
+
+    def _dir_contains_gcode(self, path):
+        return any(
+            file
+            for suffix in virtual_sdcard.VALID_GCODE_EXTS
+            for file in path.glob("**/*.{}".format(suffix))
+            if file.is_file()
+        )
+
+    def _populate(self):
+        super(MenuFileBrowser, self)._populate()
+
+        def _cb(el: MenuElement, context):
+            if "gcode" in context:
+                el.manager.queue_gcode(context["gcode"])
+            el.manager.exit()
+
+        items = sorted(
+            self.path.iterdir(),
+            key=lambda item: (
+                not item.is_dir(),  # Directories first
+                (  # Then mtime or name by configuration
+                    item.stat().st_mtime
+                    if self._sort_by == "last_modified"
+                    else item.name
+                ),
+            ),
+        )
+        for item in items:
+            if item.is_dir():
+                if not self._dir_contains_gcode(item):
+                    continue
+
+                self.insert_item(
+                    self.manager.menuitem_from(
+                        "file_browser",
+                        name=item.name,
+                        context={"path": item},
+                    )
+                )
+
+            elif item.suffix.lstrip(".") in virtual_sdcard.VALID_GCODE_EXTS:
+                self.insert_item(
+                    self.manager.menuitem_from(
+                        "command",
+                        name=item.stem,
+                        gcode=_cb,
+                        context={
+                            "sort_by": self._sort_by,
+                            "gcode": "SDCARD_PRINT_FILE FILENAME='/{}'".format(
+                                item.relative_to(self.root_dir)
+                            ),
+                        },
+                    )
+                )
+
+
 menu_items = {
     "disabled": MenuDisabled,
     "command": MenuCommand,
     "input": MenuInput,
     "list": MenuList,
     "vsdlist": MenuVSDList,
+    "file_browser": MenuFileBrowser,
 }
 
 
