@@ -59,7 +59,7 @@ serial:
 #   reset itself. The default is 'arduino' if the micro-controller
 #   communicates over a serial port, 'command' otherwise.
 #is_non_critical: False
-#   Setting this to True will allow the mcu to be disconnected and 
+#   Setting this to True will allow the mcu to be disconnected and
 #   reconnected at will without errors. Helpful for USB-accelerometer boards
 #   and USB-probes
 ```
@@ -1383,12 +1383,12 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
 #min_horizontal_move_z: 1.0
-#   minimum value for horizontal move z 
+#   minimum value for horizontal move z
 #   (only used when adaptive_horizontal_move_z is True)
 #adaptive_horizontal_move_z: False
 #   if we should adjust horizontal move z after the first adjustment round,
 #   based on error.
-#   when set to True, initial horizontal_move_z is the config value, 
+#   when set to True, initial horizontal_move_z is the config value,
 #   subsequent iterations will set horizontal_move_z to
 #   the ceil of error, or min_horizontal_move_z - whichever is greater.
 #retries: 0
@@ -1506,12 +1506,12 @@ Where x is the 0, 0 point on the bed
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
 #min_horizontal_move_z: 1.0
-#   minimum value for horizontal move z 
+#   minimum value for horizontal move z
 #   (only used when adaptive_horizontal_move_z is True)
 #adaptive_horizontal_move_z: False
 #   if we should adjust horizontal move z after the first adjustment round,
 #   based on error.
-#   when set to True, initial horizontal_move_z is the config value, 
+#   when set to True, initial horizontal_move_z is the config value,
 #   subsequent iterations will set horizontal_move_z to
 #   the ceil of error, or min_horizontal_move_z - whichever is greater.
 #max_adjust: 4
@@ -1609,6 +1609,8 @@ home_xy_position:
 #move_to_previous: False
 #   When set to True, the X and Y axes are reset to their previous
 #   positions after Z axis homing. The default is False.
+#home_y_before_x: False
+#  # If True, the Y axis will home first. The default is False.
 ```
 
 ### [homing_override]
