@@ -26,6 +26,7 @@ class MenuElement(object):
         if type(self) is MenuElement:
             raise error("Abstract MenuElement cannot be instantiated directly")
         self._manager = manager
+        self.dialog = None
         self._cursor = ">"
         # set class defaults and attributes from arguments
         self._index = kwargs.get("index", None)
@@ -46,14 +47,15 @@ class MenuElement(object):
                     config, "enable"
                 )
             # item namespace - used in relative paths
+            self._id = config.get_name().split(" ")[-1]
             self._ns = str(" ".join(config.get_name().split(" ")[1:])).strip()
         else:
             # ns - item namespace key, used in item relative paths
             # $__id - generated id text variable
-            __id = "__menu_" + hex(id(self)).lstrip("0x").rstrip("L")
+            self._id = "__menu_" + hex(id(self)).lstrip("0x").rstrip("L")
             self._ns = Template(
-                "menu " + kwargs.get("ns", __id)
-            ).safe_substitute(__id=__id)
+                "menu " + kwargs.get("ns", self._id)
+            ).safe_substitute(__id=self._id)
         self._last_heartbeat = None
         self.__scroll_pos = None
         self.__scroll_request_pending = False
@@ -120,7 +122,17 @@ class MenuElement(object):
 
     def eval_enable(self, context):
         if self._enable_tpl is not None:
-            return bool(ast.literal_eval(self._enable_tpl.render(context)))
+            try:
+                stmt = self._enable_tpl.render(context)
+                try:
+                    return bool(ast.literal_eval(stmt))
+                except:
+                    logging.exception("%s Failed to eval %r" % (self._ns, stmt))
+            except:
+                logging.exception(
+                    "%s Failed to render tpl with context %r"
+                    % (self._ns, context)
+                )
         return bool(self._enable)
 
     # Called when a item is selected
@@ -494,6 +506,10 @@ class MenuInput(MenuCommand):
     def stop_editing(self):
         if not self.is_editing():
             return
+
+        if self.manager.current_dialog:
+            self.manager.current_dialog.set_value(self._id, self._input_value)
+
         self._reset_value()
 
     def start_editing(self):
@@ -515,18 +531,14 @@ class MenuInput(MenuCommand):
             self._is_dirty = False
 
     def get_context(self, cxt=None):
-        context = super(MenuInput, self).get_context(cxt)
+        context = super().get_context(cxt)
         value = (
-            self._eval_value(context)
+            self._get_value(context)
             if self._input_value is None
             else self._input_value
         )
         context["menu"].update({"input": value})
         return context
-
-    def is_enabled(self):
-        context = super(MenuInput, self).get_context()
-        return self.eval_enable(context)
 
     def _eval_min(self, context):
         try:
@@ -556,17 +568,26 @@ class MenuInput(MenuCommand):
         except ValueError:
             logging.exception("Input value evaluation error")
 
+    def _get_value(self, context):
+        if context.get("dialog", {}).get(self._id, None):
+            return context["dialog"][self._id]
+        return self._eval_value(context)
+
+    def get_value(self):
+        context = self.get_context()
+        return self._get_value(context)
+
     def _value_changed(self):
         self.__last_change = self._last_heartbeat
         self._is_dirty = True
 
     def _init_value(self):
-        context = super(MenuInput, self).get_context()
+        context = super().get_context()
         self._input_value = None
         self._input_min = self._eval_min(context)
         self._input_max = self._eval_max(context)
         self._input_value = min(
-            self._input_max, max(self._input_min, self._eval_value(context))
+            self._input_max, max(self._input_min, self._get_value(context))
         )
         self._value_changed()
 
@@ -813,11 +834,132 @@ class MenuFileBrowser(MenuList):
                 )
 
 
+class MenuDialog(MenuList):
+    """
+    The first item is a non-selectable "title"
+
+    All child items must be inputs
+        Child inputs will be accessible in the gcode as `menu.dialog[_namespace]`
+
+    Then two final "Confirm" and "Cancel" items are added at the end
+    """
+
+    def __init__(self, manager, config, **kwargs):
+        super().__init__(manager, config, **kwargs)
+
+        # Stores dialog state for child inputs
+        self._values = {}
+
+        logging.info("%s name is %s" % (self._ns, self._name))
+        self._title_text = kwargs.get("title", self._name)
+        self._confirm_text = kwargs.get("confirm_text", "Confirm")
+        self._cancel_text = kwargs.get("cancel_text", "Cancel")
+
+        self._load_script(config or kwargs, "gcode")
+
+        self._title_item = self.manager.menuitem_from(
+            "command",
+            name=self._title_text,
+            render_only=True,
+        )
+        self._confirm_item = self.manager.menuitem_from(
+            "command",
+            name=self._confirm_text,
+            gcode=self._on_confirm,
+        )
+        self._cancel_item = self.manager.menuitem_from(
+            "command",
+            name=self._cancel_text,
+            gcode=self._on_cancel,
+        )
+
+        if config is not None:
+            if config.get("title", None, False):
+                self._title_item._name_tpl = manager.gcode_macro.load_template(
+                    config, "title", self._title_text
+                )
+            else:
+                self._title_item._name_tpl = self._name_tpl
+
+            self._confirm_item._name_tpl = manager.gcode_macro.load_template(
+                config, "confirm_text", self._confirm_text
+            )
+            self._cancel_item._name_tpl = manager.gcode_macro.load_template(
+                config, "cancel_text", self._cancel_text
+            )
+
+    def select_at(self, index):
+        if index == 0:
+            self._viewport_top = 0
+            index = 1
+        return super().select_at(max(1, index))
+
+    def handle_script_gcode(self):
+        self.manager.back()
+
+    def _on_confirm(self, el, context):
+        logging.info("confirm! %r, %r" % (self, self.get_context()))
+        self.run_script("gcode")
+
+    def _on_cancel(self, el, context):
+        logging.info("cancel! %r" % self)
+        el.manager.back()
+
+    def get_values(self):
+        return self._values
+
+    def get_value(self, ns, default=None):
+        return self._values.get(ns, default)
+
+    def set_value(self, ns, value):
+        self._values[ns] = value
+        logging.info(repr(self._values))
+        self.update_items(keep_pointer=True)
+
+    def _populate(self):
+        super(MenuList, self)._populate()
+
+        self._viewport_top = 0
+
+        # Add title as the first item
+        self.insert_item(self._title_item, 0)
+
+        # Append confirm and cancel
+        self.insert_item(self._confirm_item)
+        self.insert_item(self._cancel_item)
+
+        self.populate_values()
+
+    def is_accepted(self, item):
+        return isinstance(item, MenuCommand)
+
+    def update_items(self, keep_pointer=False):
+        super().update_items(keep_pointer)
+
+        # Refresh values for newly disabled/enabled items
+        self.populate_values()
+
+    def populate_values(self):
+        for item, _ in self._allitems:
+            if not isinstance(item, MenuInput):
+                continue
+
+            if item in self._items:
+                if self._values[item._id] is None:
+                    self._values[item._id] = item.get_value()
+
+            else:
+                self._values[item._id] = None
+
+        logging.info(repr(self._values))
+
+
 menu_items = {
     "disabled": MenuDisabled,
     "command": MenuCommand,
     "input": MenuInput,
     "list": MenuList,
+    "dialog": MenuDialog,
     "vsdlist": MenuVSDList,
     "file_browser": MenuFileBrowser,
 }
@@ -831,6 +973,7 @@ class MenuManager:
         self.running = False
         self.menuitems = {}
         self.menustack: typing.List[MenuContainer] = []
+        self.dialog_stack: typing.List[MenuDialog] = []
         self.children = {}
         self.display = display
         self.printer = config.get_printer()
@@ -967,6 +1110,10 @@ class MenuManager:
         context = dict(self.context)
         if isinstance(cxt, dict):
             context.update(cxt)
+        if self.dialog_stack:
+            context["dialog"] = {}
+            for dialog in self.dialog_stack:
+                context["dialog"].update(dialog.get_values())
         return context
 
     def update_context(self, eventtime):
@@ -978,6 +1125,11 @@ class MenuManager:
             "exit": self._action_exit,
         }
 
+    @property
+    def current_dialog(self):
+        if self.dialog_stack:
+            return self.dialog_stack[-1]
+
     def stack_push(self, container):
         if not isinstance(container, MenuContainer):
             raise error("Wrong type, expected MenuContainer")
@@ -988,6 +1140,8 @@ class MenuManager:
                 top.run_script("leave")
         if isinstance(container, MenuList):
             container.run_script("enter")
+        if isinstance(container, MenuDialog):
+            self.dialog_stack.append(container)
         if not container.is_editing():
             container.update_items()
             container.init_selection()
@@ -999,6 +1153,8 @@ class MenuManager:
             container = self.menustack.pop()
             if not isinstance(container, MenuContainer):
                 raise error("Wrong type, expected MenuContainer")
+            if isinstance(container, MenuDialog):
+                self.dialog_stack.remove(container)
             top = self.stack_peek()
             if top is not None:
                 if not isinstance(container, MenuContainer):
