@@ -70,7 +70,7 @@ class ZAdjustHelper:
         for s in self.z_steppers:
             s.set_trapq(None)
         # Move each z stepper (sorted from lowest to highest) until they match
-        positions = [(-a, s) for a, s in zip(adjustments, self.z_steppers)]
+        positions = [(float(-a), s) for a, s in zip(adjustments, self.z_steppers)]
         positions.sort(key=(lambda k: k[0]))
         first_stepper_offset, first_stepper = positions[0]
         z_low = curpos[2] - first_stepper_offset
@@ -306,16 +306,15 @@ class ZTilt:
             params.keys(), params, errorfunc
         )
         # Apply results
-        speed = self.probe_helper.get_lift_speed()
         logging.info("Calculated bed tilt parameters: %s", new_params)
         return new_params
 
     def apply_adjustments(self, offsets, new_params):
         z_offset = offsets[2]
         speed = self.probe_helper.get_lift_speed()
-        x_adjust = new_params["x_adjust"]
-        y_adjust = new_params["y_adjust"]
-        z_adjust = (
+        x_adjust = float(new_params["x_adjust"])
+        y_adjust = float(new_params["y_adjust"])
+        z_adjust = float(
             new_params["z_adjust"]
             - z_offset
             - x_adjust * offsets[0]
@@ -365,7 +364,7 @@ class ZTilt:
         )
         if this_error < prev_error:
             return "retry"
-        z_offsets = np.mean(self.cal_runs[-avlen:], axis=0)
+        z_offsets = np.mean(self.cal_runs[-avlen:], axis=0).tolist()
         z_offsets = [z - offsets[2] for z in z_offsets]
         self.z_offsets = z_offsets
         s_zoff = ""
@@ -473,9 +472,9 @@ class ZTilt:
         self.ad_gcmd.respond_info("current estimated z_positions %s" % (s_zpos))
         self.ad_runs.append(z_pos)
         if len(self.ad_runs) >= avlen:
-            self.z_positions = np.mean(self.ad_runs[-avlen:], axis=0)
+            self.z_positions = np.mean(self.ad_runs[-avlen:], axis=0).tolist()
         else:
-            self.z_positions = np.mean(self.ad_runs, axis=0)
+            self.z_positions = np.mean(self.ad_runs, axis=0).tolist()
 
         # We got a first estimate of the pivot points. Now apply the
         # adjustemts to all motors and repeat the process until the result
@@ -488,7 +487,7 @@ class ZTilt:
         self.apply_adjustments(offsets, self.ad_params[0])
         if len(self.ad_runs) >= avlen:
             errors = np.std(self.ad_runs[-avlen:], axis=0)
-            error = np.std(errors)
+            error = np.std(errors).item()
             if self.ad_error is None:
                 self.ad_gcmd.respond_info("current error: %.6f" % (error))
             else:
@@ -509,7 +508,7 @@ class ZTilt:
         np = self.numpy
         avlen = self.cal_avg_len
         # calculate probe point z offsets
-        z_offsets = np.mean(self.ad_points[-avlen:], axis=0)
+        z_offsets = np.mean(self.ad_points[-avlen:], axis=0).tolist()
         z_offsets = [z - offsets[2] for z in z_offsets]
         self.z_offsets = z_offsets
         logging.info("final z_offsets %s", (z_offsets))
