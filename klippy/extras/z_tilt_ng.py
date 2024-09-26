@@ -5,7 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import mathutil
-import importlib
 import numpy as np
 from . import probe
 
