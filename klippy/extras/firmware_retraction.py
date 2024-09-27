@@ -91,6 +91,7 @@ class FirmwareRetraction:
     # Helper method to register commands and instantiate required objects
     def _handle_ready(self):
         self.gcode_move = self.printer.lookup_object("gcode_move")
+        self.exclude_objects = self.printer.lookup_object("exclude_object", None)
 
         # Register move transformation while printer ready
         # important to track Z change request
@@ -194,12 +195,19 @@ class FirmwareRetraction:
     def _execute_clear_z_hop(self, *args):
         self.do_zhop = False
         self.current_z_hop_height = 0.0  # prevent nozzle crash if G11 occurs
+    
+    # Helper to skip command while in exclude object
+    def _test_in_excluded_region(self):
+        if self.exclude_objects is not None:
+            return self.exclude_objects._test_in_excluded_region()
+        else:
+            return False
 
     # Gcode Command G10 to perform firmware retraction
     def cmd_G10(self, gcmd):
         extrude_factor, speed_factor = self._get_factors()
 
-        if not self.is_retracted:  # If filament isn't retracted
+        if not self.is_retracted and not self._test_in_excluded_region():  # If filament isn't retracted
             # Check if FW retraction enabled
             if self.retract_length == 0.0 and self.z_hop_height == 0.0:
                 gcmd.respond_info(
@@ -233,7 +241,7 @@ class FirmwareRetraction:
     # GCode Command G11 to perform filament unretraction
     def cmd_G11(self, gcmd):
         extrude_factor, speed_factor = self._get_factors()
-        if self.is_retracted:  # Check if the filament is retracted
+        if self.is_retracted and not self._test_in_excluded_region():  # Check if the filament is retracted
             if (
                 self.current_unretract_length == 0.0
                 and self.current_z_hop_height == 0.0
