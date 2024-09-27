@@ -20,8 +20,17 @@ class error(Exception):
     pass
 
 
+def identity(v):
+    return v
+
+
+RE_GLYPHS = re.compile(r"~\w+~")
+
+
 # Scriptable menu element abstract baseclass
 class MenuElement(object):
+    _default_suffix = ""
+
     def __init__(self, manager, config, **kwargs):
         if type(self) is MenuElement:
             raise error("Abstract MenuElement cannot be instantiated directly")
@@ -34,6 +43,8 @@ class MenuElement(object):
         self._name = kwargs.get("name", None)
         self._context = kwargs.get("context", None)
         self._enable_tpl = self._name_tpl = None
+        self._suffix = kwargs.get("suffix", self._default_suffix)
+        self._suffix_tpl = None
         if config is not None:
             # overwrite class attributes from config
             self._index = config.getint("index", self._index)
@@ -46,6 +57,9 @@ class MenuElement(object):
                 self._enable_tpl = manager.gcode_macro.load_template(
                     config, "enable"
                 )
+            self._suffix_tpl = manager.gcode_macro.load_template(
+                config, "suffix", self._suffix
+            )
             # item namespace - used in relative paths
             self._id = config.get_name().split(" ")[-1]
             self._ns = str(" ".join(config.get_name().split(" ")[1:])).strip()
@@ -74,6 +88,12 @@ class MenuElement(object):
             context = self.get_context()
             return self.manager.asflat(self._name_tpl.render(context))
         return self.manager.asflat(self._name)
+
+    def _render_suffix(self):
+        if self._suffix_tpl is not None:
+            context = self.get_context()
+            return self.manager.asflat(self._suffix_tpl.render(context))
+        return self.manager.asflat(self._suffix)
 
     def _load_script(self, config, name, option=None):
         """Load script template from config or callback from dict"""
@@ -120,19 +140,32 @@ class MenuElement(object):
         context["menu"].update({"ns": self.get_ns()})
         return context
 
+    def _eval_tpl(self, tpl, context, coerce=identity):
+        try:
+            stmt = tpl.render(context)
+        except:
+            logging.exception(f"{self._ns} Failed to render template {tpl}")
+            raise
+        try:
+            val = ast.literal_eval(stmt) if stmt else None
+        except:
+            logging.exception(f"{self._ns} Failed to evaluate {stmt!r}")
+            raise
+        try:
+            return coerce(val)
+        except:
+            logging.exception(
+                f"{self._ns} Failed to coerce {val!r} as {coerce}"
+            )
+            raise
+
     def eval_enable(self, context):
         if self._enable_tpl is not None:
             try:
-                stmt = self._enable_tpl.render(context)
-                try:
-                    return bool(ast.literal_eval(stmt))
-                except:
-                    logging.exception("%s Failed to eval %r" % (self._ns, stmt))
+                return self._eval_tpl(self._enable_tpl, context, bool)
             except:
-                logging.exception(
-                    "%s Failed to render tpl with context %r"
-                    % (self._ns, context)
-                )
+                logging.exception("Menu item enable valuation error")
+                return False
         return bool(self._enable)
 
     # Called when a item is selected
@@ -503,12 +536,16 @@ class MenuInput(MenuCommand):
     def is_editing(self):
         return self._input_value is not None
 
+    def handle_script_change(self):
+        if self.manager.current_dialog:
+            self.manager.current_dialog.set_value(self._id, self._input_value)
+
     def stop_editing(self):
         if not self.is_editing():
             return
 
-        if self.manager.current_dialog:
-            self.manager.current_dialog.set_value(self._id, self._input_value)
+        if self._is_dirty:
+            self.run_script("change")
 
         self._reset_value()
 
@@ -540,32 +577,32 @@ class MenuInput(MenuCommand):
         context["menu"].update({"input": value})
         return context
 
+    def is_enabled(self):
+        context = super().get_context()
+        return self.eval_enable(context)
+
     def _eval_min(self, context):
         try:
             if self._input_min_tpl is not None:
-                return float(
-                    ast.literal_eval(self._input_min_tpl.render(context))
-                )
+                return self._eval_tpl(self._input_min_tpl, context, float)
             return float(self._input_min)
-        except ValueError:
+        except (ValueError, self.manager.printer.command_error):
             logging.exception("Input min value evaluation error")
 
     def _eval_max(self, context):
         try:
             if self._input_max_tpl is not None:
-                return float(
-                    ast.literal_eval(self._input_max_tpl.render(context))
-                )
+                return self._eval_tpl(self._input_max_tpl, context, float)
             return float(self._input_max)
-        except ValueError:
+        except (ValueError, self.manager.printer.command_error):
             logging.exception("Input max value evaluation error")
 
     def _eval_value(self, context):
         try:
             if self._input_tpl is not None:
-                return float(ast.literal_eval(self._input_tpl.render(context)))
+                return self._eval_tpl(self._input_tpl, context, float)
             return float(self._input)
-        except ValueError:
+        except (ValueError, self.manager.printer.command_error):
             logging.exception("Input value evaluation error")
 
     def _get_value(self, context):
@@ -639,7 +676,7 @@ class MenuInput(MenuCommand):
 
 
 class MenuList(MenuContainer):
-    suffix = ">"
+    _default_suffix = ">"
 
     def __init__(self, manager, config, **kwargs):
         super(MenuList, self).__init__(manager, config, **kwargs)
@@ -694,12 +731,11 @@ class MenuList(MenuContainer):
                         prefix = "*"
                     else:
                         prefix = " "
-                    # add suffix (folder indicator)
-                    if isinstance(current, MenuList):
-                        suffix += current.suffix
+                    # add suffix (indicators, typically folder)
+                    suffix += current._render_suffix()
                 # draw to display
                 plen = len(prefix)
-                slen = len(re.sub(r"~\w+~", "~~", suffix))
+                slen = len(RE_GLYPHS.sub("~~", suffix))
                 width = self.manager.cols - plen - slen
                 # draw item prefix (cursor)
                 ppos = display.draw_text(y, 0, prefix, eventtime)
@@ -753,14 +789,25 @@ class MenuVSDList(MenuList):
                 )
 
 
+def sort_key_name(item: pathlib.Path):
+    # Most people expect insensitive sort
+    return item.name.lower()
+
+
+def sort_key_mtime(item: pathlib.Path):
+    return item.stat().st_mtime
+
+
 class MenuFileBrowser(MenuList):
-    suffix = "~folder~"
+    _default_suffix = "~folder~"
 
     def __init__(self, manager, config, **kwargs):
         super().__init__(manager, config, **kwargs)
 
-        self._sort_by = (config or self._context or {}).get(
-            "sort_by", "last_modified"
+        self._sort_by = (
+            (config or self._context or {})
+            .get("sort_by", "last_modified")
+            .lower()
         )
 
         sdcard = self.manager.printer.lookup_object("virtual_sdcard", None)
@@ -774,7 +821,8 @@ class MenuFileBrowser(MenuList):
             # create back item
             self._itemBack = self.manager.menuitem_from(
                 "command",
-                name="~folder_up~ {}".format(self.path.name),
+                name=self.path.name,
+                suffix="~folder_up~",
                 gcode=lambda el, context: el.manager.back(),
             )
 
@@ -794,17 +842,24 @@ class MenuFileBrowser(MenuList):
                 el.manager.queue_gcode(context["gcode"])
             el.manager.exit()
 
+        if self._sort_by == "last_modified":
+            key = sort_key_mtime
+            reverse = True
+
+        else:
+            key = sort_key_name
+            reverse = False
+
         items = sorted(
             self.path.iterdir(),
             key=lambda item: (
-                not item.is_dir(),  # Directories first
-                (  # Then mtime or name by configuration
-                    item.stat().st_mtime
-                    if self._sort_by == "last_modified"
-                    else item.name
-                ),
+                # Ensure directories always sort first, this flips when not reversing
+                item.is_dir() == reverse,
+                key(item),
             ),
+            reverse=reverse,
         )
+
         for item in items:
             if item.is_dir():
                 if not self._dir_contains_gcode(item):
@@ -839,7 +894,7 @@ class MenuDialog(MenuList):
     The first item is a non-selectable "title"
 
     All child items must be inputs
-        Child inputs will be accessible in the gcode as `menu.dialog[_namespace]`
+        Child inputs will be accessible in the gcode as `dialog[_id]`
 
     Then two final "Confirm" and "Cancel" items are added at the end
     """
