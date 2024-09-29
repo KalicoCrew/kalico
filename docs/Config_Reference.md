@@ -111,8 +111,16 @@ A collection of DangerKlipper-specific system options
 #   This allows to set extra flush time (in seconds). Under certain conditions,
 #   a low value will result in an error if message is not get flushed, a high value
 #   (0.250) will result in homing/probing latency. The default is 0.250
+#homing_start_delay: 0.001
+#   How long to dwell before beginning a drip move for homing
+#endstop_sample_time: 0.000015
+#   How often the MCU should sample the endstop state
+#endstop_sample_count: 4
+#   How many times we should check the endstop state when homing
+#   Unless your endstop is noisy and unreliable, you should be able to lower this to 1
 
-# Logging options
+
+# Logging options:
 
 #minimal_logging: False
 #   Set all log parameters log options to False. The default is False.
