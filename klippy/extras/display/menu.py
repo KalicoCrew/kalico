@@ -810,7 +810,10 @@ class MenuFileBrowser(MenuList):
             .lower()
         )
 
-        sdcard = self.manager.printer.lookup_object("virtual_sdcard", None)
+        if not self.manager.virtual_sdcard:
+            return
+
+        sdcard = self.manager.virtual_sdcard
         self.root_dir = pathlib.Path(sdcard.sdcard_dirname)
         self.path = self.root_dir
 
@@ -825,6 +828,9 @@ class MenuFileBrowser(MenuList):
                 suffix="~folder_up~",
                 gcode=lambda el, context: el.manager.back(),
             )
+
+    def is_enabled(self):
+        return self.manager.virtual_sdcard and super().is_enabled()
 
     def _dir_contains_gcode(self, path):
         return any(
@@ -1042,6 +1048,9 @@ class MenuManager:
         )
         # load printer objects
         self.gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.virtual_sdcard = self.printer.load_object(
+            config, "virtual_sdcard", None
+        )
         # register itself for printer callbacks
         self.printer.add_object("menu", self)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
