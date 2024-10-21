@@ -13,7 +13,7 @@ def hotpatch_modules():
         if not module_name.startswith("klippy."):
             continue
 
-        hotpatched_name = module_name.lstrip("klippy.")
+        hotpatched_name = module_name.removeprefix("klippy.")
         if hotpatched_name in sys.modules:
             continue
 

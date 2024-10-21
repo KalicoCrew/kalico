@@ -7,10 +7,10 @@
 import logging, math, os, time
 from collections import deque
 from .homing import Homing, HomingMove
-from klippy.gcode import CommandError
-from klippy.stepper import LookupMultiRail
-from klippy import chelper, toolhead
-from klippy.kinematics import extruder
+from .. import chelper, toolhead
+from ..gcode import CommandError
+from ..stepper import LookupMultiRail
+from ..kinematics import extruder
 
 SERVO_NAME = "servo tr_servo"
 SELECTOR_STEPPER_NAME = "stepper_tr_selector"

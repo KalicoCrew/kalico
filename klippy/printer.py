@@ -423,7 +423,7 @@ class Printer:
 
 def import_test():
     # Import all optional modules (used as a build test)
-    from extras import danger_options
+    from .extras import danger_options
     from unittest import mock
 
     danger_options.DANGER_OPTIONS = mock.Mock()
