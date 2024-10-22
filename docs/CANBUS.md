@@ -51,7 +51,7 @@ printer and use a multi-meter to check the resistance between the CANH
 and CANL wires - it should report ~60 ohms on a correctly wired CAN
 bus.
 
-## Finding the canbus_uuid for new micro-controllers
+## ⚠️ Finding the canbus_uuid for new micro-controllers
 
 Each micro-controller on the CAN bus is assigned a unique id based on
 the factory chip identifier encoded into each micro-controller. To
@@ -61,10 +61,11 @@ powered and wired correctly, and then run:
 ~/klippy-env/bin/python ~/klipper/scripts/canbus_query.py can0
 ```
 
-If uninitialized CAN devices are detected the above command will
+If CAN devices are detected the above command will
 report lines like the following:
 ```
-Found canbus_uuid=11aa22bb33cc, Application: Klipper
+Found canbus_uuid=11aa22bb33cc, Application: Klipper, Unassigned
+Found canbus_uuid=11aa22bb33cc, Application: Danger-Klipper, Assigned: 77
 ```
 
 Each device will have a unique identifier. In the above example,
@@ -73,6 +74,10 @@ Each device will have a unique identifier. In the above example,
 Note that the `canbus_query.py` tool will only report uninitialized
 devices - if Klipper (or a similar tool) configures the device then it
 will no longer appear in the list.
+
+⚠️ Note that only devices flashed with a Danger-Klipper firmware will
+respond while assigned a device node ID. Devices using a Klipper firmware
+will no longer appear in the list once configured
 
 ## Configuring Klipper
 
