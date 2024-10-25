@@ -5,7 +5,7 @@ site_name: Kalico Documentation
 site_url: https://docs.kalico.gg
 repo_url: https://github.com/KalicoCrew/kalico
 repo_name: KalicoCrew/kalico
-edit_uri: edit/master/docs/
+edit_uri: edit/main/docs/
 use_directory_urls: False
 docs_dir: '../'
 site_dir: '../../site/'

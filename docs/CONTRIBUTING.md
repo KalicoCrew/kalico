@@ -20,7 +20,7 @@ Contributions to Kalico generally follow a high-level process:
    follows documented guidelines.
 3. After a successful review, the reviewer will "approve the review"
    on GitHub and a [maintainer](#reviewers) will commit the change to
-   the Kalico master branch.
+   the Kalico `main` branch.
 
 When working on enhancements, consider starting (or contributing to) a
 thread on [Kalico Discord server](Contact.md#discord).
@@ -87,7 +87,7 @@ Common things a reviewer will look for:
    cases this will be obvious to both the submitter and the reviewer,
    and it is not explicitly stated during a review.
 
-   Submissions to the master Kalico branch are expected to have a
+   Submissions to the `main` Kalico branch are expected to have a
    noteworthy target audience. As a general "rule of thumb",
    submissions should target a user base of at least a 100 real-world
    users.
@@ -109,7 +109,7 @@ Common things a reviewer will look for:
    understood that testing of this type can take significant time and
    effort. Some of Kalico's most notable features took months of
    discussion, rework, testing, and documentation prior to being
-   merged into the master branch.
+   merged into the `main` branch.
 
    All new modules, config options, commands, command parameters, and
    documents should have "high impact". We do not want to burden users
@@ -182,9 +182,9 @@ Common things a reviewer will look for:
    [preferred format](#format-of-commit-messages).
 
    Commits must not have a merge conflict. New additions to the
-   Kalico master branch are always done via a "rebase" or "squash and
+   Kalico `main` branch are always done via a "rebase" or "squash and
    rebase". It is generally not necessary for submitters to re-merge
-   their submission on every update to the Kalico master repository.
+   their submission on every update to the Kalico `main` branch.
    However, if there is a merge conflict, then submitters are
    recommended to use `git rebase` to address the conflict.
 
