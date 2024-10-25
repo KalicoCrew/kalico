@@ -1,6 +1,6 @@
 # Bootloader Entry
 
-Klipper can be instructed to reboot into a [Bootloader](Bootloaders.md) in one
+Kalico can be instructed to reboot into a [Bootloader](Bootloaders.md) in one
 of the following ways:
 
 ## Requesting the bootloader
@@ -99,17 +99,17 @@ for information on finding the CAN UUID of your devices.
 
 ## Entering the bootloader
 
-When klipper receives one of the above bootloader requests:
+When Kalico receives one of the above bootloader requests:
 
-If Katapult (formerly known as CANBoot) is available, klipper will request that
+If Katapult (formerly known as CANBoot) is available, Kalico will request that
 Katapult stay active on the next boot, then reset the MCU (therefore entering
 Katapult).
 
-If Katapult is not available, klipper will then try to enter a
+If Katapult is not available, Kalico will then try to enter a
 platform-specific bootloader, such as STM32's DFU
 mode([see note](#stm32-dfu-warning)).
 
-In short, Klipper will reboot to Katapult if installed, then a hardware specific
+In short, Kalico will reboot to Katapult if installed, then a hardware specific
 bootloader if available.
 
 For details about the specific bootloaders on various platforms see

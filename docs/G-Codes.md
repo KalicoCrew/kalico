@@ -1,11 +1,11 @@
 # G-Codes
 
-This document describes the commands that Klipper supports. These are
+This document describes the commands that Kalico supports. These are
 commands that one may enter into the OctoPrint terminal tab.
 
 ## G-Code commands
 
-Klipper supports the following standard G-Code commands:
+Kalico supports the following standard G-Code commands:
 - Move (G0 or G1): `G1 [X<pos>] [Y<pos>] [Z<pos>] [E<pos>] [F<speed>]`
 - Dwell: `G4 P<milliseconds>`
 - Move to origin: `G28 [X] [Y] [Z]`
@@ -38,13 +38,13 @@ Klipper supports the following standard G-Code commands:
 For further details on the above commands see the
 [RepRap G-Code documentation](http://reprap.org/wiki/G-code).
 
-Klipper's goal is to support the G-Code commands produced by common
+Kalico's goal is to support the G-Code commands produced by common
 3rd party software (eg, OctoPrint, Printrun, Slic3r, Cura, etc.) in
 their standard configurations. It is not a goal to support every
-possible G-Code command. Instead, Klipper prefers human readable
+possible G-Code command. Instead, Kalico prefers human readable
 ["extended G-Code commands"](#additional-commands). Similarly, the
 G-Code terminal output is only intended to be human readable - see the
-[API Server document](API_Server.md) if controlling Klipper from
+[API Server document](API_Server.md) if controlling Kalico from
 external software.
 
 If one requires a less common G-Code command then it may be possible
@@ -55,7 +55,7 @@ example, one might use this to implement: `G12`, `G29`, `G30`, `G31`,
 
 ## Additional Commands
 
-Klipper uses "extended" G-Code commands for general configuration and
+Kalico uses "extended" G-Code commands for general configuration and
 status. These extended commands all follow a similar format - they
 start with a command name and may be followed by one or more
 parameters. For example: `SET_SERVO SERVO=myservo ANGLE=5.3`. In this
@@ -63,7 +63,7 @@ document, the commands and parameters are shown in uppercase, however
 they are not case sensitive. (So, "SET_SERVO" and "set_servo" both run
 the same command.)
 
-This section is organized by Klipper module name, which generally
+This section is organized by Kalico module name, which generally
 follows the section names specified in the
 [printer configuration file](Config_Reference.md). Note that some
 modules are automatically loaded.
@@ -313,8 +313,8 @@ from executing.
 ### [delta_calibrate]
 
 The following commands are available when the
-[delta_calibrate config section](Config_Reference.md#linear-delta-kinematics)
-is enabled (also see the [delta calibrate guide](Delta_Calibrate.md)).
+[delta_calibrate] config section is enabled (also see the 
+[delta calibrate guide](Delta_Calibrate.md)).
 
 #### DELTA_CALIBRATE
 `DELTA_CALIBRATE [METHOD=manual] [HORIZONTAL_MOVE_Z=<value>]
@@ -457,7 +457,7 @@ cleared. Additionally including `NAME` will only reset the named object. This
 Provides a summary of an object in the file.
 
 With no parameters provided, this will list the defined objects known to
-Klipper. Returns a list of strings, unless the `JSON` parameter is given,
+Kalico. Returns a list of strings, unless the `JSON` parameter is given,
 when it will return object details in json format.
 
 When the `NAME` parameter is included, this defines an object to be excluded.
@@ -510,7 +510,7 @@ stepper's "rotation distance" (as defined in an
 [extruder_stepper](Config_Reference.md#extruder_stepper) config section).
 If the rotation distance is a negative number then the stepper motion
 will be inverted (relative to the stepper direction specified in the
-config file). Changed settings are not retained on Klipper reset. Use
+config file). Changed settings are not retained on Kalico reset. Use
 with caution as small changes can result in excessive pressure between
 extruder and hotend. Do proper calibration with filament before use.
 If 'DISTANCE' value is not provided then this command will return the
@@ -534,8 +534,8 @@ enabled.
 
 ### SET_HEATED_FAN_TARGET
 `SET_HEATED_FAN_TARGET TARGET=<temperature>`: Override the `heater_temp`
-setting in the [heated_fan config section]((Config_Reference.md#heated_fan))
-until Klipper is restarted. Useful for slicers to set different heated fan
+setting in the [heated_fan config section](Config_Reference.md#heated_fan)
+until Kalico is restarted. Useful for slicers to set different heated fan
 temperatures at different layers.
 
 ### [fan_generic]
@@ -716,7 +716,7 @@ clears any error state from the micro-controller.
 `HEATER_INTERRUPT`: Interrupts a TEMPERATURE_WAIT command.
 
 #### STATUS
-`STATUS`: Report the Klipper host software status.
+`STATUS`: Report the Kalico host software status.
 
 #### HELP
 `HELP`: Report the list of available extended G-Code commands.
@@ -1148,11 +1148,11 @@ The print_stats module is automatically loaded.
 
 #### SET_PRINT_STATS_INFO
 `SET_PRINT_STATS_INFO [TOTAL_LAYER=<total_layer_count>] [CURRENT_LAYER=
-<current_layer>]`: Pass slicer info like layer act and total to Klipper.
+<current_layer>]`: Pass slicer info like layer act and total to Kalico.
 Add `SET_PRINT_STATS_INFO [TOTAL_LAYER=<total_layer_count>]` to your
 slicer start gcode section and `SET_PRINT_STATS_INFO [CURRENT_LAYER=
 <current_layer>]` at the layer change gcode section to pass layer
-information from your slicer to Klipper.
+information from your slicer to Kalico.
 
 ### [probe]
 
@@ -1547,9 +1547,9 @@ description of each parameter.
 [SCALE=<0:1>]`: change the per-axis limits.
 
 This command is only available when `kinematics` is set to either
-[`limited_cartesian`](./Config_Reference.md#⚠️-cartesian-kinematics-with-limits-for-x-and-y-axes)
+[`limited_cartesian`](./Config_Reference.md#cartesian-kinematics-with-limits-for-x-and-y-axes)
 or
-[`limited_corexy`](./Config_Reference.md#⚠️-corexy-kinematics-with-limits-for-x-and-y-axes).
+[`limited_corexy`](./Config_Reference.md#corexy-kinematics-with-limits-for-x-and-y-axes).
 The velocity argument is not available on CoreXY. With no arguments, this
 command responds with the movement direction with the most acceleration or
 velocity.
@@ -1789,7 +1789,7 @@ three possible combinations of options:
 
 ### [virtual_sdcard]
 
-Klipper supports the following standard G-Code commands if the
+Kalico supports the following standard G-Code commands if the
 [virtual_sdcard config section](Config_Reference.md#virtual_sdcard) is
 enabled:
 - List SD card: `M20`

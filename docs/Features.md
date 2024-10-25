@@ -1,8 +1,8 @@
 # Features
 
-Klipper has several compelling features:
+Kalico has several compelling features:
 
-* High precision stepper movement. Klipper utilizes an application
+* High precision stepper movement. Kalico utilizes an application
   processor (such as a low-cost Raspberry Pi) when calculating printer
   movements. The application processor determines when to step each
   stepper motor, it compresses those events, transmits them to the
@@ -14,7 +14,7 @@ Klipper has several compelling features:
   and the physics of the machine kinematics. More precise stepper
   movement provides quieter and more stable printer operation.
 
-* Best in class performance. Klipper is able to achieve high stepping
+* Best in class performance. Kalico is able to achieve high stepping
   rates on both new and old micro-controllers. Even old 8-bit
   micro-controllers can obtain rates over 175K steps per second. On
   more recent micro-controllers, several million steps per second are
@@ -22,51 +22,51 @@ Klipper has several compelling features:
   stepper event timing remains precise even at high speeds which
   improves overall stability.
 
-* Klipper supports printers with multiple micro-controllers. For
+* Kalico supports printers with multiple micro-controllers. For
   example, one micro-controller could be used to control an extruder,
   while another controls the printer's heaters, while a third controls
-  the rest of the printer. The Klipper host software implements clock
+  the rest of the printer. The Kalico host software implements clock
   synchronization to account for clock drift between
   micro-controllers. No special code is needed to enable multiple
   micro-controllers - it just requires a few extra lines in the config
   file.
 
 * Configuration via simple config file. There's no need to reflash the
-  micro-controller to change a setting. All of Klipper's configuration
+  micro-controller to change a setting. All of Kalico's configuration
   is stored in a standard config file which can be easily edited. This
   makes it easier to setup and maintain the hardware.
 
-* Klipper supports "Smooth Pressure Advance" - a mechanism to account
+* Kalico supports "Smooth Pressure Advance" - a mechanism to account
   for the effects of pressure within an extruder. This reduces
-  extruder "ooze" and improves the quality of print corners. Klipper's
+  extruder "ooze" and improves the quality of print corners. Kalico's
   implementation does not introduce instantaneous extruder speed
   changes, which improves overall stability and robustness.
 
-* Klipper supports "Input Shaping" to reduce the impact of vibrations
+* Kalico supports "Input Shaping" to reduce the impact of vibrations
   on print quality. This can reduce or eliminate "ringing" (also known
   as "ghosting", "echoing", or "rippling") in prints. It may also
   allow one to obtain faster printing speeds while still maintaining
   high print quality.
 
-* Klipper uses an "iterative solver" to calculate precise step times
-  from simple kinematic equations. This makes porting Klipper to new
+* Kalico uses an "iterative solver" to calculate precise step times
+  from simple kinematic equations. This makes porting Kalico to new
   types of robots easier and it keeps timing precise even with complex
   kinematics (no "line segmentation" is needed).
 
-* Klipper is hardware agnostic. One should get the same precise timing
-  independent of the low-level electronics hardware. The Klipper
+* Kalico is hardware agnostic. One should get the same precise timing
+  independent of the low-level electronics hardware. The Kalico
   micro-controller code is designed to faithfully follow the schedule
-  provided by the Klipper host software (or prominently alert the user
+  provided by the Kalico host software (or prominently alert the user
   if it is unable to). This makes it easier to use available hardware,
   to upgrade to new hardware, and to have confidence in the hardware.
 
-* Portable code. Klipper works on ARM, AVR, PRU, and other
-  micro-controllers. Existing "reprap" style printers can run Klipper
-  without hardware modification - just add a Raspberry Pi. Klipper's
+* Portable code. Kalico works on ARM, AVR, PRU, and other
+  micro-controllers. Existing "reprap" style printers can run Kalico
+  without hardware modification - just add a Raspberry Pi. Kalico's
   internal code layout makes it easier to support other
   micro-controller architectures as well.
 
-* Simpler code. Klipper uses a very high level language (Python) for
+* Simpler code. Kalico uses a very high level language (Python) for
   most code. The kinematics algorithms, the G-code parsing, the
   heating and thermistor algorithms, etc. are all written in Python.
   This makes it easier to develop new functionality.
@@ -77,17 +77,17 @@ Klipper has several compelling features:
   actions depending on the state of the printer.
 
 * Builtin API server. In addition to the standard G-Code interface,
-  Klipper supports a rich JSON based application interface. This
+  Kalico supports a rich JSON based application interface. This
   enables programmers to build external applications with detailed
   control of the printer.
 
 ## Additional features
 
-Klipper supports many standard 3d printer features:
+Kalico supports many standard 3d printer features:
 
 * Several web interfaces available. Works with Mainsail, Fluidd,
   OctoPrint and others. This allows the printer to be controlled using
-  a regular web-browser. The same Raspberry Pi that runs Klipper can
+  a regular web-browser. The same Raspberry Pi that runs Kalico can
   also run the web interface.
 
 * Standard G-Code support. Common g-code commands that are produced by
@@ -101,9 +101,9 @@ Klipper supports many standard 3d printer features:
   hybrid-corexz, deltesian, rotary delta, polar, and cable winch style
   printers.
 
-* Automatic bed leveling support. Klipper can be configured for basic
+* Automatic bed leveling support. Kalico can be configured for basic
   bed tilt detection or full mesh bed leveling. If the bed uses
-  multiple Z steppers then Klipper can also level by independently
+  multiple Z steppers then Kalico can also level by independently
   manipulating the Z steppers. Most Z height probes are supported,
   including BL-Touch probes and servo activated probes. Probes may be
   calibrated for axis twist compensation.
@@ -146,7 +146,7 @@ Klipper supports many standard 3d printer features:
   movements in a similar direction will be optimized to reduce print
   stalls and improve overall print time.
 
-* Klipper implements a "stepper phase endstop" algorithm that can
+* Kalico implements a "stepper phase endstop" algorithm that can
   improve the accuracy of typical endstop switches. When properly
   tuned it can improve a print's first layer bed adhesion.
 
@@ -163,7 +163,7 @@ Klipper supports many standard 3d printer features:
 * Sample configuration files are available for many common printers.
   Check the [config directory](../config/) for a list.
 
-To get started with Klipper, read the [installation](Installation.md)
+To get started with Kalico, read the [installation](Installation.md)
 guide.
 
 ## Step Benchmarks

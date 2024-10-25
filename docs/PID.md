@@ -4,9 +4,10 @@
 PID control is a widely used control method in the 3D printing world.
 It’s ubiquitous when it comes to temperature control, be it with heaters to
 generate heat or fans to remove heat. This document aims to provide a
-high-level overview of what PID is and how to use it best in Klipper.
+high-level overview of what PID is and how to use it best in Kalico.
 
 ## PID Calibration
+
 ### Preparing the Calibration
 When a calibration test is performed external influences should be minimized as
 much as possible:
@@ -18,7 +19,7 @@ much as possible:
 More important than listed above, **PID how you print**. If your part fans are on when printing, PID tune with them on.
 
 ### Choosing the right PID Algorithm
-Klipper offers two different PID algorithms: Positional and Velocity
+Kalico offers two different PID algorithms: Positional and Velocity
 
 * Positional (`pid`)
     * The standard algorithm
@@ -100,10 +101,10 @@ In 2019 Brandon Taysom & Carl Sorensen published their paper "Adaptive Relay
 Autotuning under Static and Non-static Disturbances with Application to
 Friction Stir Welding", which laid out a method to generate more accurate
 results from a relay test. This is the PID calibration method currently used by
-Klipper.
+Kalico.
 
 ### Details of the Relay Test
-As previously mentioned, Klipper uses a relay test for calibration purposes. A
+As previously mentioned, Kalico uses a relay test for calibration purposes. A
 standard relay test is conceptually simple. You turn the heater’s power on and
 off to get it to oscillate about the target temperature, as seen in the
 following graph.
@@ -147,7 +148,7 @@ parameters.
                with these parameters and restart the printer.
 ```
 
-When asymmetry starts off negative, It will not converge to zero. If Klipper
+When asymmetry starts off negative, It will not converge to zero. If Kalico
 does not error out, the calibration run will complete and provide good PID
 parameters, However the heater is less likely to handle disturbances as well
 as a heater with power in reserve.
@@ -165,7 +166,7 @@ as a heater with power in reserve.
 
 ### Pid Control Algorithms
 
-Klipper currently supports two control algorithms: Positional and Velocity.
+Kalico currently supports two control algorithms: Positional and Velocity.
 The fundamental difference between the two algorithms is that the Positional
 algorithm calculates what the PWM value should be for the current time
 interval, and the Velocity algorithm calculates how much the previous PWM

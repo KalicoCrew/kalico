@@ -1,19 +1,19 @@
 # CANBUS protocol
 
-This document describes the protocol Klipper uses to communicate over
+This document describes the protocol Kalico uses to communicate over
 [CAN bus](https://en.wikipedia.org/wiki/CAN_bus). See
-[CANBUS.md](CANBUS.md) for information on configuring Klipper with CAN
+[CANBUS.md](CANBUS.md) for information on configuring Kalico with CAN
 bus.
 
 ## Micro-controller id assignment
 
-Klipper uses only CAN 2.0A standard size CAN bus packets, which are
+Kalico uses only CAN 2.0A standard size CAN bus packets, which are
 limited to 8 data bytes and an 11-bit CAN bus identifier. In order to
 support efficient communication, each micro-controller is assigned at
 run-time a unique 1-byte CAN bus nodeid (`canbus_nodeid`) for general
-Klipper command and response traffic. Klipper command messages going
+Kalico command and response traffic. Kalico command messages going
 from host to micro-controller use the CAN bus id of `canbus_nodeid *
-2 + 256`, while Klipper response messages from micro-controller to
+2 + 256`, while Kalico response messages from micro-controller to
 host use `canbus_nodeid * 2 + 256 + 1`.
 
 Each micro-controller has a factory assigned unique chip identifier
@@ -60,7 +60,7 @@ The packet data in messages using the node's receive CAN bus id
 (`canbus_nodeid * 2 + 256`) are simply appended to a buffer, and when
 a complete [mcu protocol message](Protocol.md) is found its contents
 are parsed and processed. The data is treated as a byte stream - there
-is no requirement for the start of a Klipper message block to align
+is no requirement for the start of a Kalico message block to align
 with the start of a CAN bus packet.
 
 Similarly, mcu protocol message responses are sent from

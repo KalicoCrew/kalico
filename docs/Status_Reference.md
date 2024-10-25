@@ -1,14 +1,14 @@
 # Status reference
 
 This document is a reference of printer status information available
-in Klipper [macros](Command_Templates.md),
+in Kalico [macros](Command_Templates.md),
 [display fields](Config_Reference.md#display), and via the
 [API Server](API_Server.md).
 
 The fields in this document are subject to change - if using an
 attribute be sure to review the
 [Config Changes document](Config_Changes.md) when upgrading the
-Klipper software.
+Kalico software.
 
 ## angle
 
@@ -56,7 +56,7 @@ The following information is available in the `configfile` object
   (or default value) during the last software start or restart. (Any
   settings changed at run-time will not be reflected here.)
 - `config.<section>.<option>`: Returns the given raw config file
-  setting as read by Klipper during the last software start or
+  setting as read by Kalico during the last software start or
   restart. (Any settings changed at run-time will not be reflected
   here.) All values are returned as strings.
 - `save_config_pending`: Returns true if there are updates that a
@@ -336,7 +336,7 @@ understands it).
 The following information is available in
 [mcu](Config_Reference.md#mcu) and
 [mcu some_name](Config_Reference.md#mcu-my_extra_mcu) objects:
-- `mcu_version`: The Klipper code version reported by the
+- `mcu_version`: The Kalico code version reported by the
   micro-controller.
 - `mcu_build_versions`: Information on the build tools used to
   generate the micro-controller code (as reported by the
@@ -481,9 +481,9 @@ The following information is available in the `system_stats` object
 
 The following information is available in
 
-[bme280 config_section_name](Config_Reference.md#bmp280bme280bme680-temperature-sensor),
+[bme280 config_section_name](Config_Reference.md#bmp180bmp280bme280bmp388bme680-temperature-sensor),
 [htu21d config_section_name](Config_Reference.md#htu21d-sensor),
-[sht3x config_section_name](Config_Reference.md#sht31-sensor),
+[sht3x config_section_name](Config_Reference.md#sht3x-sensor),
 [lm75 config_section_name](Config_Reference.md#lm75-temperature-sensor),
 [temperature_host config_section_name](Config_Reference.md#host-temperature-sensor)
 and
@@ -508,7 +508,7 @@ The following information is available in
 objects:
 - `temperature`: The last read temperature from the sensor.
 - `measured_min_temp`, `measured_max_temp`: The lowest and highest
-  temperature seen by the sensor since the Klipper host software was
+  temperature seen by the sensor since the Kalico host software was
   last restarted.
 
 ## tmc drivers
@@ -598,10 +598,10 @@ The following information is available in the
 
 The following information is available in the `webhooks` object (this
 object is always available):
-- `state`: Returns a string indicating the current Klipper
+- `state`: Returns a string indicating the current Kalico
   state. Possible values are: "ready", "startup", "shutdown", "error".
 - `state_message`: A human readable string giving additional context
-  on the current Klipper state.
+  on the current Kalico state.
 
 ## z_thermal_adjust
 

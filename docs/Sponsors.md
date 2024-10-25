@@ -1,25 +1,32 @@
 # Sponsors
 
-Klipper is Free Software. We depend on the generous support from
-sponsors. Please consider sponsoring Klipper or supporting our
+Kalico is Free Software. We depend on the generous support from
+sponsors. Please consider sponsoring Kalico or supporting our
 sponsors.
 
-## BIGTREETECH
+## Kalico Developers
 
-[<img src="./img/sponsors/BTT_BTT.png" width="200" style="margin:25px"/>](https://bigtree-tech.com/collections/all-products)
+### Rogerio Goncalves (@rogerlz)
 
-BIGTREETECH is the official mainboard sponsor of Klipper. BIGTREETECH
-is committed to developing innovative and competitive products to
-serve the 3D printing community better. Follow them on
-[Facebook](https://www.facebook.com/BIGTREETECH) or
-[Twitter](https://twitter.com/BigTreeTech).
+Rogerio initiated the Kalico project, forking the awesome Klipper firmware originally as "Danger-Klipper" to add some bleeding edge spice to it.
 
-## Sponsors
+Contact: [rogerlz@gmail.com](mailto:rogerlz@gmail.com)
 
-[<img src="./img/sponsors/obico-light-horizontal.png" width="200" style="margin:25px" />](https://obico.io/klipper.html?source=klipper_sponsor)
-[<img src="./img/sponsors/peopoly-logo.png" width="200" style="margin:25px" />](https://peopoly.net)
+### Lasse Dalegaard (@dalegaard)
 
-## Klipper Developers
+
+
+Contact: [dalegaard@gmail.com](mailto:dalegaard@gmail.com)
+
+### Bea Nance (@bwnance)
+
+
+
+Contact: [bwnance@gmail.com](mailto:bwnance@gmail.com)
+
+## Original Klipper Developers
+
+See [https://www.klipper3d.org/Sponsors.html](https://www.klipper3d.org/Sponsors.html) for further information.
 
 ### Kevin O'Connor
 
@@ -33,9 +40,9 @@ Eric is the author of bed_mesh, spi_flash, and several other Klipper
 modules.  Eric has a donations page at:
 [https://ko-fi.com/arksine](https://ko-fi.com/arksine)
 
-## Related Klipper Projects
+## Related Kalico Projects
 
-Klipper is frequently used with other Free Software. Consider using or
+Kalico is frequently used with other Free Software. Consider using or
 supporting these projects.
 
 * [Moonraker](https://github.com/Arksine/moonraker)

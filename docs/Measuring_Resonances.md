@@ -1,13 +1,13 @@
 # Measuring Resonances
 
-Klipper has built-in support for the ADXL345, MPU-9250 and LIS2DW compatible
+Kalico has built-in support for the ADXL345, MPU-9250 and LIS2DW compatible
 accelerometers which can be used to measure resonance frequencies of the printer
 for different axes, and auto-tune [input shapers](Resonance_Compensation.md) to
 compensate for resonances. Note that using accelerometers requires some
 soldering and crimping. The ADXL345/LIS2DW can be connected to the SPI interface
 of a Raspberry Pi or MCU board (it needs to be reasonably fast). The MPU family can
 be connected to the I2C interface of a Raspberry Pi directly, or to an I2C
-interface of an MCU board that supports 400kbit/s *fast mode* in Klipper.
+interface of an MCU board that supports 400kbit/s *fast mode* in Kalico.
 
 When sourcing accelerometers, be aware that there are a variety of different PCB
 board designs and different clones of them. If it is going to be connected to a
@@ -20,7 +20,7 @@ For MPU-9250/MPU-9255/MPU-6515/MPU-6050/MPU-6500s there are also a variety of
 board designs and clones with different I2C pull-up resistors which will need
 supplementing.
 
-## MCUs with Klipper I2C *fast-mode* Support
+## MCUs with Kalico I2C *fast-mode* Support
 
 | MCU Family | MCU(s) Tested | MCU(s) with Support |
 |:--:|:--|:--|
@@ -93,7 +93,7 @@ Fritzing wiring diagrams for some of the ADXL345 boards:
 
 You may connect the ADXL345 to your Raspberry Pi Pico and then connect the
 Pico to your Raspberry Pi via USB. This makes it easy to reuse the
-accelerometer on other Klipper devices, as you can connect via USB instead
+accelerometer on other Kalico devices, as you can connect via USB instead
 of GPIO. The Pico does not have much processing power, so make sure it is
 only running the accelerometer and not performing any other duties.
 
@@ -210,7 +210,7 @@ sudo apt update
 sudo apt install python3-numpy python3-matplotlib libatlas-base-dev libopenblas-dev
 ```
 
-Next, in order to install NumPy in the Klipper environment, run the command:
+Next, in order to install NumPy in the Kalico environment, run the command:
 ```
 ~/klippy-env/bin/pip install -v numpy
 ```
@@ -229,7 +229,7 @@ The correct output should simply be a new line.
 
 First, check and follow the instructions in the
 [RPi Microcontroller document](RPi_microcontroller.md) to setup the
-"linux mcu" on the Raspberry Pi. This will configure a second Klipper
+"linux mcu" on the Raspberry Pi. This will configure a second Kalico
 instance that runs on your Pi.
 
 Make sure the Linux SPI driver is enabled by running `sudo
@@ -309,7 +309,7 @@ you'll also want to modify your `printer.cfg` file to include this:
 [include adxl.cfg] # Comment this out when you disconnect the accelerometer
 ```
 
-Restart Klipper via the `RESTART` command.
+Restart Kalico via the `RESTART` command.
 
 #### Configure LIS2DW series
 
@@ -391,7 +391,7 @@ probe_points:
     100, 100, 20  # an example
 ```
 
-Restart Klipper via the `RESTART` command.
+Restart Kalico via the `RESTART` command.
 
 ## Measuring the resonances
 
@@ -502,7 +502,7 @@ charts: peaks in the power spectral density on the charts correspond to
 the resonance frequencies of the printer.
 
 Note that alternatively you can run the input shaper auto-calibration
-from Klipper [directly](#input-shaper-auto-calibration), which can be
+from Kalico [directly](#input-shaper-auto-calibration), which can be
 convenient, for example, for the input shaper
 [re-calibration](#input-shaper-re-calibration).
 
@@ -592,7 +592,7 @@ Note that the reported `smoothing` values are some abstract projected values.
 These values can be used to compare different configurations: the higher the
 value, the more smoothing a shaper will create. However, these smoothing scores
 do not represent any real measure of smoothing, because the actual smoothing
-depends on [`max_accel`](#selecting-max-accel) and `square_corner_velocity`
+depends on [`max_accel`](#selecting-max_accel) and `square_corner_velocity`
 parameters. Therefore, you should print some test prints to see how much
 smoothing exactly a chosen configuration creates.
 
@@ -643,7 +643,7 @@ probe_points: ...
 max_smoothing: 0.25  # an example
 ```
 Then, if you [rerun](#input-shaper-re-calibration) the input shaper auto-tuning
-using `SHAPER_CALIBRATE` Klipper command in the future, it will use the stored
+using `SHAPER_CALIBRATE` Kalico command in the future, it will use the stored
 `max_smoothing` value as a reference.
 
 ### Selecting max_accel
@@ -723,7 +723,7 @@ to generate `/tmp/resonances.png` comparing the resonances.
 
 Besides manually choosing the appropriate parameters for the input shaper
 feature, it is also possible to run the auto-tuning for the input shaper
-directly from Klipper. Run the following command via Octoprint terminal:
+directly from Kalico. Run the following command via Octoprint terminal:
 ```
 SHAPER_CALIBRATE
 ```
@@ -749,7 +749,7 @@ To avoid too much smoothing with '3hump_ei', suggested max_accel <= 2500 mm/sec^
 Recommended shaper_type_y = mzv, shaper_freq_y = 36.8 Hz
 ```
 If you agree with the suggested parameters, you can execute `SAVE_CONFIG`
-now to save them and restart the Klipper. Note that this will not update
+now to save them and restart the Kalico. Note that this will not update
 `max_accel` value in `[printer]` section. You should update it manually
 following the considerations in [Selecting max_accel](#selecting-max_accel)
 section.

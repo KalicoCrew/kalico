@@ -5,7 +5,7 @@ updating firmware via SD Card.  While this is convenient in many
 circumstances, these bootloaders typically provide no other way to update
 firmware.  This can be a nuisance if your board is mounted in a location
 that is difficult to access or if you need to update firmware often.
-After Klipper has been initially flashed to a controller it is possible to
+After Kalico has been initially flashed to a controller it is possible to
 transfer new firmware to the SD Card and initiate the flashing procedure
 via ssh.
 
@@ -46,7 +46,7 @@ of 250000 and the firmware is located at `~/klipper/out/klipper.bin`.  The
 All options can be viewed by the help screen:
 ```
 ./scripts/flash-sdcard.sh -h
-SD Card upload utility for Klipper
+SD Card upload utility for Kalico
 
 usage: flash_sdcard.sh [-h] [-l] [-c] [-b <baud>] [-f <firmware>]
                        <device> <board>
@@ -69,7 +69,7 @@ rate it is possible to upgrade by specifying the `-b` option:
 ./scripts/flash-sdcard.sh -b 115200 /dev/ttyAMA0 btt-skr-v1.3
 ```
 
-If you wish to flash a build of Klipper located somewhere other than
+If you wish to flash a build of Kalico located somewhere other than
 the default location it can be done by specifying the `-f` option:
 ```
 ./scripts/flash-sdcard.sh -f ~/downloads/klipper.bin /dev/ttyAMA0 btt-skr-v1.3
@@ -170,7 +170,7 @@ BOARD_ALIASES = {
 
 If you need a new board definition and you are uncomfortable with the
 procedure outlined above it is recommended that you request one in
-the [Klipper Discord](Contact.md).
+the Kalico [Discord server](Contact.md#discord).
 
 ## Flashing Boards that use SDIO
 

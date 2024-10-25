@@ -1,10 +1,10 @@
 # Benchmarks
 
-This document describes Klipper benchmarks.
+This document describes Kalico benchmarks.
 
 ## Micro-controller Benchmarks
 
-This section describes the mechanism used to generate the Klipper
+This section describes the mechanism used to generate the Kalico
 micro-controller step rate benchmarks.
 
 The primary goal of the benchmarks is to provide a consistent
@@ -15,7 +15,7 @@ platforms.
 
 The step rate benchmark is designed to find the maximum stepping rate
 that the hardware and software can reach. This benchmark stepping rate
-is not achievable in day-to-day use as Klipper needs to perform other
+is not achievable in day-to-day use as Kalico needs to perform other
 tasks (eg, mcu/host communication, temperature reading, endstop
 checking) in any real-world usage.
 
