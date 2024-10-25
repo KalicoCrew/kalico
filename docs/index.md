@@ -15,7 +15,7 @@ information on why you should use Kalico.
 
 To begin using Kalico start by [installing](Installation.md) it. If you 
 consider migrating from Klipper to Kalico, please read our dedicated
-[migration guide](Migrating_from_Klipper.md)
+[migration guide](Migrating_from_Klipper.md).
 
 Kalico is Free Software. Read the [documentation](Overview.md) or
 view [the Kalico code on GitHub](https://github.com/KalicoCrew/kalico).
