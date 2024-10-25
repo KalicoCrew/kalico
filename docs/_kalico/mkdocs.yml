@@ -3,8 +3,8 @@
 # Site and directory configuration
 site_name: Kalico Documentation
 site_url: https://docs.kalico.gg
-repo_url: https://github.com/KalicoCrew/kalico
-repo_name: KalicoCrew/kalico
+repo_url: https://github.com/KalicoCrew/kalico/
+/repo_name: KalicoCrew/kalico
 edit_uri: edit/main/docs/
 use_directory_urls: False
 docs_dir: '../'
@@ -104,6 +104,7 @@ nav:
     - G-Code_Shell_Command.md
     - Status_Reference.md
   - Getting up and running:
+    - Migrating_from_Klipper.md
     - Installation.md
     - OctoPrint.md
     - TMC_Drivers.md
