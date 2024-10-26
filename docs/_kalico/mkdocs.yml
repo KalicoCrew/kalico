@@ -4,7 +4,7 @@
 site_name: Kalico Documentation
 site_url: https://docs.kalico.gg
 repo_url: https://github.com/KalicoCrew/kalico/
-/repo_name: KalicoCrew/kalico
+repo_name: KalicoCrew/kalico
 edit_uri: edit/main/docs/
 use_directory_urls: False
 docs_dir: '../'
@@ -88,7 +88,7 @@ nav:
   - Overview.md
   - Features.md
   - FAQ.md
-  - Releases.md
+  - Releases: https://github.com/KalicoCrew/kalico/releases
   - Config_Changes.md
   - Configuration:
     - Config_Reference.md
