@@ -8,7 +8,6 @@ documents.
 
 - [Features](Features.md): A high-level list of features in Kalico.
 - [FAQ](FAQ.md): Frequently asked questions.
-- [Releases](Releases.md): The history of Kalico releases.
 - [Config changes](Config_Changes.md): Recent software changes that
 may require users to update their printer config file.
 - [Contact](Contact.md): Information on bug reporting and general
