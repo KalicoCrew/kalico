@@ -98,7 +98,11 @@ class EncoderSensor:
             "Always Fire Events: %s"
             % (
                 self.runout_helper.name,
-                ("enabled" if self.runout_helper.sensor_enabled else "disabled"),
+                (
+                    "enabled"
+                    if self.runout_helper.sensor_enabled
+                    else "disabled"
+                ),
                 "true" if self.runout_helper.filament_present else "false",
                 self.detection_length,
                 "true" if self.runout_helper.smart else "false",

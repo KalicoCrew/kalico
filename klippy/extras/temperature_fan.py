@@ -304,9 +304,9 @@ class ControlCurve:
 
     def temperature_callback(self, read_time, temp):
         def _interpolate(sbelow, above, temp):
-            return ((below[1] * (above[0] - temp)) + (above[1] * (temp - below[0]))) / (
-                above[0] - below[0]
-            )
+            return (
+                (below[1] * (above[0] - temp)) + (above[1] * (temp - below[0]))
+            ) / (above[0] - below[0])
 
         temp = self.smooth_temps(temp)
         if temp <= self.curve_table[0][0]:

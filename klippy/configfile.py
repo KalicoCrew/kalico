@@ -575,12 +575,15 @@ class PrinterConfig:
                 if config.fileconfig.has_option(section, option):
                     # They conflict only if they are not the same value
                     included_value = config.fileconfig.get(section, option)
-                    autosave_value = self.autosave.fileconfig.get(section, option)
+                    autosave_value = self.autosave.fileconfig.get(
+                        section, option
+                    )
                     if included_value != autosave_value:
                         msg = (
-                                "SAVE_CONFIG section '%s' option '%s' value '%s' conflicts "
-                                "with included value '%s' " % (section, option, autosave_value, included_value)
-                                )
+                            "SAVE_CONFIG section '%s' option '%s' value '%s' conflicts "
+                            "with included value '%s' "
+                            % (section, option, autosave_value, included_value)
+                        )
                         raise gcode.error(msg)
 
     cmd_SAVE_CONFIG_help = "Overwrite config file and restart"
