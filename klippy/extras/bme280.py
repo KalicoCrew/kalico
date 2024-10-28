@@ -342,7 +342,13 @@ class BME280:
                 status = self.read_register("STATUS", 1)[0]
 
         if self.chip_type == "BME680":
-            self.max_sample_time = 0.5
+            self.max_sample_time = (
+                1.25
+                + (2.3 * self.os_temp)
+                + ((2.3 * self.os_pres) + 0.575)
+                + ((2.3 * self.os_hum) + 0.575)
+                + self.gas_heat_duration
+            ) / 1000
             self.sample_timer = self.reactor.register_timer(self._sample_bme680)
             self.chip_registers = BME680_REGS
         elif self.chip_type == "BMP180":
@@ -380,9 +386,6 @@ class BME280:
             ) / 1000
             self.sample_timer = self.reactor.register_timer(self._sample_bme280)
             self.chip_registers = BME280_REGS
-
-        if self.chip_type == "BME680":
-            self.write_register("CONFIG", self.iir_filter << 2)
 
         # Read out and calculate the trimming parameters
         if self.chip_type == "BMP180":
@@ -445,6 +448,19 @@ class BME280:
             # Enter normal (periodic) mode
             meas = self.os_temp << 5 | self.os_pres << 2 | MODE_PERIODIC
             self.write_register("CTRL_MEAS", meas, wait=True)
+
+        if self.chip_type == "BME680":
+            self.write_register("CONFIG", self.iir_filter << 2)
+            # Should be set once and reused on every mode register write
+            self.write_register("CTRL_HUM", self.os_hum & 0x07)
+            gas_wait_0 = self._calc_gas_heater_duration(self.gas_heat_duration)
+            self.write_register("GAS_WAIT_0", [gas_wait_0])
+            res_heat_0 = self._calc_gas_heater_resistance(self.gas_heat_temp)
+            self.write_register("RES_HEAT_0", [res_heat_0])
+            gas_config = RUN_GAS | NB_CONV_0
+            self.write_register("CTRL_GAS_1", [gas_config])
+            # Set initial heater current to reach Gas heater target on start
+            self.write_register("IDAC_HEAT_0", 96)
 
     def _sample_bme280(self, eventtime):
         # In normal mode data shadowing is performed
@@ -553,17 +569,6 @@ class BME280:
         return comp_press
 
     def _sample_bme680(self, eventtime):
-        self.write_register("CTRL_HUM", self.os_hum & 0x07)
-        meas = self.os_temp << 5 | self.os_pres << 2
-        self.write_register("CTRL_MEAS", [meas])
-
-        gas_wait_0 = self._calculate_gas_heater_duration(self.gas_heat_duration)
-        self.write_register("GAS_WAIT_0", [gas_wait_0])
-        res_heat_0 = self._calculate_gas_heater_resistance(self.gas_heat_temp)
-        self.write_register("RES_HEAT_0", [res_heat_0])
-        gas_config = RUN_GAS | NB_CONV_0
-        self.write_register("CTRL_GAS_1", [gas_config])
-
         def data_ready(stat):
             new_data = stat & EAS_NEW_DATA
             gas_done = not (stat & GAS_DONE)
@@ -571,8 +576,9 @@ class BME280:
             return new_data and gas_done and meas_done
 
         # Enter forced mode
-        meas = meas | MODE
-        self.write_register("CTRL_MEAS", meas)
+        meas = self.os_temp << 5 | self.os_pres << 2 | MODE
+        self.write_register("CTRL_MEAS", meas, wait=True)
+        self.reactor.pause(self.reactor.monotonic() + self.max_sample_time)
         try:
             # wait until results are ready
             status = self.read_register("EAS_STATUS_0", 1)[0]
@@ -761,7 +767,7 @@ class BME280:
         )
         return gas
 
-    def _calculate_gas_heater_resistance(self, target_temp):
+    def _calc_gas_heater_resistance(self, target_temp):
         amb_temp = self.temp
         heater_data = self.read_register("RES_HEAT_VAL", 3)
         res_heat_val = get_signed_byte(heater_data[0])
@@ -782,7 +788,7 @@ class BME280:
         )
         return int(res_heat)
 
-    def _calculate_gas_heater_duration(self, duration_ms):
+    def _calc_gas_heater_duration(self, duration_ms):
         if duration_ms >= 4032:
             duration_reg = 0xFF
         else:
