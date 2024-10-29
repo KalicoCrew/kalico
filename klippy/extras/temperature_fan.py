@@ -303,7 +303,7 @@ class ControlCurve:
         self.last_temp = 0.0
 
     def temperature_callback(self, read_time, temp):
-        def _interpolate(sbelow, above, temp):
+        def _interpolate(below, above, temp):
             return (
                 (below[1] * (above[0] - temp)) + (above[1] * (temp - below[0]))
             ) / (above[0] - below[0])
