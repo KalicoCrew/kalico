@@ -5303,7 +5303,6 @@ sensor_type:
 ```
 
 #### HX711
-Has conversation started by @naikymen. Original line has conversation started by @naikymen.
 This is a 24 bit low sample rate chip using "bit-bang" communications. It is
 suitable for filament scales.
 ```
