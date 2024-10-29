@@ -190,7 +190,7 @@ The easiest way to make this calculation is to print a test object
 that has straight walls on all sides. The large hollow square found in
 [docs/prints/square.stl](prints/square.stl) can be used for this.
 When slicing the object, make sure the slicer uses the same layer
-height and extrusion widths for the first level that it does for all
+height and extrusion widths for the first layer that it does for all
 subsequent layers. Use a coarse layer height (the layer height should
 be around 75% of the nozzle diameter) and do not use a brim or raft.
 

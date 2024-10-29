@@ -219,6 +219,12 @@ of time, up to 10-20 minutes. Be patient and wait for the completion of
 the installation. On some occasions, if the board has too little RAM
 the installation may fail and you will need to enable swap.
 
+Once installed please check that no errors show from the command:
+```
+~/klippy-env/bin/python -c 'import numpy;'
+```
+The correct output should simply be a new line.
+
 #### Configure ADXL345 With RPi
 
 First, check and follow the instructions in the

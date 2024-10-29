@@ -5303,7 +5303,6 @@ sensor_type:
 ```
 
 #### HX711
-Has conversation started by @naikymen. Original line has conversation started by @naikymen.
 This is a 24 bit low sample rate chip using "bit-bang" communications. It is
 suitable for filament scales.
 ```
@@ -5371,13 +5370,30 @@ data_ready_pin:
 #gain: 128
 #   Valid gain values are 128, 64, 32, 16, 8, 4, 2, 1
 #   The default is 128
+#pga_bypass: False
+#   Disable the internal Programmable Gain Amplifier. If
+#   True the PGA will be disabled for gains 1, 2, and 4. The PGA is always
+#   enabled for gain settings 8 to 128, regardless of the pga_bypass setting.
+#   If AVSS is used as an input pga_bypass is forced to True.
+#   The default is False.
 #sample_rate: 660
 #   This chip supports two ranges of sample rates, Normal and Turbo. In turbo
-#   mode the chips c internal clock runs twice as fast and the SPI communication
+#   mode the chip's internal clock runs twice as fast and the SPI communication
 #   speed is also doubled.
 #   Normal sample rates: 20, 45, 90, 175, 330, 600, 1000
 #   Turbo sample rates: 40, 90, 180, 350, 660, 1200, 2000
 #   The default is 660
+#input_mux:
+#   Input multiplexer configuration, select a pair of pins to use. The first pin
+#   is the positive, AINP, and the second pin is the negative, AINN. Valid
+#   values are: 'AIN0_AIN1', 'AIN0_AIN2', 'AIN0_AIN3', 'AIN1_AIN2', 'AIN1_AIN3',
+#   'AIN2_AIN3', 'AIN1_AIN0', 'AIN3_AIN2', 'AIN0_AVSS', 'AIN1_AVSS', 'AIN2_AVSS'
+#   and 'AIN3_AVSS'. If AVSS is used the PGA is bypassed and the pga_bypass
+#   setting will be forced to True.
+#   The default is AIN0_AIN1.
+#vref:
+#   The selected voltage reference. Valid values are: 'internal', 'REF0', 'REF1'
+#   and 'analog_supply'. Default is 'internal'.
 ```
 
 
@@ -5875,8 +5891,9 @@ Most Klipper micro-controller implementations only support an
 micro-controller supports a 400000 speed (_fast mode_, 400kbit/s), but it must be
 [set in the operating system](RPi_microcontroller.md#optional-enabling-i2c)
 and the `i2c_speed` parameter is otherwise ignored. The Klipper
-"RP2040" micro-controller and ATmega AVR family support a rate of 400000
-via the `i2c_speed` parameter. All other Klipper micro-controllers use a
+"RP2040" micro-controller and ATmega AVR family and some STM32
+(F0, G0, G4, L4, F7, H7) support a rate of 400000 via the `i2c_speed` parameter.
+All other Klipper micro-controllers use a
 100000 rate and ignore the `i2c_speed` parameter.
 
 ```
