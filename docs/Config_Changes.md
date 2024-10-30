@@ -8,6 +8,11 @@ All dates in this document are approximate.
 
 ## Changes
 
+2024MMDD: The `CLEAR_RETRACTION` command does not reset parameters to
+default config values anymore, a [`RESET_RETRACTION`](./G-Codes.md#reset_retraction)
+command was added to achieve this. Automatic resetting behavior on
+events was removed.
+
 20240430: The `adc_ignore_limits` parameter in the `[danger_options]`
 config section has been renamed to `temp_ignore_limits` and it now
 covers all possible temperature sensors.

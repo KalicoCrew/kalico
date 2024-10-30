@@ -196,6 +196,7 @@ The following information is available in the
   config file if a `SET_RETRACTION` command altered them. Additional information
   available is as follows.
 - `retract_state`: Returns 'True' if filament is retracted.
+- `zhop_state`: Returns 'True' if a zhop is currently applied.
 
 ## gcode
 
