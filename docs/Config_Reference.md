@@ -3318,6 +3318,9 @@ pin:
 #   input. In such a case, the PWM pin can be used normally, and e.g. a
 #   ground-switched FET(standard fan pin) can be used to control power to
 #   the fan.
+#off_below:
+#   These option is deprecated and should no longer be specified.
+#   Use `min_power` instead.
 ```
 
 ### [heated_fan]
