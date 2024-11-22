@@ -1884,7 +1884,12 @@ allowing per-filament settings and runtime tuning.
 #   The vertical height by which the nozzle is lifted from the print to
 #   prevent collisions with the print during travel moves when retracted.
 #   The minimum value is 0 mm, the default value is 0 mm, which disables
-#   zhop moves.
+#   zhop moves. The value will be reduced if the zhop move reaches
+#   maximum z.
+#clear_zhop_on_z_moves: False
+#   If True, when a change in Z is sent while toolhead is retracted,
+#   z_hop is cancelled until next retraction. Otherwise,
+#   `z_hop_height` is applied as an offset to all movements.
 ```
 
 ### [gcode_arcs]
