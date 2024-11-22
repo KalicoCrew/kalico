@@ -8,7 +8,13 @@ All dates in this document are approximate.
 
 ## Changes
 
-2024MMDD: The `CLEAR_RETRACTION` command does not reset parameters to
+20241122: The `off_below` parameter in fans config section is
+deprecated. It will be removed in the near future. Use
+[`min_power`](./Config_Reference.md#fans)
+instead. The `printer[fan object].speed` status will be replaced by
+`printer[fan object].value` and `printer[fan object].power`.
+
+20241122: The `CLEAR_RETRACTION` command does not reset parameters to
 default config values anymore, a [`RESET_RETRACTION`](./G-Codes.md#reset_retraction)
 command was added to achieve this. Automatic resetting behavior on
 events was removed.

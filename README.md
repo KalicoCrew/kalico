@@ -122,6 +122,8 @@ See the [Danger Features document](https://dangerklipper.io/Danger_Features.html
 
 - [core: non-critical-mcus](https://github.com/DangerKlippers/danger-klipper/pull/339)
 
+- [gcode_macros: !python templates](https://github.com/DangerKlippers/danger-klipper/pull/360)
+
 - [core: action_log](https://github.com/DangerKlippers/danger-klipper/pull/367)
 
 - [danger_options: configurable homing constants](https://github.com/DangerKlippers/danger-klipper/pull/378)

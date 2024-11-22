@@ -78,14 +78,17 @@ speed (via the `F` parameter) on the first `G1` command.
 
 ## Template expansion
 
-The gcode_macro `gcode:` config section is evaluated using the Jinja2
-template language. One can evaluate expressions at run-time by
-wrapping them in `{ }` characters or use conditional statements
-wrapped in `{% %}`. See the
+The gcode_macro `gcode:` config section is evaluated using either the Jinja2
+template language or Python.
+
+### Jinja2
+
+One can evaluate expressions at run-time by wrapping them in `{ }` characters
+or use conditional statements wrapped in `{% %}`. See the
 [Jinja2 documentation](http://jinja.pocoo.org/docs/2.10/templates/)
 for further information on the syntax.
 
-An example of a complex macro:
+An example of a complex Jinja2 macro:
 ```
 [gcode_macro clean_nozzle]
 gcode:
@@ -101,7 +104,7 @@ gcode:
   RESTORE_GCODE_STATE NAME=clean_nozzle_state
 ```
 
-### Macro parameters
+#### Jinja2: Macro parameters
 
 It is often useful to inspect parameters passed to the macro when
 it is called. These parameters are available via the `params`
@@ -128,7 +131,7 @@ gcode:
   M140 S{bed_temp}
 ```
 
-### The "rawparams" variable
+#### Jinja2: The "rawparams" variable
 
 The full unparsed parameters for the running macro can be access via the
 `rawparams` pseudo-variable.
@@ -138,7 +141,7 @@ Note that this will include any comments that were part of the original command.
 See the [sample-macros.cfg](../config/sample-macros.cfg) file for an example
 showing how to override the `M117` command using `rawparams`.
 
-### The "printer" Variable
+#### Jinja2 The "printer" variable
 
 It is possible to inspect (and alter) the current state of the printer
 via the `printer` pseudo-variable. For example:
@@ -177,6 +180,77 @@ gcode:
     {% set sensor = printer["htu21d my_sensor"] %}
     M117 Temp:{sensor.temperature} Humidity:{sensor.humidity}
 ```
+
+### Python
+
+Templates can also be written in Python code. The template will automatically
+be interpreted as Python if lines are prefixed with `!`.
+Note: You can't mix Python and Jinja2.
+
+An example of a complex Python macro:
+```
+[gcode_macro clean_nozzle]
+gcode:
+  !wipe_count = 8
+  !emit("G90")
+  !emit("G0 Z15 F300")
+  !for wipe in range(wipe_count):
+  !  for coordinate in [(275, 4), (235, 4)]:
+  !    emit(f"G0 X{coordinate[0]} Y{coordinate[1] + 0.25 * wipe} Z9.7 F12000")
+```
+
+#### Python: Rawparams
+
+```
+[gcode_macro G4]
+rename_existing: G4.1
+gcode:
+  !if rawparams and "S" in rawparams:
+  !  s = int(rawparams.split("S")[1])
+  !  respond_info(f"Sleeping for {s} seconds")
+  !  emit(f"G4.1 P{s * 1000}")
+  !else:
+  !  p = int(rawparams.split("P")[1])
+  !  respond_info(f"Sleeping for {p/1000} seconds")
+  !  emit(f"G4.1 {rawparams}")
+```
+
+#### Python: Variables
+
+```
+[gcode_macro POKELOOP]
+variable_count: 10
+variable_speed: 3
+gcode:
+  !for i in range(own_vars.count):
+  !  emit(f"BEACON_POKE SPEED={own_vars.speed} TOP=5 BOTTOM=-0.3")
+```
+
+#### Python: Printer objects
+
+```
+[gcode_macro EXTRUDER_TEMP]
+gcode:
+    !ACTUAL_TEMP = printer["extruder"]["temperature"]
+    !TARGET_TEMP = printer["extruder"]["target"]
+    !
+    !respond_info("Extruder Target: %.1fC, Actual: %.1fC" % (TARGET_TEMP, ACTUAL_TEMP))
+```
+
+#### Python: Helpers
+
+- emit
+- wait_while
+- wait_until
+- wait_moves
+- blocking
+- sleep
+- set_gcode_variable
+- emergency_stop / action_emergency_stop
+- respond_info / action_respond_info
+- raise_error / action_raise_error
+- call_remote_method / action_call_remote_method
+- math
 
 ## Actions
 
