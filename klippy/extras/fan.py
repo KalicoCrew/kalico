@@ -92,10 +92,10 @@ class Fan:
             return
         if value > 0:
             # Scale value between min_power and max_power
+            value = min(value, 1.0)
             pwm_value = (
                 value * (self.max_power - self.min_power) + self.min_power
             )
-            pwm_value = max(self.min_power, min(self.max_power, pwm_value))
         else:
             pwm_value = 0
         print_time = max(self.last_fan_time + FAN_MIN_TIME, print_time)
