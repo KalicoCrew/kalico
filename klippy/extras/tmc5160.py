@@ -288,7 +288,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
-        self.fields.set_field("irun", self.cs)
+        self.fields.set_field("irun", irun)
 
     def _calc_globalscaler(self, current):
         cs = self._calc_current_bits(current)
