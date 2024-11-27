@@ -232,6 +232,7 @@ Fields["TPOWERDOWN"] = {"tpowerdown": 0xFF << 0}
 Fields["TPWMTHRS"] = {"tpwmthrs": 0xFFFFF << 0}
 Fields["TCOOLTHRS"] = {"tcoolthrs": 0xFFFFF << 0}
 Fields["TSTEP"] = {"tstep": 0xFFFFF << 0}
+Fields["THIGH"] = {"thigh": 0xFFFFF << 0}
 
 SignedFields = ["cur_a", "cur_b", "sgt", "xactual", "vactual", "pwm_scale_auto"]
 
@@ -249,7 +250,7 @@ FieldFormatters.update(
 ######################################################################
 
 VREF = 0.325
-MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
+MAX_CURRENT = 10.600  # 10.6 is max rms current for BTT TMC5160T Plus.
 
 
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
@@ -268,14 +269,16 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
                 self.name,
                 "sense_resistor",
             )
-
+#Recommend we remove this. It will burn the driver or motor up.
         self.sense_resistor = config.getfloat(
             "sense_resistor", 0.075, above=0.0
         )
 
         self.cs = config.getint("driver_cs", 31, maxval=31, minval=0)
 
-        gscaler = self._calc_globalscaler(self.req_run_current)
+        gscaler, irun, ihold = self._calc_current(
+            self.req_run_current, self.req_hold_current
+        )
         if gscaler < 32:
             raise config.error(
                 f"""[{self.name}] GLOBALSCALER ({gscaler}) calculation out of bonds.
@@ -283,18 +286,15 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
                 and CS ({self.cs}). Please adjust your configuration"""
             )
 
-        ihold = self._calc_current_bits(
-            min(self.req_run_current, self.req_hold_current), gscaler
-        )
-
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
         self.fields.set_field("irun", self.cs)
 
     def _calc_globalscaler(self, current):
+        cs = self._calc_current_bits(current)
         globalscaler = int(
             (current * 256.0 * self.sense_resistor * math.sqrt(2.0))
-            * ((self.cs + 1) / 32)
+            * ((cs + 1) / 32)
             / VREF
             + 0.5
         )
@@ -302,16 +302,17 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
             globalscaler = 0
         return globalscaler
 
-    def _calc_current_bits(self, current, globalscaler):
+    def _calc_current_bits(self, globalscaler):
         if not globalscaler:
             globalscaler = 256
-        bits = int(
-            (current * 256.0 * 32.0 * math.sqrt(2.0) * self.sense_resistor)
-            / (globalscaler * VREF)
-            - 1.0
-            + 0.5
-        )
-        return max(0, min(31, bits))
+        cs = self.cs
+        return max(0, min(31, cs))
+
+    def _calc_current(self, run_current, hold_current):
+        gscaler = self._calc_globalscaler(run_current)
+        irun = self._calc_current_bits(run_current)
+        ihold = int((hold_current/run_current)*irun)
+        return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
         globalscaler = self.fields.get_field("globalscaler")
@@ -371,6 +372,9 @@ class TMC5160:
         # Setup basic register values
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
         tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
+        tmc.TMCVcoolthrsHelper(config, self.mcu_tmc)
+        tmc.TMCVhighHelper(config, self.mcu_tmc)
+        # Allow other registers to be set from the config
         set_config_field = self.fields.set_config_field
         #   GCONF
         set_config_field(config, "multistep_filt", True)
