@@ -26,7 +26,7 @@ def transform(markdown: str, page, config, files):
         ) % 2
         if not in_code_block:
             line_out = line_out.replace(
-                "](../", f"]({config['repo_url']}blob/master/"
+                "](../", f"]({config['repo_url']}/blob/master/"
             )
             line_out = re.sub("\\\s*$", "<br>", line_out)
             # check that lists at level 0 are not indented
