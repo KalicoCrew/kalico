@@ -3927,8 +3927,14 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 #sense_resistor: 0.110
-#   The resistance (in ohms) of the motor sense resistor. The default
-#   is 0.110 ohms.
+#   The resistance (in ohms) of the motor sense resistor. Overwrites
+#   value defined by stepstick_type. The default is 0.110 ohms.
+#stepstick_type: 
+#   Here, you will input the name of your stepper driver. This is used
+#   to define a more accurate max current, and also the proper sense
+#   resistor value. sense_resistor config entry overwrites a sense
+#   resistor value defined by this entry.
+#   (See the Stepstick_Types.md document for more details on each driver)
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4038,8 +4044,14 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 #sense_resistor: 0.110
-#   The resistance (in ohms) of the motor sense resistor. The default
-#   is 0.110 ohms.
+#   The resistance (in ohms) of the motor sense resistor. Overwrites
+#   value defined by stepstick_type. The default is 0.110 ohms.
+#stepstick_type: 
+#   Here, you will input the name of your stepper driver. This is used
+#   to define a more accurate max current, and also the proper sense
+#   resistor value. sense_resistor config entry overwrites a sense
+#   resistor value defined by this entry.
+#   (See the Stepstick_Types.md document for more details on each driver)
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4083,6 +4095,14 @@ run_current:
 #home_current:
 #current_change_dwell_time:
 #sense_resistor: 0.110
+#   The resistance (in ohms) of the motor sense resistor. Overwrites
+#   value defined by stepstick_type. The default is 0.110 ohms.
+#stepstick_type: 
+#   Here, you will input the name of your stepper driver. This is used
+#   to define a more accurate max current, and also the proper sense
+#   resistor value. sense_resistor config entry overwrites a sense
+#   resistor value defined by this entry.
+#   (See the Stepstick_Types.md document for more details on each driver)
 #stealthchop_threshold: 0
 #   See the "tmc2208" section for the definition of these parameters.
 #coolstep_threshold:
@@ -4164,8 +4184,14 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 #sense_resistor:
-#   The resistance (in ohms) of the motor sense resistor. This
-#   parameter must be provided.
+#   The resistance (in ohms) of the motor sense resistor. Overwrites
+#   value defined by stepstick_type. The default is 0.110 ohms.
+#stepstick_type: 
+#   Here, you will input the name of your stepper driver. This is used
+#   to define a more accurate max current, and also the proper sense
+#   resistor value. sense_resistor config entry overwrites a sense
+#   resistor value defined by this entry.
+#   (See the Stepstick_Types.md document for more details on each driver)
 #idle_current_percent: 100
 #   The percentage of the run_current the stepper driver will be
 #   lowered to when the idle timeout expires (you need to set up the
@@ -4389,8 +4415,14 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 #sense_resistor: 0.075
-#   The resistance (in ohms) of the motor sense resistor. The default
-#   is 0.075 ohms.
+#   The resistance (in ohms) of the motor sense resistor. Overwrites
+#   value defined by stepstick_type. The default is 0.075 ohms.
+#stepstick_type: 
+#   Here, you will input the name of your stepper driver. This is used
+#   to define a more accurate max current, and also the proper sense
+#   resistor value. sense_resistor config entry overwrites a sense
+#   resistor value defined by this entry.
+#   (See the Stepstick_Types.md document for more details on each driver)
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor

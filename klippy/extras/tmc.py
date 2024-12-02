@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, collections
 import stepper
+from . import stepstick_defs
 
 
 ######################################################################
@@ -349,57 +350,44 @@ class TMCCommandHelper:
     def cmd_SET_TMC_CURRENT(self, gcmd):
         ch = self.current_helper
         (
-            prev_cur,
-            prev_hold_cur,
-            req_hold_cur,
-            max_cur,
-            prev_home_cur,
+            run_current,
+            hold_current,
+            req_hold_current,
+            home_current,
         ) = ch.get_current()
-        run_current = gcmd.get_float(
-            "CURRENT", None, minval=0.0, maxval=max_cur
+        max_current = ch.get_max_current()
+        cmd_run_current = gcmd.get_float(
+            "CURRENT", None, minval=0.0, maxval=max_current
         )
-        hold_current = gcmd.get_float(
-            "HOLDCURRENT", None, above=0.0, maxval=max_cur
+        cmd_hold_current = gcmd.get_float(
+            "HOLDCURRENT", None, above=0.0, maxval=max_current
         )
-        home_current = gcmd.get_float(
-            "HOMECURRENT", None, above=0.0, maxval=max_cur
+        cmd_home_current = gcmd.get_float(
+            "HOMECURRENT", None, above=0.0, maxval=max_current
         )
-        if (
-            run_current is not None
-            or hold_current is not None
-            or home_current is not None
-        ):
-            if run_current is not None:
-                ch.set_run_current(run_current)
-            else:
-                run_current = prev_cur
+        if cmd_run_current:
+            run_current = cmd_run_current
+            ch.set_run_current(run_current)
+        if cmd_hold_current:
+            hold_current = cmd_hold_current
+            ch.set_hold_current(hold_current)
+        if cmd_home_current:
+            home_current = cmd_home_current
+            ch.set_home_current(home_current)
 
-            if hold_current is None:
-                hold_current = req_hold_cur
-
-            if home_current is not None:
-                ch.set_home_current(home_current)
-
-            toolhead = self.printer.lookup_object("toolhead")
-            print_time = toolhead.get_last_move_time()
-            ch.set_current(run_current, hold_current, print_time)
-            (
-                prev_cur,
-                prev_hold_cur,
-                req_hold_cur,
-                max_cur,
-                prev_home_cur,
-            ) = ch.get_current()
+        toolhead = self.printer.lookup_object("toolhead")
+        print_time = toolhead.get_last_move_time()
+        ch.apply_run_current(print_time)
         # Report values
-        if prev_hold_cur is None:
+        if hold_current is None:
             gcmd.respond_info(
                 "Run Current: %0.2fA Home Current: %0.2fA"
-                % (prev_cur, prev_home_cur)
+                % (run_current, home_current)
             )
         else:
             gcmd.respond_info(
                 "Run Current: %0.2fA Hold Current: %0.2fA Home Current: %0.2fA"
-                % (prev_cur, prev_hold_cur, prev_home_cur)
+                % (run_current, hold_current, home_current)
             )
 
     # Stepper phase tracking
@@ -771,11 +759,42 @@ def TMCStealthchopHelper(config, mcu_tmc, tmc_freq):
 
 
 class BaseTMCCurrentHelper:
-    def __init__(self, config, mcu_tmc, max_current):
+    def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
+        self.config_file = self.printer.lookup_object("configfile")
         self.name = config.get_name().split()[-1]
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
+
+        stepper_driver_type = config.get("stepstick_type", None)
+        sense_resistor_from_driver, step_driver_max_current = (
+            stepstick_defs.STEPSTICK_DEFS.get(stepper_driver_type, (None, None))
+        )
+
+        override_sense_resistor = config.getfloat(
+            "sense_resistor",
+            None,
+            minval=0.0,
+        )
+        if (
+            override_sense_resistor is None
+            and sense_resistor_from_driver is None
+        ):
+            self.sense_resistor = self.DEFAULT_SENSE_RESISTOR
+            self.config_file.warn(
+                "config",
+                f"""Neither 'stepper_driver_type' or 'sense_resistor' is defined for [{self.name}].
+                Using default value of {self.sense_resistor} ohm sense resistor.
+                If this is incorrect, your drivers or board may be damaged.""",
+                "sense_resistor",
+            )
+
+        else:
+            self.sense_resistor = (
+                override_sense_resistor or sense_resistor_from_driver
+            )
+
+        max_current = step_driver_max_current or self.DEFAULT_MAX_CURRENT
 
         # config_{run|hold|home}_current
         # represents an initial value set via config file
@@ -807,8 +826,10 @@ class BaseTMCCurrentHelper:
         # It fluctuates between req_run_current and req_home_current
         # during homing
         self.actual_current = self.req_run_current
-
         self.max_current = max_current
+
+    def get_max_current(self):
+        return self.max_current
 
     def needs_home_current_change(self):
         needs = self.actual_current != self.req_home_current
@@ -824,6 +845,13 @@ class BaseTMCCurrentHelper:
         needs = hold_current != self.req_run_current
         logging.info(f"tmc {self.name}: needs_hold_current_change {needs}")
         return needs
+
+    def apply_run_current(self, print_time):
+        if self.needs_current_changes(
+            self.req_run_current, self.req_hold_current
+        ):
+            self.set_actual_current(self.req_run_current)
+            self.apply_current(print_time)
 
     def set_home_current(self, new_home_current):
         self.req_home_current = min(self.max_current, new_home_current)

@@ -111,15 +111,18 @@ FieldFormatters.update(
 # TMC stepper current config helper
 ######################################################################
 
-MAX_CURRENT = 2.400
-
 
 class TMC2660CurrentHelper(tmc.BaseTMCCurrentHelper):
+    DEFAULT_MAX_CURRENT = 2.400
+
     def __init__(self, config, mcu_tmc):
-        super().__init__(config, mcu_tmc, MAX_CURRENT)
+        super().__init__(config, mcu_tmc)
 
         self.current = self.req_run_current
-        self.sense_resistor = config.getfloat("sense_resistor")
+
+        if self.sense_resistor is None:
+            self.sense_resistor = config.getfloat("sense_resistor")
+
         vsense, cs = self._calc_current(self.req_run_current)
         self.fields.set_field("cs", cs)
         self.fields.set_field("vsense", vsense)
@@ -187,9 +190,11 @@ class TMC2660CurrentHelper(tmc.BaseTMCCurrentHelper):
             self.req_run_current,
             None,
             None,
-            MAX_CURRENT,
             self.req_home_current,
         )
+
+    def apply_current(self, print_time):
+        self._update_current(self.actual_current, print_time)
 
     def set_current(self, run_current, hold_current, print_time, force=False):
         if run_current == self.current and not force:

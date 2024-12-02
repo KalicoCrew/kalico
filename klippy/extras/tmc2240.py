@@ -347,14 +347,12 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
         return globalscaler * (bits + 1) * ifs_rms / (256.0 * 32.0)
 
     def get_current(self):
-        ifs_rms = self._get_ifs_rms()
         run_current = self._calc_current_from_field("irun")
         hold_current = self._calc_current_from_field("ihold")
         return (
             run_current,
             hold_current,
             self.req_hold_current,
-            ifs_rms,
             self.req_home_current,
         )
 
