@@ -4473,6 +4473,11 @@ sense_resistor:
 #   chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
 #   above list.
+#⚠️driver_s2vs_level: 6   # Short to Supply tolerance, from 4 to 15
+#⚠️driver_s2g_level: 6    # Short to Ground tolerance, from 2 to 15
+#⚠️driver_shortdelay: 0   # Short trigger delay, 0=750ns, 1=1500ns
+#⚠️driver_short_filter: 1 
+#   Short filtering bandwidth. 0=100ns, 1=1us (Default), 2=2us, 3=3us
 #diag0_pin:
 #diag1_pin:
 #   The micro-controller pin attached to one of the DIAG lines of the

@@ -77,6 +77,8 @@ class FieldHelper:
             )
         else:
             val = config.getint(config_name, default, minval=0, maxval=maxval)
+        if default is None and val is None:
+            return
         return self.set_field(field_name, val)
 
     def pretty_format(self, reg_name, reg_value):

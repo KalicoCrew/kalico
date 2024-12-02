@@ -123,6 +123,12 @@ Fields["DRV_CONF"] = {
     "drvstrength": 0x03 << 18,
     "filt_isense": 0x03 << 20,
 }
+Fields["SHORT_CONF"] = {
+    "s2vs_level": 0x0F << 0,
+    "s2g_level": 0x0F << 8,
+    "short_filter": 0x03 << 16,
+    "shortdelay": 0x01 << 18,
+}
 Fields["DRV_STATUS"] = {
     "sg_result": 0x3FF << 0,
     "s2vsa": 0x01 << 12,
@@ -375,6 +381,22 @@ class TMC5160:
         set_config_field(config, "bbmclks", 4)
         set_config_field(config, "bbmtime", 0)
         set_config_field(config, "filt_isense", 0)
+        #   SHORT_CONF, being write only we can't partially update
+        # TODO: add a hook to read OTP on connect to get the defaults here
+        if config.getint("driver_s2vs_level", None, 4, 15) and config.getint(
+            "driver_s2g_level", None, 2, 15
+        ):
+            set_config_field(config, "s2vs_level", 6)
+            set_config_field(config, "s2g_level", 6)
+            set_config_field(config, "short_filter", 1)
+            set_config_field(config, "shortdelay", 0)
+        elif any(
+            config.get("driver_%s" % field, None, False)
+            for field in Fields["SHORT_CONF"].keys()
+        ):
+            raise config.error(
+                "driver_s2vs_level and driver_s2g_level are required to update short_conf"
+            )
         #   IHOLDIRUN
         set_config_field(config, "iholddelay", 6)
         #   PWMCONF
