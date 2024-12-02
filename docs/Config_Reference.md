@@ -704,6 +704,9 @@ parameters.
 ```
 [printer]
 kinematics: hybrid_corexy
+invert_kinematics: False
+# ⚠️ Some hybrid_corexy machines with dual carriages may need to
+#   invert the kinematics if the toolheads move in reverse
 max_z_velocity:
 #   This sets the maximum velocity (in mm/s) of movement along the z
 #   axis. The default is to use max_velocity for max_z_velocity.
@@ -738,6 +741,9 @@ parameters.
 ```
 [printer]
 kinematics: hybrid_corexz
+invert_kinematics: False
+# ⚠️ Some hybrid_corexy machines with dual carriages may need to
+#   invert the kinematics if the toolheads move in reverse
 max_z_velocity:
 #   This sets the maximum velocity (in mm/s) of movement along the z
 #   axis. The default is to use max_velocity for max_z_velocity.
