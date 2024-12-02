@@ -7,9 +7,12 @@ import math
 import logging
 from extras.danger_options import get_danger_options
 
-HOMING_START_DELAY = 0.001
-ENDSTOP_SAMPLE_TIME = 0.000015
-ENDSTOP_SAMPLE_COUNT = 4
+# HOMING_START_DELAY = 0.001
+# ENDSTOP_SAMPLE_TIME = 0.000015
+# ENDSTOP_SAMPLE_COUNT = 4
+HOMING_START_DELAY = get_danger_options().homing_start_delay
+ENDSTOP_SAMPLE_TIME = get_danger_options().endstop_sample_time
+ENDSTOP_SAMPLE_COUNT = get_danger_options().endstop_sample_count
 
 
 # Return a completion that completes when all completions in a list complete

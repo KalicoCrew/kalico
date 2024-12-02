@@ -107,8 +107,7 @@ class FirmwareRetraction:
                 "print_stats:complete_printing", self._evaluate_retraction
             )
             self.printer.register_event_handler(
-                "print_stats:cancelled_printing\
-                ",
+                "print_stats:cancelled_printing",
                 self._reset_pause_flag,
             )
             self.printer.register_event_handler(

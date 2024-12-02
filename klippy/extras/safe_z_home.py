@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+
 class SafeZHoming:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -66,10 +67,14 @@ class SafeZHoming:
                 axis_order = "xy"
             for axis in axis_order:
                 if axis == "x" and need_x:
-                    g28_gcmd = self.gcode.create_gcode_command("G28", "G28", {"X": "0"})
+                    g28_gcmd = self.gcode.create_gcode_command(
+                        "G28", "G28", {"X": "0"}
+                    )
                     self.prev_G28(g28_gcmd)
                 elif axis == "y" and need_y:
-                    g28_gcmd = self.gcode.create_gcode_command("G28", "G28", {"Y": "0"})
+                    g28_gcmd = self.gcode.create_gcode_command(
+                        "G28", "G28", {"Y": "0"}
+                    )
                     self.prev_G28(g28_gcmd)
 
         # Home Z axis if necessary

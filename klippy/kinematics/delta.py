@@ -114,14 +114,7 @@ class DeltaKinematics:
 
         self.slow_xy2 = ratio_to_xy(SLOW_RATIO) ** 2
         self.very_slow_xy2 = ratio_to_xy(2.0 * SLOW_RATIO) ** 2
-        self.max_xy2 = (
-            min(
-                print_radius,
-                min_arm_length - radius,
-                ratio_to_xy(4.0 * SLOW_RATIO),
-            )
-            ** 2
-        )
+        self.max_xy2 = print_radius**2
         max_xy = math.sqrt(self.max_xy2)
         logging.info(
             "Delta max build radius %.2fmm (moves slowed past %.2fmm"

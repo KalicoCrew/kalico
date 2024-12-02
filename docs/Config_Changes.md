@@ -8,7 +8,13 @@ All dates in this document are approximate.
 
 ## Changes
 
-20241002: The `sense_resistor` parameter is now mandatory with no default value.
+20241202: The `sense_resistor` parameter is now mandatory with no default value.
+
+20241125: The `off_below` parameter in fans config section is
+deprecated. It will be removed in the near future. Use
+[`min_power`](./Config_Reference.md#fans)
+instead. The `printer[fan object].speed` status will be replaced by
+`printer[fan object].value` and `printer[fan object].power`.
 
 20240430: The `adc_ignore_limits` parameter in the `[danger_options]`
 config section has been renamed to `temp_ignore_limits` and it now

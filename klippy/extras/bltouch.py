@@ -5,15 +5,21 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 from . import probe
+from extras.danger_options import get_danger_options
 
 SIGNAL_PERIOD = 0.020
 MIN_CMD_TIME = 5 * SIGNAL_PERIOD
 
 TEST_TIME = 5 * 60.0
 RETRY_RESET_TIME = 1.0
-ENDSTOP_REST_TIME = 0.001
-ENDSTOP_SAMPLE_TIME = 0.000015
-ENDSTOP_SAMPLE_COUNT = 4
+
+
+# ENDSTOP_REST_TIME = 0.001
+# ENDSTOP_SAMPLE_TIME = 0.000015
+# ENDSTOP_SAMPLE_COUNT = 4
+ENDSTOP_REST_TIME = get_danger_options().homing_start_delay
+ENDSTOP_SAMPLE_TIME = get_danger_options().endstop_sample_time
+ENDSTOP_SAMPLE_COUNT = get_danger_options().endstop_sample_count
 
 Commands = {
     "pin_down": 0.000650,

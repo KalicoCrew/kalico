@@ -20,7 +20,16 @@ class HybridCoreXYKinematics:
         self.rails[1].get_endstops()[0][0].add_stepper(
             self.rails[0].get_steppers()[0]
         )
-        self.rails[0].setup_itersolve("corexy_stepper_alloc", b"-")
+
+        self.inverted = config.getboolean("invert_kinematics", False)
+
+        self.corexy_mode = (b"-", b"+")
+        if self.inverted:
+            self.corexy_mode = (b"+", b"-")
+
+        self.rails[0].setup_itersolve(
+            "corexy_stepper_alloc", self.corexy_mode[0]
+        )
         self.rails[1].setup_itersolve("cartesian_stepper_alloc", b"y")
         self.rails[2].setup_itersolve("cartesian_stepper_alloc", b"z")
         ranges = [r.get_range() for r in self.rails]
@@ -37,7 +46,9 @@ class HybridCoreXYKinematics:
             self.rails[1].get_endstops()[0][0].add_stepper(
                 self.rails[3].get_steppers()[0]
             )
-            self.rails[3].setup_itersolve("corexy_stepper_alloc", b"+")
+            self.rails[3].setup_itersolve(
+                "corexy_stepper_alloc", self.corexy_mode[1]
+            )
             dc_rail_0 = idex_modes.DualCarriagesRail(
                 self.rails[0], axis=0, active=True
             )
@@ -72,9 +83,15 @@ class HybridCoreXYKinematics:
             self.dc_module is not None
             and "PRIMARY" == self.dc_module.get_status()["carriage_1"]
         ):
-            return [pos[3] - pos[1], pos[1], pos[2]]
+            if self.inverted:
+                return [pos[3] + pos[1], pos[1], pos[2]]
+            else:
+                return [pos[3] - pos[1], pos[1], pos[2]]
         else:
-            return [pos[0] + pos[1], pos[1], pos[2]]
+            if self.inverted:
+                return [pos[0] - pos[1], pos[1], pos[2]]
+            else:
+                return [pos[0] + pos[1], pos[1], pos[2]]
 
     def update_limits(self, i, range):
         l, h = self.limits[i]

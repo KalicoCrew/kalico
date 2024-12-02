@@ -15,6 +15,10 @@
 - [`[virtual_sdcard] with_subdirs`](./Config_Reference.md#virtual_sdcard) enables scanning of subdirectories for .gcode files, for the menu and M20/M23 commands
 - [`[firmware_retraction] z_hop_height`](./Config_Reference.md#firmware_retraction) adds an automatic z hop when using firmware retraction
 
+## Enhanced behavior
+
+- [`canbus_query.py`](./CANBUS.md#️-finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Danger-Klipper devices, even after they've been assigned a node_id.
+
 ## New Klipper Modules
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Klipper
@@ -54,6 +58,7 @@
 - The jinja `do` extension has been enabled. You can now call functions in your macros without resorting to dirty hacks: `{% do array.append(5) %}`
 - The python [`math`](https://docs.python.org/3/library/math.html) library is available to macros. `{math.sin(math.pi * variable)}` and more!
 - New [`RELOAD_GCODE_MACROS`](./G-Codes.md#reload_gcode_macros) G-Code command to reload `[gcode_macro]` templates without requiring a restart.
+- G-Code Macros can be written in Python. Read more [here](./Command_Templates.md)
 
 ## [Plugins](./Plugins.md)
 

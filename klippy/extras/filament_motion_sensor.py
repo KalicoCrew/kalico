@@ -100,7 +100,7 @@ class EncoderSensor:
                 self.runout_helper.name,
                 (
                     "enabled"
-                    if self.runout_helper.sensor_enabled > 0
+                    if self.runout_helper.sensor_enabled
                     else "disabled"
                 ),
                 "true" if self.runout_helper.filament_present else "false",

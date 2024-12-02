@@ -417,6 +417,10 @@ class Printer:
 
 def import_test():
     # Import all optional modules (used as a build test)
+    from extras import danger_options
+    from unittest import mock
+
+    danger_options.DANGER_OPTIONS = mock.Mock()
     dname = os.path.dirname(__file__)
     for mname in ["extras", "kinematics"]:
         for fname in os.listdir(os.path.join(dname, mname)):
