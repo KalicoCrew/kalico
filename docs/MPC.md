@@ -382,6 +382,12 @@ MPC_CALIBRATE HEATER=heater_bed FAN_BREAKPOINTS=5
 
 These calibrated model parameters need to be saved to the _SAVE_CONFIG_ block manually or by using the `SAVE_CONFIG` command.
 
+## Updating calibration parameters at runtime
+
+Similar to [`SET_HEATER_PID`](G-Codes.md#set_heater_pid), you can update your MPC calibration profile at runtime.
+
+`MPC_SET HEATER=<heater_name> [BLOCK_HEAT_CAPACITY=0.0] [SENSOR_RESPONSIVENESS=0.0] [AMBIENT_TRANSFER=0.0] [FAN_AMBIENT_TRANSFER=0.01,0.02,0.03]`
+
 # BACKGROUND
 
 ## MPC Algorithm

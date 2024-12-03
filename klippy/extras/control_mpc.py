@@ -64,6 +64,28 @@ class ControlMPC:
             "FILAMENT_HEAT_CAPACITY", self.const_filament_heat_capacity
         )
 
+        self.const_block_heat_capacity = gcmd.get_float(
+            "BLOCK_HEAT_CAPACITY", self.const_block_heat_capacity
+        )
+        self.const_sensor_responsiveness = gcmd.get_float(
+            "SENSOR_RESPONSIVENESS", self.const_sensor_responsiveness
+        )
+        self.const_ambient_transfer = gcmd.get_float(
+            "AMBIENT_TRANSFER", self.const_ambient_transfer
+        )
+
+        if gcmd.get("FAN_AMBIENT_TRANSFER", None):
+            try:
+                self.const_fan_ambient_transfer = [
+                    float(v)
+                    for v in gcmd.get("FAN_AMBIENT_TRANSFER").split(",")
+                ]
+            except ValueError:
+                raise gcmd.error(
+                    f"Error on '{gcmd._commandline}': unable to parse FAN_AMBIENT_TRANSFER\n"
+                    "Must be a comma-separated list of values ('0.05,0.07,0.08')"
+                )
+
         temp = gcmd.get("FILAMENT_TEMP", None)
         if temp is not None:
             temp = temp.lower().strip()
