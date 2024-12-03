@@ -145,6 +145,30 @@ A collection of Kalico-specific system options
 #log_webhook_method_register_messages: False
 ```
 
+## ⚠️ Configuration references
+
+In your configuration, you can reference other values to share
+configuration between multiple sections. References take the form of
+`${option}` to copy a value in the current section, or
+`${section.option}` to look up a value elsewhere in your configuration.
+
+Optionally, a `[constants]` section may be used specifically to store
+these values. Unlike the rest of your configuration, unused constants
+will show a warning instead of causing an error.
+
+```
+[constants]
+run_current_ab:  1.0
+i_am_not_used: True  # Will show "Constant 'i_am_not_used' is unused"
+
+[tmc5160 stepper_x]
+run_current: ${constants.run_current_ab}
+
+[tmc5160 stepper_y]
+run_current: ${tmc5160 stepper_x.run_current}
+#   Nested references work, but are not advised
+```
+
 ## Common kinematic settings
 
 ### [printer]
