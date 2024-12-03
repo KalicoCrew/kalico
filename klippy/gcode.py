@@ -203,6 +203,15 @@ class GCodeDispatch:
                 "gcode command %s already registered" % (cmd,)
             )
         if not self.is_traditional_gcode(cmd):
+            if (
+                cmd.upper() != cmd
+                or not cmd.replace("_", "A").isalnum()
+                or cmd[0].isdigit()
+                or cmd[1:2].isdigit()
+            ):
+                raise self.printer.config_error(
+                    "Can't register '%s' as it is an invalid name" % (cmd,)
+                )
             origfunc = func
 
             def func(params):
