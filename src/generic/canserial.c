@@ -117,7 +117,7 @@ console_sendf(const struct command_encoder *ce, va_list args)
 #define CANBUS_CMD_REQUEST_BOOTLOADER 0x02
 
 #define CANBUS_RESP_KLIPPER_NODEID 0x01
-#define CANBUS_RESP_DANGER_NODEID 0x11
+#define CANBUS_RESP_DANGER_NODEID 0x07
 #define CANBUS_RESP_NEED_NODEID 0x20
 #define CANBUS_RESP_HAVE_NODEID 0x21
 

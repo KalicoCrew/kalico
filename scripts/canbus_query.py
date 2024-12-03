@@ -22,7 +22,7 @@ RESP_DANGER_NODEID = 0x07
 AppNames = {
     CMD_SET_KLIPPER_NODEID: "Klipper",
     RESP_DANGER_NODEID: "Danger-Klipper",
-    CMD_SET_CANBOOT_NODEID: "CanBoot",
+    CMD_SET_CANBOOT_NODEID: "Katapult",
 }
 
 
