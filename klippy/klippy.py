@@ -220,6 +220,8 @@ class Printer:
             "telemetry",
         ]:
             self.load_object(config, section_config, None)
+        if self.start_args.get("migration_required", False):
+            self.load_object(config, "kalico_migration", None)
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
@@ -554,6 +556,8 @@ def main():
     start_args["git_branch"] = git_info["branch"]
     start_args["git_remote"] = git_info["remote"]
     start_args["cpu_info"] = util.get_cpu_info()
+    if "dangerklippers/danger-klipper" in git_info["url"].lower():
+        start_args["migration_required"] = True
     if bglogger is not None:
         versions = "\n".join(
             [
