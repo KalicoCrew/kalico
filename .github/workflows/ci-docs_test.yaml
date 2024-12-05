@@ -1,4 +1,4 @@
-name: docs deployment
+name: Docs test
 on:
   pull_request:
     paths:
@@ -6,7 +6,7 @@ on:
       - .github/workflows/ci-docs_test.yaml
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,10 +16,10 @@ jobs:
         with:
           python-version: "3.10"
 
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         id: pip-cache
         with:
-          path: ~/.cache/pip
+          path: ${{ env.pythonLocation }}
           key: ${{ runner.os }}-pip-${{ hashFiles('docs/_kalico/mkdocs-requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-

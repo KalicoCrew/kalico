@@ -1,6 +1,6 @@
 <p align="center"><a href="https://docs.kalico.gg"><img align="center" src="docs/logo/kalico-big.png" alt="Kalico Logo"></a></p>
 
-[![Action Status](https://github.com/kalico-crew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=main)](https://github.com/kalico-crew/kalico/actions/workflows/ci-build_test.yaml)
+[![Action Status](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=main)](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml)
 
 # Welcome to the Kalico project!
 
@@ -14,126 +14,126 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 
 ## Features merged into the main branch:
 
-- [core: no Python2 tests; no PRU boards](https://github.com/kalico-crew/kalico/pull/39)
+- [core: no Python2 tests; no PRU boards](https://github.com/KalicoCrew/kalico/pull/39)
 
-- [core: git-untracked folder, plugins for user-plugins](https://github.com/kalico-crew/kalico/pull/82)
+- [core: git-untracked folder, plugins for user-plugins](https://github.com/KalicoCrew/kalico/pull/82)
 
-- [core: danger_options](https://github.com/kalico-crew/kalico/pull/67)
+- [core: danger_options](https://github.com/KalicoCrew/kalico/pull/67)
 
-- [core: rotate log file at every restart](https://github.com/kalico-crew/kalico/pull/181)
+- [core: rotate log file at every restart](https://github.com/KalicoCrew/kalico/pull/181)
 
-- [fan: normalising Fan PWM power](https://github.com/kalico-crew/kalico/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
+- [fan: normalising Fan PWM power](https://github.com/KalicoCrew/kalico/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
-- [fan: reverse FAN](https://github.com/kalico-crew/kalico/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
+- [fan: reverse FAN](https://github.com/KalicoCrew/kalico/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
 
-- [heaters: modify PID without reload](https://github.com/kalico-crew/kalico/pull/35)
+- [heaters: modify PID without reload](https://github.com/KalicoCrew/kalico/pull/35)
 
-- [heaters: MPC temperature control](https://github.com/kalico-crew/kalico/pull/333)
+- [heaters: MPC temperature control](https://github.com/KalicoCrew/kalico/pull/333)
 
-- [heaters: velocity PID](https://github.com/kalico-crew/kalico/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
+- [heaters: velocity PID](https://github.com/KalicoCrew/kalico/pull/47) ([klipper#6272](https://github.com/Klipper3d/klipper/pull/6272))
 
-- [heaters: PID-Profiles](https://github.com/kalico-crew/kalico/pull/162)
+- [heaters: PID-Profiles](https://github.com/KalicoCrew/kalico/pull/162)
 
-- [heaters: expose heater thermistor out of min/max](https://github.com/kalico-crew/kalico/pull/182)
+- [heaters: expose heater thermistor out of min/max](https://github.com/KalicoCrew/kalico/pull/182)
 
-- [heaters/fan: new heated_fan module](https://github.com/kalico-crew/kalico/pull/259)
+- [heaters/fan: new heated_fan module](https://github.com/KalicoCrew/kalico/pull/259)
 
-- [gcode: jinja2.ext.do extension](https://github.com/kalico-crew/kalico/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
+- [gcode: jinja2.ext.do extension](https://github.com/KalicoCrew/kalico/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
 
-- [gcode: gcode_shell_command](https://github.com/kalico-crew/kalico/pull/71) ([klipper#2173](https://github.com/Klipper3d/klipper/pull/2173) / [kiuah](https://github.com/dw-0/kiauh/blob/master/resources/gcode_shell_command.py) )
+- [gcode: gcode_shell_command](https://github.com/KalicoCrew/kalico/pull/71) ([klipper#2173](https://github.com/Klipper3d/klipper/pull/2173) / [kiuah](https://github.com/dw-0/kiauh/blob/master/resources/gcode_shell_command.py) )
 
-- [gcode: expose math functions to gcode macros](https://github.com/kalico-crew/kalico/pull/173) ([klipper#4072](https://github.com/Klipper3d/klipper/pull/4072))
+- [gcode: expose math functions to gcode macros](https://github.com/KalicoCrew/kalico/pull/173) ([klipper#4072](https://github.com/Klipper3d/klipper/pull/4072))
 
-- [gcode: HEATER_INTERRUPT gcode command](https://github.com/kalico-crew/kalico/pull/94)
+- [gcode: HEATER_INTERRUPT gcode command](https://github.com/KalicoCrew/kalico/pull/94)
 
-- [gcode: RELOAD_GCODE_MACROS command](https://github.com/kalico-crew/kalico/pull/305)
+- [gcode: RELOAD_GCODE_MACROS command](https://github.com/KalicoCrew/kalico/pull/305)
 
-- [probe: dockable Probe](https://github.com/kalico-crew/kalico/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
+- [probe: dockable Probe](https://github.com/KalicoCrew/kalico/pull/43) ([klipper#4328](https://github.com/Klipper3d/klipper/pull/4328))
 
-- [probe: drop the first result](https://github.com/kalico-crew/kalico/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
+- [probe: drop the first result](https://github.com/KalicoCrew/kalico/pull/2) ([klipper#3397](https://github.com/Klipper3d/klipper/issues/3397))
 
-- [probe: z_calibration](https://github.com/kalico-crew/kalico/pull/31) ([klipper#4614](https://github.com/Klipper3d/klipper/pull/4614) / [protoloft/z_calibration](https://github.com/protoloft/klipper_z_calibration))
+- [probe: z_calibration](https://github.com/KalicoCrew/kalico/pull/31) ([klipper#4614](https://github.com/Klipper3d/klipper/pull/4614) / [protoloft/z_calibration](https://github.com/protoloft/klipper_z_calibration))
 
-- [z_tilt: z-tilt calibration](https://github.com/kalico-crew/kalico/pull/105) ([klipper3d#4083](https://github.com/Klipper3d/klipper/pull/4083) / [dk/ztilt_calibration](https://github.com/kalico-crew/kalico/pull/54))
+- [z_tilt: z-tilt calibration](https://github.com/KalicoCrew/kalico/pull/105) ([klipper3d#4083](https://github.com/Klipper3d/klipper/pull/4083) / [dk/ztilt_calibration](https://github.com/KalicoCrew/kalico/pull/54))
 
-- [stepper: home_current](https://github.com/kalico-crew/kalico/pull/65)
+- [stepper: home_current](https://github.com/KalicoCrew/kalico/pull/65)
 
-- [stepper: current_change_dwell_time](https://github.com/kalico-crew/kalico/pull/90)
+- [stepper: current_change_dwell_time](https://github.com/KalicoCrew/kalico/pull/90)
 
-- [homing: post-home retract](https://github.com/kalico-crew/kalico/pull/65)
+- [homing: post-home retract](https://github.com/KalicoCrew/kalico/pull/65)
 
-- [homing: sensorless minimum home distance](https://github.com/kalico-crew/kalico/pull/65)
+- [homing: sensorless minimum home distance](https://github.com/KalicoCrew/kalico/pull/65)
 
-- [homing: min_home_dist](https://github.com/kalico-crew/kalico/pull/90)
+- [homing: min_home_dist](https://github.com/KalicoCrew/kalico/pull/90)
 
-- [virtual_sdcard: scanning of subdirectories](https://github.com/kalico-crew/kalico/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
+- [virtual_sdcard: scanning of subdirectories](https://github.com/KalicoCrew/kalico/pull/68) ([klipper#6327](https://github.com/Klipper3d/klipper/pull/6327))
 
-- [retraction: z_hop while retracting](https://github.com/kalico-crew/kalico/pull/83) ([klipper#6311](https://github.com/Klipper3d/klipper/pull/6311))
+- [retraction: z_hop while retracting](https://github.com/KalicoCrew/kalico/pull/83) ([klipper#6311](https://github.com/Klipper3d/klipper/pull/6311))
 
-- [danger_options: allow plugins to override conflicting extras](https://github.com/kalico-crew/kalico/pull/82)
+- [danger_options: allow plugins to override conflicting extras](https://github.com/KalicoCrew/kalico/pull/82)
 
-- [danger_options: expose the multi mcu homing timeout as a parameter](https://github.com/kalico-crew/kalico/pull/93)
+- [danger_options: expose the multi mcu homing timeout as a parameter](https://github.com/KalicoCrew/kalico/pull/93)
 
-- [danger_options: option to configure the homing elapsed distance tolerance](https://github.com/kalico-crew/kalico/pull/110)
+- [danger_options: option to configure the homing elapsed distance tolerance](https://github.com/KalicoCrew/kalico/pull/110)
 
-- [danger_options: option to ignore ADC out of range](https://github.com/kalico-crew/kalico/pull/129)
+- [danger_options: option to ignore ADC out of range](https://github.com/KalicoCrew/kalico/pull/129)
 
-- [temperature_mcu: add reference_voltage](https://github.com/kalico-crew/kalico/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
+- [temperature_mcu: add reference_voltage](https://github.com/KalicoCrew/kalico/pull/99) ([klipper#5713](https://github.com/Klipper3d/klipper/pull/5713))
 
-- [adxl345: improve ACCELEROMETER_QUERY command](https://github.com/kalico-crew/kalico/pull/124)
+- [adxl345: improve ACCELEROMETER_QUERY command](https://github.com/KalicoCrew/kalico/pull/124)
 
-- [extruder: add flag to use the PA constant from a trapq move vs a cached value](https://github.com/kalico-crew/kalico/pull/132)
+- [extruder: add flag to use the PA constant from a trapq move vs a cached value](https://github.com/KalicoCrew/kalico/pull/132)
 
-- [force_move: turn on by default](https://github.com/kalico-crew/kalico/pull/135)
+- [force_move: turn on by default](https://github.com/KalicoCrew/kalico/pull/135)
 
-- [respond: turn on by default](https://github.com/kalico-crew/kalico/pull/296)
+- [respond: turn on by default](https://github.com/KalicoCrew/kalico/pull/296)
 
-- [exclude_object: turn on by default](https://github.com/kalico-crew/kalico/pull/306)
+- [exclude_object: turn on by default](https://github.com/KalicoCrew/kalico/pull/306)
 
-- [bed_mesh: add bed_mesh_default config option](https://github.com/kalico-crew/kalico/pull/143)
+- [bed_mesh: add bed_mesh_default config option](https://github.com/KalicoCrew/kalico/pull/143)
 
-- [config: CONFIG_SAVE updates included files](https://github.com/kalico-crew/kalico/pull/153)
+- [config: CONFIG_SAVE updates included files](https://github.com/KalicoCrew/kalico/pull/153)
 
-- [kinematics: independent X&Y accel/velocity for corexy and cartesian](https://github.com/kalico-crew/kalico/pull/4)
+- [kinematics: independent X&Y accel/velocity for corexy and cartesian](https://github.com/KalicoCrew/kalico/pull/4)
 
-- [kinematics: independent X&Y accel/velocity for corexz](https://github.com/kalico-crew/kalico/pull/267)
+- [kinematics: independent X&Y accel/velocity for corexz](https://github.com/KalicoCrew/kalico/pull/267)
 
-- [idle_timeout: allow the idle timeout to be disabled](https://github.com/kalico-crew/kalico/issues/165)
+- [idle_timeout: allow the idle timeout to be disabled](https://github.com/KalicoCrew/kalico/issues/165)
 
-- [canbus: custom CAN bus uuid hash for deterministic uuids](https://github.com/kalico-crew/kalico/pull/156)
+- [canbus: custom CAN bus uuid hash for deterministic uuids](https://github.com/KalicoCrew/kalico/pull/156)
 
-- [filament_switch|motion_sensor:  runout distance, smart and runout gcode](https://github.com/kalico-crew/kalico/pull/158)
+- [filament_switch|motion_sensor:  runout distance, smart and runout gcode](https://github.com/KalicoCrew/kalico/pull/158)
 
-- [z_tilt|qgl: custom threshold for probe_points_increasing check](https://github.com/kalico-crew/kalico/pull/189)
+- [z_tilt|qgl: custom threshold for probe_points_increasing check](https://github.com/KalicoCrew/kalico/pull/189)
 
-- [save_config: save without restarting the firmware](https://github.com/kalico-crew/kalico/pull/191)
+- [save_config: save without restarting the firmware](https://github.com/KalicoCrew/kalico/pull/191)
 
-- [configfile: recursive globs](https://github.com/kalico-crew/kalico/pull/200) / ([klipper#6375](https://github.com/Klipper3d/klipper/pull/6375))
+- [configfile: recursive globs](https://github.com/KalicoCrew/kalico/pull/200) / ([klipper#6375](https://github.com/Klipper3d/klipper/pull/6375))
 
-- [temperature_fan: curve control algorithm](https://github.com/kalico-crew/kalico/pull/193)
+- [temperature_fan: curve control algorithm](https://github.com/KalicoCrew/kalico/pull/193)
 
-- [shaper_calibrate: store and expose accel_per_hz](https://github.com/kalico-crew/kalico/pull/224)
+- [shaper_calibrate: store and expose accel_per_hz](https://github.com/KalicoCrew/kalico/pull/224)
 
-- [resonance_tester: accepts ACCEL_PER_HZ in TEST_RESONANCES](https://github.com/kalico-crew/kalico/pull/312)
+- [resonance_tester: accepts ACCEL_PER_HZ in TEST_RESONANCES](https://github.com/KalicoCrew/kalico/pull/312)
 
-- [mcu: support for AT32F403](https://github.com/kalico-crew/kalico/pull/284)
+- [mcu: support for AT32F403](https://github.com/KalicoCrew/kalico/pull/284)
 
-- [z_tilt, quad_gantry_level: adaptive horizontal move z](https://github.com/kalico-crew/kalico/pull/336)
+- [z_tilt, quad_gantry_level: adaptive horizontal move z](https://github.com/KalicoCrew/kalico/pull/336)
 
-- [core: non-critical-mcus](https://github.com/kalico-crew/kalico/pull/339)
+- [core: non-critical-mcus](https://github.com/KalicoCrew/kalico/pull/339)
 
-- [gcode_macros: !python templates](https://github.com/kalico-crew/kalico/pull/360)
+- [gcode_macros: !python templates](https://github.com/KalicoCrew/kalico/pull/360)
 
-- [core: action_log](https://github.com/kalico-crew/kalico/pull/367)
+- [core: action_log](https://github.com/KalicoCrew/kalico/pull/367)
 
-- [danger_options: configurable homing constants](https://github.com/kalico-crew/kalico/pull/378)
+- [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
-- [extruder/pa: do not smooth base extruder position, only advance](https://github.com/kalico-crew/kalico/pull/266)
+- [extruder/pa: do not smooth base extruder position, only advance](https://github.com/KalicoCrew/kalico/pull/266)
 
-- [dmbutyugin's advanced-features branch - Pull Request #262](https://github.com/kalico-crew/kalico/pull/262)
+- [dmbutyugin's advanced-features branch - Pull Request #262](https://github.com/KalicoCrew/kalico/pull/262)
   - stepper: high precision stepping protocol
   - extruder: sync extruder motion with input shaper
   - extruder: new print_pa_tower utility
@@ -158,7 +158,7 @@ mv ~/klipper ~/klipper_old
 Then clone the Kalico repo and restart the klipper service:
 
 ```bash
-git clone https://github.com/kalico-crew/kalico.git ~/klipper
+git clone https://github.com/KalicoCrew/kalico.git ~/klipper
 sudo systemctl restart klipper
 ```
 
@@ -172,7 +172,7 @@ From the KIAUH menu select:
 
 - [S] Settings
 - 1\) Set custom Klipper repository
-- Use `https://github.com/kalico-crew/kalico` as the new repository URL
+- Use `https://github.com/KalicoCrew/kalico` as the new repository URL
 - Use `main` or `bleeding-edge-v2` as the new branch name
 - Select 'Y' to apply the changes
 - Enter 'B' for back twice
@@ -183,7 +183,7 @@ Can switch back to mainline klipper at any time via a `git checkout upstream_mai
 
 ```bash
 cd ~/klipper
-git remote add kalico https://github.com/kalico-crew/kalico.git
+git remote add kalico https://github.com/KalicoCrew/kalico.git
 git checkout -b upstream-main origin/master
 git branch -D master
 git checkout -b main kalico/main
