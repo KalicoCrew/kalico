@@ -284,7 +284,7 @@ removed in the near future.  Most users can replace a
 `default_parameter_NAME: VALUE` config option with a line like the
 following in the start of the macro: ` {% set NAME =
 params.NAME|default(VALUE)|float %}`.  See the [Command Templates
-document](Command_Templates.md#macro-parameters) for examples.
+document](Command_Templates.md) for examples.
 
 20210430: The SET_VELOCITY_LIMIT (and M204) command may now set a
 velocity, acceleration, and square_corner_velocity larger than the

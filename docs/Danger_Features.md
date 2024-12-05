@@ -17,7 +17,7 @@
 
 ## Enhanced behavior
 
-- [`canbus_query.py`](./CANBUS.md#️-finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Kalico devices, even after they've been assigned a node_id.
+- [`canbus_query.py`](./CANBUS.md#finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Kalico devices, even after they've been assigned a node_id.
 
 ## New Kalico Modules
 
