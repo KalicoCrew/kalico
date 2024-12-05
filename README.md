@@ -204,4 +204,4 @@ To begin using Kalico start by
 Kalico is Free Software. See the [license](COPYING) or read the
 [documentation](https://docs.kalico.gg/Overview.html).
 
-[![Join me on Discord](https://discord.com/api/guilds/1029426383614648421/widget.png?style=banner2)](https://discord.kalico.gg)
+[![Join me on Discord](https://discord.com/api/guilds/1297243471442214913/widget.png?style=banner2)](https://discord.kalico.gg)
