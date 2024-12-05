@@ -1,6 +1,6 @@
 <p align="center"><a href="https://docs.kalico.gg"><img align="center" src="docs/logo/kalico-big.png" alt="Kalico Logo"></a></p>
 
-[![Action Status](https://github.com/kalico-crew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=master)](https://github.com/kalico-crew/kalico/actions/workflows/ci-build_test.yaml)
+[![Action Status](https://github.com/kalico-crew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=main)](https://github.com/kalico-crew/kalico/actions/workflows/ci-build_test.yaml)
 
 # Welcome to the Kalico project!
 
@@ -12,7 +12,7 @@ If I want my printer to light itself on fire, I should be able to make my printe
 
 See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) for more information on *some* of the differences from Klipper.
 
-## Features merged into the master branch:
+## Features merged into the main branch:
 
 - [core: no Python2 tests; no PRU boards](https://github.com/kalico-crew/kalico/pull/39)
 
@@ -173,20 +173,20 @@ From the KIAUH menu select:
 - [S] Settings
 - 1\) Set custom Klipper repository
 - Use `https://github.com/kalico-crew/kalico` as the new repository URL
-- Use `master` or `bleeding-edge-v2` as the new branch name
+- Use `main` or `bleeding-edge-v2` as the new branch name
 - Select 'Y' to apply the changes
 - Enter 'B' for back twice
 - 'Q' to quit
 
 ### Option 3. Adding a git-remote to the existing installation
-Can switch back to mainline klipper at any time via a `git checkout upstream_master`
+Can switch back to mainline klipper at any time via a `git checkout upstream_main`
 
 ```bash
 cd ~/klipper
-git remote add danger https://github.com/kalico-crew/kalico.git
-git checkout -b upstream-master origin/master
+git remote add kalico https://github.com/kalico-crew/kalico.git
+git checkout -b upstream-main origin/master
 git branch -D master
-git checkout -b master danger/master
+git checkout -b main kalico/main
 sudo systemctl restart klipper
 sudo systemctl restart moonraker
 ```
