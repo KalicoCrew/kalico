@@ -14,7 +14,11 @@ class ControlMPC:
         self.profile = profile
         self._load_profile()
         self.heater = heater
-        self.heater_max_power = heater.get_max_power() * self.const_heater_power
+        self.is_dynamic_power = (
+            self.const_heater_voltage
+            and self.const_heater_temp_coefficient
+            and self.const_heater_wattage_ambient
+        )
 
         self.want_ambient_refresh = self.ambient_sensor is not None
         self.state_block_temp = (
@@ -116,11 +120,41 @@ class ControlMPC:
     def _heater_temp(self):
         return self.heater.get_temp(self.heater.reactor.monotonic())[0]
 
+    def _heater_power(self, temperature):
+        if self.is_dynamic_power:
+            # Compute from voltage and temperature coefficient at ambient
+            # Wattage = Voltage^2/Resistance
+            # Resistance = Voltage^2/Wattage
+            # Resistance at temp = Resistance at ambient * (1+temperature coefficient * (current temperature-ambient))
+            # Wattage at temperature = V^2/Resistance at temp
+
+            resistance_at_ambient = (
+                self.const_heater_voltage**2
+            ) / self.const_heater_power
+            resistance_at_temp = resistance_at_ambient * (
+                1
+                + self.const_heater_temp_coefficient
+                * (temperature - self.const_heater_wattage_ambient)
+            )
+            return (self.const_heater_voltage**2) / resistance_at_temp
+        else:
+            return self.const_heater_power
+
+    def _heater_max_power(self, temperature):
+        return self.heater.get_max_power() * self._heater_power(temperature)
+
     def _load_profile(self):
         self.const_block_heat_capacity = self.profile["block_heat_capacity"]
         self.const_ambient_transfer = self.profile["ambient_transfer"]
         self.const_target_reach_time = self.profile["target_reach_time"]
         self.const_heater_power = self.profile["heater_power"]
+        self.const_heater_voltage = self.profile["heater_voltage"]
+        self.const_heater_temp_coefficient = self.profile[
+            "heater_temp_coefficient"
+        ]
+        self.const_heater_wattage_ambient = self.profile[
+            "heater_wattage_ambient"
+        ]
         self.const_smoothing = self.profile["smoothing"]
         self.const_sensor_responsiveness = self.profile["sensor_responsiveness"]
         self.const_min_ambient_change = self.profile["min_ambient_change"]
@@ -296,14 +330,14 @@ class ControlMPC:
             power = max(
                 0.0,
                 min(
-                    self.heater_max_power,
+                    self._heater_max_power(self.state_block_temp),
                     heating_power + loss_ambient + loss_filament,
                 ),
             )
         else:
             power = 0
 
-        duty = power / self.const_heater_power
+        duty = power / self._heater_power(self.state_block_temp)
 
         # logging.info(
         #     "mpc: [%.3f/%.3f] %.2f => %.2f / %.2f / %.2f = %.2f[%.2f+%.2f+%.2f] / %.2f, dT %.2f, E %.2f=>%.2f",

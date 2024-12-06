@@ -350,6 +350,19 @@ class Heater:
                 temp_profile["heater_power"] = config_section.getfloat(
                     "heater_power", above=0.0
                 )
+                temp_profile["heater_voltage"] = config_section.getfloat(
+                    "heater_voltage", above=0.0, default=None
+                )
+                temp_profile["heater_temp_coefficient"] = (
+                    config_section.getfloat(
+                        "heater_temp_coefficient", above=0.0, default=None
+                    )
+                )
+                temp_profile["heater_wattage_ambient"] = (
+                    config_section.getfloat(
+                        "heater_wattage_ambient", above=0.0, default=None
+                    )
+                )
                 temp_profile["sensor_responsiveness"] = config_section.getfloat(
                     "sensor_responsiveness", above=0.0, default=None
                 )
