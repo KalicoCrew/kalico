@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, re, logging, collections, shlex
+import mathutil
 
 
 class CommandError(Exception):
@@ -73,6 +74,8 @@ class GCodeCommand:
         above=None,
         below=None,
     ):
+        if parser is float:
+            parser = mathutil.safe_float
         value = self._params.get(name)
         if value is None:
             if default is self.sentinel:
@@ -123,7 +126,7 @@ class GCodeCommand:
         return self.get(
             name,
             default,
-            parser=float,
+            parser=mathutil.safe_float,
             minval=minval,
             maxval=maxval,
             above=above,

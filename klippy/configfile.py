@@ -3,7 +3,7 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, glob, re, time, logging, configparser, io
+import sys, os, glob, re, time, logging, configparser, io, mathutil
 from extras.danger_options import get_danger_options
 
 error = configparser.Error
@@ -49,6 +49,8 @@ class ConfigWrapper:
                 "Option '%s' in section '%s' must be specified"
                 % (option, self.section)
             )
+        if parser is float:
+            parser = mathutil.safe_float
         try:
             v = parser(self.section, option)
         except self.error as e:
@@ -209,7 +211,7 @@ class ConfigWrapper:
             default,
             seps=(sep,),
             count=count,
-            parser=float,
+            parser=mathutil.safe_float,
             note_valid=note_valid,
         )
 
