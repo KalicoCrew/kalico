@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
 import math
-import chelper
+from . import chelper
 
 
 class error(Exception):

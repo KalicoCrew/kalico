@@ -63,6 +63,7 @@ fi
 ######################################################################
 
 start_test klippy "Test klippy import (Python3)"
+# I'm leaving this with klippy/klippy.py so we test that compatibility
 $PYTHON klippy/klippy.py --import-test
 finish_test klippy "Test klippy import (Python3)"
 

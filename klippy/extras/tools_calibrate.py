@@ -5,9 +5,10 @@
 # Sourced from https://github.com/viesturz/klipper-toolchanger/blob/main/klipper/extras/tools_calibrate.py
 
 import collections
-import logging
-import pins
 import enum
+import logging
+
+from klippy import pins
 
 
 class Axis(enum.IntEnum):

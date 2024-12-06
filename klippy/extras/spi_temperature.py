@@ -7,7 +7,7 @@
 import math, logging
 from . import bus
 
-from extras.danger_options import get_danger_options
+from .danger_options import get_danger_options
 
 ######################################################################
 # SensorBase

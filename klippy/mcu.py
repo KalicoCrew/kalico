@@ -7,8 +7,8 @@ import logging
 import math
 import os
 import zlib
-import serialhdl, msgproto, pins, chelper, clocksync
-from extras.danger_options import get_danger_options
+from . import serialhdl, msgproto, pins, chelper, clocksync
+from .extras.danger_options import get_danger_options
 
 
 class error(Exception):

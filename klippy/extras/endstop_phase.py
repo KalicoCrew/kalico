@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
-import stepper
+from klippy import stepper
 
 TRINAMIC_DRIVERS = [
     "tmc2130",

@@ -3,7 +3,7 @@
 # Copyright (C) 2017-2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import chelper
+from klippy import chelper
 
 MAX_SCHEDULE_TIME = 5.0
 
