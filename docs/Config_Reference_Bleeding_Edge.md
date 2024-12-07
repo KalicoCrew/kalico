@@ -1,16 +1,16 @@
 # Configuration reference for Bleeding Edge features
 
-This document is a reference for options available in the Klipper
+This document is a reference for options available in the Kalico
 config file for bleeding edge features. Refer to the [Bleeding Edge Documentation](Bleeding_Edge.md) for details on specific features.
 
 The descriptions in this document are formatted so that it is possible
 to cut-and-paste them into a printer config file. See the
 [installation document](Installation.md) for information on setting up
-Klipper and choosing an initial config file.
+Kalico and choosing an initial config file.
 
 ## High precision stepping and new stepcompress protocol
 
-This feature is enabled during klipper firmware compile
+This feature is enabled during Kalico firmware compile
 by selecting "High-precision stepping support" option in menuconfig.
 The firmware then needs to be flashed to all MCU(s) using this feature.
 

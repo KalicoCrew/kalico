@@ -1,16 +1,16 @@
 # Kinematics
 
-This document provides an overview of how Klipper implements robot
+This document provides an overview of how Kalico implements robot
 motion (its [kinematics](https://en.wikipedia.org/wiki/Kinematics)).
 The contents may be of interest to both developers interested in
-working on the Klipper software as well as users interested in better
+working on the Kalico software as well as users interested in better
 understanding the mechanics of their machines.
 
 ## Acceleration
 
-Klipper implements a constant acceleration scheme whenever the print
+Kalico implements a constant acceleration scheme whenever the print
 head changes velocity - the velocity is gradually changed to the new
-speed instead of suddenly jerking to it. Klipper always enforces
+speed instead of suddenly jerking to it. Kalico always enforces
 acceleration between the tool head and the print. The filament leaving
 the extruder can be quite fragile - rapid jerks and/or extruder flow
 changes lead to poor quality and poor bed adhesion. Even when not
@@ -20,13 +20,13 @@ filament. Limiting speed changes of the print head (relative to the
 print) reduces risks of disrupting the print.
 
 It is also important to limit acceleration so that the stepper motors
-do not skip or put excessive stress on the machine. Klipper limits the
+do not skip or put excessive stress on the machine. Kalico limits the
 torque on each stepper by virtue of limiting the acceleration of the
 print head. Enforcing acceleration at the print head naturally also
 limits the torque of the steppers that move the print head (the
 inverse is not always true).
 
-Klipper implements constant acceleration. The key formula for constant
+Kalico implements constant acceleration. The key formula for constant
 acceleration is:
 ```
 velocity(time) = start_velocity + accel*time
@@ -34,7 +34,7 @@ velocity(time) = start_velocity + accel*time
 
 ## Trapezoid generator
 
-Klipper uses a traditional "trapezoid generator" to model the motion
+Kalico uses a traditional "trapezoid generator" to model the motion
 of each move - each move has a start speed, it accelerates to a
 cruising speed at constant acceleration, it cruises at a constant
 speed, and then decelerates to the end speed using constant
@@ -86,7 +86,7 @@ small junction speed is permitted.
 The junction speeds are determined using "approximated centripetal
 acceleration". Best
 [described by the author](https://onehossshay.wordpress.com/2011/09/24/improving_grbl_cornering_algorithm/).
-However, in Klipper, junction speeds are configured by specifying the
+However, in Kalico, junction speeds are configured by specifying the
 desired speed that a 90° corner should have (the "square corner
 velocity"), and the junction speeds for other angles are derived from
 that.
@@ -98,21 +98,21 @@ end_velocity^2 = start_velocity^2 + 2*accel*move_distance
 
 ### Minimum cruise ratio
 
-Klipper also implements a mechanism for smoothing out the motions of
+Kalico also implements a mechanism for smoothing out the motions of
 short "zigzag" moves. Consider the following moves:
 
 ![zigzag](img/zigzag.svg.png)
 
 In the above, the frequent changes from acceleration to deceleration
 can cause the machine to vibrate which causes stress on the machine
-and increases the noise. Klipper implements a mechanism to ensure
+and increases the noise. Kalico implements a mechanism to ensure
 there is always some movement at a cruising speed between acceleration
 and deceleration. This is done by reducing the top speed of some moves
 (or sequence of moves) to ensure there is a minimum distance traveled
 at cruising speed relative to the distance traveled during
 acceleration and deceleration.
 
-Klipper implements this feature by tracking both a regular move
+Kalico implements this feature by tracking both a regular move
 acceleration as well as a virtual "acceleration to deceleration" rate:
 
 ![smoothed](img/smoothed.svg.png)
@@ -137,18 +137,18 @@ Once the look-ahead process completes, the print head movement for the
 given move is fully known (time, start position, end position,
 velocity at each point) and it is possible to generate the step times
 for the move. This process is done within "kinematic classes" in the
-Klipper code. Outside of these kinematic classes, everything is
+Kalico code. Outside of these kinematic classes, everything is
 tracked in millimeters, seconds, and in cartesian coordinate space.
 It's the task of the kinematic classes to convert from this generic
 coordinate system to the hardware specifics of the particular printer.
 
-Klipper uses an
+Kalico uses an
 [iterative solver](https://en.wikipedia.org/wiki/Root-finding_algorithm)
 to generate the step times for each stepper. The code contains the
 formulas to calculate the ideal cartesian coordinates of the head at
 each moment in time, and it has the kinematic formulas to calculate
 the ideal stepper positions based on those cartesian coordinates. With
-these formulas, Klipper can determine the ideal time that the stepper
+these formulas, Kalico can determine the ideal time that the stepper
 should be at each step position. The given steps are then scheduled at
 these calculated times.
 
@@ -216,7 +216,7 @@ would be smaller. Thus the higher stepper acceleration does not result
 in significantly higher stepper torque and it is therefore considered
 harmless.
 
-However, to avoid extreme cases, Klipper enforces a maximum ceiling on
+However, to avoid extreme cases, Kalico enforces a maximum ceiling on
 stepper acceleration of three times the printer's configured maximum
 move acceleration. (Similarly, the maximum velocity of the stepper is
 limited to three times the maximum move velocity.) In order to enforce
@@ -226,7 +226,7 @@ acceleration and velocity.
 
 ### Extruder kinematics
 
-Klipper implements extruder motion in its own kinematic class. Since
+Kalico implements extruder motion in its own kinematic class. Since
 the timing and speed of each print head movement is fully known for
 each move, it's possible to calculate the step times for the extruder
 independently from the step time calculations of the print head
@@ -270,7 +270,7 @@ See the [pressure advance](Pressure_Advance.md) document for
 information on how to find this pressure advance coefficient.
 
 The basic pressure advance formula can cause the extruder motor to
-make sudden velocity changes. Klipper implements "smoothing" of the
+make sudden velocity changes. Kalico implements "smoothing" of the
 extruder movement to avoid this.
 
 ![pressure-advance](img/pressure-velocity.png)

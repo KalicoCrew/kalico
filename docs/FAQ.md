@@ -52,7 +52,7 @@ each platform. Unfortunately, there is a lot of variance in flashing
 methods, so the "make flash" command may not work on all boards.
 
 If you're having an intermittent failure or you do have a standard
-setup, then double check that Klipper isn't running when flashing
+setup, then double check that Kalico isn't running when flashing
 (sudo service klipper stop), make sure OctoPrint isn't trying to
 connect directly to the device (open the Connection tab in the web
 page and click Disconnect if the Serial Port is set to the device),
@@ -70,15 +70,15 @@ additional information.
 
 ## How do I change the serial baud rate?
 
-The recommended baud rate for Klipper is 250000. This baud rate works
-well on all micro-controller boards that Klipper supports. If you've
+The recommended baud rate for Kalico is 250000. This baud rate works
+well on all micro-controller boards that Kalico supports. If you've
 found an online guide recommending a different baud rate, then ignore
 that part of the guide and continue with the default value of 250000.
 
 If you want to change the baud rate anyway, then the new rate will
 need to be configured in the micro-controller (during **make
 menuconfig**) and that updated code will need to be compiled and
-flashed to the micro-controller. The Klipper printer.cfg file will
+flashed to the micro-controller. The Kalico printer.cfg file will
 also need to be updated to match that baud rate (see the
 [config reference](Config_Reference.md#mcu) for details).  For
 example:
@@ -88,20 +88,20 @@ baud: 250000
 ```
 
 The baud rate shown on the OctoPrint web page has no impact on the
-internal Klipper micro-controller baud rate. Always set the OctoPrint
-baud rate to 250000 when using Klipper.
+internal Kalico micro-controller baud rate. Always set the OctoPrint
+baud rate to 250000 when using Kalico.
 
-The Klipper micro-controller baud rate is not related to the baud rate
+The Kalico micro-controller baud rate is not related to the baud rate
 of the micro-controller's bootloader. See the
 [bootloader document](Bootloaders.md) for additional information on
 bootloaders.
 
-## Can I run Klipper on something other than a Raspberry Pi 3?
+## Can I run Kalico on something other than a Raspberry Pi 3?
 
 The recommended hardware is a Raspberry Pi 2, Raspberry Pi 3, or
 Raspberry Pi 4.
 
-Klipper will run on a Raspberry Pi 1 and on the Raspberry Pi Zero, but
+Kalico will run on a Raspberry Pi 1 and on the Raspberry Pi Zero, but
 these boards don't have enough processing power to run OctoPrint
 well. It is common for print stalls to occur on these slower machines
 when printing directly from OctoPrint. (The printer may move faster
@@ -113,36 +113,36 @@ feature when printing (see
 For running on the Beaglebone, see the
 [Beaglebone specific installation instructions](Beaglebone.md).
 
-Klipper has been run on other machines. The Klipper host software only
+Kalico has been run on other machines. The Kalico host software only
 requires Python running on a Linux (or similar) computer. However, if
 you wish to run it on a different machine you will need Linux admin
 knowledge to install the system prerequisites for that particular
 machine. See the [install-octopi.sh](../scripts/install-octopi.sh)
 script for further information on the necessary Linux admin steps.
 
-If you are looking to run the Klipper host software on a low-end chip,
+If you are looking to run the Kalico host software on a low-end chip,
 then be aware that, at a minimum, a machine with "double precision
 floating point" hardware is required.
 
-If you are looking to run the Klipper host software on a shared
+If you are looking to run the Kalico host software on a shared
 general-purpose desktop or server class machine, then note that
-Klipper has some real-time scheduling requirements. If, during a
+Kalico has some real-time scheduling requirements. If, during a
 print, the host computer also performs an intensive general-purpose
 computing task (such as defragmenting a hard drive, 3d rendering,
-heavy swapping, etc.), then it may cause Klipper to report print
+heavy swapping, etc.), then it may cause Kalico to report print
 errors.
 
 Note: If you are not using an OctoPi image, be aware that several
 Linux distributions enable a "ModemManager" (or similar) package that
-can disrupt serial communication. (Which can cause Klipper to report
+can disrupt serial communication. (Which can cause Kalico to report
 seemingly random "Lost communication with MCU" errors.) If you install
-Klipper on one of these distributions you may need to disable that
+Kalico on one of these distributions you may need to disable that
 package.
 
-## Can I run multiple instances of Klipper on the same host machine?
+## Can I run multiple instances of Kalico on the same host machine?
 
-It is possible to run multiple instances of the Klipper host software,
-but doing so requires Linux admin knowledge. The Klipper installation
+It is possible to run multiple instances of the Kalico host software,
+but doing so requires Linux admin knowledge. The Kalico installation
 scripts ultimately cause the following Unix command to be run:
 ```
 ~/klippy-env/bin/python ~/klipper/klippy/klippy.py ~/printer.cfg -l /tmp/klippy.log
@@ -162,13 +162,13 @@ as examples.
 
 ## Do I have to use OctoPrint?
 
-The Klipper software is not dependent on OctoPrint. It is possible to
-use alternative software to send commands to Klipper, but doing so
+The Kalico software is not dependent on OctoPrint. It is possible to
+use alternative software to send commands to Kalico, but doing so
 requires Linux admin knowledge.
 
-Klipper creates a "virtual serial port" via the "/tmp/printer" file,
+Kalico creates a "virtual serial port" via the "/tmp/printer" file,
 and it emulates a classic 3d-printer serial interface via that file.
-In general, alternative software may work with Klipper as long as it
+In general, alternative software may work with Kalico as long as it
 can be configured to use "/tmp/printer" for the printer serial port.
 
 ## Why can't I move the stepper before homing the printer?
@@ -193,7 +193,7 @@ process itself (or fundamentally does not have a homing process) then
 consider using a safe_z_home or homing_override section in the config
 file. If you need to move a stepper for diagnostic or debugging
 purposes then consider adding a force_move section to the config
-file. See [config reference](Config_Reference.md#customized_homing)
+file. See [config reference](Config_Reference.md#customized-homing)
 for further details on these options.
 
 ## Why is the Z position_endstop set to 0.5 in the default configs?
@@ -218,7 +218,7 @@ try reducing the max_z_velocity setting in the printer config.
 Long answer: In practice Marlin can typically only step at a rate of
 around 10000 steps per second. If it is requested to move at a speed
 that would require a higher step rate then Marlin will generally just
-step as fast as it can. Klipper is able to achieve much higher step
+step as fast as it can. Kalico is able to achieve much higher step
 rates, but the stepper motor may not have sufficient torque to move at
 a higher speed. So, for a Z axis with a high gearing ratio or high
 microsteps setting the actual obtainable max_z_velocity may be smaller
@@ -228,9 +228,9 @@ than what is configured in Marlin.
 
 If using the TMC2208 (or TMC2224) driver in "standalone mode" then
 make sure to use the
-[latest version of Klipper](#how-do-i-upgrade-to-the-latest-software). A
+[latest version of Kalico](#how-do-i-upgrade-to-the-latest-software). A
 workaround for a TMC2208 "stealthchop" driver problem was added to
-Klipper in mid-March of 2020.
+Kalico in mid-March of 2020.
 
 ## I keep getting random "Lost communication with MCU" errors
 
@@ -305,7 +305,7 @@ heaters and temperature sensors are functioning correctly. See the
 [config reference](Config_Reference.md#verify_heater) for further
 details.
 
-## How do I convert a Marlin pin number to a Klipper pin name?
+## How do I convert a Marlin pin number to a Kalico pin name?
 
 Short answer: A mapping is available in the
 [sample-aliases.cfg](../config/sample-aliases.cfg) file. Use that file
@@ -315,11 +315,11 @@ also possible to copy the relevant
 config file and use the aliases in your config, but it is preferable
 to translate and use the actual micro-controller pin names.) Note that
 the sample-aliases.cfg file uses pin names that start with the prefix
-"ar" instead of "D" (eg, Arduino pin `D23` is Klipper alias `ar23`)
+"ar" instead of "D" (eg, Arduino pin `D23` is Kalico alias `ar23`)
 and the prefix "analog" instead of "A" (eg, Arduino pin `A14` is
-Klipper alias `analog14`).
+Kalico alias `analog14`).
 
-Long answer: Klipper uses the standard pin names defined by the
+Long answer: Kalico uses the standard pin names defined by the
 micro-controller. On the Atmega chips these hardware pins have names
 like `PA4`, `PC7`, or `PD2`.
 
@@ -331,7 +331,7 @@ In particular the Arduino pin numbers frequently don't translate to
 the same hardware names. For example, `D21` is `PD0` on one common
 Arduino board, but is `PC7` on another common Arduino board.
 
-To avoid this confusion, the core Klipper code uses the standard pin
+To avoid this confusion, the core Kalico code uses the standard pin
 names defined by the micro-controller.
 
 ## Do I have to wire my device to a specific type of micro-controller pin?
@@ -340,18 +340,18 @@ It depends on the type of device and type of pin:
 
 ADC pins (or Analog pins): For thermistors and similar "analog"
 sensors, the device must be wired to an "analog" or "ADC" capable pin
-on the micro-controller. If you configure Klipper to use a pin that is
-not analog capable, Klipper will report a "Not a valid ADC pin" error.
+on the micro-controller. If you configure Kalico to use a pin that is
+not analog capable, Kalico will report a "Not a valid ADC pin" error.
 
-PWM pins (or Timer pins): Klipper does not use hardware PWM by default
+PWM pins (or Timer pins): Kalico does not use hardware PWM by default
 for any device. So, in general, one may wire heaters, fans, and
 similar devices to any general purpose IO pin. However, fans and
 output_pin devices may be optionally configured to use `hardware_pwm:
 True`, in which case the micro-controller must support hardware PWM on
-the pin (otherwise, Klipper will report a "Not a valid PWM pin"
+the pin (otherwise, Kalico will report a "Not a valid PWM pin"
 error).
 
-IRQ pins (or Interrupt pins): Klipper does not use hardware interrupts
+IRQ pins (or Interrupt pins): Kalico does not use hardware interrupts
 on IO pins, so it is never necessary to wire a device to one of these
 micro-controller pins.
 
@@ -371,11 +371,11 @@ general purpose IO pin.
 ## How do I cancel an M109/M190 "wait for temperature" request?
 
 Navigate to the OctoPrint terminal tab and issue an M112 command in
-the terminal box. The M112 command will cause Klipper to enter into a
+the terminal box. The M112 command will cause Kalico to enter into a
 "shutdown" state, and it will cause OctoPrint to disconnect from
-Klipper. Navigate to the OctoPrint connection area and click on
+Kalico. Navigate to the OctoPrint connection area and click on
 "Connect" to cause OctoPrint to reconnect. Navigate back to the
-terminal tab and issue a FIRMWARE_RESTART command to clear the Klipper
+terminal tab and issue a FIRMWARE_RESTART command to clear the Kalico
 error state.  After completing this sequence, the previous heating
 request will be canceled and a new print may be started.
 
@@ -397,29 +397,29 @@ only lose steps in increments of 4 full steps. (So, if one is using 16
 microsteps, then a lost step on the stepper would result in the "mcu:"
 step counter being off by a multiple of 64 microsteps.)
 
-## Why does Klipper report errors? I lost my print!
+## Why does Kalico report errors? I lost my print!
 
 Short answer: We want to know if our printers detect a problem so that
 the underlying issue can be fixed and we can obtain great quality
 prints. We definitely do not want our printers to silently produce low
 quality prints.
 
-Long answer: Klipper has been engineered to automatically workaround
+Long answer: Kalico has been engineered to automatically workaround
 many transient problems. For example, it automatically detects
 communication errors and will retransmit; it schedules actions in
 advance and buffers commands at multiple layers to enable precise
 timing even with intermittent interference. However, should the
 software detect an error that it can not recover from, if it is
 commanded to take an invalid action, or if it detects it is hopelessly
-unable to perform its commanded task, then Klipper will report an
+unable to perform its commanded task, then Kalico will report an
 error. In these situations there is a high risk of producing a
 low-quality print (or worse). It is hoped that alerting the user will
 empower them to fix the underlying issue and improve the overall
 quality of their prints.
 
-There are some related questions: Why doesn't Klipper pause the print
+There are some related questions: Why doesn't Kalico pause the print
 instead? Report a warning instead? Check for errors before the print?
-Ignore errors in user typed commands? etc? Currently Klipper reads
+Ignore errors in user typed commands? etc? Currently Kalico reads
 commands using the G-Code protocol, and unfortunately the G-Code
 command protocol is not flexible enough to make these alternatives
 practical today. There is developer interest in improving the user
@@ -478,7 +478,7 @@ Note that the RESTART and FIRMWARE_RESTART g-code commands do not load
 new software - the above "sudo service klipper restart" and "make
 flash" commands are needed for a software change to take effect.
 
-## How do I uninstall Klipper?
+## How do I uninstall Kalico?
 
 On the firmware end, nothing special needs to happen. Just follow the
 flashing directions for the new firmware.

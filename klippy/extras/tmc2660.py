@@ -119,7 +119,6 @@ class TMC2660CurrentHelper(tmc.BaseTMCCurrentHelper):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
 
         self.current = self.req_run_current
-        self.sense_resistor = config.getfloat("sense_resistor")
         vsense, cs = self._calc_current(self.req_run_current)
         self.fields.set_field("cs", cs)
         self.fields.set_field("vsense", vsense)

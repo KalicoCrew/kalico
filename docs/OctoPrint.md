@@ -1,7 +1,7 @@
-# OctoPrint for Klipper
+# Using OctoPrint
 
-Klipper has a few options for its front ends, Octoprint was the first
-and original front end for Klipper. This document will give
+Kalico has a few options for its front ends, Octoprint was the first
+and original front end for Kalico. This document will give
 a brief overview of installing with this option.
 
 ## Install with OctoPi
@@ -27,12 +27,12 @@ sudo apt install git
 then proceed:
 ```
 cd ~
-git clone https://github.com/Klipper3d/klipper
+git clone https://github.com/KalicoCrew/kalico klipper
 ./klipper/scripts/install-octopi.sh
 ```
 
-The above will download Klipper, install the needed system dependencies,
-setup Klipper to run at system startup, and start the Klipper host
+The above will download Kalico, install the needed system dependencies,
+setup Kalico to run at system startup, and start the Kalico host
 software. It will require an internet connection and it may take a few
 minutes to complete.
 
@@ -42,9 +42,9 @@ KIAUH can be used to install OctoPrint on a variety of Linux based systems
 that run a form of Debian. More information can be found
 at https://github.com/dw-0/kiauh
 
-## Configuring OctoPrint to use Klipper
+## Configuring OctoPrint to use Kalico
 
-The OctoPrint web server needs to be configured to communicate with the Klipper
+The OctoPrint web server needs to be configured to communicate with the Kalico
 host software. Using a web browser, login to the OctoPrint web page and then
 configure the following items:
 
@@ -52,12 +52,12 @@ Navigate to the Settings tab (the wrench icon at the top of the page).
 Under "Serial Connection" in "Additional serial ports" add:
 
 ```
-~/printer_data/comms/klippy.sock
+~/printer_data/comms/klippy.serial
 ```
+
 Then click "Save".
 
-_In some older setups this address may be `/tmp/printer`_
-
+_In some older setups this address may be `/tmp/printer`, depending on your setup, you may need to keep this line as well_
 
 Enter the Settings tab again and under "Serial Connection" change the "Serial Port"
 setting to the one added above.
@@ -73,7 +73,7 @@ try reloading the page.)
 Once connected, navigate to the "Terminal" tab and type "status" (without the quotes)
 into the command entry box and click "Send". The terminal window will likely report
 there is an error opening the config file - that means OctoPrint is successfully
-communicating with Klipper.
+communicating with Kalico.
 
 Please proceed to [Installation.md](Installation.md) and the
 _Building and flashing the micro-controller_ section

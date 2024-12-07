@@ -44,6 +44,15 @@ class DangerOptions:
         self.bgflush_extra_time = config.getfloat(
             "bgflush_extra_time", 0.250, minval=0.0
         )
+        self.homing_start_delay = config.getfloat(
+            "homing_start_delay", 0.001, minval=0.0
+        )
+        self.endstop_sample_time = config.getfloat(
+            "endstop_sample_time", 0.000015, minval=0
+        )
+        self.endstop_sample_count = config.getint(
+            "endstop_sample_count", 4, minval=1
+        )
 
         if self.minimal_logging:
             self.log_statistics = False

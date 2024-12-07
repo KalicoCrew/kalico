@@ -2,11 +2,25 @@
 
 This document covers recent software changes to the config file that
 are not backwards compatible. It is a good idea to review this
-document when upgrading the Klipper software.
+document when upgrading the Kalico software.
 
 All dates in this document are approximate.
 
 ## Changes
+
+20241202: The `sense_resistor` parameter is now mandatory with no default value.
+
+20241201: In some cases Klipper may have ignored leading characters or
+spaces in a traditional G-Code command. For example, "99M123" may have
+been interpreted as "M123" and "M 321" may have been interpreted as
+"M321". Klipper will now report these cases with an "Unknown command"
+warning.
+
+20241125: The `off_below` parameter in fans config section is
+deprecated. It will be removed in the near future. Use
+[`min_power`](./Config_Reference.md#fans)
+instead. The `printer[fan object].speed` status will be replaced by
+`printer[fan object].value` and `printer[fan object].power`.
 
 20240430: The `adc_ignore_limits` parameter in the `[danger_options]`
 config section has been renamed to `temp_ignore_limits` and it now
@@ -276,7 +290,7 @@ removed in the near future.  Most users can replace a
 `default_parameter_NAME: VALUE` config option with a line like the
 following in the start of the macro: ` {% set NAME =
 params.NAME|default(VALUE)|float %}`.  See the [Command Templates
-document](Command_Templates.md#macro-parameters) for examples.
+document](Command_Templates.md) for examples.
 
 20210430: The SET_VELOCITY_LIMIT (and M204) command may now set a
 velocity, acceleration, and square_corner_velocity larger than the

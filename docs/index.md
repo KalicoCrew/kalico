@@ -1,19 +1,23 @@
 ---
 hide:
   - toc
-title: Welcome
+title: Kalico Documentation
 ---
 
-![](img/klipper-logo.png){ .center-image }
+# Welcome to the Kalico documentation!
 
-Danger-Klipper a community-maintained fork of the Klipper firmware.
-Klipper is a 3d-Printer firmware. It combines the power of a general
-purpose computer with one or more micro-controllers. See the
-[features](Features.md) document for more information on why you
-should use Klipper.
+![](logo/kalico-big.png){ .nobg .center-image .main-logo }
 
-To begin using Klipper start by [installing](Installation.md) it.
+Kalico is a community-maintained fork of the Klipper 3D-Printer firmware. 
+It combines the power of a general purpose computer with one or more 
+micro-controllers. See the [features](Features.md) document for more 
+information on why you should use Kalico.
 
-Danger-Klipper is Free Software. Read the [documentation](Overview.md) or
-view [the Danger-Klipper code on github](https://github.com/DangerKlippers/danger-klipper).
+To begin using Kalico start by [installing](Installation.md) it. If you 
+consider migrating from Klipper to Kalico, please read our dedicated
+[migration guide](Migrating_from_Klipper.md).
+
+Kalico is Free Software. Read the [documentation](Overview.md) or
+view [the Kalico code on GitHub](https://github.com/KalicoCrew/kalico).
+
 We depend on the generous support from our [sponsors](Sponsors.md).

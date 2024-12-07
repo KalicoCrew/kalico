@@ -1,6 +1,6 @@
 # Parse gcode commands
 #
-# Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, re, logging, collections, shlex
@@ -36,19 +36,18 @@ class GCodeCommand:
 
     def get_raw_command_parameters(self):
         command = self._command
-        if command.startswith("M117 ") or command.startswith("M118 "):
-            command = command[:4]
-        rawparams = self._commandline
-        urawparams = rawparams.upper()
-        if not urawparams.startswith(command):
-            rawparams = rawparams[urawparams.find(command) :]
-            end = rawparams.rfind("*")
-            if end >= 0:
-                rawparams = rawparams[:end]
-        rawparams = rawparams[len(command) :]
-        if rawparams.startswith(" "):
-            rawparams = rawparams[1:]
-        return rawparams
+        origline = self._commandline
+        param_start = len(command)
+        param_end = len(origline)
+        if origline[:param_start].upper() != command:
+            # Skip any gcode line-number and ignore any trailing checksum
+            param_start += origline.upper().find(command)
+            end = origline.rfind("*")
+            if end >= 0 and origline[end + 1 :].isdigit():
+                param_end = end
+        if origline[param_start : param_start + 1].isspace():
+            param_start += 1
+        return origline[param_start:param_end]
 
     def ack(self, msg=None):
         if not self._need_ack:
@@ -196,11 +195,22 @@ class GCodeDispatch:
                 del self.base_gcode_handlers[cmd]
             self._build_status_commands()
             return old_cmd
+        if desc is None and func.__doc__:
+            desc = func.__doc__
         if cmd in self.ready_gcode_handlers:
             raise self.printer.config_error(
                 "gcode command %s already registered" % (cmd,)
             )
         if not self.is_traditional_gcode(cmd):
+            if (
+                cmd.upper() != cmd
+                or not cmd.replace("_", "A").isalnum()
+                or cmd[0].isdigit()
+                or cmd[1:2].isdigit()
+            ):
+                raise self.printer.config_error(
+                    "Can't register '%s' as it is an invalid name" % (cmd,)
+                )
             origfunc = func
 
             def func(params):
@@ -269,7 +279,7 @@ class GCodeDispatch:
         self._respond_state("Ready")
 
     # Parse input into commands
-    args_r = re.compile("([A-Z_]+|[A-Z*/])")
+    args_r = re.compile("([A-Z_]+|[A-Z*])")
 
     def _process_commands(self, commands, need_ack=True):
         for line in commands:
@@ -280,16 +290,14 @@ class GCodeDispatch:
                 line = line[:cpos]
             # Break line into parts and determine command
             parts = self.args_r.split(line.upper())
-            numparts = len(parts)
-            cmd = ""
-            if numparts >= 3 and parts[1] != "N":
-                cmd = parts[1] + parts[2].strip()
-            elif numparts >= 5 and parts[1] == "N":
+            if "".join(parts[:2]) == "N":
                 # Skip line number at start of command
-                cmd = parts[3] + parts[4].strip()
+                cmd = "".join(parts[3:5]).strip()
+            else:
+                cmd = "".join(parts[:3]).strip()
             # Build gcode "params" dictionary
             params = {
-                parts[i]: parts[i + 1].strip() for i in range(1, numparts, 2)
+                parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)
             }
             gcmd = GCodeCommand(self, cmd, origline, params, need_ack)
             # Invoke handler for command
@@ -350,30 +358,23 @@ class GCodeDispatch:
         self.respond_info("Klipper state: %s" % (state,), log=False)
 
     # Parameter parsing helpers
-    extended_r = re.compile(
-        r"^\s*(?:N[0-9]+\s*)?"
-        r"(?P<cmd>[a-zA-Z_][a-zA-Z0-9_]+)(?:\s+|$)"
-        r"(?P<args>[^#*;]*?)"
-        r"\s*(?:[#*;].*)?$"
-    )
-
     def _get_extended_params(self, gcmd):
-        m = self.extended_r.match(gcmd.get_commandline())
-        if m is None:
-            raise self.error(
-                "Malformed command '%s'" % (gcmd.get_commandline(),)
-            )
-        eargs = m.group("args")
+        rawparams = gcmd.get_raw_command_parameters()
+        # Extract args while allowing shell style quoting
+        s = shlex.shlex(rawparams, posix=True)
+        s.whitespace_split = True
+        s.commenters = "#;"
         try:
-            eparams = [earg.split("=", 1) for earg in shlex.split(eargs)]
+            eparams = [earg.split("=", 1) for earg in s]
             eparams = {k.upper(): v for k, v in eparams}
-            gcmd._params.clear()
-            gcmd._params.update(eparams)
-            return gcmd
         except ValueError as e:
             raise self.error(
                 "Malformed command '%s'" % (gcmd.get_commandline(),)
             )
+        # Update gcmd with new parameters
+        gcmd._params.clear()
+        gcmd._params.update(eparams)
+        return gcmd
 
     # G-Code special command handlers
     def cmd_default(self, gcmd):
@@ -393,12 +394,15 @@ class GCodeDispatch:
             if cmdline:
                 logging.debug(cmdline)
             return
-        if cmd.startswith("M117 ") or cmd.startswith("M118 "):
+        if " " in cmd:
             # Handle M117/M118 gcode with numeric and special characters
-            handler = self.gcode_handlers.get(cmd[:4], None)
-            if handler is not None:
-                handler(gcmd)
-                return
+            realcmd = cmd.split()[0]
+            if realcmd in ["M117", "M118", "M23"]:
+                handler = self.gcode_handlers.get(realcmd, None)
+                if handler is not None:
+                    gcmd._command = realcmd
+                    handler(gcmd)
+                    return
         elif cmd in ["M140", "M104"] and not gcmd.get_float("S", 0.0):
             # Don't warn about requests to turn off heaters when not present
             return

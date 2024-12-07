@@ -1,11 +1,11 @@
 # TMC drivers
 
 This document provides information on using Trinamic stepper motor
-drivers in SPI/UART mode on Klipper.
+drivers in SPI/UART mode on Kalico.
 
-Klipper can also use Trinamic drivers in their "standalone mode".
-However, when the drivers are in this mode, no special Klipper
-configuration is needed and the advanced Klipper features discussed in
+Kalico can also use Trinamic drivers in their "standalone mode".
+However, when the drivers are in this mode, no special Kalico
+configuration is needed and the advanced Kalico features discussed in
 this document are not available.
 
 In addition to this document, be sure to review the
@@ -16,7 +16,7 @@ In addition to this document, be sure to review the
 A higher driver current increases positional accuracy and torque.
 However, a higher current also increases the heat produced by the
 stepper motor and the stepper motor driver. If the stepper motor
-driver gets too hot it will disable itself and Klipper will report an
+driver gets too hot it will disable itself and Kalico will report an
 error. If the stepper motor gets too hot, it loses torque and
 positional accuracy. (If it gets very hot it may also melt plastic
 parts attached to it or near it.)
@@ -46,7 +46,7 @@ leave a stepper idle sufficiently long.
 If one wishes to reduce current to motors during print start routines,
 then consider issuing
 [SET_TMC_CURRENT](G-Codes.md#set_tmc_current) commands in a
-[START_PRINT macro](Slicers.md#klipper-gcode_macro) to adjust the
+[START_PRINT macro](Slicers.md#kalico-gcode_macro) to adjust the
 current before and after normal printing moves.
 
 Some printers with dedicated Z motors that are idle during normal
@@ -60,7 +60,7 @@ prefer to not specify a `hold_current`.
 
 ## Setting "spreadCycle" vs "stealthChop" Mode
 
-By default, Klipper places the TMC drivers in "spreadCycle" mode. If
+By default, Kalico places the TMC drivers in "spreadCycle" mode. If
 the driver supports "stealthChop" then it can be enabled by adding
 `stealthchop_threshold: 999999` to the TMC config section.
 
@@ -88,7 +88,7 @@ motor is at a non-zero velocity.
 The TMC driver `interpolate` setting may reduce the audible noise of
 printer movement at the cost of introducing a small systemic
 positional error. This systemic positional error results from the
-driver's delay in executing "steps" that Klipper sends it. During
+driver's delay in executing "steps" that Kalico sends it. During
 constant velocity moves, this delay results in a positional error of
 nearly half a configured microstep (more precisely, the error is half
 a microstep distance minus a 512th of a full step distance). For
@@ -116,7 +116,7 @@ Sensorless homing allows to home an axis without the need for a
 physical limit switch. Instead, the carriage on the axis is moved into
 the mechanical limit making the stepper motor lose steps. The stepper
 driver senses the lost steps and indicates this to the controlling MCU
-(Klipper) by toggling a pin. This information can be used by Klipper
+(Kalico) by toggling a pin. This information can be used by Kalico
 as end stop for the axis.
 
 This guide covers the setup of sensorless homing for the X axis of
@@ -300,7 +300,7 @@ stall.
 
 During these tuning tests, if a `G28 X0` command does not move all the
 way to the axis limit, then be careful with issuing any regular
-movement commands (eg, `G1`). Klipper will not have a correct
+movement commands (eg, `G1`). Kalico will not have a correct
 understanding of the carriage position and a move command may cause
 undesirable and confusing results.
 
@@ -344,7 +344,7 @@ necessary to run the tuning process again.
 
 #### Using Macros when Homing
 
-Unlike stock Klipper, in Danger Klipper, you do not need macros for
+Unlike Klipper, in Kalico, you do not need macros for
 sensorless homing management. Homing current is handled by the TMC block, 
 homing retract distance is used to define a minimum homing distance
 (which can also be manually configured) which is used for sensorless
@@ -354,7 +354,7 @@ for sensorless setup coming soon.
 ### Tips for sensorless homing on CoreXY
 
 It is possible to use sensorless homing on the X and Y carriages of a
-CoreXY printer. Klipper uses the `[stepper_x]` stepper to detect
+CoreXY printer. Kalico uses the `[stepper_x]` stepper to detect
 stalls when homing the X carriage and uses the `[stepper_y]` stepper
 to detect stalls when homing the Y carriage.
 
@@ -394,7 +394,7 @@ gcode:
 
 The `[DUMP_TMC command](G-Codes.md#dump_tmc) is a useful tool when
 configuring and diagnosing the drivers. It will report all fields
-configured by Klipper as well as all fields that can be queried from
+configured by Kalico as well as all fields that can be queried from
 the driver.
 
 All of the reported fields are defined in the Trinamic datasheet for
@@ -405,7 +405,7 @@ DUMP_TMC.
 
 ## Configuring driver_XXX settings
 
-Klipper supports configuring many low-level driver fields using
+Kalico supports configuring many low-level driver fields using
 `driver_XXX` settings. The
 [TMC driver config reference](Config_Reference.md#tmc-stepper-driver-configuration)
 has the full list of fields available for each type of driver.
@@ -419,7 +419,7 @@ driver. These datasheets can be found on the
 
 Note that the Trinamic datasheets sometime use wording that can
 confuse a high-level setting (such as "hysteresis end") with a
-low-level field value (eg, "HEND"). In Klipper, `driver_XXX` and
+low-level field value (eg, "HEND"). In Kalico, `driver_XXX` and
 SET_TMC_FIELD always set the low-level field value that is actually
 written to the driver. So, for example, if the Trinamic datasheet
 states that a value of 3 must be written to the HEND field to obtain a
@@ -430,8 +430,8 @@ high-level value of 0.
 
 ### Can I use stealthChop mode on an extruder with pressure advance?
 
-Many people successfully use "stealthChop" mode with Klipper's
-pressure advance. Klipper implements
+Many people successfully use "stealthChop" mode with Kalico's
+pressure advance. Kalico implements
 [smooth pressure advance](Kinematics.md#pressure-advance) which does
 not introduce any instantaneous velocity changes.
 
@@ -441,25 +441,25 @@ your particular printer.
 
 ### I keep getting "Unable to read tmc uart 'stepper_x' register IFCNT" errors?
 
-This occurs when Klipper is unable to communicate with a tmc2208 or
+This occurs when Kalico is unable to communicate with a tmc2208 or
 tmc2209 driver.
 
 Make sure that the motor power is enabled, as the stepper motor driver
 generally needs motor power before it can communicate with the
 micro-controller.
 
-If this error occurs after flashing Klipper for the first time, then
+If this error occurs after flashing Kalico for the first time, then
 the stepper driver may have been previously programmed in a state that
-is not compatible with Klipper. To reset the state, remove all power
+is not compatible with Kalico. To reset the state, remove all power
 from the printer for several seconds (physically unplug both USB and
 power plugs).
 
 Otherwise, this error is typically the result of incorrect UART pin
-wiring or an incorrect Klipper configuration of the UART pin settings.
+wiring or an incorrect Kalico configuration of the UART pin settings.
 
 ### I keep getting "Unable to write tmc spi 'stepper_x' register ..." errors?
 
-This occurs when Klipper is unable to communicate with a tmc2130 or
+This occurs when Kalico is unable to communicate with a tmc2130 or
 tmc5160 driver.
 
 Make sure that the motor power is enabled, as the stepper motor driver
@@ -467,15 +467,15 @@ generally needs motor power before it can communicate with the
 micro-controller.
 
 Otherwise, this error is typically the result of incorrect SPI wiring,
-an incorrect Klipper configuration of the SPI settings, or an
+an incorrect Kalico configuration of the SPI settings, or an
 incomplete configuration of devices on an SPI bus.
 
 Note that if the driver is on a shared SPI bus with multiple devices
 then be sure to fully configure every device on that shared SPI bus in
-Klipper. If a device on a shared SPI bus is not configured, then it
+Kalico. If a device on a shared SPI bus is not configured, then it
 may incorrectly respond to commands not intended for it and corrupt
 the communication to the intended device. If there is a device on a
-shared SPI bus that can not be configured in Klipper, then use a
+shared SPI bus that can not be configured in Kalico, then use a
 [static_digital_output config section](Config_Reference.md#static_digital_output)
 to set the CS pin of the unused device high (so that it will not
 attempt to use the SPI bus). The board's schematic is often a useful
@@ -486,7 +486,7 @@ associated pins.
 
 This type of error indicates the TMC driver detected a problem and has
 disabled itself. That is, the driver stopped holding its position and
-ignored movement commands. If Klipper detects that an active driver
+ignored movement commands. If Kalico detects that an active driver
 has disabled itself, it will transition the printer into a "shutdown"
 state.
 

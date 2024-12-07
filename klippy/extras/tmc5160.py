@@ -6,7 +6,6 @@
 import math
 from . import tmc
 from . import tmc2130
-from configfile import PrinterConfig
 
 TMC_FREQUENCY = 12000000.0
 
@@ -123,6 +122,12 @@ Fields["DRV_CONF"] = {
     "otselect": 0x03 << 16,
     "drvstrength": 0x03 << 18,
     "filt_isense": 0x03 << 20,
+}
+Fields["SHORT_CONF"] = {
+    "s2vs_level": 0x0F << 0,
+    "s2g_level": 0x0F << 8,
+    "short_filter": 0x03 << 16,
+    "shortdelay": 0x01 << 18,
 }
 Fields["DRV_STATUS"] = {
     "sg_result": 0x3FF << 0,
@@ -255,23 +260,7 @@ MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
-        pconfig: PrinterConfig = self.printer.lookup_object("configfile")
 
-        self.sense_resistor = config.get("sense_resistor", None)
-        if self.sense_resistor is None:
-            pconfig.warn(
-                "config",
-                f"""[{self.name}] sense_resistor not specified; using default = 0.075.
-                If this value is wrong, it might burn your house down.
-                This parameter will be mandatory in future versions.
-                Specify the parameter to resolve this warning""",
-                self.name,
-                "sense_resistor",
-            )
-
-        self.sense_resistor = config.getfloat(
-            "sense_resistor", 0.075, above=0.0
-        )
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -392,6 +381,22 @@ class TMC5160:
         set_config_field(config, "bbmclks", 4)
         set_config_field(config, "bbmtime", 0)
         set_config_field(config, "filt_isense", 0)
+        #   SHORT_CONF, being write only we can't partially update
+        # TODO: add a hook to read OTP on connect to get the defaults here
+        if config.getint("driver_s2vs_level", None, 4, 15) and config.getint(
+            "driver_s2g_level", None, 2, 15
+        ):
+            set_config_field(config, "s2vs_level", 6)
+            set_config_field(config, "s2g_level", 6)
+            set_config_field(config, "short_filter", 1)
+            set_config_field(config, "shortdelay", 0)
+        elif any(
+            config.get("driver_%s" % field, None, False)
+            for field in Fields["SHORT_CONF"].keys()
+        ):
+            raise config.error(
+                "driver_s2vs_level and driver_s2g_level are required to update short_conf"
+            )
         #   IHOLDIRUN
         set_config_field(config, "iholddelay", 6)
         #   PWMCONF

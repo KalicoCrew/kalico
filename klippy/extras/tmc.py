@@ -77,6 +77,8 @@ class FieldHelper:
             )
         else:
             val = config.getint(config_name, default, minval=0, maxval=maxval)
+        if default is None and val is None:
+            return
         return self.set_field(field_name, val)
 
     def pretty_format(self, reg_name, reg_value):
@@ -776,6 +778,8 @@ class BaseTMCCurrentHelper:
         self.name = config.get_name().split()[-1]
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
+
+        self.sense_resistor = config.getfloat("sense_resistor", above=0.0)
 
         # config_{run|hold|home}_current
         # represents an initial value set via config file

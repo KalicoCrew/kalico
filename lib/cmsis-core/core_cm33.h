@@ -2259,7 +2259,6 @@ typedef struct
 #endif /* defined (__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U) */
 /*@} */
 
-
 /**
   \ingroup    CMSIS_core_register
   \defgroup   CMSIS_register_aliases     Backwards Compatibility Aliases
@@ -2268,7 +2267,6 @@ typedef struct
  */
 #define ID_ADR  (ID_AFR)    /*!< SCB Auxiliary Feature Register */
 /*@} */
-
 
 /*******************************************************************************
  *                Hardware Abstraction Layer
@@ -3020,7 +3018,6 @@ __STATIC_INLINE void TZ_SAU_Disable(void)
   @{
  */
 
-
 /**
   \brief   Set Debug Authentication Control Register
   \details writes to Debug Authentication Control register.
@@ -3087,7 +3084,7 @@ __STATIC_INLINE uint32_t TZ_DCB_GetAuthCtrl_NS(void)
   @{
  */
 
-
+   
 /**
   \brief   Get Debug Authentication Status Register
   \details Reads Debug Authentication Status register.

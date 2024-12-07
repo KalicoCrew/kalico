@@ -62,7 +62,7 @@ class SX1509(object):
         self.reg_i_on_dict = {reg: 0 for reg in REG_I_ON}
 
     def _build_config(self):
-        # Reset the chip
+        # Reset the chip, Default RegClock/RegMisc 0x0
         self._mcu.add_config_cmd(
             "i2c_write oid=%d data=%02x%02x" % (self._oid, REG_RESET, 0x12)
         )
@@ -71,13 +71,11 @@ class SX1509(object):
         )
         # Enable Oscillator
         self._mcu.add_config_cmd(
-            "i2c_modify_bits oid=%d reg=%02x"
-            " clear_set_bits=%02x%02x" % (self._oid, REG_CLOCK, 0, (1 << 6))
+            "i2c_write oid=%d data=%02x%02x" % (self._oid, REG_CLOCK, (1 << 6))
         )
         # Setup Clock Divider
         self._mcu.add_config_cmd(
-            "i2c_modify_bits oid=%d reg=%02x"
-            " clear_set_bits=%02x%02x" % (self._oid, REG_MISC, 0, (1 << 4))
+            "i2c_write oid=%d data=%02x%02x" % (self._oid, REG_MISC, (1 << 4))
         )
         # Transfer all regs with their initial cached state
         for _reg, _data in self.reg_dict.items():
