@@ -113,7 +113,8 @@ class TestCase:
         )
         args = [
             sys.executable,
-            "./klippy/klippy.py",
+            "-m",
+            "klippy",
             config_fname,
             "-i",
             gcode_fname,
