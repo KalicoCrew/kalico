@@ -267,6 +267,9 @@ position_max:
 #homing_speed: 5.0
 #   Maximum velocity (in mm/s) of the stepper when homing. The default
 #   is 5mm/s.
+#homing_accel:
+#   Maximum accel (in mm/s) of the stepper when homing. The default
+#   is to use the max accel configured in the [printer]'s object.
 #homing_retract_dist: 5.0
 #   Distance to backoff (in mm) before homing a second time during
 #   homing. If `use_sensorless_homing` is false, this setting can be set
