@@ -20,6 +20,7 @@ class Move:
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
         self.accel = toolhead.max_accel
+        self.junction_deviation = toolhead.junction_deviation
         self.equilateral_corner_v2 = toolhead.equilateral_corner_v2
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
@@ -74,6 +75,12 @@ class Move:
             return
         # Allow extruder to calculate its maximum junction
         extruder_v2 = self.toolhead.extruder.calc_junction(prev_move, self)
+        max_start_v2 = min(
+            extruder_v2,
+            self.max_cruise_v2,
+            prev_move.max_cruise_v2,
+            prev_move.max_start_v2 + prev_move.delta_v2,
+        )
         # Find max velocity using "approximated centripetal velocity"
         axes_r = self.axes_r
         prev_axes_r = prev_move.axes_r
@@ -82,31 +89,29 @@ class Move:
             + axes_r[1] * prev_axes_r[1]
             + axes_r[2] * prev_axes_r[2]
         )
-        if junction_cos_theta > 0.999999:
-            return
-        junction_cos_theta = max(junction_cos_theta, -0.999999)
-        sin_theta_d2 = math.sqrt(0.5 * (1.0 - junction_cos_theta))
-        R_jd = sin_theta_d2 / (1.0 - sin_theta_d2)
-        # Approximated circle must contact moves no further away than mid-move
-        #   centripetal_v2 = .5 * self.move_d * self.accel * tan_theta_d2
-        cos_theta_d2 = math.sqrt(0.5 * (1.0 + junction_cos_theta))
-        quarter_tan_theta_d2 = 0.25 * sin_theta_d2 / cos_theta_d2
-        move_centripetal_v2 = self.delta_v2 * quarter_tan_theta_d2
-        prev_move_centripetal_v2 = prev_move.delta_v2 * quarter_tan_theta_d2
+        sin_theta_d2 = math.sqrt(max(0.5 * (1.0 - junction_cos_theta), 0.0))
+        cos_theta_d2 = math.sqrt(max(0.5 * (1.0 + junction_cos_theta), 0.0))
+        one_minus_sin_theta_d2 = 1.0 - sin_theta_d2
+        if one_minus_sin_theta_d2 > 0.0 and cos_theta_d2 > 0.0:
+            R_jd = sin_theta_d2 / one_minus_sin_theta_d2
+            move_jd_v2 = R_jd * self.junction_deviation * self.accel
+            pmove_jd_v2 = R_jd * prev_move.junction_deviation * prev_move.accel
+            # Approximated circle must contact moves no further than mid-move
+            #   centripetal_v2 = .5 * self.move_d * self.accel * tan_theta_d2
+            quarter_tan_theta_d2 = 0.25 * sin_theta_d2 / cos_theta_d2
+            move_centripetal_v2 = self.delta_v2 * quarter_tan_theta_d2
+            pmove_centripetal_v2 = prev_move.delta_v2 * quarter_tan_theta_d2
+            max_start_v2 = min(
+                max_start_v2,
+                move_jd_v2,
+                pmove_jd_v2,
+                move_centripetal_v2,
+                pmove_centripetal_v2,
+            )
         # Apply limits
-        self.max_start_v2 = min(
-            R_jd * self.equilateral_corner_v2,
-            R_jd * prev_move.equilateral_corner_v2,
-            move_centripetal_v2,
-            prev_move_centripetal_v2,
-            extruder_v2,
-            self.max_cruise_v2,
-            prev_move.max_cruise_v2,
-            prev_move.max_start_v2 + prev_move.delta_v2,
-        )
+        self.max_start_v2 = max_start_v2
         self.max_smoothed_v2 = min(
-            self.max_start_v2,
-            prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2,
+            max_start_v2, prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2
         )
 
     def set_junction(self, start_v2, cruise_v2, end_v2):
@@ -275,7 +280,7 @@ class ToolHead:
             "square_corner_velocity", 5.0, minval=0.0
         )
         self.equilateral_corner_v2 = 0.0
-        self.max_accel_to_decel = 0.0
+        self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
         self.check_stall_time = 0.0
