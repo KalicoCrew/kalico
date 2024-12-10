@@ -1097,7 +1097,9 @@ per_move_pressure_advance: False
 #   If true, uses pressure advance constant from trapq when processing moves
 #   This causes changes to pressure advance be taken into account immediately,
 #   for all moves in the current queue, rather than ~250ms later once the queue gets flushed
-
+#disable_if_connected:
+#   List of mcus that should disable the heater if connected, usefull for nozzle adxls
+#   as to not accidentally fry them due to heating the hotend.
 ```
 
 ### [heater_bed]
@@ -1113,6 +1115,7 @@ sensor_pin:
 control:
 min_temp:
 max_temp:
+disable_if_connected:
 #   See the "extruder" section for a description of the above parameters.
 ```
 
@@ -2932,6 +2935,7 @@ target temperature.
 #pwm_cycle_time:
 #min_temp:
 #max_temp:
+#disable_if_connected:
 #   See the "extruder" section for the definition of the above
 #   parameters.
 ```
