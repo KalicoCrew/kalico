@@ -1,8 +1,11 @@
 # Sponsors
 
-Kalico is free (as in "free beer") software. We depend on the generous support from
-sponsors. Please consider sponsoring Kalico or supporting our
-sponsors.
+Kalico is a community-driven, open-source project that is free to use (as in "free beer").
+While we don't have official sponsors yet, we are deeply grateful for the generous support
+from our community. Every contribution helps us continue improving Kalico for everyone.
+
+If you'd like to support Kalico, donations to our Ko-Fi are more than welcome:
+👉 [https://ko-fi.com/kalicocrew](https://ko-fi.com/kalicocrew)
 
 ## The People behind Kalico
 
