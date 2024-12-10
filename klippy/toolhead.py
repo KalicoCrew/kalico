@@ -279,6 +279,11 @@ class ToolHead:
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
         )
+        self.orig_cfg = {}
+        self.orig_cfg["max_velocity"] = self.max_velocity
+        self.orig_cfg["max_accel"] = self.max_accel
+        self.orig_cfg["min_cruise_ratio"] = self.min_cruise_ratio
+        self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
         self.equilateral_corner_v2 = 0.0
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
@@ -342,6 +347,11 @@ class ToolHead:
             "SET_VELOCITY_LIMIT",
             self.cmd_SET_VELOCITY_LIMIT,
             desc=self.cmd_SET_VELOCITY_LIMIT_help,
+        )
+        gcode.register_command(
+            "RESET_VELOCITY_LIMIT",
+            self.cmd_RESET_VELOCITY_LIMIT,
+            desc=self.cmd_RESET_VELOCITY_LIMIT_help,
         )
         gcode.register_command("M204", self.cmd_M204)
         self.printer.register_event_handler(
@@ -815,6 +825,28 @@ class ToolHead:
             and min_cruise_ratio is None
         ):
             gcmd.respond_info(msg, log=False)
+
+    cmd_RESET_VELOCITY_LIMIT_help = "Reset printer velocity limits"
+
+    def cmd_RESET_VELOCITY_LIMIT(self, gcmd):
+        self.max_velocity = self.orig_cfg["max_velocity"]
+        self.max_accel = self.orig_cfg["max_accel"]
+        self.square_corner_velocity = self.orig_cfg["square_corner_velocity"]
+        self.min_cruise_ratio = self.orig_cfg["min_cruise_ratio"]
+        self._calc_junction_deviation()
+        msg = (
+            "max_velocity: %.6f\n"
+            "max_accel: %.6f\n"
+            "minimum_cruise_ratio: %.6f\n"
+            "square_corner_velocity: %.6f"
+            % (
+                self.max_velocity,
+                self.max_accel,
+                self.min_cruise_ratio,
+                self.square_corner_velocity,
+            )
+        )
+        gcmd.respond_info(msg, log=False)
 
     def cmd_M204(self, gcmd):
         # Use S for accel
