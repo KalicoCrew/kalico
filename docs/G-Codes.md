@@ -313,7 +313,7 @@ from executing.
 ### [delta_calibrate]
 
 The following commands are available when the
-[delta_calibrate] config section is enabled (also see the 
+[delta_calibrate] config section is enabled (also see the
 [delta calibrate guide](Delta_Calibrate.md)).
 
 #### DELTA_CALIBRATE
@@ -1877,6 +1877,18 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
+`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This
+command will probe the points specified in the config and then make independent
+adjustments to each Z stepper to compensate for tilt. See the PROBE command for
+details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
+value overrides the `horizontal_move_z` option specified in the config file.
+
+### [z_tilt_ng]
+
+The following commands are available when the
+[z_tilt_ng config section](Config_Reference.md#z_tilt_ng) is enabled.
+
+#### Z_TILT_ADJUST
 `Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]
 [INCREASING_THRESHOLD=<value>]`: This
 command will probe the points specified in the config and then make independent
@@ -1900,5 +1912,3 @@ configured in the z_tilt_ng section:
   small misalgnments of the steppers. The amount of misalignment can be
   configured with the DELTA paramter. It iterates until the calculated
   positions cannot be improved any further. This is can be lengthy procedure.
-IMPORTANT: For the Z_TILT_CALIBRATE and Z_TILT_AUTODETECT commands to work
-the numpy package has to be installed via ~/klippy-env/bin/pip install -v numpy.

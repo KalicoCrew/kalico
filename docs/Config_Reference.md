@@ -1423,6 +1423,13 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 
 #### [z_tilt_ng]
 
+z_tilt's next generation, adding the Z_TILT_CALIBRATE and Z_TILT_AUTODETECT
+extended [G-Code commands](G-Codes.md#z_tilt_ng). Z_TILT_CALIBRATE performs multiple
+probing runs to calculate z_offsets, enabling accurate tilt adjustment with fewer
+probe points. Z_TILT_AUTODETECT automatically determines pivot positions for each
+Z stepper through iterative probing. When this section is present, these extended
+commands become available, enhancing bed leveling accuracy and calibration efficiency.
+
 ```
 [z_tilt_ng]
 #z_positions:
