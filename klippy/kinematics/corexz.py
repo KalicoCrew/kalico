@@ -3,7 +3,7 @@
 # Copyright (C) 2020  Maks Zolin <mzolin@vorondesign.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper
+from klippy import stepper
 
 
 class CoreXZKinematics:

@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, os
-import pins, mcu
+from klippy import pins, mcu
 from . import bus
 
 REPLICAPE_MAX_CURRENT = 3.84
