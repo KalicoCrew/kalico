@@ -302,6 +302,10 @@ class ControlCurve:
         if points[-1][0] < temperature_fan.max_temp:
             points.append((temperature_fan.max_temp, points[-1][1]))
 
+        self.smooth_readings = config.getint("smooth_readings", default=None, minval=0)
+        if self.smooth_readings is not None:
+            config.deprecate("smooth_readings")
+
         self.cooling_hysteresis = config.getfloat("cooling_hysteresis", 0.0)
         self.heating_hysteresis = config.getfloat("heating_hysteresis", 0.0)
         self.curve_standard = np.array([*points]).transpose()
