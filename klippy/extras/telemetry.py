@@ -10,6 +10,7 @@ import logging
 import pathlib
 import platform
 import sys
+import shlex
 import threading
 import urllib.request
 import uuid
@@ -198,25 +199,50 @@ class KalicoTelementry:
 
         {
             "machine": "x86_64",
-            "os_release": {
-                "NAME": "Debian GNU/Linux",
-                "ID": "debian",
-                "PRETTY_NAME": "Debian GNU/Linux trixie/sid",
-                "VERSION_CODENAME": "trixie",
-                "HOME_URL": "https://www.debian.org/",
-                "SUPPORT_URL": "https://www.debian.org/support",
-                "BUG_REPORT_URL": "https://bugs.debian.org/"
-            },
+            "os_release": { ... },
             "version": "#1 SMP PREEMPT_DYNAMIC Debian 6.12~rc6-1~exp1 (2024-11-10)",
             "python": "3.12.7 (main, Nov  8 2024, 17:55:36) [GCC 14.2.0]"
         }
         """
         return {
             "machine": platform.machine(),
-            "os_release": platform.freedesktop_os_release(),
+            "os_release": self._collect_os_release(),
             "version": platform.version(),
             "python": sys.version,
         }
+
+    def _collect_os_release(self):
+        """
+        Collect the freedesktop OS-RELEASE information.
+        See also `platform.freedesktop_os_release()` (available in Python 3.10+)
+
+        {
+            "NAME": "Debian GNU/Linux",
+            "ID": "debian",
+            "PRETTY_NAME": "Debian GNU/Linux trixie/sid",
+            "VERSION_CODENAME": "trixie",
+            "HOME_URL": "https://www.debian.org/",
+            "SUPPORT_URL": "https://www.debian.org/support",
+            "BUG_REPORT_URL": "https://bugs.debian.org/"
+        }
+        """
+        paths = [
+            pathlib.Path("/etc/os-release"),
+            pathlib.Path("/usr/lib/os-release"),
+        ]
+        path = next(filter(pathlib.Path.exists, paths), None)
+        if not path:
+            return
+
+        result = {}
+        with path.open("r") as fp:
+            for line in fp:
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", maxsplit=1)
+                result[key] = shlex.split(value)[0]
+
+        return result
 
     def _collect_printer_objects(self):
         """
