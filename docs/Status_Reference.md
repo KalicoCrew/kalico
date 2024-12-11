@@ -571,7 +571,7 @@ on a cartesian, hybrid_corexy or hybrid_corexz robot
 ## tools_calibrate
 
 The following information is available in the
-[tools_calibrate](Config_Reference.md#️-tools_calibrate) object:
+[tools_calibrate](Config_Reference.md#tools_calibrate) object:
 - `sensor_location`: Once calibrated, the location of the sensor
 - `last_result`: The last tool calibration result
 - `calibration_probe_inactive`: Status of the calibration probe as of

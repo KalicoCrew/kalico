@@ -7,6 +7,13 @@ import math, logging, multiprocessing, traceback
 from . import queuelogger
 
 
+def safe_float(v: str) -> float:
+    f = float(v)
+    if math.isnan(f) or math.isinf(f):
+        raise ValueError(f"{v} is not a valid float")
+    return f
+
+
 ######################################################################
 # Coordinate descent
 ######################################################################
