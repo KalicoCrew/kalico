@@ -3,6 +3,8 @@
 This document describes the commands that Kalico supports. These are
 commands that one may enter into the OctoPrint terminal tab.
 
+Sections and commands marked with an ⚠️ show commands that are new or behave differently from Klipper
+
 ## G-Code commands
 
 Kalico supports the following standard G-Code commands:
