@@ -232,6 +232,20 @@ class DockableProbe:
             config, "deactivate_gcode", ""
         )
 
+        self.pre_attach_gcode = gcode_macro.load_template(
+            config, "pre_attach_gcode", ""
+        )
+        self.post_attach_gcode = gcode_macro.load_template(
+            config, "post_attach_gcode", ""
+        )
+
+        self.pre_detach_gcode = gcode_macro.load_template(
+            config, "pre_detach_gcode", ""
+        )
+        self.post_detach_gcode = gcode_macro.load_template(
+            config, "post_detach_gcode", ""
+        )
+
         # Pins
         ppins = self.printer.lookup_object("pins")
         pin = config.get("pin")
@@ -493,6 +507,7 @@ class DockableProbe:
 
     def attach_probe(self, return_pos=None, always_restore_toolhead=False):
         self._lower_probe()
+        self.pre_attach_gcode.run_gcode_from_command()
 
         retry = 0
         while (
@@ -527,7 +542,10 @@ class DockableProbe:
             # Do NOT return to the original Z position after attach
             # as the probe might crash into the bed.
 
+        self.post_attach_gcode.run_gcode_from_command()
+
     def detach_probe(self, return_pos=None):
+        self.pre_detach_gcode.run_gcode_from_command()
         retry = 0
         while (
             self.get_probe_state() != PROBE_DOCKED
@@ -549,6 +567,8 @@ class DockableProbe:
 
         if self.get_probe_state() != PROBE_DOCKED:
             raise self.printer.command_error("Probe detach failed!")
+
+        self.post_detach_gcode.run_gcode_from_command()
 
         if return_pos and self.restore_toolhead:
             # return to the original XY position, if inside safe_dock area

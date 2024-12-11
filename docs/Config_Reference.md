@@ -2567,6 +2567,11 @@ detach_position: 0,0,0
 #dock_sense_pin:
 #   This supplemental pin can be defined to determine a docked state in
 #   addition to probe_sense_pin or check_open_attach.
+#pre_attach_gcode:
+#post_attach_gcode:
+#pre_detach_gcode:
+#post_detach_gcode:
+#
 #x_offset:
 #y_offset:
 #z_offset:
