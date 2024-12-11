@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, re, logging, collections, shlex
-import mathutil
+from . import mathutil
 
 
 class CommandError(Exception):
