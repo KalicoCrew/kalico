@@ -21,7 +21,6 @@ class Move:
         self.end_pos = tuple(end_pos)
         self.accel = toolhead.max_accel
         self.junction_deviation = toolhead.junction_deviation
-        self.equilateral_corner_v2 = toolhead.equilateral_corner_v2
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
@@ -55,6 +54,7 @@ class Move:
         self.delta_v2 = 2.0 * move_d * self.accel
         self.max_smoothed_v2 = 0.0
         self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
+        self.next_junction_v2 = 999999999.9
 
     def limit_speed(self, speed, accel):
         speed2 = speed**2
@@ -64,6 +64,9 @@ class Move:
         self.accel = min(self.accel, accel)
         self.delta_v2 = 2.0 * self.move_d * self.accel
         self.smooth_delta_v2 = min(self.smooth_delta_v2, self.delta_v2)
+
+    def limit_next_junction_speed(self, speed):
+        self.next_junction_v2 = min(self.next_junction_v2, speed**2)
 
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
@@ -79,6 +82,7 @@ class Move:
             extruder_v2,
             self.max_cruise_v2,
             prev_move.max_cruise_v2,
+            prev_move.next_junction_v2,
             prev_move.max_start_v2 + prev_move.delta_v2,
         )
         # Find max velocity using "approximated centripetal velocity"
@@ -279,7 +283,6 @@ class ToolHead:
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
         )
-        self.equilateral_corner_v2 = 0.0
         self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
@@ -577,6 +580,11 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
 
+    def limit_next_junction_speed(self, speed):
+        last_move = self.lookahead.get_last()
+        if last_move is not None:
+            last_move.limit_next_junction_speed(speed)
+
     def move(self, newpos, speed):
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
@@ -751,7 +759,7 @@ class ToolHead:
 
     def _calc_junction_deviation(self):
         scv2 = self.square_corner_velocity**2
-        self.equilateral_corner_v2 = scv2 * (math.sqrt(2.0) - 1.0)
+        self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
     def cmd_G4(self, gcmd):
