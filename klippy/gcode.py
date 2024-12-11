@@ -441,7 +441,7 @@ class GCodeDispatch:
     def cmd_M115(self, gcmd):
         # Get Firmware Version and Capabilities
         software_version = self.printer.get_start_args().get("software_version")
-        kw = {"FIRMWARE_NAME": "Klipper", "FIRMWARE_VERSION": software_version}
+        kw = {"FIRMWARE_NAME": "Kalico", "FIRMWARE_VERSION": software_version}
         msg = " ".join(["%s:%s" % (k, v) for k, v in kw.items()])
         did_ack = gcmd.ack(msg)
         if not did_ack:
