@@ -130,9 +130,7 @@ class KalicoTelementry:
         with filename.open("w", encoding="utf-8") as fp:
             json.dump(data, fp, indent=2)
 
-        gcmd.respond_info(
-            f"Example telemetry saved to {filename.relative_to(pathlib.Path.home())}"
-        )
+        gcmd.respond_info(f"Example telemetry saved to {filename}")
 
     def _get_machine_id(self):
         """
