@@ -28,6 +28,8 @@ class SectionInterpolation(configparser.Interpolation):
         self.access_tracking = access_tracking
 
     def before_get(self, parser, section, option, value, defaults):
+        if not isinstance(value, str):
+            return value
         depth = configparser.MAX_INTERPOLATION_DEPTH
         while depth:
             depth -= 1
