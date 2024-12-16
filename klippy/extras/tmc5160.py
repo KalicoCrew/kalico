@@ -3,6 +3,12 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+#
+# CS values can be set in this version of code.
+# driver_cs = -1 will auto set CS to what the TMC5160_calculations spreadsheet determines is best. This will make Rsense on the spreadsheet roughly match what is defined in Klipper code.
+# driver_cs = ## this allows the user to set the CS value to their choosing.
+# driver_cs = undefined. This will set CS = 31 as default in Klipper code. It's likely motors will need to be run under RMS current because chopper hystersis can not correctly be set, thus resulting in motors overheating, noise, and/or VFA's.
+#
 import math
 from . import tmc
 from . import tmc2130
@@ -260,22 +266,17 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
         self.sense_resistor = config.get("sense_resistor", None)
         if self.sense_resistor is None:
-            pconfig.warn(
+            raise config.error(
                 "config",
-                f"""[{self.name}] sense_resistor not specified; using default = 0.075.
+                f"""[{self.name}] sense_resistor not specified;
                 If this value is wrong, it might burn your house down.
-                This parameter will be mandatory in future versions.
+                This parameter is mandatory.
                 Specify the parameter to resolve this warning""",
                 self.name,
                 "sense_resistor",
             )
-#Recommend we remove this. It will burn the driver or motor up.
-        self.sense_resistor = config.getfloat(
-            "sense_resistor", 0.075, above=0.0
-        )
 
-        self.cs = config.getint("driver_cs", 31, maxval=31, minval=0)
-
+        self.cs = config.getint('driver_cs', 31, maxval=31, minval=-1)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -292,26 +293,30 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_globalscaler(self, current):
         cs = self._calc_current_bits(current)
-        globalscaler = int(
-            (current * 256.0 * self.sense_resistor * math.sqrt(2.0))
-            * ((cs + 1) / 32)
-            / VREF
-            + 0.5
-        )
+        globalscaler=int(
+            (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0) ) / (
+            (cs + 1) * VREF))
+        globalscaler = max(32, globalscaler)
         if globalscaler >= 256:
             globalscaler = 0
         return globalscaler
 
-    def _calc_current_bits(self, globalscaler):
-        if not globalscaler:
-            globalscaler = 256
-        cs = self.cs
+    def _calc_current_bits(self, current):
+        if self.cs == -1:
+            Ipeak = current * math.sqrt(2)
+            Rsens = self.sense_resistor
+            cs = int(math.ceil(Rsens * 32 * Ipeak / 0.32) - 1)
+        elif self.cs < 31:
+            cs = self.cs
         return max(0, min(31, cs))
 
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
         irun = self._calc_current_bits(run_current)
-        ihold = int((hold_current/run_current)*irun)
+        if hold_current == MAX_CURRENT:
+            ihold = irun
+        else:
+            ihold = int((hold_current/run_current)*irun)
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
@@ -338,14 +343,13 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         )
 
     def apply_current(self, print_time):
-        gscaler = self._calc_globalscaler(self.actual_current)
-        ihold = self._calc_current_bits(
-            min(self.actual_current, self.req_hold_current), gscaler
+        gscaler, irun, ihold = self._calc_current(
+            self.actual_current, self.req_hold_current
         )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
         self.fields.set_field("ihold", ihold)
-        val = self.fields.set_field("irun", self.cs)
+        val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
 
 
