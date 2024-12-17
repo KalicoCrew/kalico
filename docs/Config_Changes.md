@@ -8,6 +8,12 @@ All dates in this document are approximate.
 
 ## Changes
 
+20241217: The `driver_cs` parameter has been added to tmc5160. The
+ideal driver_cs value may be found by setting the CS value on the
+tmc5160_calculations.xlsx spreadsheet, under the chopper tab, so that
+the Rsense value in the spreadsheet matches `sense_resistor` as defined
+in printer.cfg.
+
 20241202: The `sense_resistor` parameter is now mandatory with no default value.
 
 20241125: The `off_below` parameter in fans config section is
