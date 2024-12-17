@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, gc, select, math, time, logging, queue
 import greenlet
-import chelper, util
+from . import chelper, util
 
 _NOW = 0.0
 _NEVER = 9999999999999999.0

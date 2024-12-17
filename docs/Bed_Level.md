@@ -4,7 +4,7 @@ Bed leveling (sometimes also referred to as "bed tramming") is
 critical to getting high quality prints. If a bed is not properly
 "leveled" it can lead to poor bed adhesion, "warping", and subtle
 problems throughout the print. This document serves as a guide to
-performing bed leveling in Klipper.
+performing bed leveling in Kalico.
 
 It's important to understand the goal of bed leveling. If the printer
 is commanded to a position `X0 Y0 Z10` during a print, then the goal
@@ -106,7 +106,7 @@ it is easily accounted for later in the calibration process.
 
 **Use an automated tool to determine precise Z heights!**
 
-Klipper has several helper scripts available (eg, MANUAL_PROBE,
+Kalico has several helper scripts available (eg, MANUAL_PROBE,
 Z_ENDSTOP_CALIBRATE, PROBE_CALIBRATE, DELTA_CALIBRATE). See the
 documents
 [described above](#choose-the-appropriate-calibration-mechanism) to
@@ -190,7 +190,7 @@ The easiest way to make this calculation is to print a test object
 that has straight walls on all sides. The large hollow square found in
 [docs/prints/square.stl](prints/square.stl) can be used for this.
 When slicing the object, make sure the slicer uses the same layer
-height and extrusion widths for the first level that it does for all
+height and extrusion widths for the first layer that it does for all
 subsequent layers. Use a coarse layer height (the layer height should
 be around 75% of the nozzle diameter) and do not use a brim or raft.
 

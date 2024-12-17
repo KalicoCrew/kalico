@@ -1,10 +1,10 @@
 # Debugging
 
-This document describes some of the Klipper debugging tools.
+This document describes some of the Kalico debugging tools.
 
 ## Running the regression tests
 
-The main Klipper GitHub repository uses "github actions" to run a
+The main Kalico GitHub repository uses "github actions" to run a
 series of regression tests. It can be useful to run some of these
 tests locally.
 
@@ -15,7 +15,7 @@ The source code "whitespace check" can be run with:
 
 The Klippy regression test suite requires "data dictionaries" from
 many platforms. The easiest way to obtain them is to
-[download them from github](https://github.com/DangerKlippers/danger-klipper/issues/1438).
+[download them from github](https://github.com/KalicoCrew/kalico/issues/1438).
 Once the data dictionaries are downloaded, use the following to run
 the regression suite:
 ```
@@ -26,9 +26,9 @@ tar xfz klipper-dict-20??????.tar.gz
 ## Manually sending commands to the micro-controller
 
 Normally, the host klippy.py process would be used to translate gcode
-commands to Klipper micro-controller commands. However, it's also
+commands to Kalico micro-controller commands. However, it's also
 possible to manually send these MCU commands (functions marked with
-the DECL_COMMAND() macro in the Klipper source code). To do so, run:
+the DECL_COMMAND() macro in the Kalico source code). To do so, run:
 
 ```
 ~/klippy-env/bin/python ./klippy/console.py /tmp/pseudoserial
@@ -58,7 +58,7 @@ make menuconfig
 make
 ```
 
-Once the above is done it is possible to run Klipper in batch mode
+Once the above is done it is possible to run Kalico in batch mode
 (see [installation](Installation.md) for the steps necessary to build
 the python virtual environment and a printer.cfg file):
 
@@ -84,8 +84,8 @@ micro-controller.
 
 ## Motion analysis and data logging
 
-Klipper supports logging its internal motion history, which can be
-later analyzed. To use this feature, Klipper must be started with the
+Kalico supports logging its internal motion history, which can be
+later analyzed. To use this feature, Kalico must be started with the
 [API Server](API_Server.md) enabled.
 
 Data logging is enabled with the `data_logger.py` tool. For example:
@@ -93,7 +93,7 @@ Data logging is enabled with the `data_logger.py` tool. For example:
 ~/klipper/scripts/motan/data_logger.py /tmp/klippy_uds mylog
 ```
 
-This command will connect to the Klipper API Server, subscribe to
+This command will connect to the Kalico API Server, subscribe to
 status and motion information, and log the results. Two files are
 generated - a compressed data file and an index file (eg,
 `mylog.json.gz` and `mylog.index.gz`). After starting the logging, it
@@ -230,16 +230,16 @@ make cfgclean python debian
 sudo dpkg -i build/debian/python3-simulavr*.deb
 ```
 
-To compile Klipper for use in simulavr, run:
+To compile Kalico for use in simulavr, run:
 
 ```
-cd /path/to/klipper
+cd /path/to/kalico
 make menuconfig
 ```
 
 and compile the micro-controller software for an AVR atmega644p and
 select SIMULAVR software emulation support. Then one can compile
-Klipper (run `make`) and then start the simulation with:
+Kalico (run `make`) and then start the simulation with:
 
 ```
 PYTHONPATH=/path/to/simulavr/build/pysimulavr/ ./scripts/avrsim.py out/klipper.elf
@@ -252,7 +252,7 @@ not need to set `PYTHONPATH`, and can simply run the simulator as
 
 Then, with simulavr running in another window, one can run the
 following to read gcode from a file (eg, "test.gcode"), process it
-with Klippy, and send it to Klipper running in simulavr (see
+with Klippy, and send it to Kalico running in simulavr (see
 [installation](Installation.md) for the steps necessary to build the
 python virtual environment):
 

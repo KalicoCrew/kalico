@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
-import stepper
+from klippy import stepper
 
 
 class PolarKinematics:

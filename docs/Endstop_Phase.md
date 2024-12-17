@@ -1,6 +1,6 @@
 # Endstop phase
 
-This document describes Klipper's stepper phase adjusted endstop
+This document describes Kalico's stepper phase adjusted endstop
 system. This functionality can improve the accuracy of traditional
 endstop switches. It is most useful when using a Trinamic stepper
 motor driver that has run-time configuration.
@@ -22,14 +22,14 @@ cycle through phases: 0, 1, 2, ... 61, 62, 63, 0, 1, 2, etc.
 Crucially, when the stepper motor is at a particular position on a
 linear rail it should always be at the same stepper phase. Thus, when
 a carriage triggers the endstop switch the stepper controlling that
-carriage should always be at the same stepper motor phase. Klipper's
+carriage should always be at the same stepper motor phase. Kalico's
 endstop phase system combines the stepper phase with the endstop
 trigger to improve the accuracy of the endstop.
 
 In order to use this functionality it is necessary to be able to
 identify the phase of the stepper motor. If one is using Trinamic
 TMC2130, TMC2208, TMC2224 or TMC2660 drivers in run-time configuration
-mode (ie, not stand-alone mode) then Klipper can query the stepper
+mode (ie, not stand-alone mode) then Kalico can query the stepper
 phase from the driver. (It is also possible to use this system on
 traditional stepper drivers if one can reliably reset the stepper
 drivers - see below for details.)
@@ -53,7 +53,7 @@ five `G28` commands.
 After performing the above, the `ENDSTOP_PHASE_CALIBRATE` command will
 often report the same (or nearly the same) phase for the stepper. This
 phase can be saved in the config file so that all future G28 commands
-use that phase. (So, in future homing operations, Klipper will obtain
+use that phase. (So, in future homing operations, Kalico will obtain
 the same position even if the endstop triggers a little earlier or a
 little later.)
 
@@ -111,7 +111,7 @@ SAVE_CONFIG
 * It is possible to use this system with traditional (non-Trinamic)
   stepper motor drivers. However, doing this requires making sure that
   the stepper motor drivers are reset every time the micro-controller
-  is reset. (If the two are always reset together then Klipper can
+  is reset. (If the two are always reset together then Kalico can
   determine the stepper phase by tracking the total number of steps it
   has commanded the stepper to move.) Currently, the only way to do
   this reliably is if both the micro-controller and stepper motor

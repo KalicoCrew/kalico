@@ -4,13 +4,49 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, glob, re, time, logging, configparser, io
-from extras.danger_options import get_danger_options
+from .extras.danger_options import get_danger_options
+from . import mathutil
+
 
 error = configparser.Error
 
 
 class sentinel:
     pass
+
+
+class SectionInterpolation(configparser.Interpolation):
+    """
+    variable interpolation replacing ${[section.]option}
+    """
+
+    _KEYCRE = re.compile(
+        r"\$\{(?:(?P<section>[^.:${}]+)[.:])?(?P<option>[^${}]+)\}"
+    )
+
+    def __init__(self, access_tracking):
+        self.access_tracking = access_tracking
+
+    def before_get(self, parser, section, option, value, defaults):
+        if not isinstance(value, str):
+            return value
+        depth = configparser.MAX_INTERPOLATION_DEPTH
+        while depth:
+            depth -= 1
+
+            match = self._KEYCRE.search(value)
+            if not match:
+                break
+
+            sect = match.group("section") or section
+            opt = match.group("option")
+
+            const = parser.get(sect, opt)
+            self.access_tracking.setdefault((sect, opt), const)
+
+            value = value[: match.start()] + const + value[match.end() :]
+
+        return value
 
 
 class ConfigWrapper:
@@ -49,6 +85,8 @@ class ConfigWrapper:
                 "Option '%s' in section '%s' must be specified"
                 % (option, self.section)
             )
+        if parser is float:
+            parser = mathutil.safe_float
         try:
             v = parser(self.section, option)
         except self.error as e:
@@ -209,7 +247,7 @@ class ConfigWrapper:
             default,
             seps=(sep,),
             count=count,
-            parser=float,
+            parser=mathutil.safe_float,
             note_valid=note_valid,
         )
 
@@ -412,14 +450,17 @@ class PrinterConfig:
         visited.remove(path)
 
     def _build_config_wrapper(self, data, filename):
-        if sys.version_info.major >= 3:
-            fileconfig = configparser.RawConfigParser(
-                strict=False, inline_comment_prefixes=(";", "#")
-            )
-        else:
-            fileconfig = configparser.RawConfigParser()
+        access_tracking = {}
+        fileconfig = configparser.RawConfigParser(
+            strict=False,
+            inline_comment_prefixes=(";", "#"),
+            interpolation=SectionInterpolation(access_tracking),
+        )
+
         self._parse_config(data, filename, fileconfig, set())
-        return ConfigWrapper(self.printer, fileconfig, {}, "printer")
+        return ConfigWrapper(
+            self.printer, fileconfig, access_tracking, "printer"
+        )
 
     def _build_config_string(self, config):
         sfile = io.StringIO()
@@ -450,7 +491,7 @@ class PrinterConfig:
             for option in self.autosave.fileconfig.options(section):
                 access_tracking[(section.lower(), option.lower())] = 1
         # Validate that there are no undefined parameters in the config file
-        valid_sections = {s: 1 for s, o in access_tracking}
+        valid_sections = {s for s, o in access_tracking}
         for section_name in fileconfig.sections():
             section = section_name.lower()
             if section not in valid_sections and section not in objects:
@@ -464,7 +505,7 @@ class PrinterConfig:
             for option in fileconfig.options(section_name):
                 option = option.lower()
                 if (section, option) not in access_tracking:
-                    if error_on_unused:
+                    if error_on_unused and section != "constants":
                         raise error(
                             "Option '%s' is not valid in section '%s'"
                             % (option, section)
@@ -520,7 +561,10 @@ class PrinterConfig:
 
         for section, option in self.unused_options:
             _type = "unused_option"
-            msg = f"Option '{option}' in section '{section}' is invalid"
+            if section == "constants":
+                msg = f"Constant '{option}' is unused"
+            else:
+                msg = f"Option '{option}' in section '{section}' is invalid"
             self.warn(_type, msg, section, option)
         for section in self.unused_sections:
             _type = "unused_section"
@@ -573,11 +617,18 @@ class PrinterConfig:
         for section in self.autosave.fileconfig.sections():
             for option in self.autosave.fileconfig.options(section):
                 if config.fileconfig.has_option(section, option):
-                    msg = (
-                        "SAVE_CONFIG section '%s' option '%s' conflicts "
-                        "with included value" % (section, option)
+                    # They conflict only if they are not the same value
+                    included_value = config.fileconfig.get(section, option)
+                    autosave_value = self.autosave.fileconfig.get(
+                        section, option
                     )
-                    raise gcode.error(msg)
+                    if included_value != autosave_value:
+                        msg = (
+                            "SAVE_CONFIG section '%s' option '%s' value '%s' conflicts "
+                            "with included value '%s' "
+                            % (section, option, autosave_value, included_value)
+                        )
+                        raise gcode.error(msg)
 
     cmd_SAVE_CONFIG_help = "Overwrite config file and restart"
 

@@ -1,7 +1,7 @@
 # Code overview
 
 This document describes the overall code layout and major code flow of
-Klipper.
+Kalico.
 
 ## Directory Layout
 
@@ -164,7 +164,7 @@ provides further information on the mechanics of moves.
   stored in the Move() class and is in cartesian space in units of
   millimeters and seconds.
 
-* Klipper uses an
+* Kalico uses an
   [iterative solver](https://en.wikipedia.org/wiki/Root-finding_algorithm)
   to generate the step times for each stepper. For efficiency reasons,
   the stepper pulse times are generated in C code. The moves are first
@@ -236,7 +236,7 @@ The Klippy host code has a dynamic module loading capability. If a
 config section named "[my_module]" is found in the printer config file
 then the software will automatically attempt to load the python module
 klippy/extras/my_module.py . This module system is the preferred
-method for adding new functionality to Klipper.
+method for adding new functionality to Kalico.
 
 The easiest way to add a new module is to use an existing module as a
 reference - see **klippy/extras/servo.py** as an example.
@@ -326,13 +326,13 @@ The following may also be useful:
   `self.speed = 2. * x` over `self.speed = 2 * x`. Consistent use of
   floating point values can avoid hard to debug quirks in Python type
   conversions.
-* If submitting the module for inclusion in the main Klipper code, be
+* If submitting the module for inclusion in the main Kalico code, be
   sure to place a copyright notice at the top of the module. See the
   existing modules for the preferred format.
 
 ## Adding new kinematics
 
-This section provides some tips on adding support to Klipper for
+This section provides some tips on adding support to Kalico for
 additional types of printer kinematics. This type of activity requires
 excellent understanding of the math formulas for the target
 kinematics. It also requires software development skills - though one
@@ -371,7 +371,7 @@ Useful steps:
 
 ## Porting to a new micro-controller
 
-This section provides some tips on porting Klipper's micro-controller
+This section provides some tips on porting Kalico's micro-controller
 code to a new architecture. This type of activity requires good
 knowledge of embedded development and hands-on access to the target
 micro-controller.
@@ -381,9 +381,9 @@ Useful steps:
    during the port. Common examples include "CMSIS" wrappers and
    manufacturer "HAL" libraries. All 3rd party code needs to be GNU
    GPLv3 compatible. The 3rd party code should be committed to the
-   Klipper lib/ directory. Update the lib/README file with information
+   Kalico lib/ directory. Update the lib/README file with information
    on where and when the library was obtained. It is preferable to
-   copy the code into the Klipper repository unchanged, but if any
+   copy the code into the Kalico repository unchanged, but if any
    changes are required then those changes should be listed explicitly
    in the lib/README file.
 2. Create a new architecture sub-directory in the src/ directory and
@@ -406,18 +406,18 @@ Useful steps:
    micro-controller with it. This tool translates the low-level
    micro-controller communication protocol to a human readable form.
 5. Add support for timer dispatch from hardware interrupts. See
-   Klipper
-   [commit 970831ee](https://github.com/DangerKlippers/danger-klipper/commit/970831ee0d3b91897196e92270d98b2a3067427f)
+   Kalico
+   [commit 970831ee](https://github.com/KalicoCrew/kalico/commit/970831ee0d3b91897196e92270d98b2a3067427f)
    as an example of steps 1-5 done for the LPC176x architecture.
-6. Bring up basic GPIO input and output support. See Klipper
-   [commit c78b9076](https://github.com/DangerKlippers/danger-klipper/commit/c78b90767f19c9e8510c3155b89fb7ad64ca3c54)
+6. Bring up basic GPIO input and output support. See Kalico
+   [commit c78b9076](https://github.com/KalicoCrew/kalico/commit/c78b90767f19c9e8510c3155b89fb7ad64ca3c54)
    as an example of this.
-7. Bring up additional peripherals - for example see Klipper commit
-   [65613aed](https://github.com/DangerKlippers/danger-klipper/commit/65613aeddfb9ef86905cb1dade9e773a02ef3c27),
-   [c812a40a](https://github.com/DangerKlippers/danger-klipper/commit/c812a40a3782415e454b04bf7bd2158a6f0ec8b5),
+7. Bring up additional peripherals - for example see Kalico commit
+   [65613aed](https://github.com/KalicoCrew/kalico/commit/65613aeddfb9ef86905cb1dade9e773a02ef3c27),
+   [c812a40a](https://github.com/KalicoCrew/kalico/commit/c812a40a3782415e454b04bf7bd2158a6f0ec8b5),
    and
-   [c381d03a](https://github.com/DangerKlippers/danger-klipper/commit/c381d03aad5c3ee761169b7c7bced519cc14da29).
-8. Create a sample Klipper config file in the config/ directory. Test
+   [c381d03a](https://github.com/KalicoCrew/kalico/commit/c381d03aad5c3ee761169b7c7bced519cc14da29).
+8. Create a sample Kalico config file in the config/ directory. Test
    the micro-controller with the main klippy.py program.
 9. Consider adding build test cases in the test/ directory.
 
@@ -437,16 +437,16 @@ Additional coding tips:
 
 ## Coordinate Systems
 
-Internally, Klipper primarily tracks the position of the toolhead in
+Internally, Kalico primarily tracks the position of the toolhead in
 cartesian coordinates that are relative to the coordinate system
-specified in the config file. That is, most of the Klipper code will
+specified in the config file. That is, most of the Kalico code will
 never experience a change in coordinate systems. If the user makes a
 request to change the origin (eg, a `G92` command) then that effect is
 obtained by translating future commands to the primary coordinate
 system.
 
 However, in some cases it is useful to obtain the toolhead position in
-some other coordinate system and Klipper has several tools to
+some other coordinate system and Kalico has several tools to
 facilitate that. This can be seen by running the GET_POSITION
 command. For example:
 
@@ -521,14 +521,14 @@ command can alter this value.
 
 ## Time
 
-Fundamental to the operation of Klipper is the handling of clocks,
-times, and timestamps. Klipper executes actions on the printer by
+Fundamental to the operation of Kalico is the handling of clocks,
+times, and timestamps. Kalico executes actions on the printer by
 scheduling events to occur in the near future. For example, to turn on
 a fan, the code might schedule a change to a GPIO pin in a 100ms. It
 is rare for the code to attempt to take an instantaneous action. Thus,
-the handling of time within Klipper is critical to correct operation.
+the handling of time within Kalico is critical to correct operation.
 
-There are three types of times tracked internally in the Klipper host
+There are three types of times tracked internally in the Kalico host
 software:
 * System time. The system time uses the system's monotonic clock - it
   is a floating point number stored as seconds and it is (generally)

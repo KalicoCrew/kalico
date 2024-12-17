@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, bisect
-import mcu
+from klippy import mcu
 from . import ldc1612, probe, manual_probe
 
 

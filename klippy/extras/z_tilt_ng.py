@@ -4,12 +4,12 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-import mathutil
-import importlib
+import numpy as np
+from klippy import mathutil
 from . import probe
 
 
-def params_to_normal_form(np, params, offsets):
+def params_to_normal_form(params, offsets):
     v = np.array([offsets[0], offsets[1], params["z_adjust"]])
     r = np.array([1, 0, params["x_adjust"]])
     s = np.array([0, 1, params["y_adjust"]])
@@ -17,7 +17,7 @@ def params_to_normal_form(np, params, offsets):
     return np.append(cp, np.dot(cp, v))
 
 
-def intersect_3_planes(np, p1, p2, p3):
+def intersect_3_planes(p1, p2, p3):
     a = np.array([p1[0:3], p2[0:3], p3[0:3]])
     b = np.array([p1[3], p2[3], p3[3]])
     sol = np.linalg.solve(a, b)
@@ -70,7 +70,9 @@ class ZAdjustHelper:
         for s in self.z_steppers:
             s.set_trapq(None)
         # Move each z stepper (sorted from lowest to highest) until they match
-        positions = [(-a, s) for a, s in zip(adjustments, self.z_steppers)]
+        positions = [
+            (float(-a), s) for a, s in zip(adjustments, self.z_steppers)
+        ]
         positions.sort(key=(lambda k: k[0]))
         first_stepper_offset, first_stepper = positions[0]
         z_low = curpos[2] - first_stepper_offset
@@ -105,9 +107,8 @@ class ZAdjustStatus:
         )
 
     def check_retry_result(self, retry_result):
-        if retry_result and (
-            (isinstance(retry_result, str) and retry_result == "done")
-            or (isinstance(retry_result, float) and int(retry_result) == 0)
+        if (isinstance(retry_result, str) and retry_result == "done") or (
+            isinstance(retry_result, float) and retry_result == 0.0
         ):
             self.applied = True
         return retry_result
@@ -192,14 +193,6 @@ class ZTilt:
         self.printer = config.get_printer()
         self.section = config.get_name()
 
-        try:
-            self.numpy = importlib.import_module("numpy")
-        except ImportError:
-            logging.info(
-                "numpy not installed, Z_TILT_CALIBRATE will not be " "available"
-            )
-            self.numpy = None
-
         self.z_positions = config.getlists(
             "z_positions", seps=(",", "\n"), parser=float, count=2
         )
@@ -231,11 +224,6 @@ class ZTilt:
         self.ad_conf_delta = config.getfloat(
             "autodetect_delta", 1.0, minval=0.1
         )
-        if (
-            config.get("autodetect_delta", None) is not None
-            or self.z_positions is None
-        ) and self.numpy is None:
-            raise config.error(self.err_missing_numpy)
 
         # Register Z_TILT_ADJUST command
         gcode = self.printer.lookup_object("gcode")
@@ -261,10 +249,6 @@ class ZTilt:
         "Calibrate Z tilt with additional probing " "points"
     )
     cmd_Z_TILT_AUTODETECT_help = "Autodetect pivot point of Z motors"
-    err_missing_numpy = (
-        "Failed to import `numpy` module, make sure it was "
-        "installed via `~/klippy-env/bin/pip install`"
-    )
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
         if self.z_positions is None:
@@ -302,20 +286,16 @@ class ZTilt:
             params.keys(), params, errorfunc
         )
 
-        new_params = mathutil.coordinate_descent(
-            params.keys(), params, errorfunc
-        )
         # Apply results
-        speed = self.probe_helper.get_lift_speed()
         logging.info("Calculated bed tilt parameters: %s", new_params)
         return new_params
 
     def apply_adjustments(self, offsets, new_params):
         z_offset = offsets[2]
         speed = self.probe_helper.get_lift_speed()
-        x_adjust = new_params["x_adjust"]
-        y_adjust = new_params["y_adjust"]
-        z_adjust = (
+        x_adjust = float(new_params["x_adjust"])
+        y_adjust = float(new_params["y_adjust"])
+        z_adjust = float(
             new_params["z_adjust"]
             - z_offset
             - x_adjust * offsets[0]
@@ -339,16 +319,12 @@ class ZTilt:
         )
 
     def cmd_Z_TILT_CALIBRATE(self, gcmd):
-        if self.numpy is None:
-            gcmd.respond_info(self.err_missing_numpy)
-            return
         self.cal_avg_len = gcmd.get_int("AVGLEN", self.cal_conf_avg_len)
         self.cal_gcmd = gcmd
         self.cal_runs = []
         self.cal_helper.start_probe(gcmd)
 
     def cal_finalize(self, offsets, positions):
-        np = self.numpy
         avlen = self.cal_avg_len
         new_params = self.perform_coordinate_descent(offsets, positions)
         self.apply_adjustments(offsets, new_params)
@@ -365,7 +341,7 @@ class ZTilt:
         )
         if this_error < prev_error:
             return "retry"
-        z_offsets = np.mean(self.cal_runs[-avlen:], axis=0)
+        z_offsets = np.mean(self.cal_runs[-avlen:], axis=0).tolist()
         z_offsets = [z - offsets[2] for z in z_offsets]
         self.z_offsets = z_offsets
         s_zoff = ""
@@ -386,8 +362,6 @@ class ZTilt:
         self.ad_params = []
 
     def cmd_Z_TILT_AUTODETECT(self, gcmd):
-        if self.numpy is None:
-            gcmd.respond_info(self.err_missing_numpy)
         self.cal_avg_len = gcmd.get_int("AVGLEN", self.cal_conf_avg_len)
         self.ad_delta = gcmd.get_float("DELTA", self.ad_conf_delta, minval=0.1)
         self.ad_init()
@@ -408,7 +382,6 @@ class ZTilt:
     ]
 
     def ad_finalize(self, offsets, positions):
-        np = self.numpy
         avlen = self.cal_avg_len
         delta = self.ad_delta
         speed = self.probe_helper.get_lift_speed()
@@ -430,7 +403,7 @@ class ZTilt:
         # calculcate results
         p = []
         for i in range(7):
-            p.append(params_to_normal_form(np, self.ad_params[i], offsets))
+            p.append(params_to_normal_form(self.ad_params[i], offsets))
 
         # This is how it works.
         # To find the pivot point, we take 3 planes:
@@ -449,15 +422,15 @@ class ZTilt:
         # take the average of the 2 points.
 
         z_p1 = (
-            intersect_3_planes(np, p[0], p[2], p[3])[:2],
-            intersect_3_planes(np, p[0], p[1], p[3])[:2],
-            intersect_3_planes(np, p[0], p[1], p[2])[:2],
+            intersect_3_planes(p[0], p[2], p[3])[:2],
+            intersect_3_planes(p[0], p[1], p[3])[:2],
+            intersect_3_planes(p[0], p[1], p[2])[:2],
         )
 
         z_p2 = (
-            intersect_3_planes(np, p[0], p[5], p[6])[:2],
-            intersect_3_planes(np, p[0], p[4], p[6])[:2],
-            intersect_3_planes(np, p[0], p[4], p[5])[:2],
+            intersect_3_planes(p[0], p[5], p[6])[:2],
+            intersect_3_planes(p[0], p[4], p[6])[:2],
+            intersect_3_planes(p[0], p[4], p[5])[:2],
         )
 
         # take the average of positive and negative measurement
@@ -473,9 +446,9 @@ class ZTilt:
         self.ad_gcmd.respond_info("current estimated z_positions %s" % (s_zpos))
         self.ad_runs.append(z_pos)
         if len(self.ad_runs) >= avlen:
-            self.z_positions = np.mean(self.ad_runs[-avlen:], axis=0)
+            self.z_positions = np.mean(self.ad_runs[-avlen:], axis=0).tolist()
         else:
-            self.z_positions = np.mean(self.ad_runs, axis=0)
+            self.z_positions = np.mean(self.ad_runs, axis=0).tolist()
 
         # We got a first estimate of the pivot points. Now apply the
         # adjustemts to all motors and repeat the process until the result
@@ -488,7 +461,7 @@ class ZTilt:
         self.apply_adjustments(offsets, self.ad_params[0])
         if len(self.ad_runs) >= avlen:
             errors = np.std(self.ad_runs[-avlen:], axis=0)
-            error = np.std(errors)
+            error = np.std(errors).item()
             if self.ad_error is None:
                 self.ad_gcmd.respond_info("current error: %.6f" % (error))
             else:
@@ -506,10 +479,9 @@ class ZTilt:
         return "retry"
 
     def ad_finalize_done(self, offsets):
-        np = self.numpy
         avlen = self.cal_avg_len
         # calculate probe point z offsets
-        z_offsets = np.mean(self.ad_points[-avlen:], axis=0)
+        z_offsets = np.mean(self.ad_points[-avlen:], axis=0).tolist()
         z_offsets = [z - offsets[2] for z in z_offsets]
         self.z_offsets = z_offsets
         logging.info("final z_offsets %s", (z_offsets))
