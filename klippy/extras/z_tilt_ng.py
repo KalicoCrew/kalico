@@ -210,7 +210,7 @@ class ZTilt:
             "z_offsets", parser=float, count=z_count, default=None
         )
 
-        self.z_status = ZAdjustStatus(self.printer)
+        self.z_status = ZAdjustStatus(self.printer, config)
         self.z_helper = ZAdjustHelper(config, z_count)
         # probe points for calibrate/autodetect
         cal_probe_points = list(self.probe_helper.get_probe_points())
