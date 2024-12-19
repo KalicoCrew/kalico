@@ -160,8 +160,8 @@ objects:
 - `power`: The fan power as a float between 0|`min_power` and 1.0|`max_power`.
 - `rpm`: The measured fan speed in rotations per minute if the fan has
   a tachometer_pin defined.
-deprecated objects (for UI compatibility only): 
-- `speed`: The fan speed as a float between 0.0 and `max_power`. 
+deprecated objects (for UI compatibility only):
+- `speed`: The fan speed as a float between 0.0 and `max_power`.
 
 ## filament_switch_sensor
 
@@ -346,6 +346,7 @@ The following information is available in
   micro-controller architectures and with each code revision.
 - `last_stats.<statistics_name>`: Statistics information on the
   micro-controller connection.
+- `non_critical_disconnected`: True/False if the mcu is disconnected.
 
 ## motion_report
 
