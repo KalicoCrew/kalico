@@ -6,7 +6,7 @@
 import logging
 import numpy as np
 from klippy import mathutil
-from . import probe
+from . import probe, z_tilt
 
 
 def params_to_normal_form(params, offsets):
@@ -99,34 +99,6 @@ class ZAdjustHelper:
         toolhead.set_position(curpos)
 
 
-class ZAdjustStatus:
-    def __init__(self, printer, config):
-        self.gcode = printer.lookup_object("gcode")
-        self.default_rehome_z = config.getboolean("rehome_z", False)
-        self.applied = False
-        printer.register_event_handler(
-            "stepper_enable:motor_off", self._motor_off
-        )
-
-    def check_retry_result(self, retry_result):
-        if (isinstance(retry_result, str) and retry_result == "done") or (
-            isinstance(retry_result, float) and retry_result == 0.0
-        ):
-            self.applied = True
-            if self.default_rehome_z:
-                self.gcode.run_script_from_command("G28 Z")
-        return retry_result
-
-    def reset(self):
-        self.applied = False
-
-    def get_status(self, eventtime):
-        return {"applied": self.applied}
-
-    def _motor_off(self, print_time):
-        self.reset()
-
-
 class RetryHelper:
     def __init__(self, config, error_msg_extra=""):
         self.gcode = config.get_printer().lookup_object("gcode")
@@ -210,7 +182,7 @@ class ZTilt:
             "z_offsets", parser=float, count=z_count, default=None
         )
 
-        self.z_status = ZAdjustStatus(self.printer, config)
+        self.z_status = z_tilt.ZAdjustStatus(self.printer, config)
         self.z_helper = ZAdjustHelper(config, z_count)
         # probe points for calibrate/autodetect
         cal_probe_points = list(self.probe_helper.get_probe_points())
