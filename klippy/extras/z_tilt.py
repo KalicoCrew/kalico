@@ -76,7 +76,9 @@ class ZAdjustHelper:
 
 
 class ZAdjustStatus:
-    def __init__(self, printer):
+    def __init__(self, printer, config):
+        self.gcode = printer.lookup_object("gcode")
+        self.default_rehome_z = config.getboolean("rehome_z", False)
         self.applied = False
         printer.register_event_handler(
             "stepper_enable:motor_off", self._motor_off
@@ -87,6 +89,8 @@ class ZAdjustStatus:
             isinstance(retry_result, float) and retry_result == 0.0
         ):
             self.applied = True
+            if self.default_rehome_z:
+                self.gcode.run_script_from_command("G28 Z")
         return retry_result
 
     def reset(self):
@@ -170,10 +174,11 @@ class ZTilt:
         self.z_positions = config.getlists(
             "z_positions", seps=(",", "\n"), parser=float, count=2
         )
+        self.default_rehome_z = config.getboolean("rehome_z", False)
         self.retry_helper = RetryHelper(config)
         self.probe_helper = probe.ProbePointsHelper(config, self.probe_finalize)
         self.probe_helper.minimum_points(2)
-        self.z_status = ZAdjustStatus(self.printer)
+        self.z_status = ZAdjustStatus(self.printer, config)
         self.z_helper = ZAdjustHelper(config, len(self.z_positions))
         # Register Z_TILT_ADJUST command
         gcode = self.printer.lookup_object("gcode")

@@ -1447,6 +1447,9 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #increasing_threshold: 0.0000001
 #   Sets the threshold that probe points can increase before z_tilt aborts.
 #   To disable the validation, set this parameter to a high value.
+#rehome_z: False
+#   If set to true, a G28 Z  will  automatically be called after z_tilt has
+#   finished to rehome Z.
 
 ```
 
@@ -1486,6 +1489,8 @@ commands become available, enhancing bed leveling accuracy and calibration effic
 #retry_tolerance: 0
 # See [z_tilt]
 #increasing_threshold: 0.0000001
+# See [z_tilt]
+#rehome_z: False
 # See [z_tilt]
 #extra_points:
 #   A list in the same format as "points" above. This list contains
@@ -1576,6 +1581,9 @@ Where x is the 0, 0 point on the bed
 #increasing_threshold: 0.0000001
 #   Sets the threshold that probe points can increase before qgl aborts.
 #   To disable the validation, set this parameter to a high value.
+#rehome_z: False
+#   If set to true, a G28 Z  will  automatically be called after z_tilt has
+#   finished to rehome Z.
 ```
 
 ### [skew_correction]
