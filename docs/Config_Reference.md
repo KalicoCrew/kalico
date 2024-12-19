@@ -1857,7 +1857,7 @@ file for a Marlin compatible M808 G-Code macro.
 [sdcard_loop]
 ```
 
-### ⚠ [force_move]
+### ⚠️ [force_move]
 
 This module is enabled by default in Kalico!
 
