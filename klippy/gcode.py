@@ -168,6 +168,7 @@ class GCodeDispatch:
             "STATUS",
             "HELP",
             "HEATER_INTERRUPT",
+            "LOG_ROLLOVER",
         ]
         for cmd in handlers:
             func = getattr(self, "cmd_" + cmd)
@@ -495,6 +496,9 @@ class GCodeDispatch:
 
     def cmd_HEATER_INTERRUPT(self, gcmd):
         self.increment_interrupt_counter()
+
+    def cmd_LOG_ROLLOVER(self, gcmd):
+        self.printer.bglogger.doRollover()
 
 
 # Support reading gcode from a pseudo-tty interface
