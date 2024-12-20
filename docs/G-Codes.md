@@ -717,6 +717,9 @@ clears any error state from the micro-controller.
 #### HEATER_INTERRUPT
 `HEATER_INTERRUPT`: Interrupts a TEMPERATURE_WAIT command.
 
+#### LOG_ROLLOVER
+`LOG_ROLLOVER`: Trigger a klippy.log rollover and generate a new log file.
+
 #### STATUS
 `STATUS`: Report the Kalico host software status.
 
