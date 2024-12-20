@@ -461,9 +461,7 @@ class PrinterRail:
             "min_home_dist", self.homing_retract_dist, minval=0.0
         )
 
-        self.homing_accel = config.get("homing_accel", None)
-        if self.homing_accel is not None:
-            self.homing_accel = config.getfloat("homing_accel", minval=0.0)
+        self.homing_accel = config.getfloat("homing_accel", None, above=0.0)
 
         if self.homing_positive_dir is None:
             axis_len = self.position_max - self.position_min
