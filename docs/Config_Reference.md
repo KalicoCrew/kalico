@@ -3554,14 +3554,17 @@ control: curve
 #   fan would run with 0.5 at 55°)
 #cooling_hysteresis: 0.0
 #   define the temperature hysteresis for lowering the fan speed
-#   (temperature differences to the last measured value that are lower than
-#   the hysteresis will not cause lowering of the fan speed)
+#   (in simple terms this setting offsets the fan curve when cooling down
+#   by the specified amount of degrees celsius. For example, if the
+#   hysteresis is set to 5°C, the fan curve will be moved by -5°C. This
+#   setting can be used to reduce the effects of quickly changing
+#   temperatures around a target temperature which would cause the fan to
+#   speed up and slow down repeatedly.)
 #heating_hysteresis: 0.0
 #   same as cooling_hysteresis but for increasing the fan speed, it is
 #   recommended to be left at 0 for safety reasons
 #smooth_readings: 10
-#   the amount of readings a median should be taken of to determine the fan
-#   speed at each update interval, the default is 10
+#   This parameter is deprecated and should no longer be used.
 ```
 
 ### [fan_generic]
