@@ -86,8 +86,9 @@ class TemplateWrapperJinja:
         try:
             self.template = env.from_string(script)
         except Exception as e:
-            msg = "Error loading template '%s': %s" % (
+            msg = "Error loading template '%s' (line: %s): %s" % (
                 name,
+                e.lineno,
                 traceback.format_exception_only(type(e), e)[-1],
             )
             logging.exception(msg)
