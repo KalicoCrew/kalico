@@ -156,7 +156,7 @@ also find more details on limitations of this setup.
 A few prerequisites are needed to use sensorless homing:
 
 1. A stallGuard capable TMC stepper driver (tmc2130, tmc2209, tmc2660,
-   or tmc5160).
+    tmc5160 or tmc2160).
 2. SPI / UART interface of the TMC driver wired to micro-controller
    (stand-alone mode does not work).
 3. The appropriate "DIAG" or "SG_TST" pin of TMC driver connected to
@@ -231,7 +231,7 @@ home_current: 1
 
 [stepper_x]
 endstop_pin: tmc2130_stepper_x:virtual_endstop
-homing_retract_dist: 10 
+homing_retract_dist: 10
 ...
 ```
 
@@ -261,7 +261,7 @@ command to set the highest sensitivity. For tmc2209:
 ```
 SET_TMC_FIELD STEPPER=stepper_x FIELD=SGTHRS VALUE=255
 ```
-For tmc2130, tmc5160, and tmc2660:
+For tmc2130, tmc5160, tmc2160, and tmc2660:
 ```
 SET_TMC_FIELD STEPPER=stepper_x FIELD=sgt VALUE=-64
 ```
@@ -345,7 +345,7 @@ necessary to run the tuning process again.
 #### Using Macros when Homing
 
 Unlike Klipper, in Kalico, you do not need macros for
-sensorless homing management. Homing current is handled by the TMC block, 
+sensorless homing management. Homing current is handled by the TMC block,
 homing retract distance is used to define a minimum homing distance
 (which can also be manually configured) which is used for sensorless
 homing verification as well as post home retract. In depth guide
@@ -459,8 +459,8 @@ wiring or an incorrect Kalico configuration of the UART pin settings.
 
 ### I keep getting "Unable to write tmc spi 'stepper_x' register ..." errors?
 
-This occurs when Kalico is unable to communicate with a tmc2130 or
-tmc5160 driver.
+This occurs when Kalico is unable to communicate with a tmc2130, tmc5160 or
+tmc2160 driver.
 
 Make sure that the motor power is enabled, as the stepper motor driver
 generally needs motor power before it can communicate with the
@@ -492,7 +492,7 @@ state.
 
 It's also possible that a **TMC reports error** shutdown occurs due to
 SPI errors that prevent communication with the driver (on tmc2130,
-tmc5160, or tmc2660). If this occurs, it's common for the reported
+tmc5160, tmc2160, or tmc2660). If this occurs, it's common for the reported
 driver status to show `00000000` or `ffffffff` - for example: `TMC
 reports error: DRV_STATUS: ffffffff ...` OR `TMC reports error:
 READRSP@RDSEL2: 00000000 ...`. Such a failure may be due to an SPI

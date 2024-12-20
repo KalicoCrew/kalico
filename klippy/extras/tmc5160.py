@@ -1,4 +1,4 @@
-# TMC5160 configuration
+# TMC5160/TMC2160 configuration
 #
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #

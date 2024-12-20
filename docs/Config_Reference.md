@@ -4386,17 +4386,17 @@ run_current:
 
 ### [tmc5160]
 
-Configure a TMC5160 stepper motor driver via SPI bus. To use this
-feature, define a config section with a "tmc5160" prefix followed by
-the name of the corresponding stepper config section (for example,
-"[tmc5160 stepper_x]").
+Configure a TMC5160 or TMC2160 stepper motor driver via SPI bus.
+To use this feature, define a config section with a "tmc5160" prefix
+followed by the name of the corresponding stepper config section
+(for example, "[tmc5160 stepper_x]").
 
 ```
 [tmc5160 stepper_x]
 cs_pin:
-#   The pin corresponding to the TMC5160 chip select line. This pin
-#   will be set to low at the start of SPI messages and raised to high
-#   after the message completes. This parameter must be provided.
+#   The pin corresponding to the TMC5160 or TMC2160 chip select line.
+#   This pin will be set to low at the start of SPI messages and raised
+#   to high after the message completes. This parameter must be provided.
 #spi_speed:
 #spi_bus:
 #spi_software_sclk_pin:
@@ -4504,8 +4504,8 @@ sense_resistor:
 #driver_BBMCLKS: 4
 #driver_BBMTIME: 0
 #driver_FILT_ISENSE: 0
-#   Set the given register during the configuration of the TMC5160
-#   chip. This may be used to set custom motor parameters. The
+#   Set the given register during the configuration of the TMC5160 or
+#   TMC2160 chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
 #   above list.
 #⚠️driver_s2vs_level: 6   # Short to Supply tolerance, from 4 to 15
@@ -4516,9 +4516,9 @@ sense_resistor:
 #diag0_pin:
 #diag1_pin:
 #   The micro-controller pin attached to one of the DIAG lines of the
-#   TMC5160 chip. Only a single diag pin should be specified. The pin
-#   is "active low" and is thus normally prefaced with "^!". Setting
-#   this creates a "tmc5160_stepper_x:virtual_endstop" virtual pin
+#   TMC5160 or TMC2160 chip. Only a single diag pin should be specified.
+#   The pin is "active low" and is thus normally prefaced with "^!".
+#   Setting this creates a "tmc5160_stepper_x:virtual_endstop" virtual pin
 #   which may be used as the stepper's endstop_pin. Doing this enables
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
