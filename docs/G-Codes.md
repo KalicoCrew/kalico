@@ -1543,6 +1543,12 @@ printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
 description of each parameter.
 
+### RESET_VELOCITY_LIMIT
+`RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
+specified in the printer config file. See the
+[printer config section](Config_Reference.md#printer) for a
+description of each parameter.
+
 #### ⚠️ SET_KINEMATICS_LIMIT
 
 `SET_KINEMATICS_LIMIT [<X,Y,Z>_ACCEL=<value>] [<X,Y,Z>_VELOCITY=<value>]
