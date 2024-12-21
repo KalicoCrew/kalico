@@ -498,6 +498,9 @@ radius:
 #horizontal_move_z: 5
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
+#use_probe_xy_offsets: False
+#   If True, apply the `[probe]` XY offsets to the probed positions. The
+#   default is False.
 ```
 
 ### Deltesian Kinematics
@@ -1270,6 +1273,9 @@ Visual Examples:
 #bed_mesh_default:
 #   Optionally provide the name of a profile you would like loaded on init.
 #   By default, no profile is loaded.
+#use_probe_xy_offsets: True
+#   If True, apply the `[probe]` XY offsets to the probed positions. The
+#   default is True.
 ```
 
 ### [bed_tilt]
@@ -1307,6 +1313,9 @@ information.
 #horizontal_move_z: 5
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
+#use_probe_xy_offsets: False
+#   If True, apply the `[probe]` XY offsets to the probed positions. The
+#   default is False.
 ```
 
 ### [bed_screws]
@@ -1394,6 +1403,9 @@ information.
 #   Default value is CW-M3 which most printers use. A clockwise
 #   rotation of the knob decreases the gap between the nozzle and the
 #   bed. Conversely, a counter-clockwise rotation increases the gap.
+#use_probe_xy_offsets: False
+#   If True, apply the `[probe]` XY offsets to the probed positions. The
+#   default is False.
 ```
 
 ### [z_tilt]
@@ -1447,7 +1459,9 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #increasing_threshold: 0.0000001
 #   Sets the threshold that probe points can increase before z_tilt aborts.
 #   To disable the validation, set this parameter to a high value.
-
+#use_probe_xy_offsets: False
+#   If True, apply the `[probe]` XY offsets to the probed positions. The
+#   default is False.
 ```
 
 #### [z_tilt_ng]
@@ -1486,6 +1500,8 @@ commands become available, enhancing bed leveling accuracy and calibration effic
 #retry_tolerance: 0
 # See [z_tilt]
 #increasing_threshold: 0.0000001
+# See [z_tilt]
+#use_probe_xy_offsets: False
 # See [z_tilt]
 #extra_points:
 #   A list in the same format as "points" above. This list contains
@@ -1576,6 +1592,9 @@ Where x is the 0, 0 point on the bed
 #increasing_threshold: 0.0000001
 #   Sets the threshold that probe points can increase before qgl aborts.
 #   To disable the validation, set this parameter to a high value.
+#use_probe_xy_offsets: False
+#   If True, apply the `[probe]` XY offsets to the probed positions. The
+#   default is False.
 ```
 
 ### [skew_correction]

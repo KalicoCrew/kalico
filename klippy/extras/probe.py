@@ -481,6 +481,7 @@ class ProbePointsHelper:
         finalize_callback,
         default_points=None,
         option_name="points",
+        use_offsets=False,
     ):
         self.printer = config.get_printer()
         self.finalize_callback = finalize_callback
@@ -501,7 +502,10 @@ class ProbePointsHelper:
             "min_horizontal_move_z", 1.0
         )
         self.speed = config.getfloat("speed", 50.0, above=0.0)
-        self.use_offsets = False
+        self.use_offsets = config.getboolean(
+            "use_probe_xy_offsets", use_offsets
+        )
+
         # Internal probing state
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
