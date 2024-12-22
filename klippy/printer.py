@@ -63,8 +63,8 @@ class Printer:
     command_error = gcode.CommandError
 
     def __init__(self, main_reactor, bglogger, start_args):
-        if sys.version_info < (3, 9):
-            logging.error("Kalico requires Python 3.9+")
+        if sys.version_info[0] < 3:
+            logging.error("Kalico requires Python 3")
             sys.exit(1)
 
         self.bglogger = bglogger
