@@ -44,5 +44,12 @@ ignore = [
 
 [tool.uv]
 dev-dependencies = [
+    "pytest-xdist>=3.6.1",
+    "pytest>=8.3.4",
     "ruff>=0.8.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+  'test',
 ]
