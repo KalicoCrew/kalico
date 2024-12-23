@@ -69,7 +69,7 @@ is also a useful resource for finding and sharing config files.
    1. The top of each config file should list the type of
       micro-controller the user should select during "make
       menuconfig". It should also have a reference to
-      "docs/Config_Reference.md".
+      "docs/src/Config_Reference.md".
    2. Do not copy the field documentation into the example config
       files. (Doing so creates a maintenance burden as an update to
       the documentation would then require changing it in many

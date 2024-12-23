@@ -1261,7 +1261,7 @@ Visual Examples:
 #   no zero reference.
 #faulty_region_1_min:
 #faulty_region_1_max:
-#   Optional points that define a faulty region.  See docs/Bed_Mesh.md
+#   Optional points that define a faulty region.  See docs/src/Bed_Mesh.md
 #   for details on faulty regions.  Up to 99 faulty regions may be added.
 #   By default no faulty regions are set.
 #adaptive_margin:
@@ -1674,7 +1674,7 @@ machine.
 [homing_override]
 gcode:
 #   A list of G-Code commands to execute in place of G28 commands
-#   found in the normal g-code input. See docs/Command_Templates.md
+#   found in the normal g-code input. See docs/src/Command_Templates.md
 #   for G-Code format. If a G28 is contained in this list of commands
 #   then it will invoke the normal homing procedure for the printer.
 #   The commands listed here must home all axes. This parameter must
@@ -1744,7 +1744,7 @@ G-Code macros (one may define any number of sections with a
 [gcode_macro my_cmd]
 #gcode:
 #   A list of G-Code commands to execute in place of "my_cmd". See
-#   docs/Command_Templates.md for G-Code format. This parameter must
+#   docs/src/Command_Templates.md for G-Code format. This parameter must
 #   be provided.
 #variable_<name>:
 #   One may specify any number of options with a "variable_" prefix.
@@ -1753,7 +1753,7 @@ G-Code macros (one may define any number of sections with a
 #   For example, a config with "variable_fan_speed = 75" might have
 #   gcode commands containing "M106 S{ fan_speed * 255 }". Variables
 #   can be changed at run-time using the SET_GCODE_VARIABLE command
-#   (see docs/Command_Templates.md for details). Variable names may
+#   (see docs/src/Command_Templates.md for details). Variable names may
 #   not use upper case characters.
 #rename_existing:
 #   This option will cause the macro to override an existing G-Code
@@ -1811,7 +1811,7 @@ explicit idle_timeout config section to change the default settings.
 [idle_timeout]
 #gcode:
 #   A list of G-Code commands to execute on an idle timeout. See
-#   docs/Command_Templates.md for G-Code format. The default is to run
+#   docs/src/Command_Templates.md for G-Code format. The default is to run
 #   "TURN_OFF_HEATERS" and "M84".
 #timeout: 600
 #   Idle time (in seconds) to wait before running the above G-Code
@@ -1838,7 +1838,7 @@ path:
 #   be provided.
 #on_error_gcode:
 #   A list of G-Code commands to execute when an error is reported.
-#   See docs/Command_Templates.md for G-Code format. The default is to
+#   See docs/src/Command_Templates.md for G-Code format. The default is to
 #   run TURN_OFF_HEATERS.
 #with_subdirs: False
 #   Enable scanning of subdirectories for the menu and for the
@@ -2319,13 +2319,13 @@ z_offset:
 #   on the first sample that exceeds samples_tolerance.
 #activate_gcode:
 #   A list of G-Code commands to execute prior to each probe attempt.
-#   See docs/Command_Templates.md for G-Code format. This may be
+#   See docs/src/Command_Templates.md for G-Code format. This may be
 #   useful if the probe needs to be activated in some way. Do not
 #   issue any commands here that move the toolhead (eg, G1). The
 #   default is to not run any special G-Code commands on activation.
 #deactivate_gcode:
 #   A list of G-Code commands to execute after each probe attempt
-#   completes. See docs/Command_Templates.md for G-Code format. Do not
+#   completes. See docs/src/Command_Templates.md for G-Code format. Do not
 #   issue any commands here that move the toolhead. The default is to
 #   not run any special G-Code commands on deactivation.
 #drop_first_result: False
@@ -2357,7 +2357,7 @@ control_pin:
 #stow_on_each_sample: True
 #   This determines if Kalico should command the pin to move up
 #   between each probe attempt when performing a multiple probe
-#   sequence. Read the directions in docs/BLTouch.md before setting
+#   sequence. Read the directions in docs/src/BLTouch.md before setting
 #   this to False. The default is True.
 #probe_with_touch_mode: False
 #   If this is set to True then Kalico will probe with the device in
@@ -2366,12 +2366,12 @@ control_pin:
 #   Set if the BLTouch consistently reports the probe in a "not
 #   triggered" state after a successful "pin_up" command. This should
 #   be True for all genuine BLTouch devices. Read the directions in
-#   docs/BLTouch.md before setting this to False. The default is True.
+#   docs/src/BLTouch.md before setting this to False. The default is True.
 #pin_up_touch_mode_reports_triggered: True
 #   Set if the BLTouch consistently reports a "triggered" state after
 #   the commands "pin_up" followed by "touch_mode". This should be
 #   True for all genuine BLTouch devices. Read the directions in
-#   docs/BLTouch.md before setting this to False. The default is True.
+#   docs/src/BLTouch.md before setting this to False. The default is True.
 #set_output_mode:
 #   Request a specific sensor pin output mode on the BLTouch V3.0 (and
 #   later). This setting should not be used on other types of probes.
@@ -2684,16 +2684,16 @@ probing_first_fast: false
 #   probing sample. The default is false.
 start_gcode:
 #   A list of G-Code commands to execute prior to each calibration command.
-#   See docs/Command_Templates.md for G-Code format. This can be used to
+#   See docs/src/Command_Templates.md for G-Code format. This can be used to
 #   attach the probe.
 before_switch_gcode:
 #   A list of G-Code commands to execute prior to each probing on the
-#   mag-probe. See docs/Command_Templates.md for G-Code format. This can be
+#   mag-probe. See docs/src/Command_Templates.md for G-Code format. This can be
 #   used to attach the probe after probing on the nozzle and before probing
 #   on the mag-probe.
 end_gcode:
 #   A list of G-Code commands to execute after each calibration command.
-#   See docs/Command_Templates.md for G-Code format. This can be used to
+#   See docs/src/Command_Templates.md for G-Code format. This can be used to
 #   detach the probe afterwards.
 ```
 
@@ -5023,7 +5023,7 @@ position:
 #   provided.
 text:
 #   The text to show at the given position. This field is evaluated
-#   using command templates (see docs/Command_Templates.md). This
+#   using command templates (see docs/src/Command_Templates.md). This
 #   parameter must be provided.
 ```
 
@@ -5057,7 +5057,7 @@ This feature can also be used for continuous LED updates using the
 text:
 #   The text to return when the this template is rendered. This field
 #   is evaluated using command templates (see
-#   docs/Command_Templates.md). This parameter must be provided.
+#   docs/src/Command_Templates.md). This parameter must be provided.
 ```
 
 ### [display_glyph]
@@ -5231,16 +5231,16 @@ more information.
 #   is True.
 #runout_gcode:
 #   A list of G-Code commands to execute after a filament runout is
-#   detected. See docs/Command_Templates.md for G-Code format. If
+#   detected. See docs/src/Command_Templates.md for G-Code format. If
 #   pause_on_runout is set to True this G-Code will run after the
 #   PAUSE is complete. The default is not to run any G-Code commands.
 #immediate_runout_gcode:
 #   A list of G-Code commands to execute immediately after a filament
 #   runout is detected and runout_distance is greater than 0.
-#   See docs/Command_Templates.md for G-Code format.
+#   See docs/src/Command_Templates.md for G-Code format.
 #insert_gcode:
 #   A list of G-Code commands to execute after a filament insert is
-#   detected. See docs/Command_Templates.md for G-Code format. The
+#   detected. See docs/src/Command_Templates.md for G-Code format. The
 #   default is not to run any G-Code commands, which disables insert
 #   detection.
 #runout_distance: 0.0

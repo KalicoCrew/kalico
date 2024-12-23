@@ -24,7 +24,7 @@ def load_config_stable(config, option):
 ######################################################################
 
 # The angles and distances of the calibration object found in
-# docs/prints/calibrate_size.stl
+# docs/src/prints/calibrate_size.stl
 MeasureAngles = [210.0, 270.0, 330.0, 30.0, 90.0, 150.0]
 MeasureOuterRadius = 65
 MeasureRidgeRadius = 5.0 - 0.5

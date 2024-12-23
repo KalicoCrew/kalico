@@ -5,10 +5,10 @@ site_name: Kalico Documentation
 site_url: https://docs.kalico.gg
 repo_url: https://github.com/KalicoCrew/kalico/
 repo_name: KalicoCrew/kalico
-edit_uri: edit/main/docs/
+edit_uri: edit/main/docs/src/
 use_directory_urls: False
-docs_dir: '../'
-site_dir: '../../site/'
+docs_dir: 'src/'
+site_dir: '../site/'
 
 validation:
   omitted_files: warn
@@ -30,7 +30,7 @@ plugins:
     lang: en
   mkdocs-simple-hooks:
     hooks:
-      on_page_markdown: "docs._kalico.mkdocs_hooks:transform"
+      on_page_markdown: "docs.mkdocs_hooks:transform"
 
 # Website layout configuration (using mkdocs-material theme)
 theme:
@@ -69,7 +69,7 @@ theme:
         name: Switch to light mode
 
 extra_css:
-  - _kalico/css/extra.css
+  - css/kalico.css
 
 extra:
   social:

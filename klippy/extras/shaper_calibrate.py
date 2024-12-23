@@ -84,7 +84,7 @@ class ShaperCalibrate:
             raise self.error(
                 "Failed to import `numpy` module, make sure it was "
                 "installed via `~/klippy-env/bin/pip install` (refer to "
-                "docs/Measuring_Resonances.md for more details)."
+                "docs/src/Measuring_Resonances.md for more details)."
             )
 
     def background_process_exec(self, method, args):

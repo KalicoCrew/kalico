@@ -1,4 +1,4 @@
-<p align="center"><a href="https://docs.kalico.gg"><img align="center" src="docs/logo/kalico-big.png" alt="Kalico Logo"></a></p>
+<p align="center"><a href="https://docs.kalico.gg"><img align="center" src="docs/src/logo/kalico-big.png" alt="Kalico Logo"></a></p>
 
 [![Action Status](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml/badge.svg?branch=main)](https://github.com/KalicoCrew/kalico/actions/workflows/ci-build_test.yaml)
 
@@ -128,8 +128,8 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 
 - [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
 
-If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
-and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
+If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/src/Bleeding_Edge.md)
+and [feature configuration reference](docs/src/Config_Reference_Bleeding_Edge.md):
 
 - [extruder/pa: do not smooth base extruder position, only advance](https://github.com/KalicoCrew/kalico/pull/266)
 
