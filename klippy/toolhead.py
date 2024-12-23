@@ -4,9 +4,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging, importlib
-import chelper
-import kinematics.extruder
-from extras.danger_options import get_danger_options
+from . import chelper
+from .kinematics import extruder
+from .extras.danger_options import get_danger_options
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -20,7 +20,7 @@ class Move:
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
         self.accel = toolhead.max_accel
-        self.equilateral_corner_v2 = toolhead.equilateral_corner_v2
+        self.junction_deviation = toolhead.junction_deviation
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
@@ -54,6 +54,7 @@ class Move:
         self.delta_v2 = 2.0 * move_d * self.accel
         self.max_smoothed_v2 = 0.0
         self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
+        self.next_junction_v2 = 999999999.9
 
     def limit_speed(self, speed, accel):
         speed2 = speed**2
@@ -63,6 +64,9 @@ class Move:
         self.accel = min(self.accel, accel)
         self.delta_v2 = 2.0 * self.move_d * self.accel
         self.smooth_delta_v2 = min(self.smooth_delta_v2, self.delta_v2)
+
+    def limit_next_junction_speed(self, speed):
+        self.next_junction_v2 = min(self.next_junction_v2, speed**2)
 
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
@@ -74,6 +78,13 @@ class Move:
             return
         # Allow extruder to calculate its maximum junction
         extruder_v2 = self.toolhead.extruder.calc_junction(prev_move, self)
+        max_start_v2 = min(
+            extruder_v2,
+            self.max_cruise_v2,
+            prev_move.max_cruise_v2,
+            prev_move.next_junction_v2,
+            prev_move.max_start_v2 + prev_move.delta_v2,
+        )
         # Find max velocity using "approximated centripetal velocity"
         axes_r = self.axes_r
         prev_axes_r = prev_move.axes_r
@@ -82,33 +93,29 @@ class Move:
             + axes_r[1] * prev_axes_r[1]
             + axes_r[2] * prev_axes_r[2]
         )
-        if junction_cos_theta > 0.999999:
-            return
-        junction_cos_theta = max(junction_cos_theta, -0.999999)
-        sin_theta_d2 = math.sqrt(0.5 * (1.0 - junction_cos_theta))
-        R_jd = sin_theta_d2 / (1.0 - sin_theta_d2)
-        # Approximated circle must contact moves no further away than mid-move
-        tan_theta_d2 = sin_theta_d2 / math.sqrt(
-            0.5 * (1.0 + junction_cos_theta)
-        )
-        move_centripetal_v2 = 0.5 * self.move_d * tan_theta_d2 * self.accel
-        prev_move_centripetal_v2 = (
-            0.5 * prev_move.move_d * tan_theta_d2 * prev_move.accel
-        )
+        sin_theta_d2 = math.sqrt(max(0.5 * (1.0 - junction_cos_theta), 0.0))
+        cos_theta_d2 = math.sqrt(max(0.5 * (1.0 + junction_cos_theta), 0.0))
+        one_minus_sin_theta_d2 = 1.0 - sin_theta_d2
+        if one_minus_sin_theta_d2 > 0.0 and cos_theta_d2 > 0.0:
+            R_jd = sin_theta_d2 / one_minus_sin_theta_d2
+            move_jd_v2 = R_jd * self.junction_deviation * self.accel
+            pmove_jd_v2 = R_jd * prev_move.junction_deviation * prev_move.accel
+            # Approximated circle must contact moves no further than mid-move
+            #   centripetal_v2 = .5 * self.move_d * self.accel * tan_theta_d2
+            quarter_tan_theta_d2 = 0.25 * sin_theta_d2 / cos_theta_d2
+            move_centripetal_v2 = self.delta_v2 * quarter_tan_theta_d2
+            pmove_centripetal_v2 = prev_move.delta_v2 * quarter_tan_theta_d2
+            max_start_v2 = min(
+                max_start_v2,
+                move_jd_v2,
+                pmove_jd_v2,
+                move_centripetal_v2,
+                pmove_centripetal_v2,
+            )
         # Apply limits
-        self.max_start_v2 = min(
-            R_jd * self.equilateral_corner_v2,
-            R_jd * prev_move.equilateral_corner_v2,
-            move_centripetal_v2,
-            prev_move_centripetal_v2,
-            extruder_v2,
-            self.max_cruise_v2,
-            prev_move.max_cruise_v2,
-            prev_move.max_start_v2 + prev_move.delta_v2,
-        )
+        self.max_start_v2 = max_start_v2
         self.max_smoothed_v2 = min(
-            self.max_start_v2,
-            prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2,
+            max_start_v2, prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2
         )
 
     def set_junction(self, start_v2, cruise_v2, end_v2):
@@ -276,8 +283,12 @@ class ToolHead:
         self.square_corner_velocity = config.getfloat(
             "square_corner_velocity", 5.0, minval=0.0
         )
-        self.equilateral_corner_v2 = 0.0
-        self.max_accel_to_decel = 0.0
+        self.orig_cfg = {}
+        self.orig_cfg["max_velocity"] = self.max_velocity
+        self.orig_cfg["max_accel"] = self.max_accel
+        self.orig_cfg["min_cruise_ratio"] = self.min_cruise_ratio
+        self.orig_cfg["square_corner_velocity"] = self.square_corner_velocity
+        self.junction_deviation = self.max_accel_to_decel = 0
         self._calc_junction_deviation()
         # Input stall detection
         self.check_stall_time = 0.0
@@ -311,10 +322,10 @@ class ToolHead:
         # Create kinematics class
         gcode = self.printer.lookup_object("gcode")
         self.Coord = gcode.Coord
-        self.extruder = kinematics.extruder.DummyExtruder(self.printer)
+        self.extruder = extruder.DummyExtruder(self.printer)
         kin_name = config.get("kinematics")
         try:
-            mod = importlib.import_module("kinematics." + kin_name)
+            mod = importlib.import_module("klippy.kinematics." + kin_name)
             self.kin = mod.load_kinematics(self, config)
         except config.error as e:
             raise
@@ -339,6 +350,11 @@ class ToolHead:
             "SET_VELOCITY_LIMIT",
             self.cmd_SET_VELOCITY_LIMIT,
             desc=self.cmd_SET_VELOCITY_LIMIT_help,
+        )
+        gcode.register_command(
+            "RESET_VELOCITY_LIMIT",
+            self.cmd_RESET_VELOCITY_LIMIT,
+            desc=self.cmd_RESET_VELOCITY_LIMIT_help,
         )
         gcode.register_command("M204", self.cmd_M204)
         self.printer.register_event_handler(
@@ -574,6 +590,11 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
 
+    def limit_next_junction_speed(self, speed):
+        last_move = self.lookahead.get_last()
+        if last_move is not None:
+            last_move.limit_next_junction_speed(speed)
+
     def move(self, newpos, speed):
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
@@ -748,7 +769,7 @@ class ToolHead:
 
     def _calc_junction_deviation(self):
         scv2 = self.square_corner_velocity**2
-        self.equilateral_corner_v2 = scv2 * (math.sqrt(2.0) - 1.0)
+        self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
     def cmd_G4(self, gcmd):
@@ -793,25 +814,39 @@ class ToolHead:
             self.min_cruise_ratio = min_cruise_ratio
         self._calc_junction_deviation()
         msg = (
-            "max_velocity: %.6f\n"
-            "max_accel: %.6f\n"
-            "minimum_cruise_ratio: %.6f\n"
-            "square_corner_velocity: %.6f"
-            % (
-                self.max_velocity,
-                self.max_accel,
-                self.min_cruise_ratio,
-                self.square_corner_velocity,
-            )
+            "max_velocity: %.6f" % self.max_velocity,
+            "max_accel: %.6f" % self.max_accel,
+            "minimum_cruise_ratio: %.6f" % self.min_cruise_ratio,
+            "square_corner_velocity: %.6f" % self.square_corner_velocity,
         )
-        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
+        self.printer.set_rollover_info(
+            "toolhead",
+            "toolhead: %s" % (" ".join(msg),),
+            log=get_danger_options().log_velocity_limit_changes,
+        )
         if (
             max_velocity is None
             and max_accel is None
             and square_corner_velocity is None
             and min_cruise_ratio is None
         ):
-            gcmd.respond_info(msg, log=False)
+            gcmd.respond_info("\n".join(msg), log=False)
+
+    cmd_RESET_VELOCITY_LIMIT_help = "Reset printer velocity limits"
+
+    def cmd_RESET_VELOCITY_LIMIT(self, gcmd):
+        self.max_velocity = self.orig_cfg["max_velocity"]
+        self.max_accel = self.orig_cfg["max_accel"]
+        self.square_corner_velocity = self.orig_cfg["square_corner_velocity"]
+        self.min_cruise_ratio = self.orig_cfg["min_cruise_ratio"]
+        self._calc_junction_deviation()
+        msg = (
+            "max_velocity: %.6f" % self.max_velocity,
+            "max_accel: %.6f" % self.max_accel,
+            "minimum_cruise_ratio: %.6f" % self.min_cruise_ratio,
+            "square_corner_velocity: %.6f" % self.square_corner_velocity,
+        )
+        gcmd.respond_info("\n".join(msg), log=False)
 
     def cmd_M204(self, gcmd):
         # Use S for accel
@@ -832,4 +867,4 @@ class ToolHead:
 
 def add_printer_objects(config):
     config.get_printer().add_object("toolhead", ToolHead(config))
-    kinematics.extruder.add_printer_objects(config)
+    extruder.add_printer_objects(config)

@@ -26,6 +26,9 @@ class Fan:
         )
         if self.off_below is not None:
             config.deprecate("off_below")
+        self.initial_speed = config.getfloat(
+            "initial_speed", default=None, minval=0.0, maxval=1.0
+        )
 
         # handles switchover of variable
         # if new var is not set, and old var is, set new var to old var
@@ -83,6 +86,7 @@ class Fan:
         self.printer.register_event_handler(
             "gcode:request_restart", self._handle_request_restart
         )
+        self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def get_mcu(self):
         return self.mcu_fan.get_mcu()
@@ -92,10 +96,10 @@ class Fan:
             return
         if value > 0:
             # Scale value between min_power and max_power
+            value = min(value, 1.0)
             pwm_value = (
                 value * (self.max_power - self.min_power) + self.min_power
             )
-            pwm_value = max(self.min_power, min(self.max_power, pwm_value))
         else:
             pwm_value = 0
         print_time = max(self.last_fan_time + FAN_MIN_TIME, print_time)
@@ -126,6 +130,10 @@ class Fan:
 
     def _handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.0)
+
+    def _handle_ready(self):
+        if self.initial_speed:
+            self.set_speed_from_command(self.initial_speed)
 
     def get_status(self, eventtime):
         tachometer_status = self.tachometer.get_status(eventtime)

@@ -1,7 +1,7 @@
 # Protocol
 
-The Klipper messaging protocol is used for low-level communication
-between the Klipper host software and the Klipper micro-controller
+The Kalico messaging protocol is used for low-level communication
+between the Kalico host software and the Kalico micro-controller
 software. At a high level the protocol can be thought of as a series
 of command and response strings that are compressed, transmitted, and
 then processed at the receiving side. An example series of commands in
@@ -20,7 +20,7 @@ available commands. See the [debugging](Debugging.md) document for
 information on how to translate a G-Code file into its corresponding
 human-readable micro-controller commands.
 
-This page provides a high-level description of the Klipper messaging
+This page provides a high-level description of the Kalico messaging
 protocol itself. It describes how messages are declared, encoded in
 binary format (the "compression" scheme), and transmitted.
 
@@ -30,7 +30,7 @@ low-bandwidth, and low-complexity for the micro-controller.
 
 ## Micro-controller Interface
 
-The Klipper transmission protocol can be thought of as a
+The Kalico transmission protocol can be thought of as a
 [RPC](https://en.wikipedia.org/wiki/Remote_procedure_call) mechanism
 between micro-controller and host. The micro-controller software
 declares the commands that the host may invoke along with the response
@@ -229,7 +229,7 @@ the message block contents.
 
 See the [wikipedia article](https://en.wikipedia.org/wiki/Variable-length_quantity)
 for more information on the general format of VLQ encoded
-integers. Klipper uses an encoding scheme that supports both positive
+integers. Kalico uses an encoding scheme that supports both positive
 and negative integers. Integers close to zero use less bytes to encode
 and positive integers typically encode using less bytes than negative
 integers. The following table shows the number of bytes each integer

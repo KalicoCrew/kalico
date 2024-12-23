@@ -17,12 +17,12 @@ RESP_HAVE_NODEID = 0x21
 CMD_SET_KLIPPER_NODEID = 0x01
 CMD_SET_CANBOOT_NODEID = 0x11
 
-RESP_DANGER_NODEID = 0x07
+RESP_KALICO_NODEID = 0x07
 
 AppNames = {
     CMD_SET_KLIPPER_NODEID: "Klipper",
-    RESP_DANGER_NODEID: "Danger-Klipper",
-    CMD_SET_CANBOOT_NODEID: "CanBoot",
+    RESP_KALICO_NODEID: "Kalico",
+    CMD_SET_CANBOOT_NODEID: "Katapult",
 }
 
 
@@ -67,7 +67,7 @@ def query_unassigned(canbus_iface):
             app_id = msg.data[7]
         if msg.data[0] == RESP_HAVE_NODEID:
             node_id = app_id
-            app_id = RESP_DANGER_NODEID
+            app_id = RESP_KALICO_NODEID
         app_name = AppNames.get(app_id, "Unknown")
         if node_id:
             sys.stdout.write(

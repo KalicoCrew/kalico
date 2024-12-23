@@ -1,6 +1,6 @@
 # Beaglebone
 
-This document describes the process of running Klipper on a Beaglebone
+This document describes the process of running Kalico on a Beaglebone
 PRU.
 
 ## Building an OS image
@@ -14,7 +14,7 @@ the instructions from the above link.
 Then ssh into the Beaglebone machine (`ssh debian@beaglebone` --
 password is `temppwd`).
 
-Before start installing Klipper you need to free-up additional space.
+Before start installing Kalico you need to free-up additional space.
 there are 3 options to do that:
 1. remove some BeagleBone "Demo" resources
 2. if you did boot from SD-Card, and it's bigger than 4Gb - you can expand
@@ -34,27 +34,27 @@ sudo resize2fs /dev/mmcblk0p1
 ```
 
 
-Install Klipper by running the following
+Install Kalico by running the following
 commands:
 
 ```
-git clone https://github.com/DangerKlippers/danger-klipper
+git clone https://github.com/KalicoCrew/kalico klipper
 ./klipper/scripts/install-beaglebone.sh
 ```
 
-After installing Klipper you need to decide what kind of deployment do you need,
+After installing Kalico you need to decide what kind of deployment do you need,
 but take a note that BeagleBone is 3.3v based hardware and in most cases you can't
 directly connect pins to 5v or 12v based hardware without conversion boards.
 
-As Klipper have multimodule architecture on BeagleBone you can achieve many different use cases,
+As Kalico have multimodule architecture on BeagleBone you can achieve many different use cases,
 but general ones are following:
 
-Use case 1: Use BeagleBone only as a host system to run Klipper and additional software
+Use case 1: Use BeagleBone only as a host system to run Kalico and additional software
 like OctoPrint/Fluidd + Moonraker/...  and this configuration will be driving
 external micro-controllers via serial/usb/canbus connections.
 
 Use case 2: Use BeagleBone with extension board (cape) like CRAMPS board.
-in this configuration BeagleBone will host Klipper + additional software, and
+in this configuration BeagleBone will host Kalico + additional software, and
 it will drive extension board with BeagleBone PRU cores (2 additional cores 200Mh, 32Bit).
 
 Use case 3: It's same as "Use case 1" but additionally you want to drive
@@ -132,7 +132,7 @@ pkg:[bb-wl18xx-firmware]:[1.20230414.0-0~bullseye+20230414]
 
 ```
 
-To compile the Klipper micro-controller code, start by configuring it for the "Beaglebone PRU",
+To compile the Kalico micro-controller code, start by configuring it for the "Beaglebone PRU",
 for "BeagleBone Black" additionally disable options "Support GPIO Bit-banging devices" and disable "Support LCD devices"
 inside the "Optional features" because they will not fit in 8Kb PRU firmware memory,
 then exit and save config:
@@ -203,9 +203,9 @@ you can't use them for stepper control.
 
 ## Remaining configuration
 
-Complete the installation by configuring Klipper
+Complete the installation by configuring Kalico
 following the instructions in
-the main [Installation](Installation.md#configuring-octoprint-to-use-klipper) document.
+the main [Installation](Installation.md) document.
 
 ## Printing on the Beaglebone
 
@@ -214,7 +214,7 @@ OctoPrint well. Print stalls have been known to occur on complex
 prints (the printer may move faster than OctoPrint can send movement
 commands). If this occurs, consider using the "virtual_sdcard" feature
 (see [Config Reference](Config_Reference.md#virtual_sdcard) for
-details) to print directly from Klipper
+details) to print directly from Kalico
 and disable any DEBUG or VERBOSE logging options if you did enable them.
 
 

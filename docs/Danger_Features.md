@@ -1,27 +1,28 @@
-# Danger Klipper additions
+# Kalico additions
 
 ## Changes to Klipper defaults
 
-- [`[force_move]`](./Config_Reference.md#⚠-force_move) is enabled by default. Use `[force_move] enable_force_move: False` to disable it
+- [`[force_move]`](./Config_Reference.md#force_move) is enabled by default. Use `[force_move] enable_force_move: False` to disable it
 - [`[respond]`](./Config_Reference.md#respond) is enabled by default. Use `[respond] enable_respond: False` to disable it
 - [`[exclude_object]`](./Config_Reference.md#exclude_object) is enabled by default. Use `[exclude_object] enable_exclude_object: False` to disable it
 
 ## Additional configuration options
 
 - [`[mcu] is_non_critical`](./Config_Reference.md#mcu) enables marking of an mcu as optional - it can be freely disconnected and connected at will. (useful for MCU-based accelerometer boards, mcu-based probes that shut down in hot chambers, etc...)
-- [`[danger_options]`](./Config_Reference.md#danger-options) - New configuration options to adjust klipper values that were previously hidden
-- Additional kinematics versions enabled per-axis acceleration, see [limited_cartesian](./Config_Reference.md#⚠️-cartesian-kinematics-with-limits-for-x-and-y-axes) and [limited_corexy](./Config_Reference.md#⚠️-corexy-kinematics-with-limits-for-x-and-y-axes)
-- `--rotate-log-at-restart` can be added to your klipper start script or service to force log rotation every restart.
+- [`[danger_options]`](./Config_Reference.md#danger-options) - New configuration options to adjust Kalico values that were previously hidden
+- Additional kinematics versions enabled per-axis acceleration, see [limited_cartesian](./Config_Reference.md#cartesian-kinematics-with-limits-for-x-and-y-axes) and [limited_corexy](./Config_Reference.md#corexy-kinematics-with-limits-for-x-and-y-axes)
+- `--rotate-log-at-restart` can be added to your Kalico start script or service to force log rotation every restart.
 - [`[virtual_sdcard] with_subdirs`](./Config_Reference.md#virtual_sdcard) enables scanning of subdirectories for .gcode files, for the menu and M20/M23 commands
 - [`[firmware_retraction] z_hop_height`](./Config_Reference.md#firmware_retraction) adds an automatic z hop when using firmware retraction
+- [`[constants]` and `${constants.value}`](./Config_Reference.md#configuration-references) allow re-using values in your configuration
 
 ## Enhanced behavior
 
-- [`canbus_query.py`](./CANBUS.md#️-finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Danger-Klipper devices, even after they've been assigned a node_id.
+- [`canbus_query.py`](./CANBUS.md#finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Kalico devices, even after they've been assigned a node_id.
 
-## New Klipper Modules
+## New Kalico Modules
 
-- [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Klipper
+- [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Kalico
 
 ## Sensorless Homing
 
@@ -34,7 +35,7 @@
 
 - [`[probe] drop_first_result: True`](./Config_Reference.md#probe) will drop the first result when probing. This can improve probe accuracy for printers that have an outlier for the first sample.
 - [`[dockable_probe]`](./Config_Reference.md#dockable_probe) brings helpful native support for docked probes, such as the Annex Quickdraw, Klicky/Unklicky, and countless others.
-- [`[z_calibration]`](./Config_Reference.md#⚠️-z_calibration) enables automatic probe Z offset calibration using a reference endstop like the Voron 2.4 nozzle endstop.
+- [`[z_calibration]`](./Config_Reference.md#z_calibration) enables automatic probe Z offset calibration using a reference endstop like the Voron 2.4 nozzle endstop.
 - [`[z_tilt_ng]`](./Config_Reference.md#z_tilt_ng) adds enforced 3-point z tilt calibration
 - [`[z_tilt/quad_gantry_level] increasing_threshold`](./Config_Reference.md#z_tilt) allows you to customize the allowed variation when probing multiple times
 - [`[z_tilt/quad_gantry_level] adaptive_horizontal_move_z`](./Config_Reference.md#z_tilt) adaptively decrease horizontal_move_z based on resulting error - z_tilt and QGL faster and safer!
@@ -60,10 +61,10 @@
 - New [`RELOAD_GCODE_MACROS`](./G-Codes.md#reload_gcode_macros) G-Code command to reload `[gcode_macro]` templates without requiring a restart.
 - G-Code Macros can be written in Python. Read more [here](./Command_Templates.md)
 
-## [Plugins](./Plugins.md)
+## Plugins
 
-Extend your Danger Klipper installation with custom plugins.
+Extend your Kalico installation with custom plugins.
 
-Your python plugins can now extend [`klippy/extras`](https://github.com/DangerKlippers/danger-klipper/tree/master/klippy/extras) adding new modules to klipper without causing updates to fail due to a "dirty" git tree.
+Your python plugins can now extend [`klippy/extras`](https://github.com/KalicoCrew/kalico/tree/main/klippy/extras) adding new modules to Kalico without causing updates to fail due to a "dirty" git tree.
 
 Enable `[danger_options] allow_plugin_override: True` to override existing extras.

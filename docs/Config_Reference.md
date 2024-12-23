@@ -1,19 +1,21 @@
 # Configuration reference
 
-This document is a reference for options available in the Klipper
+This document is a reference for options available in the Kalico
 config file.
+
+Sections and options are marked with an ⚠️ to denote configurations that are changed from stock Klipper.
 
 The descriptions in this document are formatted so that it is possible
 to cut-and-paste them into a printer config file. See the
 [installation document](Installation.md) for information on setting up
-Klipper and choosing an initial config file.
+Kalico and choosing an initial config file.
 
 ## Micro-controller configuration
 
 ### Format of micro-controller pin names
 
 Many config options require the name of a micro-controller pin.
-Klipper uses the hardware names for these pins - for example `PA4`.
+Kalico uses the hardware names for these pins - for example `PA4`.
 
 Pin names may be preceded by `!` to indicate that a reverse polarity
 should be used (eg, trigger on low instead of high).
@@ -55,7 +57,7 @@ serial:
 #   is useful on Raspberry Pi boards with micro-controllers powered
 #   over USB - it briefly disables power to all USB ports to
 #   accomplish a micro-controller reset. The 'command' method involves
-#   sending a Klipper command to the micro-controller so that it can
+#   sending a Kalico command to the micro-controller so that it can
 #   reset itself. The default is 'arduino' if the micro-controller
 #   communicates over a serial port, 'command' otherwise.
 #is_non_critical: False
@@ -80,13 +82,13 @@ pins such as "extra_mcu:ar9" may then be used elsewhere in the config
 
 ## ⚠️ Danger Options
 
-A collection of DangerKlipper-specific system options
+A collection of Kalico-specific system options
 
 ```
 [danger_options]
 #error_on_unused_config_options: True
 #   If an unused config option or section should cause an error
-#   if False, will warn but allow klipper to still run.
+#   if False, will warn but allow Kalico to still run.
 #   The default is True.
 #allow_plugin_override: False
 #   Allows modules in `plugins` to override modules of the same name in `extras`
@@ -135,6 +137,9 @@ A collection of DangerKlipper-specific system options
 #   If the bed mesh should be logged at startup
 #   (helpful for keeping the log clean during development)
 #   The default is True.
+#log_velocity_limit_changes: True
+#   If changes to velocity limits should be logged. If False, velocity limits will only
+#   be logged at rollover. Some slicers emit very frequent SET_VELOCITY_LIMIT commands
 #log_shutdown_info: True
 #   If we should log detailed crash info when an exception occurs
 #   Most of it is overly-verbose and fluff and we still get a stack trace
@@ -143,6 +148,30 @@ A collection of DangerKlipper-specific system options
 #log_serial_reader_warnings: True
 #log_startup_info: True
 #log_webhook_method_register_messages: False
+```
+
+## ⚠️ Configuration references
+
+In your configuration, you can reference other values to share
+configuration between multiple sections. References take the form of
+`${option}` to copy a value in the current section, or
+`${section.option}` to look up a value elsewhere in your configuration.
+
+Optionally, a `[constants]` section may be used specifically to store
+these values. Unlike the rest of your configuration, unused constants
+will show a warning instead of causing an error.
+
+```
+[constants]
+run_current_ab:  1.0
+i_am_not_used: True  # Will show "Constant 'i_am_not_used' is unused"
+
+[tmc5160 stepper_x]
+run_current: ${constants.run_current_ab}
+
+[tmc5160 stepper_y]
+run_current: ${tmc5160 stepper_x.run_current}
+#   Nested references work, but are not advised
 ```
 
 ## Common kinematic settings
@@ -334,7 +363,7 @@ max_z_accel:
 ### ⚠️ Cartesian Kinematics with limits for X and Y axes
 
 Behaves exactly the as cartesian kinematics, but allows to set a velocity and
-acceleration limit for X and Y axis. This also makes command [`SET_KINEMATICS_LIMIT`](./G-Codes.md#⚠️-set_kinematics_limit) available to sets these limits at runtime.
+acceleration limit for X and Y axis. This also makes command [`SET_KINEMATICS_LIMIT`](./G-Codes.md#set_kinematics_limit) available to sets these limits at runtime.
 
 
 ```
@@ -704,6 +733,9 @@ parameters.
 ```
 [printer]
 kinematics: hybrid_corexy
+invert_kinematics: False
+# ⚠️ Some hybrid_corexy machines with dual carriages may need to
+#   invert the kinematics if the toolheads move in reverse
 max_z_velocity:
 #   This sets the maximum velocity (in mm/s) of movement along the z
 #   axis. The default is to use max_velocity for max_z_velocity.
@@ -738,6 +770,9 @@ parameters.
 ```
 [printer]
 kinematics: hybrid_corexz
+invert_kinematics: False
+# ⚠️ Some hybrid_corexy machines with dual carriages may need to
+#   invert the kinematics if the toolheads move in reverse
 max_z_velocity:
 #   This sets the maximum velocity (in mm/s) of movement along the z
 #   axis. The default is to use max_velocity for max_z_velocity.
@@ -927,7 +962,7 @@ anchor_z:
 ### None Kinematics
 
 It is possible to define a special "none" kinematics to disable
-kinematic support in Klipper. This may be useful for controlling
+kinematic support in Kalico. This may be useful for controlling
 devices that are not typical 3d-printers or for debugging purposes.
 
 ```
@@ -1044,7 +1079,7 @@ control:
 #pid_Ki:
 #pid_Kd:
 #   The proportional (pid_Kp), integral (pid_Ki), and derivative
-#   (pid_Kd) settings for the PID feedback control system. Klipper
+#   (pid_Kd) settings for the PID feedback control system. Kalico
 #   evaluates the PID settings with the following general formula:
 #     heater_pwm = (Kp*error + Ki*integral(error) - Kd*derivative(error)) / 255
 #   Where "error" is "requested_temperature - measured_temperature"
@@ -1417,6 +1452,13 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 
 #### [z_tilt_ng]
 
+z_tilt's next generation, adding the Z_TILT_CALIBRATE and Z_TILT_AUTODETECT
+extended [G-Code commands](G-Codes.md#z_tilt_ng). Z_TILT_CALIBRATE performs multiple
+probing runs to calculate z_offsets, enabling accurate tilt adjustment with fewer
+probe points. Z_TILT_AUTODETECT automatically determines pivot positions for each
+Z stepper through iterative probing. When this section is present, these extended
+commands become available, enhancing bed leveling accuracy and calibration efficiency.
+
 ```
 [z_tilt_ng]
 #z_positions:
@@ -1782,7 +1824,7 @@ explicit idle_timeout config section to change the default settings.
 ### [virtual_sdcard]
 
 A virtual sdcard may be useful if the host machine is not fast enough
-to run OctoPrint well. It allows the Klipper host software to directly
+to run OctoPrint well. It allows the Kalico host software to directly
 print gcode files stored in a directory on the host using standard
 sdcard G-Code commands (eg, M24).
 
@@ -1818,9 +1860,9 @@ file for a Marlin compatible M808 G-Code macro.
 [sdcard_loop]
 ```
 
-### ⚠ [force_move]
+### ⚠️ [force_move]
 
-This module is enabled by default in DangerKlipper!
+This module is enabled by default in Kalico!
 
 Support manually moving stepper motors for diagnostic purposes. Note,
 using this feature may place the printer in an invalid state - see the
@@ -1908,7 +1950,7 @@ Support for gcode arc (G2/G3) commands.
 
 ### [respond]
 
-This module is enabled by default in DangerKlipper!
+This module is enabled by default in Kalico!
 
 Enable the "M118" and "RESPOND" extended
 [commands](G-Codes.md#respond).
@@ -1931,13 +1973,13 @@ Enable the "M118" and "RESPOND" extended
 
 ### [exclude_object]
 
-This module is enabled by default in DangerKlipper!
+This module is enabled by default in Kalico!
 
 Enables support to exclude or cancel individual objects during the printing
 process.
 
 See the [exclude objects guide](Exclude_Object.md) and
-[command reference](G-Codes.md#excludeobject)
+[command reference](G-Codes.md#exclude_object)
 for additional information. See the
 [sample-macros.cfg](../config/sample-macros.cfg) file for a
 Marlin/RepRapFirmware compatible M486 G-Code macro.
@@ -2031,8 +2073,9 @@ Support for LIS2DW accelerometers.
 
 ```
 [lis2dw]
-cs_pin:
-#   The SPI enable pin for the sensor. This parameter must be provided.
+#cs_pin:
+#   The SPI enable pin for the sensor. This parameter must be provided
+#   if using SPI.
 #spi_speed: 5000000
 #   The SPI speed (in hz) to use when communicating with the chip.
 #   The default is 5000000.
@@ -2042,6 +2085,46 @@ cs_pin:
 #spi_software_miso_pin:
 #   See the "common SPI settings" section for a description of the
 #   above parameters.
+#i2c_address:
+#   Default is 25 (0x19). If SA0 is high, it would be 24 (0x18) instead.
+#i2c_mcu:
+#i2c_bus:
+#i2c_software_scl_pin:
+#i2c_software_sda_pin:
+#i2c_speed: 400000
+#   See the "common I2C settings" section for a description of the
+#   above parameters. The default "i2c_speed" is 400000.
+#axes_map: x, y, z
+#   See the "adxl345" section for information on this parameter.
+```
+
+### [lis3dh]
+
+Support for LIS3DH accelerometers.
+
+```
+[lis3dh]
+#cs_pin:
+#   The SPI enable pin for the sensor. This parameter must be provided
+#   if using SPI.
+#spi_speed: 5000000
+#   The SPI speed (in hz) to use when communicating with the chip.
+#   The default is 5000000.
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section for a description of the
+#   above parameters.
+#i2c_address:
+#   Default is 25 (0x19). If SA0 is high, it would be 24 (0x18) instead.
+#i2c_mcu:
+#i2c_bus:
+#i2c_software_scl_pin:
+#i2c_software_sda_pin:
+#i2c_speed: 400000
+#   See the "common I2C settings" section for a description of the
+#   above parameters. The default "i2c_speed" is 400000.
 #axes_map: x, y, z
 #   See the "adxl345" section for information on this parameter.
 ```
@@ -2163,7 +2246,7 @@ main printer config file. Wildcards may also be used (eg,
 This tool allows a single micro-controller pin to be defined multiple
 times in a config file without normal error checking. This is intended
 for diagnostic and debugging purposes. This section is not needed
-where Klipper supports using the same pin multiple times, and using
+where Kalico supports using the same pin multiple times, and using
 this override may cause confusing and unexpected results.
 
 ```
@@ -2195,7 +2278,7 @@ pin:
 #   than the Z steppers then it enables "multi-mcu homing". This
 #   parameter must be provided.
 #deactivate_on_each_sample: True
-#   This determines if Klipper should execute deactivation gcode
+#   This determines if Kalico should execute deactivation gcode
 #   between each probe attempt when performing a multiple probe
 #   sequence. The default is True.
 #x_offset: 0.0
@@ -2272,12 +2355,12 @@ control_pin:
 #   The amount of time (in seconds) to wait for the BLTouch pin to
 #   move up or down. The default is 0.680 seconds.
 #stow_on_each_sample: True
-#   This determines if Klipper should command the pin to move up
+#   This determines if Kalico should command the pin to move up
 #   between each probe attempt when performing a multiple probe
 #   sequence. Read the directions in docs/BLTouch.md before setting
 #   this to False. The default is True.
 #probe_with_touch_mode: False
-#   If this is set to True then Klipper will probe with the device in
+#   If this is set to True then Kalico will probe with the device in
 #   "touch_mode". The default is False (probing in "pin_down" mode).
 #pin_up_reports_not_triggered: True
 #   Set if the BLTouch consistently reports the probe in a "not
@@ -2536,8 +2619,7 @@ calibrate_y: 112.5
 
 Automatic Z offset calibration. One may define this section if the printer
 is able to calibrate the nozzle's offset automatically. See
-[Z-Calibration guide](Z_Calibration.md) and
-[command reference](G-Codes.md#automatic-z-offset-calibration) for further
+[Z-Calibration guide](Z_Calibration.md) for further
 information.
 
 ```
@@ -2949,7 +3031,7 @@ temperature sensors that are reported via the M105 command.
 
 ## Temperature sensors
 
-Klipper includes definitions for many types of temperature sensors.
+Kalico includes definitions for many types of temperature sensors.
 These sensors may be used in any config section that requires a
 temperature sensor (such as an `[extruder]` or `[heater_bed]`
 section).
@@ -3326,6 +3408,9 @@ pin:
 #off_below:
 #   These option is deprecated and should no longer be specified.
 #   Use `min_power` instead.
+#initial_speed:
+#   Fan speed will be set to this value on startup if specified. Value
+#   is from 0.0 to 1.0.
 ```
 
 ### [heated_fan]
@@ -3373,6 +3458,7 @@ a shutdown_speed equal to max_power.
 #tachometer_ppr:
 #tachometer_poll_interval:
 #enable_pin:
+#initial_speed:
 #   See the "fan" section for a description of the above parameters.
 #heater: extruder
 #   Name of the config section defining the heater that this fan is
@@ -3468,7 +3554,7 @@ information.
 #pid_Ki:
 #pid_Kd:
 #   The proportional (pid_Kp), integral (pid_Ki), and derivative
-#   (pid_Kd) settings for the PID feedback control system. Klipper
+#   (pid_Kd) settings for the PID feedback control system. Kalico
 #   evaluates the PID settings with the following general formula:
 #     fan_pwm = max_power - (Kp*e + Ki*integral(e) - Kd*derivative(e)) / 255
 #   Where "e" is "target_temperature - measured_temperature" and
@@ -3514,14 +3600,17 @@ control: curve
 #   fan would run with 0.5 at 55°)
 #cooling_hysteresis: 0.0
 #   define the temperature hysteresis for lowering the fan speed
-#   (temperature differences to the last measured value that are lower than
-#   the hysteresis will not cause lowering of the fan speed)
+#   (in simple terms this setting offsets the fan curve when cooling down
+#   by the specified amount of degrees celsius. For example, if the
+#   hysteresis is set to 5°C, the fan curve will be moved by -5°C. This
+#   setting can be used to reduce the effects of quickly changing
+#   temperatures around a target temperature which would cause the fan to
+#   speed up and slow down repeatedly.)
 #heating_hysteresis: 0.0
 #   same as cooling_hysteresis but for increasing the fan speed, it is
 #   recommended to be left at 0 for safety reasons
 #smooth_readings: 10
-#   the amount of readings a median should be taken of to determine the fan
-#   speed at each update interval, the default is 10
+#   This parameter is deprecated and should no longer be used.
 ```
 
 ### [fan_generic]
@@ -3925,9 +4014,9 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-#sense_resistor: 0.110
-#   The resistance (in ohms) of the motor sense resistor. The default
-#   is 0.110 ohms.
+sense_resistor:
+#   The resistance (in ohms) of the motor sense resistor. This
+#   parameter must be provided.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4036,9 +4125,9 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-#sense_resistor: 0.110
-#   The resistance (in ohms) of the motor sense resistor. The default
-#   is 0.110 ohms.
+sense_resistor:
+#   The resistance (in ohms) of the motor sense resistor. This
+#   parameter must be provided.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4081,7 +4170,7 @@ run_current:
 #hold_current:
 #home_current:
 #current_change_dwell_time:
-#sense_resistor: 0.110
+sense_resistor:
 #stealthchop_threshold: 0
 #   See the "tmc2208" section for the definition of these parameters.
 #coolstep_threshold:
@@ -4162,7 +4251,7 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-#sense_resistor:
+sense_resistor:
 #   The resistance (in ohms) of the motor sense resistor. This
 #   parameter must be provided.
 #idle_current_percent: 100
@@ -4346,17 +4435,17 @@ run_current:
 
 ### [tmc5160]
 
-Configure a TMC5160 stepper motor driver via SPI bus. To use this
-feature, define a config section with a "tmc5160" prefix followed by
-the name of the corresponding stepper config section (for example,
-"[tmc5160 stepper_x]").
+Configure a TMC5160 or TMC2160 stepper motor driver via SPI bus.
+To use this feature, define a config section with a "tmc5160" prefix
+followed by the name of the corresponding stepper config section
+(for example, "[tmc5160 stepper_x]").
 
 ```
 [tmc5160 stepper_x]
 cs_pin:
-#   The pin corresponding to the TMC5160 chip select line. This pin
-#   will be set to low at the start of SPI messages and raised to high
-#   after the message completes. This parameter must be provided.
+#   The pin corresponding to the TMC5160 or TMC2160 chip select line.
+#   This pin will be set to low at the start of SPI messages and raised
+#   to high after the message completes. This parameter must be provided.
 #spi_speed:
 #spi_bus:
 #spi_software_sclk_pin:
@@ -4387,9 +4476,9 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-#sense_resistor: 0.075
-#   The resistance (in ohms) of the motor sense resistor. The default
-#   is 0.075 ohms.
+sense_resistor:
+#   The resistance (in ohms) of the motor sense resistor. This
+#   parameter must be provided.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4464,16 +4553,21 @@ run_current:
 #driver_BBMCLKS: 4
 #driver_BBMTIME: 0
 #driver_FILT_ISENSE: 0
-#   Set the given register during the configuration of the TMC5160
-#   chip. This may be used to set custom motor parameters. The
+#   Set the given register during the configuration of the TMC5160 or
+#   TMC2160 chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
 #   above list.
+#⚠️driver_s2vs_level: 6   # Short to Supply tolerance, from 4 to 15
+#⚠️driver_s2g_level: 6    # Short to Ground tolerance, from 2 to 15
+#⚠️driver_shortdelay: 0   # Short trigger delay, 0=750ns, 1=1500ns
+#⚠️driver_short_filter: 1
+#   Short filtering bandwidth. 0=100ns, 1=1us (Default), 2=2us, 3=3us
 #diag0_pin:
 #diag1_pin:
 #   The micro-controller pin attached to one of the DIAG lines of the
-#   TMC5160 chip. Only a single diag pin should be specified. The pin
-#   is "active low" and is thus normally prefaced with "^!". Setting
-#   this creates a "tmc5160_stepper_x:virtual_endstop" virtual pin
+#   TMC5160 or TMC2160 chip. Only a single diag pin should be specified.
+#   The pin is "active low" and is thus normally prefaced with "^!".
+#   Setting this creates a "tmc5160_stepper_x:virtual_endstop" virtual pin
 #   which may be used as the stepper's endstop_pin. Doing this enables
 #   "sensorless homing". (Be sure to also set driver_SGT to an
 #   appropriate sensitivity value.) The default is to not enable
@@ -4637,15 +4731,16 @@ Support for a display attached to the micro-controller.
 [display]
 lcd_type:
 #   The type of LCD chip in use. This may be "hd44780", "hd44780_spi",
-#   "st7920", "emulated_st7920", "uc1701", "ssd1306", or "sh1106".
+#   "aip31068_spi", "st7920", "emulated_st7920", "uc1701", "ssd1306", or
+#   "sh1106".
 #   See the display sections below for information on each type and
 #   additional parameters they provide. This parameter must be
 #   provided.
 #display_group:
 #   The name of the display_data group to show on the display. This
 #   controls the content of the screen (see the "display_data" section
-#   for more information). The default is _default_20x4 for hd44780
-#   displays and _default_16x4 for other displays.
+#   for more information). The default is _default_20x4 for hd44780 or
+#   aip31068_spi displays and _default_16x4 for other displays.
 #menu_timeout:
 #   Timeout for menu. Being inactive this amount of seconds will
 #   trigger menu exit or return to root menu when having autorun
@@ -4764,6 +4859,31 @@ spi_software_miso_pin:
 #   Perform 8-bit/4-bit protocol initialization on an hd44780 display.
 #   This is necessary on real hd44780 devices. However, one may need
 #   to disable this on some "clone" devices. The default is True.
+#line_length:
+#   Set the number of characters per line for an hd44780 type lcd.
+#   Possible values are 20 (default) and 16. The number of lines is
+#   fixed to 4.
+...
+```
+
+#### aip31068_spi display
+
+Information on configuring an aip31068_spi display - a very similar to hd44780_spi
+a 20x04 (20 symbols by 4 lines) display with slightly different internal
+protocol.
+
+```
+[display]
+lcd_type: aip31068_spi
+latch_pin:
+spi_software_sclk_pin:
+spi_software_mosi_pin:
+spi_software_miso_pin:
+#   The pins connected to the shift register controlling the display.
+#   The spi_software_miso_pin needs to be set to an unused pin of the
+#   printer mainboard as the shift register does not have a MISO pin,
+#   but the software spi implementation requires this pin to be
+#   configured.
 #line_length:
 #   Set the number of characters per line for an hd44780 type lcd.
 #   Possible values are 20 (default) and 16. The number of lines is
@@ -5240,7 +5360,7 @@ adc2:
 #   The approximate distance (in mm) between sensor readings. The
 #   default is 10mm.
 #logging: False
-#   Out diameter to terminal and klipper.log can be turn on|of by
+#   Out diameter to terminal and klippy.log can be turn on|of by
 #   command.
 #min_diameter: 1.0
 #   Minimal diameter for trigger virtual filament_switch_sensor.
@@ -5511,7 +5631,7 @@ revision:
 #   P9_41).
 host_mcu:
 #   The name of the mcu config section that communicates with the
-#   Klipper "linux process" mcu instance. This parameter must be
+#   Kalico "linux process" mcu instance. This parameter must be
 #   provided.
 #standstill_power_down: False
 #   This parameter controls the CFG6_ENN line on all stepper
@@ -5627,13 +5747,59 @@ cs_pin:
 #   above parameters.
 ```
 
+### ⚠️ [tools_calibrate]
+
+Multi-toolhead nozzle offset calibration, using a 3-axis nozzle contact probe such as
+[Zruncho3D's Nudge Probe](https://github.com/zruncho3d/nudge).
+
+```
+[tools_calibrate]
+pin:
+travel_speed: 20
+#   X and Y travel speed in mm/sec
+spread: 5
+#spread_x:
+#spread_y:
+#   X and Y travel distance around the probe
+#initial_spread:
+#initial_spread_x:
+#initial_spread_y:
+#   X and Y travel distance for the initial probe locating moves
+lower_z: 1.0
+#   Distance to lower in Z for contact with the sides of the probe
+speed: 2
+#   The speed (in mm/sec) to retract between probes
+lift_speed: 4
+#   Z Lift speed after probing
+final_lift_z: 6
+#   Z lift distance after calibration, must be greater than any
+#   height variance between tools
+trigger_to_bottom_z: 0.25
+#   Offset from probe trigger to vertical motion bottoms out.
+#   decrease if the nozzle is too high, increase if too low.
+#samples: 1
+#   The number of times to probe each point. The probed z-values will
+#   be averaged. The default is to probe 1 time.
+#sample_retract_dist: 2.0
+#   The distance (in mm) to lift the toolhead between each sample (if
+#   sampling more than once). The default is 2mm.
+#samples_result: average
+#   The calculation method when sampling more than once - either
+#   "median" or "average". The default is average.
+#samples_tolerance: 0.100
+#   The maximum Z distance (in mm) that a sample may differ from other
+#   samples. If this tolerance is exceeded then either an error is
+#   reported or the attempt is restarted (see
+#   samples_tolerance_retries). The default is 0.100mm.
+```
+
 ### [trad_rack]
 
 Trad Rack multimaterial system support. See the following documents from the
 TradRack repo for additional information:
 - [Tuning.md](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Tuning.md):
   document referenced by some of the config options below.
-- [Trad Rack config reference document](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Config_Reference.md): contains info on additional config
+- [Trad Rack config reference document](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Config_Reference.md): contains info on additional config
   sections that are expected to be used alongside [trad_rack].
 
 ```
@@ -5887,21 +6053,21 @@ SPI bus.
 The following parameters are generally available for devices using an
 I2C bus.
 
-Note that Klipper's current micro-controller support for I2C is
+Note that Kalico's current micro-controller support for I2C is
 generally not tolerant to line noise. Unexpected errors on the I2C
-wires may result in Klipper raising a run-time error. Klipper's
+wires may result in Kalico raising a run-time error. Kalico's
 support for error recovery varies between each micro-controller type.
 It is generally recommended to only use I2C devices that are on the
 same printed circuit board as the micro-controller.
 
-Most Klipper micro-controller implementations only support an
-`i2c_speed` of 100000 (_standard mode_, 100kbit/s). The Klipper "Linux"
+Most Kalico micro-controller implementations only support an
+`i2c_speed` of 100000 (_standard mode_, 100kbit/s). The Kalico "Linux"
 micro-controller supports a 400000 speed (_fast mode_, 400kbit/s), but it must be
 [set in the operating system](RPi_microcontroller.md#optional-enabling-i2c)
-and the `i2c_speed` parameter is otherwise ignored. The Klipper
+and the `i2c_speed` parameter is otherwise ignored. The Kalico
 "RP2040" micro-controller and ATmega AVR family and some STM32
 (F0, G0, G4, L4, F7, H7) support a rate of 400000 via the `i2c_speed` parameter.
-All other Klipper micro-controllers use a
+All other Kalico micro-controllers use a
 100000 rate and ignore the `i2c_speed` parameter.
 
 ```
@@ -5924,7 +6090,7 @@ All other Klipper micro-controllers use a
 #   i2c_bus parameter.
 #i2c_speed:
 #   The I2C speed (in Hz) to use when communicating with the device.
-#   The Klipper implementation on most micro-controllers is hard-coded
+#   The Kalico implementation on most micro-controllers is hard-coded
 #   to 100000 and changing this value has no effect. The default is
 #   100000. Linux, RP2040 and ATmega support 400000.
 ```

@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import traceback, logging, ast, copy, json, threading
 import jinja2, math
-import configfile
+from klippy import configfile
 
 PYTHON_SCRIPT_PREFIX = "!"
 
@@ -290,7 +290,14 @@ class PrinterGCodeMacro:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.env = jinja2.Environment(
-            "{%", "%}", "{", "}", extensions=["jinja2.ext.do"]
+            "{%",
+            "%}",
+            "{",
+            "}",
+            extensions=[
+                "jinja2.ext.do",
+                "jinja2.ext.loopcontrols",
+            ],
         )
 
         self.gcode = self.printer.lookup_object("gcode")

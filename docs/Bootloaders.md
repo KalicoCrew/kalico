@@ -1,11 +1,11 @@
 # Bootloaders
 
 This document provides information on common bootloaders found on
-micro-controllers that Klipper supports.
+micro-controllers that Kalico supports.
 
 The bootloader is 3rd-party software that runs on the micro-controller
 when it is first powered on. It is typically used to flash a new
-application (eg, Klipper) to the micro-controller without requiring
+application (eg, Kalico) to the micro-controller without requiring
 specialized hardware. Unfortunately, there is no industry wide
 standard for flashing a micro-controller, nor is there a standard
 bootloader that works across all micro-controllers. Worse, it is
@@ -22,7 +22,7 @@ bootloader to flash an application where possible.
 This document attempts to describe common bootloaders, the steps
 needed to flash a bootloader, and the steps needed to flash an
 application.  This document is not an authoritative reference; it is
-intended as a collection of useful information that the Klipper
+intended as a collection of useful information that the Kalico
 developers have accumulated.
 
 ## AVR micro-controllers
@@ -221,7 +221,7 @@ To flash a program with OpenOCD use the following chip config:
 ```
 source [find target/at91samdXX.cfg]
 ```
-Obtain a program; for instance, klipper can be built for this chip.
+Obtain a program; for instance, Kalico can be built for this chip.
 Flash with OpenOCD commands similar to:
 ```
 at91samd chip-erase
@@ -414,11 +414,11 @@ If the bootloader is running you can flash with something like:
 ```
 ~/klipper/lib/hidflash/hid-flash ~/klipper/out/klipper.bin
 ```
-alternatively, you can use `make flash` to flash klipper directly:
+alternatively, you can use `make flash` to flash Kalico directly:
 ```
 make flash FLASH_DEVICE=1209:BEBA
 ```
-OR if klipper has been previously flashed:
+OR if Kalico has been previously flashed:
 ```
 make flash FLASH_DEVICE=/dev/ttyACM0
 ```
@@ -455,8 +455,8 @@ onto which the klipper.bin file can be copied.
 ### STM32F103/STM32F0x2 with CanBoot bootloader
 
 The [CanBoot](https://github.com/Arksine/CanBoot) bootloader provides an option
-for uploading Klipper firmware over the CANBUS.  The bootloader itself is
-derived from Klipper's source code.  Currently CanBoot supports the STM32F103,
+for uploading Kalico firmware over the CANBUS.  The bootloader itself is
+derived from Kalico's source code.  Currently CanBoot supports the STM32F103,
 STM32F042, and STM32F072 models.
 
 It is recommended to use a ST-Link Programmer to flash CanBoot, however it
@@ -471,7 +471,7 @@ is present and enter the bootloader.  If this doesn't occur it is possible to
 enter the bootloader by pressing the reset button twice in succession.
 
 The `flash_can.py` utility supplied in the `lib/canboot` folder may be used to
-upload Klipper firmware.  The device UUID is necessary to flash.  If you do not
+upload Kalico firmware.  The device UUID is necessary to flash.  If you do not
 have a UUID it is possible to query nodes currently running the bootloader:
 ```
 python3 flash_can.py -q
@@ -488,7 +488,7 @@ Where `aabbccddeeff` is replaced by your UUID.  Note that the `-i` and `-f`
 options may be omitted, they default to `can0` and `~/klipper/out/klipper.bin`
 respectively.
 
-When building Klipper for use with CanBoot, select the 8 KiB Bootloader option.
+When building Kalico for use with CanBoot, select the 8 KiB Bootloader option.
 
 ## STM32F4 micro-controllers (SKR Pro 1.1)
 
@@ -636,7 +636,7 @@ command.)
 
 ### OpenOCD and gdb
 
-It is possible to use OpenOCD with gdb to debug Klipper. The following
+It is possible to use OpenOCD with gdb to debug Kalico. The following
 commands assume one is running gdb on a desktop class machine.
 
 Add the following to the OpenOCD config file:

@@ -7,8 +7,8 @@ import logging
 import math
 import os
 import zlib
-import serialhdl, msgproto, pins, chelper, clocksync
-from extras.danger_options import get_danger_options
+from . import serialhdl, msgproto, pins, chelper, clocksync
+from .extras.danger_options import get_danger_options
 
 
 class error(Exception):
@@ -1148,9 +1148,13 @@ class MCU:
     def _mcu_identify(self):
         if self.is_non_critical and not self._check_serial_exists():
             self.non_critical_disconnected = True
+            if self.is_non_critical:
+                self._get_status_info["non_critical_disconnected"] = True
             return False
         else:
             self.non_critical_disconnected = False
+            if self.is_non_critical:
+                self._get_status_info["non_critical_disconnected"] = False
         if self.is_fileoutput():
             self._connect_file()
         else:

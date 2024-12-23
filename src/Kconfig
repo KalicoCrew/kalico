@@ -22,8 +22,8 @@ choice
         bool "STMicroelectronics STM32"
     config MACH_HC32F460
         bool "Huada Semiconductor HC32F460"
-    config MACH_RP2040
-        bool "Raspberry Pi RP2040"
+    config MACH_RPXXXX
+        bool "Raspberry Pi RP2040/RP235x"
     config MACH_PRU
         bool "Beaglebone PRU"
     config MACH_AR100
@@ -112,7 +112,7 @@ config WANT_SENSORS
     default y
 config WANT_LIS2DW
     bool
-    depends on HAVE_GPIO_SPI
+    depends on HAVE_GPIO_SPI || HAVE_GPIO_I2C
     default y
 config WANT_LDC1612
     bool
@@ -151,8 +151,8 @@ config WANT_SENSORS
     bool "Support external sensor devices"
     depends on HAVE_GPIO_I2C || HAVE_GPIO_SPI
 config WANT_LIS2DW
-    bool "Support lis2dw 3-axis accelerometer"
-    depends on HAVE_GPIO_SPI
+    bool "Support lis2dw and lis3dh 3-axis accelerometers"
+    depends on HAVE_GPIO_SPI || HAVE_GPIO_I2C
 config WANT_LDC1612
     bool "Support ldc1612 eddy current sensor"
     depends on HAVE_GPIO_I2C

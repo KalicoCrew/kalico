@@ -1,0 +1,34 @@
+name: Docs test
+on:
+  pull_request:
+    paths:
+      - docs/**
+      - .github/workflows/ci-docs_test.yaml
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - uses: actions/cache@v4
+        id: pip-cache
+        with:
+          path: ${{ env.pythonLocation }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('docs/_kalico/mkdocs-requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        if: steps.pip-cache.outputs.cache-hit != 'true'
+        run: pip install -r docs/_kalico/mkdocs-requirements.txt
+
+      - name: Build MkDocs Pages
+        run: |
+          cd docs/
+          mkdocs build -f _kalico/mkdocs.yml --strict

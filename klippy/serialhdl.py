@@ -6,8 +6,8 @@
 import logging, threading, os
 import serial
 
-import msgproto, chelper, util
-from extras.danger_options import get_danger_options
+from . import msgproto, chelper, util
+from .extras.danger_options import get_danger_options
 
 
 class error(Exception):

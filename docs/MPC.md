@@ -14,7 +14,7 @@ MPC offers several advantages over PID control:
 - **Effective for high and low flow hotends:** Regardless of the flow rate of the hotend, MPC maintains effective temperature control.     
 
 > [!CAUTION]
-> This feature controls the portions of the 3D printer that can get very hot. All standard Danger Klipper warnings apply. Please report all issues and bugs to github or discord.
+> This feature controls the portions of the 3D printer that can get very hot. All standard Kalico warnings apply. Please report all issues and bugs to [GitHub](https://github.com/KalicoCrew/kalico/issues) or [Discord](Contact.md#discord).
 
 # Basic Configuration
 
@@ -194,7 +194,7 @@ MPC_CALIBRATE HEATER=extruder FAN_BREAKPOINTS=7
 
 After successful  calibration the method will generate the key model parameters into the log for future reference.  
 
-![Calibration Parameter Output](/docs/img/MPC_calibration_output.png)
+![Calibration Parameter Output](img/MPC_calibration_output.png)
 
 A `SAVE_CONFIG` command is then required to commit these calibrated model parameters to the printer config or the user can manually update the values. The _SAVE_CONFIG_ block should then look like: 
 
@@ -232,7 +232,7 @@ These model parameters are not suitable for pre-configuration or are not explici
 
 The following macro can be used to replace `M109` hotend temperature set and `M190` bed temperature set G-code commands with a macro utilizing `temperature_wait` G-codes. This can be utilized in systems where the sensor temperature takes an extended time to converge on the set temperature. 
 > [!NOTE]
-> This behaviour occurs primarily because MPC controls the modelled block temperature and not the hotend temperature sensor. For almost all cases, when temperature sensor overshoot/undershoot occurs, the block modelled temperature will be correctly at the set temperature. However, the Klipper system performs actions based on the sensor temperature only which can lead to undesirable delays in print actions with stock `M109` and `M190` commands.
+> This behaviour occurs primarily because MPC controls the modelled block temperature and not the hotend temperature sensor. For almost all cases, when temperature sensor overshoot/undershoot occurs, the block modelled temperature will be correctly at the set temperature. However, the Kalico system performs actions based on the sensor temperature only which can lead to undesirable delays in print actions with stock `M109` and `M190` commands.
 
 ```
 [gcode_macro M109] # Wait Hotend Temp
@@ -334,7 +334,7 @@ The real-time temperatures and model states can be viewed from a browser by ente
 https://192.168.xxx.xxx:7125/printer/objects/query?extruder
 ```
 
-![Calibration](/docs/img/MPC_realtime_output.png)
+![Calibration](img/MPC_realtime_output.png)
 
 # EXPERIMENTAL FEATURES
 
@@ -381,6 +381,12 @@ MPC_CALIBRATE HEATER=heater_bed FAN_BREAKPOINTS=5
 ```
 
 These calibrated model parameters need to be saved to the _SAVE_CONFIG_ block manually or by using the `SAVE_CONFIG` command.
+
+## Updating calibration parameters at runtime
+
+Similar to [`SET_HEATER_PID`](G-Codes.md#set_heater_pid), you can update your MPC calibration profile at runtime.
+
+`MPC_SET HEATER=<heater_name> [BLOCK_HEAT_CAPACITY=0.0] [SENSOR_RESPONSIVENESS=0.0] [AMBIENT_TRANSFER=0.0] [FAN_AMBIENT_TRANSFER=0.01,0.02,0.03]`
 
 # BACKGROUND
 

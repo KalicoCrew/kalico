@@ -364,7 +364,7 @@ Failed to flash to %s: %s
 
 If the device is already in bootloader mode it can be flashed with the
 following command:
-  make flash FLASH_DEVICE=2e8a:0003
+  make flash FLASH_DEVICE=%s
 
 Alternatively, one can flash rp2040 boards like the Pico by manually
 entering bootloader mode(hold bootsel button during powerup), mount the
@@ -374,13 +374,16 @@ device as a usb drive, and copy klipper.uf2 to the device.
 
 
 def flash_rp2040(options, binfile):
+    rawdev = "2e8a:0003"
+    if options.mcutype == "rp2350":
+        rawdev = "2e8a:000f"
     try:
-        if options.device.lower() == "2e8a:0003":
+        if options.device.lower() == rawdev:
             call_picoboot(None, None, binfile, options.sudo)
         else:
             flash_picoboot(options.device, binfile, options.sudo)
     except error as e:
-        sys.stderr.write(RP2040_HELP % (options.device, str(e)))
+        sys.stderr.write(RP2040_HELP % (options.device, str(e), rawdev))
         sys.exit(-1)
 
 
@@ -401,7 +404,7 @@ MCUTYPES = {
     "stm32h7": flash_stm32f4,
     "stm32l4": flash_stm32f4,
     "stm32g4": flash_stm32f4,
-    "rp2040": flash_rp2040,
+    "rp2": flash_rp2040,
 }
 
 

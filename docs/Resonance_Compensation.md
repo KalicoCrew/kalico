@@ -1,6 +1,6 @@
 # Resonance Compensation
 
-Klipper supports Input Shaping - a technique that can be used to reduce ringing
+Kalico supports Input Shaping - a technique that can be used to reduce ringing
 (also known as echoing, ghosting or rippling) in prints. Ringing is a surface
 printing defect when, typically, elements like edges repeat themselves on a
 printed surface as a subtle 'echo':
@@ -136,7 +136,7 @@ For the example above, we get shaper_freq_x/y = 49.4.
 
 ### Choosing input shaper
 
-Klipper supports several input shapers. They differ in their sensitivity to
+Kalico supports several input shapers. They differ in their sensitivity to
 errors determining the resonance frequency and how much smoothing they cause
 in the printed parts. Also, some of the shapers like 2HUMP_EI and 3HUMP_EI
 should usually not be used with shaper_freq = resonance frequency - they are
@@ -311,7 +311,7 @@ new `shaper_freq_x` and `shaper_freq_y` values.
 If you use Pressure Advance, it may need to be re-tuned. Follow the
 [instructions](Pressure_Advance.md#tuning-pressure-advance) to find
 the new value, if it differs from the previous one. Make sure to
-restart Klipper before tuning Pressure Advance.
+restart Kalico before tuning Pressure Advance.
 
 ### Unreliable measurements of ringing frequencies
 
@@ -457,7 +457,7 @@ parameter described in [this section](#selecting-max_accel)).
 
 ### Input shapers
 
-Input shapers used in Klipper are rather standard, and one can find more
+Input shapers used in Kalico are rather standard, and one can find more
 in-depth overview in the articles describing the corresponding shapers.
 This section contains a brief overview of some technical aspects of the
 supported input shapers. The table below shows some (usually approximate)
@@ -476,7 +476,7 @@ A note on vibration reduction: the values in the table above are approximate.
 If the damping ratio of the printer is known for each axis, the shaper can be
 configured more precisely and it will then reduce the resonances in a bit wider
 range of frequencies. However, the damping ratio is usually unknown and is hard
-to estimate without a special equipment, so Klipper uses 0.1 value by default,
+to estimate without a special equipment, so Kalico uses 0.1 value by default,
 which is a good all-round value. The frequency ranges in the table cover a
 number of different possible damping ratios around that value (approx. from 0.05
 to 0.2).

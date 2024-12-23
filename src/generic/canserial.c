@@ -117,7 +117,7 @@ console_sendf(const struct command_encoder *ce, va_list args)
 #define CANBUS_CMD_REQUEST_BOOTLOADER 0x02
 
 #define CANBUS_RESP_KLIPPER_NODEID 0x01
-#define CANBUS_RESP_DANGER_NODEID 0x11
+#define CANBUS_RESP_KALICO_NODEID 0x07
 #define CANBUS_RESP_NEED_NODEID 0x20
 #define CANBUS_RESP_HAVE_NODEID 0x21
 
@@ -146,7 +146,7 @@ can_decode_nodeid(int nodeid)
 static void
 can_process_query_unassigned(struct canbus_msg *msg)
 {
-    uint8_t is_extended_query = // Danger-Klipper addition
+    uint8_t is_extended_query = // Kalico addition
         msg->dlc > 1
             ? msg->data[1] & CANBUS_CMD_QUERY_EXTENDED
             : 0;
@@ -163,7 +163,7 @@ can_process_query_unassigned(struct canbus_msg *msg)
             send.data[0] = CANBUS_RESP_HAVE_NODEID;
             send.data[7] = can_get_nodeid();
         } else {
-            send.data[7] = CANBUS_RESP_DANGER_NODEID;
+            send.data[7] = CANBUS_RESP_KALICO_NODEID;
         }
     } else {
         send.data[7] = CANBUS_RESP_KLIPPER_NODEID;

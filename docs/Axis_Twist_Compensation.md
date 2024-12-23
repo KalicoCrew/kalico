@@ -35,8 +35,7 @@ points along the bed
 [Screws Tilt Adjust](G-Codes.md#screws_tilt_adjust),
 [Z Tilt Adjust](G-Codes.md#z_tilt_adjust) etc
 4. Home all axis, then perform a [Bed Mesh](Bed_Mesh.md) if required
-5. Perform a test print, followed by any
-[fine-tuning](Axis_Twist_Compensation.md#fine-tuning) as desired
+5. Perform a test print, followed by any fine-tuning as desired
 
 > **Tip:** Bed temperature and nozzle temperature and size do not seem to have
 > an influence to the calibration process.

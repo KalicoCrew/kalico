@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from extras.danger_options import get_danger_options
+from .danger_options import get_danger_options
 
 SAMPLE_TIME = 0.001
 SAMPLE_COUNT = 8
@@ -55,9 +55,6 @@ class PrinterTemperatureMCU:
                 range_check_count=self._danger_check_count,
             )
             return
-        self.printer.register_event_handler(
-            "klippy:mcu_identify", self._mcu_identify
-        )
         self.mcu_adc.get_mcu().register_config_callback(self._build_config)
 
     def setup_callback(self, temperature_callback):
@@ -80,9 +77,6 @@ class PrinterTemperatureMCU:
     def calc_base(self, temp, adc):
         return temp - adc * self.slope
 
-    def _mcu_identify(self):
-        self._build_config()
-
     def _build_config(self):
         # Obtain mcu information
         _mcu = self.mcu_adc.get_mcu()
@@ -92,7 +86,7 @@ class PrinterTemperatureMCU:
         self.mcu_type = _mcu.get_constants().get("MCU", "")
         # Run MCU specific configuration
         cfg_funcs = [
-            ("rp2040", self.config_rp2040),
+            ("rp2", self.config_rp2040),
             ("sam3", self.config_sam3),
             ("sam4", self.config_sam4),
             ("same70", self.config_same70),
@@ -136,6 +130,7 @@ class PrinterTemperatureMCU:
             maxval=max(adc_range),
             range_check_count=self._danger_check_count,
         )
+        self.mcu_adc._build_config()
 
     def config_unknown(self):
         raise self.printer.config_error(
