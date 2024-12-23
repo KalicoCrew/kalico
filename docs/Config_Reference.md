@@ -4421,6 +4421,10 @@ run_current:
 #   chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
 #   above list.
+#driver_cs: 31
+#   Set the CS (Current Scale) value during the configuration of
+#   the TMC2240 chip. The tuning range is 0-31 and the default is 31.
+#   See the [tmc2240 "Calculation Sheet"](https://www.analog.com/media/en/engineering-tools/design-tools/tmc2240_calculations.xlsx) for more information.
 #diag0_pin:
 #diag1_pin:
 #   The micro-controller pin attached to one of the DIAG lines of the

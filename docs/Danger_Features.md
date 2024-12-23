@@ -54,6 +54,10 @@
 - [`[temperature_fan] reverse: True`](./Config_Reference.md#temperature_fan) will let you control a fan in reverse to temperature control. The lower the temperature, the higher the fan runs.
 - Fans now normalize PWM power within `off_below` and `max_power`, so setting a fan to 10% will get you 10% fan speed within your configured off/max range.
 
+## Steppers / TMC Drivers
+
+- [`[tmc2240] driver_cs`](./Config_Reference.html#tmc2240) allows you to tune the CS (Current Scale) value.
+
 ## Macros
 
 - The jinja `do` extension has been enabled. You can now call functions in your macros without resorting to dirty hacks: `{% do array.append(5) %}`

@@ -263,6 +263,18 @@ FieldFormatters.update(
 # TMC stepper current config helper
 ######################################################################
 
+KIFS = [11750.0, 24000.0, 36000.0, 36000.0]
+GLOBALSCALER_ERROR = (
+    "[tmc2240 %s]\n"
+    "GLOBALSCALER(%d) calculation out of bounds.\n"
+    "The target current can't be achieved with the given RREF(%f) "
+    "and CS(%d). Please adjust your configuration.\n"
+    "You most likely need to increase your driver_cs value in this case.\n"
+    "Valid values are 0 and 32-255.\n"
+    "Calculated current_range bit: %s\n"
+    "Calculated KIFS: %s"
+)
+
 
 class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
@@ -296,20 +308,31 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
         self.actual_current = self.req_run_current
         current_range = self._calc_current_range(self.actual_current)
         self.fields.set_field("current_range", current_range)
-        gscaler, irun, ihold = self._calc_current(
-            self.req_run_current, self.req_hold_current
+
+        self.cs = config.getint("driver_cs", 31, maxval=31, minval=0)
+
+        gscaler = self._calc_globalscaler(self.req_run_current)
+
+        ihold = (
+            self.cs
+            if self.req_hold_current is None
+            else self._calc_current_bits(
+                min(self.req_run_current, self.req_hold_current), gscaler
+            )
         )
+
         self.fields.set_field("globalscaler", gscaler)
         self.fields.set_field("ihold", ihold)
-        self.fields.set_field("irun", irun)
+        self.fields.set_field("irun", self.cs)
 
     def _get_ifs_rms(self, current_range=None):
         if current_range is None:
             current_range = self.fields.get_field("current_range")
-        KIFS = [11750.0, 24000.0, 36000.0, 36000.0]
-        return (KIFS[current_range] / self.Rref) / math.sqrt(2.0)
+        ifs = KIFS[current_range] / self.Rref
+        return ifs / math.sqrt(2.0)
 
     def _calc_current_range(self, current):
+        current_range = 0
         for current_range in range(4):
             if current <= self._get_ifs_rms(current_range):
                 break
@@ -317,26 +340,30 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_globalscaler(self, current):
         ifs_rms = self._get_ifs_rms()
-        globalscaler = int(((current * 256.0) / ifs_rms) + 0.5)
-        globalscaler = max(32, globalscaler)
-        if globalscaler >= 256:
-            globalscaler = 0
+        globalscaler = int(((current * 256.0 * 32) / (ifs_rms * (self.cs + 1))) + 0.5)
+        if globalscaler == 256:
+            return 0
+        if 1 <= globalscaler <= 31 or globalscaler > 256:
+            current_range = self.fields.get_field("current_range")
+            self.printer.invoke_shutdown(
+                GLOBALSCALER_ERROR
+                % (
+                    self.name,
+                    globalscaler,
+                    self.Rref,
+                    self.cs,
+                    f"{current_range:02b}",
+                    f"{(KIFS[current_range] / 1000):.2f}",
+                )
+            )
         return globalscaler
 
     def _calc_current_bits(self, current, globalscaler):
         ifs_rms = self._get_ifs_rms()
         if not globalscaler:
             globalscaler = 256
-        cs = int(
-            (current * 256.0 * 32.0) / (globalscaler * ifs_rms) - 1.0 + 0.5
-        )
-        return max(0, min(31, cs))
-
-    def _calc_current(self, run_current, hold_current):
-        gscaler = self._calc_globalscaler(run_current)
-        irun = self._calc_current_bits(run_current, gscaler)
-        ihold = self._calc_current_bits(min(hold_current, run_current), gscaler)
-        return gscaler, irun, ihold
+        bits = int((current * 256.0 * 32.0) / (globalscaler * ifs_rms) - 1.0 + 0.5)
+        return max(0, min(31, bits))
 
     def _calc_current_from_field(self, field_name):
         ifs_rms = self._get_ifs_rms()
@@ -359,13 +386,18 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
         )
 
     def apply_current(self, print_time):
-        gscaler, irun, ihold = self._calc_current(
-            self.actual_current, self.req_hold_current
+        gscaler = self._calc_globalscaler(self.actual_current)
+        ihold = (
+            self.cs
+            if self.req_hold_current is None
+            else self._calc_current_bits(
+                min(self.actual_current, self.req_hold_current), gscaler
+            )
         )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
         self.fields.set_field("ihold", ihold)
-        val = self.fields.set_field("irun", irun)
+        val = self.fields.set_field("irun", self.cs)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
 
 
