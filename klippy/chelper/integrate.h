@@ -6,7 +6,7 @@ typedef struct {
 } smoother_antiderivatives;
 
 struct smoother {
-    double c0[10], c1[10], c2[10];
+    double c0[12], c1[12], c2[12];
     double hst, t_offs;
     smoother_antiderivatives m_hst, p_hst, pm_diff;
     int n, symm;
