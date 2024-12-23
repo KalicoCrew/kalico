@@ -30,10 +30,6 @@ EXTURDER_SMOOTHERS = {
 }
 
 
-class error(Exception):
-    pass
-
-
 def _estimate_shaper(np, shaper, test_damping_ratio, test_freqs):
     A, T = np.asarray(shaper[0]), np.asarray(shaper[1])
     inv_D = 1.0 / A.sum()
@@ -158,7 +154,7 @@ def get_extruder_smoother(
     try:
         np = importlib.import_module("numpy")
     except ImportError:
-        raise error(
+        raise Exception(
             "Failed to import `numpy` module, make sure it was "
             "installed via `~/klippy-env/bin/pip install` (refer to "
             "docs/Measuring_Resonances.md for more details)."
