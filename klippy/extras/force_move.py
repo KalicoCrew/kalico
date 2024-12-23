@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
-import chelper
+from klippy import chelper
 
 BUZZ_DISTANCE = 1.0
 BUZZ_VELOCITY = BUZZ_DISTANCE / 0.250

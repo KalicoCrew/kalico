@@ -4,15 +4,11 @@
 # Copyright (C) 2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, optparse
+import sys, pathlib, optparse
 
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-def import_msgproto():
-    global msgproto
-    # Load msgproto.py module
-    kdir = os.path.join(os.path.dirname(__file__), "..", "klippy")
-    sys.path.append(kdir)
-    import msgproto
+from klippy import msgproto
 
 
 def read_dictionary(filename):
@@ -143,7 +139,6 @@ def main():
     canfilename, canid, dictfilename = args
     canid = int(canid, 16)
 
-    import_msgproto()
     dictionary = read_dictionary(dictfilename)
 
     canfile = open(canfilename, "r")

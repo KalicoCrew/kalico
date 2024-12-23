@@ -160,8 +160,8 @@ objects:
 - `power`: The fan power as a float between 0|`min_power` and 1.0|`max_power`.
 - `rpm`: The measured fan speed in rotations per minute if the fan has
   a tachometer_pin defined.
-deprecated objects (for UI compatibility only): 
-- `speed`: The fan speed as a float between 0.0 and `max_power`. 
+deprecated objects (for UI compatibility only):
+- `speed`: The fan speed as a float between 0.0 and `max_power`.
 
 ## filament_switch_sensor
 
@@ -199,6 +199,7 @@ The following information is available in the
   config file if a `SET_RETRACTION` command altered them. Additional information
   available is as follows.
 - `retract_state`: Returns 'True' if filament is retracted.
+- `zhop_state`: Returns 'True' if a zhop is currently applied.
 
 ## gcode
 
@@ -346,6 +347,7 @@ The following information is available in
   micro-controller architectures and with each code revision.
 - `last_stats.<statistics_name>`: Statistics information on the
   micro-controller connection.
+- `non_critical_disconnected`: True/False if the mcu is disconnected.
 
 ## motion_report
 
@@ -571,7 +573,7 @@ on a cartesian, hybrid_corexy or hybrid_corexz robot
 ## tools_calibrate
 
 The following information is available in the
-[tools_calibrate](Config_Reference.md#️-tools_calibrate) object:
+[tools_calibrate](Config_Reference.md#tools_calibrate) object:
 - `sensor_location`: Once calibrated, the location of the sensor
 - `last_result`: The last tool calibration result
 - `calibration_probe_inactive`: Status of the calibration probe as of

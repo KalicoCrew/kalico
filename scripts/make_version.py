@@ -6,13 +6,15 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 from __future__ import print_function
-import util
 
 import argparse
 import os
 import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../klippy"))
+KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
+sys.path.append(KLIPPER_DIR)
+
+from klippy import util  # noqa: E402
 
 
 def main(argv):

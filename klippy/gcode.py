@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, re, logging, collections, shlex
+from . import mathutil
 
 
 class CommandError(Exception):
@@ -73,6 +74,8 @@ class GCodeCommand:
         above=None,
         below=None,
     ):
+        if parser is float:
+            parser = mathutil.safe_float
         value = self._params.get(name)
         if value is None:
             if default is self.sentinel:
@@ -123,7 +126,7 @@ class GCodeCommand:
         return self.get(
             name,
             default,
-            parser=float,
+            parser=mathutil.safe_float,
             minval=minval,
             maxval=maxval,
             above=above,
@@ -165,6 +168,7 @@ class GCodeDispatch:
             "STATUS",
             "HELP",
             "HEATER_INTERRUPT",
+            "LOG_ROLLOVER",
         ]
         for cmd in handlers:
             func = getattr(self, "cmd_" + cmd)
@@ -438,7 +442,7 @@ class GCodeDispatch:
     def cmd_M115(self, gcmd):
         # Get Firmware Version and Capabilities
         software_version = self.printer.get_start_args().get("software_version")
-        kw = {"FIRMWARE_NAME": "Klipper", "FIRMWARE_VERSION": software_version}
+        kw = {"FIRMWARE_NAME": "Kalico", "FIRMWARE_VERSION": software_version}
         msg = " ".join(["%s:%s" % (k, v) for k, v in kw.items()])
         did_ack = gcmd.ack(msg)
         if not did_ack:
@@ -492,6 +496,9 @@ class GCodeDispatch:
 
     def cmd_HEATER_INTERRUPT(self, gcmd):
         self.increment_interrupt_counter()
+
+    def cmd_LOG_ROLLOVER(self, gcmd):
+        self.printer.bglogger.doRollover()
 
 
 # Support reading gcode from a pseudo-tty interface

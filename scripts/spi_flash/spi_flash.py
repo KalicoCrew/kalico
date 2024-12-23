@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 # Module supporting uploads Klipper firmware to an SD Card via SPI and SDIO
 #
 # Copyright (C) 2021 Eric Callahan <arksine.code@gmail.com>
@@ -17,10 +17,10 @@ import traceback
 import json
 import board_defs
 import fatfs_lib
-import reactor
-import serialhdl
-import clocksync
-import mcu
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
+from klippy import reactor, serialhdl, clocksync, mcu
 
 ###########################################################
 #

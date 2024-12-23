@@ -9,7 +9,7 @@ import math
 import multiprocessing
 import traceback
 
-shaper_defs = importlib.import_module(".shaper_defs", "extras")
+from . import shaper_defs
 
 MIN_FREQ = 5.0
 MAX_FREQ = 200.0

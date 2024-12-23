@@ -10,28 +10,48 @@ import logging
 import pathlib
 import platform
 import sys
+import shlex
 import threading
 import urllib.request
 import uuid
 
 
-class KalicoTelemetryPrompt:
-    "Kalico extra prompting the user to enable or disable telemetry"
+class KalicoTelementry:
+    TELEMETRY_ENDPOINT = "https://telemetry.kalico.gg/collect"
 
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.enabled = config.getboolean("enabled", None)
 
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
-            "ENABLE_TELEMETRY", self.cmd_ENABLE_TELEMETRY, True
-        )
-        gcode.register_command(
-            "DISABLE_TELEMETRY", self.cmd_DISABLE_TELEMETRY, True
+            "TELEMETRY_EXAMPLE", self.cmd_TELEMETRY_EXAMPLE, True
         )
 
-        self.printer.register_event_handler("klippy:ready", self._handle_ready)
+        if self.enabled is not True:
+            gcode.register_command(
+                "ENABLE_TELEMETRY", self.cmd_ENABLE_TELEMETRY, True
+            )
 
-    def _handle_ready(self):
+        if self.enabled is not False:
+            gcode.register_command(
+                "DISABLE_TELEMETRY", self.cmd_DISABLE_TELEMETRY, True
+            )
+
+        if self.enabled is None:
+            self.printer.register_event_handler(
+                "klippy:ready", self._telemetry_prompt
+            )
+
+        if self.enabled:
+            self.printer.register_event_handler(
+                "klippy:ready", self._handle_ready
+            )
+
+    def _telemetry_prompt(self):
+        if self.printer.get_start_args().get("debuginput"):
+            return
+
         gcode = self.printer.lookup_object("gcode")
 
         gcode.respond_info(
@@ -76,36 +96,8 @@ class KalicoTelemetryPrompt:
             "file with this setting and restart the printer."
         )
 
-
-class KalicoTelementry:
-    TELEMETRY_ENDPOINT = "https://telemetry.kalico.gg/collect"
-
-    def __init__(self, config):
-        self.printer = config.get_printer()
-        self.enabled = config.getboolean("enabled", None)
-
-        self.last_report = None
-
-        gcode = self.printer.lookup_object("gcode")
-
-        if self.enabled is not False:
-            gcode.register_command(
-                "TELEMETRY_EXAMPLE", self.cmd_TELEMETRY_EXAMPLE, True
-            )
-
-        if self.enabled is None:
-            self.telemetry_prompt = KalicoTelemetryPrompt(config)
-
-        elif self.enabled:
-            self.printer.register_event_handler(
-                "klippy:ready", self._handle_ready
-            )
-
     def get_status(self, eventtime=None):
-        return {
-            "enabled": self.enabled,
-            "last_report": self.last_report,
-        }
+        return {"enabled": self.enabled}
 
     def _handle_ready(self):
         try:
@@ -129,9 +121,7 @@ class KalicoTelementry:
         with filename.open("w", encoding="utf-8") as fp:
             json.dump(data, fp, indent=2)
 
-        gcmd.respond_info(
-            f"Example telemetry saved to {filename.relative_to(pathlib.Path.home())}"
-        )
+        gcmd.respond_info(f"Example telemetry saved to {filename}")
 
     def _get_machine_id(self):
         """
@@ -198,25 +188,50 @@ class KalicoTelementry:
 
         {
             "machine": "x86_64",
-            "os_release": {
-                "NAME": "Debian GNU/Linux",
-                "ID": "debian",
-                "PRETTY_NAME": "Debian GNU/Linux trixie/sid",
-                "VERSION_CODENAME": "trixie",
-                "HOME_URL": "https://www.debian.org/",
-                "SUPPORT_URL": "https://www.debian.org/support",
-                "BUG_REPORT_URL": "https://bugs.debian.org/"
-            },
+            "os_release": { ... },
             "version": "#1 SMP PREEMPT_DYNAMIC Debian 6.12~rc6-1~exp1 (2024-11-10)",
             "python": "3.12.7 (main, Nov  8 2024, 17:55:36) [GCC 14.2.0]"
         }
         """
         return {
             "machine": platform.machine(),
-            "os_release": platform.freedesktop_os_release(),
+            "os_release": self._collect_os_release(),
             "version": platform.version(),
             "python": sys.version,
         }
+
+    def _collect_os_release(self):
+        """
+        Collect the freedesktop OS-RELEASE information.
+        See also `platform.freedesktop_os_release()` (available in Python 3.10+)
+
+        {
+            "NAME": "Debian GNU/Linux",
+            "ID": "debian",
+            "PRETTY_NAME": "Debian GNU/Linux trixie/sid",
+            "VERSION_CODENAME": "trixie",
+            "HOME_URL": "https://www.debian.org/",
+            "SUPPORT_URL": "https://www.debian.org/support",
+            "BUG_REPORT_URL": "https://bugs.debian.org/"
+        }
+        """
+        paths = [
+            pathlib.Path("/etc/os-release"),
+            pathlib.Path("/usr/lib/os-release"),
+        ]
+        path = next(filter(pathlib.Path.exists, paths), None)
+        if not path:
+            return
+
+        result = {}
+        with path.open("r") as fp:
+            for line in fp:
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", maxsplit=1)
+                result[key] = shlex.split(value)[0]
+
+        return result
 
     def _collect_printer_objects(self):
         """

@@ -86,7 +86,7 @@ class LimitedCartKinematics(cartesian.CartKinematics):
             self.cmd_SET_KINEMATICS_LIMIT,
             desc=self.cmd_SET_KINEMATICS_LIMIT_help,
         )
-        self.supports_dual_carriage = False
+        self.supports_dual_carriage = True
 
     cmd_SET_KINEMATICS_LIMIT_help = "Set/get cartesian per axis velocity limits"
 

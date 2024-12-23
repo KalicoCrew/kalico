@@ -3,7 +3,7 @@
 # Copyright (C) 2021  Fabrice Gallet <tircown@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper
+from klippy import stepper
 from . import idex_modes
 
 

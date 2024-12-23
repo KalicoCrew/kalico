@@ -1,4 +1,3 @@
-# Perform continuous integration tests on pull requests
 name: Ruff
 
 on: pull_request

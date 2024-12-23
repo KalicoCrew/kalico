@@ -3,6 +3,8 @@
 This document describes the commands that Kalico supports. These are
 commands that one may enter into the OctoPrint terminal tab.
 
+Sections and commands marked with an ⚠️ show commands that are new or behave differently from Klipper
+
 ## G-Code commands
 
 Kalico supports the following standard G-Code commands:
@@ -313,7 +315,7 @@ from executing.
 ### [delta_calibrate]
 
 The following commands are available when the
-[delta_calibrate] config section is enabled (also see the 
+[delta_calibrate] config section is enabled (also see the
 [delta calibrate guide](Delta_Calibrate.md)).
 
 #### DELTA_CALIBRATE
@@ -631,6 +633,8 @@ the filament unretract move to reduce blobbing at seams (the minimum value is
 Z_HOP_HEIGHT determines the vertical height by which the nozzle is lifted from
 the print to prevent collisions with the print during travel moves (the
 minimum value is 0 mm, the standard value is 0 mm, which disables Z-Hop moves).
+If a parameter is set when retracted, the new value will be taken into
+account only after G11 or CLEAR_RETRACTION event.
 SET_RETRACTION is commonly set as part of slicer per-filament configuration, as
 different filaments require different parameter settings. The command can be
 issued at runtime.
@@ -638,29 +642,31 @@ issued at runtime.
 #### GET_RETRACTION
 `GET_RETRACTION`: Queries the current parameters used by the firmware retraction
 module as well as the retract state. RETRACT_LENGTH, RETRACT_SPEED,
-UNRETRACT_EXTRA_LENGTH, UNRETRACT_SPEED, Z_HOP_HEIGHT and RETRACTED (True, if
-retracted) are displayed on the terminal.
+UNRETRACT_EXTRA_LENGTH, UNRETRACT_SPEED, Z_HOP_HEIGHT, RETRACT_STATE (True, if
+retracted), ZHOP_STATE (True, if zhop offset currently applied) are displayed on
+the terminal.
 
 #### CLEAR_RETRACTION
 `CLEAR_RETRACTION`: Clears the current retract state without extruder or
 motion system movement. All flags related to the retract state are reset to
-False and all changes to retraction parameters made via previous SET_RETRACTION
-commands are reset to config values.
-NOTE: The Module contains a lot of redundancy for safety to prevent undesired
-behavior. When printing from virtual SD Card, the printer state is monitored and
-retraction state is cleared if a print is started, canceled or finished or if a
-virtual SD card file is reset. When printing via GCode streaming (e.g. using
-OctoPrint), the retract state is cleared when the steppers are disabled (M84,
+False.
+
+NOTE: The zhop state is also reset to False when the steppers are disabled (M84,
 typically part of end gcode and standard behavior of OctoPrint if a print is
 canceled) or the printer is homed (G28, typically part of start gcode). Hence,
 upon ending or canceling a print as well as starting a new print via GCode
-streaming or virtual SD card, the printer should always be in unretracted state.
+streaming or virtual SD card, the toolhead will not apply `z_hop_height` until
+next G11 if filament is retracted.
 Nevertheless, it is recommended to add `CLEAR_RETRACTION` to your start and end
-gcode to make sure the retract state is reset before and after each print. If a
-print is finished or canceled while retracted and the retract state is not
-cleared, either via `CLEAR_RETRACTION` without filament or motion system
-movement or G11, the nozzle will stay above the requested z coordinate by the
-set z_hop_height.
+gcode to make sure the retract state is reset before and after each print.
+
+#### RESET_RETRACTION
+`RESET_RETRACTION`: All changes to retraction parameters made via previous
+SET_RETRACTION commands are reset to config values.
+
+NOTE: It is recommended to add `RESET_RETRACTION` to your start and end gcode
+(with a possible override in your filament start gcode to set filament-specific
+overrides of firmware retraction defaults via `SET_RETRACTION`). 
 
 ### [force_move]
 
@@ -714,6 +720,9 @@ clears any error state from the micro-controller.
 
 #### HEATER_INTERRUPT
 `HEATER_INTERRUPT`: Interrupts a TEMPERATURE_WAIT command.
+
+#### LOG_ROLLOVER
+`LOG_ROLLOVER`: Trigger a klippy.log rollover and generate a new log file.
 
 #### STATUS
 `STATUS`: Report the Kalico host software status.
@@ -1541,6 +1550,12 @@ printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
 description of each parameter.
 
+### RESET_VELOCITY_LIMIT
+`RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
+specified in the printer config file. See the
+[printer config section](Config_Reference.md#printer) for a
+description of each parameter.
+
 #### ⚠️ SET_KINEMATICS_LIMIT
 
 `SET_KINEMATICS_LIMIT [<X,Y,Z>_ACCEL=<value>] [<X,Y,Z>_VELOCITY=<value>]
@@ -1618,7 +1633,7 @@ specified and it is higher than the extruder's current temperature,
 then the extruder will be heated to at least `MIN_TEMP` before
 unloading/loading; the current extruder temperature target may be used
 instead if it is higher than `MIN_TEMP`, and if not then
-[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md)
+[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Save_Variables.md)
 may be used. If `EXACT_TEMP` is specified, the extruder will be heated
 to `EXACT_TEMP` before unloading/loading, regardless of any other
 temperature setting. If any of the optional length parameters are
@@ -1643,7 +1658,7 @@ the extruder's current temperature, then the extruder will be heated
 to at least `MIN_TEMP` before unloading; the current extruder
 temperature target may be used instead if it is higher than
 `MIN_TEMP`, and if not then
-[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md)
+[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Save_Variables.md)
 may be used. If `EXACT_TEMP` is specified, the extruder will be heated
 to `EXACT_TEMP` before unloading/loading, regardless of any other
 temperature setting.
@@ -1738,7 +1753,7 @@ hotend_load_length will be set to the value passed in. If the ADJUST
 parameter is used, the adjustment will be added to the current value
 of hotend_load_length.
 
-### TR_DISCARD_BOWDEN_LENGTHS
+#### TR_DISCARD_BOWDEN_LENGTHS
 `TR_DISCARD_BOWDEN_LENGTHS [MODE=[ALL|LOAD|UNLOAD]]`: Discards saved
 values for "bowden_load_length" and/or "bowden_unload_length" (see
 [bowden lengths](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Tuning.md#bowden-lengths)
@@ -1746,7 +1761,7 @@ for details on how these settings are used). These settings will each
 be reset to the value of `bowden_length` from the
 [trad_rack config section](Config_Reference.md#trad_rack), and empty
 dictionaries will be saved for
-[tr_calib_bowden_load_length and tr_calib_bowden_unload_length](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md).
+[tr_calib_bowden_load_length and tr_calib_bowden_unload_length](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Save_Variables.md).
 "bowden_load_length" and tr_calib_bowden_load_length will be
 affected if MODE=LOAD is specified, "bowden_unload_length" and
 tr_calib_bowden_unload_length will be affected if MODE=UNLOAD is
@@ -1877,6 +1892,18 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
+`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This
+command will probe the points specified in the config and then make independent
+adjustments to each Z stepper to compensate for tilt. See the PROBE command for
+details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
+value overrides the `horizontal_move_z` option specified in the config file.
+
+### [z_tilt_ng]
+
+The following commands are available when the
+[z_tilt_ng config section](Config_Reference.md#z_tilt_ng) is enabled.
+
+#### Z_TILT_ADJUST
 `Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]
 [INCREASING_THRESHOLD=<value>]`: This
 command will probe the points specified in the config and then make independent
@@ -1900,5 +1927,3 @@ configured in the z_tilt_ng section:
   small misalgnments of the steppers. The amount of misalignment can be
   configured with the DELTA paramter. It iterates until the calculated
   positions cannot be improved any further. This is can be lengthy procedure.
-IMPORTANT: For the Z_TILT_CALIBRATE and Z_TILT_AUTODETECT commands to work
-the numpy package has to be installed via ~/klippy-env/bin/pip install -v numpy.
