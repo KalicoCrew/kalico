@@ -380,10 +380,12 @@ class BedMeshCalibrate:
         self._generate_points(config.error)
         self._profile_name = "default"
         self.probe_helper = probe.ProbePointsHelper(
-            config, self.probe_finalize, self._get_adjusted_points()
+            config,
+            self.probe_finalize,
+            self._get_adjusted_points(),
+            use_offsets=True,
         )
         self.probe_helper.minimum_points(3)
-        self.probe_helper.use_xy_offsets(True)
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
             "BED_MESH_CALIBRATE",
