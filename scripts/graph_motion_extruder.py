@@ -304,7 +304,7 @@ def calc_spring_raw(positions, freq, damping_ratio):
 def calc_spring_double_weighted(positions, freq, smooth_time):
     offset = time_to_index(smooth_time * 0.25)
     sa = (INV_SEG_TIME / (offset * freq * 2.0 * math.pi)) ** 2
-    ra = 2.0 * damping_ratio * math.sqrt(sa)
+    ra = 2.0 * damping_ratio * math.sqrt(sa)  # noqa: F821
     out = [0.0] * len(positions)
     for i in indexes(positions):
         out[i] = (
