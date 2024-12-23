@@ -36,7 +36,7 @@ dfu_reboot(void)
     irq_disable();
     uint64_t *bflag = (void*)USB_BOOT_FLAG_ADDR;
     *bflag = USB_BOOT_FLAG;
-#if __CORTEX_M >= 7
+#if __CORTEX_M >= 7 && __CORTEX_M != 33
     SCB_CleanDCache_by_Addr((void*)bflag, sizeof(*bflag));
 #endif
     NVIC_SystemReset();
