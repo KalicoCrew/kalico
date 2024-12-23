@@ -1448,8 +1448,7 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   Sets the threshold that probe points can increase before z_tilt aborts.
 #   To disable the validation, set this parameter to a high value.
 #rehome_z: False
-#   If set to true, a G28 Z  will  automatically be called after z_tilt has
-#   finished to rehome Z.
+#   If set to True, execute G28 Z after z_tilt is applied. Defaults to False.
 
 ```
 
@@ -1582,8 +1581,7 @@ Where x is the 0, 0 point on the bed
 #   Sets the threshold that probe points can increase before qgl aborts.
 #   To disable the validation, set this parameter to a high value.
 #rehome_z: False
-#   If set to true, a G28 Z  will  automatically be called after z_tilt has
-#   finished to rehome Z.
+#   If set to True, execute G28 Z after qgl is applied. Defaults to False.
 ```
 
 ### [skew_correction]
