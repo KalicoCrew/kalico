@@ -1,4 +1,5 @@
-name: docs deployment
+name: Docs deployment
+
 on:
   workflow_dispatch:
   push:
@@ -39,5 +40,5 @@ jobs:
       - name: Deploy
         uses: JamesIves/github-pages-deploy-action@v4.4.3
         with:
-          branch: gh-pages # The branch the action should deploy to.
-          folder: site # The folder the action should deploy.
+          branch: gh-pages
+          folder: site
