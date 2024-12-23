@@ -6,6 +6,7 @@
 import collections
 import math
 from . import chelper
+from . import msgproto
 
 
 class error(Exception):
@@ -24,7 +25,7 @@ class MCU_stepper:
     def __init__(
         self,
         name,
-        high_precision_steps,
+        high_precision_stepcompr,
         step_pin_params,
         dir_pin_params,
         rotation_dist,
@@ -33,7 +34,7 @@ class MCU_stepper:
         units_in_radians=False,
     ):
         self._name = name
-        self._high_precision_steps = high_precision_steps
+        self._high_precision_stepcompr = high_precision_stepcompr
         self._rotation_dist = rotation_dist
         self._steps_per_rotation = steps_per_rotation
         self._step_pulse_duration = step_pulse_duration
@@ -55,7 +56,7 @@ class MCU_stepper:
         self._reset_cmd_tag = self._get_position_cmd = None
         self._active_callbacks = []
         ffi_main, ffi_lib = chelper.get_ffi()
-        if high_precision_steps:
+        if high_precision_stepcompr:
             self._stepqueue = ffi_main.gc(
                 ffi_lib.stepcompress_hp_alloc(oid), ffi_lib.stepcompress_free
             )
@@ -134,11 +135,19 @@ class MCU_stepper:
         self._mcu.add_config_cmd(
             "reset_step_clock oid=%d clock=0" % (self._oid,), on_restart=True
         )
-        if self._high_precision_steps:
-            step_cmd_tag = self._mcu.lookup_command(
-                "queue_step_hp oid=%c interval=%u count=%hu "
-                "add=%hi add2=%hi shift=%hi"
-            ).get_command_tag()
+        if self._high_precision_stepcompr:
+            try:
+                step_cmd_tag = self._mcu.lookup_command(
+                    "queue_step_hp oid=%c interval=%u count=%hu "
+                    "add=%hi add2=%hi shift=%hi"
+                ).get_command_tag()
+            except msgproto.MessageParser.error as e:
+                cerror = self._mcu.get_printer().config_error
+                raise cerror(
+                    str(e)
+                    + ", maybe MCU firmware was compiled "
+                    + "without high precision stepping support?"
+                )
         else:
             step_cmd_tag = self._mcu.lookup_command(
                 "queue_step oid=%c interval=%u count=%hu " "add=%hi"
@@ -333,10 +342,12 @@ def PrinterStepper(config, units_in_radians=False):
     step_pulse_duration = config.getfloat(
         "step_pulse_duration", None, minval=0.0, maxval=0.001
     )
-    high_precision_steps = config.getboolean("high_precision_steps", False)
+    high_precision_stepcompr = config.getboolean(
+        "high_precision_step_compress", False
+    )
     mcu_stepper = MCU_stepper(
         name,
-        high_precision_steps,
+        high_precision_stepcompr,
         step_pin_params,
         dir_pin_params,
         rotation_dist,
