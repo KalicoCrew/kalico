@@ -43,7 +43,7 @@
     #define USB_IRQn USB_UCPD1_2_IRQn
   #endif
 
-  #if CONFIG_MACH_STM32H503
+  #if CONFIG_MACH_STM32H5
     #define USB_IRQn USB_DRD_FS_IRQn
     #define USB_BASE USB_DRD_FS_BASE
   #endif
