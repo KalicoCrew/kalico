@@ -1,4 +1,3 @@
-# Perform continuous integration tests on updates and pull requests
 name: Build test
 
 on:
