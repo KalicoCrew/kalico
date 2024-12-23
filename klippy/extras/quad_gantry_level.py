@@ -36,7 +36,7 @@ class QuadGantryLevel:
             raise config.error(
                 "Need exactly 4 probe points for quad_gantry_level"
             )
-        self.z_status = z_tilt.ZAdjustStatus(self.printer)
+        self.z_status = z_tilt.ZAdjustStatus(self.printer, config)
         self.z_helper = z_tilt.ZAdjustHelper(config, 4)
         self.gantry_corners = config.getlists(
             "gantry_corners", parser=float, seps=(",", "\n"), count=2
