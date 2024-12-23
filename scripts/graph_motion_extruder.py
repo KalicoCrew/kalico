@@ -5,7 +5,7 @@
 # Copyright (C) 2020-2024  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import optparse, datetime, importlib, math, os, sys
+import optparse, importlib, math, os, sys
 import numpy as np
 import matplotlib
 
@@ -104,6 +104,7 @@ LINEAR_ADVANCE = 0.045
 LINEAR_VELOCITY = 0.5
 LINEAR_OFFSET = 0.0  # 0.16
 
+
 # Calculate raw pressure advance positions
 def calc_pa_raw(positions):
     pa = LINEAR_ADVANCE * INV_SEG_TIME
@@ -142,6 +143,7 @@ def calc_nozzle_flow(positions, pressure_advance):
 
 TH_POSITION_BUCKET = 0.200
 TH_OFFSET = 10
+
 
 # Map toolhead locations
 def calc_toolhead_positions(positions):
@@ -190,6 +192,7 @@ def trim_lists(*lists):
 ######################################################################
 # Common data filters
 ######################################################################
+
 
 # Generate estimated first order derivative
 def gen_deriv(data):
@@ -252,7 +255,7 @@ def calc_weighted4(positions, smooth_time):
     out = [0.0] * len(positions)
     for i in indexes(positions):
         weighted_data = [
-            positions[j] * ((offset**2 - (j - i) ** 2)) ** 2
+            positions[j] * (offset**2 - (j - i) ** 2) ** 2
             for j in range(i - offset, i + offset)
         ]
         out[i] = sum(weighted_data) * weight
@@ -296,7 +299,7 @@ def calc_spring_raw(positions, freq, damping_ratio):
 def calc_spring_double_weighted(positions, freq, smooth_time):
     offset = time_to_index(smooth_time * 0.25)
     sa = (INV_SEG_TIME / (offset * freq * 2.0 * math.pi)) ** 2
-    ra = 2.0 * damping_ratio * math.sqrt(sa)
+    ra = 2.0 * damping_ratio * math.sqrt(sa)  # noqa: F821
     out = [0.0] * len(positions)
     for i in indexes(positions):
         out[i] = (
