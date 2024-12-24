@@ -5,9 +5,11 @@ version = "0.12.1"
 
 requires-python = ">=3.9"
 dependencies = [
-  "cffi==1.15.1",
+  "cffi==1.17.1 ; python_version >= '3.13'",
+  "cffi==1.15.1 ; python_version < '3.13'",
+  "greenlet==3.1 ; python_version >= '3.13'",
+  "greenlet==3.0.3 ; python_version == '3.12'",
   "greenlet==2.0.2 ; python_version < '3.12'",
-  "greenlet==3.0.3 ; python_version >= '3.12'",
   "Jinja2==3.1.4",
   "markupsafe==2.1.5",
   "numpy~=2.0 ; python_version=='3.9'",
