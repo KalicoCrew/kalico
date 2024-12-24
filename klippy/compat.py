@@ -55,13 +55,11 @@ class KlippyPathFinder(importlib.machinery.PathFinder):
             parts = fullname.split(".")
             klippy_path = ROOT.joinpath(*parts)
 
-            if klippy_path.with_suffix(".py").is_file():
+            if (
+                klippy_path.with_suffix(".py").is_file()
+                or (klippy_path / "__init__.py").is_file()
+            ):
                 fullname = "klippy." + fullname
-                path = [str(klippy_path.parent)]
-
-            elif (klippy_path / "__init__.py").is_file():
-                fullname = "klippy." + fullname
-                path = [str(klippy_path)]
 
         spec = super().find_spec(fullname, path, target)
 
