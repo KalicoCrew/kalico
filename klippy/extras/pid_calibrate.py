@@ -129,7 +129,9 @@ class ControlAutoTune:
         if not self.started and temp >= self.temp_low:
             self.errored = True
             self.finish(read_time)
-            self.gcode.respond_info("temperature to high to start calibration")
+            self.gcode.respond_info(
+                "temperature is too high to start calibration"
+            )
             return
         else:
             self.started = True
