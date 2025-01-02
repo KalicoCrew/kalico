@@ -3,7 +3,6 @@
 # Copyright (C) 2022-2023 Peter Gruber <nokos@gmx.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math
 
 EXTRUSION_FACTOR_THRESHOLD=0.01
 
