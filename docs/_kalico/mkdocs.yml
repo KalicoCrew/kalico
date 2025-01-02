@@ -25,12 +25,14 @@ markdown_extensions:
   - mdx_partial_gfm
   - mdx_truly_sane_lists
   - mdx_breakless_lists
+  - admonition
 plugins:
   search:
     lang: en
   mkdocs-simple-hooks:
     hooks:
       on_page_markdown: "docs._kalico.mkdocs_hooks:transform"
+  gh-admonitions:
 
 # Website layout configuration (using mkdocs-material theme)
 theme:
