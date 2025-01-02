@@ -177,7 +177,7 @@ class MixingExtruder(object):
                 mix + ",".join(extruder_stepper.name
                     for extruder_stepper, _ in self._extruder_steppers))
 
-
+'''
 class GradientMixingExtruder(MixingExtruder):
     def __init__(self, config, **kwargs):
         super(GradientMixingExtruder, self).__init__(config, **kwargs)
@@ -312,8 +312,9 @@ class GradientMixingExtruder(MixingExtruder):
                 gcmd.respond_info(
                     grad + "enabled=%s" % (str(self._gradient_enabled)))
 
+'''
 
 def load_config(config):
-    mixingextruder = GradientMixingExtruder(
+    mixingextruder = MixingExtruder(
         config.getsection('mixing_extruder'))
     return mixingextruder
