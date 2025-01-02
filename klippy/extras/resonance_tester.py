@@ -491,7 +491,7 @@ class ResonanceTester:
                 data,
                 point=test_point,
                 max_freq=self._get_max_calibration_freq(),
-                accel_per_hz=self.test.get_accel_per_hz(),
+                accel_per_hz=self.generator.vibration_generator.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Resonances data written to %s file" % (csv_name,)
@@ -569,7 +569,7 @@ class ResonanceTester:
                 calibration_data[axis],
                 all_shapers,
                 max_freq=max_freq,
-                accel_per_hz=self.test.get_accel_per_hz(),
+                accel_per_hz=self.generator.vibration_generator.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Shaper calibration data written to %s file" % (csv_name,)
