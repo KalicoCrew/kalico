@@ -30,12 +30,12 @@ class KalicoTelementry:
 
         if self.enabled is not True:
             gcode.register_command(
-                "ENABLE_TELEMETRY", self.cmd_ENABLE_TELEMETRY, True
+                "ENABLE_TELEMETRY", self.cmd_ENABLE_TELEMETRY
             )
 
         if self.enabled is not False:
             gcode.register_command(
-                "DISABLE_TELEMETRY", self.cmd_DISABLE_TELEMETRY, True
+                "DISABLE_TELEMETRY", self.cmd_DISABLE_TELEMETRY
             )
 
         if self.enabled is None:
