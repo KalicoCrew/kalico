@@ -531,7 +531,7 @@ will be desynchronized from all extruder movement.
 ### [mixing_extruder]
 
 The following commands are available when a
-[mixingextruder config section](Config_Reference.md#mixingextruder) is
+[mixingextruder config section](Config_Reference.md#mixing_extruder) is
 enabled:
 
 #### SET_MIXING_EXTRUDER
