@@ -440,6 +440,8 @@ class TMC2240:
         set_config_field(config, "tpowerdown", 10)
         #   SG4_THRS
         set_config_field(config, "sg4_angle_offset", 1)
+        #   DRV_CONF
+        set_config_field(config, "slope_control", 2)
 
 
 def load_config_prefix(config):
