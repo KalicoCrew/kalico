@@ -137,7 +137,7 @@ class RingingTest:
         systime = self.printer.get_reactor().monotonic()
         toolhead_info = toolhead.get_status(systime)
         old_max_accel = toolhead_info["max_accel"]
-        old_max_accel_to_decel = toolhead_info["max_accel_to_decel"]
+        old_minimum_cruise_ratio = toolhead_info["minimum_cruise_ratio"]
         old_max_velocity = toolhead_info["max_velocity"]
 
         # Get tower params with overrides from the GCode command
@@ -241,9 +241,9 @@ class RingingTest:
             start_x = center_x - brim_offset
             start_y = center_y - brim_offset
             start_z = first_layer_height
-            yield "SET_VELOCITY_LIMIT ACCEL=%.6f ACCEL_TO_DECEL=%.6f" % (
+            yield "SET_VELOCITY_LIMIT ACCEL=%.6f MINIMUM_CRUISE_RATIO=%.6f" % (
                 accel_start,
-                0.5 * accel_start,
+                0.5,
             )
             yield "G1 X%.3f Y%.3f Z%.3f F%.f" % (
                 start_x,
@@ -335,7 +335,7 @@ class RingingTest:
 
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.3f "
-                            "ACCEL_TO_DECEL=%.3f" % (max_accel, max_accel)
+                            "MINIMUM_CRUISE_RATIO=%.3f" % (max_accel, 0.0)
                         )
                         # The extrusion flow of the lines at an agle is reduced
                         # by cos(angle) to maintain the correct spacing between
@@ -354,8 +354,8 @@ class RingingTest:
                         )
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.6f"
-                            + " ACCEL_TO_DECEL=%.6f"
-                        ) % (INFINITE_ACCEL, INFINITE_ACCEL)
+                            + " MINIMUM_CRUISE_RATIO=%.3f"
+                        ) % (INFINITE_ACCEL, 0.0)
                         yield rotated_G1(
                             notch_pos - d_x - 0.5 * size,
                             perimeter_offset - d_y,
@@ -382,8 +382,8 @@ class RingingTest:
                             old_x, old_y = x, y
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.6f"
-                            + " ACCEL_TO_DECEL=%.6f"
-                        ) % (max_accel, 0.5 * max_accel)
+                            + " MINIMUM_CRUISE_RATIO=%.3f"
+                        ) % (max_accel, 0.5)
                         if i < perimeters - 1 or (
                             abs(band_part - 0.5) >= 0.5 * LETTER_BAND_PART
                         ):
@@ -503,9 +503,9 @@ class RingingTest:
                 self.progress = z / height
                 prev_z, z = z, next_z
             yield (
-                "SET_VELOCITY_LIMIT ACCEL=%.3f ACCEL_TO_DECEL=%.f"
+                "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=%.3f"
                 + " VELOCITY=%.3f"
-            ) % (old_max_accel, old_max_accel_to_decel, old_max_velocity)
+            ) % (old_max_accel, old_minimum_cruise_ratio, old_max_velocity)
 
         yield "M83"
         yield "G90"
