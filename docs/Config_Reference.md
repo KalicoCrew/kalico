@@ -4356,9 +4356,9 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-#rref: 12000
-#   The resistance (in ohms) of the resistor between IREF and GND. The
-#   default is 12000.
+#rref:
+#   The resistance (in ohms) of the resistor between IREF and GND. This
+#   parameter must be provided.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
