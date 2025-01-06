@@ -270,9 +270,7 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
         self.name = config.get_name().split()[-1]
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
-        self.Rref = config.getfloat(
-            "rref", minval=12000.0, maxval=60000.0
-        )
+        self.Rref = config.getfloat("rref", minval=12000.0, maxval=60000.0)
         self.max_current = self._get_ifs_rms(3)
         self.config_run_current = config.getfloat(
             "run_current", above=0.0, maxval=self.max_current
