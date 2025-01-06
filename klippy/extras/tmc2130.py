@@ -213,10 +213,9 @@ class TMC2130CurrentHelper(tmc.BaseTMCCurrentHelper):
         vref = 0.32
         if vsense:
             vref = 0.18
-        cs = (math.ceil(
-            int(32.0 * sense_resistor * current * math.sqrt(2.0) / vref)
-            - 1
-        ))
+        cs = math.ceil(
+            int(32.0 * sense_resistor * current * math.sqrt(2.0) / vref) - 1
+        )
         return max(0, min(31, cs))
 
     def _calc_current_from_bits(self, cs, vsense):
