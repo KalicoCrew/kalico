@@ -201,8 +201,6 @@ class TMC2130CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
 
-        self.cs = config.getint('driver_cs', None, maxval=31, minval=0)
-        self.vs = config.getboolean('driver_vsense', 0)
         vsense, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -215,13 +213,10 @@ class TMC2130CurrentHelper(tmc.BaseTMCCurrentHelper):
         vref = 0.32
         if vsense:
             vref = 0.18
-        if self.cs is None:
-            cs = (
-                int(32.0 * sense_resistor * current * math.sqrt(2.0) / vref + 0.5)
-                - 1
-            )
-        else:
-            cs = self.cs
+        cs = (math.ceil(
+            int(32.0 * sense_resistor * current * math.sqrt(2.0) / vref)
+            - 1
+        ))
         return max(0, min(31, cs))
 
     def _calc_current_from_bits(self, cs, vsense):
@@ -233,20 +228,16 @@ class TMC2130CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_current(self, run_current, hold_current):
         vsense = True
-        if self.cs is None:
-            irun = self._calc_current_bits(run_current, True)
-            if irun == 31:
-                cur = self._calc_current_from_bits(irun, True)
-                if cur < run_current:
-                    irun2 = self._calc_current_bits(run_current, False)
-                    cur2 = self._calc_current_from_bits(irun2, False)
-                    if abs(run_current - cur2) < abs(run_current - cur):
-                        vsense = False
-                        irun = irun2
-        else:
-            vsense = self.vs
-            irun = self.cs
-        ihold = int(min((hold_current / run_current) * irun, irun))
+        irun = self._calc_current_bits(run_current, True)
+        if irun == 31:
+            cur = self._calc_current_from_bits(irun, True)
+            if cur < run_current:
+                irun2 = self._calc_current_bits(run_current, False)
+                cur2 = self._calc_current_from_bits(irun2, False)
+                if abs(run_current - cur2) < abs(run_current - cur):
+                    vsense = False
+                    irun = irun2
+        ihold = self._calc_current_bits(min(hold_current, run_current), vsense)
         return vsense, irun, ihold
 
     def get_current(self):
