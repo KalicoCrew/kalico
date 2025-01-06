@@ -287,7 +287,6 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
                 / ((cs + 1) * VREF)
             )
         )
-        # globalscaler = max(32, globalscaler)
         if globalscaler == 256:
             return 0
         if 1 <= globalscaler <= 31 or globalscaler > 256:
@@ -309,13 +308,6 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         gscaler = self._calc_globalscaler(run_current)
         irun = self.cs
         ihold = int(min((hold_current / run_current) * irun, irun))
-        # ihold = (
-        #    self.cs
-        #    if self.req_hold_current is None
-        #    else self._calc_current_bits(
-        #        min(self.actual_current, self.req_hold_current), gscaler
-        #    )
-        # )
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
