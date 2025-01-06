@@ -8,11 +8,14 @@ All dates in this document are approximate.
 
 ## Changes
 
-20241217: The `driver_cs` parameter has been added to tmc5160. The
+202516: The `driver_CS` parameter has been added to tmc5160. The
 ideal driver_cs value may be found by setting the CS value on the
 tmc5160_calculations.xlsx spreadsheet, under the chopper tab, so that
 the Rsense value in the spreadsheet matches `sense_resistor` as defined
-in printer.cfg.
+in printer.cfg. While it's not necessary to change the CS value, it can
+be helpful to reach adequate hystersis values on high current drivers paired
+with low current motors. The default for this value is 31, meaning only
+globalscaler will be used to scale the current during normal operation.
 
 20241202: The `sense_resistor` parameter is now mandatory with no default value.
 
