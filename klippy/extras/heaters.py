@@ -61,6 +61,10 @@ class Heater:
             self.printer.get_start_args().get("debugoutput") is not None
         )
         self.can_extrude = self.min_extrude_temp <= 0.0 or is_fileoutput
+        self.disable_if_connected = []
+        self.disable_if_connected = config.getlist(
+            "disable_if_connected", self.disable_if_connected
+        )
         self.max_power = config.getfloat(
             "max_power", 1.0, above=0.0, maxval=1.0
         )
@@ -128,6 +132,12 @@ class Heater:
 
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
+        )
+
+    def notify_disabled(self, mcu_name):
+        raise self.printer.command_error(
+            "Heater [%s] is disabled due to [%s] being connected."
+            % (self.short_name, mcu_name)
         )
 
     def lookup_control(self, profile, load_clean=False):
@@ -1102,6 +1112,16 @@ class PrinterHeaters:
         self.printer.wait_while(check)
 
     def set_temperature(self, heater, temp, wait=False):
+        for mcu_name in heater.disable_if_connected:
+            if not mcu_name.startswith("mcu"):
+                mcu_name = "mcu " + mcu_name
+            mcu_object = self.printer.lookup_object(mcu_name, None)
+            if (
+                mcu_object is not None
+                and not mcu_object.non_critical_disconnected
+            ):
+                heater.notify_disabled(mcu_name)
+                return
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.register_lookahead_callback((lambda pt: None))
         heater.set_temp(temp)
