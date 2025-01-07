@@ -2879,8 +2879,9 @@ printer kinematics.
 ### [mixing_extruder]
 
 A mixing printhead which has <n>in-1out mixing nozzle. When activated
-additional g-code are available. See [G-Codes](G-Codes.md#mixing_extruder)
-for a detailed description of the additional commands.
+additional G-Code Commands are available.
+See [G-Codes](G-Codes.md#mixing_extruder) for a detailed description
+of the additional commands.
 
 ```
 [mixing_extruder]
