@@ -1,4 +1,5 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04 AS base
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -6,10 +7,9 @@ ENV TZ=UTC
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt update && apt install -y sudo git curl
 
+FROM base
+
 COPY . /klipper
 WORKDIR /klipper
-
 RUN ./scripts/ci-install.sh
 RUN ./scripts/ci-build.sh
-ENV PATH="/ci_build/python-env/bin:$PATH"
-RUN pip install -r ./scripts/requirements_dev.txt

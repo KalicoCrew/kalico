@@ -1,9 +1,9 @@
-name: Klipper Container Build and Push
+name: Kalico Container Build and Push
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 0" # at 00.00 on Sunday
+    - cron: "0 0 * * *" # Daily at 00.00
 
 jobs:
   login:

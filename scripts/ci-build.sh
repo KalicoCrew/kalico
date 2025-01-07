@@ -9,7 +9,7 @@ MAIN_DIR=${PWD}
 BUILD_DIR=/ci_build
 export PATH=${BUILD_DIR}/pru-gcc/bin:${PATH}
 export PATH=${BUILD_DIR}/or1k-linux-musl-cross/bin:${PATH}
-PYTHON=${BUILD_DIR}/python-env/bin/python
+PYTHON="uv run python3"
 
 
 ######################################################################
