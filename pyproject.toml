@@ -1,8 +1,6 @@
 [project]
 name = "Kalico"
-
 version = "0.12.1"
-
 requires-python = ">=3.9"
 dependencies = [
   "cffi==1.17.1 ; python_version >= '3.13'",
@@ -10,7 +8,7 @@ dependencies = [
   "greenlet==3.1 ; python_version >= '3.13'",
   "greenlet==3.0.3 ; python_version == '3.12'",
   "greenlet==2.0.2 ; python_version < '3.12'",
-  "Jinja2==3.1.4",
+  "Jinja2==3.1.5",
   "markupsafe==2.1.5",
   "numpy~=2.0 ; python_version=='3.9'",
   "numpy~=2.2 ; python_version>='3.10'",
@@ -42,7 +40,8 @@ ignore = [
   "E721", # Do not compare types, use 'isinstance()'
 ]
 
-[tool.uv]
-dev-dependencies = [
-    "ruff>=0.8.4",
-]
+[dependency-groups]
+dev = [
+  "ruff>=0.8.4",
+  "pre-commit>=4.0.1",
+  ]
