@@ -8,6 +8,8 @@ All dates in this document are approximate.
 
 ## Changes
 
+20250107: The `rref` parameter for tmc2240 is now mandatory with no default value.
+
 20241202: The `sense_resistor` parameter is now mandatory with no default value.
 
 20241201: In some cases Klipper may have ignored leading characters or
