@@ -262,7 +262,7 @@ GLOBALSCALER_ERROR = (
     "The target current can't be achieved with the given "
     "CS value of %d.\n"
     "A value of %d may be a reasonable starting point.\n"
-    "Please refer to the tmc5160.xlxs chopper tuning spreadsheet.\n"
+    "Please refer to the tmc5160_calculations.xlsx chopper tuning spreadsheet.\n"
 )
 
 
