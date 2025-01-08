@@ -864,6 +864,14 @@ class ToolHead:
         self.max_accel = accel
         self._calc_junction_deviation()
 
+    def set_accel(self, accel):
+        self.max_accel = accel
+        self._calc_junction_deviation()
+
+    def reset_accel(self):
+        self.max_accel = self.orig_cfg["max_accel"]
+        self._calc_junction_deviation()
+
 
 def add_printer_objects(config):
     config.get_printer().add_object("toolhead", ToolHead(config))
