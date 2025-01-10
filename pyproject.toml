@@ -12,6 +12,10 @@ dependencies = [
   "markupsafe==2.1.5",
   "numpy~=2.0 ; python_version=='3.9'",
   "numpy~=2.2 ; python_version>='3.10'",
+  "scipy==1.13.1 ; python_version=='3.9'",
+  "scipy==1.15.0 ; python_version>='3.10'",
+  "matplotlib==3.9.4 ; python_version=='3.9'",
+  "matplotlib==3.10.0 ; python_version>='3.10'",
   "pyserial==3.4",
   "python-can==3.3.4",
 ]
