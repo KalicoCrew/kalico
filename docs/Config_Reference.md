@@ -155,7 +155,8 @@ A collection of Kalico-specific system options
 In your configuration, you can reference other values to share
 configuration between multiple sections. References take the form of
 `${option}` to copy a value in the current section, or
-`${section.option}` to look up a value elsewhere in your configuration.
+`${section.option}` to look up a value elsewhere in your configuration. Note,
+that constants must always be lower case.
 
 Optionally, a `[constants]` section may be used specifically to store
 these values. Unlike the rest of your configuration, unused constants
