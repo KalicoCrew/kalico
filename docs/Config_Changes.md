@@ -8,7 +8,6 @@ All dates in this document are approximate.
 
 ## Changes
 
-=======
 20250107: The `rref` parameter for tmc2240 is now mandatory with no default value.
 
 20250102: The resonance test has been changed to include slow sweeping
