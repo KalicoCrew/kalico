@@ -515,7 +515,7 @@ class BedMeshCalibrate:
         if probe is not None:
             x_offset, y_offset = probe.get_offsets()[:2]
         print_func(
-            "bed_mesh: generated points\nIndex" " |  Tool Adjusted  |   Probe"
+            "bed_mesh: generated points\nIndex |  Tool Adjusted  |   Probe"
         )
         for i, (x, y) in enumerate(self.points):
             adj_pt = "(%.1f, %.1f)" % (x - x_offset, y - y_offset)

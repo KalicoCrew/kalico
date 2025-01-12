@@ -568,7 +568,7 @@ def main():
         logging.info(versions)
     elif not options.debugoutput:
         logging.warning(
-            "No log file specified!" " Severe timing issues may result!"
+            "No log file specified! Severe timing issues may result!"
         )
 
     compat.install()

@@ -137,10 +137,9 @@ class ExtruderStepper:
             maxval=0.200,
         )
         self._set_pressure_advance(pressure_advance, smooth_time)
-        msg = (
-            "pressure_advance: %.6f\n"
-            "pressure_advance_smooth_time: %.6f"
-            % (pressure_advance, smooth_time)
+        msg = "pressure_advance: %.6f\npressure_advance_smooth_time: %.6f" % (
+            pressure_advance,
+            smooth_time,
         )
         self.printer.set_rollover_info(self.name, "%s: %s" % (self.name, msg))
         gcmd.respond_info(msg, log=False)

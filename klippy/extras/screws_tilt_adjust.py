@@ -27,7 +27,7 @@ class ScrewsTiltAdjust:
             self.screws.append((screw_coord, screw_name))
         if len(self.screws) < 3:
             raise config.error(
-                "screws_tilt_adjust: Must have " "at least three screws"
+                "screws_tilt_adjust: Must have at least three screws"
             )
         self.threads = {
             "CW-M3": 0,

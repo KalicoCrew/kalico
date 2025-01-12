@@ -398,9 +398,7 @@ class Palette2:
                 ping_max = 100.0 + (self.auto_cancel_variation * 100.0)
                 ping_min = 100.0 - (self.auto_cancel_variation * 100.0)
                 if last_ping < ping_min or last_ping > ping_max:
-                    logging.info(
-                        "Ping variation is too high, " "cancelling print"
-                    )
+                    logging.info("Ping variation is too high, cancelling print")
                     self.gcode.run_script("CANCEL_PRINT")
 
         if len(params) > 2:
