@@ -2214,7 +2214,7 @@ section of the measuring resonances guide for more information on
 #   Minimum frequency to test for resonances. The default is 5 Hz.
 #max_freq: 133.33
 #   Maximum frequency to test for resonances. The default is 133.33 Hz.
-#accel_per_hz: 60
+#accel_per_hz: 75
 #   This parameter is used to determine which acceleration to use to
 #   test a specific frequency: accel = accel_per_hz * freq. Higher the
 #   value, the higher is the energy of the oscillations. Can be set to
@@ -2222,6 +2222,7 @@ section of the measuring resonances guide for more information on
 #   the printer. However, lower values make measurements of
 #   high-frequency resonances less precise. The default value is 75
 #   (mm/sec).
+#   Set it to 60 as a good baseline when using the sweeping resonance testes.
 #hz_per_sec: 1
 #   Determines the speed of the test. When testing all frequencies in
 #   range [min_freq, max_freq], each second the frequency increases by
@@ -2230,11 +2231,12 @@ section of the measuring resonances guide for more information on
 #   (Hz/sec == sec^-2).
 #sweeping_accel: 400
 #   An acceleration of slow sweeping moves. The default is 400 mm/sec^2.
-#sweeping_period: 1.2
+#sweeping_period: 0
 #   A period of slow sweeping moves. Setting this parameter to 0
 #   disables slow sweeping moves. Avoid setting it to a too small
 #   non-zero value in order to not poison the measurements.
 #   The default is 1.2 sec which is a good all-round choice.
+#   It is disabled by default as it tends to create issues on certain setups.
 ```
 
 ## Config file helpers

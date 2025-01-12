@@ -127,7 +127,7 @@ class VibrationPulseTestGenerator:
         self.max_freq = config.getfloat(
             "max_freq", 135.0, minval=self.min_freq, maxval=300.0
         )
-        self.accel_per_hz = config.getfloat("accel_per_hz", 60.0, above=0.0)
+        self.accel_per_hz = config.getfloat("accel_per_hz", 75.0, above=0.0)
         self.hz_per_sec = config.getfloat(
             "hz_per_sec", 1.0, minval=0.1, maxval=2.0
         )
@@ -176,7 +176,7 @@ class SweepingVibrationsTestGenerator:
             "sweeping_accel", 400.0, above=0.0
         )
         self.sweeping_period = config.getfloat(
-            "sweeping_period", 1.2, minval=0.0
+            "sweeping_period", 0.0, minval=0.0
         )
 
     def prepare_test(self, gcmd):
