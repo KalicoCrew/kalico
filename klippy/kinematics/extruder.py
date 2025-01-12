@@ -91,6 +91,13 @@ class ExtruderStepper:
         self.stepper.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
 
+    def set_rotation_distance(self, rotation_dist: float | int):
+        self.stepper.set_rotation_distance(rotation_dist)
+
+    def get_rotation_distance(self) -> float | int:
+        _, rotation_dist = self.stepper.get_rotation_distance()
+        return rotation_dist
+
     def _set_pressure_advance(self, pressure_advance, smooth_time):
         old_smooth_time = self.pressure_advance_smooth_time
         if not self.pressure_advance:
@@ -130,10 +137,9 @@ class ExtruderStepper:
             maxval=0.200,
         )
         self._set_pressure_advance(pressure_advance, smooth_time)
-        msg = (
-            "pressure_advance: %.6f\n"
-            "pressure_advance_smooth_time: %.6f"
-            % (pressure_advance, smooth_time)
+        msg = "pressure_advance: %.6f\npressure_advance_smooth_time: %.6f" % (
+            pressure_advance,
+            smooth_time,
         )
         self.printer.set_rollover_info(self.name, "%s: %s" % (self.name, msg))
         gcmd.respond_info(msg, log=False)

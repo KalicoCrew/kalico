@@ -55,7 +55,7 @@ class LimitedCoreXZKinematics(corexz.CoreXZKinematics):
             gcmd.get_int("SCALE", self.scale_per_axis, minval=0, maxval=1)
         )
 
-        msg = ("x,y,z max_velocities: %r\n" "x,y,z max_accels: %r\n") % (
+        msg = ("x,y,z max_velocities: %r\nx,y,z max_accels: %r\n") % (
             self.max_velocities,
             self.max_accels,
         )

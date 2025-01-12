@@ -615,13 +615,13 @@ class MpcCalibrate:
                 gcmd.respond_info("Waiting for temperature to stabilize")
                 self.wait_stable(3)
                 gcmd.respond_info(
-                    f"Temperature stable, measuring power usage with {speed*100.:.0f}% fan speed"
+                    f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% fan speed"
                 )
                 power = self.measure_power(
                     ambient_max_measure_time, ambient_measure_sample_time
                 )
                 gcmd.respond_info(
-                    f"{speed*100.:.0f}% fan average power: {power:.2f} W"
+                    f"{speed * 100.0:.0f}% fan average power: {power:.2f} W"
                 )
                 fan_powers.append((speed, power))
             curtime = self.heater.reactor.monotonic()

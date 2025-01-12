@@ -686,7 +686,7 @@ class Heater:
                     if profile["smooth_time"] is None
                     else profile["smooth_time"]
                 )
-                msg = "Target: %.2f\n" "Tolerance: %.4f\n" "Control: %s\n" % (
+                msg = "Target: %.2f\nTolerance: %.4f\nControl: %s\n" % (
                     profile["pid_target"],
                     profile["pid_tolerance"],
                     profile["control"],

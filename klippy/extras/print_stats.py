@@ -82,7 +82,7 @@ class PrintStats:
         self.print_start_time = None
 
     cmd_SET_PRINT_STATS_INFO_help = (
-        "Pass slicer info like layer act and " "total to klipper"
+        "Pass slicer info like layer act and total to klipper"
     )
 
     def cmd_SET_PRINT_STATS_INFO(self, gcmd):

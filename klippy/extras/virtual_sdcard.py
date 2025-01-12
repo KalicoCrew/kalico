@@ -168,7 +168,7 @@ class VirtualSD:
         self.printer.send_event("virtual_sdcard:reset_file")
 
     cmd_SDCARD_RESET_FILE_help = (
-        "Clears a loaded SD File. Stops the print " "if necessary"
+        "Clears a loaded SD File. Stops the print if necessary"
     )
 
     def cmd_SDCARD_RESET_FILE(self, gcmd):

@@ -106,8 +106,7 @@ class ClockSync:
                 and sent_time < self.last_prediction_time + 10.0
             ):
                 logging.debug(
-                    "Ignoring clock sample %.3f:"
-                    " freq=%d diff=%d stddev=%.3f",
+                    "Ignoring clock sample %.3f: freq=%d diff=%d stddev=%.3f",
                     sent_time,
                     self.clock_est[2],
                     clock - exp_clock,
