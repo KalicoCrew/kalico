@@ -14,6 +14,7 @@ _test_.*
 klippy/plugins/*
 !klippy/plugins/__init__.py
 .vscode
+.idea/*
 
 # docs
 site/
