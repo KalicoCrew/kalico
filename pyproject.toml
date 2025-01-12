@@ -1,14 +1,32 @@
+[project]
+name = "Kalico"
+version = "0.12.1"
+requires-python = ">=3.9"
+dependencies = [
+  "cffi==1.17.1 ; python_version >= '3.13'",
+  "cffi==1.15.1 ; python_version < '3.13'",
+  "greenlet==3.1 ; python_version >= '3.13'",
+  "greenlet==3.0.3 ; python_version == '3.12'",
+  "greenlet==2.0.2 ; python_version < '3.12'",
+  "Jinja2==3.1.5",
+  "markupsafe==2.1.5",
+  "numpy~=2.0 ; python_version=='3.9'",
+  "numpy~=2.2 ; python_version>='3.10'",
+  "pyserial==3.4",
+  "python-can==3.3.4",
+]
+
+[project.urls]
+homepage = "https://kalico.gg/"
+source = "https://github.com/KalicoCrew/kalico"
+documentation = "https://docs.kalico.gg/"
+issues = "https://github.com/KalicoCrew/kalico/issues"
+funding = "https://docs.kalico.gg/Sponsors.html"
+
 [tool.ruff]
 line-length = 80
 indent-width = 4
-exclude = [
-  ".github",
-  ".history",
-  "config",
-  "docs",
-  "lib",
-  "src"
-]
+exclude = [".github", ".history", "config", "docs", "lib", "src"]
 
 [tool.ruff.lint]
 ignore = [
@@ -21,3 +39,9 @@ ignore = [
   "F841", # Local variable name is assigned to but never used
   "E721", # Do not compare types, use 'isinstance()'
 ]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.8.4",
+  "pre-commit>=4.0.1",
+  ]
