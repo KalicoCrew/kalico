@@ -384,7 +384,7 @@ class DockableProbe:
         }
 
     cmd_MOVE_TO_APPROACH_PROBE_help = (
-        "Move close to the probe dockbefore attaching"
+        "Move close to the probe dock before attaching"
     )
 
     def cmd_MOVE_TO_APPROACH_PROBE(self, gcmd):
@@ -398,7 +398,7 @@ class DockableProbe:
             )
 
     cmd_MOVE_TO_DOCK_PROBE_help = (
-        "Move to connect the toolhead/dockto the probe"
+        "Move to connect the toolhead/dock to the probe"
     )
 
     def cmd_MOVE_TO_DOCK_PROBE(self, gcmd):
@@ -413,7 +413,7 @@ class DockableProbe:
         )
 
     cmd_MOVE_TO_EXTRACT_PROBE_help = (
-        "Move away from the dock with theprobe attached"
+        "Move away from the dock with the probe attached"
     )
 
     def cmd_MOVE_TO_EXTRACT_PROBE(self, gcmd):
@@ -428,7 +428,7 @@ class DockableProbe:
         )
 
     cmd_MOVE_TO_INSERT_PROBE_help = (
-        "Move near the dock with theprobe attached before detaching"
+        "Move near the dock with the probe attached before detaching"
     )
 
     def cmd_MOVE_TO_INSERT_PROBE(self, gcmd):
@@ -439,7 +439,9 @@ class DockableProbe:
                 [None, None, self.insert_position[2]], self.speed
             )
 
-    cmd_MOVE_TO_DETACH_PROBE_help = "Move away from the dock to detachthe probe"
+    cmd_MOVE_TO_DETACH_PROBE_help = (
+        "Move away from the dock to detach the probe"
+    )
 
     def cmd_MOVE_TO_DETACH_PROBE(self, gcmd):
         if len(self.detach_position) > 2:
@@ -465,7 +467,7 @@ class DockableProbe:
             self.auto_attach_detach = False
 
     cmd_ATTACH_PROBE_help = (
-        "Check probe status and attach probe usingthe movement gcodes"
+        "Check probe status and attach probe using the movement gcodes"
     )
 
     def cmd_ATTACH_PROBE(self, gcmd):
@@ -473,7 +475,7 @@ class DockableProbe:
         self.attach_probe(return_pos)
 
     cmd_DETACH_PROBE_help = (
-        "Check probe status and detach probe usingthe movement gcodes"
+        "Check probe status and detach probe using the movement gcodes"
     )
 
     def cmd_DETACH_PROBE(self, gcmd):
