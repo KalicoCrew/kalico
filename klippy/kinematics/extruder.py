@@ -91,10 +91,10 @@ class ExtruderStepper:
         self.stepper.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
 
-    def set_rotation_distance(self, rotation_dist: float | int):
+    def set_rotation_distance(self, rotation_dist):
         self.stepper.set_rotation_distance(rotation_dist)
 
-    def get_rotation_distance(self) -> float | int:
+    def get_rotation_distance(self):
         _, rotation_dist = self.stepper.get_rotation_distance()
         return rotation_dist
 
