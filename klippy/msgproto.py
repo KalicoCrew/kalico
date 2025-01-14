@@ -158,7 +158,9 @@ MessageTypes = {
 
 
 # Lookup the message types for a format string
-def lookup_params(msgformat, enumerations={}):
+def lookup_params(msgformat, enumerations=None):
+    if enumerations is None:
+        enumerations = {}
     out = []
     argparts = [arg.split("=") for arg in msgformat.split()[1:]]
     for name, fmt in argparts:
@@ -199,7 +201,9 @@ def convert_msg_format(msgformat):
 
 
 class MessageFormat:
-    def __init__(self, msgid_bytes, msgformat, enumerations={}):
+    def __init__(self, msgid_bytes, msgformat, enumerations=None):
+        if enumerations is None:
+            enumerations = {}
         self.msgid_bytes = msgid_bytes
         self.msgformat = msgformat
         self.debugformat = convert_msg_format(msgformat)
@@ -438,7 +442,11 @@ class MessageParser:
                 for i in range(count):
                     enums[enum_root + str(start_enum + i)] = start_value + i
 
-    def _init_messages(self, messages, command_ids=[], output_ids=[]):
+    def _init_messages(self, messages, command_ids=None, output_ids=None):
+        if output_ids is None:
+            output_ids = []
+        if command_ids is None:
+            command_ids = []
         for msgformat, msgid in messages.items():
             msgtype = "response"
             if msgid in command_ids:

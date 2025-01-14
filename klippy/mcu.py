@@ -1512,7 +1512,9 @@ or in response to an internal error in the host software.""",
 }
 
 
-def error_help(msg, append_msgs=[]):
+def error_help(msg, append_msgs=None):
+    if append_msgs is None:
+        append_msgs = []
     for prefixes, help_msg in Common_MCU_errors.items():
         for prefix in prefixes:
             if msg.startswith(prefix):

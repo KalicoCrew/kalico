@@ -29,6 +29,7 @@ indent-width = 4
 exclude = [".github", ".history", "config", "docs", "lib", "src"]
 
 [tool.ruff.lint]
+extend-select = ["B006"]
 ignore = [
   "E401", # Multiple imports on one line
   "C901", # Function is too complex

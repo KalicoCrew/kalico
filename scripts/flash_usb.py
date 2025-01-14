@@ -127,7 +127,9 @@ def flash_canboot(options, binfile):
 
 
 # Flash via a call to bossac
-def flash_bossac(device, binfile, extra_flags=[]):
+def flash_bossac(device, binfile, extra_flags=None):
+    if extra_flags is None:
+        extra_flags = []
     ttyname, pathname = translate_serial_to_tty(device)
     enter_bootloader(pathname)
     pathname = wait_path(pathname, ttyname)
@@ -160,7 +162,9 @@ def call_dfuutil(flags, binfile, sudo):
 
 
 # Flash via a call to dfu-util
-def flash_dfuutil(device, binfile, extra_flags=[], sudo=True):
+def flash_dfuutil(device, binfile, extra_flags=None, sudo=True):
+    if extra_flags is None:
+        extra_flags = []
     hexfmt_r = re.compile(r"^[a-fA-F0-9]{4}:[a-fA-F0-9]{4}$")
     if hexfmt_r.match(device.strip()):
         call_dfuutil(["-d", "," + device.strip()] + extra_flags, binfile, sudo)

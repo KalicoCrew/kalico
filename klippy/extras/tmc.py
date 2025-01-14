@@ -19,8 +19,16 @@ def ffs(mask):
 
 class FieldHelper:
     def __init__(
-        self, all_fields, signed_fields=[], field_formatters={}, registers=None
+        self,
+        all_fields,
+        signed_fields=None,
+        field_formatters=None,
+        registers=None,
     ):
+        if field_formatters is None:
+            field_formatters = {}
+        if signed_fields is None:
+            signed_fields = []
         self.all_fields = all_fields
         self.signed_fields = {sf: 1 for sf in signed_fields}
         self.field_formatters = field_formatters
