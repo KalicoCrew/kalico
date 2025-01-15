@@ -41,8 +41,6 @@ ACCEPT
 ACCEPT
 
 ACCEPT
-ACCEPT
-ACCEPT
 
 # Start helper script and run with two readjusts
 BED_SCREWS_ADJUST

@@ -221,6 +221,8 @@ class Printer:
             "telemetry",
         ]:
             self.load_object(config, section_config, None)
+        if self.get_start_args().get("debuginput") is not None:
+            self.load_object(config, "testing", None)
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
