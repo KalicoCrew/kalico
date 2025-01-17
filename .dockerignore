@@ -1,2 +1,9 @@
 ci_build/
 ci_cache/
+
+.venv/
+dict/
+scripts/Dockerfile*
+out/
+.pytest_cache/
+.ruff_cache/

@@ -17,17 +17,23 @@ jobs:
           filters: |
             klippy:
               - 'klippy/**'
-              - 'test/**'
-              - 'scripts/**'
             klipper:
               - 'src/**'
               - 'lib/**'
               - 'test/**'
+              - 'scripts/**'
 
-      - name: Test Klippy Only
-        if: steps.changes.outputs.klippy == 'true' && steps.changes.outputs.klipper == 'false'
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest "./scripts/ci-build.sh" 2>&1
+      - name: Test Klipper build (changes to the C code)
+        if: steps.changes.outputs.klipper == 'true'
+        run: |
+          docker pull dangerklippers/klipper-build:latest
+          docker build -f scripts/Dockerfile-build -t dangerklippers/klipper-build:latest .
 
-      - name: Test Klipper Full
-        if: steps.changes.outputs.klippy == 'true' && steps.changes.outputs.klipper == 'true'
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest "./scripts/ci-build.sh" compile 2>&1
+      - name: Test Klippy (Only)
+        if: steps.changes.outputs.klippy == 'true' || steps.changes.outputs.klipper == 'true'
+        run: |
+          docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.9  py.test -n auto
+          docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.10 py.test -n auto
+          docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.11 py.test -n auto
+          docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.12 py.test -n auto
+          docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.13 py.test -n auto

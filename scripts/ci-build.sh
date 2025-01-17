@@ -47,9 +47,11 @@ compile()
         finish_test mcu_compile "$TARGET"
         cp out/klipper.dict ${1}/$(basename ${TARGET} .config).dict
     done
+    make clean
+    make distclean
 }
 
-DICTDIR=${BUILD_DIR}/dict
+export DICTDIR=${DICTDIR:-${BUILD_DIR}/dict}
 
 if [ ! -d "${DICTDIR}" ]; then
     mkdir -p ${DICTDIR}
@@ -63,5 +65,5 @@ fi
 ######################################################################
 
 start_test klippy "py.test suite"
-py.test --dictdir "${DICTDIR}"
+py.test
 finish_test klippy "py.test suite"

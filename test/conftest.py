@@ -13,6 +13,15 @@ KLIPPY_PLUGINS = ROOT / "klippy" / "plugins"
 TESTING_PLUGIN = ROOT / "test" / "klippy_testing_plugin.py"
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--dictdir",
+        action="store",
+        default=os.environ.get("DICTDIR", "dict"),
+        help="Klipper build dictionary path",
+    )
+
+
 def pytest_sessionstart(session):
     link_path = KLIPPY_PLUGINS / "testing.py"
     if link_path.exists():

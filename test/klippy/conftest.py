@@ -8,10 +8,6 @@ import tempfile
 import shutil
 
 
-def pytest_addoption(parser):
-    parser.addoption("--dictdir", action="store", default="dict")
-
-
 def pytest_collect_file(parent, file_path):
     if file_path.suffix == ".test":
         return KlippyTest.from_parent(parent, path=file_path)
@@ -21,7 +17,7 @@ class KlippyTest(pytest.File):
     def relative_path(self, *parts, root=None):
         if not root:
             root = self.path.parent
-        return root.joinpath(*parts).resolve().relative_to(self.path.cwd())
+        return root.joinpath(*parts).resolve()
 
     def collect(self):
         dict_path = pathlib.Path.cwd() / self.config.getoption("dictdir")
