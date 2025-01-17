@@ -51,9 +51,7 @@ Use probe-based operations as needed, such as:
 
 4. **Finalize the Setup:**
     - Home all axes, and perform a [Bed Mesh](Bed_Mesh.md) if necessary.
-    - Run a test print, followed by any
-    [fine-tuning](Axis_Twist_Compensation.md#fine-tuning)
-    if needed.
+    - Run a test print, followed by any fine-tuning if needed.
 
 ### For Y-Axis Calibration
 The calibration process for the Y-axis is similar to the X-axis. To calibrate

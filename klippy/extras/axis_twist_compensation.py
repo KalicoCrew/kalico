@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import math
-from . import manual_probe, bed_mesh, probe
+from . import manual_probe, bed_mesh
 
 
 DEFAULT_SAMPLE_COUNT = 3
