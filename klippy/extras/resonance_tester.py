@@ -120,26 +120,17 @@ def suspend_limits(printer, max_accel, max_velocity, input_shaping):
             kin.scale_per_axis = old_scale_per_axis
 
 
-class VibrationPulseTest:
+class VibrationPulseTestGenerator:
     def __init__(self, config):
-        self.printer = config.get_printer()
-        self.gcode = self.printer.lookup_object("gcode")
         self.min_freq = config.getfloat("min_freq", 5.0, minval=1.0)
         # Defaults are such that max_freq * accel_per_hz == 10000 (max_accel)
         self.max_freq = config.getfloat(
-            "max_freq", 10000.0 / 75.0, minval=self.min_freq, maxval=300.0
+            "max_freq", 135.0, minval=self.min_freq, maxval=300.0
         )
         self.accel_per_hz = config.getfloat("accel_per_hz", 75.0, above=0.0)
         self.hz_per_sec = config.getfloat(
             "hz_per_sec", 1.0, minval=0.1, maxval=2.0
         )
-
-        self.probe_points = config.getlists(
-            "probe_points", seps=(",", "\n"), parser=float, count=3
-        )
-
-    def get_start_test_points(self):
-        return self.probe_points
 
     def prepare_test(self, gcmd):
         self.freq_start = gcmd.get_float(
@@ -148,43 +139,28 @@ class VibrationPulseTest:
         self.freq_end = gcmd.get_float(
             "FREQ_END", self.max_freq, minval=self.freq_start, maxval=300.0
         )
-        self.hz_per_sec = gcmd.get_float(
+        self.test_accel_per_hz = gcmd.get_float(
+            "ACCEL_PER_HZ", self.accel_per_hz, above=0.0
+        )
+        self.test_hz_per_sec = gcmd.get_float(
             "HZ_PER_SEC", self.hz_per_sec, above=0.0, maxval=2.0
         )
 
-    def run_test(self, axis, gcmd):
-        with suspend_limits(
-            self.printer,
-            self.freq_end * self.accel_per_hz + 10.0,
-            self.accel_per_hz * 0.25 + 1.0,
-            gcmd.get_int("INPUT_SHAPING", 0),
-        ):
-            self._run_test(axis, gcmd)
-
-    def _run_test(self, axis, gcmd):
-        toolhead = self.printer.lookup_object("toolhead")
-        X, Y, Z, E = toolhead.get_position()
-        sign = 1.0
+    def gen_test(self):
         freq = self.freq_start
-        gcmd.respond_info("Testing frequency %.0f Hz" % (freq,))
+        res = []
+        sign = 1.0
+        time = 0.0
         while freq <= self.freq_end + 0.000001:
             t_seg = 0.25 / freq
-            accel = self.accel_per_hz * freq
-            max_v = accel * t_seg
-            toolhead.cmd_M204(
-                self.gcode.create_gcode_command("M204", "M204", {"S": accel})
-            )
-            L = 0.5 * accel * t_seg**2
-            dX, dY = axis.get_point(L)
-            nX = X + sign * dX
-            nY = Y + sign * dY
-            toolhead.move([nX, nY, Z, E], max_v)
-            toolhead.move([X, Y, Z, E], max_v)
+            accel = self.test_accel_per_hz * freq
+            time += t_seg
+            res.append((time, sign * accel, freq))
+            time += t_seg
+            res.append((time, -sign * accel, freq))
+            freq += 2.0 * t_seg * self.test_hz_per_sec
             sign = -sign
-            old_freq = freq
-            freq += 2.0 * t_seg * self.hz_per_sec
-            if math.floor(freq) > math.floor(old_freq):
-                gcmd.respond_info("Testing frequency %.0f Hz" % (freq,))
+        return res
 
     def get_max_freq(self):
         return self.freq_end
@@ -193,11 +169,130 @@ class VibrationPulseTest:
         return self.accel_per_hz
 
 
+class SweepingVibrationsTestGenerator:
+    def __init__(self, config):
+        self.vibration_generator = VibrationPulseTestGenerator(config)
+        self.sweeping_accel = config.getfloat(
+            "sweeping_accel", 400.0, above=0.0
+        )
+        self.sweeping_period = config.getfloat(
+            "sweeping_period", 0.0, minval=0.0
+        )
+
+    def prepare_test(self, gcmd):
+        self.vibration_generator.prepare_test(gcmd)
+        self.test_sweeping_accel = gcmd.get_float(
+            "SWEEPING_ACCEL", self.sweeping_accel, above=0.0
+        )
+        self.test_sweeping_period = gcmd.get_float(
+            "SWEEPING_PERIOD", self.sweeping_period, minval=0.0
+        )
+
+    def gen_test(self):
+        test_seq = self.vibration_generator.gen_test()
+        accel_fraction = math.sqrt(2.0) * 0.125
+        if self.test_sweeping_period:
+            t_rem = self.test_sweeping_period * accel_fraction
+            sweeping_accel = self.test_sweeping_accel
+        else:
+            t_rem = float("inf")
+            sweeping_accel = 0.0
+        res = []
+        last_t = 0.0
+        sig = 1.0
+        accel_fraction += 0.25
+        for next_t, accel, freq in test_seq:
+            t_seg = next_t - last_t
+            while t_rem <= t_seg:
+                last_t += t_rem
+                res.append((last_t, accel + sweeping_accel * sig, freq))
+                t_seg -= t_rem
+                t_rem = self.test_sweeping_period * accel_fraction
+                accel_fraction = 0.5
+                sig = -sig
+            t_rem -= t_seg
+            res.append((next_t, accel + sweeping_accel * sig, freq))
+            last_t = next_t
+        return res
+
+    def get_max_freq(self):
+        return self.vibration_generator.get_max_freq()
+
+
+class ResonanceTestExecutor:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object("gcode")
+
+    def run_test(self, test_seq, axis, freq_end, accel_per_hz, gcmd):
+        with suspend_limits(
+            self.printer,
+            freq_end * accel_per_hz + 10.0,
+            accel_per_hz * 0.25 + 1.0,
+            gcmd.get_int("INPUT_SHAPING", 0),
+        ):
+            self._run_test(test_seq, axis, gcmd)
+
+    def _run_test(self, test_seq, axis, gcmd):
+        reactor = self.printer.get_reactor()
+        toolhead = self.printer.lookup_object("toolhead")
+        X, Y, Z, E = toolhead.get_position()
+        systime = reactor.monotonic()
+        toolhead_info = toolhead.get_status(systime)
+        old_max_accel = toolhead_info["max_accel"]
+        last_v = last_t = last_freq = 0.0
+        for next_t, accel, freq in test_seq:
+            t_seg = next_t - last_t
+            toolhead.cmd_M204(
+                self.gcode.create_gcode_command(
+                    "M204", "M204", {"S": abs(accel)}
+                )
+            )
+            v = last_v + accel * t_seg
+            abs_v = abs(v)
+            if abs_v < 0.000001:
+                v = abs_v = 0.0
+            abs_last_v = abs(last_v)
+            v2 = v * v
+            last_v2 = last_v * last_v
+            half_inv_accel = 0.5 / accel
+            d = (v2 - last_v2) * half_inv_accel
+            dX, dY = axis.get_point(d)
+            nX = X + dX
+            nY = Y + dY
+            toolhead.limit_next_junction_speed(abs_last_v)
+            if v * last_v < 0:
+                # The move first goes to a complete stop, then changes direction
+                d_decel = -last_v2 * half_inv_accel
+                decel_X, decel_Y = axis.get_point(d_decel)
+                toolhead.move([X + decel_X, Y + decel_Y, Z, E], abs_last_v)
+                toolhead.move([nX, nY, Z, E], abs_v)
+            else:
+                toolhead.move([nX, nY, Z, E], max(abs_v, abs_last_v))
+            if math.floor(freq) > math.floor(last_freq):
+                gcmd.respond_info("Testing frequency %.0f Hz" % (freq,))
+                reactor.pause(reactor.monotonic() + 0.01)
+            X, Y = nX, nY
+            last_t = next_t
+            last_v = v
+            last_freq = freq
+        if last_v:
+            d_decel = -0.5 * last_v2 / old_max_accel
+            decel_X, decel_Y = axis.get_point(d_decel)
+            toolhead.cmd_M204(
+                self.gcode.create_gcode_command(
+                    "M204", "M204", {"S": old_max_accel}
+                )
+            )
+            toolhead.move([X + decel_X, Y + decel_Y, Z, E], abs(last_v))
+
+
 class ResonanceTester:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.move_speed = config.getfloat("move_speed", 50.0, above=0.0)
-        self.test = VibrationPulseTest(config)
+        self.generator = SweepingVibrationsTestGenerator(config)
+        self.executor = ResonanceTestExecutor(config)
         if not config.get("accel_chip_x", None):
             self.accel_chip_names = [("xy", config.get("accel_chip").strip())]
         else:
@@ -208,6 +303,9 @@ class ResonanceTester:
             if self.accel_chip_names[0][1] == self.accel_chip_names[1][1]:
                 self.accel_chip_names = [("xy", self.accel_chip_names[0][1])]
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
+        self.probe_points = config.getlists(
+            "probe_points", seps=(",", "\n"), parser=float, count=3
+        )
 
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
@@ -246,15 +344,12 @@ class ResonanceTester:
         toolhead = self.printer.lookup_object("toolhead")
         calibration_data = {axis: None for axis in axes}
 
-        self.test.prepare_test(gcmd)
+        self.generator.prepare_test(gcmd)
 
-        if test_point is not None:
-            test_points = [test_point]
-        else:
-            test_points = self.test.get_start_test_points()
+        test_points = [test_point] if test_point else self.probe_points
 
         if test_accel_per_hz is not None:
-            self.test.accel_per_hz = test_accel_per_hz
+            self.generator.accel_per_hz = test_accel_per_hz
 
         for point in test_points:
             toolhead.manual_move(point, self.move_speed)
@@ -280,7 +375,14 @@ class ResonanceTester:
                         raw_values.append((axis, aclient, chip.name))
 
                 # Generate moves
-                self.test.run_test(axis, gcmd)
+                test_seq = self.generator.gen_test()
+                self.executor.run_test(
+                    test_seq,
+                    axis,
+                    self.generator.vibration_generator.freq_end,
+                    self.generator.vibration_generator.accel_per_hz,
+                    gcmd,
+                )
                 for chip_axis, aclient, chip_name in raw_values:
                     aclient.finish_measurements()
                     if raw_name_suffix is not None:
@@ -322,7 +424,7 @@ class ResonanceTester:
         return parsed_chips
 
     def _get_max_calibration_freq(self):
-        return 1.5 * self.test.get_max_freq()
+        return 1.5 * self.generator.get_max_freq()
 
     cmd_TEST_RESONANCES_help = "Runs the resonance test for a specifed axis"
 
@@ -389,7 +491,7 @@ class ResonanceTester:
                 data,
                 point=test_point,
                 max_freq=self._get_max_calibration_freq(),
-                accel_per_hz=self.test.get_accel_per_hz(),
+                accel_per_hz=self.generator.vibration_generator.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Resonances data written to %s file" % (csv_name,)
@@ -467,7 +569,7 @@ class ResonanceTester:
                 calibration_data[axis],
                 all_shapers,
                 max_freq=max_freq,
-                accel_per_hz=self.test.get_accel_per_hz(),
+                accel_per_hz=self.generator.vibration_generator.get_accel_per_hz(),
             )
             gcmd.respond_info(
                 "Shaper calibration data written to %s file" % (csv_name,)

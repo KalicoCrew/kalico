@@ -2208,6 +2208,9 @@ section of the measuring resonances guide for more information on
 #   auto-calibration (with 'SHAPER_CALIBRATE' command). By default no
 #   maximum smoothing is specified. Refer to Measuring_Resonances guide
 #   for more details on using this feature.
+#move_speed: 50
+#   The speed (in mm/s) to move the toolhead to and between test points
+#   during the calibration. The default is 50.
 #min_freq: 5
 #   Minimum frequency to test for resonances. The default is 5 Hz.
 #max_freq: 133.33
@@ -2220,12 +2223,20 @@ section of the measuring resonances guide for more information on
 #   the printer. However, lower values make measurements of
 #   high-frequency resonances less precise. The default value is 75
 #   (mm/sec).
+#   Set it to 60 as a good baseline when using the sweeping resonance tester.
 #hz_per_sec: 1
 #   Determines the speed of the test. When testing all frequencies in
 #   range [min_freq, max_freq], each second the frequency increases by
 #   hz_per_sec. Small values make the test slow, and the large values
 #   will decrease the precision of the test. The default value is 1.0
 #   (Hz/sec == sec^-2).
+#sweeping_accel: 400
+#   An acceleration of slow sweeping moves. The default is 400 mm/sec^2.
+#sweeping_period: 0
+#   A period of slow sweeping moves. Avoid setting it to a too small
+#   non-zero value in order to not poison the measurements.
+#   To enable it, start by setting it to 1.2 sec which is a good all-round
+#   choice. Set it to 0 do disable it. The default is 0.
 ```
 
 ## Config file helpers
