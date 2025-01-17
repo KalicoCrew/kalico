@@ -102,9 +102,14 @@ class MixingExtruder:
             if name != "extruder":
                 printer_extruder_name = "extruder_stepper " + name
 
-            extruder_stepper = self.printer.lookup_object(
-                printer_extruder_name
-            ).extruder_stepper
+            try:
+                extruder_stepper = self.printer.lookup_object(
+                    printer_extruder_name
+                ).extruder_stepper
+            except AttributeError:
+                raise self.printer.config_error(
+                    "mixing extruders is not compatible with bleeding-edge-v2"
+                )
 
             self._extruder_steppers.append(
                 (extruder_stepper, extruder_stepper.stepper)
