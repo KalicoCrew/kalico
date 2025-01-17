@@ -155,9 +155,17 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [SAMPLE_COUNT=<value>]`: Initiates the X
-twist calibration wizard. `SAMPLE_COUNT` specifies the number of points along
-the X axis to calibrate at and defaults to 3.
+`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>] 
+[SAMPLE_COUNT=<value>] [<probe_parameter>=<value>]`:
+
+Calibrates axis twist compensation by specifying the target axis or
+enabling automatic calibration.
+
+- **SAMPLE_COUNT:** Number of points tested during the calibration.
+If not specified, it defaults to 3.
+
+- **AXIS:** Define the axis (`X` or `Y`) for which the twist compensation
+will be calibrated. If not specified, the axis defaults to `'X'`.
 
 ### [bed_mesh]
 
