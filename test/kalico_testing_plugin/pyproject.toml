@@ -1,0 +1,6 @@
+[project]
+name = "kalico_testing_plugin"
+version = "0.0.0"
+
+[project.entry-points."kalico.plugins"]
+testing = "kalico_testing_plugin"

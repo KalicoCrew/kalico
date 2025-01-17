@@ -8,6 +8,7 @@ from __future__ import annotations
 import collections
 import gc
 import importlib
+import importlib.metadata
 import logging
 import optparse
 import os
@@ -153,6 +154,24 @@ class PrinterModule:
         return getattr(self.module, function_name, None)
 
 
+class PrinterEntrypoint(PrinterModule):
+    entrypoint: importlib.metadata.EntryPoint
+
+    def __init__(self, name, entrypoint):
+        self.name = name
+        self.entrypoint = entrypoint
+        self.metadata = util.entrypoint_metadata(entrypoint)
+
+    def load(self):
+        try:
+            self.module = self.entrypoint.load()
+        except Exception as e:
+            logging.exception(
+                f"Failed to load plugin '{self.name}' (v{self.metadata['version']})."
+            )
+            self.exception = e
+
+
 class Printer:
     config_error = configfile.error
     command_error = gcode.CommandError
@@ -183,6 +202,11 @@ class Printer:
             name = module_info.name.rsplit(".", 1)[-1]
             yield PrinterModule(name, module_info)
 
+    @staticmethod
+    def _iter_entrypoints() -> Generator[PrinterEntrypoint]:
+        for name, entrypoint in util.find_entrypoints().items():
+            yield PrinterEntrypoint(name, entrypoint)
+
     def _load_modules(self, config: ConfigWrapper):
         allow_overrides = self._allow_plugin_override(config)
         klippy_dir = Path(__file__).parent
@@ -194,6 +218,14 @@ class Printer:
             if pm.name in self.printer_modules and not allow_overrides:
                 raise configfile.error(
                     f"Module '{pm.name}' found in both extras and plugins!"
+                )
+            self.printer_modules[pm.name] = pm
+
+        for pm in self._iter_entrypoints():
+            if pm.name in self.printer_modules and not allow_overrides:
+                raise configfile.error(
+                    f"Module {pm.name} found in both extras and plugin"
+                    f" {pm.metadata['name']} (v{pm.metadata['version']})"
                 )
             self.printer_modules[pm.name] = pm
 
@@ -322,7 +354,7 @@ class Printer:
         ]:
             self.load_object(config, section_config, None)
         if self.get_start_args().get("debuginput") is not None:
-            self.load_object(config, "testing", None)
+            self.load_object(config, "testing")
         for m in [toolhead]:
             m.add_printer_objects(config)
         # Validate that there are no undefined parameters in the config file
@@ -637,6 +669,7 @@ def main():
         "apiserver_group": options.apiserver_group,
         "apiserver_file_mode": options.apiserver_file_mode,
         "start_reason": "startup",
+        "plugins": {},
     }
 
     debuglevel = logging.INFO
@@ -672,6 +705,12 @@ def main():
     extra_git_desc += "\nBranch: %s" % (git_info["branch"])
     extra_git_desc += "\nRemote: %s" % (git_info["remote"])
     extra_git_desc += "\nTracked URL: %s" % (git_info["url"])
+
+    for entrypoint in util.find_entrypoints().values():
+        metadata = util.entrypoint_metadata(entrypoint)
+        extra_git_desc += f"\nPlugin {metadata['name']}=={metadata['version']}"
+        start_args["plugins"][metadata["name"]] = metadata
+
     start_args["software_version"] = git_vers
     start_args["git_branch"] = git_info["branch"]
     start_args["git_remote"] = git_info["remote"]
@@ -684,6 +723,7 @@ def main():
                 f"Git version: {repr(start_args['software_version'])}{extra_git_desc}",
                 f"CPU: {start_args['cpu_info']}",
                 f"Python: {repr(sys.version)}",
+                f"Plugins: {start_args['plugins']}",
             ]
         )
         logging.info(versions)
