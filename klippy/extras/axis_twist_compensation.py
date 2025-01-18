@@ -55,41 +55,44 @@ class AxisTwistCompensation:
         # setup calibrater
         self.calibrater = Calibrater(self, config)
 
-    def get_z_compensation_value(self, pos):        
+    def get_z_compensation_value(self, pos):
         total_interpolated_z_compensation = 0
-        
+
         if self.z_compensations:
-            total_interpolated_z_compensation += self._get_interpolated_z_compensation(
-                pos[0], self.z_compensations,
-                self.compensation_start_x,
-                self.compensation_end_x
+            total_interpolated_z_compensation += (
+                self._get_interpolated_z_compensation(
+                    pos[0],
+                    self.z_compensations,
+                    self.compensation_start_x,
+                    self.compensation_end_x,
+                )
             )
 
         if self.zy_compensations:
-            total_interpolated_z_compensation += self._get_interpolated_z_compensation(
-                pos[1], self.zy_compensations,
-                self.compensation_start_y,
-                self.compensation_end_y
+            total_interpolated_z_compensation += (
+                self._get_interpolated_z_compensation(
+                    pos[1],
+                    self.zy_compensations,
+                    self.compensation_start_y,
+                    self.compensation_end_y,
+                )
             )
-        
+
         return total_interpolated_z_compensation
 
     def _get_interpolated_z_compensation(
-            self, coord, z_compensations,
-            comp_start,
-            comp_end
+        self, coord, z_compensations, comp_start, comp_end
     ):
-
         sample_count = len(z_compensations)
-        spacing = ((comp_end - comp_start)
-                   / (sample_count - 1))
+        spacing = (comp_end - comp_start) / (sample_count - 1)
         interpolate_t = (coord - comp_start) / spacing
         interpolate_i = int(math.floor(interpolate_t))
         interpolate_i = bed_mesh.constrain(interpolate_i, 0, sample_count - 2)
         interpolate_t -= interpolate_i
         interpolated_z_compensation = bed_mesh.lerp(
-            interpolate_t, z_compensations[interpolate_i],
-            z_compensations[interpolate_i + 1]
+            interpolate_t,
+            z_compensations[interpolate_i],
+            z_compensations[interpolate_i + 1],
         )
         return interpolated_z_compensation
 
@@ -101,6 +104,7 @@ class AxisTwistCompensation:
             self.z_compensations = []
         elif axis == "Y":
             self.zy_compensations = []
+
 
 class Calibrater:
     def __init__(self, compensation, config):
@@ -184,14 +188,15 @@ class Calibrater:
         nozzle_points = []
 
         if axis == "X":
-
             self.compensation.clear_compensations("X")
 
-            if not all([
-                self.x_start_point[0],
-                self.x_end_point[0],
-                self.x_start_point[1]
-                ]):
+            if not all(
+                [
+                    self.x_start_point[0],
+                    self.x_end_point[0],
+                    self.x_start_point[1],
+                ]
+            ):
                 raise gcmd.error(
                     """AXIS_TWIST_COMPENSATION for X axis requires
                     calibrate_start_x, calibrate_end_x and calibrate_y
@@ -211,14 +216,15 @@ class Calibrater:
                 nozzle_points.append((x, y))
 
         elif axis == "Y":
-
             self.compensation.clear_compensations("Y")
 
-            if not all([
-                self.y_start_point[0],
-                self.y_end_point[0],
-                self.y_start_point[1]
-                ]):
+            if not all(
+                [
+                    self.y_start_point[0],
+                    self.y_end_point[0],
+                    self.y_start_point[1],
+                ]
+            ):
                 raise gcmd.error(
                     """AXIS_TWIST_COMPENSATION for Y axis requires
                     calibrate_start_y, calibrate_end_y and calibrate_x
@@ -238,10 +244,7 @@ class Calibrater:
                 nozzle_points.append((x, y))
 
         else:
-            raise gcmd.error(
-                "AXIS_TWIST_COMPENSATION_CALIBRATE: "
-                "Invalid axis."
-            )
+            raise gcmd.error("AXIS_TWIST_COMPENSATION_CALIBRATE: Invalid axis.")
 
         probe_points = self._calculate_probe_points(
             nozzle_points, self.probe_x_offset, self.probe_y_offset
@@ -265,11 +268,13 @@ class Calibrater:
         # Calculate the desired point (average of all corner points in z)
         # For a general case, we should extract the unique
         # combinations of corner points
-        z_corners = [z_coords[i] for i, coord in enumerate(coordinates)
-                        if (coord[0] in [x_coords[0], x_coords[-1]])
-                        and (coord[1] in [y_coords[0], y_coords[-1]])]
+        z_corners = [
+            z_coords[i]
+            for i, coord in enumerate(coordinates)
+            if (coord[0] in [x_coords[0], x_coords[-1]])
+            and (coord[1] in [y_coords[0], y_coords[-1]])
+        ]
         z_desired = sum(z_corners) / len(z_corners)
-
 
         # Calculate average deformation per axis
         unique_x_coords = sorted(set(x_coords))
@@ -277,15 +282,17 @@ class Calibrater:
 
         avg_z_x = []
         for x in unique_x_coords:
-            indices = [i for i, coord in enumerate(coordinates)
-                        if coord[0] == x]
+            indices = [
+                i for i, coord in enumerate(coordinates) if coord[0] == x
+            ]
             avg_z = sum(z_coords[i] for i in indices) / len(indices)
             avg_z_x.append(avg_z)
 
         avg_z_y = []
         for y in unique_y_coords:
-            indices = [i for i, coord in enumerate(coordinates)
-                        if coord[1] == y]
+            indices = [
+                i for i, coord in enumerate(coordinates) if coord[1] == y
+            ]
             avg_z = sum(z_coords[i] for i in indices) / len(indices)
             avg_z_y.append(avg_z)
 
@@ -395,8 +402,7 @@ class Calibrater:
         configfile = self.printer.lookup_object("configfile")
         values_as_str = ", ".join(["{:.6f}".format(x) for x in self.results])
 
-        if(self.current_axis == "X"):
-
+        if self.current_axis == "X":
             configfile.set(self.configname, "z_compensations", values_as_str)
             configfile.set(
                 self.configname, "compensation_start_x", self.x_start_point[0]
@@ -409,8 +415,7 @@ class Calibrater:
             self.compensation.compensation_start_x = self.x_start_point[0]
             self.compensation.compensation_end_x = self.x_end_point[0]
 
-        elif(self.current_axis == "Y"):
-
+        elif self.current_axis == "Y":
             configfile.set(self.configname, "zy_compensations", values_as_str)
             configfile.set(
                 self.configname, "compensation_start_y", self.y_start_point[1]
@@ -431,8 +436,7 @@ class Calibrater:
         # output result
         gcmd.respond_info(
             "AXIS_TWIST_COMPENSATION_CALIBRATE: Calibration complete, "
-            "offsets: %s, mean z_offset: %f"
-            % (self.results, avg)
+            "offsets: %s, mean z_offset: %f" % (self.results, avg)
         )
 
 
