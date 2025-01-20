@@ -4823,7 +4823,7 @@ lcd_type:
 #menu_root:
 #   Name of the main menu section to show when clicking the encoder
 #   on the home screen. The defaults is __main, and this shows the
-#   the default menus as defined in klippy/extras/display/menu.cfg
+#   the default menus as defined in kalico/klippy/extras/display/menu.cfg
 #menu_reverse_navigation:
 #   When enabled it will reverse up and down directions for list
 #   navigation. The default is False. This parameter is optional.
@@ -5085,7 +5085,7 @@ the display_group option in the [display] section is set to the given
 group name.
 
 A
-[default set of display groups](../klippy/extras/display/display.cfg)
+[default set of display groups](..kalico/klippy/extras/display/display.cfg)
 are automatically created. One can replace or extend these
 display_data items by overriding the defaults in the main printer.cfg
 config file.
@@ -5181,7 +5181,7 @@ thus they do not support the "menu" options or button configuration.
 
 Customizable lcd display menus.
 
-A [default set of menus](../klippy/extras/display/menu.cfg) are
+A [default set of menus](kalico/klippy/extras/display/menu.cfg) are
 automatically created. One can replace or extend the menu by
 overriding the defaults in the main printer.cfg config file.
 
