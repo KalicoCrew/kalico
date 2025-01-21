@@ -9,3 +9,4 @@ mdx-breakless-lists==1.0.1
 py-gfm==2.0.0
 markdown==3.6
 mkdocs-github-admonitions-plugin==0.0.3
+mkdocs-redirects==1.2.2
