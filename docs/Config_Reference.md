@@ -314,7 +314,8 @@ position_max:
 #   The default is equal to `homing_retract_dist`.
 #second_homing_speed:
 #   Velocity (in mm/s) of the stepper when performing the second home.
-#   The default is homing_speed/2.
+#   The default is homing_speed/2. If `use_sensorless_homing` is
+#   true, the default is homing_speed.
 #homing_positive_dir:
 #   If true, homing will cause the stepper to move in a positive
 #   direction (away from zero); if false, home towards zero. It is
@@ -2634,11 +2635,11 @@ for more detailed information regarding symptoms, configuration and setup.
 calibrate_start_x: 20
 #   Defines the minimum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the starting
-#   calibration position. 
+#   calibration position.
 calibrate_end_x: 200
 #   Defines the maximum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the ending
-#   calibration position. 
+#   calibration position.
 calibrate_y: 112.5
 #   Defines the Y coordinate of the calibration
 #   This should be the Y coordinate that positions the nozzle during the

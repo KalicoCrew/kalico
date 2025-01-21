@@ -8,6 +8,9 @@ All dates in this document are approximate.
 
 ## Changes
 
+20250121: The `second_homing_speed` default value in the stepper config section
+is now set to `homing_speed` if sensorless homing is enabled.
+
 20250107: The `rref` parameter for tmc2240 is now mandatory with no default value.
 
 20241202: The `sense_resistor` parameter is now mandatory with no default value.
