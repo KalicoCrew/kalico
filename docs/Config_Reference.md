@@ -140,6 +140,11 @@ A collection of Kalico-specific system options
 #log_velocity_limit_changes: True
 #   If changes to velocity limits should be logged. If False, velocity limits will only
 #   be logged at rollover. Some slicers emit very frequent SET_VELOCITY_LIMIT commands
+#   The default is True
+#log_pressure_advance_changes: True
+#   If changes to pressure advance should be logged. If false, pressure advance data
+#   will only be logged at rollover.
+#   The default is True.
 #log_shutdown_info: True
 #   If we should log detailed crash info when an exception occurs
 #   Most of it is overly-verbose and fluff and we still get a stack trace
@@ -2634,11 +2639,11 @@ for more detailed information regarding symptoms, configuration and setup.
 calibrate_start_x: 20
 #   Defines the minimum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the starting
-#   calibration position. 
+#   calibration position.
 calibrate_end_x: 200
 #   Defines the maximum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the ending
-#   calibration position. 
+#   calibration position.
 calibrate_y: 112.5
 #   Defines the Y coordinate of the calibration
 #   This should be the Y coordinate that positions the nozzle during the
