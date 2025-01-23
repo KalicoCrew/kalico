@@ -1149,6 +1149,26 @@ max_temp:
 #   See the "extruder" section for a description of the above parameters.
 ```
 
+### [pid_profile]
+
+Pid Profiles specify a set of PID values that can be loaded at runtime.
+
+```
+[pid_profile <heater> <profile-name>]
+pid_version: 1
+pid_target: 
+pid_tolerance: 
+control: <pid|pid_v>
+pid_kp: 
+# this parameter is required
+pid_ki: 
+# this parameter is required
+pid_kd: 
+# this parameter is required
+```
+Version is for compatibily checks and target and tolerance are just for
+reference and can be left out.
+
 ## Bed level support
 
 ### [bed_mesh]
