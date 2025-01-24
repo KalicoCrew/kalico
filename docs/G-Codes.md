@@ -1589,11 +1589,15 @@ The toolhead module is automatically loaded.
 
 #### SET_VELOCITY_LIMIT
 `SET_VELOCITY_LIMIT [VELOCITY=<value>] [ACCEL=<value>]
-[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]`: This
+[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]
+[X_VELOCITY=<value>] [X_ACCEL=<value>] [Y_VELOCITY=<value>] [Y_ACCEL=<value>]
+[Z_VELOCITY=<value>] [Z_ACCEL=<value>]`: This
 command can alter the velocity limits that were specified in the
 printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
 description of each parameter.
+X_VELOCITY, X_ACCEL, Y_VELOCITY, Y_ACCEL, Z_VELOCITY and Z_ACCEL are only
+available if the kinematic supports it.
 
 ### RESET_VELOCITY_LIMIT
 `RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
