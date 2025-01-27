@@ -42,6 +42,6 @@ ignore = [
 
 [dependency-groups]
 dev = [
-  "ruff>=0.8.4",
+  "ruff>=0.9.3",
   "pre-commit>=4.0.1",
   ]
