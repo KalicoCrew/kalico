@@ -108,15 +108,15 @@ config WANT_DISPLAYS
     default y
 config WANT_SENSORS
     bool
-    depends on HAVE_GPIO_I2C || HAVE_GPIO_SPI
+    depends on WANT_GPIO_I2C || WANT_GPIO_SPI
     default y
 config WANT_LIS2DW
     bool
-    depends on HAVE_GPIO_SPI || HAVE_GPIO_I2C
+    depends on WANT_GPIO_SPI || WANT_GPIO_I2C
     default y
 config WANT_LDC1612
     bool
-    depends on HAVE_GPIO_I2C
+    depends on WANT_GPIO_I2C
     default y
 config WANT_HX71X
     bool
@@ -124,7 +124,7 @@ config WANT_HX71X
     default y
 config WANT_ADS1220
     bool
-    depends on HAVE_GPIO_SPI
+    depends on WANT_GPIO_SPI
     default y
 config WANT_SOFTWARE_I2C
     bool
@@ -134,13 +134,37 @@ config WANT_SOFTWARE_SPI
     bool
     depends on HAVE_GPIO && HAVE_GPIO_SPI
     default y
+config WANT_GPIO_SPI
+    bool
+    depends on HAVE_GPIO && HAVE_GPIO_SPI
+    default y
+config WANT_GPIO_ADC
+    bool
+    depends on HAVE_GPIO && HAVE_GPIO_ADC
+    default y
+config WANT_GPIO_I2C
+    bool
+    depends on HAVE_GPIO && HAVE_GPIO_I2C
+    default y
 config NEED_SENSOR_BULK
     bool
     depends on WANT_SENSORS || WANT_LIS2DW || WANT_LDC1612 || WANT_HX71X \
         || WANT_ADS1220
     default y
+config WANT_OPTIMIZE_SIZE
+    bool
+    default n
 menu "Optional features (to reduce code size)"
     depends on HAVE_LIMITED_CODE_SIZE
+config WANT_GPIO_SPI
+    bool "Support hardware SPI"
+    depends on HAVE_GPIO && HAVE_GPIO_SPI
+config WANT_GPIO_ADC
+    bool "Support hardware ADC"
+    depends on HAVE_GPIO && HAVE_GPIO_ADC
+config WANT_GPIO_I2C
+    bool "Support hardware I2C"
+    depends on HAVE_GPIO && HAVE_GPIO_I2C
 config WANT_GPIO_BITBANGING
     bool "Support GPIO \"bit-banging\" devices"
     depends on HAVE_GPIO
@@ -149,25 +173,27 @@ config WANT_DISPLAYS
     depends on HAVE_GPIO
 config WANT_SENSORS
     bool "Support external sensor devices"
-    depends on HAVE_GPIO_I2C || HAVE_GPIO_SPI
+    depends on WANT_GPIO_I2C || WANT_GPIO_SPI
 config WANT_LIS2DW
     bool "Support lis2dw and lis3dh 3-axis accelerometers"
-    depends on HAVE_GPIO_SPI || HAVE_GPIO_I2C
+    depends on WANT_GPIO_SPI || WANT_GPIO_I2C
 config WANT_LDC1612
     bool "Support ldc1612 eddy current sensor"
-    depends on HAVE_GPIO_I2C
+    depends on WANT_GPIO_I2C
 config WANT_HX71X
     bool "Support HX711 and HX717 ADC chips"
     depends on WANT_GPIO_BITBANGING
 config WANT_ADS1220
     bool "Support ADS 1220 ADC chip"
-    depends on HAVE_GPIO_SPI
+    depends on WANT_GPIO_SPI
 config WANT_SOFTWARE_I2C
     bool "Support software based I2C \"bit-banging\""
     depends on HAVE_GPIO && HAVE_GPIO_I2C
 config WANT_SOFTWARE_SPI
     bool "Support software based SPI \"bit-banging\""
     depends on HAVE_GPIO && HAVE_GPIO_SPI
+config WANT_OPTIMIZE_SIZE
+    bool "Optimize for code size (-Os) not speed (-O2)"
 endmenu
 
 # Generic configuration options for CANbus
