@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Tool to query CAN bus uuids
 #
 # Copyright (C) 2021  Kevin O'Connor <kevin@koconnor.net>

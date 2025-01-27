@@ -8,13 +8,13 @@ are as follows:
 
 Kalico uses a C module to handle some kinematics calculations more quickly.
 This module needs to be compiled at packaging time to avoid introducing a
-runtime dependency on a compiler. To compile the C module, run `python2
+runtime dependency on a compiler. To compile the C module, run `python3
 klippy/chelper/__init__.py`.
 
 ## Compiling python code
 
 Many distributions have a policy of compiling all python code before packaging
-to improve startup time. You can do this by running `python2 -m compileall
+to improve startup time. You can do this by running `python3 -m compileall
 klippy`.
 
 ## Versioning
@@ -22,7 +22,7 @@ klippy`.
 If you are building a package of Kalico from git, it is usual practice not to
 ship a .git directory, so the versioning must be handled without git.  To do
 this, use the script shipped in `scripts/make_version.py` which should be run as
-follows: `python2 scripts/make_version.py YOURDISTRONAME > klippy/.version`.
+follows: `python3 scripts/make_version.py YOURDISTRONAME > klippy/.version`.
 
 ## Sample packaging script
 

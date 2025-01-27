@@ -33,6 +33,9 @@ plugins:
     hooks:
       on_page_markdown: "docs._kalico.mkdocs_hooks:transform"
   gh-admonitions:
+  redirects:
+    redirect_maps:
+      'Danger_Features.md': 'Kalico_Additions.md'
 
 # Website layout configuration (using mkdocs-material theme)
 theme:
@@ -94,7 +97,7 @@ nav:
   - Config_Changes.md
   - Configuration:
     - Config_Reference.md
-    - Danger_Features.md
+    - Kalico_Additions.md
     - Bleeding_Edge.md
     - Config_Reference_Bleeding_Edge.md
     - PID.md
