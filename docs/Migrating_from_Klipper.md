@@ -44,6 +44,7 @@ cd ~/klipper
 git remote add kalico https://github.com/KalicoCrew/kalico.git
 git checkout -b upstream-main origin/master
 git branch -D master
+git fetch kalico main
 git checkout -b main kalico/main
 sudo systemctl restart klipper
 sudo systemctl restart moonraker

@@ -2310,6 +2310,8 @@ times in a config file without normal error checking. This is intended
 for diagnostic and debugging purposes. This section is not needed
 where Kalico supports using the same pin multiple times, and using
 this override may cause confusing and unexpected results.
+One may specify an explicit name (eg, [duplicate_pin_override my_name])
+to define multiple instances of it.
 
 ```
 [duplicate_pin_override]
@@ -2665,11 +2667,11 @@ for more detailed information regarding symptoms, configuration and setup.
 calibrate_start_x: 20
 #   Defines the minimum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the starting
-#   calibration position. 
+#   calibration position.
 calibrate_end_x: 200
 #   Defines the maximum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the ending
-#   calibration position. 
+#   calibration position.
 calibrate_y: 112.5
 #   Defines the Y coordinate of the calibration
 #   This should be the Y coordinate that positions the nozzle during the
