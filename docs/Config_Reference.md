@@ -1156,18 +1156,29 @@ Pid Profiles specify a set of PID values that can be loaded at runtime.
 ```
 [pid_profile <heater> <profile-name>]
 pid_version: 1
-pid_target: 
+# This defines the version it was saved with and is important for compatibility
+# checks, leave it at 1!
+pid_target:
+# For reference only, specifies the temperature the profile was calibrated for.
+# If you create a custom profile, either enter the temperature that profile is
+# intended to be used at or leave it blank.
 pid_tolerance: 
+# The tolerance that was used when autocalibrating the profile. If you define
+# a custom profile, leave it empty.
 control: <pid|pid_v>
+# Has to be either pid or pid_v.
+# This parameter is required.
 pid_kp: 
-# this parameter is required
-pid_ki: 
-# this parameter is required
+# The P value for the PID Control.
+# This parameter is required.
+pid_ki:
+# The I value for the PID Control.
+# This parameter is required.
 pid_kd: 
-# this parameter is required
+# The D value for the PID Control.
+# This parameter is required.
 ```
-Version is for compatibily checks and target and tolerance are just for
-reference and can be left out.
+For more information, read up on docs/PID.md
 
 ## Bed level support
 
