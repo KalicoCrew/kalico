@@ -543,7 +543,8 @@ class ProbePointsHelper:
         toolhead = self.printer.lookup_object("toolhead")
         # Check if done probing
         done = False
-        if len(self.results) >= len(self.probe_points):
+        finalize = len(self.results) >= len(self.probe_points)
+        if finalize:
             toolhead.get_last_move_time()
             res = self.finalize_callback(self.probe_offsets, self.results)
             if isinstance(res, (int, float)):
@@ -558,8 +559,9 @@ class ProbePointsHelper:
                     )
             elif res != "retry":
                 done = True
-            self.results = []
         self._lift_toolhead()
+        if finalize:
+            self.results = []
         if done:
             return True
         # Move to next XY probe point
