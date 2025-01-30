@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-RUN mkdir /ci_build /ci_cache
+RUN mkdir /ci_build
 
 # Install dependencies
 RUN apt update \
@@ -17,9 +17,9 @@ RUN apt update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install or1k-linux-musl toolchain
-RUN curl https://more.musl.cc/10/x86_64-linux-musl/or1k-linux-musl-cross.tgz -o /ci_cache/or1k-linux-musl-cross-10.tgz && \
-    tar -x -C /ci_build -f /ci_cache/or1k-linux-musl-cross-10.tgz && \
-    rm /ci_cache/or1k-linux-musl-cross-10.tgz
+RUN --mount=type=cache,target=/ci_cache \
+    curl https://more.musl.cc/10/x86_64-linux-musl/or1k-linux-musl-cross.tgz -o /ci_cache/or1k-linux-musl-cross-10.tgz && \
+    tar -x -C /ci_build -f /ci_cache/or1k-linux-musl-cross-10.tgz
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -28,7 +28,7 @@ COPY . /klipper
 WORKDIR /klipper
 
 ENV DICTDIR=/ci_build/dict
-
 RUN uv run ./scripts/ci-build.sh
 
 ENTRYPOINT [ "/bin/uv", "run" ]
+CMD [ "py.test" ]

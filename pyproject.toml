@@ -16,6 +16,14 @@ dependencies = [
   "python-can==3.3.4",
 ]
 
+[tool.uv]
+dev-dependencies = [
+  "ruff>=0.9.3",
+  "pre-commit>=4.0.1",
+  "pytest-xdist>=3.6.1",
+  "pytest>=8.3.4",
+]
+
 [project.urls]
 homepage = "https://kalico.gg/"
 source = "https://github.com/KalicoCrew/kalico"
@@ -29,7 +37,11 @@ indent-width = 4
 exclude = [".github", ".history", "config", "docs", "lib", "src"]
 
 [tool.ruff.lint]
-extend-select = ["B006"]
+extend-select = [
+  "B006",  # Checks for uses of mutable objects as function argument defaults
+  "FA100", # Detect when type annotations could be made better with PEP563
+  "FA102", # Detect type annotations that would require `from __future__ import annotations`
+]
 ignore = [
   "E401", # Multiple imports on one line
   "C901", # Function is too complex
@@ -39,14 +51,6 @@ ignore = [
   "E741", # Do not use variables named 'I', 'O', or 'l'
   "F841", # Local variable name is assigned to but never used
   "E721", # Do not compare types, use 'isinstance()'
-]
-
-[dependency-groups]
-dev = [
-  "ruff>=0.9.3",
-  "pre-commit>=4.0.1",
-  "pytest-xdist>=3.6.1",
-  "pytest>=8.3.4",
 ]
 
 [tool.pytest.ini_options]
