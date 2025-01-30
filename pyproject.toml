@@ -47,7 +47,7 @@ dev = [
   "pre-commit>=4.0.1",
   "pytest-xdist>=3.6.1",
   "pytest>=8.3.4",
-  ]
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
