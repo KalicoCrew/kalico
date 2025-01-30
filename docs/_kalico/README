@@ -5,8 +5,12 @@ https://www.mkdocs.org/ ) to automatically convert the markdown files
 in the docs/ directory to html. In addition to the files in this
 directory, the docs/CNAME file also controls the website generation.
 
-To test deploy the main English site locally one can use commands
+To test deploy the main site locally one can use commands
 similar to the following:
 
-virtualenv ~/mkdocs-env && ~/python-env/bin/pip install -r ~/kalico/docs/_kalico/mkdocs-requirements.txt
-cd ~/kalico && ~/mkdocs-env/bin/mkdocs serve --config-file ~/kalico/docs/_kalico/mkdocs.yml -a 0.0.0.0:8000
+```bash
+cd docs/_kalico/ # if you were in the repo root
+uv venv
+uv sync
+uv run mkdocs serve
+```

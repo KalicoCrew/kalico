@@ -11,24 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup python
-        uses: actions/setup-python@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.10"
+          version: 'latest'
+          enable-cache: true
+          cache-dependency-glob: "docs/_kalico/uv.lock"
 
-      - uses: actions/cache@v4
-        id: pip-cache
-        with:
-          path: ${{ env.pythonLocation }}
-          key: ${{ runner.os }}-pip-${{ hashFiles('docs/_kalico/mkdocs-requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        if: steps.pip-cache.outputs.cache-hit != 'true'
-        run: pip install -r docs/_kalico/mkdocs-requirements.txt
+      - name: Setup Python
+        working-directory: docs/_kalico/
+        run: uv python install
 
       - name: Build MkDocs Pages
-        run: |
-          cd docs/
-          mkdocs build -f _kalico/mkdocs.yml --strict
+        working-directory: docs/_kalico/
+        run: uv run mkdocs build --strict

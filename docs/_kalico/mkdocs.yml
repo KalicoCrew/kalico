@@ -31,7 +31,7 @@ plugins:
     lang: en
   mkdocs-simple-hooks:
     hooks:
-      on_page_markdown: "docs._kalico.mkdocs_hooks:transform"
+      on_page_markdown: "mkdocs_hooks:transform"
   gh-admonitions:
   redirects:
     redirect_maps:
@@ -78,7 +78,7 @@ extra_css:
 
 extra:
   social:
-    - icon: fontawesome/brands/discord 
+    - icon: fontawesome/brands/discord
       link: https://kalico.gg/discord
       name: Join our Discord server!
   # Site usage statistics
