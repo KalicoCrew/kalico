@@ -1439,14 +1439,16 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
 #min_horizontal_move_z: 1.0
-#   minimum value for horizontal move z
-#   (only used when adaptive_horizontal_move_z is True)
+#   The minimum value for horizontal move z to be used when
+#   adaptive_horizontal_move_z is enabled.
+#   The default is 1mm
 #adaptive_horizontal_move_z: False
-#   if we should adjust horizontal move z after the first adjustment round,
-#   based on error.
-#   when set to True, initial horizontal_move_z is the config value,
-#   subsequent iterations will set horizontal_move_z to
+#   Set it to True to automatically adjust horizontal move z after the first
+#   adjustment round, based on error.
+#   When enabled, the initial horizontal_move_z is the config value,
+#   and subsequent iterations will set horizontal_move_z to
 #   the ceil of error, or min_horizontal_move_z - whichever is greater.
+#   The default is False.
 #retries: 0
 #   Number of times to retry if the probed points aren't within
 #   tolerance.
@@ -1463,6 +1465,10 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
 #   default is False.
+#enforce_lift_speed: False
+#   By default, the first Z movement to reach `horizontal_move_z` uses `speed`.
+#   Set `enforce_lift_speed` to True to enforce the `lift_speed`.
+#   The default is False.
 ```
 
 #### [z_tilt_ng]
@@ -1503,6 +1509,8 @@ commands become available, enhancing bed leveling accuracy and calibration effic
 #increasing_threshold: 0.0000001
 # See [z_tilt]
 #use_probe_xy_offsets: False
+# See [z_tilt]
+#enforce_lift_speed: False
 # See [z_tilt]
 #extra_points:
 #   A list in the same format as "points" above. This list contains
@@ -1573,14 +1581,16 @@ Where x is the 0, 0 point on the bed
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
 #min_horizontal_move_z: 1.0
-#   minimum value for horizontal move z
-#   (only used when adaptive_horizontal_move_z is True)
+#   The minimum value for horizontal move z to be used when
+#   adaptive_horizontal_move_z is enabled.
+#   The default is 1mm
 #adaptive_horizontal_move_z: False
-#   if we should adjust horizontal move z after the first adjustment round,
-#   based on error.
-#   when set to True, initial horizontal_move_z is the config value,
-#   subsequent iterations will set horizontal_move_z to
+#   Set it to True to automatically adjust horizontal move z after the first
+#   adjustment round, based on error.
+#   When enabled, the initial horizontal_move_z is the config value,
+#   and subsequent iterations will set horizontal_move_z to
 #   the ceil of error, or min_horizontal_move_z - whichever is greater.
+#   The default is False.
 #max_adjust: 4
 #   Safety limit if an adjustment greater than this value is requested
 #   quad_gantry_level will abort.
@@ -1596,6 +1606,10 @@ Where x is the 0, 0 point on the bed
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
 #   default is False.
+#enforce_lift_speed: False
+#   By default, the first Z movement to reach `horizontal_move_z` uses `speed`.
+#   Set `enforce_lift_speed` to True to enforce the `lift_speed`.
+#   The default is False.
 ```
 
 ### [skew_correction]

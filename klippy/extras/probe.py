@@ -506,6 +506,8 @@ class ProbePointsHelper:
             "use_probe_xy_offsets", use_offsets
         )
 
+        self.enforce_lift_speed = config.getboolean("enforce_lift_speed", False)
+
         # Internal probing state
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
@@ -534,7 +536,7 @@ class ProbePointsHelper:
         toolhead = self.printer.lookup_object("toolhead")
         # Lift toolhead
         speed = self.lift_speed
-        if not self.results:
+        if not self.results and not self.enforce_lift_speed:
             # Use full speed to first probe position
             speed = self.speed
         toolhead.manual_move([None, None, self.horizontal_move_z], speed)
@@ -581,6 +583,12 @@ class ProbePointsHelper:
 
         def_move_z = self.default_horizontal_move_z
         self.horizontal_move_z = gcmd.get_float("HORIZONTAL_MOVE_Z", def_move_z)
+
+        enforce_lift_speed = gcmd.get_int(
+            "ENFORCE_LIFT_SPEED", None, minval=0, maxval=1
+        )
+        if enforce_lift_speed is not None:
+            self.enforce_lift_speed = enforce_lift_speed
 
         if probe is None or method != "automatic":
             # Manual probe

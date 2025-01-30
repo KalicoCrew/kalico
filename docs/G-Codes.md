@@ -155,7 +155,7 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>] 
+`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>]
 [SAMPLE_COUNT=<value>] [<probe_parameter>=<value>]`:
 
 Calibrates axis twist compensation by specifying the target axis or
@@ -711,7 +711,7 @@ SET_RETRACTION commands are reset to config values.
 
 NOTE: It is recommended to add `RESET_RETRACTION` to your start and end gcode
 (with a possible override in your filament start gcode to set filament-specific
-overrides of firmware retraction defaults via `SET_RETRACTION`). 
+overrides of firmware retraction defaults via `SET_RETRACTION`).
 
 ### [force_move]
 
@@ -1285,6 +1285,21 @@ using the CYCLE_TIME parameter (specified in seconds). Note that the
 CYCLE_TIME parameter is not stored between SET_PIN commands (any
 SET_PIN command without an explicit CYCLE_TIME parameter will use the
 `cycle_time` specified in the pwm_cycle_time config section).
+
+### [quad_gantry_level]
+
+The following commands are available when the
+[quad_gantry_level config section](Config_Reference.md#quad_gantry_level)
+is enabled.
+
+#### QUAD_GANTRY_LEVEL
+`QUAD_GANTRY_LEVEL [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+[HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
+will probe the points specified in the config and then make
+independent adjustments to each Z stepper to compensate for tilt. See
+the PROBE command for details on the optional probe parameters. The
+optional `RETRIES`, `RETRY_TOLERANCE`, `HORIZONTAL_MOVE_Z` and
+`ENFORCE_LIFT_SPEED` values override those options specified in the config file.
 
 ### [query_adc]
 
@@ -1937,11 +1952,12 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
-`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This
-command will probe the points specified in the config and then make independent
-adjustments to each Z stepper to compensate for tilt. See the PROBE command for
-details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
-value overrides the `horizontal_move_z` option specified in the config file.
+`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [ENFORCE_LIFT_SPEED=0|1]
+[<probe_parameter>=<value>]`: This command will probe the points specified in the
+config and then make independent adjustments to each Z stepper to compensate for tilt.
+See the PROBE command for details on the optional probe parameters. The optional
+`HORIZONTAL_MOVE_Z` and `ENFORCE_LIFT_SPEED` values override those options specified in
+the config file
 
 ### [z_tilt_ng]
 
