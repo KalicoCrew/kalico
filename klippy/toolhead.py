@@ -874,18 +874,18 @@ class ToolHead:
                 "square_corner_velocity: %.6f" % self.square_corner_velocity,
             )
         )
-        self.printer.set_rollover_info(
-            "toolhead",
-            "toolhead: %s" % (" ".join(msg),),
-            log=get_danger_options().log_velocity_limit_changes,
-        )
-        if (
-            max_velocity is None
-            and max_accel is None
-            and square_corner_velocity is None
-            and min_cruise_ratio is None
-        ):
-            gcmd.respond_info("\n".join(msg), log=False)
+
+        if get_danger_options().log_velocity_limit_changes:
+            self.printer.set_rollover_info(
+                "toolhead", "toolhead: %s" % (" ".join(msg),)
+            )
+            if (
+                max_velocity is None
+                and max_accel is None
+                and square_corner_velocity is None
+                and min_cruise_ratio is None
+            ):
+                gcmd.respond_info("\n".join(msg), log=False)
 
     cmd_RESET_VELOCITY_LIMIT_help = "Reset printer velocity limits"
 
@@ -932,7 +932,8 @@ class ToolHead:
                 "square_corner_velocity: %.6f" % self.square_corner_velocity,
             )
         )
-        gcmd.respond_info("\n".join(msg), log=False)
+        if get_danger_options().log_velocity_limit_changes:
+            gcmd.respond_info("\n".join(msg), log=False)
 
     def cmd_M204(self, gcmd):
         # Use S for accel
