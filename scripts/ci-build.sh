@@ -62,11 +62,6 @@ fi
 # Verify klippy host software
 ######################################################################
 
-start_test klippy "Test klippy import (Python3)"
-# I'm leaving this with klippy/klippy.py so we test that compatibility
-$PYTHON klippy/klippy.py --import-test
-finish_test klippy "Test klippy import (Python3)"
-
-start_test klippy "Test invoke klippy (Python3)"
-$PYTHON scripts/test_klippy.py -d ${DICTDIR} test/klippy/*.test
-finish_test klippy "Test invoke klippy (Python3)"
+start_test klippy "py.test suite"
+py.test --dictdir "${DICTDIR}"
+finish_test klippy "py.test suite"
