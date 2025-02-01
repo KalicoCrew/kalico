@@ -16,19 +16,15 @@ class ScrewsTiltAdjust:
         self.results = []
         self.max_diff = None
         self.max_diff_error = False
-        # Read config
-        for i in range(99):
-            prefix = "screw%d" % (i + 1,)
-            if config.get(prefix, None) is None:
-                break
-            screw_coord = config.getfloatlist(prefix, count=2)
-            screw_name = "screw at %.3f,%.3f" % screw_coord
-            screw_name = config.get(prefix + "_name", screw_name)
-            self.screws.append((screw_coord, screw_name))
-        if len(self.screws) < 3:
-            raise config.error(
-                "screws_tilt_adjust: Must have at least three screws"
-            )
+        self.end_z = config.getfloat("end_z", None)
+
+        use_bed_screws = config.get("use_bed_screws", "no").lower()
+        if use_bed_screws in ["yes", "true", "1"]:
+            self.need_probe_offsets = True
+            self._load_screws_from_bed_screws()
+        else:
+            self.need_probe_offsets = False
+            self._load_screws(self.config)
         self.threads = {
             "CW-M3": 0,
             "CCW-M3": 1,
@@ -44,12 +40,11 @@ class ScrewsTiltAdjust:
         self.thread = config.getchoice(
             "screw_thread", self.threads, default="CW-M3"
         )
-        # Initialize ProbePointsHelper
-        points = [coord for coord, name in self.screws]
+        # Initialize ProbePointsHelper; actual points
+        # are set later after offsets are applied
         self.probe_helper = probe.ProbePointsHelper(
-            self.config, self.probe_finalize, default_points=points
+            self.config, self.probe_finalize, default_points=[(0, 0)]
         )
-        self.probe_helper.minimum_points(3)
         # Register command
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
@@ -64,6 +59,59 @@ class ScrewsTiltAdjust:
         "of turns to level it."
     )
 
+    def _load_screws_from_bed_screws(self):
+        config = self.config
+        if not config.has_section("bed_screws"):
+            raise config.error(
+                "screws_tilt_adjust: must have bed_screws "
+                "if use_bed_screws is set"
+            )
+        bed_screws = config.getsection("bed_screws")
+        self._load_screws(bed_screws)
+
+    def _load_screws(self, config):
+        # Read config
+        for i in range(99):
+            prefix = "screw%d" % (i + 1,)
+            if config.get(prefix, None) is None:
+                break
+            screw_coord = config.getfloatlist(prefix, count=2)
+            screw_name = "screw at %.3f,%.3f" % screw_coord
+            screw_name = config.get(prefix + "_name", screw_name)
+            self.screws.append((screw_coord, screw_name))
+        if len(self.screws) < 3:
+            raise config.error(
+                "screws_tilt_adjust: Must have at least three screws"
+            )
+
+    def _offset_screws(self, gcmd):
+        if not self.need_probe_offsets:
+            return
+        th = self.printer.lookup_object("toolhead")
+        xrange = th.get_kinematics().rails[0].get_range()
+        yrange = th.get_kinematics().rails[1].get_range()
+        probe = self.printer.lookup_object("probe")
+        probe_x, probe_y, _ = probe.get_offsets()
+        for i in range(len(self.screws)):
+            screw_coord, screw_name = self.screws[i]
+            sx, sy = screw_coord
+            sx -= probe_x
+            sy -= probe_y
+            if xrange[0] >= sx or sx >= xrange[1]:
+                sx = max(xrange[0] + 1.0, min(sx, xrange[1] - 1.0))
+                gcmd.respond_info(
+                    f"screws_tilt_adjust: screw {screw_name} X"
+                    f"out of range, adjusting to {sx}"
+                )
+            if yrange[0] >= sy or sy >= yrange[1]:
+                sy = max(yrange[0] + 1.0, min(sy, yrange[1] - 1.0))
+                gcmd.respond_info(
+                    f"screws_tilt_adjust: screw {screw_name} Y"
+                    f"out of range, adjusting to {sy}"
+                )
+            self.screws[i] = ((sx, sy), screw_name)
+        self.need_probe_offsets = False
+
     def cmd_SCREWS_TILT_CALCULATE(self, gcmd):
         self.max_diff = gcmd.get_float("MAX_DEVIATION", None)
         # Option to force all turns to be in the given direction (CW or CCW)
@@ -76,6 +124,9 @@ class ScrewsTiltAdjust:
                     % (gcmd.get_commandline(),)
                 )
         self.direction = direction
+        self._offset_screws(gcmd)
+        points = [coord for coord, name in self.screws]
+        self.probe_helper.update_probe_points(points, 3)
         self.probe_helper.start_probe(gcmd)
 
     def get_status(self, eventtime):
@@ -86,6 +137,9 @@ class ScrewsTiltAdjust:
         }
 
     def probe_finalize(self, offsets, positions):
+        if self.end_z is not None:
+            th = self.printer.lookup_object("toolhead")
+            th.manual_move([None, None, self.end_z], 10)
         self.results = {}
         self.max_diff_error = False
         # Factors used for CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5, CW-M6
