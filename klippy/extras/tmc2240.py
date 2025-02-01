@@ -269,7 +269,6 @@ GLOBALSCALER_ERROR = (
     "GLOBALSCALER(%d) calculation out of bounds.\n"
     "The target current can't be achieved with the given RREF(%f) "
     "and CS(%d). Please adjust your configuration.\n"
-    "Valid values are 0 and 32-255.\n"
     "Calculated current_range bit: %s\n"
     "Calculated KIFS: %s"
 )
