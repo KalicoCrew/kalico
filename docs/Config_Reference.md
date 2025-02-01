@@ -2634,11 +2634,11 @@ for more detailed information regarding symptoms, configuration and setup.
 calibrate_start_x: 20
 #   Defines the minimum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the starting
-#   calibration position. 
+#   calibration position.
 calibrate_end_x: 200
 #   Defines the maximum X coordinate of the calibration
 #   This should be the X coordinate that positions the nozzle at the ending
-#   calibration position. 
+#   calibration position.
 calibrate_y: 112.5
 #   Defines the Y coordinate of the calibration
 #   This should be the Y coordinate that positions the nozzle during the
@@ -4428,12 +4428,11 @@ run_current:
 #   the "CoolStep" feature at high speeds. The default is to not set a
 #   TMC "high velocity" threshold.
 #current_range:
-#   The current_range bit value for the driver, by default it will be
+#   The current_range bit value for the driver. By default it will be
 #   autocalculated to match the requested run_current.
-#   Consult the tmc2240 datasheet to get information on what this setting does
-#   and how it works.
+#   For further information consult the tmc2240 datasheet and tuning table.
 #driver_CS: 31
-#   The curren_scaler value, the default is 31.
+#   The current_scaler value for the driver. The default is 31.
 #   For further information consult the tmc2240 datasheet and tuning table.
 #driver_MSLUT0: 2863314260
 #driver_MSLUT1: 1251300522

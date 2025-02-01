@@ -128,7 +128,7 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 
 - [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
 
-- [tmc2240: adjustable cs and cr](https://github.com/KalicoCrew/kalico/pull/556)
+- [tmc2240: adjustable driver_CS and current_range](https://github.com/KalicoCrew/kalico/pull/556)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):

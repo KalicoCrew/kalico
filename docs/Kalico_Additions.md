@@ -55,6 +55,11 @@
 - [`[temperature_fan] reverse: True`](./Config_Reference.md#temperature_fan) will let you control a fan in reverse to temperature control. The lower the temperature, the higher the fan runs.
 - Fans now normalize PWM power within `off_below` and `max_power`, so setting a fan to 10% will get you 10% fan speed within your configured off/max range.
 
+
+## TMC Drivers
+
+- [`[tmc2240] driver_CS and current_range`](./Config_Reference.md#tmc2240) let you tune the current scaler and current range of your tmc2240 drivers.
+
 ## Macros
 
 - The jinja `do` extension has been enabled. You can now call functions in your macros without resorting to dirty hacks: `{% do array.append(5) %}`
@@ -69,7 +74,3 @@ Extend your Kalico installation with custom plugins.
 Your python plugins can now extend [`klippy/extras`](https://github.com/KalicoCrew/kalico/tree/main/klippy/extras) adding new modules to Kalico without causing updates to fail due to a "dirty" git tree.
 
 Enable `[danger_options] allow_plugin_override: True` to override existing extras.
-
-## TMC Drivers
-
-- [`[tmc2240] adjust currentscaler and current_range`](./Config_Reference.md#[tmc2240]) manually adjust the currentscaler and current_range of your tmc2240 drivers
