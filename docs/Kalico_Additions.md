@@ -69,3 +69,7 @@ Extend your Kalico installation with custom plugins.
 Your python plugins can now extend [`klippy/extras`](https://github.com/KalicoCrew/kalico/tree/main/klippy/extras) adding new modules to Kalico without causing updates to fail due to a "dirty" git tree.
 
 Enable `[danger_options] allow_plugin_override: True` to override existing extras.
+
+## TMC Drivers
+
+- [`[tmc2240] adjust currentscaler and current_range`](./Config_Reference.md#[tmc2240]) manually adjust the currentscaler and current_range of your tmc2240 drivers

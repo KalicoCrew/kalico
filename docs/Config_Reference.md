@@ -4433,8 +4433,7 @@ run_current:
 #   Consult the tmc2240 datasheet to get information on what this setting does
 #   and how it works.
 #driver_CS: 31
-#   The curren_scaler value, the default is 31 which is a good value for most
-#   setups.
+#   The curren_scaler value, the default is 31.
 #   For further information consult the tmc2240 datasheet and tuning table.
 #driver_MSLUT0: 2863314260
 #driver_MSLUT1: 1251300522

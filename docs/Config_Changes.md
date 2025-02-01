@@ -8,8 +8,6 @@ All dates in this document are approximate.
 
 ## Changes
 
-23012025: You can now adjust the current_scaler and the current_range for tmc2240.
-
 20250107: The `rref` parameter for tmc2240 is now mandatory with no default value.
 
 20241202: The `sense_resistor` parameter is now mandatory with no default value.
