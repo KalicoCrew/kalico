@@ -25,6 +25,7 @@ class ExtruderStepper:
         )
         self.stepper.set_stepper_kinematics(self.sk_extruder)
         self.motion_queue = None
+        self.extruder = None
         # Register commands
         self.printer.register_event_handler(
             "klippy:connect", self._handle_connect
@@ -80,17 +81,22 @@ class ExtruderStepper:
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.flush_step_generation()
         if not extruder_name:
-            self.stepper.set_trapq(None)
+            if self.extruder is not None:
+                self.extruder.unlink_extruder_stepper(self)
             self.motion_queue = None
+            self.extruder = None
             return
         extruder = self.printer.lookup_object(extruder_name, None)
-        if extruder is None or not isinstance(extruder, PrinterExtruder):
+        if extruder is None or not (
+            hasattr(extruder, "link_extruder_stepper")
+            and hasattr(extruder, "unlink_extruder_stepper")
+        ):
             raise self.printer.command_error(
                 "'%s' is not a valid extruder." % (extruder_name,)
             )
-        self.stepper.set_position([extruder.last_position, 0.0, 0.0])
-        self.stepper.set_trapq(extruder.get_trapq())
+        extruder.link_extruder_stepper(self)
         self.motion_queue = extruder_name
+        self.extruder = extruder
 
     def set_rotation_distance(self, rotation_dist):
         self.stepper.set_rotation_distance(rotation_dist)
@@ -120,12 +126,14 @@ class ExtruderStepper:
 
     def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
         extruder = self.printer.lookup_object("toolhead").get_extruder()
-        if extruder.extruder_stepper is None:
+        extruder_steppers = extruder.get_extruder_steppers()
+        if not extruder_steppers:
             raise gcmd.error("Active extruder does not have a stepper")
-        strapq = extruder.extruder_stepper.stepper.get_trapq()
-        if strapq is not extruder.get_trapq():
-            raise gcmd.error("Unable to infer active extruder stepper")
-        extruder.extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
+        for extruder_stepper in extruder_steppers:
+            strapq = extruder_stepper.stepper.get_trapq()
+            if strapq is not extruder.get_trapq():
+                raise gcmd.error("Unable to infer active extruder stepper")
+            extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
 
     def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
         pressure_advance = gcmd.get_float(
@@ -237,14 +245,13 @@ class PrinterExtruder:
         )
 
         # Setup extruder stepper
-        self.extruder_stepper = None
+        self.extruder_steppers = []
         if (
             config.get("step_pin", None) is not None
             or config.get("dir_pin", None) is not None
             or config.get("rotation_distance", None) is not None
         ):
-            self.extruder_stepper = ExtruderStepper(config)
-            self.extruder_stepper.stepper.set_trapq(self.trapq)
+            self.link_extruder_stepper(ExtruderStepper(config))
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         if self.name == "extruder":
@@ -259,14 +266,30 @@ class PrinterExtruder:
             desc=self.cmd_ACTIVATE_EXTRUDER_help,
         )
 
+    def link_extruder_stepper(self, extruder_stepper):
+        if extruder_stepper not in self.extruder_steppers:
+            self.extruder_steppers.append(extruder_stepper)
+            extruder_stepper.stepper.set_position(
+                [self.last_position, 0.0, 0.0]
+            )
+            extruder_stepper.stepper.set_trapq(self.trapq)
+
+    def unlink_extruder_stepper(self, extruder_stepper):
+        if extruder_stepper in self.extruder_steppers:
+            self.extruder_steppers.remove(extruder_stepper)
+            extruder_stepper.stepper.set_trapq(None)
+
+    def get_extruder_steppers(self):
+        return self.extruder_steppers
+
     def update_move_time(self, flush_time, clear_history_time):
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
 
     def get_status(self, eventtime):
         sts = self.heater.get_status(eventtime)
         sts["can_extrude"] = self.heater.can_extrude
-        if self.extruder_stepper is not None:
-            sts.update(self.extruder_stepper.get_status(eventtime))
+        if self.extruder_steppers:
+            sts.update(self.extruder_steppers[0].get_status(eventtime))
         return sts
 
     def get_name(self):
@@ -332,7 +355,7 @@ class PrinterExtruder:
         cruise_v = move.cruise_v * axis_r
         pressure_advance = 0.0
         if axis_r > 0.0 and (move.axes_d[0] or move.axes_d[1]):
-            pressure_advance = self.extruder_stepper.pressure_advance
+            pressure_advance = self.extruder_steppers[0].pressure_advance
         use_pa_from_trapq = 1.0 if self.per_move_pressure_advance else 0.0
         # Queue movement (x is extruder movement, y is pressure advance flag)
         self.trapq_append(
@@ -354,9 +377,9 @@ class PrinterExtruder:
         self.last_position = move.end_pos[3]
 
     def find_past_position(self, print_time):
-        if self.extruder_stepper is None:
+        if not self.extruder_steppers:
             return 0.0
-        return self.extruder_stepper.find_past_position(print_time)
+        return self.extruder_steppers[0].find_past_position(print_time)
 
     def cmd_M104(self, gcmd, wait=False):
         # Set Extruder Temperature
@@ -412,6 +435,9 @@ class DummyExtruder:
 
     def get_name(self):
         return ""
+
+    def get_extruder_steppers(self):
+        return []
 
     def get_heater(self):
         raise self.printer.command_error("Extruder not configured")

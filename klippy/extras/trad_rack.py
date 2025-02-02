@@ -417,6 +417,11 @@ class TradRack:
     def handle_ready(self):
         self._load_saved_state()
 
+        # disable syncing of the main filament driver motor if any extra
+        # extruder steppers are used
+        if self.extruder_sync_manager.get_extruder_steppers():
+            self.sync_to_extruder = False
+
     def _load_saved_state(self):
         # load bowden lengths if the user has not changed the config value
         prev_config_bowden_length = self.variables.get(
@@ -943,6 +948,12 @@ class TradRack:
     )
 
     def cmd_TR_SYNC_TO_EXTRUDER(self, gcmd):
+        if self.extruder_sync_manager.get_extruder_steppers():
+            self.gcode.respond_info(
+                "WARNING: The TR_SYNC_TO_EXTRUDER command has no effect when"
+                " an extra extruder stepper is used"
+            )
+            return
         self.toolhead.wait_moves()
         self.sync_to_extruder = True
         self._restore_extruder_sync()
@@ -952,6 +963,12 @@ class TradRack:
     )
 
     def cmd_TR_UNSYNC_FROM_EXTRUDER(self, gcmd):
+        if self.extruder_sync_manager.get_extruder_steppers():
+            self.gcode.respond_info(
+                "WARNING: The TR_UNSYNC_FROM_EXTRUDER command has no effect"
+                " when an extra extruder stepper is used"
+            )
+            return
         self.toolhead.wait_moves()
         self.sync_to_extruder = False
         self._restore_extruder_sync()
@@ -1133,12 +1150,29 @@ class TradRack:
         self.extruder_sync_manager.reset_fil_driver()
 
     def _restore_extruder_sync(self):
-        if self.sync_to_extruder and self.active_lane is not None:
-            self.extruder_sync_manager.sync_fil_driver_to_extruder()
-            self._lower_servo(True)
-        else:
+        raise_servo = True
+        sync = False
+        if self.active_lane is not None:
+            if self.extruder_sync_manager.get_extruder_steppers():
+                sync = True
+            elif self.sync_to_extruder:
+                raise_servo = False
+                sync = True
+
+        # move servo depending on whether the main filament driver motor will be
+        # synced to the extruder
+        if raise_servo:
             self._raise_servo()
             self.tr_toolhead.wait_moves()
+        else:
+            self._lower_servo(True)
+
+        # update sync
+        if sync:
+            self.extruder_sync_manager.sync_fil_driver_to_extruder(
+                include_main_fil_driver=not raise_servo
+            )
+        else:
             self.extruder_sync_manager.unsync()
 
     def _go_to_lane(self, lane):
@@ -2289,6 +2323,16 @@ class TradRack:
             )
         self.ignore_next_unload_length = False
 
+    # extra extruder stepper syncing
+    def link_extruder_stepper(self, extruder_stepper):
+        self.extruder_sync_manager.link_extruder_stepper(extruder_stepper)
+
+    def unlink_extruder_stepper(self, extruder_stepper):
+        self.extruder_sync_manager.unlink_extruder_stepper(extruder_stepper)
+
+    def get_extruder_steppers(self):
+        return self.extruder_sync_manager.get_extruder_steppers()
+
     # other functions
     def set_fil_driver_multiplier(self, multiplier):
         self.extruder_sync_manager.set_fil_driver_multiplier(multiplier)
@@ -2704,9 +2748,10 @@ class TradRackExtruderSyncManager:
             "klippy:connect", self.handle_connect
         )
         self.sync_state = None
-        self._prev_sks = None
+        self.synced_main_fil_driver = False
+        self._synced_steppers = {}
         self._prev_trapq = None
-        self._prev_rotation_dists = None
+        self.extra_extruder_steppers = []
 
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
@@ -2721,17 +2766,24 @@ class TradRackExtruderSyncManager:
         else:
             return [extruder.extruder_stepper.stepper]
 
+    def _get_extra_extruder_mcu_steppers(self):
+        steppers = []
+        for extruder_stepper in self.extra_extruder_steppers:
+            steppers.append(extruder_stepper.stepper)
+        return steppers
+
     def reset_fil_driver(self):
         self.tr_toolhead.get_last_move_time()
         pos = self.tr_toolhead.get_position()
         pos[1] = 0.0
         self.tr_toolhead.set_position(pos, homing_axes=(1,))
+        for stepper in self._get_extra_extruder_mcu_steppers():
+            stepper.set_position((0.0, 0.0, 0.0))
         if self.sync_state == EXTRUDER_TO_FIL_DRIVER:
-            steppers = self._get_extruder_mcu_steppers()
-            for stepper in steppers:
+            for stepper in self._get_extruder_mcu_steppers():
                 stepper.set_position((0.0, 0.0, 0.0))
 
-    def _sync(self, sync_type):
+    def _sync(self, sync_type, include_main_fil_driver=True):
         self.unsync()
         self.toolhead.flush_step_generation()
         self.tr_toolhead.flush_step_generation()
@@ -2747,7 +2799,9 @@ class TradRackExtruderSyncManager:
             self.reset_fil_driver()
             new_pos = [0.0, 0.0, 0.0]
         elif sync_type == FIL_DRIVER_TO_EXTRUDER:
-            steppers = self.fil_driver_rail.get_steppers()
+            steppers = self._get_extra_extruder_mcu_steppers()
+            if include_main_fil_driver:
+                steppers += self.fil_driver_rail.get_steppers()
             self._prev_trapq = self.tr_toolhead.get_trapq()
             extruder = self.toolhead.get_extruder()
             external_trapq = extruder.get_trapq()
@@ -2760,25 +2814,33 @@ class TradRackExtruderSyncManager:
         else:
             raise Exception("Invalid sync_type: %d" % sync_type)
 
-        self._prev_sks = []
-        self._prev_rotation_dists = []
         for stepper in steppers:
             stepper_kinematics = ffi_main.gc(stepper_alloc, ffi_lib.free)
-            self._prev_rotation_dists.append(stepper.get_rotation_distance()[0])
-            self._prev_sks.append(
-                stepper.set_stepper_kinematics(stepper_kinematics)
+            stepper_name = stepper.get_name()
+            prev_rotation_dist = stepper.get_rotation_distance()[0]
+            prev_sk = stepper.set_stepper_kinematics(stepper_kinematics)
+            self._synced_steppers[stepper_name] = (
+                stepper,
+                prev_rotation_dist,
+                prev_sk,
             )
             stepper.set_trapq(external_trapq)
             stepper.set_position(new_pos)
             prev_toolhead.step_generators.remove(stepper.generate_steps)
             external_toolhead.register_step_generator(stepper.generate_steps)
         self.sync_state = sync_type
+        self.synced_main_fil_driver = (
+            sync_type == FIL_DRIVER_TO_EXTRUDER and include_main_fil_driver
+        )
 
     def sync_extruder_to_fil_driver(self):
         self._sync(EXTRUDER_TO_FIL_DRIVER)
 
-    def sync_fil_driver_to_extruder(self):
-        self._sync(FIL_DRIVER_TO_EXTRUDER)
+    def sync_fil_driver_to_extruder(self, include_main_fil_driver=True):
+        self._sync(
+            FIL_DRIVER_TO_EXTRUDER,
+            include_main_fil_driver=include_main_fil_driver,
+        )
         self.printer.send_event("trad_rack:synced_to_extruder")
 
     def unsync(self):
@@ -2789,25 +2851,38 @@ class TradRackExtruderSyncManager:
         self.tr_toolhead.flush_step_generation()
 
         if self.sync_state == EXTRUDER_TO_FIL_DRIVER:
-            steppers = self._get_extruder_mcu_steppers()
             prev_toolhead = self.toolhead
             external_toolhead = self.tr_toolhead
         elif self.sync_state == FIL_DRIVER_TO_EXTRUDER:
             self.printer.send_event("trad_rack:unsyncing_from_extruder")
-            steppers = self.fil_driver_rail.get_steppers()
             prev_toolhead = self.tr_toolhead
             external_toolhead = self.toolhead
         else:
             raise Exception("Invalid sync_state: %d" % self.sync_state)
 
-        for i in range(len(steppers)):
-            stepper = steppers[i]
+        for (
+            stepper,
+            prev_rotation_dist,
+            prev_sk,
+        ) in self._synced_steppers.values():
             external_toolhead.step_generators.remove(stepper.generate_steps)
             prev_toolhead.register_step_generator(stepper.generate_steps)
             stepper.set_trapq(self._prev_trapq)
-            stepper.set_stepper_kinematics(self._prev_sks[i])
-            stepper.set_rotation_distance(self._prev_rotation_dists[i])
+            stepper.set_stepper_kinematics(prev_sk)
+            stepper.set_rotation_distance(prev_rotation_dist)
         self.sync_state = None
+        self._synced_steppers.clear()
+
+    def _resync(self):
+        if self.sync_state is None:
+            return
+
+        prev_sync_state = self.sync_state
+        synced_main_fil_driver = self.synced_main_fil_driver
+        self.unsync()
+        self._sync(
+            prev_sync_state, include_main_fil_driver=synced_main_fil_driver
+        )
 
     def is_extruder_synced(self):
         return self.sync_state == EXTRUDER_TO_FIL_DRIVER
@@ -2821,11 +2896,53 @@ class TradRackExtruderSyncManager:
                 "Cannot set stepper multiplier when filament driver is not"
                 " synced to extruder"
             )
-        steppers = self.fil_driver_rail.get_steppers()
-        for i in range(len(steppers)):
-            steppers[i].set_rotation_distance(
-                self._prev_rotation_dists[i] / multiplier
-            )
+        for stepper, prev_rotation_dist, _ in self._synced_steppers.values():
+            stepper.set_rotation_dist(prev_rotation_dist / multiplier)
+
+    def link_extruder_stepper(self, extruder_stepper):
+        if extruder_stepper in self.extra_extruder_steppers:
+            return
+
+        # add the extruder stepper
+        self.extra_extruder_steppers.append(extruder_stepper)
+
+        # set stepper kinematics to match fil driver rail
+        ffi_main, ffi_lib = chelper.get_ffi()
+        stepper_kinematics = ffi_main.gc(
+            ffi_lib.cartesian_stepper_alloc(b"y"), ffi_lib.free
+        )
+        extruder_stepper.stepper.set_stepper_kinematics(stepper_kinematics)
+
+        # set position and trapq (and resync with the extruder stepper included
+        # if necessary)
+        if self.sync_state is None:
+            self.reset_fil_driver()
+            extruder_stepper.stepper.set_trapq(self.tr_toolhead.get_trapq())
+        else:
+            self._resync()
+
+    def unlink_extruder_stepper(self, extruder_stepper):
+        if extruder_stepper not in self.extra_extruder_steppers:
+            return
+
+        # remove the extruder stepper
+        self.extra_extruder_steppers.remove(extruder_stepper)
+
+        # if the stepper is synced to the main extruder, resync without it
+        stepper_name = extruder_stepper.stepper.get_name()
+        if stepper_name in self._synced_steppers:
+            self._resync()
+
+        # reset stepper kinematics and trapq
+        ffi_main, ffi_lib = chelper.get_ffi()
+        stepper_kinematics = ffi_main.gc(
+            ffi_lib.extruder_stepper_alloc(), ffi_lib.free
+        )
+        extruder_stepper.stepper.set_stepper_kinematics(stepper_kinematics)
+        extruder_stepper.stepper.set_trapq(None)
+
+    def get_extruder_steppers(self):
+        return self.extra_extruder_steppers
 
 
 class RunIfNoActivity:
