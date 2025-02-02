@@ -4481,7 +4481,7 @@ run_current:
 #   the "CoolStep" feature at high speeds. The default is to not set a
 #   TMC "high velocity" threshold.
 #current_range:
-#   The current_range bit value for the driver. Valid values are 0 and 32-255.
+#   The current_range bit value for the driver. Valid values are 0-3.
 #   The defaul is to auto-calculate to match the requested run_current.
 #   For further information consult the tmc2240 datasheet and tuning table.
 #driver_CS: 31
