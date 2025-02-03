@@ -800,6 +800,7 @@ class MCU:
         self._mcu_tick_avg = 0.0
         self._mcu_tick_stddev = 0.0
         self._mcu_tick_awake = 0.0
+        self._config_crc = 0
 
         # noncritical mcus
         self.is_non_critical = config.getboolean("is_non_critical", False)
@@ -1001,9 +1002,9 @@ class MCU:
                 cmdlist[i] = pin_resolver.update_command(cmd)
         # Calculate config CRC
         encoded_config = "\n".join(local_config_cmds).encode()
-        config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
-        local_config_cmds.append("finalize_config crc=%d" % (config_crc,))
-        if prev_crc is not None and config_crc != prev_crc:
+        self._config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
+        local_config_cmds.append("finalize_config crc=%d" % (self._config_crc,))
+        if prev_crc is not None and self._config_crc != prev_crc:
             self._check_restart("CRC mismatch")
             raise error("MCU '%s' CRC does not match config" % (self._name,))
         # Transmit config messages (if needed)
@@ -1105,13 +1106,18 @@ class MCU:
             if not config_params["is_config"] and not self.is_fileoutput():
                 raise error("Unable to configure MCU '%s'" % (self._name,))
         else:
-            start_reason = self._printer.get_start_args().get("start_reason")
-            if start_reason == "firmware_restart":
-                raise error(
-                    "Failed automated reset of MCU '%s'" % (self._name,)
+            # if the mcu crc match the initial crc, the mcu lost comms but not
+            # power and is reconnecting
+            if not self._config_crc == config_params["crc"]:
+                start_reason = self._printer.get_start_args().get(
+                    "start_reason"
                 )
-            # Already configured - send init commands
-            self._send_config(config_params["crc"])
+                if start_reason == "firmware_restart":
+                    raise error(
+                        "Failed automated reset of MCU '%s'" % (self._name,)
+                    )
+                # Already configured - send init commands
+                self._send_config(config_params["crc"])
         # Setup steppersync with the move_count returned by get_config
         move_count = config_params["move_count"]
         if move_count < self._reserved_move_slots:
