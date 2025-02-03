@@ -254,13 +254,14 @@ FieldFormatters.update(
 ######################################################################
 
 VREF = 0.325
-MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
+MAX_CURRENT = 10.600  # Maximum dependent on board, but 10 is safe sanity check
 
 
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
 
+        self.cs = config.getint('driver_cs', 31, maxval=31, minval=0)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -269,30 +270,19 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         self.fields.set_field("irun", irun)
 
     def _calc_globalscaler(self, current):
-        globalscaler = int(
-            (current * 256.0 * math.sqrt(2.0) * self.sense_resistor / VREF)
-            + 0.5
-        )
+        cs = self.cs
+        globalscaler=int(
+            (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0) ) / (
+            (cs + 1) * VREF))
         globalscaler = max(32, globalscaler)
         if globalscaler >= 256:
             globalscaler = 0
         return globalscaler
 
-    def _calc_current_bits(self, current, globalscaler):
-        if not globalscaler:
-            globalscaler = 256
-        cs = int(
-            (current * 256.0 * 32.0 * math.sqrt(2.0) * self.sense_resistor)
-            / (globalscaler * VREF)
-            - 1.0
-            + 0.5
-        )
-        return max(0, min(31, cs))
-
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
-        irun = self._calc_current_bits(run_current, gscaler)
-        ihold = self._calc_current_bits(min(hold_current, run_current), gscaler)
+        irun = self.cs
+        ihold = int(min((hold_current / run_current) * irun, irun))
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
