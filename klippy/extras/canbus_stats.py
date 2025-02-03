@@ -3,6 +3,7 @@
 # Copyright (C) 2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 
 
 class PrinterCANBusStats:
@@ -46,8 +47,23 @@ class PrinterCANBusStats:
             "canbus_status rx_error=%u tx_error=%u tx_retries=%u"
             " canbus_bus_state=%u",
         )
+        # Register usb_canbus_state message handling (for usb to canbus bridge)
+        self.mcu.register_response(
+            self.handle_usb_canbus_state, "usb_canbus_state"
+        )
         # Register periodic query timer
         self.reactor.register_timer(self.query_event, self.reactor.NOW)
+
+    def handle_usb_canbus_state(self, params):
+        discard = params["discard"]
+        if discard:
+            logging.warning(
+                "USB CANBUS bridge '%s' is discarding!" % (self.name,)
+            )
+        else:
+            logging.warning(
+                "USB CANBUS bridge '%s' is no longer discarding." % (self.name,)
+            )
 
     def query_event(self, eventtime):
         prev_rx = self.status["rx_error"]
