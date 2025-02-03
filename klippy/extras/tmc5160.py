@@ -261,7 +261,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
 
-        self.cs = config.getint('driver_cs', 31, maxval=31, minval=0)
+        self.cs = config.getint("driver_cs", 31, maxval=31, minval=0)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -271,9 +271,10 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_globalscaler(self, current):
         cs = self.cs
-        globalscaler=int(
-            (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0) ) / (
-            (cs + 1) * VREF))
+        globalscaler = int(
+            (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0))
+            / ((cs + 1) * VREF)
+        )
         globalscaler = max(32, globalscaler)
         if globalscaler >= 256:
             globalscaler = 0
