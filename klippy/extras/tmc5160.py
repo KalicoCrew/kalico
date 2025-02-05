@@ -261,7 +261,6 @@ GLOBALSCALER_ERROR = (
     "GLOBALSCALER(%d) calculation out of bounds.\n"
     "The target current can't be achieved with the given "
     "CS(%d) value. Please adjust your configuration.\n"
-    "You most likely need to increase your driver_cs value in this case.\n"
     "Please refer to the tmc5160.xlxs chopper tuning spreadsheet.\n"
     "A value of %d may be a reasonable starting point.\n"
 )
@@ -271,7 +270,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
 
-        self.cs = config.getint("driver_cs", 31, maxval=31, minval=0)
+        self.cs = config.getint("driver_CS", 31, maxval=31, minval=0)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -281,18 +280,16 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_globalscaler(self, current):
         cs = self.cs
-        globalscaler = int(
-            math.floor(
+        globalscaler = math.floor(
                 (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0))
                 / ((cs + 1) * VREF)
             )
-        )
         if globalscaler == 256:
             return 0
         if 1 <= globalscaler <= 31 or globalscaler > 256:
             Ipeak = current * math.sqrt(2)
             Rsens = self.sense_resistor
-            cs_calculated = int(math.floor(Rsens * 32 * Ipeak / 0.32) - 1)
+            cs_calculated = math.floor(Rsens * 32 * Ipeak / 0.32) - 1
             self.printer.invoke_shutdown(
                 GLOBALSCALER_ERROR
                 % (
@@ -307,7 +304,7 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
         irun = self.cs
-        ihold = int(math.floor(min((hold_current / run_current) * irun, irun)))
+        ihold = math.floor(min((hold_current / run_current) * irun, irun))
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
