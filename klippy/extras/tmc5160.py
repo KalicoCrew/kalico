@@ -266,6 +266,7 @@ GLOBALSCALER_ERROR = (
     "A value of %d may be a reasonable starting point.\n"
 )
 
+
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
@@ -280,9 +281,12 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_globalscaler(self, current):
         cs = self.cs
-        globalscaler=int(math.floor(
-            (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0) ) / (
-            (cs + 1) * VREF)))
+        globalscaler = int(
+            math.floor(
+                (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0))
+                / ((cs + 1) * VREF)
+            )
+        )
         if globalscaler == 256:
             return 0
         if 1 <= globalscaler <= 31 or globalscaler > 256:
