@@ -2568,9 +2568,13 @@ detach_position: 0,0,0
 #   This supplemental pin can be defined to determine a docked state in
 #   addition to probe_sense_pin or check_open_attach.
 #pre_attach_gcode:
+#   Code to run right before the probe gets attached
 #post_attach_gcode:
+#   Code to run right after the probe gets attached
 #pre_detach_gcode:
+#   Code to run right before the probe gets detached
 #post_detach_gcode:
+#   Code to run right after the probe gets detached
 #
 #x_offset:
 #y_offset:
