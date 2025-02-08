@@ -89,26 +89,36 @@ class LDC1612_ng:
             self._ldc_fin_divider = 1
             self._ldc_fref_divider = 1
             self._ldc_settle_time = 0.0001706
-            self._drive_current = 26
+            self._default_drive_current = 26
         elif self._device_product == PRODUCT_MELLOW_FLY:
             self._ldc_freq_clk = 40_000_000
             self._ldc_fin_divider = 1
             self._ldc_fref_divider = 1
             self._ldc_settle_time = 0.00125
-            self._drive_current = 15
+            self._default_drive_current = 15
         else:  # Generic/BTT Eddy using external 12MHz clock source
             # TODO add a generic setup that usees internal ldc1612 clock
             self._ldc_freq_clk = 12_000_000
             self._ldc_settle_time = 0.005
             self._ldc_fin_divider = 1
             self._ldc_fref_divider = 1
-            self._drive_current = 15
+            self._default_drive_current = 15
 
         self._ldc_freq_ref = round(self._ldc_freq_clk / self._ldc_fref_divider)
 
-        self._drive_current: int = config.getint(
-            "reg_drive_current", self._drive_current, minval=0, maxval=31
+        drive_current: int = config.getint(
+            "reg_drive_current", 0, minval=0, maxval=31
         )
+        saved_drive_current: int = config.getint(
+            "saved_reg_drive_current", 0, minval=0, maxval=31
+        )
+        if drive_current == 0:
+            drive_current = saved_drive_current
+        if drive_current == 0:
+            drive_current = self._default_drive_current
+        self._drive_current = drive_current
+        logging.info(f"ldc dc {self._drive_current}")
+
         self._deglitch: str = config.get("ldc_deglitch", "default").lower()
         self._data_rate: int = config.getint(
             "samples_per_second", 250, minval=50
@@ -226,7 +236,9 @@ class LDC1612_ng:
         # Report found value to user
         drive_cur = (reg_drive_current0 >> 6) & 0x1F
         gcmd.respond_info(
-            f"{self._name}: Estimated reg_drive_current: {drive_cur}\nAdd this to your config as either reg_drive_current or tap_drive_current\nthen restart."
+            f"{self._name}: Estimated reg_drive_current: {drive_cur}\n"
+            "Add this to your config as either reg_drive_current or tap_drive_current\n"
+            "then restart."
         )
 
     def _build_config(self):
@@ -248,7 +260,9 @@ class LDC1612_ng:
         )
 
         self._ldc1612_ng_setup_home_cmd = self._mcu.lookup_command(
-            "ldc1612_ng_setup_home oid=%c trsync_oid=%c trigger_reason=%c other_reason_base=%c trigger_freq=%u start_freq=%u start_time=%u mode=%c tap_threshold=%i",
+            "ldc1612_ng_setup_home oid=%c"
+            " trsync_oid=%c trigger_reason=%c other_reason_base=%c"
+            " trigger_freq=%u start_freq=%u start_time=%u mode=%c tap_threshold=%i",
             cq=cmdqueue,
         )
 
