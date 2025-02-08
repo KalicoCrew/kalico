@@ -753,7 +753,12 @@ class ProbeEddy:
         if hasattr(kin, "note_z_not_homed"):
             kin.note_z_not_homed()
         else:
-            kin.clear_homing_state("z")
+            try:
+                kin.clear_homing_state("z")
+            except TypeError:
+                raise self._printer.command_error(
+                    "clear_homing_state failed: please update Klipper, your klipper is from the brief 5 day window where this was broken"
+                )
 
     def save_config(self):
         for _, fmap in self._dc_to_fmap.items():
