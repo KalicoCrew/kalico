@@ -12,8 +12,6 @@ import traceback
 import pickle, base64
 from itertools import combinations
 
-from klippy import mcu, pins
-
 from dataclasses import dataclass, field
 from typing import (
     Dict,
@@ -23,6 +21,26 @@ from typing import (
     final,
     ClassVar,
 )
+
+try:
+    from klippy import mcu, pins
+    from klippy.printer import Printer
+    from klippy.configfile import ConfigWrapper
+    from klippy.configfile import error as configerror
+    from klippy.gcode import GCodeCommand
+    from klippy.toolhead import ToolHead
+except:
+    import mcu
+    import pins
+    from klippy import Printer
+    from configfile import ConfigWrapper
+    from configfile import error as configerror
+    from gcode import GCodeCommand
+    from toolhead import ToolHead
+
+from .homing import HomingMove
+
+from . import ldc1612_ng, probe, manual_probe
 
 try:
     import plotly  # noqa
@@ -37,17 +55,6 @@ try:
     HAS_SCIPY = True
 except:
     HAS_SCIPY = False
-
-from configfile import ConfigWrapper
-from configfile import error as configerror
-from gcode import GCodeCommand
-from klippy import Printer
-from stepper import MCU_stepper
-from toolhead import ToolHead
-
-from .homing import HomingMove
-
-from . import ldc1612_ng, probe, manual_probe
 
 # In this file, a couple of conventions are used (for sanity).
 # Variables are named according to:
@@ -2704,7 +2711,7 @@ class ProbeEddyEndstopWrapper:
     def get_mcu(self):
         return self._mcu
 
-    def add_stepper(self, stepper: MCU_stepper):
+    def add_stepper(self, stepper):
         self._dispatch.add_stepper(stepper)
 
     def get_steppers(self):
