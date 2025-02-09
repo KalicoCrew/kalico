@@ -12,8 +12,7 @@ import traceback
 import pickle, base64
 from itertools import combinations
 
-import mcu
-import pins
+from klippy import mcu, pins
 
 from dataclasses import dataclass, field
 from typing import (
