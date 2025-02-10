@@ -31,6 +31,11 @@ At least one of the following must be specified:
 Please see {0}.md and config_Reference.md.
 """
 
+VIRTUAL_Z_ENDSTOP_ERROR = """
+DockableProbe cannot be used as Z endstop if a z position
+is defined in approach/dock/extract/insert/detach position."
+"""
+
 
 # Helper class to handle polling pins for probe attachment states
 class PinPollingHelper:
@@ -232,6 +237,20 @@ class DockableProbe:
             config, "deactivate_gcode", ""
         )
 
+        self.pre_attach_gcode = gcode_macro.load_template(
+            config, "pre_attach_gcode", ""
+        )
+        self.post_attach_gcode = gcode_macro.load_template(
+            config, "post_attach_gcode", ""
+        )
+
+        self.pre_detach_gcode = gcode_macro.load_template(
+            config, "pre_detach_gcode", ""
+        )
+        self.post_detach_gcode = gcode_macro.load_template(
+            config, "post_detach_gcode", ""
+        )
+
         # Pins
         ppins = self.printer.lookup_object("pins")
         pin = config.get("pin")
@@ -360,6 +379,17 @@ class DockableProbe:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        rails = self.toolhead.get_kinematics().rails
+        endstops = [es for rail in rails for es, name in rail.get_endstops()]
+        positions = [
+            self.approach_position,
+            self.dock_position,
+            self.extract_position,
+            self.insert_position,
+            self.detach_position,
+        ]
+        if self in endstops and any(pos[2] is not None for pos in positions):
+            raise self.printer.config_error(VIRTUAL_Z_ENDSTOP_ERROR)
 
     #######################################################################
     # GCode Commands
@@ -503,6 +533,7 @@ class DockableProbe:
                 raise self.printer.command_error(
                     "Attach Probe: Probe not detected in dock, aborting"
                 )
+            self.pre_attach_gcode.run_gcode_from_command()
             # Call these gcodes as a script because we don't have enough
             # structs/data to call the cmd_...() funcs and supply 'gcmd'.
             # This method also has the advantage of calling user-written gcodes
@@ -514,6 +545,7 @@ class DockableProbe:
                 MOVE_TO_EXTRACT_PROBE
             """
             )
+            self.post_attach_gcode.run_gcode_from_command()
 
             retry += 1
 
@@ -533,6 +565,7 @@ class DockableProbe:
             self.get_probe_state() != PROBE_DOCKED
             and retry < self.dock_retries + 1
         ):
+            self.pre_detach_gcode.run_gcode_from_command()
             # Call these gcodes as a script because we don't have enough
             # structs/data to call the cmd_...() funcs and supply 'gcmd'.
             # This method also has the advantage of calling user-written gcodes
@@ -544,6 +577,7 @@ class DockableProbe:
                 MOVE_TO_DETACH_PROBE
             """
             )
+            self.post_detach_gcode.run_gcode_from_command()
 
             retry += 1
 

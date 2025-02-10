@@ -432,6 +432,8 @@ SET_DOCKABLE_PROBE AUTO_ATTACH_DETACH=1  # Make sure the probe is attached in fu
 
     - The toolhead position is compared to the dock position.
 
+    - The pre_attach_gcode is executed
+
     - If the toolhead is outside of the minimum safe radius, the toolhead is
       commanded to move to the approach vector, that is, a position that is
       the minimum safe distance from the dock in line with the dock angle.
@@ -442,11 +444,13 @@ SET_DOCKABLE_PROBE AUTO_ATTACH_DETACH=1  # Make sure the probe is attached in fu
       (MOVE_TO_APPROACH_PROBE)
 
     - The tool is moved along the approach vector to the dock coordinates.
-    (MOVE_TO_DOCK_PROBE)
+      (MOVE_TO_DOCK_PROBE)
 
     - The toolhead is commanded to move out of the dock back to the minimum
       safe distance in the reverse direction along the dock angle.
       (MOVE_TO_EXTRACT_PROBE)
+
+    - The post_attach_gcode is executed
 
     - If configured, the probe is checked to see if it is attached.
 
@@ -465,6 +469,8 @@ SET_DOCKABLE_PROBE AUTO_ATTACH_DETACH=1  # Make sure the probe is attached in fu
 
     - The toolhead position is compared to the dock position.
 
+    - The pre_detach_gcode is executed
+
     - If the toolhead is outside of the minimum safe radius, the toolhead is
       commanded to move to the approach vector, that is, a position that is
       the minimum safe distance from the dock in line with the dock angle.
@@ -479,6 +485,8 @@ SET_DOCKABLE_PROBE AUTO_ATTACH_DETACH=1  # Make sure the probe is attached in fu
 
     - The toolhead is commanded to move along the detach vector if supplied or a
       calculated direction based on axis parameters. (MOVE_TO_DETACH_PROBE)
+
+    - The post_detach_gcode is executed
 
     - If configured, the probe is checked to see if it detached.
 
