@@ -1171,19 +1171,19 @@ pid_target:
 # For reference only, specifies the temperature the profile was calibrated for.
 # If you create a custom profile, either enter the temperature that profile is
 # intended to be used at or leave it blank.
-pid_tolerance: 
+pid_tolerance:
 # The tolerance that was used when autocalibrating the profile. If you define
 # a custom profile, leave it empty.
 control: <pid|pid_v>
 # Has to be either pid or pid_v.
 # This parameter is required.
-pid_kp: 
+pid_kp:
 # The P value for the PID Control.
 # This parameter is required.
 pid_ki:
 # The I value for the PID Control.
 # This parameter is required.
-pid_kd: 
+pid_kd:
 # The D value for the PID Control.
 # This parameter is required.
 ```
@@ -4670,6 +4670,16 @@ sense_resistor:
 #driver_CHM: 0
 #driver_VHIGHFS: 0
 #driver_VHIGHCHM: 0
+#driver_CS: 31
+#   The ideal driver_cs value may be found by setting the CS value on the
+#   tmc5160_calculations.xlsx spreadsheet, under the chopper tab, so that
+#   the Rsense value in the spreadsheet matches `sense_resistor` as defined
+#   in printer.cfg. While it's not necessary to change the CS value, it can
+#   be helpful to reach adequate hystersis values on high current drivers paired
+#   with low current motors. The default for this value is 31, meaning only
+#   globalscaler will be used to scale the current during normal operation.
+#   Errors will be invoked if the CS value is set too low, as the target
+#   current will not be able to be reached.
 #driver_DISS2G: 0
 #driver_DISS2VS: 0
 #driver_PWM_AUTOSCALE: True
