@@ -453,6 +453,8 @@ class MpcCalibrate:
                 f"  sensor_responsiveness={sensor_responsiveness:#.6g} [K/s/K]\n"
                 f"  ambient_transfer={ambient_transfer:#.6g} [W/K]\n"
                 f"  fan_ambient_transfer={fan_ambient_transfer} [W/K]\n"
+                "The SAVE_CONFIG command will update the printer config file\n"
+                "with these parameters and restart the printer."
             )
 
             configfile = self.heater.printer.lookup_object("configfile")
