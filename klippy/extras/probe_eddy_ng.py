@@ -234,8 +234,10 @@ class ProbeEddyParams:
     y_offset: float = 0.0
     # remove some safety checks, largely for testing/development
     allow_unsafe: bool = False
-    # whether to write the tap plot after each tap
+    # whether to write the tap plot for the last tap
     write_tap_plot: bool = True
+    # whether to write the tap plot for every tap
+    write_every_tap_plot: bool = False
 
     tap_trigger_safe_start_height: float = 1.5
 
@@ -389,6 +391,9 @@ class ProbeEddyParams:
         )
         self.write_tap_plot = config.getchoice(
             "write_tap_plot", bool_choices, default="True"
+        )
+        self.write_every_tap_plot = config.getchoice(
+            "write_every_tap_plot", bool_choices, default="False"
         )
         self.x_offset = config.getfloat("x_offset", self.x_offset)
         self.y_offset = config.getfloat("y_offset", self.y_offset)
@@ -2053,6 +2058,9 @@ class ProbeEddy:
                 )
                 sample_i += 1
 
+                if self.params.write_every_tap_plot:
+                    self._write_tap_plot(tap, sample_i)
+
                 if tap.error:
                     if "too close to target z" in str(tap.error):
                         self._log_info(
@@ -2179,7 +2187,7 @@ class ProbeEddy:
         else:
             return None, float(std_min)
 
-    def _write_tap_plot(self, tap: ProbeEddy.TapResult):
+    def _write_tap_plot(self, tap: ProbeEddy.TapResult, tapnum: int = -1):
         if not HAS_PLOTLY:
             return
 
@@ -2431,7 +2439,11 @@ class ProbeEddy:
             ),  # alt
             height=800,
         )
-        fig.write_html("/tmp/tap.html")
+        if tapnum == -1:
+            filename = "tap.html"
+        else:
+            filename = f"tap-{tapnum}.html"
+        fig.write_html(f"/tmp/{filename}", include_plotlyjs="cdn")
         logging.info("Wrote tap plot")
 
 
