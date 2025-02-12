@@ -253,7 +253,7 @@ class LDC1612_ng:
         )
 
         self._ldc1612_ng_latched_status_cmd = self._mcu.lookup_query_command(
-            "query_ldc1612_ng_latched_status oid=%c",
+            "query_ldc1612_ng_latched_status_v2 oid=%c",
             "ldc1612_ng_latched_status oid=%c status=%u lastval=%u",
             oid=self._oid,
             cq=cmdqueue,

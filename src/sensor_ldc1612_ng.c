@@ -136,8 +136,6 @@ struct ldc1612_ng_homing_sos_tap {
     uint32_t tap_start_time;
     float tap_start_value;
     float last_value;
-
-    bool falling;
 };
 
 struct ldc1612_ng_homing {
@@ -404,7 +402,8 @@ command_query_ldc1612_ng_latched_status(uint32_t *args)
           , args[0], status, lastval);
 }
 DECL_COMMAND(command_query_ldc1612_ng_latched_status,
-             "query_ldc1612_ng_latched_status oid=%c");
+             "query_ldc1612_ng_latched_status_v2 oid=%c");
+// ^ this command name is also used as an API version of sorts
 
 void
 command_ldc1612_ng_start_stop(uint32_t *args)
@@ -870,24 +869,26 @@ check_sos_tap(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
     if (!check_safe_start(ld, data, time))
         return;
 
+    // Note: == is explicitly excluded below. We don't want to
+    // overwrite the "start" time (so >= won't work), and
+    // it can't make a difference to the last diff check
     if (val < sos_tap->last_value) {
-        sos_tap->falling = true;
-    } else if (val > sos_tap->last_value) {
-        // if we were falling but now we're increasing, check
-        // if the length of the last fall crossed the threshold
-        if (sos_tap->falling) {
-            float diff = sos_tap->tap_start_value - sos_tap->last_value;
-            if (diff >= sos_tap->tap_threshold) {
-                notify_trigger(ld, sos_tap->tap_start_time, ld->success_reason);
-                lh->trigger_time = sos_tap->tap_start_time;
-                lh->tap_end_time = time;
-                dprint("ZZZ tap t=%u n=%u l=%f (f=%f)", sos_tap->tap_start_time, time, sos_tap->tap_start_value - val, freq);
-                return;
-            }
+        float diff = sos_tap->last_value - sos_tap->tap_start_value;
+        if (diff < 0)
+            diff = -diff;
+        if (diff >= sos_tap->tap_threshold) {
+            notify_trigger(ld, sos_tap->tap_start_time, ld->success_reason);
+            lh->trigger_time = sos_tap->tap_start_time;
+            lh->tap_end_time = time;
+            dprint("ZZZ tap t=%u n=%u l=%f (f=%f)", sos_tap->tap_start_time, time, sos_tap->tap_start_value - val, freq);
+            return;
         }
+    } else if (val > sos_tap->last_value) {
+        // This keeps getting updated even on the rise, so that
+        // the values are correct for the start of the tap (i.e. the peak)
+        // once we realize the value is falling.
         sos_tap->tap_start_value = val;
         sos_tap->tap_start_time = time;
-        sos_tap->falling = false;
     }
 
     sos_tap->last_value = val;
