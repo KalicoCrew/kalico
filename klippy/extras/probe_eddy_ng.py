@@ -234,8 +234,10 @@ class ProbeEddyParams:
     y_offset: float = 0.0
     # remove some safety checks, largely for testing/development
     allow_unsafe: bool = False
-    # whether to write the tap plot after each tap
+    # whether to write the tap plot for the last tap
     write_tap_plot: bool = True
+    # whether to write the tap plot for every tap
+    write_every_tap_plot: bool = False
 
     tap_trigger_safe_start_height: float = 1.5
 
@@ -378,6 +380,9 @@ class ProbeEddyParams:
 
         self.allow_unsafe = config.getboolean("allow_unsafe", False)
         self.write_tap_plot = config.getboolean("write_tap_plot", True)
+        self.write_every_tap_plot = config.getboolean(
+            "write_every_tap_plot", True
+        )
 
         self.x_offset = config.getfloat("x_offset", self.x_offset)
         self.y_offset = config.getfloat("y_offset", self.y_offset)
@@ -2044,6 +2049,9 @@ class ProbeEddy:
                 )
                 sample_i += 1
 
+                if self.params.write_every_tap_plot:
+                    self._write_tap_plot(tap, sample_i)
+
                 if tap.error:
                     if "too close to target z" in str(tap.error):
                         self._log_info(
@@ -2077,8 +2085,10 @@ class ProbeEddy:
                         break
         finally:
             self._sensor.set_drive_current(self.params.reg_drive_current)
-            # This only writes the plot for the very last tap
-            if self.params.write_tap_plot:
+            if (
+                self.params.write_tap_plot
+                and not self.params.write_every_tap_plot
+            ):
                 self._write_tap_plot(tap)
 
         # If we didn't compute a tap_z report the error
@@ -2173,7 +2183,7 @@ class ProbeEddy:
     # Write a tap plot. This also has logic to compute the averages
     # and the filter mostly-exactly how it's done on the probe MCU itself
     # (vs using numpy or similar) to make these graphs more reprensetative
-    def _write_tap_plot(self, tap: ProbeEddy.TapResult):
+    def _write_tap_plot(self, tap: ProbeEddy.TapResult, tapnum: int = -1):
         if not HAS_PLOTLY:
             return
 
@@ -2428,7 +2438,11 @@ class ProbeEddy:
             ),  # alt
             height=800,
         )
-        fig.write_html("/tmp/tap.html")
+        if tapnum == -1:
+            filename = "tap.html"
+        else:
+            filename = f"tap-{tapnum}.html"
+        fig.write_html(f"/tmp/{filename}", include_plotlyjs="cdn")
         logging.info("Wrote tap plot")
 
 
