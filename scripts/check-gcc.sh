@@ -1,6 +1,11 @@
 #!/bin/sh
 # This script checks for a broken Ubuntu 18.04 arm-none-eabi-gcc compile
 
+if [ ! -f /etc/issue ] ; then
+    # doesn't exist on mac
+    exit 0
+fi
+
 f1="$1"
 f2="$2"
 
