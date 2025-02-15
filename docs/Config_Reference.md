@@ -2636,23 +2636,23 @@ z_offset:
 #   See the "probe" section for more information on the parameters above.
 ```
 
-### [probe_eddy_current]
+### [probe_eddy_ng]
 
-Support for eddy current inductive probes. One may define this section
+Support for Eddy current inductive probes. One may define this section
 (instead of a probe section) to enable this probe. See the
-[command reference](G-Codes.md#probe_eddy_current) for further information.
+[command reference](G-Codes.md#probe_eddy_ng) for available commands.
 
 ```
-[probe_eddy_current my_eddy_probe]
+[probe_eddy_ng my_eddy_probe]
 sensor_type: ldc1612
-#   The sensor chip used to perform eddy current measurements. This
-#   parameter must be provided and must be set to ldc1612.
+#   The device type used to perform eddy current measurements:
+#     - ldc1612 (generic LDC1612 device)
+#     - btt_eddy (BTT Eddy, any variant)
+#     - mellow_fly (Mellow Fly board with integrated LDC1612)
+#     - cartographer (Cartographer)
 #intb_pin:
 #   MCU gpio pin connected to the ldc1612 sensor's INTB pin (if
 #   available). The default is to not use the INTB pin.
-#z_offset:
-#   The nominal distance (in mm) between the nozzle and bed that a
-#   probing attempt should stop at. This parameter must be provided.
 #i2c_address:
 #i2c_mcu:
 #i2c_bus:
@@ -2661,16 +2661,50 @@ sensor_type: ldc1612
 #i2c_speed:
 #   The i2c settings for the sensor chip. See the "common I2C
 #   settings" section for a description of the above parameters.
-#x_offset:
-#y_offset:
-#speed:
+x_offset:
+y_offset:
+#   The X and Y offsets for the probe relative to the nozzle.
+#probe_speed:
 #lift_speed:
-#samples:
-#sample_retract_dist:
-#samples_result:
-#samples_tolerance:
-#samples_tolerance_retries:
-#   See the "probe" section for information on these parameters.
+#   The speeds to use for moving the toolhead down and up,
+#   respectively, while probing.
+#home_trigger_height: 2.0
+#   The height a which to trigger for homing. This is also
+#   used as the "z offset" fo the probe, and as the default
+#   height for a number of operations.
+#reg_drive_current: <varies by sensor_type>
+#   The LDC1612 "drive current" to be used for homing operations,
+#   and tap operations if `tap_drive_current` is not specified.
+#tap_drive_current: 0
+#   The drive current to use for tap operations. If 0,
+#   `reg_drive_current` will be used.
+#tap_adjust_z: 0.0
+#   A constant value to add to the computed tap Z offset. Use this
+#   if the computed tap is consistently slightly too high or too low.
+#   Positive values will place the toolhead higher for Z=0, negative lower.
+#tap_samples: 3
+#   The number of tap samples to consider when computing the tap offset.
+#tap_max_samples: 5
+#   The maximum number of tap samples to capture until any `tap_samples` of
+#   them are under `tap_samples_stddev`.
+#tap_samples_stddev: 0.025
+#   The maximum standard deviation of any grouping of `tap_samples` taps
+#   that will count as valid.
+#tap_start_z: 3.2
+#   The height at which to start a tap operation.
+#tap_target_z: -0.250
+#   The target height for a full tap movement. This is the lowest position
+#   that the toolhead may travel to in case of a failed tap. You may
+#   need to lower this value (slightly -- by 0.100 or so!) if the toolhead
+#   completes the tap movement before a tap is detected.
+#tap_threshold: 250
+#   The threshold at which to detect tap. This value is sensor and tap
+#   mode specific. The default is usually good enough, but fine-tuning
+#   can be done by running a `TAP` command and examining the graph.
+#tap_speed: 3.0
+#   The speed at which to make the tap movement. Too slow of a speed may
+#   cause the tap to not be detected. Too high may cause the tap to be detected
+#   late.
 ```
 
 ### [axis_twist_compensation]

@@ -1249,27 +1249,92 @@ babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a `SAVE_CONFIG` to take effect.
 
-### [probe_eddy_current]
+### [probe_eddy_]
 
 The following commands are available when a
-[probe_eddy_current config section](Config_Reference.md#probe_eddy_current)
+[probe_eddy_ng config section](Config_Reference.md#probe_eddy_ng)
 is enabled.
 
-#### PROBE_EDDY_CURRENT_CALIBRATE
-`PROBE_EDDY_CURRENT_CALIBRATE CHIP=<config_name>`: This starts a tool
-that calibrates the sensor resonance frequencies to corresponding Z
-heights. The tool will take a couple of minutes to complete. After
-completion, use the SAVE_CONFIG command to store the results in the
-printer.cfg file.
+#### PROBE_EDDY_NG_SETUP
+`PROBE_EDDY_NG_SETUP`: This starts a tool that attemps to automatically
+identify appropriate configuration for both homing and tap. After successful
+completion, use the `SAVE_CONFIG` command to store the results in the
+`printer.cfg` file. If not successful, `PROBE_EDDY_NG_CALIBRATE` will need
+to be used directly.
 
-#### LDC_CALIBRATE_DRIVE_CURRENT
-`LDC_CALIBRATE_DRIVE_CURRENT CHIP=<config_name>` This tool will
+#### PROBE_EDDY_NG_CALIBRATE
+`PROBE_EDDY_NG_CALIBRATE [DRIVE_CURRENT=<dc>] [Z_MAX=<zmax>]
+[Z_TARGET=<ztarget>] [SPEED=<speed>] [LIFT_SPEED=<speed>]`: This starts a tool
+that calibrates the sensor resonance frequencies to corresponding Z
+heights. The current drive current is assumed, unless `dc` is specified.
+After completion, use the `SAVE_CONFIG` command to store the results in the
+`printer.cfg` file. This is a manual calibration; for an automatic
+calibration, see `PROBE_EDDY_NG_SETUP`.
+
+#### PROBE_EDDY_NG_PROBE
+`PROBE_EDDY_NG_PROBE [DURATION=<s>] [DRIVE_CURRENT=<dc>]`: Move the toolhead
+to the home trigger height and scan for `<s>` seconds, returning the median
+of the values. The status variable `last_probe_result` will alo
+be updated with the result.
+
+#### PROBE_EDDY_NG_PROBE_STATIC
+`PROBE_EDDY_NG_PROBE [DURATION=<s>] [DRIVE_CURRENT=<dc>] [HOME_Z=1]`: Scan
+with the eddy current sensor at the toolhead's current Z position, returning
+the current height according to the sensor. If `HOME_Z=1` is specified,
+this command will update the Z axis position to the probed value.
+
+#### PROBE_EDDY_NG_PROBE_ACCURACY
+`PROBE_EDDY_NG_PROBE_ACCURACY [Z=<z>] [OFFSETS=1,2,3] [DURATION=<s>] [SPEED=<speed>]
+[LIFT_SPEED=<speed>]`: Probe using the sensor at various heights, reporting at each
+step, and reporting the final ranges and standard deviation. For example,
+`PROBE_EDDY_NG_PROBE_ACCURACY Z=5 OFFSETS=-1,-2,-3,-4` will run a probe at 5mm, 4mm,
+3mm, 2mm, 1mm.
+
+#### PROBE_EDDY_NG_TAP
+`PROBE_EDDY_NG_TAP [START_Z=<z>] [TARGET_Z=<z>] [MODE=butter|wma] [THRESHOLD=<tt>]
+[TAP_ADJUST_Z=<z>] [SAMPLES=<count>] [MAX_SAMPLES=<count>] [SAMPLES_STDDEV=<val>]
+[SPEED=<speed>] [LIFT_SPEED=<speed>] [RETRACT=1]`: Calculate the Z offset by
+making physical contact with the build plate. The tap motion starts at `START_Z` and
+continues until `TARGET_Z`, or until a tap is detected. All parameters are
+configurable via configuration settings; see the
+[configuration for more details](Config_Reference.md#probe_eddy_ng). After a successful
+tap, this command will set the GCode Z offset, and will set an internal `tap_offset`
+value to fine-tune probe operations such as bed mesh from that point on.
+
+
+#### PROBE_EDDY_NG_SET_TAP_ADJUST_Z
+`PROBE_EDDY_NG_SET_TAP_ADJUST_Z [VALUE=<v>] [ADJUST=<v>]`: Set the value of
+the `tap_adjust_z` parameter, either directly (via `VALUE`), or as an offset from
+the current value (via `ADJUST`).
+
+#### PROBE_EDDY_NG_SET_TAP_OFFSET
+`PROBE_EDDY_NG_SET_TAP_OFFSET [VALUE=<v>] [ADJUST=<v>]`: Set the value of the
+internal `tap_offset` value, which is automatically calculated after a successful
+`TAP`. It's recommended to reset this value back to 0 if the Gcode Z offset is
+cleared, or after each print.
+
+#### PROBE_EDDY_NG_TEST_DRIVE_CURRENT
+`PROBE_EDDY_NG_TEST_DRIVE_CURRENT [DRIVE_CURRENT=<dc>] [Z_MAX=<z>] [Z_TARGET=<z>]`:
+Test the sensor's readings using the given drive current, for the range of `Z_MAX` to
+`Z_TARGET`. Due to differences in coil design, some sensors are unable to accurately
+read a full range of values both very close to the build plate and very far away from
+it. This command can help identify appropriate drive currents for homing and tap.
+
+#### PROBE_EDDY_NG_STATUS
+`PROBE_EDDY_NG_STATUS`: This command will report the raw status
+and reading values from the sensor. Useful only for verifying
+communication with the LDC1612 sensor.
+
+#### LDC_NG_CALIBRATE_DRIVE_CURRENT
+`LDC_NG_CALIBRATE_DRIVE_CURRENT CHIP=<config_name>` This tool will
 calibrate the ldc1612 DRIVE_CURRENT0 register. Prior to using this
 tool, move the sensor so that it is near the center of the bed and
-about 20mm above the bed surface. Run this command to determine an
+about 10mm above the bed surface. Run this command to determine an
 appropriate DRIVE_CURRENT for the sensor. After running this command
 use the SAVE_CONFIG command to store that new setting in the
-printer.cfg config file.
+printer.cfg config file. This value is just a starting point,
+and you will use `PROBE_EDDY_NG_TEST_DRIVE_CURRENT` to fine-tune.
+The default value is chip-specific and is usually a fine start.
 
 ### [pwm_cycle_time]
 

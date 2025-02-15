@@ -41,6 +41,7 @@
 - [`[z_tilt/quad_gantry_level] adaptive_horizontal_move_z`](./Config_Reference.md#z_tilt) adaptively decrease horizontal_move_z based on resulting error - z_tilt and QGL faster and safer!
 - [`[safe_z_home] home_y_before_x`](./Config_Reference.md#safe_z_home) let you home Y before X.
 - [`[z_tilt/quad_gantry_level/etc] use_probe_xy_offsets`](./Config_Reference.md#z_tilt) let you decide if the `[probe] XY offsets should be applied to probe positions.
+- [`[probe_eddy_ng]`](./Config_Reference.md#probe_eddy_ng) adds support for LDC1612-based Eddy current sensors, including physical tap for precise Z offsets.
 
 ## Heaters, Fans, and PID changes
 
