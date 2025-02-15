@@ -130,6 +130,8 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 
 - [tmc2240: adjustable driver_CS and current_range](https://github.com/KalicoCrew/kalico/pull/556)
 
+- [probe_eddy_ng: eddy current probe support with physical tap z-offset](https://github.com/KalicoCrew/kalico/pull/546)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
