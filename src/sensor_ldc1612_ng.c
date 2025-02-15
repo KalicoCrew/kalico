@@ -873,9 +873,7 @@ check_sos_tap(struct ldc1612_ng* ld, uint32_t data, uint32_t time)
     // overwrite the "start" time (so >= won't work), and
     // it can't make a difference to the last diff check
     if (val < sos_tap->last_value) {
-        float diff = sos_tap->last_value - sos_tap->tap_start_value;
-        if (diff < 0)
-            diff = -diff;
+        float diff = sos_tap->tap_start_value - val;
         if (diff >= sos_tap->tap_threshold) {
             notify_trigger(ld, sos_tap->tap_start_time, ld->success_reason);
             lh->trigger_time = sos_tap->tap_start_time;
