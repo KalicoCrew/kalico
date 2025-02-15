@@ -4178,8 +4178,9 @@ sense_resistor:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   "stealthChop" mode.
+#   velocity is below this value. Note that the "sensorless homing"
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables "stealthChop" mode.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal "CoolStep"
 #   threshold to. If set, the coolstep feature will be enabled when
@@ -4291,8 +4292,9 @@ sense_resistor:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   "stealthChop" mode.
+#   velocity is below this value. Note that the "sensorless homing"
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables "stealthChop" mode.
 #driver_MULTISTEP_FILT: True
 #driver_IHOLDDELAY: 8
 #driver_TPOWERDOWN: 20
@@ -4505,8 +4507,9 @@ run_current:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   "stealthChop" mode.
+#   velocity is below this value. Note that the "sensorless homing"
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables "stealthChop" mode.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal "CoolStep"
 #   threshold to. If set, the coolstep feature will be enabled when
@@ -4665,8 +4668,9 @@ sense_resistor:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   "stealthChop" mode.
+#   velocity is below this value. Note that the "sensorless homing"
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables "stealthChop" mode.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal "CoolStep"
 #   threshold to. If set, the coolstep feature will be enabled when
