@@ -1249,7 +1249,7 @@ babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a `SAVE_CONFIG` to take effect.
 
-### [probe_eddy_]
+### [probe_eddy_ng]
 
 The following commands are available when a
 [probe_eddy_ng config section](Config_Reference.md#probe_eddy_ng)
