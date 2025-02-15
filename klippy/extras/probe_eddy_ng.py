@@ -6,7 +6,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import logging, math, bisect, re
+import os, logging, math, bisect, re
 import numpy as np
 import traceback
 import pickle, base64
@@ -2187,10 +2187,24 @@ class ProbeEddy:
         if not HAS_PLOTLY:
             return
 
+        if tapnum == -1:
+            filename = "tap.html"
+        else:
+            filename = f"tap-{tapnum}.html"
+        tapplot_path = f"/tmp/{filename}"
+
         samples = self._last_sampler_samples
         raw_samples = self._last_sampler_raw_samples
         memos = self._last_sampler_memos
-        if samples is None or raw_samples is None:
+        if (
+            samples is None
+            or raw_samples is None
+            or len(samples) == 0
+            or len(raw_samples) == 0
+        ):
+            # delete any old plots to avoid confusion
+            if os.path.exists(tapplot_path):
+                os.remove(tapplot_path)
             return
 
         s_t = np.asarray([s[0] for s in samples])
@@ -2438,11 +2452,7 @@ class ProbeEddy:
             ),  # alt
             height=800,
         )
-        if tapnum == -1:
-            filename = "tap.html"
-        else:
-            filename = f"tap-{tapnum}.html"
-        fig.write_html(f"/tmp/{filename}", include_plotlyjs="cdn")
+        fig.write_html(tapplot_path, include_plotlyjs="cdn")
         logging.info("Wrote tap plot")
 
 
