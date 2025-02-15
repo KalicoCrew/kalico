@@ -579,6 +579,12 @@ class ProbePointsHelper:
         # Lookup objects
         probe = self.printer.lookup_object("probe", None)
         method = gcmd.get("METHOD", "automatic").lower()
+        if method == "rapid_scan":
+            gcmd.respond_info(
+                "METHOD=rapid_scan not supported, using automatic"
+            )
+            method = "automatic"
+
         self.results = []
 
         def_move_z = self.default_horizontal_move_z
