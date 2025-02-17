@@ -369,7 +369,11 @@ usb_notify_bulk_in(void)
 
 #define CONCAT1(a, b) a ## b
 #define CONCAT(a, b) CONCAT1(a, b)
+#if defined(CONFIG_USB_MANUFACTURER)
+#define USB_STR_MANUFACTURER CONCAT(u,CONFIG_USB_MANUFACTURER)
+#else
 #define USB_STR_MANUFACTURER u"Klipper"
+#endif
 #define USB_STR_PRODUCT CONCAT(u,CONFIG_MCU)
 #define USB_STR_SERIAL CONCAT(u,CONFIG_USB_SERIAL_NUMBER)
 
