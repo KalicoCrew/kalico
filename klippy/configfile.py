@@ -322,7 +322,7 @@ class ConfigWrapper:
                     f" and has already been replaced with {', '.join(conflicts)}."
                 )
             for new_option, new_value in replace_with.items():
-                self.fileconfig.set(self.section, new_option, new_value)
+                self.fileconfig.set(self.section, new_option, str(new_value))
             msg += " Replaced with " + ",".join(replace_with.keys())
         pconfig = self.printer.lookup_object("configfile")
         pconfig.deprecate(
@@ -421,17 +421,6 @@ class PrinterConfig:
                 if is_dup_field:
                     result[-1] = "#" + result[-1]
                 continue
-            if is_dup_field and replacement:
-                for key, value in replacement.items():
-                    if not isinstance(value, str):
-                        value = str(value)  # TODO: Proper serialization...
-                    if "\n" in value:
-                        result.insert(-1, key + ":")
-                        for value_line in value.splitlines(False):
-                            result.insert(-1, "\t" + value_line)
-                    else:
-                        result.insert(-1, f"{key}: {value}")
-                replacement = None
             is_dup_field = False
             if pruned_line[0] == "[":
                 section = pruned_line[1:-1].strip()
@@ -440,8 +429,17 @@ class PrinterConfig:
             if replacements and (section, field) in replacements:
                 is_dup_field = True
                 replacement = replacements[(section, field)]
-                result[-1] = "#" + result[-1]
-            if config.fileconfig.has_option(section, field):
+                result[-1] = f"# {result[-1]}  # Deprecated"
+                for key, value in replacement.items():
+                    if not isinstance(value, str):
+                        value = str(value)  # TODO: Proper serialization...
+                    if "\n" in value:
+                        result.append(key + ":")
+                        for value_line in value.splitlines(False):
+                            result.append("\t" + value_line)
+                    else:
+                        result.append(f"{key}: {value}")
+            elif config.fileconfig.has_option(section, field):
                 is_dup_field = True
                 result[-1] = "#" + result[-1]
 
@@ -591,6 +589,16 @@ class PrinterConfig:
         self, section, option, value=None, msg=None, replace_with=None
     ):
         self.deprecated[(section, option, value)] = msg
+        self.deprecate_warnings = [
+            {
+                "type": "deprecated_value" if value else "deprecated_option",
+                "section": section,
+                "option": option,
+                "message": msg,
+                "value": value,
+            }
+            for (section, option, value), msg in self.deprecated.items()
+        ]
         if replace_with:
             pending_section = self.status_save_pending.setdefault(section, {})
             pending_section[option] = None
@@ -598,6 +606,7 @@ class PrinterConfig:
                 pending_section[new_opt] = new_value
             self.deprecations[(section, option)] = replace_with
             self.save_config_pending = True
+        self.status_warnings = self.runtime_warnings + self.deprecate_warnings
 
     def warn(self, type, msg, section=None, option=None, value=None):
         res = {
@@ -784,14 +793,16 @@ class PrinterConfig:
                         )
 
     def cmd_SAVE_CONFIG(self, gcmd):
-        if not self.autosave.fileconfig.sections():
+        if not (self.autosave.fileconfig.sections() or self.deprecations):
             return
         gcode = self.printer.lookup_object("gcode")
         # Create string containing autosave data
-        autosave_data = self._build_config_string(self.autosave)
-        lines = [("#*# " + l).strip() for l in autosave_data.split("\n")]
-        lines.insert(0, "\n" + AUTOSAVE_HEADER.rstrip())
-        lines.append("")
+        lines = []
+        if self.autosave.fileconfig.sections():
+            autosave_data = self._build_config_string(self.autosave)
+            lines = [("#*# " + l).strip() for l in autosave_data.split("\n")]
+            lines.insert(0, "\n" + AUTOSAVE_HEADER.rstrip())
+            lines.append("")
         autosave_data = "\n".join(lines)
         # Read in and validate current config file
         cfgname = self.printer.get_start_args()["config_file"]
