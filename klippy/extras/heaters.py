@@ -335,6 +335,27 @@ class Heater:
                     "max_delta", 2.0, above=0.0
                 )
             elif control == "mpc":
+                temp_profile["heater_power"] = config_section.getfloat(
+                    "heater_power", above=0.0
+                )
+
+                if config_section.get(
+                    "heater_temperature_coefficient", None, False
+                ):
+                    temp_profile["heater_temperature_coefficient"] = (
+                        config_section.getfloat(
+                            "heater_temperature_coefficient", above=0.0
+                        )
+                    )
+                    temp_profile["heater_voltage"] = config_section.getfloat(
+                        "heater_voltage", above=0.0
+                    )
+                    temp_profile["heater_power_ambient"] = (
+                        config_section.getfloat(
+                            "heater_power_ambient", above=0.0
+                        )
+                    )
+
                 temp_profile["block_heat_capacity"] = config_section.getfloat(
                     "block_heat_capacity", above=0.0, default=None
                 )
@@ -346,9 +367,6 @@ class Heater:
                 )
                 temp_profile["smoothing"] = config_section.getfloat(
                     "smoothing", above=0.0, maxval=1.0, default=0.83
-                )
-                temp_profile["heater_power"] = config_section.getfloat(
-                    "heater_power", above=0.0
                 )
                 temp_profile["sensor_responsiveness"] = config_section.getfloat(
                     "sensor_responsiveness", above=0.0, default=None
@@ -428,13 +446,13 @@ class Heater:
                         )
                     if fan_obj is None:
                         raise config_section.error(
-                            f"Unknown part_cooling_fan '{fan_name}' specified"
+                            f"Unknown cooling_fan '{fan_name}' specified"
                         )
                     if not hasattr(fan_obj, "fan") or not hasattr(
                         fan_obj.fan, "set_speed"
                     ):
                         raise config_section.error(
-                            f"part_cooling_fan '{fan_name}' is not a valid fan object"
+                            f"cooling_fan '{fan_name}' is not a valid fan object"
                         )
                     fan = fan_obj.fan
                 temp_profile["cooling_fan"] = fan
