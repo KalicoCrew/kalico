@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
 import klippy.chelper
 import pathlib
+import typing
+import shutil
 import os
 
 # Ensure chelper is built
@@ -32,3 +35,21 @@ def pytest_sessionstart(session):
     @session.config.add_cleanup
     def clean_symlink():
         os.unlink(link_path)
+
+
+@pytest.fixture
+def config_root(request, tmp_path):
+    """
+    This abuses type hinting to allow fixture usages to specify the source directory
+
+    def test_foo(config_root: Annotated[pathlib.Path, "relative/path/to/my_config"]):
+    """
+
+    test_hints = typing.get_type_hints(request.function, include_extras=True)
+    my_hint = test_hints[request.fixturename]
+    _, src = typing.get_args(my_hint)
+    src = pathlib.Path(request.node.fspath).parent / pathlib.Path(src)
+
+    tmp_config_root = tmp_path / "printer"
+    shutil.copytree(src, tmp_config_root)
+    yield tmp_config_root
