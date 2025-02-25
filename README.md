@@ -10,7 +10,7 @@ Our goal is to support features and behavior that could be "risky" if used incor
 
 If I want my printer to light itself on fire, I should be able to make my printer light itself on fire.
 
-See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) for more information on *some* of the differences from Klipper.
+See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html) for more information on *some* of the differences from Klipper.
 
 ## Features merged into the main branch:
 
