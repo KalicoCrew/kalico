@@ -1171,19 +1171,19 @@ pid_target:
 # For reference only, specifies the temperature the profile was calibrated for.
 # If you create a custom profile, either enter the temperature that profile is
 # intended to be used at or leave it blank.
-pid_tolerance: 
+pid_tolerance:
 # The tolerance that was used when autocalibrating the profile. If you define
 # a custom profile, leave it empty.
 control: <pid|pid_v>
 # Has to be either pid or pid_v.
 # This parameter is required.
-pid_kp: 
+pid_kp:
 # The P value for the PID Control.
 # This parameter is required.
 pid_ki:
 # The I value for the PID Control.
 # This parameter is required.
-pid_kd: 
+pid_kd:
 # The D value for the PID Control.
 # This parameter is required.
 ```
@@ -4150,8 +4150,10 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 sense_resistor:
-#   The resistance (in ohms) of the driver sense resistor. This
-#   parameter must be provided.
+#   The resistance (in ohms) of the driver sense resistor. This parameter
+#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
+#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
+#   or board schematic to confirm the correct value.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4261,8 +4263,10 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 sense_resistor:
-#   The resistance (in ohms) of the driver sense resistor. This
-#   parameter must be provided.
+#   The resistance (in ohms) of the driver sense resistor. This parameter
+#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
+#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
+#   or board schematic to confirm the correct value.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4387,8 +4391,10 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 sense_resistor:
-#   The resistance (in ohms) of the driver sense resistor. This
-#   parameter must be provided.
+#   The resistance (in ohms) of the driver sense resistor. This parameter
+#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
+#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
+#   or board schematic to confirm the correct value.
 #idle_current_percent: 100
 #   The percentage of the run_current the stepper driver will be
 #   lowered to when the idle timeout expires (you need to set up the
@@ -4624,8 +4630,10 @@ run_current:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
 sense_resistor:
-#   The resistance (in ohms) of the driver sense resistor. This
-#   parameter must be provided.
+#   The resistance (in ohms) of the driver sense resistor. This parameter
+#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
+#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
+#   or board schematic to confirm the correct value.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
