@@ -191,9 +191,9 @@ class Calibrater:
             self.compensation.clear_compensations("X")
 
             if (
-                self.x_start_point[0] is None or
-                self.x_end_point[0] is None or
-                self.x_start_point[1] is None
+                self.x_start_point[0] is None
+                or self.x_end_point[0] is None
+                or self.x_start_point[1] is None
             ):
                 raise gcmd.error(
                     """AXIS_TWIST_COMPENSATION for X axis requires
@@ -217,9 +217,9 @@ class Calibrater:
             self.compensation.clear_compensations("Y")
 
             if (
-                self.y_start_point[0] is None or
-                self.y_end_point[0] is None or
-                self.y_start_point[1] is None
+                self.y_start_point[0] is None
+                or self.y_end_point[0] is None
+                or self.y_start_point[1] is None
             ):
                 raise gcmd.error(
                     """AXIS_TWIST_COMPENSATION for Y axis requires
