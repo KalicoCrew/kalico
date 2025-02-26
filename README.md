@@ -124,6 +124,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [gcode_macros: !python templates](https://github.com/KalicoCrew/kalico/pull/360)
 
+- [gcode_macros: !!include macros/my_macro.py](https://github.com/KalicoCrew/kalico/pull/578)
+
 - [core: action_log](https://github.com/KalicoCrew/kalico/pull/367)
 
 - [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
