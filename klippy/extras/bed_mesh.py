@@ -174,7 +174,7 @@ class BedMesh:
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
         if get_danger_options().log_bed_mesh_at_startup:
-            self.bmc.print_generated_points(logging.info)
+            self.bmc.print_generated_points(logging.info, truncate=True)
 
     def set_mesh(self, mesh):
         if mesh is not None and self.fade_end != self.FADE_DISABLE:
@@ -509,7 +509,7 @@ class BedMeshCalibrate:
                 )
             self.substituted_indices[i] = valid_coords
 
-    def print_generated_points(self, print_func):
+    def print_generated_points(self, print_func, truncate=False):
         x_offset = y_offset = 0.0
         probe = self.printer.lookup_object("probe", None)
         if probe is not None:
@@ -518,6 +518,10 @@ class BedMeshCalibrate:
             "bed_mesh: generated points\nIndex |  Tool Adjusted  |   Probe"
         )
         for i, (x, y) in enumerate(self.points):
+            if i >= 50 and truncate:
+                end = len(self.points) - 1
+                print_func("...points %d through %d truncated" % (i, end))
+                break
             adj_pt = "(%.1f, %.1f)" % (x - x_offset, y - y_offset)
             mesh_pt = "(%.1f, %.1f)" % (x, y)
             print_func("  %-4d| %-16s| %s" % (i, adj_pt, mesh_pt))
@@ -855,8 +859,6 @@ class BedMeshCalibrate:
         if need_cfg_update:
             self._verify_algorithm(gcmd.error)
             self._generate_points(gcmd.error, probe_method)
-            gcmd.respond_info("Generating new points...")
-            self.print_generated_points(gcmd.respond_info)
             pts = self._get_adjusted_points()
             self.probe_helper.update_probe_points(pts, 3)
             msg = "\n".join(
