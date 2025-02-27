@@ -8,7 +8,6 @@ All dates in this document are approximate.
 
 ## Changes
 
-
 20250207: The `driver_CS` parameter has been added to tmc5160. Previously the
 CS value was nearly always set to 31. Now, the default is 31, but may be changed.
 
