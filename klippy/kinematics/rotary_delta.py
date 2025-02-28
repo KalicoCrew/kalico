@@ -109,8 +109,7 @@ class RotaryDeltaKinematics:
         max_xy = math.sqrt(self.max_xy2)
         self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, 0.0)
         self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, 0.0)
-        self.set_position([0.0, 0.0, 0.0], ())
-        self.supports_dual_carriage = False
+        self.set_position([0.0, 0.0, 0.0], "")
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
@@ -123,7 +122,7 @@ class RotaryDeltaKinematics:
         for rail in self.rails:
             rail.set_position(newpos)
         self.limit_xy2 = -1.0
-        if tuple(homing_axes) == (0, 1, 2):
+        if homing_axes == "xyz":
             self.need_home = False
 
     def clear_homing_state(self, axes):

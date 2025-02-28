@@ -852,7 +852,7 @@ class DockableProbe:
 
         tpos = self.toolhead.get_position()
         self.toolhead.set_position(
-            [tpos[0], tpos[1], 0.0, tpos[3]], homing_axes=[2]
+            [tpos[0], tpos[1], 0.0, tpos[3]], homing_axes="z"
         )
         self.toolhead.manual_move([None, None, self.z_hop], self.lift_speed)
         kin = self.toolhead.get_kinematics()
