@@ -83,7 +83,15 @@ DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PF0,PF1");
 static void
 enable_clock_stm32g4(void)
 {
-    uint32_t pll_base = 4000000, pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
+// klipper supports 8, 12, 16, 20, 24, and 25 MHz crystals on HSE
+#if CONFIG_CLOCK_REF_FREQ % 5000000 == 0
+    uint32_t pll_base = 5000000;
+#elif CONFIG_CLOCK_REF_FREQ % 4000000 == 0
+    uint32_t pll_base = 4000000;
+#else
+#error Unknown pll_base for CLOCK_REF_FREQ
+#endif
+    uint32_t pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure 150Mhz PLL from external crystal (HSE)
         uint32_t div = CONFIG_CLOCK_REF_FREQ / pll_base - 1;
