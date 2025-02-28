@@ -109,6 +109,7 @@ class RotaryDeltaKinematics:
         max_xy = math.sqrt(self.max_xy2)
         self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, 0.0)
         self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, 0.0)
+        self.supports_dual_carriage = False
         self.set_position([0.0, 0.0, 0.0], "")
 
     def get_steppers(self):
@@ -125,9 +126,12 @@ class RotaryDeltaKinematics:
         if homing_axes == "xyz":
             self.need_home = False
 
-    def clear_homing_state(self, axes):
+    def note_z_not_homed(self):
+        self.clear_homing_state("z")
+
+    def clear_homing_state(self, clear_axes):
         # Clearing homing state for each axis individually is not implemented
-        if 0 in axes or 1 in axes or 2 in axes:
+        if clear_axes:
             self.limit_xy2 = -1
             self.need_home = True
 

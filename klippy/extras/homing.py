@@ -280,8 +280,7 @@ class Homing:
         print_time = self.toolhead.get_last_move_time()
         affected_rails = set()
         for axis in homing_axes:
-            axis_name = "xyz"[axis]  # only works for cartesian
-            partial_rails = self.toolhead.get_active_rails_for_axis(axis_name)
+            partial_rails = self.toolhead.get_active_rails_for_axis(axis)
             affected_rails = affected_rails | set(partial_rails)
 
         dwell_time = 0.0
@@ -330,7 +329,7 @@ class Homing:
 
         needs_rehome = False
         retract_dist = hi.retract_dist
-        if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
+        if hmove.moved_less_than_dist(hi.min_home_dist, force_axes):
             needs_rehome = True
             retract_dist = hi.min_home_dist
 

@@ -142,9 +142,12 @@ class DeltaKinematics:
         if homing_axes == "xyz":
             self.need_home = False
 
-    def clear_homing_state(self, axes):
+    def note_z_not_homed(self):
+        self.clear_homing_state("z")
+
+    def clear_homing_state(self, clear_axes):
         # Clearing homing state for each axis individually is not implemented
-        if 0 in axes or 1 in axes or 2 in axes:
+        if clear_axes:
             self.limit_xy2 = -1
             self.need_home = True
 
