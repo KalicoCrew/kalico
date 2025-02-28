@@ -7,6 +7,8 @@
 # Output directory
 OUT=out/
 
+$(shell ./scripts/find-firmware-extras.sh)
+
 # Kconfig includes
 export KCONFIG_CONFIG     ?= $(CURDIR)/.config
 -include $(KCONFIG_CONFIG)
@@ -63,6 +65,7 @@ endif
 
 # Include board specific makefile
 include src/Makefile
+-include src/extras/Makefile
 -include src/$(patsubst "%",%,$(CONFIG_BOARD_DIRECTORY))/Makefile
 
 ################ Main build rules
