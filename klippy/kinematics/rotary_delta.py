@@ -127,6 +127,12 @@ class RotaryDeltaKinematics:
         if tuple(homing_axes) == (0, 1, 2):
             self.need_home = False
 
+    def clear_homing_state(self, axes):
+        # Clearing homing state for each axis individually is not implemented
+        if 0 in axes or 1 in axes or 2 in axes:
+            self.limit_xy2 = -1
+            self.need_home = True
+
     def home(self, homing_state):
         # All axes are homed simultaneously
         homing_state.set_axes([0, 1, 2])
@@ -137,8 +143,7 @@ class RotaryDeltaKinematics:
         homing_state.home_rails(self.rails, forcepos, self.home_position)
 
     def _motor_off(self, print_time):
-        self.limit_xy2 = -1.0
-        self.need_home = True
+        self.clear_homing_state((0, 1, 2))
 
     def check_move(self, move):
         end_pos = move.end_pos
