@@ -286,7 +286,7 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
             "current_range", current_range, minval=current_range, maxval=3
         )
         self.fields.set_field("current_range", self.current_range)
-        self.cs = config.getint("driver_CS", 31, minval=0, maxval=31)
+        self.cs = config.getint("driver_CS", None, minval=0, maxval=31)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -353,7 +353,7 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
             self.req_home_current,
         )
 
-    def apply_current(self, print_time):
+    def apply_current(self, print_time, homing=False):
         gscaler, irun, ihold = self._calc_current(
             self.actual_current, self.req_hold_current
         )
