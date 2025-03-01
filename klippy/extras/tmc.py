@@ -859,7 +859,6 @@ class BaseTMCCurrentHelper:
                 self.req_home_current,
                 self.req_hold_current,
                 print_time,
-                homing=True,
             )
             return self.current_change_dwell_time
         elif not pre_homing and self.needs_run_current_change():
@@ -878,9 +877,10 @@ class BaseTMCCurrentHelper:
             return False
         return True
 
-    def set_current(
-        self, new_current, hold_current, print_time, force=False, homing=False
-    ):
+    def apply_current(self, print_time):
+        pass
+
+    def set_current(self, new_current, hold_current, print_time, force=False):
         if not self.needs_current_changes(new_current, hold_current, force):
             return
 
@@ -888,7 +888,7 @@ class BaseTMCCurrentHelper:
             self.set_hold_current(hold_current)
 
         self.set_actual_current(new_current)
-        self.apply_current(print_time, homing)
+        self.apply_current(print_time)
 
 
 # Helper to configure StallGuard and CoolStep minimum velocity
