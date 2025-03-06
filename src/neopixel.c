@@ -13,6 +13,8 @@
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // sched_shutdown
 
+// kick
+
 // The WS2812 uses a bit-banging protocol where each bit is
 // transmitted as a gpio high pulse of variable length.  The various
 // specs are unclear, but it is believed the timing requirements are:
