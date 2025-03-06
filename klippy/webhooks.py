@@ -206,6 +206,7 @@ class ServerSocket:
 
             os.chmod(socket_path, mode_int)
 
+
 class ClientConnection:
     def __init__(self, server, sock):
         self.printer = server.printer
