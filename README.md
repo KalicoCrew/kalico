@@ -22,6 +22,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [core: rotate log file at every restart](https://github.com/KalicoCrew/kalico/pull/181)
 
+- [core: options for API server socket file mode, user, and group](https://github.com/KalicoCrew/kalico/pull/612)
+
 - [fan: normalising Fan PWM power](https://github.com/KalicoCrew/kalico/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
 - [fan: reverse FAN](https://github.com/KalicoCrew/kalico/pull/51) ([klipper#4983](https://github.com/Klipper3d/klipper/pull/4983))
