@@ -472,8 +472,23 @@ def main():
     opts.add_option(
         "-a",
         "--api-server",
-        dest="apiserver",
+        dest="apiserver_file",
         help="api server unix domain socket filename",
+    )
+    opts.add_option(
+        "--api-server-user",
+        dest="apiserver_user",
+        help="api server unix domain socket user",
+    )
+    opts.add_option(
+        "--api-server-group",
+        dest="apiserver_group",
+        help="api server unix domain socket group",
+    )
+    opts.add_option(
+        "--api-server-file-mode",
+        dest="apiserver_file_mode",
+        help="api server unix domain socket file mode",
     )
     opts.add_option(
         "-l",
@@ -516,7 +531,10 @@ def main():
         opts.error("Incorrect number of arguments")
     start_args = {
         "config_file": args[0],
-        "apiserver": options.apiserver,
+        "apiserver_file": options.apiserver_file,
+        "apiserver_user": options.apiserver_user,
+        "apiserver_group": options.apiserver_group,
+        "apiserver_file_mode": options.apiserver_file_mode,
         "start_reason": "startup",
     }
 

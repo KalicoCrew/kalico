@@ -3,7 +3,7 @@
 # Copyright (C) 2020 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license
-import logging, socket, os, sys, errno, json, collections
+import logging, socket, os, sys, errno, json, collections, pwd, grp
 from . import gcode
 from . import APP_NAME
 from .extras.danger_options import get_danger_options
@@ -125,7 +125,7 @@ class ServerSocket:
         self.sock = self.fd_handle = None
         self.clients = {}
         start_args = printer.get_start_args()
-        server_address = start_args.get("apiserver")
+        server_address = start_args.get("apiserver_file")
         is_fileinput = start_args.get("debuginput") is not None
         if not server_address or is_fileinput:
             # Do not enable server
@@ -134,6 +134,7 @@ class ServerSocket:
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.setblocking(0)
         self.sock.bind(server_address)
+        self.__apply_permission_options_to_socket(server_address, start_args)
         self.sock.listen(1)
         self.fd_handle = self.reactor.register_fd(
             self.sock.fileno(), self._handle_accept
@@ -189,6 +190,21 @@ class ServerSocket:
                     client.close()
         return False, ""
 
+    def __apply_permission_options_to_socket(self, socket_path, start_args):
+        user = start_args.get("apiserver_user")
+        group = start_args.get("apiserver_group")
+        file_mode = start_args.get("apiserver_file_mode")
+
+        if user is not None or group is not None:
+            uid = -1 if user is None else pwd.getpwnam(user).pw_uid
+            gid = -1 if group is None else grp.getgrnam(group).gr_gid
+
+            os.chown(socket_path, uid, gid)
+
+        if file_mode is not None:
+            mode_int = int(file_mode, 8)
+
+            os.chmod(socket_path, mode_int)
 
 class ClientConnection:
     def __init__(self, server, sock):
