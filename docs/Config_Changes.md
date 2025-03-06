@@ -8,6 +8,9 @@ All dates in this document are approximate.
 
 ## Changes
 
+20250207: The `driver_CS` parameter has been added to tmc5160. Previously the
+CS value was nearly always set to 31. Now, the default is 31, but may be changed.
+
 20250121: The `second_homing_speed` default value in the stepper config section
 is now set to `homing_speed` if sensorless homing is enabled.
 

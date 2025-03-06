@@ -854,7 +854,7 @@ class DockableProbe:
         )
         self.toolhead.manual_move([None, None, self.z_hop], self.lift_speed)
         kin = self.toolhead.get_kinematics()
-        kin.note_z_not_homed()
+        kin.clear_homing_state([2])
         self.last_z = self.toolhead.get_position()[2]
 
     #######################################################################

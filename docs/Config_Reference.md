@@ -373,7 +373,8 @@ max_z_accel:
 ### ⚠️ Cartesian Kinematics with limits for X and Y axes
 
 Behaves exactly the as cartesian kinematics, but allows to set a velocity and
-acceleration limit for X and Y axis. This also makes command [`SET_KINEMATICS_LIMIT`](./G-Codes.md#set_kinematics_limit) available to sets these limits at runtime.
+acceleration limit for X and Y axis. This also makes command
+[`SET_KINEMATICS_LIMIT`](./G-Codes.md#set_kinematics_limit) available to sets these limits at runtime.
 
 
 ```
@@ -3441,7 +3442,12 @@ sensor_type: temperature_host
 
 ### DS18B20 temperature sensor
 
-DS18B20 is a 1-wire (w1) digital temperature sensor. Note that this sensor is not intended for use with extruders and heater beds, but rather for monitoring ambient temperature (C). These sensors have range up to 125 C, so are usable for e.g. chamber temperature monitoring. They can also function as simple fan/heater controllers. DS18B20 sensors are only supported on the "host mcu", e.g. the Raspberry Pi. The w1-gpio Linux kernel module must be installed.
+DS18B20 is a 1-wire (w1) digital temperature sensor. Note that this sensor
+is not intended for use with extruders and heater beds, but rather for monitoring
+ambient temperature (C). These sensors have range up to 125 C, so are usable for
+e.g. chamber temperature monitoring. They can also function as simple fan/heater
+controllers. DS18B20 sensors are only supported on the "host mcu", e.g. the
+Raspberry Pi. The w1-gpio Linux kernel module must be installed.
 
 ```
 sensor_type: DS18B20
@@ -3458,7 +3464,8 @@ serial_no:
 
 ### Combined temperature sensor
 
-Combined temperature sensor is a virtual temperature sensor based on several other sensors. This sensor can be used with extruders, heater_generic and heater beds.
+Combined temperature sensor is a virtual temperature sensor based on several other
+sensors. This sensor can be used with extruders, heater_generic and heater beds.
 
 ```
 sensor_type: temperature_combined
@@ -4687,6 +4694,16 @@ sense_resistor:
 #driver_CHM: 0
 #driver_VHIGHFS: 0
 #driver_VHIGHCHM: 0
+#driver_CS: 31
+#   The current scale value for the TMC driver. The ideal `driver_CS` value may
+#   be found by setting the `CS` value on the tmc5160_calculations.xlsx spreadsheet,
+#   under the chopper tab, so that the Rsense value in the spreadsheet matches
+#   `sense_resistor`. While it's not necessary to change
+#   the CS value, it can be helpful to reach adequate hysteresis values on high
+#   current drivers paired with low current motors. The default for this value is 31,
+#   meaning only globalscaler will be used to scale the current during normal operation.
+#   Errors will be invoked if the CS value is set too low, as the target current
+#   will not be able to be reached.
 #driver_DISS2G: 0
 #driver_DISS2VS: 0
 #driver_PWM_AUTOSCALE: True
@@ -5847,7 +5864,7 @@ Octoprint as they will conflict, and 1 will fail to initialize
 properly likely aborting your print.
 
 If you use Octoprint and stream gcode over the serial port instead of
-printing from virtual_sd, then remo **M1** and **M0** from _Pausing commands_
+printing from virtual_sd, then remove **M1** and **M0** from _Pausing commands_
 in _Settings > Serial Connection > Firmware & protocol_ will prevent
 the need to start print on the Palette 2 and unpausing in Octoprint
 for your print to begin.
