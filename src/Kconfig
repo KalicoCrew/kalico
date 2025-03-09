@@ -110,9 +110,13 @@ config WANT_DISPLAYS
     bool
     depends on HAVE_GPIO
     default y
-config WANT_SENSORS
+config WANT_THERMOCOUPLE
     bool
-    depends on WANT_GPIO_I2C || WANT_GPIO_SPI
+    depends on HAVE_GPIO_SPI
+    default y
+config WANT_ADXL345
+    bool
+    depends on HAVE_GPIO_SPI
     default y
 config WANT_LIS2DW
     bool
@@ -121,6 +125,14 @@ config WANT_LIS2DW
 config WANT_LDC1612
     bool
     depends on WANT_GPIO_I2C
+    default y
+config WANT_MPU9250
+    bool
+    depends on HAVE_GPIO_I2C
+    default y
+config WANT_SENSOR_ANGLE
+    bool
+    depends on HAVE_GPIO_SPI
     default y
 config WANT_HX71X
     bool
@@ -152,8 +164,9 @@ config WANT_GPIO_I2C
     default y
 config NEED_SENSOR_BULK
     bool
-    depends on WANT_SENSORS || WANT_LIS2DW || WANT_LDC1612 || WANT_HX71X \
-        || WANT_ADS1220
+    depends on WANT_ADXL345 || WANT_LIS2DW || WANT_ADXL345 \
+        || WANT_LDC1612 || WANT_HX71X || WANT_ADS1220 \
+        || WANT_SENSOR_ANGLE
     default y
 config WANT_OPTIMIZE_SIZE
     bool
@@ -175,12 +188,15 @@ config WANT_GPIO_BITBANGING
 config WANT_DISPLAYS
     bool "Support LCD devices"
     depends on HAVE_GPIO
-config WANT_SENSORS
-    bool "Support external sensor devices"
-    depends on WANT_GPIO_I2C || WANT_GPIO_SPI
+config WANT_ADXL345
+    bool "Support adxl accelerometers"
+    depends on WANT_GPIO_SPI
 config WANT_LIS2DW
     bool "Support lis2dw and lis3dh 3-axis accelerometers"
     depends on WANT_GPIO_SPI || WANT_GPIO_I2C
+config WANT_MPU9250
+    bool "Support MPU accelerometers"
+    depends on WANT_GPIO_I2C
 config WANT_LDC1612
     bool "Support ldc1612 eddy current sensor"
     depends on WANT_GPIO_I2C
@@ -190,6 +206,9 @@ config WANT_HX71X
 config WANT_ADS1220
     bool "Support ADS 1220 ADC chip"
     depends on WANT_GPIO_SPI
+config WANT_SENSOR_ANGLE
+    bool "Support angle sensors"
+    depends on HAVE_GPIO_SPI
 config WANT_SOFTWARE_I2C
     bool "Support software based I2C \"bit-banging\""
     depends on HAVE_GPIO && HAVE_GPIO_I2C
