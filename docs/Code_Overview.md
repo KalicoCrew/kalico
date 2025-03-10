@@ -330,6 +330,49 @@ The following may also be useful:
   sure to place a copyright notice at the top of the module. See the
   existing modules for the preferred format.
 
+## Adding firmware modules
+
+In addition to adding new host modules, it's possible to add new
+firmware modules which will be auto-discovered by the firmware
+build system. This is especially useful for extensions that live
+in their own repository. While host modules are auto-discovered by
+name, firmware modules need to have a `Makefile` and a `Kconfig`
+file along with their source files.
+
+Kalico will include the `Makefile`s and `Kconfig`s inside every
+directory inside `src/extras`. For example, in order to create a new
+firmware module called `my-module`, create the following files:
+
+`src/extras/my-module/Kconfig`:
+```
+config WANT_NEW_THING
+    bool "Include the new thing!"
+```
+
+`src/extras/my-module/Makefile`:
+```
+dirs-y += src/extras/my-module
+src-$(CONFIG_WANT_NEW_THING) += extras/my-module/new-thing.c
+```
+
+`src/extras/my-module/new-thing.c`:
+```
+/* firmware source goes here */
+```
+
+Pay special attention to the `Makefile` -- the directory (with
+`src` prefix) needs to be added to `dirs-y` (or
+`dirs-$(CONFIG_WANT_NEW_THING)`), and the source files need
+to be explicitly added to `src-*`.
+
+When a user invokes `menuconfig`, they'll have a new "Include
+the new thing!" option that they can enable or disable as desired.
+The full `Kconfig` language is available for more complex
+configurations.
+
+The `my-module` directory can also be a symbolic link to a directory
+that lives outside of the Kalico source tree.
+
 ## Adding new kinematics
 
 This section provides some tips on adding support to Kalico for
