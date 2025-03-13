@@ -5,14 +5,18 @@ if [ ! -d src/extras ] ; then
     exit 1
 fi
 
-find src/extras -name Kconfig -depth 2 | sed 's,\(.*\),source "\1",' > src/extras/Kconfig.tmp
+find_extras() {
+    find -L src/extras -mindepth 2 -maxdepth 2 -name $1
+}
+
+find_extras Kconfig | sed 's,\(.*\),source "\1",' > src/extras/Kconfig.tmp
 
 if [ -s src/extras/Kconfig.tmp ] ; then
     echo 'menu "Firmware Extras"' > src/extras/Kconfig
     cat src/extras/Kconfig.tmp >> src/extras/Kconfig
     echo 'endmenu' >> src/extras/Kconfig
 
-    find src/extras -name Makefile -depth 2 | sed 's,\(.*\),include \1,' > src/extras/Makefile
+    find_extras Makefile | sed 's,\(.*\),include \1,' > src/extras/Makefile
 else
     echo -n '' > src/extras/Kconfig
     echo -n '' > src/extras/Makefile
