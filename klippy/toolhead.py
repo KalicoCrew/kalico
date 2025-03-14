@@ -474,7 +474,7 @@ class ToolHead:
                     move.accel,
                 )
             if move.axes_d[3]:
-                self.extruder.move(next_move_time, move)
+                self.extruder.process_move(next_move_time, move)
             next_move_time = (
                 next_move_time + move.accel_t + move.cruise_t + move.decel_t
             )
