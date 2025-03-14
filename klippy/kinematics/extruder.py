@@ -1,6 +1,6 @@
 # Code for handling printer nozzle extruders
 #
-# Copyright (C) 2016-2022  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
@@ -262,9 +262,6 @@ class PrinterExtruder:
             desc=self.cmd_ACTIVATE_EXTRUDER_help,
         )
 
-    def update_move_time(self, flush_time, clear_history_time):
-        self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
-
     def get_status(self, eventtime):
         sts = self.heater.get_status(eventtime)
         sts["can_extrude"] = self.heater.can_extrude
@@ -422,9 +419,6 @@ class DummyExtruder:
     def __init__(self, printer):
         self.printer = printer
 
-    def update_move_time(self, flush_time, clear_history_time):
-        pass
-
     def check_move(self, move):
         raise move.move_error("Extrude when no extruder present")
 
@@ -441,7 +435,7 @@ class DummyExtruder:
         raise self.printer.command_error("Extruder not configured")
 
     def get_trapq(self):
-        raise self.printer.command_error("Extruder not configured")
+        return None
 
 
 def add_printer_objects(config):
