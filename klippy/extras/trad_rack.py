@@ -2899,12 +2899,30 @@ class TradRackExtruderSyncManager:
         for stepper, prev_rotation_dist, _ in self._synced_steppers.values():
             stepper.set_rotation_dist(prev_rotation_dist / multiplier)
 
+    def _transfer_step_generator(
+        self, extruder_stepper, from_toolhead, to_toolhead
+    ):
+        step_generator = extruder_stepper.stepper.generate_steps
+
+        try:
+            from_toolhead.step_generators.remove(step_generator)
+        except ValueError:
+            pass
+
+        if step_generator not in to_toolhead.step_generators:
+            to_toolhead.register_step_generator(step_generator)
+
     def link_extruder_stepper(self, extruder_stepper):
         if extruder_stepper in self.extra_extruder_steppers:
             return
 
         # add the extruder stepper
         self.extra_extruder_steppers.append(extruder_stepper)
+
+        # transfer step generator from main toolhead to tr toolhead
+        self._transfer_step_generator(
+            extruder_stepper, self.toolhead, self.tr_toolhead
+        )
 
         # set stepper kinematics to match fil driver rail
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -2940,6 +2958,11 @@ class TradRackExtruderSyncManager:
         )
         extruder_stepper.stepper.set_stepper_kinematics(stepper_kinematics)
         extruder_stepper.stepper.set_trapq(None)
+
+        # transfer step generator from tr toolhead to main toolhead
+        self._transfer_step_generator(
+            extruder_stepper, self.tr_toolhead, self.toolhead
+        )
 
     def get_extruder_steppers(self):
         return self.extra_extruder_steppers
