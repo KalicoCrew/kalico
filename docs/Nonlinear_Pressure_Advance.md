@@ -232,9 +232,14 @@ The last tuning tower was printed with the printer set to 0.120 linear offset, 0
 
 This is a lot harder to see the effects from, but extreme sidelighting shows that the leftmost and rightmost transitions on the front face benefit from a height of 18mm \* 0.0001, indicating that the `pressure_advance_time_offset` should be set to 0.018. This means that the pressure advance should occur 1.8 milliseconds early in order to best synchronize flow with the toolhead motion.
 
-Finally, below is a comparison of Voron test cubes printed with three different linear PA (no time offset) versus the nonlinear tuning.
+### Performance Comparison
+
+This is a comparison of Voron test cubes printed with three different linear PA (no time offset) versus the nonlinear tuning.
 
 The perimeters were printed at a modest 3000 mm/s^2 acceleration for maximum quality, but even so the differences are visible.
+At higher accelerations the differences will be more visible.
+
+Additionally, this comparison does not compare with main branch or vanilla Klipper, which do not have the extruder synced to the input shaping.
 
 ![calibration cube comparison of pressure advance](img/PA_photos/voroncube.jpg)
 
