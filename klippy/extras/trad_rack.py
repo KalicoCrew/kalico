@@ -2897,7 +2897,7 @@ class TradRackExtruderSyncManager:
                 " synced to extruder"
             )
         for stepper, prev_rotation_dist, _ in self._synced_steppers.values():
-            stepper.set_rotation_dist(prev_rotation_dist / multiplier)
+            stepper.set_rotation_distance(prev_rotation_dist / multiplier)
 
     def _transfer_step_generator(
         self, extruder_stepper, from_toolhead, to_toolhead
