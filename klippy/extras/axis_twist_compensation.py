@@ -255,49 +255,6 @@ class Calibrater:
         self.current_axis = axis
         self._calibration(gcmd, probe_points, nozzle_points, interval_dist)
 
-    def _calculate_corrections(self, coordinates):
-        # Extracting x, y, and z values from coordinates
-        x_coords = [coord[0] for coord in coordinates]
-        y_coords = [coord[1] for coord in coordinates]
-        z_coords = [coord[2] for coord in coordinates]
-
-        # Calculate the desired point (average of all corner points in z)
-        # For a general case, we should extract the unique
-        # combinations of corner points
-        z_corners = [
-            z_coords[i]
-            for i, coord in enumerate(coordinates)
-            if (coord[0] in [x_coords[0], x_coords[-1]])
-            and (coord[1] in [y_coords[0], y_coords[-1]])
-        ]
-        z_desired = sum(z_corners) / len(z_corners)
-
-        # Calculate average deformation per axis
-        unique_x_coords = sorted(set(x_coords))
-        unique_y_coords = sorted(set(y_coords))
-
-        avg_z_x = []
-        for x in unique_x_coords:
-            indices = [
-                i for i, coord in enumerate(coordinates) if coord[0] == x
-            ]
-            avg_z = sum(z_coords[i] for i in indices) / len(indices)
-            avg_z_x.append(avg_z)
-
-        avg_z_y = []
-        for y in unique_y_coords:
-            indices = [
-                i for i, coord in enumerate(coordinates) if coord[1] == y
-            ]
-            avg_z = sum(z_coords[i] for i in indices) / len(indices)
-            avg_z_y.append(avg_z)
-
-        # Calculate corrections to reach the desired point
-        x_corrections = [z_desired - avg for avg in avg_z_x]
-        y_corrections = [z_desired - avg for avg in avg_z_y]
-
-        return x_corrections, y_corrections
-
     def _calculate_probe_points(
         self, nozzle_points, probe_x_offset, probe_y_offset
     ):
