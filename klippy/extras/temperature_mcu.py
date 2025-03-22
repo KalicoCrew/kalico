@@ -139,6 +139,7 @@ class PrinterTemperatureMCU:
         raise self.printer.config_error(
             "MCU temperature not supported on %s" % (self.mcu_type,)
         )
+        
     
     def config_gd32e230x8(self):
         self.slope = 3.3 / -.004300
