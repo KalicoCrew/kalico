@@ -170,7 +170,7 @@ class MCU_stepper:
                 )
         else:
             step_cmd_tag = self._mcu.lookup_command(
-                "queue_step oid=%c interval=%u count=%hu " "add=%hi"
+                "queue_step oid=%c interval=%u count=%hu add=%hi"
             ).get_command_tag()
         dir_cmd_tag = self._mcu.lookup_command(
             "set_next_step_dir oid=%c dir=%c"
