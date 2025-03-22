@@ -598,7 +598,7 @@ class ToolHead:
         ffi_lib.trapq_set_position(
             self.trapq, self.print_time, newpos[0], newpos[1], newpos[2]
         )
-        self.commanded_pos[:] = newpos
+        self.commanded_pos[:3] = newpos[:3]
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
 
