@@ -1,6 +1,6 @@
 # G-Code G1 movement commands (and associated coordinate manipulation)
 #
-# Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
@@ -62,6 +62,7 @@ class GCodeMove:
         self.base_position = [0.0, 0.0, 0.0, 0.0]
         self.last_position = [0.0, 0.0, 0.0, 0.0]
         self.homing_position = [0.0, 0.0, 0.0, 0.0]
+        self.axis_map = {"X": 0, "Y": 1, "Z": 2, "E": 3}
         self.speed = 25.0
         self.speed_factor = 1.0 / 60.0
         self.extrude_factor = 1.0
@@ -152,23 +153,20 @@ class GCodeMove:
         # Move
         params = gcmd.get_command_parameters()
         try:
-            for pos, axis in enumerate("XYZ"):
+            for axis, pos in self.axis_map.items():
                 if axis in params:
                     v = float(params[axis])
-                    if not self.absolute_coord:
+                    absolute_coord = self.absolute_coord
+                    if axis == "E":
+                        v *= self.extrude_factor
+                        if not self.absolute_extrude:
+                            absolute_coord = False
+                    if not absolute_coord:
                         # value relative to position of last move
                         self.last_position[pos] += v
                     else:
                         # value relative to base coordinate position
                         self.last_position[pos] = v + self.base_position[pos]
-            if "E" in params:
-                v = float(params["E"]) * self.extrude_factor
-                if not self.absolute_coord or not self.absolute_extrude:
-                    # value relative to position of last move
-                    self.last_position[3] += v
-                else:
-                    # value relative to base coordinate position
-                    self.last_position[3] = v + self.base_position[3]
             if "F" in params:
                 gcode_speed = float(params["F"])
                 if gcode_speed <= 0.0:
