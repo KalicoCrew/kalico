@@ -187,7 +187,7 @@ Make sure to adjust the factors in the PA test macro for Bowden printers.
 10. Evaluate the tower, looking mostly at the front side. This can be *very* subtle so make sure you use good lighting to reveal the differences. Set the `pressure_advance_time_offset` in your configuration based on the height that looks best there and the `factor` from the test macro code, and restart.
 11. Run the PA test macro again with `testparam` of 1 and fine-tune your settings using the procedure in step 8 again.
 
-#### SV06 Plus example
+### SV06 Plus example
 
 This is an example of tuning nonlinear PA on a Sovol SV06 Plus (featuring a standard volcano length hotend with a slightly longer nozzle tip) at 150mm/s and 5k acceleration using standard PLA at 215 C.
 
