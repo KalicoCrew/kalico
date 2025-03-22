@@ -9,14 +9,8 @@
 #include <string.h> // memset
 #include "compiler.h" // __visible
 #include "itersolve.h" // struct stepper_kinematics
-#include "list.h" // list_node
 #include "pyhelper.h" // errorf
 #include "trapq.h" // move_get_distance
-
-struct pa_params {
-    double pressure_advance, active_print_time;
-    struct list_node node;
-};
 
 // Without pressure advance, the extruder stepper position is:
 //     extruder_position(t) = nominal_position(t)
@@ -58,25 +52,30 @@ extruder_integrate_time(double base, double start_v, double half_accel
 
 // Calculate the definitive integral of extruder for a given move
 static double
-pa_move_integrate(struct move *m, int axis, struct list_head *pa_list
+pa_move_integrate(struct move *m, int axis, double pressure_advance
                   , double base, double start, double end, double time_offset)
 {
     if (start < 0.)
         start = 0.;
     if (end > m->move_t)
         end = m->move_t;
-    // Determine pressure_advance value
-    int can_pressure_advance = m->axes_r.x > 0. || m->axes_r.y > 0.;
-    double pressure_advance = 0.;
-    if (can_pressure_advance) {
-        struct pa_params *pa = list_last_entry(pa_list, struct pa_params, node);
-        while (unlikely(pa->active_print_time > m->print_time) &&
-                !list_is_first(&pa->node, pa_list)) {
-            pa = list_prev_entry(pa, node);
-        }
-        pressure_advance = pa->pressure_advance;
+    // figure out what to use for pressure advance
+    // use_pa_from_trapq is passed in via the move's axes_r.z field
+    // if this is True (not 0), we use the pressure advance value in the axes_r.y
+    // otherwise, we use the one passed in as an arg to this function (the stored one)
+    int use_pa_from_trapq = m->axes_r.z != 0.;
+    if (use_pa_from_trapq) {
+        pressure_advance = m->axes_r.y;
+    }
+    else {
+        int can_pressure_advance = m->axes_r.y != 0.;
+        if (!can_pressure_advance)
+            pressure_advance = 0.;
     }
     // Calculate base position and velocity with pressure advance
+    int can_pressure_advance = m->axes_r.x > 0. || m->axes_r.y > 0.;
+    if (!can_pressure_advance)
+        pressure_advance = 0.;
     double axis_r = m->axes_r.axis[axis - 'x'];
     double start_v = m->start_v * axis_r;
     double ha = m->half_accel * axis_r;
@@ -91,20 +90,22 @@ pa_move_integrate(struct move *m, int axis, struct list_head *pa_list
 // Calculate the definitive integral of the extruder over a range of moves
 static double
 pa_range_integrate(struct move *m, int axis, double move_time
-                   , struct list_head *pa_list, double hst)
+                   , double pressure_advance, double hst)
 {
     // Calculate integral for the current move
     double res = 0., start = move_time - hst, end = move_time + hst;
     double start_base = m->start_pos.axis[axis - 'x'];
-    res += pa_move_integrate(m, axis, pa_list, 0., start, move_time, start);
-    res -= pa_move_integrate(m, axis, pa_list, 0., move_time, end, end);
+    res += pa_move_integrate(m, axis, pressure_advance, 0.
+                             , start, move_time, start);
+    res -= pa_move_integrate(m, axis, pressure_advance, 0.
+                             , move_time, end, end);
     // Integrate over previous moves
     struct move *prev = m;
     while (unlikely(start < 0.)) {
         prev = list_prev_entry(prev, node);
         start += prev->move_t;
         double base = prev->start_pos.axis[axis - 'x'] - start_base;
-        res += pa_move_integrate(prev, axis, pa_list, base, start
+        res += pa_move_integrate(prev, axis, pressure_advance, base, start
                                  , prev->move_t, start);
     }
     // Integrate over future moves
@@ -112,14 +113,14 @@ pa_range_integrate(struct move *m, int axis, double move_time
         end -= m->move_t;
         m = list_next_entry(m, node);
         double base = m->start_pos.axis[axis - 'x'] - start_base;
-        res -= pa_move_integrate(m, axis, pa_list, base, 0., end, end);
+        res -= pa_move_integrate(m, axis, pressure_advance, base, 0., end, end);
     }
     return res;
 }
 
 struct extruder_stepper {
     struct stepper_kinematics sk;
-    struct list_head pa_list;
+    double pressure_advance, time_offset;
     double half_smooth_time, inv_half_smooth_time2;
 };
 
@@ -128,6 +129,15 @@ extruder_calc_position(struct stepper_kinematics *sk, struct move *m
                        , double move_time)
 {
     struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
+    move_time += es->time_offset;
+    while (unlikely(move_time < 0.)) {
+        m = list_prev_entry(m, node);
+        move_time += m->move_t;
+    }
+    while (unlikely(move_time >= m->move_t)) {
+        move_time -= m->move_t;
+        m = list_next_entry(m, node);
+    }
     double hst = es->half_smooth_time;
     int i;
     struct coord e_pos;
@@ -137,7 +147,7 @@ extruder_calc_position(struct stepper_kinematics *sk, struct move *m
             e_pos.axis[i] = m->axes_r.axis[i] * move_dist;
         } else {
             double area = pa_range_integrate(m, 'x' + i, move_time,
-                                             &es->pa_list, hst);
+                                             es->pressure_advance, hst);
             e_pos.axis[i] = area * es->inv_half_smooth_time2;
         }
         e_pos.axis[i] += m->start_pos.axis[i];
@@ -145,41 +155,32 @@ extruder_calc_position(struct stepper_kinematics *sk, struct move *m
     return e_pos.x + e_pos.y + e_pos.z;
 }
 
+static void
+extruder_note_generation_time(struct extruder_stepper *es)
+{
+    double pre_active = 0., post_active = 0.;
+    pre_active += es->half_smooth_time + es->time_offset;
+    if (pre_active < 0.) pre_active = 0.;
+    post_active += es->half_smooth_time - es->time_offset;
+    if (post_active < 0.) post_active = 0.;
+    es->sk.gen_steps_pre_active = pre_active;
+    es->sk.gen_steps_post_active = post_active;
+}
+
 void __visible
-extruder_set_pressure_advance(struct stepper_kinematics *sk, double print_time
-                              , double pressure_advance, double smooth_time)
+extruder_set_pressure_advance(struct stepper_kinematics *sk
+                              , double pressure_advance, double smooth_time
+                              , double time_offset)
 {
     struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    double hst = smooth_time * .5, old_hst = es->half_smooth_time;
+    double hst = smooth_time * .5;
     es->half_smooth_time = hst;
-    es->sk.gen_steps_pre_active = es->sk.gen_steps_post_active = hst;
-
-    // Cleanup old pressure advance parameters
-    double cleanup_time = sk->last_flush_time - (old_hst > hst ? old_hst : hst);
-    struct pa_params *first_pa = list_first_entry(
-            &es->pa_list, struct pa_params, node);
-    while (!list_is_last(&first_pa->node, &es->pa_list)) {
-        struct pa_params *next_pa = list_next_entry(first_pa, node);
-        if (next_pa->active_print_time >= cleanup_time) break;
-        list_del(&first_pa->node);
-        first_pa = next_pa;
-    }
-
+    es->time_offset = time_offset;
+    extruder_note_generation_time(es);
     if (! hst)
         return;
     es->inv_half_smooth_time2 = 1. / (hst * hst);
-
-    if (list_last_entry(&es->pa_list, struct pa_params, node)->pressure_advance
-            == pressure_advance) {
-        // Retain old pa_params
-        return;
-    }
-    // Add new pressure advance parameters
-    struct pa_params *pa = malloc(sizeof(*pa));
-    memset(pa, 0, sizeof(*pa));
-    pa->pressure_advance = pressure_advance;
-    pa->active_print_time = print_time;
-    list_add_tail(&pa->node, &es->pa_list);
+    es->pressure_advance = pressure_advance;
 }
 
 struct stepper_kinematics * __visible
@@ -189,22 +190,5 @@ extruder_stepper_alloc(void)
     memset(es, 0, sizeof(*es));
     es->sk.calc_position_cb = extruder_calc_position;
     es->sk.active_flags = AF_X | AF_Y | AF_Z;
-    list_init(&es->pa_list);
-    struct pa_params *pa = malloc(sizeof(*pa));
-    memset(pa, 0, sizeof(*pa));
-    list_add_tail(&pa->node, &es->pa_list);
     return &es->sk;
-}
-
-void __visible
-extruder_stepper_free(struct stepper_kinematics *sk)
-{
-    struct extruder_stepper *es = container_of(sk, struct extruder_stepper, sk);
-    while (!list_empty(&es->pa_list)) {
-        struct pa_params *pa = list_first_entry(
-                &es->pa_list, struct pa_params, node);
-        list_del(&pa->node);
-        free(pa);
-    }
-    free(sk);
 }
