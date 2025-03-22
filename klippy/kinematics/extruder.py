@@ -281,6 +281,9 @@ class PrinterExtruder:
     def get_trapq(self):
         return self.trapq
 
+    def get_axis_gcode_id(self):
+        return "E"
+
     def stats(self, eventtime):
         return self.heater.stats(eventtime)
 
@@ -440,6 +443,9 @@ class DummyExtruder:
 
     def get_trapq(self):
         return None
+
+    def get_axis_gcode_id(self):
+        return "E"
 
 
 def add_printer_objects(config):
