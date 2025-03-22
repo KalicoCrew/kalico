@@ -512,6 +512,7 @@ class RingingTest:
         yield "M220 S100"
         for line in gen_brim():
             yield line
+        yield "M106 S127"
         for line in gen_tower():
             yield line
         if final_gcode_id is not None:
