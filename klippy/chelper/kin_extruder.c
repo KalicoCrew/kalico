@@ -132,7 +132,7 @@ struct pressure_advance_params {
             double pressure_advance;
         };
         struct {
-            double linear_advance, linear_offset, linearization_velocity;
+            double linear_advance, nonlinear_offset, linearization_velocity;
         };
         double params[3];
     };
@@ -162,9 +162,9 @@ pressure_advance_tanh_model_func(double position, double pa_velocity
                                  , struct pressure_advance_params *pa_params)
 {
     position += pa_params->linear_advance * pa_velocity;
-    if (pa_params->linear_offset) {
+    if (pa_params->nonlinear_offset) {
         double rel_velocity = pa_velocity / pa_params->linearization_velocity;
-        position += pa_params->linear_offset * tanh(rel_velocity);
+        position += pa_params->nonlinear_offset * tanh(rel_velocity);
     }
     return position;
 }
@@ -174,9 +174,9 @@ pressure_advance_recipr_model_func(double position, double pa_velocity
                                    , struct pressure_advance_params *pa_params)
 {
     position += pa_params->linear_advance * pa_velocity;
-    if (pa_params->linear_offset) {
+    if (pa_params->nonlinear_offset) {
         double rel_velocity = pa_velocity / pa_params->linearization_velocity;
-        position += pa_params->linear_offset * (1. - 1. / (1. + rel_velocity));
+        position += pa_params->nonlinear_offset * (1. - 1. / (1. + rel_velocity));
     }
     return position;
 }

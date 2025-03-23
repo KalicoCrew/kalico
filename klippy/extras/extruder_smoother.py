@@ -8,8 +8,7 @@ import collections
 import importlib
 import math
 
-shaper_defs = importlib.import_module(".shaper_defs", "extras")
-shaper_calibrate = importlib.import_module(".shaper_calibrate", "extras")
+from . import shaper_calibrate, shaper_defs
 
 ExtruderSmootherCfg = collections.namedtuple(
     "ExtruderSmootherCfg", ("order", "freq_opt_range")
