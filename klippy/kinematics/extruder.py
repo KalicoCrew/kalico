@@ -94,10 +94,10 @@ class PANonLinearModel:
             self.linear_advance = config.getfloat(
                 "linear_advance", 0.0, minval=0.0
             )
-            self.linear_offset = config.getfloat(
-                "linear_offset", 0.0, minval=0.0
+            self.nonlinear_offset = config.getfloat(
+                "nonlinear_offset", 0.0, minval=0.0
             )
-            if self.linear_offset:
+            if self.nonlinear_offset:
                 self.linearization_velocity = config.getfloat(
                     "linearization_velocity", above=0.0
                 )
@@ -107,52 +107,52 @@ class PANonLinearModel:
                 )
         else:
             self.linear_advance = 0.0
-            self.linear_offset = 0.0
+            self.nonlinear_offset = 0.0
             self.linearization_velocity = 0.0
 
     def update(self, gcmd):
         self.linear_advance = gcmd.get_float(
             "ADVANCE", self.linear_advance, minval=0.0
         )
-        self.linear_offset = gcmd.get_float(
-            "OFFSET", self.linear_offset, minval=0.0
+        self.nonlinear_offset = gcmd.get_float(
+            "OFFSET", self.nonlinear_offset, minval=0.0
         )
         self.linearization_velocity = gcmd.get_float(
             "VELOCITY", self.linearization_velocity
         )
-        if self.linear_offset and self.linearization_velocity <= 0.0:
+        if self.nonlinear_offset and self.linearization_velocity <= 0.0:
             raise gcmd.error(
                 "VELOCITY must be set to a positive value "
                 "when OFFSET is non-zero"
             )
 
     def enabled(self):
-        return self.linear_advance > 0.0 or self.linear_offset > 0.0
+        return self.linear_advance > 0.0 or self.nonlinear_offset > 0.0
 
     def get_pa_params(self):
         # The order must match the order of parameters in the
         # pressure_advance_params struct in kin_extruder.c
         return (
             self.linear_advance,
-            self.linear_offset,
+            self.nonlinear_offset,
             self.linearization_velocity,
         )
 
     def get_status(self, eventtime):
         return {
             "linear_advance": self.linear_advance,
-            "linear_offset": self.linear_offset,
+            "nonlinear_offset": self.nonlinear_offset,
             "linearization_velocity": self.linearization_velocity,
         }
 
     def get_msg(self):
         return (
             "linear_advance: %.6f\n"
-            "linear_offset: %.6f\n"
+            "nonlinear_offset: %.6f\n"
             "linearization_velocity: %.6f"
             % (
                 self.linear_advance,
-                self.linear_offset,
+                self.nonlinear_offset,
                 self.linearization_velocity,
             )
         )
