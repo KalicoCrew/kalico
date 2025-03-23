@@ -157,13 +157,13 @@ When evaluating the tuning towers produced by the PA test macro, it's helpful to
 1. Install Kalico and make sure to use the `bleeding-edge-v2` branch.
 2. Set up the PA test macro as described in the Setup section, and make sure to set the desired acceleration in `[printer]`.
 3. Set up input shaping if you plan to use it at all. It affects the readability of the tuning tower. Set up extruder sync with `enabled_extruders: extruder`.
-4. in your printer configuration, set your `pressure_advance_model` to `tanh`, `linear_advance` to 0, `linear_offset` to 0, `linearization_velocity` to 1, and `pressure_advance_smooth_time` to 0.02. restart the printer to load the new settings.
-5. run the pa test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 1 to vary the `linear_offset`.
-6. Evaluate the tower, looking primarily at the left side. Set `linear_offset` in your printer config based on the height that looks best there (and the `factor` from the test macro code), and restart.
+4. in your printer configuration, set your `pressure_advance_model` to `tanh`, `linear_advance` to 0, `nonlinear_offset` to 0, `linearization_velocity` to 1, and `pressure_advance_smooth_time` to 0.02. restart the printer to load the new settings.
+5. run the pa test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 1 to vary the `nonlinear_offset`.
+6. Evaluate the tower, looking primarily at the left side. Set `nonlinear_offset` in your printer config based on the height that looks best there (and the `factor` from the test macro code), and restart.
 7. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 0 to vary the `linear_advance`.
 8. Evaluate the tower, looking mostly at both the left and front sides.
-    1. If the left side converges below the front side, then slightly decrease the `linear_offset` in your config, restart, and reprint the PA test macro with `testparam` 0.
-    2. If the left side converges above the front side, then slightly increase the `linear_offset` in your config, restart, and reprint the PA test macro with `testparam` 0.
+    1. If the left side converges below the front side, then slightly decrease the `nonlinear_offset` in your config, restart, and reprint the PA test macro with `testparam` 0.
+    2. If the left side converges above the front side, then slightly increase the `nonlinear_offset` in your config, restart, and reprint the PA test macro with `testparam` 0.
     3. If the left side converges at the same height as the front side, then use that height and the `factor` from the test macro code to set the `linear_advance` in your printer config, then restart.
 9. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 2 to vary the `pressure_advance_time_offset`.
 10. Evaluate the tower, looking mostly at the front side. This can be *very* subtle so make sure you use good lighting to reveal the differences. Set the `pressure_advance_time_offset` in your configuration based on the height that looks best there and the `factor` from the test macro code, and restart.
@@ -175,14 +175,14 @@ Make sure to adjust the factors in the PA test macro for Bowden printers.
 1. Install Kalico and make sure to use the `bleeding-edge-v2` branch.
 2. Set up the PA test macro as described in the Setup section, and make sure to set the desired acceleration in `[printer]`.
 3. Set up input shaping if you plan to use it at all. It affects the readability of the tuning tower. Set up extruder sync with `enabled_extruders: extruder`.
-4. In your printer configuration, set your `pressure_advance_model` to `tanh`, `linear_advance` to 0, `linear_offset` to 0, `linearization_velocity` to 2 (or potentially 3 for crazy performance printers, where high acceleration may cause the extruder acceleration demands to be too high with low linearization velocity), and `pressure_advance_smooth_time` to 0.02. Restart the printer to load the new settings.
+4. In your printer configuration, set your `pressure_advance_model` to `tanh`, `linear_advance` to 0, `nonlinear_offset` to 0, `linearization_velocity` to 2 (or potentially 3 for crazy performance printers, where high acceleration may cause the extruder acceleration demands to be too high with low linearization velocity), and `pressure_advance_smooth_time` to 0.02. Restart the printer to load the new settings.
 5. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 0 to vary the `linear_advance`.
-6. Evaluate the tower, looking primarily at the front side. Evaluate the ideal `linear_offset` based on the height that looks best there and the `factor` from the test macro code, write down that value, but set the configuration to at 80% of that, and restart.
-7. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 1 to vary the `linear_offset`.
+6. Evaluate the tower, looking primarily at the front side. Evaluate the ideal `nonlinear_offset` based on the height that looks best there and the `factor` from the test macro code, write down that value, but set the configuration to at 80% of that, and restart.
+7. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 1 to vary the `nonlinear_offset`.
 8. Evaluate the tower, looking mostly at both the left and front sides.
     1. If the left side converges below the front side, then slightly increase the `linear_advance` in your config, restart, and reprint the PA test macro with `testparam` 1.
     2. If the left side converges above the front side, then slightly decrease the `linear_advance` in your config, restart, and reprint the PA test macro with `testparam` 1.
-    3. If the left side converges at the same height as the front side, then use that height and the `factor` from the test macro code to set the `linear_offset` in your printer config, then restart.
+    3. If the left side converges at the same height as the front side, then use that height and the `factor` from the test macro code to set the `nonlinear_offset` in your printer config, then restart.
 9. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 2 to vary the `pressure_advance_time_offset`.
 10. Evaluate the tower, looking mostly at the front side. This can be *very* subtle so make sure you use good lighting to reveal the differences. Set the `pressure_advance_time_offset` in your configuration based on the height that looks best there and the `factor` from the test macro code, and restart.
 11. Run the PA test macro again with `testparam` of 1 and fine-tune your settings using the procedure in step 8 again.
@@ -204,25 +204,25 @@ Then a PA test tower was printed with the test parameter 1.
 
 ![linear offset test tower](img/PA_photos/1.offset=x.005.jpg)
 
-In this case, the left side looked best at roughly 27mm \* 0.005, so the `linear_offset` was set to 0.135 to start with and a PA test tower was printed with test parameter 0.
+In this case, the left side looked best at roughly 27mm \* 0.005, so the `nonlinear_offset` was set to 0.135 to start with and a PA test tower was printed with test parameter 0.
 
 ![linear advance test tower with 0.135 linear offset](img/PA_photos/2.offset=.135_advance=x.001.jpg)
 
-In this test the left side converged at the very bottom but the right side converged above that, so `linear_offset` was decreased a bit to 0.120.
-In hindsight, looking at the previous test tower for `linear_offset`, the left line on the left side just barely started to have a "thick-and-thin" pattern at 24mm, and the right line was only slightyl undercorrected.
-In general, it's better to undercorrect slightly on your initial `linear_offset`, since the `linear_advance` will give a little boost even at slow speeds.
+In this test the left side converged at the very bottom but the right side converged above that, so `nonlinear_offset` was decreased a bit to 0.120.
+In hindsight, looking at the previous test tower for `nonlinear_offset`, the left line on the left side just barely started to have a "thick-and-thin" pattern at 24mm, and the right line was only slightyl undercorrected.
+In general, it's better to undercorrect slightly on your initial `nonlinear_offset`, since the `linear_advance` will give a little boost even at slow speeds.
 
-With the `linear_offset` reduce to 0.120, another test tower with test parameter 0 was printed.
+With the `nonlinear_offset` reduce to 0.120, another test tower with test parameter 0 was printed.
 
 ![linear advance test tower with 0.120 linear offset](img/PA_photos/3.offset=.120_advance=x.001.jpg)
 
-This shows good convergence for both left and front sides at 17mm \* 0.001, so the ideal `linear_advance` was 0.017, and there was no need to tweak `linear_offset` any further.
+This shows good convergence for both left and front sides at 17mm \* 0.001, so the ideal `linear_advance` was 0.017, and there was no need to tweak `nonlinear_offset` any further.
 
-Just as a demonstration, here is what a slight overcorrection of `linear_offset` to 0.100 looks like when printing a test tower with test parameter 0:
+Just as a demonstration, here is what a slight overcorrection of `nonlinear_offset` to 0.100 looks like when printing a test tower with test parameter 0:
 
 ![linear advance test tower with 0.100 linear offset](img/PA_photos/4.offset=.100_advance=x.001.jpg)
 
-It's not quite so clear-cut, but the left side converges somewhat higher than the front side of the test tower. If you saw this you would nudge up the `linear_offset` and retest.
+It's not quite so clear-cut, but the left side converges somewhat higher than the front side of the test tower. If you saw this you would nudge up the `nonlinear_offset` and retest.
 
 Finally the time offset was tuned to properly align the pressure advance compensation with the actual toolhead motion.
 
