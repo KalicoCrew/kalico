@@ -180,8 +180,8 @@ Make sure to adjust the factors in the PA test macro for Bowden printers.
 6. Evaluate the tower, looking primarily at the front side. Evaluate the ideal `linear_offset` based on the height that looks best there and the `factor` from the test macro code, write down that value, but set the configuration to at 80% of that, and restart.
 7. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 1 to vary the `linear_offset`.
 8. Evaluate the tower, looking mostly at both the left and front sides.
-    1. If the left side converges below the front side, then slightly increase the `linear_advance` in your config, restart, and reprint the PA test macro with `testparam` 0.
-    2. If the left side converges above the front side, then slightly decrease the `linear_advance` in your config, restart, and reprint the PA test macro with `testparam` 0.
+    1. If the left side converges below the front side, then slightly increase the `linear_advance` in your config, restart, and reprint the PA test macro with `testparam` 1.
+    2. If the left side converges above the front side, then slightly decrease the `linear_advance` in your config, restart, and reprint the PA test macro with `testparam` 1.
     3. If the left side converges at the same height as the front side, then use that height and the `factor` from the test macro code to set the `linear_offset` in your printer config, then restart.
 9. Run the PA test macro with your nozzle diameter, your intended hotend temperature, and a `testparam` of 2 to vary the `pressure_advance_time_offset`.
 10. Evaluate the tower, looking mostly at the front side. This can be *very* subtle so make sure you use good lighting to reveal the differences. Set the `pressure_advance_time_offset` in your configuration based on the height that looks best there and the `factor` from the test macro code, and restart.
