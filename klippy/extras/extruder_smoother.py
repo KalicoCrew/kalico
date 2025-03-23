@@ -6,8 +6,9 @@
 
 import collections, importlib, math
 
-shaper_defs = importlib.import_module(".shaper_defs", "extras")
-shaper_calibrate = importlib.import_module(".shaper_calibrate", "extras")
+from . import shaper_defs
+from . import shaper_calibrate
+
 
 ExtruderSmootherCfg = collections.namedtuple(
     "ExtruderSmootherCfg", ("order", "freq_opt_range")
