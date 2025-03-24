@@ -29,7 +29,7 @@ class DangerOptions:
             "allow_plugin_override", False
         )
         self.single_mcu_trsync_timeout = config.getfloat(
-            "single_mcu_trsync_timeout", 0.025, minval=0.0
+            "single_mcu_trsync_timeout", 0.25, minval=0.0
         )
         self.multi_mcu_trsync_timeout = config.getfloat(
             "multi_mcu_trsync_timeout", 0.025, minval=0.0

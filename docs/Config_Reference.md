@@ -93,9 +93,9 @@ A collection of Kalico-specific system options
 #allow_plugin_override: False
 #   Allows modules in `plugins` to override modules of the same name in `extras`
 #   The default is False.
-#single_mcu_trsync_timeout: 0.025
+#single_mcu_trsync_timeout: 0.25
 #   The timeout (in seconds) for MCU synchronization during the homing process when
-#   a single MCUs is in use. The default is 0.025
+#   a single MCUs is in use. The default is 0.25
 #multi_mcu_trsync_timeout: 0.025
 #   The timeout (in seconds) for MCU synchronization during the homing process when
 #   multiple MCUs are in use. The default is 0.025
