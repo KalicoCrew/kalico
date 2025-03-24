@@ -19,6 +19,7 @@
 ## Enhanced behavior
 
 - [`canbus_query.py`](./CANBUS.md#finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Kalico devices, even after they've been assigned a node_id.
+- Input shaper calibration now warns about active fans that may affect measurement accuracy.
 
 ## New Kalico Modules
 

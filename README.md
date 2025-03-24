@@ -88,6 +88,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [force_move: turn on by default](https://github.com/KalicoCrew/kalico/pull/135)
 
+- [resonance_tester: warn about active fans during input shaper calibration](https://github.com/KalicoCrew/kalico/pull/XXX)
+
 - [respond: turn on by default](https://github.com/KalicoCrew/kalico/pull/296)
 
 - [exclude_object: turn on by default](https://github.com/KalicoCrew/kalico/pull/306)
