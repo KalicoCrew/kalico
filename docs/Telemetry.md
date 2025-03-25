@@ -1,4 +1,4 @@
-# Kalico Telemetry
+# Telemetry
 
 Kalico includes an optional telemetry system that collects anonymous information about your printer setup. This document explains what telemetry is, what data is collected, how it's used, and how to control it.
 

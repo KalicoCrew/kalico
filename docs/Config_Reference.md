@@ -4170,11 +4170,11 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-sense_resistor:
+#sense_resistor:
 #   The resistance (in ohms) of the driver sense resistor. This parameter
-#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
-#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
-#   or board schematic to confirm the correct value.
+#   must be provided when `driver_model` is not set. Common values are 0.110 ohms
+#   for most TMC2209 drivers and 0.075 ohms for TMC5160 drivers. Check your stepper
+#   driver documentation or board schematic to confirm the correct value.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4192,6 +4192,11 @@ sense_resistor:
 #   velocity" threshold (THIGH) to. This is typically used to disable
 #   the "CoolStep" feature at high speeds. The default is to not set a
 #   TMC "high velocity" threshold.
+driver_model:
+#   The TMC driver model being used. When set, Kalico will
+#   automatically configure the sense_resistor and maximum current values
+#   appropriate for the specified model. See the
+#   [TMC Driver Models](TMC_Driver_Models.md) document for available options.
 #driver_MSLUT0: 2863314260
 #driver_MSLUT1: 1251300522
 #driver_MSLUT2: 608774441
@@ -4283,16 +4288,22 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-sense_resistor:
+#sense_resistor:
 #   The resistance (in ohms) of the driver sense resistor. This parameter
-#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
-#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
-#   or board schematic to confirm the correct value.
+#   must be provided when `driver_model` is not set. Common values are
+#   0.110 ohms for most TMC2209 drivers and 0.075 ohms for TMC5160 drivers.
+#   Check your stepper driver documentation or board schematic to confirm
+#   the correct value.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
 #   velocity is below this value. The default is 0, which disables
 #   "stealthChop" mode.
+driver_model:
+#   The TMC driver model being used. When set, Kalico will
+#   automatically configure the sense_resistor and maximum current values
+#   appropriate for the specified model. See the
+#   [TMC Driver Models](TMC_Driver_Models.md) document for available options.
 #driver_MULTISTEP_FILT: True
 #driver_IHOLDDELAY: 8
 #driver_TPOWERDOWN: 20
@@ -4330,8 +4341,9 @@ run_current:
 #hold_current:
 #home_current:
 #current_change_dwell_time:
-sense_resistor:
+#sense_resistor:
 #stealthchop_threshold: 0
+driver_model:
 #   See the "tmc2208" section for the definition of these parameters.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal "CoolStep"
@@ -4411,11 +4423,11 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-sense_resistor:
+#sense_resistor:
 #   The resistance (in ohms) of the driver sense resistor. This parameter
-#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
-#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
-#   or board schematic to confirm the correct value.
+#   must be provided when `driver_model` is not set. Common values are 0.110 ohms
+#   for most TMC2209 drivers and 0.075 ohms for TMC5160 drivers. Check your
+#   stepper driver documentation or board schematic to confirm the correct value.
 #idle_current_percent: 100
 #   The percentage of the run_current the stepper driver will be
 #   lowered to when the idle timeout expires (you need to set up the
@@ -4425,6 +4437,11 @@ sense_resistor:
 #   their position. There is also small delay until the current is
 #   raised again, so take this into account when commanding fast moves
 #   while the stepper is idling. The default is 100 (no reduction).
+driver_model:
+#   The TMC driver model being used. When set, Kalico will
+#   automatically configure the sense_resistor and maximum current values
+#   appropriate for the specified model. See the
+#   [TMC Driver Models](TMC_Driver_Models.md) document for available options.
 #driver_TBL: 2
 #driver_RNDTF: 0
 #driver_HDEC: 0
@@ -4657,11 +4674,11 @@ run_current:
 #current_change_dwell_time:
 #   The amount of time (in seconds) to wait after changing homing current.
 #   The default is 0.5 seconds.
-sense_resistor:
+#sense_resistor:
 #   The resistance (in ohms) of the driver sense resistor. This parameter
-#   must be provided. Common values are 0.110 ohms for most TMC2209 drivers
-#   and 0.075 ohms for TMC5160 drivers. Check your stepper driver documentation
-#   or board schematic to confirm the correct value.
+#   must be provided when `driver_model` is not set. Common values are 0.110 ohms
+#   for most TMC2209 drivers and 0.075 ohms for TMC5160 drivers. Check your
+#   stepper driver documentation or board schematic to confirm the correct value.
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the "stealthChop" threshold to. When
 #   set, "stealthChop" mode will be enabled if the stepper motor
@@ -4679,6 +4696,11 @@ sense_resistor:
 #   velocity" threshold (THIGH) to. This is typically used to disable
 #   the "CoolStep" feature at high speeds. The default is to not set a
 #   TMC "high velocity" threshold.
+driver_model:
+#   The TMC driver model being used. When set, Kalico will
+#   automatically configure the sense_resistor and maximum current values
+#   appropriate for the specified model. See the
+#   [TMC Driver Models](TMC_Driver_Models.md) document for available options.
 #driver_MSLUT0: 2863314260
 #driver_MSLUT1: 1251300522
 #driver_MSLUT2: 608774441

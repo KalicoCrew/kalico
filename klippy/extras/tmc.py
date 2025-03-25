@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, collections
 from klippy import stepper
+from . import driver_defs
 
 
 ######################################################################
@@ -781,14 +782,59 @@ def TMCStealthchopHelper(config, mcu_tmc, tmc_freq):
 
 
 class BaseTMCCurrentHelper:
-    def __init__(self, config, mcu_tmc, max_current, has_sense_resistor=True):
+    def __init__(
+        self, config, mcu_tmc, def_max_current, has_sense_resistor=True
+    ):
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
+        self.config_file = self.printer.lookup_object("configfile")
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
 
+        max_current = def_max_current
+
         if has_sense_resistor:
-            self.sense_resistor = config.getfloat("sense_resistor", above=0.0)
+            driver_model = config.get("driver_model", None)
+            driver_sense_resistor, driver_max_current = (
+                driver_defs.DRIVER_DEFS.get(driver_model, (None, None))
+            )
+
+            override_sense_resistor = config.getfloat(
+                "sense_resistor",
+                None,
+                minval=0.0,
+            )
+
+            # both driver_model and sense_resistor are specified
+            if driver_model is not None and override_sense_resistor is not None:
+                self.config_file.warn(
+                    "config",
+                    f"Both 'driver_model' and 'sense_resistor' specified for [{self.name}]. "
+                    f"The 'sense_resistor' value of {override_sense_resistor} will override "
+                    f"the default value for {driver_model}.",
+                    "sense_resistor",
+                )
+                self.sense_resistor = override_sense_resistor
+
+            # neither driver_model nor sense_resistor is specified
+            elif (
+                override_sense_resistor is None
+                and driver_sense_resistor is None
+            ):
+                raise self.config_file.error(
+                    f"TMC driver [{self.name}] requires either 'driver_model' or 'sense_resistor' to be specified. "
+                    f"Please configure one of these options:\n"
+                    f"- 'driver_model': Specify a predefined driver model (recommended)\n"
+                    f"- 'sense_resistor': Specify the exact sense resistor value for your driver"
+                )
+
+            # either driver_model or sense_resistor is specified
+            else:
+                self.sense_resistor = (
+                    override_sense_resistor or driver_sense_resistor
+                )
+
+            max_current = driver_max_current or def_max_current
 
         # config_{run|hold|home}_current
         # represents an initial value set via config file
