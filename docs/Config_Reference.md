@@ -439,6 +439,17 @@ diagonals. If the slicer emit `M204 S3000` (3000 mm/s^2 accel). On these 37° an
 acceleration will be  12000 * 3000 / 15000 = 2400 mm/s^2, and 18000 mm/s^2 for
 pure Y moves.
 
+### Linear Delta Kinematics
+
+See [example-delta.cfg](../config/example-delta.cfg) for an example
+linear delta kinematics config file. See the
+[delta calibrate guide](Delta_Calibrate.md) for information on
+calibration.
+
+Only parameters specific to linear delta printers are described here -
+see [common kinematic settings](#common-kinematic-settings) for
+available parameters.
+
 ```
 [printer]
 kinematics: delta
