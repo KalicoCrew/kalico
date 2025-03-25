@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+
 from . import fan, output_pin
 
 
@@ -35,6 +36,7 @@ class PrinterFanGeneric:
             value = float(text)
         except ValueError as e:
             logging.exception("fan_generic template render error")
+            value = 0.0
         self.fan.set_speed(value)
 
     def cmd_SET_FAN_SPEED(self, gcmd):
