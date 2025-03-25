@@ -88,7 +88,9 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [force_move: turn on by default](https://github.com/KalicoCrew/kalico/pull/135)
 
-- [resonance_tester: warn about active fans during input shaper calibration](https://github.com/KalicoCrew/kalico/pull/XXX)
+- [resonance_tester: warn about active fans during input shaper calibration](https://github.com/KalicoCrew/kalico/pull/627)
+
+- [bed_mesh: add BED_MESH_CHECK command for mesh validation](https://github.com/KalicoCrew/kalico/pull/629)
 
 - [respond: turn on by default](https://github.com/KalicoCrew/kalico/pull/296)
 

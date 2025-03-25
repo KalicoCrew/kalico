@@ -225,6 +225,16 @@ adjustment after a tool change.  Note that a ZFADE offset does not apply
 additional z-adjustment directly, it is used to correct the `fade`
 calculation when a `gcode offset` has been applied to the Z axis.
 
+#### BED_MESH_CHECK
+`BED_MESH_CHECK [MAX_DEVIATION=<value>] [MAX_SLOPE=<value>]`: Validates the
+current bed mesh against specified criteria. If MAX_DEVIATION is specified,
+checks that the difference between the highest and lowest mesh points does not
+exceed the provided value. If MAX_SLOPE is specified, checks that the maximum
+slope between adjacent mesh points does not exceed the provided value (in mm/mm).
+The command will raise an error if any specified check fails, or display a message
+confirming the mesh is valid if all checks pass. If no parameters are specified,
+the command will list the available validation checks.
+
 ### [bed_screws]
 
 The following commands are available when the
@@ -1155,9 +1165,11 @@ Saves the currently loaded profile of the specified heater to the config under
 the given name.
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
-Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
+Removes the given profile from the profiles List for the current session and
+config if SAVE_CONFIG is issued afterwards.
 
-`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
+`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp>
+TOLERANCE=<tolerance>
 CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Creates a new profile with the given PID values, CONTROL must either be `pid` or
 `pid_v`, TOLERANCE and TARGET must be specified to create a valid profile,
