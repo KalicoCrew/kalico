@@ -30,6 +30,10 @@ Quite often, PA that is high enough for higher speed corners will be insufficien
 
 These effects are multiplied for printers that need higher PA such as Bowden printers.
 
+## Explanation
+
+UNDER CONSTRUCTION
+
 ## Setup
 
 The best way to tune nonlinear pressure advance is to use the tuning macro that is built into `bleeding-edge-v2` Kalico.
@@ -230,7 +234,7 @@ The last tuning tower was printed with the printer set to 0.120 linear offset, 0
 
 ![time offset test tower](img/PA_photos/5.time_offset=x.0001.jpg)
 
-This is a lot harder to see the effects from, but extreme sidelighting shows that the leftmost and rightmost transitions on the front face benefit from a height of 18mm \* 0.0001, indicating that the `pressure_advance_time_offset` should be set to 0.018. This means that the pressure advance should occur 1.8 milliseconds early in order to best synchronize flow with the toolhead motion.
+This is a lot harder to see the effects from, but extreme sidelighting shows that the leftmost and rightmost transitions on the front face benefit from a height of 18mm \* 0.0001, indicating that the `pressure_advance_time_offset` should be set to 0.0018. This means that the pressure advance should occur 1.8 milliseconds early in order to best synchronize flow with the toolhead motion.
 
 ### Performance Comparison
 
