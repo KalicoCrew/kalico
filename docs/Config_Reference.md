@@ -3166,6 +3166,10 @@ printer. Use verify_heater sections to change the default settings.
 #   The minimum temperature (in Celsius) that the heater must increase
 #   by during the check_gain_time check. It is rare to customize this
 #   value. The default is 2.
+#ignore_below: 0.0
+#   Disable heater verification when the temperature is below this point.
+#   This keeps Kalico from erroring when a detachable heaters is removed
+#   while heating.
 ```
 
 ### [homing_heaters]
