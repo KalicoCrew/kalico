@@ -25,6 +25,7 @@ class HeaterCheck:
         self.hysteresis = config.getfloat("hysteresis", 5.0, minval=0.0)
         self.max_error = config.getfloat("max_error", 120.0, minval=0.0)
         self.heating_gain = config.getfloat("heating_gain", 2.0, above=0.0)
+        self.ignore_below = config.getfloat("ignore_below", None, below=0.0)
         default_gain_time = 20.0
         if self.heater_name == "heater_bed":
             default_gain_time = 60.0
@@ -53,6 +54,8 @@ class HeaterCheck:
 
     def check_event(self, eventtime):
         temp, target = self.heater.get_temp(eventtime)
+        if self.ignore_below is not None and temp < self.ignore_below:
+            return eventtime + 1.0
         if temp >= target - self.hysteresis or target <= 0.0:
             # Temperature near target - reset checks
             if self.approaching_target and target:
