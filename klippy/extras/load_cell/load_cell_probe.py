@@ -1049,5 +1049,8 @@ class LoadCellPrinterProbe:
         )
         PrinterProbe(config, wrapper)
 
+    def add_client(self, callback):
+        self._tap_analysis_helper.add_client(callback)
+
     def get_status(self, eventtime):
         return self._tapping_move.get_status(eventtime)
