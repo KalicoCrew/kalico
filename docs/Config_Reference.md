@@ -4531,8 +4531,8 @@ run_current:
 #   While it's not necessary to change the CS value, it can be helpful to achieve
 #   adequate hysteresis values on low current steppers.
 #   By default, this value is autocalculated.
-#   For homing, the code will first try to use the specified driver_CS value. If that
-#   does not result in an allowed value, the CS for homing will be autocalculated.
+#   If driver_CS is specified this value will be used for homing so make sure it is possible to achieve your homing_current
+#   with the given currentscaler value.
 #driver_MSLUT0: 2863314260
 #driver_MSLUT1: 1251300522
 #driver_MSLUT2: 608774441
@@ -4723,8 +4723,8 @@ sense_resistor:
 #   While it's not necessary to change the CS value, it can be helpful to achieve
 #   adequate hysteresis values on low current steppers.
 #   By default, this value is autocalculated.
-#   For homing, the code will first try to use the specified driver_CS value. If that
-#   does not result in an allowed value, the CS for homing will be autocalculated.
+#   If driver_CS is specified this value will be used for homing so make sure it is possible to achieve your homing_current
+#   with the given currentscaler value.
 #driver_DISS2G: 0
 #driver_DISS2VS: 0
 #driver_PWM_AUTOSCALE: True
