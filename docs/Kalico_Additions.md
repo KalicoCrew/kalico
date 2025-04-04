@@ -14,6 +14,7 @@
 - `--rotate-log-at-restart` can be added to your Kalico start script or service to force log rotation every restart.
 - [`[virtual_sdcard] with_subdirs`](./Config_Reference.md#virtual_sdcard) enables scanning of subdirectories for .gcode files, for the menu and M20/M23 commands
 - [`[firmware_retraction] z_hop_height`](./Config_Reference.md#firmware_retraction) adds an automatic z hop when using firmware retraction
+- [`[tmc*] driver_model`](./TMC_Driver_Models.md) allows specifying a predefined driver model to automatically configure the correct sense resistor and maximum current values for TMC stepper drivers. Either `driver_model` or `sense_resistor` must be specified.
 - [`[constants]` and `${constants.value}`](./Config_Reference.md#configuration-references) allow re-using values in your configuration
 
 ## Enhanced behavior

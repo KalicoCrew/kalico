@@ -113,6 +113,7 @@ nav:
     - Installation.md
     - OctoPrint.md
     - TMC_Drivers.md
+    - TMC_Driver_Models.md
     - Config_checks.md
     - Rotation_Distance.md
     - Multi_MCU_Homing.md
