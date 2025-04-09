@@ -207,12 +207,12 @@ software dependencies not installed by default. First, run on your Raspberry Pi
 the following commands:
 ```
 sudo apt update
-sudo apt install python3-numpy python3-matplotlib libatlas-base-dev libopenblas-dev
+sudo apt install libatlas-base-dev libopenblas-dev
 ```
 
 Next, in order to install NumPy in the Kalico environment, run the command:
 ```
-~/klippy-env/bin/pip install -v numpy
+~/klippy-env/bin/pip install -v numpy matplotlib
 ```
 Note that, depending on the performance of the CPU, it may take *a lot*
 of time, up to 10-20 minutes. Be patient and wait for the completion of
