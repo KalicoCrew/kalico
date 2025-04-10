@@ -72,7 +72,7 @@ class HomingMove:
     def _calc_endstop_rate(self, mcu_endstop, movepos, speed):
         startpos = self.toolhead.get_position()
         axes_d = [mp - sp for mp, sp in zip(movepos, startpos)]
-        move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
+        move_d = math.sqrt(sum([d * d for d in axes_d[:4]]))
         move_t = move_d / speed
         max_steps = max(
             [
@@ -86,6 +86,7 @@ class HomingMove:
                 for s in mcu_endstop.get_steppers()
             ]
         )
+        steppers = mcu_endstop.get_steppers()
         if max_steps <= 0.0:
             return 0.001
         return move_t / max_steps
@@ -97,7 +98,10 @@ class HomingMove:
             sname = stepper.get_name()
             kin_spos[sname] += offsets.get(sname, 0) * stepper.get_step_dist()
         thpos = self.toolhead.get_position()
-        return list(kin.calc_position(kin_spos))[:3] + thpos[3:]
+        calc_pos_res = list(kin.calc_position(kin_spos))
+        if len(calc_pos_res) == 4:
+            return calc_pos_res
+        return calc_pos_res[:3] + thpos[3:]
 
     def homing_move(
         self,
@@ -120,6 +124,7 @@ class HomingMove:
             for es, name in self.endstops
             for s in es.get_steppers()
         ]
+
         # Start endstop checking
         print_time = self.toolhead.get_last_move_time()
         endstop_triggers = []
@@ -145,6 +150,7 @@ class HomingMove:
         # Wait for endstops to trigger
         trigger_times = {}
         move_end_print_time = self.toolhead.get_last_move_time()
+
         for mcu_endstop, name in self.endstops:
             try:
                 trigger_time = mcu_endstop.home_wait(move_end_print_time)
@@ -152,7 +158,8 @@ class HomingMove:
                 if error is None:
                     error = "Error during homing %s: %s" % (name, str(e))
                 continue
-            if trigger_time > 0.0:
+
+            if trigger_time > 0.0 and move_end_print_time - trigger_time > 0.15:
                 trigger_times[name] = trigger_time
             elif check_triggered and error is None:
                 error = "No trigger on %s after full movement" % (name,)
@@ -187,6 +194,7 @@ class HomingMove:
                 * sp.stepper.get_step_dist()
                 for sp in self.stepper_positions
             }
+
             filled_steps_moved = {
                 sname: steps_moved.get(sname, 0)
                 for sname in [s.get_name() for s in kin.get_steppers()]
@@ -425,12 +433,23 @@ class PrinterHoming:
         gcode.register_command("G28", self.cmd_G28)
 
     def manual_home(
-        self, toolhead, endstops, pos, speed, triggered, check_triggered
+        self,
+        toolhead,
+        endstops,
+        pos,
+        speed,
+        triggered,
+        check_triggered,
+        probe_pos=False,
     ):
         hmove = HomingMove(self.printer, endstops, toolhead)
         try:
-            hmove.homing_move(
-                pos, speed, triggered=triggered, check_triggered=check_triggered
+            return hmove.homing_move(
+                pos,
+                speed,
+                triggered=triggered,
+                check_triggered=check_triggered,
+                probe_pos=probe_pos,
             )
         except self.printer.command_error:
             if self.printer.is_shutdown():

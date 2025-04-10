@@ -324,8 +324,13 @@ class MCU_stepper:
         return ffi_lib.itersolve_is_active_axis(self._stepper_kinematics, a)
 
 
+class ExtruderMCU_stepper(MCU_stepper):
+    def calc_position_from_coord(self, coord):
+        return coord[3]
+
+
 # Helper code to build a stepper object from a config section
-def PrinterStepper(config, units_in_radians=False):
+def PrinterStepper(config, units_in_radians=False, for_extruder=False):
     printer = config.get_printer()
     name = config.get_name()
     # Stepper definition
@@ -340,7 +345,10 @@ def PrinterStepper(config, units_in_radians=False):
     step_pulse_duration = config.getfloat(
         "step_pulse_duration", None, minval=0.0, maxval=0.001
     )
-    mcu_stepper = MCU_stepper(
+    StepperClass = MCU_stepper
+    if for_extruder:
+        StepperClass = ExtruderMCU_stepper
+    mcu_stepper = StepperClass(
         name,
         step_pin_params,
         dir_pin_params,

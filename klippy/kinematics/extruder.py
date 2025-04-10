@@ -21,7 +21,7 @@ class ExtruderStepper:
             "per_move_pressure_advance", False
         )
         # Setup stepper
-        self.stepper = stepper.PrinterStepper(config)
+        self.stepper = stepper.PrinterStepper(config, for_extruder=True)
         ffi_main, ffi_lib = chelper.get_ffi()
         self.sk_extruder = ffi_main.gc(
             ffi_lib.extruder_stepper_alloc(), ffi_lib.free
