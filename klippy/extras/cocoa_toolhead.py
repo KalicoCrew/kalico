@@ -23,6 +23,27 @@ logger = logging.getLogger(__name__)
 
 
 class States(Enum):
+    """
+    * home to top
+    * home to bottom
+    * if distance < empty_tube_travel_distance_cutoff
+        * cartridge is installed
+        * prompt user to remove screw
+        * push extruder ~10mm
+        * prompt user to remove toolhead + remove core, reinstall toolhead
+    * else:
+        * no cartridge installed
+        * skip to the prompt to install red cap
+
+    * wait for toolhead to be reinstalled
+    * home to bottom
+    * prompt user to install red cap
+    * move to safe load height
+    * prompt user to remove toolhead, install core, reinstall toolhead
+    * wait for toolhead to be reinstalled
+    * home to chocolate
+    """
+
     ABORTED = -1
     UNKNOWN = 0
     INITIAL_UNLOAD = 1
