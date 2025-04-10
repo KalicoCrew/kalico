@@ -13,7 +13,7 @@ from .force_move import calc_move_time
 
 if TYPE_CHECKING:
     from ..toolhead import ToolHead
-    from ..gcode import GCodeCommand
+    from ..gcode import GCodeDispatch
     from .homing import PrinterHoming
     from ..stepper import MCU_stepper
     from ..kinematics.extruder import PrinterExtruder
@@ -27,15 +27,25 @@ class States(Enum):
     UNKNOWN = 0
     INITIAL_UNLOAD = 1
     AWAITING_THUMBSCREW_REMOVAL = 2
-    AWAITING_TOOLHEAD_REMOVAL_UNLOAD = 3
+    AWAITING_TOOLHEAD_DETACH_UNLOAD = 3
     UNLOADED = 4
     UNLOADED_READY_FOR_CAP = 5
     INITIAL_LOAD = 6
-    AWAITING_TOOLHEAD_INSTALL_INITIAL_LOAD = 7
+    AWAITING_TOOLHEAD_ATTACH_INITIAL_LOAD = 7
     AWAITING_PLUNGER_CAP_INSTALL = 8
-    AWAITING_TOOLHEAD_REMOVAL_CORE_LOAD = 9
-    AWAITING_TOOLHEAD_INSTALL_CORE_LOAD = 10
+    AWAITING_TOOLHEAD_DETACH_CORE_LOAD = 9
+    AWAITING_TOOLHEAD_ATTACH_CORE_LOAD = 10
     LOADED = 11
+
+
+ATTACH_LISTEN_STATES = [
+    States.AWAITING_TOOLHEAD_ATTACH_INITIAL_LOAD,
+    States.AWAITING_TOOLHEAD_ATTACH_CORE_LOAD,
+]
+DETACH_LISTEN_STATES = [
+    States.AWAITING_TOOLHEAD_DETACH_UNLOAD,
+    States.AWAITING_TOOLHEAD_DETACH_CORE_LOAD,
+]
 
 
 class FakeExtruderHomingToolhead:
@@ -107,13 +117,16 @@ class CocoaToolheadControl:
 
         self.attached = None
         self.last_readings = {}
+        self.load_unload_message = None
+        self.state = States.UNKNOWN
+        self.state_pre_abort = None
 
         self.printer.register_event_handler("klippy:connect", self._on_ready)
         self.printer.register_event_handler(
             "klippy:mcu_identify", self._handle_config
         )
 
-        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
 
         self.toolhead: ToolHead = None
         self.fake_toolhead_for_homing: FakeExtruderHomingToolhead = None
@@ -131,9 +144,6 @@ class CocoaToolheadControl:
         self.total_maximum_homing_dist = 300  # mm
         self.homing_chunk_size = 5  # mm
         self.empty_tube_travel_distance_cutoff = 180  # mm
-
-        self.state = States.UNKNOWN
-        self.state_pre_abort = None
 
         # register commands
         self.gcode.register_command(
@@ -214,33 +224,41 @@ class CocoaToolheadControl:
             if is_attached:
                 self.printer.send_event("cocoa_toolhead:attached")
                 self._run_template(self.attach_tmpl)
-
+                self._load_hook_for_toolhead_attach_detach()
             else:
                 self.printer.send_event("cocoa_toolhead:detached")
                 self._run_template(self.detach_tmpl)
+                self._load_hook_for_toolhead_attach_detach()
+
+    def _load_hook_for_toolhead_attach_detach(self):
+        if (
+            self.state in ATTACH_LISTEN_STATES
+            or self.state in DETACH_LISTEN_STATES
+        ):
+            self.continue_load_unload()
 
     def _run_template(self, template):
         ctx = template.create_template_context()
         template.run_gcode_from_command(ctx)
 
-    def cmd_LOAD_COCOAPRESS(self, gcmd: "GCodeCommand"):
+    def cmd_LOAD_COCOAPRESS(self, gcmd):
         # if self.state == States.UNKNOWN or self.state == States.UNLOADED:
         #     gcmd.respond_info("Please unload before trying to load!")
         #     return
         if self.state != States.UNLOADED_READY_FOR_CAP:
             self.state = States.INITIAL_LOAD
-        self.continue_load_unload(gcmd)
+        self.continue_load_unload()
 
     def cmd_UNLOAD_COCOAPRESS(self, gcmd):
         if self.state == States.UNLOADED:
             gcmd.respond_info("Already unloaded!")
             return
         self.state = States.INITIAL_UNLOAD
-        self.continue_load_unload(gcmd)
+        self.continue_load_unload()
 
     def cmd_CONTINUE(self, gcmd):
         self._unregister_commands()
-        self.continue_load_unload(gcmd)
+        self.continue_load_unload()
 
     def cmd_HOME_COCOAPRESS(self, gcmd):
         direction = gcmd.get_int("DIR", 1)
@@ -280,16 +298,16 @@ class CocoaToolheadControl:
             None,
         )
 
-    def _set_extruder_current_for_homing(self, pre_homing):
-        print_time = self.toolhead.get_last_move_time()
-        ch = self.extruder_stepper.get_tmc_current_helper()
-        dwell_time = ch.set_current_for_homing(print_time, pre_homing)
-        if dwell_time:
-            self.toolhead.dwell(dwell_time)
+    def _print_message__load_unload(self, message, error=False):
+        if error:
+            self.gcode._respond_error(message)
+        else:
+            self.gcode.respond_info(message)
+        self.load_unload_message = message
 
-    def continue_load_unload(self, gcmd):
+    def continue_load_unload(self):
         if self.state == States.UNKNOWN or self.state == States.ABORTED:
-            raise gcmd.error("Unknown state!")
+            raise self._print_message__load_unload("Unknown state!", error=True)
 
         elif self.state == States.INITIAL_UNLOAD:
             self.home_extruder_to_top()
@@ -297,12 +315,12 @@ class CocoaToolheadControl:
             if homed_dist > self.empty_tube_travel_distance_cutoff:
                 # no tube installed, skip to prompt for cap
                 self.state = States.UNLOADED_READY_FOR_CAP
-                gcmd.respond_info("Ready for load!")
+                self._print_message__load_unload("Ready for load!")
                 self._unregister_commands()
             else:
                 self.state = States.AWAITING_THUMBSCREW_REMOVAL
                 self._register_commands()
-                gcmd.respond_info(
+                self._print_message__load_unload(
                     "Please remove the thumbscrew and run CONTINUE"
                 )
 
@@ -310,33 +328,34 @@ class CocoaToolheadControl:
             self.move_extruder(
                 self.load_nozzle_push_distance, self.load_move_speed
             )
-            gcmd.respond_info("Please remove the toolhead and run CONTINUE")
-            self.state = States.AWAITING_TOOLHEAD_REMOVAL_UNLOAD
-            # TODO FRANK - event listening for toolhead disconnect to continue automatically here
+            self._print_message__load_unload("Please remove the toolhead!")
+            self.state = States.AWAITING_TOOLHEAD_DETACH_UNLOAD
             self._register_commands()
 
-        elif self.state == States.AWAITING_TOOLHEAD_REMOVAL_UNLOAD:
-            gcmd.respond_info("Ready to load!")
+        elif self.state == States.AWAITING_TOOLHEAD_DETACH_UNLOAD:
+            self._print_message__load_unload("Ready to load!")
             self.state = States.UNLOADED
             self._unregister_commands()
 
         elif self.state == States.INITIAL_LOAD:
-            # TODO FRANK - check if toolhead is installed,
-            # if it is, skip this check
-            gcmd.respond_info(
-                "Reinstall toolhead with cartridge removed and run CONTINUE"
+            self._print_message__load_unload(
+                "Reinstall toolhead with cartridge removed!"
             )
-            self.state = States.AWAITING_TOOLHEAD_INSTALL_INITIAL_LOAD
+            self.state = States.AWAITING_TOOLHEAD_ATTACH_INITIAL_LOAD
             self._register_commands()
 
         elif self.state == States.UNLOADED_READY_FOR_CAP:
-            gcmd.respond_info("Install red cap on plunger and run CONTINUE")
+            self._print_message__load_unload(
+                "Install red cap on plunger and run CONTINUE"
+            )
             self.state = States.AWAITING_PLUNGER_CAP_INSTALL
             self._register_commands()
 
-        elif self.state == States.AWAITING_TOOLHEAD_INSTALL_INITIAL_LOAD:
+        elif self.state == States.AWAITING_TOOLHEAD_ATTACH_INITIAL_LOAD:
             self.home_extruder_to_bottom()
-            gcmd.respond_info("Install red cap on plunger and run CONTINUE")
+            self._print_message__load_unload(
+                "Install red cap on plunger and run CONTINUE"
+            )
             self.state = States.AWAITING_PLUNGER_CAP_INSTALL
             self._register_commands()
 
@@ -344,22 +363,20 @@ class CocoaToolheadControl:
             self.move_extruder(
                 -self.load_retract_distance, self.load_move_speed
             )
-            gcmd.respond_info("Remove toolhead, install core, and run CONTINUE")
-            self.state = States.AWAITING_TOOLHEAD_REMOVAL_CORE_LOAD
-            # TODO FRANK - detect removal of toolhead and continue automatically
+            self._print_message__load_unload("Remove toolhead!")
+            self.state = States.AWAITING_TOOLHEAD_DETACH_CORE_LOAD
             self._register_commands()
 
-        elif self.state == States.AWAITING_TOOLHEAD_REMOVAL_CORE_LOAD:
-            gcmd.respond_info(
-                "Reinstall toolhead (with core installed) and run CONTINUE"
+        elif self.state == States.AWAITING_TOOLHEAD_DETACH_CORE_LOAD:
+            self._print_message__load_unload(
+                "Load chocolate core into cartridge and reinstall toolhead!"
             )
-            self.state = States.AWAITING_TOOLHEAD_INSTALL_CORE_LOAD
-            # TODO FRANK - detect install of toolhead and continue automatically
+            self.state = States.AWAITING_TOOLHEAD_ATTACH_CORE_LOAD
             self._register_commands()
 
-        elif self.state == States.AWAITING_TOOLHEAD_INSTALL_CORE_LOAD:
+        elif self.state == States.AWAITING_TOOLHEAD_ATTACH_CORE_LOAD:
             self.home_extruder_to_bottom()
-            gcmd.respond_info("Loaded! Ready for preheat!")
+            self._print_message__load_unload("Done loading, ready for preheat!")
             self.state = States.LOADED
             self._unregister_commands()
 
@@ -380,6 +397,13 @@ class CocoaToolheadControl:
             return self.__home_extruder_in_direction(dir)
         finally:
             self._set_extruder_current_for_homing(pre_homing=False)
+
+    def _set_extruder_current_for_homing(self, pre_homing):
+        print_time = self.toolhead.get_last_move_time()
+        ch = self.extruder_stepper.get_tmc_current_helper()
+        dwell_time = ch.set_current_for_homing(print_time, pre_homing)
+        if dwell_time:
+            self.toolhead.dwell(dwell_time)
 
     def __home_extruder_in_direction(self, dir: int) -> float:
         """
@@ -451,6 +475,8 @@ class CocoaToolheadControl:
         return {
             "attached": self.attached,
             "adc": self.last_readings,
+            "load_state": self.state.name,
+            "load_unload_message": self.load_unload_message,
         }
 
 
