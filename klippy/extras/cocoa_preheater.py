@@ -4,9 +4,17 @@ Cocoa Press chocolate core preheater
 
 from __future__ import annotations
 
+import enum
 from typing import TypedDict
 
 module_name = "cocoa_preheater"
+
+
+class PreheatState(str, enum.Enum):
+    preheating = "preheating"
+    paused = "paused"
+    complete = "complete"
+    cancelled = "cancelled"
 
 
 class PreheatProfile(TypedDict):
@@ -14,6 +22,7 @@ class PreheatProfile(TypedDict):
     body: float
     nozzle: float
     duration: int
+    default: bool
 
 
 class PreheatProfileManager:
@@ -29,12 +38,14 @@ class PreheatProfileManager:
             body = section.getfloat("body", above=0.0)
             nozzle = section.getfloat("nozzle", above=0.0)
             duration = section.getint("duration", minval=1)
+            default = section.getboolean("default", default=False)
 
             self.profiles[name] = PreheatProfile(
                 name=name,
                 body=body,
                 nozzle=nozzle,
                 duration=duration,
+                default=default,
             )
 
     def get_status(self):
@@ -46,11 +57,16 @@ class PreheatProfileManager:
     def save_profile(
         self, name: str, body: float, nozzle: float, duration: int
     ):
+        default = False
+        if name in self.profiles:
+            default = self.profiles[name]["default"]
+
         self.profiles[name] = PreheatProfile(
             name=name,
             body=body,
             nozzle=nozzle,
             duration=duration,
+            default=default,
         )
 
         section = f"{module_name} {name}"
@@ -59,7 +75,11 @@ class PreheatProfileManager:
         self._pconfig.set(section, "duration", f"{duration}")
 
     def delete_profile(self, name):
-        profile = self.profiles.pop(name)
+        if name not in self.profiles:
+            raise KeyError(f"Profile {name} does not exist")
+        if self.profiles[name]["default"]:
+            raise ValueError(f"Unable to delete default profile {name}")
+        self.profiles.pop(name)
         self._pconfig.remove_section(f"{module_name} {name}")
 
 
@@ -79,6 +99,7 @@ class CocoaPreheater:
         self.profile_manager = PreheatProfileManager(config)
         self.profile = None
         self.time_remaining = None
+        self.state = None
 
         self._is_attached = None
         self._timer = None
@@ -86,8 +107,8 @@ class CocoaPreheater:
 
     def get_status(self, eventtime):
         return {
+            "status": self.state,
             "profile": self.profile,
-            "is_active": self._timer is not None and self._is_attached,
             "time_remaining": self.time_remaining,
             "profiles": self.profile_manager.get_status(),
         }
@@ -105,9 +126,13 @@ class CocoaPreheater:
 
     def _on_attached(self):
         self._is_attached = True
+        if self._timer is not None:
+            self.state = PreheatState.preheating
 
     def _on_detached(self):
         self._is_attached = False
+        if self._timer is not None:
+            self.state = PreheatState.paused
 
     def _preheat_timer_callback(self, eventtime):
         reactor = self.printer.get_reactor()
@@ -121,6 +146,7 @@ class CocoaPreheater:
             return eventtime + 1.0  # Wake again in 1 second
 
         else:
+            self.state = PreheatState.complete
             self._stop_preheating("complete")
             return reactor.NEVER
 
@@ -133,6 +159,7 @@ class CocoaPreheater:
 
         self.profile = profile
         self.time_remaining = float(profile["duration"])
+        self.state = PreheatState.preheating
 
         self.gcode.run_script_from_command(
             f'SET_HEATER_TEMPERATURE HEATER="{self.cocoa_toolhead.body_heater_name.split()[-1]}" TARGET={self.profile["body"]:0.2f}'
@@ -199,6 +226,7 @@ class CocoaPreheater:
             gcmd.respond_error("No preheating in progress")
 
         else:
+            self.state = PreheatState.cancelled
             self._stop_preheating("cancel")
 
     def cmd_PREHEATER_SAVE_PROFILE(self, gcmd):
