@@ -1,6 +1,6 @@
 # Code for coordinating events on the printer toolhead
 #
-# Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import importlib
@@ -144,8 +144,7 @@ LOOKAHEAD_FLUSH_TIME = 0.250
 # Class to track a list of pending move requests and to facilitate
 # "look-ahead" across moves to reduce acceleration between moves.
 class LookAheadQueue:
-    def __init__(self, toolhead):
-        self.toolhead = toolhead
+    def __init__(self):
         self.queue = []
         self.junction_flush = LOOKAHEAD_FLUSH_TIME
 
@@ -219,11 +218,11 @@ class LookAheadQueue:
             next_end_v2 = start_v2
             next_smoothed_v2 = smoothed_v2
         if update_flush_count or not flush_count:
-            return
-        # Generate step times for all moves ready to be flushed
-        self.toolhead._process_moves(queue[:flush_count])
+            return []
         # Remove processed moves from the queue
+        res = queue[:flush_count]
         del queue[:flush_count]
+        return res
 
     def add_move(self, move):
         self.queue.append(move)
@@ -231,9 +230,8 @@ class LookAheadQueue:
             return
         move.calc_junction(self.queue[-2])
         self.junction_flush -= move.min_move_t
-        if self.junction_flush <= 0.0:
-            # Enough moves have been queued to reach the target flush time.
-            self.flush(lazy=True)
+        # Check if enough moves have been queued to reach the target flush time.
+        return self.junction_flush <= 0.0
 
 
 BUFFER_TIME_LOW = 1.0
@@ -264,7 +262,7 @@ class ToolHead:
             m for n, m in self.printer.lookup_objects(module="mcu")
         ]
         self.mcu = self.all_mcus[0]
-        self.lookahead = LookAheadQueue(self)
+        self.lookahead = LookAheadQueue()
         self.lookahead.set_flush_time(BUFFER_TIME_HIGH)
         self.commanded_pos = [0.0, 0.0, 0.0, 0.0]
         # Velocity and acceleration control
@@ -450,7 +448,10 @@ class ToolHead:
                 self.print_time,
             )
 
-    def _process_moves(self, moves):
+    def _process_lookahead(self, lazy=False):
+        moves = self.lookahead.flush(lazy=lazy)
+        if not moves:
+            return
         # Resync print_time if necessary
         if self.special_queuing_state:
             if self.special_queuing_state != "Drip":
@@ -495,7 +496,7 @@ class ToolHead:
 
     def _flush_lookahead(self):
         # Transit from "NeedPrime"/"Priming"/"Drip"/main state to "NeedPrime"
-        self.lookahead.flush()
+        self._process_lookahead()
         self.special_queuing_state = "NeedPrime"
         self.need_check_pause = -1.0
         self.lookahead.set_flush_time(BUFFER_TIME_HIGH)
@@ -511,7 +512,7 @@ class ToolHead:
             self._flush_lookahead()
             self._calc_print_time()
         else:
-            self.lookahead.flush()
+            self._process_lookahead()
         return self.print_time
 
     def _check_pause(self):
@@ -621,7 +622,9 @@ class ToolHead:
         if move.axes_d[3]:
             self.extruder.check_move(move)
         self.commanded_pos[:] = move.end_pos
-        self.lookahead.add_move(move)
+        want_flush = self.lookahead.add_move(move)
+        if want_flush:
+            self._process_lookahead(lazy=True)
         if self.print_time > self.need_check_pause:
             self._check_pause()
 
@@ -678,7 +681,7 @@ class ToolHead:
     def drip_move(self, newpos, speed, drip_completion):
         self.dwell(self.kin_flush_delay)
         # Transition from "NeedPrime"/"Priming"/main state to "Drip" state
-        self.lookahead.flush()
+        self._process_lookahead()
         self.special_queuing_state = "Drip"
         self.need_check_pause = self.reactor.NEVER
         self.reactor.update_timer(self.flush_timer, self.reactor.NEVER)
@@ -695,7 +698,7 @@ class ToolHead:
             raise
         # Transmit move in "drip" mode
         try:
-            self.lookahead.flush()
+            self._process_lookahead()
         except DripModeEndSignal as e:
             self.lookahead.reset()
             self.trapq_finalize_moves(self.trapq, self.reactor.NEVER, 0)
