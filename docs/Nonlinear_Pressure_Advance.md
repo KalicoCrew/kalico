@@ -32,7 +32,36 @@ These effects are multiplied for printers that need higher PA such as Bowden pri
 
 ## Explanation
 
-UNDER CONSTRUCTION
+Nonlinear pressure advance, instead of advancing proportionally to speed, allows the use of a nonlinear function to determine the amount the requested extrusion is ahead of the nominal amount of extrusion.
+
+In order to provide higher effective PA at lower speeds, the amount of advance can be configured to rapidly rise at a low speed, and then level off to a lower slope for the remainder of the speed range.
+
+![Nonlinear amount of filament advance graphed versus filament flowrate](img/PA_photos/nonlin_advance_vs_flowrate.png)
+
+In this example, the same amount of total advance occurs once the toolhead reaches its full speed, but the nonlinear advance rises more quickly at the beginning of each motion.
+
+![Nonlinear PA filament position versus time](img/PA_photos/nonlin_position_vs_time.png)
+
+The rise at low speed is controlled by two parameters in the firmware: `nonlinear_offset` and `linearization_velocity`.
+The linear slope that occurs past the linearization velocity is controlled by `linear_advance`.
+
+To be perfectly clear, due to the implementation, they are not perfectly independent.
+The advance at low speed is affected slightly by the `linear_advance` setting, and likewise the advance at high speed is affected by the offset and linearization velocity.
+
+This interaction means that the different parameters need to be tuned in an iterative process, unlike standard PA with only one variable to tweak.
+
+You can play with this in [this spreadsheet](resources/NonlinearPA_Kalico.ods).
+
+In addition to being able to generate the two graphs above, there are also graphs providing the expected filament feedrate and acceleration.
+This can be useful when tuning high speed machines to know what the limits of your extruder are.
+
+![Nonlinear PA filament feedrate versus time](img/PA_photos/nonlin_speed_vs_time.png)
+![Nonlinear PA filament acceleration versus time](img/PA_photos/nonlin_accel_vs_time.png)
+
+Depending on the specific settings, nonlinear PA can request higher speeds and almost always requests higher accelerations than standard PA, so you can use this in combination with testing to ensure new settings combinations you are trying don't have issues.
+
+Note that there are two different nonlinear functions: reciprocal and tanh.
+They both can have similar results, but reciprocal provides better independence between low and high speed PA so we recommend you use that for ease of tuning.
 
 ## Setup
 
