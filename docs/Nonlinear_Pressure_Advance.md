@@ -2,7 +2,7 @@
 
 This document provides information for tuning the nonlinear pressure advance found in the `bleeding_edge_v2` branch of Kalico, as well as some other related firmwares.
 
-If you're using nonlinear pressure advance, this supersedes the standard [Pressure Advance documentation page](Pressure_Advance.md)
+If you're using nonlinear pressure advance, this supersedes the standard [Pressure Advance documentation page](Pressure_Advance.md).
 
 ## Pressure Advance Overview
 
