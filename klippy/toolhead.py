@@ -652,7 +652,7 @@ class ToolHead:
         return self.extruder
 
     # Homing "drip move" handling
-    def drip_update_time(self, next_print_time, drip_completion):
+    def drip_update_time(self, next_print_time, drip_completion, addstepper=()):
         # Transition from "NeedPrime"/"Priming"/main state to "Drip" state
         self.special_queuing_state = "Drip"
         self.need_check_pause = self.reactor.NEVER
@@ -676,6 +676,8 @@ class ToolHead:
             self.note_mcu_movequeue_activity(
                 npt + self.kin_flush_delay, set_step_gen_time=True
             )
+            for stepper in addstepper:
+                stepper.generate_steps(npt)
             self._advance_move_time(npt)
         # Exit "Drip" state
         self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
