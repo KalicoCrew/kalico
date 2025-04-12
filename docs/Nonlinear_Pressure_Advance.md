@@ -2,6 +2,8 @@
 
 This document provides information for tuning the nonlinear pressure advance found in the `bleeding_edge_v2` branch of Kalico, as well as some other related firmwares.
 
+If you're using nonlinear pressure advance, this supersedes the standard [Pressure Advance documentation page](Pressure_Advance.md)
+
 ## Pressure Advance Overview
 
 If a 3D printer pushes the filament at a speed perfectly proportional to the speed of the toolhead, the actual rate of plastic coming out of the nozzle will not match.
