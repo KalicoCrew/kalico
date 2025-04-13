@@ -286,7 +286,7 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
             "current_range", current_range, minval=current_range, maxval=3
         )
         self.fields.set_field("current_range", self.current_range)
-        self.cs = config.getint("driver_CS", 31, minval=0, maxval=31)
+        self.cs = config.getint("driver_CS", None, minval=0, maxval=31)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -300,6 +300,7 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
         return (KIFS[current_range] / self.Rref) / math.sqrt(2.0)
 
     def _calc_current_range(self, current):
+        current_range = 0
         for current_range in range(4):
             if current <= self._get_ifs_rms(current_range):
                 break
@@ -307,10 +308,9 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_globalscaler(self, current):
         ifs_rms = self._get_ifs_rms()
-        globalscaler = math.floor(
-            (current * 256.0 * 32) / (ifs_rms * (self.cs + 1))
-        )
-        if globalscaler == 256:
+        cs = 31 if self.cs is None else self.cs
+        globalscaler = math.floor((current * 256.0 * 32) / (ifs_rms * (cs + 1)))
+        if self.cs is None and globalscaler == 256:
             return 0
         if 1 <= globalscaler <= 31 or globalscaler > 256:
             current_range = self.fields.get_field("current_range")
@@ -320,16 +320,29 @@ class TMC2240CurrentHelper(tmc.BaseTMCCurrentHelper):
                     self.name,
                     globalscaler,
                     self.Rref,
-                    self.cs,
+                    cs,
                     f"{current_range:02b}",
                     f"{(KIFS[current_range] / 1000):.2f}",
                 )
             )
         return globalscaler
 
+    def _calc_current_bits(self, current, globalscaler):
+        ifs_rms = self._get_ifs_rms()
+        if not globalscaler:
+            globalscaler = 256
+        cs = int(
+            (current * 256.0 * 32.0) / (globalscaler * ifs_rms) - 1.0 + 0.5
+        )
+        return max(0, min(31, cs))
+
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
-        irun = self.cs
+        irun = (
+            self._calc_current_bits(run_current, gscaler)
+            if self.cs is None
+            else self.cs
+        )
         ihold = math.floor((min((hold_current / run_current) * irun, irun)))
         return gscaler, irun, ihold
 

@@ -6,6 +6,7 @@
 import math
 import os
 import time
+import logging
 from contextlib import contextmanager
 from . import shaper_calibrate
 
@@ -523,6 +524,9 @@ class ResonanceTester:
 
         input_shaper = self.printer.lookup_object("input_shaper", None)
 
+        # Check for active fans and display warning if found
+        self._check_active_fans(gcmd)
+
         # Setup shaper calibration
         helper = shaper_calibrate.ShaperCalibrate(self.printer)
 
@@ -640,6 +644,41 @@ class ResonanceTester:
             output, calibration_data, all_shapers, max_freq, accel_per_hz
         )
         return output
+
+    def _check_active_fans(self, gcmd):
+        try:
+            active_fans = []
+            all_objects = self.printer.lookup_objects()
+            for name, obj in all_objects:
+                module_name = name.split(" ")[0]
+                if "fan" in module_name.lower():
+                    try:
+                        status = obj.get_status(
+                            self.printer.get_reactor().monotonic()
+                        )
+                        if status.get("speed", 0.0) > 0.0:
+                            if name == "fan":
+                                fan_name = "fan"
+                            else:
+                                fan_name = (
+                                    name.split(" ", 1)[1]
+                                    if " " in name
+                                    else name
+                                )
+
+                            active_fans.append(fan_name)
+                    except:
+                        continue
+
+            if active_fans:
+                gcmd.respond_info(
+                    "WARNING: Active fans detected: %s\n"
+                    "Fan vibrations may affect input shaper calibration accuracy.\n"
+                    "For best results, stop fans or wait for them to stop automatically."
+                    % (", ".join(active_fans))
+                )
+        except Exception as e:
+            logging.exception("Error checking fans: %s", str(e))
 
 
 def load_config(config):

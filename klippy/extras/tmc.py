@@ -856,7 +856,9 @@ class BaseTMCCurrentHelper:
     def set_current_for_homing(self, print_time, pre_homing) -> float:
         if pre_homing and self.needs_home_current_change():
             self.set_current(
-                self.req_home_current, self.req_hold_current, print_time
+                self.req_home_current,
+                self.req_hold_current,
+                print_time,
             )
             return self.current_change_dwell_time
         elif not pre_homing and self.needs_run_current_change():
@@ -874,6 +876,9 @@ class BaseTMCCurrentHelper:
         ):
             return False
         return True
+
+    def apply_current(self, print_time):
+        pass
 
     def set_current(self, new_current, hold_current, print_time, force=False):
         if not self.needs_current_changes(new_current, hold_current, force):

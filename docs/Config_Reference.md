@@ -93,6 +93,9 @@ A collection of Kalico-specific system options
 #allow_plugin_override: False
 #   Allows modules in `plugins` to override modules of the same name in `extras`
 #   The default is False.
+#single_mcu_trsync_timeout: 0.25
+#   The timeout (in seconds) for MCU synchronization during the homing process when
+#   a single MCUs is in use. The default is 0.25
 #multi_mcu_trsync_timeout: 0.025
 #   The timeout (in seconds) for MCU synchronization during the homing process when
 #   multiple MCUs are in use. The default is 0.025
@@ -435,6 +438,17 @@ diagonals. If the slicer emit `M204 S3000` (3000 mm/s^2 accel). On these 37° an
 143° diagonals, the toolhead will accelerate at 3000 mm/s^2. On the X axis, the
 acceleration will be  12000 * 3000 / 15000 = 2400 mm/s^2, and 18000 mm/s^2 for
 pure Y moves.
+
+### Linear Delta Kinematics
+
+See [example-delta.cfg](../config/example-delta.cfg) for an example
+linear delta kinematics config file. See the
+[delta calibrate guide](Delta_Calibrate.md) for information on
+calibration.
+
+Only parameters specific to linear delta printers are described here -
+see [common kinematic settings](#common-kinematic-settings) for
+available parameters.
 
 ```
 [printer]
@@ -4509,9 +4523,16 @@ run_current:
 #   The current_range bit value for the driver. Valid values are 0-3.
 #   The defaul is to auto-calculate to match the requested run_current.
 #   For further information consult the tmc2240 datasheet and tuning table.
-#driver_CS: 31
-#   The current_scaler value for the driver. The default is 31.
-#   For further information consult the tmc2240 datasheet and tuning table.
+#driver_CS:
+#   The current scale value for the TMC driver.
+#   The ideal `driver_CS` value may be found by setting the `CS` value in the
+#   TMC calculations spreadsheet (https://www.analog.com/media/en/engineering-tools/design-tools/tmc5240_tmc2240_tmc2210_calculations.xlsx),
+#   under the chopper tab so the hysteresis is not marked as too high.
+#   While it's not necessary to change the CS value, it can be helpful to achieve
+#   adequate hysteresis values on low current steppers.
+#   By default, this value is autocalculated.
+#   If driver_CS is specified this value will be used for homing so make sure it is possible to achieve your homing_current
+#   with the given currentscaler value.
 #driver_MSLUT0: 2863314260
 #driver_MSLUT1: 1251300522
 #driver_MSLUT2: 608774441
@@ -4694,16 +4715,16 @@ sense_resistor:
 #driver_CHM: 0
 #driver_VHIGHFS: 0
 #driver_VHIGHCHM: 0
-#driver_CS: 31
-#   The current scale value for the TMC driver. The ideal `driver_CS` value may
-#   be found by setting the `CS` value on the tmc5160_calculations.xlsx spreadsheet,
-#   under the chopper tab, so that the Rsense value in the spreadsheet matches
-#   `sense_resistor`. While it's not necessary to change
-#   the CS value, it can be helpful to reach adequate hysteresis values on high
-#   current drivers paired with low current motors. The default for this value is 31,
-#   meaning only globalscaler will be used to scale the current during normal operation.
-#   Errors will be invoked if the CS value is set too low, as the target current
-#   will not be able to be reached.
+#driver_CS:
+#   The current scale value for the TMC driver.
+#   The ideal `driver_CS` value may be found by setting the `CS` value in the
+#   TMC calculations spreadsheet (https://www.analog.com/media/en/engineering-tools/design-tools/tmc5160_calculations.xlsx),
+#   under the chopper tab so the hysteresis is not marked as too high.
+#   While it's not necessary to change the CS value, it can be helpful to achieve
+#   adequate hysteresis values on low current steppers.
+#   By default, this value is autocalculated.
+#   If driver_CS is specified this value will be used for homing so make sure it is possible to achieve your homing_current
+#   with the given currentscaler value.
 #driver_DISS2G: 0
 #driver_DISS2VS: 0
 #driver_PWM_AUTOSCALE: True
