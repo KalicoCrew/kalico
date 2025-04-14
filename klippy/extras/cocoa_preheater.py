@@ -5,7 +5,13 @@ Cocoa Press chocolate core preheater
 from __future__ import annotations
 
 import enum
+import math
+import typing
 from typing import TypedDict
+
+if typing.TYPE_CHECKING:
+    from klippy.gcode import GCodeDispatch
+
 
 module_name = "cocoa_preheater"
 
@@ -84,6 +90,12 @@ class PreheatProfileManager:
 
 
 class CocoaPreheater:
+    profile_manager: PreheatProfileManager
+    time_remaining: float
+    state: None | PreheatState
+    profile: None | PreheatProfile
+    gcode: GCodeDispatch
+
     def __init__(self, config):
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
@@ -98,7 +110,7 @@ class CocoaPreheater:
 
         self.profile_manager = PreheatProfileManager(config)
         self.profile = None
-        self.time_remaining = None
+        self.time_remaining = 0.0
         self.state = None
 
         self._is_attached = None
@@ -109,7 +121,7 @@ class CocoaPreheater:
         return {
             "status": self.state,
             "profile": self.profile,
-            "time_remaining": self.time_remaining,
+            "time_remaining": round(self.time_remaining, 1),
             "profiles": self.profile_manager.get_status(),
         }
 
@@ -138,7 +150,10 @@ class CocoaPreheater:
         reactor = self.printer.get_reactor()
 
         if self._is_attached and self._last_wake is not None:
-            self.time_remaining -= eventtime - self._last_wake
+            self.time_remaining = max(
+                self.time_remaining - (eventtime - self._last_wake),
+                0.0,
+            )
 
         self._last_wake = eventtime
 
@@ -148,6 +163,10 @@ class CocoaPreheater:
         else:
             self.state = PreheatState.complete
             self._stop_preheating("complete")
+            if self.profile:
+                self.gcode.respond_info(
+                    f"Cocoa Press: Preheating {self.profile['name']} complete"
+                )
             return reactor.NEVER
 
     def _start_preheating(self, profile):
@@ -203,9 +222,11 @@ class CocoaPreheater:
                 f"cocoa_preheater:{reason}",
                 self.profile,
             )
-            self.profile = None
 
         self.gcode.register_command("PREHEATER_CANCEL", None)
+
+    def _is_preheating(self, eventtime) -> bool:
+        return self._timer is not None and self.time_remaining > 0.0
 
     def cmd_PREHEATER_START(self, gcmd):
         """Preheat a chocolate core. `PREHEATER_START NAME=`"""
@@ -219,6 +240,9 @@ class CocoaPreheater:
         else:
             self._start_preheating(profile)
 
+        if gcmd.get("WAIT", None):
+            self.printer.wait_while(self._is_preheating)
+
     def cmd_PREHEATER_CANCEL(self, gcmd):
         """Cancel a current preheat action"""
 
@@ -228,6 +252,15 @@ class CocoaPreheater:
         else:
             self.state = PreheatState.cancelled
             self._stop_preheating("cancel")
+
+    def cmd_PREHEATER_WAIT(self, gcmd):
+        """Wait for a pending preheat to complete"""
+
+        if self._timer is None:
+            gcmd.respond_error("Not current preheating, unable to wait")
+            return
+
+        self.printer.wait_while(self._is_preheating)
 
     def cmd_PREHEATER_SAVE_PROFILE(self, gcmd):
         "Save a preheating profile. `PREHEATER_SAVE_PROFILE NAME= BODY= NOZZLE= DURATION=`"
