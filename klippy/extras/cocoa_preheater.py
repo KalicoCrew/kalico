@@ -195,6 +195,7 @@ class CocoaPreheater:
         self.gcode.register_command(
             "PREHEATER_CANCEL", self.cmd_PREHEATER_CANCEL
         )
+        self.gcode.register_command("PREHEATER_WAIT", self.cmd_PREHEATER_WAIT)
         self.printer.send_event(
             "cocoa_preheater:start",
             self.profile,
@@ -224,6 +225,7 @@ class CocoaPreheater:
             )
 
         self.gcode.register_command("PREHEATER_CANCEL", None)
+        self.gcode.register_command("PREHEATER_WAIT", None)
 
     def _is_preheating(self, eventtime) -> bool:
         return self._timer is not None and self.time_remaining > 0.0
