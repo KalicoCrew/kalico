@@ -92,6 +92,13 @@ void
 spi_transfer(struct spi_config config, uint8_t receive_data
              , uint8_t len, uint8_t *data)
 {
+    spi_transfer_large(config, receive_data, len, data);
+}
+
+void
+spi_transfer_large(struct spi_config config, uint8_t receive_data
+             , size_t len, uint8_t *data)
+{
     if (!len)
         return;
 

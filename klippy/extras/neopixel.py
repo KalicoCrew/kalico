@@ -5,6 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
+from . import bus
+
 BACKGROUND_PRIORITY_CLOCK = 0x7FFFFFFF00000000
 
 BIT_MAX_TIME = 0.000004
@@ -18,12 +20,20 @@ class PrinterNeoPixel:
         self.printer = printer = config.get_printer()
         self.mutex = printer.get_reactor().mutex()
         # Configure neopixel
-        ppins = printer.lookup_object("pins")
-        pin_params = ppins.lookup_pin(config.get("pin"))
-        self.mcu = pin_params["chip"]
+        if config.get("pin", None) is not None:
+            ppins = printer.lookup_object("pins")
+            pin_params = ppins.lookup_pin(config.get("pin"))
+            self.mcu = pin_params["chip"]
+            self.pin = pin_params["pin"]
+            self.mcu.register_config_callback(self.build_config_bitbang)
+        else:
+            self.spi = bus.MCU_SPI_from_config(
+                config, 0, default_speed=6_000_000
+            )
+            self.mcu = self.spi.mcu
+            self.mcu.register_config_callback(self.build_config_spi)
+
         self.oid = self.mcu.create_oid()
-        self.pin = pin_params["pin"]
-        self.mcu.register_config_callback(self.build_config)
         self.neopixel_update_cmd = self.neopixel_send_cmd = None
         # Build color map
         chain_count = config.getint("chain_count", 1, minval=1)
@@ -54,7 +64,7 @@ class PrinterNeoPixel:
             self.mcu.get_non_critical_reconnect_event_name(), self.send_data
         )
 
-    def build_config(self):
+    def build_config_bitbang(self):
         bmt = self.mcu.seconds_to_clock(BIT_MAX_TIME)
         rmt = self.mcu.seconds_to_clock(RESET_MIN_TIME)
         self.mcu.add_config_cmd(
@@ -68,6 +78,24 @@ class PrinterNeoPixel:
         )
         self.neopixel_send_cmd = self.mcu.lookup_query_command(
             "neopixel_send oid=%c",
+            "neopixel_result oid=%c success=%c",
+            oid=self.oid,
+            cq=cmd_queue,
+        )
+
+    def build_config_spi(self):
+        rmt = self.mcu.seconds_to_clock(RESET_MIN_TIME)
+        self.mcu.add_config_cmd(
+            "config_neopixel_spi oid=%d bus_oid=%s data_size=%d"
+            " reset_min_ticks=%d"
+            % (self.oid, self.spi.oid, len(self.color_data), rmt)
+        )
+        cmd_queue = self.mcu.alloc_command_queue()
+        self.neopixel_update_cmd = self.mcu.lookup_command(
+            "neopixel_update_spi oid=%c pos=%hu data=%*s", cq=cmd_queue
+        )
+        self.neopixel_send_cmd = self.mcu.lookup_query_command(
+            "neopixel_send_spi oid=%c",
             "neopixel_result oid=%c success=%c",
             oid=self.oid,
             cq=cmd_queue,

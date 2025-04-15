@@ -128,6 +128,24 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
 }
 
 void
+spidev_transfer_large(struct spidev_s *spi, uint8_t receive_data
+                , size_t data_len, uint8_t *data)
+{
+    uint_fast8_t flags = spi->flags;
+    if (!(flags & (SF_SOFTWARE|SF_HARDWARE)))
+        // Not yet initialized
+        return;
+
+    // Large transfers require hardware support, so software SPI is not
+    // supported, and CS pin management must be done by the hardware
+
+    if (flags & SF_SOFTWARE)
+        try_shutdown("Software SPI does not support large transfers");
+
+    spi_transfer_large(spi->spi_config, receive_data, data_len, data);
+}
+
+void
 command_spi_transfer(uint32_t *args)
 {
     uint8_t oid = args[0];

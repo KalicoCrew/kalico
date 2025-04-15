@@ -138,6 +138,10 @@ config WANT_NEOPIXEL
     bool
     depends on HAVE_GPIO
     default y
+config WANT_NEOPIXEL_SPI
+    bool
+    depends on HAVE_GPIO_HARD_SPI
+    default y
 config WANT_PULSE_COUNTER
     bool
     depends on HAVE_GPIO
@@ -238,6 +242,9 @@ config WANT_TMCUART
 config WANT_NEOPIXEL
     bool "Support 'neopixel' type LED control"
     depends on HAVE_GPIO
+config WANT_NEOPIXEL_SPI
+    bool "Support 'neopixel' type LED control using hardware SPI"
+    depends on WANT_SPI && HAVE_GPIO_HARD_SPI
 config WANT_PULSE_COUNTER
     bool "Support measuring fan tachometer GPIO pins"
     depends on HAVE_GPIO
@@ -348,6 +355,8 @@ config HAVE_GPIO
 config HAVE_GPIO_ADC
     bool
 config HAVE_GPIO_SPI
+    bool
+config HAVE_GPIO_HARD_SPI
     bool
 config HAVE_GPIO_SDIO
     bool
