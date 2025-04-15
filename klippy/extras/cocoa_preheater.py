@@ -5,9 +5,9 @@ Cocoa Press chocolate core preheater
 from __future__ import annotations
 
 import enum
-import math
+import copy
 import typing
-from typing import TypedDict
+from typing import TypedDict, NotRequired
 
 if typing.TYPE_CHECKING:
     from klippy.gcode import GCodeDispatch
@@ -28,7 +28,32 @@ class PreheatProfile(TypedDict):
     body: float
     nozzle: float
     duration: int
-    default: bool
+    default: NotRequired[bool]
+
+
+DEFAULT_PROFILES = [
+    PreheatProfile(
+        name="Milk Cocoa Core",
+        body=30,
+        nozzle=30,
+        duration=1200,
+        default=True,
+    ),
+    PreheatProfile(
+        name="White Cocoa Core",
+        body=30,
+        nozzle=30,
+        duration=1200,
+        default=True,
+    ),
+    PreheatProfile(
+        name="Dark Cocoa Core",
+        body=33.1,
+        nozzle=33.4,
+        duration=1200,
+        default=True,
+    ),
+]
 
 
 class PreheatProfileManager:
@@ -36,23 +61,26 @@ class PreheatProfileManager:
         self._config = config
         self._pconfig = config.get_printer().lookup_object("configfile")
 
-        self.profiles = {}
+        self.default_profiles = {
+            default_profile["name"]: default_profile
+            for default_profile in DEFAULT_PROFILES
+        }
+        self.profiles = copy.deepcopy(self.default_profiles)
 
         for section in config.get_prefix_sections(f"{module_name} "):
             name = section.get_name().split(" ", maxsplit=1)[-1]
-
             body = section.getfloat("body", above=0.0)
             nozzle = section.getfloat("nozzle", above=0.0)
             duration = section.getint("duration", minval=1)
-            default = section.getboolean("default", default=False)
 
             self.profiles[name] = PreheatProfile(
                 name=name,
                 body=body,
                 nozzle=nozzle,
                 duration=duration,
-                default=default,
             )
+            if name in self.default_profiles:
+                self.profiles[name]["default"] = False
 
     def get_status(self):
         return self.profiles
@@ -63,16 +91,11 @@ class PreheatProfileManager:
     def save_profile(
         self, name: str, body: float, nozzle: float, duration: int
     ):
-        default = False
-        if name in self.profiles:
-            default = self.profiles[name]["default"]
-
         self.profiles[name] = PreheatProfile(
             name=name,
             body=body,
             nozzle=nozzle,
             duration=duration,
-            default=default,
         )
 
         section = f"{module_name} {name}"
@@ -83,10 +106,13 @@ class PreheatProfileManager:
     def delete_profile(self, name):
         if name not in self.profiles:
             raise KeyError(f"Profile {name} does not exist")
-        if self.profiles[name]["default"]:
-            raise ValueError(f"Unable to delete default profile {name}")
-        self.profiles.pop(name)
+
         self._pconfig.remove_section(f"{module_name} {name}")
+
+        if name in self.default_profiles:
+            self.profiles[name] = self.default_profiles[name].copy()
+        else:
+            self.profiles.pop(name)
 
 
 class CocoaPreheater:
@@ -169,7 +195,7 @@ class CocoaPreheater:
                 )
             return reactor.NEVER
 
-    def _start_preheating(self, profile):
+    def _start_preheating(self, profile: PreheatProfile):
         reactor = self.printer.get_reactor()
 
         if self._timer:
