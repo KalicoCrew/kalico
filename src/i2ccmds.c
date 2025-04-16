@@ -34,10 +34,14 @@ i2cdev_oid_lookup(uint8_t oid)
 void
 command_i2c_set_bus(uint32_t *args)
 {
+#if CONFIG_WANT_GPIO_I2C
     uint8_t addr = args[3] & 0x7f;
     struct i2cdev_s *i2c = i2cdev_oid_lookup(args[0]);
     i2c->i2c_hw = i2c_setup(args[1], args[2], addr);
     i2c->flags |= IF_HARDWARE;
+#else
+    shutdown("hardware I2C is not supported/enabled");
+#endif
 }
 DECL_COMMAND(command_i2c_set_bus,
              "i2c_set_bus oid=%c i2c_bus=%u rate=%u address=%u");
@@ -45,8 +49,12 @@ DECL_COMMAND(command_i2c_set_bus,
 void
 i2cdev_set_software_bus(struct i2cdev_s *i2c, struct i2c_software *is)
 {
+#if CONFIG_WANT_SOFTWARE_I2C
     i2c->i2c_sw = is;
     i2c->flags |= IF_SOFTWARE;
+#else
+    shutdown("software I2C is not supported/enabled");
+#endif
 }
 
 void i2c_shutdown_on_err(int ret)
