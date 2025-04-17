@@ -48,8 +48,8 @@ DEFAULT_PROFILES = [
     ),
     PreheatProfile(
         name="Dark Cocoa Core",
-        body=33.1,
-        nozzle=33.4,
+        body=33.0,
+        nozzle=33.1,
         duration=1200,
         default=True,
     ),
