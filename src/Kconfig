@@ -128,7 +128,7 @@ config WANT_LDC1612
     default y
 config WANT_MPU9250
     bool
-    depends on HAVE_I2C
+    depends on WANT_I2C
     default y
 config WANT_SENSOR_ANGLE
     bool
