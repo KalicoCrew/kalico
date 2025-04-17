@@ -20,6 +20,7 @@ class PreheatState(str, enum.Enum):
     preheating = "preheating"
     paused = "paused"
     complete = "complete"
+    stopped = "stopped"
     cancelled = "cancelled"
 
 
@@ -31,42 +32,27 @@ class PreheatProfile(TypedDict):
     default: NotRequired[bool]
 
 
-DEFAULT_PROFILES = [
-    PreheatProfile(
-        name="Milk Cocoa Core",
-        body=30,
-        nozzle=30,
-        duration=1200,
-        default=True,
-    ),
-    PreheatProfile(
-        name="White Cocoa Core",
-        body=30,
-        nozzle=30,
-        duration=1200,
-        default=True,
-    ),
-    PreheatProfile(
-        name="Dark Cocoa Core",
-        body=33.0,
-        nozzle=33.1,
-        duration=1200,
-        default=True,
-    ),
-]
-
-
 class PreheatProfileManager:
     def __init__(self, config):
         self._config = config
         self._pconfig = config.get_printer().lookup_object("configfile")
 
-        self.default_profiles = {
-            default_profile["name"]: default_profile
-            for default_profile in DEFAULT_PROFILES
-        }
-        self.profiles = copy.deepcopy(self.default_profiles)
+        self.default_profiles = {}
+        for section in config.get_prefix_sections(f"{module_name}_default "):
+            name = section.get_name().split(" ", maxsplit=1)[-1]
+            body = section.getfloat("body", above=0.0)
+            nozzle = section.getfloat("nozzle", above=0.0)
+            duration = section.getint("duration", minval=1)
 
+            self.default_profiles[name] = PreheatProfile(
+                name=name,
+                body=body,
+                nozzle=nozzle,
+                duration=duration,
+                default=True,
+            )
+
+        self.profiles = copy.deepcopy(self.default_profiles)
         for section in config.get_prefix_sections(f"{module_name} "):
             name = section.get_name().split(" ", maxsplit=1)[-1]
             body = section.getfloat("body", above=0.0)
@@ -218,19 +204,19 @@ class CocoaPreheater:
             reactor.NOW,
         )
 
+        self.gcode.register_command("PREHEATER_STOP", self.cmd_PREHEATER_STOP)
         self.gcode.register_command(
             "PREHEATER_CANCEL", self.cmd_PREHEATER_CANCEL
         )
         self.gcode.register_command("PREHEATER_WAIT", self.cmd_PREHEATER_WAIT)
-        self.printer.send_event(
-            "cocoa_preheater:start",
-            self.profile,
-        )
+
+        self.printer.send_event("cocoa_preheater:start", self.profile)
 
     def _stop_preheating(self, reason="cancel"):
         reactor = self.printer.get_reactor()
 
         self.duration = None
+        self._last_wake = None
 
         if self._timer:
             reactor.unregister_timer(self._timer)
@@ -244,12 +230,13 @@ class CocoaPreheater:
                 f'SET_HEATER_TEMPERATURE HEATER="{self.cocoa_toolhead.extruder_name.split()[-1]}" TARGET=0'
             )
 
-        if self.profile:
-            self.printer.send_event(
-                f"cocoa_preheater:{reason}",
-                self.profile,
-            )
+        self.printer.send_event(
+            f"cocoa_preheater:stop",
+            reason,
+            self.profile,
+        )
 
+        self.gcode.register_command("PREHEATER_STOP", None)
         self.gcode.register_command("PREHEATER_CANCEL", None)
         self.gcode.register_command("PREHEATER_WAIT", None)
 
@@ -264,29 +251,36 @@ class CocoaPreheater:
         try:
             profile = self.profile_manager.get_profile(name)
         except KeyError:
-            gcmd.respond_error(f"Preheat profile {name} not found")
-        else:
-            self._start_preheating(profile)
+            raise gcmd.error(f"Preheat profile {name} not found")
+
+        self._start_preheating(profile)
 
         if gcmd.get("WAIT", None):
             self.printer.wait_while(self._is_preheating)
 
+    def cmd_PREHEATER_STOP(self, gcmd):
+        """Stop a preheat action, leaving the heaters at temperature."""
+
+        if not self._timer:
+            raise gcmd.error("No preheating in progress")
+
+        self.state = PreheatState.stopped
+        self._stop_preheating("stop")
+
     def cmd_PREHEATER_CANCEL(self, gcmd):
         """Cancel a current preheat action"""
 
-        if not self.profile:
-            gcmd.respond_error("No preheating in progress")
+        if not self._timer:
+            raise gcmd.error("Not currently preheating, unable to cancel")
 
-        else:
-            self.state = PreheatState.cancelled
-            self._stop_preheating("cancel")
+        self.state = PreheatState.cancelled
+        self._stop_preheating("cancel")
 
     def cmd_PREHEATER_WAIT(self, gcmd):
         """Wait for a pending preheat to complete"""
 
-        if self._timer is None:
-            gcmd.respond_error("Not current preheating, unable to wait")
-            return
+        if not self._timer:
+            raise gcmd.error("Not currently preheating, unable to wait")
 
         self.printer.wait_while(self._is_preheating)
 
@@ -300,6 +294,7 @@ class CocoaPreheater:
 
         self.profile_manager.save_profile(name, body, nozzle, duration)
         self.gcode.run_script_from_command("SAVE_CONFIG RESTART=0")
+
         gcmd.respond_info("Saved new profile")
 
     def cmd_PREHEATER_DELETE_PROFILE(self, gcmd):
@@ -309,12 +304,10 @@ class CocoaPreheater:
 
         try:
             self.profile_manager.delete_profile(name)
-
         except KeyError:
-            gcmd.respond_error(f"Preheat profile {name} not found")
+            raise gcmd.error(f"Preheat profile {name} not found")
 
-        else:
-            self.gcode.run_script_from_command("SAVE_CONFIG RESTART=0")
+        self.gcode.run_script_from_command("SAVE_CONFIG RESTART=0")
 
 
 def load_config(config):
