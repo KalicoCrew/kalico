@@ -21,10 +21,16 @@ enum {
 // These are declared here to avoid a bunch of ifdefs below,
 // if software I2C is enabled but not hardware I2C.
 int
-i2c_write(struct i2c_config i2c, uint8_t write_len, uint8_t *data) {}
+i2c_write(struct i2c_config i2c, uint8_t write_len, uint8_t *data)
+{
+    return 0;
+}
 int
 i2c_read(struct i2c_config i2c, uint8_t reg_len, uint8_t *reg,
-         uint8_t read_len, uint8_t *read) {}
+         uint8_t read_len, uint8_t *read)
+{
+    return 0;
+}
 #endif
 
 
