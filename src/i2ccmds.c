@@ -17,6 +17,17 @@ enum {
     IF_SOFTWARE = 1, IF_HARDWARE = 2
 };
 
+#if !CONFIG_WANT_GPIO_I2C
+// These are declared here to avoid a bunch of ifdefs below,
+// if software I2C is enabled but not hardware I2C.
+int
+i2c_write(struct i2c_config i2c, uint8_t write_len, uint8_t *data) {}
+int
+i2c_read(struct i2c_config i2c, uint8_t reg_len, uint8_t *reg,
+         uint8_t read_len, uint8_t *read) {}
+#endif
+
+
 void
 command_config_i2c(uint32_t *args)
 {

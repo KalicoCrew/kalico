@@ -28,10 +28,10 @@ enum {
 
 #if !CONFIG_WANT_GPIO_SPI
 // These are declared here to avoid a bunch of ifdefs below,
-// if software SPI is enabled but not hwardware SPI.
+// if software SPI is enabled but not hardware SPI.
 void
-spi_transfer(struct spi_config spi, uint8_t receive_data
-             , uint8_t data_len, uint8_t *data) {}
+spi_transfer(struct spi_config spi, uint8_t receive_data,
+             uint8_t data_len, uint8_t *data) {}
 void
 spi_prepare(struct spi_config spi) {}
 #endif
