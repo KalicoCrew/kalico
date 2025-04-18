@@ -213,7 +213,8 @@ class MCU_I2C:
             self.config_fmt_ticks = (
                 "i2c_set_sw_bus oid=%d"
                 " scl_pin=%s sda_pin=%s pulse_ticks=%%d address=%d"
-                % (self.oid, sw_pins[0], sw_pins[1], addr))
+                % (self.oid, sw_pins[0], sw_pins[1], addr)
+            )
         else:
             self.config_fmt = (
                 "i2c_set_bus oid=%d i2c_bus=%%s rate=%d address=%d"
@@ -240,10 +241,12 @@ class MCU_I2C:
             bus = resolve_bus_name(self.mcu, "i2c_bus", self.bus)
             self.config_fmt = self.config_fmt % (bus,)
         if self.config_fmt_ticks:
-            if self.mcu.try_lookup_command("i2c_set_sw_bus oid=%c"
-                                           " scl_pin=%u sda_pin=%u"
-                                           " pulse_ticks=%u address=%u"):
-                pulse_ticks = self.mcu.seconds_to_clock(1./self.speed/2)
+            if self.mcu.try_lookup_command(
+                "i2c_set_sw_bus oid=%c"
+                " scl_pin=%u sda_pin=%u"
+                " pulse_ticks=%u address=%u"
+            ):
+                pulse_ticks = self.mcu.seconds_to_clock(1.0 / self.speed / 2)
                 self.config_fmt = self.config_fmt_ticks % (pulse_ticks,)
         self.mcu.add_config_cmd(self.config_fmt)
         self.i2c_write_cmd = self.mcu.lookup_command(
