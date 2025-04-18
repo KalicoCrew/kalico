@@ -28,7 +28,7 @@ COPY . /klipper
 WORKDIR /klipper
 
 ENV DICTDIR=/ci_build/dict
-RUN uv run ./scripts/ci-build.sh
+# RUN uv run ./scripts/ci-build.sh
 
-ENTRYPOINT [ "/bin/uv", "run" ]
-CMD [ "py.test" ]
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["uv run py.test"]

@@ -5,58 +5,59 @@ on:
   pull_request:
 
 jobs:
-  build:
+  test-firmware:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dorny/paths-filter@v2
-        id: changes
-        with:
-          filters: |
-            dependencies:
-              - 'pyproject.toml'
-              - 'scripts/klippy-requirements.txt'
-              - 'scripts/requirements_dev.txt'
-            klipper:
-              - 'pyproject.toml'
-              - 'Makefile'
-              - 'src/**'
-              - 'lib/**'
-              - 'test/configs/**'
-              - 'scripts/Dockerfile-build'
-              - 'scripts/buildcommands.py'
-              - 'scripts/check-gcc.sh'
-
-      # Always pull the latest image to take advantage of layer caching
+      # Pull the latest image from Docker Hub
       - name: Pull docker image
         run: docker pull dangerklippers/klipper-build:latest
 
-      - name: Test Klipper build (changes to the firmware)
-        if: steps.changes.outputs.klipper == 'true'
-        run: docker build -f scripts/Dockerfile-build -t dangerklippers/klipper-build:latest .
+      - name: Run firmware build tests
+        run: |
+          # Get the configs
+          CONFIGS=$(./scripts/ci-build.sh list-configs)
+          # Parse the JSON to get the array of configs
+          CONFIGS_ARRAY=$(echo $CONFIGS | jq -r '.configs[]')
+          
+          # Set up error tracking
+          FAILED_CONFIGS=""
+          EXIT_CODE=0
+          
+          # Run each config test
+          for CONFIG in $CONFIGS_ARRAY; do
+            echo "::group::Testing config: $CONFIG"
+            if docker run -v $PWD:/klipper dangerklippers/klipper-build:latest ./scripts/ci-build.sh compile $CONFIG; then
+              echo "Config $CONFIG passed"
+            else
+              echo "::error::Config $CONFIG failed"
+              FAILED_CONFIGS="$FAILED_CONFIGS $CONFIG"
+              EXIT_CODE=1
+            fi
+            echo "::endgroup::"
+          done
+          
+          # Report failures
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::error::The following configs failed: $FAILED_CONFIGS"
+            exit $EXIT_CODE
+          fi
 
-      - name: Ensure scripts/klippy-dependencies.txt is up to date
-        if: steps.changes.outputs.dependencies == 'true'
-        uses: nickcharlton/diff-check@main
-        with:
-          command: |
-            docker run -v $PWD:/klipper dangerklippers/klipper-build:latest uv export --frozen -o scripts/klippy-requirements.txt --no-dev --no-hashes
-            docker run -v $PWD:/klipper dangerklippers/klipper-build:latest uv export --frozen -o scripts/requirements_dev.txt --only-dev --no-hashes
+  test-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
 
-      # This *could* be done with a matrix, but then we would have to figure out sharing the docker image between builds
-      - name: Test Klippy (Python 3.9)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.9  py.test -n auto
+      # Pull the latest image from Docker Hub
+      - name: Pull docker image
+        run: docker pull dangerklippers/klipper-build:latest
 
-      - name: Test Klippy (Python 3.10)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.10 py.test -n auto
-
-      - name: Test Klippy (Python 3.11)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.11 py.test -n auto
-
-      - name: Test Klippy (Python 3.12)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.12 py.test -n auto
-
-      - name: Test Klippy (Python 3.13)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.13 py.test -n auto
+      - name: Test Klippy (Python ${{ matrix.python-version }})
+        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest uv run --python ${{ matrix.python-version }} py.test -n auto
