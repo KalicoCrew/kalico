@@ -2257,21 +2257,26 @@ section of the measuring resonances guide for more information on
 #   resonances at. At least one point is required. Make sure that all
 #   points with some safety margin in XY plane (~a few centimeters)
 #   are reachable by the toolhead.
+#accel_chips:
+#   A comma-separated list of accelerometer chips to use for measurements.
+#   For example, "accel_chips: adxl345 head, adxl345 bed" would use two
+#   separate accelerometer chips. This parameter has priority over the
+#   other accelerometer parameters if specified.
 #accel_chip:
 #   A name of the accelerometer chip to use for measurements. If
 #   adxl345 chip was defined without an explicit name, this parameter
 #   can simply reference it as "accel_chip: adxl345", otherwise an
 #   explicit name must be supplied as well, e.g. "accel_chip: adxl345
-#   my_chip_name". Either this, or the next two parameters must be
-#   set.
+#   my_chip_name". Either this, 'accel_chips', or the next two parameters
+#   must be set.
 #accel_chip_x:
 #accel_chip_y:
 #   Names of the accelerometer chips to use for measurements for each
 #   of the axis. Can be useful, for instance, on bed slinger printer,
 #   if two separate accelerometers are mounted on the bed (for Y axis)
 #   and on the toolhead (for X axis). These parameters have the same
-#   format as 'accel_chip' parameter. Only 'accel_chip' or these two
-#   parameters must be provided.
+#   format as 'accel_chip' parameter. Only one of 'accel_chips', 'accel_chip',
+#   or these two parameters must be provided.
 #max_smoothing:
 #   Maximum input shaper smoothing to allow for each axis during shaper
 #   auto-calibration (with 'SHAPER_CALIBRATE' command). By default no

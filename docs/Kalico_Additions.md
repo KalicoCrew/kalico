@@ -21,6 +21,7 @@
 - [`canbus_query.py`](./CANBUS.md#finding-the-canbus_uuid-for-new-micro-controllers) now responds with all Kalico devices, even after they've been assigned a node_id.
 - Input shaper calibration now warns about active fans that may affect measurement accuracy.
 - [`BED_MESH_CHECK`](./G-Codes.md#bed_mesh_check) validates the current bed mesh against specified criteria, allowing you to check maximum deviation and slope between adjacent points before printing.
+- [`[resonance_tester]`](./Config_Reference.md#resonance_tester) now supports multiple accelerometer chips via the new `accel_chips` parameter, allowing data from multiple accelerometers to be combined for more accurate input shaper calibration.
 
 ## New Kalico Modules
 
