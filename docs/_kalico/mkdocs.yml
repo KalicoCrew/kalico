@@ -98,8 +98,10 @@ nav:
   - Configuration:
     - Config_Reference.md
     - Kalico_Additions.md
-    - Bleeding_Edge.md
-    - Config_Reference_Bleeding_Edge.md
+    - Bleeding Edge:
+      - Bleeding_Edge.md
+      - Config_Reference_Bleeding_Edge.md
+      - Nonlinear_Pressure_Advance.md
     - PID.md
     - MPC.md
     - Dockable_Probe.md
