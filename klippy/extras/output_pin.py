@@ -1,11 +1,12 @@
 # PWM and digital output pin handling
 #
-# Copyright (C) 2017-2024  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2017-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import ast
+import logging
 
-PIN_MIN_TIME = 0.100
-MAX_SCHEDULE_TIME = 5.0
+from . import display
 
 
 # Helper code to queue g-code requests
@@ -24,6 +25,7 @@ class GCodeRequestQueue:
         self.toolhead = self.printer.lookup_object("toolhead")
 
     def _flush_notification(self, print_time, clock):
+        min_sched_time = self.mcu.min_schedule_time()
         rqueue = self.rqueue
         while rqueue:
             next_time = max(rqueue[0][0], self.next_min_flush_time)
@@ -46,7 +48,7 @@ class GCodeRequestQueue:
                 if action == "delay":
                     pos -= 1
             del rqueue[: pos + 1]
-            self.next_min_flush_time = next_time + max(min_wait, PIN_MIN_TIME)
+            self.next_min_flush_time = next_time + max(min_wait, min_sched_time)
             # Ensure following queue items are flushed
             self.toolhead.note_mcu_movequeue_activity(self.next_min_flush_time)
 
@@ -59,7 +61,11 @@ class GCodeRequestQueue:
             (lambda pt: self._queue_request(pt, value))
         )
 
-    def send_async_request(self, print_time, value):
+    def send_async_request(self, value, print_time=None):
+        min_sched_time = self.mcu.min_schedule_time()
+        if print_time is None:
+            systime = self.printer.get_reactor().monotonic()
+            print_time = self.mcu.estimated_print_time(systime + min_sched_time)
         while 1:
             next_time = max(print_time, self.next_min_flush_time)
             # Invoke callback for the request
@@ -70,9 +76,131 @@ class GCodeRequestQueue:
                 action, min_wait = ret
                 if action == "discard":
                     break
-            self.next_min_flush_time = next_time + max(min_wait, PIN_MIN_TIME)
+            self.next_min_flush_time = next_time + max(min_wait, min_sched_time)
             if action != "delay":
                 break
+
+
+######################################################################
+# Template evaluation helper
+######################################################################
+
+
+# Time between each template update
+RENDER_TIME = 0.500
+
+
+# Main template evaluation code
+class PrinterTemplateEvaluator:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.active_templates = {}
+        self.render_timer = None
+        # Load templates
+        dtemplates = display.lookup_display_templates(config)
+        self.templates = dtemplates.get_display_templates()
+        gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.create_template_context = gcode_macro.create_template_context
+
+    def _activate_timer(self):
+        if self.render_timer is not None or not self.active_templates:
+            return
+        reactor = self.printer.get_reactor()
+        self.render_timer = reactor.register_timer(self._render, reactor.NOW)
+
+    def _activate_template(self, callback, template, lparams, flush_callback):
+        if template is not None:
+            # Build a unique id to make it possible to cache duplicate rendering
+            uid = (template,) + tuple(sorted(lparams.items()))
+            try:
+                {}.get(uid)
+            except TypeError:
+                # lparams is not static, so disable caching
+                uid = None
+            self.active_templates[callback] = (
+                uid,
+                template,
+                lparams,
+                flush_callback,
+            )
+            return
+        if callback in self.active_templates:
+            del self.active_templates[callback]
+
+    def _render(self, eventtime):
+        if not self.active_templates:
+            # Nothing to do - unregister timer
+            reactor = self.printer.get_reactor()
+            reactor.unregister_timer(self.render_timer)
+            self.render_timer = None
+            return reactor.NEVER
+        # Setup gcode_macro template context
+        context = self.create_template_context(eventtime)
+
+        def render(name, **kwargs):
+            return self.templates[name].render(context, **kwargs)
+
+        context["render"] = render
+        # Render all templates
+        flush_callbacks = {}
+        render_cache = {}
+        template_info = self.active_templates.items()
+        for callback, (uid, template, lparams, flush_callback) in template_info:
+            text = render_cache.get(uid)
+            if text is None:
+                try:
+                    text = template.render(context, **lparams)
+                except Exception:
+                    logging.exception("display template render error")
+                    text = ""
+                if uid is not None:
+                    render_cache[uid] = text
+            if flush_callback is not None:
+                flush_callbacks[flush_callback] = 1
+            callback(text)
+        context.clear()  # Remove circular references for better gc
+        # Invoke optional flush callbacks
+        for flush_callback in flush_callbacks.keys():
+            flush_callback()
+        return eventtime + RENDER_TIME
+
+    def set_template(self, gcmd, callback, flush_callback=None):
+        template = None
+        lparams = {}
+        tpl_name = gcmd.get("TEMPLATE")
+        if tpl_name:
+            template = self.templates.get(tpl_name)
+            if template is None:
+                raise gcmd.error("Unknown display_template '%s'" % (tpl_name,))
+            tparams = template.get_params()
+            for p, v in gcmd.get_command_parameters().items():
+                if not p.startswith("PARAM_"):
+                    continue
+                p = p.lower()
+                if p not in tparams:
+                    raise gcmd.error(
+                        "Invalid display_template parameter: %s" % (p,)
+                    )
+                try:
+                    lparams[p] = ast.literal_eval(v)
+                except ValueError:
+                    raise gcmd.error("Unable to parse '%s' as a literal" % (v,))
+        self._activate_template(callback, template, lparams, flush_callback)
+        self._activate_timer()
+
+
+def lookup_template_eval(config):
+    printer = config.get_printer()
+    te = printer.lookup_object("template_evaluator", None)
+    if te is None:
+        te = PrinterTemplateEvaluator(config)
+        printer.add_object("template_evaluator", te)
+    return te
+
+
+######################################################################
+# Main output pin handling
+######################################################################
 
 
 class PrinterOutputPin:
@@ -83,8 +211,9 @@ class PrinterOutputPin:
         self.is_pwm = config.getboolean("pwm", False)
         if self.is_pwm:
             self.mcu_pin = ppins.setup_pin("pwm", config.get("pin"))
+            max_duration = self.mcu_pin.get_mcu().max_nominal_duration()
             cycle_time = config.getfloat(
-                "cycle_time", 0.100, above=0.0, maxval=MAX_SCHEDULE_TIME
+                "cycle_time", 0.100, above=0.0, maxval=max_duration
             )
             hardware_pwm = config.getboolean("hardware_pwm", False)
             self.mcu_pin.setup_cycle_time(cycle_time, hardware_pwm)
