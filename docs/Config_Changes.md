@@ -12,6 +12,11 @@ All dates in this document are approximate.
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
 
+20250425: The maximum `cycle_time` for pwm `[output_pin]`,
+`[pwm_cycle_time]`, `[pwm_tool]`, and similar config sections is now 3
+seconds (reduced from 5 seconds). The `maximum_mcu_duration` in
+`[pwm_tool]` is now also 3 seconds.
+
 20250816: The filament_switch_sensor adds a new option `debounce_delay` that
 takes a time in seconds to debounce the state of the switch before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
