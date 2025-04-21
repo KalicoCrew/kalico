@@ -1,6 +1,6 @@
 # Interface to Klipper micro-controller code
 #
-# Copyright (C) 2016-2023  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
@@ -734,6 +734,12 @@ class MCU_adc:
 ######################################################################
 
 
+# Minimum time host needs to get scheduled events queued into mcu
+MIN_SCHEDULE_TIME = 0.100
+# Maximum time all MCUs can internally schedule into the future
+MAX_NOMINAL_DURATION = 5.0
+
+
 class MCU:
     error = error
 
@@ -1283,6 +1289,12 @@ class MCU:
 
     def get_max_stepper_error(self):
         return self._max_stepper_error
+
+    def min_schedule_time(self):
+        return MIN_SCHEDULE_TIME
+
+    def max_nominal_duration(self):
+        return MAX_NOMINAL_DURATION
 
     # Wrapper functions
     def get_printer(self):
