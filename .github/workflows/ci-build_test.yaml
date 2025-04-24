@@ -36,7 +36,7 @@ jobs:
       - name: Test Klipper build (changes to the firmware)
         if: steps.changes.outputs.klipper == 'true'
         run: |
-          apt-get update && apt-get install -y expect
+          sudo apt-get update && sudo apt-get install -y expect
           # Clean up docker output so that github ::group: instructions
           # get recognized
           unbuffer docker build --progress=plain -f scripts/Dockerfile-build \
