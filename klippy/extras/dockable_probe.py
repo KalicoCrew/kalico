@@ -33,7 +33,7 @@ Please see {0}.md and config_Reference.md.
 
 VIRTUAL_Z_ENDSTOP_ERROR = """
 DockableProbe cannot be used as Z endstop if a z position
-is defined in approach/dock/extract/insert/detach position."
+is defined in approach/dock/extract."
 """
 
 
@@ -385,8 +385,6 @@ class DockableProbe:
             self.approach_position,
             self.dock_position,
             self.extract_position,
-            self.insert_position,
-            self.detach_position,
         ]
         if self in endstops and any(pos[2] is not None for pos in positions):
             raise self.printer.config_error(VIRTUAL_Z_ENDSTOP_ERROR)
@@ -700,10 +698,10 @@ class DockableProbe:
     def _get_closest_exitpoint(self, point1, point2):
         cx, cy = self.dock_position[:2]
         # Choose point2 if point1 is the dock position
-        if point1[:2] != (cx, cy):
+        if point1[:2] != [cx, cy]:
             dx, dy = point1[0] - cx, point1[1] - cy
             reference_point = point1[:2]
-        elif point2[:2] != (cx, cy):
+        elif point2[:2] != [cx, cy]:
             dx, dy = point2[0] - cx, point2[1] - cy
             reference_point = point2[:2]
         else:

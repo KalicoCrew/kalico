@@ -2494,7 +2494,7 @@ control_pin:
 #   See the "probe" section for information on these parameters.
 ```
 
-### [dockable_probe]
+### ⚠️ [dockable_probe]
 
 Certain probes are magnetically coupled to the toolhead and stowed
 in a dock when not in use. One should define this section instead
