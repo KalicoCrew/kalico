@@ -23,3 +23,4 @@ src-$(CONFIG_WANT_HX71X) += sensor_hx71x.c
 src-$(CONFIG_WANT_ADS1220) += sensor_ads1220.c
 src-$(CONFIG_WANT_SENSOR_ANGLE) += sensor_angle.c
 src-$(CONFIG_NEED_SENSOR_BULK) += sensor_bulk.c
+
