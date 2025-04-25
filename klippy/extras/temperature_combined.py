@@ -55,8 +55,10 @@ class PrinterSensorCombined:
 
     def _handle_ready(self):
         # Start temperature update timer
+        # There is a race condition with sensors where they can be not ready,
+        # and return 0 or None - initialize a little bit later.
         self.reactor.update_timer(
-            self.temperature_update_timer, self.reactor.NOW
+            self.temperature_update_timer, self.reactor.monotonic() + 1.0
         )
 
     def setup_minmax(self, min_temp, max_temp):
