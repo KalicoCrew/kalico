@@ -7,7 +7,6 @@ set -eu
 # Paths to tools installed by ci-install.sh
 MAIN_DIR=${PWD}
 BUILD_DIR=/ci_build
-export PATH=${BUILD_DIR}/pru-gcc/bin:${PATH}
 export PATH=${BUILD_DIR}/or1k-linux-musl-cross/bin:${PATH}
 PYTHON=${BUILD_DIR}/python-env/bin/python
 
