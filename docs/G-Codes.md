@@ -1359,20 +1359,19 @@ is enabled (also see the
 all enabled accelerometer chips.
 
 #### TEST_RESONANCES
-`TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
+`TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
-[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=[<0:1>]]`: Runs
+[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=<0:1>]`: Runs
 the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
 point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 `AXIS=1,-1` to define a diagonal direction). Note that `AXIS=dx,dy`
-and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
-more configured adxl345 chip,delimited with comma, for example
-`CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+and `AXIS=-dx,-dy` is equivalent. `chip_name` can be one or
+more configured accel chips, delimited with comma, for example
+`CHIPS="adxl345, adxl345 rpi"`. If POINT or ACCEL_PER_HZ are specified,
 they will override the corresponding fields configured in `[resonance_tester]`.
 If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
 testing, because it is not valid to run the resonance testing with the input shaper
@@ -1389,14 +1388,13 @@ frequency response is calculated (across all probe points) and written into
 
 #### SHAPER_CALIBRATE
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
-[FREQ_END=<max_freq>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[MAX_SMOOTHING=<max_smoothing>]`: Similarly to `TEST_RESONANCES`, runs
-the resonance test as configured, and tries to find the optimal
-parameters for the input shaper for the requested axis (or both X and
-Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset, its
-value is taken from `[resonance_tester]` section, with the default
-being unset. See the
-[Max smoothing](Measuring_Resonances.md#max-smoothing) of the
+[FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
+[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]`:
+Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
+to find the optimal parameters for the input shaper for the requested axis
+(or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
+its value is taken from `[resonance_tester]` section, with the default being unset.
+See the [Max smoothing](Measuring_Resonances.md#max-smoothing) of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the
 frequency responses and the different input shapers values are written

@@ -443,14 +443,7 @@ class ResonanceTester:
             return None
         parsed_chips = []
         for chip_name in accel_chips.split(","):
-            chip_name = chip_name.strip()
-            if not chip_name:
-                continue
-            if "adxl345" in chip_name:
-                chip_lookup_name = chip_name
-            else:
-                chip_lookup_name = "adxl345 " + chip_name
-            chip = self.printer.lookup_object(chip_lookup_name)
+            chip = self.printer.lookup_object(chip_name.strip())
             parsed_chips.append(chip)
         return parsed_chips
 
