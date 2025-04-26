@@ -44,6 +44,7 @@ compile()
         make olddefconfig
         make V=1 -j2
         size out/*.elf
+        ./scripts/check-software-div.sh .config out/*.elf
         finish_test mcu_compile "$TARGET"
         cp out/klipper.dict ${1}/$(basename ${TARGET} .config).dict
     done
