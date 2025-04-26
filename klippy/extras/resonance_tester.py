@@ -294,15 +294,32 @@ class ResonanceTester:
         self.move_speed = config.getfloat("move_speed", 50.0, above=0.0)
         self.generator = SweepingVibrationsTestGenerator(config)
         self.executor = ResonanceTestExecutor(config)
-        if not config.get("accel_chip_x", None):
-            self.accel_chip_names = [("xy", config.get("accel_chip").strip())]
-        else:
+
+        accel_chips = config.get("accel_chips", None)
+        accel_chip = config.get("accel_chip", None)
+        accel_chip_x = config.get("accel_chip_x", None)
+        accel_chip_y = config.get("accel_chip_y", None)
+
+        # priority: accel_chips > accel_chip_x/y > accel_chip
+        if accel_chips is not None:
+            # Parse comma-separated list of chips
+            chip_names = [chip.strip() for chip in accel_chips.split(",")]
+            self.accel_chip_names = [("xy", chip) for chip in chip_names]
+        elif accel_chip_x is not None:
             self.accel_chip_names = [
-                ("x", config.get("accel_chip_x").strip()),
-                ("y", config.get("accel_chip_y").strip()),
+                ("x", accel_chip_x.strip()),
+                ("y", accel_chip_y.strip()),
             ]
             if self.accel_chip_names[0][1] == self.accel_chip_names[1][1]:
                 self.accel_chip_names = [("xy", self.accel_chip_names[0][1])]
+        elif accel_chip is not None:
+            self.accel_chip_names = [("xy", accel_chip.strip())]
+        else:
+            raise config.error(
+                "No accelerometer chips configured. At least one of accel_chips,"
+                " accel_chip, or accel_chip_x/accel_chip_y must be specified."
+            )
+
         self.max_smoothing = config.getfloat("max_smoothing", None, minval=0.05)
         self.probe_points = config.getlists(
             "probe_points", seps=(",", "\n"), parser=float, count=3
@@ -327,10 +344,18 @@ class ResonanceTester:
         self.printer.register_event_handler("klippy:connect", self.connect)
 
     def connect(self):
-        self.accel_chips = [
-            (chip_axis, self.printer.lookup_object(chip_name))
-            for chip_axis, chip_name in self.accel_chip_names
-        ]
+        self.accel_chips = []
+        for chip_axis, chip_name in self.accel_chip_names:
+            try:
+                chip = self.printer.lookup_object(chip_name)
+                self.accel_chips.append((chip_axis, chip))
+            except self.printer.config_error as e:
+                logging.exception(
+                    "Error looking up accelerometer chip '%s': %s",
+                    chip_name,
+                    str(e),
+                )
+                raise
 
     def _run_test(
         self,
@@ -392,7 +417,7 @@ class ResonanceTester:
                             raw_name_suffix,
                             axis,
                             point if len(test_points) > 1 else None,
-                            chip_name if accel_chips is not None else None,
+                            chip_name,
                         )
                         aclient.write_to_file(raw_name)
                         gcmd.respond_info(
@@ -414,13 +439,11 @@ class ResonanceTester:
         return calibration_data
 
     def _parse_chips(self, accel_chips):
+        if not accel_chips:
+            return None
         parsed_chips = []
         for chip_name in accel_chips.split(","):
-            if "adxl345" in chip_name:
-                chip_lookup_name = chip_name.strip()
-            else:
-                chip_lookup_name = "adxl345 " + chip_name.strip()
-            chip = self.printer.lookup_object(chip_lookup_name)
+            chip = self.printer.lookup_object(chip_name.strip())
             parsed_chips.append(chip)
         return parsed_chips
 

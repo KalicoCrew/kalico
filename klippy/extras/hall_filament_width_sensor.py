@@ -346,14 +346,19 @@ class HallFilamentWidthSensor:
         return self.get_status()
 
     def get_status(self, eventtime=None):
-        return {
-            "Diameter": self.diameter,
-            "Raw": (
-                self.lastFilamentWidthReading + self.lastFilamentWidthReading2
-            ),
-            "is_active": self.is_active,
-            "check_on_print_start": bool(self.check_on_print_start),
-        }
+        status = self.runout_helper.get_status(eventtime)
+        status.update(
+            {
+                "Diameter": self.diameter,
+                "Raw": (
+                    self.lastFilamentWidthReading
+                    + self.lastFilamentWidthReading2
+                ),
+                "is_active": self.is_active,
+                "check_on_print_start": bool(self.check_on_print_start),
+            }
+        )
+        return status
 
     def cmd_log_enable(self, gcmd):
         self.is_log = True

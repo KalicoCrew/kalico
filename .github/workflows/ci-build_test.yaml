@@ -35,7 +35,13 @@ jobs:
 
       - name: Test Klipper build (changes to the firmware)
         if: steps.changes.outputs.klipper == 'true'
-        run: docker build -f scripts/Dockerfile-build -t dangerklippers/klipper-build:latest .
+        run: |
+          sudo apt-get update && sudo apt-get install -y expect
+          # Clean up docker output so that github ::group: instructions
+          # get recognized
+          unbuffer docker build --progress=plain -f scripts/Dockerfile-build \
+            -t dangerklippers/klipper-build:latest . 2>&1 \
+            | sed -u -E 's/^#[0-9]+ [0-9.]+ ?//g'
 
       - name: Ensure scripts/klippy-dependencies.txt is up to date
         if: steps.changes.outputs.dependencies == 'true'

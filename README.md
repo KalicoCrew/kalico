@@ -176,17 +176,39 @@ sudo systemctl restart klipper
 
 For users that are not comfortable using Git directly, [KIAUH v6](https://github.com/dw-0/kiauh) is able to use custom repositories.
 
-To do this, add the Kalico repo to KIAUH's custom repository settings with the following steps:
+To do this, add the Kalico repo to KIAUH's custom repository config depending on your KIAUH version:
+
+#### Setup Kalico as repository in KIAUH v6
+- `cd ~/kiauh`
+- `cp default.kiauh.cfg kiauh.cfg`
+- `nano kiauh.cfg`
+- add `https://github.com/KalicoCrew/kalico, main` for the main branch
+
+    or `https://github.com/KalicoCrew/kalico, bleeding-edge-v2` for the bleeding edge branch
+- CTRL-X to save and exit
 
 From the KIAUH menu select:
 
-- [S] Settings
-- 1\) Set custom Klipper repository
-- Use `https://github.com/KalicoCrew/kalico` as the new repository URL
-- Use `main` or `bleeding-edge-v2` as the new branch name
-- Select 'Y' to apply the changes
-- Enter 'B' for back twice
-- 'Q' to quit
+-   [S] Settings  
+-   1\) Switch Klipper source repository
+
+-   Select Kalico from the list
+
+#### Setup Kalico as repository in KIAUH v4
+- Add the custom repo to your `klipper_repos.txt` in the `~kiauh` directory
+- `echo "https://github.com/KalicoCrew/kalico,main" >> ~/kiauh/klipper_repos.txt` for the main branch
+
+  or `echo "https://github.com/KalicoCrew/kalico,bleeding-edge-v2" >> ~/kiauh/klipper_repos.txt` for the bleeding edge branch
+
+From the KIAUH menu select:
+
+-   [6] Settings  
+-   1\) Set custom Klipper repository
+
+-   Select Kalico from the list
+
+
+*Repo changes will not persist across KIAUH versions.*
 
 ### Option 3. Adding a git-remote to the existing installation
 Can switch back to mainline klipper at any time via a `git checkout upstream_main`
