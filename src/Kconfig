@@ -114,17 +114,9 @@ config WANT_THERMOCOUPLE
     bool
     depends on HAVE_GPIO_SPI
     default y
-config WANT_SENSOR_ADXL345
+config WANT_ADXL345
     bool
     depends on HAVE_GPIO_SPI
-    default y
-config WANT_SENSOR_ANGLE
-    bool
-    depends on HAVE_GPIO_SPI
-    default y
-config WANT_SENSOR_MPU9250
-    bool
-    depends on HAVE_GPIO_I2C
     default y
 config WANT_LIS2DW
     bool
@@ -172,10 +164,9 @@ config WANT_GPIO_I2C
     default y
 config NEED_SENSOR_BULK
     bool
-    depends on WANT_LIS2DW || WANT_LDC1612 || WANT_HX71X \
-        || WANT_ADS1220 || WANT_THERMOCOUPLE \
-        || WANT_SENSOR_ADXL345 || WANT_SENSOR_ANGLE \
-        || WANT_SENSOR_MPU9250
+    depends on WANT_ADXL345 || WANT_LIS2DW || WANT_ADXL345 \
+        || WANT_LDC1612 || WANT_HX71X || WANT_ADS1220 \
+        || WANT_SENSOR_ANGLE
     default y
 config WANT_OPTIMIZE_SIZE
     bool
@@ -197,18 +188,9 @@ config WANT_GPIO_BITBANGING
 config WANT_DISPLAYS
     bool "Support LCD devices"
     depends on HAVE_GPIO
-config WANT_THERMOCOUPLE
-    bool "Support thermocouple MAX sensors"
-    depends on HAVE_GPIO_SPI
-config WANT_SENSOR_ADXL345
+config WANT_ADXL345
     bool "Support adxl accelerometers"
-    depends on HAVE_GPIO_SPI
-config WANT_SENSOR_ANGLE
-    bool "Support angle sensors"
-    depends on HAVE_GPIO_SPI
-config WANT_SENSOR_MPU9250
-    bool "Support MPU accelerometers"
-    depends on HAVE_GPIO_I2C
+    depends on WANT_GPIO_SPI
 config WANT_LIS2DW
     bool "Support lis2dw and lis3dh 3-axis accelerometers"
     depends on WANT_GPIO_SPI || WANT_GPIO_I2C
