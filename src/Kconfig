@@ -112,27 +112,27 @@ config WANT_DISPLAYS
     default y
 config WANT_THERMOCOUPLE
     bool
-    depends on HAVE_GPIO_SPI
+    depends on WANT_SPI
     default y
 config WANT_ADXL345
     bool
-    depends on HAVE_GPIO_SPI
+    depends on WANT_SPI
     default y
 config WANT_LIS2DW
     bool
-    depends on WANT_GPIO_SPI || WANT_GPIO_I2C
+    depends on WANT_SPI || WANT_I2C
     default y
 config WANT_LDC1612
     bool
-    depends on WANT_GPIO_I2C
+    depends on WANT_I2C
     default y
 config WANT_MPU9250
     bool
-    depends on HAVE_GPIO_I2C
+    depends on WANT_I2C
     default y
 config WANT_SENSOR_ANGLE
     bool
-    depends on HAVE_GPIO_SPI
+    depends on HAVE_SPI
     default y
 config WANT_HX71X
     bool
@@ -140,16 +140,16 @@ config WANT_HX71X
     default y
 config WANT_ADS1220
     bool
-    depends on WANT_GPIO_SPI
+    depends on WANT_SPI
     default y
 config WANT_SOFTWARE_I2C
     bool
-    depends on HAVE_GPIO && HAVE_GPIO_I2C
-    default y
+    depends on HAVE_GPIO
+    default y if HAVE_GPIO
 config WANT_SOFTWARE_SPI
     bool
-    depends on HAVE_GPIO && HAVE_GPIO_SPI
-    default y
+    depends on HAVE_GPIO
+    default y if HAVE_GPIO
 config WANT_GPIO_SPI
     bool
     depends on HAVE_GPIO && HAVE_GPIO_SPI
@@ -164,60 +164,13 @@ config WANT_GPIO_I2C
     default y
 config NEED_SENSOR_BULK
     bool
-    depends on WANT_ADXL345 || WANT_LIS2DW || WANT_ADXL345 \
+    depends on WANT_ADXL345 || WANT_LIS2DW \
         || WANT_LDC1612 || WANT_HX71X || WANT_ADS1220 \
-        || WANT_SENSOR_ANGLE
+        || WANT_SENSOR_ANGLE || WANT_MPU9250
     default y
 config WANT_OPTIMIZE_SIZE
     bool
     default n
-menu "Optional features (to reduce code size)"
-    depends on HAVE_LIMITED_CODE_SIZE
-config WANT_GPIO_SPI
-    bool "Support hardware SPI"
-    depends on HAVE_GPIO && HAVE_GPIO_SPI
-config WANT_GPIO_ADC
-    bool "Support hardware ADC"
-    depends on HAVE_GPIO && HAVE_GPIO_ADC
-config WANT_GPIO_I2C
-    bool "Support hardware I2C"
-    depends on HAVE_GPIO && HAVE_GPIO_I2C
-config WANT_GPIO_BITBANGING
-    bool "Support GPIO \"bit-banging\" devices"
-    depends on HAVE_GPIO
-config WANT_DISPLAYS
-    bool "Support LCD devices"
-    depends on HAVE_GPIO
-config WANT_ADXL345
-    bool "Support adxl accelerometers"
-    depends on WANT_GPIO_SPI
-config WANT_LIS2DW
-    bool "Support lis2dw and lis3dh 3-axis accelerometers"
-    depends on WANT_GPIO_SPI || WANT_GPIO_I2C
-config WANT_MPU9250
-    bool "Support MPU accelerometers"
-    depends on WANT_GPIO_I2C
-config WANT_LDC1612
-    bool "Support ldc1612 eddy current sensor"
-    depends on WANT_GPIO_I2C
-config WANT_HX71X
-    bool "Support HX711 and HX717 ADC chips"
-    depends on WANT_GPIO_BITBANGING
-config WANT_ADS1220
-    bool "Support ADS 1220 ADC chip"
-    depends on WANT_GPIO_SPI
-config WANT_SENSOR_ANGLE
-    bool "Support angle sensors"
-    depends on HAVE_GPIO_SPI
-config WANT_SOFTWARE_I2C
-    bool "Support software based I2C \"bit-banging\""
-    depends on HAVE_GPIO && HAVE_GPIO_I2C
-config WANT_SOFTWARE_SPI
-    bool "Support software based SPI \"bit-banging\""
-    depends on HAVE_GPIO && HAVE_GPIO_SPI
-config WANT_OPTIMIZE_SIZE
-    bool "Optimize for code size (-Os) not speed (-O2)"
-endmenu
 
 # Generic configuration options for CANbus
 config CANSERIAL
@@ -247,6 +200,54 @@ config INITIAL_PINS
         pins will be set to output high - preface a pin with a '!'
         character to set that pin to output low.
 
+menu "Optional features (to reduce code size)"
+    depends on HAVE_LIMITED_CODE_SIZE
+config WANT_GPIO_SPI
+    bool "Support hardware SPI"
+    depends on HAVE_GPIO && HAVE_GPIO_SPI
+config WANT_SOFTWARE_SPI
+    bool "Support software based SPI \"bit-banging\""
+    depends on HAVE_GPIO
+config WANT_GPIO_I2C
+    bool "Support hardware I2C"
+    depends on HAVE_GPIO && HAVE_GPIO_I2C
+config WANT_SOFTWARE_I2C
+    bool "Support software based I2C \"bit-banging\""
+    depends on HAVE_GPIO
+config WANT_GPIO_ADC
+    bool "Support hardware ADC"
+    depends on HAVE_GPIO && HAVE_GPIO_ADC
+config WANT_GPIO_BITBANGING
+    bool "Support GPIO \"bit-banging\" devices"
+    depends on HAVE_GPIO
+config WANT_DISPLAYS
+    bool "Support LCD devices"
+    depends on HAVE_GPIO
+config WANT_ADXL345
+    bool "Support adxl accelerometers"
+    depends on WANT_SPI
+config WANT_LIS2DW
+    bool "Support lis2dw and lis3dh 3-axis accelerometers"
+    depends on WANT_SPI || WANT_I2C
+config WANT_MPU9250
+    bool "Support MPU accelerometers"
+    depends on WANT_I2C
+config WANT_LDC1612
+    bool "Support ldc1612 eddy current sensor"
+    depends on WANT_I2C
+config WANT_HX71X
+    bool "Support HX711 and HX717 ADC chips"
+    depends on WANT_GPIO_BITBANGING
+config WANT_ADS1220
+    bool "Support ADS 1220 ADC chip"
+    depends on WANT_GPIO_SPI
+config WANT_SENSOR_ANGLE
+    bool "Support angle sensors"
+    depends on WANT_SPI
+config WANT_OPTIMIZE_SIZE
+    bool "Optimize for code size (-Os) not speed (-O2)"
+endmenu
+
 # The HAVE_x options allow boards to disable support for some commands
 # if the hardware does not support the feature.
 config HAVE_GPIO
@@ -271,6 +272,16 @@ config HAVE_BOOTLOADER_REQUEST
     bool
 config HAVE_LIMITED_CODE_SIZE
     bool
+
+config WANT_SPI
+    bool
+    default y if WANT_GPIO_SPI || WANT_SOFTWARE_SPI
+    default n
+
+config WANT_I2C
+    bool
+    default y if WANT_GPIO_I2C || WANT_SOFTWARE_I2C
+    default n
 
 config INLINE_STEPPER_HACK
     # Enables gcc to inline stepper_event() into the main timer irq handler
