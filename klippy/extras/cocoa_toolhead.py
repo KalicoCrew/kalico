@@ -5,11 +5,10 @@ to detect the toolhead's attachment status
 
 from enum import Enum
 import logging
-import math
-from typing import TYPE_CHECKING
 
+from typing import TYPE_CHECKING
+from klippy import chelper
 from klippy.extras.homing import Homing
-from .force_move import calc_move_time
 
 if TYPE_CHECKING:
     from ..toolhead import ToolHead
@@ -78,8 +77,17 @@ class FakeExtruderHomingToolhead:
         return self.toolhead.get_position()
 
     def set_position(self, pos, homing_axes=()):
+        _ffi_main, ffi_lib = chelper.get_ffi()
         logging.info(f"setting position to {pos}, homing_axes={homing_axes}")
         self.toolhead.set_position(pos, homing_axes=homing_axes)
+        ffi_lib.trapq_set_position(
+            self.extruder_stepper._trapq,
+            self.toolhead.print_time,
+            pos[3],
+            0.0,
+            0.0,
+        )
+        self.extruder_stepper.set_position([pos[3], 0.0, 0.0])
 
     def get_last_move_time(self):
         return self.toolhead.get_last_move_time()
@@ -162,8 +170,7 @@ class CocoaToolheadControl:
         # constants for homing
         self.load_retract_distance = 150  # mm
         self.load_nozzle_push_distance = 10  # mm
-        self.total_maximum_homing_dist = 300  # mm
-        self.homing_chunk_size = 5  # mm
+        self.total_maximum_homing_dist = 200  # mm
         self.empty_tube_travel_distance_cutoff = 180  # mm
 
         # register commands
@@ -432,63 +439,33 @@ class CocoaToolheadControl:
         """
 
         phoming: PrinterHoming = self.printer.lookup_object("homing")
+        homing_state = Homing(self.printer)
 
-        homing_distance = self.homing_chunk_size * dir
-
-        max_iterations = math.ceil(
-            self.total_maximum_homing_dist / self.homing_chunk_size
-        )
+        homing_distance = dir * self.total_maximum_homing_dist
 
         curpos = self.toolhead.get_position()
         starting_e_pos = curpos[3]
         ending_e_pos = starting_e_pos
-        # logging.info(
-        #     f"total_max_homing distance: {self.total_maximum_homing_dist}"
-        # )
-        # logging.info(f"homing distance: {homing_distance}")
-        # logging.info(f"max iterations: {max_iterations}")
-        homing_state = Homing(self.printer)
-        for _ in range(max_iterations):
-            curpos[3] += homing_distance
-            try:
-                logging.info("homing!")
-                trig_pos = phoming.manual_home(
-                    toolhead=self.fake_toolhead_for_homing,
-                    endstops=self.endstops,
-                    pos=curpos,
-                    probe_pos=True,
-                    speed=self.homing_speed,
-                    triggered=True,
-                    check_triggered=True,  # raise exception if no trigger on full movement
-                )
-                self.toolhead.dwell(0.1)
-                self.toolhead.set_position(curpos)
-                homing_state._reset_endstop_states(self.endstops)
-                logging.info(f"triggered at {trig_pos}")
-                ending_e_pos = trig_pos[3]
-                break
-            except Exception as e:
-                if "No trigger on" in str(e):
-                    # no trigger, move down
-                    logging.info("no trigger!")
-                    continue
-                raise e
+        curpos[3] += homing_distance
+
+        trig_pos = phoming.manual_home(
+            toolhead=self.fake_toolhead_for_homing,
+            endstops=self.endstops,
+            pos=curpos,
+            probe_pos=True,
+            speed=self.homing_speed,
+            triggered=True,
+            check_triggered=True,  # raise exception if no trigger on full movement
+        )
+        homing_state._reset_endstop_states(self.endstops)
+
+        ending_e_pos = trig_pos[3]
+        total_homing_distance = round(abs(ending_e_pos - starting_e_pos), 6)
+
         logging.info("successfully homed!")
         logging.info(f"starting_position: {starting_e_pos}")
         logging.info(f"ending position: {ending_e_pos}")
-        total_homing_distance = round(abs(ending_e_pos - starting_e_pos), 6)
-        leftover_dist = total_homing_distance % self.homing_chunk_size
 
-        leftover_dist = (
-            math.ceil(leftover_dist * 1000) / 1000
-        )  # to avoid float precision issues
-
-        # dwell the time for the leftover distance
-        _, accel_t, cruise_t, _ = calc_move_time(
-            leftover_dist, self.homing_speed, self.toolhead.max_accel
-        )
-        est_segment_move_time = (2 * accel_t) + cruise_t
-        self.toolhead.dwell(est_segment_move_time)
         self.toolhead.flush_step_generation()
         return total_homing_distance
 
