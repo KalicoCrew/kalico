@@ -32,6 +32,8 @@ PID_PROFILE_OPTIONS = {
     "pid_kp": (float, "%.3f"),
     "pid_ki": (float, "%.3f"),
     "pid_kd": (float, "%.3f"),
+    "settle_delta": (float, "%.3f"),
+    "settle_slope": (float, "%.3f"),
 }
 
 
@@ -801,6 +803,8 @@ class ControlPID:
         self.Kp = profile["pid_kp"] / PID_PARAM_BASE
         self.Ki = profile["pid_ki"] / PID_PARAM_BASE
         self.Kd = profile["pid_kd"] / PID_PARAM_BASE
+        self.settle_delta = profile.get("settle_delta", PID_SETTLE_DELTA)
+        self.settle_slope = profile.get("settle_slope", PID_SETTLE_SLOPE)
         self.min_deriv_time = (
             self.heater.get_smooth_time()
             if profile["smooth_time"] is None
@@ -850,8 +854,8 @@ class ControlPID:
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         temp_diff = target_temp - smoothed_temp
         return (
-            abs(temp_diff) > PID_SETTLE_DELTA
-            or abs(self.prev_temp_deriv) > PID_SETTLE_SLOPE
+            abs(temp_diff) > self.settle_delta
+            or abs(self.prev_temp_deriv) > self.settle_slope
         )
 
     def update_smooth_time(self):
@@ -877,6 +881,8 @@ class ControlVelocityPID:
         self.Kp = profile["pid_kp"] / PID_PARAM_BASE
         self.Ki = profile["pid_ki"] / PID_PARAM_BASE
         self.Kd = profile["pid_kd"] / PID_PARAM_BASE
+        self.settle_delta = profile.get("settle_delta", PID_SETTLE_DELTA)
+        self.settle_slope = profile.get("settle_slope", PID_SETTLE_SLOPE)
         smooth_time = (
             self.heater.get_smooth_time()
             if profile["smooth_time"] is None
@@ -939,7 +945,8 @@ class ControlVelocityPID:
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         temp_diff = target_temp - smoothed_temp
         return (
-            abs(temp_diff) > PID_SETTLE_DELTA or abs(self.d1) > PID_SETTLE_SLOPE
+            abs(temp_diff) > self.settle_delta
+            or abs(self.d1) > self.settle_slope
         )
 
     def update_smooth_time(self):

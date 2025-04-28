@@ -199,6 +199,7 @@ class CocoaPreheater:
             f'SET_HEATER_TEMPERATURE HEATER="{self.cocoa_toolhead.extruder_name.split()[-1]}" TARGET={self.profile["nozzle"]:0.2f}'
         )
 
+        self._last_wake = None
         self._timer = reactor.register_timer(
             self._preheat_timer_callback,
             reactor.NOW,
