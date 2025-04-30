@@ -38,6 +38,7 @@ class ManualStepper:
         # Registered with toolhead as an axtra axis
         self.axis_gcode_id = None
         self.instant_corner_v = 0.0
+        self.gaxis_limit_velocity = self.gaxis_limit_accel = 0.0
         # Register commands
         stepper_name = config.get_name().split()[1]
         gcode = self.printer.lookup_object("gcode")
@@ -170,6 +171,8 @@ class ManualStepper:
         instant_corner_v = gcmd.get_float(
             "INSTANTANEOUS_CORNER_VELOCITY", 1.0, minval=0.0
         )
+        limit_velocity = gcmd.get_float("LIMIT_VELOCITY", 999999.9, above=0.0)
+        limit_accel = gcmd.get_float("LIMIT_ACCEL", 999999.9, above=0.0)
         if self.axis_gcode_id is not None:
             if gcode_axis:
                 raise gcmd.error("Must unregister axis first")
@@ -192,6 +195,8 @@ class ManualStepper:
                 raise gcmd.error("Axis '%s' already registered" % (gcode_axis,))
         self.axis_gcode_id = gcode_axis
         self.instant_corner_v = instant_corner_v
+        self.gaxis_limit_velocity = limit_velocity
+        self.gaxis_limit_accel = limit_accel
         toolhead.add_extra_axis(self, self.get_position()[0])
         toolhead.register_step_generator(self.rail.generate_steps)
 
@@ -219,13 +224,19 @@ class ManualStepper:
         )
 
     def check_move(self, move, ea_index):
+        # Check move is in bounds
         movepos = move.end_pos[ea_index]
         if (self.pos_min is not None and movepos < self.pos_min) or (
             self.pos_max is not None and movepos > self.pos_max
         ):
             raise move.move_error()
-        # XXX - support max accel/velocity
-        # XXX - support non-kinematic max accel/velocity
+        # Check if need to limit maximum velocity and acceleration
+        axis_ratio = move.move_d / abs(move.axes_d[ea_index])
+        limit_velocity = self.gaxis_limit_velocity * axis_ratio
+        limit_accel = self.gaxis_limit_accel * axis_ratio
+        if not move.is_kinematic_move and self.accel:
+            limit_accel = min(limit_accel, self.accel * axis_ratio)
+        move.limit_speed(limit_velocity, limit_accel)
 
     def calc_junction(self, prev_move, move, ea_index):
         diff_r = move.axes_r[ea_index] - prev_move.axes_r[ea_index]
