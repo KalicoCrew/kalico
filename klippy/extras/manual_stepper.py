@@ -26,6 +26,8 @@ class ManualStepper:
             "accel", 0.0, minval=0.0
         )
         self.next_cmd_time = 0.0
+        self.pos_min = config.getfloat("position_min", None)
+        self.pos_max = config.getfloat("position_max", None)
         # Setup iterative solver
         ffi_main, ffi_lib = chelper.get_ffi()
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
@@ -35,7 +37,7 @@ class ManualStepper:
         self.rail.set_trapq(self.trapq)
         # Registered with toolhead as an axtra axis
         self.axis_gcode_id = None
-        self.instant_corner_v = 0.
+        self.instant_corner_v = 0.0
         # Register commands
         stepper_name = config.get_name().split()[1]
         gcode = self.printer.lookup_object("gcode")
@@ -142,11 +144,19 @@ class ManualStepper:
         homing_move = gcmd.get_int("STOP_ON_ENDSTOP", 0)
         if homing_move:
             movepos = gcmd.get_float("MOVE")
+            if (self.pos_min is not None and movepos < self.pos_min) or (
+                self.pos_max is not None and movepos > self.pos_max
+            ):
+                raise gcmd.error("Move out of range")
             self.do_homing_move(
                 movepos, speed, accel, homing_move > 0, abs(homing_move) == 1
             )
         elif gcmd.get_float("MOVE", None) is not None:
             movepos = gcmd.get_float("MOVE")
+            if (self.pos_min is not None and movepos < self.pos_min) or (
+                self.pos_max is not None and movepos > self.pos_max
+            ):
+                raise gcmd.error("Move out of range")
             sync = gcmd.get_int("SYNC", 1)
             self.do_move(movepos, speed, accel, sync)
         elif gcmd.get_int("SYNC", 0):
@@ -157,8 +167,9 @@ class ManualStepper:
         gcode_move = self.printer.lookup_object("gcode_move")
         toolhead = self.printer.lookup_object("toolhead")
         gcode_axis = gcmd.get("GCODE_AXIS").upper()
-        instant_corner_v = gcmd.get_float('INSTANTANEOUS_CORNER_VELOCITY', 1.,
-                                          minval=0.)
+        instant_corner_v = gcmd.get_float(
+            "INSTANTANEOUS_CORNER_VELOCITY", 1.0, minval=0.0
+        )
         if self.axis_gcode_id is not None:
             if gcode_axis:
                 raise gcmd.error("Must unregister axis first")
@@ -208,15 +219,18 @@ class ManualStepper:
         )
 
     def check_move(self, move, ea_index):
-        # XXX - support out of bounds checks
+        movepos = move.end_pos[ea_index]
+        if (self.pos_min is not None and movepos < self.pos_min) or (
+            self.pos_max is not None and movepos > self.pos_max
+        ):
+            raise move.move_error()
         # XXX - support max accel/velocity
         # XXX - support non-kinematic max accel/velocity
-        pass
 
     def calc_junction(self, prev_move, move, ea_index):
         diff_r = move.axes_r[ea_index] - prev_move.axes_r[ea_index]
         if diff_r:
-            return (self.instant_corner_v / abs(diff_r))**2
+            return (self.instant_corner_v / abs(diff_r)) ** 2
         return move.max_cruise_v2
 
     def get_axis_gcode_id(self):
