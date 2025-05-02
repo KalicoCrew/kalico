@@ -170,10 +170,6 @@ config WANT_THERMOCOUPLE
     bool
     depends on WANT_SPI
     default y
-config WANT_ICM20948
-    bool
-    depends on HAVE_GPIO_I2C
-    default y
 config WANT_HX71X
     bool
     depends on WANT_GPIO_BITBANGING
