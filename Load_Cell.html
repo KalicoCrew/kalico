@@ -8,13 +8,13 @@
       
       
       
-        <link rel="canonical" href="https://docs.kalico.gg/Migrating_from_Klipper.html">
+        <link rel="canonical" href="https://docs.kalico.gg/Load_Cell.html">
       
       
-        <link rel="prev" href="Status_Reference.html">
+        <link rel="prev" href="Hall_Filament_Width_Sensor.html">
       
       
-        <link rel="next" href="Installation.html">
+        <link rel="next" href="Telemetry.html">
       
       
       <link rel="icon" href="logo/kalico-32x32.png">
@@ -22,7 +22,7 @@
     
     
       
-        <title>Migrating from Klipper - Kalico Documentation</title>
+        <title>Load Cells - Kalico Documentation</title>
       
     
     
@@ -86,7 +86,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#migrating-from-klipper" class="md-skip">
+        <a href="#load-cells" class="md-skip">
           Skip to content
         </a>
       
@@ -121,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Migrating from Klipper
+              Load Cells
             
           </span>
         </div>
@@ -766,19 +766,17 @@
       
   
   
-    
   
   
-  
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
         
           
           <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
@@ -792,7 +790,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             Getting up and running
@@ -803,30 +801,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  <span class="md-ellipsis">
-    Migrating from Klipper
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="Migrating_from_Klipper.html" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="Migrating_from_Klipper.html" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -835,53 +813,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#option-1-manually-clone-the-repository" class="md-nav__link">
-    <span class="md-ellipsis">
-      Option 1. Manually clone the repository
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#option-2-using-kiauh" class="md-nav__link">
-    <span class="md-ellipsis">
-      Option 2. Using KIAUH
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#option-3-adding-a-git-remote-to-the-existing-installation" class="md-nav__link">
-    <span class="md-ellipsis">
-      Option 3. Adding a git-remote to the existing installation
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1740,17 +1671,19 @@
       
   
   
+    
   
   
+  
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_12" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_12" checked>
         
           
           <label class="md-nav__link" for="__nav_12" id="__nav_12_label" tabindex="0">
@@ -1764,7 +1697,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_12">
             <span class="md-nav__icon md-icon"></span>
             Device Specific Documents
@@ -1985,10 +1918,30 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="Load_Cell.html" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Load Cells
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="Load_Cell.html" class="md-nav__link md-nav__link--active">
         
   
   <span class="md-ellipsis">
@@ -1997,6 +1950,86 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#related-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Related Documentation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-load_cell_diagnostic" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using LOAD_CELL_DIAGNOSTIC
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calibrating-a-load-cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      Calibrating a Load Cell
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Calibrating a Load Cell">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#applying-a-known-force-or-load" class="md-nav__link">
+    <span class="md-ellipsis">
+      Applying a Known Force or Load
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-force-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reading Force Data
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#taring-a-load-cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      Taring a Load Cell
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -2096,27 +2129,60 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#option-1-manually-clone-the-repository" class="md-nav__link">
+  <a href="#related-documentation" class="md-nav__link">
     <span class="md-ellipsis">
-      Option 1. Manually clone the repository
+      Related Documentation
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#option-2-using-kiauh" class="md-nav__link">
+  <a href="#using-load_cell_diagnostic" class="md-nav__link">
     <span class="md-ellipsis">
-      Option 2. Using KIAUH
+      Using LOAD_CELL_DIAGNOSTIC
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#option-3-adding-a-git-remote-to-the-existing-installation" class="md-nav__link">
+  <a href="#calibrating-a-load-cell" class="md-nav__link">
     <span class="md-ellipsis">
-      Option 3. Adding a git-remote to the existing installation
+      Calibrating a Load Cell
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Calibrating a Load Cell">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#applying-a-known-force-or-load" class="md-nav__link">
+    <span class="md-ellipsis">
+      Applying a Known Force or Load
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-force-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reading Force Data
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#taring-a-load-cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      Taring a Load Cell
     </span>
   </a>
   
@@ -2137,7 +2203,7 @@
                   
 
   
-    <a href="https://github.com/KalicoCrew/kalico/edit/main/docs/Migrating_from_Klipper.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/KalicoCrew/kalico/edit/main/docs/Load_Cell.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -2145,57 +2211,108 @@
   
 
 
-<h1 id="migrating-from-klipper">Migrating from Klipper<a class="headerlink" href="#migrating-from-klipper" title="Permanent link">&para;</a></h1>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Any add-on modules you are using will need to be reinstalled after switching to Kalico. This includes things like Beacon support, led-effect, etc.</p>
-<p>Any data in ~/printer_data such as printer configs and macros will be unaffected, THOUGH do back up just in case.</p>
-</div>
-<h3 id="option-1-manually-clone-the-repository">Option 1. Manually clone the repository<a class="headerlink" href="#option-1-manually-clone-the-repository" title="Permanent link">&para;</a></h3>
-<p>If desired, make a backup copy of your existing Klipper installation by running:</p>
-<div class="highlight"><pre><span></span><code>mv<span class="w"> </span>~/klipper<span class="w"> </span>~/klipper_old
+<h1 id="load-cells">Load Cells<a class="headerlink" href="#load-cells" title="Permanent link">&para;</a></h1>
+<p>This document describes Klipper's support for load cells. Basic load cell
+functionality can be used to read force data and to weigh things like filament.
+A calibrated force sensor is an important part of a load cell based probe.</p>
+<h2 id="related-documentation">Related Documentation<a class="headerlink" href="#related-documentation" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="Config_Reference.html#load_cell">load_cell Config Reference</a></li>
+<li><a href="G-Codes.html#load_cell">load_cell G-Code Commands</a></li>
+<li><a href="Status_Reference.html#load_cell">load_cell Status Reference</a></li>
+</ul>
+<h2 id="using-load_cell_diagnostic">Using <code>LOAD_CELL_DIAGNOSTIC</code><a class="headerlink" href="#using-load_cell_diagnostic" title="Permanent link">&para;</a></h2>
+<p>When you first connect a load cell its good practice to check for issues by
+running <code>LOAD_CELL_DIAGNOSTIC</code>. This tool collects 10 seconds of data from the
+load cell and resport statistics:</p>
+<div class="highlight"><pre><span></span><code>$ LOAD_CELL_DIAGNOSTIC
+// Collecting load cell data for 10 seconds...
+// Samples Collected: 3211
+// Measured samples per second: 332.0
+// Good samples: 3211, Saturated samples: 0, Unique values: 900
+// Sample range: [4.01% to 4.02%]
+// Sample range / sensor capacity: 0.00524%
 </code></pre></div>
 
-<p>Then clone the Kalico repo and restart the klipper service:</p>
-<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/KalicoCrew/kalico.git<span class="w"> </span>~/klipper
-sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>klipper
+<p>Things you can check with this data:</p>
+<ul>
+<li>The configured sample rate of the sensor should be close to the 'Measured
+samples per second' value. If it is not you may have a configuration or wiring
+issue.</li>
+<li>'Saturated samples' should be 0. If you have saturated samples it means the
+load sell is seeing more force than it can measure.</li>
+<li>'Unique values' should be a large percentage of the 'Samples
+Collected' value. If 'Unique values' is 1 it is very likely a wiring issue.</li>
+<li>Tap or push on the sensor while <code>LOAD_CELL_DIAGNOSTIC</code> runs. If
+things are working correctly ths should increase the 'Sample range'.</li>
+</ul>
+<h2 id="calibrating-a-load-cell">Calibrating a Load Cell<a class="headerlink" href="#calibrating-a-load-cell" title="Permanent link">&para;</a></h2>
+<p>Load cells are calibrated using the <code>LOAD_CELL_CALIBRATE</code> command. This is an
+interactive calibration utility that walks you though a 3 step process:</p>
+<ol>
+<li>First use the <code>TARE</code> command to establish the zero force value. This is the
+<code>reference_tare_counts</code> config value.</li>
+<li>Next you apply a known load or force to the load cell and run the
+<code>CALIBRATE GRAMS=nnn</code> command. From this the <code>counts_per_gram</code> value is
+calculated. See <a href="#applying-a-known-force-or-load">the next section</a> for some
+suggestions on how to do this.</li>
+<li>Finally, use the <code>ACCEPT</code> command to save the results.</li>
+</ol>
+<p>You can cancel the calibration process at any time with <code>ABORT</code>.</p>
+<h3 id="applying-a-known-force-or-load">Applying a Known Force or Load<a class="headerlink" href="#applying-a-known-force-or-load" title="Permanent link">&para;</a></h3>
+<p>The <code>CALIBRATE GRAMS=nnn</code> step can be accomplished in a number of ways. If your
+load cell is under a platform like a bed or filament holder it might be easiest
+to put a known mass on the platform. E.g. you could use a couple of 1KG filament
+spools.</p>
+<p>If your load cell is in the printer's toolhead a different approach is easier.
+Put a digital scale on the printers bed and gently lower the toolhead onto the
+scale (or raise the bed into the toolhead if your bed moves). You may be able to
+do this using the <code>FORCE_MOVE</code> command. But more likely you will have to
+manually moving the z axis with the motors off until the toolhead presses on the
+scale.</p>
+<p>A good calibration force would ideally be a large percentage of the load cell's
+rated capacity. E.g. if you have a 5Kg load cell you would ideally calibrate it
+with a 5kg mass. This might work well with under-bed sensors that have to
+support a lot of weight. For toolhead probes this may not be a load that your
+printer bed or toolhead can tolerate without damage. Do try to use at least 1Kg
+of force, most printers should tolerate this without issue.</p>
+<p>When calibrating make careful note of the values reported:</p>
+<div class="highlight"><pre><span></span><code>$ CALIBRATE GRAMS=555
+// Calibration value: -2.78% (-59803108), Counts/gram: 73039.78739,
+Total capacity: +/- 29.14Kg
 </code></pre></div>
 
-<h3 id="option-2-using-kiauh">Option 2. Using KIAUH<a class="headerlink" href="#option-2-using-kiauh" title="Permanent link">&para;</a></h3>
-<p>For users that are not comfortable using Git directly, <a href="https://github.com/dw-0/kiauh">KIAUH v6</a> is able to use custom repositories.</p>
-<p>To do this, add the Kalico repo to KIAUH's custom repository config with the following steps:</p>
-<ol>
-<li>Setup kalico as repository in KIAUH
-- <code>cd ~/kiauh</code>
-- <code>cp default.kiauh.cfg kiauh.cfg</code>
-- <code>nano kiauh.cfg</code>
-- add <code>https://github.com/KalicoCrew/kalico, main</code> for the main branch<p>or <code>https://github.com/KalicoCrew/kalico, bleeding-edge-v2</code> for the bleeding edge branch</p>
-</li>
-</ol>
-<ul>
-<li>CTRL-X to save and exit</li>
-</ul>
-<ol>
-<li>Select Kalico in KIAUH</li>
-</ol>
-<p>From the KIAUH menu select:</p>
-<ul>
-<li>[S] Settings</li>
-<li>1) Switch Klipper source repository</li>
-</ul>
-<ul>
-<li>Select Kalico from the list</li>
-</ul>
-<h3 id="option-3-adding-a-git-remote-to-the-existing-installation">Option 3. Adding a git-remote to the existing installation<a class="headerlink" href="#option-3-adding-a-git-remote-to-the-existing-installation" title="Permanent link">&para;</a></h3>
-<p>Can switch back to mainline klipper at any time via a <code>git checkout upstream_main</code></p>
-<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>~/klipper
-git<span class="w"> </span>remote<span class="w"> </span>add<span class="w"> </span>kalico<span class="w"> </span>https://github.com/KalicoCrew/kalico.git
-git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </span>upstream-main<span class="w"> </span>origin/master
-git<span class="w"> </span>branch<span class="w"> </span>-D<span class="w"> </span>master
-git<span class="w"> </span>fetch<span class="w"> </span>kalico<span class="w"> </span>main
-git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </span>main<span class="w"> </span>kalico/main
-sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>klipper
-sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>moonraker
+<p>The <code>Total capacity</code> should be close to the theoretical rating of the load cell
+based on the sensor's capacity. If it is much larger you could have used a
+higher gain setting in the sensor or a more sensitive load cell. This isn't as
+critical for 32bit and 24bit sensors but is much more critical for low bit width
+sensors.</p>
+<h2 id="reading-force-data">Reading Force Data<a class="headerlink" href="#reading-force-data" title="Permanent link">&para;</a></h2>
+<p>Force data can be read with a GCode command:</p>
+<div class="highlight"><pre><span></span><code>LOAD_CELL_READ
+// 10.6g (1.94%)
+</code></pre></div>
+
+<p>Data is also continuously read and can be consumed from the load_cell printer
+object in a macro:</p>
+<div class="highlight"><pre><span></span><code>{% set grams = printer.load_cell.force_g %}
+</code></pre></div>
+
+<p>This provides an average force over the last 1 second, similar to how
+temperature sensors work.</p>
+<h2 id="taring-a-load-cell">Taring a Load Cell<a class="headerlink" href="#taring-a-load-cell" title="Permanent link">&para;</a></h2>
+<p>Taring, sometimes called zeroing, sets the current weight reported by the
+load_cell to 0. This is useful for measuring relative to a known weight. e.g.
+when measuring a filament spool, using <code>LOAD_CELL_TARE</code> sets the weight to 0.
+Then as filament is printed the load_cell will report the weight of the
+filament used.</p>
+<div class="highlight"><pre><span></span><code>LOAD_CELL_TARE
+// Load cell tare value: 5.32% (445903)
+</code></pre></div>
+
+<p>The current tare value is reported in the printers status and can be read in
+a macro:</p>
+<div class="highlight"><pre><span></span><code>{% set tare_counts = printer.load_cell.tare_counts %}
 </code></pre></div>
 
 

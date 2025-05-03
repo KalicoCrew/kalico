@@ -1961,6 +1961,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Load_Cell.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Load Cells
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2092,6 +2113,9 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20250426: Option <code>CHIPS=&lt;chip_name&gt;</code> in <code>TEST_RESONANCES</code> and
+<code>SHAPER_CALIBRATE</code> requires specifying the full name(s) of the accel
+chip(s). For example, <code>adxl345 rpi</code> instead of short name - <code>rpi</code>.</p>
 <p>20250207: The <code>driver_CS</code> parameter has been added to tmc5160. Previously the
 CS value was nearly always set to 31. Now, the default is 31, but may be changed.</p>
 <p>20250121: The <code>second_homing_speed</code> default value in the stepper config section

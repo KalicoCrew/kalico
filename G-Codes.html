@@ -815,6 +815,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#angle_chip_calibrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      ANGLE_CHIP_CALIBRATE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#angle_debug_read" class="md-nav__link">
     <span class="md-ellipsis">
       ANGLE_DEBUG_READ
@@ -1821,6 +1830,51 @@
         
       </ul>
     </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      [load_cell]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_diagnostic" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_DIAGNOSTIC
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_calibrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_CALIBRATE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_tare" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_TARE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_read-load_cellname" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_READ load_cell="name"
+    </span>
+  </a>
   
 </li>
         
@@ -4516,6 +4570,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Load_Cell.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Load Cells
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4693,6 +4768,15 @@
   <a href="#angle_calibrate" class="md-nav__link">
     <span class="md-ellipsis">
       ANGLE_CALIBRATE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#angle_chip_calibrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      ANGLE_CHIP_CALIBRATE
     </span>
   </a>
   
@@ -5705,6 +5789,51 @@
         
       </ul>
     </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      [load_cell]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_diagnostic" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_DIAGNOSTIC
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_calibrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_CALIBRATE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_tare" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_TARE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load_cell_read-load_cellname" class="md-nav__link">
+    <span class="md-ellipsis">
+      LOAD_CELL_READ load_cell="name"
+    </span>
+  </a>
   
 </li>
         
@@ -7320,6 +7449,14 @@ command to save the calibration data to the config file. In order to
 use this tool the Python "numpy" package must be installed (see the
 <a href="Measuring_Resonances.html#software-installation">measuring resonance document</a>
 for more information).</p>
+<h4 id="angle_chip_calibrate">ANGLE_CHIP_CALIBRATE<a class="headerlink" href="#angle_chip_calibrate" title="Permanent link">&para;</a></h4>
+<p><code>ANGLE_CHIP_CALIBRATE CHIP=&lt;chip_name&gt;</code>: Perform internal sensor calibration,
+if implemented (MT6826S/MT6835).</p>
+<ul>
+<li><strong>MT68XX</strong>: The motor should be disconnected
+from any printer carriage before performing calibration.
+After calibration, the sensor should be reset by disconnecting the power.</li>
+</ul>
 <h4 id="angle_debug_read">ANGLE_DEBUG_READ<a class="headerlink" href="#angle_debug_read" title="Permanent link">&para;</a></h4>
 <p><code>ANGLE_DEBUG_READ CHIP=&lt;config_name&gt; REG=&lt;register&gt;</code>: Queries sensor
 register "register" (e.g. 44 or 0x2C). Can be useful for debugging
@@ -7960,6 +8097,34 @@ and RAW sensor value for calibration points.</p>
 <p><code>ENABLE_FILAMENT_WIDTH_LOG</code>: Turn on diameter logging.</p>
 <h4 id="disable_filament_width_log">DISABLE_FILAMENT_WIDTH_LOG<a class="headerlink" href="#disable_filament_width_log" title="Permanent link">&para;</a></h4>
 <p><code>DISABLE_FILAMENT_WIDTH_LOG</code>: Turn off diameter logging.</p>
+<h3 id="load_cell">[load_cell]<a class="headerlink" href="#load_cell" title="Permanent link">&para;</a></h3>
+<p>The following commands are enabled if a
+<a href="Config_Reference.html#load_cell">load_cell config section</a> has been enabled.</p>
+<h3 id="load_cell_diagnostic">LOAD_CELL_DIAGNOSTIC<a class="headerlink" href="#load_cell_diagnostic" title="Permanent link">&para;</a></h3>
+<p><code>LOAD_CELL_DIAGNOSTIC [LOAD_CELL=&lt;config_name&gt;]</code>: This command collects 10
+seconds of load cell data and reports statistics that can help you verify proper
+operation of the load cell. This command can be run on both calibrated and
+uncalibrated load cells.</p>
+<h3 id="load_cell_calibrate">LOAD_CELL_CALIBRATE<a class="headerlink" href="#load_cell_calibrate" title="Permanent link">&para;</a></h3>
+<p><code>LOAD_CELL_CALIBRATE [LOAD_CELL=&lt;config_name&gt;]</code>: Start the guided calibration
+utility. Calibration is a 3 step process:</p>
+<ol>
+<li>First you remove all load from the load cell and run the <code>TARE</code> command</li>
+<li>Next you apply a known load to the load cell and run the
+<code>CALIBRATE GRAMS=nnn</code> command</li>
+<li>Finally use the <code>ACCEPT</code> command to save the results</li>
+</ol>
+<p>You can cancel the calibration process at any time with <code>ABORT</code>.</p>
+<h3 id="load_cell_tare">LOAD_CELL_TARE<a class="headerlink" href="#load_cell_tare" title="Permanent link">&para;</a></h3>
+<p><code>LOAD_CELL_TARE [LOAD_CELL=&lt;config_name&gt;]</code>: This works just like the tare button
+on digital scale. It sets the current raw reading of the load cell to be the
+zero point reference value. The response is the percentage of the sensors range
+that was read and the raw value in counts.</p>
+<h3 id="load_cell_read-load_cellname">LOAD_CELL_READ load_cell="name"<a class="headerlink" href="#load_cell_read-load_cellname" title="Permanent link">&para;</a></h3>
+<p><code>LOAD_CELL_READ [LOAD_CELL=&lt;config_name&gt;]</code>:
+This command takes a reading from the load cell. The response is the percentage
+of the sensors range that was read and the raw value in counts. If the load cell
+is calibrated a force in grams is also reported.</p>
 <h3 id="heaters">[heaters]<a class="headerlink" href="#heaters" title="Permanent link">&para;</a></h3>
 <p>The heaters module is automatically loaded if a heater is defined in
 the config file.</p>
@@ -8334,20 +8499,19 @@ is enabled (also see the
 <p><code>MEASURE_AXES_NOISE</code>: Measures and outputs the noise for all axes of
 all enabled accelerometer chips.</p>
 <h4 id="test_resonances">TEST_RESONANCES<a class="headerlink" href="#test_resonances" title="Permanent link">&para;</a></h4>
-<p><code>TEST_RESONANCES AXIS=&lt;axis&gt; OUTPUT=&lt;resonances,raw_data&gt;
+<p><code>TEST_RESONANCES AXIS=&lt;axis&gt; [OUTPUT=&lt;resonances,raw_data&gt;]
 [NAME=&lt;name&gt;] [FREQ_START=&lt;min_freq&gt;] [FREQ_END=&lt;max_freq&gt;]
-[HZ_PER_SEC=&lt;hz_per_sec&gt;] [CHIPS=&lt;adxl345_chip_name&gt;]
-[POINT=x,y,z] [ACCEL_PER_HZ=&lt;accel_per_hz&gt;] [INPUT_SHAPING=[&lt;0:1&gt;]]</code>: Runs
+[HZ_PER_SEC=&lt;hz_per_sec&gt;] [CHIPS=&lt;chip_name&gt;]
+[POINT=x,y,z] [ACCEL_PER_HZ=&lt;accel_per_hz&gt;] [INPUT_SHAPING=&lt;0:1&gt;]</code>: Runs
 the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as <code>AXIS=dx,dy</code>, where dx and dy are floating
 point numbers defining a direction vector (e.g. <code>AXIS=X</code>, <code>AXIS=Y</code>, or
 <code>AXIS=1,-1</code> to define a diagonal direction). Note that <code>AXIS=dx,dy</code>
-and <code>AXIS=-dx,-dy</code> is equivalent. <code>adxl345_chip_name</code> can be one or
-more configured adxl345 chip,delimited with comma, for example
-<code>CHIPS="adxl345, adxl345 rpi"</code>. Note that <code>adxl345</code> can be omitted from
-named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+and <code>AXIS=-dx,-dy</code> is equivalent. <code>chip_name</code> can be one or
+more configured accel chips, delimited with comma, for example
+<code>CHIPS="adxl345, adxl345 rpi"</code>. If POINT or ACCEL_PER_HZ are specified,
 they will override the corresponding fields configured in <code>[resonance_tester]</code>.
 If <code>INPUT_SHAPING=0</code> or not set(default), disables input shaping for the resonance
 testing, because it is not valid to run the resonance testing with the input shaper
@@ -8363,14 +8527,13 @@ frequency response is calculated (across all probe points) and written into
 "YYYYMMDD_HHMMSS" format.</p>
 <h4 id="shaper_calibrate">SHAPER_CALIBRATE<a class="headerlink" href="#shaper_calibrate" title="Permanent link">&para;</a></h4>
 <p><code>SHAPER_CALIBRATE [AXIS=&lt;axis&gt;] [NAME=&lt;name&gt;] [FREQ_START=&lt;min_freq&gt;]
-[FREQ_END=&lt;max_freq&gt;] [HZ_PER_SEC=&lt;hz_per_sec&gt;] [CHIPS=&lt;adxl345_chip_name&gt;]
-[MAX_SMOOTHING=&lt;max_smoothing&gt;]</code>: Similarly to <code>TEST_RESONANCES</code>, runs
-the resonance test as configured, and tries to find the optimal
-parameters for the input shaper for the requested axis (or both X and
-Y axes if <code>AXIS</code> parameter is unset). If <code>MAX_SMOOTHING</code> is unset, its
-value is taken from <code>[resonance_tester]</code> section, with the default
-being unset. See the
-<a href="Measuring_Resonances.html#max-smoothing">Max smoothing</a> of the
+[FREQ_END=&lt;max_freq&gt;] [ACCEL_PER_HZ=&lt;accel_per_hz&gt;] [HZ_PER_SEC=&lt;hz_per_sec&gt;]
+[CHIPS=&lt;chip_name&gt;] [MAX_SMOOTHING=&lt;max_smoothing&gt;] [INPUT_SHAPING=&lt;0:1&gt;]</code>:
+Similarly to <code>TEST_RESONANCES</code>, runs the resonance test as configured, and tries
+to find the optimal parameters for the input shaper for the requested axis
+(or both X and Y axes if <code>AXIS</code> parameter is unset). If <code>MAX_SMOOTHING</code> is unset,
+its value is taken from <code>[resonance_tester]</code> section, with the default being unset.
+See the <a href="Measuring_Resonances.html#max-smoothing">Max smoothing</a> of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the
 frequency responses and the different input shapers values are written

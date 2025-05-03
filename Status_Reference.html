@@ -1014,6 +1014,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#load_cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      load_cell
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#manual_probe" class="md-nav__link">
     <span class="md-ellipsis">
       manual_probe
@@ -2440,6 +2449,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Load_Cell.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Load Cells
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2753,6 +2783,15 @@
   <a href="#led" class="md-nav__link">
     <span class="md-ellipsis">
       led
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#load_cell" class="md-nav__link">
+    <span class="md-ellipsis">
+      load_cell
     </span>
   </a>
   
@@ -3323,6 +3362,8 @@ objects:</p>
 <a href="Config_Reference.html#hall_filament_width_sensor">hall_filament_width_sensor</a>
 object:</p>
 <ul>
+<li>all items from
+  <a href="Status_Reference.html#filament_switch_sensor">filament_switch_sensor</a></li>
 <li><code>is_active</code>: Returns True if the sensor is currently active.</li>
 <li><code>Diameter</code>: The last reading from the sensor in mm.</li>
 <li><code>Raw</code>: The last raw ADC reading from the sensor.</li>
@@ -3383,6 +3424,17 @@ is always available):</p>
   the blue value (3rd item in color list) of the second neopixel in a
   chain could be accessed at
   <code>printer["neopixel &lt;config_name&gt;"].color_data[1][2]</code>.</li>
+</ul>
+<h2 id="load_cell">load_cell<a class="headerlink" href="#load_cell" title="Permanent link">&para;</a></h2>
+<p>The following information is available for each <code>[load_cell name]</code>:</p>
+<ul>
+<li>'is_calibrated': True/False is the load cell calibrated</li>
+<li>'counts_per_gram': The number of raw sensor counts that equals 1 gram of force</li>
+<li>'reference_tare_counts': The reference number of raw sensor counts for 0 force</li>
+<li>'tare_counts': The current number of raw sensor counts for 0 force</li>
+<li>'force_g': The force in grams, averaged over the last polling period.</li>
+<li>'min_force_g': The minimum force in grams, over the last polling period.</li>
+<li>'max_force_g': The maximum force in grams, over the last polling period.</li>
 </ul>
 <h2 id="manual_probe">manual_probe<a class="headerlink" href="#manual_probe" title="Permanent link">&para;</a></h2>
 <p>The following information is available in the

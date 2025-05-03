@@ -1044,6 +1044,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#icm20948" class="md-nav__link">
+    <span class="md-ellipsis">
+      [icm20948]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#lis2dw" class="md-nav__link">
     <span class="md-ellipsis">
       [lis2dw]
@@ -1157,7 +1166,7 @@
           <li class="md-nav__item">
   <a href="#dockable_probe" class="md-nav__link">
     <span class="md-ellipsis">
-      [dockable_probe]
+      ⚠️ [dockable_probe]
     </span>
   </a>
   
@@ -3673,6 +3682,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Load_Cell.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Load Cells
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4338,6 +4368,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#icm20948" class="md-nav__link">
+    <span class="md-ellipsis">
+      [icm20948]
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#lis2dw" class="md-nav__link">
     <span class="md-ellipsis">
       [lis2dw]
@@ -4451,7 +4490,7 @@
           <li class="md-nav__item">
   <a href="#dockable_probe" class="md-nav__link">
     <span class="md-ellipsis">
-      [dockable_probe]
+      ⚠️ [dockable_probe]
     </span>
   </a>
   
@@ -7456,6 +7495,22 @@ cs_pin:
 #   measurements.
 </code></pre></div>
 
+<h3 id="icm20948">[icm20948]<a class="headerlink" href="#icm20948" title="Permanent link">&para;</a></h3>
+<p>Support for icm20948 accelerometers.</p>
+<div class="highlight"><pre><span></span><code>[icm20948]
+#i2c_address:
+#   Default is 104 (0x68). If AD0 is high, it would be 0x69 instead.
+#i2c_mcu:
+#i2c_bus:
+#i2c_software_scl_pin:
+#i2c_software_sda_pin:
+#i2c_speed: 400000
+#   See the &quot;common I2C settings&quot; section for a description of the
+#   above parameters. The default &quot;i2c_speed&quot; is 400000.
+#axes_map: x, y, z
+#   See the &quot;adxl345&quot; section for information on this parameter.
+</code></pre></div>
+
 <h3 id="lis2dw">[lis2dw]<a class="headerlink" href="#lis2dw" title="Permanent link">&para;</a></h3>
 <p>Support for LIS2DW accelerometers.</p>
 <div class="highlight"><pre><span></span><code>[lis2dw]
@@ -7545,21 +7600,26 @@ section of the measuring resonances guide for more information on
 #   resonances at. At least one point is required. Make sure that all
 #   points with some safety margin in XY plane (~a few centimeters)
 #   are reachable by the toolhead.
+#accel_chips:
+#   A comma-separated list of accelerometer chips to use for measurements.
+#   For example, &quot;accel_chips: adxl345 head, adxl345 bed&quot; would use two
+#   separate accelerometer chips. This parameter has priority over the
+#   other accelerometer parameters if specified.
 #accel_chip:
 #   A name of the accelerometer chip to use for measurements. If
 #   adxl345 chip was defined without an explicit name, this parameter
 #   can simply reference it as &quot;accel_chip: adxl345&quot;, otherwise an
 #   explicit name must be supplied as well, e.g. &quot;accel_chip: adxl345
-#   my_chip_name&quot;. Either this, or the next two parameters must be
-#   set.
+#   my_chip_name&quot;. Either this, &#39;accel_chips&#39;, or the next two parameters
+#   must be set.
 #accel_chip_x:
 #accel_chip_y:
 #   Names of the accelerometer chips to use for measurements for each
 #   of the axis. Can be useful, for instance, on bed slinger printer,
 #   if two separate accelerometers are mounted on the bed (for Y axis)
 #   and on the toolhead (for X axis). These parameters have the same
-#   format as &#39;accel_chip&#39; parameter. Only &#39;accel_chip&#39; or these two
-#   parameters must be provided.
+#   format as &#39;accel_chip&#39; parameter. Only one of &#39;accel_chips&#39;, &#39;accel_chip&#39;,
+#   or these two parameters must be provided.
 #max_smoothing:
 #   Maximum input shaper smoothing to allow for each axis during shaper
 #   auto-calibration (with &#39;SHAPER_CALIBRATE&#39; command). By default no
@@ -7765,7 +7825,7 @@ control_pin:
 #   See the &quot;probe&quot; section for information on these parameters.
 </code></pre></div>
 
-<h3 id="dockable_probe">[dockable_probe]<a class="headerlink" href="#dockable_probe" title="Permanent link">&para;</a></h3>
+<h3 id="dockable_probe">⚠️ [dockable_probe]<a class="headerlink" href="#dockable_probe" title="Permanent link">&para;</a></h3>
 <p>Certain probes are magnetically coupled to the toolhead and stowed
 in a dock when not in use. One should define this section instead
 of a probe section if the probe uses magnets to attach and a dock
@@ -9284,8 +9344,9 @@ sense_resistor:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the &quot;stealthChop&quot; threshold to. When
 #   set, &quot;stealthChop&quot; mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   &quot;stealthChop&quot; mode.
+#   velocity is below this value. Note that the &quot;sensorless homing&quot;
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables &quot;stealthChop&quot; mode.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal &quot;CoolStep&quot;
 #   threshold to. If set, the coolstep feature will be enabled when
@@ -9332,6 +9393,7 @@ sense_resistor:
 #driver_PWM_FREQ: 1
 #driver_PWM_GRAD: 4
 #driver_PWM_AMPL: 128
+#driver_FREEWHEEL: 0
 #driver_SGT: 0
 #   Set the given register during the configuration of the TMC2130
 #   chip. This may be used to set custom motor parameters. The
@@ -9394,8 +9456,9 @@ sense_resistor:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the &quot;stealthChop&quot; threshold to. When
 #   set, &quot;stealthChop&quot; mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   &quot;stealthChop&quot; mode.
+#   velocity is below this value. Note that the &quot;sensorless homing&quot;
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables &quot;stealthChop&quot; mode.
 #driver_MULTISTEP_FILT: True
 #driver_IHOLDDELAY: 8
 #driver_TPOWERDOWN: 20
@@ -9410,6 +9473,7 @@ sense_resistor:
 #driver_PWM_FREQ: 1
 #driver_PWM_GRAD: 14
 #driver_PWM_OFS: 36
+#driver_FREEWHEEL: 0
 #   Set the given register during the configuration of the TMC2208
 #   chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
@@ -9458,6 +9522,7 @@ sense_resistor:
 #driver_PWM_FREQ: 1
 #driver_PWM_GRAD: 14
 #driver_PWM_OFS: 36
+#driver_FREEWHEEL: 0
 #driver_SGTHRS: 0
 #   Set the given register during the configuration of the TMC2209
 #   chip. This may be used to set custom motor parameters. The
@@ -9599,8 +9664,9 @@ run_current:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the &quot;stealthChop&quot; threshold to. When
 #   set, &quot;stealthChop&quot; mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   &quot;stealthChop&quot; mode.
+#   velocity is below this value. Note that the &quot;sensorless homing&quot;
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables &quot;stealthChop&quot; mode.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal &quot;CoolStep&quot;
 #   threshold to. If set, the coolstep feature will be enabled when
@@ -9756,8 +9822,9 @@ sense_resistor:
 #stealthchop_threshold: 0
 #   The velocity (in mm/s) to set the &quot;stealthChop&quot; threshold to. When
 #   set, &quot;stealthChop&quot; mode will be enabled if the stepper motor
-#   velocity is below this value. The default is 0, which disables
-#   &quot;stealthChop&quot; mode.
+#   velocity is below this value. Note that the &quot;sensorless homing&quot;
+#   code may temporarily override this setting during homing
+#   operations. The default is 0, which disables &quot;stealthChop&quot; mode.
 #coolstep_threshold:
 #   The velocity (in mm/s) to set the TMC driver internal &quot;CoolStep&quot;
 #   threshold to. If set, the coolstep feature will be enabled when
@@ -10635,6 +10702,16 @@ scale.</p>
 <div class="highlight"><pre><span></span><code>[load_cell]
 sensor_type:
 #   This must be one of the supported sensor types, see below.
+#counts_per_gram:
+#   The floating point number of sensor counts that indicates 1 gram of force.
+#   This value is calculated by the LOAD_CELL_CALIBRATE command.
+#reference_tare_counts:
+#   The integer tare value, in raw sensor counts, taken when LOAD_CELL_CALIBRATE
+#   is run. This is the default tare value when klipper starts up.
+#sensor_orientation:
+#   Change the sensor&#39;s orientation. Can be either &#39;normal&#39; or &#39;inverted&#39;.
+#   The default is &#39;normal&#39;. Use &#39;inverted&#39; if the sensor reports a
+#   decreasing force value when placed under load.
 </code></pre></div>
 
 <h4 id="hx711">HX711<a class="headerlink" href="#hx711" title="Permanent link">&para;</a></h4>
@@ -10896,14 +10973,15 @@ serial:
 
 <h3 id="angle">[angle]<a class="headerlink" href="#angle" title="Permanent link">&para;</a></h3>
 <p>Magnetic hall angle sensor support for reading stepper motor angle
-shaft measurements using a1333, as5047d, or tle5012b SPI chips. The
-measurements are available via the <a href="API_Server.html">API Server</a> and
+shaft measurements using a1333, as5047d, mt6816, mt6826s,
+or tle5012b SPI chips.
+The measurements are available via the <a href="API_Server.html">API Server</a> and
 <a href="Debugging.html#motion-analysis-and-data-logging">motion analysis tool</a>.
 See the <a href="G-Codes.html#angle">G-Code reference</a> for available commands.</p>
 <div class="highlight"><pre><span></span><code>[angle my_angle_sensor]
 sensor_type:
 #   The type of the magnetic hall sensor chip. Available choices are
-#   &quot;a1333&quot;, &quot;as5047d&quot;, and &quot;tle5012b&quot;. This parameter must be
+#   &quot;a1333&quot;, &quot;as5047d&quot;, &quot;mt6816&quot;, &quot;mt6826s&quot;, and &quot;tle5012b&quot;. This parameter must be
 #   specified.
 #sample_period: 0.000400
 #   The query period (in seconds) to use during measurements. The

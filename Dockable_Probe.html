@@ -697,6 +697,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#additional-g-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Additional G-codes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#homing" class="md-nav__link">
     <span class="md-ellipsis">
       Homing
@@ -2152,6 +2161,27 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="Load_Cell.html" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Load Cells
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2278,6 +2308,15 @@
   
     <nav class="md-nav" aria-label="Position Examples">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#additional-g-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Additional G-codes
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#homing" class="md-nav__link">
@@ -2707,6 +2746,28 @@ detach_position: 50, 150
 z_hop: 15
 </code></pre></div>
 
+<h3 id="additional-g-codes">Additional G-codes<a class="headerlink" href="#additional-g-codes" title="Permanent link">&para;</a></h3>
+<p>If your probe has special setup/teardown steps (e.g., moving a servo), you can use the following configuration options to execute custom G-code before or after attaching/detaching the probe instead of overwriting <a href="#individual-movements">individual movements</a> commands:</p>
+<ul>
+<li><code>pre_attach_gcode:</code><br>
+  <em>Default Value: None</em><br>
+  G-code to execute immediately before the probe is attached.</li>
+</ul>
+<ul>
+<li><code>post_attach_gcode:</code><br>
+  <em>Default Value: None</em><br>
+  G-code to execute immediately after the probe is attached.</li>
+</ul>
+<ul>
+<li><code>pre_detach_gcode:</code><br>
+  <em>Default Value: None</em><br>
+  G-code to execute immediately before the probe is detached.</li>
+</ul>
+<ul>
+<li><code>post_detach_gcode:</code><br>
+  <em>Default Value: None</em><br>
+  G-code to execute immediately after the probe is detached.</li>
+</ul>
 <h3 id="homing">Homing<a class="headerlink" href="#homing" title="Permanent link">&para;</a></h3>
 <p>No configuration specific to the dockable probe is required. However, when
 using the probe as a virtual endstop, it's required to
@@ -2870,7 +2931,7 @@ and <code>MOVE_TO_DETACH_PROBE</code>.</p>
 <p>These commands are useful during setup to prevent the full attach/detach
 sequence from crashing into the bed or damaging the probe/dock.</p>
 <p>If your probe has special setup/teardown steps (e.g. moving a servo),
-accommodating that could be accomplished by overriding these gcodes.</p>
+accommodating that could be accomplished by using <a href="#additional-g-codes">additional G_codes</a> in configuration or overriding the following gcodes.</p>
 <p><code>MOVE_TO_APPROACH_PROBE</code></p>
 <p>This command will move the toolhead to the <code>approach_position</code>. It can be
 overridden to move a servo if that's required for attaching your probe.</p>
