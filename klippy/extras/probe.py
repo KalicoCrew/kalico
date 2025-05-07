@@ -608,9 +608,12 @@ class ProbePointsHelper:
         self.lift_speed = probe.get_lift_speed(gcmd)
         self.probe_offsets = probe.get_offsets()
         if self.horizontal_move_z < self.probe_offsets[2]:
-            raise gcmd.error(
-                "horizontal_move_z can't be less than probe's z_offset"
-            )
+            if self.adaptive_horizontal_move_z:
+                self.horizontal_move_z += self.probe_offsets[2]
+            else:
+                raise gcmd.error(
+                    "horizontal_move_z can't be less than probe's z_offset"
+                )
         probe.multi_probe_begin()
         while True:
             done = self._move_next()
