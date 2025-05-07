@@ -6,11 +6,12 @@ to detect the toolhead's attachment status
 from enum import Enum
 import logging
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from klippy import chelper
 from klippy.extras.homing import Homing
 
 if TYPE_CHECKING:
+    from .stepper_enable import EnableTracking
     from ..toolhead import ToolHead
     from ..gcode import GCodeDispatch
     from .homing import PrinterHoming
@@ -19,6 +20,9 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+DIRECTION_TOP = -1
+DIRECTION_BOTTOM = 1
 
 
 class States(Enum):
@@ -161,6 +165,7 @@ class CocoaToolheadControl:
         self.fake_toolhead_for_homing: FakeExtruderHomingToolhead = None
         self.extruder: PrinterExtruder = None
         self.extruder_stepper: MCU_stepper = None
+        self.extruder_stepper_enable: EnableTracking = None
 
         self.load_move_speed = config.getfloat(
             "load_move_speed", 25.0, above=0.0
@@ -221,6 +226,9 @@ class CocoaToolheadControl:
 
         self.extruder = self.toolhead.extruder
         self.extruder_stepper = self.extruder.extruder_stepper.stepper
+        self.extruder_stepper_enable = self.printer.lookup_object(
+            "stepper_enable"
+        ).lookup_enable("extruder")
         self.mcu_endstop.add_stepper(self.extruder_stepper)
         self.fake_toolhead_for_homing = FakeExtruderHomingToolhead(
             self.toolhead, self.extruder_stepper
@@ -290,7 +298,7 @@ class CocoaToolheadControl:
 
     def cmd_HOME_COCOAPRESS(self, gcmd):
         direction = gcmd.get_int("DIR", 1)
-        if direction not in (1, -1):
+        if direction not in (DIRECTION_BOTTOM, DIRECTION_TOP):
             raise gcmd.error("Invalid direction %s" % (direction,))
         dist_moved = self._home_extruder_in_direction(direction)
         gcmd.respond_info(
@@ -414,12 +422,20 @@ class CocoaToolheadControl:
         self.toolhead.manual_move(new_pos, speed)
 
     def home_extruder_to_top(self) -> float:
-        return self._home_extruder_in_direction(-1)
+        return self._home_extruder_in_direction(DIRECTION_TOP)
 
     def home_extruder_to_bottom(self) -> float:
-        return self._home_extruder_in_direction(1)
+        return self._home_extruder_in_direction(DIRECTION_BOTTOM)
 
-    def _home_extruder_in_direction(self, dir: int) -> float:
+    def _home_extruder_in_direction(self, dir: Literal[-1, 1]) -> float:
+        if dir == DIRECTION_BOTTOM:
+            # Ensure the bed is low enough to home.
+            position = self.toolhead.get_position()
+            status = self.toolhead.get_status(self.toolhead.print_time)
+            if "z" in status.get("homed_axes", "") and position[2] < 50:
+                position[2] = 50
+                self.toolhead.move(position, 3600)
+
         self._set_extruder_current_for_homing(pre_homing=True)
         try:
             return self.__home_extruder_in_direction(dir)
