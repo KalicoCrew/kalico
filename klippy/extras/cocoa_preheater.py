@@ -222,6 +222,9 @@ class CocoaPreheater:
             reactor.unregister_timer(self._timer)
             self._timer = None
 
+        self.gcode.register_command("PREHEATER_STOP", None)
+        self.gcode.register_command("PREHEATER_WAIT", None)
+
         if reason == "cancel":
             self.gcode.run_script_from_command(
                 f'SET_HEATER_TEMPERATURE HEATER="{self.cocoa_toolhead.body_heater_name.split()[-1]}" TARGET=0'
@@ -229,16 +232,13 @@ class CocoaPreheater:
             self.gcode.run_script_from_command(
                 f'SET_HEATER_TEMPERATURE HEATER="{self.cocoa_toolhead.extruder_name.split()[-1]}" TARGET=0'
             )
+            self.gcode.register_command("PREHEATER_CANCEL", None)
 
         self.printer.send_event(
-            f"cocoa_preheater:stop",
+            "cocoa_preheater:stop",
             reason,
             self.profile,
         )
-
-        self.gcode.register_command("PREHEATER_STOP", None)
-        self.gcode.register_command("PREHEATER_CANCEL", None)
-        self.gcode.register_command("PREHEATER_WAIT", None)
 
     def _is_preheating(self, eventtime) -> bool:
         return self._timer is not None and self.time_remaining > 0.0
@@ -269,9 +269,6 @@ class CocoaPreheater:
 
     def cmd_PREHEATER_CANCEL(self, gcmd):
         """Cancel a current preheat action"""
-
-        if not self._timer:
-            raise gcmd.error("Not currently preheating, unable to cancel")
 
         self.state = PreheatState.cancelled
         self._stop_preheating("cancel")

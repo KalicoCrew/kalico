@@ -188,7 +188,7 @@ class CocoaToolheadControl:
         query_endstops = self.printer.load_object(config, "query_endstops")
         query_endstops.register_endstop(self.mcu_endstop, self.extruder_name)
 
-        self.gcode_macro = self.printer.lookup_object("gcode_macro")
+        self.gcode_macro = self.printer.load_object(config, "gcode_macro")
         self.attach_tmpl = self.gcode_macro.load_template(
             config, "attach_gcode", ""
         )
