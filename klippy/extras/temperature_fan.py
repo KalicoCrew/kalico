@@ -48,6 +48,7 @@ class TemperatureFan:
             "watermark": ControlBangBang,
             "pid": ControlPID,
             "curve": ControlCurve,
+            "chamber_heater": ControlChamberHeater,
         }
         algo = config.getchoice("control", algos)
         self.control = algo(self, config)
@@ -246,6 +247,53 @@ class ControlPID:
 
     def get_type(self):
         return "pid"
+
+
+######################################################################
+# Chamber Heater algo
+######################################################################
+
+
+class ControlChamberHeater:
+    def __init__(self, temperature_fan, config):
+        self.temperature_fan = temperature_fan
+        self.max_delta = config.getfloat("max_delta", 1.0, above=0.0)
+        pheaters = self.temperature_fan.printer.load_object(config, "heaters")
+        self.heater_name = config.get("heater")
+        self.heater = pheaters.lookup_heater(self.heater_name)
+        self.heating = False
+        self.speed = 0
+
+    def temperature_callback(self, read_time, temp):
+        current_temp, target_temp = self.temperature_fan.get_temp(read_time)
+        if (
+            self.heating
+            and temp >= target_temp + self.max_delta
+        ):
+            self.heating = False
+        elif (
+            not self.heating
+            and temp <= target_temp - self.max_delta
+        ):
+            self.heating = True
+        heater_temp, heater_target = self.heater.get_temp(read_time)
+        if heater_temp <= heater_target - 1.5:
+            self.heating = False
+        self.speed = max(0, min(1, 
+            (
+                self.speed * 9 + 
+                (heater_temp - heater_target + 1.5)
+            ) / 10
+        ))
+        if self.heating:
+            self.temperature_fan.set_speed(
+                read_time, self.temperature_fan.get_max_speed() * self.speed
+            )
+        else:
+            self.temperature_fan.set_speed(read_time, 0.0)
+
+    def get_type(self):
+        return "chamber_heater"
 
 
 class ControlCurve:

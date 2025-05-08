@@ -3793,6 +3793,16 @@ control: curve
 #   This parameter is deprecated and should no longer be used.
 ```
 
+```
+control: chamber_heater
+#   Chamber heating fan.
+#heater: heater_bed
+#   Heater which fan is pulling heat from. Fan uses proportional controller
+#   of heater's target tempearture, scaling its output. Fan turns on at
+#   heater's target_temp - 1.5° and achieves max power at target_temp - 0.5°.
+#   Temperature control is done with watermark.
+```
+
 ### [fan_generic]
 
 Manually controlled fan (one may define any number of sections with a
