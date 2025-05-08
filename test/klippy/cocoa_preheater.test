@@ -1,0 +1,18 @@
+DICTIONARY atmega2560.dict
+CONFIG cocoa_preheater.cfg
+
+PREHEATER_START NAME="Dark Chocolate"
+ASSERT TEST='{printer.cocoa_preheater.status == "preheating"}'
+ASSERT TEST='{printer.extruder.target == 31}'
+ASSERT TEST='{printer["heater_generic Body_Heater"].target == 32}'
+
+PREHEATER_STOP
+ASSERT TEST='{printer.cocoa_preheater.status == "stopped"}'
+ASSERT TEST='{printer.cocoa_preheater.profile != None}'
+ASSERT TEST='{printer.extruder.target == 31}'
+ASSERT TEST='{printer["heater_generic Body_Heater"].target == 32}'
+
+PREHEATER_CANCEL
+ASSERT TEST='{printer.cocoa_preheater.status == "cancelled"}'
+ASSERT TEST='{printer.extruder.target == 0}'
+ASSERT TEST='{printer["heater_generic Body_Heater"].target == 0}'
