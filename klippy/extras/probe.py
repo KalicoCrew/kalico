@@ -7,6 +7,8 @@ import logging
 import math
 from klippy import pins
 from . import manual_probe
+from klippy.toolhead import ToolHead
+from klippy.gcode import GCodeCommand
 
 HINT_TIMEOUT = """
 If the probe did not move far enough to trigger, then
@@ -202,13 +204,19 @@ class PrinterProbe:
             return self.drop_first_result
         return False
 
-    def run_probe(self, gcmd):
-        speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
-        lift_speed = self.get_lift_speed(gcmd)
-        sample_count = gcmd.get_int("SAMPLES", self.sample_count, minval=1)
+    # Raise the toolhead at the current x/y location
+    def _retract(self, gcmd: GCodeCommand):
         sample_retract_dist = gcmd.get_float(
             "SAMPLE_RETRACT_DIST", self.sample_retract_dist, above=0.0
         )
+        lift_speed = self.get_lift_speed(gcmd)
+        toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        pos = toolhead.get_position()
+        self._move([None, None, pos[2] + sample_retract_dist], lift_speed)
+
+    def run_probe(self, gcmd: GCodeCommand):
+        speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
+        sample_count = gcmd.get_int("SAMPLES", self.sample_count, minval=1)
         samples_tolerance = gcmd.get_float(
             "SAMPLES_TOLERANCE", self.samples_tolerance, minval=0.0
         )
@@ -219,7 +227,6 @@ class PrinterProbe:
         must_notify_multi_probe = not self.multi_probe_pending
         if must_notify_multi_probe:
             self.multi_probe_begin(always_restore_toolhead=True)
-        probexy = self.printer.lookup_object("toolhead").get_position()[:2]
         retries = 0
         positions = []
 
@@ -229,8 +236,7 @@ class PrinterProbe:
             pos = self._probe(speed)
             if self._drop_first_result and first_probe:
                 first_probe = False
-                liftpos = [None, None, pos[2] + sample_retract_dist]
-                self._move(liftpos, lift_speed)
+                self._retract(gcmd)
                 continue
             positions.append(pos)
             # Check samples tolerance
@@ -243,7 +249,7 @@ class PrinterProbe:
                 positions = []
             # Retract
             if len(positions) < sample_count:
-                self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
+                self._retract(gcmd)
         if must_notify_multi_probe:
             self.multi_probe_end()
         # Calculate and return result
@@ -276,7 +282,7 @@ class PrinterProbe:
 
     cmd_PROBE_ACCURACY_help = "Probe Z-height accuracy at current XY position"
 
-    def cmd_PROBE_ACCURACY(self, gcmd):
+    def cmd_PROBE_ACCURACY(self, gcmd: GCodeCommand):
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         lift_speed = self.get_lift_speed(gcmd)
         sample_count = gcmd.get_int("SAMPLES", 10, minval=1)
@@ -309,13 +315,11 @@ class PrinterProbe:
             pos = self._probe(speed)
             if self._drop_first_result and first_probe:
                 first_probe = False
-                liftpos = [None, None, pos[2] + sample_retract_dist]
-                self._move(liftpos, lift_speed)
+                self._retract(gcmd)
                 continue
             positions.append(pos)
             # Retract
-            liftpos = [None, None, pos[2] + sample_retract_dist]
-            self._move(liftpos, lift_speed)
+            self._retract(gcmd)
         self.multi_probe_end()
         # Calculate maximum, minimum and average values
         max_value = max([p[2] for p in positions])
