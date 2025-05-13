@@ -181,6 +181,15 @@ gcode:
 The PA test macro will run at the acceleration specified in your `[printer]` section of `printer.cfg`.
 Set that to the highest acceleration you expect to use while extruding (for infill, for example).
 
+### Setting values via G-Code
+
+To change the nonlinear PA from G-code, whether in the command line or in your slicer, use the `SET_PRESSURE_ADVANCE` g-code command with the following arguments:
+
+* `ADVANCE=` linear_advance
+* `OFFSET=` nonlinear_offset
+* `VELOCITY=` linearization_velocity
+* `TIME_OFFSET=` pressure_advance_time_offset
+
 ## Tuning procedure
 
 The tuning procedure will be slightly different for more pedestrian printers, which are dominated by offset, compared with ultra fast printers, which will have more of a linear advance component, or bowden tube printers, which have a large value for both.
@@ -244,7 +253,7 @@ In this case, the left side looked best at roughly 27mm \* 0.005, so the `nonlin
 ![linear advance test tower with 0.135 linear offset](img/PA_photos/2.offset=.135_advance=x.001.jpg)
 
 In this test the left side converged at the very bottom but the right side converged above that, so `nonlinear_offset` was decreased a bit to 0.120.
-In hindsight, looking at the previous test tower for `nonlinear_offset`, the left line on the left side just barely started to have a "thick-and-thin" pattern at 24mm, and the right line was only slightyl undercorrected.
+In hindsight, looking at the previous test tower for `nonlinear_offset`, the left line on the left side just barely started to have a "thick-and-thin" pattern at 24mm, and the right line was only slightly undercorrected.
 In general, it's better to undercorrect slightly on your initial `nonlinear_offset`, since the `linear_advance` will give a little boost even at slow speeds.
 
 With the `nonlinear_offset` reduce to 0.120, another test tower with test parameter 0 was printed.
