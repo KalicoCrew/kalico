@@ -241,6 +241,8 @@ class CocoaToolheadControl:
         def new_callback(read_time, read_value):
             if read_value < OPEN_ADC_VALUE:
                 sensor.adc_callback(read_time, read_value)
+            else:
+                heater.set_pwm(read_time, 0.0)
             self.receive_sensor_value(heater, read_value)
 
         setattr(mcu_adc, "_callback", new_callback)
