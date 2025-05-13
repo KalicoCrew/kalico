@@ -3793,6 +3793,24 @@ control: curve
 #   This parameter is deprecated and should no longer be used.
 ```
 
+```
+control: chamber_heater
+#   Chamber heating fan. One may link it to heater_bed and use bed's power
+#   to heat up the chamber. It ensures no thermay runaway - turns off when
+#   heater is 1 degree below its target. Fan turns off when heater isn't
+#   hot enough.
+#heater: heater_bed
+#   Heater which fan is pulling heat from. Fan increases or decreases
+#   its speed proportional to difference between heater's power and 98%.
+#   Temperature control is done with watermark.
+#reaction_speed: 0.01
+#   How fast the fan's target speed should change. 0.01 is 100 seconds of
+#   ramping up when bed is at 0%.
+#idle_speed: 0
+#   Speed at which fan should be spinning before heater reached its temp.
+#   This option may introduce thermal runaway when set too high!
+```
+
 ### [fan_generic]
 
 Manually controlled fan (one may define any number of sections with a
