@@ -237,12 +237,16 @@ class CocoaToolheadControl:
     def inject_adc_callback(self, heater):
         sensor = heater.sensor
         mcu_adc = sensor.mcu_adc
+        verify_heater = self.printer.lookup_object(
+            f"verify_heater {heater.short_name}"
+        )
 
         def new_callback(read_time, read_value):
             if read_value < OPEN_ADC_VALUE:
                 sensor.adc_callback(read_time, read_value)
             else:
                 heater.set_pwm(read_time, 0.0)
+                verify_heater.error = 0.0
             self.receive_sensor_value(heater, read_value)
 
         setattr(mcu_adc, "_callback", new_callback)
