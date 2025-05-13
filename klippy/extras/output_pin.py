@@ -38,24 +38,30 @@ class PrinterOutputPin:
         if max_mcu_duration:
             config.deprecate("maximum_mcu_duration")
             self.resend_interval = max_mcu_duration - RESEND_HOST_TIME
+
         # Determine start and shutdown values
         static_value = config.getfloat(
             "static_value", None, minval=0.0, maxval=self.scale
         )
         if static_value is not None:
-            config.deprecate("static_value")
-            self.last_value = self.shutdown_value = static_value / self.scale
-        else:
-            self.last_value = (
-                config.getfloat("value", 0.0, minval=0.0, maxval=self.scale)
-                / self.scale
+            config.deprecate(
+                "static_value",
+                replace_with={
+                    "value": static_value,
+                    "shutdown_value": static_value,
+                },
             )
-            self.shutdown_value = (
-                config.getfloat(
-                    "shutdown_value", 0.0, minval=0.0, maxval=self.scale
-                )
-                / self.scale
+
+        self.last_value = (
+            config.getfloat("value", 0.0, minval=0.0, maxval=self.scale)
+            / self.scale
+        )
+        self.shutdown_value = (
+            config.getfloat(
+                "shutdown_value", 0.0, minval=0.0, maxval=self.scale
             )
+            / self.scale
+        )
         self.mcu_pin.setup_start_value(self.last_value, self.shutdown_value)
         # Register commands
         pin_name = config.get_name().split()[1]
