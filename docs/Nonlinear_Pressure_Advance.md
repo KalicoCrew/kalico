@@ -183,7 +183,7 @@ Set that to the highest acceleration you expect to use while extruding (for infi
 
 ### Setting values via G-Code
 
-To change the nonlinear PA from G-code, whether in the command line or in your slicer, use the `SET_PRESSURE_ADVANCE` g-code command with the following arguments:
+To change the nonlinear PA at runtime, whether in the printer command line or in your slicer filament settings, use the `SET_PRESSURE_ADVANCE` command with the following arguments:
 
 * `ADVANCE=` linear_advance
 * `OFFSET=` nonlinear_offset
