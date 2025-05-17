@@ -166,9 +166,9 @@ configuration between multiple sections. References take the form of
 `${section.option}` to look up a value elsewhere in your configuration. Note,
 that constants must always be lower case.
 
-Optionally, a `[constants]` section may be used specifically to store
-these values. Unlike the rest of your configuration, unused constants
-will show a warning instead of causing an error.
+Optionally, a `[constants]` section can be used specifically to store
+these values. Unused constants will display a warning. However, `[constants]`
+will display an error if none of the constants are used.
 
 ```
 [constants]
