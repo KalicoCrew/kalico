@@ -48,6 +48,7 @@ class TemperatureFan:
             "watermark": ControlBangBang,
             "pid": ControlPID,
             "curve": ControlCurve,
+            "chamber_heater": ControlChamberHeater,
         }
         algo = config.getchoice("control", algos)
         self.control = algo(self, config)
@@ -248,6 +249,57 @@ class ControlPID:
         return "pid"
 
 
+######################################################################
+# Chamber Heater algo
+######################################################################
+
+
+class ControlChamberHeater:
+    def __init__(self, temperature_fan, config):
+        self.temperature_fan = temperature_fan
+        self.max_delta = config.getfloat("max_delta", 1.0, above=0.0)
+        self.reaction_speed = config.getfloat("reaction_speed", 0.01, above=0.0)
+        self.idle_speed = config.getfloat("idle_speed", 0, above=0, maxval=1.0)
+        pheaters = self.temperature_fan.printer.load_object(config, "heaters")
+        self.heater_name = config.get("heater")
+        self.heater = pheaters.lookup_heater(self.heater_name)
+        self.heating = False
+        self.speed = self.temperature_fan.get_min_speed()
+        self.prev_temp_time = 0.0
+
+    def temperature_callback(self, read_time, temp):
+        current_temp, target_temp = self.temperature_fan.get_temp(read_time)
+        heater_power = self.heater.last_pwm_value
+        heater_temp, heater_target = self.heater.get_temp(read_time)
+        time_diff = read_time - self.prev_temp_time
+
+        self.heating = temp <= target_temp - self.max_delta
+        if self.heating and temp >= target_temp + self.max_delta:
+            self.heating = False
+        elif not self.heating and temp <= target_temp - self.max_delta:
+            self.heating = True
+        if heater_temp <= heater_target - 1:
+            self.heating = False
+        if (temp + 5) > heater_temp:
+            self.heating = False
+
+        self.speed += self.reaction_speed * (0.98 - heater_power) * time_diff
+        self.speed = min(1, max(self.idle_speed, self.speed))
+
+        if self.heating:
+            self.temperature_fan.set_speed(
+                read_time, self.temperature_fan.get_max_speed() * self.speed
+            )
+        else:
+            self.temperature_fan.set_speed(read_time, 0.0)
+            self.speed = self.temperature_fan.get_min_speed()
+
+        self.prev_temp_time = read_time
+
+    def get_type(self):
+        return "chamber_heater"
+
+
 class ControlCurve:
     def __init__(self, temperature_fan, config):
         self.temperature_fan = temperature_fan
@@ -264,8 +316,8 @@ class ControlCurve:
             )
         if any(len(point) != 2 for point in points):
             raise temperature_fan.printer.config_error(
-                "A point must have exactly one temperature and one pwm setting "
-                "value."
+                "A point must have exactly one temperature and one pwm "
+                "setting value."
             )
         if not all(points[i] <= points[i + 1] for i in range(len(points) - 1)):
             raise temperature_fan.printer.config_error(
