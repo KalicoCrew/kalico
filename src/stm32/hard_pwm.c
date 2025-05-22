@@ -21,7 +21,10 @@ struct gpio_pwm_info {
 
 static const struct gpio_pwm_info pwm_regs[] = {
 #if CONFIG_MACH_STM32F0
-  #if CONFIG_MACH_STM32F070
+   #if CONFIG_MACH_STM32F0x2
+    {TIM3, GPIO('B', 4), 1, GPIO_FUNCTION(1)}
+   #endif
+   #if CONFIG_MACH_STM32F070
     {TIM15, GPIO('A', 2), 1, GPIO_FUNCTION(0)},
     {TIM15, GPIO('A', 3), 2, GPIO_FUNCTION(0)},
     {TIM14, GPIO('A', 4), 1, GPIO_FUNCTION(4)},
@@ -275,7 +278,7 @@ static const struct gpio_pwm_info pwm_regs[] = {
 };
 
 struct gpio_pwm
-gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint32_t val)
+gpio_pwm_setup_with_max(uint8_t pin, uint32_t cycle_time, uint32_t val, uint32_t max_pwm)
 {
     // Find pin in pwm_regs table
     const struct gpio_pwm_info* p = pwm_regs;
@@ -291,7 +294,7 @@ gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint32_t val)
     uint32_t pclock_div = CONFIG_CLOCK_FREQ / pclk;
     if (pclock_div > 1)
         pclock_div /= 2; // Timers run at twice the normal pclock frequency
-    uint32_t prescaler = cycle_time / (pclock_div * (MAX_PWM - 1));
+    uint32_t prescaler = cycle_time / (pclock_div * (max_pwm - 1));
     if (prescaler > UINT16_MAX) {
         prescaler = UINT16_MAX;
     } else if (prescaler > 0) {
@@ -311,7 +314,7 @@ gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint32_t val)
         }
     } else {
         p->timer->PSC = (uint16_t) prescaler;
-        p->timer->ARR = MAX_PWM - 1;
+        p->timer->ARR = max_pwm - 1;
         p->timer->EGR |= TIM_EGR_UG;
     }
 
@@ -366,6 +369,11 @@ gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint32_t val)
     p->timer->BDTR |= TIM_BDTR_MOE;
 #endif
     return channel;
+}
+
+struct gpio_pwm
+gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint32_t val) {
+    return gpio_pwm_setup_with_max(pin, cycle_time, val, MAX_PWM);
 }
 
 void
