@@ -83,6 +83,8 @@ class PreheatProfileManager:
             nozzle=nozzle,
             duration=duration,
         )
+        if name in self.default_profiles:
+            self.profiles[name]["default"] = False
 
         section = f"{module_name} {name}"
         self._pconfig.set(section, "body", f"{body:0.2f}")
