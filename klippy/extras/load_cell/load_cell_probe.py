@@ -44,7 +44,7 @@ class ParamHelper:
         below=None,
         max_len=None,
     ):
-        self._config_section = config.section
+        self._config_section = config.get_name()
         self._config_error = config.error
         self.name = name
         self._type_name = type_name
