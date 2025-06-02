@@ -36,6 +36,7 @@ class PreheatProfileManager:
     def __init__(self, config):
         self._config = config
         self._pconfig = config.get_printer().lookup_object("configfile")
+        self._profile_status_cache = None
 
         self.default_profiles = {}
         for section in config.get_prefix_sections(f"{module_name}_default "):
@@ -69,7 +70,9 @@ class PreheatProfileManager:
                 self.profiles[name]["default"] = False
 
     def get_status(self):
-        return self.profiles
+        if self._profile_status_cache is None:
+            self._profile_status_cache = copy.deepcopy(self.profiles)
+        return self._profile_status_cache
 
     def get_profile(self, name: str) -> PreheatProfile:
         return self.profiles[name]
@@ -91,6 +94,9 @@ class PreheatProfileManager:
         self._pconfig.set(section, "nozzle", f"{nozzle:0.2f}")
         self._pconfig.set(section, "duration", f"{duration}")
 
+        # Invalidate cache after updating self.profiles
+        self._profile_status_cache = None
+
     def delete_profile(self, name):
         if name not in self.profiles:
             raise KeyError(f"Profile {name} does not exist")
@@ -101,6 +107,9 @@ class PreheatProfileManager:
             self.profiles[name] = self.default_profiles[name].copy()
         else:
             self.profiles.pop(name)
+
+        # Invalidate cache after updating self.profiles
+        self._profile_status_cache = None
 
 
 class CocoaPreheater:
@@ -190,7 +199,7 @@ class CocoaPreheater:
             # Currently preheating, cancel that and start a new preheat
             self._stop_preheating()
 
-        self.profile = profile
+        self.profile = profile.copy()
         self.time_remaining = float(profile["duration"])
         self.state = PreheatState.preheating
 
