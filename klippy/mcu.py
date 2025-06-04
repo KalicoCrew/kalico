@@ -294,9 +294,6 @@ class MCU_trsync:
         return params["trigger_reason"]
 
 
-TRSYNC_SINGLE_MCU_TIMEOUT = 0.250
-
-
 class TriggerDispatch:
     def __init__(self, mcu):
         self._mcu = mcu
@@ -338,7 +335,7 @@ class TriggerDispatch:
         self._trigger_completion = reactor.completion()
         expire_timeout = get_danger_options().multi_mcu_trsync_timeout
         if len(self._trsyncs) == 1:
-            expire_timeout = TRSYNC_SINGLE_MCU_TIMEOUT
+            expire_timeout = get_danger_options().single_mcu_trsync_timeout
         for i, trsync in enumerate(self._trsyncs):
             report_offset = float(i) / len(self._trsyncs)
             trsync.start(
@@ -465,6 +462,7 @@ class MCU_endstop:
 
 class MCU_digital_out:
     def __init__(self, mcu, pin_params):
+        self._printer = mcu.get_printer()
         self._mcu = mcu
         self._oid = None
         self._mcu.register_config_callback(self._build_config)
@@ -518,6 +516,10 @@ class MCU_digital_out:
         )
 
     def set_digital(self, print_time, value):
+        if self._mcu.non_critical_disconnected:
+            raise self._printer.command_error(
+                f"Cannot set pin on disconnected MCU '{self._mcu.get_name()}'"
+            )
         clock = self._mcu.print_time_to_clock(print_time)
         self._set_cmd.send(
             [self._oid, clock, (not not value) ^ self._invert],
@@ -757,6 +759,7 @@ class MCU:
             self._canbus_iface = config.get("canbus_interface", "can0")
             cbid = self._printer.load_object(config, "canbus_ids")
             cbid.add_uuid(config, canbus_uuid, self._canbus_iface)
+            self._printer.load_object(config, "canbus_stats %s" % (self._name,))
         else:
             self._serialport = config.get("serial")
             if not (
@@ -800,6 +803,7 @@ class MCU:
         self._mcu_tick_avg = 0.0
         self._mcu_tick_stddev = 0.0
         self._mcu_tick_awake = 0.0
+        self._config_crc = 0
 
         # noncritical mcus
         self.is_non_critical = config.getboolean("is_non_critical", False)
@@ -1001,9 +1005,9 @@ class MCU:
                 cmdlist[i] = pin_resolver.update_command(cmd)
         # Calculate config CRC
         encoded_config = "\n".join(local_config_cmds).encode()
-        config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
-        local_config_cmds.append("finalize_config crc=%d" % (config_crc,))
-        if prev_crc is not None and config_crc != prev_crc:
+        self._config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
+        local_config_cmds.append("finalize_config crc=%d" % (self._config_crc,))
+        if prev_crc is not None and self._config_crc != prev_crc:
             self._check_restart("CRC mismatch")
             raise error("MCU '%s' CRC does not match config" % (self._name,))
         # Transmit config messages (if needed)
@@ -1105,13 +1109,18 @@ class MCU:
             if not config_params["is_config"] and not self.is_fileoutput():
                 raise error("Unable to configure MCU '%s'" % (self._name,))
         else:
-            start_reason = self._printer.get_start_args().get("start_reason")
-            if start_reason == "firmware_restart":
-                raise error(
-                    "Failed automated reset of MCU '%s'" % (self._name,)
+            # if the mcu crc match the initial crc, the mcu lost comms but not
+            # power and is reconnecting
+            if not self._config_crc == config_params["crc"]:
+                start_reason = self._printer.get_start_args().get(
+                    "start_reason"
                 )
-            # Already configured - send init commands
-            self._send_config(config_params["crc"])
+                if start_reason == "firmware_restart":
+                    raise error(
+                        "Failed automated reset of MCU '%s'" % (self._name,)
+                    )
+                # Already configured - send init commands
+                self._send_config(config_params["crc"])
         # Setup steppersync with the move_count returned by get_config
         move_count = config_params["move_count"]
         if move_count < self._reserved_move_slots:
@@ -1512,7 +1521,9 @@ or in response to an internal error in the host software.""",
 }
 
 
-def error_help(msg, append_msgs=[]):
+def error_help(msg, append_msgs=None):
+    if append_msgs is None:
+        append_msgs = []
     for prefixes, help_msg in Common_MCU_errors.items():
         for prefix in prefixes:
             if msg.startswith(prefix):

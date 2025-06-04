@@ -1,6 +1,6 @@
 # Printer stepper support
 #
-# Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
@@ -16,7 +16,8 @@ class error(Exception):
 # Steppers
 ######################################################################
 
-MIN_BOTH_EDGE_DURATION = 0.000000200
+MIN_BOTH_EDGE_DURATION = 0.000000500
+MIN_OPTIMIZED_BOTH_EDGE_DURATION = 0.000000150
 
 
 # Interface to low-level mcu and chelper code
@@ -102,16 +103,35 @@ class MCU_stepper:
         if self._step_pulse_duration is None:
             self._step_pulse_duration = 0.000002
         invert_step = self._invert_step
-        sbe = int(self._mcu.get_constants().get("STEPPER_BOTH_EDGE", "0"))
-        if (
-            self._req_step_both_edge
-            and sbe
-            and self._step_pulse_duration <= MIN_BOTH_EDGE_DURATION
+        # Check if can enable "step on both edges"
+        constants = self._mcu.get_constants()
+        ssbe = int(constants.get("STEPPER_STEP_BOTH_EDGE", "0"))
+        sbe = int(constants.get("STEPPER_BOTH_EDGE", "0"))
+        sou = int(constants.get("STEPPER_OPTIMIZED_UNSTEP", "0"))
+        want_both_edges = self._req_step_both_edge
+        if self._step_pulse_duration > MIN_BOTH_EDGE_DURATION:
+            # If user has requested a very large step pulse duration
+            # then disable step on both edges (rise and fall times may
+            # not be symetric)
+            want_both_edges = False
+        elif (
+            sbe and self._step_pulse_duration > MIN_OPTIMIZED_BOTH_EDGE_DURATION
         ):
-            # Enable stepper optimized step on both edges
+            # Older MCU and user has requested large pulse duration
+            want_both_edges = False
+        elif not sbe and not ssbe:
+            # Older MCU that doesn't support step on both edges
+            want_both_edges = False
+        elif sou:
+            # MCU has optimized step/unstep - better to use that
+            want_both_edges = False
+        if want_both_edges:
             self._step_both_edge = True
-            self._step_pulse_duration = 0.0
             invert_step = -1
+            if sbe:
+                # Older MCU requires setting step_pulse_ticks=0 to enable
+                self._step_pulse_duration = 0.0
+        # Configure stepper object
         step_pulse_ticks = self._mcu.seconds_to_clock(self._step_pulse_duration)
         self._mcu.add_config_cmd(
             "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
@@ -441,9 +461,18 @@ class PrinterRail:
                 " position_min and position_max" % config.get_name()
             )
         # Homing mechanics
+        self.use_sensorless_homing = config.getboolean(
+            "use_sensorless_homing", endstop_is_virtual
+        )
+
         self.homing_speed = config.getfloat("homing_speed", 5.0, above=0.0)
+
+        default_second_homing_speed = self.homing_speed / 2.0
+        if self.use_sensorless_homing:
+            default_second_homing_speed = self.homing_speed
+
         self.second_homing_speed = config.getfloat(
-            "second_homing_speed", self.homing_speed / 2.0, above=0.0
+            "second_homing_speed", default_second_homing_speed, above=0.0
         )
         self.homing_retract_speed = config.getfloat(
             "homing_retract_speed", self.homing_speed, above=0.0
@@ -454,12 +483,12 @@ class PrinterRail:
         self.homing_positive_dir = config.getboolean(
             "homing_positive_dir", None
         )
-        self.use_sensorless_homing = config.getboolean(
-            "use_sensorless_homing", endstop_is_virtual
-        )
+
         self.min_home_dist = config.getfloat(
             "min_home_dist", self.homing_retract_dist, minval=0.0
         )
+
+        self.homing_accel = config.getfloat("homing_accel", None, above=0.0)
 
         if self.homing_positive_dir is None:
             axis_len = self.position_max - self.position_min
@@ -507,6 +536,7 @@ class PrinterRail:
                 "second_homing_speed",
                 "use_sensorless_homing",
                 "min_home_dist",
+                "accel",
             ],
         )(
             self.homing_speed,
@@ -517,6 +547,7 @@ class PrinterRail:
             self.second_homing_speed,
             self.use_sensorless_homing,
             self.min_home_dist,
+            self.homing_accel,
         )
         return homing_info
 
@@ -559,7 +590,7 @@ class PrinterRail:
             changed_pullup = pin_params["pullup"] != endstop["pullup"]
             if changed_invert or changed_pullup:
                 raise error(
-                    "Pinter rail %s shared endstop pin %s "
+                    "Printer rail %s shared endstop pin %s "
                     "must specify the same pullup/invert settings"
                     % (self.get_name(), pin_name)
                 )

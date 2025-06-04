@@ -10,7 +10,7 @@ Our goal is to support features and behavior that could be "risky" if used incor
 
 If I want my printer to light itself on fire, I should be able to make my printer light itself on fire.
 
-See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) for more information on *some* of the differences from Klipper.
+See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html) for more information on *some* of the differences from Klipper.
 
 ## Features merged into the main branch:
 
@@ -23,6 +23,10 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 - [core: rotate log file at every restart](https://github.com/KalicoCrew/kalico/pull/181)
 
 - [core: STM32 H5 support](https://github.com/KalicoCrew/kalico/pull/348)
+
+- [core: options for API server socket file mode, user, and group](https://github.com/KalicoCrew/kalico/pull/612)
+
+- [core: options to change mode and group of linux mcu psuedoterminal](https://github.com/KalicoCrew/kalico/pull/692)
 
 - [fan: normalising Fan PWM power](https://github.com/KalicoCrew/kalico/pull/44) ([klipper#6307](https://github.com/Klipper3d/klipper/pull/6307))
 
@@ -88,6 +92,10 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 
 - [force_move: turn on by default](https://github.com/KalicoCrew/kalico/pull/135)
 
+- [resonance_tester: warn about active fans during input shaper calibration](https://github.com/KalicoCrew/kalico/pull/627)
+
+- [bed_mesh: add BED_MESH_CHECK command for mesh validation](https://github.com/KalicoCrew/kalico/pull/629)
+
 - [respond: turn on by default](https://github.com/KalicoCrew/kalico/pull/296)
 
 - [exclude_object: turn on by default](https://github.com/KalicoCrew/kalico/pull/306)
@@ -126,9 +134,13 @@ See the [Danger Features document](https://docs.kalico.gg/Danger_Features.html) 
 
 - [gcode_macros: !python templates](https://github.com/KalicoCrew/kalico/pull/360)
 
+- [gcode_macros: !!include macros/my_macro.py](https://github.com/KalicoCrew/kalico/pull/578)
+
 - [core: action_log](https://github.com/KalicoCrew/kalico/pull/367)
 
 - [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
+
+- [tmc2240: adjustable driver_CS and current_range](https://github.com/KalicoCrew/kalico/pull/556)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
@@ -157,35 +169,67 @@ If desired, make a backup copy of your existing Klipper installation by running:
 mv ~/klipper ~/klipper_old
 ```
 
-Then clone the Kalico repo and restart the klipper service:
+Then clone the Kalico repository and restart the `klipper` service:
 
 ```bash
 git clone https://github.com/KalicoCrew/kalico.git ~/klipper
 sudo systemctl restart klipper
 ```
 
+It might happen that your python environment needs to be updated. If that is the case, run:
+
+```bash
+~/klippy-env/bin/pip install -r ~/klipper/scripts/klippy-requirements.txt
+```
+
 ### Option 2. Using KIAUH
 
 For users that are not comfortable using Git directly, [KIAUH v6](https://github.com/dw-0/kiauh) is able to use custom repositories.
 
-To do this, add the Kalico repo to KIAUH's custom repository settings with the following steps:
+To do this, add the Kalico repo to KIAUH's custom repository config depending on your KIAUH version:
+
+#### Setup Kalico as repository in KIAUH v6
+
+- `cd ~/kiauh`
+- `cp default.kiauh.cfg kiauh.cfg`
+- `nano kiauh.cfg`
+- add `https://github.com/KalicoCrew/kalico, main` for the main branch
+
+    or `https://github.com/KalicoCrew/kalico, bleeding-edge-v2` for the bleeding edge branch
+- CTRL-X to save and exit
 
 From the KIAUH menu select:
 
-- [S] Settings
-- 1\) Set custom Klipper repository
-- Use `https://github.com/KalicoCrew/kalico` as the new repository URL
-- Use `main` or `bleeding-edge-v2` as the new branch name
-- Select 'Y' to apply the changes
-- Enter 'B' for back twice
-- 'Q' to quit
+-   [S] Settings
+-   1\) Switch Klipper source repository
+
+-   Select Kalico from the list
+
+#### Setup Kalico as repository in KIAUH v4
+
+- Add the custom repository to your `klipper_repos.txt` in the `~kiauh` directory
+- `echo "https://github.com/KalicoCrew/kalico,main" >> ~/kiauh/klipper_repos.txt` for the main branch
+
+  or `echo "https://github.com/KalicoCrew/kalico,bleeding-edge-v2" >> ~/kiauh/klipper_repos.txt` for the bleeding edge branch
+
+From the KIAUH menu select:
+
+-   [6] Settings
+-   1\) Set custom Klipper repository
+
+-   Select Kalico from the list
+
+
+*Repository changes will not persist across KIAUH versions.*
 
 ### Option 3. Adding a git-remote to the existing installation
-Can switch back to mainline klipper at any time via a `git checkout upstream_main`
+
+It allows you to switch back to mainline Klipper at any time via a `git checkout upstream_main`
 
 ```bash
 cd ~/klipper
 git remote add kalico https://github.com/KalicoCrew/kalico.git
+git fetch kalico
 git checkout -b upstream-main origin/master
 git branch -D master
 git checkout -b main kalico/main

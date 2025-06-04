@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Tool to graph temperature sensor ADC resolution
 #
 # Copyright (C) 2020  Kevin O'Connor <kevin@koconnor.net>

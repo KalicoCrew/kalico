@@ -31,8 +31,8 @@ enum {
 };
 
 #define BYTES_PER_SAMPLE 4
-#define SAMPLE_ERROR_DESYNC 1 << 31
-#define SAMPLE_ERROR_READ_TOO_LONG 1 << 30
+#define SAMPLE_ERROR_DESYNC 1L << 31
+#define SAMPLE_ERROR_READ_TOO_LONG 1L << 30
 
 static struct task_wake wake_hx71x;
 

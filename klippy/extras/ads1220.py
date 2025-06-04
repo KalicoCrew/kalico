@@ -150,11 +150,6 @@ class ADS1220:
             self._finish_measurements,
             UPDATE_INTERVAL,
         )
-        # publish raw samples to the socket
-        hdr = {"header": ("time", "counts", "value")}
-        self.batch_bulk.add_mux_endpoint(
-            "ads1220/dump_ads1220", "sensor", self.name, hdr
-        )
         # Command Configuration
         mcu.add_config_cmd(
             "config_ads1220 oid=%d spi_oid=%d data_ready_pin=%s"

@@ -1,16 +1,48 @@
+[project]
+name = "Kalico"
+version = "0.12.1"
+requires-python = ">=3.9"
+dependencies = [
+  "cffi==1.17.1 ; python_version >= '3.13'",
+  "cffi==1.15.1 ; python_version < '3.13'",
+  "greenlet==3.1 ; python_version >= '3.13'",
+  "greenlet==3.0.3 ; python_version == '3.12'",
+  "greenlet==2.0.2 ; python_version < '3.12'",
+  "Jinja2==3.1.5",
+  "markupsafe==2.1.5",
+  "numpy~=2.0 ; python_version=='3.9'",
+  "numpy~=2.2 ; python_version>='3.10'",
+  "pyserial==3.4",
+  "python-can==3.3.4",
+  "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3
+]
+
+[tool.uv]
+dev-dependencies = [
+  "ruff>=0.9.3",
+  "pre-commit>=4.0.1",
+  "pytest-xdist>=3.6.1",
+  "pytest>=8.3.4",
+]
+
+[project.urls]
+homepage = "https://kalico.gg/"
+source = "https://github.com/KalicoCrew/kalico"
+documentation = "https://docs.kalico.gg/"
+issues = "https://github.com/KalicoCrew/kalico/issues"
+funding = "https://docs.kalico.gg/Sponsors.html"
+
 [tool.ruff]
 line-length = 80
 indent-width = 4
-exclude = [
-  ".github",
-  ".history",
-  "config",
-  "docs",
-  "lib",
-  "src"
-]
+exclude = [".github", ".history", "config", "docs", "lib", "src"]
 
 [tool.ruff.lint]
+extend-select = [
+  "B006",  # Checks for uses of mutable objects as function argument defaults
+  "FA100", # Detect when type annotations could be made better with PEP563
+  "FA102", # Detect type annotations that would require `from __future__ import annotations`
+]
 ignore = [
   "E401", # Multiple imports on one line
   "C901", # Function is too complex
@@ -21,3 +53,7 @@ ignore = [
   "F841", # Local variable name is assigned to but never used
   "E721", # Do not compare types, use 'isinstance()'
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["test"]

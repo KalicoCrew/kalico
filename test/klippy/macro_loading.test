@@ -1,0 +1,8 @@
+# Test case for python gcode
+CONFIG macro_loading.cfg
+DICTIONARY atmega2560.dict
+
+EXTERNAL_GCODE
+EXTERNAL_PYTHON
+INCLUDE_GCODE
+INCLUDE_PYTHON

@@ -17,7 +17,7 @@ class ZCalibrationHelper:
         self.position_z_endstop = None
         self.config = config
         self.printer = config.get_printer()
-        self.switch_offset = config.getfloat("switch_offset", 0.0, above=0.0)
+        self.switch_offset = config.getfloat("switch_offset", 0.0)
         # max_deviation is deprecated
         self.max_deviation = config.getfloat("max_deviation", None, above=0.0)
         config.deprecate("max_deviation")
@@ -167,7 +167,7 @@ class ZCalibrationHelper:
         pass
 
     cmd_CALIBRATE_Z_help = (
-        "Automatically calibrates the nozzle offset" " to the print surface"
+        "Automatically calibrates the nozzle offset to the print surface"
     )
 
     def cmd_CALIBRATE_Z(self, gcmd):
@@ -209,7 +209,7 @@ class ZCalibrationHelper:
         state.calibrate_z()
 
     cmd_PROBE_Z_ACCURACY_help = (
-        "Probe Z-Endstop accuracy at" " Nozzle-Endstop position"
+        "Probe Z-Endstop accuracy at Nozzle-Endstop position"
     )
 
     def cmd_PROBE_Z_ACCURACY(self, gcmd):
@@ -269,7 +269,7 @@ class ZCalibrationHelper:
         )
 
     cmd_CALCULATE_SWITCH_OFFSET_help = (
-        "Calculates a switch_offset based on" " the current z position"
+        "Calculates a switch_offset based on the current z position"
     )
 
     def cmd_CALCULATE_SWITCH_OFFSET(self, gcmd):
@@ -454,7 +454,7 @@ class CalibrationState:
             time = self.toolhead.get_last_move_time()
             if self.probe.mcu_probe.query_endstop(time):
                 raise self.helper.printer.command_error(
-                    "Probe switch not" " closed - Probe not" " attached?"
+                    "Probe switch not closed - Probe not attached?"
                 )
         if self.helper.first_fast:
             # first probe just to get down faster
@@ -482,7 +482,7 @@ class CalibrationState:
                     self.helper.end_gcode.run_gcode_from_command()
                     raise self.gcmd.error("Probe samples exceed tolerance")
                 self.gcmd.respond_info(
-                    "Probe samples exceed tolerance." " Retrying..."
+                    "Probe samples exceed tolerance. Retrying..."
                 )
                 retries += 1
                 positions = []

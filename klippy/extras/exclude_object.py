@@ -224,7 +224,7 @@ class ExcludeObject:
                 self._normal_move(newpos, speed)
 
     cmd_EXCLUDE_OBJECT_START_help = (
-        "Marks the beginning the current object" " as labeled"
+        "Marks the beginning the current object as labeled"
     )
 
     def cmd_EXCLUDE_OBJECT_START(self, gcmd):
@@ -239,8 +239,7 @@ class ExcludeObject:
     def cmd_EXCLUDE_OBJECT_END(self, gcmd):
         if self.current_object is None and self.next_transform:
             gcmd.respond_info(
-                "EXCLUDE_OBJECT_END called, but no object is"
-                " currently active"
+                "EXCLUDE_OBJECT_END called, but no object is currently active"
             )
             return
         name = gcmd.get("NAME", default=None)

@@ -1,5 +1,5 @@
 exclude: "^docs/|config/|lib/"
-default_stages: [commit]
+default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit

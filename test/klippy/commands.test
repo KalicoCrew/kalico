@@ -33,7 +33,6 @@ RESTORE_GCODE_STATE MOVE=1
 
 # Update commands
 SET_GCODE_OFFSET Z=.1
-M206 Z-.2
 SET_GCODE_OFFSET Z_ADJUST=-.1
 
 SET_VELOCITY_LIMIT ACCEL=100 VELOCITY=20 SQUARE_CORNER_VELOCITY=1 ACCEL_TO_DECEL=200
@@ -45,8 +44,6 @@ SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=.001
 SET_PRESSURE_ADVANCE ADVANCE=.002 ADVANCE_LOOKAHEAD_TIME=.001
 
 # test telemetry
-TELEMETRY_ENABLE
-TELEMETRY_EXAMPLE
-
-# Restart command (must be last in test)
-RESTART
+ASSERT TEST='{"telemetry" not in printer.configfile.save_config_pending_items}'
+ENABLE_TELEMETRY
+ASSERT TEST='{printer.configfile.save_config_pending_items.telemetry.enabled}'

@@ -13,22 +13,20 @@ class HybridCoreXZKinematics:
         self.printer = config.get_printer()
         # itersolve parameters
         self.rails = [
-            stepper.PrinterRail(config.getsection("stepper_x")),
-            stepper.LookupMultiRail(config.getsection("stepper_y")),
-            stepper.LookupMultiRail(config.getsection("stepper_z")),
+            stepper.LookupMultiRail(config.getsection("stepper_" + n))
+            for n in "xyz"
         ]
-        self.rails[2].get_endstops()[0][0].add_stepper(
-            self.rails[0].get_steppers()[0]
-        )
+        for s in self.rails[0].get_steppers():
+            self.rails[2].get_endstops()[0][0].add_stepper(s)
 
         self.inverted = config.getboolean("invert_kinematics", False)
         self.corexy_mode = (b"-", b"+")
         if self.inverted:
             self.corexy_mode = (b"+", b"-")
 
-        self.rails[0].setup_itersolve(
-            "corexz_stepper_alloc", self.corexy_mode[0]
-        )
+        for i, s in enumerate(self.rails[0].get_steppers()):
+            mode = self.corexy_mode[0] if i == 0 else self.corexy_mode[1]
+            s.setup_itersolve("corexz_stepper_alloc", mode)
         self.rails[1].setup_itersolve("cartesian_stepper_alloc", b"y")
         self.rails[2].setup_itersolve("cartesian_stepper_alloc", b"z")
         ranges = [r.get_range() for r in self.rails]
@@ -41,13 +39,13 @@ class HybridCoreXZKinematics:
             # dummy for cartesian config users
             dc_config.getchoice("axis", ["x"], default="x")
             # setup second dual carriage rail
-            self.rails.append(stepper.PrinterRail(dc_config))
-            self.rails[2].get_endstops()[0][0].add_stepper(
-                self.rails[3].get_steppers()[0]
-            )
-            self.rails[3].setup_itersolve(
-                "corexz_stepper_alloc", self.corexy_mode[1]
-            )
+            self.rails.append(stepper.LookupMultiRail(dc_config))
+            for s in self.rails[3].get_steppers():
+                self.rails[2].get_endstops()[0][0].add_stepper(s)
+
+            for i, s in enumerate(self.rails[3].get_steppers()):
+                mode = self.corexy_mode[1] if i == 0 else self.corexy_mode[0]
+                s.setup_itersolve("corexz_stepper_alloc", mode)
             dc_rail_0 = idex_modes.DualCarriagesRail(
                 self.rails[0], axis=0, active=True
             )
@@ -110,8 +108,12 @@ class HybridCoreXZKinematics:
             self.limits[axis] = rail.get_range()
 
     def note_z_not_homed(self):
-        # Helper for Safe Z Home
-        self.limits[2] = (1.0, -1.0)
+        self.clear_homing_state([2])
+
+    def clear_homing_state(self, axes):
+        for i, _ in enumerate(self.limits):
+            if i in axes:
+                self.limits[i] = (1.0, -1.0)
 
     def home_axis(self, homing_state, axis, rail):
         position_min, position_max = rail.get_range()
@@ -134,7 +136,7 @@ class HybridCoreXZKinematics:
                 self.home_axis(homing_state, axis, self.rails[axis])
 
     def _motor_off(self, print_time):
-        self.limits = [(1.0, -1.0)] * 3
+        self.clear_homing_state((0, 1, 2))
 
     def _check_endstops(self, move):
         end_pos = move.end_pos

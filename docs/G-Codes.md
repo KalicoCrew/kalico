@@ -136,6 +136,14 @@ use this tool the Python "numpy" package must be installed (see the
 [measuring resonance document](Measuring_Resonances.md#software-installation)
 for more information).
 
+#### ANGLE_CHIP_CALIBRATE
+`ANGLE_CHIP_CALIBRATE CHIP=<chip_name>`: Perform internal sensor calibration,
+if implemented (MT6826S/MT6835).
+
+- **MT68XX**: The motor should be disconnected
+from any printer carriage before performing calibration.
+After calibration, the sensor should be reset by disconnecting the power.
+
 #### ANGLE_DEBUG_READ
 `ANGLE_DEBUG_READ CHIP=<config_name> REG=<register>`: Queries sensor
 register "register" (e.g. 44 or 0x2C). Can be useful for debugging
@@ -155,9 +163,17 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [SAMPLE_COUNT=<value>]`: Initiates the X
-twist calibration wizard. `SAMPLE_COUNT` specifies the number of points along
-the X axis to calibrate at and defaults to 3.
+`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>]
+[SAMPLE_COUNT=<value>] [<probe_parameter>=<value>]`:
+
+Calibrates axis twist compensation by specifying the target axis or
+enabling automatic calibration.
+
+- **SAMPLE_COUNT:** Number of points tested during the calibration.
+If not specified, it defaults to 3.
+
+- **AXIS:** Define the axis (`X` or `Y`) for which the twist compensation
+will be calibrated. If not specified, the axis defaults to `'X'`.
 
 ### [bed_mesh]
 
@@ -216,6 +232,16 @@ independent extruders, as an offset is necessary to produce correct Z
 adjustment after a tool change.  Note that a ZFADE offset does not apply
 additional z-adjustment directly, it is used to correct the `fade`
 calculation when a `gcode offset` has been applied to the Z axis.
+
+#### BED_MESH_CHECK
+`BED_MESH_CHECK [MAX_DEVIATION=<value>] [MAX_SLOPE=<value>]`: Validates the
+current bed mesh against specified criteria. If MAX_DEVIATION is specified,
+checks that the difference between the highest and lowest mesh points does not
+exceed the provided value. If MAX_SLOPE is specified, checks that the maximum
+slope between adjacent mesh points does not exceed the provided value (in mm/mm).
+The command will raise an error if any specified check fails, or display a message
+confirming the mesh is valid if all checks pass. If no parameters are specified,
+the command will list the available validation checks.
 
 ### [bed_screws]
 
@@ -528,6 +554,43 @@ MOTION_QUEUE (as defined in an [extruder](Config_Reference.md#extruder)
 config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.
 
+### [mixing_extruder]
+
+The following commands are available when a
+[mixingextruder config section](Config_Reference.md#mixing_extruder) is
+enabled:
+
+#### SET_MIXING_EXTRUDER
+`SET_MIXING_EXTRUDER [FACTORS=<factor1>[:<factor2>[:<factor3>...]]]
+[ENABLE=[0|1]]`:
+This command activates the specified mixing extruder. Subsequent G1 commands
+use the mixing defined by the factors. FACTORS defines the mixing by providing
+a number of positive values. The number of values should correspond to the
+number of steppers defined in the configuration. The values are normalized
+internally to add up to 1 and the extrusion of the corresponding stepper is
+multiplied by that value. If ENABLED is omitted the current mixing state is
+not changed.
+If neither FACTORS nor ENABLE is provided the current mixing status is
+displayed.
+
+#### SET_MIXING_EXTRUDER_GRADIENT
+`SET_MIXING_EXTRUDER_GRADIENT [START_FACTORS=<s1>[,<s2>[,<s3>...]]
+END_FACTORS=<e1>[,<e2>[,<e3>...]] START_HEIGHT=<start> END_HEIGHT=<end>`]
+[ENABLE=[0|1|RESET]] [METHOD=[linear|spherical] [VECTOR=<x>,<y>,<z>]]`: When
+START_FACTORS, END_FACTORS, START_HEIGHT, END_HEIGHT is provided
+then an gradient configuration is added. The START_FACTORS define the mixing
+below and up to the START_HEIGHT. The END_FACTORS respectively the mixing
+from the END_HEIGHT onward. The mixing in between is linearly interpolated.
+When ENABLE is either 0 or 1 or METHOD is specified the mixing gradient is
+turned off or on and the gradient method (METHOD) which should be used is
+selected. All previously added gradients are used when enabled. The optional
+VECTOR configures a parameter depending on the METHOD: eg. for linear VECTOR
+defines the up direction and for spherical it defines the origin of the
+spheres.
+When ENABLE is RESET all configured gradients are removed and the gradient
+handling is disabled.
+When no parameter is provided the current mixing gradient status is displayed.
+
 ### [heated_fan]
 
 The following command is available when a
@@ -666,7 +729,7 @@ SET_RETRACTION commands are reset to config values.
 
 NOTE: It is recommended to add `RESET_RETRACTION` to your start and end gcode
 (with a possible override in your filament start gcode to set filament-specific
-overrides of firmware retraction defaults via `SET_RETRACTION`). 
+overrides of firmware retraction defaults via `SET_RETRACTION`).
 
 ### [force_move]
 
@@ -693,15 +756,18 @@ state; issue a G28 afterwards to reset the kinematics. This command is
 intended for low-level diagnostics and debugging.
 
 #### SET_KINEMATIC_POSITION
-`SET_KINEMATIC_POSITION [X=<value>] [Y=<value>] [Z=<value>]`: Force
-the low-level kinematic code to believe the toolhead is at the given
-cartesian position. This is a diagnostic and debugging command; use
-SET_GCODE_OFFSET and/or G92 for regular axis transformations. If an
-axis is not specified then it will default to the position that the
-head was last commanded to. Setting an incorrect or invalid position
-may lead to internal software errors. This command may invalidate
-future boundary checks; issue a G28 afterwards to reset the
-kinematics.
+`SET_KINEMATIC_POSITION [X=<value>] [Y=<value>] [Z=<value>]
+[CLEAR=<[X][Y][Z]>]`: Force the low-level kinematic code to believe the
+toolhead is at the given cartesian position. This is a diagnostic and
+debugging command; use SET_GCODE_OFFSET and/or G92 for regular axis
+transformations. If an axis is not specified then it will default to the
+position that the head was last commanded to. Setting an incorrect or
+invalid position may lead to internal software errors. Use the CLEAR
+parameter to forget the homing state for the given axes. Note that CLEAR
+will not override the previous functionality; if an axis is not specified
+to CLEAR it will have its kinematic position set as per above. This
+command may invalidate future boundary checks; issue a G28 afterwards to
+reset the kinematics.
 
 ### [gcode]
 
@@ -837,6 +903,40 @@ and RAW sensor value for calibration points.
 
 #### DISABLE_FILAMENT_WIDTH_LOG
 `DISABLE_FILAMENT_WIDTH_LOG`: Turn off diameter logging.
+
+### [load_cell]
+
+The following commands are enabled if a
+[load_cell config section](Config_Reference.md#load_cell) has been enabled.
+
+### LOAD_CELL_DIAGNOSTIC
+`LOAD_CELL_DIAGNOSTIC [LOAD_CELL=<config_name>]`: This command collects 10
+seconds of load cell data and reports statistics that can help you verify proper
+operation of the load cell. This command can be run on both calibrated and
+uncalibrated load cells.
+
+### LOAD_CELL_CALIBRATE
+`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>]`: Start the guided calibration
+utility. Calibration is a 3 step process:
+1. First you remove all load from the load cell and run the `TARE` command
+1. Next you apply a known load to the load cell and run the
+`CALIBRATE GRAMS=nnn` command
+1. Finally use the `ACCEPT` command to save the results
+
+You can cancel the calibration process at any time with `ABORT`.
+
+### LOAD_CELL_TARE
+`LOAD_CELL_TARE [LOAD_CELL=<config_name>]`: This works just like the tare button
+on digital scale. It sets the current raw reading of the load cell to be the
+zero point reference value. The response is the percentage of the sensors range
+that was read and the raw value in counts.
+
+### LOAD_CELL_READ load_cell="name"
+`LOAD_CELL_READ [LOAD_CELL=<config_name>]`:
+This command takes a reading from the load cell. The response is the percentage
+of the sensors range that was read and the raw value in counts. If the load cell
+is calibrated a force in grams is also reported.
+
 
 ### [heaters]
 
@@ -1107,9 +1207,11 @@ Saves the currently loaded profile of the specified heater to the config under
 the given name.
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
-Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
+Removes the given profile from the profiles List for the current session and
+config if SAVE_CONFIG is issued afterwards.
 
-`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
+`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp>
+TOLERANCE=<tolerance>
 CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Creates a new profile with the given PID values, CONTROL must either be `pid` or
 `pid_v`, TOLERANCE and TARGET must be specified to create a valid profile,
@@ -1241,6 +1343,21 @@ CYCLE_TIME parameter is not stored between SET_PIN commands (any
 SET_PIN command without an explicit CYCLE_TIME parameter will use the
 `cycle_time` specified in the pwm_cycle_time config section).
 
+### [quad_gantry_level]
+
+The following commands are available when the
+[quad_gantry_level config section](Config_Reference.md#quad_gantry_level)
+is enabled.
+
+#### QUAD_GANTRY_LEVEL
+`QUAD_GANTRY_LEVEL [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+[HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
+will probe the points specified in the config and then make
+independent adjustments to each Z stepper to compensate for tilt. See
+the PROBE command for details on the optional probe parameters. The
+optional `RETRIES`, `RETRY_TOLERANCE`, `HORIZONTAL_MOVE_Z` and
+`ENFORCE_LIFT_SPEED` values override those options specified in the config file.
+
 ### [query_adc]
 
 The query_adc module is automatically loaded.
@@ -1276,20 +1393,19 @@ is enabled (also see the
 all enabled accelerometer chips.
 
 #### TEST_RESONANCES
-`TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
+`TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
-[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=[<0:1>]]`: Runs
+[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=<0:1>]`: Runs
 the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
 point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 `AXIS=1,-1` to define a diagonal direction). Note that `AXIS=dx,dy`
-and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
-more configured adxl345 chip,delimited with comma, for example
-`CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+and `AXIS=-dx,-dy` is equivalent. `chip_name` can be one or
+more configured accel chips, delimited with comma, for example
+`CHIPS="adxl345, adxl345 rpi"`. If POINT or ACCEL_PER_HZ are specified,
 they will override the corresponding fields configured in `[resonance_tester]`.
 If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
 testing, because it is not valid to run the resonance testing with the input shaper
@@ -1306,14 +1422,13 @@ frequency response is calculated (across all probe points) and written into
 
 #### SHAPER_CALIBRATE
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
-[FREQ_END=<max_freq>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[MAX_SMOOTHING=<max_smoothing>]`: Similarly to `TEST_RESONANCES`, runs
-the resonance test as configured, and tries to find the optimal
-parameters for the input shaper for the requested axis (or both X and
-Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset, its
-value is taken from `[resonance_tester]` section, with the default
-being unset. See the
-[Max smoothing](Measuring_Resonances.md#max-smoothing) of the
+[FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
+[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]`:
+Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
+to find the optimal parameters for the input shaper for the requested axis
+(or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
+its value is taken from `[resonance_tester]` section, with the default being unset.
+See the [Max smoothing](Measuring_Resonances.md#max-smoothing) of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the
 frequency responses and the different input shapers values are written
@@ -1544,11 +1659,15 @@ The toolhead module is automatically loaded.
 
 #### SET_VELOCITY_LIMIT
 `SET_VELOCITY_LIMIT [VELOCITY=<value>] [ACCEL=<value>]
-[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]`: This
+[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]
+[X_VELOCITY=<value>] [X_ACCEL=<value>] [Y_VELOCITY=<value>] [Y_ACCEL=<value>]
+[Z_VELOCITY=<value>] [Z_ACCEL=<value>]`: This
 command can alter the velocity limits that were specified in the
 printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
 description of each parameter.
+X_VELOCITY, X_ACCEL, Y_VELOCITY, Y_ACCEL, Z_VELOCITY and Z_ACCEL are only
+available if the kinematic supports it.
 
 ### RESET_VELOCITY_LIMIT
 `RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
@@ -1892,11 +2011,12 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
-`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This
-command will probe the points specified in the config and then make independent
-adjustments to each Z stepper to compensate for tilt. See the PROBE command for
-details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
-value overrides the `horizontal_move_z` option specified in the config file.
+`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [ENFORCE_LIFT_SPEED=0|1]
+[<probe_parameter>=<value>]`: This command will probe the points specified in the
+config and then make independent adjustments to each Z stepper to compensate for tilt.
+See the PROBE command for details on the optional probe parameters. The optional
+`HORIZONTAL_MOVE_Z` and `ENFORCE_LIFT_SPEED` values override those options specified in
+the config file
 
 ### [z_tilt_ng]
 

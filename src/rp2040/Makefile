@@ -28,9 +28,9 @@ src-$(CONFIG_CANSERIAL) += ../lib/fast-hash/fasthash.c
 src-$(CONFIG_USBCANBUS) += rp2040/can.c rp2040/chipid.c ../lib/can2040/can2040.c
 src-$(CONFIG_USBCANBUS) += generic/canserial.c generic/usb_canbus.c
 src-$(CONFIG_USBCANBUS) += ../lib/fast-hash/fasthash.c rp2040/usbserial.c
-src-$(CONFIG_HAVE_GPIO_HARD_PWM) += rp2040/hard_pwm.c
-src-$(CONFIG_HAVE_GPIO_SPI) += rp2040/spi.c
-src-$(CONFIG_HAVE_GPIO_I2C) += rp2040/i2c.c
+src-$(CONFIG_WANT_HARD_PWM) += rp2040/hard_pwm.c
+src-$(CONFIG_WANT_GPIO_SPI) += rp2040/spi.c
+src-$(CONFIG_WANT_GPIO_I2C) += rp2040/i2c.c
 
 # rp2040 stage2 building
 STAGE2_FILE := $(shell echo $(CONFIG_RP2040_STAGE2_FILE))
@@ -45,7 +45,7 @@ $(OUT)stage2.o: lib/pico-sdk/$(MCU)/boot_stage2/$(STAGE2_FILE) $(OUT)autoconf.h
 # Binary output file rules when using stage2
 $(OUT)lib/elf2uf2/elf2uf2: lib/elf2uf2/main.cpp
 	@echo "  Building $@"
-	$(Q)g++ -g -O -Ilib/pico-sdk $< -o $@
+	$(Q)g++ --std=c++11 -g -O -Ilib/pico-sdk $< -o $@
 
 $(OUT)klipper.uf2: $(OUT)klipper.elf $(OUT)lib/elf2uf2/elf2uf2
 	@echo "  Creating uf2 file $@"

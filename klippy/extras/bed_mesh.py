@@ -165,6 +165,11 @@ class BedMesh:
             self.cmd_BED_MESH_OFFSET,
             desc=self.cmd_BED_MESH_OFFSET_help,
         )
+        self.gcode.register_command(
+            "BED_MESH_CHECK",
+            self.cmd_BED_MESH_CHECK,
+            desc=self.cmd_BED_MESH_CHECK_help,
+        )
         # Register transform
         gcode_move = self.printer.load_object(config, "gcode_move")
         gcode_move.set_move_transform(self)
@@ -174,7 +179,7 @@ class BedMesh:
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
         if get_danger_options().log_bed_mesh_at_startup:
-            self.bmc.print_generated_points(logging.info)
+            self.bmc.print_generated_points(logging.info, truncate=True)
 
     def set_mesh(self, mesh):
         if mesh is not None and self.fade_end != self.FADE_DISABLE:
@@ -352,6 +357,104 @@ class BedMesh:
         else:
             gcmd.respond_info("No mesh loaded to offset")
 
+    cmd_BED_MESH_CHECK_help = "Validate a variety of bed mesh parameters"
+
+    def cmd_BED_MESH_CHECK(self, gcmd):
+        if self.z_mesh is None:
+            raise self.gcode.error("No mesh has been loaded")
+
+        has_checks = False
+
+        # Validate mesh deviation if MAX_DEVIATION is specified
+        max_deviation = gcmd.get_float("MAX_DEVIATION", None)
+        if max_deviation is not None:
+            has_checks = True
+            if max_deviation <= 0:
+                raise self.gcode.error("MAX_DEVIATION must be greater than 0")
+
+            mesh_min, mesh_max = self.z_mesh.get_z_range()
+            current_deviation = mesh_max - mesh_min
+
+            if current_deviation > max_deviation:
+                message = (
+                    f"Mesh deviation ({current_deviation:.6f}) exceeds maximum "
+                    f"allowed deviation ({max_deviation:.6f})"
+                )
+                raise self.gcode.error(message)
+            else:
+                gcmd.respond_info(
+                    f"Mesh deviation ({current_deviation:.6f}) is within the "
+                    f"allowed maximum ({max_deviation:.6f})"
+                )
+
+        # Validate maximum slope between adjacent points if MAX_SLOPE is specified
+        max_slope = gcmd.get_float("MAX_SLOPE", None)
+        if max_slope is not None:
+            has_checks = True
+            if max_slope <= 0:
+                raise self.gcode.error("MAX_SLOPE must be greater than 0")
+
+            # Get the mesh matrix and parameters
+            mesh_matrix = self.z_mesh.get_mesh_matrix()
+            params = self.z_mesh.get_mesh_params()
+
+            # Calculate the distance between adjacent points
+            x_dist = (params["max_x"] - params["min_x"]) / (
+                params["x_count"] - 1
+            )
+            y_dist = (params["max_y"] - params["min_y"]) / (
+                params["y_count"] - 1
+            )
+
+            max_slope_value = 0
+            max_slope_pos = None
+
+            # Check slopes in X direction
+            for y in range(len(mesh_matrix)):
+                for x in range(len(mesh_matrix[0]) - 1):
+                    z1 = mesh_matrix[y][x]
+                    z2 = mesh_matrix[y][x + 1]
+                    slope = abs((z2 - z1) / x_dist)
+                    if slope > max_slope_value:
+                        max_slope_value = slope
+                        max_slope_pos = (x, y, x + 1, y)
+
+            # Check slopes in Y direction
+            for x in range(len(mesh_matrix[0])):
+                for y in range(len(mesh_matrix) - 1):
+                    z1 = mesh_matrix[y][x]
+                    z2 = mesh_matrix[y + 1][x]
+                    slope = abs((z2 - z1) / y_dist)
+                    if slope > max_slope_value:
+                        max_slope_value = slope
+                        max_slope_pos = (x, y, x, y + 1)
+
+            if max_slope_value > max_slope:
+                # Calculate the actual positions in bed coordinates
+                x1 = params["min_x"] + max_slope_pos[0] * x_dist
+                y1 = params["min_y"] + max_slope_pos[1] * y_dist
+                x2 = params["min_x"] + max_slope_pos[2] * x_dist
+                y2 = params["min_y"] + max_slope_pos[3] * y_dist
+
+                message = (
+                    f"Maximum slope ({max_slope_value:.6f} mm/mm) between points "
+                    f"({x1:.2f},{y1:.2f}) and ({x2:.2f},{y2:.2f}) "
+                    f"exceeds allowed maximum ({max_slope:.6f} mm/mm)"
+                )
+                raise self.gcode.error(message)
+            else:
+                gcmd.respond_info(
+                    f"Maximum slope ({max_slope_value:.6f} mm/mm) is within the "
+                    f"allowed maximum ({max_slope:.6f} mm/mm)"
+                )
+
+        if not has_checks:
+            gcmd.respond_info(
+                "No validation checks specified. Available checks:\n"
+                "MAX_DEVIATION - Validate maximum mesh height deviation\n"
+                "MAX_SLOPE - Validate maximum slope between adjacent points"
+            )
+
 
 class ZrefMode:
     DISABLED = 0  # Zero reference disabled
@@ -380,10 +483,12 @@ class BedMeshCalibrate:
         self._generate_points(config.error)
         self._profile_name = "default"
         self.probe_helper = probe.ProbePointsHelper(
-            config, self.probe_finalize, self._get_adjusted_points()
+            config,
+            self.probe_finalize,
+            self._get_adjusted_points(),
+            use_offsets=True,
         )
         self.probe_helper.minimum_points(3)
-        self.probe_helper.use_xy_offsets(True)
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
             "BED_MESH_CALIBRATE",
@@ -507,15 +612,19 @@ class BedMeshCalibrate:
                 )
             self.substituted_indices[i] = valid_coords
 
-    def print_generated_points(self, print_func):
+    def print_generated_points(self, print_func, truncate=False):
         x_offset = y_offset = 0.0
         probe = self.printer.lookup_object("probe", None)
         if probe is not None:
             x_offset, y_offset = probe.get_offsets()[:2]
         print_func(
-            "bed_mesh: generated points\nIndex" " |  Tool Adjusted  |   Probe"
+            "bed_mesh: generated points\nIndex |  Tool Adjusted  |   Probe"
         )
         for i, (x, y) in enumerate(self.points):
+            if i >= 50 and truncate:
+                end = len(self.points) - 1
+                print_func("...points %d through %d truncated" % (i, end))
+                break
             adj_pt = "(%.1f, %.1f)" % (x - x_offset, y - y_offset)
             mesh_pt = "(%.1f, %.1f)" % (x, y)
             print_func("  %-4d| %-16s| %s" % (i, adj_pt, mesh_pt))
@@ -853,8 +962,6 @@ class BedMeshCalibrate:
         if need_cfg_update:
             self._verify_algorithm(gcmd.error)
             self._generate_points(gcmd.error, probe_method)
-            gcmd.respond_info("Generating new points...")
-            self.print_generated_points(gcmd.respond_info)
             pts = self._get_adjusted_points()
             self.probe_helper.update_probe_points(pts, 3)
             msg = "\n".join(

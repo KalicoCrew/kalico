@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Script to implement a test console with firmware over serial port
 #
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
@@ -286,7 +286,7 @@ class KeyboardReader:
             if msg is None:
                 continue
             try:
-                self.ser.send(msg)
+                self.ser.send(msg.encode("utf-8"))
             except msgproto.error as e:
                 self.output("Error: %s" % (str(e),))
         self.data = kbdlines[-1]

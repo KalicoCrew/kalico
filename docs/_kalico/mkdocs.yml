@@ -25,12 +25,17 @@ markdown_extensions:
   - mdx_partial_gfm
   - mdx_truly_sane_lists
   - mdx_breakless_lists
+  - admonition
 plugins:
   search:
     lang: en
   mkdocs-simple-hooks:
     hooks:
-      on_page_markdown: "docs._kalico.mkdocs_hooks:transform"
+      on_page_markdown: "mkdocs_hooks:transform"
+  gh-admonitions:
+  redirects:
+    redirect_maps:
+      'Danger_Features.md': 'Kalico_Additions.md'
 
 # Website layout configuration (using mkdocs-material theme)
 theme:
@@ -73,7 +78,7 @@ extra_css:
 
 extra:
   social:
-    - icon: fontawesome/brands/discord 
+    - icon: fontawesome/brands/discord
       link: https://kalico.gg/discord
       name: Join our Discord server!
   # Site usage statistics
@@ -92,9 +97,11 @@ nav:
   - Config_Changes.md
   - Configuration:
     - Config_Reference.md
-    - Danger_Features.md
-    - Bleeding_Edge.md
-    - Config_Reference_Bleeding_Edge.md
+    - Kalico_Additions.md
+    - Bleeding Edge:
+      - Bleeding_Edge.md
+      - Config_Reference_Bleeding_Edge.md
+      - Nonlinear_Pressure_Advance.md
     - PID.md
     - MPC.md
     - Dockable_Probe.md
@@ -152,5 +159,7 @@ nav:
     - CANBUS_Troubleshooting.md
     - TSL1401CL_Filament_Width_Sensor.md
     - Hall_Filament_Width_Sensor.md
+    - Load_Cell.md
+  - Telemetry.md
   - Contact.md
   - Sponsors.md

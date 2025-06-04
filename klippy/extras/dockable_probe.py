@@ -31,6 +31,11 @@ At least one of the following must be specified:
 Please see {0}.md and config_Reference.md.
 """
 
+VIRTUAL_Z_ENDSTOP_ERROR = """
+DockableProbe cannot be used as Z endstop if a z position
+is defined in approach/dock/extract."
+"""
+
 
 # Helper class to handle polling pins for probe attachment states
 class PinPollingHelper:
@@ -232,6 +237,20 @@ class DockableProbe:
             config, "deactivate_gcode", ""
         )
 
+        self.pre_attach_gcode = gcode_macro.load_template(
+            config, "pre_attach_gcode", ""
+        )
+        self.post_attach_gcode = gcode_macro.load_template(
+            config, "post_attach_gcode", ""
+        )
+
+        self.pre_detach_gcode = gcode_macro.load_template(
+            config, "pre_detach_gcode", ""
+        )
+        self.post_detach_gcode = gcode_macro.load_template(
+            config, "post_detach_gcode", ""
+        )
+
         # Pins
         ppins = self.printer.lookup_object("pins")
         pin = config.get("pin")
@@ -360,6 +379,15 @@ class DockableProbe:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        rails = self.toolhead.get_kinematics().rails
+        endstops = [es for rail in rails for es, name in rail.get_endstops()]
+        positions = [
+            self.approach_position,
+            self.dock_position,
+            self.extract_position,
+        ]
+        if self in endstops and any(pos[2] is not None for pos in positions):
+            raise self.printer.config_error(VIRTUAL_Z_ENDSTOP_ERROR)
 
     #######################################################################
     # GCode Commands
@@ -384,7 +412,7 @@ class DockableProbe:
         }
 
     cmd_MOVE_TO_APPROACH_PROBE_help = (
-        "Move close to the probe dock" "before attaching"
+        "Move close to the probe dock before attaching"
     )
 
     def cmd_MOVE_TO_APPROACH_PROBE(self, gcmd):
@@ -398,7 +426,7 @@ class DockableProbe:
             )
 
     cmd_MOVE_TO_DOCK_PROBE_help = (
-        "Move to connect the toolhead/dock" "to the probe"
+        "Move to connect the toolhead/dock to the probe"
     )
 
     def cmd_MOVE_TO_DOCK_PROBE(self, gcmd):
@@ -413,7 +441,7 @@ class DockableProbe:
         )
 
     cmd_MOVE_TO_EXTRACT_PROBE_help = (
-        "Move away from the dock with the" "probe attached"
+        "Move away from the dock with the probe attached"
     )
 
     def cmd_MOVE_TO_EXTRACT_PROBE(self, gcmd):
@@ -428,7 +456,7 @@ class DockableProbe:
         )
 
     cmd_MOVE_TO_INSERT_PROBE_help = (
-        "Move near the dock with the" "probe attached before detaching"
+        "Move near the dock with the probe attached before detaching"
     )
 
     def cmd_MOVE_TO_INSERT_PROBE(self, gcmd):
@@ -440,7 +468,7 @@ class DockableProbe:
             )
 
     cmd_MOVE_TO_DETACH_PROBE_help = (
-        "Move away from the dock to detach" "the probe"
+        "Move away from the dock to detach the probe"
     )
 
     def cmd_MOVE_TO_DETACH_PROBE(self, gcmd):
@@ -467,7 +495,7 @@ class DockableProbe:
             self.auto_attach_detach = False
 
     cmd_ATTACH_PROBE_help = (
-        "Check probe status and attach probe using" "the movement gcodes"
+        "Check probe status and attach probe using the movement gcodes"
     )
 
     def cmd_ATTACH_PROBE(self, gcmd):
@@ -475,7 +503,7 @@ class DockableProbe:
         self.attach_probe(return_pos)
 
     cmd_DETACH_PROBE_help = (
-        "Check probe status and detach probe using" "the movement gcodes"
+        "Check probe status and detach probe using the movement gcodes"
     )
 
     def cmd_DETACH_PROBE(self, gcmd):
@@ -503,6 +531,7 @@ class DockableProbe:
                 raise self.printer.command_error(
                     "Attach Probe: Probe not detected in dock, aborting"
                 )
+            self.pre_attach_gcode.run_gcode_from_command()
             # Call these gcodes as a script because we don't have enough
             # structs/data to call the cmd_...() funcs and supply 'gcmd'.
             # This method also has the advantage of calling user-written gcodes
@@ -514,6 +543,7 @@ class DockableProbe:
                 MOVE_TO_EXTRACT_PROBE
             """
             )
+            self.post_attach_gcode.run_gcode_from_command()
 
             retry += 1
 
@@ -533,6 +563,7 @@ class DockableProbe:
             self.get_probe_state() != PROBE_DOCKED
             and retry < self.dock_retries + 1
         ):
+            self.pre_detach_gcode.run_gcode_from_command()
             # Call these gcodes as a script because we don't have enough
             # structs/data to call the cmd_...() funcs and supply 'gcmd'.
             # This method also has the advantage of calling user-written gcodes
@@ -544,6 +575,7 @@ class DockableProbe:
                 MOVE_TO_DETACH_PROBE
             """
             )
+            self.post_detach_gcode.run_gcode_from_command()
 
             retry += 1
 
@@ -666,10 +698,10 @@ class DockableProbe:
     def _get_closest_exitpoint(self, point1, point2):
         cx, cy = self.dock_position[:2]
         # Choose point2 if point1 is the dock position
-        if point1[:2] != (cx, cy):
+        if point1[:2] != [cx, cy]:
             dx, dy = point1[0] - cx, point1[1] - cy
             reference_point = point1[:2]
-        elif point2[:2] != (cx, cy):
+        elif point2[:2] != [cx, cy]:
             dx, dy = point2[0] - cx, point2[1] - cy
             reference_point = point2[:2]
         else:
@@ -820,7 +852,7 @@ class DockableProbe:
         )
         self.toolhead.manual_move([None, None, self.z_hop], self.lift_speed)
         kin = self.toolhead.get_kinematics()
-        kin.note_z_not_homed()
+        kin.clear_homing_state([2])
         self.last_z = self.toolhead.get_position()[2]
 
     #######################################################################

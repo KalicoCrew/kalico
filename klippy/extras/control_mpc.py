@@ -380,7 +380,10 @@ class MpcCalibrate:
             "AMBIENT_MEASURE_SAMPLE_TIME", 5.0, below=ambient_max_measure_time
         )
         fan_breakpoints = gcmd.get_int("FAN_BREAKPOINTS", 3, minval=2)
-        target_temp = gcmd.get_float("TARGET", 200.0, minval=90.0)
+        default_target_temp = (
+            90.0 if self.heater.get_name() == "heater_bed" else 200.0
+        )
+        target_temp = gcmd.get_float("TARGET", default_target_temp, minval=90.0)
         threshold_temp = gcmd.get_float(
             "THRESHOLD", max(50.0, min(100, target_temp - 100.0))
         )
@@ -417,7 +420,6 @@ class MpcCalibrate:
                 ambient_max_measure_time,
                 ambient_measure_sample_time,
                 fan_breakpoints,
-                new_control,
                 first_res,
             )
             second_res = self.process_second_pass(
@@ -588,7 +590,6 @@ class MpcCalibrate:
         ambient_max_measure_time,
         ambient_measure_sample_time,
         fan_breakpoints,
-        control,
         first_pass_results,
     ):
         target_temp = round(first_pass_results["post_block_temp"])
@@ -609,27 +610,26 @@ class MpcCalibrate:
             )
             gcmd.respond_info(f"Average stable power: {power_base} W")
         else:
-            if fan is not None:
-                for idx in range(0, fan_breakpoints):
-                    speed = idx / (fan_breakpoints - 1)
-                    curtime = self.heater.reactor.monotonic()
-                    print_time = fan.get_mcu().estimated_print_time(curtime)
-                    fan.set_speed(print_time + PIN_MIN_TIME, speed)
-                    gcmd.respond_info("Waiting for temperature to stabilize")
-                    self.wait_stable(3)
-                    gcmd.respond_info(
-                        f"Temperature stable, measuring power usage with {speed*100.:.0f}% fan speed"
-                    )
-                    power = self.measure_power(
-                        ambient_max_measure_time, ambient_measure_sample_time
-                    )
-                    gcmd.respond_info(
-                        f"{speed*100.:.0f}% fan average power: {power:.2f} W"
-                    )
-                    fan_powers.append((speed, power))
+            for idx in range(0, fan_breakpoints):
+                speed = idx / (fan_breakpoints - 1)
                 curtime = self.heater.reactor.monotonic()
                 print_time = fan.get_mcu().estimated_print_time(curtime)
-                fan.set_speed(print_time + PIN_MIN_TIME, 0.0)
+                fan.set_speed(print_time + PIN_MIN_TIME, speed)
+                gcmd.respond_info("Waiting for temperature to stabilize")
+                self.wait_stable(3)
+                gcmd.respond_info(
+                    f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% fan speed"
+                )
+                power = self.measure_power(
+                    ambient_max_measure_time, ambient_measure_sample_time
+                )
+                gcmd.respond_info(
+                    f"{speed * 100.0:.0f}% fan average power: {power:.2f} W"
+                )
+                fan_powers.append((speed, power))
+            curtime = self.heater.reactor.monotonic()
+            print_time = fan.get_mcu().estimated_print_time(curtime)
+            fan.set_speed(print_time + PIN_MIN_TIME, 0.0)
             power_base = fan_powers[0][1]
 
         return {

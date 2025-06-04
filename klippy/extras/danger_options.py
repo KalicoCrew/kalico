@@ -11,6 +11,9 @@ class DangerOptions:
         self.log_velocity_limit_changes = config.getboolean(
             "log_velocity_limit_changes", True
         )
+        self.log_pressure_advance_changes = config.getboolean(
+            "log_pressure_advance_changes", True
+        )
         self.log_shutdown_info = config.getboolean("log_shutdown_info", True)
         self.log_serial_reader_warnings = config.getboolean(
             "log_serial_reader_warnings", True
@@ -24,6 +27,9 @@ class DangerOptions:
         )
         self.allow_plugin_override = config.getboolean(
             "allow_plugin_override", False
+        )
+        self.single_mcu_trsync_timeout = config.getfloat(
+            "single_mcu_trsync_timeout", 0.25, minval=0.0
         )
         self.multi_mcu_trsync_timeout = config.getfloat(
             "multi_mcu_trsync_timeout", 0.025, minval=0.0
@@ -62,6 +68,7 @@ class DangerOptions:
             self.log_config_file_at_startup = False
             self.log_bed_mesh_at_startup = False
             self.log_velocity_limit_changes = False
+            self.log_pressure_advance_changes = False
             self.log_shutdown_info = False
             self.log_serial_reader_warnings = False
             self.log_startup_info = False
