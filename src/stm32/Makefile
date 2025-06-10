@@ -12,6 +12,7 @@ dirs-$(CONFIG_MACH_STM32F4) += lib/stm32f4
 dirs-$(CONFIG_MACH_STM32F7) += lib/stm32f7
 dirs-$(CONFIG_MACH_STM32G0) += lib/stm32g0
 dirs-$(CONFIG_MACH_STM32G4) += lib/stm32g4
+dirs-$(CONFIG_MACH_STM32H5) += lib/stm32h5
 dirs-$(CONFIG_MACH_STM32H7) += lib/stm32h7
 dirs-$(CONFIG_MACH_STM32L4) += lib/stm32l4
 
@@ -27,6 +28,7 @@ CFLAGS-$(CONFIG_MACH_STM32F4) += -mcpu=cortex-m4 -Ilib/stm32f4/include
 CFLAGS-$(CONFIG_MACH_STM32F7) += -mcpu=cortex-m7 -Ilib/stm32f7/include
 CFLAGS-$(CONFIG_MACH_STM32G0) += -mcpu=cortex-m0plus -Ilib/stm32g0/include
 CFLAGS-$(CONFIG_MACH_STM32G4) += -mcpu=cortex-m4 -Ilib/stm32g4/include
+CFLAGS-$(CONFIG_MACH_STM32H5) += -mcpu=cortex-m33 -Ilib/stm32h5/include
 CFLAGS-$(CONFIG_MACH_STM32H7) += -mcpu=cortex-m7 -Ilib/stm32h7/include
 CFLAGS-$(CONFIG_MACH_STM32L4) += -mcpu=cortex-m4 -Ilib/stm32l4/include
 CFLAGS-$(CONFIG_MACH_AT32F403) = -mcpu=cortex-m4 -Ilib/stm32f1/include
@@ -48,6 +50,7 @@ src-$(CONFIG_MACH_STM32F4) += stm32/stm32f4.c ../lib/stm32f4/system_stm32f4xx.c
 src-$(CONFIG_MACH_STM32F7) += stm32/stm32f7.c ../lib/stm32f7/system_stm32f7xx.c
 src-$(CONFIG_MACH_STM32G0) += stm32/stm32g0.c
 src-$(CONFIG_MACH_STM32G4) += stm32/stm32g4.c ../lib/stm32g4/system_stm32g4xx.c
+src-$(CONFIG_MACH_STM32H5) += stm32/stm32h5.c ../lib/stm32h5/system_stm32h5xx.c
 src-$(CONFIG_MACH_STM32H7) += stm32/stm32h7.c ../lib/stm32h7/system_stm32h7xx.c
 src-$(CONFIG_MACH_STM32L4) += stm32/stm32l4.c ../lib/stm32l4/system_stm32l4xx.c
 
@@ -63,11 +66,13 @@ adc-src-$(CONFIG_MACH_STM32F0) := stm32/stm32f0_adc.c
 adc-src-$(CONFIG_MACH_N32G45x) := ../lib/n32g45x/n32g45x_adc.c stm32/n32g45x_adc.c
 adc-src-$(CONFIG_MACH_STM32G0) := stm32/stm32f0_adc.c
 adc-src-$(CONFIG_MACH_STM32G4) := stm32/stm32h7_adc.c
+adc-src-$(CONFIG_MACH_STM32H5) += stm32/stm32h7_adc.c
 adc-src-$(CONFIG_MACH_STM32H7) := stm32/stm32h7_adc.c
 adc-src-$(CONFIG_MACH_STM32L4) := stm32/stm32h7_adc.c
 src-$(CONFIG_WANT_ADC) += $(adc-src-y)
 
 spi-src-y := stm32/spi.c
+spi-src-$(CONFIG_MACH_STM32H5) := stm32/stm32h7_spi.c # STM32H5 SPI same as H7?
 spi-src-$(CONFIG_MACH_STM32H7) := stm32/stm32h7_spi.c
 src-$(CONFIG_WANT_GPIO_SPI) += $(spi-src-y)
 
@@ -75,12 +80,15 @@ i2c-src-y := stm32/stm32f0_i2c.c
 i2c-src-$(CONFIG_MACH_STM32F1) := stm32/i2c.c
 i2c-src-$(CONFIG_MACH_STM32F2) := stm32/i2c.c
 i2c-src-$(CONFIG_MACH_STM32F4) := stm32/i2c.c
+
+src-$(CONFIG_MACH_STM32H5) += stm32/stm32f0_i2c.c
 src-$(CONFIG_WANT_GPIO_I2C) += $(i2c-src-y)
 
 serial-src-y := stm32/serial.c
 serial-src-$(CONFIG_MACH_STM32F0) := stm32/stm32f0_serial.c
 serial-src-$(CONFIG_MACH_STM32G0) := stm32/stm32f0_serial.c
 serial-src-$(CONFIG_MACH_STM32G4) := stm32/stm32f0_serial.c
+serial-src-$(CONFIG_MACH_STM32H5) := stm32/stm32f0_serial.c
 serial-src-$(CONFIG_MACH_STM32H7) := stm32/stm32f0_serial.c
 src-$(CONFIG_SERIAL) += $(serial-src-y) generic/serial_irq.c
 
