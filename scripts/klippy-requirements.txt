@@ -10,6 +10,8 @@ greenlet==3.0.3 ; python_full_version == '3.12.*'
     # via kalico
 greenlet==3.1.0 ; python_full_version >= '3.13'
     # via kalico
+importlib-metadata==8.7.0
+    # via kalico
 jinja2==3.1.5
     # via kalico
 markupsafe==2.1.5
@@ -36,3 +38,5 @@ typing-extensions==4.13.2
     # via python-can
 wrapt==1.17.2
     # via python-can
+zipp==3.23.0
+    # via importlib-metadata
