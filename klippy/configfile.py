@@ -357,16 +357,17 @@ class PrinterConfig:
     def get_printer(self):
         return self.printer
 
+    def _read_config_file_silent(self, filename):
+        with open(filename, "r") as f:
+            return f.read().replace("\r\n", "\n")
+
     def _read_config_file(self, filename):
         try:
-            f = open(filename, "r")
-            data = f.read()
-            f.close()
+            return self._read_config_file_silent(filename)
         except:
             msg = "Unable to open config file %s" % (filename,)
             logging.exception(msg)
             raise error(msg)
-        return data.replace("\r\n", "\n")
 
     def _find_autosave_data(self, data):
         regular_data = data
@@ -420,7 +421,7 @@ class PrinterConfig:
             field = self.value_r.sub("", pruned_line)
             if config.fileconfig.has_option(section, field):
                 is_dup_field = True
-                lines[lineno] = "#" + lines[lineno]
+                lines[lineno] = "#" + lines[lineno] + "  # disabled by SAVE_CONFIG"
         return "\n".join(lines)
 
     def _parse_config_buffer(self, buffer, filename, fileconfig):
@@ -510,14 +511,31 @@ class PrinterConfig:
             self._read_config_file(filename), filename
         )
 
+    def _build_autosave_filename(self, filename):
+        directory, name = os.path.split(filename)
+        base, ext = os.path.splitext(name)
+        return os.path.join(directory, base + ".autosave" + ext)
+
     def read_main_config(self):
         filename = self.printer.get_start_args()["config_file"]
-        data = self._read_config_file(filename)
-        regular_data, autosave_data = self._find_autosave_data(data)
+
+        # Autosave data used to get written straight into the user's main config
+        # file. This was very invasive, so we now write all autosave data into a
+        # separate file, which is then loaded implicitly with the main config.
+        # However, we still have to read existing autosave data in the main
+        # config file to remain backwards-compatible.
+        regular_data, autosave_data = self._find_autosave_data(
+            self._read_config_file(filename))
+        try:
+            autosave_data = self._read_config_file_silent(
+                self._build_autosave_filename(filename)) + "\n" + autosave_data
+        except FileNotFoundError:
+            pass  # optional
+
         regular_config = self._build_config_wrapper(regular_data, filename)
         autosave_data = self._strip_duplicates(autosave_data, regular_config)
         self.autosave = self._build_config_wrapper(autosave_data, filename)
-        cfg = self._build_config_wrapper(regular_data + autosave_data, filename)
+        cfg = self._build_config_wrapper(autosave_data + regular_data, filename)
         return cfg
 
     def check_unused_options(self, config, error_on_unused):
@@ -764,11 +782,8 @@ class PrinterConfig:
             return
         gcode = self.printer.lookup_object("gcode")
         # Create string containing autosave data
-        autosave_data = self._build_config_string(self.autosave)
-        lines = [("#*# " + l).strip() for l in autosave_data.split("\n")]
-        lines.insert(0, "\n" + AUTOSAVE_HEADER.rstrip())
-        lines.append("")
-        autosave_data = "\n".join(lines)
+        autosave_data = AUTOSAVE_HEADER.strip() + "\n\n" + self._build_config_string(
+            self.autosave) + "\n"
         # Read in and validate current config file
         cfgname = self.printer.get_start_args()["config_file"]
         try:
@@ -786,8 +801,15 @@ class PrinterConfig:
 
         # NOW we're safe to check for conflicts
         self._disallow_include_conflicts(regular_data, cfgname, gcode)
-        data = regular_data.rstrip() + autosave_data
-        self._write_backup(cfgname, data, gcode)
+
+        # Eventually we would want to stop touching the user config at all and
+        # only write autosave data independently, but for as long as we support
+        # auto-migration from embedded autosave data, we have to keep fixing up
+        # those user configs. See config loading for more info.
+        with open(self._build_autosave_filename(cfgname), "w+") as f:
+            f.write(autosave_data)
+        if regular_data != data:
+            self._write_backup(cfgname, regular_data, gcode)
 
         # If requested restart or no restart just flag config saved
         require_restart = gcmd.get_int("RESTART", 1, minval=0, maxval=1)
