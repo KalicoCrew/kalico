@@ -76,8 +76,12 @@ gpio_clock_enable(GPIO_TypeDef *regs)
     RCC->AHB2ENR;
 }
 
-#if !CONFIG_STM32_CLOCK_REF_INTERNAL
-DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PF0,PF1");
+#if CONFIG_STM32_CLOCK_REF_INTERNAL
+// No pins required.
+#elif CONFIG_STM32_CLOCK_HSE_BYPASS
+DECL_CONSTANT_STR("RESERVE_PINS_hse_clock", "PF0");
+#else // CONFIG_STM32_CLOCK_HSE_CRYSTAL
+DECL_CONSTANT_STR("RESERVE_PINS_hse_clock", "PF0,PF1");
 #endif
 
 static void
@@ -94,6 +98,9 @@ enable_clock_stm32g4(void)
         pll_base = 4000000;
 #endif
         uint32_t div = CONFIG_CLOCK_REF_FREQ / pll_base - 1;
+        if (CONFIG_STM32_CLOCK_HSE_BYPASS) {
+            RCC->CR |= RCC_CR_HSEBYP;
+        }
         RCC->CR |= RCC_CR_HSEON;
         while (!(RCC->CR & RCC_CR_HSERDY))
             ;

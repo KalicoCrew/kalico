@@ -140,6 +140,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [tmc2240: adjustable driver_CS and current_range](https://github.com/KalicoCrew/kalico/pull/556)
 
+- [core: support for STM32 MCUs with oscillators rather than crystals](https://github.com/KalicoCrew/kalico/pull/709)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
