@@ -70,6 +70,7 @@ ReadRegisters = [
     "THIGH",
     "ADC_VSUPPLY_AIN",
     "ADC_TEMP",
+    "OTW_OV_VTH",
     "MSCNT",
     "MSCURACT",
     "CHOPCONF",
