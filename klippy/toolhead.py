@@ -349,20 +349,7 @@ class ToolHead:
         if hasattr(self.kin, "max_z_accel"):
             self.orig_cfg["max_z_accel"] = self.kin.max_z_accel
 
-        # Register commands
-        gcode.register_command("G4", self.cmd_G4)
-        gcode.register_command("M400", self.cmd_M400)
-        gcode.register_command(
-            "SET_VELOCITY_LIMIT",
-            self.cmd_SET_VELOCITY_LIMIT,
-            desc=self.cmd_SET_VELOCITY_LIMIT_help,
-        )
-        gcode.register_command(
-            "RESET_VELOCITY_LIMIT",
-            self.cmd_RESET_VELOCITY_LIMIT,
-            desc=self.cmd_RESET_VELOCITY_LIMIT_help,
-        )
-        gcode.register_command("M204", self.cmd_M204)
+        # Register handlers
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
@@ -838,14 +825,63 @@ class ToolHead:
         self.junction_deviation = scv2 * (math.sqrt(2.0) - 1.0) / self.max_accel
         self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
+    def set_max_velocities(
+        self, max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
+    ):
+        if max_velocity is not None:
+            self.max_velocity = max_velocity
+        if max_accel is not None:
+            self.max_accel = max_accel
+        if square_corner_velocity is not None:
+            self.square_corner_velocity = square_corner_velocity
+        if min_cruise_ratio is not None:
+            self.min_cruise_ratio = min_cruise_ratio
+        self._calc_junction_deviation()
+        return (
+            self.max_velocity,
+            self.max_accel,
+            self.square_corner_velocity,
+            self.min_cruise_ratio,
+        )
+
+    def set_accel(self, accel):
+        self.max_accel = accel
+        self._calc_junction_deviation()
+
+    def reset_accel(self):
+        self.max_accel = self.orig_cfg["max_accel"]
+        self._calc_junction_deviation()
+
+
+# Support common G-Code commands relative to the toolhead
+class ToolHeadCommandHelper:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.toolhead = self.printer.lookup_object("toolhead")
+        # Register commands
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_command("G4", self.cmd_G4)
+        gcode.register_command("M400", self.cmd_M400)
+        gcode.register_command(
+            "SET_VELOCITY_LIMIT",
+            self.cmd_SET_VELOCITY_LIMIT,
+            desc=self.cmd_SET_VELOCITY_LIMIT_help,
+        )
+        gcode.register_command(
+            "RESET_VELOCITY_LIMIT",
+            self.cmd_RESET_VELOCITY_LIMIT,
+            desc=self.cmd_RESET_VELOCITY_LIMIT_help,
+        )
+        gcode.register_command("M204", self.cmd_M204)
+
     def cmd_G4(self, gcmd):
         # Dwell
         delay = gcmd.get_float("P", 0.0, minval=0.0) / 1000.0
-        self.dwell(delay)
+        self.toolhead.dwell(delay)
 
     def cmd_M400(self, gcmd):
         # Wait for current moves to finish
-        self.wait_moves()
+        self.toolhead.wait_moves()
 
     cmd_SET_VELOCITY_LIMIT_help = "Set printer velocity limits"
 
@@ -858,61 +894,56 @@ class ToolHead:
         min_cruise_ratio = gcmd.get_float(
             "MINIMUM_CRUISE_RATIO", None, minval=0.0, below=1.0
         )
-        if max_velocity is not None:
-            self.max_velocity = max_velocity
-        if max_accel is not None:
-            self.max_accel = max_accel
-        if square_corner_velocity is not None:
-            self.square_corner_velocity = square_corner_velocity
-        if min_cruise_ratio is not None:
-            self.min_cruise_ratio = min_cruise_ratio
+        kin = self.toolhead.get_kinematics()
+        mv, ma, scv, mcr = self.toolhead.set_max_velocities(
+            max_velocity, max_accel, square_corner_velocity, min_cruise_ratio
+        )
         msg = [
-            "max_velocity: %.6f" % self.max_velocity,
-            "max_accel: %.6f" % self.max_accel,
+            "max_velocity: %.6f" % mv,
+            "max_accel: %.6f" % ma,
         ]
-        if hasattr(self.kin, "max_x_velocity"):
+        if hasattr(kin, "max_x_velocity"):
             max_x_velocity = gcmd.get_float("X_VELOCITY", None)
             if max_x_velocity is not None:
-                self.kin.max_x_velocity = max_x_velocity
-            msg.append("max_x_velocity: %.6f" % self.kin.max_x_velocity)
+                kin.max_x_velocity = max_x_velocity
+            msg.append("max_x_velocity: %.6f" % kin.max_x_velocity)
 
-        if hasattr(self.kin, "max_x_accel"):
+        if hasattr(kin, "max_x_accel"):
             max_x_accel = gcmd.get_float("X_ACCEL", None)
             if max_x_accel is not None:
-                self.kin.max_x_accel = max_x_accel
-            msg.append("max_x_accel: %.6f" % self.kin.max_x_accel)
+                kin.max_x_accel = max_x_accel
+            msg.append("max_x_accel: %.6f" % kin.max_x_accel)
 
-        if hasattr(self.kin, "max_y_velocity"):
+        if hasattr(kin, "max_y_velocity"):
             max_y_velocity = gcmd.get_float("Y_VELOCITY", None)
             if max_y_velocity is not None:
-                self.kin.max_y_velocity = max_y_velocity
-            msg.append("max_y_velocity: %.6f" % self.kin.max_y_velocity)
+                kin.max_y_velocity = max_y_velocity
+            msg.append("max_y_velocity: %.6f" % kin.max_y_velocity)
 
-        if hasattr(self.kin, "max_y_accel"):
+        if hasattr(kin, "max_y_accel"):
             max_y_accel = gcmd.get_float("Y_ACCEL", None)
             if max_y_accel is not None:
-                self.kin.max_y_accel = max_y_accel
+                kin.max_y_accel = max_y_accel
             msg.append(
-                "max_y_accel: %.6f" % self.kin.max_y_accel,
+                "max_y_accel: %.6f" % kin.max_y_accel,
             )
 
-        if hasattr(self.kin, "max_z_velocity"):
+        if hasattr(kin, "max_z_velocity"):
             max_z_velocity = gcmd.get_float("Z_VELOCITY", None, above=0.0)
             if max_z_velocity is not None:
-                self.kin.max_z_velocity = max_z_velocity
-            msg.append("max_z_velocity: %.6f" % self.kin.max_z_velocity)
+                kin.max_z_velocity = max_z_velocity
+            msg.append("max_z_velocity: %.6f" % kin.max_z_velocity)
 
-        if hasattr(self.kin, "max_z_accel"):
+        if hasattr(kin, "max_z_accel"):
             max_z_accel = gcmd.get_float("Z_ACCEL", None, above=0.0)
             if max_z_accel is not None:
-                self.kin.max_z_accel = max_z_accel
-            msg.append("max_z_accel: %.6f" % self.kin.max_z_accel)
+                kin.max_z_accel = max_z_accel
+            msg.append("max_z_accel: %.6f" % kin.max_z_accel)
 
-        self._calc_junction_deviation()
         msg.extend(
             (
-                "minimum_cruise_ratio: %.6f" % self.min_cruise_ratio,
-                "square_corner_velocity: %.6f" % self.square_corner_velocity,
+                "minimum_cruise_ratio: %.6f" % mcr,
+                "square_corner_velocity: %.6f" % scv,
             )
         )
 
@@ -931,46 +962,49 @@ class ToolHead:
     cmd_RESET_VELOCITY_LIMIT_help = "Reset printer velocity limits"
 
     def cmd_RESET_VELOCITY_LIMIT(self, gcmd):
-        self.max_velocity = self.orig_cfg["max_velocity"]
-        self.max_accel = self.orig_cfg["max_accel"]
+        kin = self.toolhead.get_kinematics()
+        orig_cfg = self.toolhead.orig_cfg
+        mv, ma, scv, mcr = self.toolhead.set_max_velocities(
+            orig_cfg["max_velocity"],
+            orig_cfg["max_accel"],
+            orig_cfg["square_corner_velocity"],
+            orig_cfg["min_cruise_ratio"],
+        )
         msg = [
-            "max_velocity: %.6f" % self.max_velocity,
-            "max_accel: %.6f" % self.max_accel,
+            "max_velocity: %.6f" % mv,
+            "max_accel: %.6f" % ma,
         ]
 
-        if hasattr(self.kin, "max_x_velocity"):
-            self.kin.max_x_velocity = self.orig_cfg["max_x_velocity"]
-            msg.append("max_x_velocity: %.6f" % self.kin.max_x_velocity)
+        if hasattr(kin, "max_x_velocity"):
+            kin.max_x_velocity = orig_cfg["max_x_velocity"]
+            msg.append("max_x_velocity: %.6f" % kin.max_x_velocity)
 
-        if hasattr(self.kin, "max_x_accel"):
-            self.kin.max_x_accel = self.orig_cfg["max_x_accel"]
-            msg.append("max_x_accel: %.6f" % self.kin.max_x_accel)
+        if hasattr(kin, "max_x_accel"):
+            kin.max_x_accel = orig_cfg["max_x_accel"]
+            msg.append("max_x_accel: %.6f" % kin.max_x_accel)
 
-        if hasattr(self.kin, "max_y_velocity"):
-            self.kin.max_y_velocity = self.orig_cfg["max_y_velocity"]
-            msg.append("max_y_velocity: %.6f" % self.kin.max_y_velocity)
+        if hasattr(kin, "max_y_velocity"):
+            kin.max_y_velocity = orig_cfg["max_y_velocity"]
+            msg.append("max_y_velocity: %.6f" % kin.max_y_velocity)
 
-        if hasattr(self.kin, "max_y_accel"):
-            self.kin.max_y_accel = self.orig_cfg["max_y_accel"]
+        if hasattr(kin, "max_y_accel"):
+            kin.max_y_accel = orig_cfg["max_y_accel"]
             msg.append(
-                "max_y_accel: %.6f" % self.kin.max_y_accel,
+                "max_y_accel: %.6f" % kin.max_y_accel,
             )
 
-        if hasattr(self.kin, "max_z_velocity"):
-            self.kin.max_z_velocity = self.orig_cfg["max_z_velocity"]
-            msg.append("max_z_velocity: %.6f" % self.kin.max_z_velocity)
+        if hasattr(kin, "max_z_velocity"):
+            kin.max_z_velocity = orig_cfg["max_z_velocity"]
+            msg.append("max_z_velocity: %.6f" % kin.max_z_velocity)
 
-        if hasattr(self.kin, "max_z_accel"):
-            self.kin.max_z_accel = self.orig_cfg["max_z_accel"]
-            msg.append("max_z_accel: %.6f" % self.kin.max_z_accel)
+        if hasattr(kin, "max_z_accel"):
+            kin.max_z_accel = orig_cfg["max_z_accel"]
+            msg.append("max_z_accel: %.6f" % kin.max_z_accel)
 
-        self.square_corner_velocity = self.orig_cfg["square_corner_velocity"]
-        self.min_cruise_ratio = self.orig_cfg["min_cruise_ratio"]
-        self._calc_junction_deviation()
         msg.extend(
             (
-                "minimum_cruise_ratio: %.6f" % self.min_cruise_ratio,
-                "square_corner_velocity: %.6f" % self.square_corner_velocity,
+                "minimum_cruise_ratio: %.6f" % mcr,
+                "square_corner_velocity: %.6f" % scv,
             )
         )
         if get_danger_options().log_velocity_limit_changes:
@@ -989,21 +1023,14 @@ class ToolHead:
                 )
                 return
             accel = min(p, t)
-        self.max_accel = accel
-        self._calc_junction_deviation()
-
-    def set_accel(self, accel):
-        self.max_accel = accel
-        self._calc_junction_deviation()
-
-    def reset_accel(self):
-        self.max_accel = self.orig_cfg["max_accel"]
-        self._calc_junction_deviation()
+        self.toolhead.set_max_velocities(None, accel, None, None)
 
 
 def add_printer_objects(config):
     printer = config.get_printer()
     printer.add_object("toolhead", ToolHead(config))
+    ToolHeadCommandHelper(config)
+    # Load default extruder objects
     kinematics_extruder.add_printer_objects(config)
     # Load some default modules
     modules = [
