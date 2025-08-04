@@ -366,18 +366,6 @@ class ToolHead:
         self.printer.register_event_handler(
             "klippy:shutdown", self._handle_shutdown
         )
-        # Load some default modules
-        modules = [
-            "gcode_move",
-            "homing",
-            "idle_timeout",
-            "statistics",
-            "manual_probe",
-            "tuning_tower",
-            "garbage_collection",
-        ]
-        for module_name in modules:
-            self.printer.load_object(config, module_name)
 
     def get_active_rails_for_axis(self, axis):
         # axis is 'x,y,z'
@@ -1014,5 +1002,18 @@ class ToolHead:
 
 
 def add_printer_objects(config):
-    config.get_printer().add_object("toolhead", ToolHead(config))
+    printer = config.get_printer()
+    printer.add_object("toolhead", ToolHead(config))
     kinematics_extruder.add_printer_objects(config)
+    # Load some default modules
+    modules = [
+        "gcode_move",
+        "homing",
+        "idle_timeout",
+        "statistics",
+        "manual_probe",
+        "tuning_tower",
+        "garbage_collection",
+    ]
+    for module_name in modules:
+        printer.load_object(config, module_name)
