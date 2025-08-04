@@ -18,6 +18,11 @@ for configuration details.
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
 
+20250811: Support for the `max_accel_to_decel` parameter in the
+`[printer]` config section has been removed and support for the
+`ACCEL_TO_DECEL` parameter in the `SET_VELOCITY_LIMIT` command has
+been removed. These capabilities were deprecated on 20240313.
+
 20250721: The `[pca9632]` and `[mcp4018]` modules no longer accept the
 `scl_pin` and `sda_pin` options. Use `i2c_software_scl_pin` and
 `i2c_software_sda_pin` instead.
