@@ -23,6 +23,7 @@ SOURCE_FILES = [
     "pyhelper.c",
     "serialqueue.c",
     "stepcompress.c",
+    "steppersync.c",
     "itersolve.c",
     "trapq.c",
     "pollreactor.c",
@@ -45,6 +46,7 @@ OTHER_FILES = [
     "list.h",
     "serialqueue.h",
     "stepcompress.h",
+    "steppersync.h",
     "itersolve.h",
     "pyhelper.h",
     "trapq.h",
@@ -77,7 +79,9 @@ defs_stepcompress = """
     int stepcompress_extract_old(struct stepcompress *sc
         , struct pull_history_steps *p, int max
         , uint64_t start_clock, uint64_t end_clock);
+"""
 
+defs_steppersync = """
     struct steppersync *steppersync_alloc(struct serialqueue *sq
         , struct stepcompress **sc_list, int sc_num, int move_num);
     void steppersync_free(struct steppersync *ss);
@@ -247,6 +251,7 @@ defs_all = [
     defs_serialqueue,
     defs_std,
     defs_stepcompress,
+    defs_steppersync,
     defs_itersolve,
     defs_trapq,
     defs_trdispatch,
