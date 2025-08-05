@@ -24,13 +24,15 @@ class GCodeRequestQueue:
         self.rqueue = []
         self.next_min_flush_time = 0.0
         self.toolhead = None
-        mcu.register_flush_callback(self._flush_notification)
+        motion_queuing = printer.load_object(config, "motion_queuing")
+        motion_queuing.register_flush_callback(self._flush_notification)
         printer.register_event_handler("klippy:connect", self._handle_connect)
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
 
-    def _flush_notification(self, print_time, clock):
+    def _flush_notification(self, print_time):
+        min_sched_time = self.mcu.min_schedule_time()
         rqueue = self.rqueue
         while rqueue:
             next_time = max(rqueue[0][0], self.next_min_flush_time)
