@@ -822,7 +822,6 @@ class MCU:
             "max_stepper_error", 0.000025, minval=0.0
         )
         self._reserved_move_slots = 0
-        self._stepqueues = []
         self._steppersync = None
         self._flush_callbacks = []
         # Stats
@@ -1198,10 +1197,7 @@ class MCU:
         ss_move_count = move_count - self._reserved_move_slots
         motion_queuing = self._printer.lookup_object("motion_queuing")
         self._steppersync = motion_queuing.allocate_steppersync(
-            self,
-            self._serial.get_serialqueue(),
-            self._stepqueues,
-            ss_move_count,
+            self, self._serial.get_serialqueue(), ss_move_count
         )
         self._ffi_lib.steppersync_set_time(
             self._steppersync, 0.0, self._mcu_freq
@@ -1503,9 +1499,6 @@ class MCU:
         self._firmware_restart(True)
 
     # Move queue tracking
-    def register_stepqueue(self, stepqueue):
-        self._stepqueues.append(stepqueue)
-
     def request_move_queue_slot(self):
         self._reserved_move_slots += 1
 
