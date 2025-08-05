@@ -2386,14 +2386,10 @@ class TradRackToolHead(toolhead.ToolHead, object):
         # Kinematic step generation scan window time tracking
         self.kin_flush_delay = toolhead.SDS_CHECK_TIME
         self.kin_flush_times = []
-        # Setup iterative solver
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-        self.trapq_append = ffi_lib.trapq_append
-        self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
-        # Motion flushing
-        self.step_generators = []
-        self.flush_trapqs = [self.trapq]
+        # Setup for generating moves
+        self.motion_queuing = self.printer.load_object(config, "motion_queuing")
+        self.trapq = self.motion_queuing.allocate_trapq()
+        self.trapq_append = self.motion_queuing.lookup_trapq_append()
         # Create kinematic class
         gcode = self.printer.lookup_object("gcode")
         self.Coord = gcode.Coord
