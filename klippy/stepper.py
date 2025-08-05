@@ -181,7 +181,7 @@ class MCU_stepper:
         mcu_pos = self.get_mcu_position()
         self._rotation_dist = rotation_dist
         self._step_dist = rotation_dist / self._steps_per_rotation
-        self.set_stepper_kinematics(self._stepper_kinematics)
+        self.set_trapq(self._trapq)
         self._set_mcu_position(mcu_pos)
 
     def get_dir_inverted(self):
@@ -252,8 +252,6 @@ class MCU_stepper:
         if old_sk is not None:
             mcu_pos = self.get_mcu_position()
         self._stepper_kinematics = sk
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.itersolve_set_stepcompress(sk, self._stepqueue, self._step_dist)
         self.set_trapq(self._trapq)
         self._set_mcu_position(mcu_pos)
         return old_sk
@@ -294,7 +292,8 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         if tq is None:
             tq = ffi_main.NULL
-        ffi_lib.itersolve_set_trapq(self._stepper_kinematics, tq)
+        ffi_lib.itersolve_set_trapq(self._stepper_kinematics,
+                                    tq, self._step_dist)
         old_tq = self._trapq
         self._trapq = tq
         return old_tq
@@ -325,7 +324,7 @@ class MCU_stepper:
     def generate_steps(self, flush_time):
         # Generate steps
         sk = self._stepper_kinematics
-        ret = self._itersolve_generate_steps(sk, flush_time)
+        ret = self._itersolve_generate_steps(sk, self._stepqueue, flush_time)
         if ret:
             raise error("Internal error in stepcompress")
 
