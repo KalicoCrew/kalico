@@ -2438,7 +2438,6 @@ class TradRackKinematics:
             rail.setup_itersolve("cartesian_stepper_alloc", axis.encode())
         for s in self.get_steppers():
             s.set_trapq(toolhead.get_trapq())
-            toolhead.register_step_generator(s.generate_steps)
         self.printer.register_event_handler(
             "stepper_enable:motor_off", self._motor_off
         )
@@ -2778,8 +2777,6 @@ class TradRackExtruderSyncManager:
             )
             stepper.set_trapq(external_trapq)
             stepper.set_position(new_pos)
-            prev_toolhead.step_generators.remove(stepper.generate_steps)
-            external_toolhead.register_step_generator(stepper.generate_steps)
         self.sync_state = sync_type
 
     def sync_extruder_to_fil_driver(self):
@@ -2810,8 +2807,6 @@ class TradRackExtruderSyncManager:
 
         for i in range(len(steppers)):
             stepper = steppers[i]
-            external_toolhead.step_generators.remove(stepper.generate_steps)
-            prev_toolhead.register_step_generator(stepper.generate_steps)
             stepper.set_trapq(self._prev_trapq)
             stepper.set_stepper_kinematics(self._prev_sks[i])
             stepper.set_rotation_distance(self._prev_rotation_dists[i])

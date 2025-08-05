@@ -309,7 +309,7 @@ class ToolHead:
         self.trapq_append = ffi_lib.trapq_append
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
         # Motion flushing
-        self.step_generators = []
+        self.motion_queuing = self.printer.load_object(config, "motion_queuing")
         self.flush_trapqs = [self.trapq]
         # Create kinematics class
         gcode = self.printer.lookup_object("gcode")
@@ -374,8 +374,7 @@ class ToolHead:
             self.print_time - self.kin_flush_delay,
         )
         sg_flush_time = max(sg_flush_want, flush_time)
-        for sg in self.step_generators:
-            sg(sg_flush_time)
+        self.motion_queuing.flush_motion_queues(flush_time, sg_flush_time)
         self.min_restart_time = max(self.min_restart_time, sg_flush_time)
         # Free trapq entries that are no longer needed
         clear_history_time = self.clear_history_time
@@ -655,7 +654,7 @@ class ToolHead:
         return [None, None, None] + self.extra_axes
 
     # Homing "drip move" handling
-    def drip_update_time(self, next_print_time, drip_completion, addstepper=()):
+    def drip_update_time(self, next_print_time, drip_completion):
         # Transition from "NeedPrime"/"Priming"/main state to "Drip" state
         self.special_queuing_state = "Drip"
         self.need_check_pause = self.reactor.NEVER
@@ -677,8 +676,6 @@ class ToolHead:
                 continue
             npt = min(self.print_time + DRIP_SEGMENT_TIME, next_print_time)
             self.note_mcu_movequeue_activity(npt + self.kin_flush_delay)
-            for stepper in addstepper:
-                stepper.generate_steps(npt)
             self._advance_move_time(npt)
         # Exit "Drip" state
         self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
@@ -781,13 +778,6 @@ class ToolHead:
 
     def get_trapq(self):
         return self.trapq
-
-    def register_step_generator(self, handler):
-        self.step_generators.append(handler)
-
-    def unregister_step_generator(self, handler):
-        if handler in self.step_generators:
-            self.step_generators.remove(handler)
 
     def note_step_generation_scan_time(self, delay, old_delay=0.0):
         self.flush_step_generation()
