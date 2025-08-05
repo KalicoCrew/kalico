@@ -60,7 +60,6 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._stepper_kinematics = None
-        self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
         printer.register_event_handler(
@@ -252,6 +251,8 @@ class MCU_stepper:
         if old_sk is not None:
             mcu_pos = self.get_mcu_position()
         self._stepper_kinematics = sk
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.stepcompress_set_stepper_kinematics(self._stepqueue, sk)
         self.set_trapq(self._trapq)
         self._set_mcu_position(mcu_pos)
         return old_sk
@@ -292,8 +293,9 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         if tq is None:
             tq = ffi_main.NULL
-        ffi_lib.itersolve_set_trapq(self._stepper_kinematics,
-                                    tq, self._step_dist)
+        ffi_lib.itersolve_set_trapq(
+            self._stepper_kinematics, tq, self._step_dist
+        )
         old_tq = self._trapq
         self._trapq = tq
         return old_tq
@@ -320,13 +322,6 @@ class MCU_stepper:
         # Invoke callbacks
         for cb in cbs:
             cb(ret)
-
-    def generate_steps(self, flush_time):
-        # Generate steps
-        sk = self._stepper_kinematics
-        ret = self._itersolve_generate_steps(sk, self._stepqueue, flush_time)
-        if ret:
-            raise error("Internal error in stepcompress")
 
     def is_active_axis(self, axis):
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -359,8 +354,7 @@ def PrinterStepper(config, units_in_radians=False):
         units_in_radians,
     )
     # Register with helper modules
-    mods = ["stepper_enable", "force_move", "motion_report", "motion_queuing"]
-    for mname in mods:
+    for mname in ["stepper_enable", "force_move", "motion_report"]:
         m = printer.load_object(config, mname)
         m.register_stepper(config, mcu_stepper)
     return mcu_stepper
