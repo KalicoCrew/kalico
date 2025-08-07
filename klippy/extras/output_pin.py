@@ -55,11 +55,13 @@ class GCodeRequestQueue:
             del rqueue[: pos + 1]
             self.next_min_flush_time = next_time + max(min_wait, PIN_MIN_TIME)
             # Ensure following queue items are flushed
-            self.toolhead.note_mcu_movequeue_activity(self.next_min_flush_time)
+            self.toolhead.note_mcu_movequeue_activity(
+                self.next_min_flush_time, is_step_gen=False
+            )
 
     def _queue_request(self, print_time, value):
         self.rqueue.append((print_time, value))
-        self.toolhead.note_mcu_movequeue_activity(print_time)
+        self.toolhead.note_mcu_movequeue_activity(print_time, is_step_gen=False)
 
     def queue_gcode_request(self, value):
         self.toolhead.register_lookahead_callback(

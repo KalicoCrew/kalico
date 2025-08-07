@@ -454,9 +454,7 @@ class ToolHead:
             for cb in move.timing_callbacks:
                 cb(next_move_time)
         # Generate steps for moves
-        self.note_mcu_movequeue_activity(
-            next_move_time + self.kin_flush_delay, set_step_gen_time=True
-        )
+        self.note_mcu_movequeue_activity(next_move_time + self.kin_flush_delay)
         self._advance_move_time(next_move_time)
 
     def _flush_lookahead(self):
@@ -678,9 +676,7 @@ class ToolHead:
                 drip_completion.wait(curtime + wait_time)
                 continue
             npt = min(self.print_time + DRIP_SEGMENT_TIME, next_print_time)
-            self.note_mcu_movequeue_activity(
-                npt + self.kin_flush_delay, set_step_gen_time=True
-            )
+            self.note_mcu_movequeue_activity(npt + self.kin_flush_delay)
             for stepper in addstepper:
                 stepper.generate_steps(npt)
             self._advance_move_time(npt)
@@ -809,9 +805,9 @@ class ToolHead:
             return
         last_move.timing_callbacks.append(callback)
 
-    def note_mcu_movequeue_activity(self, mq_time, set_step_gen_time=False):
+    def note_mcu_movequeue_activity(self, mq_time, is_step_gen=True):
         self.need_flush_time = max(self.need_flush_time, mq_time)
-        if set_step_gen_time:
+        if is_step_gen:
             self.step_gen_time = max(self.step_gen_time, mq_time)
         if self.do_kick_flush_timer:
             self.do_kick_flush_timer = False
