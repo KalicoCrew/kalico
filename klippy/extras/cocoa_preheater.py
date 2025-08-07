@@ -4,10 +4,10 @@ Cocoa Press chocolate core preheater
 
 from __future__ import annotations
 
-import enum
 import copy
+import enum
 import typing
-from typing import TypedDict, NotRequired
+from typing import NotRequired, TypedDict
 
 if typing.TYPE_CHECKING:
     from klippy.gcode import GCodeDispatch
