@@ -13,6 +13,7 @@ SLOW_NOTCH_SIZE = 10.0
 SEAM_GAP_RATIO = 0.10
 SEAM_EXTRA_WIPE_RATIO = 1.1
 VERY_SLOW_SEG = 0.20
+DEFAULT_FAN_SPEED = 127
 
 
 class PATest:
@@ -21,6 +22,7 @@ class PATest:
         self.printer.register_event_handler("klippy:connect", self._connect)
         self.size_x = config.getfloat("size_x", 0.0, minval=0.0)
         self.size_y = config.getfloat("size_y", 0.0, minval=0.0)
+        self.fan = config.getint("fan", DEFAULT_FAN_SPEED, minval=0, maxval=255)
         if self.size_x or self.size_y:
             if self.size_x < SLOW_NOTCH_SIZE * 4:
                 raise config.error(
@@ -185,6 +187,7 @@ class PATest:
             "FIRST_LAYER_HEIGHT", self.first_layer_height, above=layer_height
         )
         height = gcmd.get_float("HEIGHT", self.height, above=0.0)
+        fan = gcmd.get_int("FAN", self.fan, minval=0, maxval=255)
         step_height = gcmd.get_float("STEP_HEIGHT", 0.0, minval=0.0)
         brim_width = gcmd.get_float("BRIM_WIDTH", self.brim_width, above=nozzle)
         final_gcode_id = gcmd.get("FINAL_GCODE_ID", None)
@@ -433,7 +436,7 @@ class PATest:
         yield "G90"
         for line in gen_brim():
             yield line
-        yield "M106 S127"
+        yield "M106 S%d" % (fan)
         for line in gen_tower():
             yield line
         if final_gcode_id is not None:

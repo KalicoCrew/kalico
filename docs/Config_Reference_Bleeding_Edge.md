@@ -141,4 +141,6 @@ medium_velocity: 50
 fast_velocity: 80
 #   End velocity for PA test segment (mm/s)
 filament_diameter: 1.75
+fan: 127
+#   Part fan value to set after brim is printed (0-255)
 ```
