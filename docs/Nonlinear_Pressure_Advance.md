@@ -156,6 +156,7 @@ variable_pa_value: 0             # Used for further tuning of pa value. If value
 variable_pa_range: 0.03          # Only use if pa_value is set to heigher than 0. Used to set the +/- area around pa_value that should be tested
 variable_flow_rate: -1
 variable_testparam: 0            # 0 = advance, 1 = offset, 2 = time_offset
+variable_fan: 127
 variable_rawparams: ''
 gcode:
     # Fail early if the required parameters are not provided
@@ -171,6 +172,7 @@ gcode:
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=pa_range VALUE={params.PA_RANGE|default(0.01)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=flow_rate VALUE={params.FLOW_RATE|default(-1)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=testparam VALUE={params.TESTPARAM|default(0)}
+    SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=fan VALUE={params.FAN|default(127)}
     SET_GCODE_VARIABLE MACRO=RUN_PA_TEST VARIABLE=rawparams VALUE="'{rawparams}'"
     SAVE_GCODE_STATE NAME=PA_TEST_STATE
     UPDATE_DELAYED_GCODE ID=start_pa_test DURATION=0.01
