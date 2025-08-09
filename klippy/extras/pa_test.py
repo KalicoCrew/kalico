@@ -22,7 +22,9 @@ class PATest:
         self.printer.register_event_handler("klippy:connect", self._connect)
         self.size_x = config.getfloat("size_x", 0.0, minval=0.0)
         self.size_y = config.getfloat("size_y", 0.0, minval=0.0)
-        self.fan_speed = config.getfloat("fan_speed", DEFAULT_FAN_SPEED, minval=0.0, maxval=1.0)
+        self.fan_speed = config.getfloat(
+            "fan_speed", DEFAULT_FAN_SPEED, minval=0.0, maxval=1.0
+        )
         if self.size_x or self.size_y:
             if self.size_x < SLOW_NOTCH_SIZE * 4:
                 raise config.error(
@@ -187,7 +189,9 @@ class PATest:
             "FIRST_LAYER_HEIGHT", self.first_layer_height, above=layer_height
         )
         height = gcmd.get_float("HEIGHT", self.height, above=0.0)
-        fan_speed = gcmd.get_float("FAN_SPEED", self.fan_speed, minval=0, maxval=1)
+        fan_speed = gcmd.get_float(
+            "FAN_SPEED", self.fan_speed, minval=0, maxval=1
+        )
         step_height = gcmd.get_float("STEP_HEIGHT", 0.0, minval=0.0)
         brim_width = gcmd.get_float("BRIM_WIDTH", self.brim_width, above=nozzle)
         final_gcode_id = gcmd.get("FINAL_GCODE_ID", None)
