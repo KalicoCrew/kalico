@@ -3,6 +3,8 @@ Klipper plugin to monitor toolhead adc values
 to detect the toolhead's attachment status
 """
 
+from __future__ import annotations
+
 import contextlib
 import logging
 import math
@@ -12,19 +14,20 @@ from typing import TYPE_CHECKING, Literal
 from klippy import chelper
 from klippy.extras.homing import Homing
 
-from ..configfile import ConfigWrapper, PrinterConfig
-from ..gcode import GCodeCommand
-from .gcode_macro import PrinterGCodeMacro
-from .tmc2209 import TMC2209
-
 if TYPE_CHECKING:
-    from ..gcode import GCodeDispatch
+    from ..configfile import ConfigWrapper, PrinterConfig
+    from ..gcode import GCodeCommand, GCodeDispatch
     from ..kinematics.extruder import PrinterExtruder
+    from ..printer import Printer
+    from ..reactor import SelectReactor
     from ..stepper import MCU_stepper
     from ..toolhead import ToolHead
+    from .gcode_macro import PrinterGCodeMacro, Template
     from .gcode_move import GCodeMove
     from .homing import PrinterHoming
+    from .pause_resume import PauseResume
     from .stepper_enable import EnableTracking
+    from .tmc2209 import TMC2209
 
 
 logger = logging.getLogger(__name__)
@@ -648,22 +651,32 @@ POSITION_FULL = POSITION_EMPTY - NOMINAL_CORE_LENGTH
 
 
 class CocoaRunout:
+    config: ConfigWrapper
+    printer: Printer
+    reactor: SelectReactor
+    gcode: GCodeDispatch
+    gcode_move: GCodeMove
+    gcode_macro: PrinterGCodeMacro
+    pause_resume: PauseResume
+    toolhead: ToolHead
+
+    runout_enabled: bool
+
     def __init__(self, config: ConfigWrapper):
         self.config = config
         self.name = config.get_name()
         self.printer = config.get_printer()
-        self.reactor = self.printer.get_reactor()
+        self.reactor: SelectReactor = self.printer.get_reactor()
 
-        self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
-        self.gcode_move: GCodeMove = self.printer.lookup_object("gcode_move")
-        self.gcode_macro: PrinterGCodeMacro = self.printer.load_object(
-            config, "gcode_macro"
-        )
+        self.gcode = self.printer.lookup_object("gcode")
+        self.gcode_move = self.printer.lookup_object("gcode_move")
+        self.gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.pause_resume = self.printer.load_object(config, "pause_resume")
 
-        self.toolhead: ToolHead = None
+        self.toolhead = None
 
         self.enable_runout = config.getboolean("runout_enabled", True)
-        self.runout_tmpl = self.gcode_macro.load_template(
+        self.runout_tmpl: Template = self.gcode_macro.load_template(
             config,
             "runout_gcode",
             "M600",
@@ -722,22 +735,26 @@ class CocoaRunout:
         return self.next_transform.get_position()
 
     def move(self, newpos, speed):
-        if self.runout_enabled:
-            next_real_position = newpos[3]
-            adjusted_position = next_real_position - self.position_top
-
-            if adjusted_position > self.position_empty:
-                self._trigger_runout()
+        if self.runout_enabled and newpos[3] > self.position_empty:
+            self._trigger_runout()
 
         return self.next_transform.move(newpos, speed)
 
     def _trigger_runout(self):
+        runouttime = self.toolhead.get_last_move_time()
+        self.reactor.register_callback(self._runout_callback, runouttime)
+
+        self.pause_resume.send_pause_command()
         self._disable_runout()
 
-        eventtime = self.reactor.monotonic()
-        ctx = self.runout_tmpl.create_template_context()
+    def _runout_callback(self, eventtime):
+        ctx = self.gcode_macro.create_template_context()
         self.runout_tmpl.run_gcode_from_command(ctx)
+
+        self.gcode.respond_info("action:runout")
         self.printer.send_event("filament:runout", eventtime, self.name)
+
+        return self.reactor.NEVER
 
     def cmd_SET_FILAMENT_SENSOR(self, gcmd: GCodeCommand):
         "Enable or disable the chocolate runout sensor"

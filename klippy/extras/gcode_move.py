@@ -4,6 +4,12 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+import typing
+
+
+class MoveTransform(typing.Protocol):
+    def move(self, newpos: tuple[float, float, float, float], speed: float): ...
+    def get_position(self) -> tuple[float, float, float, float]: ...
 
 
 class GCodeMove:
@@ -106,7 +112,11 @@ class GCodeMove:
         for axis in homing_state.get_axes():
             self.base_position[axis] = self.homing_position[axis]
 
-    def set_move_transform(self, transform, force=False):
+    def set_move_transform(
+        self,
+        transform: MoveTransform,
+        force=False,
+    ) -> MoveTransform:
         if self.move_transform is not None and not force:
             raise self.printer.config_error(
                 "G-Code move transform already specified"
