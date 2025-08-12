@@ -296,7 +296,7 @@ class ToolHead:
         self.flush_timer = self.reactor.register_timer(self._flush_handler)
         self.do_kick_flush_timer = True
         self.last_flush_time = self.last_step_gen_time = 0.0
-        self.need_flush_time = self.step_gen_time = 0.0
+        self.need_flush_time = self.need_step_gen_time = 0.0
         # Kinematic step generation scan window time tracking
         self.kin_flush_delay = SDS_CHECK_TIME
         self.kin_flush_times = []
@@ -436,7 +436,7 @@ class ToolHead:
             for cb in move.timing_callbacks:
                 cb(next_move_time)
         # Generate steps for moves
-        self.note_mcu_movequeue_activity(next_move_time + self.kin_flush_delay)
+        self.note_mcu_movequeue_activity(next_move_time)
         self._advance_move_time(next_move_time)
 
     def _flush_lookahead(self):
@@ -449,7 +449,7 @@ class ToolHead:
 
     def flush_step_generation(self):
         self._flush_lookahead()
-        self._advance_flush_time(self.step_gen_time)
+        self._advance_flush_time(self.need_step_gen_time)
 
     def get_last_move_time(self):
         if self.special_queuing_state:
@@ -645,7 +645,7 @@ class ToolHead:
                 drip_completion.wait(curtime + wait_time)
                 continue
             npt = min(self.print_time + DRIP_SEGMENT_TIME, next_print_time)
-            self.note_mcu_movequeue_activity(npt + self.kin_flush_delay)
+            self.note_mcu_movequeue_activity(npt)
             self._advance_move_time(npt)
         # Exit "Drip" state
         self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
@@ -766,9 +766,10 @@ class ToolHead:
         last_move.timing_callbacks.append(callback)
 
     def note_mcu_movequeue_activity(self, mq_time, is_step_gen=True):
-        self.need_flush_time = max(self.need_flush_time, mq_time)
         if is_step_gen:
-            self.step_gen_time = max(self.step_gen_time, mq_time)
+            mq_time += self.kin_flush_delay
+            self.need_step_gen_time = max(self.need_step_gen_time, mq_time)
+        self.need_flush_time = max(self.need_flush_time, mq_time)
         if self.do_kick_flush_timer:
             self.do_kick_flush_timer = False
             self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
