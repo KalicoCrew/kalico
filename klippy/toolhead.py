@@ -295,7 +295,7 @@ class ToolHead:
         # Flush tracking
         self.flush_timer = self.reactor.register_timer(self._flush_handler)
         self.do_kick_flush_timer = True
-        self.last_flush_time = self.min_restart_time = 0.0
+        self.last_flush_time = self.last_step_gen_time = 0.0
         self.need_flush_time = self.step_gen_time = 0.0
         # Kinematic step generation scan window time tracking
         self.kin_flush_delay = SDS_CHECK_TIME
@@ -366,10 +366,10 @@ class ToolHead:
             flush_time + STEPCOMPRESS_FLUSH_TIME,
             self.print_time - self.kin_flush_delay,
         )
-        sg_flush_time = max(sg_flush_want, flush_time)
-        self.motion_queuing.flush_motion_queues(flush_time, sg_flush_time)
-        self.min_restart_time = max(self.min_restart_time, sg_flush_time)
+        step_gen_time = max(self.last_step_gen_time, sg_flush_want, flush_time)
+        self.motion_queuing.flush_motion_queues(flush_time, step_gen_time)
         self.last_flush_time = flush_time
+        self.last_step_gen_time = step_gen_time
 
     def _advance_move_time(self, next_print_time):
         pt_delay = self.kin_flush_delay + STEPCOMPRESS_FLUSH_TIME
@@ -385,7 +385,7 @@ class ToolHead:
     def _calc_print_time(self):
         curtime = self.reactor.monotonic()
         est_print_time = self.mcu.estimated_print_time(curtime)
-        kin_time = max(est_print_time + MIN_KIN_TIME, self.min_restart_time)
+        kin_time = max(est_print_time + MIN_KIN_TIME, self.last_step_gen_time)
         kin_time += self.kin_flush_delay
         min_print_time = max(est_print_time + BUFFER_TIME_START, kin_time)
         if min_print_time > self.print_time:
@@ -450,7 +450,6 @@ class ToolHead:
     def flush_step_generation(self):
         self._flush_lookahead()
         self._advance_flush_time(self.step_gen_time)
-        self.min_restart_time = max(self.min_restart_time, self.print_time)
 
     def get_last_move_time(self):
         if self.special_queuing_state:
