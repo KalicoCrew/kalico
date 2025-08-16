@@ -119,14 +119,15 @@ class RunoutHelper:
         self.min_event_systime = self.reactor.monotonic() + self.event_delay
 
     def note_filament_present(
-        self, is_filament_present=None, force=False, immediate=False
+        self, eventtime, is_filament_present=None, force=False, immediate=False
     ):
         if is_filament_present is None:
             is_filament_present = self.filament_present
         if is_filament_present == self.filament_present and not force:
             return
         self.filament_present = is_filament_present
-        eventtime = self.reactor.monotonic()
+        # with debouncing the event time is passed into us as we are
+        # called with a delay so the current time is not the event time
         if eventtime < self.min_event_systime or (
             not self.always_fire_events and not self.sensor_enabled
         ):
@@ -233,7 +234,8 @@ class SwitchSensor:
         buttons = self.printer.load_object(config, "buttons")
         switch_pin = config.get("switch_pin")
         runout_distance = config.getfloat("runout_distance", 0.0, minval=0.0)
-        buttons.register_buttons([switch_pin], self._button_handler)
+        buttons.register_debounce_button(switch_pin, self._button_handler, config)
+
         self.check_on_print_start = config.getboolean(
             "check_on_print_start", False
         )
@@ -257,10 +259,10 @@ class SwitchSensor:
 
     def _handle_printing(self, print_time):
         if self.check_on_print_start:
-            self.runout_helper.note_filament_present(None, True, True)
+            self.runout_helper.note_filament_present(self.reactor.monotonic(), None, True, True)
 
     def _button_handler(self, eventtime, state):
-        self.runout_helper.note_filament_present(state)
+        self.runout_helper.note_filament_present(eventtime, state)
 
     def get_extruder_pos(self, eventtime=None):
         if eventtime is None:
@@ -330,6 +332,7 @@ class SwitchSensor:
     def reset(self):
         self.runout_helper.reset_runout_distance_info()
         self.runout_helper.note_filament_present(
+            self.reactor.monotonic(),
             self.runout_helper.filament_present, True
         )
 
