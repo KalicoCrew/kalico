@@ -235,7 +235,9 @@ class SwitchSensor:
         buttons = self.printer.load_object(config, "buttons")
         switch_pin = config.get("switch_pin")
         runout_distance = config.getfloat("runout_distance", 0.0, minval=0.0)
-        buttons.register_debounce_button(switch_pin, self._button_handler, config)
+        buttons.register_debounce_button(
+            switch_pin, self._button_handler, config
+        )
 
         self.check_on_print_start = config.getboolean(
             "check_on_print_start", False
@@ -260,7 +262,9 @@ class SwitchSensor:
 
     def _handle_printing(self, print_time):
         if self.check_on_print_start:
-            self.runout_helper.note_filament_present(self.reactor.monotonic(), None, True, True)
+            self.runout_helper.note_filament_present(
+                self.reactor.monotonic(), None, True, True
+            )
 
     def _button_handler(self, eventtime, state):
         self.runout_helper.note_filament_present(eventtime, state)
@@ -333,8 +337,7 @@ class SwitchSensor:
     def reset(self):
         self.runout_helper.reset_runout_distance_info()
         self.runout_helper.note_filament_present(
-            self.reactor.monotonic(),
-            self.runout_helper.filament_present, True
+            self.reactor.monotonic(), self.runout_helper.filament_present, True
         )
 
 

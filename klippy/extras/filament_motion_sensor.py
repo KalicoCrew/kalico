@@ -77,8 +77,8 @@ class EncoderSensor:
     def _extruder_pos_update_event(self, eventtime):
         extruder_pos = self.get_extruder_pos(eventtime)
         # Check for filament runout
-        self.runout_helper.note_filament_present(eventtime,
-            extruder_pos < self.filament_runout_pos
+        self.runout_helper.note_filament_present(
+            eventtime, extruder_pos < self.filament_runout_pos
         )
         return eventtime + CHECK_RUNOUT_TIMEOUT
 
