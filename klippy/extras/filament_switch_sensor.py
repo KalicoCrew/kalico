@@ -142,12 +142,13 @@ class RunoutHelper:
         if not self.sensor_enabled:
             return
         # Determine "printing" status
+        now = self.reactor.monotonic()
         idle_timeout = self.printer.lookup_object("idle_timeout")
         print_stats = self.printer.lookup_object("print_stats")
         is_printing = (
-            print_stats.get_status(eventtime)["state"] == "printing"
+            print_stats.get_status(now)["state"] == "printing"
             if self.smart
-            else idle_timeout.get_status(eventtime)["state"] == "Printing"
+            else idle_timeout.get_status(now)["state"] == "Printing"
         )
         # Perform filament action associated with status change (if any)
         if is_filament_present:
@@ -156,7 +157,7 @@ class RunoutHelper:
                 self.min_event_systime = self.reactor.NEVER
                 logging.info(
                     "Filament Sensor %s: insert event detected, Time %.2f"
-                    % (self.name, eventtime)
+                    % (self.name, now)
                 )
                 self.reactor.register_callback(self._insert_event_handler)
         elif is_printing and self.runout_gcode is not None:
@@ -164,7 +165,7 @@ class RunoutHelper:
             self.min_event_systime = self.reactor.NEVER
             logging.info(
                 "Filament Sensor %s: runout event detected, Time %.2f"
-                % (self.name, eventtime)
+                % (self.name, now)
             )
             self.reactor.register_callback(
                 self._execute_runout

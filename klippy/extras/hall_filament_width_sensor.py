@@ -126,6 +126,7 @@ class HallFilamentWidthSensor:
             if self.check_on_print_start:
                 self.reset()
                 self.runout_helper.note_filament_present(
+                    self.reactor.monotonic(),
                     self.runout_dia_min <= self.diameter <= self.runout_dia_max,
                     True,
                     True,
@@ -136,6 +137,7 @@ class HallFilamentWidthSensor:
             if self.check_on_print_start:
                 self.reset()
                 self.runout_helper.note_filament_present(
+                    self.reactor.monotonic(),
                     self.runout_dia_min <= self.diameter <= self.runout_dia_max,
                     True,
                     True,
@@ -201,7 +203,7 @@ class HallFilamentWidthSensor:
         # Update filament array for lastFilamentWidthReading
         self.update_filament_array(last_epos)
         # Check runout
-        self.runout_helper.note_filament_present(
+        self.runout_helper.note_filament_present(eventtime,
             self.runout_dia_min <= self.diameter <= self.runout_dia_max
         )
         # Does filament exists
@@ -319,7 +321,7 @@ class HallFilamentWidthSensor:
 
     def reset(self):
         self.runout_helper.reset_runout_distance_info()
-        self.runout_helper.note_filament_present(
+        self.runout_helper.note_filament_present(self.reactor.monotonic(),
             self.runout_helper.filament_present, True
         )
 
