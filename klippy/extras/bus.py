@@ -225,6 +225,7 @@ class MCU_I2C:
         self.i2c_write_cmd = self.i2c_read_cmd = None
         printer = self.mcu.get_printer()
         printer.register_event_handler("klippy:connect", self._handle_connect)
+        self._debugoutput = printer.get_start_args().get("debugoutput")
         # backward support i2c_write inside the init section
         self._to_write = []
 
@@ -271,7 +272,12 @@ class MCU_I2C:
         if self.i2c_write_cmd is None:
             self._to_write.append(data)
             return
-        self.i2c_write_cmd.send(
+        if self._debugoutput is not None:
+            self.i2c_write_cmd.send(
+                [self.oid, data], minclock=minclock, reqclock=reqclock
+            )
+            return
+        self.i2c_write_cmd.send_wait_ack(
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
 
