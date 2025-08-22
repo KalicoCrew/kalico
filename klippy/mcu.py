@@ -128,7 +128,7 @@ class CommandQueryWrapper:
 
 # Wrapper around command sending
 class CommandWrapper:
-    def __init__(self, serial, msgformat, cmd_queue=None):
+    def __init__(self, serial, msgformat, cmd_queue=None, debugoutput=False):
         self._serial = serial
         msgparser = serial.get_msgparser()
         self._cmd = msgparser.lookup_command(msgformat)
@@ -136,6 +136,9 @@ class CommandWrapper:
             cmd_queue = serial.get_default_command_queue()
         self._cmd_queue = cmd_queue
         self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
+        if debugoutput:
+            # Can't use send_wait_ack when in debugging mode
+            self.send_wait_ack = self.send
 
     def send(self, data=(), minclock=0, reqclock=0):
         cmd = self._cmd.encode(data)
@@ -1361,7 +1364,9 @@ class MCU:
         return self._serial.alloc_command_queue()
 
     def lookup_command(self, msgformat, cq=None):
-        return CommandWrapper(self._serial, msgformat, cq)
+        return CommandWrapper(
+            self._serial, msgformat, cq, debugoutput=self.is_fileoutput()
+        )
 
     def lookup_query_command(
         self, msgformat, respformat, oid=None, cq=None, is_async=False
