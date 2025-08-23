@@ -606,12 +606,16 @@ temperatures at different layers.
 ### [fan_generic]
 
 The following command is available when a
-[fan_generic config section](Config_Reference.md#fan_generic) is
-enabled.
+[fan_generic](Config_Reference.md#fan_generic)
+or
+[heater_fan](Config_Reference.md#heater_fan) 
+config section is enabled.
 
 #### SET_FAN_SPEED
 `SET_FAN_SPEED FAN=config_name SPEED=<speed>` This command sets the
 speed of a fan. "speed" must be between 0.0 and 1.0.
+For `[heater_fan]` the command does not override the minimum speed set
+by the heater when it's on.
 
 ### [filament_switch_sensor]
 
