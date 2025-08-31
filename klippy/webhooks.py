@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license
 import logging, socket, os, sys, errno, json, collections, pwd, grp
+import numpy
 from . import gcode
 from . import APP_NAME
 from .extras.danger_options import get_danger_options
@@ -311,12 +312,31 @@ class ClientConnection:
             return
         self.send(result)
 
+    def _json_convert(self, obj):
+        # numpy bool/array objects aren't directly serializable;
+        # convert to regular types in case they leak into state dicts
+        # to avoid a shutdown
+        if isinstance(obj, numpy.bool_):
+            return bool(obj)
+        elif isinstance(obj, numpy.ndarray):
+            return obj.tolist()
+        # anything else will fail
+        logging.warning(
+            f"_json_convert: can't serialize object of type {type(obj)}: '{str(obj)}'"
+        )
+        return obj
+
     def send(self, data):
         try:
-            jmsg = json.dumps(data, separators=(",", ":"))
+            jmsg = json.dumps(
+                data, separators=(",", ":"), default=self._json_convert
+            )
             self.send_buffer += jmsg.encode() + b"\x03"
         except (TypeError, ValueError) as e:
-            msg = "json encoding error: %s" % (str(e),)
+            msg = "json encoding error: %s\ndata: %s" % (
+                str(e),
+                str(data),
+            )
             logging.exception(msg)
             self.printer.invoke_shutdown(msg)
             return

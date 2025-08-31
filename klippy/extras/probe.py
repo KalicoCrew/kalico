@@ -126,7 +126,7 @@ class PrinterProbe:
     def multi_probe_begin(self, always_restore_toolhead=False):
         try:
             self.mcu_probe.multi_probe_begin(always_restore_toolhead)
-        except:
+        except TypeError:
             self.mcu_probe.multi_probe_begin()
         self.multi_probe_pending = True
 
@@ -529,7 +529,9 @@ class ProbePointsHelper:
     def use_xy_offsets(self, use_offsets):
         self.use_offsets = use_offsets
 
-    def get_lift_speed(self):
+    def get_lift_speed(self, gcmd=None):
+        if gcmd is not None:
+            return gcmd.get_float("LIFT_SPEED", self.lift_speed, above=0.0)
         return self.lift_speed
 
     def _lift_toolhead(self):

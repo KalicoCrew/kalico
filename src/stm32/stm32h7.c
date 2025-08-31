@@ -49,6 +49,10 @@ lookup_clock_line(uint32_t periph_base)
         uint32_t bit = 1 << ((periph_base - D2_APB2PERIPH_BASE) / 0x400);
         return (struct cline){.en=&RCC->APB2ENR, .rst=&RCC->APB2RSTR, .bit=bit};
     } else {
+        if (periph_base == FDCAN2_BASE)
+            // FDCAN1 and FDCAN2 share same clock enable
+            return (struct cline){.en=&RCC->APB1HENR, .rst=&RCC->APB1HRSTR,
+                                  .bit = RCC_APB1HENR_FDCANEN};
         uint32_t offset = ((periph_base - D2_APB1PERIPH_BASE) / 0x400);
         if (offset < 32) {
             uint32_t bit = 1 << offset;
@@ -98,18 +102,17 @@ clock_setup(void)
     PWR->CR3 = (PWR->CR3 | PWR_CR3_LDOEN) & ~(PWR_CR3_BYPASS | PWR_CR3_SCUEN);
     while (!(PWR->CSR1 & PWR_CSR1_ACTVOSRDY))
         ;
-// klipper supports 8, 12, 16, 20, 24, and 25 MHz crystals on HSE
-#if CONFIG_CLOCK_REF_FREQ % 5000000 == 0
-    uint32_t pll_base = 5000000;
-#elif CONFIG_CLOCK_REF_FREQ % 4000000 == 0
-    uint32_t pll_base = 4000000;
-#else
-#error Unknown pll_base for CLOCK_REF_FREQ
-#endif
     // Only even dividers (DIVP1) are allowed
     uint32_t pll_freq = CONFIG_CLOCK_FREQ * 2;
+    uint32_t pll_base;
+
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure PLL from external crystal (HSE)
+#if CONFIG_CLOCK_REF_FREQ % 5000000 == 0
+        pll_base = 5000000;
+#else
+        pll_base = 4000000;
+#endif
         RCC->CR |= RCC_CR_HSEON;
         while(!(RCC->CR & RCC_CR_HSERDY))
             ;

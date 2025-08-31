@@ -83,9 +83,16 @@ DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PF0,PF1");
 static void
 enable_clock_stm32g4(void)
 {
-    uint32_t pll_base = 4000000, pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
+    uint32_t pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
+    uint32_t pll_base;
+
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure 150Mhz PLL from external crystal (HSE)
+#if CONFIG_CLOCK_REF_FREQ % 5000000 == 0
+        pll_base = 5000000;
+#else
+        pll_base = 4000000;
+#endif
         uint32_t div = CONFIG_CLOCK_REF_FREQ / pll_base - 1;
         RCC->CR |= RCC_CR_HSEON;
         while (!(RCC->CR & RCC_CR_HSERDY))
@@ -93,6 +100,7 @@ enable_clock_stm32g4(void)
         pllcfgr = RCC_PLLCFGR_PLLSRC_HSE | (div << RCC_PLLCFGR_PLLM_Pos);
     } else {
         // Configure 150Mhz PLL from internal 16Mhz oscillator (HSI)
+        pll_base = 4000000;
         uint32_t div = 16000000 / pll_base - 1;
         pllcfgr = RCC_PLLCFGR_PLLSRC_HSI | (div << RCC_PLLCFGR_PLLM_Pos);
         RCC->CR |= RCC_CR_HSION;

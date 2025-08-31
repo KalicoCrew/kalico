@@ -7,7 +7,6 @@ set -eu
 # Paths to tools installed by ci-install.sh
 MAIN_DIR=${PWD}
 BUILD_DIR=/ci_build
-export PATH=${BUILD_DIR}/pru-gcc/bin:${PATH}
 export PATH=${BUILD_DIR}/or1k-linux-musl-cross/bin:${PATH}
 PYTHON=${BUILD_DIR}/python-env/bin/python
 
@@ -44,6 +43,7 @@ compile()
         make olddefconfig
         make V=1 -j2
         size out/*.elf
+        ./scripts/check-software-div.sh .config out/*.elf
         finish_test mcu_compile "$TARGET"
         cp out/klipper.dict ${1}/$(basename ${TARGET} .config).dict
     done

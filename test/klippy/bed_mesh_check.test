@@ -1,0 +1,20 @@
+# Test case for bed_mesh_check command
+CONFIG bed_mesh_check.cfg
+DICTIONARY atmega2560.dict
+
+# Generate a mesh
+G28
+BED_MESH_CALIBRATE PROFILE=test_mesh
+
+# Test BED_MESH_CHECK with no parameters (should list available checks)
+BED_MESH_CHECK
+
+# Test MAX_DEVIATION check with passing value
+BED_MESH_CHECK MAX_DEVIATION=10.0
+
+# Test SLOPE_MAX check with passing value
+BED_MESH_CHECK SLOPE_MAX=1.0
+
+# Test both checks together with passing values
+BED_MESH_CHECK MAX_DEVIATION=10.0 SLOPE_MAX=1.0
+
