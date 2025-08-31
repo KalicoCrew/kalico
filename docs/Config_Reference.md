@@ -1098,11 +1098,11 @@ sensor_pin:
 #   be smoothed to reduce the impact of measurement noise. The default
 #   is 1 seconds.
 control:
-#   Control algorithm (either pid, pid_v, watermark or mpc). This parameter must
-#   be provided. pid_v should only be used on well calibrated heaters with
-#   low to moderate noise.
+#   Control algorithm (either pid, pid_v, dual_loop_pid, watermark or mpc).
+#   This parameter must be provided. pid_v should only be used on well
+#   calibrated heaters with low to moderate noise.
 #
-#   If control: pid or pid_v
+#   If control: pid, pid_v or dual_loop_pid
 #pid_Kp:
 #pid_Ki:
 #pid_Kd:
@@ -1154,7 +1154,31 @@ per_move_pressure_advance: False
 #   If true, uses pressure advance constant from trapq when processing moves
 #   This causes changes to pressure advance be taken into account immediately,
 #   for all moves in the current queue, rather than ~250ms later once the queue gets flushed
-
+#
+#   If: control: dual_loop_pid
+#inner_sensor_name:
+#   The temperature_sensor name of a second sensor to use for temperature
+#   control with 'dual_loop_pid'. This sensor will limit the heater power
+#   to not allow the temperature to exceed the 'inner_max_temp' value.
+#
+#   If: control: dual_loop_pid
+#inner_max_temp:
+#   The maximum temperature target that the inner sensor will allow.
+#
+#   If control: dual_loop_pid
+#inner_pid_Kp:
+#inner_pid_Ki:
+#inner_pid_Kd:
+#   'dual_loop_pid' control uses two PID loops to control the temperature.
+#   The inner(secondary) PID loop controls the temperature directly. The
+#   primary PID loop controls the power to the secondary PID loop. This
+#   allows the primary PID loop to be tuned for temperature control, while
+#   the secondary PID loop can be tuned for power control, not exceeding
+#   the temperature limit set on 'inner_max_temp'.
+#   The primary sensor is positioned close where the temperature
+#   measurament should be more accurate (e.g. on the bed surface). The
+#   secondary sensor is positioned where the temperature measurament
+#   should not exceed a limit (e.g. on the silicone heater).
 ```
 
 ### [heater_bed]
