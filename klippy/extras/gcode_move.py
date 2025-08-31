@@ -126,7 +126,7 @@ class GCodeMove:
     def _get_gcode_position(self):
         p = [lp - bp for lp, bp in zip(self.last_position, self.base_position)]
         p[3] /= self.extrude_factor
-        return p
+        return p[:4]
 
     def _get_gcode_speed(self):
         return self.speed / self.speed_factor
@@ -144,7 +144,7 @@ class GCodeMove:
             "absolute_extrude": self.absolute_extrude,
             "homing_origin": self.Coord(*self.homing_position[:4]),
             "position": self.Coord(*self.last_position[:4]),
-            "gcode_position": self.Coord(*move_position[:4]),
+            "gcode_position": self.Coord(*move_position),
         }
 
     def reset_last_position(self):
