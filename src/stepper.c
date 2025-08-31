@@ -74,7 +74,11 @@ enum { POSITION_BIAS=0x40000000 };
 
 enum {
     SF_LAST_DIR=1<<0, SF_NEXT_DIR=1<<1, SF_INVERT_STEP=1<<2, SF_NEED_RESET=1<<3,
+<<<<<<< HEAD
     SF_SINGLE_SCHED=1<<4, SF_HAVE_ADD=1<<5, SF_OPTIMIZED_PATH=1<<5, SF_HIGH_PREC_STEP=1<<6
+=======
+    SF_SINGLE_SCHED=1<<4, SF_HAVE_ADD=1<<5, SF_HIGH_PREC_STEP=1<<6
+>>>>>>> 9eac41f99ac96f01e0c74e57c64b6a4b2674c494
 };
 
 // High-precision stepping interval functions
@@ -126,9 +130,24 @@ stepper_load_next(struct stepper *s)
     struct stepper_move *m = container_of(mn, struct stepper_move, node);
     s->add = m->add;
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+#if CONFIG_HIGH_PREC_STEP
+    s->interval = m->next_interval;
+    if (m->flags & SF_HIGH_PREC_STEP) {
+        s->add2 = m->add2;
+        s->shift = m->shift;
+        s->int_low_acc = m->int_low_acc;
+        s->flags = s->flags |  SF_HIGH_PREC_STEP;
+    } else
+        s->flags = s->flags & ~SF_HIGH_PREC_STEP;
+#else
+>>>>>>> 9eac41f99ac96f01e0c74e57c64b6a4b2674c494
     s->interval = m->interval + m->add;
+#endif
     if (HAVE_SINGLE_SCHEDULE && s->flags & SF_SINGLE_SCHED) {
         s->time.waketime += m->interval;
+<<<<<<< HEAD
         if (HAVE_AVR_OPTIMIZATION)
             s->flags = m->add ? s->flags|SF_HAVE_ADD : s->flags & ~SF_HAVE_ADD;
 =======
@@ -146,13 +165,18 @@ stepper_load_next(struct stepper *s)
 #endif
     if (HAVE_SINGLE_SCHEDULE && s->flags & SF_SINGLE_SCHED) {
         s->time.waketime += m->interval;
+=======
+>>>>>>> 9eac41f99ac96f01e0c74e57c64b6a4b2674c494
         if (HAVE_AVR_OPTIMIZATION) {
             if (m->flags & SF_HAVE_ADD)
                 s->flags = s->flags |  SF_HAVE_ADD;
             else
                 s->flags = s->flags & ~SF_HAVE_ADD;
         }
+<<<<<<< HEAD
 >>>>>>> 7ebe6062 (stepper: Optionally enable new stepcompress protocol in MCU firmware)
+=======
+>>>>>>> 9eac41f99ac96f01e0c74e57c64b6a4b2674c494
         s->count = m->count;
     } else {
         // It is necessary to schedule unstep events and so there are
@@ -200,7 +224,7 @@ stepper_event_edge(struct timer *t)
     return stepper_load_next(s);
 }
 
-#define AVR_STEP_INSNS 40 // minimum instructions between step gpio pulses
+#define AVR_STEP_INSNS 45 // minimum instructions between step gpio pulses
 
 // AVR optimized step function
 static uint_fast8_t
