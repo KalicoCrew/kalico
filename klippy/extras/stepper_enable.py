@@ -105,28 +105,28 @@ class PrinterStepperEnable:
         enable = setup_enable_pin(self.printer, config.get("enable_pin", None))
         self.enable_lines[name] = EnableTracking(mcu_stepper, enable)
 
-    def motor_off(self):
+    def set_motors_enable(self, stepper_names, enable):
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.dwell(DISABLE_STALL_TIME)
         print_time = toolhead.get_last_move_time()
-        for el in self.enable_lines.values():
-            el.motor_disable(print_time)
-        toolhead.get_kinematics().clear_homing_state("xyz")
-        self.printer.send_event("stepper_enable:motor_off", print_time)
+        did_change = False
+        for stepper_name in stepper_names:
+            el = self.enable_lines[stepper_name]
+            was_enabled = el.is_motor_enabled()
+            if enable:
+                el.motor_enable(print_time)
+            else:
+                el.motor_disable(print_time)
+            if was_enabled != el.is_motor_enabled():
+                did_change = True
         toolhead.dwell(DISABLE_STALL_TIME)
+        return did_change
 
-    def motor_debug_enable(self, stepper, enable):
+    def motor_off(self):
+        self.set_motors_enable(self.get_steppers(), False)
         toolhead = self.printer.lookup_object("toolhead")
-        toolhead.dwell(DISABLE_STALL_TIME)
-        print_time = toolhead.get_last_move_time()
-        el = self.enable_lines[stepper]
-        if enable:
-            el.motor_enable(print_time)
-            logging.info("%s has been manually enabled", stepper)
-        else:
-            el.motor_disable(print_time)
-            logging.info("%s has been manually disabled", stepper)
-        toolhead.dwell(DISABLE_STALL_TIME)
+        toolhead.get_kinematics().clear_homing_state("xyz")
+        self.printer.send_event("stepper_enable:motor_off")
 
     def get_status(self, eventtime):
         steppers = {
@@ -152,7 +152,11 @@ class PrinterStepperEnable:
             )
             return
         stepper_enable = gcmd.get_int("ENABLE", 1)
-        self.motor_debug_enable(stepper_name, stepper_enable)
+        self.set_motors_enable([stepper_name], stepper_enable)
+        if stepper_enable:
+            logging.info("%s has been manually enabled", stepper_name)
+        else:
+            logging.info("%s has been manually disabled", stepper_name)
 
     def lookup_enable(self, name):
         if name not in self.enable_lines:
