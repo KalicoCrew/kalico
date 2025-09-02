@@ -176,11 +176,7 @@ class PrinterMotionQueuing:
     def setup_lookahead_flush_callback(self, check_flush_lookahead_cb):
         self.check_flush_lookahead_cb = check_flush_lookahead_cb
 
-    def advance_flush_time(self, target_time=None, lazy_target=False):
-        if target_time is None:
-            # This is a full flush
-            target_time = self.need_step_gen_time
-            self.need_calc_kin_flush_delay = True
+    def advance_flush_time(self, target_time, lazy_target=False):
         want_flush_time = want_step_gen_time = target_time
         if lazy_target:
             # Account for step gen scan windows and optimize step compression
@@ -207,6 +203,10 @@ class PrinterMotionQueuing:
             self.last_step_gen_time = step_gen_time
             if flush_time >= want_flush_time:
                 break
+
+    def flush_all_steps(self):
+        self.need_calc_kin_flush_delay = True
+        self.advance_flush_time(self.need_step_gen_time)
 
     def calc_step_gen_restart(self, est_print_time):
         if self.need_calc_kin_flush_delay:
@@ -271,7 +271,7 @@ class PrinterMotionQueuing:
             self.advance_flush_time(flush_time, lazy_target=True)
         # Restore background flushing
         self.reactor.update_timer(self.flush_timer, self.reactor.NOW)
-        self.advance_flush_time()
+        self.advance_flush_time(self.need_step_gen_time)
 
 
 def load_config(config):
