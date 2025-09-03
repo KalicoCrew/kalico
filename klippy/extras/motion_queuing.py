@@ -33,8 +33,10 @@ class PrinterMotionQueuing:
         # Low-level C flushing calls
         ffi_main, ffi_lib = chelper.get_ffi()
         self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
-        self.steppersync_generate_steps = ffi_lib.steppersync_generate_steps
-        self.steppersync_flush = ffi_lib.steppersync_flush
+        self.steppersync_start_gen_steps = ffi_lib.steppersync_start_gen_steps
+        self.steppersync_finalize_gen_steps = (
+            ffi_lib.steppersync_finalize_gen_steps
+        )
         self.steppersync_history_expire = ffi_lib.steppersync_history_expire
         # Flush notification callbacks
         self.flush_callbacks = []
@@ -64,10 +66,11 @@ class PrinterMotionQueuing:
         self.trapqs.append(trapq)
         return trapq
 
-    def allocate_stepcompress(self, mcu, oid):
+    def allocate_stepcompress(self, mcu, oid, name):
+        name = name.encode("utf-8")[:15]
         ffi_main, ffi_lib = chelper.get_ffi()
         sc = ffi_main.gc(
-            ffi_lib.stepcompress_alloc(oid), ffi_lib.stepcompress_free
+            ffi_lib.stepcompress_alloc(oid, name), ffi_lib.stepcompress_free
         )
         self.stepcompress.append((mcu, sc))
         return sc
@@ -103,15 +106,10 @@ class PrinterMotionQueuing:
         # Generate stepper movement and transmit
         for mcu, ss in self.steppersyncs:
             clock = max(0, mcu.print_time_to_clock(must_flush_time))
-            # Generate steps
-            ret = self.steppersync_generate_steps(ss, max_step_gen_time, clock)
-            if ret:
-                raise mcu.error(
-                    "Internal error in MCU '%s' stepcompress"
-                    % (mcu.get_name(),)
-                )
-            # Flush steps from steppersync
-            ret = self.steppersync_flush(ss, clock)
+            self.steppersync_start_gen_steps(ss, max_step_gen_time, clock)
+        for mcu, ss in self.steppersyncs:
+            clock = max(0, mcu.print_time_to_clock(must_flush_time))
+            ret = self.steppersync_finalize_gen_steps(ss, clock)
             if ret:
                 raise mcu.error(
                     "Internal error in MCU '%s' stepcompress"
