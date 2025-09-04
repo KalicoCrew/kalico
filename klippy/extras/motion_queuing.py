@@ -74,7 +74,8 @@ class PrinterMotionQueuing:
         self.stepcompress.append((mcu, sc))
         return sc
 
-    def allocate_steppersync(self, mcu, serialqueue, move_count):
+    def setup_mcu_movequeue(self, mcu, serialqueue, move_count):
+        # Setup steppersync object for the mcu's main movequeue
         stepqueues = []
         for sc_mcu, sc in self.stepcompress:
             if sc_mcu is mcu:
@@ -87,7 +88,8 @@ class PrinterMotionQueuing:
             ffi_lib.steppersync_free,
         )
         self.steppersyncs.append((mcu, ss))
-        return ss
+        mcu_freq = float(mcu.seconds_to_clock(1.0))
+        ffi_lib.steppersync_set_time(ss, 0.0, mcu_freq)
 
     def register_flush_callback(self, callback):
         self.flush_callbacks.append(callback)
@@ -138,9 +140,12 @@ class PrinterMotionQueuing:
         return ffi_lib.trapq_append
 
     def stats(self, eventtime):
-        # Hack to globally invoke mcu check_active()
-        for m in self.all_mcus:
-            m.check_active(self.last_step_gen_time, eventtime)
+        # Globally calibrate mcu clocks (and step generation clocks)
+        sync_time = self.last_step_gen_time
+        ffi_main, ffi_lib = chelper.get_ffi()
+        for mcu, ss in self.steppersyncs:
+            offset, freq = mcu.calibrate_clock(sync_time, eventtime)
+            ffi_lib.steppersync_set_time(ss, offset, freq)
         # Calculate history expiration
         est_print_time = self.mcu.estimated_print_time(eventtime)
         self.clear_history_time = est_print_time - MOVE_HISTORY_EXPIRE
