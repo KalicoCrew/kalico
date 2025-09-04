@@ -1875,6 +1875,10 @@ gcode:
 #   useful for initialization procedures or a repeating delayed_gcode.
 #   If set to 0 the delayed_gcode will not execute on startup.
 #   Default is 0.
+#description: Update the duration of a delayed_gcode
+#   This will add a short description used at the HELP command or while
+#   using the auto completion feature. Default "Update the duration of 
+#   a delayed_gcode"
 ```
 
 ### [save_variables]
