@@ -290,6 +290,37 @@ class HalfStepRotaryEncoder(BaseRotaryEncoder):
     )
 
 
+class DebounceButton:
+    def __init__(self, config, button_action):
+        self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
+        self.button_action = button_action
+        self.debounce_delay = config.getfloat("debounce_delay", 0.0, minval=0.0)
+        self.logical_state = None
+        self.physical_state = None
+        self.latest_eventtime = None
+
+    def button_handler(self, eventtime, state):
+        self.physical_state = state
+        self.latest_eventtime = eventtime
+        # if there would be no state transition, ignore the event:
+        if self.logical_state == self.physical_state:
+            return
+        trigger_time = eventtime + self.debounce_delay
+        self.reactor.register_callback(self._debounce_event, trigger_time)
+
+    def _debounce_event(self, eventtime):
+        # if there would be no state transition, ignore the event:
+        if self.logical_state == self.physical_state:
+            return
+        # if there were more recent events, they supersede this one:
+        if (eventtime - self.debounce_delay) < self.latest_eventtime:
+            return
+        # enact state transition and trigger action
+        self.logical_state = self.physical_state
+        self.button_action(self.latest_eventtime, self.logical_state)
+
+
 ######################################################################
 # Button registration code
 ######################################################################
@@ -316,6 +347,18 @@ class PrinterButtons:
                 callback(eventtime)
 
         self.register_adc_button(pin, min_val, max_val, pullup, helper)
+
+    def register_debounce_button(self, pin, callback, config):
+        debounce = DebounceButton(config, callback)
+        return self.register_buttons([pin], debounce.button_handler)
+
+    def register_debounce_adc_button(
+        self, pin, min_val, max_val, pullup, callback, config
+    ):
+        debounce = DebounceButton(config, callback)
+        return self.register_adc_button(
+            pin, min_val, max_val, pullup, debounce.button_handler
+        )
 
     def register_buttons(self, pins, callback):
         # Parse pins
