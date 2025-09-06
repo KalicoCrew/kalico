@@ -696,12 +696,9 @@ class MCU_adc:
         self._inv_max_adc = 1.0 / max_adc
         self._report_clock = self._mcu.seconds_to_clock(self._report_time)
         min_sample = max(0, min(0xFFFF, int(self._min_sample * max_adc)))
-        max_sample = max(0, int(math.ceil(self._max_sample * max_adc)))
-        if max_sample > 0xFFFF:
-            raise error(
-                "Maximum ADC sample value (MAX_ADC * oversampling) must not "
-                "be greater than 0xFFFF."
-            )
+        max_sample = max(
+            0, min(0xFFFF, int(math.ceil(self._max_sample * max_adc)))
+        )
         self._mcu.add_config_cmd(
             "query_analog_in oid=%d clock=%d sample_ticks=%d sample_count=%d"
             " rest_ticks=%d min_value=%d max_value=%d range_check_count=%d"
