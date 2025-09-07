@@ -276,6 +276,12 @@ is active. The optional `HORIZONTAL_MOVE_Z` value overrides the
 The following commands are available when a
 [belay config section](Config_Reference.md#belay) is enabled.
 
+#### BELAY_ENABLE
+`BELAY_ENABLE BELAY=<config_name>`: Enable compensation for belay specified by `BELAY`.
+
+#### BELAY_DISABLE
+`BELAY_DISABLE BELAY=<config_name>`: Disable compensation for belay specified by `BELAY`. This setting will not persist across restarts.
+
 #### QUERY_BELAY
 `QUERY_BELAY BELAY=<config_name>`: Queries the state of the belay
 specified by `BELAY`.
