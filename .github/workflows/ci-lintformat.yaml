@@ -1,15 +1,19 @@
 name: Ruff
-
 on:
   pull_request:
   workflow_dispatch:
-
 jobs:
   ruff:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+
+      # Step para rodar correção automática (format) do código
       - uses: astral-sh/ruff-action@v3
         with:
-          args: "format --check --diff"
+          args: format .
+
+      # Step para checar se código está formatado (verifica e mostra diff)
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: format --check --diff

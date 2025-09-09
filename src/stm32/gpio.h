@@ -24,7 +24,8 @@ uint8_t gpio_in_read(struct gpio_in g);
 struct gpio_pwm {
   void *reg;
 };
-struct gpio_pwm gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint8_t val);
+struct gpio_pwm gpio_pwm_setup(uint8_t pin, uint32_t cycle_time, uint32_t val);
+struct gpio_pwm gpio_pwm_setup_with_max(uint8_t pin, uint32_t cycle_time, uint32_t val, uint32_t max_pwm);
 void gpio_pwm_write(struct gpio_pwm g, uint32_t val);
 
 struct gpio_adc {

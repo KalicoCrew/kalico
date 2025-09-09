@@ -197,6 +197,26 @@ detach_position: 50, 150
 z_hop: 15
 ```
 
+### Additional G-codes
+
+If your probe has special setup/teardown steps (e.g., moving a servo), you can use the following configuration options to execute custom G-code before or after attaching/detaching the probe instead of overwriting [individual movements](#individual-movements) commands:
+
+- `pre_attach_gcode:`\
+  _Default Value: None_\
+  G-code to execute immediately before the probe is attached.
+
+- `post_attach_gcode:`\
+  _Default Value: None_\
+  G-code to execute immediately after the probe is attached.
+
+- `pre_detach_gcode:`\
+  _Default Value: None_\
+  G-code to execute immediately before the probe is detached.
+
+- `post_detach_gcode:`\
+  _Default Value: None_\
+  G-code to execute immediately after the probe is detached.
+
 ### Homing
 
 No configuration specific to the dockable probe is required. However, when
@@ -363,7 +383,7 @@ These commands are useful during setup to prevent the full attach/detach
 sequence from crashing into the bed or damaging the probe/dock.
 
 If your probe has special setup/teardown steps (e.g. moving a servo),
-accommodating that could be accomplished by overriding these gcodes.
+accommodating that could be accomplished by using [additional G_codes](#additional-g-codes) in configuration or overriding the following gcodes.
 
 `MOVE_TO_APPROACH_PROBE`
 

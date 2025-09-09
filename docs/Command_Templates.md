@@ -329,10 +329,12 @@ gcode sequence:
 
 ```
 [delayed_gcode clear_display]
+description: Clear the LCD display message
 gcode:
   M117
 
 [gcode_macro load_filament]
+description: Load 50mm of filament
 gcode:
  G91
  G1 E50

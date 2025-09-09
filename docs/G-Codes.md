@@ -136,6 +136,14 @@ use this tool the Python "numpy" package must be installed (see the
 [measuring resonance document](Measuring_Resonances.md#software-installation)
 for more information).
 
+#### ANGLE_CHIP_CALIBRATE
+`ANGLE_CHIP_CALIBRATE CHIP=<chip_name>`: Perform internal sensor calibration,
+if implemented (MT6826S/MT6835).
+
+- **MT68XX**: The motor should be disconnected
+from any printer carriage before performing calibration.
+After calibration, the sensor should be reset by disconnecting the power.
+
 #### ANGLE_DEBUG_READ
 `ANGLE_DEBUG_READ CHIP=<config_name> REG=<register>`: Queries sensor
 register "register" (e.g. 44 or 0x2C). Can be useful for debugging
@@ -224,6 +232,16 @@ independent extruders, as an offset is necessary to produce correct Z
 adjustment after a tool change.  Note that a ZFADE offset does not apply
 additional z-adjustment directly, it is used to correct the `fade`
 calculation when a `gcode offset` has been applied to the Z axis.
+
+#### BED_MESH_CHECK
+`BED_MESH_CHECK [MAX_DEVIATION=<value>] [MAX_SLOPE=<value>]`: Validates the
+current bed mesh against specified criteria. If MAX_DEVIATION is specified,
+checks that the difference between the highest and lowest mesh points does not
+exceed the provided value. If MAX_SLOPE is specified, checks that the maximum
+slope between adjacent mesh points does not exceed the provided value (in mm/mm).
+The command will raise an error if any specified check fails, or display a message
+confirming the mesh is valid if all checks pass. If no parameters are specified,
+the command will list the available validation checks.
 
 ### [bed_screws]
 
@@ -886,6 +904,40 @@ and RAW sensor value for calibration points.
 #### DISABLE_FILAMENT_WIDTH_LOG
 `DISABLE_FILAMENT_WIDTH_LOG`: Turn off diameter logging.
 
+### [load_cell]
+
+The following commands are enabled if a
+[load_cell config section](Config_Reference.md#load_cell) has been enabled.
+
+### LOAD_CELL_DIAGNOSTIC
+`LOAD_CELL_DIAGNOSTIC [LOAD_CELL=<config_name>]`: This command collects 10
+seconds of load cell data and reports statistics that can help you verify proper
+operation of the load cell. This command can be run on both calibrated and
+uncalibrated load cells.
+
+### LOAD_CELL_CALIBRATE
+`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>]`: Start the guided calibration
+utility. Calibration is a 3 step process:
+1. First you remove all load from the load cell and run the `TARE` command
+1. Next you apply a known load to the load cell and run the
+`CALIBRATE GRAMS=nnn` command
+1. Finally use the `ACCEPT` command to save the results
+
+You can cancel the calibration process at any time with `ABORT`.
+
+### LOAD_CELL_TARE
+`LOAD_CELL_TARE [LOAD_CELL=<config_name>]`: This works just like the tare button
+on digital scale. It sets the current raw reading of the load cell to be the
+zero point reference value. The response is the percentage of the sensors range
+that was read and the raw value in counts.
+
+### LOAD_CELL_READ load_cell="name"
+`LOAD_CELL_READ [LOAD_CELL=<config_name>]`:
+This command takes a reading from the load cell. The response is the percentage
+of the sensors range that was read and the raw value in counts. If the load cell
+is calibrated a force in grams is also reported.
+
+
 ### [heaters]
 
 The heaters module is automatically loaded if a heater is defined in
@@ -1155,9 +1207,11 @@ Saves the currently loaded profile of the specified heater to the config under
 the given name.
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
-Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
+Removes the given profile from the profiles List for the current session and
+config if SAVE_CONFIG is issued afterwards.
 
-`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
+`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp>
+TOLERANCE=<tolerance>
 CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Creates a new profile with the given PID values, CONTROL must either be `pid` or
 `pid_v`, TOLERANCE and TARGET must be specified to create a valid profile,
@@ -1339,20 +1393,19 @@ is enabled (also see the
 all enabled accelerometer chips.
 
 #### TEST_RESONANCES
-`TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
+`TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
-[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=[<0:1>]]`: Runs
+[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=<0:1>]`: Runs
 the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
 point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 `AXIS=1,-1` to define a diagonal direction). Note that `AXIS=dx,dy`
-and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
-more configured adxl345 chip,delimited with comma, for example
-`CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+and `AXIS=-dx,-dy` is equivalent. `chip_name` can be one or
+more configured accel chips, delimited with comma, for example
+`CHIPS="adxl345, adxl345 rpi"`. If POINT or ACCEL_PER_HZ are specified,
 they will override the corresponding fields configured in `[resonance_tester]`.
 If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
 testing, because it is not valid to run the resonance testing with the input shaper
@@ -1369,14 +1422,13 @@ frequency response is calculated (across all probe points) and written into
 
 #### SHAPER_CALIBRATE
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
-[FREQ_END=<max_freq>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[MAX_SMOOTHING=<max_smoothing>]`: Similarly to `TEST_RESONANCES`, runs
-the resonance test as configured, and tries to find the optimal
-parameters for the input shaper for the requested axis (or both X and
-Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset, its
-value is taken from `[resonance_tester]` section, with the default
-being unset. See the
-[Max smoothing](Measuring_Resonances.md#max-smoothing) of the
+[FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
+[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]`:
+Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
+to find the optimal parameters for the input shaper for the requested axis
+(or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
+its value is taken from `[resonance_tester]` section, with the default being unset.
+See the [Max smoothing](Measuring_Resonances.md#max-smoothing) of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the
 frequency responses and the different input shapers values are written

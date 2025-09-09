@@ -13,7 +13,7 @@ dependencies = [
   "numpy~=2.0 ; python_version=='3.9'",
   "numpy~=2.2 ; python_version>='3.10'",
   "pyserial==3.4",
-  "python-can==3.3.4",
+  "python-can~=4.5",
   "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3
 ]
 

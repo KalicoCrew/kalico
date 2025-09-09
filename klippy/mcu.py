@@ -462,6 +462,7 @@ class MCU_endstop:
 
 class MCU_digital_out:
     def __init__(self, mcu, pin_params):
+        self._printer = mcu.get_printer()
         self._mcu = mcu
         self._oid = None
         self._mcu.register_config_callback(self._build_config)
@@ -515,6 +516,10 @@ class MCU_digital_out:
         )
 
     def set_digital(self, print_time, value):
+        if self._mcu.non_critical_disconnected:
+            raise self._printer.command_error(
+                f"Cannot set pin on disconnected MCU '{self._mcu.get_name()}'"
+            )
         clock = self._mcu.print_time_to_clock(print_time)
         self._set_cmd.send(
             [self._oid, clock, (not not value) ^ self._invert],

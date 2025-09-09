@@ -362,6 +362,8 @@ class ControlMPC:
             "loss_ambient": self.last_loss_ambient,
             "loss_filament": self.last_loss_filament,
             "filament_temp": self.filament_temp_src,
+            "filament_heat_capacity": self.const_filament_heat_capacity,
+            "filament_density": self.const_filament_density,
         }
 
 
@@ -383,7 +385,7 @@ class MpcCalibrate:
         default_target_temp = (
             90.0 if self.heater.get_name() == "heater_bed" else 200.0
         )
-        target_temp = gcmd.get_float("TARGET", default_target_temp, minval=90.0)
+        target_temp = gcmd.get_float("TARGET", default_target_temp, minval=60.0)
         threshold_temp = gcmd.get_float(
             "THRESHOLD", max(50.0, min(100, target_temp - 100.0))
         )
