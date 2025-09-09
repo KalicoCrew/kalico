@@ -126,7 +126,7 @@ class PrinterProbe:
     def multi_probe_begin(self, always_restore_toolhead=False):
         try:
             self.mcu_probe.multi_probe_begin(always_restore_toolhead)
-        except:
+        except TypeError:
             self.mcu_probe.multi_probe_begin()
         self.multi_probe_pending = True
 
