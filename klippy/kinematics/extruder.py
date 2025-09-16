@@ -86,9 +86,11 @@ class ExtruderStepper:
     def sync_to_extruder(self, extruder_name):
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.flush_step_generation()
+        motion_queuing = self.printer.lookup_object("motion_queuing")
         if not extruder_name:
             self.stepper.set_trapq(None)
             self.motion_queue = None
+            motion_queuing.check_step_generation_scan_windows()
             return
         extruder = self.printer.lookup_object(extruder_name, None)
         if extruder is None or not isinstance(extruder, PrinterExtruder):
@@ -98,6 +100,7 @@ class ExtruderStepper:
         self.stepper.set_position([extruder.last_position, 0.0, 0.0])
         self.stepper.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
+        motion_queuing.check_step_generation_scan_windows()
 
     def set_rotation_distance(self, rotation_dist):
         self.stepper.set_rotation_distance(rotation_dist)
