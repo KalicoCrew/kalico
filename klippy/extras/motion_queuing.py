@@ -78,11 +78,11 @@ class PrinterMotionQueuing:
         return ffi_lib.trapq_append
 
     # C steppersync tracking
-    def allocate_stepcompress(self, mcu, oid, name):
+    def allocate_stepcompress(self, mcu, name):
         name = name.encode("utf-8")[:15]
         ffi_main, ffi_lib = chelper.get_ffi()
         sc = ffi_main.gc(
-            ffi_lib.stepcompress_alloc(oid, name), ffi_lib.stepcompress_free
+            ffi_lib.stepcompress_alloc(name), ffi_lib.stepcompress_free
         )
         self.stepcompress.append((mcu, sc))
         return sc
