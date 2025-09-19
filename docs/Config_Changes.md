@@ -8,6 +8,9 @@ All dates in this document are approximate.
 
 ## Changes
 
+20261021: Support for the undocumented `max_stepper_error` option in
+the `[mcu]` config section has been removed.
+
 20261002: Homing with a physical endstop no longer backs off by
 `homing_retract_dist` after the final touch; the axis stays on the
 endstop, as in Klipper. The final back-off now only applies to

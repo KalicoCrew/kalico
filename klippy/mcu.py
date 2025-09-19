@@ -834,10 +834,6 @@ class MCU:
         self._restart_cmds = []
         self._init_cmds = []
         self._mcu_freq = 0.0
-        # Move command queuing
-        self._max_stepper_error = config.getfloat(
-            "max_stepper_error", 0.000025, minval=0.0
-        )
         self._reserved_move_slots = 0
         # Stats
         self._get_status_info = {}
@@ -1334,9 +1330,6 @@ class MCU:
 
     def seconds_to_clock(self, time):
         return int(time * self._mcu_freq)
-
-    def get_max_stepper_error(self):
-        return self._max_stepper_error
 
     def min_schedule_time(self):
         return MIN_SCHEDULE_TIME

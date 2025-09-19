@@ -19,6 +19,7 @@ class error(Exception):
 
 MIN_BOTH_EDGE_DURATION = 0.000000500
 MIN_OPTIMIZED_BOTH_EDGE_DURATION = 0.000000150
+MAX_STEPCOMPRESS_ERROR = 0.000025
 
 
 # Interface to low-level mcu and chelper code
@@ -164,8 +165,7 @@ class MCU_stepper:
             "stepper_position oid=%c pos=%i",
             oid=self._oid,
         )
-        max_error = self._mcu.get_max_stepper_error()
-        max_error_ticks = self._mcu.seconds_to_clock(max_error)
+        max_error_ticks = self._mcu.seconds_to_clock(MAX_STEPCOMPRESS_ERROR)
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.stepcompress_fill(
             self._stepqueue,
