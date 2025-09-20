@@ -866,6 +866,13 @@ class MCU:
         self._config_cmds_post_inits = []
         self._init_cmds_post_inits = []
         self._restart_cmds_post_inits = []
+        # Alter time reporting when debugging
+        if self.is_fileoutput():
+
+            def dummy_estimated_print_time(eventtime):
+                return 0.0
+
+            self.estimated_print_time = dummy_estimated_print_time
         # Register handlers
         printer.load_object(config, "error_mcu")
         printer.register_event_handler(
@@ -951,7 +958,7 @@ class MCU:
         # else a reset will trigger the built-in bootloader.
         return self._restart_method != "cheetah"
 
-    def _attach_file(self, pace=False):
+    def _attach_file(self):
         # In a debugging mode.  Open debug output file and read data dictionary
         start_args = self._printer.get_start_args()
         if self._name == "mcu":
@@ -965,14 +972,7 @@ class MCU:
         dict_data = dfile.read()
         dfile.close()
         self._serial.connect_file(outfile, dict_data)
-        self._clocksync.connect_file(self._serial, pace)
-        # Handle pacing
-        if not pace:
-
-            def dummy_estimated_print_time(eventtime):
-                return 0.0
-
-            self.estimated_print_time = dummy_estimated_print_time
+        self._clocksync.connect_file(self._serial)
 
     def handle_non_critical_disconnect(self):
         if self.non_critical_disconnected:
