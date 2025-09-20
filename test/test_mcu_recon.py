@@ -38,6 +38,14 @@ class _FakeReactor:
         pass
 
 
+class _FakeConfigHelper:
+    def reset_to_initial_state(self):
+        pass
+
+    def connect_config(self):
+        pass
+
+
 class _FakeCommand:
     def __init__(self, response=None):
         self.sent = 0
@@ -65,13 +73,10 @@ def _make_mcu(is_shutdown_response=0):
     mcu.non_critical_disconnected = True
     mcu._stats_helper = mcu_mod.MCUStatsHelper.__new__(mcu_mod.MCUStatsHelper)
     mcu._stats_helper._get_status_info = {}
-    mcu._steppersync = None
-    mcu._cached_init_state = False
-    mcu._reserved_move_slots = 0
     mcu._non_critical_reconnect_event_name = RECON_EVENT
     # Fake out the recon path boundaries; recon_mcu itself is the unit
     mcu._mcu_identify = lambda: True
-    mcu._connect = lambda: None
+    mcu._config_helper = _FakeConfigHelper()
     get_config = _FakeCommand(
         {
             "is_config": 1,
@@ -90,7 +95,7 @@ def test_failed_connect_does_not_propagate():
     def _boom():
         raise mcu_mod.error("Failed automated reset of MCU 'test'")
 
-    mcu._connect = _boom
+    mcu._config_helper.connect_config = _boom
     assert mcu.recon_mcu() is False
     assert mcu.non_critical_disconnected is True
     assert mcu._serial.disconnected is True
