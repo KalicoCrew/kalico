@@ -50,20 +50,23 @@ class _FakeCommand:
 
 def _make_mcu(is_shutdown_response=0):
     mcu = mcu_mod.MCU.__new__(mcu_mod.MCU)
-    mcu._name = "test"
-    mcu._printer = _FakePrinter()
-    mcu._reactor = _FakeReactor()
-    mcu._serial = _FakeSerial()
-    mcu._clocksync = _FakeClockSync()
-    mcu._is_shutdown = False
-    mcu._shutdown_msg = ""
+    conn = mcu_mod.MCUConnectHelper.__new__(mcu_mod.MCUConnectHelper)
+    mcu._name = conn._name = "test"
+    mcu._printer = conn._printer = _FakePrinter()
+    mcu._reactor = conn._reactor = _FakeReactor()
+    mcu._serial = conn._serial = _FakeSerial()
+    mcu._clocksync = conn._clocksync = _FakeClockSync()
+    mcu._conn_helper = conn
+    conn._mcu = mcu
+    conn._is_shutdown = False
+    conn._shutdown_msg = ""
+    conn._reset_cmd = None
+    conn._config_reset_cmd = None
     mcu.non_critical_disconnected = True
     mcu._get_status_info = {}
     mcu._steppersync = None
     mcu._cached_init_state = False
     mcu._reserved_move_slots = 0
-    mcu._reset_cmd = None
-    mcu._config_reset_cmd = None
     mcu._non_critical_reconnect_event_name = RECON_EVENT
     # Fake out the recon path boundaries; recon_mcu itself is the unit
     mcu._mcu_identify = lambda: True
@@ -95,9 +98,9 @@ def test_failed_connect_does_not_propagate():
 
 def test_shutdown_mcu_gets_reset_and_retries():
     mcu = _make_mcu(is_shutdown_response=1)
-    mcu._reset_cmd = _FakeCommand()
+    mcu._conn_helper._reset_cmd = _FakeCommand()
     assert mcu.recon_mcu() is False
-    assert mcu._reset_cmd.sent == 1
+    assert mcu._conn_helper._reset_cmd.sent == 1
     assert mcu._serial.disconnected is True
     assert mcu.non_critical_disconnected is True
     assert RECON_EVENT not in mcu._printer.events
@@ -114,16 +117,17 @@ def test_shutdown_mcu_clear_shutdown_fallback():
 
 def test_shutdown_skips_disconnected_non_critical_mcu():
     mcu = _make_mcu()
-    mcu._emergency_stop_cmd = _FakeCommand()
+    conn = mcu._conn_helper
+    conn._emergency_stop_cmd = _FakeCommand()
     mcu.non_critical_disconnected = True
-    mcu._shutdown()
-    assert mcu._emergency_stop_cmd.sent == 0
+    conn._shutdown()
+    assert conn._emergency_stop_cmd.sent == 0
 
 
 def test_successful_recon_clears_stale_shutdown_flag():
     mcu = _make_mcu()
-    mcu._is_shutdown = True
+    mcu._conn_helper._is_shutdown = True
     assert mcu.recon_mcu() is True
-    assert mcu._is_shutdown is False
+    assert mcu._conn_helper._is_shutdown is False
     assert mcu.non_critical_disconnected is False
     assert mcu._printer.events == [RECON_EVENT]
