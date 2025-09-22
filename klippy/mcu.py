@@ -775,10 +775,169 @@ class MCU_adc:
 
 
 ######################################################################
-# Main MCU class
+# Main MCU class (and its helper classes)
 ######################################################################
 
 
+# Support for restarting a micro-controller
+class MCURestartHelper:
+    def __init__(self, config, conn_helper):
+        self._printer = printer = config.get_printer()
+        self._conn_helper = conn_helper
+        self._mcu = mcu = conn_helper.get_mcu()
+        self._serial = conn_helper.get_serial()
+        self._clocksync = conn_helper.get_clocksync()
+        self._reactor = printer.get_reactor()
+        self._name = mcu.get_name()
+        restart_methods = [None, "arduino", "cheetah", "command", "rpi_usb"]
+        self._restart_method = "command"
+        serialport, baud = conn_helper.get_serialport()
+        if baud:
+            self._restart_method = config.getchoice(
+                "restart_method", restart_methods, None
+            )
+        self._reset_cmd = self._config_reset_cmd = None
+        self._is_mcu_bridge = False
+        # Register handlers
+        printer.register_event_handler(
+            "klippy:firmware_restart", self._firmware_restart
+        )
+        printer.register_event_handler("klippy:disconnect", self._disconnect)
+
+    # Connection phase
+    def _check_restart(self, reason):
+        start_reason = self._printer.get_start_args().get("start_reason")
+        if start_reason == "firmware_restart":
+            return
+        logging.info(
+            "Attempting automated MCU '%s' restart: %s", self._name, reason
+        )
+        self._printer.request_exit("firmware_restart")
+        self._reactor.pause(self._reactor.monotonic() + 2.000)
+        raise error("Attempt MCU '%s' restart failed" % (self._name,))
+
+    def check_restart_on_crc_mismatch(self):
+        self._check_restart("CRC mismatch")
+
+    def check_restart_on_send_config(self):
+        if self._restart_method == "rpi_usb":
+            # Only configure mcu after usb power reset
+            self._check_restart("full reset before config")
+
+    def check_restart_on_attach(self):
+        resmeth = self._restart_method
+        serialport, baud = self._conn_helper.get_serialport()
+        if resmeth == "rpi_usb" and not os.path.exists(serialport):
+            # Try toggling usb power
+            self._check_restart("enable power")
+
+    def lookup_attach_uart_rts(self):
+        # Cheetah boards require RTS to be deasserted
+        # else a reset will trigger the built-in bootloader.
+        return self._restart_method != "cheetah"
+
+    def post_attach_setup_restart(self):
+        self._reset_cmd = self._mcu.try_lookup_command("reset")
+        self._config_reset_cmd = self._mcu.try_lookup_command("config_reset")
+        ext_only = self._reset_cmd is None and self._config_reset_cmd is None
+        msgparser = self._serial.get_msgparser()
+        mbaud = msgparser.get_constant("SERIAL_BAUD", None)
+        if self._restart_method is None and mbaud is None and not ext_only:
+            self._restart_method = "command"
+        if msgparser.get_constant("CANBUS_BRIDGE", 0):
+            self._is_mcu_bridge = True
+            self._printer.register_event_handler(
+                "klippy:firmware_restart", self._firmware_restart_bridge
+            )
+
+    def recon_handle_shutdown(self):
+        # A firmware shutdown survives the loss of the host connection.
+        # Ask the mcu to reset so a later reconnect attempt starts from
+        # a clean state.  Returns True if the mcu was shutdown.
+        get_config_cmd = self._mcu.lookup_query_command(
+            "get_config",
+            "config is_config=%c crc=%u is_shutdown=%c move_count=%hu",
+        )
+        if not get_config_cmd.send()["is_shutdown"]:
+            return False
+        logging.info(
+            "MCU '%s' is in a shutdown state - attempting reset", self._name
+        )
+        if self._reset_cmd is not None:
+            self._reset_cmd.send()
+        elif self._config_reset_cmd is not None:
+            self._config_reset_cmd.send()
+        else:
+            # No reset mechanism - clear the shutdown state and let the
+            # next reconnect attempt reuse the retained config
+            clear_shutdown_cmd = self._mcu.try_lookup_command("clear_shutdown")
+            if clear_shutdown_cmd is not None:
+                clear_shutdown_cmd.send()
+        self._reactor.pause(self._reactor.monotonic() + 0.015)
+        return True
+
+    def _disconnect(self):
+        self._serial.disconnect()
+
+    def _restart_arduino(self):
+        logging.info("Attempting MCU '%s' reset", self._name)
+        self._disconnect()
+        serialport, baud = self._conn_helper.get_serialport()
+        serialhdl.arduino_reset(serialport, self._reactor)
+
+    def _restart_cheetah(self):
+        logging.info("Attempting MCU '%s' Cheetah-style reset", self._name)
+        self._disconnect()
+        serialport, baud = self._conn_helper.get_serialport()
+        serialhdl.cheetah_reset(serialport, self._reactor)
+
+    def _restart_via_command(self):
+        if (
+            self._reset_cmd is None and self._config_reset_cmd is None
+        ) or not self._clocksync.is_active():
+            logging.info(
+                "Unable to issue reset command on MCU '%s'", self._name
+            )
+            return
+        if self._reset_cmd is None:
+            # Attempt reset via config_reset command
+            logging.info("Attempting MCU '%s' config_reset command", self._name)
+            self._conn_helper.force_local_shutdown()
+            self._reactor.pause(self._reactor.monotonic() + 0.015)
+            self._config_reset_cmd.send()
+        else:
+            # Attempt reset via reset command
+            logging.info("Attempting MCU '%s' reset command", self._name)
+            self._reset_cmd.send()
+        self._reactor.pause(self._reactor.monotonic() + 0.015)
+        self._disconnect()
+
+    def _restart_rpi_usb(self):
+        logging.info("Attempting MCU '%s' reset via rpi usb power", self._name)
+        self._disconnect()
+        chelper.run_hub_ctrl(0)
+        self._reactor.pause(self._reactor.monotonic() + 2.0)
+        chelper.run_hub_ctrl(1)
+
+    def _firmware_restart(self, force=False):
+        if (
+            self._is_mcu_bridge and not force
+        ) or self._mcu.non_critical_disconnected:
+            return
+        if self._restart_method == "rpi_usb":
+            self._restart_rpi_usb()
+        elif self._restart_method == "command":
+            self._restart_via_command()
+        elif self._restart_method == "cheetah":
+            self._restart_cheetah()
+        else:
+            self._restart_arduino()
+
+    def _firmware_restart_bridge(self):
+        self._firmware_restart(True)
+
+
+# Low-level mcu connection management helper
 class MCUConnectHelper:
     def __init__(self, config, mcu, clocksync):
         self._mcu = mcu
@@ -807,25 +966,12 @@ class MCUConnectHelper:
                 or self._serialport.startswith("/tmp/klipper_host_")
             ):
                 self._baud = config.getint("baud", 250000, minval=2400)
-        # Restarts
-        restart_methods = [None, "arduino", "cheetah", "command", "rpi_usb"]
-        self._restart_method = "command"
-        if self._baud:
-            self._restart_method = config.getchoice(
-                "restart_method", restart_methods, None
-            )
-        self._reset_cmd = self._config_reset_cmd = None
-        self._is_mcu_bridge = False
         self._emergency_stop_cmd = None
         self._is_shutdown = self._is_timeout = False
         self._shutdown_clock = 0
         self._shutdown_msg = ""
-        # Register handlers
-        printer.register_event_handler(
-            "klippy:firmware_restart", self._firmware_restart
-        )
+        self._restart_helper = MCURestartHelper(config, self)
         printer.register_event_handler("klippy:shutdown", self._shutdown)
-        printer.register_event_handler("klippy:disconnect", self._disconnect)
 
     def get_mcu(self):
         return self._mcu
@@ -835,6 +981,12 @@ class MCUConnectHelper:
 
     def get_clocksync(self):
         return self._clocksync
+
+    def get_serialport(self):
+        return self._serialport, self._baud
+
+    def get_restart_helper(self):
+        return self._restart_helper
 
     def _handle_shutdown(self, params):
         if self._is_shutdown:
@@ -865,36 +1017,6 @@ class MCUConnectHelper:
             self._printer.invoke_async_shutdown(
                 "MCU '%s' spontaneous restart" % (self._name,)
             )
-
-    def _check_restart(self, reason):
-        start_reason = self._printer.get_start_args().get("start_reason")
-        if start_reason == "firmware_restart":
-            return
-        logging.info(
-            "Attempting automated MCU '%s' restart: %s", self._name, reason
-        )
-        self._printer.request_exit("firmware_restart")
-        self._reactor.pause(self._reactor.monotonic() + 2.000)
-        raise error("Attempt MCU '%s' restart failed" % (self._name,))
-
-    def check_restart_on_crc_mismatch(self):
-        self._check_restart("CRC mismatch")
-
-    def check_restart_on_send_config(self):
-        if self._restart_method == "rpi_usb":
-            # Only configure mcu after usb power reset
-            self._check_restart("full reset before config")
-
-    def _check_restart_on_attach(self):
-        resmeth = self._restart_method
-        if resmeth == "rpi_usb" and not os.path.exists(self._serialport):
-            # Try toggling usb power
-            self._check_restart("enable power")
-
-    def _lookup_attach_uart_rts(self):
-        # Cheetah boards require RTS to be deasserted
-        # else a reset will trigger the built-in bootloader.
-        return self._restart_method != "cheetah"
 
     def log_info(self):
         msgparser = self._serial.get_msgparser()
@@ -940,11 +1062,11 @@ class MCUConnectHelper:
                 self._serialport, nodeid, self._canbus_iface
             )
         else:
-            rts = self._lookup_attach_uart_rts()
+            rts = self._restart_helper.lookup_attach_uart_rts()
             return self._serial.check_connect(self._serialport, self._baud, rts)
 
     def _attach(self):
-        self._check_restart_on_attach()
+        self._restart_helper.check_restart_on_attach()
         try:
             if self._canbus_iface is not None:
                 cbid = self._printer.lookup_object("canbus_ids")
@@ -953,7 +1075,7 @@ class MCUConnectHelper:
                     self._serialport, nodeid, self._canbus_iface
                 )
             elif self._baud:
-                rts = self._lookup_attach_uart_rts()
+                rts = self._restart_helper.lookup_attach_uart_rts()
                 self._serial.connect_uart(self._serialport, self._baud, rts)
             else:
                 self._serial.connect_pipe(self._serialport)
@@ -967,20 +1089,6 @@ class MCUConnectHelper:
         self._mcu.register_response(self._handle_shutdown, "is_shutdown")
         self._mcu.register_response(self._handle_starting, "starting")
 
-    def _post_attach_setup_restart(self):
-        self._reset_cmd = self._mcu.try_lookup_command("reset")
-        self._config_reset_cmd = self._mcu.try_lookup_command("config_reset")
-        ext_only = self._reset_cmd is None and self._config_reset_cmd is None
-        msgparser = self._serial.get_msgparser()
-        mbaud = msgparser.get_constant("SERIAL_BAUD", None)
-        if self._restart_method is None and mbaud is None and not ext_only:
-            self._restart_method = "command"
-        if msgparser.get_constant("CANBUS_BRIDGE", 0):
-            self._is_mcu_bridge = True
-            self._printer.register_event_handler(
-                "klippy:firmware_restart", self._firmware_restart_bridge
-            )
-
     def start_attach(self):
         if self._mcu.is_fileoutput():
             self._attach_file()
@@ -989,11 +1097,7 @@ class MCUConnectHelper:
         if get_danger_options().log_startup_info:
             logging.info(self.log_info())
         self._post_attach_setup_shutdown()
-        self._post_attach_setup_restart()
-
-    # Restarts
-    def _disconnect(self):
-        self._serial.disconnect()
+        self._restart_helper.post_attach_setup_restart()
 
     def _shutdown(self, force=False):
         if (
@@ -1003,62 +1107,6 @@ class MCUConnectHelper:
         ):
             return
         self._emergency_stop_cmd.send()
-
-    def _restart_arduino(self):
-        logging.info("Attempting MCU '%s' reset", self._name)
-        self._disconnect()
-        serialhdl.arduino_reset(self._serialport, self._reactor)
-
-    def _restart_cheetah(self):
-        logging.info("Attempting MCU '%s' Cheetah-style reset", self._name)
-        self._disconnect()
-        serialhdl.cheetah_reset(self._serialport, self._reactor)
-
-    def _restart_via_command(self):
-        if (
-            self._reset_cmd is None and self._config_reset_cmd is None
-        ) or not self._clocksync.is_active():
-            logging.info(
-                "Unable to issue reset command on MCU '%s'", self._name
-            )
-            return
-        if self._reset_cmd is None:
-            # Attempt reset via config_reset command
-            logging.info("Attempting MCU '%s' config_reset command", self._name)
-            self._is_shutdown = True
-            self._shutdown(force=True)
-            self._reactor.pause(self._reactor.monotonic() + 0.015)
-            self._config_reset_cmd.send()
-        else:
-            # Attempt reset via reset command
-            logging.info("Attempting MCU '%s' reset command", self._name)
-            self._reset_cmd.send()
-        self._reactor.pause(self._reactor.monotonic() + 0.015)
-        self._disconnect()
-
-    def _restart_rpi_usb(self):
-        logging.info("Attempting MCU '%s' reset via rpi usb power", self._name)
-        self._disconnect()
-        chelper.run_hub_ctrl(0)
-        self._reactor.pause(self._reactor.monotonic() + 2.0)
-        chelper.run_hub_ctrl(1)
-
-    def _firmware_restart(self, force=False):
-        if (
-            self._is_mcu_bridge and not force
-        ) or self._mcu.non_critical_disconnected:
-            return
-        if self._restart_method == "rpi_usb":
-            self._restart_rpi_usb()
-        elif self._restart_method == "command":
-            self._restart_via_command()
-        elif self._restart_method == "cheetah":
-            self._restart_cheetah()
-        else:
-            self._restart_arduino()
-
-    def _firmware_restart_bridge(self):
-        self._firmware_restart(True)
 
     def check_timeout(self, eventtime):
         if (
@@ -1086,35 +1134,16 @@ class MCUConnectHelper:
             "Lost communication with MCU '%s'" % (self._name,)
         )
 
+    def force_local_shutdown(self):
+        self._is_shutdown = True
+        self._shutdown(force=True)
+
     def disconnect(self):
         self._clocksync.disconnect()
-        self._disconnect()
+        self._serial.disconnect()
 
     def recon_handle_shutdown(self):
-        # A firmware shutdown survives the loss of the host connection.
-        # Ask the mcu to reset so a later reconnect attempt starts from
-        # a clean state.  Returns True if the mcu was shutdown.
-        get_config_cmd = self._mcu.lookup_query_command(
-            "get_config",
-            "config is_config=%c crc=%u is_shutdown=%c move_count=%hu",
-        )
-        if not get_config_cmd.send()["is_shutdown"]:
-            return False
-        logging.info(
-            "MCU '%s' is in a shutdown state - attempting reset", self._name
-        )
-        if self._reset_cmd is not None:
-            self._reset_cmd.send()
-        elif self._config_reset_cmd is not None:
-            self._config_reset_cmd.send()
-        else:
-            # No reset mechanism - clear the shutdown state and let the
-            # next reconnect attempt reuse the retained config
-            clear_shutdown_cmd = self._mcu.try_lookup_command("clear_shutdown")
-            if clear_shutdown_cmd is not None:
-                clear_shutdown_cmd.send()
-        self._reactor.pause(self._reactor.monotonic() + 0.015)
-        return True
+        return self._restart_helper.recon_handle_shutdown()
 
     def clear_shutdown(self):
         self._is_shutdown = False
@@ -1279,7 +1308,8 @@ class MCUConfigHelper:
         self._config_crc = zlib.crc32(encoded_config) & 0xFFFFFFFF
         local_config_cmds.append("finalize_config crc=%d" % (self._config_crc,))
         if prev_crc is not None and self._config_crc != prev_crc:
-            self._conn_helper.check_restart_on_crc_mismatch()
+            restart_helper = self._conn_helper.get_restart_helper()
+            restart_helper.check_restart_on_crc_mismatch()
             raise error("MCU '%s' CRC does not match config" % (self._name,))
         # Transmit config messages (if needed)
         try:
@@ -1342,7 +1372,8 @@ class MCUConfigHelper:
     def connect_config(self):
         config_params = self._send_get_config()
         if not config_params["is_config"]:
-            self._conn_helper.check_restart_on_send_config()
+            restart_helper = self._conn_helper.get_restart_helper()
+            restart_helper.check_restart_on_send_config()
             # Not configured - send config and issue get_config again
             self._send_config(None)
             config_params = self._send_get_config()

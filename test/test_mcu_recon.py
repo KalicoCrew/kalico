@@ -68,8 +68,13 @@ def _make_mcu(is_shutdown_response=0):
     conn._mcu = mcu
     conn._is_shutdown = False
     conn._shutdown_msg = ""
-    conn._reset_cmd = None
-    conn._config_reset_cmd = None
+    restart = mcu_mod.MCURestartHelper.__new__(mcu_mod.MCURestartHelper)
+    restart._mcu = mcu
+    restart._name = "test"
+    restart._reactor = conn._reactor
+    restart._reset_cmd = None
+    restart._config_reset_cmd = None
+    conn._restart_helper = restart
     mcu.non_critical_disconnected = True
     mcu._stats_helper = mcu_mod.MCUStatsHelper.__new__(mcu_mod.MCUStatsHelper)
     mcu._stats_helper._get_status_info = {}
@@ -104,9 +109,9 @@ def test_failed_connect_does_not_propagate():
 
 def test_shutdown_mcu_gets_reset_and_retries():
     mcu = _make_mcu(is_shutdown_response=1)
-    mcu._conn_helper._reset_cmd = _FakeCommand()
+    mcu._conn_helper._restart_helper._reset_cmd = _FakeCommand()
     assert mcu.recon_mcu() is False
-    assert mcu._conn_helper._reset_cmd.sent == 1
+    assert mcu._conn_helper._restart_helper._reset_cmd.sent == 1
     assert mcu._serial.disconnected is True
     assert mcu.non_critical_disconnected is True
     assert RECON_EVENT not in mcu._printer.events
