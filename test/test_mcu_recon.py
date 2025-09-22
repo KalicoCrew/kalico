@@ -81,6 +81,7 @@ def _make_mcu(is_shutdown_response=0):
     mcu._non_critical_reconnect_event_name = RECON_EVENT
     # Fake out the recon path boundaries; recon_mcu itself is the unit
     mcu._mcu_identify = lambda: True
+    mcu._identify_helpers = lambda: None
     mcu._config_helper = _FakeConfigHelper()
     get_config = _FakeCommand(
         {
