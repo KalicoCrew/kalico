@@ -9,22 +9,32 @@ import logging
 
 class DelayedGcode:
     def __init__(self, config):
+        if len(config.get_name().split()) > 2:
+            raise config.error(
+                "Name of section '%s' contains illegal whitespace"
+                % (config.get_name())
+            )
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.name = config.get_name().split()[1]
         self.gcode = self.printer.lookup_object("gcode")
         gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.cmd_desc = config.get(
+            "description",
+            "Update the duration of a delayed_gcode",
+        )
         self.timer_gcode = gcode_macro.load_template(config, "gcode")
         self.duration = config.getfloat("initial_duration", 0.0, minval=0.0)
         self.timer_handler = None
         self.inside_timer = self.repeat = False
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+
         self.gcode.register_mux_command(
             "UPDATE_DELAYED_GCODE",
             "ID",
             self.name,
             self.cmd_UPDATE_DELAYED_GCODE,
-            desc=self.cmd_UPDATE_DELAYED_GCODE_help,
+            desc=self.cmd_desc,
         )
 
     def _handle_ready(self):
@@ -46,8 +56,6 @@ class DelayedGcode:
             nextwake = eventtime + self.duration
         self.inside_timer = self.repeat = False
         return nextwake
-
-    cmd_UPDATE_DELAYED_GCODE_help = "Update the duration of a delayed_gcode"
 
     def cmd_UPDATE_DELAYED_GCODE(self, gcmd):
         self.duration = gcmd.get_float("DURATION", minval=0.0)
