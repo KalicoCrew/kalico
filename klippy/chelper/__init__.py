@@ -23,6 +23,7 @@ SOURCE_FILES = [
     "pyhelper.c",
     "serialqueue.c",
     "stepcompress.c",
+    "stepcompress_hp.c",
     "itersolve.c",
     "trapq.c",
     "pollreactor.c",
@@ -61,6 +62,7 @@ defs_stepcompress = """
     };
 
     struct stepcompress *stepcompress_alloc(uint32_t oid);
+    struct stepcompress *stepcompress_hp_alloc(uint32_t oid);
     void stepcompress_fill(struct stepcompress *sc, uint32_t max_error
         , int32_t queue_step_msgtag, int32_t set_next_step_dir_msgtag);
     void stepcompress_set_invert_sdir(struct stepcompress *sc
