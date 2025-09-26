@@ -138,6 +138,7 @@ nav:
     - Exclude_Object.md
     - Using_PWM_Tools.md
   - Developer Documentation:
+    - Developing-Plugins.md
     - Code_Overview.md
     - Kinematics.md
     - Protocol.md
