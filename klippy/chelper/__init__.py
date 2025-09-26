@@ -24,6 +24,7 @@ SOURCE_FILES = [
     "serialqueue.c",
     "stepcompress.c",
     "steppersync.c",
+    "stepcompress_hp.c",
     "itersolve.c",
     "trapq.c",
     "pollreactor.c",
@@ -65,6 +66,7 @@ defs_stepcompress = """
     void stepcompress_fill(struct stepcompress *sc, uint32_t oid
         , uint32_t max_error, int32_t queue_step_msgtag
         , int32_t set_next_step_dir_msgtag);
+    void stepcompress_hp_enable(struct stepcompress *sc);
     void stepcompress_set_invert_sdir(struct stepcompress *sc
         , uint32_t invert_sdir);
     int stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock);

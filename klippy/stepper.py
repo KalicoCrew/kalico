@@ -27,6 +27,7 @@ class MCU_stepper:
     def __init__(
         self,
         config,
+        high_precision_steps,
         step_pin_params,
         dir_pin_params,
         rotation_dist,
@@ -35,6 +36,7 @@ class MCU_stepper:
         units_in_radians=False,
     ):
         self._name = config.get_name()
+        self._high_precision_steps = high_precision_steps
         self._rotation_dist = rotation_dist
         self._steps_per_rotation = steps_per_rotation
         self._step_pulse_duration = step_pulse_duration
@@ -63,6 +65,8 @@ class MCU_stepper:
         self._stepqueue = ffi_lib.syncemitter_get_stepcompress(
             self._syncemitter
         )
+        if high_precision_steps:
+            ffi_lib.stepcompress_hp_enable(self._stepqueue)
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._stepper_kinematics = None
         self._itersolve_check_active = ffi_lib.itersolve_check_active
@@ -151,9 +155,15 @@ class MCU_stepper:
         self._mcu.add_config_cmd(
             "reset_step_clock oid=%d clock=0" % (self._oid,), on_restart=True
         )
-        step_cmd_tag = self._mcu.lookup_command(
-            "queue_step oid=%c interval=%u count=%hu add=%hi"
-        ).get_command_tag()
+        if self._high_precision_steps:
+            step_cmd_tag = self._mcu.lookup_command(
+                "queue_step_hp oid=%c interval=%u count=%hu "
+                "add=%hi add2=%hi shift=%hi"
+            ).get_command_tag()
+        else:
+            step_cmd_tag = self._mcu.lookup_command(
+                "queue_step oid=%c interval=%u count=%hu add=%hi"
+            ).get_command_tag()
         dir_cmd_tag = self._mcu.lookup_command(
             "set_next_step_dir oid=%c dir=%c"
         ).get_command_tag()
@@ -350,8 +360,10 @@ def PrinterStepper(config, units_in_radians=False):
     step_pulse_duration = config.getfloat(
         "step_pulse_duration", None, minval=0.0, maxval=0.001
     )
+    high_precision_steps = config.getboolean("high_precision_steps", False)
     mcu_stepper = MCU_stepper(
         config,
+        high_precision_steps,
         step_pin_params,
         dir_pin_params,
         rotation_dist,
