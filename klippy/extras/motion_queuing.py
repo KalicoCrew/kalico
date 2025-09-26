@@ -266,8 +266,10 @@ class PrinterMotionQueuing:
             flush_count = 0
             while self.last_step_gen_time < faux_time:
                 target = self.last_step_gen_time + batch_time
-                if flush_count > 100.0:
-                    target = faux_time
+                if flush_count > 100.0 and faux_time > target:
+                    target += (
+                        int((faux_time - target) / batch_time) * batch_time
+                    )
                 self._advance_flush_time(0.0, target)
                 flush_count += 1
             if flush_count:
