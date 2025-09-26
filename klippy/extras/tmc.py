@@ -834,7 +834,7 @@ class BaseTMCCurrentHelper:
         return needs
 
     def needs_hold_current_change(self, hold_current):
-        needs = hold_current != self.req_run_current
+        needs = hold_current != self.req_hold_current
         logging.info(f"tmc {self.name}: needs_hold_current_change {needs}")
         return needs
 
