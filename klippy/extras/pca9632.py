@@ -43,7 +43,7 @@ class PCA9632:
         if self.prev_regs.get(reg) == val:
             return
         self.prev_regs[reg] = val
-        self.i2c.i2c_write(
+        self.i2c.i2c_write_noack(
             [reg, val], minclock=minclock, reqclock=BACKGROUND_PRIORITY_CLOCK
         )
 
