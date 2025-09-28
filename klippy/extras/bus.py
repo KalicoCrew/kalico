@@ -269,6 +269,9 @@ class MCU_I2C:
         )
 
     def i2c_write_noack(self, data, minclock=0, reqclock=0):
+        if self.i2c_write_cmd is None:
+            self._to_write.append(data)
+            return
         self.i2c_write_cmd.send(
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
