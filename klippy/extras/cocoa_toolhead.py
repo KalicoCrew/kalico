@@ -669,7 +669,7 @@ class CocoaRunout:
         self.reactor: SelectReactor = self.printer.get_reactor()
 
         self.gcode = self.printer.lookup_object("gcode")
-        self.gcode_move = self.printer.lookup_object("gcode_move")
+        self.gcode_move = self.printer.load_object(config, "gcode_move")
         self.gcode_macro = self.printer.load_object(config, "gcode_macro")
         self.pause_resume = self.printer.load_object(config, "pause_resume")
 

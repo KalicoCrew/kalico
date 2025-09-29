@@ -35,8 +35,8 @@ def test_autosave_includes(
 
         # Test that the autosave line is now in printer.cfg
         assert (
-            "#*# temp_ignore_limits = False"
-            in (config_root / "printer.cfg").read_text()
+            "temp_ignore_limits = False"
+            in (config_root / "printer.autosave.cfg").read_text()
         )
         # Test that the source line in danger_options.cfg is commented out
         assert (

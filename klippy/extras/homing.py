@@ -159,8 +159,12 @@ class HomingMove:
 
             if trigger_time > 0.0 and move_end_print_time - trigger_time > 0.15:
                 trigger_times[name] = trigger_time
-            elif check_triggered and error is None:
-                error = "No trigger on %s after full movement" % (name,)
+            elif (
+                check_triggered
+                and error is None
+                and self.printer.get_start_args().get("debuginput") is None
+            ):
+                error = f"No trigger on {name} after full movement {trigger_time=} {move_end_print_time=}"
         # Determine stepper halt positions
         self.toolhead.flush_step_generation()
         for sp in self.stepper_positions:

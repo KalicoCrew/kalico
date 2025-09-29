@@ -428,7 +428,9 @@ class PrinterConfig:
             field = self.value_r.sub("", pruned_line)
             if config.fileconfig.has_option(section, field):
                 is_dup_field = True
-                lines[lineno] = "#" + lines[lineno] + "  # disabled by SAVE_CONFIG"
+                lines[lineno] = (
+                    "#" + lines[lineno] + "  # disabled by SAVE_CONFIG"
+                )
         return "\n".join(lines)
 
     def _parse_config_buffer(self, buffer, filename, fileconfig):
@@ -532,10 +534,16 @@ class PrinterConfig:
         # However, we still have to read existing autosave data in the main
         # config file to remain backwards-compatible.
         regular_data, autosave_data = self._find_autosave_data(
-            self._read_config_file(filename))
+            self._read_config_file(filename)
+        )
         try:
-            autosave_data = self._read_config_file_silent(
-                self._build_autosave_filename(filename)) + "\n" + autosave_data
+            autosave_data = (
+                self._read_config_file_silent(
+                    self._build_autosave_filename(filename)
+                )
+                + "\n"
+                + autosave_data
+            )
         except FileNotFoundError:
             pass  # optional
 
@@ -789,8 +797,12 @@ class PrinterConfig:
             return
         gcode = self.printer.lookup_object("gcode")
         # Create string containing autosave data
-        autosave_data = AUTOSAVE_HEADER.strip() + "\n\n" + self._build_config_string(
-            self.autosave) + "\n"
+        autosave_data = (
+            AUTOSAVE_HEADER.strip()
+            + "\n\n"
+            + self._build_config_string(self.autosave)
+            + "\n"
+        )
         # Read in and validate current config file
         cfgname = self.printer.get_start_args()["config_file"]
         try:
