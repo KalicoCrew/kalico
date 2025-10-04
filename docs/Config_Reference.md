@@ -2488,6 +2488,24 @@ z_offset:
 #   Set to `True` will probe one extra time and remove the first
 #   sample from calculation. This can improve probe accuracy for
 #   printers that have an outlier first sample.
+#⚠️ bad_probe_strategy: RETRY
+#   Strategy to apply when a probe attempt is considered "bad" based on
+#   the probe's quality detection logic. If the probe doesnt support 
+#   quality detection all probes are assumed to be good.
+#   One of: fail, ignore, retry or circle.
+#   - fail: Stop immediately with an error on first bad probe.
+#   - ignore: Accept all probes regardless of quality.
+#   - retry: Re-attempt the probe at the same location.
+#   - circle: Re-attempt the probe using a circular offset pattern to
+#     avoid fouling.
+#   The default is retry.
+#⚠️ bad_probe_retries: 6
+#   Number of additional probe attempts to make when a bad probe
+#   is detected, according to 'bad_probe_strategy'. Set to 0 to disable
+#   retries. The default is 6.
+#⚠️ retry_speed:
+#   Probe horizontal movement speed (in mm/s) to use when moving the probe
+#   for a retry. If not specified, the default value is the value of 'speed'.
 ```
 
 ### [bltouch]
