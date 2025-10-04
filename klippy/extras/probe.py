@@ -3,8 +3,13 @@
 # Copyright (C) 2017-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
 import logging
 import math
+from enum import IntEnum
+from typing import Optional, Union
+
+from klippy.configfile import ConfigWrapper
 from klippy import pins
 from . import manual_probe
 from klippy.toolhead import ToolHead
@@ -17,12 +22,193 @@ can travel further (the Z minimum position can be negative).
 """
 
 
+class RetryStrategy(IntEnum):
+    # Probe strategy constants
+    FAIL = 0  # bad probes fail with a command error
+    IGNORE = 1  # bad probes are ignored
+    RETRY = 2  # bad probes are retried in the same location, assumes
+    # no fouling
+    CIRCLE = 3  # bad probes are retried in a circular pattern to avoid
+
+
+class RetryPolicy:
+    retry_speed: float
+    bad_probe_retries: int
+    bad_probe_strategy: RetryStrategy
+    pattern_spacing: float
+
+    def __init__(self, config: ConfigWrapper):
+        speed = config.getfloat("speed", 5.0, above=0.0)
+        self._cfg_retry_speed: float = config.getfloat(
+            "retry_speed", speed, above=0.0
+        )
+        # Probe retry configuration
+        strategy_choices = {member.name: member for member in RetryStrategy}
+        self._cfg_bad_probe_strategy = config.getchoice(
+            "bad_probe_strategy", strategy_choices, RetryStrategy.RETRY.name
+        )
+        self._cfg_bad_probe_retries = config.getint(
+            "bad_probe_retries", 6, minval=0
+        )
+        self._cfg_pattern_spacing = config.getfloat(
+            "pattern_spacing", 2.0, above=0.0
+        )
+        # Build circular lookup based on pattern spacing
+
+        # initialize values from config
+        self.retry_speed = self._cfg_retry_speed
+        self.bad_probe_strategy = self._cfg_bad_probe_strategy
+        self.bad_probe_retries = self._cfg_bad_probe_retries
+        self.pattern_spacing = self._cfg_pattern_spacing
+
+    # update the settings from a GCode Command instance
+    def customize(self, gcmd: GCodeCommand):
+        self.retry_speed = gcmd.get_float(
+            "RETRY_SPEED", self._cfg_retry_speed, above=0.0
+        )
+        strategy_name = gcmd.get(
+            "BAD_PROBE_STRATEGY", self._cfg_bad_probe_strategy.name
+        )
+        self.bad_probe_strategy = RetryStrategy[strategy_name]
+        self.bad_probe_retries = gcmd.get_int(
+            "BAD_PROBE_RETRIES", self._cfg_bad_probe_retries, minval=0
+        )
+        self.pattern_spacing = gcmd.get_float(
+            "PATTERN_SPACING", self._cfg_pattern_spacing, above=0.0
+        )
+
+
+class ProbeRetryState:
+    @staticmethod
+    def _build_circular_offsets(
+        distance_step: float,
+    ) -> list[tuple[float, float]]:
+        lookup = [(0.0, 0.0)]
+        radius = 0.0
+        for i in range(1, 3):
+            radius += distance_step
+            perimeter = 2.0 * radius * math.pi
+            locations = int(perimeter / distance_step)
+            for j in range(locations):
+                distance = float(j) / float(locations) * 2.0 * math.pi
+                x = math.cos(distance) * radius
+                y = math.sin(distance) * radius
+                lookup.append((x, y))
+        return lookup
+
+    def __init__(self, pos: tuple[float, float], retry_policy: RetryPolicy):
+        self.retry_policy = retry_policy
+        self._bad_probe_count = 0
+        self._start_pos = pos
+        self._fouled_count = 0
+        # Build circular lookup based on pattern spacing
+        self._circle_lookup = self._build_circular_offsets(
+            retry_policy.pattern_spacing
+        )
+
+    def has_retries_remaining(self) -> bool:
+        has_retries = (
+            self._bad_probe_count < self.retry_policy.bad_probe_retries
+        )
+        has_clean_points = self._fouled_count < len(self._circle_lookup)
+        return has_retries and has_clean_points
+
+    def reset(self):
+        self._bad_probe_count = 0
+
+    def evaluate_probe(self, is_good: Optional[bool], gcmd) -> bool:
+        """
+        Evaluate probe result based on strategy.
+        Returns True if probe should be accepted.
+        Returns False if probe should be retried.
+        Raises error if strategy is FAIL or retries exhausted.
+        """
+        if (
+            is_good
+            or self.retry_policy.bad_probe_strategy is RetryStrategy.IGNORE
+        ):
+            return True
+        if self.retry_policy.bad_probe_strategy is RetryStrategy.FAIL:
+            raise gcmd.error("Probe failed")
+        self._bad_probe_count += 1
+        if self.retry_policy.bad_probe_strategy is RetryStrategy.CIRCLE:
+            self._fouled_count += 1
+        if not self.has_retries_remaining():
+            raise gcmd.error(
+                f"Probing failed after {self._bad_probe_count} retries"
+            )
+        # Probe rejected, inform user and retry
+        gcmd.respond_info(
+            "Bad probe detected. Retrying "
+            f"({self._bad_probe_count}/{self.retry_policy.bad_probe_retries})..."
+        )
+        return False
+
+    def get_position(self) -> tuple[float, float, None]:
+        if self.retry_policy.bad_probe_strategy is not RetryStrategy.CIRCLE:
+            return self._start_pos[0], self._start_pos[1], None
+        x, y = self._circle_lookup[self._fouled_count]
+        return self._start_pos[0] + x, self._start_pos[1] + y, None
+
+
+class RetrySession:
+    def __init__(self, config: ConfigWrapper):
+        self.retry_policy = RetryPolicy(config)
+        self._point_lookup: dict[tuple[float, float], ProbeRetryState] = {}
+        self._pos: Optional[tuple[float, float]] = None
+        self._quantized_pos: Optional[tuple[float, float]] = None
+        self._gcmd: Optional[GCodeCommand] = None
+        self._retry_state: Optional[ProbeRetryState] = None
+
+    @staticmethod
+    def _quantize_position(pos: tuple[float, float]) -> tuple[float, float]:
+        return round(pos[0], 1), round(pos[1], 1)
+
+    def start(self, gcmd: GCodeCommand):
+        self.retry_policy.customize(gcmd)
+        self._gcmd = gcmd
+
+    def end(self):
+        self._gcmd = self._pos = self._quantized_pos = self._retry_state = None
+        self._point_lookup.clear()
+
+    def set_position(self, pos: list[float]) -> None:
+        """Set the current ideal position being probed"""
+        self._pos = (pos[0], pos[1])
+        self._quantized_pos = self._quantize_position((pos[0], pos[1]))
+        if self._quantized_pos not in self._point_lookup:
+            self._point_lookup[self._quantized_pos] = ProbeRetryState(
+                self._pos, self.retry_policy
+            )
+        self._retry_state = self._point_lookup[self._quantized_pos]
+
+    def get_probe_position(self) -> tuple[float, float, None]:
+        """Get the actual probe position for the current 'ideal' position"""
+        return self._retry_state.get_position()
+
+    def can_retry(self) -> bool:
+        return self._retry_state.has_retries_remaining()
+
+    def evaluate_probe(self, is_good: bool) -> bool:
+        return self._retry_state.evaluate_probe(is_good, self._gcmd)
+
+    def reset_all(self):
+        for pos in self._point_lookup.values():
+            pos.reset()
+
+    def set_retry_strategy(self, retry_strategy: RetryStrategy) -> None:
+        self.retry_policy.bad_probe_strategy = retry_strategy
+
+
 class PrinterProbe:
     def __init__(self, config, mcu_probe):
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.mcu_probe = mcu_probe
         self.speed = config.getfloat("speed", 5.0, above=0.0)
+        self.retry_speed: float = config.getfloat(
+            "retry_speed", self.speed, above=0.0
+        )
         self.lift_speed = config.getfloat("lift_speed", self.speed, above=0.0)
         self.x_offset = config.getfloat("x_offset", 0.0)
         self.y_offset = config.getfloat("y_offset", 0.0)
@@ -32,7 +218,9 @@ class PrinterProbe:
         self.multi_probe_pending = False
         self.last_state = False
         self.last_z_result = 0.0
+        self.was_last_result_good = False
         self.gcode_move = self.printer.load_object(config, "gcode_move")
+        self.retry_session = RetrySession(config)
         # Infer Z position to move to during a probe
         if config.has_section("stepper_z"):
             zconfig = config.getsection("stepper_z")
@@ -152,20 +340,35 @@ class PrinterProbe:
     def get_offsets(self):
         return self.x_offset, self.y_offset, self.z_offset
 
-    def _probe(self, speed, gcmd: GCodeCommand):
+    def _probing_move(
+        self, pos, speed, gcmd: GCodeCommand
+    ) -> tuple[list[float], Optional[bool]]:
+        try:
+            result = self.mcu_probe.probing_move(pos, speed, gcmd)
+        except self.printer.command_error as e:
+            reason = str(e)
+            if "Timeout during endstop homing" in reason:
+                reason += HINT_TIMEOUT
+            raise self.printer.command_error(reason)
+        # Normalize return value to (epos, is_good)
+        epos: list[float]
+        is_good: Optional[bool]
+        if isinstance(result, tuple) and len(result) == 2:
+            epos, is_good = result
+        else:
+            epos, is_good = result, True
+        return epos, is_good
+
+    def _probe(
+        self, speed, gcmd: GCodeCommand
+    ) -> tuple[list[float], Optional[bool]]:
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
         if "z" not in toolhead.get_status(curtime)["homed_axes"]:
             raise self.printer.command_error("Must home before probe")
         pos = toolhead.get_position()
         pos[2] = self.z_position
-        try:
-            epos = self.mcu_probe.probing_move(pos, speed, gcmd)
-        except self.printer.command_error as e:
-            reason = str(e)
-            if "Timeout during endstop homing" in reason:
-                reason += HINT_TIMEOUT
-            raise self.printer.command_error(reason)
+        epos, is_good = self._probing_move(pos, speed, gcmd)
         # get z compensation from axis_twist_compensation
         axis_twist_compensation = self.printer.lookup_object(
             "axis_twist_compensation", None
@@ -180,7 +383,7 @@ class PrinterProbe:
         self.gcode.respond_info(
             "probe at %.3f,%.3f is z=%.6f" % (epos[0], epos[1], epos[2])
         )
-        return epos[:3]
+        return epos[:3], is_good
 
     def _move(self, coord, speed):
         self.printer.lookup_object("toolhead").manual_move(coord, speed)
@@ -206,7 +409,9 @@ class PrinterProbe:
 
     def _discard_first_result(self, speed: float, gcmd: GCodeCommand):
         if self._drop_first_result:
-            self._probe(speed, gcmd)
+            pos, is_good = self._probe(speed, gcmd)
+            # marks the initial probing location as fouled if needed
+            self.retry_session.evaluate_probe(is_good)
             self._retract(gcmd)
 
     # Raise the toolhead at the current x/y location
@@ -218,6 +423,20 @@ class PrinterProbe:
         toolhead: ToolHead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
         self._move([None, None, pos[2] + sample_retract_dist], lift_speed)
+
+    def _run_probe_with_retries(
+        self, speed: float, retry_session: RetrySession, gcmd: GCodeCommand
+    ):
+        """Probe for a single good result with retries based on strategy"""
+        while retry_session.can_retry():
+            self._move(retry_session.get_probe_position(), self.retry_speed)
+            # Probe position
+            pos, is_good = self._probe(speed, gcmd)
+            if retry_session.evaluate_probe(is_good):
+                return pos
+            # Probe was rejected, retry
+            self._retract(gcmd)
+        raise gcmd.error("Probing failed")
 
     def run_probe(self, gcmd: GCodeCommand):
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
@@ -232,13 +451,21 @@ class PrinterProbe:
         must_notify_multi_probe = not self.multi_probe_pending
         if must_notify_multi_probe:
             self.multi_probe_begin(always_restore_toolhead=True)
+        # Initialize probe retry state
+        self.retry_session.start(gcmd)
+        toolhead = self.printer.lookup_object("toolhead")
+        self.retry_session.set_position(toolhead.get_position())
+
+        # Handle drop first result, perform a probe and throw it away
+        if self._drop_first_result:
+            self._probe(speed, gcmd)
+            self._retract(gcmd)
         retries = 0
         positions = []
-
         self._discard_first_result(speed, gcmd)
         while len(positions) < sample_count:
-            # Probe position
-            pos = self._probe(speed, gcmd)
+            # Probe position with retries
+            pos = self._run_probe_with_retries(speed, self.retry_session, gcmd)
             positions.append(pos)
             # Check samples tolerance
             z_positions = [p[2] for p in positions]
@@ -253,6 +480,7 @@ class PrinterProbe:
                 self._retract(gcmd)
         if must_notify_multi_probe:
             self.multi_probe_end()
+        self.retry_session.end()
         # Calculate and return result
         if samples_result == "median":
             return self._calc_median(positions)
@@ -308,16 +536,25 @@ class PrinterProbe:
         )
         # Probe bed sample_count times
         self.multi_probe_begin(always_restore_toolhead=True)
+        # Initialize probe retry state
+        self.retry_session.start(gcmd)
+        # force FAIL behavior for PROBE_ACCURACY, never accept bad probes
+        self.retry_session.set_retry_strategy(RetryStrategy.FAIL)
+        self.retry_session.set_position(toolhead.get_position())
+        # Discard first probe if required
+        if self._drop_first_result:
+            self._probe(speed, gcmd)
+            self._retract(gcmd)
         positions = []
-
         self._discard_first_result(speed, gcmd)
         while len(positions) < sample_count:
             # Probe position
-            pos = self._probe(speed, gcmd)
+            pos = self._run_probe_with_retries(speed, self.retry_session, gcmd)
             positions.append(pos)
             # Retract
             self._retract(gcmd)
         self.multi_probe_end()
+        self.retry_session.end()
         # Calculate maximum, minimum and average values
         max_value = max([p[2] for p in positions])
         min_value = min([p[2] for p in positions])
@@ -455,7 +692,9 @@ class ProbeEndstopWrapper:
         self._raise_probe()
         self.multi = "OFF"
 
-    def probing_move(self, pos, speed, gcmd: GCodeCommand):
+    def probing_move(
+        self, pos, speed, gcmd: GCodeCommand
+    ) -> Union[list[float], tuple[list[float], bool]]:
         phoming = self.printer.lookup_object("homing")
         return phoming.probing_move(self, pos, speed)
 
