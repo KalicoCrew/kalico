@@ -36,6 +36,7 @@ class RetryPolicy:
     bad_probe_retries: int
     bad_probe_strategy: RetryStrategy
     pattern_spacing: float
+    scrubbing_frequency: int
 
     def __init__(self, config: ConfigWrapper):
         speed = config.getfloat("speed", 5.0, above=0.0)
@@ -53,6 +54,13 @@ class RetryPolicy:
         self._cfg_pattern_spacing = config.getfloat(
             "pattern_spacing", 2.0, above=0.0
         )
+        gcode_macro = config.get_printer().load_object(config, "gcode_macro")
+        self.template = gcode_macro.load_template(
+            config, "nozzle_scrubber_gcode", ""
+        )
+        self._cfg_scrubbing_frequency = config.getint(
+            "scrubbing_frequency", 0, minval=0
+        )
         # Build circular lookup based on pattern spacing
 
         # initialize values from config
@@ -60,6 +68,7 @@ class RetryPolicy:
         self.bad_probe_strategy = self._cfg_bad_probe_strategy
         self.bad_probe_retries = self._cfg_bad_probe_retries
         self.pattern_spacing = self._cfg_pattern_spacing
+        self.scrubbing_frequency = self._cfg_scrubbing_frequency
 
     # update the settings from a GCode Command instance
     def customize(self, gcmd: GCodeCommand):
@@ -76,6 +85,33 @@ class RetryPolicy:
         self.pattern_spacing = gcmd.get_float(
             "PATTERN_SPACING", self._cfg_pattern_spacing, above=0.0
         )
+        self.scrubbing_frequency = gcmd.get_int(
+            "SCRUBBING_FREQUENCY", self._cfg_scrubbing_frequency, minval=0
+        )
+
+
+class GcodeNozzleScrubber:
+    def __init__(self, printer, retry_policy: RetryPolicy):
+        self._printer = printer
+        self._retry_policy = retry_policy
+
+    def clean_nozzle(self, attempt, retries):
+        if not self._retry_policy.template:
+            return
+        if attempt == 0 or self._retry_policy.scrubbing_frequency <= 0:
+            return
+        if attempt % self._retry_policy.scrubbing_frequency != 0:
+            return
+        toolhead = self._printer.lookup_object("toolhead")
+        pos = toolhead.get_position()
+        context = self._retry_policy.template.create_template_context()
+        context["params"] = {
+            "ATTEMPT": attempt,
+            "RETRIES": retries,
+            "X": pos[0],
+            "Y": pos[1],
+        }
+        self._retry_policy.template.run_gcode_from_command(context)
 
 
 class ProbeRetryState:
@@ -116,6 +152,9 @@ class ProbeRetryState:
     def reset(self):
         self._bad_probe_count = 0
 
+    def get_attempt(self):
+        return self._bad_probe_count
+
     def evaluate_probe(self, is_good: Optional[bool], gcmd) -> bool:
         """
         Evaluate probe result based on strategy.
@@ -154,6 +193,9 @@ class ProbeRetryState:
 class RetrySession:
     def __init__(self, config: ConfigWrapper):
         self.retry_policy = RetryPolicy(config)
+        self._scrubber: GcodeNozzleScrubber = GcodeNozzleScrubber(
+            config.get_printer(), self.retry_policy
+        )
         self._point_lookup: dict[tuple[float, float], ProbeRetryState] = {}
         self._pos: Optional[tuple[float, float]] = None
         self._quantized_pos: Optional[tuple[float, float]] = None
@@ -191,6 +233,13 @@ class RetrySession:
 
     def evaluate_probe(self, is_good: bool) -> bool:
         return self._retry_state.evaluate_probe(is_good, self._gcmd)
+
+    def scrub_nozzle(self):
+        """Scrub nozzle based on attempts at the current position"""
+        self._scrubber.clean_nozzle(
+            self._retry_state.get_attempt(),
+            self.retry_policy.bad_probe_retries,
+        )
 
     def reset_all(self):
         for pos in self._point_lookup.values():
@@ -438,6 +487,7 @@ class PrinterProbe:
                 return pos
             # Probe was rejected, retry
             self._retract(gcmd)
+            retry_session.scrub_nozzle()
         raise gcmd.error("Probing failed")
 
     def run_probe(

@@ -2506,6 +2506,18 @@ z_offset:
 #⚠️ retry_speed:
 #   Probe horizontal movement speed (in mm/s) to use when moving the probe
 #   for a retry. If not specified, the default value is the value of 'speed'.
+#⚠️ nozzle_scrubber_gcode:
+#   A block of G-Code to perform a custom nozzle scrubbing routine. This
+#   G-code may be invoked between PROBE retries and by the NOZZLE_CLEANUP
+#   command. The gcode template receives the following parameters:
+#   - ATTEMPT: The current retry attempt number
+#   - RETRIES: The maximum number of retries configured
+#   - X, Y: The current toolhead position
+#⚠️ scrubbing_frequency: 0
+#   Controls how often the nozzle scrubber is used in response to bad probes.
+#   If set to a positive number, N, the nozzle_scrubber_gcode will be invoked
+#   after every Nth bad probe. 1 will run the scrubber after every bad probe.
+#   0 will disable scrubbing. The default is 0.
 ```
 
 ### [bltouch]
