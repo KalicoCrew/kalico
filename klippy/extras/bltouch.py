@@ -229,7 +229,7 @@ class BLTouchEndstopWrapper:
         self.sync_print_time()
         self.multi = "OFF"
 
-    def probing_move(self, pos, speed):
+    def probing_move(self, pos, speed, gcmd):
         phoming = self.printer.lookup_object("homing")
         return phoming.probing_move(self, pos, speed)
 

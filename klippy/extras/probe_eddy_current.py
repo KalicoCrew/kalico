@@ -301,7 +301,7 @@ class EddyEndstopWrapper:
         return False  # XXX
 
     # Interface for ProbeEndstopWrapper
-    def probing_move(self, pos, speed):
+    def probing_move(self, pos, speed, gcmd):
         # Perform probing move
         phoming = self._printer.lookup_object("homing")
         trig_pos = phoming.probing_move(self, pos, speed)

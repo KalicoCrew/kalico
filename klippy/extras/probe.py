@@ -152,7 +152,7 @@ class PrinterProbe:
     def get_offsets(self):
         return self.x_offset, self.y_offset, self.z_offset
 
-    def _probe(self, speed):
+    def _probe(self, speed, gcmd: GCodeCommand):
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
         if "z" not in toolhead.get_status(curtime)["homed_axes"]:
@@ -160,7 +160,7 @@ class PrinterProbe:
         pos = toolhead.get_position()
         pos[2] = self.z_position
         try:
-            epos = self.mcu_probe.probing_move(pos, speed)
+            epos = self.mcu_probe.probing_move(pos, speed, gcmd)
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -233,7 +233,7 @@ class PrinterProbe:
         first_probe = True
         while len(positions) < sample_count:
             # Probe position
-            pos = self._probe(speed)
+            pos = self._probe(speed, gcmd)
             if self._drop_first_result and first_probe:
                 first_probe = False
                 self._retract(gcmd)
@@ -312,7 +312,7 @@ class PrinterProbe:
         first_probe = True
         while len(positions) < sample_count:
             # Probe position
-            pos = self._probe(speed)
+            pos = self._probe(speed, gcmd)
             if self._drop_first_result and first_probe:
                 first_probe = False
                 self._retract(gcmd)
@@ -458,7 +458,7 @@ class ProbeEndstopWrapper:
         self._raise_probe()
         self.multi = "OFF"
 
-    def probing_move(self, pos, speed):
+    def probing_move(self, pos, speed, gcmd: GCodeCommand):
         phoming = self.printer.lookup_object("homing")
         return phoming.probing_move(self, pos, speed)
 
