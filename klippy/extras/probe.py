@@ -9,11 +9,13 @@ import math
 from enum import IntEnum
 from typing import Optional, Union
 
+from klippy import Printer
 from klippy.configfile import ConfigWrapper
 from klippy import pins
 from . import manual_probe
 from klippy.toolhead import ToolHead
 from klippy.gcode import GCodeCommand
+from klippy.extras.gcode_macro import Template
 
 HINT_TIMEOUT = """
 If the probe did not move far enough to trigger, then
@@ -60,8 +62,6 @@ class RetryPolicy:
         self._cfg_pattern_spacing = config.getfloat(
             "pattern_spacing", 2.0, above=0.0
         )
-        # Build circular lookup based on pattern spacing
-
         # initialize values from config
         self.retry_speed = self._cfg_retry_speed
         self.bad_probe_strategy = self._cfg_bad_probe_strategy
@@ -89,6 +89,57 @@ class RetryPolicy:
         self.pattern_spacing = gcmd.get_float(
             "PATTERN_SPACING", self._cfg_pattern_spacing, above=0.0
         )
+
+
+class GcodeNozzleScrubberConfig:
+    scrubbing_frequency: int = 0
+    template: Template
+
+    def __init__(self, config: ConfigWrapper):
+        gcode_macro = config.get_printer().load_object(config, "gcode_macro")
+        self.template = gcode_macro.load_template(
+            config, "nozzle_scrubber_gcode", ""
+        )
+        self.scrubbing_frequency = self._cfg_scrubbing_frequency = (
+            config.getint("scrubbing_frequency", 0, minval=0)
+        )
+
+    def customize(self, gcmd: GCodeCommand):
+        self.scrubbing_frequency = gcmd.get_int(
+            "SCRUBBING_FREQUENCY", self._cfg_scrubbing_frequency, minval=0
+        )
+
+
+class GcodeNozzleScrubber:
+    def __init__(
+        self,
+        config: ConfigWrapper,
+    ):
+        self._printer: Printer = config.get_printer()
+        self.config = GcodeNozzleScrubberConfig(config)
+
+    def clean_nozzle(self, gcmd: GCodeCommand, attempt, retries):
+        self.config.customize(gcmd)
+        if not self.config.template:
+            return
+        if attempt == 0 or self.config.scrubbing_frequency <= 0:
+            return
+        if attempt % self.config.scrubbing_frequency != 0:
+            return
+        toolhead = self._printer.lookup_object("toolhead")
+        start_pos = toolhead.get_position()
+        context = self.config.template.create_template_context()
+        context["params"] = {
+            "ATTEMPT": attempt,
+            "RETRIES": retries,
+        }
+        self.config.template.run_gcode_from_command(context)
+        end_pos = toolhead.get_position()
+        if not start_pos[:3] == end_pos[:3]:
+            self._printer.command_error(
+                "Nozzle Scrubber GCode did not return to the start position. "
+                "(Hint: Use RESTORE_GCODE_STATE MOVE=1)"
+            )
 
 
 class ProbeRetryState:
@@ -135,6 +186,9 @@ class ProbeRetryState:
     def reset(self):
         self._bad_probe_count = 0
 
+    def get_attempt(self):
+        return self._bad_probe_count
+
     def evaluate_probe(self, is_good: Optional[bool], gcmd) -> bool:
         """
         Evaluate probe result based on strategy.
@@ -176,6 +230,7 @@ class ProbeRetryState:
 class RetrySession:
     def __init__(self, config: ConfigWrapper):
         self.retry_policy = RetryPolicy(config)
+        self._scrubber: GcodeNozzleScrubber = GcodeNozzleScrubber(config)
         self._point_lookup: dict[tuple[float, float], ProbeRetryState] = {}
         self._pos: Optional[tuple[float, float]] = None
         self._quantized_pos: Optional[tuple[float, float]] = None
@@ -219,6 +274,14 @@ class RetrySession:
 
     def evaluate_probe(self, is_good: bool) -> bool:
         return self._retry_state.evaluate_probe(is_good, self._gcmd)
+
+    def scrub_nozzle(self):
+        """Scrub nozzle based on attempts at the current position"""
+        self._scrubber.clean_nozzle(
+            self._gcmd,
+            self._retry_state.get_attempt(),
+            self.retry_policy.bad_probe_retries,
+        )
 
     def reset_all(self):
         for pos in self._point_lookup.values():
@@ -468,6 +531,7 @@ class PrinterProbe:
                 return retry_session.get_position() + (pos[2],)
             # Probe was rejected, retry
             self._retract(gcmd)
+            retry_session.scrub_nozzle()
         attempts = retry_session.get_bad_probe_count()
         raise gcmd.error(
             f"Probing failed to collect a good sample after {attempts} attempts"
