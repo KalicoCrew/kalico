@@ -19,6 +19,10 @@ _NOW = 0.0
 _NEVER = 9999999999999999.0
 
 
+class ReactorError(Exception):
+    pass
+
+
 class ReactorTimer:
     def __init__(self, callback, waketime):
         self.callback = callback
@@ -114,6 +118,17 @@ class ReactorMutex:
         self.reactor.update_timer(self.queue[0].timer, self.reactor.NOW)
 
 
+class ReactorPreventPause:
+    def __init__(self, reactor):
+        self.reactor = reactor
+
+    def __enter__(self):
+        self.reactor._prevent_pause_count += 1
+
+    def __exit__(self, type=None, value=None, tb=None):
+        self.reactor._prevent_pause_count -= 1
+
+
 class SelectReactor:
     NOW = _NOW
     NEVER = _NEVER
@@ -144,6 +159,7 @@ class SelectReactor:
         self._g_dispatch = None
         self._greenlets = []
         self._all_greenlets = []
+        self._prevent_pause_count = 0
 
     def get_gc_stats(self):
         return tuple(self._last_gc_times)
@@ -259,8 +275,12 @@ class SelectReactor:
             if self._g_dispatch is None:
                 return self._sys_pause(waketime)
             # Switch to _check_timers (via g.timer.callback return)
+            if self._prevent_pause_count:
+                self.verify_can_pause()
             return self._g_dispatch.switch(waketime)
         # Pausing the dispatch greenlet - prepare a new greenlet to do dispatch
+        if self._prevent_pause_count:
+            self.verify_can_pause()
         if self._greenlets:
             g_next = self._greenlets.pop()
         else:
@@ -286,6 +306,14 @@ class SelectReactor:
         self._g_dispatch.switch(self.NEVER)
         # This greenlet reactivated from pause() - return to main dispatch loop
         self._g_dispatch = g_old
+
+    # Support for temporarily disabling pauses
+    def assert_no_pause(self):
+        return ReactorPreventPause(self)
+
+    def verify_can_pause(self):
+        if self._prevent_pause_count:
+            raise ReactorError("Internal error - reactor pause disabled")
 
     # Mutexes
     def mutex(self, is_locked=False):
@@ -353,6 +381,7 @@ class SelectReactor:
         if self._pipe_fds is None:
             self._setup_async_callbacks()
         self._process = True
+        self._prevent_pause_count = 0
         g_next = ReactorGreenlet(run=self._dispatch_loop)
         self._all_greenlets.append(g_next)
         g_next.switch()
