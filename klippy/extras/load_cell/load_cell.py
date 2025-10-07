@@ -647,7 +647,7 @@ class LoadCell:
         # startup, when klippy is ready, start capturing data
         printer.register_event_handler("klippy:ready", self._handle_ready)
 
-    def _handle_ready(self):
+    def _handle_do_ready(self, eventtime):
         self.sensor.add_client(self._sensor_data_event)
         self.add_client(self._track_force)
         # announce calibration status on ready
@@ -655,6 +655,9 @@ class LoadCell:
             self.printer.send_event("load_cell:calibrate", self)
         if self.is_tared():
             self.printer.send_event("load_cell:tare", self)
+
+    def _handle_ready(self):
+        self.printer.get_reactor().register_callback(self._handle_do_ready)
 
     # convert raw counts to grams and broadcast to clients
     def _sensor_data_event(self, msg):
