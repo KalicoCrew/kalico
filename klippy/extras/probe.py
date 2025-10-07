@@ -596,10 +596,17 @@ class PrinterProbe:
 
     cmd_PROBE_help = "Probe Z-height at current XY position"
 
-    def cmd_PROBE(self, gcmd):
+    def cmd_PROBE(self, gcmd: GCodeCommand):
         pos = self.run_probe(gcmd)
         gcmd.respond_info("Result is z=%.6f" % (pos[2],))
         self.last_z_result = pos[2]
+        home = gcmd.get("HOME", default="").lower()
+        if home == "z":
+            toolhead: ToolHead = self.printer.lookup_object("toolhead")
+            toolhead.get_last_move_time()
+            toolhead_pos = toolhead.get_position()
+            toolhead_pos[2] = toolhead_pos[2] - self.last_z_result
+            toolhead.set_position(toolhead_pos, homing_axes=[2])
 
     cmd_QUERY_PROBE_help = "Return the status of the z-probe"
 

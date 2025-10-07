@@ -1291,10 +1291,11 @@ see the [probe calibrate guide](Probe_Calibrate.md)).
 [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
 [SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]
 [BAD_PROBE_STRATEGY=<FAIL|IGNORE|RETRY|CIRCLE>] [BAD_PROBE_RETRIES=<count>]
-[RETRY_SPEED=<mm/s>]`: ⚠️
+[RETRY_SPEED=<mm/s>] [HOME=<z>]`: ⚠️
 Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
+- `HOME`: Set the value `z` to home the z axis from the probe result
 The following optional parameters control probe quality handling (for probes
 that support quality detection): ⚠️
 - `BAD_PROBE_STRATEGY`: Strategy to use when a bad probe is detected.
