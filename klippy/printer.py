@@ -502,11 +502,12 @@ class Printer:
         logging.error("Transition to shutdown state: %s", msg)
         self.in_shutdown_state = True
         self._set_state("%s%s" % (msg, message_shutdown))
-        for cb in self.event_handlers.get("klippy:shutdown", []):
-            try:
-                cb()
-            except:
-                logging.exception("Exception during shutdown handler")
+        with self.reactor.assert_no_pause():
+            for cb in self.event_handlers.get("klippy:shutdown", []):
+                try:
+                    cb()
+                except:
+                    logging.exception("Exception during shutdown handler")
         logging.info(
             "Reactor garbage collection: %s", self.reactor.get_gc_stats()
         )
