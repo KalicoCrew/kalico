@@ -450,9 +450,6 @@ class Printer:
                     cb(msg, details)
                 except:
                     logging.exception("Exception in analyze_shutdown handler")
-        logging.info(
-            "Reactor garbage collection: %s", self.reactor.get_gc_stats()
-        )
 
     def invoke_async_shutdown(self, msg, details=None):
         self.reactor.register_async_callback(
