@@ -445,10 +445,14 @@ class Printer:
                     cb()
                 except:
                     logging.exception("Exception during shutdown handler")
+            for cb in self.event_handlers.get("klippy:analyze_shutdown", []):
+                try:
+                    cb(msg, details)
+                except:
+                    logging.exception("Exception in analyze_shutdown handler")
         logging.info(
             "Reactor garbage collection: %s", self.reactor.get_gc_stats()
         )
-        self.send_event("klippy:notify_mcu_shutdown", msg, details)
 
     def invoke_async_shutdown(self, msg, details=None):
         self.reactor.register_async_callback(

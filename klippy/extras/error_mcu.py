@@ -65,7 +65,7 @@ class PrinterMCUError:
         self.printer = config.get_printer()
         self.clarify_callbacks = {}
         self.printer.register_event_handler(
-            "klippy:notify_mcu_shutdown", self._handle_notify_mcu_shutdown
+            "klippy:analyze_shutdown", self._handle_analyze_shutdown
         )
         self.printer.register_event_handler(
             "klippy:notify_mcu_error", self._handle_notify_mcu_error
@@ -101,7 +101,7 @@ class PrinterMCUError:
         )
         self.printer.update_error_msg(msg, newmsg)
 
-    def _handle_notify_mcu_shutdown(self, msg, details):
+    def _handle_analyze_shutdown(self, msg, details):
         if msg == "MCU shutdown":
             self._check_mcu_shutdown(msg, details)
         else:
