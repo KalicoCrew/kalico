@@ -975,7 +975,6 @@ class MCUConnectHelper:
         # Shutdown tracking
         self._emergency_stop_cmd = None
         self._is_shutdown = self._is_timeout = False
-        self._shutdown_clock = 0
         self._shutdown_msg = ""
         # Register handlers
         printer.register_event_handler(
@@ -1006,14 +1005,19 @@ class MCUConnectHelper:
         if self._is_shutdown:
             return
         self._is_shutdown = True
-        clock = params.get("clock")
-        if clock is not None:
-            self._shutdown_clock = self._mcu.clock32_to_clock64(clock)
         self._shutdown_msg = msg = params["static_string_id"]
+        shutdown_clock = params.get("clock")
+        if shutdown_clock is not None:
+            shutdown_clock = self._mcu.clock32_to_clock64(shutdown_clock)
         event_type = params["#name"]
         self._printer.invoke_async_shutdown(
             "MCU shutdown",
-            {"reason": msg, "mcu": self._name, "event_type": event_type},
+            {
+                "reason": msg,
+                "mcu": self._name,
+                "event_type": event_type,
+                "shutdown_clock": shutdown_clock,
+            },
         )
 
     def _handle_starting(self, params):
@@ -1169,9 +1173,6 @@ class MCUConnectHelper:
 
     def is_shutdown(self):
         return self._is_shutdown
-
-    def get_shutdown_clock(self):
-        return self._shutdown_clock
 
     def get_shutdown_msg(self):
         return self._shutdown_msg
@@ -1747,9 +1748,6 @@ class MCU:
     # Low-level connection wrappers
     def is_shutdown(self):
         return self._conn_helper.is_shutdown()
-
-    def get_shutdown_clock(self):
-        return self._conn_helper.get_shutdown_clock()
 
     # Statistics wrappers
     def get_status(self, eventtime=None):
