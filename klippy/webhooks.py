@@ -152,7 +152,9 @@ class ServerSocket:
         printer.register_event_handler(
             "klippy:disconnect", self._handle_disconnect
         )
-        printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
+        printer.register_event_handler(
+            "klippy:analyze_shutdown", self._handle_analyze_shutdown
+        )
 
     def _handle_accept(self, eventtime):
         try:
@@ -173,7 +175,7 @@ class ServerSocket:
             except socket.error:
                 pass
 
-    def _handle_shutdown(self):
+    def _handle_analyze_shutdown(self, msg, details):
         for client in self.clients.values():
             client.dump_request_log()
 
