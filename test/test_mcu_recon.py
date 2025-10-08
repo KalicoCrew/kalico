@@ -143,3 +143,16 @@ def test_successful_recon_clears_stale_shutdown_flag():
     assert mcu._conn_helper._is_shutdown is False
     assert mcu.non_critical_disconnected is False
     assert mcu._printer.events == [RECON_EVENT]
+
+
+def test_analyze_shutdown_skips_disconnected_non_critical_mcu():
+    # The serialqueue is gone while disconnected; dumping it would crash
+    mcu = _make_mcu()
+    mcu.non_critical_disconnected = True
+    mcu.is_fileoutput = lambda: False
+
+    def _no_dump():
+        raise AssertionError("dump_debug called on a disconnected mcu")
+
+    mcu._serial.dump_debug = _no_dump
+    mcu._conn_helper._analyze_shutdown("MCU shutdown", {})

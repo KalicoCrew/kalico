@@ -983,6 +983,9 @@ class MCUConnectHelper:
         )
         self._restart_helper = MCURestartHelper(config, self)
         printer.register_event_handler("klippy:shutdown", self._shutdown)
+        printer.register_event_handler(
+            "klippy:analyze_shutdown", self._analyze_shutdown
+        )
 
     def get_mcu(self):
         return self._mcu
@@ -1012,16 +1015,6 @@ class MCUConnectHelper:
             "MCU shutdown",
             {"reason": msg, "mcu": self._name, "event_type": event_type},
         )
-        if get_danger_options().log_shutdown_info:
-            logging.info(
-                "MCU '%s' %s: %s\n%s\n%s\n%s",
-                self._name,
-                event_type,
-                self._shutdown_msg,
-                self._mcu.dump_debug(),
-                self._clocksync.dump_debug(),
-                self._serial.dump_debug(),
-            )
 
     def _handle_starting(self, params):
         if not self._is_shutdown and not self._mcu.is_non_critical:
@@ -1108,6 +1101,22 @@ class MCUConnectHelper:
         self._mcu.register_response(self._handle_shutdown, "shutdown")
         self._mcu.register_response(self._handle_shutdown, "is_shutdown")
         self._mcu.register_response(self._handle_starting, "starting")
+
+    def _analyze_shutdown(self, msg, details):
+        if (
+            self._mcu.is_fileoutput()
+            or self._mcu.non_critical_disconnected
+            or not get_danger_options().log_shutdown_info
+        ):
+            return
+        logging.info(
+            "MCU '%s' shutdown: %s\n%s\n%s\n%s",
+            self._name,
+            self._shutdown_msg,
+            self._mcu.dump_debug(),
+            self._clocksync.dump_debug(),
+            self._serial.dump_debug(),
+        )
 
     def _shutdown(self, force=False):
         if (
