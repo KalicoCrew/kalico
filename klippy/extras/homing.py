@@ -518,7 +518,7 @@ class Homing:
 
             for i in homing_axes:
                 gcode.respond_info(
-                    f"Final homing position for {'XYZ'[i]}: {pos[i]}"
+                    f"Final homing position for {'XYZ'[i]}: {pos[i] + distances[-1][i]}"
                 )
             self.toolhead.set_position(pos)
             if hi.move_toolhead_after_adjusting:
