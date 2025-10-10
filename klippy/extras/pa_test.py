@@ -54,6 +54,9 @@ class PATest:
         self.filament_diameter = config.getfloat(
             "filament_diameter", 1.75, above=0.0
         )
+        self.fan_speed = config.getfloat(
+            "fan_speed", 0.5, minval=0.0, maxval=1.0
+        )
         # Register commands
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
@@ -433,7 +436,7 @@ class PATest:
         yield "G90"
         for line in gen_brim():
             yield line
-        yield "M106 S127"
+        yield f"M106 S{self.fan_speed * 255}"
         for line in gen_tower():
             yield line
         if final_gcode_id is not None:
