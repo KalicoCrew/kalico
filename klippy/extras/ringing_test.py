@@ -43,6 +43,9 @@ class RingingTest:
         self.deceleration_points = config.getint(
             "deceleration_points", 100, minval=10
         )
+        self.fan_speed = config.getfloat(
+            "fan_speed", 0.5, minval=0.0, maxval=1.0
+        )
         # Register commands
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
@@ -512,7 +515,7 @@ class RingingTest:
         yield "M220 S100"
         for line in gen_brim():
             yield line
-        yield "M106 S127"
+        yield f"M106 S{self.fan_speed * 255}"
         for line in gen_tower():
             yield line
         if final_gcode_id is not None:
