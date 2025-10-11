@@ -307,13 +307,13 @@ class Homing:
         for endstop in endstops:
             endstop[0].query_endstop(print_time)
 
-    def _calc_mean(self, positions):
-        return sum(positions) / float(len(positions))
+    def _calc_mean(self, distances):
+        return sum(distances) / float(len(distances))
 
-    def _calc_median(self, positions):
-        z_sorted = sorted(positions)
-        middle = len(positions) // 2
-        if (len(positions) & 1) == 1:
+    def _calc_median(self, distances):
+        z_sorted = sorted(distances)
+        middle = len(distances) // 2
+        if (len(distances) & 1) == 1:
             # odd number of samples
             return z_sorted[middle]
         # even number of samples
