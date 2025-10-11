@@ -554,7 +554,7 @@ class Homing:
 
         if retries and hi.retry_gcode is not None:
             gcode.respond_info("Executing retry_gcode")
-            gcode.run_script_from_command(hi.retry_gcode)
+            hi.retry_gcode.run_gcode_from_command()
 
     def process_homing(self, distances, homing_axes):
         pass
