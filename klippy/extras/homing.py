@@ -344,10 +344,9 @@ class Homing:
         )
         hmove = HomingMove(self.printer, endstops)
 
-        distances = []
         retries = 0
-        first_home = True
-        drop = hi.drop_first_result
+        distances = []
+        drop_result = hi.drop_first_result
 
         startpos = None
         homepos = None
@@ -369,20 +368,19 @@ class Homing:
             self.toolhead.move(retractpos, retract_speed)
 
         def _process_samples():
-            nonlocal drop, first_home, distances, retries
+            nonlocal drop_result, distances, retries
             # early return if we don't use samples for homing
             if hi.sample_count == 1:
-                distances.append([0] * len(hmove.distance_elapsed))
+                distances.append([0.0] * len(hmove.distance_elapsed))
                 return
 
-            if drop:
+            if drop_result:
                 # Don't process the sample if it's dropped
                 gcode.respond_info("Settling sample (ignored)...")
-                drop = False
+                drop_result = False
             else:
-                if first_home:
-                    result = [0] * len(hmove.distance_elapsed)
-                    first_home = False
+                if not distances:
+                    result = [0.0] * len(hmove.distance_elapsed)
                 else:
                     result = [
                         distances[-1][i] + dist - sample_retract_dist
@@ -412,7 +410,6 @@ class Homing:
                         )
                         retries += 1
                         distances = []
-                        first_home = True
 
             if len(distances) < hi.sample_count:
                 _retract_toolhead(
@@ -460,8 +457,7 @@ class Homing:
 
                 distances = []
                 retries = 0
-                first_home = True
-                drop = hi.drop_first_result
+                drop_result = hi.drop_first_result
                 while len(distances) < hi.sample_count:
                     try:
                         # Home again
