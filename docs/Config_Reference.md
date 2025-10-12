@@ -347,8 +347,6 @@ position_max:
 #   second homing move will use samples.
 #sample_retract_speed: 
 #   Equals probes lift_speed, defaults to retract_speed
-#samples_retract_speed: 
-#   Equals probes lift_speed, defaults to retract_speed
 #move_toolhead_after_adjusting: False
 #   Move the toolhead to the configured homing position after adjusting the coordinate
 #   system according to the samples.
