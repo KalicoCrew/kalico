@@ -633,7 +633,7 @@ class PrinterExtruder:
                 section = "extruder%d" % (index,)
             extruder = self.printer.lookup_object(section, None)
             if extruder is None:
-                raise gcmd.error("Extruder not configured")
+                raise gcmd.error("Extruder%d not configured", (index,))
         else:
             extruder = self.printer.lookup_object("toolhead").get_extruder()
         heater = extruder.get_heater()
