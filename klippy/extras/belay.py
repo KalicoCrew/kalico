@@ -224,7 +224,6 @@ class Belay:
         self._set_extruder_stepper(gcmd.get("STEPPER"))
         self.handle_enable()
 
-
     cmd_BELAY_ENABLE_help = "Manually enable Belay"
     cmd_BELAY_DISABLE_help = "Manually disable Belay"
 
@@ -235,7 +234,6 @@ class Belay:
     def cmd_BELAY_DISABLE(self, gcmd):
         self.handle_disable()
         gcmd.respond_info("Belay manually disabled")
-
 
     def get_status(self, eventtime):
         return {"last_state": self.last_state, "enabled": self.enabled}
