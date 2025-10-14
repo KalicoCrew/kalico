@@ -1007,6 +1007,24 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#belay_enable" class="md-nav__link">
+    <span class="md-ellipsis">
+      BELAY_ENABLE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#belay_disable" class="md-nav__link">
+    <span class="md-ellipsis">
+      BELAY_DISABLE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#query_belay" class="md-nav__link">
     <span class="md-ellipsis">
       QUERY_BELAY
@@ -4966,6 +4984,24 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#belay_enable" class="md-nav__link">
+    <span class="md-ellipsis">
+      BELAY_ENABLE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#belay_disable" class="md-nav__link">
+    <span class="md-ellipsis">
+      BELAY_DISABLE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#query_belay" class="md-nav__link">
     <span class="md-ellipsis">
       QUERY_BELAY
@@ -7568,6 +7604,10 @@ is active. The optional <code>HORIZONTAL_MOVE_Z</code> value overrides the
 <h3 id="belay">[belay]<a class="headerlink" href="#belay" title="Permanent link">&para;</a></h3>
 <p>The following commands are available when a
 <a href="Config_Reference.html#belay">belay config section</a> is enabled.</p>
+<h4 id="belay_enable">BELAY_ENABLE<a class="headerlink" href="#belay_enable" title="Permanent link">&para;</a></h4>
+<p><code>BELAY_ENABLE BELAY=&lt;config_name&gt;</code>: Enable compensation for belay specified by <code>BELAY</code>.</p>
+<h4 id="belay_disable">BELAY_DISABLE<a class="headerlink" href="#belay_disable" title="Permanent link">&para;</a></h4>
+<p><code>BELAY_DISABLE BELAY=&lt;config_name&gt;</code>: Disable compensation for belay specified by <code>BELAY</code>. This setting will not persist across restarts.</p>
 <h4 id="query_belay">QUERY_BELAY<a class="headerlink" href="#query_belay" title="Permanent link">&para;</a></h4>
 <p><code>QUERY_BELAY BELAY=&lt;config_name&gt;</code>: Queries the state of the belay
 specified by <code>BELAY</code>.</p>
