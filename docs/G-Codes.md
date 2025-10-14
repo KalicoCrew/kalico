@@ -27,6 +27,7 @@ Kalico supports the following standard G-Code commands:
 - Set extruder temperature and wait: `M109 [T<index>] S<temperature>`
   - Note: M109 always waits for temperature to settle at requested
     value
+- Enable Cold Extrusion: `M302 [T<index>] [P<enable>] [S<min_extrude_temp>]
 - Set bed temperature: `M140 [S<temperature>]`
 - Set bed temperature and wait: `M190 S<temperature>`
   - Note: M190 always waits for temperature to settle at requested
@@ -955,6 +956,13 @@ above the supplied MINIMUM and/or at or below the supplied MAXIMUM.
 `SET_HEATER_TEMPERATURE HEATER=<heater_name>
 [TARGET=<target_temperature>]`: Sets the target temperature for a
 heater. If a target temperature is not supplied, the target is 0.
+
+#### COLD_EXTRUDE
+`COLD_EXTRUDE HEATER=<heater_name> [ENABLE=<0 or 1>]
+[MIN_EXTRUDE_TEMP=<min_extrude_temp>]: Enables or disables cold extrusion.
+If neither ENABLE nor MIN_EXTRUDE_TEMP are supplied, it
+will report the current state. If ENABLE is 0, cold extrusion is disabled,
+if it is 1 it is enabled.
 
 #### SET_SMOOTH_TIME
 `SET_SMOOTH_TIME HEATER=<heater_name> [SMOOTH_TIME=<smooth_time>]
