@@ -2113,6 +2113,12 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20250817: The gcode_button section adds a new option <code>debounce_delay</code> that
+takes a time in seconds to debounce the state of the button before any action
+is taken. It defaults to 0 which causes it to act as if there is no debouncing.</p>
+<p>20250816: The filament_switch_sensor adds a new option <code>debounce_delay</code> that
+takes a time in seconds to debounce the state of the switch before any action
+is taken. It defaults to 0 which causes it to act as if there is no debouncing.</p>
 <p>20250426: Option <code>CHIPS=&lt;chip_name&gt;</code> in <code>TEST_RESONANCES</code> and
 <code>SHAPER_CALIBRATE</code> requires specifying the full name(s) of the accel
 chip(s). For example, <code>adxl345 rpi</code> instead of short name - <code>rpi</code>.</p>
