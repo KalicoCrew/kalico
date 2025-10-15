@@ -407,11 +407,13 @@ class PrinterProbe:
             return self.drop_first_result
         return False
 
-    def _discard_first_result(self, speed: float, gcmd: GCodeCommand):
+    def _discard_first_result(
+        self, speed: float, retry_session: RetrySession, gcmd: GCodeCommand
+    ):
         if self._drop_first_result:
             pos, is_good = self._probe(speed, gcmd)
             # marks the initial probing location as fouled if needed
-            self.retry_session.evaluate_probe(is_good)
+            retry_session.evaluate_probe(is_good)
             self._retract(gcmd)
 
     # Raise the toolhead at the current x/y location
@@ -438,7 +440,9 @@ class PrinterProbe:
             self._retract(gcmd)
         raise gcmd.error("Probing failed")
 
-    def run_probe(self, gcmd: GCodeCommand):
+    def run_probe(
+        self, gcmd: GCodeCommand, retry_session: Optional[RetrySession] = None
+    ) -> list[float]:
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         sample_count = gcmd.get_int("SAMPLES", self.sample_count, minval=1)
         samples_tolerance = gcmd.get_float(
@@ -452,20 +456,21 @@ class PrinterProbe:
         if must_notify_multi_probe:
             self.multi_probe_begin(always_restore_toolhead=True)
         # Initialize probe retry state
-        self.retry_session.start(gcmd)
-        toolhead = self.printer.lookup_object("toolhead")
-        self.retry_session.set_position(toolhead.get_position())
-
+        if retry_session is None:
+            retry_session = self.retry_session
+            self.retry_session.start(gcmd)
+            toolhead = self.printer.lookup_object("toolhead")
+            self.retry_session.set_position(toolhead.get_position())
         # Handle drop first result, perform a probe and throw it away
         if self._drop_first_result:
             self._probe(speed, gcmd)
             self._retract(gcmd)
         retries = 0
         positions = []
-        self._discard_first_result(speed, gcmd)
+        self._discard_first_result(speed, retry_session, gcmd)
         while len(positions) < sample_count:
             # Probe position with retries
-            pos = self._run_probe_with_retries(speed, self.retry_session, gcmd)
+            pos = self._run_probe_with_retries(speed, retry_session, gcmd)
             positions.append(pos)
             # Check samples tolerance
             z_positions = [p[2] for p in positions]
@@ -546,7 +551,7 @@ class PrinterProbe:
             self._probe(speed, gcmd)
             self._retract(gcmd)
         positions = []
-        self._discard_first_result(speed, gcmd)
+        self._discard_first_result(speed, self.retry_session, gcmd)
         while len(positions) < sample_count:
             # Probe position
             pos = self._run_probe_with_retries(speed, self.retry_session, gcmd)
@@ -748,6 +753,8 @@ class ProbePointsHelper:
 
         self.enforce_lift_speed = config.getboolean("enforce_lift_speed", False)
 
+        # Probe retry configuration
+        self.retry_session = RetrySession(config)
         # Internal probing state
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
@@ -783,6 +790,14 @@ class ProbePointsHelper:
             speed = self.speed
         toolhead.manual_move([None, None, self.horizontal_move_z], speed)
 
+    def _next_pos(self):
+        nextpos = list(self.probe_points[len(self.results)])
+        if self.use_offsets:
+            nextpos[0] -= self.probe_offsets[0]
+            nextpos[1] -= self.probe_offsets[1]
+        self.retry_session.set_position(nextpos)
+        return self.retry_session.get_probe_position()
+
     def _move_next(self):
         toolhead = self.printer.lookup_object("toolhead")
         # Check if done probing
@@ -809,14 +824,12 @@ class ProbePointsHelper:
         if done:
             return True
         # Move to next XY probe point
-        nextpos = list(self.probe_points[len(self.results)])
-        if self.use_offsets:
-            nextpos[0] -= self.probe_offsets[0]
-            nextpos[1] -= self.probe_offsets[1]
-        toolhead.manual_move(nextpos, self.speed)
+        toolhead.manual_move(self._next_pos(), self.speed)
         return False
 
     def start_probe(self, gcmd):
+        self.retry_session.start(gcmd)
+        self.retry_session.reset_all()
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
         probe = self.printer.lookup_object("probe", None)
@@ -856,7 +869,7 @@ class ProbePointsHelper:
             done = self._move_next()
             if done:
                 break
-            pos = probe.run_probe(gcmd)
+            pos = probe.run_probe(gcmd, self.retry_session)
             self.results.append(pos)
         probe.multi_probe_end()
 
