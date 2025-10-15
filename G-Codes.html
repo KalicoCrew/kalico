@@ -1934,6 +1934,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cold_extrude" class="md-nav__link">
+    <span class="md-ellipsis">
+      COLD_EXTRUDE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#set_smooth_time" class="md-nav__link">
     <span class="md-ellipsis">
       SET_SMOOTH_TIME
@@ -5911,6 +5920,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cold_extrude" class="md-nav__link">
+    <span class="md-ellipsis">
+      COLD_EXTRUDE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#set_smooth_time" class="md-nav__link">
     <span class="md-ellipsis">
       SET_SMOOTH_TIME
@@ -7389,6 +7407,7 @@ commands that one may enter into the OctoPrint terminal tab.</p>
   value</li>
 </ul>
 </li>
+<li>Enable Cold Extrusion: `M302 [T<index>] [P<enable>] [S<min_extrude_temp>]</li>
 <li>Set bed temperature: <code>M140 [S&lt;temperature&gt;]</code></li>
 <li>Set bed temperature and wait: <code>M190 S&lt;temperature&gt;</code><ul>
 <li>Note: M190 always waits for temperature to settle at requested
@@ -8178,6 +8197,12 @@ above the supplied MINIMUM and/or at or below the supplied MAXIMUM.</p>
 <p><code>SET_HEATER_TEMPERATURE HEATER=&lt;heater_name&gt;
 [TARGET=&lt;target_temperature&gt;]</code>: Sets the target temperature for a
 heater. If a target temperature is not supplied, the target is 0.</p>
+<h4 id="cold_extrude">COLD_EXTRUDE<a class="headerlink" href="#cold_extrude" title="Permanent link">&para;</a></h4>
+<p>`COLD_EXTRUDE HEATER=<heater_name> [ENABLE=&lt;0 or 1&gt;]
+[MIN_EXTRUDE_TEMP=<min_extrude_temp>]: Enables or disables cold extrusion.
+If neither ENABLE nor MIN_EXTRUDE_TEMP are supplied, it
+will report the current state. If ENABLE is 0, cold extrusion is disabled,
+if it is 1 it is enabled.</p>
 <h4 id="set_smooth_time">SET_SMOOTH_TIME<a class="headerlink" href="#set_smooth_time" title="Permanent link">&para;</a></h4>
 <p><code>SET_SMOOTH_TIME HEATER=&lt;heater_name&gt; [SMOOTH_TIME=&lt;smooth_time&gt;]
 [SAVE_TO_PROFILE=0|1]</code>: Sets the smooth_time of the specified heater.
