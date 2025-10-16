@@ -1,0 +1,2 @@
+[kalico.plugins]
+testing = kalico_testing_plugin
