@@ -29,6 +29,16 @@ class PIDCalibrate:
     ):
         if isinstance(heater.control, heaters.ControlDualLoopPID):
             if calibrate_secondary:
+                delta = heater.control.secondary_max_temp - target
+                if delta <= 15.0:
+                    gcmd.respond_raw(
+                        "!! Target calibration temperature of %d°C is <= 15°C below `secondary_max_temp`."
+                        % target
+                    )
+                    gcmd.respond_raw(
+                        "!! Depending on the thermal mass this might prevent successful calibration."
+                    )
+
                 gcmd.respond_info(
                     "Calibrating secondary pid loop (target=%.1f)"
                     % (heater.control.secondary_max_temp)
