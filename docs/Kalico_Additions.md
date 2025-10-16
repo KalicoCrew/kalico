@@ -70,6 +70,7 @@
 - New [`RELOAD_GCODE_MACROS`](./G-Codes.md#reload_gcode_macros) G-Code command to reload `[gcode_macro]` templates without requiring a restart.
 - G-Code Macros can be written in Python. Read more [here](./Command_Templates.md)
   - Macros may also be loaded from other files, using `!!include path/to/file.py`
+- Inside a macro you can use `RETURN` to end macro execution early without raising an error.
 
 ## Plugins
 

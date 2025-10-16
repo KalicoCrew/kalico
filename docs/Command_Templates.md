@@ -104,6 +104,9 @@ gcode:
   RESTORE_GCODE_STATE NAME=clean_nozzle_state
 ```
 
+Additionally, in macro contexts you can use `RETURN` to end macro execution
+early.
+
 #### Jinja2: Macro parameters
 
 It is often useful to inspect parameters passed to the macro when
