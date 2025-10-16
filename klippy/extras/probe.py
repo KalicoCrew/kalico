@@ -204,6 +204,11 @@ class PrinterProbe:
             return self.drop_first_result
         return False
 
+    def _discard_first_result(self, speed: float, gcmd: GCodeCommand):
+        if self._drop_first_result:
+            self._probe(speed, gcmd)
+            self._retract(gcmd)
+
     # Raise the toolhead at the current x/y location
     def _retract(self, gcmd: GCodeCommand):
         sample_retract_dist = gcmd.get_float(
@@ -230,14 +235,10 @@ class PrinterProbe:
         retries = 0
         positions = []
 
-        first_probe = True
+        self._discard_first_result(speed, gcmd)
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(speed, gcmd)
-            if self._drop_first_result and first_probe:
-                first_probe = False
-                self._retract(gcmd)
-                continue
             positions.append(pos)
             # Check samples tolerance
             z_positions = [p[2] for p in positions]
@@ -309,14 +310,10 @@ class PrinterProbe:
         self.multi_probe_begin(always_restore_toolhead=True)
         positions = []
 
-        first_probe = True
+        self._discard_first_result(speed, gcmd)
         while len(positions) < sample_count:
             # Probe position
             pos = self._probe(speed, gcmd)
-            if self._drop_first_result and first_probe:
-                first_probe = False
-                self._retract(gcmd)
-                continue
             positions.append(pos)
             # Retract
             self._retract(gcmd)
