@@ -33,7 +33,7 @@ class SectionInterpolation(configparser.Interpolation):
     """
 
     _KEYCRE = re.compile(
-        r"\$\{(?:(?P<section>[^.:${}]+)[.:])?(?P<option>[^${}]+)\}"
+        r"(?<!\\)?\$\{(?:(?P<section>[^.:${}]+)[.:])?(?P<option>[^${}]+)\}"
     )
 
     def __init__(self, access_tracking):
@@ -58,7 +58,7 @@ class SectionInterpolation(configparser.Interpolation):
 
             value = value[: match.start()] + const + value[match.end() :]
 
-        return value
+        return value.replace("\\${", "${")
 
 
 class ConfigWrapper:
