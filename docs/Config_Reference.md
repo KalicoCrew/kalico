@@ -183,6 +183,8 @@ run_current: ${tmc5160 stepper_x.run_current}
 #   Nested references work, but are not advised
 ```
 
+If needed, references may be escaped as `\${such}`
+
 ## Common kinematic settings
 
 ### [printer]
