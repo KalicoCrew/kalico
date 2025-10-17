@@ -5,7 +5,10 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from . import bulk_sensor
+from klippy.mcu import MCU
+
+from .. import bulk_sensor
+from .interfaces import BulkAdcData, BulkAdcDataCallback, LoadCellSensor
 
 #
 # Constants
@@ -16,7 +19,7 @@ SAMPLE_ERROR_LONG_READ = 0x40000000
 
 
 # Implementation of HX711 and HX717
-class HX71xBase:
+class HX71xBase(LoadCellSensor):
     def __init__(
         self,
         config,
@@ -37,7 +40,8 @@ class HX71xBase:
         ppins = printer.lookup_object("pins")
         dout_ppin = ppins.lookup_pin(dout_pin_name)
         sclk_ppin = ppins.lookup_pin(sclk_pin_name)
-        self.mcu = mcu = dout_ppin["chip"]
+        mcu: MCU = dout_ppin["chip"]
+        self.mcu: MCU = mcu
         self.oid = mcu.create_oid()
         if sclk_ppin["chip"] is not mcu:
             raise config.error(
@@ -89,19 +93,19 @@ class HX71xBase:
             cq=self.mcu.alloc_command_queue(),
         )
 
-    def get_mcu(self):
+    def get_mcu(self) -> MCU:
         return self.mcu
 
-    def get_samples_per_second(self):
+    def get_samples_per_second(self) -> int:
         return self.sps
 
     # returns a tuple of the minimum and maximum value of the sensor, used to
     # detect if a data value is saturated
-    def get_range(self):
+    def get_range(self) -> tuple[int, int]:
         return -0x800000, 0x7FFFFF
 
     # add_client interface, direct pass through to bulk_sensor API
-    def add_client(self, callback):
+    def add_client(self, callback: BulkAdcDataCallback):
         self.batch_bulk.add_client(callback)
 
     # Measurement decoding
@@ -140,7 +144,7 @@ class HX71xBase:
             "%s finished '%s' measurements", self.sensor_type, self.name
         )
 
-    def _process_batch(self, eventtime):
+    def _process_batch(self, eventtime) -> BulkAdcData:
         prev_overflows = self.ffreader.get_last_overflows()
         prev_error_count = self.last_error_count
         samples = self.ffreader.pull_samples()

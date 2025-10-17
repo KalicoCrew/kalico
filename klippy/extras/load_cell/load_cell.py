@@ -3,11 +3,11 @@
 # Copyright (C) 2024 Gareth Farrington <gareth@waves.ky>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-
 import collections
 
-from . import ads1220, hx71x
-from .bulk_sensor import BatchWebhooksClient
+from klippy.configfile import ConfigWrapper
+from klippy.extras.bulk_sensor import BatchWebhooksClient
+from klippy.extras.load_cell.interfaces import BulkAdcSensor
 
 # We want either Python 3's zip() or Python 2's izip() but NOT 2's zip():
 zip_impl = zip
@@ -428,11 +428,11 @@ MIN_COUNTS_PER_GRAM = 1.0
 
 
 class LoadCell:
-    def __init__(self, config, sensor):
+    def __init__(self, config: ConfigWrapper, sensor: BulkAdcSensor):
         self.printer = printer = config.get_printer()
         self.config_name = config.get_name()
         self.name = config.get_name().split()[-1]
-        self.sensor = sensor  # must implement BulkSensorAdc
+        self.sensor = sensor
         buffer_size = sensor.get_samples_per_second() // 2
         self._force_buffer = collections.deque(maxlen=buffer_size)
         self.reference_tare_counts = config.getint(
@@ -607,16 +607,3 @@ class LoadCell:
             }
         )
         return status
-
-
-def load_config(config):
-    # Sensor types
-    sensors = {}
-    sensors.update(hx71x.HX71X_SENSOR_TYPES)
-    sensors.update(ads1220.ADS1220_SENSOR_TYPE)
-    sensor_class = config.getchoice("sensor_type", sensors)
-    return LoadCell(config, sensor_class(config))
-
-
-def load_config_prefix(config):
-    return load_config(config)
