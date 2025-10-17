@@ -30,7 +30,7 @@ class RingingTest:
         self.center_y = config.getfloat("center_y", None)
         self.layer_height = config.getfloat("layer_height", 0.2, above=0.0)
         self.first_layer_height = config.getfloat(
-            "first_layer_height", 0.2, above=self.layer_height
+            "first_layer_height", 0.2, minval=self.layer_height
         )
         self.perimeters = config.getint("perimeters", 2, minval=1)
         self.brim_width = config.getfloat(
