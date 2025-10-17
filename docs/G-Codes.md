@@ -1289,10 +1289,22 @@ see the [probe calibrate guide](Probe_Calibrate.md)).
 #### PROBE
 `PROBE [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
-[SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]`:
+[SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]
+[BAD_PROBE_STRATEGY=<FAIL|IGNORE|RETRY|CIRCLE>] [BAD_PROBE_RETRIES=<count>]
+[RETRY_SPEED=<mm/s>] [HOME=<z>]`: ⚠️
 Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
+- `HOME`: Set the value `z` to home the z axis from the probe result
+The following optional parameters control probe quality handling (for probes
+that support quality detection): ⚠️
+- `BAD_PROBE_STRATEGY`: Strategy to use when a bad probe is detected.
+  See the probe config section for available strategies.
+- `BAD_PROBE_RETRIES`: Maximum number of retry attempts for bad probes.
+- `RETRY_SPEED`: Probe speed to use when moving horizontally between
+  retry locations.
+- `PATTERN_SPACING`: Spacing (in mm) for the circular retry pattern when
+  using CIRCLE strategy.
 
 #### QUERY_PROBE
 `QUERY_PROBE`: Report the current status of the probe ("triggered" or
