@@ -181,8 +181,8 @@ class Heater:
                 self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
             )
         # logging.debug("temp: %.3f %f = %f", read_time, temp)
-        for mpc_sensor, temp_callback in self.mpc_sensors:
-            mpc_sensor.process_temp_update(temp_callback(), read_time)
+        for mpc_sensor in self.mpc_sensors:
+            mpc_sensor.process_temp_update(self.get_control(), read_time)
 
     def _handle_shutdown(self):
         self.verify_mainthread_time = -999.0
@@ -191,8 +191,8 @@ class Heater:
     def get_name(self):
         return self.name
 
-    def add_mpc_sensor(self, mpc_sensor, type):
-        self.mpc_sensors.append((mpc_sensor, type))
+    def add_mpc_sensor(self, mpc_sensor):
+        self.mpc_sensors.append(mpc_sensor)
 
     def get_pwm_delay(self):
         return self.pwm_delay

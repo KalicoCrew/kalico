@@ -24,9 +24,7 @@ class MPC_AMBIENT_TEMP_WRAPPER:
     def _handle_ready(self):
         pheaters = self.printer.lookup_object("heaters")
         self.heater = pheaters.lookup_heater(self.heater_name)
-        self.heater.add_mpc_sensor(
-            self, self.heater.get_control().get_ambient_temp
-        )
+        self.heater.add_mpc_sensor(self)
 
     def setup_callback(self, temperature_callback):
         self.temperature_callback = temperature_callback
@@ -38,8 +36,8 @@ class MPC_AMBIENT_TEMP_WRAPPER:
     def get_report_time_delta(self):
         return self.heater.sensor.get_report_time_delta()
 
-    def process_temp_update(self, temperature, read_time):
-        self.temp = temperature
+    def process_temp_update(self, control, read_time):
+        self.temp = control.get_ambient_temp()
 
         if self.temp is not None:
             if (
