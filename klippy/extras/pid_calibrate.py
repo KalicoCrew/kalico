@@ -327,7 +327,8 @@ class ControlAutoTune:
             self.heater.alter_target(self.temp_high)
         # set the pwm output based on the heater state
         if self.heating:
-            if not self.calibrate_secondary:
+            is_dual_loop = isinstance(self.control, heaters.ControlDualLoopPID)
+            if is_dual_loop and not self.calibrate_secondary:
                 pid = self.control.secondary_pid
                 secondary_target_temp = self.control.secondary_max_temp
                 _, bounded_co = pid.calculate_output(
