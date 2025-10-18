@@ -510,15 +510,11 @@ class PrinterRail:
             "homing_positive_dir", None
         )
 
-        self.min_home_dist = config.getfloat(
-            "min_home_dist", self.homing_retract_dist, minval=0.0
-        )
-
         self.homing_accel = config.getfloat("homing_accel", None, above=0.0)
 
         self.sample_count = config.getint("samples", 1, minval=1)
         self.sample_retract_dist = config.getfloat(
-            "sample_retract_dist", 2.0, above=0.0
+            "sample_retract_dist", self.homing_retract_dist, above=0.0
         )
         self.sample_retract_speed = config.getfloat(
             "sample_retract_speed", self.homing_retract_speed, above=0.0
@@ -545,6 +541,10 @@ class PrinterRail:
             self.retry_gcode = gcode_macro.load_template(
                 config, "retry_gcode", ""
             )
+
+        self.min_home_dist = config.getfloat(
+            "min_home_dist", self.sample_retract_dist, minval=0.0
+        )
 
         if self.homing_positive_dir is None:
             axis_len = self.position_max - self.position_min
