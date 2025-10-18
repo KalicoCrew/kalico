@@ -631,7 +631,7 @@ class HomingAccuracy(Homing):
             sigma = (deviation_sum / len(dists)) ** 0.5
 
             self.gcmd.respond_info(
-                "probe accuracy results: maximum %.6f, minimum %.6f, range %.6f, "
+                "homing accuracy results: maximum %.6f, minimum %.6f, range %.6f, "
                 "average %.6f, median %.6f, standard deviation %.6f"
                 % (max_value, min_value, range_value, avg_value, median, sigma)
             )
