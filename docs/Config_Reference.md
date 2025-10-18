@@ -3549,6 +3549,30 @@ sensor_type: temperature_combined
 #   to combine (e.g. 5 degrees). To disable it, use a large value (e.g. 999.9)
 ```
 
+### MPC Block temperature
+
+Sensor to expose the virtual mpc block temp used by the algorithm
+
+```
+sensor_type: mpc_block_temperature
+heater_name:
+#   Put the name of the heater this sensor is tied to (this parameter is required)
+#ignore_limits: False
+#   Ignore the temp limits (if set to true, the min and max temp can be omitted)
+```
+
+### MPC Ambient temperature
+
+Sensor to expose the virtual mpc ambient temp used by the algorithm
+
+```
+sensor_type: mpc_ambient_temperature
+heater_name:
+#   Put the name of the heater this sensor is tied to (this parameter is required)
+#ignore_limits: False
+#   Ignore the temp limits (if set to true, the min and max temp can be omitted)
+```
+
 ## Fans
 
 ### [fan]

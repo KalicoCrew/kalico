@@ -51,6 +51,12 @@ class ControlMPC:
             desc=self.cmd_MPC_SET_help,
         )
 
+    def get_block_temp(self):
+        return self.state_block_temp
+
+    def get_ambient_temp(self):
+        return self.state_ambient_temp
+
     cmd_MPC_SET_help = "Set MPC parameter"
 
     def cmd_MPC_SET(self, gcmd):

@@ -46,6 +46,7 @@ class Heater:
         self.configfile = self.printer.lookup_object("configfile")
         # Setup sensor
         self.sensor = sensor
+        self.mpc_sensors = []
         self.min_temp = config.getfloat("min_temp", minval=KELVIN_TO_CELSIUS)
         self.max_temp = config.getfloat("max_temp", above=self.min_temp)
         self.sensor.setup_minmax(self.min_temp, self.max_temp)
@@ -180,6 +181,8 @@ class Heater:
                 self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
             )
         # logging.debug("temp: %.3f %f = %f", read_time, temp)
+        for mpc_sensor, temp_callback in self.mpc_sensors:
+            mpc_sensor.process_temp_update(temp_callback(), read_time)
 
     def _handle_shutdown(self):
         self.verify_mainthread_time = -999.0
@@ -187,6 +190,9 @@ class Heater:
     # External commands
     def get_name(self):
         return self.name
+
+    def add_mpc_sensor(self, mpc_sensor, type):
+        self.mpc_sensors.append((mpc_sensor, type))
 
     def get_pwm_delay(self):
         return self.pwm_delay
@@ -865,6 +871,12 @@ class ControlBangBang:
         self.max_delta = profile["max_delta"]
         self.heating = False
 
+    def get_block_temp(self):
+        return self.heater.smoothed_temp
+
+    def get_ambient_temp(self):
+        return AMBIENT_TEMP
+
     def temperature_update(self, read_time, temp, target_temp):
         if self.heating and temp >= target_temp + self.max_delta:
             self.heating = False
@@ -921,6 +933,12 @@ class ControlPID:
         self.prev_temp_time = 0.0
         self.prev_temp_deriv = 0.0
         self.prev_temp_integ = 0.0
+
+    def get_block_temp(self):
+        return self.heater.smoothed_temp
+
+    def get_ambient_temp(self):
+        return AMBIENT_TEMP
 
     def calculate_output(self, read_time, temp, target_temp):
         time_diff = read_time - self.prev_temp_time
@@ -1003,6 +1021,12 @@ class ControlVelocityPID:
         self.d1 = 0.0  # previous smoothed 1st derivative
         self.d2 = 0.0  # previous smoothed 2nd derivative
         self.pwm = 0.0 if load_clean else self.heater.last_pwm_value
+
+    def get_block_temp(self):
+        return self.heater.smoothed_temp
+
+    def get_ambient_temp(self):
+        return AMBIENT_TEMP
 
     def temperature_update(self, read_time, temp, target_temp):
         # update the temp and time lists
@@ -1105,6 +1129,12 @@ class ControlDualLoopPID:
         )
 
         self.secondary_max_temp = self.heater.config.getfloat("inner_max_temp")
+
+    def get_block_temp(self):
+        return self.heater.smoothed_temp
+
+    def get_ambient_temp(self):
+        return AMBIENT_TEMP
 
     def temperature_update(
         self,
