@@ -384,15 +384,12 @@ class Homing:
                 else:
                     haltpos = self.toolhead.get_position()
                     result = [
-                        distances[-1][
-                            i
-                        ]  # Last deviation from the first home which is defined as 0.0
-                        + (
-                            dist - sample_retract_dist
-                        )  # deviation between retract and actual distance traveled till endstop triggered
-                        - (
-                            haltpos[i] - trigpos[i]
-                        )  # compensate for the deviation between haltpos and trigpos
+                        distances[-1][i]
+                        # Last deviation from the first home which is defined as 0.0
+                        + (dist - sample_retract_dist)
+                        # deviation between retract and actual distance traveled till endstop triggered
+                        - (haltpos[i] - trigpos[i])
+                        # compensate for the deviation between haltpos and trigpos
                         if i in homing_axes
                         else 0.0
                         for i, dist in enumerate(hmove.distance_elapsed)
