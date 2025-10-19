@@ -9,17 +9,10 @@ from klippy.configfile import ConfigWrapper
 from klippy.extras.bulk_sensor import BatchWebhooksClient
 from klippy.extras.load_cell.interfaces import BulkAdcSensor
 
-# We want either Python 3's zip() or Python 2's izip() but NOT 2's zip():
-zip_impl = zip
-try:
-    from itertools import izip as zip_impl  # python 2.x izip
-except ImportError:  # will be Python 3.x
-    pass
-
 
 # alternative to numpy's column selection:
 def select_column(data, column_idx):
-    return list(zip_impl(*data))[column_idx]
+    return list(zip(*data))[column_idx]
 
 
 def avg(data):
