@@ -2,6 +2,8 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
+ENV OR1K_ARCHIVE=or1k-elf-12.0.1-20220210-20220304.tar.xz
+ENV OR1K_RELEASE=or1k-12.0.1-20220210-20220304
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN mkdir /ci_build
@@ -15,10 +17,11 @@ RUN apt update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install or1k-linux-musl toolchain
+# Install or1k toolchain
 RUN --mount=type=cache,target=/ci_cache \
-    curl https://more.musl.cc/10/x86_64-linux-musl/or1k-linux-musl-cross.tgz -o /ci_cache/or1k-linux-musl-cross-10.tgz && \
-    tar -x -C /ci_build -f /ci_cache/or1k-linux-musl-cross-10.tgz
+    curl -L https://github.com/openrisc/or1k-gcc/releases/download/${OR1K_RELEASE}/${OR1K_ARCHIVE} \
+    -o /ci_cache/${OR1K_ARCHIVE} && \
+    tar -xJ -C /ci_build -f /ci_cache/${OR1K_ARCHIVE}
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
