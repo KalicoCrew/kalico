@@ -14,7 +14,8 @@ dependencies = [
   "numpy~=2.2 ; python_version>='3.10'",
   "pyserial==3.4",
   "python-can~=4.5",
-  "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3
+  "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3 
+  "shapely>=2.0.7",
 ]
 
 [tool.uv]
