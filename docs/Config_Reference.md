@@ -322,7 +322,8 @@ position_max:
 #   Minimum distance (in mm) for toolhead before sensorless homing. If closer
 #   than `min_home_dist` to endstop, it moves away to this distance, then homes.
 #   If further, it directly homes and retracts to `homing_retract_dist`.
-#   The default is equal to `homing_retract_dist`.
+#   The default is equal to `homing_retract_dist` or `sample_retract_dist`
+#   depending on which is lower.
 #second_homing_speed:
 #   Velocity (in mm/s) of the stepper when performing the second home.
 #   The default is homing_speed/2. If `use_sensorless_homing` is
