@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, pty, fcntl, termios, signal, logging, json, time
+import functools
+import importlib.metadata
 import subprocess
 import traceback
 
@@ -101,6 +103,33 @@ def dump_mcu_build():
     except:
         pass
     dump_file_stats(build_dir, "out/klipper.elf")
+
+
+######################################################################
+# Plugin loading and metadata
+######################################################################
+
+
+@functools.cache
+def find_entrypoints() -> dict[str, importlib.metadata.EntryPoint]:
+    entrypoints = importlib.metadata.entry_points()
+    if hasattr(entrypoints, "select"):
+        return {e.name: e for e in entrypoints.select(group="kalico.plugins")}
+    else:
+        return {e.name: e for e in entrypoints["kalico.plugins"]}
+
+
+@functools.cache
+def entrypoint_metadata(
+    entrypoint: importlib.metadata.EntryPoint,
+) -> dict[str, str]:
+    metadata = importlib.metadata.metadata(entrypoint.value)
+    return {
+        "name": metadata.get("name", entrypoint.name),
+        "version": metadata.get("version", None),
+        "summary": metadata.get("summary", None),
+        "description": metadata.get_payload(),
+    }
 
 
 ######################################################################

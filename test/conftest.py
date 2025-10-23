@@ -11,11 +11,6 @@ import os
 klippy.chelper.get_ffi()
 
 
-ROOT = pathlib.Path(__file__).parent.parent
-KLIPPY_PLUGINS = ROOT / "klippy" / "plugins"
-TESTING_PLUGIN = ROOT / "test" / "klippy_testing_plugin.py"
-
-
 def pytest_addoption(parser):
     parser.addoption(
         "--dictdir",
@@ -25,16 +20,17 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_sessionstart(session):
-    link_path = KLIPPY_PLUGINS / "testing.py"
-    if link_path.exists():
-        return
+# Use PYTHONPATH to enable the testing plugin
+TESTING_PLUGIN = pathlib.Path(__file__).parent / "kalico_testing_plugin"
 
-    os.symlink(TESTING_PLUGIN, link_path)
+
+def pytest_sessionstart(session):
+    old_python_path = os.environ.get("PYTHONPATH", "")
+    os.environ["PYTHONPATH"] = f"{TESTING_PLUGIN}:{old_python_path}"
 
     @session.config.add_cleanup
     def clean_symlink():
-        os.unlink(link_path)
+        os.environ["PYTHONPATH"] = old_python_path
 
 
 @pytest.fixture
