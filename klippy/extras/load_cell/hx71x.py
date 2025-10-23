@@ -4,7 +4,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bulk_sensor
+from .. import bulk_sensor
+from klippy.mcu import MCU
+from .interfaces import BulkAdcData, LoadCellSensor, BulkAdcDataCallback
 
 #
 # Constants
@@ -15,7 +17,7 @@ SAMPLE_ERROR_LONG_READ = 0x40000000
 
 
 # Implementation of HX711 and HX717
-class HX71xBase:
+class HX71xBase(LoadCellSensor):
     def __init__(
         self,
         config,
@@ -36,7 +38,8 @@ class HX71xBase:
         ppins = printer.lookup_object("pins")
         dout_ppin = ppins.lookup_pin(dout_pin_name)
         sclk_ppin = ppins.lookup_pin(sclk_pin_name)
-        self.mcu = mcu = dout_ppin["chip"]
+        mcu: MCU = dout_ppin["chip"]
+        self.mcu: MCU = mcu
         self.oid = mcu.create_oid()
         if sclk_ppin["chip"] is not mcu:
             raise config.error(
@@ -68,6 +71,7 @@ class HX71xBase:
         )
         # Command Configuration
         self.query_hx71x_cmd = None
+        self.attach_probe_cmd = None
         mcu.add_config_cmd(
             "config_hx71x oid=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
             % (self.oid, self.gain_channel, self.dout_pin, self.sclk_pin)
@@ -82,26 +86,32 @@ class HX71xBase:
         self.query_hx71x_cmd = self.mcu.lookup_command(
             "query_hx71x oid=%c rest_ticks=%u"
         )
+        self.attach_probe_cmd = self.mcu.lookup_command(
+            "hx71x_attach_load_cell_probe oid=%c load_cell_probe_oid=%c"
+        )
         self.ffreader.setup_query_command(
             "query_hx71x_status oid=%c",
             oid=self.oid,
             cq=self.mcu.alloc_command_queue(),
         )
 
-    def get_mcu(self):
+    def get_mcu(self) -> MCU:
         return self.mcu
 
-    def get_samples_per_second(self):
+    def get_samples_per_second(self) -> int:
         return self.sps
 
     # returns a tuple of the minimum and maximum value of the sensor, used to
     # detect if a data value is saturated
-    def get_range(self):
+    def get_range(self) -> tuple[int, int]:
         return -0x800000, 0x7FFFFF
 
     # add_client interface, direct pass through to bulk_sensor API
-    def add_client(self, callback):
+    def add_client(self, callback: BulkAdcDataCallback):
         self.batch_bulk.add_client(callback)
+
+    def attach_load_cell_probe(self, load_cell_probe_oid: int):
+        self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     # Measurement decoding
     def _convert_samples(self, samples):
@@ -139,7 +149,7 @@ class HX71xBase:
             "%s finished '%s' measurements", self.sensor_type, self.name
         )
 
-    def _process_batch(self, eventtime):
+    def _process_batch(self, eventtime) -> BulkAdcData:
         prev_overflows = self.ffreader.get_last_overflows()
         prev_error_count = self.last_error_count
         samples = self.ffreader.pull_samples()

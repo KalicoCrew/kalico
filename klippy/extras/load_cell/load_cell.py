@@ -3,23 +3,15 @@
 # Copyright (C) 2024 Gareth Farrington <gareth@waves.ky>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-
-from . import hx71x
-from . import ads1220
-from .bulk_sensor import BatchWebhooksClient
 import collections
-
-# We want either Python 3's zip() or Python 2's izip() but NOT 2's zip():
-zip_impl = zip
-try:
-    from itertools import izip as zip_impl  # python 2.x izip
-except ImportError:  # will be Python 3.x
-    pass
+from klippy.extras.load_cell import hx71x
+from klippy.extras.load_cell import ads1220
+from klippy.extras.bulk_sensor import BatchWebhooksClient
 
 
 # alternative to numpy's column selection:
 def select_column(data, column_idx):
-    return list(zip_impl(*data))[column_idx]
+    return list(zip(*data))[column_idx]
 
 
 def avg(data):
@@ -333,9 +325,6 @@ class LoadCellGuidedCalibrationHelper:
 # Optionally blocks execution while collecting with reactor.pause()
 # can collect a minimum n samples or collect until a specific print_time
 # samples returned in [[time],[force],[counts]] arrays for easy processing
-RETRY_DELAY = 0.05  # 20Hz
-
-
 class LoadCellSampleCollector:
     def __init__(self, printer, load_cell):
         self._printer = printer
@@ -346,9 +335,17 @@ class LoadCellSampleCollector:
         self.max_time = float("inf")
         self.min_count = float("inf")  # In Python 3.5 math.inf is better
         self.is_started = False
+        self._completion = None
         self._samples = []
         self._errors = 0
         self._overflows = 0
+
+    # move from the started to stopped state and trigger the completion
+    def _notify(self):
+        self.is_started = False
+        if self._completion is not None:
+            self._completion.complete(True)
+            self._completion = None
 
     def _on_samples(self, msg):
         if not self.is_started:
@@ -361,9 +358,9 @@ class LoadCellSampleCollector:
             if self.min_time <= time <= self.max_time:
                 self._samples.append(sample)
             if time > self.max_time:
-                self.is_started = False
+                self._notify()
         if len(self._samples) >= self.min_count:
-            self.is_started = False
+            self._notify()
         return self.is_started
 
     def _finish_collecting(self):
@@ -381,15 +378,19 @@ class LoadCellSampleCollector:
 
     def _collect_until(self, timeout):
         self.start_collecting()
-        while self.is_started:
-            now = self._reactor.monotonic()
-            if self._mcu.estimated_print_time(now) > timeout:
+        # calculate print time delay and convert to reactor time
+        now = self._reactor.monotonic()
+        print_time = self._mcu.estimated_print_time(now)
+        wake_time = now + (timeout - print_time)
+        if self.is_started:
+            self._completion = self._reactor.completion()
+            result = self._completion.wait(waketime=wake_time)
+            if result is None:
                 self._finish_collecting()
                 raise self._printer.command_error(
                     "LoadCellSampleCollector timed out! Errors: %i,"
                     " Overflows: %i" % (self._errors, self._overflows)
                 )
-            self._reactor.pause(now + RETRY_DELAY)
         return self._finish_collecting()
 
     # start collecting with no automatic end to collection
