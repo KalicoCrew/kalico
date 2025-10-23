@@ -107,9 +107,17 @@ class LoadCellCommandHelper:
         tare_counts = self.load_cell.avg_counts()
         self.load_cell.tare(tare_counts)
         tare_percent = self.load_cell.counts_to_percent(tare_counts)
-        gcmd.respond_info(
-            "Load cell tare value: %.2f%% (%i)" % (tare_percent, tare_counts)
-        )
+        tare_force = self.load_cell.tare_force
+        if tare_force is not None:
+            gcmd.respond_info(
+                "Load cell tare value: 0 = %.1fg (%.2f%% / %i)"
+                % (tare_force, tare_percent, tare_counts)
+            )
+        else:
+            gcmd.respond_info(
+                "Load cell tare value: 0 = %.2f%% (%i)"
+                % (tare_percent, tare_counts)
+            )
 
     cmd_CALIBRATE_LOAD_CELL_help = "Start interactive calibration tool"
 
@@ -439,6 +447,9 @@ class LoadCell:
             "reference_tare_counts", default=None
         )
         self.tare_counts = self.reference_tare_counts
+        self.tare_force = (
+            0.0 if self.reference_tare_counts is not None else None
+        )
         self.counts_per_gram = config.getfloat(
             "counts_per_gram", minval=MIN_COUNTS_PER_GRAM, default=None
         )
@@ -489,6 +500,11 @@ class LoadCell:
 
     def tare(self, tare_counts):
         self.tare_counts = int(tare_counts)
+        if self.is_calibrated():
+            tare_delta = float(tare_counts - self.reference_tare_counts)
+            self.tare_force = round(
+                self.invert * (tare_delta / self.counts_per_gram), 1
+            )
         self.printer.send_event("load_cell:tare", self)
 
     def set_calibration(self, counts_per_gram, tare_counts):
@@ -604,6 +620,7 @@ class LoadCell:
                 "counts_per_gram": self.counts_per_gram,
                 "reference_tare_counts": self.reference_tare_counts,
                 "tare_counts": self.tare_counts,
+                "tare_force": self.tare_force,
             }
         )
         return status
