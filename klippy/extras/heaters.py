@@ -849,7 +849,9 @@ class DualSensorHeater(Heater):
             temp_diff = primary_temp - self.smoothed_temp
             adj_time = min(time_diff * self.inv_smooth_time, 1.0)
             self.smoothed_temp += temp_diff * adj_time
-            self.can_extrude = self.smoothed_temp >= self.min_extrude_temp
+            self.can_extrude = (
+                self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
+            )
 
 
 ######################################################################
