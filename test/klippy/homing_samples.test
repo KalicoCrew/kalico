@@ -1,0 +1,12 @@
+# Test cases for multi sample homing
+CONFIG homing_samples.cfg
+DICTIONARY atmega2560.dict
+
+# First home the printer
+G90
+G28
+
+# Perform a dummy move
+G1 X10 F6000
+
+HOMING_ACCURACY AXIS=X
