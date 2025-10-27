@@ -761,7 +761,7 @@ def TMCtstepHelper(mcu_tmc, velocity, pstepper=None, config=None):
 
 
 # Helper to configure stealthChop-spreadCycle transition velocity
-def TMCStealthchopHelper(config, mcu_tmc, tmc_freq):
+def TMCStealthchopHelper(config, mcu_tmc):
     fields = mcu_tmc.get_fields()
     en_pwm_mode = False
     velocity = config.getfloat("stealthchop_threshold", None, minval=0.0)
@@ -834,7 +834,7 @@ class BaseTMCCurrentHelper:
         return needs
 
     def needs_hold_current_change(self, hold_current):
-        needs = hold_current != self.req_run_current
+        needs = hold_current != self.req_hold_current
         logging.info(f"tmc {self.name}: needs_hold_current_change {needs}")
         return needs
 

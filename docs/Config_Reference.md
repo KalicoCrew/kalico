@@ -183,6 +183,8 @@ run_current: ${tmc5160 stepper_x.run_current}
 #   Nested references work, but are not advised
 ```
 
+If needed, references may be escaped as `\${such}`
+
 ## Common kinematic settings
 
 ### [printer]
@@ -1098,11 +1100,11 @@ sensor_pin:
 #   be smoothed to reduce the impact of measurement noise. The default
 #   is 1 seconds.
 control:
-#   Control algorithm (either pid, pid_v, watermark or mpc). This parameter must
-#   be provided. pid_v should only be used on well calibrated heaters with
-#   low to moderate noise.
+#   Control algorithm (either pid, pid_v, dual_loop_pid, watermark or mpc).
+#   This parameter must be provided. pid_v should only be used on well
+#   calibrated heaters with low to moderate noise.
 #
-#   If control: pid or pid_v
+#   If control: pid, pid_v or dual_loop_pid
 #pid_Kp:
 #pid_Ki:
 #pid_Kd:
@@ -1154,7 +1156,31 @@ per_move_pressure_advance: False
 #   If true, uses pressure advance constant from trapq when processing moves
 #   This causes changes to pressure advance be taken into account immediately,
 #   for all moves in the current queue, rather than ~250ms later once the queue gets flushed
-
+#
+#   If: control: dual_loop_pid
+#inner_sensor_name:
+#   The temperature_sensor name of a second sensor to use for temperature
+#   control with 'dual_loop_pid'. This sensor will limit the heater power
+#   to not allow the temperature to exceed the 'inner_max_temp' value.
+#
+#   If: control: dual_loop_pid
+#inner_max_temp:
+#   The maximum temperature target that the inner sensor will allow.
+#
+#   If control: dual_loop_pid
+#inner_pid_Kp:
+#inner_pid_Ki:
+#inner_pid_Kd:
+#   'dual_loop_pid' control uses two PID loops to control the temperature.
+#   The inner(secondary) PID loop controls the temperature directly. The
+#   primary PID loop controls the power to the secondary PID loop. This
+#   allows the primary PID loop to be tuned for temperature control, while
+#   the secondary PID loop can be tuned for power control, not exceeding
+#   the temperature limit set on 'inner_max_temp'.
+#   The primary sensor is positioned close where the temperature
+#   measurament should be more accurate (e.g. on the bed surface). The
+#   secondary sensor is positioned where the temperature measurament
+#   should not exceed a limit (e.g. on the silicone heater).
 ```
 
 ### [heater_bed]
@@ -1685,7 +1711,9 @@ the nature of skew correction these lengths are set via gcode. See
 Temperature-dependant toolhead Z position adjustment. Compensate for vertical
 toolhead movement caused by thermal expansion of the printer's frame in
 real-time using a temperature sensor (typically coupled to a vertical section
-of frame).
+of frame). Multiple sections may be defined as [z_thermal_adjust component] to
+compensate for thermal expansion in different printer components, such as the
+hotend, heatbreak and frame.
 
 See also: [extended g-code commands](G-Codes.md#z_thermal_adjust).
 
@@ -1875,6 +1903,10 @@ gcode:
 #   useful for initialization procedures or a repeating delayed_gcode.
 #   If set to 0 the delayed_gcode will not execute on startup.
 #   Default is 0.
+#description: Update the duration of a delayed_gcode
+#   This will add a short description used at the HELP command or while
+#   using the auto completion feature. Default "Update the duration of 
+#   a delayed_gcode"
 ```
 
 ### [save_variables]
@@ -4016,6 +4048,10 @@ pin:
 #   A list of G-Code commands to execute when the button is released.
 #   G-Code templates are supported. The default is to not run any
 #   commands on a button release.
+#debounce_delay:
+#   A period of time in seconds to debounce events prior to running the
+#   button gcode. If the button is pressed and released during this
+#   delay, the entire button press is ignored. Default is 0.
 ```
 
 ### [output_pin]
@@ -4247,12 +4283,20 @@ sense_resistor:
 #driver_TOFF: 4
 #driver_HEND: 7
 #driver_HSTRT: 0
+#driver_VHIGHFS: 0
+#driver_VHIGHCHM: 0
 #driver_PWM_AUTOSCALE: True
 #driver_PWM_FREQ: 1
 #driver_PWM_GRAD: 4
 #driver_PWM_AMPL: 128
 #driver_FREEWHEEL: 0
 #driver_SGT: 0
+#driver_SEMIN: 0
+#driver_SEUP: 0
+#driver_SEMAX: 0
+#driver_SEDN: 0
+#driver_SEIMIN: 0
+#driver_SFILT: 0
 #   Set the given register during the configuration of the TMC2130
 #   chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
@@ -4388,6 +4432,11 @@ sense_resistor:
 #driver_PWM_OFS: 36
 #driver_FREEWHEEL: 0
 #driver_SGTHRS: 0
+#driver_SEMIN: 0
+#driver_SEUP: 0
+#driver_SEMAX: 0
+#driver_SEDN: 0
+#driver_SEIMIN: 0
 #   Set the given register during the configuration of the TMC2209
 #   chip. This may be used to set custom motor parameters. The
 #   defaults for each parameter are next to the parameter name in the
@@ -5483,6 +5532,11 @@ more information.
 #   dispatch and execution of the runout_gcode. It may be useful to
 #   increase this delay if OctoPrint exhibits strange pause behavior.
 #   Default is 0.5 seconds.
+#debounce_delay:
+#   A period of time in seconds to debounce events prior to running the
+#   switch gcode. The switch must he held in a single state for at least
+#   this long to activate. If the switch is toggled on/off during this delay,
+#   the event is ignored. Default is 0.
 #switch_pin:
 #   The pin on which the switch is connected. This parameter must be
 #   provided.

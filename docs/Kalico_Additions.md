@@ -57,7 +57,7 @@
 - [`[temperature_fan] control: curve`](./Config_Reference.md#temperature_fan) lets you set a fan curve instead of linear control
 - [`[temperature_fan] reverse: True`](./Config_Reference.md#temperature_fan) will let you control a fan in reverse to temperature control. The lower the temperature, the higher the fan runs.
 - Fans now normalize PWM power within `off_below` and `max_power`, so setting a fan to 10% will get you 10% fan speed within your configured off/max range.
-
+- Dual-loop PID control to accurately manage the bed's temperature while limiting heater power to prevent exceeding a maximum temperature.
 
 ## TMC Drivers
 

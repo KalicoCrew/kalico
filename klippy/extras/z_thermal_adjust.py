@@ -59,8 +59,17 @@ class ZThermalAdjuster:
         self.next_transform = None
 
         # Register gcode commands
-        self.gcode.register_command(
+        full_name = config.get_name()
+        self.component = None
+        if not full_name == "z_thermal_adjust":
+            self.component = full_name.split(maxsplit=1)[-1]
+        self.register_commands(self.component)
+
+    def register_commands(self, component):
+        self.gcode.register_mux_command(
             "SET_Z_THERMAL_ADJUST",
+            "COMPONENT",
+            component,
             self.cmd_SET_Z_THERMAL_ADJUST,
             desc=self.cmd_SET_Z_THERMAL_ADJUST_help,
         )
@@ -180,7 +189,11 @@ class ZThermalAdjuster:
 
         state = "1 (enabled)" if self.adjust_enable else "0 (disabled)"
         override = " (manual)" if self.ref_temp_override else ""
+        component = ""
+        if self.component is not None:
+            component = "component: %s\n" % (self.component,)
         msg = (
+            "%s"
             "enable: %s\n"
             "temp_coeff: %f mm/degC\n"
             "ref_temp: %.2f degC%s\n"
@@ -188,6 +201,7 @@ class ZThermalAdjuster:
             "Current Z temp: %.2f degC\n"
             "Applied Z adjustment: %.4f mm"
             % (
+                component,
                 state,
                 self.temp_coeff,
                 self.ref_temperature,
@@ -199,6 +213,10 @@ class ZThermalAdjuster:
         gcmd.respond_info(msg)
 
     cmd_SET_Z_THERMAL_ADJUST_help = "Set/query Z Thermal Adjust parameters."
+
+
+def load_config_prefix(config):
+    return ZThermalAdjuster(config)
 
 
 def load_config(config):

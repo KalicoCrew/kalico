@@ -27,6 +27,7 @@ Kalico supports the following standard G-Code commands:
 - Set extruder temperature and wait: `M109 [T<index>] S<temperature>`
   - Note: M109 always waits for temperature to settle at requested
     value
+- Enable Cold Extrusion: `M302 [T<index>] [P<enable>] [S<min_extrude_temp>]
 - Set bed temperature: `M140 [S<temperature>]`
 - Set bed temperature and wait: `M190 S<temperature>`
   - Note: M190 always waits for temperature to settle at requested
@@ -275,6 +276,12 @@ is active. The optional `HORIZONTAL_MOVE_Z` value overrides the
 
 The following commands are available when a
 [belay config section](Config_Reference.md#belay) is enabled.
+
+#### BELAY_ENABLE
+`BELAY_ENABLE BELAY=<config_name>`: Enable compensation for belay specified by `BELAY`.
+
+#### BELAY_DISABLE
+`BELAY_DISABLE BELAY=<config_name>`: Disable compensation for belay specified by `BELAY`. This setting will not persist across restarts.
 
 #### QUERY_BELAY
 `QUERY_BELAY BELAY=<config_name>`: Queries the state of the belay
@@ -955,6 +962,13 @@ above the supplied MINIMUM and/or at or below the supplied MAXIMUM.
 `SET_HEATER_TEMPERATURE HEATER=<heater_name>
 [TARGET=<target_temperature>]`: Sets the target temperature for a
 heater. If a target temperature is not supplied, the target is 0.
+
+#### COLD_EXTRUDE
+`COLD_EXTRUDE HEATER=<heater_name> [ENABLE=<0 or 1>]
+[MIN_EXTRUDE_TEMP=<min_extrude_temp>]: Enables or disables cold extrusion.
+If neither ENABLE nor MIN_EXTRUDE_TEMP are supplied, it
+will report the current state. If ENABLE is 0, cold extrusion is disabled,
+if it is 1 it is enabled.
 
 #### SET_SMOOTH_TIME
 `SET_SMOOTH_TIME HEATER=<heater_name> [SMOOTH_TIME=<smooth_time>]
@@ -1978,15 +1992,19 @@ The following commands are available when the
 is enabled.
 
 #### SET_Z_THERMAL_ADJUST
-`SET_Z_THERMAL_ADJUST [ENABLE=<0:1>] [TEMP_COEFF=<value>] [REF_TEMP=<value>]`:
-Enable or disable the Z thermal adjustment with `ENABLE`. Disabling does not
+`SET_Z_THERMAL_ADJUST [COMPONENT=name] [ENABLE=<0:1>] [TEMP_COEFF=<value>]
+ [REF_TEMP=<value>]`:
+- `COMPONENT`: if multiple thermal adjustments are defined use `COMPONENT` to
+specify which one to adjust.
+- `ENABLE`: Enable or disable the Z thermal adjustment. Disabling does not
 remove any adjustment already applied, but will freeze the current adjustment
 value - this prevents potentially unsafe downward Z movement. Re-enabling can
 potentially cause upward tool movement as the adjustment is updated and applied.
-`TEMP_COEFF` allows run-time tuning of the adjustment temperature coefficient
+- `TEMP_COEFF`: allows run-time tuning of the adjustment temperature coefficient
 (i.e. the `TEMP_COEFF` config parameter). `TEMP_COEFF` values are not saved to
-the config. `REF_TEMP` manually overrides the reference temperature typically
-set during homing (for use in e.g. non-standard homing routines) - will be reset
+the config.
+- `REF_TEMP` manually overrides the reference temperature typically set during
+homing (for use in e.g. non-standard homing routines) - will be reset
 automatically upon homing.
 
 ### ⚠️ [z_calibration]

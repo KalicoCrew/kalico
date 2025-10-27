@@ -8,6 +8,14 @@ All dates in this document are approximate.
 
 ## Changes
 
+20250817: The gcode_button section adds a new option `debounce_delay` that
+takes a time in seconds to debounce the state of the button before any action
+is taken. It defaults to 0 which causes it to act as if there is no debouncing.
+
+20250816: The filament_switch_sensor adds a new option `debounce_delay` that
+takes a time in seconds to debounce the state of the switch before any action
+is taken. It defaults to 0 which causes it to act as if there is no debouncing.
+
 20250426: Option `CHIPS=<chip_name>` in `TEST_RESONANCES` and
 `SHAPER_CALIBRATE` requires specifying the full name(s) of the accel
 chip(s). For example, `adxl345 rpi` instead of short name - `rpi`.

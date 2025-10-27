@@ -89,6 +89,16 @@ The following information is available in the `configfile` object
   field (both strings). Additional fields may be available depending
   on the type of warning.
 
+## control_mpc
+
+The following information is available in the `extruder.control_stats` object
+(this object is automatically available if control type for [extruder](Config_Reference.md#extruder) config section is set to [mpc](MPC.md):
+- `loss_ambient`: The current/last ambient loss rate.
+- `loss_filament`: The current/last filament loss rate.
+- `filament_temp`: The current filament temperature.
+- `filament_heat_capacity`: The current specific heat capacity of filament in J/g/K.
+- `filament_density`: The current filament density in g/mm^3.
+
 ## display_status
 
 The following information is available in the `display_status` object
