@@ -1226,6 +1226,11 @@ class MCU:
                 f"MCU {self._name!r} currently has firmware compiled for {app} (version {version})."
                 f" It is recommended to re-flash for best compatiblity with Kalico"
             )
+        elif sources != self._printer.get_start_args().get("sources_hash"):
+            pconfig = self._printer.lookup_object("configfile")
+            pconfig.runtime_warning(
+                f"MCU {self._name!r} firmware is out of date, it will still work but an update is recommended"
+            )
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
