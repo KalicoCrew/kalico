@@ -787,15 +787,18 @@ def main():
     logging.info("=======================")
     logging.info("Starting Klippy...")
     git_info = util.get_git_version()
+    sources_hash = util.get_firmware_hash()
     git_vers = git_info["version"]
 
     extra_git_desc = ""
     extra_git_desc += "\nBranch: %s" % (git_info["branch"])
     extra_git_desc += "\nRemote: %s" % (git_info["remote"])
     extra_git_desc += "\nTracked URL: %s" % (git_info["url"])
+    extra_git_desc += "\nSources Hash: %s" % (sources_hash)
     start_args["software_version"] = git_vers
     start_args["git_branch"] = git_info["branch"]
     start_args["git_remote"] = git_info["remote"]
+    start_args["sources_hash"] = sources_hash
     start_args["cpu_info"] = util.get_cpu_info()
     if bglogger is not None:
         versions = "\n".join(

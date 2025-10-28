@@ -1214,9 +1214,11 @@ class MCU:
             )
         app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
+        sources = msgparser.get_sources_hash()
         self._get_status_info["app"] = app
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
+        self._get_status_info["mcu_sources"] = sources
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
         if app in ("Klipper", "Danger-Klipper"):
             pconfig = self._printer.lookup_object("configfile")
