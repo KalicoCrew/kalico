@@ -37,6 +37,9 @@ class DangerOptions:
         self.homing_elapsed_distance_tolerance = config.getfloat(
             "homing_elapsed_distance_tolerance", 0.5, minval=0.0
         )
+        self.warn_on_mismatched_firmware_sources = config.getboolean(
+            "warn_on_mismatched_firmware_sources", True
+        )
 
         temp_ignore_limits = False
         if config.getboolean("temp_ignore_limits", None) is None:
