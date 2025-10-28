@@ -249,6 +249,13 @@ class GCodeDispatch:
                 % (cmd, key, value, prev_key)
             )
         if value in prev_values:
+            if func is None:
+                old_func = prev_values[value]
+                del prev_values[value]
+                if not prev_values:
+                    self.register_command(cmd, None, desc=desc)
+                    del self.mux_commands[cmd]
+                return old_func
             raise self.printer.config_error(
                 "mux command %s %s %s already registered (%s)"
                 % (cmd, key, value, prev_values)
