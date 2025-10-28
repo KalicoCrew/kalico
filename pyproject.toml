@@ -42,9 +42,10 @@ extend-select = [
   "B006",  # Checks for uses of mutable objects as function argument defaults
   "FA100", # Detect when type annotations could be made better with PEP563
   "FA102", # Detect type annotations that would require `from __future__ import annotations`
+  "I001",  # unsorted-imports: Import block is un-sorted or un-formatted
+  "I002",  # missing-required-import: Missing required import: {name}"
 ]
 ignore = [
-  "E401", # Multiple imports on one line
   "C901", # Function is too complex
   "E501", # Line too long (82 > 79 characters)
   "E302", # Expected 2 blank lines, found 0
