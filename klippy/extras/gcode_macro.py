@@ -290,7 +290,7 @@ class Template:
         self.reload(script_type, script)
 
     def __call__(self, context=None):
-        return self.function(context)
+        return self.function.run_gcode_from_command(context)
 
     def __getattr__(self, name):
         return getattr(self.function, name)
