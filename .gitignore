@@ -6,6 +6,7 @@ __pycache__/
 .config
 .config.old
 klippy/.version
+klippy/.sources
 .history/
 .DS_Store
 ci_build/
