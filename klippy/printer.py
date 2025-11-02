@@ -3,10 +3,17 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
 
+from enum import Enum
+from typing import Optional, Callable, Union, Any
+from types import ModuleType
+from pathlib import Path
+from collections import defaultdict
 import sys, os, gc, optparse, logging, time, collections, importlib, importlib.util
 
 from . import compat
+from klippy.configfile import ConfigWrapper
 from . import util, reactor, queuelogger, msgproto
 from . import gcode, configfile, pins, mcu, toolhead, webhooks
 from .extras.danger_options import get_danger_options
@@ -58,6 +65,152 @@ class WaitInterruption(gcode.CommandError):
     pass
 
 
+class PrinterModuleType(Enum):
+    EXTRA = "klippy.extras."
+    PLUGIN = ("klippy.extras.", True)
+    PLUGIN_OVERRIDE_EXTRA = ("klippy.extras.", True, True)
+    PLUGIN_DIRECTORY = ("klippy.plugins.", True)
+    PLUGIN_DIRECTORY_OVERRIDE_EXTRA = ("klippy.plugins.", True, True)
+
+    def __init__(
+        self,
+        module_root,
+        custom_loading: bool = False,
+        is_override: bool = False,
+    ):
+        self.module_root = module_root
+        self.custom_loading = custom_loading
+        self.is_override = is_override
+
+    def import_module(self, module_name: str, module_path: Path) -> ModuleType:
+        full_name = self.module_root + module_name
+        if self.custom_loading:
+            return self._module_from_spec(full_name, module_path)
+        return self._import_module(full_name)
+
+    @staticmethod
+    def _import_module(module_name: str) -> ModuleType:
+        """
+        Import a module when its physical path on disk matches it module path
+        All extras and plugins in a directory
+        """
+        return importlib.import_module(module_name)
+
+    @staticmethod
+    def _module_from_spec(module_name: str, module_path: Path) -> ModuleType:
+        """
+        Import a module when its module path doesn't match its physical path
+        Default for plugin files
+        """
+        path = module_path
+        if path.is_dir():
+            path = module_path.joinpath("__init__.py")
+        mod_spec = importlib.util.spec_from_file_location(module_name, path)
+        if mod_spec is None:
+            raise ModuleNotFoundError(f"Module {module_name} failed to load")
+        module = importlib.util.module_from_spec(mod_spec)
+        mod_spec.loader.exec_module(module)
+        # TODO: insert into sys_modules?
+        # sys.modules[module_name] = module
+        return module
+
+
+class SubsystemComponentCollection:
+    def __init__(self, config_error):
+        self._subsystems: dict[str, dict[str, Any]] = defaultdict(dict)
+        self._config_error = config_error
+
+    def get_components(self, subsystem_name) -> dict[str, Any]:
+        """
+        Return the map of all registered components of a subsystem
+        """
+        return self._subsystems[subsystem_name]
+
+    def register_component(
+        self,
+        subsystem_name: str,
+        component_name: str,
+        component: Any,
+    ):
+        """
+        Register 1 component to a subsystem under a unique name
+        """
+        subsystem = self._subsystems[subsystem_name]
+        if component_name in subsystem:
+            raise self._config_error(
+                f"Component '{subsystem_name}:{component_name}' is already registered"
+            )
+        subsystem[component_name] = component
+
+
+class PrinterModule:
+    path: Path
+    name: str
+    module_type: PrinterModuleType
+    exception: Optional[Exception] = None
+    module: Optional[ModuleType] = None
+    allow_plugin_override: bool
+    config_error: Callable
+
+    def __init__(
+        self,
+        path: Path,
+        module_type: PrinterModuleType,
+        allow_plugin_override: bool,
+        config_error: Callable,
+    ):
+        self.path = path
+        self.name = path.stem
+        self.module_type = module_type
+        self.allow_plugin_override = allow_plugin_override
+        self.config_error = config_error
+
+    def load(self):
+        try:
+            self.module = self.module_type.import_module(self.name, self.path)
+        except Exception as ex:
+            logging.exception(f"Failed to load module '{self.name}'.")
+            self.exception = ex
+
+    def get_init_function(self, section: str):
+        # if loading failed, raise that exception now
+        self.verify_loaded()
+        self.validate_plugin_overrides()
+        # find the right init function
+        is_prefix = self.name != section
+        init_func_name = "load_config_prefix" if is_prefix else "load_config"
+        return self.get_method(init_func_name)
+
+    def register_components(self, collector: SubsystemComponentCollection):
+        # skip failed modules: this is a tradeoff vs failing all loading for
+        # unused modules
+        if self.exception is not None:
+            return
+        register_func = self.get_method("register_components")
+        if register_func is None:
+            return
+        # only validate now that the call will actually happen
+        self.validate_plugin_overrides()
+        register_func(collector)
+
+    def validate_plugin_overrides(self):
+        if not self.module_type.is_override:
+            return
+        if not self.allow_plugin_override:
+            raise self.config_error(
+                f"Module '{self.name}' found in both extras and plugins!"
+            )
+
+    def verify_loaded(self):
+        if self.exception is not None:
+            raise self.exception
+
+    def get_method(self, function_name):
+        if self.module is None:
+            return None
+        return getattr(self.module, function_name, None)
+
+
 class Printer:
     config_error = configfile.error
     command_error = gcode.CommandError
@@ -75,10 +228,90 @@ class Printer:
         self.in_shutdown_state = False
         self.run_result = None
         self.event_handlers = {}
+        self.printer_modules: dict[str, PrinterModule] = {}
+        self.components = SubsystemComponentCollection(self.config_error)
         self.objects = collections.OrderedDict()
         # Init printer components that must be setup prior to config
         for m in [gcode, webhooks]:
             m.add_early_printer_objects(self)
+
+    @staticmethod
+    def _list_modules(search_path: str) -> list[Path]:
+        """
+        list files + directories and filter to only those that could be a module
+        """
+        path_list: list[Path] = []
+        for path_string in os.listdir(search_path):
+            path = Path(os.path.join(search_path, path_string))
+            # don't include hidden files or directories
+            # don't include __init__.py
+            if path.name.startswith(".") or path.name.startswith("__"):
+                continue
+            # only include files that are .py files
+            if path.is_file() and not path.name.endswith(".py"):
+                continue
+            path_list.append(path)
+        return path_list
+
+    def _load_modules(self, config: ConfigWrapper):
+        allow_overrides = self._allow_plugin_override(config)
+        extra_modules: dict[str, PrinterModule] = {}
+        extras_path = os.path.join(os.path.dirname(__file__), "extras")
+        extras = self._list_modules(extras_path)
+        extra_names = [extra.stem for extra in extras]
+        plugin_modules: dict[str, PrinterModule] = {}
+        plugins_path = os.path.join(os.path.dirname(__file__), "plugins")
+        plugins = self._list_modules(plugins_path)
+        plugin_names = [plugin.stem for plugin in plugins]
+
+        for plugin in plugins:
+            is_dir = plugin.is_dir()
+            is_override = plugin.name in extra_names
+            if is_override:
+                if is_dir:
+                    module_type = (
+                        PrinterModuleType.PLUGIN_DIRECTORY_OVERRIDE_EXTRA
+                    )
+                else:
+                    module_type = PrinterModuleType.PLUGIN_OVERRIDE_EXTRA
+            else:
+                if is_dir:
+                    module_type = PrinterModuleType.PLUGIN_DIRECTORY
+                else:
+                    module_type = PrinterModuleType.PLUGIN
+            pm = PrinterModule(
+                plugin, module_type, allow_overrides, self.config_error
+            )
+            plugin_modules[pm.name] = pm
+            pm.load()
+
+        for extra in extras:
+            # don't load extras that were overridden by plugins
+            if extra.name in plugin_names:
+                continue
+            pm = PrinterModule(
+                extra,
+                PrinterModuleType.EXTRA,
+                allow_overrides,
+                self.config_error,
+            )
+            pm.load()
+            extra_modules[pm.name] = pm
+
+        # plugins override extras:
+        self.printer_modules = extra_modules | plugin_modules
+
+    def _register_subsystem_components(self):
+        for name, module in self.printer_modules.items():
+            module.register_components(self.components)
+
+    @staticmethod
+    def _allow_plugin_override(config) -> bool:
+        """Check config directly for allow_plugin_override before danger_options loads"""
+        section = config.getsection("danger_options")
+        return section.getboolean(
+            "allow_plugin_override", False, note_valid=False
+        )
 
     def get_start_args(self):
         return self.start_args
@@ -123,6 +356,11 @@ class Printer:
             raise self.config_error("Unknown config object '%s'" % (name,))
         return default
 
+    def lookup_components(
+        self, subsystem_name: str
+    ) -> dict[str, Union[object, Callable, str]]:
+        return self.components.get_components(subsystem_name)
+
     def lookup_objects(self, module=None):
         if module is None:
             return list(self.objects.items())
@@ -134,81 +372,45 @@ class Printer:
             return [(module, self.objects[module])] + objs
         return objs
 
-    def load_object(self, config, section, default=configfile.sentinel):
+    def load_object(
+        self, config, section, default: Optional[Any] = configfile.sentinel
+    ):
         if section in self.objects:
             return self.objects[section]
+
+        # create objects entry from module
         module_parts = section.split()
         module_name = module_parts[0]
-        extras_py_name = os.path.join(
-            os.path.dirname(__file__), "extras", module_name + ".py"
-        )
-        extras_py_dirname = os.path.join(
-            os.path.dirname(__file__), "extras", module_name, "__init__.py"
-        )
-
-        plugins_py_dirname = os.path.join(
-            os.path.dirname(__file__), "plugins", module_name, "__init__.py"
-        )
-        plugins_py_name = os.path.join(
-            os.path.dirname(__file__), "plugins", module_name + ".py"
-        )
-
-        found_in_extras = os.path.exists(extras_py_name) or os.path.exists(
-            extras_py_dirname
-        )
-        found_in_plugins = os.path.exists(plugins_py_name)
-        found_in_plugins_dir = os.path.exists(plugins_py_dirname)
-
-        if not any([found_in_extras, found_in_plugins, found_in_plugins_dir]):
-            if default is not configfile.sentinel:
-                return default
-            raise self.config_error("Unable to load module '%s'" % (section,))
-
-        if (
-            found_in_extras
-            and (found_in_plugins or found_in_plugins_dir)
-            and not get_danger_options().allow_plugin_override
-        ):
-            raise self.config_error(
-                "Module '%s' found in both extras and plugins!" % (section,)
-            )
-
-        if found_in_plugins:
-            mod_spec = importlib.util.spec_from_file_location(
-                "klippy.extras." + module_name, plugins_py_name
-            )
-            mod = importlib.util.module_from_spec(mod_spec)
-            mod_spec.loader.exec_module(mod)
-        elif found_in_plugins_dir:
-            mod_spec = importlib.util.spec_from_file_location(
-                "klippy.plugins." + module_name, plugins_py_dirname
-            )
-            mod = importlib.util.module_from_spec(mod_spec)
-            mod_spec.loader.exec_module(mod)
-        else:
-            mod = importlib.import_module("klippy.extras." + module_name)
-
-        init_func = "load_config"
-        if len(module_parts) > 1:
-            init_func = "load_config_prefix"
-        init_func = getattr(mod, init_func, None)
-        if init_func is None:
-            if default is not configfile.sentinel:
-                return default
-            raise self.config_error("Unable to load module '%s'" % (section,))
-        self.objects[section] = init_func(config.getsection(section))
-        return self.objects[section]
+        if module_name in self.printer_modules:
+            printer_module = self.printer_modules[module_name]
+            printer_module.verify_loaded()
+            init_func = printer_module.get_init_function(section)
+            if init_func is None:
+                if default is not configfile.sentinel:
+                    return default
+                raise self.config_error(
+                    f"Unable to load module '{module_name}'"
+                )
+            self.objects[section] = init_func(config.getsection(section))
+            return self.objects[section]
+        # unable to find that module
+        if default is not configfile.sentinel:
+            return default
+        raise self.config_error(f"Module '{module_name}' not found")
 
     def _read_config(self):
         self.objects["configfile"] = pconfig = configfile.PrinterConfig(self)
         config = pconfig.read_main_config()
-        self.load_object(config, "danger_options", None)
+        self._load_modules(config)
+        self.load_object(config, "danger_options")
         if (
             self.bglogger is not None
             and get_danger_options().log_config_file_at_startup
         ):
             pconfig.log_config(config)
-        # Create printer components
+        # Register subsystem components
+        self._register_subsystem_components()
+        # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)
         for section_config in config.get_prefix_sections(""):
