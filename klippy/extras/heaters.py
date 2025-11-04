@@ -34,6 +34,11 @@ PID_PROFILE_OPTIONS = {
     "pid_ki": (float, "%.3f"),
     "pid_kd": (float, "%.3f"),
 }
+DUAL_LOOP_PID_PROFILE_OPTIONS = {
+    "inner_pid_kp": (float, "%.3f"),
+    "inner_pid_ki": (float, "%.3f"),
+    "inner_pid_kd": (float, "%.3f"),
+}
 
 
 class Heater:
@@ -509,15 +514,14 @@ class Heater:
                     temp_profile[key] = self._check_value_config(
                         key, config_section, type, can_be_none
                     )
-                    # Add the keys for the outer/primary loop
-                    if key in ["pid_kp", "pid_ki", "pid_kd"]:
-                        inner_key = "inner_" + key
-                        temp_profile[inner_key] = self._check_value_config(
-                            inner_key,
-                            config_section,
-                            type,
-                            can_be_none,
-                        )
+                for key, (
+                    type,
+                    placeholder,
+                ) in DUAL_LOOP_PID_PROFILE_OPTIONS.items():
+                    can_be_none = key not in ["pid_kp", "pid_ki", "pid_kd"]
+                    temp_profile[key] = self._check_value_config(
+                        key, config_section, type, can_be_none
+                    )
 
                 if name == "default":
                     temp_profile["smooth_time"] = None
@@ -670,7 +674,9 @@ class Heater:
                 % (target, tolerance, control, smooth_time, kp, ki, kd, name)
             )
 
-        def save_profile(self, profile_name=None, gcmd=None, verbose=True):
+        def save_profile(
+            self, profile_name=None, gcmd=None, verbose=True, dual_loop=False
+        ):
             temp_profile = self.outer_instance.get_control().get_profile()
             if profile_name is None:
                 profile_name = temp_profile["name"]
@@ -684,6 +690,16 @@ class Heater:
                     self.outer_instance.configfile.set(
                         section_name, key, placeholder % value
                     )
+            if dual_loop:
+                for key, (
+                    type,
+                    placeholder,
+                ) in DUAL_LOOP_PID_PROFILE_OPTIONS.items():
+                    value = temp_profile[key]
+                    if value is not None:
+                        self.outer_instance.configfile.set(
+                            section_name, key, placeholder % value
+                        )
             temp_profile["name"] = profile_name
             self.profiles[profile_name] = temp_profile
             if verbose:

@@ -110,7 +110,10 @@ class PIDCalibrate:
             raise gcmd.error(str(e))
         self.printer.lookup_object("toolhead").get_last_move_time()
 
+        dual_loop = False
+
         if isinstance(heater.control, heaters.ControlDualLoopPID):
+            dual_loop = True
             # Calibrate the inner (secondary) loop
             kp_s, ki_s, kd_s, _ = self._calibrate(
                 pheaters,
@@ -206,7 +209,9 @@ class PIDCalibrate:
             }
 
         heater.set_control(heater.lookup_control(profile, True), False)
-        heater.pmgr.save_profile(profile_name=profile_name, verbose=False)
+        heater.pmgr.save_profile(
+            profile_name=profile_name, verbose=False, dual_loop=dual_loop
+        )
 
 
 TUNE_PID_DELTA = 5.0
