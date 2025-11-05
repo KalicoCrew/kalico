@@ -169,6 +169,12 @@ enable_clock_stm32f446(void)
 static void
 clock_setup(void)
 {
+    // Set voltage scaling to support 96MHz for F411
+#if CONFIG_MACH_STM32F411
+    enable_pclock(PWR_BASE);
+    MODIFY_REG(PWR->CR, PWR_CR_VOS_Msk, (3u << PWR_CR_VOS_Pos));
+#endif
+
     // Configure and enable PLL
     if (CONFIG_MACH_STM32F207)
         enable_clock_stm32f20x();
@@ -178,8 +184,12 @@ clock_setup(void)
         enable_clock_stm32f446();
 
     // Set flash latency
+#if CONFIG_MACH_STM32F411
+    FLASH->ACR = (FLASH_ACR_LATENCY_3WS | FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_PRFTEN);
+#else
     FLASH->ACR = (FLASH_ACR_LATENCY_5WS | FLASH_ACR_ICEN | FLASH_ACR_DCEN
                   | FLASH_ACR_PRFTEN);
+#endif
 
     // Wait for PLL lock
     while (!(RCC->CR & RCC_CR_PLLRDY))
