@@ -112,13 +112,17 @@ static const struct gpio_pwm_info pwm_regs[] = {
     {TIM4, GPIO('B', 8),  3, GPIO_FUNCTION(2)},
     {TIM4, GPIO('B', 9),  4, GPIO_FUNCTION(2)}
 #elif CONFIG_MACH_STM32F4
-  #if CONFIG_MACH_STM32F401
+  #if CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F411
     {TIM3,  GPIO('A',  6),  1, GPIO_FUNCTION(2)},
     {TIM3,  GPIO('C',  6),  1, GPIO_FUNCTION(3)},
     {TIM3,  GPIO('A',  7),  2, GPIO_FUNCTION(2)},
     {TIM3,  GPIO('C',  7),  2, GPIO_FUNCTION(3)},
     {TIM3,  GPIO('C',  8),  3, GPIO_FUNCTION(3)},
     {TIM3,  GPIO('C',  9),  4, GPIO_FUNCTION(3)},
+  #endif
+  #if CONFIG_MACH_STM32F411
+    {TIM9,  GPIO('A',  2),  1, GPIO_FUNCTION(3)},
+    {TIM9,  GPIO('A',  3),  2, GPIO_FUNCTION(3)},
   #endif
   #if CONFIG_MACH_STM32F446
     {TIM2,  GPIO('B',  2),  4, GPIO_FUNCTION(1)},
@@ -164,8 +168,10 @@ static const struct gpio_pwm_info pwm_regs[] = {
     {TIM5,  GPIO('A',  1),  2, GPIO_FUNCTION(2)},
     {TIM5,  GPIO('A',  2),  3, GPIO_FUNCTION(2)},
     {TIM5,  GPIO('A',  3),  4, GPIO_FUNCTION(2)},
+  #if !CONFIG_MACH_STM32F411
     {TIM9,  GPIO('E',  5),  1, GPIO_FUNCTION(3)},
     {TIM9,  GPIO('E',  6),  2, GPIO_FUNCTION(3)},
+  #endif
     {TIM10, GPIO('B',  8),  1, GPIO_FUNCTION(3)},
     {TIM11, GPIO('B',  9),  1, GPIO_FUNCTION(3)}
 #elif CONFIG_MACH_STM32F7
