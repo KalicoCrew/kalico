@@ -15,6 +15,7 @@ dependencies = [
   "pyserial==3.4",
   "python-can~=4.5",
   "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3
+  "msgpack>=1.1.0",
 ]
 
 [tool.uv]
@@ -54,6 +55,9 @@ ignore = [
   "F841", # Local variable name is assigned to but never used
   "E721", # Do not compare types, use 'isinstance()'
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"!klippy/extras/cocoa_toolhead/**.py" = ["I"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
