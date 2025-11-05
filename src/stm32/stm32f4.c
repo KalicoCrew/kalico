@@ -91,12 +91,6 @@ enable_clock_stm32f40x(void)
     uint32_t pll_base = (CONFIG_STM32_CLOCK_REF_25M) ? 1000000 : 2000000;
     uint32_t pllp = (CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F411) ? 4 : 2;
     uint32_t pll_freq = CONFIG_CLOCK_FREQ * pllp, pllcfgr;
-#if CONFIG_MACH_STM32F411
-    enable_pclock(PWR_BASE);
-    MODIFY_REG(PWR->CR, PWR_CR_VOS_Msk, (3 << PWR_CR_VOS_Pos));
-    while (!(PWR->CSR & PWR_CSR_VOSRDY))
-        ;
-#endif
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure 168Mhz PLL from external crystal (HSE)
         uint32_t div = CONFIG_CLOCK_REF_FREQ / pll_base;
