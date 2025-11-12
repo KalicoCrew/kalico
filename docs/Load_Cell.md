@@ -278,7 +278,7 @@ If the calibration fails, look at the bowden tube motion during the calibration.
 
 #### Tap Performance Calibration
 
-`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=TAP_PERFORMANCE`
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=TAP_PERFORMANCE` ([docs](G-Codes.md#load_cell_probe_calibrate))
 
 Optimizes the `pullback_distance` parameter for faster probing. The default is conservative; calibration may reduce it based on the probes measured decompression behavior. The calibration probes a bed mesh and measures the decompression distance at each point (Z travel from decompression start to contact break). It calculates a safe minimum: `(mean + 3σ) × 2.0`. It accepts all [BED_MESH_CALIBRATE](G-Codes.md#bed_mesh_calibrate) parameters for mesh point generation.
 
@@ -293,6 +293,31 @@ Optimizes the `pullback_distance` parameter for faster probing. The default is c
 The most likely cause of a high standard deviation is contamination on the nozzle. Make sure the nozzle is clean prior to running the calibration. Another likely cause is a "springy" bed. If the bed flexes significantly during probing it may not be suitable for a load cell probe.
 
 Re-calibrate when changes are made to `probe_speed` or `trigger_force`, these affect overshoot which determines the required pullback distance.
+
+#### Decompression Angle Calibration
+
+This calibration runs as part of the [Tap Performance Calibration](#tap-performance-calibration), after the pullback distance has been calibrated.
+
+This enables and calibrates tap quality checking. This detects nozzle ooze during probing by comparing tap geometry to a clean baseline. See [Tap Quality Components](#tap-quality-components) for details on how the score is calculated.
+
+**Example output:**
+```
+// Tap quality calibration successful:
+// Tap Quality average: 87.7%, min: 70.8%, max: 95.2%, std dev: 4.4%
+// 
+// Mean Decompression Angle: 78.6 degrees
+// decompression_angle=78.6
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file and restart the printer.
+```
+
+**Choosing a threshold for min_tap_quality:** The calibration does not automatically set `min_tap_quality`. The default is 40%. In testing, the observed tap quality score drops quite significantly before any actual Z error can be detected. Taps with a small amount of ooze have a very different `tap_quality` mean and standard deviation than clean taps. Choose based on experience:
+- Higher thresholds (70-80%): Stricter, may cause retries on acceptable taps
+- Lower thresholds (5-20%): Too permissive, only catches severe ooze
+
+**Re-calibrate when:**
+- `pullback_speed`, `trigger_force` or load cell sample rate changes
+- Tap quality warnings become too frequent or too rare
 
 ### Probing Temperature
 
@@ -450,7 +475,7 @@ The classifier uses ratio metrics to make it more transferable between different
 | Dwell Force Drop               | The drop in force during the dwell over the compression force.                                                                                                                    | While some drop is not unusual, large drops are associated with plastic oozing out from between the nozzle and the bed. |
 | Normalized Decompression Angle | How closely the slope of the decompression line matches the ideal decompression slope.  Normalized as `(actual - expected) / expected`                                            | Ooze can pull on the nozzle, changing the slope. This ruins the accuracy of the measurement.                            |
 
-These factors are all combined to give the final quality score. The only component that has to be measured on the printer is the **Normalized Decompression Angle**.
+These factors are all combined to give the final quality score. The only component that has to be measured on the printer is the **Normalized Decompression Angle**. This can be automatically set with [Decompression Angle Calibration](#decompression-angle-calibration). Until this is angle is set the tap quality classifier is off.
 
 Each component has a maximum cutoff value. If the component is above the cutoff, the tap quality score drops to 0%. Each value is a percentage of the compression force:
 
