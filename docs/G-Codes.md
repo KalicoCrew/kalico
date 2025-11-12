@@ -1098,6 +1098,7 @@ probe a bed mesh and save results for the current session (use `SAVE_CONFIG` to 
 Available calibration types:
 - `DRIFT_FILTER`: Calibrate drift_filter_cutoff_frequency
 - `PULLBACK_DISTANCE`: Calibrate pullback_distance
+- `DECOMPRESSION_ANGLE`: Calibrate decompression_angle
 
 All calibrations accept [BED_MESH_CALIBRATE](#bed_mesh_calibrate) parameters for 
 controlling mesh point generation (PROFILE, MESH_MIN, MESH_MAX, PROBE_COUNT, ALGORITHM, etc.).
@@ -1142,6 +1143,20 @@ normal probing across the bed. Computes a safe minimum using statistical analysi
   testing. The default is 1.0 (valid range: 0.5-2.0).
 
 See [Pullback Distance Calibration](Load_Cell.md#pullback-distance-calibration)
+
+#### DECOMPRESSION_ANGLE Calibration
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DECOMPRESSION_ANGLE [<bed_mesh_parameters>]`
+
+Enables and calibrates the tap quality checking system. Measures the pullback angle 
+across clean probes to establish a baseline.
+
+No calibration-specific parameters.
+
+**Prerequisites**: Run DRIFT_FILTER and PULLBACK_DISTANCE calibrations first. Ensure 
+nozzle is completely clean.
+
+See [Tap Quality Calibration](Load_Cell.md#tap-quality-calibration) for choosing 
+thresholds and interpreting results.
 
 ### [manual_probe]
 
