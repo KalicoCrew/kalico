@@ -335,7 +335,7 @@ class PythonMacroContext:
 
     def emit(self, gcode: str):
         "Run GCode"
-        self._gcode.run_gcode_from_command(gcode)
+        self._gcode.run_script_from_command(gcode)
 
     def wait_while(self, condition: typing.Callable[[], bool]):
         "Wait while a condition is True"
