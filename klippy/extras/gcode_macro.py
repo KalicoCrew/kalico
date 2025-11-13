@@ -473,7 +473,12 @@ class PythonMacroTemplate:
 
     def run_gcode_from_command(self, context=None):
         context = PythonMacroContext(self.printer, self.name, context)
-        return self.func(context)
+        try:
+            return self.func(context)
+        except self.printer.command_error:
+            raise
+        except Exception as e:
+            raise self.printer.command_error(f"Error in {self.name}: {e}")
 
     def __call__(self, context=None):
         return self.run_gcode_from_command(context)
