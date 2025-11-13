@@ -242,6 +242,40 @@ PROBE HOME=Z
 
 Load cell probes support automated calibrations with the `LOAD_CELL_PROBE_CALIBRATE` command (([docs](G-Codes.md#load_cell_probe_calibrate))). These calibration tools probe a bed mesh or move the Z axis and analyze the results to determine optimal settings. All calibrations use the same mesh points as `BED_MESH_CALIBRATE` and save parameters for the current session (use `SAVE_CONFIG` to persist).
 
+#### Drift Filter Calibration
+
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`
+
+Calibrates the drift filter cutoff frequency. The drift filter removes slow force changes caused by bowden tube movement during probing, keeping the signal centered on zero.
+
+**Prerequisites:** This feature requires the SciPy library. See [Installing SciPy](#installing-scipy).
+
+The calibration moves from maximum Z to `horizontal_move_z` at each mesh point, recording force data. It tests increasing filter frequencies until drift is eliminated, then returns the lowest frequency that works at all positions.
+
+**Hints**
+* If the probe triggers early, before touching the bed, this is probably the reason why.
+* If the machine cannot complete Z homing, you can manually home it and run this calibration.
+* This calibration can be slow. Using fewer mesh points can speed things up and still give usable results, e.g. `PROBE_COUNT=3,3`. All [BED_MESH_CALIBRATE](G-Codes.md#bed_mesh_calibrate) parameters for mesh point generation.
+
+**Example output:**
+```
+// Minimum drift filter cutoff: 5.2Hz
+// drift_filter_cutoff_frequency=5.2
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file with the above and restart the printer.
+```
+
+**Normal range:** 1-20Hz. Lower values indicate minimal drift, higher values suggest more bowden movement.
+
+**Partial failures:** If some positions exceed the 20Hz limit, the calibration uses the highest successful frequency but warns. This may still be usable if only a few positions failed.
+
+**Troubleshooting:**
+If the calibration fails, look at the bowden tube motion during the calibration. Bowden tube routing should minimize snagging and sudden shaking.
+
+**Re-calibrate when:**
+- Bowden tube routing changes
+- Experiencing probe failures when probing from max Z
+
 ### Probing Temperature
 
 Keep nozzle temperature below the filament oozing point during homing and probing. 140°C is a good starting point for all filament types.
@@ -320,9 +354,9 @@ The circle strategy is a feature of `[probe]`. When the load cell probe detects 
 
 ## Advanced Configuration
 
-### Continuous Tare Filtering
+### Drift Filter (Continuous Taring)
 
-Load cell probes support a filter on the MCU that compensates for drift from external forces such as bowden tubes and umbilical cables. If the probe triggers before touching the bed this is probably the reason why. This is sometimes called *continuous taring* and is intended for toolhead-mounted sensors experiencing variable external forces during a probe.
+Load cell probes support a drift filter on the MCU that compensates for external forces such as bowden tubes and umbilical cables. If the probe triggers before touching the bed this is probably the reason why. This is sometimes called *continuous taring* and is intended for toolhead-mounted sensors experiencing variable external forces during a probe.
 
 #### Installing SciPy
 
@@ -336,20 +370,13 @@ Pre-compiled builds are available for Python 3 on 32-bit Raspberry Pi systems.
 
 #### Filter Tuning
 
-The `drift_filter_cutoff_frequency` parameter should be selected based on observed drift during normal operation.
+The `drift_filter_cutoff_frequency` parameter can be automatically calibrated using `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`. See [Drift Filter Calibration](#drift-filter-calibration) for details.
 
-Basic tuning guidelines:
-- Start with `drift_filter_cutoff_frequency: 0.5` Hz
-- Prusa uses 0.8 Hz (MK4) and 11.2 Hz (XL); this range is reasonable for experimentation
-- Increase only until bowden tube drift is eliminated
-- Setting too high causes slow triggering and excessive force
-- Keep `trigger_force` low (default 75 g); the drift filter maintains internal readings near zero
-- Keep `force_safety_limit` conservative (default 2 kg) during tuning
-- Keep `drift_safety_limit` conservative (default 1 kg) during tuning
-- **Note:** Over-aggressive `drift_filter_cutoff_frequency` can distort tap shape and timing, triggering validation failures (e.g., `TAP_BREAK_CONTACT_TOO_LATE`). Reduce cutoff frequency or probing speed if such errors appear.
+**Manual tuning:** If you prefer manual tuning, start with `drift_filter_cutoff_frequency: 0.5` Hz and increase only until bowden tube drift is eliminated. Setting too high causes slow triggering and excessive force. Keep `trigger_force` low (default 75 g); the drift filter maintains internal readings near zero.
 
-Tuning of the other filter parameters is beyond the scope of this documentation. 
-A Jupyter notebook is provided in [scripts/filter_workbench.ipynb](../scripts/filter_workbench.ipynb) with an example of a detailed analysis.
+**Note:** Over-aggressive `drift_filter_cutoff_frequency` can distort tap shape and timing, triggering validation failures (e.g., `TAP_BREAK_CONTACT_TOO_LATE`). Reduce cutoff frequency or probing speed if such errors appear.
+
+Manual tuning of other filter parameters is beyond the scope of this documentation. A Jupyter notebook is provided in [scripts/filter_workbench.ipynb](../scripts/filter_workbench.ipynb) with an example of detailed analysis.
 
 ### Tap Validation
 
