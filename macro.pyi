@@ -4,6 +4,13 @@ import typing
 
 BlockingResult = typing.TypeVar("BlockingResult")
 
+class GCodeCommand(typing.Protocol):
+    def __call__(self, **params):
+        "Run GCode with parameters"
+
+class GCode:
+    def __getattribute__(self, name) -> GCodeCommand: ...
+
 class Printer:
     'The magic "Printer" object for macros'
 
@@ -12,6 +19,8 @@ class Printer:
 
     raw_params: str
     params: dict[str, str]
+
+    gcode: GCode
 
     def emit(self, gcode: str):
         "Run GCode"
@@ -53,3 +62,12 @@ class Printer:
 
     def call_remote_method(self, method: str, **kwargs):
         "Call a Kalico webhooks method"
+
+Macro: typing.TypeAlias = typing.Callable[
+    typing.Concatenate[Printer, ...], None
+]
+
+def gcode_macro(
+    name: str,
+    rename_existing: typing.Optional[str],
+) -> typing.Callable[[Macro], Macro]: ...
