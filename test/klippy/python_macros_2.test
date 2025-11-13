@@ -1,0 +1,7 @@
+# Test case for python gcode
+CONFIG python_macros_2.cfg
+DICTIONARY atmega2560.dict
+
+HELLO_WORLD
+HELLO_WORLD NAME="Frank"
+RELOAD_GCODE_MACROS
