@@ -8,12 +8,15 @@ import traceback, logging, ast, copy, json, threading
 import jinja2, math
 import typing
 import functools
-import importlib, importlib.metadata, importlib.util
+import importlib.util
 import inspect
 import pathlib
-from klippy.printer import Printer
+import shlex
 from klippy import configfile
 
+if typing.TYPE_CHECKING:
+    from klippy.gcode import GCodeDispatch
+    from klippy.printer import Printer
 
 ######################################################################
 # Template handling
@@ -312,6 +315,37 @@ class Template:
 BlockingResult = typing.TypeVar("BlockingResult")
 
 
+class PythonGcodeWrapper:
+    def __init__(self, gcode: GCodeDispatch):
+        self.__gcode = gcode
+
+    def __getattr__(self, command) -> GCodeCommandWrapper:
+        if command.upper() not in self.__gcode.status_commands:
+            raise AttributeError(f"No such GCode command {command!r}")
+        return GCodeCommandWrapper(self.__gcode, command)
+
+
+class GCodeCommandWrapper:
+    def __init__(self, gcode: GCodeDispatch, command: str):
+        self.__gcode = gcode
+        self.__command = command
+
+    def __call__(self, **params):
+        if self.__gcode.is_traditional_gcode(self.__command):
+            if not all(len(k) == 1 for k in params):
+                raise self.__gcode.error(
+                    "Traditional gcode may only have single character parameters"
+                )
+            params_str = " ".join(f"{k}{v}" for k, v in params.items())
+
+        else:
+            params_str = " ".join(
+                f"{k}={shlex.quote(v)}" for k, v in params.items()
+            )
+
+        self.__gcode.run_script_from_command(self.__command + " " + params_str)
+
+
 class PythonMacroContext:
     'The magic "Printer" object for macros'
 
@@ -320,6 +354,8 @@ class PythonMacroContext:
 
     raw_params: str
     params: dict[str, str]
+
+    gcode: GCodeCommandWrapper
 
     def __init__(self, printer: Printer, name: str, context: dict):
         self._printer = printer
@@ -332,6 +368,8 @@ class PythonMacroContext:
 
         self.raw_params = context.get("raw_params", None)
         self.params = context.get("params", {})
+
+        self.gcode = PythonGcodeWrapper(self._gcode)
 
     def emit(self, gcode: str):
         "Run GCode"
@@ -435,12 +473,7 @@ class PythonMacroTemplate:
 
     def run_gcode_from_command(self, context=None):
         context = PythonMacroContext(self.printer, self.name, context)
-        try:
-            return self.func(context)
-        except self.printer.command_error:
-            raise
-        except Exception as e:
-            raise self.printer.command_error(f"Error in {self.name}: {e}")
+        return self.func(context)
 
     def __call__(self, context=None):
         return self.run_gcode_from_command(context)
