@@ -8,11 +8,16 @@ from __future__ import annotations
 import math
 from typing import Optional, Tuple
 
+import numpy as np
+
 from klippy import mcu
-from klippy.configfile import ConfigWrapper
+from klippy.configfile import ConfigWrapper, PrinterConfig
+from klippy.extras.bed_mesh import BedMesh
 from klippy.extras.homing import PrinterHoming
 from klippy.extras.probe import PrinterProbe
 from klippy.gcode import GCodeCommand, GCodeDispatch
+from klippy.printer import Printer
+from klippy.toolhead import ToolHead
 
 from . import sos_filter
 from .interfaces import LoadCellSensor
@@ -40,9 +45,9 @@ Q16_FRAC_BITS = 32 - (1 + Q16_INT_BITS)
 class ParamHelper:
     def __init__(
         self,
-        config,
-        name,
-        type_name,
+        config: ConfigWrapper,
+        name: str,
+        type_name: str,
         default=None,
         minval=None,
         maxval=None,
@@ -50,6 +55,7 @@ class ParamHelper:
         below=None,
         max_len=None,
     ):
+        self._printer: Printer = config.get_printer()
         self._config_section = config.get_name()
         self._config_error = config.error
         self.name = name
@@ -190,6 +196,13 @@ class ParamHelper:
             return self._get_float(config, gcmd, minval, maxval, above, below)
         else:
             return self._get_float_list(config, gcmd, above, below)
+
+    def set(self, value):
+        self.value = value
+
+    def save(self):
+        configfile: PrinterConfig = self._printer.lookup_object("configfile")
+        configfile.set(self._config_section, self.name, self.value)
 
 
 def booleanParamHelper(config, name, default=False):
@@ -368,6 +381,10 @@ class ContinuousTareFilterHelper:
 
     def get_sos_filter(self) -> sos_filter.SosFilter:
         return self._sos_filter
+
+    def save_drift_filter_cutoff_frequency(self, value):
+        self._drift_param.set(value)
+        self._drift_param.save()
 
 
 class LoadCellProbeConfigHelper:
@@ -1001,6 +1018,228 @@ class LoadCellEndstopWrapper:
         return status
 
 
+class DriftFilterCalibration:
+    DEFAULT_APPROACH_SPEED: float = 10.0
+
+    def __init__(
+        self,
+        config: ConfigWrapper,
+        config_helper: ContinuousTareFilterHelper,
+        tare_callback,
+        load_cell: LoadCell,
+    ):
+        self._config_helper = config_helper
+        self._tare_callback = tare_callback
+        self._load_cell = load_cell
+        self._printer: Printer = config.get_printer()
+        self._horizontal_move_z: float = 5.0
+        if config.has_section("bed_mesh"):
+            bed_mesh_config = config.getsection("bed_mesh")
+            self._horizontal_move_z: float = bed_mesh_config.getfloat(
+                "horizontal_move_z", 5.0, note_valid=False
+            )
+
+    def calibrate(self, gcmd: GCodeCommand):
+        try:
+            import scipy.signal as signal
+
+            _ = signal
+        except:
+            raise gcmd.error("Drift Filter requires the SciPy module")
+        toolhead: ToolHead = self._printer.lookup_object("toolhead")
+        kinematics = toolhead.get_kinematics()
+        eventtime = self._printer.get_reactor().monotonic()
+        axis_maximum = kinematics.get_status(eventtime)["axis_maximum"]
+        # delta kinematics have a z limit that is lower than stepper limit
+        default_max_z_position = min(
+            axis_maximum.z, getattr(kinematics, "limit_z", math.inf)
+        )
+        default_max_z_velocity = getattr(
+            kinematics, "max_z_velocity", toolhead.max_velocity
+        )
+        probe = self._printer.lookup_object("probe")
+        bed_mesh: BedMesh = self._printer.lookup_object(
+            "bed_mesh", default=None
+        )
+        if bed_mesh is None:
+            raise gcmd.error("bed_mesh not configured")
+
+        # Calibration parameters
+        max_z_position = gcmd.get_float(
+            "MAXIMUM_Z_POSITION", default_max_z_position, minval=0
+        )
+        if max_z_position > default_max_z_position:
+            gcmd.respond_info(
+                f"MAXIMUM_Z_POSITION {max_z_position:.1f} exceeds the axis "
+                f"maximum, using {default_max_z_position:.1f}"
+            )
+            max_z_position = default_max_z_position
+        max_z_velocity = gcmd.get_float(
+            "MAX_Z_VELOCITY", default_max_z_velocity, above=0.0
+        )
+        approach_speed = gcmd.get_float(
+            "APPROACH_SPEED",
+            min(DriftFilterCalibration.DEFAULT_APPROACH_SPEED, max_z_velocity),
+            above=0.0,
+        )
+        segment_duration = gcmd.get_float("SEGMENT_DURATION", 5.0, above=0.0)
+        slope_percentile = gcmd.get_float(
+            "SLOPE_PERCENTILE", 99.0, minval=0.0, maxval=100.0
+        )
+        max_drift_rate = gcmd.get_float("MAX_DRIFT_RATE", 1.0, above=0.0)
+        max_cutoff_frequency = gcmd.get_float(
+            "MAX_CUTOFF_FREQUENCY", 20.0, above=0.0
+        )
+        cutoff_increment = gcmd.get_float("CUTOFF_INCREMENT", 0.1, above=0.0)
+
+        gcmd.respond_info("Starting drift filter calibration...")
+        points = bed_mesh.generate_points(gcmd, "drift_filter_calibrate")
+        # Get actual approach speed (limited by Z max speed)
+        approach_speed = min(approach_speed, max_z_velocity)
+
+        gcmd.respond_info(
+            f"Collecting drift data at {len(points)} points\n"
+            f"Z range: {max_z_position:.1f} -> {self._horizontal_move_z:.1f}mm\n"
+            f"Approach speed: {approach_speed:.1f}mm/s"
+        )
+
+        # Get probe offsets for XY positioning
+        max_filter_cutoff = cutoff_increment
+        # Get sampling rate from sensor
+        probe_offset_x, probe_offset_y, _ = probe.get_offsets()
+        sample_rate: int = self._load_cell.get_sensor().get_samples_per_second()
+        failed_count = 0
+        for i, point in enumerate(points):
+            # Adjust for probe offset (this should be 0 for a nozzle probe)
+            point = [
+                point[0] - probe_offset_x,
+                point[1] - probe_offset_y,
+                max_z_position,
+            ]
+            # Move to XY position at max Z
+            toolhead.manual_move(point, max_z_velocity)
+            toolhead.wait_moves()
+            # Tare the sensor (probing_move behavior)
+            self._tare_callback(gcmd)
+            # Start collecting samples
+            collector: LoadCellSampleCollector = self._load_cell.get_collector()
+            print_time = toolhead.get_last_move_time()
+            collector.start_collecting(min_time=print_time)
+            try:
+                # Start the downward move
+                point[2] = self._horizontal_move_z
+                toolhead.manual_move(point, approach_speed)
+                toolhead.wait_moves()
+                move_end_time = toolhead.get_last_move_time()
+            except Exception as ex:
+                collector.stop_collecting()
+                raise ex
+            # Stop collecting
+            samples, errors = collector.collect_until(move_end_time)
+            if errors:
+                raise gcmd.error("Load cell errors detected!")
+            segment_samples = int(segment_duration * sample_rate)
+            if segment_samples < 2 or len(samples) < segment_samples:
+                raise gcmd.error(
+                    f"Drift filter calibration collected "
+                    f"{len(samples) / sample_rate:.1f}s of data, which is less "
+                    f"than SEGMENT_DURATION={segment_duration:.1f}s"
+                )
+            force = np.array(samples)[:, 1]
+            cutoff_freq = self._run_calibration(
+                force,
+                sample_rate,
+                segment_duration,
+                slope_percentile,
+                max_cutoff_frequency,
+                max_filter_cutoff,
+                cutoff_increment,
+                max_drift_rate,
+                gcmd,
+            )
+            if math.isnan(cutoff_freq):
+                failed_count += 1
+            else:
+                max_filter_cutoff = cutoff_freq
+        self._config_helper.save_drift_filter_cutoff_frequency(
+            round(max_filter_cutoff, 4)
+        )
+        if failed_count > 0:
+            raise gcmd.error(
+                f"WARNING: {failed_count} calibrations failed with the "
+                f"max_cutoff_frequency={max_cutoff_frequency}Hz"
+            )
+        gcmd.respond_info(
+            f"Minimum drift filter cutoff: {max_filter_cutoff:.1f}Hz\n"
+            f"drift_filter_cutoff_frequency={max_filter_cutoff:.1f}\n"
+            "This has been saved for the current session.\n"
+            "The SAVE_CONFIG command will update the printer config file "
+            "with the above and restart the printer."
+        )
+
+    @staticmethod
+    def _calculate_segment_slopes(force_data, sampling_rate, segment_duration):
+        """Split the graph into segments and calculate a slope for each."""
+        segment_samples = int(segment_duration * sampling_rate)
+        num_segments = len(force_data) // segment_samples
+        segments = np.array_split(force_data, num_segments)
+        slopes = []
+        for segment in segments:
+            time = np.arange(len(segment)) / sampling_rate
+            coefficients = np.polyfit(time, segment, 1)
+            slopes.append(coefficients[0])
+        return np.array(slopes)
+
+    @staticmethod
+    def _apply_drift_filter(force_data, cutoff_freq, sampling_rate):
+        import scipy.signal as signal
+
+        sos = signal.butter(
+            1, cutoff_freq, fs=sampling_rate, btype="highpass", output="sos"
+        )
+        # use zi to immediately have the filter start in a steady state at 0
+        zi = signal.sosfilt_zi(sos)
+        zi = zi * force_data[0]
+        filtered_data, zo = signal.sosfilt(sos, force_data, zi=zi)
+        return filtered_data
+
+    def _run_calibration(
+        self,
+        force_data: np.ndarray,
+        sampling_rate: float,
+        segment_duration: float,
+        slope_percentile: float,
+        max_cutoff_frequency: float,
+        cutoff: float,
+        cutoff_increment: float,
+        max_drift_rate: float,
+        gcmd: GCodeCommand,
+    ):
+        current_cutoff = cutoff
+        while current_cutoff <= max_cutoff_frequency:
+            filtered_data = self._apply_drift_filter(
+                force_data, current_cutoff, sampling_rate
+            )
+            filtered_slopes = self._calculate_segment_slopes(
+                filtered_data, sampling_rate, segment_duration
+            )
+            post_filter_pct = float(
+                np.percentile(np.abs(filtered_slopes), slope_percentile)
+            )
+            if post_filter_pct <= max_drift_rate:
+                gcmd.respond_info(
+                    f"Cutoff frequency: {current_cutoff:.4f} Hz\n"
+                )
+                return current_cutoff
+            current_cutoff += cutoff_increment
+        gcmd.respond_info(
+            f"Calibration FAILED\n"
+            f"Could not meet criteria within the {max_cutoff_frequency}Hz "
+            f"limit\n"
+        )
+        return math.nan
+
+
 class LoadCellPrinterProbe:
     def __init__(
         self,
@@ -1008,6 +1247,7 @@ class LoadCellPrinterProbe:
         sensor: LoadCellSensor,
         tap_classifier: TapClassifierModule,
     ):
+        self._config = config
         self._printer = config.get_printer()
         self._load_cell = LoadCell(config, sensor)
         # Read all user configuration and build modules
@@ -1029,25 +1269,32 @@ class LoadCellPrinterProbe:
             config_helper,
             trigger_dispatch,
         )
-        load_cell_primitives = LoadCellPrimitives(
+        self._load_cell_primitives = LoadCellPrimitives(
             config,
             self._mcu_load_cell_probe,
             continuous_tare_filter_helper,
             config_helper,
         )
-        homing_move = HomingMove(config, load_cell_primitives)
+        homing_move = HomingMove(config, self._load_cell_primitives)
         self._tapping_move = TappingMove(
             config,
-            load_cell_primitives,
+            self._load_cell_primitives,
             self._tap_analysis_helper,
             config_helper,
         )
         # printer integration
-        LoadCellProbeCommands(config, load_cell_primitives)
+        LoadCellProbeCommands(config, self._load_cell_primitives)
         wrapper = LoadCellEndstopWrapper(
             config, homing_move, self._tapping_move
         )
         self._printer_probe: PrinterProbe = PrinterProbe(config, wrapper)
+        # calibration macro setup:
+        self._drift_filter_calibration = DriftFilterCalibration(
+            config,
+            continuous_tare_filter_helper,
+            self._load_cell_primitives.tare,
+            self._load_cell,
+        )
         self._register_macros()
 
     def _register_macros(self):
@@ -1072,8 +1319,8 @@ class LoadCellPrinterProbe:
 
     def cmd_LOAD_CELL_PROBE_CALIBRATE(self, gcmd: GCodeCommand):
         calibration: str = gcmd.get("CALIBRATION")
-        if calibration == "TEST":
-            gcmd.respond_info(f"CALIBRATION is {calibration}")
+        if calibration == "DRIFT_FILTER":
+            self._drift_filter_calibration.calibrate(gcmd)
         else:
             raise gcmd.error(f"Unknown CALIBRATION value '{calibration}'")
 

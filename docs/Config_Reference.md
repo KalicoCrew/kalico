@@ -6321,7 +6321,10 @@ sensor_type:
 #drift_filter_cutoff_frequency: 0.8
 #   Enable optional continuous taring while homing & probing to reject drift.
 #   The value is a frequency, in Hz, below which drift will be ignored. This
-#   option requires the SciPy library. Default: None
+#   option requires the SciPy library. Can be automatically calibrated using 
+#   `LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER`. 
+#   See [Drift Filter Calibration](Load_Cell.md#drift-filter-calibration).
+#   Default: None
 #drift_filter_delay: 2
 #   The delay, or 'order', of the drift filter. This controls the number of
 #   samples required to make a trigger detection. Can be 1 or 2, the default

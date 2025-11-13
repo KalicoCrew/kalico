@@ -1260,8 +1260,41 @@ corresponding settings from the
 Run automated calibration routines for load cell probe parameters. All calibrations
 probe a bed mesh and save results for the current session (use `SAVE_CONFIG` to persist).
 
-Calibration commands will be added in future commits. See 
-[Load Cell Calibration](Load_Cell.md#calibration) for detailed usage.
+Available calibration types:
+- `DRIFT_FILTER`: Calibrate drift_filter_cutoff_frequency
+
+All calibrations accept [BED_MESH_CALIBRATE](#bed_mesh_calibrate) parameters for 
+controlling mesh point generation (PROFILE, MESH_MIN, MESH_MAX, PROBE_COUNT, ALGORITHM, etc.).
+See [Load Cell Calibration](Load_Cell.md#calibration) for detailed usage and examples.
+
+#### DRIFT_FILTER Calibration
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=DRIFT_FILTER [MAXIMUM_Z_POSITION=<pos>] 
+[MAX_Z_VELOCITY=<vel>] [APPROACH_SPEED=<speed>] [SEGMENT_DURATION=<duration>] 
+[SLOPE_PERCENTILE=<pct>] [MAX_DRIFT_RATE=<drift_rate>] 
+[MAX_CUTOFF_FREQUENCY=<freq>] [CUTOFF_INCREMENT=<inc>] [<bed_mesh_parameters>]`
+
+Calibrates the drift filter cutoff frequency by measuring force drift during slow Z 
+descents at each mesh point. The drift filter removes slow force changes caused by 
+bowden tube movement, keeping the signal centered on zero.
+
+- **MAXIMUM_Z_POSITION**: Starting height for drift measurement. If not specified, 
+  defaults to the printer's maximum Z position (the delta Z limit on delta printers).
+- **MAX_Z_VELOCITY**: Maximum speed for Z moves between points. If not specified, 
+  defaults to the kinematics `max_z_velocity`.
+- **APPROACH_SPEED**: Descent speed in mm/s during measurement (slower collects more 
+  data). The default is 10.0 or `MAX_Z_VELOCITY`, whichever is lower.
+  Values above `MAX_Z_VELOCITY` are limited to it.
+- **SEGMENT_DURATION**: Time window in seconds for drift analysis. The default is 5.0.
+- **SLOPE_PERCENTILE**: Which percentile of slopes must meet criteria (higher is 
+  stricter). The default is 99.0 (valid range: 0-100).
+- **MAX_DRIFT_RATE**: Maximum acceptable drift rate in grams/second. The 
+  default is 1.0.
+- **MAX_CUTOFF_FREQUENCY**: Upper limit for filter frequency in Hz. The default is 20.0.
+- **CUTOFF_INCREMENT**: Step size in Hz when searching for optimal frequency. The 
+  default is 0.1.
+
+See [Drift Filter Calibration](Load_Cell.md#drift-filter-calibration) for interpretation 
+and troubleshooting.
 
 ### [manual_probe]
 
