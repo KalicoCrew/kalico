@@ -1,13 +1,44 @@
 from kalico import Kalico, gcode_macro
+import enum
+
+
+class Direction(enum.Enum):
+    up = -1
+    down = 1
+
+
+class Location(enum.StrEnum):
+    front = "FRONT"
+    back = "BACK"
 
 
 @gcode_macro("HELLO_WORLD")
 def example_macro(p: Kalico, name: str = "World"):
+    "Say hello"
+
     p.gcode.respond(msg=f"Hello, {name}!")
+    assert p.status.gcode.commands["HELLO_WORLD"]["help"] == "Say hello"
+    assert p.status.gcode.commands["HELLO_WORLD"]["params"] == {
+        "NAME": {"type": "str", "default": "World"}
+    }
 
 
 @gcode_macro("DO_THE_THING")
-def exercise(p):
+def exercise(
+    p, direction: Direction = None, location: Location = Location.front
+):
+    "Run a suite of api tests"
+
+    # Test to make sure the enum parameters are handled correctly
+    assert p.status.gcode.commands["DO_THE_THING"]["params"] == {
+        "DIRECTION": {"type": "enum", "choices": [-1, 1]},
+        "LOCATION": {
+            "type": "enum",
+            "choices": ["FRONT", "BACK"],
+            "default": "FRONT",
+        },
+    }
+
     # Attribute proxy for gcode
     p.gcode.g28("x", "y")
     assert p.status.toolhead.homed_axes == "xy"
