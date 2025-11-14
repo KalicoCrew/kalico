@@ -91,7 +91,7 @@ class Kalico:
     status: GetStatusWrapperPython
     vars: TemplateVariableWrapperPython
     saved_vars: SaveVariablesWrapper
-    gcode: GCodeCommandWrapper
+    gcode: PythonGcodeWrapper
     move: MoveAPI
     heaters: HeatersAPI
     @property
