@@ -16,8 +16,10 @@ import json
 import logging
 import math
 import pathlib
+import sys
 import threading
 import traceback
+import types
 import typing
 
 import jinja2
@@ -269,16 +271,19 @@ class PythonMacroTemplate:
     def __init__(self, config, macro_func):
         self.printer = config.get_printer()
 
-        self.name = macro_func.__macro_name__
+        self.name = macro_func.__name__
         self.func = macro_func
+        self._macro_context = None
 
     def create_template_context(self):
         return {}  # Shim
 
     def run_gcode_from_command(self, context=None):
-        context = PythonMacroContext(self.printer, self.name, context)
+        if self._macro_context is None:
+            self._macro_context = PythonMacroContext(self.printer, self.name)
         try:
-            return self.func(context)
+            with self._macro_context._with_context(context) as kalico:
+                return self.func(kalico)
         except self.printer.command_error:
             raise
         except Exception as e:
@@ -303,19 +308,22 @@ class PythonMacroLoader:
 
         self._filename = None
         self._loaded_macros = None
+        self._build_kalico_module()
 
     def _build_macro_wrapper(self, name, func):
         sig = inspect.signature(func)
+        source_file = inspect.getfile(func)
+
         if not sig.parameters:
             raise configfile.error(
-                f"Error when loading macro {self._filename}:{name}."
+                f"Error when loading macro {source_file}:{name}."
                 " Macro functions must accept a parameter for the Printer object"
             )
 
         param_gcmd, *parameters = sig.parameters.values()
         if param_gcmd.annotation not in (sig.empty, PythonMacroContext):
             raise configfile.error(
-                f"Error when loading macro {self._filename}:{name}."
+                f"Error when loading macro {source_file}:{name}."
                 " First parameter must be of type Printer"
             )
 
@@ -356,7 +364,7 @@ class PythonMacroLoader:
         @functools.wraps(func)
         def _wrapper(context: PythonMacroContext):
             kwargs = {}
-            print(context.params)
+
             for paramspec in parameters:
                 param_name = paramspec.name.upper()
 
@@ -382,8 +390,8 @@ class PythonMacroLoader:
             bound = sig.bind(context, **kwargs)
             func(*bound.args, **bound.kwargs)
 
-        _wrapper.__macro_name__ = name
-        _wrapper.__filename__ = self._filename
+        _wrapper.__name__ = name
+        _wrapper.__file__ = source_file
         _wrapper.__doc__ = macro_description
 
         return _wrapper
@@ -395,38 +403,53 @@ class PythonMacroLoader:
     ) -> typing.Callable[[macro_function], macro_function]:
         def macro_decorator(func: macro_function) -> macro_function:
             wrapped_macro = self._build_macro_wrapper(name, func)
-
             self._register_macro(wrapped_macro, rename_existing)
-
             return func
 
         return macro_decorator
 
     def get_context(self):
         return {
-            "Printer": PythonMacroContext,
+            "Kalico": PythonMacroContext,
             "config": self._config,
             "gcode_macro": self._macro_decorator,
         }
 
-    def load(self, filename):
-        self._filename = self._root_path / filename
+    def _build_kalico_module(self):
+        if "kalico" not in sys.modules:
+            kalico = types.ModuleType(
+                "kalico", "virtual module for the Kalico Python API"
+            )
+            kalico.Kalico = PythonMacroContext
+            sys.modules["kalico"] = kalico
 
-        if not self._filename.exists():
+        return sys.modules["kalico"]
+
+    def load(self):
+        files = self._config.getlist("python", [], sep="\n")
+        for file in files:
+            if not file.strip():
+                continue
+            self._load_file(file)
+
+    def _load_file(self, filename):
+        file = self._root_path / filename
+
+        if not file.exists():
             raise configfile.error(
-                f"Error loading python macros: {self._filename} does not exist"
+                f"Error loading python macros: {file} does not exist"
             )
 
-        spec = importlib.util.spec_from_file_location(
-            self._filename.name, self._filename
-        )
+        spec = importlib.util.spec_from_file_location(file.name, file)
         module = importlib.util.module_from_spec(spec)
 
-        module.__dict__.update(self.get_context())
+        # TODO: change these to be scoped, using something like "kalico.gcode_macro.loader(self)"
+        sys.modules["kalico"].config = self._config
+        sys.modules["kalico"].gcode_macro = self._macro_decorator
         spec.loader.exec_module(module)
 
     def _register_macro(self, macro_func, rename_existing=None):
-        section = f"gcode_macro {macro_func.__macro_name__}"
+        section = f"gcode_macro {macro_func.__name__}"
 
         config = self._config.getsection(section)
         if not config.has_section(section):
@@ -462,21 +485,14 @@ class PrinterGCodeMacro:
                 "jinja2.ext.loopcontrols",
             ],
         )
+        self.macro_loader = PythonMacroLoader(config)
 
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
             "RELOAD_GCODE_MACROS", self.cmd_RELOAD_GCODE_MACROS
         )
 
-        self.load_macros_from_python(config)
-
-    def load_macros_from_python(self, config):
-        files = config.getlist("python", [], sep="\n")
-        for file in files:
-            if not file.strip():
-                continue
-            macro_loader = PythonMacroLoader(config)
-            macro_loader.load(file)
+        self.macro_loader.load()
 
     def load_template(self, config, option, default=None):
         name = "%s:%s" % (config.get_name(), option)
@@ -539,7 +555,7 @@ class PrinterGCodeMacro:
                 template.reload(script_type, new_script)
 
         # TODO: Verify this works like I expect
-        self.load_macros_from_python(self.config)
+        self.macro_loader.load()
 
 
 def load_config(config):
