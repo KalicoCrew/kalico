@@ -228,9 +228,10 @@ class PythonMacroContext:
     vars: TemplateVariableWrapperPython
     saved_vars: SaveVariablesWrapper
 
+    fans: FanAPI
     gcode: PythonGcodeWrapper
-    move: MoveAPI
     heaters: HeatersAPI
+    move: MoveAPI
 
     def __init__(self, printer: Printer, name: str):
         self._name = name
@@ -245,9 +246,10 @@ class PythonMacroContext:
         self.vars = TemplateVariableWrapperPython(self._gcode_macro)
         self.saved_vars = SaveVariablesWrapper(printer)
 
-        self.move = MoveAPI(printer)
-        self.heaters = HeatersAPI(printer)
+        self.fans = FanAPI(printer)
         self.gcode = PythonGcodeWrapper(self._gcode)
+        self.heaters = HeatersAPI(printer)
+        self.move = MoveAPI(printer)
 
         self._context = []
 

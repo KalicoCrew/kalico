@@ -91,9 +91,10 @@ class Kalico:
     status: GetStatusWrapperPython
     vars: TemplateVariableWrapperPython
     saved_vars: SaveVariablesWrapper
+    fans: FanAPI
     gcode: PythonGcodeWrapper
-    move: MoveAPI
     heaters: HeatersAPI
+    move: MoveAPI
     @property
     def raw_params(self) -> str: ...
     @property
