@@ -13,7 +13,7 @@ class GCodeCommand(typing.Protocol):
         "Run GCode with parameters"
 
 class GCode:
-    def __getattribute__(self, name) -> GCodeCommand: ...
+    def __getattr__(self, name) -> GCodeCommand: ...
     def __call__(self, command: str):
         "Run GCode"
 
@@ -37,9 +37,6 @@ class Printer:
 
     gcode: GCode
     "Helper for calling other GCode"
-
-    def emit(self, gcode: str):
-        "Run GCode"
 
     def wait_while(self, condition: typing.Callable[[], bool]):
         "Wait while a condition is True"
