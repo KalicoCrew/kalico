@@ -147,6 +147,32 @@ class GCodeMove:
         if self.is_printer_ready:
             self.last_position = self.position_with_transform()
 
+    def move_to(
+        self,
+        position: tuple[float, float, float, float],
+        speed: float = None,  # In mm/s
+    ):
+        if speed is None:
+            speed = self.speed
+
+        self.last_position[:] = position
+        self.move_with_transform(self.last_position, speed)
+
+    def set_speed(self, speed):
+        "Set the gcode move speed in mm/s"
+        self.speed = speed * 60.0 * self.speed_factor
+
+    def set_speed_factor(self, speed_factor):
+        speed_factor /= 60.0
+        self.speed = self._get_gcode_speed() * speed_factor
+        self.speed_factor = speed_factor
+
+    def set_extrude_factor(self, extrude_factor):
+        last_e_pos = self.last_position[3]
+        e_value = (last_e_pos - self.base_position[3]) / self.extrude_factor
+        self.base_position[3] = last_e_pos - e_value * extrude_factor
+        self.extrude_factor = extrude_factor
+
     # G-Code movement commands
     def cmd_G1(self, gcmd):
         # Move
@@ -225,17 +251,41 @@ class GCodeMove:
 
     def cmd_M220(self, gcmd):
         # Set speed factor override percentage
-        value = gcmd.get_float("S", 100.0, above=0.0) / (60.0 * 100.0)
-        self.speed = self._get_gcode_speed() * value
-        self.speed_factor = value
+        value = gcmd.get_float("S", 100.0, above=0.0) / 100.0
+        self.set_speed_factor(value)
 
     def cmd_M221(self, gcmd):
         # Set extrude factor override percentage
         new_extrude_factor = gcmd.get_float("S", 100.0, above=0.0) / 100.0
-        last_e_pos = self.last_position[3]
-        e_value = (last_e_pos - self.base_position[3]) / self.extrude_factor
-        self.base_position[3] = last_e_pos - e_value * new_extrude_factor
-        self.extrude_factor = new_extrude_factor
+        self.set_extrude_factor(new_extrude_factor)
+
+    def set_gcode_offset(
+        self,
+        x: float = None,
+        y: float = None,
+        z: float = None,
+        e: float = None,
+        move: bool = False,
+        speed: float = None,
+    ):
+        old_offsets = self.homing_position.copy()
+        self.homing_position[:] = [
+            x if x is not None else old_offsets[0],
+            y if y is not None else old_offsets[1],
+            z if z is not None else old_offsets[2],
+            e if e is not None else old_offsets[3],
+        ]
+        offset_deltas = [
+            new - old for new, old in zip(self.homing_position, old_offsets)
+        ]
+        for i, delta in enumerate(offset_deltas):
+            self.base_position[i] += delta
+            if move:
+                self.last_position[i] += delta
+        if move:
+            if speed is None:
+                speed = self.speed
+            self.move_with_transform(self.last_position, speed)
 
     cmd_SET_GCODE_OFFSET_help = "Set a virtual offset to g-code positions"
 
