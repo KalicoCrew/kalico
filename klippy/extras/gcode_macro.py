@@ -11,12 +11,12 @@ import functools
 import importlib.util
 import inspect
 import pathlib
-import shlex
 from klippy import configfile
-
-if typing.TYPE_CHECKING:
-    from klippy.gcode import GCodeDispatch
-    from klippy.printer import Printer
+from .macro_api import (
+    PythonMacroContext,
+    TemplateVariableWrapperPython,
+    GetStatusWrapperPython,
+)
 
 ######################################################################
 # Template handling
@@ -53,42 +53,6 @@ class GetStatusWrapperJinja:
         for name, obj in self.printer.lookup_objects():
             if self.__contains__(name):
                 yield name
-
-
-class GetStatusWrapperPython:
-    def __init__(self, printer):
-        self.printer = printer
-
-    def __getitem__(self, val):
-        sval = str(val).strip()
-        po = self.printer.lookup_object(sval, None)
-        if po is None or not hasattr(po, "get_status"):
-            raise KeyError(val)
-        eventtime = self.printer.get_reactor().monotonic()
-        return po.get_status(eventtime)
-
-    def __getattr__(self, val):
-        return self.__getitem__(val)
-
-    def __contains__(self, val):
-        try:
-            self.__getitem__(val)
-        except KeyError as e:
-            return False
-        return True
-
-    def __iter__(self):
-        for name, obj in self.printer.lookup_objects():
-            if self.__contains__(name):
-                yield name
-
-    def get(self, key: str, default: configfile.sentinel):
-        try:
-            return self[key]
-        except KeyError:
-            if default is not configfile.sentinel:
-                return default
-            raise
 
 
 # Wrapper around a Jinja2 template
@@ -258,32 +222,6 @@ class TemplateWrapperPython:
         macro.variables = v
 
 
-class TemplateVariableWrapperPython:
-    def __init__(self, macro):
-        self.__dict__["__macro"] = macro
-
-    def __setattr__(self, name, value):
-        v = dict(self.__dict__["__macro"].variables)
-        v[name] = value
-        self.__dict__["__macro"].variables = v
-
-    def __getattr__(self, name):
-        if name not in self.__dict__["__macro"].variables:
-            raise KeyError(name)
-        return self.__dict__["__macro"].variables[name]
-
-    def __contains__(self, val):
-        try:
-            self.__getattr__(val)
-        except KeyError as e:
-            return False
-        return True
-
-    def __iter__(self):
-        for name, obj in self.__dict__["__macro"].variables:
-            yield name
-
-
 class Template:
     def __init__(self, printer, env, name, script, script_type="gcode"):
         self.name = name
@@ -310,155 +248,6 @@ class Template:
             self.function = TemplateWrapperJinja(
                 self.printer, self.env, self.name, script
             )
-
-
-BlockingResult = typing.TypeVar("BlockingResult")
-
-
-class PythonGcodeWrapper:
-    def __init__(self, gcode: GCodeDispatch):
-        self.__gcode = gcode
-
-    def __getattr__(self, command) -> GCodeCommandWrapper:
-        if command.upper() not in self.__gcode.status_commands:
-            raise AttributeError(f"No such GCode command {command!r}")
-        return GCodeCommandWrapper(self.__gcode, command)
-
-
-class GCodeCommandWrapper:
-    def __init__(self, gcode: GCodeDispatch, command: str):
-        self.__gcode = gcode
-        self.__command = command
-
-    def __call__(self, **params):
-        if self.__gcode.is_traditional_gcode(self.__command):
-            if not all(len(k) == 1 for k in params):
-                raise self.__gcode.error(
-                    "Traditional gcode may only have single character parameters"
-                )
-            params_str = " ".join(f"{k}{v}" for k, v in params.items())
-
-        else:
-            params_str = " ".join(
-                f"{k}={shlex.quote(v)}" for k, v in params.items()
-            )
-
-        self.__gcode.run_script_from_command(self.__command + " " + params_str)
-
-
-class PythonMacroContext:
-    'The magic "Printer" object for macros'
-
-    status: dict[str, dict[str, typing.Any]]
-    vars: dict[str, typing.Any]
-
-    raw_params: str
-    params: dict[str, str]
-
-    gcode: GCodeCommandWrapper
-
-    def __init__(self, printer: Printer, name: str, context: dict):
-        self._printer = printer
-        self._gcode = printer.lookup_object("gcode")
-        self._gcode_macro = printer.lookup_object(f"gcode_macro {name}")
-        self._name = name
-
-        self.status = GetStatusWrapperPython(printer)
-        self.vars = TemplateVariableWrapperPython(self._gcode_macro)
-
-        self.raw_params = context.get("raw_params", None)
-        self.params = context.get("params", {})
-
-        self.gcode = PythonGcodeWrapper(self._gcode)
-
-    def emit(self, gcode: str):
-        "Run GCode"
-        self._gcode.run_script_from_command(gcode)
-
-    def wait_while(self, condition: typing.Callable[[], bool]):
-        "Wait while a condition is True"
-
-        def inner(eventtime):
-            return condition()
-
-        self._printer.wait_while(inner)
-
-    def wait_until(self, condition: typing.Callable[[], bool]):
-        "Wait until a condition is True"
-
-        def inner(eventtime):
-            return not condition()
-
-        self._printer.wait_until(condition)
-
-    def wait_moves(self):
-        "Wait until all moves are completed"
-        if self._toolhead is None:
-            self._toolhead = self._printer.lookup_object("toolhead")
-        self._toolhead.wait_moves()
-
-    def blocking(
-        self, function: typing.Callable[[], BlockingResult]
-    ) -> BlockingResult:
-        "Run a blocking task in a thread, waiting for the result"
-        completion = self._printer.get_reactor().completion()
-
-        def run():
-            try:
-                ret = function()
-                completion.complete((False, ret))
-            except Exception as e:
-                completion.complete((True, e))
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-        [is_exception, ret] = completion.wait()
-        if is_exception:
-            raise ret
-        else:
-            return ret
-
-    def sleep(self, timeout: float):
-        "Wait a given number of seconds"
-        reactor = self._printer.get_reactor()
-        deadline = reactor.monotonic() + timeout
-
-        def check(event):
-            return deadline > reactor.monotonic()
-
-        self._printer.wait_while(check)
-
-    def set_gcode_variable(self, macro: str, variable: str, value: typing.Any):
-        "Save a variable to a gcode_macro"
-        macro = self._printer.lookup_object(f"gcode_macro {macro}")
-        macro.variables = {**macro.variables, variable: value}
-
-    def emergency_stop(self, msg: str = "action_emergency_stop"):
-        "Immediately shutdown Kalico"
-        self._printer.invoke_shutdown(f"Shutdown due to {msg}")
-
-    def respond(self, prefix: str, msg: str):
-        "Send a message to the console"
-        self._gcode.respond_raw(f"{prefix} {msg}")
-
-    def respond_info(self, msg: str):
-        "Send a message to the console"
-        self._gcode.respond_info(msg)
-
-    def respond_raw(self, msg: str):
-        self._gcode.respond_raw(msg)
-
-    def raise_error(self, msg):
-        "Raise a G-Code command error"
-        raise self._printer.command_error(msg)
-
-    def call_remote_method(self, method: str, **kwargs):
-        "Call a Kalico webhooks method"
-        webhooks = self._printer.lookup_object("webhooks")
-        try:
-            webhooks.call_remote_method(method, **kwargs)
-        except self._printer.command_error:
-            logging.exception("Remote call error")
 
 
 class PythonMacroTemplate:

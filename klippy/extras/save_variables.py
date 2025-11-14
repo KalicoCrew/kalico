@@ -5,6 +5,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, ast, configparser
+from klippy.gcode import CommandError
 
 
 class SaveVariables:
@@ -15,7 +16,7 @@ class SaveVariables:
         try:
             if not os.path.exists(self.filename):
                 open(self.filename, "w").close()
-            self.loadVariables()
+            self.load_variables()
         except self.printer.command_error as e:
             raise config.error(str(e))
         gcode = self.printer.lookup_object("gcode")
@@ -25,7 +26,7 @@ class SaveVariables:
             desc=self.cmd_SAVE_VARIABLE_help,
         )
 
-    def loadVariables(self):
+    def load_variables(self):
         allvars = {}
         varfile = configparser.ConfigParser()
         try:
@@ -48,6 +49,10 @@ class SaveVariables:
             value = ast.literal_eval(value)
         except ValueError as e:
             raise gcmd.error("Unable to parse '%s' as a literal" % (value,))
+
+        self.set_variable(varname, value)
+
+    def set_variable(self, varname, value):
         newvars = dict(self.allVariables)
         newvars[varname] = value
         # Write file
@@ -62,8 +67,9 @@ class SaveVariables:
         except:
             msg = "Unable to save variable"
             logging.exception(msg)
-            raise gcmd.error(msg)
-        self.loadVariables()
+            raise CommandError(msg)
+
+        self.load_variables()
 
     def get_status(self, eventtime):
         return {"variables": self.allVariables}
