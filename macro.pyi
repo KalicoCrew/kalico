@@ -1,26 +1,42 @@
 # Kalico Python Macro typing
 
+import math
 import typing
 
 BlockingResult = typing.TypeVar("BlockingResult")
 
 class GCodeCommand(typing.Protocol):
-    def __call__(self, **params):
+    def format(self, *args, **params) -> str:
+        "Return a formatted GCode string"
+
+    def __call__(self, *args, **params):
         "Run GCode with parameters"
 
 class GCode:
     def __getattribute__(self, name) -> GCodeCommand: ...
+    def __call__(self, command: str):
+        "Run GCode"
 
 class Printer:
     'The magic "Printer" object for macros'
 
     status: dict[str, dict[str, typing.Any]]
+    "The printer status object"
+
     vars: dict[str, typing.Any]
+    "The current macro's variables"
+
+    saved_vars: dict[str, typing.Any]
+    "Variables from save_variables"
 
     raw_params: str
+    "the raw parameters passed to the macro"
+
     params: dict[str, str]
+    "macro parameters, without type parsing"
 
     gcode: GCode
+    "Helper for calling other GCode"
 
     def emit(self, gcode: str):
         "Run GCode"
@@ -62,6 +78,36 @@ class Printer:
 
     def call_remote_method(self, method: str, **kwargs):
         "Call a Kalico webhooks method"
+
+    def set_temperature(
+        self,
+        heater_name: str,
+        temp: typing.Optional[float] = None,
+    ):
+        "Set the target temperature for a heater"
+
+    def temperature_wait(
+        self,
+        sensor_name,
+        min_temp: float = -math.inf,
+        max_temp: float = math.inf,
+    ):
+        """
+        Wait for a heater or sensor to reach a temperature
+
+        If no minimum or maximum is given, this will wait for the heater's control loop to settle
+        """
+
+    def set_fan_speed(self, fan_name: str, speed: float):
+        "Set the speed of a fan"
+
+    def save_gcode_state(
+        self,
+        name: str = None,
+        move_on_restore: bool = False,
+        move_speed: float = None,
+    ) -> typing.ContextManager:
+        "Save and restore the current gcode state"
 
 Macro: typing.TypeAlias = typing.Callable[
     typing.Concatenate[Printer, ...], None
