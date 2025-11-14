@@ -196,7 +196,9 @@ class GCodeDispatch:
         except:
             return False
 
-    def register_command(self, cmd, func, when_not_ready=False, desc=None):
+    def register_command(
+        self, cmd, func, when_not_ready=False, desc=None, params=None
+    ):
         if func is None:
             old_cmd = self.ready_gcode_handlers.get(cmd)
             if cmd in self.ready_gcode_handlers:
@@ -230,7 +232,9 @@ class GCodeDispatch:
         if when_not_ready:
             self.base_gcode_handlers[cmd] = func
         if desc is not None:
-            self.gcode_help[cmd] = desc
+            self.gcode_help.setdefault(cmd, {})["help"] = desc
+        if params is not None:
+            self.gcode_help.setdefault(cmd, {})["params"] = params
         self._build_status_commands()
 
     def register_mux_command(self, cmd, key, value, func, desc=None):
@@ -265,7 +269,7 @@ class GCodeDispatch:
         commands = {cmd: {} for cmd in self.gcode_handlers}
         for cmd in self.gcode_help:
             if cmd in commands:
-                commands[cmd]["help"] = self.gcode_help[cmd]
+                commands[cmd] = self.gcode_help[cmd]
         self.status_commands = commands
 
     def register_output_handler(self, cb):
@@ -503,8 +507,9 @@ class GCodeDispatch:
             cmdhelp.append("Printer is not ready - not all commands available.")
         cmdhelp.append("Available extended commands:")
         for cmd in sorted(self.gcode_handlers):
-            if cmd in self.gcode_help:
-                cmdhelp.append("%-10s: %s" % (cmd, self.gcode_help[cmd]))
+            if cmd in self.gcode_help.items():
+                if "help" in self.gcode_help[cmd]:
+                    cmdhelp.append("%-10s: %s" % (cmd, self.gcode_help[cmd]))
         gcmd.respond_info("\n".join(cmdhelp), log=False)
 
     def cmd_HEATER_INTERRUPT(self, gcmd):

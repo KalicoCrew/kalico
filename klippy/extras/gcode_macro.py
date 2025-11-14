@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import enum
 import functools
 import importlib
 import importlib.util
@@ -244,6 +245,7 @@ class Template:
         self.name = name
         self.printer = printer
         self.env = env
+        self.params = None
         self.reload(script_type, script)
 
     def __call__(self, context=None):
@@ -273,6 +275,7 @@ class PythonMacroTemplate:
 
         self.name = macro_func.__name__
         self.func = macro_func
+        self.params = macro_func.__params__
         self._macro_context = None
 
     def create_template_context(self):
@@ -310,6 +313,14 @@ class PythonMacroLoader:
         self._loaded_macros = None
         self._build_kalico_module()
 
+    @staticmethod
+    def is_converter(func):
+        "Is this function callable with a single string argument"
+        if not callable(func):
+            return False
+        sig = inspect.signature(func)
+        return len(sig.parameters) == 1
+
     def _build_macro_wrapper(self, name, func):
         sig = inspect.signature(func)
         source_file = inspect.getfile(func)
@@ -327,7 +338,8 @@ class PythonMacroLoader:
                 " First parameter must be of type Printer"
             )
 
-        macro_description = name.upper()
+        help_params = {}
+
         for paramspec in parameters:
             if paramspec.annotation not in (
                 paramspec.empty,
@@ -335,31 +347,25 @@ class PythonMacroLoader:
                 int,
                 bool,
                 float,
-            ):
+            ) and not self.is_converter(paramspec.annotation):
                 raise configfile.error(
                     f"Error when loading macro {self._filename}:{name}."
                     f" Parameter '{paramspec.name}: {paramspec.annotation}' may only be str, int, float, or bool"
                 )
 
-            param_description = paramspec.name.upper() + "="
-            if paramspec.annotation is float:
-                param_description += "1.23"
-            elif paramspec.annotation is int:
-                param_description += "123"
-            elif paramspec.annotation is bool:
-                if paramspec.default is True:
-                    param_description += "0"
-                elif paramspec.default is False:
-                    param_description += "1"
-                else:
-                    param_description += "0|1"
-            if paramspec.default is not paramspec.empty:
-                param_description = "[" + param_description + "]"
-            macro_description += " " + param_description
+            param_doc = help_params[paramspec.name.upper()] = {}
+            if paramspec.default is paramspec.empty:
+                param_doc["required"] = True
 
-        docstring = macro_description
-        if func.__doc__:
-            docstring += "\n\n" + func.__doc__
+            if issubclass(paramspec.annotation, enum.Enum):
+                param_doc["type"] = "enum"
+                param_doc["choices"] = [e.value for e in paramspec.annotation]
+                if paramspec.default is not None:
+                    param_doc["default"] = paramspec.default.value
+            else:
+                param_doc["type"] = paramspec.annotation.__name__
+                if paramspec.default is not None:
+                    param_doc["default"] = paramspec.default
 
         @functools.wraps(func)
         def _wrapper(context: PythonMacroContext):
@@ -371,7 +377,10 @@ class PythonMacroLoader:
                 if param_name not in context.params:
                     if paramspec.default is paramspec.empty:
                         raise context._printer.command_error(
-                            f"{name} requires {param_name}\n", macro_description
+                            f"{name} requires {param_name}\n"
+                            + json.dumps(
+                                param_doc.get(param_name, "Unknown parameter")
+                            )
                         )
                     else:
                         continue
@@ -392,7 +401,7 @@ class PythonMacroLoader:
 
         _wrapper.__name__ = name
         _wrapper.__file__ = source_file
-        _wrapper.__doc__ = macro_description
+        _wrapper.__params__ = help_params
 
         return _wrapper
 
@@ -597,7 +606,10 @@ class GCodeMacro:
             )
         else:
             self.gcode.register_command(
-                self.alias, self.cmd, desc=self.cmd_desc
+                self.alias,
+                self.cmd,
+                desc=self.cmd_desc,
+                params=self.template.params,
             )
         self.gcode.register_mux_command(
             "SET_GCODE_VARIABLE",
@@ -629,7 +641,12 @@ class GCodeMacro:
             )
         pdesc = "Renamed builtin of '%s'" % (self.alias,)
         self.gcode.register_command(self.rename_existing, prev_cmd, desc=pdesc)
-        self.gcode.register_command(self.alias, self.cmd, desc=self.cmd_desc)
+        self.gcode.register_command(
+            self.alias,
+            self.cmd,
+            desc=self.cmd_desc,
+            params=self.template.params,
+        )
 
     def get_status(self, eventtime):
         return self.variables
