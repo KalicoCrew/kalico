@@ -1,23 +1,38 @@
 # Z Thermal Adjust
 #
 # Copyright (C) 2022  Robert Pazdzior <robertp@norbital.com>
+# Copyright (C) 2026  Gareth Farrington <garth@waves.ky>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 # Adjusts Z position in real-time using a thermal probe to e.g. compensate
 # for thermal expansion of the printer frame.
+from __future__ import annotations
 
 import threading
+
+import numpy as np
+
+from klippy import Printer
+from klippy.configfile import ConfigWrapper, PrinterConfig
+from klippy.extras.heaters import Heater, PrinterHeaters
+from klippy.extras.probe import ProbeList
+from klippy.gcode import (
+    CommandError,
+    GCodeCommand,
+    GCodeDispatch,
+)
+from klippy.toolhead import ToolHead
 
 KELVIN_TO_CELSIUS = -273.15
 
 
 class ZThermalAdjuster:
-    def __init__(self, config):
+    def __init__(self, config: ConfigWrapper):
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
         self.lock = threading.Lock()
-        self.config = config
+        self.config: ConfigWrapper = config
 
         # Get config parameters, convert to SI units where necessary
         self.temp_coeff = config.getfloat(
@@ -72,6 +87,13 @@ class ZThermalAdjuster:
             component,
             self.cmd_SET_Z_THERMAL_ADJUST,
             desc=self.cmd_SET_Z_THERMAL_ADJUST_help,
+        )
+        self.gcode.register_mux_command(
+            "Z_THERMAL_ADJUST_CALIBRATE",
+            "COMPONENT",
+            component,
+            self.cmd_Z_THERMAL_ADJUST_CALIBRATE,
+            desc=self.cmd_Z_THERMAL_ADJUST_CALIBRATE_help,
         )
 
     def handle_connect(self):
@@ -171,6 +193,15 @@ class ZThermalAdjuster:
     def stats(self, eventtime):
         return False, "%s: temp=%.1f" % ("z_thermal_adjust", self.smoothed_temp)
 
+    def save_temp_coeff(self, temp_coeff):
+        if temp_coeff < -1.0 or temp_coeff > 1.0:
+            raise CommandError(
+                f"temp_coeff value {temp_coeff} is out of range -1.0 to 1.0"
+            )
+        self.temp_coeff = temp_coeff
+        configfile: PrinterConfig = self.printer.lookup_object("configfile")
+        configfile.set(self.config.get_name(), "temp_coeff", self.temp_coeff)
+
     def cmd_SET_Z_THERMAL_ADJUST(self, gcmd):
         enable = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
         coeff = gcmd.get_float("TEMP_COEFF", None, minval=-1, maxval=1)
@@ -213,6 +244,148 @@ class ZThermalAdjuster:
         gcmd.respond_info(msg)
 
     cmd_SET_Z_THERMAL_ADJUST_help = "Set/query Z Thermal Adjust parameters."
+
+    cmd_Z_THERMAL_ADJUST_CALIBRATE_help = (
+        "Measure thermal expansion coefficient (requires HEATER parameter)"
+    )
+
+    def cmd_Z_THERMAL_ADJUST_CALIBRATE(self, gcmd: GCodeCommand):
+        calibration = gcmd.get("CALIBRATION").upper()
+        if calibration == "NOZZLE":
+            NozzleCalibration(self, self.printer, gcmd).calibrate()
+        elif calibration == "FRAME":
+            raise gcmd.error("FRAME calibration not implemented")
+        else:
+            raise gcmd.error("CALIBRATION must be NOZZLE or FRAME")
+
+
+class FrameCalibration:
+    def __init__(self, gcmd: GCodeCommand):
+        self.gcmd: GCodeCommand = gcmd
+
+    def calibrate(self):
+        # TK a frame calibration routine that uses a frame temp sensor
+        raise self.gcmd.error("Not Implemented")
+
+
+class NozzleCalibration:
+    def __init__(
+        self,
+        z_thermal_adjust: ZThermalAdjuster,
+        printer: Printer,
+        gcmd: GCodeCommand,
+    ):
+        self.gcmd: GCodeCommand = gcmd
+        self.printer: Printer = printer
+        self.z_thermal_adjust = z_thermal_adjust
+        self.component = z_thermal_adjust.component
+        self.gcode: GCodeDispatch = printer.lookup_object("gcode")
+        self.toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        self.pheaters: PrinterHeaters = self.printer.lookup_object("heaters")
+
+        self.probe = ProbeList.get_list(printer).get_command_probe(gcmd)
+        heater_name: str = gcmd.get("HEATER")
+        try:
+            self.heater: Heater = self.pheaters.lookup_heater(heater_name)
+        except self.printer.config_error as e:
+            raise gcmd.error(str(e))
+
+        self.min_temp: float = gcmd.get_float(
+            "MIN_TEMP",
+            140.0,
+            minval=self.heater.min_temp,
+            maxval=self.heater.max_temp,
+        )
+        self.max_temp: float = gcmd.get_float(
+            "MAX_TEMP", 250.0, above=self.min_temp, maxval=self.heater.max_temp
+        )
+        self.soak_time: float = gcmd.get_float("SOAK_TIME", 20.0, above=0.0)
+        self.measurements: int = gcmd.get_int("MEASUREMENTS", 10, minval=2)
+        self.z_lift: float = gcmd.get_float("Z_LIFT", 10.0, minval=1.0)
+        self.z_lift_speed: float = gcmd.get_float(
+            "Z_LIFT_SPEED", 5.0, minval=1.0
+        )
+        self.temperatures = []
+        self.z_values = []
+
+    def _calibration_temperatures(self) -> list[float]:
+        if self.max_temp <= self.min_temp:
+            raise self.gcmd.error("MAX_TEMP must be greater than MIN_TEMP")
+        step_size = (self.max_temp - self.min_temp) / (self.measurements - 1)
+        temps = [
+            round(self.min_temp + step_size * i, 1)
+            for i in range(self.measurements)
+        ]
+        temps[0] = self.min_temp
+        temps[-1] = self.max_temp
+        return temps
+
+    def calibrate(self):
+        self.gcmd.respond_info("Starting thermal coefficient measurement...")
+        temps_range = self._calibration_temperatures()
+
+        try:
+            # Measure temperature going up
+            for temp in temps_range:
+                self.gcmd.respond_info(f"Heating to {temp}C...")
+                self._change_temp(temp)
+                self.temperatures.append(temp)
+                self._measure_z()
+
+            # Measure temperature going down
+            for temp in reversed(temps_range):
+                self.gcmd.respond_info(f"Cooling to {temp}C...")
+                self._change_temp(temp)
+                self.temperatures.append(temp)
+                self._measure_z()
+        finally:
+            # Turn off heater
+            self.pheaters.set_temperature(self.heater, 0)
+
+        # Perform linear regression
+        temp_coeff = self._calculate_and_report_coeff()
+        self._save_config(temp_coeff)
+
+    def _change_temp(self, temp: float):
+        self.pheaters.set_temperature(self.heater, temp, wait=True)
+        self.toolhead.dwell(self.soak_time)
+
+    def _measure_z(self):
+        probe_result: list[float] = self.probe.run_probe(self.gcmd)
+        self.z_values.append(probe_result[2])
+        probe_result[2] += self.z_lift
+        self.toolhead.manual_move(probe_result, speed=self.z_lift_speed)
+
+    def _calculate_and_report_coeff(self) -> float:
+        # I don't know that there is a lot of value in this:
+        # A picture would be worth 1000 words here
+        # self.gcmd.respond_info(f"Temperatures: {self.temperatures}")
+        # self.gcmd.respond_info(f"Z Values: {self.z_values}")
+
+        # say something a human can understand
+        expansion = max(self.z_values) - min(self.z_values)
+        temp_range = max(self.temperatures) - min(self.temperatures)
+        self.gcmd.respond_info(
+            f"Nozzle expands {expansion}mm over {temp_range}C"
+        )
+
+        # Linear regression using numpy
+        temps = np.array(self.temperatures)
+        z_vals = np.array(self.z_values)
+        a = np.vstack([temps, np.ones(len(temps))]).T
+        slope, intercept = np.linalg.lstsq(a, z_vals, rcond=None)[0]
+        slope = round(slope, 8)
+        temp_coeff = -1.0 * slope
+
+        self.gcmd.respond_info(f"Temperature Coefficient: {temp_coeff}")
+        return temp_coeff
+
+    def _save_config(self, temp_coeff: float):
+        self.z_thermal_adjust.save_temp_coeff(temp_coeff)
+        self.gcmd.respond_info(
+            "Temperature coefficient saved. "
+            "Run SAVE_CONFIG to update printer.cfg and restart."
+        )
 
 
 def load_config_prefix(config):
