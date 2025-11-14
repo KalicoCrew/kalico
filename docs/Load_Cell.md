@@ -276,6 +276,24 @@ If the calibration fails, look at the bowden tube motion during the calibration.
 - Bowden tube routing changes
 - Experiencing probe failures when probing from max Z
 
+#### Tap Performance Calibration
+
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=TAP_PERFORMANCE`
+
+Optimizes the `pullback_distance` parameter for faster probing. The default is conservative; calibration may reduce it based on the probes measured decompression behavior. The calibration probes a bed mesh and measures the decompression distance at each point (Z travel from decompression start to contact break). It calculates a safe minimum: `(mean + 3σ) × 2.0`. It accepts all [BED_MESH_CALIBRATE](G-Codes.md#bed_mesh_calibrate) parameters for mesh point generation.
+
+**Example output:**
+```
+// Decompression Distance: mean=0.0607mm, min=0.0498mm, max=0.0758mm, std=0.0080mm
+// pullback_distance=0.1693
+// This has been saved for the current session.
+// The SAVE_CONFIG command will update the printer config file with the above and restart the printer.
+```
+
+The most likely cause of a high standard deviation is contamination on the nozzle. Make sure the nozzle is clean prior to running the calibration. Another likely cause is a "springy" bed. If the bed flexes significantly during probing it may not be suitable for a load cell probe.
+
+Re-calibrate when changes are made to `probe_speed` or `trigger_force`, these affect overshoot which determines the required pullback distance.
+
 ### Probing Temperature
 
 Keep nozzle temperature below the filament oozing point during homing and probing. 140°C is a good starting point for all filament types.
