@@ -309,11 +309,8 @@ class GCodeMove:
                 self.last_position[pos] += delta
             self.move_with_transform(self.last_position, speed)
 
-    cmd_SAVE_GCODE_STATE_help = "Save G-Code coordinate state"
-
-    def cmd_SAVE_GCODE_STATE(self, gcmd):
-        state_name = gcmd.get("NAME", "default")
-        self.saved_states[state_name] = {
+    def get_state(self):
+        return {
             "absolute_coord": self.absolute_coord,
             "absolute_extrude": self.absolute_extrude,
             "base_position": list(self.base_position),
@@ -324,13 +321,12 @@ class GCodeMove:
             "extrude_factor": self.extrude_factor,
         }
 
-    cmd_RESTORE_GCODE_STATE_help = "Restore a previously saved G-Code state"
-
-    def cmd_RESTORE_GCODE_STATE(self, gcmd):
-        state_name = gcmd.get("NAME", "default")
-        state = self.saved_states.get(state_name)
-        if state is None:
-            raise gcmd.error("Unknown g-code state: %s" % (state_name,))
+    def restore_state(
+        self,
+        state: dict,
+        restore_position: bool = False,
+        speed: float = None,
+    ):
         # Restore state
         self.absolute_coord = state["absolute_coord"]
         self.absolute_extrude = state["absolute_extrude"]
@@ -342,11 +338,33 @@ class GCodeMove:
         # Restore the relative E position
         e_diff = self.last_position[3] - state["last_position"][3]
         self.base_position[3] += e_diff
-        # Move the toolhead back if requested
-        if gcmd.get_int("MOVE", 0):
-            speed = gcmd.get_float("MOVE_SPEED", self.speed, above=0.0)
+
+        if restore_position:
+            if speed is None:
+                speed = self.speed
             self.last_position[:3] = state["last_position"][:3]
             self.move_with_transform(self.last_position, speed)
+
+    cmd_SAVE_GCODE_STATE_help = "Save G-Code coordinate state"
+
+    def cmd_SAVE_GCODE_STATE(self, gcmd):
+        state_name = gcmd.get("NAME", "default")
+        self.saved_states[state_name] = self.get_state()
+
+    cmd_RESTORE_GCODE_STATE_help = "Restore a previously saved G-Code state"
+
+    def cmd_RESTORE_GCODE_STATE(self, gcmd):
+        state_name = gcmd.get("NAME", "default")
+        state = self.saved_states.get(state_name)
+        if state is None:
+            raise self.printer.command_error(
+                "Unknown g-code state: %s" % (state_name,)
+            )
+
+        move = bool(gcmd.get_int("MOVE", 0))
+        speed = gcmd.get_float("MOVE_SPEED", None, above=0.0)
+
+        self.restore_state(state, restore_position=move, speed=speed)
 
     cmd_GET_POSITION_help = (
         "Return information on the current location of the toolhead"

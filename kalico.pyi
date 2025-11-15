@@ -1,8 +1,6 @@
 import collections
-import contextlib
 import typing
 
-from klippy import configfile
 from klippy.extras.fan import PrinterFan as PrinterFan
 from klippy.extras.fan_generic import PrinterFanGeneric as PrinterFanGeneric
 from klippy.extras.gcode_macro import GCodeMacro as GCodeMacro
@@ -12,17 +10,18 @@ from klippy.extras.save_variables import SaveVariables as SaveVariables
 from klippy.gcode import GCodeDispatch as GCodeDispatch
 
 BlockingResult = typing.TypeVar("BlockingResult")
-Macro = typing.Callable[typing.Concatenate[Kalico, ...], None]
 
-class PythonGcodeWrapper:
-    def __getattr__(self, command: str) -> GCodeCommandWrapper: ...
+class GCodeAPI:
+    def __getattr__(self, command: str) -> GCodeCommand: ...
     def __call__(self, command: str): ...
-    def absolute_movement(self) -> None: ...
-    def relative_movement(self) -> None: ...
-    def absolute_extrusion(self) -> None: ...
-    def relative_extrusion(self) -> None: ...
+    def absolute_movement(self): ...
+    def relative_movement(self): ...
+    def absolute_extrusion(self): ...
+    def relative_extrusion(self): ...
+    def display(self, msg) -> None:
+        "M117 {msg}"
 
-class GCodeCommandWrapper:
+class GCodeCommand:
     def format(self, *args, **params): ...
     def __call__(self, *args: str, **params): ...
 
@@ -81,23 +80,21 @@ class MoveAPI:
     def set_speed(self, speed: float):
         """Set the speed for future moves in mm/s"""
     def set_speed_factor(self, speed_factor: float = 1.0):
-        """Set the movement speed factor"""
-    def set_extrude_factor(self, extrude_factor: float = 1.0): ...
+        """Set the movement speed multiplier"""
+    def set_extrude_factor(self, extrude_factor: float = 1.0):
+        """Set the extrusion multiplier"""
 
 class Kalico:
     """The magic "Printer" object for macros"""
 
     status: GetStatusWrapperPython
-    vars: TemplateVariableWrapperPython
     saved_vars: SaveVariablesWrapper
+
     fans: FanAPI
-    gcode: PythonGcodeWrapper
+    gcode: GCodeAPI
     heaters: HeatersAPI
     move: MoveAPI
-    @property
-    def raw_params(self) -> str: ...
-    @property
-    def params(self) -> dict[str, str]: ...
+
     def wait_while(self, condition: typing.Callable[[], bool]):
         """Wait while a condition is True"""
     def wait_until(self, condition: typing.Callable[[], bool]):
@@ -123,14 +120,6 @@ class Kalico:
         """Raise a G-Code command error"""
     def call_remote_method(self, method: str, **kwargs):
         """Call a Kalico webhooks method"""
-    @contextlib.contextmanager
-    def save_gcode_state(
-        self,
-        name: str = None,
-        move_on_restore: bool = False,
-        move_speed: float = None,
-    ):
-        """Save and restore the current gcode state"""
 
 class TemplateVariableWrapperPython:
     def __setitem__(self, name, value) -> None: ...
@@ -151,14 +140,51 @@ class GetStatusWrapperPython:
     def __getattr__(self, val) -> StatusWrapper: ...
     def __contains__(self, val) -> bool: ...
     def __iter__(self): ...
-    def get(self, key: str, default: configfile.sentinel) -> StatusWrapper: ...
+    def get(self, key: str, default: typing.Any = ...) -> StatusWrapper: ...
 
 class StatusWrapper(collections.UserDict):
     def __getattr__(self, name): ...
 
+MacroParams = typing.ParamSpec("MacroParams")
+MacroReturn = typing.TypeVar("MacroReturn")
+MacroFunction = typing.Callable[
+    typing.Concatenate[Kalico, MacroParams], MacroReturn
+]
+
+class Macro(typing.Protocol, typing.Generic[MacroParams, MacroReturn]):
+    rawparams: str
+    params: dict[str, str]
+    vars: TemplateVariableWrapperPython
+
+    @staticmethod
+    def __call__(
+        kalico: Kalico, *args: MacroParams.args, **kwargs: MacroParams.kwargs
+    ) -> MacroReturn: ...
+    @staticmethod
+    def delay(
+        delay: float, /, *args: MacroParams.args, **kwargs: MacroParams.kwargs
+    ):
+        "Schedule this function to run after a delay"
+
+    @staticmethod
+    def every(
+        period: float, /, *args: MacroParams.args, **kwargs: MacroParams.kwargs
+    ):
+        "Schedule this function to run every `period` seconds"
+
+@typing.overload
 def gcode_macro(
-    name: str,
-    rename_existing: typing.Optional[str],
-) -> typing.Callable[[Macro], Macro]: ...
+    function: typing.Callable[
+        typing.Concatenate[Kalico, MacroParams], MacroReturn
+    ],
+    /,
+) -> Macro[MacroParams, MacroReturn]: ...
+@typing.overload
+def gcode_macro(
+    *, rename_existing: str
+) -> typing.Callable[
+    [typing.Callable[typing.Concatenate[Kalico, MacroParams], MacroReturn]],
+    Macro[MacroParams, MacroReturn],
+]: ...
 
 __all__ = ("gcode_macro", "Kalico")
