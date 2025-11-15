@@ -7,12 +7,17 @@ import fcntl
 import json
 import logging
 import os
+import pathlib
 import pty
 import signal
 import subprocess
 import termios
 import time
 import traceback
+
+# We use this often enough
+klippy_dir = pathlib.Path(__file__).parent
+klipper_dir = klippy_dir.parent
 
 ######################################################################
 # Low-level Unix commands
@@ -207,10 +212,9 @@ def get_git_version(from_file=True):
         "remote": "?",
         "url": "?",
     }
-    klippy_src = os.path.dirname(__file__)
 
     # Obtain version info from "git" program
-    gitdir = os.path.join(klippy_src, "..")
+    gitdir = str(klipper_dir)
     prog_desc = (
         "git",
         "-C",
@@ -250,5 +254,5 @@ def get_git_version(from_file=True):
         logging.debug("Exception on run: %s", traceback.format_exc())
 
     if from_file:
-        git_info["version"] = get_version_from_file(klippy_src)
+        git_info["version"] = get_version_from_file(str(klippy_dir))
     return git_info

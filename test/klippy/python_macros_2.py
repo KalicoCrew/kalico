@@ -1,5 +1,8 @@
-from kalico import Kalico, gcode_macro
 import enum
+
+import pytest
+
+from kalico import Kalico, gcode_macro
 
 
 class Direction(enum.Enum):
@@ -12,8 +15,8 @@ class Location(enum.StrEnum):
     back = "BACK"
 
 
-@gcode_macro("HELLO_WORLD")
-def example_macro(p: Kalico, name: str = "World"):
+@gcode_macro
+def hello_world(p: Kalico, name: str = "World"):
     "Say hello"
 
     p.gcode.respond(msg=f"Hello, {name}!")
@@ -23,9 +26,11 @@ def example_macro(p: Kalico, name: str = "World"):
     }
 
 
-@gcode_macro("DO_THE_THING")
-def exercise(
-    p, direction: Direction = None, location: Location = Location.front
+@gcode_macro
+def do_the_thing(
+    p: Kalico,
+    direction: Direction = None,
+    location: Location = Location.front,
 ):
     "Run a suite of api tests"
 
@@ -38,6 +43,9 @@ def exercise(
             "default": "FRONT",
         },
     }
+
+    with pytest.raises(p._printer.command_error):
+        p.move(x=-999)
 
     # Attribute proxy for gcode
     p.gcode.g28("x", "y")
