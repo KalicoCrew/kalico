@@ -1255,6 +1255,14 @@ corresponding settings from the
 - `MIN_TAP_QUALITY=<percent>`
 - `DECOMPRESSION_ANGLE=<angle>`
 
+### LOAD_CELL_PROBE_CALIBRATE
+`LOAD_CELL_PROBE_CALIBRATE CALIBRATION=<calibration_type> [<parameters>]`: 
+Run automated calibration routines for load cell probe parameters. All calibrations
+probe a bed mesh and save results for the current session (use `SAVE_CONFIG` to persist).
+
+Calibration commands will be added in future commits. See 
+[Load Cell Calibration](Load_Cell.md#calibration) for detailed usage.
+
 ### [manual_probe]
 
 The manual_probe module is automatically loaded.

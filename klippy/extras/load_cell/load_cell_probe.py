@@ -12,7 +12,7 @@ from klippy import mcu
 from klippy.configfile import ConfigWrapper
 from klippy.extras.homing import PrinterHoming
 from klippy.extras.probe import PrinterProbe
-from klippy.gcode import GCodeCommand
+from klippy.gcode import GCodeCommand, GCodeDispatch
 
 from . import sos_filter
 from .interfaces import LoadCellSensor
@@ -1047,7 +1047,35 @@ class LoadCellPrinterProbe:
         wrapper = LoadCellEndstopWrapper(
             config, homing_move, self._tapping_move
         )
-        PrinterProbe(config, wrapper)
+        self._printer_probe: PrinterProbe = PrinterProbe(config, wrapper)
+        self._register_macros()
+
+    def _register_macros(self):
+        gcode_dispatch: GCodeDispatch = self._printer.lookup_object("gcode")
+        gcode_dispatch.register_mux_command(
+            "LOAD_CELL_PROBE_CALIBRATE",
+            "PROBE",
+            self._printer_probe.probe_name,
+            self.cmd_LOAD_CELL_PROBE_CALIBRATE,
+            desc=self.cmd_LOAD_CELL_PROBE_CALIBRATE_help,
+        )
+        if self._printer_probe.is_default_probe:
+            gcode_dispatch.register_mux_command(
+                "LOAD_CELL_PROBE_CALIBRATE",
+                "PROBE",
+                None,
+                self.cmd_LOAD_CELL_PROBE_CALIBRATE,
+                desc=self.cmd_LOAD_CELL_PROBE_CALIBRATE_help,
+            )
+
+    cmd_LOAD_CELL_PROBE_CALIBRATE_help: str = "Run a calibration routine"
+
+    def cmd_LOAD_CELL_PROBE_CALIBRATE(self, gcmd: GCodeCommand):
+        calibration: str = gcmd.get("CALIBRATION")
+        if calibration == "TEST":
+            gcmd.respond_info(f"CALIBRATION is {calibration}")
+        else:
+            raise gcmd.error(f"Unknown CALIBRATION value '{calibration}'")
 
     def add_client(self, callback):
         self._tap_analysis_helper.add_client(callback)
