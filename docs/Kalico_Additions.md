@@ -26,6 +26,7 @@
 ## New Kalico Modules
 
 - [gcode_shell_command](./G-Code_Shell_Command.md) - Execute linux commands and scripts from within Kalico
+- [macro_api](./Python_API.md) - Use clean python to write macros and interact with Kalico in entirely new ways
 
 ## Sensorless Homing
 

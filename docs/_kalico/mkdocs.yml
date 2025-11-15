@@ -108,6 +108,7 @@ nav:
   - G-Code Reference:
     - G-Codes.md
     - Command_Templates.md
+    - Python_API.md
     - G-Code_Shell_Command.md
     - Status_Reference.md
   - Getting up and running:
