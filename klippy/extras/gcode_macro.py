@@ -14,9 +14,10 @@ import pathlib
 import sys
 import types
 import typing
-from klippy import configfile
+from klippy import configfile, util
+from klippy.gcode import CommandError
 from .macro_api import (
-    PythonMacroContext,
+    Kalico,
     TemplateVariableWrapperPython,
     GetStatusWrapperPython,
 )
@@ -268,22 +269,16 @@ class PythonMacroTemplate:
 
     def run_gcode_from_command(self, context=None):
         if self._macro_context is None:
-            self._macro_context = PythonMacroContext(self.printer, self.name)
-        try:
-            with self._macro_context._with_context(context) as kalico:
-                return self.func(kalico)
-        except self.printer.command_error:
-            raise
-        except Exception as e:
-            raise self.printer.command_error(f"Error in {self.name}: {e}")
+            self._macro_context = Kalico(self.printer, self.name)
+
+        with self._macro_context._with_context(context) as kalico:
+            return self.func(kalico)
 
     def __call__(self, context=None):
         return self.run_gcode_from_command(context)
 
 
-macro_function = typing.Callable[
-    typing.Concatenate[PythonMacroContext, ...], None
-]
+macro_function = typing.Callable[typing.Concatenate[Kalico, ...], None]
 
 
 class PythonMacroLoader:
@@ -306,9 +301,10 @@ class PythonMacroLoader:
         sig = inspect.signature(func)
         return len(sig.parameters) == 1
 
-    def _build_macro_wrapper(self, name, func):
+    def _build_macro_wrapper(self, func):
+        name = func.__name__.upper()
         sig = inspect.signature(func)
-        source_file = inspect.getfile(func)
+        source_file = pathlib.Path(inspect.getfile(func))
 
         if not sig.parameters:
             raise configfile.error(
@@ -317,7 +313,7 @@ class PythonMacroLoader:
             )
 
         param_gcmd, *parameters = sig.parameters.values()
-        if param_gcmd.annotation not in (sig.empty, PythonMacroContext):
+        if param_gcmd.annotation not in (sig.empty, Kalico):
             raise configfile.error(
                 f"Error when loading macro {source_file}:{name}."
                 " First parameter must be of type Printer"
@@ -334,7 +330,7 @@ class PythonMacroLoader:
                 float,
             ) and not self.is_converter(paramspec.annotation):
                 raise configfile.error(
-                    f"Error when loading macro {self._filename}:{name}."
+                    f"Error when loading macro {source_file}:{name}."
                     f" Parameter '{paramspec.name}: {paramspec.annotation}' may only be str, int, float, or bool"
                 )
 
@@ -353,7 +349,7 @@ class PythonMacroLoader:
                     param_doc["default"] = paramspec.default
 
         @functools.wraps(func)
-        def _wrapper(context: PythonMacroContext):
+        def _wrapper(context: Kalico):
             kwargs = {}
 
             for paramspec in parameters:
@@ -382,29 +378,47 @@ class PythonMacroLoader:
                 kwargs[paramspec.name] = value
 
             bound = sig.bind(context, **kwargs)
-            func(*bound.args, **bound.kwargs)
+            try:
+                func(*bound.args, **bound.kwargs)
+            except Exception as e:
+                tbe = traceback.TracebackException.from_exception(
+                    e, capture_locals=True
+                )
+                # Drop the frame for the macro wrapper
+                tbe.stack.pop(0)
+                # Drop locals for internal frames
+                for frame in tbe.stack:
+                    if frame.filename.startswith(str(util.klippy_dir)):
+                        frame.locals = None
+                lines = list(tbe.format())
+                logging.error(f"Error in {name}: {e})\n" + "".join(lines))
+                raise CommandError(
+                    f"Error in {name}: {e}\n{lines[1]}", log=False
+                )
 
         _wrapper.__name__ = name
-        _wrapper.__file__ = source_file
+        _wrapper.__file__ = pathlib.Path(source_file)
         _wrapper.__params__ = help_params
 
         return _wrapper
 
     def _macro_decorator(
         self,
-        name: str,
+        func: typing.Optional[macro_function],
+        /,
         rename_existing: typing.Optional[str] = None,
     ) -> typing.Callable[[macro_function], macro_function]:
         def macro_decorator(func: macro_function) -> macro_function:
-            wrapped_macro = self._build_macro_wrapper(name, func)
+            wrapped_macro = self._build_macro_wrapper(func)
             self._register_macro(wrapped_macro, rename_existing)
             return func
 
+        if func is not None:
+            return macro_decorator(func)
         return macro_decorator
 
     def get_context(self):
         return {
-            "Kalico": PythonMacroContext,
             "config": self._config,
             "gcode_macro": self._macro_decorator,
         }
@@ -414,7 +428,7 @@ class PythonMacroLoader:
             kalico = types.ModuleType(
                 "kalico", "virtual module for the Kalico Python API"
             )
-            kalico.Kalico = PythonMacroContext
+            kalico.Kalico = Kalico
             sys.modules["kalico"] = kalico
 
         return sys.modules["kalico"]
@@ -436,10 +450,11 @@ class PythonMacroLoader:
 
         spec = importlib.util.spec_from_file_location(file.name, file)
         module = importlib.util.module_from_spec(spec)
+        kalico = self._build_kalico_module()
 
         # TODO: change these to be scoped, using something like "kalico.gcode_macro.loader(self)"
-        sys.modules["kalico"].config = self._config
-        sys.modules["kalico"].gcode_macro = self._macro_decorator
+        for k, v in self.get_context().items():
+            setattr(kalico, k, v)
         spec.loader.exec_module(module)
 
     def _register_macro(self, macro_func, rename_existing=None):
@@ -449,6 +464,12 @@ class PythonMacroLoader:
         if not config.has_section(section):
             config.fileconfig.add_section(section)
             config.fileconfig.set(section, "description", macro_func.__doc__)
+            config.fileconfig.set(
+                section,
+                "gcode",
+                f"# {macro_func.__file__.relative_to(self._root_path)}:{macro_func.__wrapped__.__name__}",
+            )
+            config.access_tracking[(section.lower(), "gcode")] = ""
             if rename_existing:
                 config.fileconfig.set(
                     section, "rename_existing", rename_existing

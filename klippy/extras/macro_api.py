@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import collections
 import contextlib
 import logging
@@ -48,6 +49,9 @@ class PythonGcodeWrapper:
     def relative_extrusion(self):
         self._gcode.run_script_from_command("M83")
 
+    def display(self, msg: str):
+        self._gcode.run_script_from_command(f"M117 {msg}")
+
 
 class GCodeCommandWrapper:
     def __init__(self, gcode: GCodeDispatch, command: str):
@@ -96,7 +100,8 @@ class HeatersAPI:
     ):
         "Set the target temperature for a heater"
         heaters: PrinterHeaters = self._printer.lookup_object("heaters")
-        heaters.set_temperature(heater_name, temp)
+        heater = heaters.lookup_heater(heater_name)
+        heaters.set_temperature(heater, temp)
 
     def temperature_wait(
         self,
@@ -125,13 +130,14 @@ class HeatersAPI:
                     f"{sensor_name} is not a valid temperature sensor"
                 )
 
-            @self.wait_until
             def check(eventtime):
                 temp, _ = sensor.get_temp(eventtime)
                 if min_temp <= temp <= max_temp:
-                    return True
+                    return False
                 self._gcode.respond_raw(heaters._get_temp(eventtime))
-                return False
+                return True
+
+            self._printer.wait_while(check)
 
 
 class FanAPI:
@@ -218,7 +224,7 @@ class MoveAPI:
         self._gcode_move.set_extrude_factor(extrude_factor)
 
 
-class PythonMacroContext:
+class Kalico:
     'The magic "Printer" object for macros'
 
     _context: list[dict]
@@ -251,6 +257,9 @@ class PythonMacroContext:
         self.move = MoveAPI(printer)
 
         self._context = []
+
+    def __repr__(self):
+        return f"<Kalico {self._name}>"
 
     @property
     def raw_params(self) -> str:

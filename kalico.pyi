@@ -9,10 +9,9 @@ from klippy.extras.gcode_move import GCodeMove as GCodeMove
 from klippy.extras.heaters import PrinterHeaters as PrinterHeaters
 from klippy.extras.save_variables import SaveVariables as SaveVariables
 from klippy.gcode import GCodeDispatch as GCodeDispatch
-from klippy.printer import Printer as Printer
 
 BlockingResult = typing.TypeVar("BlockingResult")
-Macro = typing.Callable[typing.Concatenate[Printer, ...], None]
+Macro = typing.Callable[typing.Concatenate[Kalico, ...], None]
 
 class PythonGcodeWrapper:
     def __getattr__(self, command: str) -> GCodeCommandWrapper: ...

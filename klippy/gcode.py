@@ -8,7 +8,9 @@ from . import mathutil
 
 
 class CommandError(Exception):
-    pass
+    def __init__(self, *args, log=True):
+        super().__init__(*args)
+        self._log = log
 
 
 Coord = collections.namedtuple("Coord", ("x", "y", "z", "e"))
@@ -316,7 +318,7 @@ class GCodeDispatch:
             try:
                 handler(gcmd)
             except self.error as e:
-                self._respond_error(str(e))
+                self._respond_error(str(e), log=e._log)
                 self.printer.send_event("gcode:command_error")
                 if not need_ack:
                     raise
@@ -360,8 +362,9 @@ class GCodeDispatch:
         lines = [l.strip() for l in msg.strip().split("\n")]
         self.respond_raw("// " + "\n// ".join(lines))
 
-    def _respond_error(self, msg):
-        logging.warning(msg)
+    def _respond_error(self, msg, log=True):
+        if log:
+            logging.warning(msg)
         lines = msg.strip().split("\n")
         if len(lines) > 1:
             self.respond_info("\n".join(lines), log=False)

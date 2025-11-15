@@ -138,26 +138,19 @@ class Printer:
         if section in self.objects:
             return self.objects[section]
         module_parts = section.split()
-        module_name = module_parts[0]
-        extras_py_name = os.path.join(
-            os.path.dirname(__file__), "extras", module_name + ".py"
-        )
-        extras_py_dirname = os.path.join(
-            os.path.dirname(__file__), "extras", module_name, "__init__.py"
-        )
+        module_name: str = module_parts[0]
 
-        plugins_py_dirname = os.path.join(
-            os.path.dirname(__file__), "plugins", module_name, "__init__.py"
-        )
-        plugins_py_name = os.path.join(
-            os.path.dirname(__file__), "plugins", module_name + ".py"
-        )
+        extras_dir = util.klippy_dir / "extras"
+        extras_py_name = extras_dir / f"{module_name}.py"
+        extras_py_dirname = extras_dir / module_name / "__init__.py"
 
-        found_in_extras = os.path.exists(extras_py_name) or os.path.exists(
-            extras_py_dirname
-        )
-        found_in_plugins = os.path.exists(plugins_py_name)
-        found_in_plugins_dir = os.path.exists(plugins_py_dirname)
+        plugins_dir = util.klippy_dir / "plugins"
+        plugins_py_name = plugins_dir / f"{module_name}.py"
+        plugins_py_dirname = plugins_dir / module_name / "__init__.py"
+
+        found_in_extras = extras_py_name.exists() or extras_py_dirname.exists()
+        found_in_plugins = plugins_py_name.exists()
+        found_in_plugins_dir = plugins_py_dirname.exists()
 
         if not any([found_in_extras, found_in_plugins, found_in_plugins_dir]):
             if default is not configfile.sentinel:
