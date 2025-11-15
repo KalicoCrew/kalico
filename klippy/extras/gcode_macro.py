@@ -6,21 +6,9 @@
 from __future__ import annotations
 import traceback, logging, ast, copy, json, threading
 import jinja2, math
-import functools
-import importlib.util
-import inspect
-import enum
-import pathlib
-import sys
-import types
+import collections
 import typing
-from klippy import configfile, util
-from klippy.gcode import CommandError
-from .macro_api import (
-    Kalico,
-    TemplateVariableWrapperPython,
-    GetStatusWrapperPython,
-)
+from klippy import configfile
 
 ######################################################################
 # Template handling
@@ -103,6 +91,77 @@ class TemplateWrapperJinja:
 
     def run_gcode_from_command(self, context=None):
         self.gcode.run_script_from_command(self.render(context))
+
+
+class TemplateVariableWrapperPython:
+    def __init__(self, macro: GCodeMacro):
+        self.__macro = macro
+
+    def __setitem__(self, name, value):
+        v = dict(self.__macro.variables)
+        v[name] = value
+        self.__macro.variables = v
+
+    def __getitem__(self, name):
+        return self.__macro.variables[name]
+
+    def __contains__(self, val):
+        return val in self.__macro.variables
+
+    def __iter__(self):
+        yield from iter(self.__macro.variables)
+
+    def items(self):
+        return self.__macro.variables.items()
+
+
+class GetStatusWrapperPython:
+    def __init__(self, printer):
+        self._printer = printer
+
+    def __getitem__(self, val) -> StatusWrapper:
+        sval = str(val).strip()
+        po = self._printer.lookup_object(sval, None)
+        if po is None or not hasattr(po, "get_status"):
+            raise KeyError(val)
+        eventtime = self._printer.get_reactor().monotonic()
+        return StatusWrapper(po.get_status(eventtime))
+
+    def __getattr__(self, val) -> StatusWrapper:
+        return self.__getitem__(val)
+
+    def __contains__(self, val):
+        try:
+            self.__getitem__(val)
+        except KeyError as e:
+            return False
+        return True
+
+    def __iter__(self):
+        for name, obj in self._printer.lookup_objects():
+            if hasattr(obj, "get_status"):
+                yield name
+
+    def get(self, key: str, default: configfile.sentinel) -> StatusWrapper:
+        try:
+            return self[key]
+        except KeyError:
+            if default is not configfile.sentinel:
+                return default
+            raise
+
+
+class StatusWrapper(collections.UserDict):
+    "Attribute accessible dictionary"
+
+    def __init__(self, dict):
+        self.data = dict
+
+    def __getattr__(self, name):
+        val = self.__getitem__(name)
+        if isinstance(val, dict):
+            return StatusWrapper(val)
+        return val
 
 
 class TemplateWrapperPython:
@@ -255,236 +314,6 @@ class Template:
             )
 
 
-class PythonMacroTemplate:
-    def __init__(self, config, macro_func):
-        self.printer = config.get_printer()
-
-        self.name = macro_func.__name__
-        self.func = macro_func
-        self.params = macro_func.__params__
-        self._macro_context = None
-
-    def create_template_context(self):
-        return {}  # Shim
-
-    def run_gcode_from_command(self, context=None):
-        if self._macro_context is None:
-            self._macro_context = Kalico(self.printer, self.name)
-
-        with self._macro_context._with_context(context) as kalico:
-            return self.func(kalico)
-
-    def __call__(self, context=None):
-        return self.run_gcode_from_command(context)
-
-
-macro_function = typing.Callable[typing.Concatenate[Kalico, ...], None]
-
-
-class PythonMacroLoader:
-    def __init__(self, config: configfile.ConfigWrapper):
-        self._printer = config.get_printer()
-        self._config = config
-        self._root_path = pathlib.Path(
-            self._config.printer.get_start_args()["config_file"]
-        ).parent
-
-        self._filename = None
-        self._loaded_macros = None
-        self._build_kalico_module()
-
-    @staticmethod
-    def is_converter(func):
-        "Is this function callable with a single string argument"
-        if not callable(func):
-            return False
-        sig = inspect.signature(func)
-        return len(sig.parameters) == 1
-
-    def _build_macro_wrapper(self, func):
-        name = func.__name__.upper()
-        sig = inspect.signature(func)
-        source_file = pathlib.Path(inspect.getfile(func))
-
-        if not sig.parameters:
-            raise configfile.error(
-                f"Error when loading macro {source_file}:{name}."
-                " Macro functions must accept a parameter for the Printer object"
-            )
-
-        param_gcmd, *parameters = sig.parameters.values()
-        if param_gcmd.annotation not in (sig.empty, Kalico):
-            raise configfile.error(
-                f"Error when loading macro {source_file}:{name}."
-                " First parameter must be of type Printer"
-            )
-
-        help_params = {}
-
-        for paramspec in parameters:
-            if paramspec.annotation not in (
-                paramspec.empty,
-                str,
-                int,
-                bool,
-                float,
-            ) and not self.is_converter(paramspec.annotation):
-                raise configfile.error(
-                    f"Error when loading macro {source_file}:{name}."
-                    f" Parameter '{paramspec.name}: {paramspec.annotation}' may only be str, int, float, or bool"
-                )
-
-            param_doc = help_params[paramspec.name.upper()] = {}
-            if paramspec.default is paramspec.empty:
-                param_doc["required"] = True
-
-            if issubclass(paramspec.annotation, enum.Enum):
-                param_doc["type"] = "enum"
-                param_doc["choices"] = [e.value for e in paramspec.annotation]
-                if paramspec.default is not None:
-                    param_doc["default"] = paramspec.default.value
-            else:
-                param_doc["type"] = paramspec.annotation.__name__
-                if paramspec.default is not None:
-                    param_doc["default"] = paramspec.default
-
-        @functools.wraps(func)
-        def _wrapper(context: Kalico):
-            kwargs = {}
-
-            for paramspec in parameters:
-                param_name = paramspec.name.upper()
-
-                if param_name not in context.params:
-                    if paramspec.default is paramspec.empty:
-                        raise context._printer.command_error(
-                            f"{name} requires {param_name}\n"
-                            + json.dumps(
-                                param_doc.get(param_name, "Unknown parameter")
-                            )
-                        )
-                    else:
-                        continue
-
-                value = context.params[param_name]
-
-                # Special case for boolean values
-                if paramspec.annotation is bool:
-                    value = bool(int(value))
-
-                elif callable(paramspec.annotation):
-                    value = paramspec.annotation(value)
-
-                kwargs[paramspec.name] = value
-
-            bound = sig.bind(context, **kwargs)
-            try:
-                func(*bound.args, **bound.kwargs)
-            except Exception as e:
-                tbe = traceback.TracebackException.from_exception(
-                    e, capture_locals=True
-                )
-                # Drop the frame for the macro wrapper
-                tbe.stack.pop(0)
-                # Drop locals for internal frames
-                for frame in tbe.stack:
-                    if frame.filename.startswith(str(util.klippy_dir)):
-                        frame.locals = None
-                lines = list(tbe.format())
-                logging.error(f"Error in {name}: {e})\n" + "".join(lines))
-                raise CommandError(
-                    f"Error in {name}: {e}\n{lines[1]}", log=False
-                )
-
-        _wrapper.__name__ = name
-        _wrapper.__file__ = pathlib.Path(source_file)
-        _wrapper.__params__ = help_params
-
-        return _wrapper
-
-    def _macro_decorator(
-        self,
-        func: typing.Optional[macro_function],
-        /,
-        rename_existing: typing.Optional[str] = None,
-    ) -> typing.Callable[[macro_function], macro_function]:
-        def macro_decorator(func: macro_function) -> macro_function:
-            wrapped_macro = self._build_macro_wrapper(func)
-            self._register_macro(wrapped_macro, rename_existing)
-            return func
-
-        if func is not None:
-            return macro_decorator(func)
-        return macro_decorator
-
-    def get_context(self):
-        return {
-            "config": self._config,
-            "gcode_macro": self._macro_decorator,
-        }
-
-    def _build_kalico_module(self):
-        if "kalico" not in sys.modules:
-            kalico = types.ModuleType(
-                "kalico", "virtual module for the Kalico Python API"
-            )
-            kalico.Kalico = Kalico
-            sys.modules["kalico"] = kalico
-
-        return sys.modules["kalico"]
-
-    def load(self):
-        files = self._config.getlist("python", [], sep="\n")
-        for file in files:
-            if not file.strip():
-                continue
-            self._load_file(file)
-
-    def _load_file(self, filename):
-        file = self._root_path / filename
-
-        if not file.exists():
-            raise configfile.error(
-                f"Error loading python macros: {file} does not exist"
-            )
-
-        spec = importlib.util.spec_from_file_location(file.name, file)
-        module = importlib.util.module_from_spec(spec)
-        kalico = self._build_kalico_module()
-
-        # TODO: change these to be scoped, using something like "kalico.gcode_macro.loader(self)"
-        for k, v in self.get_context().items():
-            setattr(kalico, k, v)
-        spec.loader.exec_module(module)
-
-    def _register_macro(self, macro_func, rename_existing=None):
-        section = f"gcode_macro {macro_func.__name__}"
-
-        config = self._config.getsection(section)
-        if not config.has_section(section):
-            config.fileconfig.add_section(section)
-            config.fileconfig.set(section, "description", macro_func.__doc__)
-            config.fileconfig.set(
-                section,
-                "gcode",
-                f"# {macro_func.__file__.relative_to(self._root_path)}:{macro_func.__wrapped__.__name__}",
-            )
-            config.access_tracking[(section.lower(), "gcode")] = ""
-            if rename_existing:
-                config.fileconfig.set(
-                    section, "rename_existing", rename_existing
-                )
-
-        template = PythonMacroTemplate(config, macro_func)
-
-        gcode_macro = self._printer.lookup_object(section, None)
-        if gcode_macro:
-            gcode_macro.template = template
-        else:
-            gcode_macro = GCodeMacro(config, template)
-            self._printer.add_object(section, gcode_macro)
-
-
 # Main gcode macro template tracking
 class PrinterGCodeMacro:
     def __init__(self, config):
@@ -500,14 +329,11 @@ class PrinterGCodeMacro:
                 "jinja2.ext.loopcontrols",
             ],
         )
-        self.macro_loader = PythonMacroLoader(config)
 
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
             "RELOAD_GCODE_MACROS", self.cmd_RELOAD_GCODE_MACROS
         )
-
-        self.macro_loader.load()
 
     def load_template(self, config, option, default=None):
         name = "%s:%s" % (config.get_name(), option)
@@ -569,8 +395,9 @@ class PrinterGCodeMacro:
                 script_type, new_script = new_section.getscript("gcode")
                 template.reload(script_type, new_script)
 
-        # TODO: Verify this works like I expect
-        self.macro_loader.load()
+        macro_api = self.printer.lookup_object("macro_api", None)
+        if macro_api:
+            macro_api.load()
 
 
 def load_config(config):
