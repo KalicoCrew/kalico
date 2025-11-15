@@ -238,6 +238,10 @@ Load cell probes support homing the Z axis. Homing is less accurate than probing
 PROBE HOME=Z
 ```
 
+### Calibration
+
+Load cell probes support automated calibrations with the `LOAD_CELL_PROBE_CALIBRATE` command (([docs](G-Codes.md#load_cell_probe_calibrate))). These calibration tools probe a bed mesh or move the Z axis and analyze the results to determine optimal settings. All calibrations use the same mesh points as `BED_MESH_CALIBRATE` and save parameters for the current session (use `SAVE_CONFIG` to persist).
+
 ### Probing Temperature
 
 Keep nozzle temperature below the filament oozing point during homing and probing. 140°C is a good starting point for all filament types.
