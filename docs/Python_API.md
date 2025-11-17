@@ -1,7 +1,7 @@
 # Python API for Kalico
 
 ```
-[macro_api]
+[kalico_api]
 python: 
     macros.py
     another_file.py
@@ -133,7 +133,7 @@ Traceback (most recent call last):
     ~~~~~~^^^^^^^^^^^^^^^
     x_distance = -999
     k = <Kalico>
-  File "/home/printer/klipper/klippy/extras/macro_api/kalico/gcode_move.py", line 40, in __call__
+  File "/home/printer/klipper/klippy/extras/kalico_api/kalico/gcode_move.py", line 40, in __call__
     self._gcode_move.move_to(newpos, speed)
     ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
 ```

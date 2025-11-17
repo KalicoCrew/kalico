@@ -395,9 +395,9 @@ class PrinterGCodeMacro:
                 script_type, new_script = new_section.getscript("gcode")
                 template.reload(script_type, new_script)
 
-        macro_api = self.printer.lookup_object("macro_api", None)
-        if macro_api:
-            macro_api.load()
+        kalico_api = self.printer.lookup_object("kalico_api", None)
+        if kalico_api:
+            kalico_api.load()
 
 
 def load_config(config):

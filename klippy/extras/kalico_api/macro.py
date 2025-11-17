@@ -8,6 +8,7 @@ import pathlib
 import traceback
 import typing
 
+from typing_extensions import ParamSpec, Concatenate
 from klippy import configfile, util
 from klippy.extras.gcode_macro import TemplateVariableWrapperPython
 from klippy.gcode import CommandError
@@ -26,7 +27,16 @@ def _is_param_converter(func):
     if not callable(func):
         return False
     sig = inspect.signature(func)
-    return len(sig.parameters) == 1
+    if not sig.parameters:
+        return False
+    param, *other_params = list(sig.parameters.values())
+    # First parameter must be untyped or str
+    if param.annotation not in (sig.empty, str):
+        return False
+    # Any others must be optional
+    if not all(p.default is not sig.empty for p in other_params):
+        return False
+    return True
 
 
 def _validate_parameters(func: typing.Callable):
@@ -83,11 +93,9 @@ def _document_parameters(parameters: list[inspect.Parameter]):
     return help
 
 
-MacroParams = typing.ParamSpec("MacroParams")
+MacroParams = ParamSpec("MacroParams")
 MacroReturn = typing.TypeVar("MacroReturn")
-MacroFunction = typing.Callable[
-    typing.Concatenate["Kalico", MacroParams], MacroReturn
-]
+MacroFunction = typing.Callable[Concatenate["Kalico", MacroParams], MacroReturn]
 
 
 class Macro(typing.Generic[MacroParams, MacroReturn]):
