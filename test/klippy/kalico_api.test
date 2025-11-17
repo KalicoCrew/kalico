@@ -1,5 +1,5 @@
 # Test case for python gcode
-CONFIG python_macros_2.cfg
+CONFIG kalico_api.cfg
 DICTIONARY atmega2560.dict
 
 HELLO_WORLD

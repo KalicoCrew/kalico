@@ -10,7 +10,7 @@ class Direction(enum.Enum):
     down = 1
 
 
-class Location(enum.StrEnum):
+class Location(enum.Enum):
     front = "FRONT"
     back = "BACK"
 
