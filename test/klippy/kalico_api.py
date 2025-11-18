@@ -2,7 +2,7 @@ import enum
 
 import pytest
 
-from kalico import Kalico, gcode_macro
+from kalico import IntRange, Kalico, event_handler, gcode_macro
 
 
 class Direction(enum.Enum):
@@ -31,18 +31,27 @@ def do_the_thing(
     k: Kalico,
     direction: Direction = None,
     location: Location = Location.front,
+    validated: IntRange[0, 5] = -1,
 ):
     "Run a suite of api tests"
-
+    print(k.status.gcode.commands.DO_THE_THING.params.VALIDATED)
     # Test to make sure the enum parameters are handled correctly
-    assert k.status.gcode.commands["DO_THE_THING"]["params"] == {
+    assert k.status.gcode.commands.DO_THE_THING["params"] == {
         "DIRECTION": {"type": "enum", "choices": [-1, 1]},
         "LOCATION": {
             "type": "enum",
             "choices": ["FRONT", "BACK"],
             "default": "FRONT",
         },
+        "VALIDATED": {
+            "type": "int",
+            "default": -1,
+            "valid": {"minimum": 0, "maximum": 5},
+        },
     }
+
+    with pytest.raises(k._printer.command_error):
+        do_the_thing(k, validated=-1)
 
     with pytest.raises(k._printer.command_error):
         k.move(x=-999)
@@ -99,23 +108,10 @@ def do_the_thing(
 
 
 @gcode_macro
-def _init_countdown(k: Kalico, counter: int = None):
-    k.set_gcode_variable("countdown", "counter", counter)
-
-    countdown(k)
+def assert_event_handler_ran(k: Kalico):
+    assert assert_event_handler_ran.vars["ready"]
 
 
-@gcode_macro
-def countdown(k: Kalico):
-    counter = countdown.vars["counter"] - 1
-    countdown.vars["counter"] = counter
-
-    if counter > 0:
-        k.respond_info(f"Countdown {countdown.vars['counter']}")
-        countdown.delay(1)
-
-    else:
-        k.raise_error("countdown finished")
-
-
-_init_countdown.delay(0)
+@event_handler("klippy:ready")
+def on_ready(k: Kalico):
+    assert_event_handler_ran.vars["ready"] = True

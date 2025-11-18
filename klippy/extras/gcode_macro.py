@@ -20,11 +20,6 @@ import jinja2
 
 from klippy import configfile
 
-from .macro_api import (
-    GetStatusWrapperPython,
-    TemplateVariableWrapperPython,
-)
-
 ######################################################################
 # Template handling
 ######################################################################

@@ -35,3 +35,6 @@ class SaveVariablesWrapper:
 
     def items(self):
         return self._save_variables.allVariables.items()
+
+
+__all__ = ("SaveVariablesWrapper",)

@@ -46,9 +46,21 @@ Your function parameters are automatically mapped to GCode parameters. This exam
 
 If no annotation is used on a parameter, it is directly passed as a string. Type annotations for parameters must be a callable object accepting a single `str` and returning the value.
 
+Helpers for validating numbers can be used in the type annotations.
+
+```python
+from kalico import Kalico, Range
+
+@gcode_macro
+def validated(
+    kalico: Kalico,
+    count: Annotated[int, Range(0, 10)]
+): ...
+```
+
 ### GCode Variables
 
-`@gcode_macro` returns a `Macro` instance. This provides helpers for accessing gcode variables, scheduling delayed or recurring calls, or accessing raw context parameters.
+`@gcode_macro` returns a `Macro` instance. This provides helpers for accessing gcode variables or accessing raw context parameters.
 
 ```python
 @gcode_macro
@@ -62,9 +74,21 @@ def countdown(k: Kalico, count: int = 10):
 
     else:
         k.respond_info("Countdown complete")
+```
 
-@gcode_macro
-def _bedfans_control_loop(k: Kalico):
+### Events and Timers
+
+The API provides two helpers for scheduling function calls, as well as a method to register handlers for the many available events.
+
+```python
+from kalico import Kalico, event_handler
+
+def init_bedfans(k: Kalico, eventtime: float):
+    # This code only runs once
+    k.fans.set_speed('bed_fans', 0.)
+
+def update_bedfans(k: Kalico, eventtime: float):
+    # This code will run every 10 seconds
     if k.status.heater_bed.target:
         if not k.status['fan_generic bed_fans'].speed:
             k.fans.set_speed('bed_fans', 1.)
@@ -72,10 +96,17 @@ def _bedfans_control_loop(k: Kalico):
         if k.status['fan_generic bed_fans'].speed:
             k.fans.set_speed('bed_fans', 0.)
 
-_bedfans_control_loop.every(10.)
+
+@event_handler('klippy:ready')
+def on_ready(k: Kalico):
+    k.timer(0.0, init_bedfans)
+    k.interval(10.0, bedfans_loop)
 ```
 
-As a warning, rapidly recurring functions may cause print issues.
+See [events.py](../klippy/extras/kalico_api/kalico/events.py) for available events.
+
+Scheduling a timer returns an `Interval` from where you can `interval.cancel()` events.
+As a warning, rapidly recurring intervals may cause print issues or Kalico crashes.
 
 ### Automatic Macro Documentation
 
@@ -142,47 +173,45 @@ Traceback (most recent call last):
 
 ```python
 class Kalico:
-    status: GetStatusWrapper
+    status: GetStatusWrapperPython
     saved_vars: SaveVariablesWrapper
 
-    gcode: GCode
-    fans: Fans
-    heaters: Heaters
-    move: Move
-    
-    def wait_while(self, condition: Callable[[], bool]):
+    fans: FanAPI
+    gcode: GCodeAPI
+    heaters: HeatersAPI
+    move: MoveAPI
+
+    def wait_while(self, condition: typing.Callable[[], bool]):
         """Wait while a condition is True"""
-
-    def wait_until(self, condition: Callable[[], bool]):
+    def wait_until(self, condition: typing.Callable[[], bool]):
         """Wait until a condition is True"""
-
     def wait_moves(self) -> None:
         """Wait until all moves are completed"""
-
-    def blocking(self, function: Callable[[], R]) -> R:
+    def blocking(
+        self, function: typing.Callable[[], BlockingResult]
+    ) -> BlockingResult:
         """Run a blocking task in a thread, waiting for the result"""
-
     def sleep(self, timeout: float):
         """Wait a given number of seconds"""
-
-    def set_gcode_variable(self, macro: str, variable: str, value: Any):
+    def set_gcode_variable(self, macro: str, variable: str, value: typing.Any):
         """Save a variable to a gcode_macro"""
-
+    def get_gcode_variables(
+        self, macro: str
+    ) -> TemplateVariableWrapperPython: ...
     def emergency_stop(self, msg: str = "action_emergency_stop"):
         """Immediately shutdown Kalico"""
-
     def respond(self, prefix: str, msg: str):
-        """Send a prefixed message to the console"""
-
+        """Send a message to the console"""
     def respond_info(self, msg: str):
         """Send a message to the console"""
     def respond_raw(self, msg: str): ...
-    
     def raise_error(self, msg) -> None:
         """Raise a G-Code command error"""
-
     def call_remote_method(self, method: str, **kwargs):
         """Call a Kalico webhooks method"""
+    def timer(self, delay: float, callback: TimerCallback) -> Timer:
+        """Schedule a callback to run after a delay"""
+    def interval(self, period: float, callback: TimerCallback) -> Interval: ...
 ```
 
 ### MoveAPI
