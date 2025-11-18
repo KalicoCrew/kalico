@@ -301,6 +301,7 @@ class Printer:
         config = pconfig.read_main_config()
         self._load_modules(config)
         self.load_object(config, "danger_options")
+        self.load_object(config, "kalico_api")
         if (
             self.bglogger is not None
             and get_danger_options().log_config_file_at_startup
@@ -325,6 +326,7 @@ class Printer:
             self.load_object(config, "testing", None)
         for m in [toolhead]:
             m.add_printer_objects(config)
+        self.send_event("klippy:configured")
         # Validate that there are no undefined parameters in the config file
         error_on_unused = get_danger_options().error_on_unused_config_options
         pconfig.check_unused_options(config, error_on_unused)
