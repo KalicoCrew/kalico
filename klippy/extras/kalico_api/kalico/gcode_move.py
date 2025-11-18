@@ -10,7 +10,11 @@ if typing.TYPE_CHECKING:
 
 class MoveAPI:
     def __init__(self, printer: Printer):
-        self._gcode_move: GCodeMove = printer.lookup_object("gcode_move")
+        self._printer = printer
+        printer.register_event_handler("klippy:configured", self._on_configured)
+
+    def _on_configured(self):
+        self._gcode_move: GCodeMove = self._printer.lookup_object("gcode_move")
 
     def __call__(
         self,

@@ -49,7 +49,7 @@ class MacroLoader:
 
         self.kalico = kalico.Kalico(self.printer)
 
-        self.load()
+        self.printer.register_event_handler("klippy:configured", self.load)
 
     # def _build_kalico_module(self):
     #     if "kalico" not in sys.modules:
