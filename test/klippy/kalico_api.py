@@ -107,6 +107,11 @@ def do_the_thing(
     assert k.status["gcode_macro DO_THE_THING"].test == 1
 
 
+@gcode_macro(rename_existing="PAUSE_BASE")
+def pause(k: Kalico):
+    k.gcode.pause_base()
+
+
 @gcode_macro
 def assert_event_handler_ran(k: Kalico):
     assert assert_event_handler_ran.vars["ready"]

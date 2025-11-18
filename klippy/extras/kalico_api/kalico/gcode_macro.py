@@ -314,7 +314,7 @@ def gcode_macro(
 
 
 def gcode_macro(
-    func: typing.Optional[MacroFunction],
+    func: typing.Optional[MacroFunction] = None,
     /,
     rename_existing: typing.Optional[str] = None,
 ) -> typing.Callable[[MacroFunction], Macro]:
