@@ -135,7 +135,7 @@ def _document_parameters(parameters: list[inspect.Parameter]):
         else:
             doc["type"] = param_type.__name__
 
-        if parameter.default is not None:
+        if parameter.default not in (parameter.empty, None):
             doc["default"] = parameter.default
 
         if validators:
@@ -245,6 +245,7 @@ class Macro(typing.Generic[MacroParams, MacroReturn]):
             value = params[param_name]
             type_ = paramspec.annotation
             validators = []
+
             if typing.get_origin(type_) == typing.Annotated:
                 type_ = typing.get_args(type_)[0]
 
