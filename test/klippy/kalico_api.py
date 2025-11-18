@@ -1,8 +1,10 @@
 import enum
+import json
+from typing import Annotated
 
 import pytest
 
-from kalico import IntRange, Kalico, event_handler, gcode_macro
+from kalico import Above, IntRange, Kalico, event_handler, gcode_macro
 
 
 class Direction(enum.Enum):
@@ -13,6 +15,19 @@ class Direction(enum.Enum):
 class Location(enum.Enum):
     front = "FRONT"
     back = "BACK"
+
+
+@gcode_macro
+def test_parameters(
+    k: Kalico,
+    string,
+    required_temp: Annotated[float, Above(0)],
+    optional_temp: float = None,
+    direction: Direction = None,
+    location: Location = Location.front,
+    validated: IntRange[0, 5] = -1,
+):
+    "Validate a wide array of parameter types"
 
 
 @gcode_macro
@@ -27,28 +42,36 @@ def hello_world(p: Kalico, name: str = "World"):
 
 
 @gcode_macro
-def do_the_thing(
-    k: Kalico,
-    direction: Direction = None,
-    location: Location = Location.front,
-    validated: IntRange[0, 5] = -1,
-):
+def do_the_thing(k: Kalico, validated: IntRange[0, 5] = -1):
     "Run a suite of api tests"
-    print(k.status.gcode.commands.DO_THE_THING.params.VALIDATED)
+
+    # Ensure parameter docs are json serializable
+    assert json.dumps(k.status.gcode.data)
+
     # Test to make sure the enum parameters are handled correctly
-    assert k.status.gcode.commands.DO_THE_THING["params"] == {
-        "DIRECTION": {"type": "enum", "choices": [-1, 1]},
-        "LOCATION": {
-            "type": "enum",
-            "choices": ["FRONT", "BACK"],
-            "default": "FRONT",
+    assert k.status.gcode.commands.TEST_PARAMETERS == {
+        "help": "Validate a wide array of parameter types",
+        "params": {
+            "STRING": {"required": True},
+            "REQUIRED_TEMP": {
+                "required": True,
+                "type": "float",
+                "valid": {"above": 0},
+            },
+            "OPTIONAL_TEMP": {"type": "float"},
+            "DIRECTION": {"type": "enum", "choices": [-1, 1]},
+            "LOCATION": {
+                "type": "enum",
+                "choices": ["FRONT", "BACK"],
+                "default": "FRONT",
+            },
+            "VALIDATED": {
+                "type": "int",
+                "default": -1,
+                "valid": {"minimum": 0, "maximum": 5},
+            },
         },
-        "VALIDATED": {
-            "type": "int",
-            "default": -1,
-            "valid": {"minimum": 0, "maximum": 5},
-        },
-    }
+    }, k.status.gcode.commands.TEST_PARAMETERS
 
     with pytest.raises(k._printer.command_error):
         do_the_thing(k, validated=-1)
