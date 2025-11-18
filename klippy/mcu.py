@@ -967,6 +967,9 @@ class MCU:
             self.non_critical_recon_timer, self._reactor.NOW
         )
         self._printer.send_event(self._non_critical_disconnect_event_name)
+        self._printer.send_event(
+            "danger:non_critical_mcu:disconnected", self.get_name()
+        )
         self.gcode.respond_info(f"mcu: '{self._name}' disconnected!", log=True)
 
     def non_critical_recon_event(self, eventtime):
@@ -1081,6 +1084,9 @@ class MCU:
         self.non_critical_disconnected = False
         self._connect()
         self._printer.send_event(self._non_critical_reconnect_event_name)
+        self._printer.send_event(
+            "danger:non_critical_mcu:reconnected", self.get_name()
+        )
         return True
 
     def reset_to_initial_state(self):
