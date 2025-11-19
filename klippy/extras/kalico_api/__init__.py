@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import pathlib
 import sys
 import typing
 
@@ -43,28 +42,10 @@ class MacroLoader:
     def __init__(self, config: configfile.ConfigWrapper):
         self.printer: Printer = config.get_printer()
         self._config = config
-        self._root_path = pathlib.Path(
-            self._config.printer.get_start_args()["config_file"]
-        ).parent
+        self._root_path = self.printer.get_user_path()
 
-        self.kalico = kalico.Kalico(self.printer)
-
-        self.printer.register_event_handler("klippy:configured", self.load)
-
-    # def _build_kalico_module(self):
-    #     if "kalico" not in sys.modules:
-    #         kalico_api = types.ModuleType(
-    #             "kalico", "virtual module for the Kalico Python API"
-    #         )
-    #         for exposed in real_kalico.__all__:
-    #             setattr(
-    #                 kalico_api,
-    #                 exposed,
-    #                 getattr(real_kalico, exposed),
-    #             )
-    #         sys.modules["kalico"] = kalico_api
-
-    #     return sys.modules["kalico"]
+        self.kalico = kalico.Kalico(self.printer, config)
+        self.load()
 
     def load(self):
         files = self._config.getlist("python", [], sep="\n")

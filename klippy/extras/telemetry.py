@@ -112,10 +112,7 @@ class KalicoTelementry:
     def cmd_TELEMETRY_EXAMPLE(self, gcmd):
         "Save an example of the current machine telemetry to 'telemetry.json'"
 
-        filename = (
-            pathlib.Path(self.printer.get_start_args()["config_file"]).parent
-            / "telemetry.json"
-        )
+        filename = self.printer.get_user_path() / "telemetry.json"
         data = self._collect_telemetry()
 
         with filename.open("w", encoding="utf-8") as fp:
@@ -133,10 +130,7 @@ class KalicoTelementry:
         """
 
         MACHINE_ID = pathlib.Path("/etc/machine-id")
-        KALICO_MACHINE_ID = (
-            pathlib.Path(self.printer.get_start_args()["config_file"]).parent
-            / ".machine-id"
-        )
+        KALICO_MACHINE_ID = self.printer.get_user_path() / ".machine-id"
 
         if MACHINE_ID.exists():
             return MACHINE_ID.read_text().strip()

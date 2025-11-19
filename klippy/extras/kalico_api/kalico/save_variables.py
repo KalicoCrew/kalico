@@ -5,14 +5,15 @@ import typing
 from klippy.gcode import CommandError
 
 if typing.TYPE_CHECKING:
+    from klippy.configfile import ConfigWrapper
     from klippy.extras.save_variables import SaveVariables
     from klippy.printer import Printer
 
 
 class SaveVariablesWrapper:
-    def __init__(self, printer: Printer):
-        self._save_variables: SaveVariables = printer.lookup_object(
-            "save_variables", None
+    def __init__(self, printer: Printer, config: ConfigWrapper):
+        self._save_variables: SaveVariables = printer.load_object(
+            config, "save_variables"
         )
 
     def __getitem__(self, name):

@@ -234,9 +234,7 @@ class Macro(typing.Generic[MacroParams, MacroReturn]):
                     raise CommandError(
                         f"{self.name} requires {param_name}\n"
                         + json.dumps(
-                            self._parameters.get(
-                                param_name, "Unknown parameter"
-                            )
+                            self._help.get(param_name, "Unknown parameter")
                         )
                     )
                 else:

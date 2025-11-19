@@ -11,6 +11,7 @@ import importlib
 import logging
 import optparse
 import os
+import pathlib
 import pkgutil
 import sys
 import time
@@ -215,6 +216,9 @@ class Printer:
     def get_start_args(self):
         return self.start_args
 
+    def get_user_path(self):
+        return pathlib.Path(self.start_args["config_file"]).expanduser().parent
+
     def get_reactor(self):
         return self.reactor
 
@@ -312,13 +316,15 @@ class Printer:
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)
+        self.load_object(config, "kalico_api")
         for section_config in config.get_prefix_sections(""):
             self.load_object(config, section_config.get_name(), None)
         # Kalico on-by-default extras
         for section_config in [
+            "save_variables",
+            "exclude_object",
             "force_move",
             "respond",
-            "exclude_object",
             "telemetry",
         ]:
             self.load_object(config, section_config, None)
