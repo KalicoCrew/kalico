@@ -16,11 +16,11 @@ from .heaters import HeatersAPI
 from .save_variables import SaveVariablesWrapper
 
 if typing.TYPE_CHECKING:
+    from klippy.configfile import ConfigWrapper
     from klippy.extras.gcode_macro import GCodeMacro
     from klippy.gcode import GCodeDispatch
     from klippy.printer import Printer
     from klippy.reactor import SelectReactor
-
 
 BlockingResult = typing.TypeVar("BlockingResult")
 
@@ -41,13 +41,13 @@ class Kalico:
     heaters: HeatersAPI
     move: MoveAPI
 
-    def __init__(self, printer: Printer):
+    def __init__(self, printer: Printer, config: ConfigWrapper):
         self._printer = printer
 
         self._gcode: GCodeDispatch = printer.lookup_object("gcode")
 
         self.status = GetStatusWrapperPython(printer)
-        self.saved_vars = SaveVariablesWrapper(printer)
+        self.saved_vars = SaveVariablesWrapper(printer, config)
 
         self.fans = FanAPI(printer)
         self.gcode = GCodeAPI(self._gcode)
