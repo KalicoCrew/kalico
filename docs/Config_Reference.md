@@ -1550,6 +1550,9 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #   By default, the first Z movement to reach `horizontal_move_z` uses `speed`.
 #   Set `enforce_lift_speed` to True to enforce the `lift_speed`.
 #   The default is False.
+#use_adjustments: False
+#   If set to true it uses the behaviour described by trails here:
+#   https://github.com/Trails5000/klipper/commit/47b5a91f96761961e693031fa514a0025a877117
 ```
 
 #### [z_tilt_ng]
@@ -1618,6 +1621,9 @@ commands become available, enhancing bed leveling accuracy and calibration effic
 #   values yield better results, but can also lead to situations where the
 #   bed is tilted in a way that the nozzle touched the bed before the probe.
 #   The default is conservative.
+#use_adjustments: False
+#   If set to true it uses the behaviour described by trails here:
+#   https://github.com/Trails5000/klipper/commit/47b5a91f96761961e693031fa514a0025a877117
 ```
 
 ### [quad_gantry_level]

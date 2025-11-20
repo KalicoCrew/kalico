@@ -175,6 +175,8 @@ class ZTilt:
         self.probe_helper.minimum_points(2)
         self.z_status = ZAdjustStatus(self.printer)
         self.z_helper = ZAdjustHelper(config, len(self.z_positions))
+
+        self.use_adjustments = config.getboolean("use_adjustments", False)
         # Register Z_TILT_ADJUST command
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -231,7 +233,11 @@ class ZTilt:
         ]
         self.z_helper.adjust_steppers(adjustments, speed)
         return self.z_status.check_retry_result(
-            self.retry_helper.check_retry([p[2] for p in positions])
+            self.retry_helper.check_retry(
+                adjustments
+                if self.use_adjustments
+                else [p[2] for p in positions]
+            )
         )
 
     def get_status(self, eventtime):
