@@ -3551,6 +3551,41 @@ sensor_type: temperature_combined
 #   to combine (e.g. 5 degrees). To disable it, use a large value (e.g. 999.9)
 ```
 
+### MPC Ambient Sensor
+
+Virtual MPC sensor to show the internal ambient temperature value (defaults to 25 if any other algorithm than MPC is used)
+
+```
+sensor_type: mpc_ambient_temperature
+heater_name: extruder
+#   Put the name of the heater this sensor is tied to (this parameter is required)
+#gcode_id: AT
+min_temp: 0
+max_temp: 325
+#ignore_limits: False
+#   Ignore the temp limits (if set to true, the min and max temp can be omitted)
+#echo_limits_to_console: False
+#   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
+```
+
+### MPC Block Sensor
+
+Virtual MPC sensor to show the internal ambient temperature value (defaults to 25 if any other algorithm than MPC is used)
+
+```
+sensor_type: mpc_block_temperature
+heater_name: extruder
+#   Put the name of the heater this sensor is tied to (this parameter is required)
+#gcode_id: BE
+min_temp: 0
+max_temp: 325
+#ignore_limits: False
+#   Ignore the temp limits (if set to true, the min and max temp can be omitted)
+#echo_limits_to_console: False
+#   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
+```
+
+
 ## Fans
 
 ### [fan]
