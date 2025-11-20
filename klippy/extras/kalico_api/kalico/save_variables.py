@@ -37,5 +37,10 @@ class SaveVariablesWrapper:
     def items(self):
         return self._save_variables.allVariables.items()
 
+    def get(self, name, default=None):
+        if not self.__contains__(name):
+            return default
+        return self.__getitem__(name)
+
 
 __all__ = ("SaveVariablesWrapper",)
