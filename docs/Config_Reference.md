@@ -3551,6 +3551,21 @@ sensor_type: temperature_combined
 #   to combine (e.g. 5 degrees). To disable it, use a large value (e.g. 999.9)
 ```
 
+### Template temperature sensors
+
+Template temperature sensors use templates to calculate the sensor temperature
+
+```
+sensor_type: template
+#template:
+#   Template that evaluates to a float
+#   e.g. '{printer.extruder.control_stats.block_temp}' for MPC block temperature
+#heater_name:
+#   If provided, update temperature when the named heater updates
+#report_time: 0.3
+#   If not binding to a heater, the interval in which the sensor updates
+```
+
 ## Fans
 
 ### [fan]

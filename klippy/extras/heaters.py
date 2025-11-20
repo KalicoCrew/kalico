@@ -76,6 +76,7 @@ class Heater:
         # pwm caching
         self.next_pwm_time = 0.0
         self.last_pwm_value = 0.0
+        self.sensor_callbacks = []
         # Those are necessary so the klipper config check does not complain
         config.get("control", None)
         config.getfloat("pid_kp", None)
@@ -179,6 +180,8 @@ class Heater:
             self.can_extrude = (
                 self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
             )
+        for sensor_callback in self.sensor_callbacks:
+            sensor_callback(read_time, self)
         # logging.debug("temp: %.3f %f = %f", read_time, temp)
 
     def _handle_shutdown(self):
@@ -236,6 +239,9 @@ class Heater:
 
     def get_control(self):
         return self.control
+
+    def add_sensor_callback(self, callback):
+        self.sensor_callbacks.append(callback)
 
     def alter_target(self, target_temp):
         if target_temp:
@@ -852,6 +858,8 @@ class DualSensorHeater(Heater):
             self.can_extrude = (
                 self.smoothed_temp >= self.min_extrude_temp or self.cold_extrude
             )
+        for sensor_callback in self.sensor_callbacks:
+            sensor_callback(read_time, self)
 
 
 ######################################################################
