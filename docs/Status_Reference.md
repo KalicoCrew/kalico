@@ -236,7 +236,9 @@ The following information is available in the
 
 The following information is available in the `gcode` object:
 - `commands`: Returns a list of all currently available commands. For each
-  command, if a help string is defined it will also be provided.
+  command, if a help string is defined it will also be provided. If parameters
+  for a command are known they will be provided as well. See
+  ["gcode_params" on gcode_macros](Config_Reference.md#gcode_macro)
 
 ## gcode_button
 

@@ -1888,6 +1888,13 @@ G-Code macros (one may define any number of sections with a
 #description: G-Code macro
 #   This will add a short description used at the HELP command or while
 #   using the auto completion feature. Default "G-Code macro"
+#gcode_params:
+#   A list of python-like typed variable definitions, this will be passed
+#   to frontends for parameter handling
+#   e.g.
+#     required        # Required string
+#     optional: int = # Optional, without a default value
+#     count: int = 5  # Optional, with a default value
 ```
 
 ### [delayed_gcode]
