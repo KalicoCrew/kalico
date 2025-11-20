@@ -11,10 +11,13 @@ class GCodeAPI:
     def __init__(self, gcode: GCodeDispatch):
         self._gcode = gcode
 
-    def __getattr__(self, command: str) -> GCodeCommand:
+    def __getitem__(self, command: str) -> GCodeCommand:
         if command.upper() not in self._gcode.status_commands:
             raise AttributeError(f"No such GCode command {command!r}")
         return GCodeCommand(self._gcode, command)
+
+    def __getattr__(self, command: str) -> GCodeCommand:
+        return self.__getitem__(command)
 
     def __call__(self, command: str):
         self._gcode.run_script_from_command(command)
