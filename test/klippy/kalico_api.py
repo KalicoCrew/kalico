@@ -7,6 +7,10 @@ import pytest
 from kalico import Above, IntRange, Kalico, event_handler, gcode_macro
 
 
+def assert_eq(val, expected):
+    assert val == expected
+
+
 class Direction(enum.Enum):
     up = -1
     down = 1
@@ -35,10 +39,11 @@ def hello_world(p: Kalico, name: str = "World"):
     "Say hello"
 
     p.gcode.respond(msg=f"Hello, {name}!")
-    assert p.status.gcode.commands["HELLO_WORLD"]["help"] == "Say hello"
-    assert p.status.gcode.commands["HELLO_WORLD"]["params"] == {
-        "NAME": {"type": "str", "default": "World"}
-    }
+    assert_eq(p.status.gcode.commands["HELLO_WORLD"]["help"], "Say hello")
+    assert_eq(
+        p.status.gcode.commands["HELLO_WORLD"]["params"],
+        {"NAME": {"type": "str", "default": "World"}},
+    )
 
 
 @gcode_macro
@@ -49,29 +54,46 @@ def do_the_thing(k: Kalico, validated: IntRange[0, 5] = -1):
     assert json.dumps(k.status.gcode.data)
 
     # Test to make sure the enum parameters are handled correctly
-    assert k.status.gcode.commands.TEST_PARAMETERS == {
-        "help": "Validate a wide array of parameter types",
-        "params": {
-            "STRING": {"required": True},
-            "REQUIRED_TEMP": {
-                "required": True,
-                "type": "float",
-                "valid": {"above": 0},
-            },
-            "OPTIONAL_TEMP": {"type": "float"},
-            "DIRECTION": {"type": "enum", "choices": [-1, 1]},
-            "LOCATION": {
-                "type": "enum",
-                "choices": ["FRONT", "BACK"],
-                "default": "FRONT",
-            },
-            "VALIDATED": {
-                "type": "int",
-                "default": -1,
-                "valid": {"minimum": 0, "maximum": 5},
+    assert_eq(
+        k.status.gcode.commands.TEST_PARAMETERS,
+        {
+            "help": "Validate a wide array of parameter types",
+            "params": {
+                "STRING": {"required": True},
+                "REQUIRED_TEMP": {
+                    "required": True,
+                    "type": "float",
+                    "valid": {"above": 0},
+                },
+                "OPTIONAL_TEMP": {"type": "float"},
+                "DIRECTION": {"type": "enum", "choices": [-1, 1]},
+                "LOCATION": {
+                    "type": "enum",
+                    "choices": ["FRONT", "BACK"],
+                    "default": "FRONT",
+                },
+                "VALIDATED": {
+                    "type": "int",
+                    "default": -1,
+                    "valid": {"minimum": 0, "maximum": 5},
+                },
             },
         },
-    }, k.status.gcode.commands.TEST_PARAMETERS
+    )
+
+    # Test the gcode_macro params were parsed
+    assert_eq(
+        k.status.gcode.commands.TEST_GCODE_MACRO_PARAMS,
+        {
+            "help": "example description",
+            "params": {
+                "REQUIRED": {"type": "int", "required": True},
+                "OPTIONAL": {"type": "float"},
+                "DEFAULT": {"type": "str", "default": "test"},
+                "DEFAULT_INT": {"type": "int", "default": 5},
+            },
+        },
+    )
 
     with pytest.raises(k._printer.command_error):
         do_the_thing(k, validated=-1)

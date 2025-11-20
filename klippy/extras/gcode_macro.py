@@ -433,6 +433,10 @@ class GCodeMacro:
         if self.template is None:
             gcode_macro = printer.load_object(config, "gcode_macro")
             self.template = gcode_macro.load_template(config, "gcode")
+        if self.template.params:
+            self.params = self.template.params
+        else:
+            self.params = self._parse_gcode_params(config)
         self.gcode = printer.lookup_object("gcode")
         self.rename_existing = config.get("rename_existing", None)
         self.cmd_desc = config.get("description", "G-Code macro")
@@ -452,7 +456,7 @@ class GCodeMacro:
                 self.alias,
                 self.cmd,
                 desc=self.cmd_desc,
-                params=self.template.params,
+                params=self.params,
             )
         self.gcode.register_mux_command(
             "SET_GCODE_VARIABLE",
@@ -475,6 +479,40 @@ class GCodeMacro:
                     % (option, config.get_name(), e)
                 )
 
+    def _parse_gcode_params(self, config):
+        gcode_params = config.getlist("gcode_params", [], sep="\n")
+        if not gcode_params:
+            return
+
+        params = {}
+        for param_text in gcode_params:
+            if not param_text.strip():
+                continue
+
+            param = param_text
+            type_ = "str"
+            default = None
+            if "=" in param:
+                param, default = map(str.strip, param.split("=", maxsplit=1))
+            if ":" in param:
+                key, type_ = map(str.strip, param.split(":", maxsplit=1))
+            else:
+                key = param
+            param_dict = {"type": type_.strip()}
+            if default and default.strip():
+                try:
+                    default = ast.literal_eval(default.strip())
+                except ValueError:
+                    raise config.error(
+                        f"{config.get_name()} error parsing gcode_params at {param_text!r}"
+                    )
+            if default:
+                param_dict["default"] = default
+            elif default is None:
+                param_dict["required"] = True
+            params[key.strip().upper()] = param_dict
+        return params
+
     def handle_connect(self):
         prev_cmd = self.gcode.register_command(self.alias, None)
         if prev_cmd is None:
@@ -488,7 +526,7 @@ class GCodeMacro:
             self.alias,
             self.cmd,
             desc=self.cmd_desc,
-            params=self.template.params,
+            params=self.params,
         )
 
     def get_status(self, eventtime):
