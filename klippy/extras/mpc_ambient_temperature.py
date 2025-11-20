@@ -1,3 +1,4 @@
+from . import heaters
 from .danger_options import get_danger_options
 
 
@@ -41,7 +42,10 @@ class MPC_AMBIENT_TEMP_WRAPPER:
         return self.heater.sensor.get_report_time_delta()
 
     def process_temp_update(self, control, read_time):
-        self.temp = control.get_ambient_temp()
+        if control.get_type() == "mpc" or control.get_type() == "tuning":
+            self.temp = self.heater.get_control().state_ambient_temp
+        else:
+            self.temp = heaters.AMBIENT_TEMP
 
         if self.temp is not None:
             if not self.heater.mcu_pwm.get_mcu().non_critical_disconnected and (

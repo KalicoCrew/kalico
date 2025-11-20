@@ -164,12 +164,6 @@ class ControlMPC:
             * self.const_filament_heat_capacity  # J/g/K
         )
 
-    def get_block_temp(self):
-        return self.state_block_temp
-
-    def get_ambient_temp(self):
-        return self.state_ambient_temp
-
     # Control interface
 
     def temperature_update(self, read_time, temp, target_temp):
