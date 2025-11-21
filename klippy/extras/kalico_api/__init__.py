@@ -86,17 +86,16 @@ class MacroLoader:
         config = self._config.getsection(section)
         if not config.has_section(section):
             config.fileconfig.add_section(section)
-            config.fileconfig.set(section, "description", macro.__doc__)
-            config.fileconfig.set(
-                section,
-                "gcode",
-                f"# {macro._source_file.relative_to(self._root_path)}:{macro.name}",
-            )
-            config.access_tracking[(section.lower(), "gcode")] = ""
+            config.fileconfig.set(section, "gcode", macro._source)
+            config.access_tracking[(section.lower(), "gcode")] = macro._source
+            if macro.__doc__:
+                config.fileconfig.set(section, "description", macro.__doc__)
+                config.get(section, "description")
             if rename_existing:
                 config.fileconfig.set(
                     section, "rename_existing", rename_existing
                 )
+                config.get(section, "rename_existing")
 
         template = MacroApiTemplate(config, macro)
 

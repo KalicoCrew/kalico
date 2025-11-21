@@ -172,6 +172,11 @@ class Macro(typing.Generic[MacroParams, MacroReturn]):
         self._parameters = _validate_parameters(func)
         self._help = _document_parameters(self._parameters)
         self._source_file = pathlib.Path(inspect.getsourcefile(func))
+        source_lines, self._source_lineno = inspect.getsourcelines(func)
+        self._source = (
+            f"# {self._source_file.relative_to(self.__printer.get_user_path())}:{self._source_lineno}\n"
+            + "\n".join(source_lines)
+        )
 
         self._converters = {}
         self._validators = {}
