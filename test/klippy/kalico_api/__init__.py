@@ -4,11 +4,11 @@ from typing import Annotated
 
 import pytest
 
-from kalico import Above, IntRange, Kalico, event_handler, gcode_macro
+from kalico import Above, IntRange, Kalico, gcode_macro
 
-
-def assert_eq(val, expected):
-    assert val == expected
+from . import events as events
+from . import hello_world as hello_world
+from .asserts import assert_eq
 
 
 class Direction(enum.Enum):
@@ -32,18 +32,6 @@ def test_parameters(
     validated: IntRange[0, 5] = -1,
 ):
     "Validate a wide array of parameter types"
-
-
-@gcode_macro
-def hello_world(p: Kalico, name: str = "World"):
-    "Say hello"
-
-    p.gcode.respond(msg=f"Hello, {name}!")
-    assert_eq(p.status.gcode.commands["HELLO_WORLD"]["help"], "Say hello")
-    assert_eq(
-        p.status.gcode.commands["HELLO_WORLD"]["params"],
-        {"NAME": {"type": "str", "default": "World"}},
-    )
 
 
 @gcode_macro
@@ -155,13 +143,3 @@ def do_the_thing(k: Kalico, validated: IntRange[0, 5] = -1):
 @gcode_macro(rename_existing="PAUSE_BASE")
 def pause(k: Kalico):
     k.gcode.pause_base()
-
-
-@gcode_macro
-def assert_event_handler_ran(k: Kalico):
-    assert assert_event_handler_ran.vars["ready"]
-
-
-@event_handler("klippy:ready")
-def on_ready(k: Kalico):
-    assert_event_handler_ran.vars["ready"] = True

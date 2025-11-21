@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import pathlib
 import sys
+import types
 import typing
 
 from klippy import configfile
@@ -17,6 +19,9 @@ if typing.TYPE_CHECKING:
     from klippy.printer import Printer
 
 sys.modules["kalico"] = kalico
+sys.modules["printer_config"] = types.ModuleType(
+    "printer_config", "imported user configuration"
+)
 
 
 # gcode_macro template shim
@@ -42,9 +47,11 @@ class MacroLoader:
     def __init__(self, config: configfile.ConfigWrapper):
         self.printer: Printer = config.get_printer()
         self._config = config
-        self._root_path = self.printer.get_user_path()
+        self._root_path: pathlib.Path = self.printer.get_user_path()
 
         self.kalico = kalico.Kalico(self.printer, config)
+        self.user_modules = {"kalico": kalico}
+        load_context.set_loader(self)
         self.load()
 
     def load(self):
@@ -55,17 +62,22 @@ class MacroLoader:
             self._load_file(file)
 
     def _load_file(self, filename):
-        file = self._root_path / filename
+        file: pathlib.Path = self._root_path / filename
 
         if not file.exists():
             raise configfile.error(
                 f"Error loading python macros: {file} does not exist"
             )
 
-        spec = importlib.util.spec_from_file_location(file.name, file)
-        module = importlib.util.module_from_spec(spec)
+        module_name = f"printer_config.{file.name}"
 
-        load_context.set_loader(self)
+        if file.is_dir() and (file / "__init__.py").is_file():
+            file = file / "__init__.py"
+
+        spec = importlib.util.spec_from_file_location(module_name, file)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+
         spec.loader.exec_module(module)
 
     def _register_macro(self, macro: Macro, rename_existing=None):
