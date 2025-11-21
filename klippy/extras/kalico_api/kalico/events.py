@@ -12,11 +12,7 @@ if typing.TYPE_CHECKING:
     from klippy.extras.load_cell import LoadCell
     from klippy.stepper import MCU_stepper, PrinterRail
 
-Handler = typing.TypeVar("Handler", bound=typing.Callable)
-
-
-class Decorator(typing.Generic[Handler], typing.Protocol):
-    def __call__(self, handler: Handler) -> Handler: ...
+    from .types import Decorator
 
 
 class ToolheadSyncEventHandler(typing.Protocol):
