@@ -62,7 +62,9 @@ class ShellCommand:
                 stderr=subprocess.STDOUT,
             )
         except Exception:
-            logging.exception("shell_command: Command {%s} failed" % (self.name))
+            logging.exception(
+                "shell_command: Command {%s} failed" % (self.name)
+            )
             raise self.gcode.error("Error running command {%s}" % (self.name))
         if self.verbose:
             self.proc_fd = proc.stdout.fileno()
