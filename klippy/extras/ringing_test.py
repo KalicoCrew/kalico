@@ -30,7 +30,7 @@ class RingingTest:
         self.center_y = config.getfloat("center_y", None)
         self.layer_height = config.getfloat("layer_height", 0.2, above=0.0)
         self.first_layer_height = config.getfloat(
-            "first_layer_height", 0.2, above=self.layer_height
+            "first_layer_height", 0.2, minval=self.layer_height
         )
         self.perimeters = config.getint("perimeters", 2, minval=1)
         self.brim_width = config.getfloat(
@@ -42,6 +42,9 @@ class RingingTest:
         )
         self.deceleration_points = config.getint(
             "deceleration_points", 100, minval=10
+        )
+        self.fan_speed = config.getfloat(
+            "fan_speed", 0.5, minval=0.0, maxval=1.0
         )
         # Register commands
         self.gcode = self.printer.lookup_object("gcode")
@@ -512,7 +515,7 @@ class RingingTest:
         yield "M220 S100"
         for line in gen_brim():
             yield line
-        yield "M106 S127"
+        yield f"M106 S{self.fan_speed * 255}"
         for line in gen_tower():
             yield line
         if final_gcode_id is not None:

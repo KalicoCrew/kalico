@@ -110,6 +110,9 @@ filament_diameter: 1.75
 #notch_offset:
 #   0.275 * size by default
 #deceleration_points: 100
+
+fan_speed: 0.5
+#   Speed the fan should run at after finishing the brim
 ```
 
 ### [pa_test]
@@ -141,4 +144,6 @@ medium_velocity: 50
 fast_velocity: 80
 #   End velocity for PA test segment (mm/s)
 filament_diameter: 1.75
+fan_speed: 0.5
+#   Speed the fan should run at after finishing the brim
 ```
