@@ -9,7 +9,7 @@ import dataclasses
 import datetime
 import struct
 import uuid
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 import msgpack
 
@@ -24,7 +24,9 @@ if TYPE_CHECKING:
     from ...reactor import SelectReactor
     from .toolhead import CocoaToolheadControl
 
+    T = TypeVar("T")
 
+AUTOSAVE_DELAY = 1.0
 NULL_CRC16 = b"\xff\xff"  # crc16(b'')
 
 
@@ -184,6 +186,10 @@ class CocoaMemory:
             "cocoa_toolhead:detached", self._on_detach
         )
 
+        self._save_timer = self.reactor.register_timer(
+            self._autosave, self.reactor.NEVER
+        )
+
     def _on_attach(self, name):
         if self.name != name:
             return
@@ -225,7 +231,7 @@ class CocoaMemory:
             self.config = copy.deepcopy(self._last_config)
 
         self.gcode.respond_info(
-            f"cocoa_memory[{self.name}] {self.header}\n{self.config=}"
+            f"cocoa_memory[{self.name}] {self.config.get('name', self.header.uid)} attached"
         )
         self.printer.send_event(
             "cocoa_memory:connected", self.name, self.config
@@ -240,6 +246,10 @@ class CocoaMemory:
         self.config = None
         self.printer.send_event("cocoa_memory:disconnected", self.name)
 
+    def _autosave(self, eventtime):
+        self.save()
+        return self.reactor.NEVER
+
     def has_changes(self):
         return self.config != self._last_config
 
@@ -250,17 +260,19 @@ class CocoaMemory:
             )
             return
 
+        self.logger.info(f"cocoa_memory[{self.name}] Saving {self.config=}")
         config = msgpack.dumps(self.config)
 
         new_header = self.header.update(data=config)
         self.memory.write(new_header.get_data_address(), config)
         self.memory.write(0, new_header.to_bytes())
         self.header = new_header
+        self._last_config = copy.deepcopy(self.config)
 
-    def set(self, key: str, val):
+    def has(self, key: str):
         if not self.connected:
             raise MemoryNotConnected()
-        self.config[key] = val
+        return key in self.config
 
     def get(self, key: str, default=...):
         if not self.connected:
@@ -269,6 +281,33 @@ class CocoaMemory:
         if val is ...:
             raise KeyError(f"no such key {key!r} in cocoa_memory")
         return val
+
+    def set(self, key: str, val):
+        if not self.connected:
+            raise MemoryNotConnected()
+        self.config[key] = val
+        if self._save_timer.waketime == self.reactor.NEVER:
+            self.reactor.update_timer(
+                self._save_timer,
+                self.reactor.monotonic() + AUTOSAVE_DELAY,
+            )
+
+    def setdefault(self, key: str, default: T) -> T:
+        if not self.connected:
+            raise MemoryNotConnected()
+        if key not in self.config:
+            self.config[key] = default
+        return self.config[key]
+
+    def delete(self, key):
+        if not self.connected:
+            raise MemoryNotConnected()
+        self.config.pop(key, None)
+        if self._save_timer.waketime == self.reactor.NEVER:
+            self.reactor.update_timer(
+                self._save_timer,
+                self.reactor.monotonic() + AUTOSAVE_DELAY,
+            )
 
     def get_status(self, eventtime):
         return {
