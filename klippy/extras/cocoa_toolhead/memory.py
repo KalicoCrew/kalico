@@ -34,6 +34,9 @@ class HeaderError(Exception): ...
 class InvalidChecksum(HeaderError): ...
 
 
+class InvalidVersion(HeaderError): ...
+
+
 class InvalidMagic(HeaderError): ...
 
 
@@ -62,11 +65,12 @@ class Header:
 
     struct: ClassVar = struct.Struct(
         "<"  # byte order
-        "3s"  # magic, 3 bytes
+        "2s"  # magic, 2 bytes
         "B"  # version, 1 byte
         "16s"  # uuid, 16 bytes
         "xx"  # padding, 2 bytes
         "I"  # timestamp, 4 bytes
+        "B"  # data page, 1 byte
         "H"  # data length, 2 bytes
         "2s"  # data crc16, 2 bytes
         "2s"  # header crc16, 2 bytes
@@ -74,23 +78,23 @@ class Header:
     size: ClassVar = struct.size
 
     # constants
-    # 0x00
-    magic: bytes = dataclasses.field(default=b"\xc0\xc0\xa0", repr=False)
-    # 0x03
+    magic: bytes = dataclasses.field(default=b"\xc0\xc0", repr=False)
     version: int = dataclasses.field(default=1, repr=False)
     # static
     # 0x04
     uid: uuid.UUID = dataclasses.field(default_factory=uuid.uuid1)
     # changing
     timestamp: int = dataclasses.field(default_factory=timestamp_utc)
+    data_page: int = dataclasses.field(default=0)
     data_length: int = dataclasses.field(default=0)
     data_checksum: bytes = dataclasses.field(default=NULL_CRC16)
 
     @classmethod
     def from_bytes(cls, v: bytes):
-        if v[:3] != cls.magic:
+        if v[:2] != cls.magic:
             raise InvalidMagic()
-
+        if v[2] != cls.version:
+            raise InvalidVersion()
         if bytes(crc16_ccitt(v[:-2])) != v[-2:]:
             raise InvalidChecksum()
 
@@ -99,6 +103,7 @@ class Header:
             version,
             uid_bytes,
             timestamp,
+            data_page,
             data_length,
             data_checksum,
             _header_checksum,
@@ -109,6 +114,7 @@ class Header:
             version,
             uuid.UUID(bytes=uid_bytes),
             timestamp,
+            data_page,
             data_length,
             data_checksum,
         )
@@ -119,6 +125,7 @@ class Header:
             self.version,
             self.uid.bytes,
             self.timestamp,
+            self.data_page,
             self.data_length,
             self.data_checksum,
             NULL_CRC16,
@@ -133,6 +140,9 @@ class Header:
             data_length=len(data),
             data_checksum=bytes(crc16_ccitt(data)),
         )
+
+    def get_data_address(self):
+        return 256 * (self.data_page + 1)
 
 
 class CocoaMemory:
@@ -208,10 +218,8 @@ class CocoaMemory:
                 )
 
             else:
-                data = self.memory.read(
-                    Header.size,
-                    self.header.data_length,
-                )
+                offset = 256 * (self.header.data_page + 1)
+                data = self.memory.read(offset, self.header.data_length)
                 self._last_config = msgpack.loads(data)
 
             self.config = copy.deepcopy(self._last_config)
@@ -242,11 +250,10 @@ class CocoaMemory:
             )
             return
 
-        # config = json.dumps(self.config, separators=(",", ":")).encode()
         config = msgpack.dumps(self.config)
 
         new_header = self.header.update(data=config)
-        self.memory.write(new_header.size, config)
+        self.memory.write(new_header.get_data_address(), config)
         self.memory.write(0, new_header.to_bytes())
         self.header = new_header
 

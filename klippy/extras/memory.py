@@ -8,6 +8,7 @@ import typing
 import logging
 
 from . import bus
+from ..gcode import CommandError
 
 if typing.TYPE_CHECKING:
     from ..configfile import ConfigWrapper
@@ -55,14 +56,6 @@ class Memory:
         self.capacity = config.getint("capacity", minval=0x0001, maxval=0x10000)
         self.read_only = config.getboolean("read_only", False)
 
-        ## TODO: Implement paged writing
-        # self.page_size = config.getint(
-        #     "page_size",
-        #     default=self.capacity,
-        #     minval=32,
-        #     maxval=0x10000,
-        # )
-
         self.current_address = 0x0
         self.last_result = None
 
@@ -88,20 +81,29 @@ class Memory:
             logging.debug(
                 f"[memory {self.name}] Writing {len(value)}B to {address} ({chunk!r})"
             )
-            self.i2c.i2c_write([hi, lo, *list(chunk)])
+            params = self.i2c.i2c_transfer(
+                [hi, lo, *list(chunk)], shutdown_on_error=False
+            )
+            if params["i2c_bus_status"] != "SUCCESS":
+                raise CommandError(
+                    f"Error writing to {self.name}: {params['i2c_bus_status']}"
+                )
             address += len(chunk)
 
     def read(self, address: int, length: int = 1) -> bytearray:
         assert self.i2c._configured
-
-        logging.debug(f"[memory {self.name}] Dummy write for address {address}")
-        hi, lo = address.to_bytes(2)
-        self.i2c.i2c_write([hi, lo])
         response = bytearray()
         while length:
+            hi, lo = (address + len(response)).to_bytes(2)
             chunk = min(length, 32)
             length -= chunk
-            params = self.i2c.i2c_read([], chunk)
+            params = self.i2c.i2c_transfer(
+                [hi, lo], read_len=chunk, shutdown_on_error=False
+            )
+            if params["i2c_bus_status"] != "SUCCESS":
+                raise CommandError(
+                    f"Error reading from {self.name}: {params['i2c_bus_status']}"
+                )
             logging.debug(
                 f"[memory {self.name}] Read {chunk}B: {params['response']}"
             )
