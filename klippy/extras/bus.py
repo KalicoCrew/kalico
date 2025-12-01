@@ -309,7 +309,13 @@ class MCU_I2C:
         return self.i2c_read_cmd.send([self.oid, write, read_len], retry=retry)
 
     def i2c_transfer(
-        self, write, read_len=0, minclock=0, reqclock=0, retry=True
+        self,
+        write,
+        read_len=0,
+        minclock=0,
+        reqclock=0,
+        retry=True,
+        shutdown_on_error=True,
     ):
         cmd = self.i2c_transfer_cmd
         if self._debugoutput:
@@ -326,14 +332,14 @@ class MCU_I2C:
             retry=retry,
         )
         status = param["i2c_bus_status"]
-        if status == "SUCCESS":
-            return param
-        err_msg = "MCU '%s' I2C request to addr %i reports error %s" % (
-            self.mcu.get_name(),
-            self.i2c_address,
-            status,
-        )
-        self.mcu.get_printer().invoke_shutdown(err_msg)
+        if status != "SUCCESS" and shutdown_on_error:
+            err_msg = "MCU '%s' I2C request to addr %i reports error %s" % (
+                self.mcu.get_name(),
+                self.i2c_address,
+                status,
+            )
+            self.mcu.get_printer().invoke_shutdown(err_msg)
+        return param
 
 
 def MCU_I2C_from_config(config, default_addr=None, default_speed=100000):
