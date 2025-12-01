@@ -105,7 +105,15 @@ class CocoaToolheadControl:
         self.printer.register_event_handler(
             "cocoa_memory:disconnected", self._memory_disconnected
         )
-
+        self.printer.register_event_handler(
+            "cocoa_preheater:start", self._preheater_started
+        )
+        self.printer.register_event_handler(
+            "cocoa_preheater:update", self._preheater_update
+        )
+        self.printer.register_event_handler(
+            "cocoa_preheater:stop", self._preheater_stopped
+        )
         self.printer.register_event_handler(
             "homing:homing_move_end", self._on_homing_move_end
         )
@@ -207,14 +215,42 @@ class CocoaToolheadControl:
         if self.name != name:
             return
 
-        if "sgthrs" in config:
-            self._set_extruder_sgthrs(config.get("sgthrs"))
-            self.calibration_required = False
+        self.calibration_required = "sgthrs" in config
+        self._set_extruder_sgthrs(config.get("sgthrs", 255))
 
     def _memory_disconnected(self, name: str):
         if self.name != name:
             return
         ...
+
+    def _preheater_started(self, name, profile):
+        if not (self.name == name and self.memory.connected):
+            return
+        self.memory.set("profile", profile)
+        self._preheater_update(name)
+
+    def _preheater_update(self, name):
+        if not (self.name == name and self.memory.connected):
+            return
+        self.memory.set(
+            "preheater",
+            {
+                "status": "preheating",
+                "remaining": int(self.preheater.time_remaining),
+            },
+        )
+
+    def _preheater_stopped(self, name, profile, reason):
+        if not (self.name == name and self.memory.connected):
+            return
+        self.memory.set(
+            "preheater",
+            {
+                "status": "stopped",
+                "reason": reason,
+                "remaining": int(self.preheater.time_remaining),
+            },
+        )
 
     def inject_adc_callback(self, heater):
         sensor = heater.sensor
@@ -270,13 +306,15 @@ class CocoaToolheadControl:
         min_deviation = 0.001
         min_threshold = 70
 
-        sgthrs = (
-            255
-            if full_calibration
-            else self.extruder_driver.fields.get_field("sgthrs") + 15
-        )
+        if full_calibration:
+            sgthrs = 255
+        else:
+            sgthrs = self.extruder_driver.fields.get_field("sgthrs") + 15
 
-        sgthrs = min(sgthrs, 255)
+        initial_sgthrs = sgthrs = min(sgthrs, 255)
+        if initial_sgthrs == 255:
+            full_calibration = True
+
         delta = 5
         last_deviation = None
         deviation_increase_count = 0
@@ -311,9 +349,17 @@ class CocoaToolheadControl:
                         deviation_increase_count += 1
                     else:
                         deviation_increase_count = 0
+                        delta = abs(delta)
 
                     if deviation_increase_count > 3:
-                        ...  # Reverse delta until corrects?
+                        gcmd.respond_info(
+                            "Failed to find a safe threshold, restarting calibration"
+                        )
+                        full_calibration = True
+                        sgthrs = initial_sgthrs = 255
+                        delta = 5
+                        continue
+
                 last_deviation = deviation
 
                 if sgthrs <= min_threshold:
@@ -330,7 +376,6 @@ class CocoaToolheadControl:
 
         if self.memory.connected:
             self.memory.set("sgthrs", sgthrs)
-            self.memory.save()
 
         if save_config:
             pconfig: PrinterConfig = self.printer.lookup_object("configfile")
@@ -470,9 +515,3 @@ class CocoaToolheadControl:
         if new_name is not None:
             self.memory.set("name", new_name)
             gcmd.respond_info(f"{self.name}: Set name to {new_name}")
-
-        self.memory.save()
-
-
-# SET_COCOA_TOOLHEAD TOOL=left NAME="frank's shiny toolhead"
-# SET_COCOA_TOOLHEAD TOOL=right NAME="frank's old toolhead"

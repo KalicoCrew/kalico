@@ -13,6 +13,7 @@ if typing.TYPE_CHECKING:
     from ...configfile import ConfigWrapper
     from ...gcode import GCodeCommand, GCodeDispatch
     from ...printer import Printer
+    from .memory import CocoaMemory
     from .toolhead import CocoaToolheadControl
 
 
@@ -27,6 +28,7 @@ class PreheatState(str, enum.Enum):
 class CocoaPreheater:
     name: str
     cocoa_toolhead: CocoaToolheadControl
+    memory: CocoaMemory
     printer: Printer
     gcode: GCodeDispatch
     profile_manager: PreheatProfileManager
@@ -111,6 +113,7 @@ class CocoaPreheater:
         self._last_wake = eventtime
 
         if self.time_remaining > 0.0:
+            self.printer.send_event("cocoa_preheater:update", self.name)
             return eventtime + 1.0  # Wake again in 1 second
 
         else:
@@ -160,7 +163,9 @@ class CocoaPreheater:
                 self.cmd_PREHEATER_CANCEL,
             )
 
-        self.printer.send_event("cocoa_preheater:start", self.profile)
+        self.printer.send_event(
+            "cocoa_preheater:start", self.name, self.profile
+        )
 
     def _stop_preheating(self, reason="cancel"):
         reactor = self.printer.get_reactor()
@@ -191,9 +196,7 @@ class CocoaPreheater:
             )
 
         self.printer.send_event(
-            "cocoa_preheater:stop",
-            reason,
-            self.profile,
+            "cocoa_preheater:stop", self.name, self.profile, reason
         )
 
     def _is_preheating(self, eventtime) -> bool:
