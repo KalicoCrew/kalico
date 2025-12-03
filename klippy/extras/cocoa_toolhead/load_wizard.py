@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from ...configfile import ConfigWrapper
     from ...gcode import GCodeCommand, GCodeDispatch
     from ...printer import Printer
+    from ...toolhead import ToolHead
     from .toolhead import CocoaToolheadControl
 
 
@@ -74,7 +75,6 @@ class CocoaLoadWizard:
         self.cocoa_toolhead = cocoa_toolhead
         self.name = cocoa_toolhead.name
         self.mux_name = cocoa_toolhead.mux_name
-        self.toolhead = self.cocoa_toolhead.toolhead
 
         self.gcode = self.printer.lookup_object("gcode")
 
@@ -177,8 +177,8 @@ class CocoaLoadWizard:
             raise self._print_message__load_unload("Unknown state!", error=True)
 
         elif self.state == States.INITIAL_UNLOAD:
-            self.cocoa_toolhead.home_extruder_to_top()
-            homed_dist = self.cocoa_toolhead.home_extruder_to_bottom()
+            self.cocoa_toolhead.homing.home_extruder_to_top()
+            homed_dist = self.cocoa_toolhead.homing.home_extruder_to_bottom()
             if homed_dist > self.empty_tube_travel_distance_cutoff:
                 # no tube installed, skip to prompt for cap
                 self.state = States.UNLOADED_READY_FOR_CAP
@@ -219,7 +219,7 @@ class CocoaLoadWizard:
             self._register_commands()
 
         elif self.state == States.AWAITING_TOOLHEAD_ATTACH_INITIAL_LOAD:
-            self.home_extruder_to_bottom()
+            self.cocoa_toolhead.homing.home_extruder_to_bottom()
             self._print_message__load_unload(
                 "Install red cap on plunger and run CONTINUE"
             )
@@ -242,15 +242,16 @@ class CocoaLoadWizard:
             self._register_commands()
 
         elif self.state == States.AWAITING_TOOLHEAD_ATTACH_CORE_LOAD:
-            self.home_extruder_to_bottom()
+            self.cocoa_toolhead.homing.home_extruder_to_bottom()
             self._print_message__load_unload("Done loading, ready for preheat!")
             self.state = States.LOADED
             self._unregister_commands()
 
     def move_extruder(self, amount, speed):
-        last_pos = self.toolhead.get_position()
+        toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        last_pos = toolhead.get_position()
         new_pos = (last_pos[0], last_pos[1], last_pos[2], last_pos[3] + amount)
-        self.toolhead.manual_move(new_pos, speed)
+        toolhead.manual_move(new_pos, speed)
 
     def get_state(self, eventtime):
         return {

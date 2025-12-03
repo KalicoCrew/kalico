@@ -68,7 +68,7 @@ class Memory:
                     "MEMORY_WRITE", "NAME", self.name, self.cmd_WRITE
                 )
 
-    def write(self, address: int, value: bytearray):
+    def write(self, address: int, value: bytes | bytearray):
         assert 0 <= address and address + len(value) <= self.capacity
         assert self.i2c._configured
         if value and self.read_only:
