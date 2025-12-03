@@ -145,7 +145,6 @@ class ADS1220(LoadCellSensor):
                 " data_ready_pin must be on the same MCU"
             )
         # Bulk Sensor Setup
-        self.bulk_queue = bulk_sensor.BulkDataQueue(self.mcu, oid=self.oid)
         # Clock tracking
         chip_smooth = self.sps * UPDATE_INTERVAL * 2
         # Measurement conversion
