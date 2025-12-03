@@ -20,14 +20,9 @@ struct ads1220_adc {
     uint32_t rest_ticks;
     struct gpio_in data_ready;
     struct spidev_s *spi;
-    uint8_t pending_flag, data_count;
+    uint8_t pending_flag;
     struct sensor_bulk sb;
     struct load_cell_probe *lce;
-};
-
-// Flag types
-enum {
-    FLAG_PENDING = 1 << 0
 };
 
 #define BYTES_PER_SAMPLE 4
