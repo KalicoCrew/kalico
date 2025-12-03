@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 import msgpack
 
-from ...mcu import error as mcu_error
+from ...gcode import CommandError
 from ...msgproto import crc16_ccitt
 from ..memory import Memory
 
@@ -26,11 +26,11 @@ if TYPE_CHECKING:
 
     T = TypeVar("T")
 
-AUTOSAVE_DELAY = 1.0
+AUTOSAVE_INTERVAL = 1.0
 NULL_CRC16 = b"\xff\xff"  # crc16(b'')
 
 
-class HeaderError(Exception): ...
+class HeaderError(CommandError): ...
 
 
 class InvalidChecksum(HeaderError): ...
@@ -42,7 +42,7 @@ class InvalidVersion(HeaderError): ...
 class InvalidMagic(HeaderError): ...
 
 
-class MemoryError(Exception): ...
+class MemoryError(CommandError): ...
 
 
 class MemoryNotConnected(MemoryError): ...
@@ -92,7 +92,7 @@ class Header:
     data_checksum: bytes = dataclasses.field(default=NULL_CRC16)
 
     @classmethod
-    def from_bytes(cls, v: bytes):
+    def from_bytes(cls, v: bytes | bytearray):
         if v[:2] != cls.magic:
             raise InvalidMagic()
         if v[2] != cls.version:
@@ -150,7 +150,6 @@ class Header:
 class CocoaMemory:
     printer: Printer
     reactor: SelectReactor
-    config: ConfigWrapper
     gcode: GCodeDispatch
 
     name: str
@@ -164,8 +163,8 @@ class CocoaMemory:
     def __init__(
         self, cocoa_toolhead: CocoaToolheadControl, config: ConfigWrapper
     ):
-        self.config = config
         self.name = cocoa_toolhead.name
+        self.mux_name = cocoa_toolhead.mux_name
         self.logger = cocoa_toolhead.logger.getChild("memory")
 
         self.printer = config.get_printer()
@@ -199,7 +198,7 @@ class CocoaMemory:
     def _attached(self, _eventtime):
         try:
             header_data = self.memory.read(0, Header.size)
-        except mcu_error as e:
+        except CommandError:
             self.connected = False
             self.logger.exception(
                 f"cocoa_memory[{self.name}] Unable to read memory"
@@ -230,6 +229,9 @@ class CocoaMemory:
 
             self.config = copy.deepcopy(self._last_config)
 
+        self.reactor.update_timer(
+            self._save_timer, self.reactor.monotonic() + AUTOSAVE_INTERVAL
+        )
         self.gcode.respond_info(
             f"cocoa_memory[{self.name}] {self.config.get('name', self.header.uid)} attached"
         )
@@ -244,22 +246,18 @@ class CocoaMemory:
         self.connected = False
         self.header = None
         self.config = None
+        self.reactor.update_timer(self._save_timer, self.reactor.NEVER)
         self.printer.send_event("cocoa_memory:disconnected", self.name)
 
     def _autosave(self, eventtime):
-        self.save()
-        return self.reactor.NEVER
+        if self.has_changes():
+            self.save()
+        return eventtime + AUTOSAVE_INTERVAL
 
     def has_changes(self):
         return self.config != self._last_config
 
     def save(self):
-        if not self.has_changes():
-            self.logger.debug(
-                f"cocoa_memory[{self.name}] unchanged, nothing to save"
-            )
-            return
-
         self.logger.info(f"cocoa_memory[{self.name}] Saving {self.config=}")
         config = msgpack.dumps(self.config)
 
@@ -286,28 +284,12 @@ class CocoaMemory:
         if not self.connected:
             raise MemoryNotConnected()
         self.config[key] = val
-        if self._save_timer.waketime == self.reactor.NEVER:
-            self.reactor.update_timer(
-                self._save_timer,
-                self.reactor.monotonic() + AUTOSAVE_DELAY,
-            )
 
-    def setdefault(self, key: str, default: T) -> T:
+    def delete(self, key: str):
         if not self.connected:
             raise MemoryNotConnected()
-        if key not in self.config:
-            self.config[key] = default
-        return self.config[key]
-
-    def delete(self, key):
-        if not self.connected:
-            raise MemoryNotConnected()
-        self.config.pop(key, None)
-        if self._save_timer.waketime == self.reactor.NEVER:
-            self.reactor.update_timer(
-                self._save_timer,
-                self.reactor.monotonic() + AUTOSAVE_DELAY,
-            )
+        if key in self.config:
+            del self.config[key]
 
     def get_status(self, eventtime):
         return {

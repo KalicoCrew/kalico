@@ -6,7 +6,7 @@ to detect the toolhead's attachment status
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ...configfile import ConfigWrapper
@@ -49,7 +49,9 @@ class CocoaRunout:
     runout_enabled: bool
 
     def __init__(
-        self, cocoa_toolhead: CocoaToolheadControl, config: ConfigWrapper
+        self,
+        cocoa_toolhead: CocoaToolheadControl,
+        config: ConfigWrapper,
     ):
         self.cocoa_toolhead = cocoa_toolhead
         self.name = cocoa_toolhead.name
@@ -63,14 +65,14 @@ class CocoaRunout:
         self.gcode_macro = self.printer.load_object(config, "gcode_macro")
         self.pause_resume = self.printer.load_object(config, "pause_resume")
 
-        self.toolhead = None
-
         self.enable_runout = config.getboolean("runout_enabled", True)
         self.runout_tmpl: Template = self.gcode_macro.load_template(
             config,
             "runout_gcode",
             "M600",
         )
+
+        self.toolhead = None
 
         self.runout_enabled = False
         self.position_top = None
@@ -101,7 +103,9 @@ class CocoaRunout:
     def _on_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
         self.next_transform = self.gcode_move.set_move_transform(self, True)
-        self.get_position = self.next_transform.get_position
+        self.get_position: Callable[[], tuple[float, float, float, float]] = (
+            self.next_transform.get_position
+        )
 
     def set_top(self, extruder_position: float):
         self.position_top = extruder_position
@@ -155,7 +159,7 @@ class CocoaRunout:
             self._disable_runout()
 
     def calculate_length(self, raw_position: float) -> float:
-        position = raw_position - self.position_top
+        position = raw_position - (self.position_top or 0)
         return POSITION_EMPTY - max(POSITION_FULL, position)
 
     def get_status(self, eventtime):
