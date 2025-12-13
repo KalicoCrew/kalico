@@ -2490,6 +2490,36 @@ z_offset:
 #   Set to `True` will probe one extra time and remove the first
 #   sample from calculation. This can improve probe accuracy for
 #   printers that have an outlier first sample.
+#⚠️ bad_probe_strategy: RETRY
+#   Strategy to apply when a probe attempt is considered "bad" based on
+#   the probe's quality detection logic. If the probe doesnt support 
+#   quality detection all probes are assumed to be good.
+#   One of: fail, ignore, retry or circle.
+#   - fail: Stop immediately with an error on first bad probe.
+#   - ignore: Accept all probes regardless of quality.
+#   - retry: Re-attempt the probe at the same location.
+#   - circle: Re-attempt the probe using a circular offset pattern to
+#     avoid fouling.
+#   The default is retry.
+#⚠️ bad_probe_retries: 6
+#   Number of additional probe attempts to make when a bad probe
+#   is detected, according to 'bad_probe_strategy'. Set to 0 to disable
+#   retries. The default is 6.
+#⚠️ retry_speed:
+#   Probe horizontal movement speed (in mm/s) to use when moving the probe
+#   for a retry. If not specified, the default value is the value of 'speed'.
+#⚠️ nozzle_scrubber_gcode:
+#   A block of G-Code to perform a custom nozzle scrubbing routine. This
+#   G-code may be invoked between PROBE retries and by the NOZZLE_CLEANUP
+#   command. The gcode template receives the following parameters:
+#   - ATTEMPT: The current retry attempt number
+#   - RETRIES: The maximum number of retries configured
+#   - X, Y: The current toolhead position
+#⚠️ scrubbing_frequency: 0
+#   Controls how often the nozzle scrubber is used in response to bad probes.
+#   If set to a positive number, N, the nozzle_scrubber_gcode will be invoked
+#   after every Nth bad probe. 1 will run the scrubber after every bad probe.
+#   0 will disable scrubbing. The default is 0.
 ```
 
 ### [bltouch]
@@ -5812,6 +5842,64 @@ data_ready_pin:
 #   and 'analog_supply'. Default is 'internal'.
 ```
 
+### [load_cell_probe]
+Load Cell Probe. This combines the functionality of a [probe] and a [load_cell].
+
+```
+[load_cell_probe]
+sensor_type:
+#   This must be one of the supported bulk ADC sensor types and support
+#   load cell endstops on the mcu.
+#counts_per_gram:
+#reference_tare_counts:
+#sensor_orientation:
+#   These parameters must be configured before the probe will operate.
+#   See the [load_cell] section for further details.
+#force_safety_limit: 2000
+#   The safe limit for probing force relative to the reference_tare_counts on
+#   the load_cell. The default is +/-2Kg.
+#trigger_force: 75.0
+#   The force that the probe will trigger at. 75g is the default.
+#drift_filter_cutoff_frequency: 0.8
+#   Enable optional continuous taring while homing & probing to reject drift.
+#   The value is a frequency, in Hz, below which drift will be ignored. This
+#   option requires the SciPy library. Default: None
+#drift_filter_delay: 2
+#   The delay, or 'order', of the drift filter. This controls the number of
+#   samples required to make a trigger detection. Can be 1 or 2, the default
+#   is 2.
+#buzz_filter_cutoff_frequency: 100.0
+#   The value is a frequency, in Hz, above which high frequency noise in the
+#   load cell will be filtered out. This option requires the SciPy
+#   library. Default: None
+#buzz_filter_delay: 2
+#   The delay, or 'order', of the buzz filter. This controls the number of
+#   samples required to make a trigger detection. Can be 1 or 2, the default
+#   is 2.
+#notch_filter_frequencies: 50, 60
+#   1 or 2 frequencies, in Hz, to filter out of the load cell data. This is
+#   intended to reject power line noise. This option requires the SciPy
+#   library.  Default: None
+#notch_filter_quality: 2.0
+#   Controls how narrow the range of frequencies are that the notch filter
+#   removes. Larger numbers produce a narrower filter. Minimum value is 0.5 and
+#   maximum is 3.0. Default: 2.0
+#tare_time:
+#   The time in seconds used for taring the load_cell before each probe. The
+#   default value is: 4 / 60 = 0.066. This collects samples from 4 cycles of
+#   60Hz mains power to cancel power line noise.
+#z_offset:
+#speed:
+#samples:
+#sample_retract_dist:
+#lift_speed:
+#samples_result:
+#samples_tolerance:
+#samples_tolerance_retries:
+#activate_gcode:
+#deactivate_gcode:
+#   See the "[probe]" section for a description of the above parameters.
+```
 
 ## Board specific hardware support
 
