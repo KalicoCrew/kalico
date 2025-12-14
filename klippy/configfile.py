@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, glob, re, time, logging, configparser, io
 import pathlib
+import jinja2
 from .extras.danger_options import get_danger_options
 from . import mathutil
 
@@ -346,6 +347,17 @@ class PrinterConfig:
         self.unused_sections = []
         self.unused_options = []
         self.save_config_pending = False
+        self.jinja_env = jinja2.Environment(
+            "{!%",
+            "%!}",
+            "{!",
+            "!}",
+            extensions=[
+                "jinja2.ext.do",
+                "jinja2.ext.loopcontrols",
+            ],
+        )
+
         gcode = self.printer.lookup_object("gcode")
         if "SAVE_CONFIG" not in gcode.ready_gcode_handlers:
             gcode.register_command(
@@ -435,8 +447,9 @@ class PrinterConfig:
             fileconfig.readfp(sbuffer, filename)
 
     def _resolve_include(
-        self, source_filename, include_spec, fileconfig, visited
+        self, source_filename, include_spec, fileconfig, visited, include_vars
     ):
+        #logging.info(f"include: {include_spec}, vars: {include_vars}")
         dirname = os.path.dirname(source_filename)
         include_spec = include_spec.strip()
         include_glob = os.path.join(dirname, include_spec)
@@ -450,12 +463,13 @@ class PrinterConfig:
         include_filenames.sort()
         for include_filename in include_filenames:
             include_data = self._read_config_file(include_filename)
+            include_data = self.jinja_env.from_string(include_data).render(include_vars)
             self._parse_config(
-                include_data, include_filename, fileconfig, visited
+                include_data, include_filename, fileconfig, visited, include_vars
             )
         return include_filenames
 
-    def _parse_config(self, data, filename, fileconfig, visited):
+    def _parse_config(self, data, filename, fileconfig, visited, include_vars=None):
         path = os.path.abspath(filename)
         if path in visited:
             raise error("Recursive include of config file '%s'" % (filename))
@@ -464,7 +478,10 @@ class PrinterConfig:
         # Buffer lines between includes and parse as a unit so that overrides
         # in includes apply linearly as they do within a single file
         buffer = []
+        pending_include = None
+        pending_include_vars = dict(include_vars or {})
         for line in lines:
+            #logging.info(f"LINE: {line}")
             # Strip trailing comment
             pos = line.find("#")
             if pos >= 0:
@@ -472,12 +489,29 @@ class PrinterConfig:
             # Process include or buffer line
             mo = configparser.RawConfigParser.SECTCRE.match(line)
             header = mo and mo.group("header")
+
+            if pending_include:
+                # if we hit another header, then process the include
+                if header:
+                    self._parse_config_buffer(buffer, filename, fileconfig)
+                    self._resolve_include(
+                        filename, pending_include, fileconfig, visited, pending_include_vars
+                    )
+                    pending_include = None
+                    pending_include_vars = dict(include_vars or {})
+                else:
+                    # parse variable line
+                    vr = configparser.RawConfigParser.OPTCRE.match(line)
+                    if vr:
+                        opt = vr.group("option")
+                        val = vr.group("value")
+                        pending_include_vars[opt] = val
+                    elif len(line.strip()) != 0:
+                        raise error(f"Line '{line}' is not a valid include variable definition")
+                    continue
+
             if header and header.startswith("include "):
-                self._parse_config_buffer(buffer, filename, fileconfig)
-                include_spec = header[8:].strip()
-                self._resolve_include(
-                    filename, include_spec, fileconfig, visited
-                )
+                pending_include = header[8:].strip()
             else:
                 line = _INCLUDERE.sub(
                     lambda match: _fix_include_path(filename, match),
@@ -485,6 +519,10 @@ class PrinterConfig:
                 )
                 buffer.append(line)
         self._parse_config_buffer(buffer, filename, fileconfig)
+        if pending_include:
+            self._resolve_include(
+                filename, pending_include, fileconfig, visited, pending_include_vars
+            )
         visited.remove(path)
 
     def _build_config_wrapper(self, data, filename):
