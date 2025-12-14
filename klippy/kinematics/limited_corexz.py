@@ -13,8 +13,8 @@
 #
 
 
+from math import atan2, hypot, pi
 from sys import float_info
-from math import hypot, atan2, pi
 
 from . import corexz
 

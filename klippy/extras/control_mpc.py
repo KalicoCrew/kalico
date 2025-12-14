@@ -1,5 +1,5 @@
-import math
 import logging
+import math
 
 AMBIENT_TEMP = 25.0
 PIN_MIN_TIME = 0.100

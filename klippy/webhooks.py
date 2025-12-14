@@ -3,10 +3,19 @@
 # Copyright (C) 2020 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license
-import logging, socket, os, sys, errno, json, collections, pwd, grp
+import collections
+import errno
+import grp
+import json
+import logging
+import os
+import pwd
+import socket
+import sys
+
 import numpy
-from . import gcode
-from . import APP_NAME
+
+from . import APP_NAME, gcode
 from .extras.danger_options import get_danger_options
 
 REQUEST_LOG_SIZE = 20

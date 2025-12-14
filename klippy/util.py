@@ -3,10 +3,16 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, pty, fcntl, termios, signal, logging, json, time
+import fcntl
+import json
+import logging
+import os
+import pty
+import signal
 import subprocess
+import termios
+import time
 import traceback
-
 
 ######################################################################
 # Low-level Unix commands

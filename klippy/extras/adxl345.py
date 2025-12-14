@@ -3,8 +3,14 @@
 # Copyright (C) 2020-2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, time, collections, multiprocessing, os, math
-from . import bus, bulk_sensor
+import collections
+import logging
+import math
+import multiprocessing
+import os
+import time
+
+from . import bulk_sensor, bus
 
 # ADXL345 registers
 REG_DEVID = 0x00

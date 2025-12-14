@@ -10,7 +10,8 @@
 #               2016/06/DS-000189-ICM-20948-v1.3.pdf
 
 import logging
-from . import bus, adxl345, bulk_sensor
+
+from . import adxl345, bulk_sensor, bus
 
 ICM20948_ADDR = 0x68
 

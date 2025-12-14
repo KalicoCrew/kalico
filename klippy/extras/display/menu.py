@@ -6,10 +6,16 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import os, logging, ast, pathlib, re, typing
+import ast
+import logging
+import os
+import pathlib
+import re
+import typing
 from string import Template
-from . import menu_keys
+
 from .. import virtual_sdcard
+from . import menu_keys
 
 
 class sentinel:

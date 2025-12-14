@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import pytest
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
-import shutil
+
+import pytest
 
 
 def pytest_collect_file(parent, file_path):

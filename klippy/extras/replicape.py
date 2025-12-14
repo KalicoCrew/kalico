@@ -3,8 +3,11 @@
 # Copyright (C) 2017-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, os
-from klippy import pins, mcu
+import logging
+import os
+
+from klippy import mcu, pins
+
 from . import bus
 
 REPLICAPE_MAX_CURRENT = 3.84

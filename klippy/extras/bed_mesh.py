@@ -3,7 +3,11 @@
 # Copyright (C) 2018-2019 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, json, collections
+import collections
+import json
+import logging
+import math
+
 from . import probe
 from .danger_options import get_danger_options
 

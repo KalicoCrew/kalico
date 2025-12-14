@@ -3,7 +3,12 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, re, logging, collections, shlex
+import collections
+import logging
+import os
+import re
+import shlex
+
 from . import mathutil
 
 

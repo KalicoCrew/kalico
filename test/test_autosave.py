@@ -1,4 +1,6 @@
-import typing, pathlib
+import pathlib
+import typing
+
 import pytest
 from klippy_testing import PrinterShim, Restart
 

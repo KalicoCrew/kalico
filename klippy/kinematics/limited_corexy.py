@@ -27,9 +27,10 @@
 # fastest axis (usually max_x_accel). This means that the actual
 # acceleration will always depend on the direction.
 
+from math import atan2, pi, sqrt
 from sys import float_info
+
 from . import corexy
-from math import sqrt, atan2, pi
 
 EPSILON = 2 * float_info.epsilon
 

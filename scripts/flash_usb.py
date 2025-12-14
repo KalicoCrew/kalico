@@ -4,7 +4,15 @@
 # Copyright (C) 2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, re, subprocess, optparse, time, fcntl, termios, struct
+import fcntl
+import optparse
+import os
+import re
+import struct
+import subprocess
+import sys
+import termios
+import time
 
 
 class error(Exception):

@@ -7,8 +7,9 @@
 # Copyright (C) 2023       Alan Smith <alan@airpost.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from math import acos, atan2, cos, fabs, floor, hypot, pi, sin, sqrt
+
 from . import probe
-from math import atan2, acos, cos, floor, fabs, hypot, pi, sin, sqrt
 
 PROBE_VERIFY_DELAY = 0.1
 

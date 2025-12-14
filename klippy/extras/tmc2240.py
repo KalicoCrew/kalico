@@ -5,6 +5,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
+
 from . import tmc, tmc2130, tmc_uart
 
 TMC_FREQUENCY = 12500000.0

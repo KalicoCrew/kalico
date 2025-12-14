@@ -5,8 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import math
-from . import manual_probe, bed_mesh
 
+from . import bed_mesh, manual_probe
 
 DEFAULT_SAMPLE_COUNT = 3
 DEFAULT_SPEED = 50.0

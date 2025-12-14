@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import pytest
-import klippy.chelper
-import pathlib
-import typing
-import shutil
 import os
+import pathlib
+import shutil
+import typing
+
+import pytest
+
+import klippy.chelper
 
 # Ensure chelper is built
 klippy.chelper.get_ffi()

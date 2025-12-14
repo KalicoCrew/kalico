@@ -3,7 +3,10 @@
 # Copyright (C) 2018-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, sys, logging, io
+import io
+import logging
+import os
+import sys
 
 VALID_GCODE_EXTS = ["gcode", "g", "gco"]
 

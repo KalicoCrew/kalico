@@ -7,7 +7,8 @@ import logging
 import math
 import os
 import zlib
-from . import serialhdl, msgproto, pins, chelper, clocksync
+
+from . import chelper, clocksync, msgproto, pins, serialhdl
 from .extras.danger_options import get_danger_options
 
 

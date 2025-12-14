@@ -4,10 +4,10 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-from . import hx71x
-from . import ads1220
-from .bulk_sensor import BatchWebhooksClient
 import collections
+
+from . import ads1220, hx71x
+from .bulk_sensor import BatchWebhooksClient
 
 # We want either Python 3's zip() or Python 2's izip() but NOT 2's zip():
 zip_impl = zip

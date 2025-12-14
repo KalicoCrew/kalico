@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
+
 from . import bus, tmc
 
 TMC_FREQUENCY = 13200000.0

@@ -9,8 +9,8 @@ import json
 import logging
 import pathlib
 import platform
-import sys
 import shlex
+import sys
 import threading
 import urllib.request
 import uuid

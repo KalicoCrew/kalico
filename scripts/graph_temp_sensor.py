@@ -4,9 +4,11 @@
 # Copyright (C) 2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, optparse
-import matplotlib
+import optparse
+import os
+import sys
 
+import matplotlib
 
 ######################################################################
 # Dummy config / printer / etc. class emulation
@@ -125,7 +127,9 @@ def setup_matplotlib(output_to_file):
     if output_to_file:
         matplotlib.rcParams.update({"figure.autolayout": True})
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 
@@ -134,7 +138,8 @@ def import_sensors(config):
     # Load adc_temperature.py and thermistor.py modules
     kdir = os.path.join(os.path.dirname(__file__), "..", "klippy")
     sys.path.append(kdir)
-    import extras.adc_temperature, extras.thermistor
+    import extras.adc_temperature
+    import extras.thermistor
 
     extras.thermistor.load_config(config)
     extras.adc_temperature.load_config(config)

@@ -4,7 +4,11 @@
 # Copyright (C) 2017  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, re, collections, ast, itertools
+import ast
+import collections
+import itertools
+import re
+import sys
 
 
 def format_comment(line_num, line):

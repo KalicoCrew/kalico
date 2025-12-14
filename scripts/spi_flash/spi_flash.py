@@ -5,22 +5,23 @@
 # Copyright (C) 2022 H. Gregor Molter <gregor.molter@secretlab.de>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys
 import argparse
-import os
-import zlib
-import hashlib
-import logging
 import collections
+import hashlib
+import json
+import logging
+import os
+import pathlib
+import sys
 import time
 import traceback
-import json
+import zlib
+
 import board_defs
 import fatfs_lib
-import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
-from klippy import reactor, serialhdl, clocksync, mcu
+from klippy import clocksync, mcu, reactor, serialhdl
 
 ###########################################################
 #

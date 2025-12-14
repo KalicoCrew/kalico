@@ -3,7 +3,9 @@
 # Copyright (C) 2020-2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, threading, struct
+import logging
+import struct
+import threading
 
 # This "bulk sensor" module facilitates the processing of sensor chip
 # measurements that do not require the host to respond with low

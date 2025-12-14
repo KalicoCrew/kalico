@@ -4,11 +4,12 @@
 # Copyright (C) 2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os
+import errno
 import optparse
+import os
 import sys
 import time
-import errno
+
 import can
 
 CANBUS_ID_ADMIN = 0x3F0

@@ -3,7 +3,10 @@
 # Copyright (C) 2018-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, time, logging
+import logging
+import os
+import time
+
 from .danger_options import get_danger_options
 
 

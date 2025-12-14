@@ -3,8 +3,11 @@
 # Copyright (C) 2016-2022  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
-from klippy import stepper, chelper
+import logging
+import math
+
+from klippy import chelper, stepper
+
 from ..extras.danger_options import get_danger_options
 
 

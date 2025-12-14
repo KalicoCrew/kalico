@@ -4,10 +4,15 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, optparse, os, re, logging, pathlib
+import logging
+import optparse
+import os
+import pathlib
+import re
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-from klippy import util, reactor, serialhdl, msgproto, clocksync
+from klippy import clocksync, msgproto, reactor, serialhdl, util
 
 help_txt = """
   This is a debugging console for the Klipper micro-controller.

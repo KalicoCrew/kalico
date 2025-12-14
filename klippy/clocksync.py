@@ -3,7 +3,9 @@
 # Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, traceback
+import logging
+import math
+import traceback
 
 RTT_AGE = 0.000010 / (60.0 * 60.0)
 DECAY = 1.0 / 30.0

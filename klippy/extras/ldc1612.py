@@ -4,7 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus, bulk_sensor
+
+from . import bulk_sensor, bus
 
 MIN_MSG_TIME = 0.100
 

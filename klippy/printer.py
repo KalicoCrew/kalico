@@ -5,19 +5,38 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional, Callable, Union, Any
-from types import ModuleType
-from pathlib import Path
+import collections
+import gc
+import importlib
+import importlib.util
+import logging
+import optparse
+import os
+import sys
+import time
 from collections import defaultdict
-import sys, os, gc, optparse, logging, time, collections, importlib, importlib.util
+from enum import Enum
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Callable, Optional, Union
 
-from . import compat
 from klippy.configfile import ConfigWrapper
-from . import util, reactor, queuelogger, msgproto
-from . import gcode, configfile, pins, mcu, toolhead, webhooks
+
+from . import (
+    APP_NAME,
+    compat,
+    configfile,
+    gcode,
+    mcu,
+    msgproto,
+    pins,
+    queuelogger,
+    reactor,
+    toolhead,
+    util,
+    webhooks,
+)
 from .extras.danger_options import get_danger_options
-from . import APP_NAME
 
 message_ready = "Printer is ready"
 
@@ -627,8 +646,9 @@ class Printer:
 
 def import_test():
     # Import all optional modules (used as a build test)
-    from .extras import danger_options
     from unittest import mock
+
+    from .extras import danger_options
 
     danger_options.DANGER_OPTIONS = mock.Mock()
     dname = os.path.dirname(__file__)

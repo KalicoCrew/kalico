@@ -4,18 +4,19 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
+
 import logging
 import math
 from enum import IntEnum
 from typing import Optional, Union
 
-from klippy import Printer
+from klippy import Printer, pins
 from klippy.configfile import ConfigWrapper
-from klippy import pins
-from . import manual_probe
-from klippy.toolhead import ToolHead
-from klippy.gcode import GCodeCommand
 from klippy.extras.gcode_macro import Template
+from klippy.gcode import GCodeCommand
+from klippy.toolhead import ToolHead
+
+from . import manual_probe
 
 HINT_TIMEOUT = """
 If the probe did not move far enough to trigger, then

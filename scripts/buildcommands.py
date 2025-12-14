@@ -4,8 +4,18 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, subprocess, optparse, logging, pathlib, shlex, socket, time
-import traceback, json, zlib
+import json
+import logging
+import optparse
+import os
+import pathlib
+import shlex
+import socket
+import subprocess
+import sys
+import time
+import traceback
+import zlib
 
 # Directly import msgproto without needing the full klippy environment
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "klippy"))

@@ -5,7 +5,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+
 from klippy import chelper
+
 from . import shaper_defs
 
 

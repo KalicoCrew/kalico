@@ -4,16 +4,16 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
-import os
 import logging
+import os
 import threading
+
 from .control_mpc import (
-    ControlMPC,
     FILAMENT_TEMP_SRC_AMBIENT,
     FILAMENT_TEMP_SRC_FIXED,
     FILAMENT_TEMP_SRC_SENSOR,
+    ControlMPC,
 )
-
 
 ######################################################################
 # Heater
