@@ -1478,6 +1478,24 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#mpc-ambient-sensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      MPC Ambient Sensor
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mpc-block-sensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      MPC Block Sensor
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -4797,6 +4815,24 @@
   <a href="#combined-temperature-sensor" class="md-nav__link">
     <span class="md-ellipsis">
       Combined temperature sensor
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mpc-ambient-sensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      MPC Ambient Sensor
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mpc-block-sensor" class="md-nav__link">
+    <span class="md-ellipsis">
+      MPC Block Sensor
     </span>
   </a>
   
@@ -8763,6 +8799,34 @@ sensors. This sensor can be used with extruders, heater_generic and heater beds.
 #maximum_deviation:
 #   Must be provided. Maximum permissible deviation between the sensors
 #   to combine (e.g. 5 degrees). To disable it, use a large value (e.g. 999.9)
+</code></pre></div>
+
+<h3 id="mpc-ambient-sensor">MPC Ambient Sensor<a class="headerlink" href="#mpc-ambient-sensor" title="Permanent link">&para;</a></h3>
+<p>Virtual MPC sensor to show the internal ambient temperature value (defaults to 25 if any other algorithm than MPC is used)</p>
+<div class="highlight"><pre><span></span><code>sensor_type: mpc_ambient_temperature
+heater_name: extruder
+#   Put the name of the heater this sensor is tied to (this parameter is required)
+#gcode_id: AT
+min_temp: 0
+max_temp: 325
+#ignore_limits: False
+#   Ignore the temp limits (if set to true, the min and max temp can be omitted)
+#echo_limits_to_console: False
+#   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
+</code></pre></div>
+
+<h3 id="mpc-block-sensor">MPC Block Sensor<a class="headerlink" href="#mpc-block-sensor" title="Permanent link">&para;</a></h3>
+<p>Virtual MPC sensor to show the internal ambient temperature value (defaults to 25 if any other algorithm than MPC is used)</p>
+<div class="highlight"><pre><span></span><code>sensor_type: mpc_block_temperature
+heater_name: extruder
+#   Put the name of the heater this sensor is tied to (this parameter is required)
+#gcode_id: BE
+min_temp: 0
+max_temp: 325
+#ignore_limits: False
+#   Ignore the temp limits (if set to true, the min and max temp can be omitted)
+#echo_limits_to_console: False
+#   If set to true, limits will be echoed to console instead of just being ignored if ignore_limits is true
 </code></pre></div>
 
 <h2 id="fans">Fans<a class="headerlink" href="#fans" title="Permanent link">&para;</a></h2>
