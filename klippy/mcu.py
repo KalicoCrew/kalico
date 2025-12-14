@@ -280,12 +280,12 @@ class MCU_trsync:
         )
         self._trsync_start_cmd.send(
             [self._oid, report_clock, report_ticks, self.REASON_COMMS_TIMEOUT],
-            reqclock=report_clock,
+            reqclock=clock,
         )
         for s in self._steppers:
             self._stepper_stop_cmd.send([s.get_oid(), self._oid])
         self._trsync_set_timeout_cmd.send(
-            [self._oid, expire_clock], reqclock=expire_clock
+            [self._oid, expire_clock], reqclock=clock
         )
 
     def set_home_end_time(self, home_end_time):
