@@ -305,97 +305,242 @@ class Homing:
         for endstop in endstops:
             endstop[0].query_endstop(print_time)
 
+    def _calc_mean(self, distances):
+        return sum(distances) / float(len(distances))
+
+    def _calc_median(self, distances):
+        z_sorted = sorted(distances)
+        middle = len(distances) // 2
+        if (len(distances) & 1) == 1:
+            # odd number of samples
+            return z_sorted[middle]
+        # even number of samples
+        return self._calc_mean(z_sorted[middle - 1 : middle + 1])
+
+    def init_homing(self, hi, homing_axes):
+        pass
+
+    def process_homing_info(self, hi):
+        return hi
+
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
         self.printer.send_event("homing:home_rails_begin", self, rails)
-        # Alter kinematics class to think printer is at forcepo
+        gcode = self.printer.lookup_object("gcode")
+        # Alter kinematics class to think printer is at forcepos
         homing_axes = [axis for axis in range(3) if forcepos[axis] is not None]
-        startpos = self._fill_coord(forcepos)
-        homepos = self._fill_coord(movepos)
-        self.toolhead.set_position(startpos, homing_axes=homing_axes)
         # Perform first home
         endstops = [es for rail in rails for es in rail.get_endstops()]
-        hi = rails[0].get_homing_info()
-        hmove = HomingMove(self.printer, endstops)
-
-        try:
-            self._set_homing_accel(hi.accel, pre_homing=True)
-            self._set_homing_current(homing_axes, pre_homing=True)
-            self._reset_endstop_states(endstops)
-            hmove.homing_move(homepos, hi.speed)
-        finally:
-            self._set_homing_accel(hi.accel, pre_homing=False)
-
+        hi = self.process_homing_info(rails[0].get_homing_info())
+        self.init_homing(hi, homing_axes)
         needs_rehome = False
         retract_dist = hi.retract_dist
-        if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
-            needs_rehome = True
-            retract_dist = hi.min_home_dist
+        sample_retract_dist = hi.sample_retract_dist
+        hmove = HomingMove(self.printer, endstops)
 
-        # Perform second home
-        if retract_dist:
-            logging.info("homing: needs rehome: %s", needs_rehome)
-            # Retract
+        retries = 0
+        distances = []
+        drop_result = hi.drop_first_result
+
+        startpos = None
+        homepos = None
+        axes_d = []
+        move_d = None
+        retract_r = None
+        retractpos = []
+
+        def _retract_toolhead(retract_distance, retract_speed):
+            nonlocal startpos, homepos, axes_d, move_d, retract_r, retractpos
             startpos = self._fill_coord(forcepos)
             homepos = self._fill_coord(movepos)
             axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
             move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
-            retract_r = min(1.0, retract_dist / move_d)
+            retract_r = min(1.0, retract_distance / move_d)
             retractpos = [
                 hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
             ]
-            self.toolhead.move(retractpos, hi.retract_speed)
-            if not hi.use_sensorless_homing or needs_rehome:
-                try:
-                    # Home again
-                    startpos = [
-                        rp - ad * retract_r
-                        for rp, ad in zip(retractpos, axes_d)
+            self.toolhead.move(retractpos, retract_speed)
+
+        def _process_samples(trigpos):
+            nonlocal drop_result, distances, retries
+            # early return if we don't use samples for homing
+            if hi.sample_count == 1:
+                distances.append([0.0] * len(hmove.distance_elapsed))
+                return
+
+            if drop_result:
+                # Don't process the sample if it's dropped
+                gcode.respond_info("Settling sample (ignored)...")
+                drop_result = False
+            else:
+                if not distances:
+                    result = [0] * len(hmove.distance_elapsed)
+                else:
+                    haltpos = self.toolhead.get_position()
+                    result = [
+                        distances[-1][i]
+                        # Last deviation from the first home which is defined as 0.0
+                        + (
+                            (dist - sample_retract_dist)
+                            if hi.positive_dir
+                            else (dist + sample_retract_dist)
+                        )
+                        # deviation between retract and actual distance traveled till endstop triggered
+                        - (haltpos[i] - trigpos[i])
+                        # compensate for the deviation between haltpos and trigpos
+                        if i in homing_axes
+                        else 0
+                        for i, dist in enumerate(hmove.distance_elapsed)
                     ]
-                    self.toolhead.set_position(startpos)
-                    self._reset_endstop_states(endstops)
+                for i in homing_axes:
+                    gcode.respond_info(
+                        f"Homing sample for {'XYZ'[i]}: {result[i]:.9f}".rstrip(
+                            "0"
+                        ).rstrip(".")
+                    )
+                distances.append(result)
 
-                    hmove = HomingMove(self.printer, endstops)
-                    hmove.homing_move(homepos, hi.second_homing_speed)
-
-                    if hmove.check_no_movement() is not None:
-                        raise self.printer.command_error(
-                            "Endstop %s still triggered after retract"
-                            % (hmove.check_no_movement(),)
-                        )
-                    if (
-                        hi.use_sensorless_homing
-                        and needs_rehome
-                        and hmove.moved_less_than_dist(
-                            hi.min_home_dist, homing_axes
-                        )
+                if hi.samples_tolerance is not None:
+                    if any(
+                        max([dist[i] for dist in distances])
+                        - min([dist[i] for dist in distances])
+                        > hi.samples_tolerance
+                        for i in range(len(hmove.distance_elapsed))
                     ):
-                        raise self.printer.command_error(
-                            "Early homing trigger on second home!"
+                        if retries >= hi.samples_retries:
+                            raise self.printer.command_error(
+                                "Homing samples exceed samples_tolerance"
+                            )
+                        gcode.respond_info(
+                            "Homing samples exceed tolerance. Retrying..."
                         )
+                        retries += 1
+                        distances = []
+
+            if len(distances) < hi.sample_count:
+                _retract_toolhead(
+                    hi.sample_retract_dist, hi.sample_retract_speed
+                )
+
+        try:
+            while len(distances) < hi.sample_count:
+                startpos = self._fill_coord(forcepos)
+                homepos = self._fill_coord(movepos)
+                self.toolhead.set_position(startpos, homing_axes=homing_axes)
+                hmove = HomingMove(self.printer, endstops)
+
+                try:
+                    self._set_homing_accel(hi.accel, pre_homing=True)
+                    self._set_homing_current(homing_axes, pre_homing=True)
+                    self._reset_endstop_states(endstops)
+                    trigpos = hmove.homing_move(homepos, hi.speed)
                 finally:
                     self._set_homing_accel(hi.accel, pre_homing=False)
-                    self._set_homing_current(homing_axes, pre_homing=False)
 
-                if hi.retract_dist:
-                    # Retract (again)
-                    startpos = self._fill_coord(forcepos)
-                    homepos = self._fill_coord(movepos)
-                    axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
-                    move_d = math.sqrt(sum([d * d for d in axes_d[:3]]))
-                    retract_r = min(1.0, hi.retract_dist / move_d)
-                    retractpos = [
-                        hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
-                    ]
-                    self.toolhead.move(retractpos, hi.retract_speed)
+                if hi.use_sensorless_homing and hmove.moved_less_than_dist(
+                    hi.min_home_dist, homing_axes
+                ):
+                    needs_rehome = True
+                    retract_dist = hi.min_home_dist
+                    sample_retract_dist = hi.min_home_dist
+                    gcode.respond_info(
+                        "Moved less than min_home_dist. Retrying..."
+                    )
+                    break
+                if not hi.use_sensorless_homing and retract_dist:
+                    break
 
-        self._set_homing_accel(hi.accel, pre_homing=False)
-        self._set_homing_current(homing_axes, pre_homing=False)
+                _process_samples(trigpos)
+
+            # Perform second home
+            if (not hi.use_sensorless_homing or needs_rehome) and retract_dist:
+                if needs_rehome:
+                    logging.info(
+                        "homing:needs rehome: %s",
+                        [("X", "Y", "Z")[axis] for axis in homing_axes],
+                    )
+                # Retract
+                _retract_toolhead(retract_dist, hi.retract_speed)
+
+                distances = []
+                retries = 0
+                drop_result = hi.drop_first_result
+                while len(distances) < hi.sample_count:
+                    try:
+                        # Home again
+                        startpos = [
+                            rp - ad * retract_r
+                            for rp, ad in zip(retractpos, axes_d)
+                        ]
+                        self.toolhead.set_position(startpos)
+                        self._reset_endstop_states(endstops)
+
+                        hmove = HomingMove(self.printer, endstops)
+                        trigpos = hmove.homing_move(
+                            homepos, hi.second_homing_speed
+                        )
+
+                        if hmove.check_no_movement() is not None:
+                            raise self.printer.command_error(
+                                "Endstop %s still triggered after retract"
+                                % (hmove.check_no_movement(),)
+                            )
+                        if (
+                            hi.use_sensorless_homing
+                            and needs_rehome
+                            and hmove.moved_less_than_dist(
+                                hi.min_home_dist, homing_axes
+                            )
+                        ):
+                            raise self.printer.command_error(
+                                "Early homing trigger on second home!"
+                            )
+                    finally:
+                        self._set_homing_accel(hi.accel, pre_homing=False)
+
+                    _process_samples(trigpos)
+
+        finally:
+            self._set_homing_accel(hi.accel, pre_homing=False)
+            self._set_homing_current(homing_axes, pre_homing=False)
+
+        self.process_homing(distances, homing_axes)
+
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {
             sp.stepper_name: sp.trig_pos for sp in hmove.stepper_positions
         }
+
+        if len(distances) > 1:
+            self.toolhead.wait_moves()
+            pos = self.toolhead.get_position()
+            home_pos = self.toolhead.get_position()
+            calc_adjustment = (
+                self._calc_median
+                if hi.samples_result == "median"
+                else self._calc_mean
+            )
+            for i in range(0, len(hmove.distance_elapsed)):
+                pos[i] += (
+                    calc_adjustment([dist[i] for dist in distances])
+                    - distances[-1][i]
+                )
+                pos[i] = round(pos[i], 9)
+
+            for i in homing_axes:
+                gcode.respond_info(
+                    f"Final homing position for {'XYZ'[i]}: {round(pos[i] + distances[-1][i], 9):.9f}".rstrip(
+                        "0"
+                    ).rstrip(".")
+                )
+            self.toolhead.set_position(pos)
+            if hi.move_toolhead_after_adjusting:
+                self.printer.lookup_object(
+                    "gcode_move"
+                ).last_position = home_pos
+                self.toolhead.move(home_pos, hi.retract_speed)
+
         self.adjust_pos = {}
         self.printer.send_event("homing:home_rails_end", self, rails)
         if any(self.adjust_pos.values()):
@@ -414,6 +559,84 @@ class Homing:
                 homepos[axis] = newpos[axis]
             self.toolhead.set_position(homepos)
 
+        if hi.retract_dist:
+            # Retract (again)
+            self.toolhead.wait_moves()
+            _retract_toolhead(hi.retract_dist, hi.retract_speed)
+            self.printer.lookup_object("gcode_move").last_position = retractpos
+        gcode.run_script_from_command("M400")
+
+        if retries and hi.retry_gcode is not None:
+            gcode.respond_info("Executing retry_gcode")
+            hi.retry_gcode.run_gcode_from_command()
+
+    def process_homing(self, distances, homing_axes):
+        pass
+
+
+class HomingAccuracy(Homing):
+    def __init__(self, printer, gcmd):
+        super().__init__(printer)
+        self.gcmd = gcmd
+
+    def init_homing(self, hi, homing_axes):
+        axes = ["XYZ"[i] for i in homing_axes]
+        for axis in axes:
+            self.gcmd.respond_info(
+                "HOMING_ACCURACY for %s"
+                " (samples=%d retract=%.3f"
+                " speed=%.1f retract_speed=%.1f)\n"
+                % (
+                    axis,
+                    hi.sample_count,
+                    hi.sample_retract_dist,
+                    hi.second_homing_speed,
+                    hi.retract_speed,
+                )
+            )
+
+    def process_homing_info(self, hi):
+        drop_first_result = self.gcmd.get_int(
+            "DROP_FIRST_RESULT", hi.drop_first_result
+        )
+        speed = self.gcmd.get_float("SPEED", hi.second_homing_speed, above=0.0)
+        sample_retract_speed = self.gcmd.get_float(
+            "RETRACT_SPEED", hi.sample_retract_speed, above=0.0
+        )
+        sample_count = self.gcmd.get_int("SAMPLES", 10, minval=1)
+        sample_retract_dist = self.gcmd.get_float(
+            "RETRACT_DIST", hi.sample_retract_dist, above=0.0
+        )
+        homing_info = hi._replace(
+            drop_first_result=drop_first_result,
+            speed=speed,
+            second_homing_speed=speed,
+            sample_retract_speed=sample_retract_speed,
+            sample_count=sample_count,
+            sample_retract_dist=sample_retract_dist,
+            samples_tolerance=None,
+        )
+        return homing_info
+
+    def process_homing(self, distances, homing_axes):
+        for i in homing_axes:
+            dists = [dist[i] for dist in distances]
+            min_value = min(dists)
+            max_value = max(dists)
+            avg_value = self._calc_mean(dists)
+            median = self._calc_median(dists)
+            range_value = max_value - min_value
+            deviation_sum = 0
+            for j in range(len(dists)):
+                deviation_sum += pow(dists[j] - avg_value, 2.0)
+            sigma = (deviation_sum / len(dists)) ** 0.5
+
+            self.gcmd.respond_info(
+                "homing accuracy results: maximum %.6f, minimum %.6f, range %.6f, "
+                "average %.6f, median %.6f, standard deviation %.6f"
+                % (max_value, min_value, range_value, avg_value, median, sigma)
+            )
+
 
 class PrinterHoming:
     def __init__(self, config):
@@ -421,6 +644,11 @@ class PrinterHoming:
         # Register g-code commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28)
+        gcode.register_command(
+            "HOMING_ACCURACY",
+            self.cmd_HOMING_ACCURACY,
+            desc=self.cmd_HOMING_ACCURACY_help,
+        )
 
     def manual_home(
         self, toolhead, endstops, pos, speed, triggered, check_triggered
@@ -453,6 +681,26 @@ class PrinterHoming:
                 "Probe triggered prior to movement"
             )
         return epos
+
+    cmd_HOMING_ACCURACY_help = "Check the accuracy of your endstops"
+
+    def cmd_HOMING_ACCURACY(self, gcmd):
+        axes = []
+        for pos, axis in enumerate("XYZ"):
+            if gcmd.get("AXIS") == axis:
+                axes.append(pos)
+        homing_state = HomingAccuracy(self.printer, gcmd)
+        homing_state.set_axes(axes)
+        kin = self.printer.lookup_object("toolhead").get_kinematics()
+        try:
+            kin.home(homing_state)
+        except self.printer.command_error:
+            if self.printer.is_shutdown():
+                raise self.printer.command_error(
+                    "Homing failed due to printer shutdown"
+                )
+            self.printer.lookup_object("stepper_enable").motor_off()
+            raise
 
     def cmd_G28(self, gcmd):
         # Move to origin

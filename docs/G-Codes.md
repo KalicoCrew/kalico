@@ -1407,6 +1407,16 @@ not recommended:
 "triggered" or in an "open" state. This command is typically used to
 verify that an endstop is working correctly.
 
+### [homing_accuracy]
+
+#### HOMING_ACCURACY
+`HOMING_ACCURACY AXIS=<X|Y|Z> [DROP_FIRST_RESULT=<TRUE|FALSE>] [SPEED=<mm/s>] [SAMPLES=<count>]
+[RETRACT_DIST=<mm>] [RETRACT_SPEED=<mm>]`: Calculate the maximum, minimum, average,
+median, and standard deviation of multiple homing samples. By default,
+10 SAMPLES are taken. Otherwise the optional parameters default to
+their equivalent setting in the stepper config section.
+Speed defaults to `second_homing_speed`.
+
 ### [resonance_tester]
 
 The following commands are available when a
