@@ -20,6 +20,9 @@ import jinja2
 
 from klippy import configfile
 
+if typing.TYPE_CHECKING:
+    from klippy.printer import SubsystemComponentCollection
+
 ######################################################################
 # Template handling
 ######################################################################
@@ -566,3 +569,7 @@ class GCodeMacro:
 
 def load_config_prefix(config):
     return GCodeMacro(config)
+
+
+def register_components(subsystem: SubsystemComponentCollection):
+    subsystem.register_component("kalico_api", "status", GetStatusWrapperPython)

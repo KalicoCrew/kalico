@@ -4,21 +4,20 @@ import logging
 import threading
 import typing
 
+from klippy import configfile
 from klippy.extras.gcode_macro import (
     GetStatusWrapperPython,
     TemplateVariableWrapperPython,
 )
 
-from .fans import FanAPI
-from .gcode import GCodeAPI
-from .gcode_move import MoveAPI
-from .heaters import HeatersAPI
-from .save_variables import SaveVariablesWrapper
-
 if typing.TYPE_CHECKING:
     from klippy.configfile import ConfigWrapper
+    from klippy.extras.fan import FanAPI
     from klippy.extras.gcode_macro import GCodeMacro
-    from klippy.gcode import GCodeDispatch
+    from klippy.extras.gcode_move import MoveAPI
+    from klippy.extras.heaters import HeatersAPI
+    from klippy.extras.save_variables import SaveVariablesAPI
+    from klippy.gcode import GCodeAPI, GCodeDispatch
     from klippy.printer import Printer
     from klippy.reactor import SelectReactor
 
@@ -34,7 +33,7 @@ class Kalico:
     'The magic "Printer" object for macros'
 
     status: GetStatusWrapperPython
-    saved_vars: SaveVariablesWrapper
+    saved_vars: SaveVariablesAPI
 
     fans: FanAPI
     gcode: GCodeAPI
@@ -43,16 +42,20 @@ class Kalico:
 
     def __init__(self, printer: Printer, config: ConfigWrapper):
         self._printer = printer
-
         self._gcode: GCodeDispatch = printer.lookup_object("gcode")
 
-        self.status = GetStatusWrapperPython(printer)
-        self.saved_vars = SaveVariablesWrapper(printer, config)
+        self._printer.register_event_handler(
+            "klippy:configured", self._load_components
+        )
 
-        self.fans = FanAPI(printer)
-        self.gcode = GCodeAPI(self._gcode)
-        self.heaters = HeatersAPI(printer)
-        self.move = MoveAPI(printer)
+    def _load_components(self):
+        components = self._printer.lookup_components("kalico_api")
+        for name, klass in components.items():
+            if hasattr(self, name):
+                raise configfile.error(
+                    f"Kalico API {name!r} from {klass.__module__!r} conflicts with {getattr(self, name)}"
+                )
+            setattr(self, name, klass(self._printer))
 
     def __repr__(self):
         return "<Kalico>"

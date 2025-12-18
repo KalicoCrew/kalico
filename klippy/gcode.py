@@ -3,13 +3,20 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+
+from __future__ import annotations
+
 import collections
 import logging
 import os
 import re
 import shlex
+import typing
 
 from . import mathutil
+
+if typing.TYPE_CHECKING:
+    from .printer import Printer
 
 
 class CommandError(Exception):
@@ -631,6 +638,75 @@ class GCodeIO:
         return False, "gcodein=%d" % (self.bytes_read,)
 
 
-def add_early_printer_objects(printer):
+## Kalico API
+class GCodeAPI:
+    def __init__(self, printer: Printer):
+        self._gcode: GCodeDispatch = printer.lookup_object("gcode")
+
+    def __getitem__(self, command: str) -> GCodeCommandAPI:
+        if command.upper() not in self._gcode.status_commands:
+            raise AttributeError(f"No such GCode command {command!r}")
+        return GCodeCommandAPI(self._gcode, command)
+
+    def __getattr__(self, command: str) -> GCodeCommandAPI:
+        return self.__getitem__(command)
+
+    def __call__(self, command: str):
+        self._gcode.run_script_from_command(command)
+
+    def absolute_movement(self):
+        self._gcode.run_script_from_command("G90")
+
+    def relative_movement(self):
+        self._gcode.run_script_from_command("G91")
+
+    def absolute_extrusion(self):
+        self._gcode.run_script_from_command("M82")
+
+    def relative_extrusion(self):
+        self._gcode.run_script_from_command("M83")
+
+    def display(self, msg: str):
+        self._gcode.run_script_from_command(f"M117 {msg}")
+
+
+class GCodeCommandAPI:
+    def __init__(self, gcode: GCodeDispatch, command: str):
+        self._gcode = gcode
+        self._command = command
+
+    def _serialize_value(self, value):
+        if value is True:
+            return "1"
+        if value is False:
+            return "0"
+        return shlex.quote(str(value))
+
+    def format(self, *args, **params):
+        command = [self._command]
+        if args:
+            command.extend(map(str, args))
+
+        for key, raw_value in params.items():
+            if raw_value is None:
+                continue
+
+            value = self._serialize_value(raw_value)
+            if (
+                self._gcode.is_traditional_gcode(self._command)
+                and len(key) == 1
+            ):
+                command.append(f"{key}{value}")
+            else:
+                command.append(f"{key}={value}")
+
+        return " ".join(command)
+
+    def __call__(self, *args: str, **params):
+        self._gcode.run_script_from_command(self.format(*args, **params))
+
+
+def add_early_printer_objects(printer: Printer):
     printer.add_object("gcode", GCodeDispatch(printer))
     printer.add_object("gcode_io", GCodeIO(printer))
+    printer.components.register_component("kalico_api", "gcode", GCodeAPI)
