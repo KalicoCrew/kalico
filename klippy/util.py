@@ -4,17 +4,17 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import fcntl
+import hashlib
 import json
 import logging
 import os
+import pathlib
 import pty
 import signal
 import subprocess
 import termios
 import time
 import traceback
-import pathlib
-import hashlib
 
 ######################################################################
 # Low-level Unix commands
@@ -257,20 +257,19 @@ def get_git_version(from_file=True):
 
 
 def get_firmware_hash():
-    klippy_dir = pathlib.Path(__file__).parent
-    root_dir = klippy_dir.parent
-    hash_cache = klippy_dir / ".sources"
-    sources = sorted(
+    root_dir = pathlib.Path(__file__).parent.parent
+    hash_cache = root_dir / ".sources"
+    source_files = sorted(
         file
         for path in (root_dir / "src", root_dir / "lib")
         for file in path.glob("**/*")
         if file.is_file()
     )
-    last_modified = max(file.stat().st_mtime for file in sources)
+    last_modified = max(file.stat().st_mtime for file in source_files)
     if hash_cache.is_file() and hash_cache.stat().st_mtime >= last_modified:
         return hash_cache.read_text()
-    hash = hashlib.md5()
-    for file in sources:
+    hash = hashlib.blake2b(digest_size=16, usedforsecurity=False)
+    for file in source_files:
         hash.update(b"\x00" + bytes(file.relative_to(root_dir)) + b"\x00")
         hash.update(file.read_bytes())
     digest = hash.hexdigest()

@@ -5,8 +5,8 @@ out
 __pycache__/
 .config
 .config.old
+.sources
 klippy/.version
-klippy/.sources
 .history/
 .DS_Store
 ci_build/

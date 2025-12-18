@@ -652,14 +652,14 @@ class HandleVersions:
         data["build_versions"] = self.toolstr
         data["app"] = "Kalico"
         data["license"] = "GNU GPLv3"
-        data["sources"] = self.sources
+        data["sources_hash"] = self.sources
 
     def generate_code(self, options):
         cleanbuild, self.toolstr = tool_versions(options.tools)
         self.version = build_version(options.extra, cleanbuild)
         self.sources = get_firmware_hash()
         sys.stdout.write("Version: %s\n" % (self.version,))
-        sys.stdout.write("Sources: %s\n" % (self.sources,))
+        sys.stdout.write("Sources Hash: %s\n" % (self.sources,))
         return "\n// version: %s\n// build_versions: %s\n// sources: %s\n" % (
             self.version,
             self.toolstr,
