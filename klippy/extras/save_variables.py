@@ -4,12 +4,18 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import ast
 import configparser
 import logging
 import pathlib
+import typing
 
 from klippy.gcode import CommandError
+
+if typing.TYPE_CHECKING:
+    from klippy.printer import Printer, SubsystemComponentCollection
 
 
 class SaveVariables:
@@ -86,3 +92,43 @@ class SaveVariables:
 
 def load_config(config):
     return SaveVariables(config)
+
+
+## Kalico API
+
+
+class SaveVariablesAPI:
+    def __init__(self, printer: Printer):
+        self._save_variables: SaveVariables = printer.lookup_object(
+            "save_variables"
+        )
+
+    def __getitem__(self, name):
+        if self._save_variables is None:
+            raise CommandError("save_variables is not enabled")
+        return self._save_variables.allVariables[name]
+
+    def __setitem__(self, name, value):
+        if self._save_variables is None:
+            raise CommandError("save_variables is not enabled")
+        self._save_variables.set_variable(name, value)
+
+    def __contains__(self, name):
+        return (
+            self._save_variables and name in self._save_variables.allVariables
+        )
+
+    def __iter__(self):
+        yield from iter(self._save_variables.allVariables)
+
+    def items(self):
+        return self._save_variables.allVariables.items()
+
+    def get(self, name, default=None):
+        if not self.__contains__(name):
+            return default
+        return self.__getitem__(name)
+
+
+def register_components(subsystem: SubsystemComponentCollection):
+    subsystem.register_component("kalico_api", "saved_vars", SaveVariablesAPI)
