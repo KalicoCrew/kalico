@@ -9,6 +9,7 @@ def test_autosave_includes(
     config_root: typing.Annotated[pathlib.Path, "test_configs/autosave"],
 ):
     start_args = {"config_file": str(config_root / "printer.cfg")}
+
     with PrinterShim(start_args) as printer:
         pconfig = printer.lookup_object("configfile")
         config = printer.load_config()
@@ -42,4 +43,32 @@ def test_autosave_includes(
         assert (
             "#temp_ignore_limits: True"
             in (config_root / "danger_options.cfg").read_text()
+        )
+
+
+def test_autosave_deprecations(
+    config_root: typing.Annotated[pathlib.Path, "test_configs/deprecations"],
+):
+    start_args = {"config_file": str(config_root / "printer.cfg")}
+    with PrinterShim(start_args) as printer:
+        config = printer.load_config()
+        pconfig = printer.lookup_object("configfile")
+
+        assert ("danger_options", "adc_ignore_limits") in pconfig.deprecations
+
+        with pytest.raises(Restart):
+            printer.call("SAVE_CONFIG")
+
+    with PrinterShim(start_args) as printer:
+        config = printer.load_config()
+        pconfig = printer.lookup_object("configfile")
+
+        assert not pconfig.deprecations
+        assert (
+            config.getsection("danger_options").getboolean("temp_ignore_limits")
+            is True
+        )
+        assert (
+            config.getsection("danger_options").get("adc_ignore_limits", None)
+            is None
         )
