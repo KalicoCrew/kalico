@@ -2,6 +2,7 @@
 #define __SPICMDS_H
 
 #include <stdint.h> // uint8_t
+#include <stddef.h>
 
 struct spidev_s *spidev_oid_lookup(uint8_t oid);
 struct spi_software;
@@ -10,5 +11,7 @@ int spidev_have_cs_pin(struct spidev_s *spi);
 struct gpio_out spidev_get_cs_pin(struct spidev_s *spi);
 void spidev_transfer(struct spidev_s *spi, uint8_t receive_data
                      , uint8_t data_len, uint8_t *data);
+void spidev_transfer_large(struct spidev_s *spi, uint8_t receive_data
+                     , size_t data_len, uint8_t *data);
 
 #endif // spicmds.h
