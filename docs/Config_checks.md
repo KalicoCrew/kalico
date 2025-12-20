@@ -135,8 +135,8 @@ To calibrate the extruder, navigate to the command console
 and run the PID_CALIBRATE command. For example: `PID_CALIBRATE
 HEATER=extruder TARGET=170`
 
-At the completion of the tuning test run `SAVE_CONFIG` to update the
-printer.cfg file the new PID settings.
+At the completion of the tuning test run `SAVE_CONFIG` to update
+printer.autosave.cfg file the new PID settings.
 
 If the printer has a heated bed and it supports being driven by PWM
 (Pulse Width Modulation) then it is recommended to use PID control for
