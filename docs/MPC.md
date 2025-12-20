@@ -197,21 +197,19 @@ After successful  calibration the method will generate the key model parameters 
 
 ![Calibration Parameter Output](img/MPC_calibration_output.png)
 
-A `SAVE_CONFIG` command is then required to commit these calibrated model parameters to the printer config or the user can manually update the values. The _SAVE_CONFIG_ block should then look like: 
+A `SAVE_CONFIG` command is then required to commit these calibrated model parameters to the printer config or the user can manually update the values. Your `printer.autosave.cfg` should then look like: 
 
 ```
 #*# <----------- SAVE_CONFIG ----------->
 #*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
-#*# [extruder]
-#*# control = mpc
-#*# block_heat_capacity = 22.3110
-#*# sensor_responsiveness = 0.0998635
-#*# ambient_transfer = 0.155082
-#*# fan_ambient_transfer=0.155082, 0.20156, 0.216441
+#*#
+[extruder]
+control = mpc
+block_heat_capacity = 22.3110
+sensor_responsiveness = 0.0998635
+ambient_transfer = 0.155082
+fan_ambient_transfer=0.155082, 0.20156, 0.216441
 ```
-
-> [!NOTE]
-> If the [extruder] section is in a .cfg file other than printer.cfg the `SAVE_CONFIG` command may not be able to write the calibration parameters and klippy will provide an error. 
 
 These model parameters are not suitable for pre-configuration or are not explicitly determinable. Advanced users could tweak these post calibration based on the following guidance: Slightly increasing these values will increase the temperature where MPC settles and slightly decreasing them will decrease the settling temperature.  
 
