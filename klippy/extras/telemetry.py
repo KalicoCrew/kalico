@@ -157,7 +157,6 @@ class KalicoTelementry:
 
         {
             "danger_options": [
-                "autosave_includes",
                 "allow_plugin_override",
                 "log_bed_mesh_at_startup"
             ],

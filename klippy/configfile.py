@@ -10,11 +10,11 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import sys
 import time
 
 from . import mathutil
-from .extras.danger_options import get_danger_options
 
 error = configparser.Error
 
@@ -332,7 +332,7 @@ class ConfigWrapper:
         pconfig.deprecate(self.section, option, value, msg)
 
 
-AUTOSAVE_HEADER = """
+AUTOSAVE_HEADER = """\
 #*# <---------------------- SAVE_CONFIG ---------------------->
 #*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
 #*#
@@ -364,6 +364,18 @@ class PrinterConfig:
     def get_printer(self):
         return self.printer
 
+    @property
+    def main_config_path(self):
+        return pathlib.Path(self.printer.get_start_args()["config_file"])
+
+    @property
+    def autosave_path(self):
+        return self.main_config_path.with_suffix(".autosave.cfg")
+
+    @staticmethod
+    def _normalize_newlines(s: str) -> str:
+        return s.replace("\r\n", "\n")
+
     def _read_config_file(self, filename):
         try:
             f = open(filename, "r")
@@ -373,7 +385,7 @@ class PrinterConfig:
             msg = "Unable to open config file %s" % (filename,)
             logging.exception(msg)
             raise error(msg)
-        return data.replace("\r\n", "\n")
+        return self._normalize_newlines(data)
 
     def _find_autosave_data(self, data):
         regular_data = data
@@ -518,11 +530,19 @@ class PrinterConfig:
         )
 
     def read_main_config(self):
-        filename = self.printer.get_start_args()["config_file"]
+        filename = self.main_config_path
         data = self._read_config_file(filename)
         regular_data, autosave_data = self._find_autosave_data(data)
-        regular_config = self._build_config_wrapper(regular_data, filename)
-        autosave_data = self._strip_duplicates(autosave_data, regular_config)
+        if autosave_data:
+            self.save_config_pending = True
+            self.runtime_warning(
+                f"Kalico has migrated saved configuration data to a separate file {self.autosave_path.name}\n"
+                f"To migrate your configuration, run `SAVE_CONFIG`"
+            )
+        if self.autosave_path.exists():
+            autosave_data += self._normalize_newlines(
+                self.autosave_path.read_text()
+            )
         self.autosave = self._build_config_wrapper(autosave_data, filename)
         cfg = self._build_config_wrapper(regular_data + autosave_data, filename)
         return cfg
@@ -657,144 +677,60 @@ class PrinterConfig:
             self.status_save_pending = pending
             self.save_config_pending = True
 
-    def _disallow_include_conflicts(self, regular_data, cfgname, gcode):
-        config = self._build_config_wrapper(regular_data, cfgname)
-        for section in self.autosave.fileconfig.sections():
-            for option in self.autosave.fileconfig.options(section):
-                if config.fileconfig.has_option(section, option):
-                    # They conflict only if they are not the same value
-                    included_value = config.fileconfig.get(section, option)
-                    autosave_value = self.autosave.fileconfig.get(
-                        section, option
-                    )
-                    if included_value != autosave_value:
-                        msg = (
-                            "SAVE_CONFIG section '%s' option '%s' value '%s' conflicts "
-                            "with included value '%s' "
-                            % (section, option, autosave_value, included_value)
-                        )
-                        raise gcode.error(msg)
-
     cmd_SAVE_CONFIG_help = "Overwrite config file and restart"
 
     def _write_backup(self, cfgpath, cfgdata, gcode):
-        printercfg = self.printer.get_start_args()["config_file"]
-        configdir = os.path.dirname(printercfg)
+        configdir = self.main_config_path.parent
         # Define a directory for configuration backups so that include blocks
         # using a wildcard to reference all files in a directory don't throw
         # errors
-        backupdir = os.path.join(configdir, "config_backups")
+        backupdir = configdir / "config_backups"
         # Create the backup directory if it doesn't already exist
-        if not os.path.exists(backupdir):
-            os.mkdir(backupdir)
+        backupdir.mkdir(exist_ok=True)
 
         # Generate the name of the backup file by stripping the leading path in
         # `cfgpath` and appending to it. Then add it to the config_backups dir
-        datestr = time.strftime("-%Y%m%d_%H%M%S")
-        cfgname = os.path.basename(cfgpath)
-        backup_path = backupdir + "/" + cfgname + datestr
-        if cfgpath.endswith(".cfg"):
-            backup_path = backupdir + "/" + cfgname[:-4] + datestr + ".cfg"
+        datestr = time.strftime("%Y%m%d_%H%M%S")
+        backup_path = (backupdir / self.main_config_path.name).with_stem(
+            f"{self.main_config_path.stem}-{datestr}"
+        )
         logging.info(
             "SAVE_CONFIG to '%s' (backup in '%s')", cfgpath, backup_path
         )
         try:
             # Read the current config into the backup before making changes to
             # the original file
-            currentconfig = open(cfgpath, "r")
-            backupconfig = open(backup_path, "w")
-            backupconfig.write(currentconfig.read())
-            backupconfig.close()
-            currentconfig.close()
+            if cfgpath.exists():
+                shutil.copy(cfgpath, backup_path)
             # With the backup created, write the new data to the original file
-            currentconfig = open(cfgpath, "w")
-            currentconfig.write(cfgdata)
-            currentconfig.close()
+            cfgpath.write_text(cfgdata)
         except:
             msg = "Unable to write config file during SAVE_CONFIG"
             logging.exception(msg)
             raise gcode.error(msg)
-
-    def _save_includes(self, cfgpath, data, visitedpaths, gcode):
-        # Prevent an infinite loop in the event of configs circularly
-        # referencing each other
-        if cfgpath in visitedpaths:
-            return
-
-        visitedpaths.add(cfgpath)
-        dirname = os.path.dirname(cfgpath)
-        # Read the data as individual lines so we can find include blocks
-        lines = data.split("\n")
-        for line in lines:
-            # Strip trailing comment
-            pos = line.find("#")
-            if pos >= 0:
-                line = line[:pos]
-
-            mo = configparser.RawConfigParser.SECTCRE.match(line)
-            header = mo and mo.group("header")
-            if header and header.startswith("include "):
-                include_spec = header[8:].strip()
-                include_glob = os.path.join(dirname, include_spec)
-                # retrieve all filenames associated with the absolute path of
-                # the include header
-                include_filenames = glob.glob(include_glob)
-                if not include_filenames and not glob.has_magic(include_glob):
-                    # Empty set is OK if wildcard but not for direct file
-                    # reference
-                    raise error(
-                        "Include file '%s' does not exist" % (include_glob,)
-                    )
-                include_filenames.sort()
-                # Read the include files and check them against autosave data.
-                # If autosave data overwites anything we'll update the file
-                # and create a backup.
-                for include_filename in include_filenames:
-                    # Recursively check for includes. No need to check for looping
-                    # includes as klipper checks this at startup.
-                    include_predata = self._read_config_file(include_filename)
-                    self._save_includes(
-                        include_filename, include_predata, visitedpaths, gcode
-                    )
-
-                    include_postdata = self._strip_duplicates(
-                        include_predata, self.autosave
-                    )
-                    # Only write and backup data that's been changed
-                    if include_predata != include_postdata:
-                        self._write_backup(
-                            include_filename, include_postdata, gcode
-                        )
 
     def cmd_SAVE_CONFIG(self, gcmd):
         if not self.autosave.fileconfig.sections():
             return
         gcode = self.printer.lookup_object("gcode")
         # Create string containing autosave data
-        autosave_data = self._build_config_string(self.autosave)
-        lines = [("#*# " + l).strip() for l in autosave_data.split("\n")]
-        lines.insert(0, "\n" + AUTOSAVE_HEADER.rstrip())
-        lines.append("")
-        autosave_data = "\n".join(lines)
+        autosave_data = AUTOSAVE_HEADER
+        autosave_data += self._build_config_string(self.autosave)
         # Read in and validate current config file
-        cfgname = self.printer.get_start_args()["config_file"]
+        cfgname = self.main_config_path
         try:
             data = self._read_config_file(cfgname)
-            regular_data, old_autosave_data = self._find_autosave_data(data)
-            config = self._build_config_wrapper(regular_data, cfgname)
+            regular_data, _ = self._find_autosave_data(data)
         except error as e:
             msg = "Unable to parse existing config on SAVE_CONFIG"
             logging.exception(msg)
             raise gcode.error(msg)
-        regular_data = self._strip_duplicates(regular_data, self.autosave)
 
-        if get_danger_options().autosave_includes:
-            self._save_includes(cfgname, data, set(), gcode)
+        self._write_backup(self.autosave_path, autosave_data, gcode)
 
-        # NOW we're safe to check for conflicts
-        self._disallow_include_conflicts(regular_data, cfgname, gcode)
-        data = regular_data.rstrip() + autosave_data
-        self._write_backup(cfgname, data, gcode)
+        # Migration to remove legacy autosave data
+        if regular_data != data:
+            self._write_backup(cfgname, regular_data, gcode)
 
         # If requested restart or no restart just flag config saved
         require_restart = gcmd.get_int("RESTART", 1, minval=0, maxval=1)
