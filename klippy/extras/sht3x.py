@@ -61,7 +61,7 @@ class SHT3X:
             config, default_addr=SHT3X_I2C_ADDR, default_speed=100000
         )
         self.mcu = self.i2c.get_mcu()
-        self._error = self.i2c.get_mcu().error
+        self._error = self.printer.command_error
         self.report_time = config.getint("sht3x_report_time", 1, minval=1)
         self.deviceId = config.get("sensor_type")
         self.temp = self.min_temp = self.max_temp = self.humidity = 0.0
