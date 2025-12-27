@@ -69,6 +69,20 @@ class PrinterCANBusStats:
         prev_rx = self.status["rx_error"]
         prev_tx = self.status["tx_error"]
         prev_retries = self.status["tx_retries"]
+
+        # skip querying disconnected MCU and maintain previous status
+        if (
+            self.mcu.non_critical_disconnected
+            or self.get_canbus_status_cmd is None
+        ):
+            self.status = {
+                "rx_error": prev_rx,
+                "tx_error": prev_tx,
+                "tx_retries": prev_retries,
+                "bus_state": "disconnected",
+            }
+            return self.reactor.monotonic() + 1.0
+
         if prev_rx is None:
             prev_rx = prev_tx = prev_retries = 0
         params = self.get_canbus_status_cmd.send()
