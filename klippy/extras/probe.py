@@ -481,11 +481,11 @@ class PrinterProbe:
     def _move(self, coord, speed):
         self.printer.lookup_object("toolhead").manual_move(coord, speed)
 
-    def _calc_mean(self, positions):
+    def _calc_mean(self, positions) -> list[float]:
         count = float(len(positions))
         return [sum([pos[i] for pos in positions]) / count for i in range(3)]
 
-    def _calc_median(self, positions):
+    def _calc_median(self, positions) -> list[float]:
         z_sorted = sorted(positions, key=(lambda p: p[2]))
         middle = len(positions) // 2
         if (len(positions) & 1) == 1:
@@ -521,7 +521,7 @@ class PrinterProbe:
 
     def _run_probe_with_retries(
         self, speed: float, retry_session: RetrySession, gcmd: GCodeCommand
-    ):
+    ) -> list[float]:
         """Probe for a single good result with retries based on strategy"""
         while retry_session.can_retry():
             self._move(retry_session.get_probe_position(), self.retry_speed)
@@ -529,7 +529,7 @@ class PrinterProbe:
             pos, is_good = self._probe(speed, gcmd)
             if retry_session.evaluate_probe(is_good):
                 # return the x/y of the original requested location
-                return retry_session.get_position() + (pos[2],)
+                return list(retry_session.get_position() + (pos[2],))
             # Probe was rejected, retry
             self._retract(gcmd)
             retry_session.scrub_nozzle()
