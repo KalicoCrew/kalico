@@ -68,6 +68,10 @@ class SHT3X:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
+        )
 
     def handle_connect(self):
         self._init_sht3x()

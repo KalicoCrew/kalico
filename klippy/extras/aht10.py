@@ -41,6 +41,10 @@ class AHT10:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
+        )
         self.is_calibrated = False
         self.init_sent = False
 
