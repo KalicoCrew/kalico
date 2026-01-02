@@ -4740,10 +4740,11 @@ run_current:
 #driver_PWM_REG: 4
 #driver_PWM_LIM: 12
 #driver_SLOPE_CONTROL: 0
-#   The chip has a default value of 0, corresponding to 100V/µs.
-#   Setting this value to 2, corresponding to 400V/µs, approximately
-#   matches the TMC2209. This lowers the power dissipation at a 50kHz
-#   chopper frequency by around 1W.
+#   Controls the slew rate of the gate driver output. The chip default is 0,
+#   corresponding to 100V/µs. Setting to 2 (400V/µs) or 3 (570V/µs) can
+#   significantly reduce driver temperature (users report ~15-20°C reduction
+#   at 50kHz chopper frequency). A value of 2 matches TMC2209 slew rate.
+#   Higher values may increase EMI. See TMC2240 datasheet for details.
 #driver_SGT: 0
 #driver_SEMIN: 0
 #driver_SEUP: 0
