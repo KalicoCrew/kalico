@@ -2833,6 +2833,31 @@ calibrate_x: ...
 #   This should be the X coordinate that positions the nozzle during the
 #   calibration process for Y axis twist compensation. This parameter must be
 #   provided and is recommended to be near the center of the bed.
+
+# The following parameters are automatically saved by SAVE_CONFIG after
+# running AXIS_TWIST_COMPENSATION_CALIBRATE and typically should not be
+# manually modified:
+#z_compensations:
+#   A comma-separated list of Z offset compensation values for X-axis twist.
+#   These represent Z adjustments at evenly-spaced points from
+#   compensation_start_x to compensation_end_x. Generated automatically
+#   during X-axis calibration. The default is an empty list.
+#compensation_start_x:
+#   The starting X coordinate for X-axis twist compensation.
+#   Set automatically during calibration. The default is unset.
+#compensation_end_x:
+#   The ending X coordinate for X-axis twist compensation.
+#   Set automatically during calibration. The default is unset.
+#zy_compensations:
+#   A comma-separated list of Z offset compensation values for Y-axis twist.
+#   Similar to z_compensations but for the Y axis. Generated automatically
+#   during Y-axis calibration (AXIS=Y). The default is an empty list.
+#compensation_start_y:
+#   The starting Y coordinate for Y-axis twist compensation.
+#   Set automatically during Y-axis calibration. The default is unset.
+#compensation_end_y:
+#   The ending Y coordinate for Y-axis twist compensation.
+#   Set automatically during Y-axis calibration. The default is unset.
 ```
 
 ### ⚠️ [z_calibration]
