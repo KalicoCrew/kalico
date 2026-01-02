@@ -3577,8 +3577,12 @@ sensors. This sensor can be used with extruders, heater_generic and heater beds.
 sensor_type: temperature_combined
 #sensor_list:
 #   Must be provided. List of sensors to combine to new "virtual"
-#   sensor.
-#   E.g. 'temperature_sensor sensor1,extruder,heater_bed'
+#   sensor. Each entry should be the full name of a temperature-
+#   reporting object as it appears in the config (e.g. 'extruder',
+#   'heater_bed', or 'temperature_sensor <name>' for custom sensors).
+#   E.g. 'temperature_sensor sensor1, temperature_sensor sensor2'
+#   E.g. 'extruder, heater_bed'
+#   E.g. 'temperature_sensor chamber, extruder, heater_bed'
 #combination_method:
 #   Must be provided. Combination method used for the sensor.
 #   Available options are 'max', 'min', 'mean'.
