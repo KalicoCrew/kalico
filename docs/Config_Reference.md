@@ -2836,12 +2836,15 @@ calibrate_x: ...
 
 # The following parameters are automatically saved by SAVE_CONFIG after
 # running AXIS_TWIST_COMPENSATION_CALIBRATE and typically should not be
-# manually modified:
+# manually modified. Note: if z_compensations is set, compensation_start_x
+# and compensation_end_x must also be set. Similarly, zy_compensations
+# requires compensation_start_y and compensation_end_y.
 #z_compensations:
 #   A comma-separated list of Z offset compensation values for X-axis twist.
 #   These represent Z adjustments at evenly-spaced points from
 #   compensation_start_x to compensation_end_x. Generated automatically
-#   during X-axis calibration. The default is an empty list.
+#   during X-axis calibration. Requires compensation_start_x and
+#   compensation_end_x to be set. The default is an empty list.
 #compensation_start_x:
 #   The starting X coordinate for X-axis twist compensation.
 #   Set automatically during calibration. The default is unset.
@@ -2851,7 +2854,8 @@ calibrate_x: ...
 #zy_compensations:
 #   A comma-separated list of Z offset compensation values for Y-axis twist.
 #   Similar to z_compensations but for the Y axis. Generated automatically
-#   during Y-axis calibration (AXIS=Y). The default is an empty list.
+#   during Y-axis calibration (AXIS=Y). Requires compensation_start_y and
+#   compensation_end_y to be set. The default is an empty list.
 #compensation_start_y:
 #   The starting Y coordinate for Y-axis twist compensation.
 #   Set automatically during Y-axis calibration. The default is unset.
