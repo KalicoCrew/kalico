@@ -322,7 +322,20 @@ gpio_pwm_setup_with_max(uint8_t pin, uint32_t cycle_time, uint32_t val, uint32_t
     uint32_t pclock_div = CONFIG_CLOCK_FREQ / pclk;
     if (pclock_div > 1)
         pclock_div /= 2; // Timers run at twice the normal pclock frequency
-    uint32_t prescaler = cycle_time / (pclock_div * (max_pwm - 1));
+    uint32_t max_pwm = MAX_PWM;
+    uint32_t pcycle_time = cycle_time / pclock_div;
+    uint32_t prescaler = pcycle_time / (max_pwm - 1);
+    // CLK output
+    if (is_clock_out) {
+        prescaler = 1;
+        val = val / pclock_div;
+        while (pcycle_time > UINT16_MAX) {
+            prescaler = prescaler * 2;
+            pcycle_time /= 2;
+            val /= 2;
+        }
+        max_pwm = pcycle_time;
+    }
     if (prescaler > UINT16_MAX) {
         prescaler = UINT16_MAX;
     } else if (prescaler > 0) {
