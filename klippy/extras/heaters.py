@@ -36,6 +36,7 @@ PID_PROFILE_OPTIONS = {
     "pid_kd": (float, "%.3f"),
 }
 
+
 class Heater:
     def __init__(self, config, sensor):
         self.printer = config.get_printer()
@@ -161,8 +162,9 @@ class Heater:
             # No significant change in value - can suppress update
             return
         pwm_time = read_time + self.pwm_delay
-        self.next_pwm_time = (pwm_time + MAX_HEAT_TIME
-                              - (3. * self.pwm_delay + 0.001))
+        self.next_pwm_time = (
+            pwm_time + MAX_HEAT_TIME - (3.0 * self.pwm_delay + 0.001)
+        )
         self.last_pwm_value = value
         self.mcu_pwm.set_pwm(pwm_time, value)
         # logging.debug("%s: pwm=%.3f@%.3f (from %.3f@%.3f [%.3f])",
