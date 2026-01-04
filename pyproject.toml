@@ -5,7 +5,8 @@ requires-python = ">=3.9"
 dependencies = [
   "cffi==1.17.1 ; python_version >= '3.13'",
   "cffi==1.15.1 ; python_version < '3.13'",
-  "greenlet==3.1 ; python_version >= '3.13'",
+  "greenlet==3.3 ; python_version >= '3.14'",
+  "greenlet==3.1 ; python_version == '3.13'",
   "greenlet==3.0.3 ; python_version == '3.12'",
   "greenlet==2.0.2 ; python_version < '3.12'",
   "Jinja2==3.1.5",
@@ -17,8 +18,8 @@ dependencies = [
   "setuptools==75.8.2 ; python_version >= '3.12'", # required by python-can < 4.3
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
   "ruff>=0.9.3",
   "pre-commit>=4.0.1",
   "pytest-xdist>=3.6.1",
