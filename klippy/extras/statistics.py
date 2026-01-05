@@ -68,7 +68,11 @@ class PrinterStats:
         reactor = self.printer.get_reactor()
         self.stats_timer = reactor.register_timer(self.generate_stats)
         self.stats_cb = []
+        self.stats_buffer = []
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.printer.register_event_handler(
+            "klippy:shutdown", self.handle_shutdown
+        )
 
     def handle_ready(self):
         self.stats_cb = [
@@ -76,16 +80,27 @@ class PrinterStats:
             for n, o in self.printer.lookup_objects()
             if hasattr(o, "stats")
         ]
+
         if self.printer.get_start_args().get("debugoutput") is None:
             reactor = self.printer.get_reactor()
             reactor.update_timer(self.stats_timer, reactor.NOW)
 
+    def handle_shutdown(self):
+        if self.stats_buffer:
+            logging.info(f"Dumping last {len(self.stats_buffer)} statistics")
+            for msg in self.stats_buffer:
+                logging.info(msg)
+
     def generate_stats(self, eventtime):
         stats = [cb(eventtime) for cb in self.stats_cb]
-        if max([s[0] for s in stats]) and get_danger_options().log_statistics:
-            logging.info(
-                "Stats %.1f: %s", eventtime, " ".join([s[1] for s in stats])
-            )
+        if max([s[0] for s in stats]):
+            msg = f"Stats {eventtime:.1f}: {' '.join([s[1] for s in stats])}"
+            if get_danger_options().log_statistics:
+                logging.info(msg)
+            if buflen := get_danger_options().dump_statistics_on_shutdown:
+                self.stats_buffer.append(msg)
+                while len(self.stats_buffer) > buflen:
+                    self.stats_buffer.pop(0)
         return eventtime + 1.0
 
 

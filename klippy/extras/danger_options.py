@@ -23,6 +23,10 @@ class DangerOptions:
         self.log_webhook_method_register_messages = config.getboolean(
             "log_webhook_method_register_messages", verbose
         )
+        self.dump_statistics_on_shutdown = config.getint(
+            "dump_statistics_on_shutdown", None, minval=1
+        )
+
         self.error_on_unused_config_options = config.getboolean(
             "error_on_unused_config_options", True
         )

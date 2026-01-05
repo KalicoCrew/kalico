@@ -156,6 +156,9 @@ A collection of Kalico-specific system options
 #log_serial_reader_warnings: True
 #log_startup_info: True
 #log_webhook_method_register_messages: False
+#dump_statistics_on_shutdown: 0
+#   If set, the last stats messages will be logged before a shutdown. This is most
+#   useful when log_statistics is disabled
 ```
 
 ## ⚠️ Configuration references
