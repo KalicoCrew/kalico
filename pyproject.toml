@@ -1,7 +1,7 @@
 [project]
 name = "Kalico"
 version = "0.12.1"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
   "cffi==1.17.1 ; python_version >= '3.13'",
   "cffi==1.15.1 ; python_version < '3.13'",
