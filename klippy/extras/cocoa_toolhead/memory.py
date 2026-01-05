@@ -285,6 +285,11 @@ class CocoaMemory:
             raise MemoryNotConnected()
         self.config[key] = val
 
+    def setdefault(self, key: str, default: T) -> T:
+        if not self.connected:
+            raise MemoryNotConnected()
+        return self.config.setdefault(key, default)
+
     def delete(self, key: str):
         if not self.connected:
             raise MemoryNotConnected()

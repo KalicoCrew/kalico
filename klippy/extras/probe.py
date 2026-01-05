@@ -700,6 +700,7 @@ class PrinterProbe:
         )
         configfile = self.printer.lookup_object("configfile")
         configfile.set(self.name, "z_offset", "%.3f" % (z_offset,))
+        self.printer.send_event("probe:calibrated", self.name, z_offset)
 
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
 

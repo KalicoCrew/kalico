@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from ..adc_temperature import PrinterADCtoTemperature
     from ..gcode_macro import PrinterGCodeMacro
     from ..heaters import Heater
+    from ..probe import PrinterProbe
+    from ..save_variables import SaveVariables
 
 # Open circuits on the ADC cause a near 1.0 reading, typically above 0.998
 OPEN_ADC_VALUE = 0.99
@@ -73,6 +75,12 @@ class CocoaToolheadControl:
 
         self.printer.register_event_handler("klippy:connect", self._on_connect)
         self.printer.register_event_handler(
+            "probe:calibrated", self._probe_calibrated
+        )
+        self.printer.register_event_handler(
+            "cocoa_memory:connected", self._memory_connected
+        )
+        self.printer.register_event_handler(
             "cocoa_preheater:start", self._preheater_started
         )
         self.printer.register_event_handler(
@@ -81,7 +89,6 @@ class CocoaToolheadControl:
         self.printer.register_event_handler(
             "cocoa_preheater:stop", self._preheater_stopped
         )
-
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
 
         # register commands
@@ -112,6 +119,30 @@ class CocoaToolheadControl:
 
         self.inject_adc_callback(extruder.heater)
         self.inject_adc_callback(body_heater)
+
+        self.inject_temp_callback("extruder", extruder.heater)
+        self.inject_temp_callback("body", body_heater)
+
+    # TODO: Probe offsets are gonna get weirder for idex
+    def _probe_calibrated(self, probe_name, z_offset):
+        if not self.memory.connected:
+            return
+
+        sv: SaveVariables = self.printer.lookup_object("save_variables")
+        sv.save(f"z_offset_{self.memory.header.uid}", round(z_offset, 4))
+
+    def _memory_connected(self, name, config):
+        if self.name != name:
+            return
+
+        sv: SaveVariables = self.printer.lookup_object("save_variables")
+        probe: PrinterProbe = self.printer.lookup_object("probe")
+
+        key = f"z_offset_{self.memory.header.uid}"
+        if key in sv.allVariables:
+            saved_z_offset = sv.allVariables[key]
+            z_offset = saved_z_offset - probe.z_offset
+            self.gcode.run_script_from_command(f"SET_GCODE_OFFSET Z={z_offset}")
 
     def _preheater_started(self, name, profile):
         if not (self.name == name and self.memory.connected):
@@ -161,6 +192,16 @@ class CocoaToolheadControl:
         self.logger.debug(
             f"{self.name}: Intercepted ADC callback for {heater.name}"
         )
+
+    def inject_temp_callback(self, name: str, heater: Heater):
+        orig_set_temp = heater.set_temp
+
+        def set_temp(degrees):
+            orig_set_temp(degrees)
+            if self.memory.connected:
+                self.memory.setdefault("heaters", {})[name] = heater.target_temp
+
+        heater.set_temp = set_temp
 
     def receive_sensor_value(self, heater, value: float):
         self.last_readings[heater.name] = value

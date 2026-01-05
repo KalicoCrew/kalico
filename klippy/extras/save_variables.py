@@ -8,6 +8,7 @@ import ast
 import configparser
 import logging
 import os
+from ..gcode import CommandError
 
 
 class SaveVariables:
@@ -51,6 +52,9 @@ class SaveVariables:
             value = ast.literal_eval(value)
         except ValueError as e:
             raise gcmd.error("Unable to parse '%s' as a literal" % (value,))
+        self.save(varname, value)
+
+    def save(self, varname, value):
         newvars = dict(self.allVariables)
         newvars[varname] = value
         # Write file
@@ -65,7 +69,7 @@ class SaveVariables:
         except:
             msg = "Unable to save variable"
             logging.exception(msg)
-            raise gcmd.error(msg)
+            raise CommandError(msg)
         self.loadVariables()
 
     def get_status(self, eventtime):
