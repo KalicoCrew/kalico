@@ -108,10 +108,6 @@ A collection of Kalico-specific system options
 #   limits for temperature sensors. It prevents shutdowns due to
 #   'ADC out of range' and similar errors by allowing readings outside the
 #   specified range without triggering a shutdown. The default is False.
-#autosave_includes: False
-#   When set to true, SAVE_CONFIG will recursively read [include ...] blocks
-#   for conflicts to autosave data. Any configurations updated will be backed
-#   up to configs/config_backups.
 #bgflush_extra_time: 0.250
 #   This allows to set extra flush time (in seconds). Under certain conditions,
 #   a low value will result in an error if message is not get flushed, a high value
