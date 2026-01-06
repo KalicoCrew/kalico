@@ -1,6 +1,7 @@
 #ifndef __LINUX_GPIO_H
 #define __LINUX_GPIO_H
 
+#include <stddef.h> // size_t
 #include <stdint.h> // uint8_t
 
 struct gpio_out {
@@ -35,6 +36,8 @@ struct spi_config spi_setup(uint32_t bus, uint8_t mode, uint32_t rate);
 void spi_prepare(struct spi_config config);
 void spi_transfer(struct spi_config config, uint8_t receive_data
                   , uint8_t len, uint8_t *data);
+void spi_transfer_large(struct spi_config config, uint8_t receive_data
+                  , size_t len, uint8_t *data);
 
 struct gpio_pwm {
     int duty_fd, enable_fd;
