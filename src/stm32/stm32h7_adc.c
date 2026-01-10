@@ -160,10 +160,11 @@ static const uint8_t adc_pins[] = {
 #define ADC_CKMODE 0b11
 #define ADC_ATICKS 0b110
 #define ADC_ATICKS_H723_ADC3 0b111
-// stm32h7: clock=25Mhz, Tsamp=387.5, Tconv=394, total=15.76us
-// stm32h723 adc3: clock=50Mhz, Tsamp=640.5, Tconv=653, total=13.06us
-// stm32l4: clock=20Mhz, Tsamp=247.5, Tconv=260, total=13.0us
-// stm32g4: clock=37.5Mhz, Tsamp=247.5, Tconv=260, total=6.933us
+// 400Mhz stm32h7: clock=25Mhz, Tsamp=387.5, Tconv=394, total=15.76us
+// 520Mhz stm32h723: clock=32.5Mhz, Tsamp=387.5, Tconv=394, total=12.12us
+// 520Mhz stm32h723 adc3: clock=65Mhz, Tsamp=640.5, Tconv=653, total=10.05us
+// 80Mhz stm32l4: clock=20Mhz, Tsamp=247.5, Tconv=260, total=13.0us
+// 170Mhz stm32g4: clock=42.5Mhz, Tsamp=247.5, Tconv=260, total=6.118us
 
 // Handle register name differences between chips
 #if CONFIG_MACH_STM32H723
