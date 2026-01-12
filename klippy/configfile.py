@@ -101,8 +101,7 @@ class ConfigWrapper:
                     self.access_tracking[acc_id] = default
                 return default
             raise error(
-                "Option '%s' in section '%s' must be specified"
-                % (option, self.section)
+                f"Option '{option}' in section '{self.section}' must be specified"
             )
         if parser is float:
             parser = mathutil.safe_float
@@ -112,30 +111,25 @@ class ConfigWrapper:
             raise
         except:
             raise error(
-                "Unable to parse option '%s' in section '%s'"
-                % (option, self.section)
+                f"Unable to parse option '{option}' in section '{self.section}'"
             )
         if note_valid:
             self.access_tracking[(self.section.lower(), option.lower())] = v
         if minval is not None and v < minval:
             raise error(
-                "Option '%s' in section '%s' must have minimum of %s"
-                % (option, self.section, minval)
+                f"Option '{option}' in section '{self.section}' must have minimum of {minval}"
             )
         if maxval is not None and v > maxval:
             raise error(
-                "Option '%s' in section '%s' must have maximum of %s"
-                % (option, self.section, maxval)
+                f"Option '{option}' in section '{self.section}' must have maximum of {maxval}"
             )
         if above is not None and v <= above:
             raise error(
-                "Option '%s' in section '%s' must be above %s"
-                % (option, self.section, above)
+                f"Option '{option}' in section '{self.section}' must be above {above}"
             )
         if below is not None and v >= below:
             raise self.error(
-                "Option '%s' in section '%s' must be below %s"
-                % (option, self.section, below)
+                f"Option '{option}' in section '{self.section}' must be below {below}"
             )
         return v
 
@@ -218,8 +212,7 @@ class ConfigWrapper:
             c = self.get(option, default, note_valid=note_valid)
         if c not in choices:
             raise error(
-                "Choice '%s' for option '%s' in section '%s'"
-                " is not a valid choice" % (c, option, self.section)
+                f"Choice '{c}' for option '{option}' in section '{self.section}' is not a valid choice"
             )
         return choices[c]
 
@@ -244,8 +237,7 @@ class ConfigWrapper:
             res = [parser(p) for p in parts]
             if count is not None and len(res) != count:
                 raise error(
-                    "Option '%s' in section '%s' must have %d elements"
-                    % (option, self.section, count)
+                    f"Option '{option}' in section '{self.section}' must have {count} elements"
                 )
             return tuple(res)
 
@@ -314,22 +306,35 @@ class ConfigWrapper:
             if o.startswith(prefix)
         ]
 
-    def deprecate(self, option, value=None):
+    def deprecate(self, option, value=None, replace_with=None):
         if not self.fileconfig.has_option(self.section, option):
             return
+
         if value is None:
-            msg = "Option '%s' in section '%s' is deprecated." % (
-                option,
-                self.section,
+            msg = (
+                f"Option '{option}' in section '{self.section}' is deprecated."
             )
         else:
-            msg = "Value '%s' in option '%s' in section '%s' is deprecated." % (
-                value,
-                option,
-                self.section,
-            )
+            msg = f"Value '{value}' in option '{option}' in section '{self.section}' is deprecated."
+
+        if replace_with:
+            conflicts = [
+                new_option
+                for new_option in replace_with
+                if self.fileconfig.has_option(self.section, new_option)
+            ]
+            if conflicts:
+                raise self.error(
+                    f"Option '{option}' in section '{self.section}' is deprecated"
+                    f" and has already been replaced with {', '.join(conflicts)}."
+                )
+            for new_option, new_value in replace_with.items():
+                self.fileconfig.set(self.section, new_option, str(new_value))
+            msg += " Replaced with " + ",".join(replace_with.keys())
         pconfig = self.printer.lookup_object("configfile")
-        pconfig.deprecate(self.section, option, value, msg)
+        pconfig.deprecate(
+            self.section, option, value, msg, replace_with=replace_with
+        )
 
 
 AUTOSAVE_HEADER = """
@@ -344,6 +349,7 @@ class PrinterConfig:
         self.printer = printer
         self.autosave = None
         self.deprecated = {}
+        self.deprecations = {}
         self.runtime_warnings = []
         self.deprecate_warnings = []
         self.status_raw_config = {}
@@ -370,7 +376,7 @@ class PrinterConfig:
             data = f.read()
             f.close()
         except:
-            msg = "Unable to open config file %s" % (filename,)
+            msg = f"Unable to open config file {filename}"
             logging.exception(msg)
             raise error(msg)
         return data.replace("\r\n", "\n")
@@ -385,8 +391,7 @@ class PrinterConfig:
         # Check for errors and strip line prefixes
         if "\n#*# " in regular_data:
             logging.warning(
-                "Can't read autosave from config file"
-                " - autosave state corrupted"
+                "Can't read autosave from config file - autosave state corrupted"
             )
             return data, ""
         out = [""]
@@ -407,28 +412,45 @@ class PrinterConfig:
     comment_r = re.compile("[#;].*$")
     value_r = re.compile("[^A-Za-z0-9_].*$")
 
-    def _strip_duplicates(self, data, config):
+    def _strip_duplicates(self, data, config, replacements=None):
         # Comment out fields in 'data' that are defined in 'config'
         lines = data.split("\n")
+        result = []
         section = None
         is_dup_field = False
-        for lineno, line in enumerate(lines):
+        replacement = None
+        for line in lines:
+            result.append(line)
             pruned_line = self.comment_r.sub("", line).rstrip()
             if not pruned_line:
                 continue
             if pruned_line[0].isspace():
                 if is_dup_field:
-                    lines[lineno] = "#" + lines[lineno]
+                    result[-1] = "#" + result[-1]
                 continue
             is_dup_field = False
             if pruned_line[0] == "[":
                 section = pruned_line[1:-1].strip()
                 continue
             field = self.value_r.sub("", pruned_line)
-            if config.fileconfig.has_option(section, field):
+            if replacements and (section, field) in replacements:
                 is_dup_field = True
-                lines[lineno] = "#" + lines[lineno]
-        return "\n".join(lines)
+                replacement = replacements[(section, field)]
+                result[-1] = f"# {result[-1]}  # Deprecated"
+                for key, value in replacement.items():
+                    if not isinstance(value, str):
+                        value = str(value)  # TODO: Proper serialization...
+                    if "\n" in value:
+                        result.append(key + ":")
+                        for value_line in value.splitlines(False):
+                            result.append("\t" + value_line)
+                    else:
+                        result.append(f"{key}: {value}")
+            elif config.fileconfig.has_option(section, field):
+                is_dup_field = True
+                result[-1] = "#" + result[-1]
+
+        return "\n".join(result)
 
     def _parse_config_buffer(self, buffer, filename, fileconfig):
         if not buffer:
@@ -436,10 +458,7 @@ class PrinterConfig:
         data = "\n".join(buffer)
         del buffer[:]
         sbuffer = io.StringIO(data)
-        if sys.version_info.major >= 3:
-            fileconfig.read_file(sbuffer, filename)
-        else:
-            fileconfig.readfp(sbuffer, filename)
+        fileconfig.read_file(sbuffer, filename)
 
     def _resolve_include(
         self, source_filename, include_spec, fileconfig, visited
@@ -453,7 +472,7 @@ class PrinterConfig:
             include_filenames = glob.glob(include_glob)
         if not include_filenames and not glob.has_magic(include_glob):
             # Empty set is OK if wildcard but not for direct file reference
-            raise error("Include file '%s' does not exist" % (include_glob,))
+            raise error(f"Include file '{include_glob}' does not exist")
         include_filenames.sort()
         for include_filename in include_filenames:
             include_data = self._read_config_file(include_filename)
@@ -465,7 +484,7 @@ class PrinterConfig:
     def _parse_config(self, data, filename, fileconfig, visited):
         path = os.path.abspath(filename)
         if path in visited:
-            raise error("Recursive include of config file '%s'" % (filename))
+            raise error(f"Recursive include of config file '{filename}'")
         visited.add(path)
         lines = data.split("\n")
         # Buffer lines between includes and parse as a unit so that overrides
@@ -542,8 +561,7 @@ class PrinterConfig:
             if section not in valid_sections and section not in objects:
                 if error_on_unused:
                     raise error(
-                        "Section '%s' is not a valid config section"
-                        % (section,)
+                        f"Section '{section}' is not a valid config section"
                     )
                 else:
                     self.unused_sections.append(section)
@@ -552,8 +570,7 @@ class PrinterConfig:
                 if (section, option) not in access_tracking:
                     if error_on_unused and section != "constants":
                         raise error(
-                            "Option '%s' is not valid in section '%s'"
-                            % (option, section)
+                            f"Option '{option}' is not valid in section '{section}'"
                         )
                     else:
                         self.unused_options.append((section, option))
@@ -575,8 +592,28 @@ class PrinterConfig:
         self.runtime_warnings.append(res)
         self.status_warnings = self.runtime_warnings + self.deprecate_warnings
 
-    def deprecate(self, section, option, value=None, msg=None):
+    def deprecate(
+        self, section, option, value=None, msg=None, replace_with=None
+    ):
         self.deprecated[(section, option, value)] = msg
+        self.deprecate_warnings = [
+            {
+                "type": "deprecated_value" if value else "deprecated_option",
+                "section": section,
+                "option": option,
+                "message": msg,
+                "value": value,
+            }
+            for (section, option, value), msg in self.deprecated.items()
+        ]
+        if replace_with:
+            pending_section = self.status_save_pending.setdefault(section, {})
+            pending_section[option] = None
+            for new_opt, new_value in replace_with.items():
+                pending_section[new_opt] = new_value
+            self.deprecations[(section, option)] = replace_with
+            self.save_config_pending = True
+        self.status_warnings = self.runtime_warnings + self.deprecate_warnings
 
     def warn(self, type, msg, section=None, option=None, value=None):
         res = {
@@ -639,7 +676,7 @@ class PrinterConfig:
         pending[section][option] = svalue
         self.status_save_pending = pending
         self.save_config_pending = True
-        logging.info("save_config: set [%s] %s = %s", section, option, svalue)
+        logging.info(f"save_config: set [{section}] {option} = {svalue}")
 
     def remove_section(self, section):
         if self.autosave.fileconfig.has_section(section):
@@ -669,9 +706,8 @@ class PrinterConfig:
                     )
                     if included_value != autosave_value:
                         msg = (
-                            "SAVE_CONFIG section '%s' option '%s' value '%s' conflicts "
-                            "with included value '%s' "
-                            % (section, option, autosave_value, included_value)
+                            f"SAVE_CONFIG section '{section}' option '{option}' value '{autosave_value}' conflicts "
+                            f"with included value '{included_value}'"
                         )
                         raise gcode.error(msg)
 
@@ -695,9 +731,7 @@ class PrinterConfig:
         backup_path = backupdir + "/" + cfgname + datestr
         if cfgpath.endswith(".cfg"):
             backup_path = backupdir + "/" + cfgname[:-4] + datestr + ".cfg"
-        logging.info(
-            "SAVE_CONFIG to '%s' (backup in '%s')", cfgpath, backup_path
-        )
+        logging.info(f"SAVE_CONFIG to '{cfgpath}' (backup in '{backup_path}')")
         try:
             # Read the current config into the backup before making changes to
             # the original file
@@ -742,9 +776,7 @@ class PrinterConfig:
                 if not include_filenames and not glob.has_magic(include_glob):
                     # Empty set is OK if wildcard but not for direct file
                     # reference
-                    raise error(
-                        "Include file '%s' does not exist" % (include_glob,)
-                    )
+                    raise error(f"Include file '{include_glob}' does not exist")
                 include_filenames.sort()
                 # Read the include files and check them against autosave data.
                 # If autosave data overwites anything we'll update the file
@@ -758,8 +790,9 @@ class PrinterConfig:
                     )
 
                     include_postdata = self._strip_duplicates(
-                        include_predata, self.autosave
+                        include_predata, self.autosave, self.deprecations
                     )
+
                     # Only write and backup data that's been changed
                     if include_predata != include_postdata:
                         self._write_backup(
@@ -767,14 +800,16 @@ class PrinterConfig:
                         )
 
     def cmd_SAVE_CONFIG(self, gcmd):
-        if not self.autosave.fileconfig.sections():
+        if not (self.autosave.fileconfig.sections() or self.deprecations):
             return
         gcode = self.printer.lookup_object("gcode")
         # Create string containing autosave data
-        autosave_data = self._build_config_string(self.autosave)
-        lines = [("#*# " + l).strip() for l in autosave_data.split("\n")]
-        lines.insert(0, "\n" + AUTOSAVE_HEADER.rstrip())
-        lines.append("")
+        lines = []
+        if self.autosave.fileconfig.sections():
+            autosave_data = self._build_config_string(self.autosave)
+            lines = [("#*# " + l).strip() for l in autosave_data.split("\n")]
+            lines.insert(0, "\n" + AUTOSAVE_HEADER.rstrip())
+            lines.append("")
         autosave_data = "\n".join(lines)
         # Read in and validate current config file
         cfgname = self.printer.get_start_args()["config_file"]
@@ -786,7 +821,9 @@ class PrinterConfig:
             msg = "Unable to parse existing config on SAVE_CONFIG"
             logging.exception(msg)
             raise gcode.error(msg)
-        regular_data = self._strip_duplicates(regular_data, self.autosave)
+        regular_data = self._strip_duplicates(
+            regular_data, self.autosave, self.deprecations
+        )
 
         if get_danger_options().autosave_includes:
             self._save_includes(cfgname, data, set(), gcode)
