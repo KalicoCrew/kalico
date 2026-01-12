@@ -488,6 +488,7 @@ class MessageParser:
             self.app = data.get("app", "")
             self.version = data.get("version", "")
             self.build_versions = data.get("build_versions", "")
+            self.sources_hash = data.get("sources_hash", "unknown")
         except error as e:
             raise
         except Exception as e:
@@ -502,6 +503,9 @@ class MessageParser:
 
     def get_version_info(self):
         return self.version, self.build_versions
+
+    def get_sources_hash(self):
+        return self.sources_hash
 
     def get_messages(self):
         return list(self.messages)
