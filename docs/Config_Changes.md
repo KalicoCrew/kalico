@@ -12,6 +12,11 @@ All dates in this document are approximate.
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
 
+20250425: The maximum `cycle_time` for pwm `[output_pin]`,
+`[pwm_cycle_time]`, `[pwm_tool]`, and similar config sections is now 3
+seconds (reduced from 5 seconds). The `maximum_mcu_duration` in
+`[pwm_tool]` is now also 3 seconds.
+
 20250816: The filament_switch_sensor adds a new option `debounce_delay` that
 takes a time in seconds to debounce the state of the switch before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
@@ -46,6 +51,19 @@ instead. The `printer[fan object].speed` status will be replaced by
 default config values anymore, a [`RESET_RETRACTION`](./G-Codes.md#reset_retraction)
 command was added to achieve this. Automatic resetting behavior on
 events was removed.
+
+20240912: `SET_PIN`, `SET_SERVO`, `SET_FAN_SPEED`, `M106`, and `M107`
+commands are now collated. Previously, if many updates to the same
+object were issued faster than the minimum scheduling time (typically
+100ms) then actual updates could be queued far into the future. Now if
+many updates are issued in rapid succession then it is possible that
+only the latest request will be applied. If the previous behavior is
+required then consider adding explicit `G4` delay commands between
+updates.
+
+20240912: Support for `maximum_mcu_duration` and `static_value`
+parameters in `[output_pin]` config sections have been removed. These
+options have been deprecated since 20240123.
 
 20240430: The `adc_ignore_limits` parameter in the `[danger_options]`
 config section has been renamed to `temp_ignore_limits` and it now

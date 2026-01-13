@@ -1,6 +1,6 @@
 # File descriptor and timer event helper
 #
-# Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import gc
@@ -23,6 +23,7 @@ class ReactorTimer:
     def __init__(self, callback, waketime):
         self.callback = callback
         self.waketime = waketime
+        self.timer_is_running = False
 
 
 class ReactorCompletion:
@@ -146,6 +147,8 @@ class SelectReactor:
 
     # Timers
     def update_timer(self, timer_handler, waketime):
+        if timer_handler.timer_is_running:
+            return
         timer_handler.waketime = waketime
         self._next_timer = min(self._next_timer, waketime)
 
@@ -186,7 +189,9 @@ class SelectReactor:
             waketime = t.waketime
             if eventtime >= waketime:
                 t.waketime = self.NEVER
+                t.timer_is_running = True
                 t.waketime = waketime = t.callback(eventtime)
+                t.timer_is_running = False
                 if g_dispatch is not self._g_dispatch:
                     self._next_timer = min(self._next_timer, waketime)
                     self._end_greenlet(g_dispatch)

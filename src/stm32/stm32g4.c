@@ -84,15 +84,10 @@ static void
 enable_clock_stm32g4(void)
 {
     uint32_t pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
-    uint32_t pll_base;
+    uint32_t pll_base = CONFIG_STM32_CLOCK_REF_25M ? 5000000 : 4000000;
 
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure 150Mhz PLL from external crystal (HSE)
-#if CONFIG_CLOCK_REF_FREQ % 5000000 == 0
-        pll_base = 5000000;
-#else
-        pll_base = 4000000;
-#endif
         uint32_t div = CONFIG_CLOCK_REF_FREQ / pll_base - 1;
         RCC->CR |= RCC_CR_HSEON;
         while (!(RCC->CR & RCC_CR_HSERDY))
