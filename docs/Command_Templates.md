@@ -219,6 +219,16 @@ emit("G0 Z15 F300")
 
 ```
 
+#### Python: Macro parameters
+
+Parameters passed to python macros are stored in the `params` variable.
+
+```
+[gcode_macro PARAMETER_EXAMPLE]
+gcode:
+  !respond_info(f"{params}")
+```
+
 #### Python: Rawparams
 
 ```
