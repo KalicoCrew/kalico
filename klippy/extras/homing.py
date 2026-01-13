@@ -361,33 +361,36 @@ class Homing:
             ]
             self.toolhead.move(retractpos, retract_speed)
 
-        def _process_samples(trigpos):
+        # Process the homing sample
+        def _process_sample(trigpos):
             nonlocal drop_result, distances, retries
             # early return if we don't use samples for homing
             if hi.sample_count == 1:
                 distances.append([0.0] * len(hmove.distance_elapsed))
                 return
 
+            # early return if we want to drop it
             if drop_result:
                 # Don't process the sample if it's dropped
                 gcode.respond_info("Settling sample (ignored)...")
                 drop_result = False
             else:
+                # since we need an initial reference, set the first sample as 0
                 if not distances:
                     result = [0] * len(hmove.distance_elapsed)
                 else:
                     haltpos = self.toolhead.get_position()
                     result = [
-                        distances[-1][i]
                         # Last deviation from the first home which is defined as 0.0
+                        distances[-1][i]
+                        # deviation between retract and actual distance traveled till endstop triggered
                         + (
                             (dist - sample_retract_dist)
                             if hi.positive_dir
                             else (dist + sample_retract_dist)
                         )
-                        # deviation between retract and actual distance traveled till endstop triggered
-                        - (haltpos[i] - trigpos[i])
                         # compensate for the deviation between haltpos and trigpos
+                        - (haltpos[i] - trigpos[i])
                         if i in homing_axes
                         else 0
                         for i, dist in enumerate(hmove.distance_elapsed)
@@ -401,6 +404,7 @@ class Homing:
                 distances.append(result)
 
                 if hi.samples_tolerance is not None:
+                    # check if tolerance exceeds configured threshold
                     if any(
                         max([dist[i] for dist in distances])
                         - min([dist[i] for dist in distances])
@@ -416,13 +420,14 @@ class Homing:
                         )
                         retries += 1
                         distances = []
-
+            # retract unless we have all samples
             if len(distances) < hi.sample_count:
                 _retract_toolhead(
                     hi.sample_retract_dist, hi.sample_retract_speed
                 )
 
         try:
+            # home for each sample
             while len(distances) < hi.sample_count:
                 startpos = self._fill_coord(forcepos)
                 homepos = self._fill_coord(movepos)
@@ -447,10 +452,12 @@ class Homing:
                         "Moved less than min_home_dist. Retrying..."
                     )
                     break
+                # if we use second homing and this is the first home,
+                # don't use multiple samples as it would be redundant
                 if not hi.use_sensorless_homing and retract_dist:
                     break
 
-                _process_samples(trigpos)
+                _process_sample(trigpos)
 
             # Perform second home
             if (not hi.use_sensorless_homing or needs_rehome) and retract_dist:
@@ -498,7 +505,7 @@ class Homing:
                     finally:
                         self._set_homing_accel(hi.accel, pre_homing=False)
 
-                    _process_samples(trigpos)
+                    _process_sample(trigpos)
 
         finally:
             self._set_homing_accel(hi.accel, pre_homing=False)
@@ -512,6 +519,7 @@ class Homing:
             sp.stepper_name: sp.trig_pos for sp in hmove.stepper_positions
         }
 
+        # Process samples if we have any
         if len(distances) > 1:
             self.toolhead.wait_moves()
             pos = self.toolhead.get_position()
@@ -521,9 +529,13 @@ class Homing:
                 if hi.samples_result == "median"
                 else self._calc_mean
             )
+
+            # calculate the final position
             for i in range(0, len(hmove.distance_elapsed)):
                 pos[i] += (
                     calc_adjustment([dist[i] for dist in distances])
+                    # subtract the last measured distance from the current position so we are at the 0 reference again
+                    # since all distance are relative to that
                     - distances[-1][i]
                 )
                 pos[i] = round(pos[i], 9)
@@ -534,6 +546,7 @@ class Homing:
                         "0"
                     ).rstrip(".")
                 )
+            # set the position to what we calculated
             self.toolhead.set_position(pos)
             if hi.move_toolhead_after_adjusting:
                 self.printer.lookup_object(
