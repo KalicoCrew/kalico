@@ -198,6 +198,10 @@ class BME280:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
+        )
         self.last_gas_time = 0
 
     def handle_connect(self):

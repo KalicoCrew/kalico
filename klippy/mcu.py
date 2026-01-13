@@ -814,8 +814,6 @@ class MCU:
             self.non_critical_recon_timer = self._reactor.register_timer(
                 self.non_critical_recon_event
             )
-            if canbus_uuid:
-                raise error("CAN MCUs can't be non-critical yet!")
         self.non_critical_disconnected = False
         self._non_critical_reconnect_event_name = (
             f"danger:non_critical_mcu_{self.get_name()}:reconnected"
@@ -1144,16 +1142,15 @@ class MCU:
         self._printer.set_rollover_info(self._name, log_info, log=False)
 
     def _check_serial_exists(self):
-        # if self._canbus_iface is not None:
-        #     cbid = self._printer.lookup_object("canbus_ids")
-        #     nodeid = cbid.get_nodeid(self._serialport)
-        #     # self._serial.check_canbus_connect is not functional yet
-        #     return self._serial.check_canbus_connect(
-        #         self._serialport, nodeid, self._canbus_iface
-        #     )
-        # else:
-        rts = self._restart_method != "cheetah"
-        return self._serial.check_connect(self._serialport, self._baud, rts)
+        if self._canbus_iface is not None:
+            cbid = self._printer.lookup_object("canbus_ids")
+            nodeid = cbid.get_nodeid(self._serialport)
+            return self._serial.check_canbus_connect(
+                self._serialport, nodeid, self._canbus_iface
+            )
+        else:
+            rts = self._restart_method != "cheetah"
+            return self._serial.check_connect(self._serialport, self._baud, rts)
 
     def _mcu_identify(self):
         if self.is_non_critical and not self._check_serial_exists():

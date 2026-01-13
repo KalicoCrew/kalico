@@ -35,7 +35,7 @@ funding = "https://docs.kalico.gg/Sponsors.html"
 [tool.ruff]
 line-length = 80
 indent-width = 4
-exclude = [".github", ".history", "config", "docs", "lib", "src"]
+exclude = ["./.github", "./.history", "./config", "./docs", "./lib", "./src"]
 
 [tool.ruff.lint]
 extend-select = [
