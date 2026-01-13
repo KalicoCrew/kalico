@@ -223,6 +223,15 @@ class MCU_I2C:
         self.cmd_queue = self.mcu.alloc_command_queue()
         self.mcu.register_config_callback(self.build_config)
         self.i2c_write_cmd = self.i2c_read_cmd = None
+        printer = self.mcu.get_printer()
+        printer.register_event_handler("klippy:connect", self._handle_connect)
+        self._debugoutput = printer.get_start_args().get("debugoutput")
+        # backward support i2c_write inside the init section
+        self._to_write = []
+
+    def _handle_connect(self):
+        for data in self._to_write:
+            self.i2c_write(data)
 
     def get_oid(self):
         return self.oid
@@ -259,15 +268,24 @@ class MCU_I2C:
             cq=self.cmd_queue,
         )
 
-    def i2c_write(self, data, minclock=0, reqclock=0):
+    def i2c_write_noack(self, data, minclock=0, reqclock=0):
         if self.i2c_write_cmd is None:
-            # Send setup message via mcu initialization
-            data_msg = "".join(["%02x" % (x,) for x in data])
-            self.mcu.add_config_cmd(
-                "i2c_write oid=%d data=%s" % (self.oid, data_msg), is_init=True
-            )
+            self._to_write.append(data)
             return
         self.i2c_write_cmd.send(
+            [self.oid, data], minclock=minclock, reqclock=reqclock
+        )
+
+    def i2c_write(self, data, minclock=0, reqclock=0):
+        if self.i2c_write_cmd is None:
+            self._to_write.append(data)
+            return
+        if self._debugoutput is not None:
+            self.i2c_write_cmd.send(
+                [self.oid, data], minclock=minclock, reqclock=reqclock
+            )
+            return
+        self.i2c_write_cmd.send_wait_ack(
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
 
@@ -276,8 +294,8 @@ class MCU_I2C:
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
 
-    def i2c_read(self, write, read_len):
-        return self.i2c_read_cmd.send([self.oid, write, read_len])
+    def i2c_read(self, write, read_len, retry=True):
+        return self.i2c_read_cmd.send([self.oid, write, read_len], retry)
 
 
 def MCU_I2C_from_config(config, default_addr=None, default_speed=100000):
