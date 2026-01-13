@@ -3,7 +3,7 @@
 # Copyright (C) 2022  Ricardo Alcantara <ricardo@vulcanolabs.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-from . import bus, led
+from . import bus
 
 BACKGROUND_PRIORITY_CLOCK = 0x7FFFFFFF00000000
 
