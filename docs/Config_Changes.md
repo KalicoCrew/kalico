@@ -18,6 +18,10 @@ for configuration details.
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.
 
+20250721: The `[pca9632]` module no longer accepts the `scl_pin` and
+`sda_pin` options.  Use `i2c_software_scl_pin` and
+`i2c_software_sda_pin` instead.
+
 20250425: The maximum `cycle_time` for pwm `[output_pin]`,
 `[pwm_cycle_time]`, `[pwm_tool]`, and similar config sections is now 3
 seconds (reduced from 5 seconds). The `maximum_mcu_duration` in
