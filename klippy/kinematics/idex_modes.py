@@ -185,6 +185,8 @@ class DualCarriages:
             self.dc[index].activate(mode, toolhead.get_position())
         kin.update_limits(self.axis, self.get_kin_range(toolhead, mode))
 
+        self.printer.send_event("dual_carriage:mode_change", index, mode)
+
     def _handle_ready(self):
         # Apply the transform later during Klipper initialization to make sure
         # that input shaping can pick up the correct stepper kinematic flags.
