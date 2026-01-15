@@ -133,7 +133,7 @@ static const uint8_t adc_pins[] = {
     ADC_INVALID_PIN,        // [16] opamp
     GPIO('A', 4),           // [17]
     ADC_INVALID_PIN,        // [18] opamp
-#else // stm32l4
+#elif CONFIG_MACH_STM32L4
     ADC_INVALID_PIN,        // vref
     GPIO('C', 0),           // ADC12_IN1 .. 16
     GPIO('C', 1),
@@ -153,6 +153,27 @@ static const uint8_t adc_pins[] = {
     GPIO('B', 1),
     ADC_TEMPERATURE_PIN,    // temp
     ADC_INVALID_PIN,        // vbat
+#elif CONFIG_MACH_STM32H5
+    GPIO('A', 0), // 0
+    GPIO('A', 1), // 1
+    ADC_INVALID_PIN, // vbat/4
+    GPIO('A', 6), // 3
+    GPIO('C', 4), // 4
+    GPIO('B', 1), // 5
+    ADC_INVALID_PIN, // vddcore
+    GPIO('A', 7), // 7
+    GPIO('C', 5), // 8
+    GPIO('B', 0), // 9
+    GPIO('C', 0), // 10
+    GPIO('C', 1), // 11
+    GPIO('C', 2), // 12
+    GPIO('C', 3), // 13
+    GPIO('A', 2), // 14
+    GPIO('A', 3), // 15
+    ADC_TEMPERATURE_PIN, // "vsense", temp?
+    ADC_INVALID_PIN, // vrefint
+    GPIO('A', 4), // 18
+    GPIO('A', 5), // 19
 #endif
 };
 
