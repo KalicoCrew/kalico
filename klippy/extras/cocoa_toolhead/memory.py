@@ -16,6 +16,7 @@ import msgpack
 from ...gcode import CommandError
 from ...msgproto import crc16_ccitt
 from ..memory import Memory
+from .utils import generate_name
 
 if TYPE_CHECKING:
     from ...configfile import ConfigWrapper
@@ -212,7 +213,7 @@ class CocoaMemory:
         except HeaderError:
             self.logger.debug(f"cocoa_memory[{self.name}] initializing")
             self._last_header = self.header = Header()
-            self.config = {}
+            self.config = {"name": generate_name()}
             self.save()
         else:
             if self.header.data_length > 0:
