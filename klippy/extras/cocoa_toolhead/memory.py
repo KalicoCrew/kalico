@@ -179,20 +179,17 @@ class CocoaMemory:
         self.config = self._last_config = None
 
         self.printer.register_event_handler(
-            "cocoa_toolhead:attached", self._on_attach
+            f"cocoa_toolhead:{self.name}:attached", self._on_attach
         )
         self.printer.register_event_handler(
-            "cocoa_toolhead:detached", self._on_detach
+            f"cocoa_toolhead:{self.name}:detached", self._on_detach
         )
 
         self._save_timer = self.reactor.register_timer(
             self._autosave, self.reactor.NEVER
         )
 
-    def _on_attach(self, name):
-        if self.name != name:
-            return
-
+    def _on_attach(self):
         self.reactor.register_callback(self._attached)
 
     def _attached(self, _eventtime):
@@ -203,6 +200,9 @@ class CocoaMemory:
             self.logger.exception(
                 f"cocoa_memory[{self.name}] Unable to read memory"
             )
+            self.printer.send_event(
+                f"cocoa_memory:{self.name}:ready", self.connected, self.config
+            )
             return
 
         self.connected = True
@@ -212,22 +212,23 @@ class CocoaMemory:
         except HeaderError:
             self.logger.debug(f"cocoa_memory[{self.name}] initializing")
             self._last_header = self.header = Header()
-            self.memory.write(0, self.header.to_bytes())
+            self.config = {}
+            self.save()
+        else:
+            if self.header.data_length > 0:
+                if self.header == self._last_header and self._last_config:
+                    self.logger.debug(
+                        f"cocoa_memory[{self.name}] config unchanged from last attachment"
+                    )
 
-        self.config = {}
+                else:
+                    offset = 256 * (self.header.data_page + 1)
+                    data = self.memory.read(offset, self.header.data_length)
+                    self._last_config = msgpack.loads(data)
 
-        if self.header.data_length > 0:
-            if self.header == self._last_header and self._last_config:
-                self.logger.debug(
-                    f"cocoa_memory[{self.name}] config unchanged from last attachment"
-                )
-
+                self.config = copy.deepcopy(self._last_config)
             else:
-                offset = 256 * (self.header.data_page + 1)
-                data = self.memory.read(offset, self.header.data_length)
-                self._last_config = msgpack.loads(data)
-
-            self.config = copy.deepcopy(self._last_config)
+                self.config = {}
 
         self.reactor.update_timer(
             self._save_timer, self.reactor.monotonic() + AUTOSAVE_INTERVAL
@@ -236,18 +237,14 @@ class CocoaMemory:
             f"cocoa_memory[{self.name}] {self.config.get('name', self.header.uid)} attached"
         )
         self.printer.send_event(
-            "cocoa_memory:connected", self.name, self.config
+            f"cocoa_memory:{self.name}:ready", self.connected, self.config
         )
 
-    def _on_detach(self, name):
-        if self.name != name:
-            return
-
+    def _on_detach(self):
         self.connected = False
         self.header = None
         self.config = None
         self.reactor.update_timer(self._save_timer, self.reactor.NEVER)
-        self.printer.send_event("cocoa_memory:disconnected", self.name)
 
     def _autosave(self, eventtime):
         if self.has_changes():

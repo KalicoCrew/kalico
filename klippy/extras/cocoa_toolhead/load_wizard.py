@@ -100,11 +100,11 @@ class CocoaLoadWizard:
         )
 
         self.printer.register_event_handler(
-            "cocoa_toolhead:attached",
+            f"cocoa_toolhead:{self.name}:attached",
             self._load_hook_for_toolhead_attach_detach,
         )
         self.printer.register_event_handler(
-            "cocoa_toolhead:detached",
+            f"cocoa_toolhead:{self.name}:detached",
             self._load_hook_for_toolhead_attach_detach,
         )
 
@@ -156,13 +156,11 @@ class CocoaLoadWizard:
             None,
         )
 
-    def _load_hook_for_toolhead_attach_detach(self, name):
+    def _load_hook_for_toolhead_attach_detach(self):
         if (
             self.state in ATTACH_LISTEN_STATES
             or self.state in DETACH_LISTEN_STATES
         ):
-            if self.name != name:
-                return
             self.continue_load_unload()
 
     def _print_message__load_unload(self, message, error=False):

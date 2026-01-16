@@ -78,16 +78,16 @@ class CocoaToolheadControl:
             "probe:calibrated", self._probe_calibrated
         )
         self.printer.register_event_handler(
-            "cocoa_memory:connected", self._memory_connected
+            f"cocoa_memory:{self.name}:ready", self._memory_ready
         )
         self.printer.register_event_handler(
-            "cocoa_preheater:start", self._preheater_started
+            f"cocoa_preheater:{self.name}:start", self._preheater_started
         )
         self.printer.register_event_handler(
-            "cocoa_preheater:update", self._preheater_update
+            f"cocoa_preheater:{self.name}:update", self._preheater_update
         )
         self.printer.register_event_handler(
-            "cocoa_preheater:stop", self._preheater_stopped
+            f"cocoa_preheater:{self.name}:stop", self._preheater_stopped
         )
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
 
@@ -131,27 +131,28 @@ class CocoaToolheadControl:
         sv: SaveVariables = self.printer.lookup_object("save_variables")
         sv.save(f"z_offset_{self.memory.header.uid}", round(z_offset, 4))
 
-    def _memory_connected(self, name, config):
-        if self.name != name:
-            return
-
+    def _memory_ready(self, connected: bool, config: dict):
         sv: SaveVariables = self.printer.lookup_object("save_variables")
         probe: PrinterProbe = self.printer.lookup_object("probe")
 
-        key = f"z_offset_{self.memory.header.uid}"
+        key = (
+            f"z_offset_{self.memory.header.uid}"
+            if connected
+            else "z_offset_generic"
+        )
         if key in sv.allVariables:
             saved_z_offset = sv.allVariables[key]
             z_offset = saved_z_offset - probe.z_offset
             self.gcode.run_script_from_command(f"SET_GCODE_OFFSET Z={z_offset}")
 
-    def _preheater_started(self, name, profile):
-        if not (self.name == name and self.memory.connected):
+    def _preheater_started(self, profile):
+        if not (self.memory.connected):
             return
         self.memory.set("profile", profile)
-        self._preheater_update(name)
+        self._preheater_update()
 
-    def _preheater_update(self, name):
-        if not (self.name == name and self.memory.connected):
+    def _preheater_update(self):
+        if not self.memory.connected:
             return
         self.memory.set(
             "preheater",
@@ -161,8 +162,8 @@ class CocoaToolheadControl:
             },
         )
 
-    def _preheater_stopped(self, name, profile, reason):
-        if not (self.name == name and self.memory.connected):
+    def _preheater_stopped(self, profile, reason):
+        if not self.memory.connected:
             return
         self.memory.set(
             "preheater",
@@ -215,10 +216,12 @@ class CocoaToolheadControl:
             )
 
             if is_attached:
-                self.printer.send_event("cocoa_toolhead:attached", self.name)
+                self.memory._on_attach(self.name)
+                self.printer.send_event(f"cocoa_toolhead:{self.name}:attached")
                 self.attach_tmpl()
             else:
-                self.printer.send_event("cocoa_toolhead:detached", self.name)
+                self.memory._on_detach(self.name)
+                self.printer.send_event(f"cocoa_toolhead:{self.name}:detached")
                 self.detach_tmpl()
 
     def get_status(self, eventtime):

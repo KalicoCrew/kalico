@@ -157,10 +157,7 @@ class CocoaHoming:
         )
         self.printer.register_event_handler("klippy:ready", self._on_ready)
         self.printer.register_event_handler(
-            "cocoa_memory:connected", self._memory_connected
-        )
-        self.printer.register_event_handler(
-            "cocoa_memory:disconnected", self._memory_disconnected
+            f"cocoa_memory:{self.name}:ready", self._memory_ready
         )
 
     def _on_identify(self):
@@ -189,17 +186,12 @@ class CocoaHoming:
         elif current_sgthrs == 255:
             self.calibration_required = True
 
-    def _memory_connected(self, name: str, config: dict):
-        if self.name != name:
+    def _memory_ready(self, connected: bool, config: dict):
+        if not connected:
             return
 
         self.calibration_required = "sgthrs" in config
         self._set_extruder_sgthrs(config.get("sgthrs", 255))
-
-    def _memory_disconnected(self, name: str):
-        if self.name != name:
-            return
-        ...
 
     def _set_extruder_sgthrs(self, sgthrs: int):
         reg_val = self.extruder_driver.fields.set_field("sgthrs", sgthrs)

@@ -60,10 +60,10 @@ class CocoaPreheater:
 
         # self.printer.register_event_handler("klippy:ready", self._on_ready)
         self.printer.register_event_handler(
-            "cocoa_toolhead:attached", self._on_attached
+            f"cocoa_toolhead:{self.name}:attached", self._on_attached
         )
         self.printer.register_event_handler(
-            "cocoa_toolhead:detached", self._on_detached
+            f"cocoa_toolhead:{self.name}:detached", self._on_detached
         )
 
         self.profile = None
@@ -113,7 +113,7 @@ class CocoaPreheater:
         self._last_wake = eventtime
 
         if self.time_remaining > 0.0:
-            self.printer.send_event("cocoa_preheater:update", self.name)
+            self.printer.send_event(f"cocoa_preheater:{self.name}:update")
             return eventtime + 1.0  # Wake again in 1 second
 
         else:
@@ -164,7 +164,7 @@ class CocoaPreheater:
             )
 
         self.printer.send_event(
-            "cocoa_preheater:start", self.name, self.profile
+            f"cocoa_preheater:{self.name}:start", self.profile
         )
 
     def _stop_preheating(self, reason="cancel"):
@@ -196,7 +196,7 @@ class CocoaPreheater:
             )
 
         self.printer.send_event(
-            "cocoa_preheater:stop", self.name, self.profile, reason
+            f"cocoa_preheater:{self.name}:stop", self.profile, reason
         )
 
     def _is_preheating(self, eventtime) -> bool:
