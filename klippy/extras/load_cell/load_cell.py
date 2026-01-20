@@ -465,6 +465,11 @@ class LoadCellSampleCollector:
         self._errors = 0
         overflows = self._overflows
         self._overflows = 0
+        if self._mcu.is_fileoutput():
+            ncols = len(
+                SampleStructure.header_labels(self._load_cell.channel_count)
+            )
+            samples = [(0.0,) * ncols]
         return samples, (errors, overflows) if errors or overflows else 0
 
     def _collect_until(self, timeout):
@@ -473,7 +478,7 @@ class LoadCellSampleCollector:
         now = self._reactor.monotonic()
         print_time = self._mcu.estimated_print_time(now)
         wake_time = now + (timeout - print_time)
-        if self.is_started:
+        if self.is_started and not self._mcu.is_fileoutput():
             self._completion = self._reactor.completion()
             result = self._completion.wait(waketime=wake_time)
             if result is None:
