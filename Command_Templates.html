@@ -845,6 +845,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#python-macro-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Python: Macro parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#python-rawparams" class="md-nav__link">
     <span class="md-ellipsis">
       Python: Rawparams
@@ -2371,6 +2380,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#python-macro-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Python: Macro parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#python-rawparams" class="md-nav__link">
     <span class="md-ellipsis">
       Python: Rawparams
@@ -2672,6 +2690,13 @@ wipe_count = 8
 emit(&quot;G90&quot;)
 emit(&quot;G0 Z15 F300&quot;)
 ...
+</code></pre></div>
+
+<h4 id="python-macro-parameters">Python: Macro parameters<a class="headerlink" href="#python-macro-parameters" title="Permanent link">&para;</a></h4>
+<p>Parameters passed to python macros are stored in the <code>params</code> variable.</p>
+<div class="highlight"><pre><span></span><code>[gcode_macro PARAMETER_EXAMPLE]
+gcode:
+  !respond_info(f&quot;{params}&quot;)
 </code></pre></div>
 
 <h4 id="python-rawparams">Python: Rawparams<a class="headerlink" href="#python-rawparams" title="Permanent link">&para;</a></h4>
