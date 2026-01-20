@@ -3990,17 +3990,31 @@ Neopixel (aka WS2812) LED support (one may define any number of
 sections with a "neopixel" prefix). See the
 [command reference](G-Codes.md#led) for more information.
 
-Note that the [linux mcu](RPi_microcontroller.md) implementation does
-not currently support directly connected neopixels. The current design
-using the Linux kernel interface does not allow this scenario because
-the kernel GPIO interface is not fast enough to provide the required
-pulse rates.
-
+If connected to a [linux mcu](RPi_microcontroller.md), a SPI bus must be used
+to generate the data to send to the neopixels, as the GPIO interface is not
+fast enough to provide the required pulse rates. They aren't really SPI
+devices, but this allows offloading the required timing to hardware. By default
+a SPI speed of 6MHz (6000000) is requested -- this should generate timings that
+most neopixel-like devices support, but altering this may help you make some
+devices work if the default timings are not compatible. Values in the range
+4000000 - 10000000 are probably reasonable.
 ```
 [neopixel my_neopixel]
 pin:
 #   The pin connected to the neopixel. This parameter must be
-#   provided.
+#   provided if not using SPI bus.
+spi_bus:
+spi_speed:
+#   See the "common SPI settings" section for a description of the
+#   above parameters. Changing `spi_speed` will change the timing of
+#   pulses sent to the neopixel chain. On Raspberry Pi 4 and older the
+#   actual SPI bus speed is a fraction of the current core clock speed,
+#   which can vary, so you may need to set the core clock to a fixed
+#   speed. See https://github.com/raspberrypi/linux/issues/3381 for more.
+cs_pin:
+#   If using a SPI bus this is required in order to determine which
+#   MCU the SPI bus is on, but the pin is not actually set directly by
+#   this code, and so should be specified as "mcu:None".
 #chain_count:
 #   The number of Neopixel chips that are "daisy chained" to the
 #   provided pin. The default is 1 (which indicates only a single
