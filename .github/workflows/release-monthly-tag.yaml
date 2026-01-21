@@ -1,0 +1,42 @@
+name: Monthly Release Tag
+
+on:
+  schedule:
+    # Run on 1st of each month at 00:00 UTC
+    - cron: '0 0 1 * *'
+  workflow_dispatch:  # Allow manual trigger for hotfixes
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Generate tag name
+        id: tag
+        run: |
+          YEAR=$(date -u +%Y)
+          MONTH=$(date -u +%m)
+
+          # Find existing tags for this month (vYYYY.MM.*)
+          EXISTING=$(git tag -l "v${YEAR}.${MONTH}.*" | sort -V | tail -1)
+
+          if [ -z "$EXISTING" ]; then
+            # No tags for this month yet
+            echo "name=v${YEAR}.${MONTH}.00" >> $GITHUB_OUTPUT
+          else
+            # Increment the patch number
+            PATCH=$(echo "$EXISTING" | sed "s/v${YEAR}.${MONTH}.//")
+            NEXT=$(printf "%02d" $((10#$PATCH + 1)))
+            echo "name=v${YEAR}.${MONTH}.${NEXT}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.tag.outputs.name }}" -m "release ${{ steps.tag.outputs.name }}"
+          git push origin "${{ steps.tag.outputs.name }}"
