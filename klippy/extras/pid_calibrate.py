@@ -81,7 +81,7 @@ class PIDCalibrate:
         if write_file:
             fname = "/tmp/heattest.csv"
             if calibrate_secondary:
-                fname = "tmp/heattest_secondary.txt"
+                fname = "/tmp/heattest_secondary.csv"
             calibrate.write_file(fname)
 
         if calibrate.check_busy(0.0, 0.0, 0.0):
