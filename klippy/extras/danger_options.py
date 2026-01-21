@@ -1,5 +1,13 @@
+from __future__ import annotations
+
+import typing
+
+if typing.TYPE_CHECKING:
+    from klippy.configfile import ConfigWrapper
+
+
 class DangerOptions:
-    def __init__(self, config):
+    def __init__(self, config: ConfigWrapper):
         self.minimal_logging = config.getboolean("minimal_logging", False)
         verbose = not self.minimal_logging
         self.log_statistics = config.getboolean("log_statistics", verbose)
@@ -50,7 +58,6 @@ class DangerOptions:
             "temp_ignore_limits", temp_ignore_limits
         )
 
-        self.autosave_includes = config.getboolean("autosave_includes", False)
         self.bgflush_extra_time = config.getfloat(
             "bgflush_extra_time", 0.250, minval=0.0
         )
@@ -64,6 +71,9 @@ class DangerOptions:
             "endstop_sample_count", 4, minval=1
         )
 
+        if config.get("autosave_includes", None, False) is not None:
+            config.deprecate("autosave_includes")
+
 
 DANGER_OPTIONS: DangerOptions = None
 
@@ -75,7 +85,7 @@ def get_danger_options():
     return DANGER_OPTIONS
 
 
-def load_config(config):
+def load_config(config: ConfigWrapper):
     global DANGER_OPTIONS
     DANGER_OPTIONS = DangerOptions(config)
     return DANGER_OPTIONS
