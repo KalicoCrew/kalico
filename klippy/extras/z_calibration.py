@@ -20,15 +20,25 @@ class ZCalibrationHelper:
         self.printer = config.get_printer()
         self.switch_offset = config.getfloat("switch_offset", 0.0)
         # max_deviation is deprecated
-        self.max_deviation = config.getfloat("max_deviation", None, above=0.0)
-        config.deprecate("max_deviation")
+        max_deviation = config.getfloat("max_deviation", None, above=0.0)
+        if max_deviation is not None:
+            config.deprecate(
+                "max_deviation",
+                replace_with={
+                    "offset_margins": f"-{max_deviation}, {max_deviation}"
+                },
+            )
         self.offset_margins = self._get_offset_margins(
             "offset_margins", "-1.0,1.0"
         )
         self.speed = config.getfloat("speed", 50.0, above=0.0)
         # clearance is deprecated
-        self.clearance = config.getfloat("clearance", None, above=0.0)
-        config.deprecate("clearance")
+        clearance = config.getfloat("clearance", None, above=0.0)
+        if clearance is not None:
+            config.deprecate(
+                "clearance",
+                replace_with={"safe_z_height": clearance},
+            )
         self.safe_z_height = config.getfloat("safe_z_height", None, above=0.0)
         self.samples = config.getint("samples", None, minval=1)
         self.tolerance = config.getfloat("samples_tolerance", None, above=0.0)
@@ -138,9 +148,6 @@ class ZCalibrationHelper:
             self.retries = probe.samples_retries
         if self.lift_speed is None:
             self.lift_speed = probe.lift_speed
-        # clearance is deprecated
-        if self.clearance is not None and self.clearance == 0:
-            self.clearance = 20  # defaults to 20mm
         if self.safe_z_height is None:
             self.safe_z_height = probe.z_offset * 2
         if self.safe_z_height < 3:
@@ -355,15 +362,9 @@ class ZCalibrationHelper:
         self.printer.lookup_object("toolhead").manual_move(coord, speed)
 
     def _move_safe_z(self, pos, lift_speed):
-        # clearance is deprecated
-        if self.clearance is not None:
-            if pos[2] < self.clearance:
-                # no clearance, better to move up (relative)
-                self._move([None, None, pos[2] + self.clearance], lift_speed)
-        else:
-            if pos[2] < self.safe_z_height:
-                # no safe z position, better to move up (absolute)
-                self._move([None, None, self.safe_z_height], lift_speed)
+        if pos[2] < self.safe_z_height:
+            # no safe z position, better to move up (absolute)
+            self._move([None, None, self.safe_z_height], lift_speed)
 
     def _calc_mean(self, positions):
         count = float(len(positions))
@@ -436,7 +437,6 @@ class CalibrationState:
         self.probe = helper.printer.lookup_object("probe")
         self.toolhead = helper.printer.lookup_object("toolhead")
         self.gcode_move = helper.printer.lookup_object("gcode_move")
-        self.max_deviation = helper.max_deviation
         self.offset_margins = helper.offset_margins
 
     def _probe_on_site(
@@ -562,17 +562,7 @@ class CalibrationState:
             )
         )
         # check offset margins
-        if (
-            self.max_deviation is not None  # deprecated
-            and abs(offset) > self.max_deviation
-        ):
-            self.helper.end_gcode.run_gcode_from_command()
-            raise self.helper.printer.command_error(
-                "Offset is greater than"
-                " allowed: offset=%.3f"
-                " > max_deviation=%.3f" % (offset, self.max_deviation)
-            )
-        elif offset < self.offset_margins[0] or offset > self.offset_margins[1]:
+        if offset < self.offset_margins[0] or offset > self.offset_margins[1]:
             self.helper.end_gcode.run_gcode_from_command()
             raise self.helper.printer.command_error(
                 "Offset %.3f is outside"
