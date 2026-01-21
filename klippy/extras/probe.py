@@ -564,10 +564,6 @@ class PrinterProbe:
         # save X and Y position
         toolhead = self.printer.lookup_object("toolhead")
         request_pos = toolhead.get_position()[:2]
-        # Handle drop first result, perform a probe and throw it away
-        if self._drop_first_result:
-            self._probe(speed, gcmd)
-            self._retract(gcmd)
         retries = 0
         positions = []
         self._discard_first_result(speed, local_retry_session, gcmd)
@@ -657,10 +653,6 @@ class PrinterProbe:
         # force FAIL behavior for PROBE_ACCURACY, never accept bad probes
         self.retry_session.set_retry_strategy(RetryStrategy.FAIL)
         self.retry_session.set_position(toolhead.get_position())
-        # Discard first probe if required
-        if self._drop_first_result:
-            self._probe(speed, gcmd)
-            self._retract(gcmd)
         positions = []
         self._discard_first_result(speed, self.retry_session, gcmd)
         while len(positions) < sample_count:
