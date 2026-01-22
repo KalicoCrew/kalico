@@ -9,6 +9,7 @@ import collections
 import gc
 import importlib
 import logging
+import multiprocessing
 import optparse
 import os
 import pkgutil
@@ -693,6 +694,11 @@ def main():
         )
 
     compat.install()
+
+    # Python 3.14 will change the default start method to `forkserver`
+    # which improves thread safety. But this also breaks passing
+    # unpickleable functions, which we use in mathutil
+    multiprocessing.set_start_method("fork")
 
     gc.disable()
 
