@@ -2121,6 +2121,9 @@ for configuration details.</p>
 <p>20250817: The gcode_button section adds a new option <code>debounce_delay</code> that
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.</p>
+<p>20250721: The <code>[pca9632]</code> and <code>[mcp4018]</code> modules no longer accept the
+<code>scl_pin</code> and <code>sda_pin</code> options. Use <code>i2c_software_scl_pin</code> and
+<code>i2c_software_sda_pin</code> instead.</p>
 <p>20250425: The maximum <code>cycle_time</code> for pwm <code>[output_pin]</code>,
 <code>[pwm_cycle_time]</code>, <code>[pwm_tool]</code>, and similar config sections is now 3
 seconds (reduced from 5 seconds). The <code>maximum_mcu_duration</code> in
