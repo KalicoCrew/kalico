@@ -12,7 +12,7 @@ greenlet==3.1.0 ; python_full_version == '3.13.*'
     # via kalico
 greenlet==3.3.0 ; python_full_version >= '3.14'
     # via kalico
-jinja2==3.1.5
+jinja2==3.1.6
     # via kalico
 markupsafe==2.1.5
     # via
