@@ -1209,6 +1209,7 @@ class MCU:
                 raise error(str(e))
         if get_danger_options().log_startup_info:
             logging.info(self._log_info())
+        pconfig = self._printer.lookup_object("configfile")
         ppins = self._printer.lookup_object("pins")
         pin_resolver = ppins.get_pin_resolver(self._name)
         for cname, value in self.get_constants().items():
@@ -1240,15 +1241,25 @@ class MCU:
             )
         app = msgparser.get_app_info()
         version, build_versions = msgparser.get_version_info()
+        sources_hash = msgparser.get_sources_hash()
         self._get_status_info["app"] = app
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
+        self._get_status_info["mcu_sources_hash"] = sources_hash
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
         if app in ("Klipper", "Danger-Klipper"):
-            pconfig = self._printer.lookup_object("configfile")
             pconfig.runtime_warning(
                 f"MCU {self._name!r} currently has firmware compiled for {app} (version {version})."
                 f" It is recommended to re-flash for best compatiblity with Kalico"
+            )
+        elif (
+            get_danger_options().warn_on_mismatched_firmware_sources
+            and sources_hash
+            != self._printer.get_start_args().get("sources_hash")
+        ):
+            pconfig.runtime_warning(
+                f"MCU {self._name!r} firmware is out of date and may not function as intended."
+                f" Please re-flash as soon as possible"
             )
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
