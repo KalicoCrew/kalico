@@ -8,6 +8,12 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260121: Kalico now uses automatic monthly release tags in the format
+`vYYYY.MM.NN` (e.g., `v2026.01.00`). Users can configure Moonraker to track
+stable monthly releases instead of the latest commits. See
+[Migrating from Klipper](Migrating_from_Klipper.md#moonraker-update-configuration)
+for configuration details.
+
 20250817: The gcode_button section adds a new option `debounce_delay` that
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.

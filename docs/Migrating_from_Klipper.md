@@ -57,3 +57,23 @@ git checkout -b main kalico/main
 sudo systemctl restart klipper
 sudo systemctl restart moonraker
 ```
+
+## Moonraker Update Configuration
+
+Kalico creates monthly release tags in the format `vYYYY.MM.NN` (e.g.,
+`v2026.01.00`). You can choose between tracking the latest commits or
+stable monthly releases.
+
+In your `moonraker.conf`, set the channel in the `[update_manager klipper]`
+section:
+
+```ini
+[update_manager klipper]
+channel: dev
+```
+
+- **dev** - Track the latest commits on main branch
+- **stable** - Track monthly release tags only
+
+Hotfix releases within the same month use incremented suffixes
+(e.g., `v2026.01.01`, `v2026.01.02`).
