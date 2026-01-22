@@ -2116,6 +2116,10 @@ document when upgrading the Kalico software.</p>
 <p>20250817: The gcode_button section adds a new option <code>debounce_delay</code> that
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.</p>
+<p>20250425: The maximum <code>cycle_time</code> for pwm <code>[output_pin]</code>,
+<code>[pwm_cycle_time]</code>, <code>[pwm_tool]</code>, and similar config sections is now 3
+seconds (reduced from 5 seconds). The <code>maximum_mcu_duration</code> in
+<code>[pwm_tool]</code> is now also 3 seconds.</p>
 <p>20250816: The filament_switch_sensor adds a new option <code>debounce_delay</code> that
 takes a time in seconds to debounce the state of the switch before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.</p>
@@ -2142,6 +2146,17 @@ instead. The <code>printer[fan object].speed</code> status will be replaced by
 default config values anymore, a <a href="G-Codes.html#reset_retraction"><code>RESET_RETRACTION</code></a>
 command was added to achieve this. Automatic resetting behavior on
 events was removed.</p>
+<p>20240912: <code>SET_PIN</code>, <code>SET_SERVO</code>, <code>SET_FAN_SPEED</code>, <code>M106</code>, and <code>M107</code>
+commands are now collated. Previously, if many updates to the same
+object were issued faster than the minimum scheduling time (typically
+100ms) then actual updates could be queued far into the future. Now if
+many updates are issued in rapid succession then it is possible that
+only the latest request will be applied. If the previous behavior is
+required then consider adding explicit <code>G4</code> delay commands between
+updates.</p>
+<p>20240912: Support for <code>maximum_mcu_duration</code> and <code>static_value</code>
+parameters in <code>[output_pin]</code> config sections have been removed. These
+options have been deprecated since 20240123.</p>
 <p>20240430: The <code>adc_ignore_limits</code> parameter in the <code>[danger_options]</code>
 config section has been renamed to <code>temp_ignore_limits</code> and it now
 covers all possible temperature sensors.</p>
