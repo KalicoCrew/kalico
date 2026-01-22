@@ -2113,6 +2113,11 @@ are not backwards compatible. It is a good idea to review this
 document when upgrading the Kalico software.</p>
 <p>All dates in this document are approximate.</p>
 <h2 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h2>
+<p>20260121: Kalico now uses automatic monthly release tags in the format
+<code>vYYYY.MM.NN</code> (e.g., <code>v2026.01.00</code>). Users can configure Moonraker to track
+stable monthly releases instead of the latest commits. See
+<a href="Migrating_from_Klipper.html#moonraker-update-configuration">Migrating from Klipper</a>
+for configuration details.</p>
 <p>20250817: The gcode_button section adds a new option <code>debounce_delay</code> that
 takes a time in seconds to debounce the state of the button before any action
 is taken. It defaults to 0 which causes it to act as if there is no debouncing.</p>

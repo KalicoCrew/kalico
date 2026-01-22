@@ -878,6 +878,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#moonraker-update-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Moonraker Update Configuration
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2122,6 +2131,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#moonraker-update-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Moonraker Update Configuration
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2197,6 +2215,23 @@ git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </
 sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>klipper
 sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>moonraker
 </code></pre></div>
+
+<h2 id="moonraker-update-configuration">Moonraker Update Configuration<a class="headerlink" href="#moonraker-update-configuration" title="Permanent link">&para;</a></h2>
+<p>Kalico creates monthly release tags in the format <code>vYYYY.MM.NN</code> (e.g.,
+<code>v2026.01.00</code>). You can choose between tracking the latest commits or
+stable monthly releases.</p>
+<p>In your <code>moonraker.conf</code>, set the channel in the <code>[update_manager klipper]</code>
+section:</p>
+<div class="highlight"><pre><span></span><code><span class="k">[update_manager klipper]</span>
+<span class="na">channel</span><span class="o">:</span><span class="w"> </span><span class="s">dev</span>
+</code></pre></div>
+
+<ul>
+<li><strong>dev</strong> - Track the latest commits on main branch</li>
+<li><strong>stable</strong> - Track monthly release tags only</li>
+</ul>
+<p>Hotfix releases within the same month use incremented suffixes
+(e.g., <code>v2026.01.01</code>, <code>v2026.01.02</code>).</p>
 
 
 
