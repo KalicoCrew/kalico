@@ -1128,6 +1128,9 @@ control:
 #   If control: mpc
 #   See MPC.md for details about these parameters.
 #heater_power:
+#heater_power_ambient:
+#heater_voltage:
+#heater_temperature_coefficient:
 #cooling_fan:
 #ambient_temp_sensor:
 #filament_diameter: 1.75
