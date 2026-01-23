@@ -1011,13 +1011,26 @@ been enabled (also see the
 `SET_INPUT_SHAPER [SHAPER_FREQ_X=<shaper_freq_x>]
 [SHAPER_FREQ_Y=<shaper_freq_y>] [DAMPING_RATIO_X=<damping_ratio_x>]
 [DAMPING_RATIO_Y=<damping_ratio_y>] [SHAPER_TYPE=<shaper>]
-[SHAPER_TYPE_X=<shaper_type_x>] [SHAPER_TYPE_Y=<shaper_type_y>]`:
+[SHAPER_TYPE_X=<shaper_type_x>] [SHAPER_TYPE_Y=<shaper_type_y>]
+[TOOLHEAD=<toolhead_index>]`:
 Modify input shaper parameters. Note that SHAPER_TYPE parameter resets
 input shaper for both X and Y axes even if different shaper types have
 been configured in [input_shaper] section. SHAPER_TYPE cannot be used
 together with either of SHAPER_TYPE_X and SHAPER_TYPE_Y parameters.
+
+For printers with dual toolheads (dual_carriage), the TOOLHEAD parameter
+can be used to specify which toolhead's input shaper parameters should be
+modified (0 or 1). If not specified, the parameters for all toolheads will
+be updated.
+
 See [config reference](Config_Reference.md#input_shaper) for more
 details on each of these parameters.
+
+#### GET_INPUT_SHAPER
+`GET_INPUT_SHAPER`:
+Reports the current input shaper settings. For printers with dual toolheads,
+it displays the active toolhead and mode along with the current input shaper
+parameters for each axis.
 
 ### [manual_probe]
 

@@ -36,7 +36,10 @@ def pytest_sessionstart(session):
 
     @session.config.add_cleanup
     def clean_symlink():
-        os.unlink(link_path)
+        try:
+            os.unlink(link_path)
+        except FileNotFoundError:
+            pass
 
 
 @pytest.fixture
