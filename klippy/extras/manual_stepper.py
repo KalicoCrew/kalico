@@ -147,7 +147,7 @@ class ManualStepper:
     def get_position(self):
         return [self.rail.get_commanded_position(), 0.0, 0.0, 0.0]
 
-    def set_position(self, newpos, homing_axes=()):
+    def set_position(self, newpos, homing_axes=""):
         self.do_set_position(newpos[0])
 
     def get_last_move_time(self):
