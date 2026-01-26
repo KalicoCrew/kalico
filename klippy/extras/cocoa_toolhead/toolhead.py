@@ -216,11 +216,11 @@ class CocoaToolheadControl:
             )
 
             if is_attached:
-                self.memory._on_attach(self.name)
+                self.memory._on_attach()
                 self.printer.send_event(f"cocoa_toolhead:{self.name}:attached")
                 self.attach_tmpl()
             else:
-                self.memory._on_detach(self.name)
+                self.memory._on_detach()
                 self.printer.send_event(f"cocoa_toolhead:{self.name}:detached")
                 self.detach_tmpl()
 

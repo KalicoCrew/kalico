@@ -91,12 +91,12 @@ class CocoaPreheater:
             "profiles": self.profile_manager.get_status(eventtime),
         }
 
-    def _on_attached(self, _name):
+    def _on_attached(self):
         self._is_attached = True
         if self._timer is not None:
             self.state = PreheatState.preheating
 
-    def _on_detached(self, _name):
+    def _on_detached(self):
         self._is_attached = False
         if self._timer is not None:
             self.state = PreheatState.paused
