@@ -117,9 +117,12 @@ class Fan:
         ):
             # Run fan at full speed for specified kick_start_time
             self.last_req_value = value
-            self.last_fan_value = value
+
+            self.last_fan_value = self.max_power
             self.last_pwm_value = self.max_power
+
             self.mcu_fan.set_pwm(print_time, self.max_power)
+
             return "delay", self.kick_start_time
         self.last_fan_value = self.last_req_value = value
         self.last_pwm_value = pwm_value
