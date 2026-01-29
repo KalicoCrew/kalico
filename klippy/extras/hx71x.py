@@ -25,12 +25,17 @@ class HX71xBase:
         default_sample_rate,
         gain_options,
         default_gain,
+        sps_bits = {},
     ):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.last_error_count = 0
         self.consecutive_fails = 0
         self.sensor_type = sensor_type
+        if sensor_type == "hx71708":
+            self.gain_or_sps = 1
+        else:
+            self.gain_or_sps = 0
         # Chip options
         dout_pin_name = config.get("dout_pin")
         sclk_pin_name = config.get("sclk_pin")
@@ -49,6 +54,9 @@ class HX71xBase:
         # Samples per second choices
         self.sps = config.getchoice(
             "sample_rate", sample_rate_options, default=default_sample_rate
+        )
+        self.sps_bits = config.getchoice(
+            "sample_rate", sps_bits, default=default_sample_rate
         )
         # gain/channel choices
         self.gain_channel = int(
@@ -196,4 +204,19 @@ class HX717(HX71xBase):
         )
 
 
-HX71X_SENSOR_TYPES = {"hx711": HX711, "hx717": HX717}
+class HX71708(HX71xBase):
+    def __init__(self, config):
+        super(HX71708, self).__init__(
+            config,
+            "hx71708",
+            # HX717 sps options
+            {320: 320, 80: 80, 20: 20, 10: 10},
+            320,
+            # HX717 gain/channel options
+            {"A-128": 1},
+            "A-128",
+            {320: 4, 3: 80, 20: 2, 10: 1},
+        )
+
+
+HX71X_SENSOR_TYPES = {"hx711": HX711, "hx717": HX717, "hx71708": HX71708}
