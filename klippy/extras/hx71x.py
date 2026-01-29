@@ -81,7 +81,14 @@ class HX71xBase:
         self.query_hx71x_cmd = None
         mcu.add_config_cmd(
             "config_hx71x oid=%d gain_or_sps=%d sps=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
-            % (self.oid, self.gain_or_sps, self.sps_bits, self.gain_channel, self.dout_pin, self.sclk_pin)
+            % (
+                self.oid,
+                self.gain_or_sps,
+                self.sps_bits,
+                self.gain_channel,
+                self.dout_pin,
+                self.sclk_pin
+            )
         )
         mcu.add_config_cmd(
             "query_hx71x oid=%d rest_ticks=0" % (self.oid,), on_restart=True
