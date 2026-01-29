@@ -30,6 +30,7 @@ class HX71xBase:
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.last_error_count = 0
+        self.sensor_type = sensor_type
         self.consecutive_fails = 0
         # Chip options
         dout_pin_name = config.get("dout_pin")
@@ -47,7 +48,9 @@ class HX71xBase:
         self.dout_pin = dout_ppin["pin"]
         self.sclk_pin = sclk_ppin["pin"]
         # Samples per second choices
-        self.sensor_type = sensor_type
+        self.sps = config.getchoice(
+            "sample_rate", sample_rate_options, default=default_sample_rate
+        )
         # HX71708 configures the sample rate instead of the gain/channel.
         # We forward the sps bits to hx71x_read_adc so that it can read the extra bits required
         if sensor_type == "hx71708":
@@ -57,9 +60,8 @@ class HX71xBase:
             )
         else:
             self.gain_or_sps = 0
-        self.sps = config.getchoice(
-            "sample_rate", sample_rate_options, default=default_sample_rate
-        )
+            self.sps_bits = 0
+
         # gain/channel choices
         self.gain_channel = int(
             config.getchoice("gain", gain_options, default=default_gain)
@@ -80,7 +82,7 @@ class HX71xBase:
         # Command Configuration
         self.query_hx71x_cmd = None
         mcu.add_config_cmd(
-            "config_hx71x oid=%d gain_or_sps=%d sps=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
+            "config_hx71x oid=%d gain_or_sps=%d sps_bits=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
             % (
                 self.oid,
                 self.gain_or_sps,
