@@ -196,6 +196,7 @@ class HX711(HX71xBase):
             # HX711 gain/channel options
             {"A-128": 1, "B-32": 2, "A-64": 3},
             "A-128",
+            {},
         )
 
 
@@ -210,6 +211,7 @@ class HX717(HX71xBase):
             # HX717 gain/channel options
             {"A-128": 1, "B-64": 2, "A-64": 3, "B-8": 4},
             "A-128",
+            {},
         )
 
 
