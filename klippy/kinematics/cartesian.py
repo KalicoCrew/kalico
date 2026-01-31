@@ -6,7 +6,7 @@
 from klippy import stepper
 
 from . import idex_modes
-
+from .forbidden_zones import ForbiddenZones
 
 class CartKinematics:
     def __init__(self, toolhead, config):
@@ -25,6 +25,8 @@ class CartKinematics:
         self.axes_max = toolhead.Coord(*[r[1] for r in ranges], e=0.0)
         self.dc_module = None
         self.supports_dual_carriage = True
+        self.forbidden_zones = ForbiddenZones(config)
+            
         if config.has_section("dual_carriage"):
             dc_config = config.getsection("dual_carriage")
             dc_axis = dc_config.getchoice("axis", ["x", "y"])
@@ -145,6 +147,7 @@ class CartKinematics:
             or ypos > limits[1][1]
         ):
             self._check_endstops(move)
+        self.forbidden_zones.check_move(move)
         if not move.axes_d[2]:
             # Normal XY move - use defaults
             return
