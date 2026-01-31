@@ -5,6 +5,7 @@ out
 __pycache__/
 .config
 .config.old
+.sources
 klippy/.version
 .history/
 .DS_Store

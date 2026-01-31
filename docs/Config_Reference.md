@@ -123,7 +123,9 @@ A collection of Kalico-specific system options
 #endstop_sample_count: 4
 #   How many times we should check the endstop state when homing
 #   Unless your endstop is noisy and unreliable, you should be able to lower this to 1
-
+#warn_on_mismatched_firmware_sources: True
+#   Warn when the mcu firmware does not match the firmware sources for the current
+#   Kalico version
 
 # Logging options:
 
