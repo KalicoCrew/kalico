@@ -25,12 +25,13 @@ class HX71xBase:
         default_sample_rate,
         gain_options,
         default_gain,
+        sps_bits,
     ):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.last_error_count = 0
-        self.consecutive_fails = 0
         self.sensor_type = sensor_type
+        self.consecutive_fails = 0
         # Chip options
         dout_pin_name = config.get("dout_pin")
         sclk_pin_name = config.get("sclk_pin")
@@ -50,6 +51,17 @@ class HX71xBase:
         self.sps = config.getchoice(
             "sample_rate", sample_rate_options, default=default_sample_rate
         )
+        # HX71708 configures the sample rate instead of the gain/channel.
+        # We forward the sps bits to hx71x_read_adc so that it can read the extra bits required
+        if sensor_type == "hx71708":
+            self.gain_or_sps = 1
+            self.sps_bits = config.getchoice(
+                "sample_rate", sps_bits, default=default_sample_rate
+            )
+        else:
+            self.gain_or_sps = 0
+            self.sps_bits = 0
+
         # gain/channel choices
         self.gain_channel = int(
             config.getchoice("gain", gain_options, default=default_gain)
@@ -70,8 +82,15 @@ class HX71xBase:
         # Command Configuration
         self.query_hx71x_cmd = None
         mcu.add_config_cmd(
-            "config_hx71x oid=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
-            % (self.oid, self.gain_channel, self.dout_pin, self.sclk_pin)
+            "config_hx71x oid=%d gain_or_sps=%d sps_bits=%d gain_channel=%d dout_pin=%s sclk_pin=%s"
+            % (
+                self.oid,
+                self.gain_or_sps,
+                self.sps_bits,
+                self.gain_channel,
+                self.dout_pin,
+                self.sclk_pin,
+            )
         )
         mcu.add_config_cmd(
             "query_hx71x oid=%d rest_ticks=0" % (self.oid,), on_restart=True
@@ -179,6 +198,7 @@ class HX711(HX71xBase):
             # HX711 gain/channel options
             {"A-128": 1, "B-32": 2, "A-64": 3},
             "A-128",
+            {},
         )
 
 
@@ -193,7 +213,23 @@ class HX717(HX71xBase):
             # HX717 gain/channel options
             {"A-128": 1, "B-64": 2, "A-64": 3, "B-8": 4},
             "A-128",
+            {},
         )
 
 
-HX71X_SENSOR_TYPES = {"hx711": HX711, "hx717": HX717}
+class HX71708(HX71xBase):
+    def __init__(self, config):
+        super(HX71708, self).__init__(
+            config,
+            "hx71708",
+            # HX717 sps options
+            {320: 320, 80: 80, 20: 20, 10: 10},
+            320,
+            # HX717 gain/channel options
+            {"A-128": 1},
+            "A-128",
+            {320: 4, 3: 80, 20: 2, 10: 1},
+        )
+
+
+HX71X_SENSOR_TYPES = {"hx711": HX711, "hx717": HX717, "hx71708": HX71708}

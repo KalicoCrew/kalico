@@ -17,6 +17,8 @@
 
 struct hx71x_adc {
     struct timer timer;
+    uint8_t gain_or_sps;
+    uint8_t sps_bits;
     uint8_t gain_channel;   // the gain+channel selection (1-4)
     uint8_t flags;
     uint32_t rest_ticks;
@@ -77,7 +79,7 @@ hx71x_delay(void)
 
 // Read 'num_bits' from the sensor
 static uint32_t
-hx71x_raw_read(struct gpio_in dout, struct gpio_out sclk, int num_bits)
+hx71x_raw_read(struct gpio_in dout, struct gpio_out sclk, uint_fast8_t num_bits)
 {
     uint32_t bits_read = 0;
     while (num_bits--) {
@@ -146,8 +148,15 @@ static void
 hx71x_read_adc(struct hx71x_adc *hx71x, uint8_t oid)
 {
     // Read from sensor
-    uint_fast8_t gain_channel = hx71x->gain_channel;
-    uint32_t adc = hx71x_raw_read(hx71x->dout, hx71x->sclk, 24 + gain_channel);
+    uint_fast8_t gain_or_sps = hx71x->gain_or_sps;
+
+    uint_fast8_t extra_bits;
+    if (gain_or_sps == 1) {
+        extra_bits = hx71x->sps_bits;
+    } else {
+        extra_bits = hx71x->gain_channel;
+    }
+    uint32_t adc = hx71x_raw_read(hx71x->dout, hx71x->sclk, 24u + extra_bits);
 
     // Clear pending flag (and note if an overflow occurred)
     irq_disable();
@@ -156,12 +165,12 @@ hx71x_read_adc(struct hx71x_adc *hx71x, uint8_t oid)
     irq_enable();
 
     // Extract report from raw data
-    uint32_t counts = adc >> gain_channel;
+    uint32_t counts = adc >> extra_bits;
     if (counts & 0x800000)
         counts |= 0xFF000000;
 
     // Check for errors
-    uint_fast8_t extras_mask = (1 << gain_channel) - 1;
+    uint_fast8_t extras_mask = (1 << extra_bits) - 1;
     if ((adc & extras_mask) != extras_mask) {
         // Transfer did not complete correctly
         hx71x->last_error = SAMPLE_ERROR_DESYNC;
@@ -186,17 +195,23 @@ command_config_hx71x(uint32_t *args)
     struct hx71x_adc *hx71x = oid_alloc(args[0]
                 , command_config_hx71x, sizeof(*hx71x));
     hx71x->timer.func = hx71x_event;
-    uint8_t gain_channel = args[1];
-    if (gain_channel < 1 || gain_channel > 4) {
+    uint8_t gain_or_sps = args[1];
+    uint8_t sps_bits = args[2];
+    uint8_t gain_channel = args[3];
+    if (gain_or_sps == 0 && (gain_channel < 1 || gain_channel > 4)) {
         shutdown("HX71x gain/channel out of range 1-4");
     }
+    if (gain_or_sps == 1 && (sps_bits < 1 || sps_bits > 4)) {
+        shutdown("HX71x sample_rate out of range 1-4");
+    }
+    hx71x->gain_or_sps = gain_or_sps;
+    hx71x->sps_bits = sps_bits;
     hx71x->gain_channel = gain_channel;
-    hx71x->dout = gpio_in_setup(args[2], 1);
-    hx71x->sclk = gpio_out_setup(args[3], 0);
+    hx71x->dout = gpio_in_setup(args[4], 1);
+    hx71x->sclk = gpio_out_setup(args[5], 0);
     gpio_out_write(hx71x->sclk, 1); // put chip in power down state
 }
-DECL_COMMAND(command_config_hx71x, "config_hx71x oid=%c gain_channel=%c"
-             " dout_pin=%u sclk_pin=%u");
+DECL_COMMAND(command_config_hx71x, "config_hx71x oid=%c gain_or_sps=%c sps_bits=%c gain_channel=%c"" dout_pin=%u sclk_pin=%u");
 
 // start/stop capturing ADC data
 void
