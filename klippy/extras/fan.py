@@ -111,15 +111,18 @@ class Fan:
                 self.enable_pin.set_digital(print_time, 0)
         if (
             value
-            and value < self.max_power
+            and value < 1.0
             and self.kick_start_time
             and (not self.last_fan_value or value - self.last_fan_value > 0.5)
         ):
             # Run fan at full speed for specified kick_start_time
             self.last_req_value = value
-            self.last_fan_value = value
+
+            self.last_fan_value = 1.0
             self.last_pwm_value = self.max_power
+
             self.mcu_fan.set_pwm(print_time, self.max_power)
+
             return "delay", self.kick_start_time
         self.last_fan_value = self.last_req_value = value
         self.last_pwm_value = pwm_value
@@ -142,8 +145,8 @@ class Fan:
         tachometer_status = self.tachometer.get_status(eventtime)
         return {
             "power": self.last_pwm_value,
-            "value": self.last_fan_value,
-            "speed": self.last_fan_value * self.max_power,
+            "value": self.last_req_value,
+            "speed": self.last_req_value * self.max_power,
             "rpm": tachometer_status["rpm"],
         }
 
