@@ -768,6 +768,7 @@ class MCU:
         self._name = config.get_name()
         if self._name.startswith("mcu "):
             self._name = self._name[4:]
+        self._child_mcu = self._config.getboolean("child_mcu", False)
         # Serial port
         wp = "mcu '%s': " % (self._name)
         self._serial = serialhdl.SerialReader(
@@ -1135,7 +1136,11 @@ class MCU:
                 start_reason = self._printer.get_start_args().get(
                     "start_reason"
                 )
-                if start_reason == "firmware_restart":
+
+                # if we are a child mcu that means we have a usb hub on another mcu that provides power
+                # during firmware_reset but the connection drops.
+                # We can skip erroring because either we have already ran the firmware reset or it will happen soon
+                if start_reason == "firmware_restart" and not self._child_mcu:
                     raise error(
                         "Failed automated reset of MCU '%s'" % (self._name,)
                     )
