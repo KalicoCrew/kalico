@@ -1,0 +1,49 @@
+# Test cases for input shaper with dual carriage
+CONFIG dual_carriage_input_shaper.cfg
+DICTIONARY atmega2560.dict
+
+# First home the printer
+G90
+G28
+
+# Check initial input shaper settings (should be toolhead 0, PRIMARY mode)
+M118 Initial input shaper settings:
+GET_INPUT_SHAPER
+
+# Perform a move with toolhead 0
+G1 X10 F6000
+
+# Activate alternate carriage (toolhead 1)
+SET_DUAL_CARRIAGE CARRIAGE=1
+GET_INPUT_SHAPER
+
+# Test COPY mode
+SET_DUAL_CARRIAGE CARRIAGE=1 MODE=COPY
+GET_INPUT_SHAPER
+
+# Test MIRROR mode
+SET_DUAL_CARRIAGE CARRIAGE=1 MODE=MIRROR
+GET_INPUT_SHAPER
+
+# Go back to main carriage
+SET_DUAL_CARRIAGE CARRIAGE=0
+GET_INPUT_SHAPER
+
+# Test setting input shaper parameters for a specific toolhead
+SET_INPUT_SHAPER SHAPER_FREQ_X=45 TOOLHEAD=0
+GET_INPUT_SHAPER
+
+# Test setting input shaper parameters for the other toolhead
+SET_INPUT_SHAPER SHAPER_FREQ_X=55 TOOLHEAD=1
+GET_INPUT_SHAPER
+
+# Test setting input shaper parameters for all toolheads
+SET_INPUT_SHAPER SHAPER_FREQ_X=65
+GET_INPUT_SHAPER
+
+# Test switching between toolheads again to verify parameter persistence
+SET_DUAL_CARRIAGE CARRIAGE=1
+GET_INPUT_SHAPER
+
+SET_DUAL_CARRIAGE CARRIAGE=0
+GET_INPUT_SHAPER

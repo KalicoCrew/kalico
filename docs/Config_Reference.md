@@ -2134,6 +2134,10 @@ the [command reference](G-Codes.md#input_shaper).
 #   input shapers, this parameter can be set from different
 #   considerations. The default value is 0, which disables input
 #   shaping for X axis.
+#   For printers with dual toolheads (dual_carriage), this parameter can
+#   be specified as a comma-separated list to provide different values for
+#   each toolhead/mode: "freq_toolhead0, freq_toolhead1" or
+#   "freq_toolhead0_primary, freq_toolhead1_primary, freq_copy, freq_mirror".
 #shaper_freq_y: 0
 #   A frequency (in Hz) of the input shaper for Y axis. This is
 #   usually a resonance frequency of Y axis that the input shaper
@@ -2141,6 +2145,8 @@ the [command reference](G-Codes.md#input_shaper).
 #   input shapers, this parameter can be set from different
 #   considerations. The default value is 0, which disables input
 #   shaping for Y axis.
+#   For printers with dual toolheads, this parameter supports comma-separated
+#   lists as described in shaper_freq_x.
 #shaper_type: mzv
 #   A type of the input shaper to use for both X and Y axes. Supported
 #   shapers are zv, mzv, zvd, ei, 2hump_ei, and 3hump_ei. The default
@@ -2150,12 +2156,18 @@ the [command reference](G-Codes.md#input_shaper).
 #   If shaper_type is not set, these two parameters can be used to
 #   configure different input shapers for X and Y axes. The same
 #   values are supported as for shaper_type parameter.
+#   For printers with dual toolheads (dual_carriage), these parameters can
+#   be specified as comma-separated lists to provide different values for
+#   each toolhead/mode, following the same format as described in shaper_freq_x.
 #damping_ratio_x: 0.1
 #damping_ratio_y: 0.1
 #   Damping ratios of vibrations of X and Y axes used by input shapers
 #   to improve vibration suppression. Default value is 0.1 which is a
 #   good all-round value for most printers. In most circumstances this
 #   parameter requires no tuning and should not be changed.
+#   For printers with dual toolheads (dual_carriage), these parameters can
+#   be specified as comma-separated lists to provide different values for
+#   each toolhead/mode, following the same format as described in shaper_freq_x.
 ```
 
 ### [adxl345]
