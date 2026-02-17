@@ -198,6 +198,10 @@ config WANT_GPIO_I2C
     bool
     depends on HAVE_GPIO && HAVE_GPIO_I2C
     default y
+config WANT_TLA2518
+    bool
+    depends on HAVE_GPIO_SPI
+    default y
 config NEED_SENSOR_BULK
     bool
     depends on WANT_ADXL345 || WANT_LIS2DW || WANT_MPU9250 || WANT_ICM20948 \
@@ -278,6 +282,9 @@ config WANT_ADS1220
 config WANT_LDC1612
     bool "Support ldc1612 eddy current sensor chip"
     depends on WANT_I2C
+config WANT_TLA2518
+    bool "Support TLA2518 8-channel 12-bit ADC"
+    depends on HAVE_GPIO_SPI
 
 config WANT_SENSOR_ANGLE
     bool "Support angle sensors"
