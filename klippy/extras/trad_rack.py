@@ -839,8 +839,10 @@ class TradRack:
                 # (and wait for user to resume)
                 resume_kwargs = {
                     "condition": (
-                        lambda: self.active_lane is not None
-                        or not self._query_selector_sensor()
+                        lambda: (
+                            self.active_lane is not None
+                            or not self._query_selector_sensor()
+                        )
                     ),
                     "action": self._resume_act_locate_selector,
                     "fail_msg": (
