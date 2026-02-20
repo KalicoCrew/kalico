@@ -1,0 +1,44 @@
+# Extruder override tests
+DICTIONARY atmega2560.dict
+CONFIG extruder_overrides.cfg
+
+# Test pressure advance overrides
+# Test default behavior (should work with original limits)
+SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=0.025 SMOOTH_TIME=0.040
+
+# Test pressure advance min override (should fail with -0.1)
+SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=-0.1
+
+# Test pressure advance max override (should work with 1.0)
+SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=1.0
+
+# Test pressure advance smooth_time min override (should fail with -0.1)
+SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=0.025 SMOOTH_TIME=-0.1
+
+# Test pressure advance smooth_time max override (should work with 0.5)
+SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=0.025 SMOOTH_TIME=0.5
+
+# Test extruder config limits with overrides
+# These should work because we override the limits in danger_options
+# Test max_extrude_only_distance override (should work with 100.0)
+SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=extruder DISTANCE=33.5
+
+# Test instantaneous_corner_velocity override (should work with 5.0)
+SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=extruder DISTANCE=33.5
+
+# Test max_extrude_cross_section override (should work with 50.0)
+SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=extruder DISTANCE=33.5
+
+# Test max_extrude_only_velocity override (should work with 1000.0)
+SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=extruder DISTANCE=33.5
+
+# Test max_extrude_only_accel override (should work with 10000.0)
+SET_EXTRUDER_ROTATION_DISTANCE EXTRUDER=extruder DISTANCE=33.5
+
+# Test normal operation
+G28
+G1 X10 Y10 Z5 E5
+G1 X20 Y20 Z10 E10
+
+# Reset to normal values
+SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=0.0 SMOOTH_TIME=0.040
