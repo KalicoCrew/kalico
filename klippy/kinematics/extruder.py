@@ -17,8 +17,12 @@ class ExtruderStepper:
         self.name = config.get_name().split()[-1]
         self.pressure_advance = self.pressure_advance_smooth_time = 0.0
         self.config_pa = config.getfloat("pressure_advance", 0.0, minval=0.0)
+        danger_options = get_danger_options()
+        smooth_time_min = danger_options.override_pressure_advance_smooth_time_min
+        smooth_time_max = danger_options.override_pressure_advance_smooth_time_max
         self.config_smooth_time = config.getfloat(
-            "pressure_advance_smooth_time", 0.040, above=0.0, maxval=0.200
+            "pressure_advance_smooth_time", 0.040,
+            above=smooth_time_min, maxval=smooth_time_max,
         )
         self.per_move_pressure_advance = config.getboolean(
             "per_move_pressure_advance", False
@@ -137,11 +141,12 @@ class ExtruderStepper:
         pressure_advance = gcmd.get_float(
             "ADVANCE", self.pressure_advance, minval=0.0
         )
+        danger_options = get_danger_options()
         smooth_time = gcmd.get_float(
             "SMOOTH_TIME",
             self.pressure_advance_smooth_time,
-            minval=0.0,
-            maxval=0.200,
+            minval=danger_options.override_pressure_advance_smooth_time_min,
+            maxval=danger_options.override_pressure_advance_smooth_time_max,
         )
         self._set_pressure_advance(pressure_advance, smooth_time)
 
