@@ -5,7 +5,9 @@ from klippy_testing import PrinterShim
 
 
 def test_extruder_overrides_danger_options_values(
-    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides"],
+    config_root: typing.Annotated[
+        pathlib.Path, "test_configs/extruder_overrides"
+    ],
 ):
     """Test that danger_options override max values are loaded correctly"""
     start_args = {"config_file": str(config_root / "printer.cfg")}
@@ -24,7 +26,9 @@ def test_extruder_overrides_danger_options_values(
 
 
 def test_extruder_overrides_defaults(
-    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_defaults"],
+    config_root: typing.Annotated[
+        pathlib.Path, "test_configs/extruder_defaults"
+    ],
 ):
     """Test that default override values are None (unbounded) without overrides"""
     start_args = {"config_file": str(config_root / "printer.cfg")}
@@ -43,7 +47,9 @@ def test_extruder_overrides_defaults(
 
 
 def test_extruder_overrides_restrictive(
-    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides_fail"],
+    config_root: typing.Annotated[
+        pathlib.Path, "test_configs/extruder_overrides_fail"
+    ],
 ):
     """Test that partial override values load correctly"""
     start_args = {"config_file": str(config_root / "printer.cfg")}
@@ -60,7 +66,9 @@ def test_extruder_overrides_restrictive(
 
 
 def test_extruder_config_validation_with_overrides(
-    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides"],
+    config_root: typing.Annotated[
+        pathlib.Path, "test_configs/extruder_overrides"
+    ],
 ):
     """Test that extruder config values beyond default limits are accepted with overrides"""
     start_args = {"config_file": str(config_root / "printer.cfg")}

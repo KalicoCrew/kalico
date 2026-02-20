@@ -18,12 +18,14 @@ class ExtruderStepper:
         self.pressure_advance = self.pressure_advance_smooth_time = 0.0
         danger_options = get_danger_options()
         self.config_pa = config.getfloat(
-            "pressure_advance", 0.0,
+            "pressure_advance",
+            0.0,
             minval=0.0,
             maxval=danger_options.override_pressure_advance_max,
         )
         self.config_smooth_time = config.getfloat(
-            "pressure_advance_smooth_time", 0.040,
+            "pressure_advance_smooth_time",
+            0.040,
             above=0.0,
             maxval=danger_options.override_pressure_advance_smooth_time_max,
         )
@@ -143,7 +145,8 @@ class ExtruderStepper:
     def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
         danger_options = get_danger_options()
         pressure_advance = gcmd.get_float(
-            "ADVANCE", self.pressure_advance,
+            "ADVANCE",
+            self.pressure_advance,
             minval=0.0,
             maxval=danger_options.override_pressure_advance_max,
         )
@@ -221,7 +224,8 @@ class PrinterExtruder:
         def_max_extrude_ratio = def_max_cross_section / self.filament_area
         danger_options = get_danger_options()
         max_cross_section = config.getfloat(
-            "max_extrude_cross_section", def_max_cross_section,
+            "max_extrude_cross_section",
+            def_max_cross_section,
             above=0.0,
             maxval=danger_options.override_max_extrude_cross_section_max,
         )
@@ -242,12 +246,14 @@ class PrinterExtruder:
             maxval=danger_options.override_max_extrude_only_accel_max,
         )
         self.max_e_dist = config.getfloat(
-            "max_extrude_only_distance", 50.0,
+            "max_extrude_only_distance",
+            50.0,
             minval=0.0,
             maxval=danger_options.override_max_extrude_only_distance_max,
         )
         self.instant_corner_v = config.getfloat(
-            "instantaneous_corner_velocity", 1.0,
+            "instantaneous_corner_velocity",
+            1.0,
             minval=0.0,
             maxval=danger_options.override_instantaneous_corner_velocity_max,
         )
