@@ -18,7 +18,7 @@ class PrinterShim:
         def register_command(self, cmd, func, *_, **__):
             self.ready_gcode_handlers[cmd.upper()] = func
 
-        def respond_info(self, msg, log=True):
+        def respond_info(self, msg):
             print("info", msg)
 
         def respond_raw(self, msg):
@@ -34,6 +34,7 @@ class PrinterShim:
             gcmd = klippy.gcode.GCodeCommand(
                 self, command, cmdline, params, False
             )
+            print("Calling", func, "with", params)
             func(gcmd)
 
     def __init__(self, start_args):
