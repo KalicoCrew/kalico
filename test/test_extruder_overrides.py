@@ -6,10 +6,10 @@ from klippy_testing import PrinterShim
 
 
 def test_extruder_overrides_pressure_advance(
-    config_root: typing.Annotated[pathlib.Path, "klippy/extruder_overrides"],
+    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides"],
 ):
     """Test that pressure advance overrides work correctly"""
-    start_args = {"config_file": str(config_root / "extruder_overrides.cfg")}
+    start_args = {"config_file": str(config_root / "printer.cfg")}
     
     with PrinterShim(start_args) as printer:
         # Test that config values work with overrides
@@ -29,10 +29,10 @@ def test_extruder_overrides_pressure_advance(
 
 
 def test_extruder_overrides_config_limits(
-    config_root: typing.Annotated[pathlib.Path, "klippy/extruder_overrides"],
+    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides"],
 ):
     """Test that extruder config limits work with overrides"""
-    start_args = {"config_file": str(config_root / "extruder_overrides.cfg")}
+    start_args = {"config_file": str(config_root / "printer.cfg")}
     
     with PrinterShim(start_args) as printer:
         extruder = printer.lookup_object("extruder")
@@ -45,10 +45,10 @@ def test_extruder_overrides_config_limits(
 
 
 def test_extruder_overrides_fail_bounds(
-    config_root: typing.Annotated[pathlib.Path, "klippy/extruder_overrides_fail"],
+    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides_fail"],
 ):
     """Test that values outside override bounds fail"""
-    start_args = {"config_file": str(config_root / "extruder_overrides_fail.cfg")}
+    start_args = {"config_file": str(config_root / "printer.cfg")}
     
     with PrinterShim(start_args) as printer:
         # Test pressure advance below min override
@@ -69,10 +69,10 @@ def test_extruder_overrides_fail_bounds(
 
 
 def test_extruder_defaults_behavior(
-    config_root: typing.Annotated[pathlib.Path, "klippy/extruder_defaults"],
+    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_defaults"],
 ):
     """Test that default behavior works without overrides"""
-    start_args = {"config_file": str(config_root / "extruder_defaults.cfg")}
+    start_args = {"config_file": str(config_root / "printer.cfg")}
     
     with PrinterShim(start_args) as printer:
         extruder = printer.lookup_object("extruder")
@@ -97,10 +97,10 @@ def test_extruder_defaults_behavior(
 
 
 def test_extruder_overrides_none_values(
-    config_root: typing.Annotated[pathlib.Path, "klippy/extruder_overrides"],
+    config_root: typing.Annotated[pathlib.Path, "test_configs/extruder_overrides"],
 ):
     """Test that None values for max overrides allow unbounded behavior"""
-    start_args = {"config_file": str(config_root / "extruder_overrides.cfg")}
+    start_args = {"config_file": str(config_root / "printer.cfg")}
     
     with PrinterShim(start_args) as printer:
         # Test that pressure advance can go up to the override max of 2.0
