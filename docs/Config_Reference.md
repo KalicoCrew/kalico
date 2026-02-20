@@ -124,6 +124,49 @@ A collection of Kalico-specific system options
 #   How many times we should check the endstop state when homing
 #   Unless your endstop is noisy and unreliable, you should be able to lower this to 1
 
+# Extruder safety limit overrides:
+#override_pressure_advance_min: 0.0
+#   Override minimum value for pressure_advance in both config and SET_PRESSURE_ADVANCE
+#   The default is 0.0
+#override_pressure_advance_max: None
+#   Override maximum value for pressure_advance in both config and SET_PRESSURE_ADVANCE
+#   Set to None for no upper limit. The default is None (unbounded)
+#override_pressure_advance_smooth_time_min: 0.0
+#   Override minimum value for pressure_advance_smooth_time in both config and SET_PRESSURE_ADVANCE
+#   The default is 0.0
+#override_pressure_advance_smooth_time_max: 0.200
+#   Override maximum value for pressure_advance_smooth_time in both config and SET_PRESSURE_ADVANCE
+#   The default is 0.200
+#override_max_extrude_only_distance_min: 0.0
+#   Override minimum value for max_extrude_only_distance config parameter
+#   The default is 0.0
+#override_max_extrude_only_distance_max: None
+#   Override maximum value for max_extrude_only_distance config parameter
+#   Set to None for no upper limit. The default is None (unbounded)
+#override_instantaneous_corner_velocity_min: 0.0
+#   Override minimum value for instantaneous_corner_velocity config parameter
+#   The default is 0.0
+#override_instantaneous_corner_velocity_max: None
+#   Override maximum value for instantaneous_corner_velocity config parameter
+#   Set to None for no upper limit. The default is None (unbounded)
+#override_max_extrude_cross_section_min: 0.0
+#   Override minimum value for max_extrude_cross_section config parameter
+#   The default is 0.0
+#override_max_extrude_cross_section_max: None
+#   Override maximum value for max_extrude_cross_section config parameter
+#   Set to None for no upper limit. The default is None (unbounded)
+#override_max_extrude_only_velocity_min: 0.0
+#   Override minimum value for max_extrude_only_velocity config parameter
+#   The default is 0.0
+#override_max_extrude_only_velocity_max: None
+#   Override maximum value for max_extrude_only_velocity config parameter
+#   Set to None for no upper limit. The default is None (unbounded)
+#override_max_extrude_only_accel_min: 0.0
+#   Override minimum value for max_extrude_only_accel config parameter
+#   The default is 0.0
+#override_max_extrude_only_accel_max: None
+#   Override maximum value for max_extrude_only_accel config parameter
+#   Set to None for no upper limit. The default is None (unbounded)
 
 # Logging options:
 
