@@ -64,44 +64,23 @@ class DangerOptions:
             "endstop_sample_count", 4, minval=1
         )
         # Extruder safety limit overrides
-        self.override_pressure_advance_min = config.getfloat(
-            "override_pressure_advance_min", 0.0, minval=0.0
-        )
         self.override_pressure_advance_max = config.getfloat(
             "override_pressure_advance_max", None, above=0.0
-        )
-        self.override_pressure_advance_smooth_time_min = config.getfloat(
-            "override_pressure_advance_smooth_time_min", 0.0, minval=0.0
         )
         self.override_pressure_advance_smooth_time_max = config.getfloat(
             "override_pressure_advance_smooth_time_max", 0.200, above=0.0
         )
-        self.override_max_extrude_only_distance_min = config.getfloat(
-            "override_max_extrude_only_distance_min", 0.0, minval=0.0
-        )
         self.override_max_extrude_only_distance_max = config.getfloat(
             "override_max_extrude_only_distance_max", None, minval=0.0
-        )
-        self.override_instantaneous_corner_velocity_min = config.getfloat(
-            "override_instantaneous_corner_velocity_min", 0.0, minval=0.0
         )
         self.override_instantaneous_corner_velocity_max = config.getfloat(
             "override_instantaneous_corner_velocity_max", None, minval=0.0
         )
-        self.override_max_extrude_cross_section_min = config.getfloat(
-            "override_max_extrude_cross_section_min", 0.0, minval=0.0
-        )
         self.override_max_extrude_cross_section_max = config.getfloat(
             "override_max_extrude_cross_section_max", None, above=0.0
         )
-        self.override_max_extrude_only_velocity_min = config.getfloat(
-            "override_max_extrude_only_velocity_min", 0.0, minval=0.0
-        )
         self.override_max_extrude_only_velocity_max = config.getfloat(
             "override_max_extrude_only_velocity_max", None, above=0.0
-        )
-        self.override_max_extrude_only_accel_min = config.getfloat(
-            "override_max_extrude_only_accel_min", 0.0, minval=0.0
         )
         self.override_max_extrude_only_accel_max = config.getfloat(
             "override_max_extrude_only_accel_max", None, above=0.0

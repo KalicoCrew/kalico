@@ -14,34 +14,9 @@ class PrinterShim:
 
         def __init__(self):
             self.ready_gcode_handlers = {}
-            self.mux_commands = {}
 
         def register_command(self, cmd, func, *_, **__):
             self.ready_gcode_handlers[cmd.upper()] = func
-
-        def register_mux_command(self, cmd, key, value, func, desc=None):
-            prev = self.mux_commands.get(cmd)
-            if prev is None:
-
-                def handler(gcmd):
-                    return self._cmd_mux(cmd, gcmd)
-
-                self.register_command(cmd, handler, desc=desc)
-                self.mux_commands[cmd] = prev = (key, {})
-            prev_key, prev_values = prev
-            prev_values[value] = func
-
-        def _cmd_mux(self, command, gcmd):
-            key, values = self.mux_commands[command]
-            if None in values:
-                key_param = gcmd.get(key, None)
-            else:
-                key_param = gcmd.get(key)
-            if key_param not in values:
-                raise gcmd.error(
-                    "The value '%s' is not valid for %s" % (key_param, key)
-                )
-            values[key_param](gcmd)
 
         def respond_info(self, msg, log=True):
             print("info", msg)
@@ -52,19 +27,13 @@ class PrinterShim:
         def request_restart(self, reason):
             raise Restart(reason)
 
-        def call(self, cmdline, **kwargs):
-            if kwargs:
-                parts = [cmdline] + [
-                    "%s=%s" % (k, v) for k, v in kwargs.items()
-                ]
-                cmdline = " ".join(parts)
+        def call(self, cmdline):
             command, *paramlist = cmdline.split()
             func = self.ready_gcode_handlers[command.upper()]
             params = dict(param.split("=", 1) for param in paramlist)
             gcmd = klippy.gcode.GCodeCommand(
                 self, command, cmdline, params, False
             )
-            print("Calling", func, "with", params)
             func(gcmd)
 
     def __init__(self, start_args):

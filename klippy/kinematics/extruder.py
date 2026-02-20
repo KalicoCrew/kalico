@@ -19,12 +19,12 @@ class ExtruderStepper:
         danger_options = get_danger_options()
         self.config_pa = config.getfloat(
             "pressure_advance", 0.0,
-            minval=danger_options.override_pressure_advance_min,
+            minval=0.0,
             maxval=danger_options.override_pressure_advance_max,
         )
         self.config_smooth_time = config.getfloat(
             "pressure_advance_smooth_time", 0.040,
-            above=danger_options.override_pressure_advance_smooth_time_min,
+            above=0.0,
             maxval=danger_options.override_pressure_advance_smooth_time_max,
         )
         self.per_move_pressure_advance = config.getboolean(
@@ -144,13 +144,13 @@ class ExtruderStepper:
         danger_options = get_danger_options()
         pressure_advance = gcmd.get_float(
             "ADVANCE", self.pressure_advance,
-            minval=danger_options.override_pressure_advance_min,
+            minval=0.0,
             maxval=danger_options.override_pressure_advance_max,
         )
         smooth_time = gcmd.get_float(
             "SMOOTH_TIME",
             self.pressure_advance_smooth_time,
-            minval=danger_options.override_pressure_advance_smooth_time_min,
+            minval=0.0,
             maxval=danger_options.override_pressure_advance_smooth_time_max,
         )
         self._set_pressure_advance(pressure_advance, smooth_time)
@@ -222,7 +222,7 @@ class PrinterExtruder:
         danger_options = get_danger_options()
         max_cross_section = config.getfloat(
             "max_extrude_cross_section", def_max_cross_section,
-            above=danger_options.override_max_extrude_cross_section_min,
+            above=0.0,
             maxval=danger_options.override_max_extrude_cross_section_max,
         )
         self.max_extrude_ratio = max_cross_section / self.filament_area
@@ -232,23 +232,23 @@ class PrinterExtruder:
         self.max_e_velocity = config.getfloat(
             "max_extrude_only_velocity",
             max_velocity * def_max_extrude_ratio,
-            above=danger_options.override_max_extrude_only_velocity_min,
+            above=0.0,
             maxval=danger_options.override_max_extrude_only_velocity_max,
         )
         self.max_e_accel = config.getfloat(
             "max_extrude_only_accel",
             max_accel * def_max_extrude_ratio,
-            above=danger_options.override_max_extrude_only_accel_min,
+            above=0.0,
             maxval=danger_options.override_max_extrude_only_accel_max,
         )
         self.max_e_dist = config.getfloat(
             "max_extrude_only_distance", 50.0,
-            minval=danger_options.override_max_extrude_only_distance_min,
+            minval=0.0,
             maxval=danger_options.override_max_extrude_only_distance_max,
         )
         self.instant_corner_v = config.getfloat(
             "instantaneous_corner_velocity", 1.0,
-            minval=danger_options.override_instantaneous_corner_velocity_min,
+            minval=0.0,
             maxval=danger_options.override_instantaneous_corner_velocity_max,
         )
         # Setup extruder trapq (trapezoidal motion queue)
