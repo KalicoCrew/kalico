@@ -3,23 +3,16 @@
 # Copyright (C) 2024 Gareth Farrington <gareth@waves.ky>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-
 import collections
 
-from . import ads1220, hx71x
-from .bulk_sensor import BatchWebhooksClient
-
-# We want either Python 3's zip() or Python 2's izip() but NOT 2's zip():
-zip_impl = zip
-try:
-    from itertools import izip as zip_impl  # python 2.x izip
-except ImportError:  # will be Python 3.x
-    pass
+from klippy.configfile import ConfigWrapper
+from klippy.extras.bulk_sensor import BatchWebhooksClient
+from klippy.extras.load_cell.interfaces import BulkAdcSensor
 
 
 # alternative to numpy's column selection:
 def select_column(data, column_idx):
-    return list(zip_impl(*data))[column_idx]
+    return list(zip(*data))[column_idx]
 
 
 def avg(data):
@@ -107,9 +100,17 @@ class LoadCellCommandHelper:
         tare_counts = self.load_cell.avg_counts()
         self.load_cell.tare(tare_counts)
         tare_percent = self.load_cell.counts_to_percent(tare_counts)
-        gcmd.respond_info(
-            "Load cell tare value: %.2f%% (%i)" % (tare_percent, tare_counts)
-        )
+        tare_force = self.load_cell.tare_force
+        if tare_force is not None:
+            gcmd.respond_info(
+                "Load cell tare value: 0 = %.1fg (%.2f%% / %i)"
+                % (tare_force, tare_percent, tare_counts)
+            )
+        else:
+            gcmd.respond_info(
+                "Load cell tare value: 0 = %.2f%% (%i)"
+                % (tare_percent, tare_counts)
+            )
 
     cmd_CALIBRATE_LOAD_CELL_help = "Start interactive calibration tool"
 
@@ -333,9 +334,6 @@ class LoadCellGuidedCalibrationHelper:
 # Optionally blocks execution while collecting with reactor.pause()
 # can collect a minimum n samples or collect until a specific print_time
 # samples returned in [[time],[force],[counts]] arrays for easy processing
-RETRY_DELAY = 0.05  # 20Hz
-
-
 class LoadCellSampleCollector:
     def __init__(self, printer, load_cell):
         self._printer = printer
@@ -346,9 +344,17 @@ class LoadCellSampleCollector:
         self.max_time = float("inf")
         self.min_count = float("inf")  # In Python 3.5 math.inf is better
         self.is_started = False
+        self._completion = None
         self._samples = []
         self._errors = 0
         self._overflows = 0
+
+    # move from the started to stopped state and trigger the completion
+    def _complete(self):
+        self.is_started = False
+        if self._completion is not None:
+            self._completion.complete(True)
+            self._completion = None
 
     def _on_samples(self, msg):
         if not self.is_started:
@@ -361,9 +367,9 @@ class LoadCellSampleCollector:
             if self.min_time <= time <= self.max_time:
                 self._samples.append(sample)
             if time > self.max_time:
-                self.is_started = False
+                self._complete()
         if len(self._samples) >= self.min_count:
-            self.is_started = False
+            self._complete()
         return self.is_started
 
     def _finish_collecting(self):
@@ -381,15 +387,19 @@ class LoadCellSampleCollector:
 
     def _collect_until(self, timeout):
         self.start_collecting()
-        while self.is_started:
-            now = self._reactor.monotonic()
-            if self._mcu.estimated_print_time(now) > timeout:
+        # calculate print time delay and convert to reactor time
+        now = self._reactor.monotonic()
+        print_time = self._mcu.estimated_print_time(now)
+        wake_time = now + (timeout - print_time)
+        if self.is_started:
+            self._completion = self._reactor.completion()
+            result = self._completion.wait(waketime=wake_time)
+            if result is None:
                 self._finish_collecting()
                 raise self._printer.command_error(
                     "LoadCellSampleCollector timed out! Errors: %i,"
                     " Overflows: %i" % (self._errors, self._overflows)
                 )
-            self._reactor.pause(now + RETRY_DELAY)
         return self._finish_collecting()
 
     # start collecting with no automatic end to collection
@@ -428,17 +438,20 @@ MIN_COUNTS_PER_GRAM = 1.0
 
 
 class LoadCell:
-    def __init__(self, config, sensor):
+    def __init__(self, config: ConfigWrapper, sensor: BulkAdcSensor):
         self.printer = printer = config.get_printer()
         self.config_name = config.get_name()
         self.name = config.get_name().split()[-1]
-        self.sensor = sensor  # must implement BulkSensorAdc
+        self.sensor = sensor
         buffer_size = sensor.get_samples_per_second() // 2
         self._force_buffer = collections.deque(maxlen=buffer_size)
         self.reference_tare_counts = config.getint(
             "reference_tare_counts", default=None
         )
         self.tare_counts = self.reference_tare_counts
+        self.tare_force = (
+            0.0 if self.reference_tare_counts is not None else None
+        )
         self.counts_per_gram = config.getfloat(
             "counts_per_gram", minval=MIN_COUNTS_PER_GRAM, default=None
         )
@@ -489,6 +502,11 @@ class LoadCell:
 
     def tare(self, tare_counts):
         self.tare_counts = int(tare_counts)
+        if self.is_calibrated():
+            tare_delta = float(tare_counts - self.reference_tare_counts)
+            self.tare_force = round(
+                self.invert * (tare_delta / self.counts_per_gram), 1
+            )
         self.printer.send_event("load_cell:tare", self)
 
     def set_calibration(self, counts_per_gram, tare_counts):
@@ -604,19 +622,7 @@ class LoadCell:
                 "counts_per_gram": self.counts_per_gram,
                 "reference_tare_counts": self.reference_tare_counts,
                 "tare_counts": self.tare_counts,
+                "tare_force": self.tare_force,
             }
         )
         return status
-
-
-def load_config(config):
-    # Sensor types
-    sensors = {}
-    sensors.update(hx71x.HX71X_SENSOR_TYPES)
-    sensors.update(ads1220.ADS1220_SENSOR_TYPE)
-    sensor_class = config.getchoice("sensor_type", sensors)
-    return LoadCell(config, sensor_class(config))
-
-
-def load_config_prefix(config):
-    return load_config(config)
