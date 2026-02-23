@@ -65,10 +65,9 @@ def test_legacy_screw_thread(tmp_path, thread, expected_factor, expected_dir):
 # --- Config parsing: new universal params ---
 
 
-def test_defaults_no_screw_params(tmp_path):
-    sta = _build_sta(tmp_path)
-    assert sta.screw_pitch == 0.5
-    assert sta.screw_direction == "CW"
+def test_error_no_screw_params(tmp_path):
+    with pytest.raises(configparser.Error):
+        _build_sta(tmp_path)
 
 
 def test_custom_screw_pitch_and_direction(tmp_path):
@@ -77,16 +76,14 @@ def test_custom_screw_pitch_and_direction(tmp_path):
     assert sta.screw_direction == "CCW"
 
 
-def test_custom_screw_pitch_only(tmp_path):
-    sta = _build_sta(tmp_path, "screw_pitch: 2.0")
-    assert sta.screw_pitch == 2.0
-    assert sta.screw_direction == "CW"
+def test_error_screw_pitch_only(tmp_path):
+    with pytest.raises(configparser.Error):
+        _build_sta(tmp_path, "screw_pitch: 2.0")
 
 
-def test_custom_screw_direction_only(tmp_path):
-    sta = _build_sta(tmp_path, "screw_direction: CCW")
-    assert sta.screw_pitch == 0.5
-    assert sta.screw_direction == "CCW"
+def test_error_screw_direction_only(tmp_path):
+    with pytest.raises(configparser.Error, match="Must specify either"):
+        _build_sta(tmp_path, "screw_direction: CCW")
 
 
 # --- Config parsing: error cases ---
@@ -103,8 +100,8 @@ def test_error_screw_thread_with_screw_direction(tmp_path):
 
 
 def test_error_invalid_screw_direction(tmp_path):
-    with pytest.raises(configparser.Error, match="must be"):
-        _build_sta(tmp_path, "screw_direction: INVALID")
+    with pytest.raises(configparser.Error):
+        _build_sta(tmp_path, "screw_pitch: 0.5\nscrew_direction: INVALID")
 
 
 def test_error_invalid_screw_thread(tmp_path):
@@ -114,12 +111,18 @@ def test_error_invalid_screw_thread(tmp_path):
 
 def test_error_screw_pitch_zero(tmp_path):
     with pytest.raises(configparser.Error):
-        _build_sta(tmp_path, "screw_pitch: 0")
+        _build_sta(tmp_path, "screw_pitch: 0\nscrew_direction: CW")
 
 
 def test_error_screw_pitch_negative(tmp_path):
     with pytest.raises(configparser.Error):
-        _build_sta(tmp_path, "screw_pitch: -1.0")
+        _build_sta(tmp_path, "screw_pitch: -1.0\nscrew_direction: CW")
+
+
+def test_legacy_screw_thread_case_insensitive(tmp_path):
+    sta = _build_sta(tmp_path, "screw_thread: cw-m3")
+    assert sta.screw_pitch == 0.5
+    assert sta.screw_direction == "CW"
 
 
 # --- probe_finalize calculation tests ---
