@@ -48,7 +48,9 @@ class ScrewsTiltAdjust:
         # universal 'screw_pitch'/'screw_direction' options.
         screw_thread = config.get("screw_thread", None)
         screw_pitch = config.getfloat("screw_pitch", None, above=0.0)
-        screw_direction = config.getchoice("screw_direction", {"CW": "CW", "CCW": "CCW"}, None)
+        screw_direction = config.getchoice(
+            "screw_direction", {"CW": "CW", "CCW": "CCW"}, None
+        )
         if screw_thread is not None:
             if screw_pitch is not None or screw_direction is not None:
                 raise config.error(
