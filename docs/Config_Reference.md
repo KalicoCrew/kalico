@@ -1498,6 +1498,16 @@ information.
 #   using any screw size, not just the predefined ones in
 #   'screw_thread'. The default is 0.5 (M3 thread pitch). This option
 #   cannot be used together with 'screw_thread'.
+#   Calculation: screw_factor is the bed movement for one full turn of
+#   the leveling screw. For most single-start metric screws, this is
+#   the thread pitch itself (for example, M3x0.5 -> 0.5, M4x0.7 -> 0.7,
+#   M5x0.8 -> 0.8). For multi-start screws, use the lead
+#   (lead = pitch * number_of_starts).
+#   Relation to adjustment output: required turns are calculated as
+#   abs(z_error) / screw_factor, then shown as full turns and minutes
+#   (01:20 = 1 turn + 20/60 turn).
+#   Note: this is not the same as a stepper's 'rotation_distance' value
+#   unless your manual bed screw is exactly that same screw/lead.
 #screw_direction:
 #   The rotation direction of the knob used to level the bed. Accepted
 #   values: CW, CCW. The default is CW. A clockwise rotation of the
