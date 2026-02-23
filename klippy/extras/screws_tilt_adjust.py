@@ -55,13 +55,14 @@ class ScrewsTiltAdjust:
                     "screws_tilt_adjust: 'screw_thread' cannot be used "
                     "together with 'screw_pitch' or 'screw_direction'"
                 )
-            if screw_thread not in SCREW_THREAD_MAP:
+            screw_thread_result = SCREW_THREAD_MAP.get(screw_thread.upper())
+            if screw_thread_result is None:
                 raise config.error(
                     "screws_tilt_adjust: Invalid screw_thread '%s'. "
                     "Accepted values: %s"
                     % (screw_thread, ", ".join(sorted(SCREW_THREAD_MAP.keys())))
                 )
-            self.screw_pitch, self.screw_direction = SCREW_THREAD_MAP[screw_thread]
+            self.screw_pitch, self.screw_direction = screw_thread_result
         else:
             self.screw_pitch = (
                 screw_pitch if screw_pitch is not None else 0.5
