@@ -1273,6 +1273,11 @@ Visual Examples:
 #horizontal_move_z: 5
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
+#horizontal_z_clearance:
+#   A relative height (in mm) that the toolhead will lift at each mesh
+#   point before moving to the next one. If enabled, the `horizontal_move_z`
+#   value is only used for the travel move to the first mesh point. The default
+#   is None.
 #mesh_radius:
 #   Defines the radius of the mesh to probe for round beds. Note that
 #   the radius is relative to the coordinate specified by the
@@ -2527,6 +2532,33 @@ z_offset:
 #   after every Nth bad probe. 1 will run the scrubber after every bad probe.
 #   0 will disable scrubbing. The default is 0.
 ```
+
+### [nozzle_cleanup]
+
+Enables the [NOZZLE_CLEANUP](G-Codes.md#nozzle_cleanup) gcode command. This 
+performs a nozzle cleaning routine that probes over a grid pattern to
+remove ooze from the nozzle. To work correctly your probe needs to support probe
+quality detection, such as the [load_cell_probe](#load_cell_probe).
+```
+#samples: 3
+#   Number of consecutive good probes required at one location to succeed.
+#   Default is 3.
+#stepover: 2.0
+#   The spacing (in mm) between probe locations in the grid. Default is 2mm.
+#pattern_x: 10
+#   Number of probe locations along the X axis. Can be negative. Default is 10.
+#pattern_y: 4
+#   Number of probe locations along the Y axis. Can be negative. Default is 4.
+#
+#These config values are inherited from [probe] if not specified:
+#speed:
+#lift_speed:
+#retry_speed:
+#sample_retract_dist:
+#nozzle_scrubber_gcode:
+#scrubbing_frequency:
+```
+
 
 ### [bltouch]
 
@@ -5931,6 +5963,64 @@ data_ready_pin:
 #   and 'analog_supply'. Default is 'internal'.
 ```
 
+### [load_cell_probe]
+Load Cell Probe. This combines the functionality of a [probe] and a [load_cell].
+
+```
+[load_cell_probe]
+sensor_type:
+#   This must be one of the supported bulk ADC sensor types and support
+#   load cell endstops on the mcu.
+#counts_per_gram:
+#reference_tare_counts:
+#sensor_orientation:
+#   These parameters must be configured before the probe will operate.
+#   See the [load_cell] section for further details.
+#force_safety_limit: 5000
+#   The safe limit for probing force relative to the reference_tare_counts on
+#   the load_cell. The default is +/-2Kg.
+#trigger_force: 75.0
+#   The force that the probe will trigger at. 75g is the default.
+#drift_filter_cutoff_frequency: 0.8
+#   Enable optional continuous taring while homing & probing to reject drift.
+#   The value is a frequency, in Hz, below which drift will be ignored. This
+#   option requires the SciPy library. Default: None
+#drift_filter_delay: 2
+#   The delay, or 'order', of the drift filter. This controls the number of
+#   samples required to make a trigger detection. Can be 1 or 2, the default
+#   is 2.
+#buzz_filter_cutoff_frequency: 100.0
+#   The value is a frequency, in Hz, above which high frequency noise in the
+#   load cell will be filtered out. This option requires the SciPy
+#   library. Default: None
+#buzz_filter_delay: 2
+#   The delay, or 'order', of the buzz filter. This controls the number of
+#   samples required to make a trigger detection. Can be 1 or 2, the default
+#   is 2.
+#notch_filter_frequencies: 50, 60
+#   1 or 2 frequencies, in Hz, to filter out of the load cell data. This is
+#   intended to reject power line noise. This option requires the SciPy
+#   library.  Default: None
+#notch_filter_quality: 2.0
+#   Controls how narrow the range of frequencies are that the notch filter
+#   removes. Larger numbers produce a narrower filter. Minimum value is 0.5 and
+#   maximum is 3.0. Default: 2.0
+#tare_time:
+#   The time in seconds used for taring the load_cell before each probe. The
+#   default value is: 5 / 50 = 0.1. This collects samples from 5 cycles of
+#   50Hz / 6 cycles of 60Hz mains power to cancel power line noise.
+#z_offset:
+#speed:
+#samples:
+#sample_retract_dist:
+#lift_speed:
+#samples_result:
+#samples_tolerance:
+#samples_tolerance_retries:
+#activate_gcode:
+#deactivate_gcode:
+#   See the "[probe]" section for a description of the above parameters.
+```
 
 ## Board specific hardware support
 

@@ -5,7 +5,13 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from . import bulk_sensor, bus
+from klippy.extras import bulk_sensor, bus
+from klippy.extras.load_cell.interfaces import (
+    BulkAdcData,
+    BulkAdcDataCallback,
+    LoadCellSensor,
+)
+from klippy.mcu import MCU
 
 #
 # Constants
@@ -26,7 +32,7 @@ def hexify(byte_array):
     return "[%s]" % (", ".join([hex(b) for b in byte_array]))
 
 
-class ADS1220:
+class ADS1220(LoadCellSensor):
     def __init__(self, config):
         self.printer = printer = config.get_printer()
         self.name = config.get_name().split()[-1]
@@ -124,7 +130,8 @@ class ADS1220:
         # SPI Setup
         spi_speed = 512000 if self.is_turbo else 256000
         self.spi = bus.MCU_SPI_from_config(config, 1, default_speed=spi_speed)
-        self.mcu = mcu = self.spi.get_mcu()
+        mcu: MCU = self.spi.get_mcu()
+        self.mcu: MCU = mcu
         self.oid = mcu.create_oid()
         # Data Ready (DRDY) Pin
         drdy_pin = config.get("data_ready_pin")
@@ -138,7 +145,6 @@ class ADS1220:
                 " data_ready_pin must be on the same MCU"
             )
         # Bulk Sensor Setup
-        self.bulk_queue = bulk_sensor.BulkDataQueue(self.mcu, oid=self.oid)
         # Clock tracking
         chip_smooth = self.sps * UPDATE_INTERVAL * 2
         # Measurement conversion
@@ -152,6 +158,7 @@ class ADS1220:
             UPDATE_INTERVAL,
         )
         # Command Configuration
+        self.attach_probe_cmd = None
         mcu.add_config_cmd(
             "config_ads1220 oid=%d spi_oid=%d data_ready_pin=%s"
             % (self.oid, self.spi.get_oid(), self.data_ready_pin)
@@ -167,24 +174,30 @@ class ADS1220:
         self.query_ads1220_cmd = self.mcu.lookup_command(
             "query_ads1220 oid=%c rest_ticks=%u", cq=cmdqueue
         )
+        self.attach_probe_cmd = self.mcu.lookup_command(
+            "ads1220_attach_load_cell_probe oid=%c load_cell_probe_oid=%c"
+        )
         self.ffreader.setup_query_command(
             "query_ads1220_status oid=%c", oid=self.oid, cq=cmdqueue
         )
 
-    def get_mcu(self):
+    def get_mcu(self) -> MCU:
         return self.mcu
 
-    def get_samples_per_second(self):
+    def get_samples_per_second(self) -> int:
         return self.sps
 
     # returns a tuple of the minimum and maximum value of the sensor, used to
     # detect if a data value is saturated
-    def get_range(self):
+    def get_range(self) -> tuple[int, int]:
         return -0x800000, 0x7FFFFF
 
     # add_client interface, direct pass through to bulk_sensor API
-    def add_client(self, callback):
+    def add_client(self, callback: BulkAdcDataCallback):
         self.batch_bulk.add_client(callback)
+
+    def attach_load_cell_probe(self, load_cell_probe_oid: int):
+        self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
 
     # Measurement decoding
     def _convert_samples(self, samples):
@@ -217,7 +230,7 @@ class ADS1220:
         self.ffreader.note_end()
         logging.info("ADS1220 finished '%s' measurements", self.name)
 
-    def _process_batch(self, eventtime):
+    def _process_batch(self, eventtime) -> BulkAdcData:
         samples = self.ffreader.pull_samples()
         self._convert_samples(samples)
         return {

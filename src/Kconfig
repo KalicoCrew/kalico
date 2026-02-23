@@ -203,6 +203,14 @@ config NEED_SENSOR_BULK
     depends on WANT_ADXL345 || WANT_LIS2DW || WANT_MPU9250 || WANT_ICM20948 \
         || WANT_HX71X || WANT_ADS1220 || WANT_LDC1612 || WANT_SENSOR_ANGLE
     default y
+config NEED_LOAD_CELL_PROBE
+    bool
+    depends on WANT_HX71X || WANT_ADS1220
+    default y
+config NEED_SOS_FILTER
+    bool
+    depends on NEED_LOAD_CELL_PROBE
+    default y
 config WANT_OPTIMIZE_SIZE
     bool
     default n

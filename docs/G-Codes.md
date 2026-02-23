@@ -1019,6 +1019,73 @@ together with either of SHAPER_TYPE_X and SHAPER_TYPE_Y parameters.
 See [config reference](Config_Reference.md#input_shaper) for more
 details on each of these parameters.
 
+### [load_cell]
+
+The following commands are enabled if a
+[load_cell config section](Config_Reference.md#load_cell) has been enabled.
+
+### LOAD_CELL_DIAGNOSTIC
+`LOAD_CELL_DIAGNOSTIC [LOAD_CELL=<config_name>]`: This command collects 10
+seconds of load cell data and reports statistics that can help you verify proper
+operation of the load cell. This command can be run on both calibrated and
+uncalibrated load cells.
+
+### LOAD_CELL_CALIBRATE
+`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>]`: Start the guided calibration
+utility. Calibration is a 3 step process:
+1. First you remove all load from the load cell and run the `TARE` command
+2. Next you apply a known load to the load cell and run the
+`CALIBRATE GRAMS=nnn` command
+3. Finally use the `ACCEPT` command to save the results
+
+You can cancel the calibration process at any time with `ABORT`.
+
+### LOAD_CELL_TARE
+`LOAD_CELL_TARE [LOAD_CELL=<config_name>]`: This works just like the tare button
+on digital scale. It sets the current raw reading of the load cell to be the
+zero point reference value. The response is the percentage of the sensors range
+that was read and the raw value in counts. If the load cell is calibrated a
+force in grams is also reported.
+
+### LOAD_CELL_READ load_cell="name"
+`LOAD_CELL_READ [LOAD_CELL=<config_name>]`:
+This command takes a reading from the load cell. The response is the percentage
+of the sensors range that was read and the raw value in counts. If the load cell
+is calibrated a force in grams is also reported.
+
+### [load_cell_probe]
+
+The following commands are enabled if a
+[load_cell config section](Config_Reference.md#load_cell_probe) has been
+enabled.
+
+### LOAD_CELL_TEST_TAP
+`LOAD_CELL_TEST_TAP [TAPS=<taps>] [TIMEOUT=<timeout>]`: Run a testing routine
+that reports taps on the load cell. The toolhead will not move but the load cell
+probe will sense taps just as if it was probing. This can be used as a
+sanity check to make sure that the probe works. This tool replaces
+QUERY_ENDSTOPS and QUERY_PROBE for load cell probes.
+- `TAPS`: the number of taps the tool expects
+- `TIMEOOUT`: the time, in seconds, that the tool waits for each tab before
+  aborting.
+
+### Load Cell Command Extensions
+Commands that perform probes, such as [`PROBE`](#probe),
+[`PROBE_ACCURACY`](#probe_accuracy),
+[`BED_MESH_CALIBRATE`](#bed_mesh_calibrate) etc. will accept additional
+parameters if a `[load_cell_probe]` is defined. The parameters override the
+corresponding settings from the
+[`[load_cell_probe]`](./Config_Reference.md#load_cell_probe) configuration:
+- `FORCE_SAFETY_LIMIT=<grams>`
+- `TRIGGER_FORCE=<grams>`
+- `DRIFT_FILTER_CUTOFF_FREQUENCY=<frequency_hz>`
+- `DRIFT_FILTER_DELAY=<1|2>`
+- `BUZZ_FILTER_CUTOFF_FREQUENCY=<frequency_hz>`
+- `BUZZ_FILTER_DELAY=<1|2>`
+- `NOTCH_FILTER_FREQUENCIES=<list of frequency_hz>`
+- `NOTCH_FILTER_QUALITY=<quality>`
+- `TARE_TIME=<seconds>`
+
 ### [manual_probe]
 
 The manual_probe module is automatically loaded.
@@ -1359,6 +1426,27 @@ direction as well as Z.
 babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a `SAVE_CONFIG` to take effect.
+
+### [nozzle_cleanup]
+The following command is available when a
+[nozzle_cleanup config section](Config_Reference.md#nozzle_cleanup)
+is enabled.
+
+#### NOZZLE_CLEANUP
+`NOZZLE_CLEANUP [SAMPLES=<count>] [PATTERN_STEP=<mm>] [PATTERN_X=<count>]
+[PATTERN_Y=<count>] [SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [RETRY_SPEED=<mm/s>]
+[SAMPLE_RETRACT_DIST=<mm>] [SCRUBBING_FREQUENCY=<count>]`: ⚠️
+
+Perform a nozzle cleaning routine that probes over a grid pattern to
+remove ooze from the nozzle. This is especially useful for nozzle-based probes
+that don't have scrubbing hardware. Running this right before bed mesh can cut
+down on bad probes encountered during the mesh and keep ooze out of your first
+layer. The command probes a grid of locations and ends when the specified
+number of consecutive good probes are recorded. The nozzle always moves to a new
+location on each probe to promote cleaning. Nozzle scrubbing can be mixed with
+tapping to enhance the cleaning effect.
+
+To use the command position the toolhead where you want to start the cleanup. E.g. near the edge of the print area. `PATTERN_X` and `PATTERN_Y` control the number of grid points in each axis. Positive values extend the grid along the positive direction of the axis, negative values do the reverse. E.g. if you position the toolhead near the front left corner of the print area, and you want to keep the cleanup mess out of the print are, you should use `PATTERN_Y=-4` to extend the pattern towards the front of the bed, away from the print area.
 
 ### [probe_eddy_current]
 

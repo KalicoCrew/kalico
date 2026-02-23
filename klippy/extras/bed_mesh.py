@@ -491,6 +491,7 @@ class BedMeshCalibrate:
             self.probe_finalize,
             self._get_adjusted_points(),
             use_offsets=True,
+            enable_horizontal_z_clearance=True,
         )
         self.probe_helper.minimum_points(3)
         self.gcode = self.printer.lookup_object("gcode")
