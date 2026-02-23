@@ -33,7 +33,7 @@ class ScrewsTiltAdjust:
         # Screw parameters: support both legacy 'screw_thread' and
         # universal 'screw_factor'/'screw_direction' options.
         screw_thread = config.get("screw_thread", None)
-        screw_factor = config.getfloat("screw_factor", None, above=0.)
+        screw_factor = config.getfloat("screw_factor", None, above=0.0)
         screw_direction = config.get("screw_direction", None)
         if screw_thread is not None:
             if screw_factor is not None or screw_direction is not None:
@@ -59,9 +59,7 @@ class ScrewsTiltAdjust:
                     "Accepted values: %s"
                     % (screw_thread, ", ".join(sorted(thread_map.keys())))
                 )
-            self.screw_factor, self.screw_direction = thread_map[
-                screw_thread
-            ]
+            self.screw_factor, self.screw_direction = thread_map[screw_thread]
         else:
             self.screw_factor = (
                 screw_factor if screw_factor is not None else 0.5
@@ -71,8 +69,7 @@ class ScrewsTiltAdjust:
             )
         if self.screw_direction not in ("CW", "CCW"):
             raise config.error(
-                "screws_tilt_adjust: 'screw_direction' must be "
-                "'CW' or 'CCW'"
+                "screws_tilt_adjust: 'screw_direction' must be 'CW' or 'CCW'"
             )
         # Initialize ProbePointsHelper
         points = [coord for coord, name in self.screws]
