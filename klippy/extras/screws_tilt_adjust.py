@@ -30,21 +30,50 @@ class ScrewsTiltAdjust:
             raise config.error(
                 "screws_tilt_adjust: Must have at least three screws"
             )
-        self.threads = {
-            "CW-M3": 0,
-            "CCW-M3": 1,
-            "CW-M4": 2,
-            "CCW-M4": 3,
-            "CW-M5": 4,
-            "CCW-M5": 5,
-            "CW-M6": 6,
-            "CCW-M6": 7,
-            "CW-M8": 8,
-            "CCW-M8": 9,
-        }
-        self.thread = config.getchoice(
-            "screw_thread", self.threads, default="CW-M3"
-        )
+        # Screw parameters: support both legacy 'screw_thread' and
+        # universal 'screw_factor'/'screw_direction' options.
+        screw_thread = config.get("screw_thread", None)
+        screw_factor = config.getfloat("screw_factor", None, above=0.)
+        screw_direction = config.get("screw_direction", None)
+        if screw_thread is not None:
+            if screw_factor is not None or screw_direction is not None:
+                raise config.error(
+                    "screws_tilt_adjust: 'screw_thread' cannot be used "
+                    "together with 'screw_factor' or 'screw_direction'"
+                )
+            thread_map = {
+                "CW-M3": (0.5, "CW"),
+                "CCW-M3": (0.5, "CCW"),
+                "CW-M4": (0.7, "CW"),
+                "CCW-M4": (0.7, "CCW"),
+                "CW-M5": (0.8, "CW"),
+                "CCW-M5": (0.8, "CCW"),
+                "CW-M6": (1.0, "CW"),
+                "CCW-M6": (1.0, "CCW"),
+                "CW-M8": (1.25, "CW"),
+                "CCW-M8": (1.25, "CCW"),
+            }
+            if screw_thread not in thread_map:
+                raise config.error(
+                    "screws_tilt_adjust: Invalid screw_thread '%s'. "
+                    "Accepted values: %s"
+                    % (screw_thread, ", ".join(sorted(thread_map.keys())))
+                )
+            self.screw_factor, self.screw_direction = thread_map[
+                screw_thread
+            ]
+        else:
+            self.screw_factor = (
+                screw_factor if screw_factor is not None else 0.5
+            )
+            self.screw_direction = (
+                screw_direction if screw_direction is not None else "CW"
+            )
+        if self.screw_direction not in ("CW", "CCW"):
+            raise config.error(
+                "screws_tilt_adjust: 'screw_direction' must be "
+                "'CW' or 'CCW'"
+            )
         # Initialize ProbePointsHelper
         points = [coord for coord, name in self.screws]
         self.probe_helper = probe.ProbePointsHelper(
@@ -89,21 +118,7 @@ class ScrewsTiltAdjust:
     def probe_finalize(self, offsets, positions):
         self.results = {}
         self.max_diff_error = False
-        # Factors used for CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5, CW-M6
-        # and CCW-M6
-        threads_factor = {
-            0: 0.5,
-            1: 0.5,
-            2: 0.7,
-            3: 0.7,
-            4: 0.8,
-            5: 0.8,
-            6: 1.0,
-            7: 1.0,
-            8: 1.25,
-            9: 1.25,
-        }
-        is_clockwise_thread = (self.thread & 1) == 0
+        is_clockwise_thread = self.screw_direction == "CW"
         screw_diff = []
         # Process the read Z values
         if self.direction is not None:
@@ -146,7 +161,7 @@ class ScrewsTiltAdjust:
                 if abs(diff) < 0.001:
                     adjust = 0
                 else:
-                    adjust = diff / threads_factor.get(self.thread, 0.5)
+                    adjust = diff / self.screw_factor
                 if is_clockwise_thread:
                     sign = "CW" if adjust >= 0 else "CCW"
                 else:

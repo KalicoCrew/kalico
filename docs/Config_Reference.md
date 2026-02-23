@@ -1486,10 +1486,23 @@ information.
 #screw_thread: CW-M3
 #   The type of screw used for bed leveling, M3, M4, or M5, and the
 #   rotation direction of the knob that is used to level the bed.
-#   Accepted values: CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5, CW-M8, CCW-M8.
+#   Accepted values: CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5,
+#   CW-M6, CCW-M6, CW-M8, CCW-M8.
 #   Default value is CW-M3 which most printers use. A clockwise
 #   rotation of the knob decreases the gap between the nozzle and the
 #   bed. Conversely, a counter-clockwise rotation increases the gap.
+#   This option cannot be used together with 'screw_factor' or
+#   'screw_direction'.
+#screw_factor:
+#   The thread pitch (in mm) of the bed leveling screw. This allows
+#   using any screw size, not just the predefined ones in
+#   'screw_thread'. The default is 0.5 (M3 thread pitch). This option
+#   cannot be used together with 'screw_thread'.
+#screw_direction:
+#   The rotation direction of the knob used to level the bed. Accepted
+#   values: CW, CCW. The default is CW. A clockwise rotation of the
+#   knob decreases the gap between the nozzle and the bed. This option
+#   cannot be used together with 'screw_thread'.
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
 #   default is False.
