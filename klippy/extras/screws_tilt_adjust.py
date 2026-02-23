@@ -8,6 +8,20 @@ import math
 
 from . import probe
 
+# Screw thread mapping: thread_name -> (pitch, direction)
+SCREW_THREAD_MAP = {
+    "CW-M3": (0.5, "CW"),
+    "CCW-M3": (0.5, "CCW"),
+    "CW-M4": (0.7, "CW"),
+    "CCW-M4": (0.7, "CCW"),
+    "CW-M5": (0.8, "CW"),
+    "CCW-M5": (0.8, "CCW"),
+    "CW-M6": (1.0, "CW"),
+    "CCW-M6": (1.0, "CCW"),
+    "CW-M8": (1.25, "CW"),
+    "CCW-M8": (1.25, "CCW"),
+}
+
 
 class ScrewsTiltAdjust:
     def __init__(self, config):
@@ -41,25 +55,13 @@ class ScrewsTiltAdjust:
                     "screws_tilt_adjust: 'screw_thread' cannot be used "
                     "together with 'screw_pitch' or 'screw_direction'"
                 )
-            thread_map = {
-                "CW-M3": (0.5, "CW"),
-                "CCW-M3": (0.5, "CCW"),
-                "CW-M4": (0.7, "CW"),
-                "CCW-M4": (0.7, "CCW"),
-                "CW-M5": (0.8, "CW"),
-                "CCW-M5": (0.8, "CCW"),
-                "CW-M6": (1.0, "CW"),
-                "CCW-M6": (1.0, "CCW"),
-                "CW-M8": (1.25, "CW"),
-                "CCW-M8": (1.25, "CCW"),
-            }
-            if screw_thread not in thread_map:
+            if screw_thread not in SCREW_THREAD_MAP:
                 raise config.error(
                     "screws_tilt_adjust: Invalid screw_thread '%s'. "
                     "Accepted values: %s"
-                    % (screw_thread, ", ".join(sorted(thread_map.keys())))
+                    % (screw_thread, ", ".join(sorted(SCREW_THREAD_MAP.keys())))
                 )
-            self.screw_pitch, self.screw_direction = thread_map[screw_thread]
+            self.screw_pitch, self.screw_direction = SCREW_THREAD_MAP[screw_thread]
         else:
             self.screw_pitch = (
                 screw_pitch if screw_pitch is not None else 0.5
