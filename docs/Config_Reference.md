@@ -1510,8 +1510,7 @@ information.
 #   unless your manual bed screw is exactly that same screw/lead.
 #screw_direction:
 #   The rotation direction of the knob used to level the bed. Accepted
-#   values: CW, CCW. The default is CW. A clockwise rotation of the
-#   knob decreases the gap between the nozzle and the bed. This option
+#   values: CW, CCW. The default is CW. Rotation in this direction decreases the gap between the nozzle and the bed. This option
 #   cannot be used together with 'screw_thread'.
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
