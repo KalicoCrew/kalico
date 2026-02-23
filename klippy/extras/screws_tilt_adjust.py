@@ -31,15 +31,15 @@ class ScrewsTiltAdjust:
                 "screws_tilt_adjust: Must have at least three screws"
             )
         # Screw parameters: support both legacy 'screw_thread' and
-        # universal 'screw_factor'/'screw_direction' options.
+        # universal 'screw_pitch'/'screw_direction' options.
         screw_thread = config.get("screw_thread", None)
-        screw_factor = config.getfloat("screw_factor", None, above=0.0)
+        screw_pitch = config.getfloat("screw_pitch", None, above=0.0)
         screw_direction = config.get("screw_direction", None)
         if screw_thread is not None:
-            if screw_factor is not None or screw_direction is not None:
+            if screw_pitch is not None or screw_direction is not None:
                 raise config.error(
                     "screws_tilt_adjust: 'screw_thread' cannot be used "
-                    "together with 'screw_factor' or 'screw_direction'"
+                    "together with 'screw_pitch' or 'screw_direction'"
                 )
             thread_map = {
                 "CW-M3": (0.5, "CW"),
@@ -59,10 +59,10 @@ class ScrewsTiltAdjust:
                     "Accepted values: %s"
                     % (screw_thread, ", ".join(sorted(thread_map.keys())))
                 )
-            self.screw_factor, self.screw_direction = thread_map[screw_thread]
+            self.screw_pitch, self.screw_direction = thread_map[screw_thread]
         else:
-            self.screw_factor = (
-                screw_factor if screw_factor is not None else 0.5
+            self.screw_pitch = (
+                screw_pitch if screw_pitch is not None else 0.5
             )
             self.screw_direction = (
                 screw_direction if screw_direction is not None else "CW"
@@ -158,7 +158,7 @@ class ScrewsTiltAdjust:
                 if abs(diff) < 0.001:
                     adjust = 0
                 else:
-                    adjust = diff / self.screw_factor
+                    adjust = diff / self.screw_pitch
                 if is_clockwise_thread:
                     sign = "CW" if adjust >= 0 else "CCW"
                 else:

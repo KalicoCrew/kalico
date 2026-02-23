@@ -58,7 +58,7 @@ def _build_sta(tmp_path, extra=""):
 )
 def test_legacy_screw_thread(tmp_path, thread, expected_factor, expected_dir):
     sta = _build_sta(tmp_path, f"screw_thread: {thread}")
-    assert sta.screw_factor == expected_factor
+    assert sta.screw_pitch == expected_factor
     assert sta.screw_direction == expected_dir
 
 
@@ -67,34 +67,34 @@ def test_legacy_screw_thread(tmp_path, thread, expected_factor, expected_dir):
 
 def test_defaults_no_screw_params(tmp_path):
     sta = _build_sta(tmp_path)
-    assert sta.screw_factor == 0.5
+    assert sta.screw_pitch == 0.5
     assert sta.screw_direction == "CW"
 
 
-def test_custom_screw_factor_and_direction(tmp_path):
-    sta = _build_sta(tmp_path, "screw_factor: 1.5\nscrew_direction: CCW")
-    assert sta.screw_factor == 1.5
+def test_custom_screw_pitch_and_direction(tmp_path):
+    sta = _build_sta(tmp_path, "screw_pitch: 1.5\nscrew_direction: CCW")
+    assert sta.screw_pitch == 1.5
     assert sta.screw_direction == "CCW"
 
 
-def test_custom_screw_factor_only(tmp_path):
-    sta = _build_sta(tmp_path, "screw_factor: 2.0")
-    assert sta.screw_factor == 2.0
+def test_custom_screw_pitch_only(tmp_path):
+    sta = _build_sta(tmp_path, "screw_pitch: 2.0")
+    assert sta.screw_pitch == 2.0
     assert sta.screw_direction == "CW"
 
 
 def test_custom_screw_direction_only(tmp_path):
     sta = _build_sta(tmp_path, "screw_direction: CCW")
-    assert sta.screw_factor == 0.5
+    assert sta.screw_pitch == 0.5
     assert sta.screw_direction == "CCW"
 
 
 # --- Config parsing: error cases ---
 
 
-def test_error_screw_thread_with_screw_factor(tmp_path):
+def test_error_screw_thread_with_screw_pitch(tmp_path):
     with pytest.raises(configparser.Error, match="cannot be used together"):
-        _build_sta(tmp_path, "screw_thread: CW-M3\nscrew_factor: 0.5")
+        _build_sta(tmp_path, "screw_thread: CW-M3\nscrew_pitch: 0.5")
 
 
 def test_error_screw_thread_with_screw_direction(tmp_path):
@@ -112,27 +112,27 @@ def test_error_invalid_screw_thread(tmp_path):
         _build_sta(tmp_path, "screw_thread: CW-M99")
 
 
-def test_error_screw_factor_zero(tmp_path):
+def test_error_screw_pitch_zero(tmp_path):
     with pytest.raises(configparser.Error):
-        _build_sta(tmp_path, "screw_factor: 0")
+        _build_sta(tmp_path, "screw_pitch: 0")
 
 
-def test_error_screw_factor_negative(tmp_path):
+def test_error_screw_pitch_negative(tmp_path):
     with pytest.raises(configparser.Error):
-        _build_sta(tmp_path, "screw_factor: -1.0")
+        _build_sta(tmp_path, "screw_pitch: -1.0")
 
 
 # --- probe_finalize calculation tests ---
 
 
-def _make_sta_for_calc(screw_factor, screw_direction, screws, direction=None):
+def _make_sta_for_calc(screw_pitch, screw_direction, screws, direction=None):
     """Build a minimal ScrewsTiltAdjust-like object for calculation tests."""
     sta = object.__new__(
         __import__(
             "klippy.extras.screws_tilt_adjust", fromlist=["ScrewsTiltAdjust"]
         ).ScrewsTiltAdjust
     )
-    sta.screw_factor = screw_factor
+    sta.screw_pitch = screw_pitch
     sta.screw_direction = screw_direction
     sta.screws = screws
     sta.direction = direction
@@ -212,7 +212,7 @@ def test_probe_finalize_custom_factor():
         ((155, 30), "front right"),
         ((155, 190), "rear right"),
     ]
-    # Using screw_factor=1.5 (e.g. a large lead screw)
+    # Using screw_pitch=1.5 (e.g. a large lead screw)
     sta = _make_sta_for_calc(1.5, "CW", screws)
     # Base z=1.0, screw2 z=0.25 → diff=0.75, turns=0.75/1.5=0.5 → 00:30
     positions = [[10, 30, 1.0], [155, 30, 0.25], [155, 190, 1.0]]
