@@ -1488,16 +1488,17 @@ information.
 #   rotation direction of the knob that is used to level the bed.
 #   Accepted values: CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5,
 #   CW-M6, CCW-M6, CW-M8, CCW-M8.
-#   Default value is CW-M3 which most printers use. A clockwise
-#   rotation of the knob decreases the gap between the nozzle and the
+#   A clockwise rotation of the knob decreases the gap between the nozzle and the
 #   bed. Conversely, a counter-clockwise rotation increases the gap.
 #   This option cannot be used together with 'screw_pitch' or
-#   'screw_direction'.
+#   'screw_direction'. Either this option must be specified, or both
+#   'screw_pitch' and 'screw_direction' must be specified.
 #screw_pitch:
 #   The thread pitch (in mm) of the bed leveling screw. This allows
 #   using any screw size, not just the predefined ones in
-#   'screw_thread'. The default is 0.5 (M3 thread pitch). This option
-#   cannot be used together with 'screw_thread'.
+#   'screw_thread'. This option cannot be used together with 'screw_thread'.
+#   Must be specified together with 'screw_direction' if 'screw_thread'
+#   is not used.
 #   Calculation: screw_pitch is the bed movement for one full turn of
 #   the leveling screw. For most single-start metric screws, this is
 #   the thread pitch itself (for example, M3x0.5 -> 0.5, M4x0.7 -> 0.7,
@@ -1510,8 +1511,9 @@ information.
 #   unless your manual bed screw is exactly that same screw/lead.
 #screw_direction:
 #   The rotation direction of the knob used to level the bed. Accepted
-#   values: CW, CCW. The default is CW. Rotation in this direction decreases the gap between the nozzle and the bed. This option
-#   cannot be used together with 'screw_thread'.
+#   values: CW, CCW. Rotation in this direction decreases the gap between the nozzle and the bed. This option
+#   cannot be used together with 'screw_thread'. Must be specified
+#   together with 'screw_pitch' if 'screw_thread' is not used.
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
 #   default is False.

@@ -64,12 +64,13 @@ class ScrewsTiltAdjust:
                 )
             self.screw_pitch, self.screw_direction = screw_thread_result
         else:
-            self.screw_pitch = (
-                screw_pitch if screw_pitch is not None else 0.5
-            )
-            self.screw_direction = (
-                screw_direction if screw_direction is not None else "CW"
-            )
+            if screw_pitch is None or screw_direction is None:
+                raise config.error(
+                    "screws_tilt_adjust: Must specify either 'screw_thread' "
+                    "or both 'screw_pitch' and 'screw_direction'"
+                )
+            self.screw_pitch = screw_pitch
+            self.screw_direction = screw_direction
         # Initialize ProbePointsHelper
         points = [coord for coord, name in self.screws]
         self.probe_helper = probe.ProbePointsHelper(
