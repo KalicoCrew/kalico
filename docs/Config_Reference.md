@@ -125,30 +125,10 @@ A collection of Kalico-specific system options
 #   Unless your endstop is noisy and unreliable, you should be able to lower this to 1
 
 # Extruder safety limit overrides:
-#   These options allow raising the maximum allowed values for extruder
-#   parameters. Useful for non-standard setups that need values beyond
-#   the built-in defaults. Set to None for no upper limit.
-#override_pressure_advance_max: None
-#   Override maximum for pressure_advance (config and SET_PRESSURE_ADVANCE).
-#   The default is None (unbounded).
 #override_pressure_advance_smooth_time_max: 0.200
 #   Override maximum for pressure_advance_smooth_time (config and
-#   SET_PRESSURE_ADVANCE). The default is 0.200.
-#override_max_extrude_only_distance_max: None
-#   Override maximum for max_extrude_only_distance config parameter.
-#   The default is None (unbounded).
-#override_instantaneous_corner_velocity_max: None
-#   Override maximum for instantaneous_corner_velocity config parameter.
-#   The default is None (unbounded).
-#override_max_extrude_cross_section_max: None
-#   Override maximum for max_extrude_cross_section config parameter.
-#   The default is None (unbounded).
-#override_max_extrude_only_velocity_max: None
-#   Override maximum for max_extrude_only_velocity config parameter.
-#   The default is None (unbounded).
-#override_max_extrude_only_accel_max: None
-#   Override maximum for max_extrude_only_accel config parameter.
-#   The default is None (unbounded).
+#   SET_PRESSURE_ADVANCE). Useful for non-standard setups that need
+#   values beyond the built-in default. The default is 0.200.
 
 # Logging options:
 

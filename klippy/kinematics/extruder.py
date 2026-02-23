@@ -16,18 +16,12 @@ class ExtruderStepper:
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.pressure_advance = self.pressure_advance_smooth_time = 0.0
-        danger_options = get_danger_options()
-        self.config_pa = config.getfloat(
-            "pressure_advance",
-            0.0,
-            minval=0.0,
-            maxval=danger_options.override_pressure_advance_max,
-        )
+        self.config_pa = config.getfloat("pressure_advance", 0.0, minval=0.0)
         self.config_smooth_time = config.getfloat(
             "pressure_advance_smooth_time",
             0.040,
             above=0.0,
-            maxval=danger_options.override_pressure_advance_smooth_time_max,
+            maxval=get_danger_options().override_pressure_advance_smooth_time_max,
         )
         self.per_move_pressure_advance = config.getboolean(
             "per_move_pressure_advance", False
@@ -143,18 +137,14 @@ class ExtruderStepper:
         extruder.extruder_stepper.cmd_SET_PRESSURE_ADVANCE(gcmd)
 
     def cmd_SET_PRESSURE_ADVANCE(self, gcmd):
-        danger_options = get_danger_options()
         pressure_advance = gcmd.get_float(
-            "ADVANCE",
-            self.pressure_advance,
-            minval=0.0,
-            maxval=danger_options.override_pressure_advance_max,
+            "ADVANCE", self.pressure_advance, minval=0.0
         )
         smooth_time = gcmd.get_float(
             "SMOOTH_TIME",
             self.pressure_advance_smooth_time,
             minval=0.0,
-            maxval=danger_options.override_pressure_advance_smooth_time_max,
+            maxval=get_danger_options().override_pressure_advance_smooth_time_max,
         )
         self._set_pressure_advance(pressure_advance, smooth_time)
 
@@ -222,12 +212,8 @@ class PrinterExtruder:
         self.filament_area = math.pi * (filament_diameter * 0.5) ** 2
         def_max_cross_section = 4.0 * self.nozzle_diameter**2
         def_max_extrude_ratio = def_max_cross_section / self.filament_area
-        danger_options = get_danger_options()
         max_cross_section = config.getfloat(
-            "max_extrude_cross_section",
-            def_max_cross_section,
-            above=0.0,
-            maxval=danger_options.override_max_extrude_cross_section_max,
+            "max_extrude_cross_section", def_max_cross_section, above=0.0
         )
         self.max_extrude_ratio = max_cross_section / self.filament_area
         logging.info("Extruder max_extrude_ratio=%.6f", self.max_extrude_ratio)
@@ -237,25 +223,17 @@ class PrinterExtruder:
             "max_extrude_only_velocity",
             max_velocity * def_max_extrude_ratio,
             above=0.0,
-            maxval=danger_options.override_max_extrude_only_velocity_max,
         )
         self.max_e_accel = config.getfloat(
             "max_extrude_only_accel",
             max_accel * def_max_extrude_ratio,
             above=0.0,
-            maxval=danger_options.override_max_extrude_only_accel_max,
         )
         self.max_e_dist = config.getfloat(
-            "max_extrude_only_distance",
-            50.0,
-            minval=0.0,
-            maxval=danger_options.override_max_extrude_only_distance_max,
+            "max_extrude_only_distance", 50.0, minval=0.0
         )
         self.instant_corner_v = config.getfloat(
-            "instantaneous_corner_velocity",
-            1.0,
-            minval=0.0,
-            maxval=danger_options.override_instantaneous_corner_velocity_max,
+            "instantaneous_corner_velocity", 1.0, minval=0.0
         )
         # Setup extruder trapq (trapezoidal motion queue)
         ffi_main, ffi_lib = chelper.get_ffi()
