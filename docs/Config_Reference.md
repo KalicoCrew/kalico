@@ -1483,7 +1483,7 @@ information.
 #horizontal_move_z: 5
 #   The height (in mm) that the head should be commanded to move to
 #   just prior to starting a probe operation. The default is 5.
-#screw_thread: CW-M3
+#screw_thread:
 #   The type of screw used for bed leveling, M3, M4, or M5, and the
 #   rotation direction of the knob that is used to level the bed.
 #   Accepted values: CW-M3, CCW-M3, CW-M4, CCW-M4, CW-M5, CCW-M5,
