@@ -82,7 +82,7 @@ def test_error_screw_pitch_only(tmp_path):
 
 
 def test_error_screw_direction_only(tmp_path):
-    with pytest.raises(configparser.Error, match="Must specify either"):
+    with pytest.raises(configparser.Error, match="Must specify both"):
         _build_sta(tmp_path, "screw_direction: CCW")
 
 
@@ -90,12 +90,12 @@ def test_error_screw_direction_only(tmp_path):
 
 
 def test_error_screw_thread_with_screw_pitch(tmp_path):
-    with pytest.raises(configparser.Error, match="cannot be used together"):
+    with pytest.raises(configparser.Error, match="but not both"):
         _build_sta(tmp_path, "screw_thread: CW-M3\nscrew_pitch: 0.5")
 
 
 def test_error_screw_thread_with_screw_direction(tmp_path):
-    with pytest.raises(configparser.Error, match="cannot be used together"):
+    with pytest.raises(configparser.Error, match="but not both"):
         _build_sta(tmp_path, "screw_thread: CW-M3\nscrew_direction: CW")
 
 

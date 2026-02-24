@@ -48,15 +48,16 @@ class ScrewsTiltAdjust:
         # universal 'screw_pitch'/'screw_direction' options.
         screw_thread = config.get("screw_thread", None)
         screw_pitch = config.getfloat("screw_pitch", None, above=0.0)
+        screw_direction = config.get("screw_direction", None)
+        if not (
+            (screw_thread is not None)
+            ^ (screw_pitch is not None or screw_direction is not None)
+        ):
+            raise config.error(
+                "screws_tilt_adjust: Must specify either 'screw_thread' "
+                "or both 'screw_pitch' and 'screw_direction', but not both"
+            )
         if screw_thread is not None:
-            if (
-                screw_pitch is not None
-                or config.get("screw_direction", None) is not None
-            ):
-                raise config.error(
-                    "screws_tilt_adjust: 'screw_thread' cannot be used "
-                    "together with 'screw_pitch' or 'screw_direction'"
-                )
             screw_thread_result = SCREW_THREAD_MAP.get(screw_thread.upper())
             if screw_thread_result is None:
                 raise config.error(
@@ -66,13 +67,10 @@ class ScrewsTiltAdjust:
                 )
             self.screw_pitch, self.screw_direction = screw_thread_result
         else:
-            if (
-                screw_pitch is None
-                or config.get("screw_direction", None) is None
-            ):
+            if screw_pitch is None or screw_direction is None:
                 raise config.error(
-                    "screws_tilt_adjust: Must specify either 'screw_thread' "
-                    "or both 'screw_pitch' and 'screw_direction'"
+                    "screws_tilt_adjust: Must specify both 'screw_pitch' "
+                    "and 'screw_direction'"
                 )
             self.screw_pitch = screw_pitch
             self.screw_direction = config.getchoice(
