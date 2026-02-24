@@ -4,9 +4,11 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import fcntl
+import hashlib
 import json
 import logging
 import os
+import pathlib
 import pty
 import signal
 import subprocess
@@ -252,3 +254,24 @@ def get_git_version(from_file=True):
     if from_file:
         git_info["version"] = get_version_from_file(klippy_src)
     return git_info
+
+
+def get_firmware_hash():
+    root_dir = pathlib.Path(__file__).parent.parent
+    hash_cache = root_dir / ".sources"
+    source_files = sorted(
+        file
+        for path in (root_dir / "src", root_dir / "lib")
+        for file in path.glob("**/*")
+        if file.is_file()
+    )
+    last_modified = max(file.stat().st_mtime for file in source_files)
+    if hash_cache.is_file() and hash_cache.stat().st_mtime >= last_modified:
+        return hash_cache.read_text()
+    hash = hashlib.blake2b(digest_size=16, usedforsecurity=False)
+    for file in source_files:
+        hash.update(b"\x00" + bytes(file.relative_to(root_dir)) + b"\x00")
+        hash.update(file.read_bytes())
+    digest = hash.hexdigest()
+    hash_cache.write_text(digest)
+    return digest
