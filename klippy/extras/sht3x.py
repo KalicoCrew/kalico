@@ -60,6 +60,7 @@ class SHT3X:
         self.i2c = bus.MCU_I2C_from_config(
             config, default_addr=SHT3X_I2C_ADDR, default_speed=100000
         )
+        self.mcu = self.i2c.get_mcu()
         self._error = self.i2c.get_mcu().error
         self.report_time = config.getint("sht3x_report_time", 1, minval=1)
         self.deviceId = config.get("sensor_type")
