@@ -98,6 +98,7 @@ class HTU21D:
         self.i2c = bus.MCU_I2C_from_config(
             config, default_addr=HTU21D_I2C_ADDR, default_speed=100000
         )
+        self.mcu = self.i2c.get_mcu()
         self.hold_master_mode = config.getboolean("htu21d_hold_master", False)
         self.resolution = config.get("htu21d_resolution", "TEMP12_HUM08")
         self.report_time = config.getint("htu21d_report_time", 30, minval=5)

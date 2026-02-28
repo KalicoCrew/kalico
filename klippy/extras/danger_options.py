@@ -63,6 +63,10 @@ class DangerOptions:
         self.endstop_sample_count = config.getint(
             "endstop_sample_count", 4, minval=1
         )
+        # Extruder safety limit overrides
+        self.override_pressure_advance_smooth_time_max = config.getfloat(
+            "override_pressure_advance_smooth_time_max", 0.200, above=0.0
+        )
 
 
 DANGER_OPTIONS: DangerOptions = None

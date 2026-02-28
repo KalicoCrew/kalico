@@ -128,6 +128,11 @@ A collection of Kalico-specific system options
 #   How many times we should check the endstop state when homing
 #   Unless your endstop is noisy and unreliable, you should be able to lower this to 1
 
+# Extruder safety limit overrides:
+#override_pressure_advance_smooth_time_max: 0.200
+#   Override maximum for pressure_advance_smooth_time (config and
+#   SET_PRESSURE_ADVANCE). Useful for non-standard setups that need
+#   values beyond the built-in default. The default is 0.200.
 
 # Logging options:
 

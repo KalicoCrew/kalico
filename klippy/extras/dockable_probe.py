@@ -187,6 +187,9 @@ class DockableProbe:
         self.sample_retract_dist = config.getfloat(
             "sample_retract_dist", 2.0, above=0.0
         )
+        self.detach_dockable_before_z_home = config.getboolean(
+            "detach_dockable_before_z_home", False
+        )
 
         # Positions (approach, detach, etc)
         self.approach_position = self._parse_coord(config, "approach_position")
