@@ -18,7 +18,7 @@ COMPILE_ARGS = (
     " -flto -fwhole-program -fno-use-linker-plugin"
     " -o %s %s"
 )
-SSE_FLAGS = "-mfpmath=sse -msse2"
+NATIVE_FLAGS = "-march=native -mtune=native"
 SOURCE_FILES = [
     "pyhelper.c",
     "serialqueue.c",
@@ -324,8 +324,8 @@ def get_ffi():
         ofiles = get_abs_files(srcdir, OTHER_FILES)
         destlib = get_abs_files(srcdir, [DEST_LIB])[0]
         if check_build_code(srcfiles + ofiles + [__file__], destlib):
-            if check_gcc_option(SSE_FLAGS):
-                cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
+            if check_gcc_option(NATIVE_FLAGS):
+                cmd = "%s %s %s" % (GCC_CMD, NATIVE_FLAGS, COMPILE_ARGS)
             else:
                 cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
             logging.info("Building C code module %s", DEST_LIB)
