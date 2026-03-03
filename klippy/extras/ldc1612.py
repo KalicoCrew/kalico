@@ -13,7 +13,7 @@ BATCH_UPDATES = 0.100
 
 LDC1612_ADDR = 0x2A
 
-LDC1612_FREQ = 12000000
+DEFAULT_LDC1612_FREQ = 12000000
 SETTLETIME = 0.005
 DRIVECUR = 15
 DEGLITCH = 0x05  # 10 Mhz
@@ -100,6 +100,9 @@ class LDC1612:
         self.oid = oid = mcu.create_oid()
         self.query_ldc1612_cmd = None
         self.ldc1612_setup_home_cmd = self.query_ldc1612_home_state_cmd = None
+        self.frequency = config.getint(
+            "frequency", DEFAULT_LDC1612_FREQ, 2000000, 40000000
+        )
         if config.get("intb_pin", None) is not None:
             ppins = config.get_printer().lookup_object("pins")
             pin_params = ppins.lookup_pin(config.get("intb_pin"))
@@ -176,7 +179,7 @@ class LDC1612:
         self, print_time, trigger_freq, trsync_oid, hit_reason, err_reason
     ):
         clock = self.mcu.print_time_to_clock(print_time)
-        tfreq = int(trigger_freq * (1 << 28) / float(LDC1612_FREQ) + 0.5)
+        tfreq = int(trigger_freq * (1 << 28) / float(self.frequency) + 0.5)
         self.ldc1612_setup_home_cmd.send(
             [self.oid, clock, tfreq, trsync_oid, hit_reason, err_reason]
         )
@@ -191,7 +194,7 @@ class LDC1612:
 
     # Measurement decoding
     def _convert_samples(self, samples):
-        freq_conv = float(LDC1612_FREQ) / (1 << 28)
+        freq_conv = float(self.frequency) / (1 << 28)
         count = 0
         for ptime, val in samples:
             mv = val & 0x0FFFFFFF
@@ -214,11 +217,11 @@ class LDC1612:
                 % (manuf_id, dev_id, LDC1612_MANUF_ID, LDC1612_DEV_ID)
             )
         # Setup chip in requested query rate
-        rcount0 = LDC1612_FREQ / (16.0 * (self.data_rate - 4))
+        rcount0 = self.frequency / (16.0 * (self.data_rate - 4))
         self.set_reg(REG_RCOUNT0, int(rcount0 + 0.5))
         self.set_reg(REG_OFFSET0, 0)
         self.set_reg(
-            REG_SETTLECOUNT0, int(SETTLETIME * LDC1612_FREQ / 16.0 + 0.5)
+            REG_SETTLECOUNT0, int(SETTLETIME * self.frequency / 16.0 + 0.5)
         )
         self.set_reg(REG_CLOCK_DIVIDERS0, (1 << 12) | 1)
         self.set_reg(REG_ERROR_CONFIG, (0x1F << 11) | 1)
