@@ -1,8 +1,12 @@
-import math
 import logging
+import math
 
 AMBIENT_TEMP = 25.0
 PIN_MIN_TIME = 0.100
+
+FILAMENT_TEMP_SRC_AMBIENT = "ambient"
+FILAMENT_TEMP_SRC_FIXED = "fixed"
+FILAMENT_TEMP_SRC_SENSOR = "sensor"
 
 
 class ControlMPC:
@@ -59,6 +63,46 @@ class ControlMPC:
         self.const_filament_heat_capacity = gcmd.get_float(
             "FILAMENT_HEAT_CAPACITY", self.const_filament_heat_capacity
         )
+
+        self.const_block_heat_capacity = gcmd.get_float(
+            "BLOCK_HEAT_CAPACITY", self.const_block_heat_capacity
+        )
+        self.const_sensor_responsiveness = gcmd.get_float(
+            "SENSOR_RESPONSIVENESS", self.const_sensor_responsiveness
+        )
+        self.const_ambient_transfer = gcmd.get_float(
+            "AMBIENT_TRANSFER", self.const_ambient_transfer
+        )
+
+        if gcmd.get("FAN_AMBIENT_TRANSFER", None):
+            try:
+                self.const_fan_ambient_transfer = [
+                    float(v)
+                    for v in gcmd.get("FAN_AMBIENT_TRANSFER").split(",")
+                ]
+            except ValueError:
+                raise gcmd.error(
+                    f"Error on '{gcmd._commandline}': unable to parse FAN_AMBIENT_TRANSFER\n"
+                    "Must be a comma-separated list of values ('0.05,0.07,0.08')"
+                )
+
+        temp = gcmd.get("FILAMENT_TEMP", None)
+        if temp is not None:
+            temp = temp.lower().strip()
+            if temp == "sensor":
+                self.filament_temp_src = (FILAMENT_TEMP_SRC_SENSOR,)
+            elif temp == "ambient":
+                self.filament_temp_src = (FILAMENT_TEMP_SRC_AMBIENT,)
+            else:
+                try:
+                    value = float(temp)
+                except ValueError:
+                    raise gcmd.error(
+                        f"Error on '{gcmd._commandline}': unable to parse FILAMENT_TEMP\n"
+                        "Valid options are 'sensor', 'ambient', or number."
+                    )
+                self.filament_temp_src = (FILAMENT_TEMP_SRC_FIXED, value)
+
         self._update_filament_const()
 
     cmd_MPC_CALIBRATE_help = "Run MPC calibration"
@@ -86,6 +130,8 @@ class ControlMPC:
         self.const_filament_heat_capacity = self.profile[
             "filament_heat_capacity"
         ]
+        self.const_maximum_retract = self.profile["maximum_retract"]
+        self.filament_temp_src = self.profile["filament_temp_src"]
         self._update_filament_const()
         self.ambient_sensor = self.profile["ambient_temp_sensor"]
         self.cooling_fan = self.profile["cooling_fan"]
@@ -126,25 +172,30 @@ class ControlMPC:
             return
 
         dt = read_time - self.last_temp_time
-        if self.last_temp_time == 0.0:
+        if self.last_temp_time == 0.0 or dt < 0.0 or dt > 1.0:
             dt = 0.1
 
         # Extruder position
         extrude_speed_prev = 0.0
         extrude_speed_next = 0.0
-        if self.toolhead is None:
-            self.toolhead = self.printer.lookup_object("toolhead")
-        if self.toolhead is not None:
-            extruder = self.toolhead.get_extruder()
-            if (
-                hasattr(extruder, "find_past_position")
-                and extruder.get_heater() == self.heater
-            ):
-                pos_prev = extruder.find_past_position(read_time - dt)
-                pos = extruder.find_past_position(read_time)
-                pos_next = extruder.find_past_position(read_time + dt)
-                extrude_speed_prev = max(0.0, (pos - pos_prev)) / dt
-                extrude_speed_next = max(0.0, (pos_next - pos)) / dt
+        if target_temp != 0.0:
+            if self.toolhead is None:
+                self.toolhead = self.printer.lookup_object("toolhead")
+            if self.toolhead is not None:
+                extruder = self.toolhead.get_extruder()
+                if (
+                    hasattr(extruder, "find_past_position")
+                    and extruder.get_heater() == self.heater
+                ):
+                    pos = extruder.find_past_position(read_time)
+
+                    pos_prev = extruder.find_past_position(read_time - dt)
+                    pos_moved = max(-self.const_maximum_retract, pos - pos_prev)
+                    extrude_speed_prev = pos_moved / dt
+
+                    pos_next = extruder.find_past_position(read_time + dt)
+                    pos_move = max(-self.const_maximum_retract, pos_next - pos)
+                    extrude_speed_next = pos_move / dt
 
         # Modulate ambient transfer coefficient with fan speed
         ambient_transfer = self.const_ambient_transfer
@@ -231,8 +282,11 @@ class ControlMPC:
         # Losses (+ = lost from block, - = gained to block)
         block_ambient_delta = self.state_block_temp - self.state_ambient_temp
         loss_ambient = block_ambient_delta * ambient_transfer
+        block_filament_delta = self.state_block_temp - self.filament_temp(
+            read_time, self.state_ambient_temp
+        )
         loss_filament = (
-            block_ambient_delta
+            block_filament_delta
             * extrude_speed_next
             * self.const_filament_cross_section_heat_capacity
         )
@@ -275,6 +329,18 @@ class ControlMPC:
         self.last_temp_time = read_time
         self.heater.set_pwm(read_time, duty)
 
+    def filament_temp(self, read_time, ambient_temp):
+        src = self.filament_temp_src
+        if src[0] == FILAMENT_TEMP_SRC_FIXED:
+            return src[1]
+        elif (
+            src[0] == FILAMENT_TEMP_SRC_SENSOR
+            and self.ambient_sensor is not None
+        ):
+            return self.ambient_sensor.get_temp(read_time)[0]
+        else:
+            return ambient_temp
+
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         return abs(target_temp - smoothed_temp) > 1.0
 
@@ -295,6 +361,9 @@ class ControlMPC:
             "power": self.last_power,
             "loss_ambient": self.last_loss_ambient,
             "loss_filament": self.last_loss_filament,
+            "filament_temp": self.filament_temp_src,
+            "filament_heat_capacity": self.const_filament_heat_capacity,
+            "filament_density": self.const_filament_density,
         }
 
 
@@ -313,7 +382,10 @@ class MpcCalibrate:
             "AMBIENT_MEASURE_SAMPLE_TIME", 5.0, below=ambient_max_measure_time
         )
         fan_breakpoints = gcmd.get_int("FAN_BREAKPOINTS", 3, minval=2)
-        target_temp = gcmd.get_float("TARGET", 200.0, minval=90.0)
+        default_target_temp = (
+            90.0 if self.heater.get_name() == "heater_bed" else 200.0
+        )
+        target_temp = gcmd.get_float("TARGET", default_target_temp, minval=60.0)
         threshold_temp = gcmd.get_float(
             "THRESHOLD", max(50.0, min(100, target_temp - 100.0))
         )
@@ -350,7 +422,6 @@ class MpcCalibrate:
                 ambient_max_measure_time,
                 ambient_measure_sample_time,
                 fan_breakpoints,
-                new_control,
                 first_res,
             )
             second_res = self.process_second_pass(
@@ -411,6 +482,41 @@ class MpcCalibrate:
             self.heater.set_control(old_control)
             self.heater.alter_target(0.0)
 
+    def wait_stable(self, cycles=5):
+        """
+        We wait for the extruder to cycle x amount of times above and below the target
+        doing this should ensure the temperature is stable enough to give a good result
+        as a fallback if it stays within 0.1 degree for ~30 seconds it is also accepted
+        """
+
+        below_target = True
+        above_target = 0
+        on_target = 0
+        starttime = self.printer.reactor.monotonic()
+
+        def process(eventtime):
+            nonlocal below_target, above_target, on_target
+            temp, target = self.heater.get_temp(eventtime)
+            if below_target and temp > target + 0.015:
+                above_target += 1
+                below_target = False
+            elif not below_target and temp < target - 0.015:
+                below_target = True
+            if (
+                above_target >= cycles
+                and (self.printer.reactor.monotonic() - starttime) > 30.0
+            ):
+                return False
+            if above_target > 0 and abs(target - temp) < 0.1:
+                on_target += 1
+            else:
+                on_target = 0
+            if on_target >= 150:  # in case the heating is super consistent
+                return False
+            return True
+
+        self.printer.wait_while(process, True, 0.2)
+
     def wait_settle(self, max_rate):
         last_temp = None
         next_check = None
@@ -444,7 +550,7 @@ class MpcCalibrate:
                 ret = temp > target
                 if ret and not reported[0]:
                     gcmd.respond_info(
-                        f"Waiting for heater to drop below {target} degrees celcius"
+                        f"Waiting for heater to drop below {target} degrees Celsius"
                     )
                     reported[0] = True
                 return ret
@@ -486,7 +592,6 @@ class MpcCalibrate:
         ambient_max_measure_time,
         ambient_measure_sample_time,
         fan_breakpoints,
-        control,
         first_pass_results,
     ):
         target_temp = round(first_pass_results["post_block_temp"])
@@ -496,8 +601,7 @@ class MpcCalibrate:
             % (target_temp,)
         )
 
-        self.wait_settle(0.2)
-        gcmd.respond_info("Temperature stable, performing power tests")
+        self.wait_stable(5)
 
         fan = self.orig_control.cooling_fan
 
@@ -508,22 +612,26 @@ class MpcCalibrate:
             )
             gcmd.respond_info(f"Average stable power: {power_base} W")
         else:
-            if fan is not None:
-                for idx in range(0, fan_breakpoints):
-                    speed = idx / (fan_breakpoints - 1)
-                    curtime = self.heater.reactor.monotonic()
-                    print_time = fan.get_mcu().estimated_print_time(curtime)
-                    fan.set_speed(print_time + PIN_MIN_TIME, speed)
-                    power = self.measure_power(
-                        ambient_max_measure_time, ambient_measure_sample_time
-                    )
-                    gcmd.respond_info(
-                        f"{speed*100.:.0f}% fan average power: {power:.2f} W"
-                    )
-                    fan_powers.append((speed, power))
+            for idx in range(0, fan_breakpoints):
+                speed = idx / (fan_breakpoints - 1)
                 curtime = self.heater.reactor.monotonic()
                 print_time = fan.get_mcu().estimated_print_time(curtime)
-                fan.set_speed(print_time + PIN_MIN_TIME, 0.0)
+                fan.set_speed(print_time + PIN_MIN_TIME, speed)
+                gcmd.respond_info("Waiting for temperature to stabilize")
+                self.wait_stable(3)
+                gcmd.respond_info(
+                    f"Temperature stable, measuring power usage with {speed * 100.0:.0f}% fan speed"
+                )
+                power = self.measure_power(
+                    ambient_max_measure_time, ambient_measure_sample_time
+                )
+                gcmd.respond_info(
+                    f"{speed * 100.0:.0f}% fan average power: {power:.2f} W"
+                )
+                fan_powers.append((speed, power))
+            curtime = self.heater.reactor.monotonic()
+            print_time = fan.get_mcu().estimated_print_time(curtime)
+            fan.set_speed(print_time + PIN_MIN_TIME, 0.0)
             power_base = fan_powers[0][1]
 
         return {

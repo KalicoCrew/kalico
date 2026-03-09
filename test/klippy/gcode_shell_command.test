@@ -2,4 +2,4 @@
 CONFIG gcode_shell_command.cfg
 DICTIONARY atmega2560.dict
 
-HELLO_WORLD
+RUN_SHELL_COMMAND CMD=HELLO_WORLD

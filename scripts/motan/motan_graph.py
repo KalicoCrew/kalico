@@ -4,9 +4,13 @@
 # Copyright (C) 2019-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, optparse, ast
+import ast
+import optparse
+import sys
+
+import analyzers
 import matplotlib
-import readlog, analyzers
+import readlog
 
 try:
     import urlparse
@@ -75,7 +79,9 @@ def setup_matplotlib(output_to_file):
     global matplotlib
     if output_to_file:
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 

@@ -2,14 +2,14 @@
 
 ### Creator of this extension is [Arksine](https://github.com/Arksine).
 
-This is a brief explanation of how to use the shell command extension for Klipper, which you can install with KIAUH.
+This is a brief explanation of how to use the shell command extension for Kalico, which you can install with KIAUH.
 
-After installing the extension you can execute linux commands or even scripts from within Klipper with custom commands defined in your printer.cfg.
+After installing the extension you can execute linux commands or even scripts from within Kalico with custom commands defined in your printer.cfg.
 
 #### How to configure a shell command:
 
 ```shell
-# Runs a linux command or script from within klipper.  Note that sudo commands
+# Runs a linux command or script from within Kalico.  Note that sudo commands
 # that require password authentication are disallowed. All executable scripts
 # should include a shebang.
 # [gcode_shell_command my_shell_cmd]
@@ -51,7 +51,7 @@ Content of the `gcode_shell_command` and the `gcode_macro`:
 
 ```
 [gcode_shell_command print_to_file]
-command: sh /home/pi/klipper_config/script.sh
+command: sh /home/pi/printer_data/config/script.sh
 timeout: 30.
 verbose: True
 

@@ -7,8 +7,9 @@
 # Copyright (C) 2023       Alan Smith <alan@airpost.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from math import acos, atan2, cos, fabs, floor, hypot, pi, sin, sqrt
+
 from . import probe
-from math import atan2, acos, cos, floor, fabs, hypot, pi, sin, sqrt
 
 PROBE_VERIFY_DELAY = 0.1
 
@@ -29,6 +30,11 @@ At least one of the following must be specified:
 'check_open_attach', 'probe_sense_pin', 'dock_sense_pin'
 
 Please see {0}.md and config_Reference.md.
+"""
+
+VIRTUAL_Z_ENDSTOP_ERROR = """
+DockableProbe cannot be used as Z endstop if a z position
+is defined in approach/dock/extract."
 """
 
 
@@ -232,6 +238,20 @@ class DockableProbe:
             config, "deactivate_gcode", ""
         )
 
+        self.pre_attach_gcode = gcode_macro.load_template(
+            config, "pre_attach_gcode", ""
+        )
+        self.post_attach_gcode = gcode_macro.load_template(
+            config, "post_attach_gcode", ""
+        )
+
+        self.pre_detach_gcode = gcode_macro.load_template(
+            config, "pre_detach_gcode", ""
+        )
+        self.post_detach_gcode = gcode_macro.load_template(
+            config, "post_detach_gcode", ""
+        )
+
         # Pins
         ppins = self.printer.lookup_object("pins")
         pin = config.get("pin")
@@ -360,6 +380,15 @@ class DockableProbe:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        rails = self.toolhead.get_kinematics().rails
+        endstops = [es for rail in rails for es, name in rail.get_endstops()]
+        positions = [
+            self.approach_position,
+            self.dock_position,
+            self.extract_position,
+        ]
+        if self in endstops and any(pos[2] is not None for pos in positions):
+            raise self.printer.config_error(VIRTUAL_Z_ENDSTOP_ERROR)
 
     #######################################################################
     # GCode Commands
@@ -384,7 +413,7 @@ class DockableProbe:
         }
 
     cmd_MOVE_TO_APPROACH_PROBE_help = (
-        "Move close to the probe dock" "before attaching"
+        "Move close to the probe dock before attaching"
     )
 
     def cmd_MOVE_TO_APPROACH_PROBE(self, gcmd):
@@ -398,7 +427,7 @@ class DockableProbe:
             )
 
     cmd_MOVE_TO_DOCK_PROBE_help = (
-        "Move to connect the toolhead/dock" "to the probe"
+        "Move to connect the toolhead/dock to the probe"
     )
 
     def cmd_MOVE_TO_DOCK_PROBE(self, gcmd):
@@ -413,7 +442,7 @@ class DockableProbe:
         )
 
     cmd_MOVE_TO_EXTRACT_PROBE_help = (
-        "Move away from the dock with the" "probe attached"
+        "Move away from the dock with the probe attached"
     )
 
     def cmd_MOVE_TO_EXTRACT_PROBE(self, gcmd):
@@ -428,7 +457,7 @@ class DockableProbe:
         )
 
     cmd_MOVE_TO_INSERT_PROBE_help = (
-        "Move near the dock with the" "probe attached before detaching"
+        "Move near the dock with the probe attached before detaching"
     )
 
     def cmd_MOVE_TO_INSERT_PROBE(self, gcmd):
@@ -440,7 +469,7 @@ class DockableProbe:
             )
 
     cmd_MOVE_TO_DETACH_PROBE_help = (
-        "Move away from the dock to detach" "the probe"
+        "Move away from the dock to detach the probe"
     )
 
     def cmd_MOVE_TO_DETACH_PROBE(self, gcmd):
@@ -467,7 +496,7 @@ class DockableProbe:
             self.auto_attach_detach = False
 
     cmd_ATTACH_PROBE_help = (
-        "Check probe status and attach probe using" "the movement gcodes"
+        "Check probe status and attach probe using the movement gcodes"
     )
 
     def cmd_ATTACH_PROBE(self, gcmd):
@@ -475,7 +504,7 @@ class DockableProbe:
         self.attach_probe(return_pos)
 
     cmd_DETACH_PROBE_help = (
-        "Check probe status and detach probe using" "the movement gcodes"
+        "Check probe status and detach probe using the movement gcodes"
     )
 
     def cmd_DETACH_PROBE(self, gcmd):
@@ -503,6 +532,7 @@ class DockableProbe:
                 raise self.printer.command_error(
                     "Attach Probe: Probe not detected in dock, aborting"
                 )
+            self.pre_attach_gcode.run_gcode_from_command()
             # Call these gcodes as a script because we don't have enough
             # structs/data to call the cmd_...() funcs and supply 'gcmd'.
             # This method also has the advantage of calling user-written gcodes
@@ -514,6 +544,7 @@ class DockableProbe:
                 MOVE_TO_EXTRACT_PROBE
             """
             )
+            self.post_attach_gcode.run_gcode_from_command()
 
             retry += 1
 
@@ -533,6 +564,7 @@ class DockableProbe:
             self.get_probe_state() != PROBE_DOCKED
             and retry < self.dock_retries + 1
         ):
+            self.pre_detach_gcode.run_gcode_from_command()
             # Call these gcodes as a script because we don't have enough
             # structs/data to call the cmd_...() funcs and supply 'gcmd'.
             # This method also has the advantage of calling user-written gcodes
@@ -544,6 +576,7 @@ class DockableProbe:
                 MOVE_TO_DETACH_PROBE
             """
             )
+            self.post_detach_gcode.run_gcode_from_command()
 
             retry += 1
 
@@ -584,16 +617,19 @@ class DockableProbe:
     # Move to position avoiding the dock
     def _move_avoiding_dock(self, end_point, speed):
         start_point = self.toolhead.get_position()[:2]
-        if not start_point:
-            return
         end_point = end_point[:2]
         dock = self.dock_position[:2]
+        if not start_point or start_point == end_point:
+            return
         radius = self.safe_dock_distance
+        if radius == 0:
+            self.toolhead.manual_move([end_point[0], end_point[1], None], speed)
+            return
 
-        # redefine star_point outside safe dock area
+        # redefine start_point outside safe dock area
         coords = []
         if radius > self._get_distance(dock, start_point):
-            start_point = self._get_closest_exitpoint(start_point)
+            start_point = self._get_closest_exitpoint(start_point, end_point)
             coords.append(start_point)
 
         # Check if trajectory intersect safe dock area
@@ -660,20 +696,28 @@ class DockableProbe:
         return [(x_tangent1, y_tangent1), (x_tangent2, y_tangent2)]
 
     # determine closest exit point X or Y while toolhead inside safe_dock_zone
-    def _get_closest_exitpoint(self, point1):
+    def _get_closest_exitpoint(self, point1, point2):
         cx, cy = self.dock_position[:2]
-        x1, y1 = point1[:2]
-        dx, dy = x1 - cx, y1 - cy
+        # Choose point2 if point1 is the dock position
+        if point1[:2] != [cx, cy]:
+            dx, dy = point1[0] - cx, point1[1] - cy
+            reference_point = point1[:2]
+        elif point2[:2] != [cx, cy]:
+            dx, dy = point2[0] - cx, point2[1] - cy
+            reference_point = point2[:2]
+        else:
+            raise self.printer.command_error(
+                "_move_avoiding_dock : Unable to determine exit point"
+            )
         d = hypot(dx, dy)
-        if d == 0:
-            return self.detach_position
-        magnitude = self.safe_dock_distance
+        # Ensure exit point is outside dock area.
+        magnitude = self.safe_dock_distance + 10e-8
         x1 = cx + magnitude * dx / d
         y1 = cy + magnitude * dy / d
         x2 = cx - magnitude * dx / d
         y2 = cy - magnitude * dy / d
 
-        return self._get_closest_point(point1, [(x1, y1), (x2, y2)])
+        return self._get_closest_point(reference_point, [(x1, y1), (x2, y2)])
 
     # determine intersect points between a line and a circle
     def _get_intersect_points(self, point1, point2):
@@ -809,7 +853,7 @@ class DockableProbe:
         )
         self.toolhead.manual_move([None, None, self.z_hop], self.lift_speed)
         kin = self.toolhead.get_kinematics()
-        kin.note_z_not_homed()
+        kin.clear_homing_state([2])
         self.last_z = self.toolhead.get_position()[2]
 
     #######################################################################
@@ -891,7 +935,7 @@ class DockableProbe:
     def get_position_endstop(self):
         return self.position_endstop
 
-    def probing_move(self, pos, speed):
+    def probing_move(self, pos, speed, gcmd):
         phoming = self.printer.lookup_object("homing")
         return phoming.probing_move(self, pos, speed)
 

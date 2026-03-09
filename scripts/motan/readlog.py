@@ -3,8 +3,9 @@
 # Copyright (C) 2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import json, zlib
+import json
 import logging
+import zlib
 
 
 class error(Exception):
@@ -351,7 +352,7 @@ class HandleStepPhase:
                 self._pull_block(req_time)
                 continue
             step_pos = step_data[data_pos][1]
-            return (step_pos - self.mcu_phase_offset) % self.phases
+            return (step_pos + self.mcu_phase_offset) % self.phases
 
     def _pull_block(self, req_time):
         step_data = self.step_data

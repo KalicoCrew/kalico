@@ -79,6 +79,8 @@ class PrinterNeoPixel:
             color_data[cdidx] = int(led_state[lidx][cidx] * 255.0 + 0.5)
 
     def send_data(self, print_time=None):
+        if self.mcu.non_critical_disconnected:
+            return
         old_data, new_data = self.old_color_data, self.color_data
         if new_data == old_data:
             return

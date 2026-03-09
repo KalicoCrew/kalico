@@ -12,7 +12,7 @@
 #include "internal.h" // enable_pclock
 #include "sched.h" // sched_main
 
-#define FREQ_PERIPH_DIV 1
+#define FREQ_PERIPH_DIV 2
 #define FREQ_PERIPH (CONFIG_CLOCK_FREQ / FREQ_PERIPH_DIV)
 
 // Map a peripheral address to its enable bits
@@ -83,9 +83,16 @@ DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PF0,PF1");
 static void
 enable_clock_stm32g4(void)
 {
-    uint32_t pll_base = 4000000, pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
+    uint32_t pll_freq = CONFIG_CLOCK_FREQ * 2, pllcfgr;
+    uint32_t pll_base;
+
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure 150Mhz PLL from external crystal (HSE)
+#if CONFIG_CLOCK_REF_FREQ % 5000000 == 0
+        pll_base = 5000000;
+#else
+        pll_base = 4000000;
+#endif
         uint32_t div = CONFIG_CLOCK_REF_FREQ / pll_base - 1;
         RCC->CR |= RCC_CR_HSEON;
         while (!(RCC->CR & RCC_CR_HSERDY))
@@ -93,6 +100,7 @@ enable_clock_stm32g4(void)
         pllcfgr = RCC_PLLCFGR_PLLSRC_HSE | (div << RCC_PLLCFGR_PLLM_Pos);
     } else {
         // Configure 150Mhz PLL from internal 16Mhz oscillator (HSI)
+        pll_base = 4000000;
         uint32_t div = 16000000 / pll_base - 1;
         pllcfgr = RCC_PLLCFGR_PLLSRC_HSI | (div << RCC_PLLCFGR_PLLM_Pos);
         RCC->CR |= RCC_CR_HSION;
@@ -104,7 +112,7 @@ enable_clock_stm32g4(void)
     RCC->CR |= RCC_CR_PLLON;
 
     // Enable 48Mhz USB clock using clock recovery
-    if (CONFIG_USBSERIAL) {
+    if (CONFIG_USB) {
         RCC->CRRCR |= RCC_CRRCR_HSI48ON;
         while (!(RCC->CRRCR & RCC_CRRCR_HSI48RDY))
             ;
@@ -142,7 +150,7 @@ clock_setup(void)
     RCC->PLLCFGR |= RCC_PLLCFGR_PLLREN;
 
     // Switch system clock to PLL
-    RCC->CFGR = RCC_CFGR_HPRE_DIV1 | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1
+    RCC->CFGR = RCC_CFGR_HPRE_DIV1 | RCC_CFGR_PPRE1_DIV2 | RCC_CFGR_PPRE2_DIV2
                 | RCC_CFGR_SW_PLL;
     while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_PLL)
         ;

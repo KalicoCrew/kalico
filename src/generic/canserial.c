@@ -2,7 +2,7 @@
 //
 // Copyright (C) 2019 Eug Krashtan <eug.krashtan@gmail.com>
 // Copyright (C) 2020 Pontus Borg <glpontus@gmail.com>
-// Copyright (C) 2021  Kevin O'Connor <kevin@koconnor.net>
+// Copyright (C) 2021-2025  Kevin O'Connor <kevin@koconnor.net>
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -99,14 +99,12 @@ console_sendf(const struct command_encoder *ce, va_list args)
     }
 
     // Generate message
-    uint32_t msglen = command_encode_and_frame(&CanData.transmit_buf[tmax]
-                                               , ce, args);
+    uint32_t msglen = command_encode_and_frame(&CanData.transmit_buf[tmax], ce, args);
 
     // Start message transmit
     CanData.transmit_max = tmax + msglen;
     canserial_notify_tx();
 }
-
 
 /****************************************************************
  * CAN "admin" command handling
@@ -114,9 +112,14 @@ console_sendf(const struct command_encoder *ce, va_list args)
 
 // Available commands and responses
 #define CANBUS_CMD_QUERY_UNASSIGNED 0x00
+#define CANBUS_CMD_QUERY_EXTENDED 0x01
 #define CANBUS_CMD_SET_KLIPPER_NODEID 0x01
 #define CANBUS_CMD_REQUEST_BOOTLOADER 0x02
+
+#define CANBUS_RESP_KLIPPER_NODEID 0x01
+#define CANBUS_RESP_KALICO_NODEID 0x07
 #define CANBUS_RESP_NEED_NODEID 0x20
+#define CANBUS_RESP_HAVE_NODEID 0x21
 
 // Helper to verify a UUID in a command matches this chip's UUID
 static int
@@ -143,14 +146,29 @@ can_decode_nodeid(int nodeid)
 static void
 can_process_query_unassigned(struct canbus_msg *msg)
 {
-    if (CanData.assigned_id)
+    uint8_t is_extended_query = // Kalico addition
+        msg->dlc > 1
+            ? msg->data[1] & CANBUS_CMD_QUERY_EXTENDED
+            : 0;
+    if (CanData.assigned_id && !is_extended_query)
         return;
     struct canbus_msg send;
     send.id = CANBUS_ID_ADMIN_RESP;
     send.dlc = 8;
     send.data[0] = CANBUS_RESP_NEED_NODEID;
     memcpy(&send.data[1], CanData.uuid, sizeof(CanData.uuid));
-    send.data[7] = CANBUS_CMD_SET_KLIPPER_NODEID;
+
+    if (is_extended_query) {
+        if (CanData.assigned_id) {
+            send.data[0] = CANBUS_RESP_HAVE_NODEID;
+            send.data[7] = can_get_nodeid();
+        } else {
+            send.data[7] = CANBUS_RESP_KALICO_NODEID;
+        }
+    } else {
+        send.data[7] = CANBUS_RESP_KLIPPER_NODEID;
+    }
+
     // Send with retry
     for (;;) {
         int ret = canbus_send(&send);
@@ -317,6 +335,25 @@ DECL_TASK(canserial_rx_task);
 /****************************************************************
  * Setup and shutdown
  ****************************************************************/
+
+DECL_ENUMERATION("canbus_bus_state", "active", CANBUS_STATE_ACTIVE);
+DECL_ENUMERATION("canbus_bus_state", "warn", CANBUS_STATE_WARN);
+DECL_ENUMERATION("canbus_bus_state", "passive", CANBUS_STATE_PASSIVE);
+DECL_ENUMERATION("canbus_bus_state", "off", CANBUS_STATE_OFF);
+
+void
+command_get_canbus_status(uint32_t *args)
+{
+    struct canbus_status status;
+    memset(&status, 0, sizeof(status));
+    canhw_get_status(&status);
+    sendf("canbus_status rx_error=%u tx_error=%u tx_retries=%u"
+          " canbus_bus_state=%u"
+          , status.rx_error, status.tx_error, status.tx_retries
+          , status.bus_state);
+}
+DECL_COMMAND_FLAGS(command_get_canbus_status, HF_IN_SHUTDOWN
+                   , "get_canbus_status");
 
 void
 command_get_canbus_id(uint32_t *args)

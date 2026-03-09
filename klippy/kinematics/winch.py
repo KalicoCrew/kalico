@@ -3,7 +3,7 @@
 # Copyright (C) 2018-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper, mathutil
+from klippy import mathutil, stepper
 
 
 class WinchKinematics:
@@ -41,6 +41,10 @@ class WinchKinematics:
     def set_position(self, newpos, homing_axes):
         for s in self.steppers:
             s.set_position(newpos)
+
+    def clear_homing_state(self, axes):
+        # XXX - homing not implemented
+        pass
 
     def home(self, homing_state):
         # XXX - homing not implemented

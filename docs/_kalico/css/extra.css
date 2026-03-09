@@ -1,0 +1,36 @@
+/* Customization of mkdocs generated site */
+
+[data-md-color-scheme="slate"] {
+    --md-hue: 40; 
+}
+
+.md-logo {
+    transform: scale(1.6);
+    transition: transform 0.2s;
+    transition-timing-function: ease-in-out;
+}
+
+.md-logo:hover {
+    opacity: 1;
+    transform: scale(1.8) rotate(10deg);
+}
+
+img {
+    background-color: white;
+}
+
+.md-logo img, img.nobg {
+    background-color: transparent !important;
+}
+
+.center-image {
+    margin: 0 auto;
+    display: block;
+}
+
+.main-logo {
+    width: 300px;
+    height: 300px;
+    margin-top: 4rem;
+    margin-bottom: 4rem;
+}

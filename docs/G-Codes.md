@@ -1,11 +1,13 @@
 # G-Codes
 
-This document describes the commands that Klipper supports. These are
+This document describes the commands that Kalico supports. These are
 commands that one may enter into the OctoPrint terminal tab.
+
+Sections and commands marked with an ⚠️ show commands that are new or behave differently from Klipper
 
 ## G-Code commands
 
-Klipper supports the following standard G-Code commands:
+Kalico supports the following standard G-Code commands:
 - Move (G0 or G1): `G1 [X<pos>] [Y<pos>] [Z<pos>] [E<pos>] [F<speed>]`
 - Dwell: `G4 P<milliseconds>`
 - Move to origin: `G28 [X] [Y] [Z]`
@@ -25,6 +27,7 @@ Klipper supports the following standard G-Code commands:
 - Set extruder temperature and wait: `M109 [T<index>] S<temperature>`
   - Note: M109 always waits for temperature to settle at requested
     value
+- Enable Cold Extrusion: `M302 [T<index>] [P<enable>] [S<min_extrude_temp>]
 - Set bed temperature: `M140 [S<temperature>]`
 - Set bed temperature and wait: `M190 S<temperature>`
   - Note: M190 always waits for temperature to settle at requested
@@ -38,13 +41,13 @@ Klipper supports the following standard G-Code commands:
 For further details on the above commands see the
 [RepRap G-Code documentation](http://reprap.org/wiki/G-code).
 
-Klipper's goal is to support the G-Code commands produced by common
+Kalico's goal is to support the G-Code commands produced by common
 3rd party software (eg, OctoPrint, Printrun, Slic3r, Cura, etc.) in
 their standard configurations. It is not a goal to support every
-possible G-Code command. Instead, Klipper prefers human readable
+possible G-Code command. Instead, Kalico prefers human readable
 ["extended G-Code commands"](#additional-commands). Similarly, the
 G-Code terminal output is only intended to be human readable - see the
-[API Server document](API_Server.md) if controlling Klipper from
+[API Server document](API_Server.md) if controlling Kalico from
 external software.
 
 If one requires a less common G-Code command then it may be possible
@@ -55,7 +58,7 @@ example, one might use this to implement: `G12`, `G29`, `G30`, `G31`,
 
 ## Additional Commands
 
-Klipper uses "extended" G-Code commands for general configuration and
+Kalico uses "extended" G-Code commands for general configuration and
 status. These extended commands all follow a similar format - they
 start with a command name and may be followed by one or more
 parameters. For example: `SET_SERVO SERVO=myservo ANGLE=5.3`. In this
@@ -63,7 +66,7 @@ document, the commands and parameters are shown in uppercase, however
 they are not case sensitive. (So, "SET_SERVO" and "set_servo" both run
 the same command.)
 
-This section is organized by Klipper module name, which generally
+This section is organized by Kalico module name, which generally
 follows the section names specified in the
 [printer configuration file](Config_Reference.md). Note that some
 modules are automatically loaded.
@@ -134,6 +137,14 @@ use this tool the Python "numpy" package must be installed (see the
 [measuring resonance document](Measuring_Resonances.md#software-installation)
 for more information).
 
+#### ANGLE_CHIP_CALIBRATE
+`ANGLE_CHIP_CALIBRATE CHIP=<chip_name>`: Perform internal sensor calibration,
+if implemented (MT6826S/MT6835).
+
+- **MT68XX**: The motor should be disconnected
+from any printer carriage before performing calibration.
+After calibration, the sensor should be reset by disconnecting the power.
+
 #### ANGLE_DEBUG_READ
 `ANGLE_DEBUG_READ CHIP=<config_name> REG=<register>`: Queries sensor
 register "register" (e.g. 44 or 0x2C). Can be useful for debugging
@@ -153,9 +164,17 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [SAMPLE_COUNT=<value>]`: Initiates the X
-twist calibration wizard. `SAMPLE_COUNT` specifies the number of points along
-the X axis to calibrate at and defaults to 3.
+`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>]
+[SAMPLE_COUNT=<value>] [<probe_parameter>=<value>]`:
+
+Calibrates axis twist compensation by specifying the target axis or
+enabling automatic calibration.
+
+- **SAMPLE_COUNT:** Number of points tested during the calibration.
+If not specified, it defaults to 3.
+
+- **AXIS:** Define the axis (`X` or `Y`) for which the twist compensation
+will be calibrated. If not specified, the axis defaults to `'X'`.
 
 ### [bed_mesh]
 
@@ -215,6 +234,16 @@ adjustment after a tool change.  Note that a ZFADE offset does not apply
 additional z-adjustment directly, it is used to correct the `fade`
 calculation when a `gcode offset` has been applied to the Z axis.
 
+#### BED_MESH_CHECK
+`BED_MESH_CHECK [MAX_DEVIATION=<value>] [MAX_SLOPE=<value>]`: Validates the
+current bed mesh against specified criteria. If MAX_DEVIATION is specified,
+checks that the difference between the highest and lowest mesh points does not
+exceed the provided value. If MAX_SLOPE is specified, checks that the maximum
+slope between adjacent mesh points does not exceed the provided value (in mm/mm).
+The command will raise an error if any specified check fails, or display a message
+confirming the mesh is valid if all checks pass. If no parameters are specified,
+the command will list the available validation checks.
+
 ### [bed_screws]
 
 The following commands are available when the
@@ -247,6 +276,12 @@ is active. The optional `HORIZONTAL_MOVE_Z` value overrides the
 
 The following commands are available when a
 [belay config section](Config_Reference.md#belay) is enabled.
+
+#### BELAY_ENABLE
+`BELAY_ENABLE BELAY=<config_name>`: Enable compensation for belay specified by `BELAY`.
+
+#### BELAY_DISABLE
+`BELAY_DISABLE BELAY=<config_name>`: Disable compensation for belay specified by `BELAY`. This setting will not persist across restarts.
 
 #### QUERY_BELAY
 `QUERY_BELAY BELAY=<config_name>`: Queries the state of the belay
@@ -313,8 +348,8 @@ from executing.
 ### [delta_calibrate]
 
 The following commands are available when the
-[delta_calibrate config section](Config_Reference.md#linear-delta-kinematics)
-is enabled (also see the [delta calibrate guide](Delta_Calibrate.md)).
+[delta_calibrate] config section is enabled (also see the
+[delta calibrate guide](Delta_Calibrate.md)).
 
 #### DELTA_CALIBRATE
 `DELTA_CALIBRATE [METHOD=manual] [HORIZONTAL_MOVE_Z=<value>]
@@ -457,7 +492,7 @@ cleared. Additionally including `NAME` will only reset the named object. This
 Provides a summary of an object in the file.
 
 With no parameters provided, this will list the defined objects known to
-Klipper. Returns a list of strings, unless the `JSON` parameter is given,
+Kalico. Returns a list of strings, unless the `JSON` parameter is given,
 when it will return object details in json format.
 
 When the `NAME` parameter is included, this defines an object to be excluded.
@@ -510,7 +545,7 @@ stepper's "rotation distance" (as defined in an
 [extruder_stepper](Config_Reference.md#extruder_stepper) config section).
 If the rotation distance is a negative number then the stepper motion
 will be inverted (relative to the stepper direction specified in the
-config file). Changed settings are not retained on Klipper reset. Use
+config file). Changed settings are not retained on Kalico reset. Use
 with caution as small changes can result in excessive pressure between
 extruder and hotend. Do proper calibration with filament before use.
 If 'DISTANCE' value is not provided then this command will return the
@@ -526,6 +561,43 @@ MOTION_QUEUE (as defined in an [extruder](Config_Reference.md#extruder)
 config section). If MOTION_QUEUE is an empty string then the stepper
 will be desynchronized from all extruder movement.
 
+### [mixing_extruder]
+
+The following commands are available when a
+[mixingextruder config section](Config_Reference.md#mixing_extruder) is
+enabled:
+
+#### SET_MIXING_EXTRUDER
+`SET_MIXING_EXTRUDER [FACTORS=<factor1>[:<factor2>[:<factor3>...]]]
+[ENABLE=[0|1]]`:
+This command activates the specified mixing extruder. Subsequent G1 commands
+use the mixing defined by the factors. FACTORS defines the mixing by providing
+a number of positive values. The number of values should correspond to the
+number of steppers defined in the configuration. The values are normalized
+internally to add up to 1 and the extrusion of the corresponding stepper is
+multiplied by that value. If ENABLED is omitted the current mixing state is
+not changed.
+If neither FACTORS nor ENABLE is provided the current mixing status is
+displayed.
+
+#### SET_MIXING_EXTRUDER_GRADIENT
+`SET_MIXING_EXTRUDER_GRADIENT [START_FACTORS=<s1>[,<s2>[,<s3>...]]
+END_FACTORS=<e1>[,<e2>[,<e3>...]] START_HEIGHT=<start> END_HEIGHT=<end>`]
+[ENABLE=[0|1|RESET]] [METHOD=[linear|spherical] [VECTOR=<x>,<y>,<z>]]`: When
+START_FACTORS, END_FACTORS, START_HEIGHT, END_HEIGHT is provided
+then an gradient configuration is added. The START_FACTORS define the mixing
+below and up to the START_HEIGHT. The END_FACTORS respectively the mixing
+from the END_HEIGHT onward. The mixing in between is linearly interpolated.
+When ENABLE is either 0 or 1 or METHOD is specified the mixing gradient is
+turned off or on and the gradient method (METHOD) which should be used is
+selected. All previously added gradients are used when enabled. The optional
+VECTOR configures a parameter depending on the METHOD: eg. for linear VECTOR
+defines the up direction and for spherical it defines the origin of the
+spheres.
+When ENABLE is RESET all configured gradients are removed and the gradient
+handling is disabled.
+When no parameter is provided the current mixing gradient status is displayed.
+
 ### [heated_fan]
 
 The following command is available when a
@@ -534,8 +606,8 @@ enabled.
 
 ### SET_HEATED_FAN_TARGET
 `SET_HEATED_FAN_TARGET TARGET=<temperature>`: Override the `heater_temp`
-setting in the [heated_fan config section]((Config_Reference.md#heated_fan))
-until Klipper is restarted. Useful for slicers to set different heated fan
+setting in the [heated_fan config section](Config_Reference.md#heated_fan)
+until Kalico is restarted. Useful for slicers to set different heated fan
 temperatures at different layers.
 
 ### [fan_generic]
@@ -631,6 +703,8 @@ the filament unretract move to reduce blobbing at seams (the minimum value is
 Z_HOP_HEIGHT determines the vertical height by which the nozzle is lifted from
 the print to prevent collisions with the print during travel moves (the
 minimum value is 0 mm, the standard value is 0 mm, which disables Z-Hop moves).
+If a parameter is set when retracted, the new value will be taken into
+account only after G11 or CLEAR_RETRACTION event.
 SET_RETRACTION is commonly set as part of slicer per-filament configuration, as
 different filaments require different parameter settings. The command can be
 issued at runtime.
@@ -638,29 +712,31 @@ issued at runtime.
 #### GET_RETRACTION
 `GET_RETRACTION`: Queries the current parameters used by the firmware retraction
 module as well as the retract state. RETRACT_LENGTH, RETRACT_SPEED,
-UNRETRACT_EXTRA_LENGTH, UNRETRACT_SPEED, Z_HOP_HEIGHT and RETRACTED (True, if
-retracted) are displayed on the terminal.
+UNRETRACT_EXTRA_LENGTH, UNRETRACT_SPEED, Z_HOP_HEIGHT, RETRACT_STATE (True, if
+retracted), ZHOP_STATE (True, if zhop offset currently applied) are displayed on
+the terminal.
 
 #### CLEAR_RETRACTION
 `CLEAR_RETRACTION`: Clears the current retract state without extruder or
 motion system movement. All flags related to the retract state are reset to
-False and all changes to retraction parameters made via previous SET_RETRACTION
-commands are reset to config values.
-NOTE: The Module contains a lot of redundancy for safety to prevent undesired
-behavior. When printing from virtual SD Card, the printer state is monitored and
-retraction state is cleared if a print is started, canceled or finished or if a
-virtual SD card file is reset. When printing via GCode streaming (e.g. using
-OctoPrint), the retract state is cleared when the steppers are disabled (M84,
+False.
+
+NOTE: The zhop state is also reset to False when the steppers are disabled (M84,
 typically part of end gcode and standard behavior of OctoPrint if a print is
 canceled) or the printer is homed (G28, typically part of start gcode). Hence,
 upon ending or canceling a print as well as starting a new print via GCode
-streaming or virtual SD card, the printer should always be in unretracted state.
+streaming or virtual SD card, the toolhead will not apply `z_hop_height` until
+next G11 if filament is retracted.
 Nevertheless, it is recommended to add `CLEAR_RETRACTION` to your start and end
-gcode to make sure the retract state is reset before and after each print. If a
-print is finished or canceled while retracted and the retract state is not
-cleared, either via `CLEAR_RETRACTION` without filament or motion system
-movement or G11, the nozzle will stay above the requested z coordinate by the
-set z_hop_height.
+gcode to make sure the retract state is reset before and after each print.
+
+#### RESET_RETRACTION
+`RESET_RETRACTION`: All changes to retraction parameters made via previous
+SET_RETRACTION commands are reset to config values.
+
+NOTE: It is recommended to add `RESET_RETRACTION` to your start and end gcode
+(with a possible override in your filament start gcode to set filament-specific
+overrides of firmware retraction defaults via `SET_RETRACTION`).
 
 ### [force_move]
 
@@ -687,15 +763,18 @@ state; issue a G28 afterwards to reset the kinematics. This command is
 intended for low-level diagnostics and debugging.
 
 #### SET_KINEMATIC_POSITION
-`SET_KINEMATIC_POSITION [X=<value>] [Y=<value>] [Z=<value>]`: Force
-the low-level kinematic code to believe the toolhead is at the given
-cartesian position. This is a diagnostic and debugging command; use
-SET_GCODE_OFFSET and/or G92 for regular axis transformations. If an
-axis is not specified then it will default to the position that the
-head was last commanded to. Setting an incorrect or invalid position
-may lead to internal software errors. This command may invalidate
-future boundary checks; issue a G28 afterwards to reset the
-kinematics.
+`SET_KINEMATIC_POSITION [X=<value>] [Y=<value>] [Z=<value>]
+[CLEAR=<[X][Y][Z]>]`: Force the low-level kinematic code to believe the
+toolhead is at the given cartesian position. This is a diagnostic and
+debugging command; use SET_GCODE_OFFSET and/or G92 for regular axis
+transformations. If an axis is not specified then it will default to the
+position that the head was last commanded to. Setting an incorrect or
+invalid position may lead to internal software errors. Use the CLEAR
+parameter to forget the homing state for the given axes. Note that CLEAR
+will not override the previous functionality; if an axis is not specified
+to CLEAR it will have its kinematic position set as per above. This
+command may invalidate future boundary checks; issue a G28 afterwards to
+reset the kinematics.
 
 ### [gcode]
 
@@ -715,8 +794,11 @@ clears any error state from the micro-controller.
 #### HEATER_INTERRUPT
 `HEATER_INTERRUPT`: Interrupts a TEMPERATURE_WAIT command.
 
+#### LOG_ROLLOVER
+`LOG_ROLLOVER`: Trigger a klippy.log rollover and generate a new log file.
+
 #### STATUS
-`STATUS`: Report the Klipper host software status.
+`STATUS`: Report the Kalico host software status.
 
 #### HELP
 `HELP`: Report the list of available extended G-Code commands.
@@ -829,6 +911,40 @@ and RAW sensor value for calibration points.
 #### DISABLE_FILAMENT_WIDTH_LOG
 `DISABLE_FILAMENT_WIDTH_LOG`: Turn off diameter logging.
 
+### [load_cell]
+
+The following commands are enabled if a
+[load_cell config section](Config_Reference.md#load_cell) has been enabled.
+
+### LOAD_CELL_DIAGNOSTIC
+`LOAD_CELL_DIAGNOSTIC [LOAD_CELL=<config_name>]`: This command collects 10
+seconds of load cell data and reports statistics that can help you verify proper
+operation of the load cell. This command can be run on both calibrated and
+uncalibrated load cells.
+
+### LOAD_CELL_CALIBRATE
+`LOAD_CELL_CALIBRATE [LOAD_CELL=<config_name>]`: Start the guided calibration
+utility. Calibration is a 3 step process:
+1. First you remove all load from the load cell and run the `TARE` command
+1. Next you apply a known load to the load cell and run the
+`CALIBRATE GRAMS=nnn` command
+1. Finally use the `ACCEPT` command to save the results
+
+You can cancel the calibration process at any time with `ABORT`.
+
+### LOAD_CELL_TARE
+`LOAD_CELL_TARE [LOAD_CELL=<config_name>]`: This works just like the tare button
+on digital scale. It sets the current raw reading of the load cell to be the
+zero point reference value. The response is the percentage of the sensors range
+that was read and the raw value in counts.
+
+### LOAD_CELL_READ load_cell="name"
+`LOAD_CELL_READ [LOAD_CELL=<config_name>]`:
+This command takes a reading from the load cell. The response is the percentage
+of the sensors range that was read and the raw value in counts. If the load cell
+is calibrated a force in grams is also reported.
+
+
 ### [heaters]
 
 The heaters module is automatically loaded if a heater is defined in
@@ -846,6 +962,13 @@ above the supplied MINIMUM and/or at or below the supplied MAXIMUM.
 `SET_HEATER_TEMPERATURE HEATER=<heater_name>
 [TARGET=<target_temperature>]`: Sets the target temperature for a
 heater. If a target temperature is not supplied, the target is 0.
+
+#### COLD_EXTRUDE
+`COLD_EXTRUDE HEATER=<heater_name> [ENABLE=<0 or 1>]
+[MIN_EXTRUDE_TEMP=<min_extrude_temp>]: Enables or disables cold extrusion.
+If neither ENABLE nor MIN_EXTRUDE_TEMP are supplied, it
+will report the current state. If ENABLE is 0, cold extrusion is disabled,
+if it is 1 it is enabled.
 
 #### SET_SMOOTH_TIME
 `SET_SMOOTH_TIME HEATER=<heater_name> [SMOOTH_TIME=<smooth_time>]
@@ -1098,9 +1221,11 @@ Saves the currently loaded profile of the specified heater to the config under
 the given name.
 
 `PID_PROFILE REMOVE=<profile_name> HEATER=<heater_name>`:
-Removes the given profile from the profiles List for the current session and config if SAVE_CONFIG is issued afterwards.
+Removes the given profile from the profiles List for the current session and
+config if SAVE_CONFIG is issued afterwards.
 
-`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp> TOLERANCE=<tolerance>
+`PID_PROFILE SET_VALUES=<profile_name> HEATER=<heater_name> TARGET=<target_temp>
+TOLERANCE=<tolerance>
 CONTROL=<control_type> KP=<kp> KI=<ki> KD=<kd> [RESET_TARGET=0|1] [LOAD_CLEAN=0|1]`:
 Creates a new profile with the given PID values, CONTROL must either be `pid` or
 `pid_v`, TOLERANCE and TARGET must be specified to create a valid profile,
@@ -1148,11 +1273,11 @@ The print_stats module is automatically loaded.
 
 #### SET_PRINT_STATS_INFO
 `SET_PRINT_STATS_INFO [TOTAL_LAYER=<total_layer_count>] [CURRENT_LAYER=
-<current_layer>]`: Pass slicer info like layer act and total to Klipper.
+<current_layer>]`: Pass slicer info like layer act and total to Kalico.
 Add `SET_PRINT_STATS_INFO [TOTAL_LAYER=<total_layer_count>]` to your
 slicer start gcode section and `SET_PRINT_STATS_INFO [CURRENT_LAYER=
 <current_layer>]` at the layer change gcode section to pass layer
-information from your slicer to Klipper.
+information from your slicer to Kalico.
 
 ### [probe]
 
@@ -1164,10 +1289,22 @@ see the [probe calibrate guide](Probe_Calibrate.md)).
 #### PROBE
 `PROBE [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
-[SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]`:
+[SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]
+[BAD_PROBE_STRATEGY=<FAIL|IGNORE|RETRY|CIRCLE>] [BAD_PROBE_RETRIES=<count>]
+[RETRY_SPEED=<mm/s>] [HOME=<z>]`: ⚠️
 Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
+- `HOME`: Set the value `z` to home the z axis from the probe result
+The following optional parameters control probe quality handling (for probes
+that support quality detection): ⚠️
+- `BAD_PROBE_STRATEGY`: Strategy to use when a bad probe is detected.
+  See the probe config section for available strategies.
+- `BAD_PROBE_RETRIES`: Maximum number of retry attempts for bad probes.
+- `RETRY_SPEED`: Probe speed to use when moving horizontally between
+  retry locations.
+- `PATTERN_SPACING`: Spacing (in mm) for the circular retry pattern when
+  using CIRCLE strategy.
 
 #### QUERY_PROBE
 `QUERY_PROBE`: Report the current status of the probe ("triggered" or
@@ -1232,6 +1369,21 @@ CYCLE_TIME parameter is not stored between SET_PIN commands (any
 SET_PIN command without an explicit CYCLE_TIME parameter will use the
 `cycle_time` specified in the pwm_cycle_time config section).
 
+### [quad_gantry_level]
+
+The following commands are available when the
+[quad_gantry_level config section](Config_Reference.md#quad_gantry_level)
+is enabled.
+
+#### QUAD_GANTRY_LEVEL
+`QUAD_GANTRY_LEVEL [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+[HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
+will probe the points specified in the config and then make
+independent adjustments to each Z stepper to compensate for tilt. See
+the PROBE command for details on the optional probe parameters. The
+optional `RETRIES`, `RETRY_TOLERANCE`, `HORIZONTAL_MOVE_Z` and
+`ENFORCE_LIFT_SPEED` values override those options specified in the config file.
+
 ### [query_adc]
 
 The query_adc module is automatically loaded.
@@ -1267,20 +1419,19 @@ is enabled (also see the
 all enabled accelerometer chips.
 
 #### TEST_RESONANCES
-`TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
+`TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
-[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=[<0:1>]]`: Runs
+[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
+[POINT=x,y,z] [ACCEL_PER_HZ=<accel_per_hz>] [INPUT_SHAPING=<0:1>]`: Runs
 the resonance test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
 point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 `AXIS=1,-1` to define a diagonal direction). Note that `AXIS=dx,dy`
-and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
-more configured adxl345 chip,delimited with comma, for example
-`CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT or ACCEL_PER_HZ are specified,
+and `AXIS=-dx,-dy` is equivalent. `chip_name` can be one or
+more configured accel chips, delimited with comma, for example
+`CHIPS="adxl345, adxl345 rpi"`. If POINT or ACCEL_PER_HZ are specified,
 they will override the corresponding fields configured in `[resonance_tester]`.
 If `INPUT_SHAPING=0` or not set(default), disables input shaping for the resonance
 testing, because it is not valid to run the resonance testing with the input shaper
@@ -1297,14 +1448,13 @@ frequency response is calculated (across all probe points) and written into
 
 #### SHAPER_CALIBRATE
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
-[FREQ_END=<max_freq>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[MAX_SMOOTHING=<max_smoothing>]`: Similarly to `TEST_RESONANCES`, runs
-the resonance test as configured, and tries to find the optimal
-parameters for the input shaper for the requested axis (or both X and
-Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset, its
-value is taken from `[resonance_tester]` section, with the default
-being unset. See the
-[Max smoothing](Measuring_Resonances.md#max-smoothing) of the
+[FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>]
+[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]`:
+Similarly to `TEST_RESONANCES`, runs the resonance test as configured, and tries
+to find the optimal parameters for the input shaper for the requested axis
+(or both X and Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset,
+its value is taken from `[resonance_tester]` section, with the default being unset.
+See the [Max smoothing](Measuring_Resonances.md#max-smoothing) of the
 measuring resonances guide for more information on the use of this
 feature. The results of the tuning are printed to the console, and the
 frequency responses and the different input shapers values are written
@@ -1535,9 +1685,19 @@ The toolhead module is automatically loaded.
 
 #### SET_VELOCITY_LIMIT
 `SET_VELOCITY_LIMIT [VELOCITY=<value>] [ACCEL=<value>]
-[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]`: This
+[MINIMUM_CRUISE_RATIO=<value>] [SQUARE_CORNER_VELOCITY=<value>]
+[X_VELOCITY=<value>] [X_ACCEL=<value>] [Y_VELOCITY=<value>] [Y_ACCEL=<value>]
+[Z_VELOCITY=<value>] [Z_ACCEL=<value>]`: This
 command can alter the velocity limits that were specified in the
 printer config file. See the
+[printer config section](Config_Reference.md#printer) for a
+description of each parameter.
+X_VELOCITY, X_ACCEL, Y_VELOCITY, Y_ACCEL, Z_VELOCITY and Z_ACCEL are only
+available if the kinematic supports it.
+
+### RESET_VELOCITY_LIMIT
+`RESET_VELOCITY_LIMIT`: This command resets the velocity limits to the values
+specified in the printer config file. See the
 [printer config section](Config_Reference.md#printer) for a
 description of each parameter.
 
@@ -1547,12 +1707,39 @@ description of each parameter.
 [SCALE=<0:1>]`: change the per-axis limits.
 
 This command is only available when `kinematics` is set to either
-[`limited_cartesian`](./Config_Reference.md#⚠️-cartesian-kinematics-with-limits-for-x-and-y-axes)
+[`limited_cartesian`](./Config_Reference.md#cartesian-kinematics-with-limits-for-x-and-y-axes)
 or
-[`limited_corexy`](./Config_Reference.md#⚠️-corexy-kinematics-with-limits-for-x-and-y-axes).
+[`limited_corexy`](./Config_Reference.md#corexy-kinematics-with-limits-for-x-and-y-axes).
 The velocity argument is not available on CoreXY. With no arguments, this
 command responds with the movement direction with the most acceleration or
 velocity.
+
+### ⚠️ [tools_calibrate]
+
+The following commands are available when the
+[tools_calibrate config section](Config_Reference.md#tools_calibrate) is enabled.
+
+#### TOOL_CALIBRATE_QUERY_PROBE
+`TOOL_CALIBRATE_QUERY_PROBE`: Query the current calibration probe state.
+
+#### TOOL_LOCATE_SENSOR
+`TOOL_LOCATE_SENSOR`: Locate the sensor relative to the initial tool. The initial
+tool is the 0 offset, which other tools are calibrated against.
+
+Before running `TOOL_LOCATE_SENSOR`, position your primary toolhead centered over
+the calibration probe.
+
+#### TOOL_CALIBRATE_TOOL_OFFSET
+`TOOL_CALIBRATE_TOOL_OFFSET`: After locating the sensor with your initial tool,
+position each additional tool over the sensor and run `TOOL_CALIBRATE_TOOL_OFFSET`
+to find their offsets.
+
+#### TOOL_CALIBRATE_SAVE_TOOL_OFFSET
+`TOOL_CALIBRATE_SAVE_TOOL_OFFSET MACRO=<macro_name> VARIABLE=<variable_name> [VALUE="({x:0.6f}, {y:0.6f}, {z:0.6f})"]`:
+Save the last calibration result to a macro variable.
+
+`TOOL_CALIBRATE_SAVE_TOOL_OFFSET SECTION= ATTRIBUTE= [VALUE="{x:0.6f}, {y:0.6f}, {z:0.6f}"]`:
+Save the last calibration result to a field in your configuration. Calibration data saved this way will not take effect until after a `RESTART` of your printer.
 
 ### [trad_rack]
 
@@ -1591,7 +1778,7 @@ specified and it is higher than the extruder's current temperature,
 then the extruder will be heated to at least `MIN_TEMP` before
 unloading/loading; the current extruder temperature target may be used
 instead if it is higher than `MIN_TEMP`, and if not then
-[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md)
+[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Save_Variables.md)
 may be used. If `EXACT_TEMP` is specified, the extruder will be heated
 to `EXACT_TEMP` before unloading/loading, regardless of any other
 temperature setting. If any of the optional length parameters are
@@ -1616,7 +1803,7 @@ the extruder's current temperature, then the extruder will be heated
 to at least `MIN_TEMP` before unloading; the current extruder
 temperature target may be used instead if it is higher than
 `MIN_TEMP`, and if not then
-[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md)
+[tr_last_heater_target](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Save_Variables.md)
 may be used. If `EXACT_TEMP` is specified, the extruder will be heated
 to `EXACT_TEMP` before unloading/loading, regardless of any other
 temperature setting.
@@ -1642,10 +1829,14 @@ selector motor will be enabled if it isn't already.
 not been loaded.
 
 #### TR_RESUME
-`TR_RESUME`: Retries loading the last lane, loads the next filament
-into the toolhead, and resumes the print. The user will be prompted
-to use this command if Trad Rack has paused the print due to a failed
-load or unload.
+`TR_RESUME`: Completes necessary actions for Trad Rack to recover
+(and/or checks that Trad Rack is ready to continue), then resumes the
+print if all of those actions complete successfully. For example, if
+the print was paused due to a failed toolchange, then this command
+would retry the toolchange and then resume the print if the toolchange
+completes successfully. You will be prompted to use this command if
+Trad Rack has paused the print and requires user interaction or
+confirmation before attempting to recover and resume.
 
 #### TR_LOCATE_SELECTOR
 `TR_LOCATE_SELECTOR`: Ensures the position of Trad Rack's selector is
@@ -1707,7 +1898,7 @@ hotend_load_length will be set to the value passed in. If the ADJUST
 parameter is used, the adjustment will be added to the current value
 of hotend_load_length.
 
-### TR_DISCARD_BOWDEN_LENGTHS
+#### TR_DISCARD_BOWDEN_LENGTHS
 `TR_DISCARD_BOWDEN_LENGTHS [MODE=[ALL|LOAD|UNLOAD]]`: Discards saved
 values for "bowden_load_length" and/or "bowden_unload_length" (see
 [bowden lengths](https://github.com/Annex-Engineering/TradRack/blob/main/docs/Tuning.md#bowden-lengths)
@@ -1715,7 +1906,7 @@ for details on how these settings are used). These settings will each
 be reset to the value of `bowden_length` from the
 [trad_rack config section](Config_Reference.md#trad_rack), and empty
 dictionaries will be saved for
-[tr_calib_bowden_load_length and tr_calib_bowden_unload_length](https://github.com/Annex-Engineering/TradRack/blob/main/docs/klipper/Save_Variables.md).
+[tr_calib_bowden_load_length and tr_calib_bowden_unload_length](https://github.com/Annex-Engineering/TradRack/blob/main/docs/kalico/Save_Variables.md).
 "bowden_load_length" and tr_calib_bowden_load_length will be
 affected if MODE=LOAD is specified, "bowden_unload_length" and
 tr_calib_bowden_unload_length will be affected if MODE=UNLOAD is
@@ -1785,7 +1976,7 @@ three possible combinations of options:
 
 ### [virtual_sdcard]
 
-Klipper supports the following standard G-Code commands if the
+Kalico supports the following standard G-Code commands if the
 [virtual_sdcard config section](Config_Reference.md#virtual_sdcard) is
 enabled:
 - List SD card: `M20`
@@ -1813,15 +2004,19 @@ The following commands are available when the
 is enabled.
 
 #### SET_Z_THERMAL_ADJUST
-`SET_Z_THERMAL_ADJUST [ENABLE=<0:1>] [TEMP_COEFF=<value>] [REF_TEMP=<value>]`:
-Enable or disable the Z thermal adjustment with `ENABLE`. Disabling does not
+`SET_Z_THERMAL_ADJUST [COMPONENT=name] [ENABLE=<0:1>] [TEMP_COEFF=<value>]
+ [REF_TEMP=<value>]`:
+- `COMPONENT`: if multiple thermal adjustments are defined use `COMPONENT` to
+specify which one to adjust.
+- `ENABLE`: Enable or disable the Z thermal adjustment. Disabling does not
 remove any adjustment already applied, but will freeze the current adjustment
 value - this prevents potentially unsafe downward Z movement. Re-enabling can
 potentially cause upward tool movement as the adjustment is updated and applied.
-`TEMP_COEFF` allows run-time tuning of the adjustment temperature coefficient
+- `TEMP_COEFF`: allows run-time tuning of the adjustment temperature coefficient
 (i.e. the `TEMP_COEFF` config parameter). `TEMP_COEFF` values are not saved to
-the config. `REF_TEMP` manually overrides the reference temperature typically
-set during homing (for use in e.g. non-standard homing routines) - will be reset
+the config.
+- `REF_TEMP` manually overrides the reference temperature typically set during
+homing (for use in e.g. non-standard homing routines) - will be reset
 automatically upon homing.
 
 ### ⚠️ [z_calibration]
@@ -1844,6 +2039,19 @@ and detach a mag-probe for these commands!
 
 The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
+
+#### Z_TILT_ADJUST
+`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [ENFORCE_LIFT_SPEED=0|1]
+[<probe_parameter>=<value>]`: This command will probe the points specified in the
+config and then make independent adjustments to each Z stepper to compensate for tilt.
+See the PROBE command for details on the optional probe parameters. The optional
+`HORIZONTAL_MOVE_Z` and `ENFORCE_LIFT_SPEED` values override those options specified in
+the config file
+
+### [z_tilt_ng]
+
+The following commands are available when the
+[z_tilt_ng config section](Config_Reference.md#z_tilt_ng) is enabled.
 
 #### Z_TILT_ADJUST
 `Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]
@@ -1869,5 +2077,3 @@ configured in the z_tilt_ng section:
   small misalgnments of the steppers. The amount of misalignment can be
   configured with the DELTA paramter. It iterates until the calculated
   positions cannot be improved any further. This is can be lengthy procedure.
-IMPORTANT: For the Z_TILT_CALIBRATE and Z_TILT_AUTODETECT commands to work
-the numpy package has to be installed via ~/klippy-env/bin/pip install -v numpy.

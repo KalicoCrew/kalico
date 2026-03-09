@@ -3,8 +3,19 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging, multiprocessing, traceback
-import queuelogger
+import logging
+import math
+import multiprocessing
+import traceback
+
+from . import queuelogger
+
+
+def safe_float(v: str) -> float:
+    f = float(v)
+    if math.isnan(f) or math.isinf(f):
+        raise ValueError(f"{v} is not a valid float")
+    return f
 
 
 ######################################################################

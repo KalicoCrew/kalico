@@ -1,11 +1,11 @@
-# TMC5160 configuration
+# TMC5160/TMC2160 configuration
 #
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
-from . import tmc
-from . import tmc2130
+
+from . import tmc, tmc2130
 
 TMC_FREQUENCY = 12000000.0
 
@@ -123,6 +123,12 @@ Fields["DRV_CONF"] = {
     "drvstrength": 0x03 << 18,
     "filt_isense": 0x03 << 20,
 }
+Fields["SHORT_CONF"] = {
+    "s2vs_level": 0x0F << 0,
+    "s2g_level": 0x0F << 8,
+    "short_filter": 0x03 << 16,
+    "shortdelay": 0x01 << 18,
+}
 Fields["DRV_STATUS"] = {
     "sg_result": 0x3FF << 0,
     "s2vsa": 0x01 << 12,
@@ -231,6 +237,7 @@ Fields["TPOWERDOWN"] = {"tpowerdown": 0xFF << 0}
 Fields["TPWMTHRS"] = {"tpwmthrs": 0xFFFFF << 0}
 Fields["TCOOLTHRS"] = {"tcoolthrs": 0xFFFFF << 0}
 Fields["TSTEP"] = {"tstep": 0xFFFFF << 0}
+Fields["THIGH"] = {"thigh": 0xFFFFF << 0}
 
 SignedFields = ["cur_a", "cur_b", "sgt", "xactual", "vactual", "pwm_scale_auto"]
 
@@ -248,16 +255,23 @@ FieldFormatters.update(
 ######################################################################
 
 VREF = 0.325
-MAX_CURRENT = 10.000  # Maximum dependent on board, but 10 is safe sanity check
+MAX_CURRENT = 10.600  # Maximum dependent on board, but 10 is safe sanity check
+
+GLOBALSCALER_ERROR = (
+    "[tmc5160 %s]\n"
+    "GLOBALSCALER(%d) calculation out of bounds.\n"
+    "The target current can't be achieved with the given "
+    "CS(%d) value. Please adjust your configuration.\n"
+    "Please refer to the tmc5160.xlxs chopper tuning spreadsheet.\n"
+    "A value of %d may be a reasonable starting point.\n"
+)
 
 
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
 
-        self.sense_resistor = config.getfloat(
-            "sense_resistor", 0.075, above=0.0
-        )
+        self.cs = config.getint("driver_CS", None, minval=0, maxval=31)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
@@ -266,13 +280,28 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         self.fields.set_field("irun", irun)
 
     def _calc_globalscaler(self, current):
-        globalscaler = int(
-            (current * 256.0 * math.sqrt(2.0) * self.sense_resistor / VREF)
-            + 0.5
+        cs = 31 if self.cs is None else self.cs
+        globalscaler = math.floor(
+            (current * 32 * 256 * self.sense_resistor * math.sqrt(2.0))
+            / ((cs + 1) * VREF)
         )
-        globalscaler = max(32, globalscaler)
-        if globalscaler >= 256:
-            globalscaler = 0
+        if globalscaler == 256:
+            return 0
+        if self.cs is None and globalscaler < 32:
+            return 32
+        if 1 <= globalscaler <= 31 or globalscaler > 256:
+            Ipeak = current * math.sqrt(2)
+            Rsens = self.sense_resistor
+            cs_calculated = math.floor(Rsens * 32 * Ipeak / 0.32) - 1
+            self.printer.invoke_shutdown(
+                GLOBALSCALER_ERROR
+                % (
+                    self.name,
+                    globalscaler,
+                    cs,
+                    cs_calculated,
+                )
+            )
         return globalscaler
 
     def _calc_current_bits(self, current, globalscaler):
@@ -288,8 +317,12 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
     def _calc_current(self, run_current, hold_current):
         gscaler = self._calc_globalscaler(run_current)
-        irun = self._calc_current_bits(run_current, gscaler)
-        ihold = self._calc_current_bits(min(hold_current, run_current), gscaler)
+        irun = (
+            self._calc_current_bits(run_current, gscaler)
+            if self.cs is None
+            else self.cs
+        )
+        ihold = math.floor(min((hold_current / run_current) * irun, irun))
         return gscaler, irun, ihold
 
     def _calc_current_from_field(self, field_name):
@@ -348,7 +381,10 @@ class TMC5160:
         self.get_status = cmdhelper.get_status
         # Setup basic register values
         tmc.TMCWaveTableHelper(config, self.mcu_tmc)
-        tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
+        tmc.TMCStealthchopHelper(config, self.mcu_tmc)
+        tmc.TMCVcoolthrsHelper(config, self.mcu_tmc)
+        tmc.TMCVhighHelper(config, self.mcu_tmc)
+        # Allow other registers to be set from the config
         set_config_field = self.fields.set_config_field
         #   GCONF
         set_config_field(config, "multistep_filt", True)
@@ -378,6 +414,22 @@ class TMC5160:
         set_config_field(config, "bbmclks", 4)
         set_config_field(config, "bbmtime", 0)
         set_config_field(config, "filt_isense", 0)
+        #   SHORT_CONF, being write only we can't partially update
+        # TODO: add a hook to read OTP on connect to get the defaults here
+        if config.getint("driver_s2vs_level", None, 4, 15) and config.getint(
+            "driver_s2g_level", None, 2, 15
+        ):
+            set_config_field(config, "s2vs_level", 6)
+            set_config_field(config, "s2g_level", 6)
+            set_config_field(config, "short_filter", 1)
+            set_config_field(config, "shortdelay", 0)
+        elif any(
+            config.get("driver_%s" % field, None, False)
+            for field in Fields["SHORT_CONF"].keys()
+        ):
+            raise config.error(
+                "driver_s2vs_level and driver_s2g_level are required to update short_conf"
+            )
         #   IHOLDIRUN
         set_config_field(config, "iholddelay", 6)
         #   PWMCONF

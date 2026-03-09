@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Script that tries to find how much stack space each function in an
 # object is using.
 #
@@ -9,8 +9,8 @@
 # Usage:
 #   avr-objdump -d out/klipper.elf | scripts/checkstack.py
 
-import sys
 import re
+import sys
 
 # Functions that change stacks
 STACKHOP = []

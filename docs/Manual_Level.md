@@ -44,7 +44,7 @@ crashes.
 
 Some printers have the ability to manually adjust the location of the
 physical endstop switch. However, it's recommended to perform Z
-endstop positioning in software with Klipper - once the physical
+endstop positioning in software with Kalico - once the physical
 location of the endstop is in a convenient location, one can make any
 further adjustments by running Z_ENDSTOP_CALIBRATE or by manually
 updating the Z position_endstop in the configuration file.
@@ -55,7 +55,7 @@ The secret to getting good bed leveling with bed leveling screws is to
 utilize the printer's high precision motion system during the bed
 leveling process itself. This is done by commanding the nozzle to a
 position near each bed screw and then adjusting that screw until the
-bed is a set distance from the nozzle. Klipper has a tool to assist
+bed is a set distance from the nozzle. Kalico has a tool to assist
 with this. In order to use the tool it is necessary to specify each
 screw XY location.
 

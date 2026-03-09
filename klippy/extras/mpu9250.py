@@ -5,7 +5,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus, adxl345, bulk_sensor
+
+from . import adxl345, bulk_sensor, bus
 
 MPU9250_ADDR = 0x68
 
@@ -108,7 +109,7 @@ class MPU9250:
     def check_connected(self):
         if self.mcu.non_critical_disconnected:
             raise self.printer.command_error(
-                f"MPU: {self.name} could not connect cause mcu: {self.mcu.get_name()} is non_critical_disconnected!"
+                f"MPU: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
             )
 
     def read_reg(self, reg):

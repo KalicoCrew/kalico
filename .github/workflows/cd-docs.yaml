@@ -1,0 +1,37 @@
+name: Docs deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**
+      - .github/workflows/cd-docs.yaml
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+          enable-cache: true
+          cache-dependency-glob: "docs/_kalico/uv.lock"
+
+      - name: Setup Python
+        working-directory: docs/_kalico/
+        run: uv python install
+
+      - name: Build MkDocs Pages
+        working-directory: docs/_kalico/
+        run: uv run mkdocs build
+
+      - name: Deploy
+        uses: JamesIves/github-pages-deploy-action@v4.4.3
+        with:
+          branch: gh-pages
+          folder: site

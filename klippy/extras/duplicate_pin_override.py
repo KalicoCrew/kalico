@@ -15,3 +15,7 @@ class PrinterDupPinOverride:
 
 def load_config(config):
     return PrinterDupPinOverride(config)
+
+
+def load_config_prefix(config):
+    return PrinterDupPinOverride(config)

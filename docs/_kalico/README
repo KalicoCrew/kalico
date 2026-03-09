@@ -1,0 +1,16 @@
+This directory defines the https://docs.kalico.gg website. The
+site is hosted using "github pages". The
+.github/workflows/cd-docs.yaml tool uses mkdocs (
+https://www.mkdocs.org/ ) to automatically convert the markdown files
+in the docs/ directory to html. In addition to the files in this
+directory, the docs/CNAME file also controls the website generation.
+
+To test deploy the main site locally one can use commands
+similar to the following:
+
+```bash
+cd docs/_kalico/ # if you were in the repo root
+uv venv
+uv sync
+uv run mkdocs serve
+```

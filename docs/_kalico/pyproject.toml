@@ -1,0 +1,20 @@
+[project]
+name = "kalico-docs"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    # mkdocs + theme
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.5.49",
+    # mkdocs plugins
+    "mdx-breakless-lists>=1.0.1",
+    "mdx-truly-sane-lists>=1.3",
+    "mkdocs-exclude>=1.0.2",
+    "mkdocs-simple-hooks>=0.1.5",
+    "mkdocs-github-admonitions-plugin==0.0.3",
+    "mkdocs-redirects==1.2.2",
+    "py-gfm>=2.0.0",
+]
+
+[dependency-groups]
+dev = []

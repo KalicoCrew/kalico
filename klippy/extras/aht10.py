@@ -4,9 +4,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus
 
-from extras.danger_options import get_danger_options
+from . import bus
+from .danger_options import get_danger_options
 
 ######################################################################
 # Compatible Sensors:
@@ -40,6 +40,10 @@ class AHT10:
         self.printer.add_object("aht10 " + self.name, self)
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
+        )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
         )
         self.is_calibrated = False
         self.init_sent = False

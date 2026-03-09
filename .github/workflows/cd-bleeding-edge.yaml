@@ -1,0 +1,30 @@
+name: Rebase bleeding-edge-v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rebase-bleeding-edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: fetch branches
+        run: |
+          git fetch origin main bleeding-edge-v2
+
+      - name: rebase bleeding-edge-v2 onto main
+        run: |
+          git checkout bleeding-edge-v2
+          git rebase main
+
+      - name: push changes
+        run: |
+          git push origin bleeding-edge-v2 --force

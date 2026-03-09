@@ -33,14 +33,17 @@ RESTORE_GCODE_STATE MOVE=1
 
 # Update commands
 SET_GCODE_OFFSET Z=.1
-M206 Z-.2
 SET_GCODE_OFFSET Z_ADJUST=-.1
 
 SET_VELOCITY_LIMIT ACCEL=100 VELOCITY=20 SQUARE_CORNER_VELOCITY=1 ACCEL_TO_DECEL=200
 M204 S500
 
+RESET_VELOCITY_LIMIT
+
 SET_PRESSURE_ADVANCE EXTRUDER=extruder ADVANCE=.001
 SET_PRESSURE_ADVANCE ADVANCE=.002 ADVANCE_LOOKAHEAD_TIME=.001
 
-# Restart command (must be last in test)
-RESTART
+# test telemetry
+ASSERT TEST='{"telemetry" not in printer.configfile.save_config_pending_items}'
+ENABLE_TELEMETRY
+ASSERT TEST='{printer.configfile.save_config_pending_items.telemetry.enabled}'

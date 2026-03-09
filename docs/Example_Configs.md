@@ -1,7 +1,7 @@
 # Example configurations
 
-This document contains guidelines for contributing an example Klipper
-configuration to the Klipper github repository (located in the
+This document contains guidelines for contributing an example Kalico
+configuration to the Kalico github repository (located in the
 [config directory](../config/)).
 
 Note that the
@@ -31,7 +31,7 @@ is also a useful resource for finding and sharing config files.
 3. Do not use spaces or special characters in the config filename. The
    filename should contain only characters `A-Z`, `a-z`, `0-9`, `-`,
    and `.`.
-4. Klipper must be able to start `printer`, `generic`, and `kit`
+4. Kalico must be able to start `printer`, `generic`, and `kit`
    example config file without error. These config files should be
    added to the
    [test/klippy/printers.test](../test/klippy/printers.test)
@@ -39,7 +39,7 @@ is also a useful resource for finding and sharing config files.
    appropriate section and in alphabetical order within that section.
 5. The example configuration should be for the "stock" configuration
    of the printer. (There are too many "customized" configurations to
-   track in the main Klipper repository.) Similarly, we only add
+   track in the main Kalico repository.) Similarly, we only add
    example config files for printers, kits, and boards that have
    mainstream popularity (eg, there should be at least a 100 of them
    in active use). Consider using the
@@ -101,7 +101,7 @@ is also a useful resource for finding and sharing config files.
    For example, a config should not specify a custom
    `max_extrude_cross_section`. Do not enable debugging features. For
    example there should not be a `force_move` config section.
-10. All known boards that Klipper supports can use the default serial
+10. All known boards that Kalico supports can use the default serial
     baud rate of 250000. Do not recommend a different baud rate in an
     example config file.
 

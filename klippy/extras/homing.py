@@ -1,11 +1,12 @@
 # Helper code for implementing homing operations
 #
-# Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math
 import logging
-from extras.danger_options import get_danger_options
+import math
+
+from .danger_options import get_danger_options
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = 0.000015
@@ -34,11 +35,22 @@ class StepperPosition:
         self.endstop_name = endstop_name
         self.stepper_name = stepper.get_name()
         self.start_pos = stepper.get_mcu_position()
+        self.start_cmd_pos = stepper.mcu_to_commanded_position(self.start_pos)
         self.halt_pos = self.trig_pos = None
 
     def note_home_end(self, trigger_time):
         self.halt_pos = self.stepper.get_mcu_position()
         self.trig_pos = self.stepper.get_past_mcu_position(trigger_time)
+
+    def verify_no_probe_skew(self, haltpos):
+        new_start_pos = self.stepper.get_mcu_position(self.start_cmd_pos)
+        if new_start_pos != self.start_pos:
+            logging.warning(
+                "Stepper '%s' position skew after probe: pos %d now %d",
+                self.stepper.get_name(),
+                self.start_pos,
+                new_start_pos,
+            )
 
 
 # Implementation of homing/probing moves
@@ -159,6 +171,9 @@ class HomingMove:
             haltpos = trigpos = self.calc_toolhead_pos(kin_spos, trig_steps)
             if trig_steps != halt_steps:
                 haltpos = self.calc_toolhead_pos(kin_spos, halt_steps)
+            self.toolhead.set_position(haltpos)
+            for sp in self.stepper_positions:
+                sp.verify_no_probe_skew(haltpos)
         else:
             haltpos = trigpos = movepos
             over_steps = {
@@ -182,7 +197,7 @@ class HomingMove:
                     for s in kin.get_steppers()
                 }
                 haltpos = self.calc_toolhead_pos(halt_kin_spos, over_steps)
-        self.toolhead.set_position(haltpos)
+            self.toolhead.set_position(haltpos)
         # Signal homing/probing move complete
         try:
             self.printer.send_event("homing:homing_move_end", self)
@@ -253,7 +268,15 @@ class Homing:
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
 
-    def _set_current_homing(self, homing_axes, pre_homing):
+    def _set_homing_accel(self, accel, pre_homing):
+        if accel is None:
+            return
+        if pre_homing:
+            self.toolhead.set_accel(accel)
+        else:
+            self.toolhead.reset_accel()
+
+    def _set_homing_current(self, homing_axes, pre_homing):
         print_time = self.toolhead.get_last_move_time()
         affected_rails = set()
         for axis in homing_axes:
@@ -274,6 +297,14 @@ class Homing:
         if dwell_time:
             self.toolhead.dwell(dwell_time)
 
+    def _reset_endstop_states(self, endstops):
+        # re-querying a tmc endstop seems to reset the state
+        # otherwise it triggers almost immediately upon second home
+        # this seems to be an adequate substitute for a 2 second dwell.
+        print_time = self.toolhead.get_last_move_time()
+        for endstop in endstops:
+            endstop[0].query_endstop(print_time)
+
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
         self.printer.send_event("homing:home_rails_begin", self, rails)
@@ -287,9 +318,13 @@ class Homing:
         hi = rails[0].get_homing_info()
         hmove = HomingMove(self.printer, endstops)
 
-        self._set_current_homing(homing_axes, pre_homing=True)
-
-        hmove.homing_move(homepos, hi.speed)
+        try:
+            self._set_homing_accel(hi.accel, pre_homing=True)
+            self._set_homing_current(homing_axes, pre_homing=True)
+            self._reset_endstop_states(endstops)
+            hmove.homing_move(homepos, hi.speed)
+        finally:
+            self._set_homing_accel(hi.accel, pre_homing=False)
 
         needs_rehome = False
         retract_dist = hi.retract_dist
@@ -311,20 +346,18 @@ class Homing:
             ]
             self.toolhead.move(retractpos, hi.retract_speed)
             if not hi.use_sensorless_homing or needs_rehome:
-                # Home again
-                startpos = [
-                    rp - ad * retract_r for rp, ad in zip(retractpos, axes_d)
-                ]
-                self.toolhead.set_position(startpos)
-                print_time = self.toolhead.get_last_move_time()
-                for endstop in endstops:
-                    # re-querying a tmc endstop seems to reset the state
-                    # otherwise it triggers almost immediately upon second home
-                    # this seems to be an adequate substitute for a 2 second dwell.
-                    endstop[0].query_endstop(print_time)
-                hmove = HomingMove(self.printer, endstops)
-                hmove.homing_move(homepos, hi.second_homing_speed)
                 try:
+                    # Home again
+                    startpos = [
+                        rp - ad * retract_r
+                        for rp, ad in zip(retractpos, axes_d)
+                    ]
+                    self.toolhead.set_position(startpos)
+                    self._reset_endstop_states(endstops)
+
+                    hmove = HomingMove(self.printer, endstops)
+                    hmove.homing_move(homepos, hi.second_homing_speed)
+
                     if hmove.check_no_movement() is not None:
                         raise self.printer.command_error(
                             "Endstop %s still triggered after retract"
@@ -341,7 +374,9 @@ class Homing:
                             "Early homing trigger on second home!"
                         )
                 finally:
-                    self._set_current_homing(homing_axes, pre_homing=False)
+                    self._set_homing_accel(hi.accel, pre_homing=False)
+                    self._set_homing_current(homing_axes, pre_homing=False)
+
                 if hi.retract_dist:
                     # Retract (again)
                     startpos = self._fill_coord(forcepos)
@@ -354,7 +389,8 @@ class Homing:
                     ]
                     self.toolhead.move(retractpos, hi.retract_speed)
 
-        self._set_current_homing(homing_axes, pre_homing=False)
+        self._set_homing_accel(hi.accel, pre_homing=False)
+        self._set_homing_current(homing_axes, pre_homing=False)
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {
@@ -441,4 +477,10 @@ class PrinterHoming:
 
 
 def load_config(config):
+    global HOMING_START_DELAY
+    HOMING_START_DELAY = get_danger_options().homing_start_delay
+    global ENDSTOP_SAMPLE_TIME
+    ENDSTOP_SAMPLE_TIME = get_danger_options().endstop_sample_time
+    global ENDSTOP_SAMPLE_COUNT
+    ENDSTOP_SAMPLE_COUNT = get_danger_options().endstop_sample_count
     return PrinterHoming(config)

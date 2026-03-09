@@ -7,6 +7,7 @@ dirs-y += src/atsamd src/generic lib/fast-hash
 
 MCU := $(shell echo $(CONFIG_MCU) | tr a-z A-Z)
 
+CFLAGS-$(CONFIG_HAVE_LIMITED_CODE_SIZE) += -Os
 CFLAGS-$(CONFIG_MACH_SAMC21) += -mcpu=cortex-m0plus -Ilib/samc21/samc21/include
 CFLAGS-$(CONFIG_MACH_SAMD21) += -mcpu=cortex-m0plus -Ilib/samd21/samd21a/include
 CFLAGS-$(CONFIG_MACH_SAMD51) += -Ilib/samd51/samd51a/include
@@ -14,7 +15,7 @@ CFLAGS-$(CONFIG_MACH_SAME51) += -Ilib/same51/include
 CFLAGS-$(CONFIG_MACH_SAMX5) += -mcpu=cortex-m4 -Ilib/same54/include
 CFLAGS += $(CFLAGS-y) -D__$(MCU)__ -mthumb -Ilib/cmsis-core -Ilib/fast-hash
 
-CFLAGS_klipper.elf += --specs=nano.specs --specs=nosys.specs
+CFLAGS_klipper.elf += -nostdlib -lgcc -lc_nano
 CFLAGS_klipper.elf += -T $(OUT)src/generic/armcm_link.ld
 $(OUT)klipper.elf: $(OUT)src/generic/armcm_link.ld
 
@@ -27,9 +28,9 @@ canbus-src-y := generic/canserial.c ../lib/fast-hash/fasthash.c
 canbus-src-y += atsamd/fdcan.c atsamd/chipid.c
 src-$(CONFIG_USBCANBUS) += $(canbus-src-y) atsamd/usbserial.c generic/usb_canbus.c
 src-$(CONFIG_CANSERIAL) += $(canbus-src-y) generic/canbus.c
-src-$(CONFIG_HAVE_GPIO_ADC) += atsamd/adc.c
-src-$(CONFIG_HAVE_GPIO_I2C) += atsamd/i2c.c
-src-$(CONFIG_HAVE_GPIO_SPI) += atsamd/spi.c
+src-$(CONFIG_WANT_GPIO_ADC) += atsamd/adc.c
+src-$(CONFIG_WANT_GPIO_I2C) += atsamd/i2c.c
+src-$(CONFIG_WANT_GPIO_SPI) += atsamd/spi.c
 src-$(CONFIG_HAVE_SERCOM) += atsamd/sercom.c
 src-$(CONFIG_HAVE_GPIO_HARD_PWM) += atsamd/hard_pwm.c
 src-$(CONFIG_MACH_SAMC21) += atsamd/samd51_watchdog.c

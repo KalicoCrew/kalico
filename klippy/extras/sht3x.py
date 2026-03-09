@@ -5,9 +5,9 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus
 
-from extras.danger_options import get_danger_options
+from . import bus
+from .danger_options import get_danger_options
 
 ######################################################################
 # Compatible Sensors:
@@ -27,6 +27,13 @@ SHT3X_CMD = {
             "HIGH_REP": [0x24, 0x00],
             "MED_REP": [0x24, 0x0B],
             "LOW_REP": [0x24, 0x16],
+        },
+    },
+    "PERIODIC": {
+        "2HZ": {
+            "HIGH_REP": [0x22, 0x36],
+            "MED_REP": [0x22, 0x20],
+            "LOW_REP": [0x22, 0x2B],
         },
     },
     "OTHER": {
@@ -61,6 +68,10 @@ class SHT3X:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
+        )
 
     def handle_connect(self):
         self._init_sht3x()
@@ -78,10 +89,12 @@ class SHT3X:
 
     def _init_sht3x(self):
         # Device Soft Reset
-        self.i2c.i2c_write(SHT3X_CMD["OTHER"]["SOFTRESET"])
-
-        # Wait 2ms after reset
-        self.reactor.pause(self.reactor.monotonic() + 0.02)
+        self.i2c.i2c_write_wait_ack(SHT3X_CMD["OTHER"]["BREAK"])
+        # Break takes ~ 1ms
+        self.reactor.pause(self.reactor.monotonic() + 0.0015)
+        self.i2c.i2c_write_wait_ack(SHT3X_CMD["OTHER"]["SOFTRESET"])
+        # Wait <=1.5ms after reset
+        self.reactor.pause(self.reactor.monotonic() + 0.0015)
 
         status = self.i2c.i2c_read(SHT3X_CMD["OTHER"]["STATUS"]["READ"], 3)
         response = bytearray(status["response"])
@@ -92,16 +105,15 @@ class SHT3X:
         if self._crc8(status) != checksum:
             logging.warning("sht3x: Reading status - checksum error!")
 
+        # Enable periodic mode
+        self.i2c.i2c_write_wait_ack(SHT3X_CMD["PERIODIC"]["2HZ"]["HIGH_REP"])
+        # Wait <=15.5ms for first measurment
+        self.reactor.pause(self.reactor.monotonic() + 0.0155)
+
     def _sample_sht3x(self, eventtime):
         try:
-            # Read Temeprature
-            params = self.i2c.i2c_write(
-                SHT3X_CMD["MEASURE"]["STRETCH_ENABLED"]["HIGH_REP"]
-            )
-            # Wait
-            self.reactor.pause(self.reactor.monotonic() + 0.20)
-
-            params = self.i2c.i2c_read([], 6)
+            # Read measurment
+            params = self.i2c.i2c_read(SHT3X_CMD["OTHER"]["FETCH"], 6)
 
             response = bytearray(params["response"])
             rtemp = response[0] << 8

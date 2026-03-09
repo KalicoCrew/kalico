@@ -7,8 +7,10 @@
 # Output directory
 OUT=out/
 
+$(shell ./scripts/find-firmware-extras.sh)
+
 # Kconfig includes
-export KCONFIG_CONFIG     := $(CURDIR)/.config
+export KCONFIG_CONFIG     ?= $(CURDIR)/.config
 -include $(KCONFIG_CONFIG)
 
 # Common command definitions
@@ -18,7 +20,7 @@ LD=$(CROSS_PREFIX)ld
 OBJCOPY=$(CROSS_PREFIX)objcopy
 OBJDUMP=$(CROSS_PREFIX)objdump
 STRIP=$(CROSS_PREFIX)strip
-CPP=cpp
+CPP=$(CROSS_PREFIX)cpp
 PYTHON=python3
 
 # Source files
@@ -30,14 +32,21 @@ cc-option=$(shell if test -z "`$(1) $(2) -S -o /dev/null -xc /dev/null 2>&1`" \
     ; then echo "$(2)"; else echo "$(3)"; fi ;)
 
 CFLAGS := -iquote $(OUT) -iquote src -iquote $(OUT)board-generic/ \
-		-std=gnu11 -O2 -MD -Wall \
+		-std=gnu11 -MD -Wall \
 		-Wold-style-definition $(call cc-option,$(CC),-Wtype-limits,) \
     -ffunction-sections -fdata-sections -fno-delete-null-pointer-checks
 CFLAGS += -flto=auto -fwhole-program -fno-use-linker-plugin -ggdb3
+CFLAGS += $(EXTRA_CFLAGS)
+
+ifeq ($(CONFIG_WANT_OPTIMIZE_SIZE), y)
+CFLAGS += -Os
+else
+CFLAGS += -O2
+endif
 
 OBJS_klipper.elf = $(patsubst %.c, $(OUT)src/%.o,$(src-y))
 OBJS_klipper.elf += $(OUT)compile_time_request.o
-CFLAGS_klipper.elf = $(CFLAGS) -Wl,--gc-sections
+CFLAGS_klipper.elf = $(CFLAGS) -Wl,--gc-sections -Wl,--print-memory-usage
 
 CPPFLAGS = -I$(OUT) -P -MD -MT $@
 
@@ -56,6 +65,7 @@ endif
 
 # Include board specific makefile
 include src/Makefile
+-include src/extras/Makefile
 -include src/$(patsubst "%",%,$(CONFIG_BOARD_DIRECTORY))/Makefile
 
 ################ Main build rules

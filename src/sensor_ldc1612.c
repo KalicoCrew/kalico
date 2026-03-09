@@ -7,7 +7,6 @@
 
 #include <string.h> // memcpy
 #include "basecmd.h" // oid_alloc
-#include "board/gpio.h" // i2c_read
 #include "board/irq.h" // irq_disable
 #include "board/misc.h" // timer_read_time
 #include "command.h" // DECL_COMMAND
@@ -147,7 +146,8 @@ check_home(struct ldc1612 *ld, uint32_t data)
 static void
 read_reg(struct ldc1612 *ld, uint8_t reg, uint8_t *res)
 {
-    i2c_read(ld->i2c->i2c_config, sizeof(reg), &reg, 2, res);
+    int ret = i2c_dev_read(ld->i2c, sizeof(reg), &reg, 2, res);
+    i2c_shutdown_on_err(ret);
 }
 
 // Read the status register on the ldc1612
@@ -180,7 +180,10 @@ ldc1612_query(struct ldc1612 *ld, uint8_t oid)
     ld->sb.data_count += BYTES_PER_SAMPLE;
 
     // Check for endstop trigger
-    uint32_t data = (d[0] << 24L) | (d[1] << 16L) | (d[2] << 8) | d[3];
+    uint32_t data =   ((uint32_t)d[0] << 24)
+                    | ((uint32_t)d[1] << 16)
+                    | ((uint32_t)d[2] << 8)
+                    | ((uint32_t)d[3]);
     check_home(ld, data);
 
     // Flush local buffer if needed
@@ -210,7 +213,7 @@ command_query_ldc1612(uint32_t *args)
 DECL_COMMAND(command_query_ldc1612, "query_ldc1612 oid=%c rest_ticks=%u");
 
 void
-command_query_ldc1612_status(uint32_t *args)
+command_query_status_ldc1612(uint32_t *args)
 {
     struct ldc1612 *ld = oid_lookup(args[0], command_config_ldc1612);
 
@@ -232,7 +235,7 @@ command_query_ldc1612_status(uint32_t *args)
     uint32_t fifo = status & 0x08 ? BYTES_PER_SAMPLE : 0;
     sensor_bulk_status(&ld->sb, args[0], time1, time2-time1, fifo);
 }
-DECL_COMMAND(command_query_ldc1612_status, "query_ldc1612_status oid=%c");
+DECL_COMMAND(command_query_status_ldc1612, "query_status_ldc1612 oid=%c");
 
 void
 ldc1612_task(void)

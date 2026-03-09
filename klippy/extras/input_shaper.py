@@ -5,8 +5,11 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
-import chelper
-from . import extruder_smoother, shaper_defs
+
+from klippy import chelper
+
+from . import shaper_defs
+from . import extruder_smoother
 
 
 def parse_float_list(list_str):

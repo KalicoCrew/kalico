@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from extras.danger_options import get_danger_options
+from .danger_options import get_danger_options
 
 SAMPLE_TIME = 0.001
 SAMPLE_COUNT = 8
@@ -55,13 +55,32 @@ class PrinterTemperatureMCU:
                 range_check_count=self._danger_check_count,
             )
             return
-        self.printer.register_event_handler(
-            "klippy:mcu_identify", self._mcu_identify
-        )
         self.mcu_adc.get_mcu().register_config_callback(self._build_config)
 
+    def setup_callback(self, temperature_callback):
+        self.temperature_callback = temperature_callback
+
+    def get_report_time_delta(self):
+        return REPORT_TIME
+
+    def adc_callback(self, read_time, read_value):
+        temp = self.base_temperature + read_value * self.slope
+        self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
+
+    def setup_minmax(self, min_temp, max_temp):
+        self.min_temp = min_temp
+        self.max_temp = max_temp
+
+    def calc_adc(self, temp):
+        return (temp - self.base_temperature) / self.slope
+
+    def calc_base(self, temp, adc):
+        return temp - adc * self.slope
+
     def _build_config(self):
-        self.debug_read_cmd = self.mcu_adc.get_mcu().lookup_query_command(
+        # Obtain mcu information
+        _mcu = self.mcu_adc.get_mcu()
+        self.debug_read_cmd = _mcu.lookup_query_command(
             "debug_read order=%c addr=%u", "debug_result val=%u"
         )
 
@@ -70,7 +89,7 @@ class PrinterTemperatureMCU:
         self.mcu_type = _mcu.get_constants().get("MCU", "")
         # Run MCU specific configuration
         cfg_funcs = [
-            ("rp2040", self.config_rp2040),
+            ("rp2", self.config_rp2040),
             ("sam3", self.config_sam3),
             ("sam4", self.config_sam4),
             ("same70", self.config_same70),
@@ -88,6 +107,9 @@ class PrinterTemperatureMCU:
             ("stm32l4", self.config_stm32g0),
             ("stm32h723", self.config_stm32h723),
             ("stm32h7", self.config_stm32h7),
+            ("gd32e230x8", self.config_gd32e230x8),
+            ("gd32f303xe", self.config_gd32f303xe),
+            ("gd32f303xb", self.config_gd32f303xb),
             ("", self.config_unknown),
         ]
         for name, func in cfg_funcs:
@@ -114,6 +136,7 @@ class PrinterTemperatureMCU:
             maxval=max(adc_range),
             range_check_count=self._danger_check_count,
         )
+        self.mcu_adc._build_config()
 
     def setup_callback(self, temperature_callback):
         self.temperature_callback = temperature_callback
@@ -142,6 +165,18 @@ class PrinterTemperatureMCU:
         raise self.printer.config_error(
             "MCU temperature not supported on %s" % (self.mcu_type,)
         )
+
+    def config_gd32e230x8(self):
+        self.slope = 3.3 / -0.004300
+        self.base_temperature = self.calc_base(25.0, 1.45 / 3.3)
+
+    def config_gd32f303xe(self):
+        self.slope = 3.3 / -0.004100
+        self.base_temperature = self.calc_base(25.0, 1.45 / 3.3)
+
+    def config_gd32f303xb(self):
+        self.slope = 3.3 / -0.004100
+        self.base_temperature = self.calc_base(25.0, 1.45 / 3.3)
 
     def config_rp2040(self):
         self.slope = self.reference_voltage / -0.001721

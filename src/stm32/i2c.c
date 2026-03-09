@@ -11,6 +11,7 @@
 #include "internal.h" // GPIO
 #include "sched.h" // sched_shutdown
 #include "board/irq.h" //irq_disable
+#include "i2ccmds.h"   // I2C_BUS_SUCCESS
 
 struct i2c_info {
     I2C_TypeDef *i2c;
@@ -31,6 +32,8 @@ DECL_ENUMERATION("i2c_bus", "i2c2a", 4);
 DECL_CONSTANT_STR("BUS_PINS_i2c2a", "PH4,PH5");
 DECL_ENUMERATION("i2c_bus", "i2c3a", 5);
 DECL_CONSTANT_STR("BUS_PINS_i2c3a", "PH7,PH8");
+DECL_ENUMERATION("i2c_bus", "i2c2_PF1_PF0", 6);
+DECL_CONSTANT_STR("BUS_PINS_i2c2_PF1_PF0", "PF1,PF0");
   #endif
 #endif
 
@@ -43,6 +46,7 @@ static const struct i2c_info i2c_bus[] = {
   #if CONFIG_MACH_STM32F2 || CONFIG_MACH_STM32F4x5
     { I2C2, GPIO('H', 4), GPIO('H', 5) },
     { I2C3, GPIO('H', 7), GPIO('H', 8) },
+    { I2C2, GPIO('F', 1), GPIO('F', 0) },
   #endif
 #endif
 };
@@ -97,6 +101,8 @@ i2c_wait(I2C_TypeDef *i2c, uint32_t set, uint32_t clear, uint32_t timeout)
         uint32_t sr1 = i2c->SR1;
         if ((sr1 & set) == set && (sr1 & clear) == 0)
             return sr1;
+        if (sr1 & I2C_SR1_AF)
+            shutdown("I2C NACK error encountered");
         if (!timer_is_before(timer_read_time(), timeout))
             shutdown("i2c timeout");
     }
@@ -147,7 +153,7 @@ i2c_stop(I2C_TypeDef *i2c, uint32_t timeout)
     i2c_wait(i2c, 0, I2C_SR1_TXE, timeout);
 }
 
-void
+int
 i2c_write(struct i2c_config config, uint8_t write_len, uint8_t *write)
 {
     I2C_TypeDef *i2c = config.i2c;
@@ -157,9 +163,11 @@ i2c_write(struct i2c_config config, uint8_t write_len, uint8_t *write)
     while (write_len--)
         i2c_send_byte(i2c, *write++, timeout);
     i2c_stop(i2c, timeout);
+
+    return I2C_BUS_SUCCESS;
 }
 
-void
+int
 i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
          , uint8_t read_len, uint8_t *read)
 {
@@ -180,4 +188,6 @@ i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
         read++;
     }
     i2c_wait(i2c, 0, I2C_SR1_RXNE, timeout);
+
+    return I2C_BUS_SUCCESS;
 }

@@ -2,8 +2,21 @@ name: Klipper Container Build and Push
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * 0" # at 00.00 on Sunday
+  push:
+    branches:
+      - main
+    # This should mirror the klipper paths-filter in ci-build_test.yaml
+    paths:
+      - "Makefile"
+      - "pyproject.toml"
+      - "src/**"
+      - "lib/**"
+      - "test/configs/**"
+      - "scripts/Dockerfile-build"
+      - "scripts/buildcommands.py"
+      - "scripts/check-gcc.sh"
+      - "scripts/ci-build.sh"
+      - ".github/workflows/ci-builder.yaml"
 
 jobs:
   login:

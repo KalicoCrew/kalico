@@ -12,7 +12,7 @@ config LPC_SELECT
     select HAVE_GPIO_HARD_PWM
     select HAVE_STRICT_TIMING
     select HAVE_CHIPID
-    select HAVE_STEPPER_BOTH_EDGE
+    select HAVE_STEPPER_OPTIMIZED_BOTH_EDGE
     select HAVE_BOOTLOADER_REQUEST
 
 config BOARD_DIRECTORY
@@ -65,7 +65,7 @@ config STACK_SIZE
 choice
     prompt "Bootloader offset"
     config LPC_FLASH_START_4000
-        bool "16KiB bootloader (Smoothieware bootloader)"
+        bool "16KiB bootloader"
     config LPC_FLASH_START_0000
         bool "No bootloader"
 endchoice

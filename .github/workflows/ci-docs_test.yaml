@@ -1,0 +1,27 @@
+name: Docs test
+on:
+  pull_request:
+    paths:
+      - docs/**
+      - .github/workflows/ci-docs_test.yaml
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+          enable-cache: true
+          cache-dependency-glob: "docs/_kalico/uv.lock"
+
+      - name: Setup Python
+        working-directory: docs/_kalico/
+        run: uv python install
+
+      - name: Build MkDocs Pages
+        working-directory: docs/_kalico/
+        run: uv run mkdocs build --strict

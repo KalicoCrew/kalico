@@ -1,6 +1,6 @@
 # Multiple Micro-controller Homing and Probing
 
-Klipper supports a mechanism for homing with an endstop attached to
+Kalico supports a mechanism for homing with an endstop attached to
 one micro-controller while its stepper motors are on a different
 micro-controller. This support is referred to as "multi-mcu
 homing". This feature is also used when a Z probe is on a different
@@ -13,7 +13,7 @@ motors during homing and probing operations.
 
 The overshoot occurs due to possible message transmission delays
 between the micro-controller monitoring the endstop and the
-micro-controllers moving the stepper motors. The Klipper code is
+micro-controllers moving the stepper motors. The Kalico code is
 designed to limit this delay to no more than 25ms. (When multi-mcu
 homing is activated, the micro-controllers send periodic status
 messages and check that corresponding status messages are received
@@ -26,7 +26,7 @@ overshoot. Using slower homing or probing speeds can reduce the
 overshoot.
 
 Stepper motor overshoot should not adversely impact the precision of
-the homing and probing procedure. The Klipper code will detect the
+the homing and probing procedure. The Kalico code will detect the
 overshoot and account for it in its calculations. However, it is
 important that the hardware design is capable of handling overshoot
 without causing damage to the machine.
@@ -38,7 +38,7 @@ less than 10ms. High latency (even for short periods) is likely to
 result in homing failures.
 
 Should high latency result in a failure (or if some other
-communication issue is detected) then Klipper will raise a
+communication issue is detected) then Kalico will raise a
 "Communication timeout during homing" error.
 
 Note that an axis with multiple steppers (eg, `stepper_z` and

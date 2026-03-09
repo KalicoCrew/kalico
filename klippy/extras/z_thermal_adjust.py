@@ -42,7 +42,7 @@ class ZThermalAdjuster:
         pheaters = self.printer.load_object(config, "heaters")
         self.sensor = pheaters.setup_sensor(config)
         self.sensor.setup_minmax(self.min_temp, self.max_temp)
-        self.sensor.setup_callback(self.temperature_callback)
+        self.sensor.setup_callback(self.init_temperature_callback)
         pheaters.register_sensor(config, self)
 
         self.last_temp = 0.0
@@ -54,14 +54,22 @@ class ZThermalAdjuster:
 
         # Z transformation
         self.z_adjust_mm = 0.0
-        self.last_z_adjust_mm = 0.0
         self.adjust_enable = True
         self.last_position = [0.0, 0.0, 0.0, 0.0]
         self.next_transform = None
 
         # Register gcode commands
-        self.gcode.register_command(
+        full_name = config.get_name()
+        self.component = None
+        if not full_name == "z_thermal_adjust":
+            self.component = full_name.split(maxsplit=1)[-1]
+        self.register_commands(self.component)
+
+    def register_commands(self, component):
+        self.gcode.register_mux_command(
             "SET_Z_THERMAL_ADJUST",
+            "COMPONENT",
+            component,
             self.cmd_SET_Z_THERMAL_ADJUST,
             desc=self.cmd_SET_Z_THERMAL_ADJUST_help,
         )
@@ -116,7 +124,6 @@ class ZThermalAdjuster:
 
         # Apply Z adjustment
         new_z = pos[2] + self.z_adjust_mm
-        self.last_z_adjust_mm = self.z_adjust_mm
         return [pos[0], pos[1], new_z, pos[3]]
 
     def calc_unadjust(self, pos):
@@ -131,14 +138,20 @@ class ZThermalAdjuster:
 
     def move(self, newpos, speed):
         # don't apply to extrude only moves or when disabled
-        if (newpos[0:2] == self.last_position[0:2]) or not self.adjust_enable:
-            z = newpos[2] + self.last_z_adjust_mm
+        if (newpos[0:3] == self.last_position[0:3]) or not self.adjust_enable:
+            z = newpos[2] + self.z_adjust_mm
             adjusted_pos = [newpos[0], newpos[1], z, newpos[3]]
             self.next_transform.move(adjusted_pos, speed)
         else:
             adjusted_pos = self.calc_adjust(newpos)
             self.next_transform.move(adjusted_pos, speed)
         self.last_position[:] = newpos
+
+    def init_temperature_callback(self, read_time, temp):
+        "Initialize Z adjust thermistor ref temp"
+        with self.lock:
+            self.ref_temperature = temp
+            self.sensor.setup_callback(self.temperature_callback)
 
     def temperature_callback(self, read_time, temp):
         "Called everytime the Z adjust thermistor is read"
@@ -176,7 +189,11 @@ class ZThermalAdjuster:
 
         state = "1 (enabled)" if self.adjust_enable else "0 (disabled)"
         override = " (manual)" if self.ref_temp_override else ""
+        component = ""
+        if self.component is not None:
+            component = "component: %s\n" % (self.component,)
         msg = (
+            "%s"
             "enable: %s\n"
             "temp_coeff: %f mm/degC\n"
             "ref_temp: %.2f degC%s\n"
@@ -184,6 +201,7 @@ class ZThermalAdjuster:
             "Current Z temp: %.2f degC\n"
             "Applied Z adjustment: %.4f mm"
             % (
+                component,
                 state,
                 self.temp_coeff,
                 self.ref_temperature,
@@ -195,6 +213,10 @@ class ZThermalAdjuster:
         gcmd.respond_info(msg)
 
     cmd_SET_Z_THERMAL_ADJUST_help = "Set/query Z Thermal Adjust parameters."
+
+
+def load_config_prefix(config):
+    return ZThermalAdjuster(config)
 
 
 def load_config(config):

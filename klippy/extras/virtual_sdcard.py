@@ -3,7 +3,10 @@
 # Copyright (C) 2018-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, sys, logging, io
+import io
+import logging
+import os
+import sys
 
 VALID_GCODE_EXTS = ["gcode", "g", "gco"]
 
@@ -189,6 +192,7 @@ class VirtualSDGCodeProvider:
         self.file_position = 0
         self.file_size = fsize
         self.filename = filename
+        self.printer.send_event("virtual_sdcard:load_file")
 
     def get_file_position(self):
         return self.next_file_position
@@ -239,6 +243,7 @@ class VirtualSD:
         self.print_stats = self.printer.load_object(config, "print_stats")
         # sdcard state
         self.virtualsd_gcode_provider = VirtualSDGCodeProvider(config)
+        self.sdcard_dirname = self.virtualsd_gcode_provider.sdcard_dirname
         self.gcode_provider = None
         # Work timer
         self.reactor = self.printer.get_reactor()
@@ -334,7 +339,7 @@ class VirtualSD:
         self.printer.send_event("virtual_sdcard:reset_file")
 
     cmd_SDCARD_RESET_FILE_help = (
-        "Clears a loaded SD File. Stops the print " "if necessary"
+        "Clears a loaded SD File. Stops the print if necessary"
     )
 
     def cmd_SDCARD_RESET_FILE(self, gcmd):

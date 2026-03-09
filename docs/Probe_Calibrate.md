@@ -1,7 +1,7 @@
 # Probe calibration
 
 This document describes the method for calibrating the X, Y, and Z
-offsets of an "automatic z probe" in Klipper. This is useful for users
+offsets of an "automatic z probe" in Kalico. This is useful for users
 that have a `[probe]` or `[bltouch]` section in their config file.
 
 ## Calibrating probe X and Y offsets
@@ -47,7 +47,7 @@ the new values take effect.
 
 Providing an accurate probe z_offset is critical to obtaining high
 quality prints. The z_offset is the distance between the nozzle and
-bed when the probe triggers. The Klipper `PROBE_CALIBRATE` tool can be
+bed when the probe triggers. The Kalico `PROBE_CALIBRATE` tool can be
 used to obtain this value - it will run an automatic probe to measure
 the probe's Z trigger position and then start a manual probe to obtain
 the nozzle Z height. The probe z_offset will then be calculated from
@@ -141,7 +141,7 @@ update the printer.cfg file and issue a `RESTART` command. If so, it
 is a good idea to
 [calibrate the z_offset](#calibrating-probe-z-offset) again. If
 repeatable results can not be obtained then don't use the probe for
-bed leveling. Klipper has several manual probing tools that can be
+bed leveling. Kalico has several manual probing tools that can be
 used instead - see the [Bed Level document](Bed_Level.md) for further
 details.
 

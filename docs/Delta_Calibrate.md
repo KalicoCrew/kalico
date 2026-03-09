@@ -1,6 +1,6 @@
 # Delta calibration
 
-This document describes Klipper's automatic calibration system for
+This document describes Kalico's automatic calibration system for
 "delta" style printers.
 
 Delta calibration involves finding the tower endstop positions, tower
@@ -18,7 +18,7 @@ improve the accuracy of those switches.
 
 ## Automatic vs manual probing
 
-Klipper supports calibrating the delta parameters via a manual probing
+Kalico supports calibrating the delta parameters via a manual probing
 method or via an automatic Z probe.
 
 A number of delta printer kits come with automatic Z probes that are
@@ -40,7 +40,7 @@ then be sure to rerun probe calibration after any delta calibration.
 
 ## Basic delta calibration
 
-Klipper has a DELTA_CALIBRATE command that can perform basic delta
+Kalico has a DELTA_CALIBRATE command that can perform basic delta
 calibration. This command probes seven different points on the bed and
 calculates new values for the tower angles, tower endstops, and delta
 radius.
@@ -137,7 +137,7 @@ from C label, distance from center to pillar with B label, etc.).
 
 ![delta_cal_e_step1](img/delta_cal_e_step1.png)
 
-Enter these parameters into Klipper with a comma separated list of
+Enter these parameters into Kalico with a comma separated list of
 floating point numbers:
 ```
 DELTA_ANALYZE CENTER_DISTS=<a_dist>,<far_c_dist>,<b_dist>,<far_a_dist>,<c_dist>,<far_b_dist>
@@ -155,7 +155,7 @@ the pillar across from A, and so on.
 
 ![delta_cal_e_step2](img/delta_cal_e_step2.png)
 
-Enter these parameters into Klipper:
+Enter these parameters into Kalico:
 ```
 DELTA_ANALYZE OUTER_DISTS=<a_to_far_c>,<far_c_to_b>,<b_to_far_a>,<far_a_to_c>,<c_to_far_b>,<far_b_to_a>
 ```
@@ -169,7 +169,7 @@ spoke.
 
 ![delta_cal_e_step3](img/delta_cal_e_step3.png)
 
-Enter them into Klipper:
+Enter them into Kalico:
 ```
 DELTA_ANALYZE CENTER_PILLAR_WIDTHS=<a>,<b>,<c>
 ```
@@ -186,7 +186,7 @@ pillar across from A, etc.).
 
 ![delta_cal_e_step4](img/delta_cal_e_step4.png)
 
-And enter them into Klipper:
+And enter them into Kalico:
 ```
 DELTA_ANALYZE OUTER_PILLAR_WIDTHS=<a>,<far_c>,<b>,<far_a>,<c>,<far_b>
 ```

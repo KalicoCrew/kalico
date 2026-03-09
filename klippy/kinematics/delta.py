@@ -3,8 +3,10 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
-import stepper, mathutil
+import logging
+import math
+
+from klippy import mathutil, stepper
 
 # Slow moves once the ratio of tower to XY movement exceeds SLOW_RATIO
 SLOW_RATIO = 3.0
@@ -114,14 +116,7 @@ class DeltaKinematics:
 
         self.slow_xy2 = ratio_to_xy(SLOW_RATIO) ** 2
         self.very_slow_xy2 = ratio_to_xy(2.0 * SLOW_RATIO) ** 2
-        self.max_xy2 = (
-            min(
-                print_radius,
-                min_arm_length - radius,
-                ratio_to_xy(4.0 * SLOW_RATIO),
-            )
-            ** 2
-        )
+        self.max_xy2 = print_radius**2
         max_xy = math.sqrt(self.max_xy2)
         logging.info(
             "Delta max build radius %.2fmm (moves slowed past %.2fmm"
@@ -151,6 +146,12 @@ class DeltaKinematics:
         if tuple(homing_axes) == (0, 1, 2):
             self.need_home = False
 
+    def clear_homing_state(self, axes):
+        # Clearing homing state for each axis individually is not implemented
+        if 0 in axes or 1 in axes or 2 in axes:
+            self.limit_xy2 = -1
+            self.need_home = True
+
     def home(self, homing_state):
         # All axes are homed simultaneously
         homing_state.set_axes([0, 1, 2])
@@ -159,8 +160,7 @@ class DeltaKinematics:
         homing_state.home_rails(self.rails, forcepos, self.home_position)
 
     def _motor_off(self, print_time):
-        self.limit_xy2 = -1.0
-        self.need_home = True
+        self.clear_homing_state((0, 1, 2))
 
     def check_move(self, move):
         end_pos = move.end_pos

@@ -26,6 +26,16 @@ enum {
     SF_HAVE_PIN = 1, SF_SOFTWARE = 2, SF_HARDWARE = 4, SF_CS_ACTIVE_HIGH = 8
 };
 
+#if !CONFIG_WANT_GPIO_SPI
+// These are declared here to avoid a bunch of ifdefs below,
+// if software SPI is enabled but not hardware SPI.
+void
+spi_transfer(struct spi_config spi, uint8_t receive_data,
+             uint8_t data_len, uint8_t *data) {}
+void
+spi_prepare(struct spi_config spi) {}
+#endif
+
 void
 command_config_spi(uint32_t *args)
 {
@@ -52,12 +62,16 @@ spidev_oid_lookup(uint8_t oid)
 void
 command_spi_set_bus(uint32_t *args)
 {
+#if CONFIG_WANT_GPIO_SPI
     struct spidev_s *spi = spidev_oid_lookup(args[0]);
     uint8_t mode = args[2];
     if (mode > 3 || spi->flags & (SF_SOFTWARE|SF_HARDWARE))
         shutdown("Invalid spi config");
     spi->spi_config = spi_setup(args[1], mode, args[3]);
     spi->flags |= SF_HARDWARE;
+#else
+    shutdown("hardware SPI is not supported/enabled");
+#endif
 }
 DECL_COMMAND(command_spi_set_bus,
              "spi_set_bus oid=%c spi_bus=%u mode=%u rate=%u");
@@ -65,10 +79,14 @@ DECL_COMMAND(command_spi_set_bus,
 void
 spidev_set_software_bus(struct spidev_s *spi, struct spi_software *ss)
 {
+#if CONFIG_WANT_SOFTWARE_SPI
     if (spi->flags & (SF_SOFTWARE|SF_HARDWARE))
         shutdown("Invalid spi config");
     spi->spi_software = ss;
     spi->flags |= SF_SOFTWARE;
+#else
+    shutdown("software SPI is not supported/enabled");
+#endif
 }
 
 int

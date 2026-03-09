@@ -30,7 +30,7 @@ class RingingTest:
         self.center_y = config.getfloat("center_y", None)
         self.layer_height = config.getfloat("layer_height", 0.2, above=0.0)
         self.first_layer_height = config.getfloat(
-            "first_layer_height", 0.2, above=self.layer_height
+            "first_layer_height", 0.2, minval=self.layer_height
         )
         self.perimeters = config.getint("perimeters", 2, minval=1)
         self.brim_width = config.getfloat(
@@ -42,6 +42,9 @@ class RingingTest:
         )
         self.deceleration_points = config.getint(
             "deceleration_points", 100, minval=10
+        )
+        self.fan_speed = config.getfloat(
+            "fan_speed", 0.5, minval=0.0, maxval=1.0
         )
         # Register commands
         self.gcode = self.printer.lookup_object("gcode")
@@ -137,7 +140,7 @@ class RingingTest:
         systime = self.printer.get_reactor().monotonic()
         toolhead_info = toolhead.get_status(systime)
         old_max_accel = toolhead_info["max_accel"]
-        old_max_accel_to_decel = toolhead_info["max_accel_to_decel"]
+        old_minimum_cruise_ratio = toolhead_info["minimum_cruise_ratio"]
         old_max_velocity = toolhead_info["max_velocity"]
 
         # Get tower params with overrides from the GCode command
@@ -241,9 +244,9 @@ class RingingTest:
             start_x = center_x - brim_offset
             start_y = center_y - brim_offset
             start_z = first_layer_height
-            yield "SET_VELOCITY_LIMIT ACCEL=%.6f ACCEL_TO_DECEL=%.6f" % (
+            yield "SET_VELOCITY_LIMIT ACCEL=%.6f MINIMUM_CRUISE_RATIO=%.6f" % (
                 accel_start,
-                0.5 * accel_start,
+                0.5,
             )
             yield "G1 X%.3f Y%.3f Z%.3f F%.f" % (
                 start_x,
@@ -335,7 +338,7 @@ class RingingTest:
 
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.3f "
-                            "ACCEL_TO_DECEL=%.3f" % (max_accel, max_accel)
+                            "MINIMUM_CRUISE_RATIO=%.3f" % (max_accel, 0.0)
                         )
                         # The extrusion flow of the lines at an agle is reduced
                         # by cos(angle) to maintain the correct spacing between
@@ -354,8 +357,8 @@ class RingingTest:
                         )
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.6f"
-                            + " ACCEL_TO_DECEL=%.6f"
-                        ) % (INFINITE_ACCEL, INFINITE_ACCEL)
+                            + " MINIMUM_CRUISE_RATIO=%.3f"
+                        ) % (INFINITE_ACCEL, 0.0)
                         yield rotated_G1(
                             notch_pos - d_x - 0.5 * size,
                             perimeter_offset - d_y,
@@ -382,8 +385,8 @@ class RingingTest:
                             old_x, old_y = x, y
                         yield (
                             "SET_VELOCITY_LIMIT ACCEL=%.6f"
-                            + " ACCEL_TO_DECEL=%.6f"
-                        ) % (max_accel, 0.5 * max_accel)
+                            + " MINIMUM_CRUISE_RATIO=%.3f"
+                        ) % (max_accel, 0.5)
                         if i < perimeters - 1 or (
                             abs(band_part - 0.5) >= 0.5 * LETTER_BAND_PART
                         ):
@@ -503,15 +506,16 @@ class RingingTest:
                 self.progress = z / height
                 prev_z, z = z, next_z
             yield (
-                "SET_VELOCITY_LIMIT ACCEL=%.3f ACCEL_TO_DECEL=%.f"
+                "SET_VELOCITY_LIMIT ACCEL=%.3f MINIMUM_CRUISE_RATIO=%.3f"
                 + " VELOCITY=%.3f"
-            ) % (old_max_accel, old_max_accel_to_decel, old_max_velocity)
+            ) % (old_max_accel, old_minimum_cruise_ratio, old_max_velocity)
 
         yield "M83"
         yield "G90"
         yield "M220 S100"
         for line in gen_brim():
             yield line
+        yield f"M106 S{self.fan_speed * 255}"
         for line in gen_tower():
             yield line
         if final_gcode_id is not None:

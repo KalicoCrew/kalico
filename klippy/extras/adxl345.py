@@ -3,8 +3,14 @@
 # Copyright (C) 2020-2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, time, collections, multiprocessing, os, math
-from . import bus, bulk_sensor
+import collections
+import logging
+import math
+import multiprocessing
+import os
+import time
+
+from . import bulk_sensor, bus
 
 # ADXL345 registers
 REG_DEVID = 0x00
@@ -234,14 +240,14 @@ class AccelCommandHelper:
     cmd_ACCELEROMETER_DEBUG_READ_help = "Query register (for debugging)"
 
     def cmd_ACCELEROMETER_DEBUG_READ(self, gcmd):
-        reg = gcmd.get("REG", minval=0, maxval=126, parser=lambda x: int(x, 0))
+        reg = gcmd.get("REG", minval=0, maxval=127, parser=lambda x: int(x, 0))
         val = self.chip.read_reg(reg)
         gcmd.respond_info("Accelerometer REG[0x%x] = 0x%x" % (reg, val))
 
     cmd_ACCELEROMETER_DEBUG_WRITE_help = "Set register (for debugging)"
 
     def cmd_ACCELEROMETER_DEBUG_WRITE(self, gcmd):
-        reg = gcmd.get("REG", minval=0, maxval=126, parser=lambda x: int(x, 0))
+        reg = gcmd.get("REG", minval=0, maxval=127, parser=lambda x: int(x, 0))
         val = gcmd.get("VAL", minval=0, maxval=255, parser=lambda x: int(x, 0))
         self.chip.set_reg(reg, val)
 
@@ -316,7 +322,7 @@ class ADXL345:
     def check_connected(self):
         if self.mcu.non_critical_disconnected:
             raise self.printer.command_error(
-                f"ADXL: {self.name} could not connect cause mcu: {self.mcu.get_name()} is non_critical_disconnected!"
+                f"ADXL: {self.name} could not connect because mcu: {self.mcu.get_name()} is non_critical_disconnected!"
             )
 
     def read_reg(self, reg):

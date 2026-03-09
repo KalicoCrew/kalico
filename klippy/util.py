@@ -3,10 +3,16 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, pty, fcntl, termios, signal, logging, json, time
+import fcntl
+import json
+import logging
+import os
+import pty
+import signal
 import subprocess
+import termios
+import time
 import traceback
-
 
 ######################################################################
 # Low-level Unix commands
@@ -101,26 +107,6 @@ def dump_mcu_build():
     except:
         pass
     dump_file_stats(build_dir, "out/klipper.elf")
-
-
-######################################################################
-# Python2 wrapper hacks
-######################################################################
-
-
-def setup_python2_wrappers():
-    if sys.version_info.major >= 3:
-        return
-    # Add module hacks so that common Python3 module imports work in Python2
-    import ConfigParser, Queue, io, StringIO, time
-
-    sys.modules["configparser"] = ConfigParser
-    sys.modules["queue"] = Queue
-    io.StringIO = StringIO.StringIO
-    time.process_time = time.clock
-
-
-setup_python2_wrappers()
 
 
 ######################################################################

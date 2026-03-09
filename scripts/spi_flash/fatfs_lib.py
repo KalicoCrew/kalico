@@ -4,15 +4,15 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os
+import pathlib
 import sys
 
-KLIPPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
-sys.path.append(os.path.join(KLIPPER_DIR, "klippy"))
-
-import chelper  # noqa: E402
+KLIPPER_DIR = pathlib.Path(__file__).parent.parent.parent
+sys.path.insert(0, str(KLIPPER_DIR))
+from klippy import chelper  # noqa: E402
 
 DEST_LIB = "fatfs.so"
-FATFS_DIR = os.path.join(KLIPPER_DIR, "lib/fatfs")
+FATFS_DIR = str(KLIPPER_DIR / "lib" / "fatfs")
 FATFS_SRC = ["ff.c", "ffsystem.c", "ffunicode.c"]
 SPI_FLASH_SRC = ["fatfs_api.c"]
 FATFS_HEADERS = ["diskio.h", "ff.h", "ffconf.h"]

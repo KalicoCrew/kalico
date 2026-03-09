@@ -1,16 +1,16 @@
 # Configuration reference for Bleeding Edge features
 
-This document is a reference for options available in the Klipper
+This document is a reference for options available in the Kalico
 config file for bleeding edge features. Refer to the [Bleeding Edge Documentation](Bleeding_Edge.md) for details on specific features.
 
 The descriptions in this document are formatted so that it is possible
 to cut-and-paste them into a printer config file. See the
 [installation document](Installation.md) for information on setting up
-Klipper and choosing an initial config file.
+Kalico and choosing an initial config file.
 
 ## High precision stepping and new stepcompress protocol
 
-This feature is enabled during klipper firmware compile
+This feature is enabled during Kalico firmware compile
 by selecting "High-precision stepping support" option in menuconfig.
 The firmware then needs to be flashed to all MCU(s) using this feature.
 
@@ -66,12 +66,12 @@ smoother_freq_y: 0
 
 ## Test print utilities
 
-### [ringing_tower]
+### [ringing_test]
 
 Ringing tower test print utility which isolates vibrations to one axis at a time.
 
 ```
-[ringing_tower]
+[ringing_test]
 size: 100
 #   X-Y Size of tower footprint (mm)
 height: 60
@@ -110,6 +110,9 @@ filament_diameter: 1.75
 #notch_offset:
 #   0.275 * size by default
 #deceleration_points: 100
+
+fan_speed: 0.5
+#   Speed the fan should run at after finishing the brim
 ```
 
 ### [pa_test]
@@ -141,4 +144,6 @@ medium_velocity: 50
 fast_velocity: 80
 #   End velocity for PA test segment (mm/s)
 filament_diameter: 1.75
+fan_speed: 0.5
+#   Speed the fan should run at after finishing the brim
 ```

@@ -1,7 +1,6 @@
 # Bleeding Edge Features Documentation
 
-The following are experimental features found in the bleeding edge branch of danger klipper and should be used at your own caution. The support for these features is limited and your experience may vary! If you do use the features and find them useful, discover bugs, or have improvements please use the klipper discourse forums or discord to discuss your findings.
-https://github.com/dmbutyugin/klipper/commits/advanced-features
+The following are experimental features found in the bleeding edge branch of Kalico and should be used at your own caution. The support for these features is limited and your experience may vary! If you do use the features and find them useful, discover bugs, or have improvements please use the Kalico [Discord server](Contact.md#discord) to discuss your findings.
 
 Refer to the [Bleeding Edge Configuration Reference](Config_Reference_Bleeding_Edge.md) for details on printer configurations for these features.
 
@@ -348,3 +347,23 @@ gcode:
     SAVE_GCODE_STATE NAME=PA_TEST_STATE
     UPDATE_DELAYED_GCODE ID=start_pa_test DURATION=0.01
 ```
+
+## Nonlinear Pressure Advance
+
+Full documentation available here: [Nonlinear Pressure Advance](Nonlinear_Pressure_Advance.md)
+
+### Overview
+
+Standard linear pressure advance sometimes cannot fully prevent bulging corners without causing thinned lines, and the best settings can vary with speed and acceleration.
+This feature enables a nonlinear relation between the advance and the filament feedrate, which improves many of these aspects.
+
+### Advantages:
+
+* Improved print quality
+* Settings are more independent of speed and acceleration.
+
+### Considerations:
+
+* The multiple interacting parameters make tuning more time-consuming.
+* For some extremely fast printers the requested extruder speed and acceleration can result in skipping.
+

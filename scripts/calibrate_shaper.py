@@ -6,14 +6,18 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import print_function
-import importlib, optparse, os, sys
-from textwrap import wrap
-import numpy as np, matplotlib
 
-sys.path.append(
-    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "klippy")
-)
-shaper_calibrate = importlib.import_module(".shaper_calibrate", "extras")
+import optparse
+import pathlib
+import sys
+from textwrap import wrap
+
+import matplotlib
+import numpy as np
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+
+from klippy.extras import shaper_calibrate
 
 MAX_TITLE_LENGTH = 65
 
@@ -212,7 +216,9 @@ def setup_matplotlib(output_to_file):
     if output_to_file:
         matplotlib.rcParams.update({"figure.autolayout": True})
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 

@@ -1,6 +1,6 @@
 # RPi microcontroller
 
-This document describes the process of running Klipper on a RPi and
+This document describes the process of running Kalico on a RPi and
 use the same RPi as secondary mcu.
 
 ## Why use RPi as a secondary MCU?
@@ -8,9 +8,9 @@ use the same RPi as secondary mcu.
 Often the MCUs dedicated to controlling 3D printers have a limited and
 pre-configured number of exposed pins to manage the main printing
 functions (thermal resistors, extruders, steppers ...). Using the RPi
-where Klipper is installed as a secondary MCU gives the possibility to
+where Kalico is installed as a secondary MCU gives the possibility to
 directly use the GPIOs and the buses (i2c, spi) of the RPi inside
-klipper without using Octoprint plugins (if used) or external programs
+Kalico without using Octoprint plugins (if used) or external programs
 giving the ability to control everything within the print GCODE.
 
 **Warning**: If your platform is a _Beaglebone_ and you have correctly
@@ -22,7 +22,7 @@ and configured for your system.
 If you want to use the host as a secondary MCU the klipper_mcu process
 must run before the klippy process.
 
-After installing Klipper, install the script. run:
+After installing Kalico, install the script. run:
 ```
 cd ~/klipper/
 sudo cp ./scripts/klipper-mcu.service /etc/systemd/system/
@@ -31,7 +31,7 @@ sudo systemctl enable klipper-mcu.service
 
 ## Building the micro-controller code
 
-To compile the Klipper micro-controller code, start by configuring it
+To compile the Kalico micro-controller code, start by configuring it
 for the "Linux process":
 ```
 cd ~/klipper/
@@ -58,7 +58,7 @@ sudo usermod -a -G tty pi
 
 ## Remaining configuration
 
-Complete the installation by configuring Klipper secondary MCU
+Complete the installation by configuring Kalico secondary MCU
 following the instructions in
 [RaspberryPi sample config](../config/sample-raspberry-pi.cfg) and
 [Multi MCU sample config](../config/sample-multi-mcu.cfg).
@@ -81,7 +81,7 @@ to set the baud rate to 400000 by: adding/uncommenting
 ## Optional: Identify the correct gpiochip
 
 On Raspberry Pi and on many clones the pins exposed on the GPIO belong
-to the first gpiochip. They can therefore be used on klipper simply by
+to the first gpiochip. They can therefore be used on Kalico simply by
 referring them with the name `gpio0..n`. However, there are cases in
 which the exposed pins belong to gpiochips other than the first. For
 example in the case of some OrangePi models or if a Port Expander is
@@ -112,7 +112,7 @@ gpioinfo` command.
 ***Warning:*** only gpio marked as `unused` can be used. It is not
 possible for a _line_ to be used by multiple processes simultaneously.
 
-For example on a RPi 3B+ where klipper use the GPIO20 for a switch:
+For example on a RPi 3B+ where Kalico use the GPIO20 for a switch:
 ```
 $ gpiodetect
 gpiochip0 [pinctrl-bcm2835] (54 lines)

@@ -4,7 +4,15 @@
 # Copyright (C) 2020-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, optparse, socket, select, json, errno, time, zlib
+import errno
+import json
+import optparse
+import os
+import select
+import socket
+import sys
+import time
+import zlib
 
 INDEX_UPDATE_TIME = 5.0
 ClientInfo = {"program": "motan_data_logger", "version": "v0.1"}

@@ -5,8 +5,14 @@
 # Copyright (C) 2020-2023  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import optparse, importlib, math, os, sys
-import numpy as np, matplotlib
+import importlib
+import math
+import optparse
+import os
+import sys
+
+import matplotlib
+import numpy as np
 
 sys.path.append(
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "klippy")
@@ -232,7 +238,9 @@ def setup_matplotlib(output_to_file):
     global matplotlib
     if output_to_file:
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 

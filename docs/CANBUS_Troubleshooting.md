@@ -1,7 +1,7 @@
 # CANBUS Troubleshooting
 
 This document provides information on troubleshooting communication
-issues when using [Klipper with CAN bus](CANBUS.md).
+issues when using [Kalico with CAN bus](CANBUS.md).
 
 ## Verify CAN bus wiring
 
@@ -26,7 +26,7 @@ intermittent communication errors.
 
 ## Check for incrementing bytes_invalid counter
 
-The Klipper log file will report a `Stats` line once a second when the
+The Kalico log file will report a `Stats` line once a second when the
 printer is active. These "Stats" lines will have a `bytes_invalid`
 counter for each micro-controller. This counter should not increment
 during normal printer operation (it is normal for the counter to be
@@ -37,41 +37,57 @@ hours or more frequently) then it is an indication of a severe
 problem.
 
 Incrementing `bytes_invalid` on a CAN bus connection is a symptom of
-reordered messages on the CAN bus. There are two known causes of
-reordered messages:
-1. Old versions of the popular candlight_firmware for USB CAN adapters
-   had a bug that could cause reordered messages. If using a USB CAN
-   adapter running this firmware then make sure to update to the
-   latest firmware if incrementing `bytes_invalid` is observed.
-2. Some Linux kernel builds for embedded devices have been known to
-   reorder CAN bus messages. It may be necessary to use an alternative
-   Linux kernel or to use alternative hardware that supports
-   mainstream Linux kernels that do not exhibit this problem.
+reordered messages on the CAN bus. If seen, make sure to:
+* Use a Linux kernel version 6.6.0 or later.
+* If using a USB-to-CANBUS adapter running candlelight firmware, use
+  v2.0 or later of candleLight_fw.
+* If using Klipper's USB-to-CANBUS bridge mode, make sure the bridge
+  node is flashed with Klipper v0.12.0 or later.
 
 Reordered messages is a severe problem that must be fixed. It will
 result in unstable behavior and can lead to confusing errors at any
-part of a print.
+part of a print. An incrementing `bytes_invalid` is not caused by
+wiring or similar hardware issues and can only be fixed by identifying
+and updating the faulty software.
+
+Older versions of the Linux kernel had a bug in the gs_usb canbus
+driver code that could cause reordered canbus packets.  The issue is
+thought to be fixed in
+[Linux commit 24bc41b4](https://github.com/torvalds/linux/commit/24bc41b4558347672a3db61009c339b1f5692169)
+which was released in v6.6.0. In some cases, older Linux versions may
+not show the problem (due to how hardware interrupts are configured),
+however if problems are seen the recommended solution is to upgrade to
+a newer kernel.
+
+Older versions of candlelight firmware could reorder canbus packets,
+and the issue is thought to be fixed in
+[candlelight_fw commit 8b3a7b45](https://github.com/candle-usb/candleLight_fw/commit/8b3a7b4565a3c9521b762b154c94c72c5acb2bcf).
+
+Older versions of Klipper's USB-to-CANBUS bridge code could
+incorrectly drop canbus messages. This is not as severe as reordering
+messages, but it should still be fixed. It is thought to be fixed with
+[Klipper PR #6175](https://github.com/Klipper3d/klipper/pull/6175).
 
 ## Use an appropriate txqueuelen setting
 
-The Klipper code uses the Linux kernel to manage CAN bus traffic. By
+The Kalico code uses the Linux kernel to manage CAN bus traffic. By
 default, the kernel will only queue 10 CAN transmit packets. It is
 recommended to [configure the can0 device](CANBUS.md#host-hardware)
 with a `txqueuelen 128` to increase that size.
 
-If Klipper transmits a packet and Linux has filled all of its transmit
+If Kalico transmits a packet and Linux has filled all of its transmit
 queue space then Linux will drop that packet and messages like the
-following will appear in the Klipper log:
+following will appear in the Kalico log:
 ```
 Got error -1 in can write: (105)No buffer space available
 ```
-Klipper will automatically retransmit the lost messages as part of its
+Kalico will automatically retransmit the lost messages as part of its
 normal application level message retransmit system. Thus, this log
 message is a warning and it does not indicate an unrecoverable error.
 
 If a complete CAN bus failure occurs (such as a CAN wire break) then
 Linux will not be able to transmit any messages on the CAN bus and it
-is common to find the above message in the Klipper log. In this case,
+is common to find the above message in the Kalico log. In this case,
 the log message is a symptom of a larger problem (the inability to
 transmit any messages) and is not directly related to Linux
 `txqueuelen`.
@@ -86,18 +102,18 @@ than 128. A CAN bus running at a frequency of 1000000 will typically
 take around 120us to transmit a CAN packet. Thus a queue of 128
 packets is likely to take around 15-20ms to drain. A substantially
 larger queue could cause excessive spikes in message round-trip-time
-which could lead to unrecoverable errors. Said another way, Klipper's
+which could lead to unrecoverable errors. Said another way, Kalico's
 application retransmit system is more robust if it does not have to
 wait for Linux to drain an excessively large queue of possibly stale
 data. This is analogous to the problem of
 [bufferbloat](https://en.wikipedia.org/wiki/Bufferbloat) on internet
 routers.
 
-Under normal circumstances Klipper may utilize ~25 queue slots per
+Under normal circumstances Kalico may utilize ~25 queue slots per
 MCU - typically only utilizing more slots during retransmits.
-(Specifically, the Klipper host may transmit up to 192 bytes to each
-Klipper MCU before receiving an acknowledgment from that MCU.) If a
-single CAN bus has 5 or more Klipper MCUs on it, then it might be
+(Specifically, the Kalico host may transmit up to 192 bytes to each
+Kalico MCU before receiving an acknowledgment from that MCU.) If a
+single CAN bus has 5 or more Kalico MCUs on it, then it might be
 necessary to increase the `txqueuelen` above the recommended value
 of 128. However, as above, care should be taken when selecting a new
 value to avoid excessive round-trip-time latency.
@@ -123,16 +139,16 @@ candump -tz -Ddex can0,#FFFFFFFF > mycanlog
 ```
 
 One can view the resulting log file (`mycanlog` in the example above)
-to see each raw CAN bus message that was sent and received by Klipper.
+to see each raw CAN bus message that was sent and received by Kalico.
 Understanding the content of these messages will likely require
-low-level knowledge of Klipper's [CANBUS protocol](CANBUS_protocol.md)
-and Klipper's [MCU commands](MCU_Commands.md).
+low-level knowledge of Kalico's [CANBUS protocol](CANBUS_protocol.md)
+and Kalico's [MCU commands](MCU_Commands.md).
 
-### Parsing Klipper messages in a candump log
+### Parsing Kalico messages in a candump log
 
-One may use the `parsecandump.py` tool to parse the low-level Klipper
+One may use the `parsecandump.py` tool to parse the low-level Kalico
 micro-controller messages contained in a candump log. Using this tool
-is an advanced topic that requires knowledge of Klipper
+is an advanced topic that requires knowledge of Kalico
 [MCU commands](MCU_Commands.md). For example:
 ```
 ./scripts/parsecandump.py mycanlog 108 ./out/klipper.dict
@@ -141,11 +157,11 @@ is an advanced topic that requires knowledge of Klipper
 This tool produces output similar to the [parsedump
 tool](Debugging.md#translating-gcode-files-to-micro-controller-commands). See
 the documentation for that tool for information on generating the
-Klipper micro-controller data dictionary.
+Kalico micro-controller data dictionary.
 
 In the above example, `108` is the [CAN bus
 id](CANBUS_protocol.md#micro-controller-id-assignment). It is a
-hexadecimal number. The id `108` is assigned by Klipper to the first
+hexadecimal number. The id `108` is assigned by Kalico to the first
 micro-controller. If the CAN bus has multiple micro-controllers on it,
 then the second micro-controller would be `10a`, the third would be
 `10c`, and so on.

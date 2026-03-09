@@ -1,26 +1,27 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 # Module supporting uploads Klipper firmware to an SD Card via SPI and SDIO
 #
 # Copyright (C) 2021 Eric Callahan <arksine.code@gmail.com>
 # Copyright (C) 2022 H. Gregor Molter <gregor.molter@secretlab.de>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys
 import argparse
-import os
-import zlib
-import hashlib
-import logging
 import collections
+import hashlib
+import json
+import logging
+import os
+import pathlib
+import sys
 import time
 import traceback
-import json
+import zlib
+
 import board_defs
 import fatfs_lib
-import reactor
-import serialhdl
-import clocksync
-import mcu
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
+from klippy import clocksync, mcu, reactor, serialhdl
 
 ###########################################################
 #
@@ -79,26 +80,19 @@ def translate_serial_to_tty(device):
 
 
 def check_need_convert(board_name, config):
-    if board_name.lower().startswith("mks-robin-e3"):
-        # we need to convert this file
-        robin_util = os.path.join(
-            fatfs_lib.KLIPPER_DIR, "scripts/update_mks_robin.py"
-        )
-        klipper_bin = config["klipper_bin_path"]
-        robin_bin = os.path.join(
-            os.path.dirname(klipper_bin),
-            os.path.basename(config["firmware_path"]),
-        )
-        cmd = "%s %s %s %s" % (
-            sys.executable,
-            robin_util,
-            klipper_bin,
-            robin_bin,
-        )
-        output("Converting Klipper binary to MKS Robin format...")
-        os.system(cmd)
-        output_line("Done")
-        config["klipper_bin_path"] = robin_bin
+    conv_script = config.get("conversion_script")
+    if conv_script is None:
+        return
+    conv_util = os.path.join(fatfs_lib.KLIPPER_DIR, conv_script)
+    klipper_bin = config["klipper_bin_path"]
+    dest_bin = os.path.join(
+        os.path.dirname(klipper_bin), os.path.basename(config["firmware_path"])
+    )
+    cmd = "%s %s %s %s" % (sys.executable, conv_util, klipper_bin, dest_bin)
+    output("Converting Klipper binary to custom format...")
+    os.system(cmd)
+    output_line("Done")
+    config["klipper_bin_path"] = dest_bin
 
 
 ###########################################################
@@ -124,9 +118,11 @@ SPI_CFG_CMDS = (
     "config_spi oid=%d pin=%s",  # Original
 )
 SPI_BUS_CMD = "spi_set_bus oid=%d spi_bus=%s mode=%d rate=%d"
-SW_SPI_BUS_CMD = (
-    "spi_set_software_bus oid=%d "
-    "miso_pin=%s mosi_pin=%s sclk_pin=%s mode=%d rate=%d"
+SW_SPI_BUS_CMDS = (
+    "spi_set_sw_bus oid=%d miso_pin=%s mosi_pin=%s "
+    "sclk_pin=%s mode=%d pulse_ticks=%d",
+    "spi_set_software_bus oid=%d miso_pin=%s mosi_pin=%s "
+    "sclk_pin=%s mode=%d rate=%d",
 )
 SPI_SEND_CMD = "spi_send oid=%c data=%*s"
 SPI_XFER_CMD = "spi_transfer oid=%c data=%*s"
@@ -135,7 +131,7 @@ SDIO_CFG_CMD = "config_sdio oid=%d blocksize=%u"
 SDIO_BUS_CMD = "sdio_set_bus oid=%d sdio_bus=%s"
 SDIO_SEND_CMD = "sdio_send_command oid=%c cmd=%c argument=%u wait=%c"
 SDIO_SEND_CMD_RESPONSE = (
-    "sdio_send_command_response oid=%c error=%c " "response=%*s"
+    "sdio_send_command_response oid=%c error=%c response=%*s"
 )
 SDIO_READ_DATA = "sdio_read_data oid=%c cmd=%c argument=%u"
 SDIO_READ_DATA_RESPONSE = "sdio_read_data_response oid=%c error=%c read=%u"
@@ -667,7 +663,7 @@ class SDCardSPI:
                     # Check acceptable volatage range for V1 cards
                     if resp[2] != 0xFF:
                         raise OSError(
-                            "flash_sdcard: card does not support" " 3.3v range"
+                            "flash_sdcard: card does not support 3.3v range"
                         )
                 elif self.sd_version == 2 and resp[0] == 0:
                     # Determine if this is a high capacity sdcard
@@ -875,9 +871,7 @@ class SDCardSPI:
             )
             valid_response = False
         if not self._find_sd_token(0xFE):
-            logging.info(
-                "flash_sdcard: read error, unable to find " "start token"
-            )
+            logging.info("flash_sdcard: read error, unable to find start token")
             valid_response = False
         if not valid_response:
             # In the event of an invalid response we will still
@@ -919,7 +913,7 @@ class SDCardSPI:
                 )
             if not self.initialized:
                 raise OSError(
-                    "flash_sdcard: write error, SD Card not" " initialized"
+                    "flash_sdcard: write error, SD Card not initialized"
                 )
             outbuf = bytearray(data)
             if len(outbuf) > SECTOR_SIZE:
@@ -950,7 +944,7 @@ class SDCardSPI:
             # wait until the card leaves the busy state
             if not self._find_sd_token(0xFF, tries=128):
                 err_msgs.append(
-                    "flash_sdcard: could not leave busy" " state after write"
+                    "flash_sdcard: could not leave busy state after write"
                 )
             else:
                 status = self._send_command_with_response("SEND_STATUS", 0)
@@ -1042,7 +1036,7 @@ class SDCardSDIO:
                     # Check acceptable volatage range for V1 cards
                     if resp[1] != 0xFF:
                         raise OSError(
-                            "flash_sdcard: card does not support" " 3.3v range"
+                            "flash_sdcard: card does not support 3.3v range"
                         )
                 elif self.sd_version == 2:
                     # Determine if this is a high capacity sdcard
@@ -1069,7 +1063,7 @@ class SDCardSDIO:
             # Check if bits 15:13 have some error set
             if (resp[-2] & 0xE0) != 0:
                 raise OSError(
-                    "flash_sdcard: set card's " "relative address failed"
+                    "flash_sdcard: set card's relative address failed"
                 )
             self.rca = resp[0] << 8 | resp[1]
 
@@ -1292,7 +1286,7 @@ class SDCardSDIO:
                 )
             if not self.initialized:
                 raise OSError(
-                    "flash_sdcard: write error, SD Card not" " initialized"
+                    "flash_sdcard: write error, SD Card not initialized"
                 )
             outbuf = bytearray(data)
             if len(outbuf) > SECTOR_SIZE:
@@ -1460,6 +1454,8 @@ class MCUConnection:
         )
         pin_enums = self.enumerations.get("pin")
         if bus == "swspi":
+            mcu_freq = self.clocksync.print_time_to_clock(1)
+            pulse_ticks = mcu_freq // SD_SPI_SPEED
             cfgpins = self.board_config["spi_pins"]
             pins = [p.strip().upper() for p in cfgpins.split(",") if p.strip()]
             pin_err_msg = "Invalid Software SPI Pins: %s" % (cfgpins,)
@@ -1468,36 +1464,30 @@ class MCUConnection:
             for p in pins:
                 if p not in pin_enums:
                     raise SPIFlashError(pin_err_msg)
-            bus_cmd = SW_SPI_BUS_CMD % (
-                SPI_OID,
-                pins[0],
-                pins[1],
-                pins[2],
-                SPI_MODE,
-                SD_SPI_SPEED,
-            )
+            bus_cmds = [
+                SW_SPI_BUS_CMDS[0]
+                % (SPI_OID, pins[0], pins[1], pins[2], SPI_MODE, pulse_ticks),
+                SW_SPI_BUS_CMDS[1]
+                % (SPI_OID, pins[0], pins[1], pins[2], SPI_MODE, SD_SPI_SPEED),
+            ]
         else:
             if bus not in bus_enums:
                 raise SPIFlashError("Invalid SPI Bus: %s" % (bus,))
-            bus_cmd = SPI_BUS_CMD % (SPI_OID, bus, SPI_MODE, SD_SPI_SPEED)
+            bus_cmds = [
+                SPI_BUS_CMD % (SPI_OID, bus, SPI_MODE, SD_SPI_SPEED),
+            ]
         if cs_pin not in pin_enums:
             raise SPIFlashError("Invalid CS Pin: %s" % (cs_pin,))
-        cfg_cmds = [ALLOC_OIDS_CMD % (1,), bus_cmd]
+        cfg_cmds = [
+            ALLOC_OIDS_CMD % (1,),
+        ]
         self._serial.send(cfg_cmds[0])
         spi_cfg_cmds = [
             SPI_CFG_CMDS[0] % (SPI_OID, cs_pin, False),
             SPI_CFG_CMDS[1] % (SPI_OID, cs_pin),
         ]
-        for cmd in spi_cfg_cmds:
-            try:
-                self._serial.send(cmd)
-            except self.proto_error:
-                if cmd == spi_cfg_cmds[-1]:
-                    raise
-            else:
-                cfg_cmds.insert(1, cmd)
-                break
-        self._serial.send(bus_cmd)
+        cfg_cmds.append(self._try_send_command(spi_cfg_cmds))
+        cfg_cmds.append(self._try_send_command(bus_cmds))
         config_crc = zlib.crc32("\n".join(cfg_cmds).encode()) & 0xFFFFFFFF
         self._serial.send(FINALIZE_CFG_CMD % (config_crc,))
         config = self.get_mcu_config()
@@ -1511,6 +1501,16 @@ class MCUConnection:
         except OSError:
             logging.exception("SD Card Mount Failure")
             raise SPIFlashError("Failed to Initialize SD Card. Is it inserted?")
+
+    def _try_send_command(self, cmd_list):
+        for cmd in cmd_list:
+            try:
+                self._serial.send(cmd)
+            except self.proto_error:
+                if cmd == cmd_list[-1]:
+                    raise
+            else:
+                return cmd
 
     def _configure_mcu_sdiobus(self, printfunc=logging.info):
         bus = self.board_config["sdio_bus"]

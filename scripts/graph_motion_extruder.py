@@ -104,6 +104,7 @@ LINEAR_ADVANCE = 0.045
 LINEAR_VELOCITY = 0.5
 LINEAR_OFFSET = 0.0  # 0.16
 
+
 # Calculate raw pressure advance positions
 def calc_pa_raw(positions):
     pa = LINEAR_ADVANCE * INV_SEG_TIME
@@ -142,6 +143,7 @@ def calc_nozzle_flow(positions, pressure_advance):
 
 TH_POSITION_BUCKET = 0.200
 TH_OFFSET = 10
+
 
 # Map toolhead locations
 def calc_toolhead_positions(positions):
@@ -190,6 +192,7 @@ def trim_lists(*lists):
 ######################################################################
 # Common data filters
 ######################################################################
+
 
 # Generate estimated first order derivative
 def gen_deriv(data):
@@ -252,7 +255,7 @@ def calc_weighted4(positions, smooth_time):
     out = [0.0] * len(positions)
     for i in indexes(positions):
         weighted_data = [
-            positions[j] * ((offset**2 - (j - i) ** 2)) ** 2
+            positions[j] * (offset**2 - (j - i) ** 2) ** 2
             for j in range(i - offset, i + offset)
         ]
         out[i] = sum(weighted_data) * weight

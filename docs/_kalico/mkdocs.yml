@@ -1,0 +1,165 @@
+# Main configuration file for mkdocs generation of the Kalico documentation.
+
+# Site and directory configuration
+site_name: Kalico Documentation
+site_url: https://docs.kalico.gg
+repo_url: https://github.com/KalicoCrew/kalico/
+repo_name: KalicoCrew/kalico
+edit_uri: edit/main/docs/
+use_directory_urls: False
+docs_dir: '../'
+site_dir: '../../site/'
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+# Custom markdown dialect settings
+markdown_extensions:
+  - toc:
+      permalink: True
+      toc_depth: 6
+  - attr_list
+  - mdx_partial_gfm
+  - mdx_truly_sane_lists
+  - mdx_breakless_lists
+  - admonition
+plugins:
+  search:
+    lang: en
+  mkdocs-simple-hooks:
+    hooks:
+      on_page_markdown: "mkdocs_hooks:transform"
+  gh-admonitions:
+  redirects:
+    redirect_maps:
+      'Danger_Features.md': 'Kalico_Additions.md'
+
+# Website layout configuration (using mkdocs-material theme)
+theme:
+  name: material
+  logo: logo/kalico-96x96.png
+  favicon: logo/kalico-32x32.png
+  icon:
+    repo: fontawesome/brands/github
+    alternate: material/web
+  features:
+    - navigation.top # back to top button
+    - navigation.instant # XHR loading instead of full page reload
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - navigation.tracking # url automatically refers to the current paragraph
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.action.edit
+    - optimize # output optimization
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: orange
+      accent: deep orange
+      toggle:
+        icon: material/theme-light-dark
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: orange
+      accent: yellow
+      toggle:
+        icon: material/theme-light-dark
+        name: Switch to light mode
+
+extra_css:
+  - _kalico/css/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/discord
+      link: https://kalico.gg/discord
+      name: Join our Discord server!
+  # Site usage statistics
+  # https://squidfunk.github.io/mkdocs-material/setup/setting-up-site-analytics/#site-search-tracking
+  analytics:
+    provider: google
+    property: G-3YZJ9658GV
+
+# Navigation hierarchy (this should mimic the layout of Overview.md)
+nav:
+  - Home: index.md
+  - Overview.md
+  - Features.md
+  - FAQ.md
+  - Releases: https://github.com/KalicoCrew/kalico/releases
+  - Config_Changes.md
+  - Configuration:
+    - Config_Reference.md
+    - Kalico_Additions.md
+    - Bleeding Edge:
+      - Bleeding_Edge.md
+      - Config_Reference_Bleeding_Edge.md
+      - Nonlinear_Pressure_Advance.md
+    - PID.md
+    - MPC.md
+    - Dockable_Probe.md
+  - G-Code Reference:
+    - G-Codes.md
+    - Command_Templates.md
+    - G-Code_Shell_Command.md
+    - Status_Reference.md
+  - Getting up and running:
+    - Migrating_from_Klipper.md
+    - Installation.md
+    - OctoPrint.md
+    - TMC_Drivers.md
+    - Config_checks.md
+    - Rotation_Distance.md
+    - Multi_MCU_Homing.md
+    - Bed leveling, Probes and Endstops:
+      - Z_Calibration.md
+      - Bed_Level.md
+      - Delta_Calibrate.md
+      - Probe_Calibrate.md
+      - BLTouch.md
+      - Manual_Level.md
+      - Bed_Mesh.md
+      - Endstop_Phase.md
+      - Axis_Twist_Compensation.md
+      - Skew_Correction.md
+    - Tuning:
+      - Measuring_Resonances.md
+      - Resonance_Compensation.md
+      - Pressure_Advance.md
+  - Slicers:
+    - Slicers.md
+    - Exclude_Object.md
+    - Using_PWM_Tools.md
+  - Developer Documentation:
+    - Code_Overview.md
+    - Kinematics.md
+    - Protocol.md
+    - API_Server.md
+    - MCU_Commands.md
+    - CANBUS_protocol.md
+    - Debugging.md
+    - Benchmarks.md
+    - CONTRIBUTING.md
+    - Packaging.md
+  - Device Specific Documents:
+    - Example_Configs.md
+    - SDCard_Updates.md
+    - RPi_microcontroller.md
+    - Beaglebone.md
+    - Bootloaders.md
+    - Bootloader_Entry.md
+    - CANBUS.md
+    - CANBUS_Troubleshooting.md
+    - TSL1401CL_Filament_Width_Sensor.md
+    - Hall_Filament_Width_Sensor.md
+    - Load_Cell.md
+  - Telemetry.md
+  - Contact.md
+  - Sponsors.md

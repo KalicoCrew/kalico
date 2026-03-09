@@ -5,14 +5,14 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
-import serial
 
+import serial
 from serial import SerialException
 
 try:
-    from queue import Queue, Empty
+    from queue import Empty, Queue
 except ImportError:
-    from Queue import Queue, Empty
+    from Queue import Empty, Queue
 
 COMMAND_HEARTBEAT = "O99"
 COMMAND_CUT = "O10 D5"
@@ -398,9 +398,7 @@ class Palette2:
                 ping_max = 100.0 + (self.auto_cancel_variation * 100.0)
                 ping_min = 100.0 - (self.auto_cancel_variation * 100.0)
                 if last_ping < ping_min or last_ping > ping_max:
-                    logging.info(
-                        "Ping variation is too high, " "cancelling print"
-                    )
+                    logging.info("Ping variation is too high, cancelling print")
                     self.gcode.run_script("CANCEL_PRINT")
 
         if len(params) > 2:

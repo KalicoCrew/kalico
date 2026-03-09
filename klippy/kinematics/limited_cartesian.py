@@ -49,7 +49,7 @@
 
 
 import sys
-from math import hypot, atan2, pi
+from math import atan2, hypot, pi
 
 from . import cartesian
 
@@ -86,7 +86,7 @@ class LimitedCartKinematics(cartesian.CartKinematics):
             self.cmd_SET_KINEMATICS_LIMIT,
             desc=self.cmd_SET_KINEMATICS_LIMIT_help,
         )
-        self.supports_dual_carriage = False
+        self.supports_dual_carriage = True
 
     cmd_SET_KINEMATICS_LIMIT_help = "Set/get cartesian per axis velocity limits"
 

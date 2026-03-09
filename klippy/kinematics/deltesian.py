@@ -3,8 +3,10 @@
 # Copyright (C) 2022  Fabrice Gallet <tircown@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging
-import stepper
+import logging
+import math
+
+from klippy import stepper
 
 # Slow moves once the ratio of tower to XY movement exceeds SLOW_RATIO
 SLOW_RATIO = 3.0
@@ -155,6 +157,11 @@ class DeltesianKinematics:
             rail.set_position(newpos)
         for n in homing_axes:
             self.homed_axis[n] = True
+
+    def clear_homing_state(self, axes):
+        for i, _ in enumerate(self.limits):
+            if i in axes:
+                self.homed_axis[i] = False
 
     def home(self, homing_state):
         homing_axes = homing_state.get_axes()

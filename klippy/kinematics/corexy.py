@@ -3,7 +3,7 @@
 # Copyright (C) 2017-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import stepper
+from klippy import stepper
 
 
 class CoreXYKinematics:
@@ -54,8 +54,12 @@ class CoreXYKinematics:
                 self.limits[i] = rail.get_range()
 
     def note_z_not_homed(self):
-        # Helper for Safe Z Home
-        self.limits[2] = (1.0, -1.0)
+        self.clear_homing_state([2])
+
+    def clear_homing_state(self, axes):
+        for i, _ in enumerate(self.limits):
+            if i in axes:
+                self.limits[i] = (1.0, -1.0)
 
     def home(self, homing_state):
         # Each axis is homed independently and in order
@@ -75,7 +79,7 @@ class CoreXYKinematics:
             homing_state.home_rails([rail], forcepos, homepos)
 
     def _motor_off(self, print_time):
-        self.limits = [(1.0, -1.0)] * 3
+        self.clear_homing_state((0, 1, 2))
 
     def _check_endstops(self, move):
         end_pos = move.end_pos

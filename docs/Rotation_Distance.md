@@ -1,6 +1,6 @@
 # Rotation distance
 
-Stepper motor drivers on Klipper require a `rotation_distance`
+Stepper motor drivers on Kalico require a `rotation_distance`
 parameter in each
 [stepper config section](Config_Reference.md#stepper). The
 `rotation_distance` is the amount of distance that the axis moves with
@@ -17,7 +17,7 @@ distance:
 rotation_distance = <full_steps_per_rotation> * <microsteps> / <steps_per_mm>
 ```
 
-Or, if you have an older Klipper configuration and know the
+Or, if you have an older Kalico configuration and know the
 `step_distance` parameter you can use this formula:
 ```
 rotation_distance = <full_steps_per_rotation> * <microsteps> * <step_distance>

@@ -3,8 +3,11 @@
 # Copyright (C) 2017-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, os
-import pins, mcu
+import logging
+import os
+
+from klippy import mcu, pins
+
 from . import bus
 
 REPLICAPE_MAX_CURRENT = 3.84
@@ -203,7 +206,7 @@ class Replicape:
         printer = config.get_printer()
         ppins = printer.lookup_object("pins")
         ppins.register_chip("replicape", self)
-        revisions = {"B3": "B3"}
+        revisions = ["B3"]
         config.getchoice("revision", revisions)
         self.host_mcu = mcu.get_printer_mcu(printer, config.get("host_mcu"))
         # Setup enable pin
