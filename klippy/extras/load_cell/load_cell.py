@@ -15,6 +15,7 @@ from klippy.configfile import ConfigWrapper
 from klippy.extras.bulk_sensor import BatchWebhooksClient
 from klippy.extras.load_cell.interfaces import BulkAdcSensor
 from klippy.gcode import GCodeCommand, GCodeDispatch
+from klippy.toolhead import ToolHead
 
 
 # alternative to numpy's column selection:
@@ -747,7 +748,16 @@ class LoadCell:
     def avg_counts(self, num_samples: int | None = None) -> tuple[int, ...]:
         if num_samples is None:
             num_samples = self.sensor.get_samples_per_second()
-        samples, errors = self.get_collector().collect_min(num_samples)
+        toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        # callers expect a load from the context of the call, all moves must
+        # finish before samples are valid
+        collector: LoadCellSampleCollector = self.get_collector()
+        collector.start_collecting(min_time=toolhead.get_last_move_time())
+        samples, errors = collector.collect_min(num_samples)
+        self.validate_samples(samples, errors)
+        return self._avg_counts_from_samples(samples)
+
+    def validate_samples(self, samples, errors):
         if errors:
             raise self.printer.command_error(
                 "Sensor reported %i errors while sampling"
@@ -763,7 +773,6 @@ class LoadCell:
                     raise self.printer.command_error(
                         "Some samples are saturated (+/-100%)"
                     )
-        return self._avg_counts_from_samples(samples)
 
     # Provide ongoing force tracking/averaging for status updates
     def _track_force(self, msg):
@@ -825,7 +834,7 @@ class LoadCell:
             per_channel.append(int(avg(select_column(samples, col))))
         return tuple(per_channel)
 
-    def get_collector(self):
+    def get_collector(self) -> LoadCellSampleCollector:
         return LoadCellSampleCollector(self.printer, self)
 
     def get_status(self, eventtime):
