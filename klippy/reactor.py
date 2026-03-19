@@ -361,7 +361,6 @@ class SelectReactor:
 
     # Main loop
     def _dispatch_loop(self):
-        self._g_dispatch = greenlet.getcurrent()
         busy = True
         eventtime = self.monotonic()
         while self._process:
@@ -375,17 +374,22 @@ class SelectReactor:
                     (fd, self._WRITE) for fd in res[1]
                 ]
                 eventtime = self._check_fds(eventtime, hdls)
-        self._g_dispatch = None
 
     def run(self):
         if self._pipe_fds is None:
             self._setup_async_callbacks()
         self._process = True
         self._prevent_pause_count = 0
-        while self._process:
-            g_next = ReactorGreenlet(run=self._dispatch_loop)
-            self._all_greenlets.append(g_next)
-            g_next.switch()
+        try:
+            while self._process:
+                # Create new greenlet to dispatch timers and events
+                g_next = ReactorGreenlet(run=self._dispatch_loop)
+                self._all_greenlets.append(g_next)
+                self._g_dispatch = g_next
+                g_next.switch()
+                # Control returns here on end() request or switch from pause()
+        finally:
+            self._g_dispatch = None
 
     def end(self):
         self._process = False
@@ -433,7 +437,6 @@ class PollReactor(SelectReactor):
 
     # Main loop
     def _dispatch_loop(self):
-        self._g_dispatch = greenlet.getcurrent()
         busy = True
         eventtime = self.monotonic()
         while self._process:
@@ -444,7 +447,6 @@ class PollReactor(SelectReactor):
             if res:
                 busy = True
                 eventtime = self._check_fds(eventtime, res)
-        self._g_dispatch = None
 
 
 class EPollReactor(SelectReactor):
@@ -475,7 +477,6 @@ class EPollReactor(SelectReactor):
 
     # Main loop
     def _dispatch_loop(self):
-        self._g_dispatch = greenlet.getcurrent()
         busy = True
         eventtime = self.monotonic()
         while self._process:
@@ -486,7 +487,6 @@ class EPollReactor(SelectReactor):
             if res:
                 busy = True
                 eventtime = self._check_fds(eventtime, res)
-        self._g_dispatch = None
 
 
 # Use the poll based reactor if it is available
