@@ -2714,6 +2714,8 @@
 <li><a href="Config_Reference.html#hx711"><code>hx711</code></a></li>
 <li><a href="Config_Reference.html#hx717"><code>hx717</code></a></li>
 <li><a href="Config_Reference.html#ads1220"><code>ads1220</code></a></li>
+<li><a href="Config_Reference.html#ads131m02"><code>ads131m02</code></a></li>
+<li><a href="Config_Reference.html#ads131m04"><code>ads131m04</code></a></li>
 </ul>
 </li>
 </ul>
@@ -2954,7 +2956,7 @@ A Jupyter notebook is provided in <a href="https://github.com/KalicoCrew/kalico/
 <li>Programmable gain amplifier with 128× gain to eliminate external amplifiers</li>
 <li>SPI reset indication to detect sensor restarts, a common indication of electrical problems</li>
 <li>Selectable sample rate between 350 Hz and 2 kHz (rates below 250 Hz require slower probing speeds and increase toolhead force)</li>
-<li>For under-bed applications with multiple load cells, simultaneous sampling on all channels (multiplexed ADCs have settling delays after channel switches)</li>
+<li>For under-bed applications with multiple load cells, use an ADC with simultaneous sampling on all channels, such as the <a href="Config_Reference.html#ads131m04">ADS131M04</a>. Multiplexed ADCs have settling delays after channel switches and issues with time smearing of the readings which reduce accuracy.</li>
 </ul>
 <p>Klipper's <code>bulk_sensor</code> and <code>load_cell_probe</code> infrastructure simplifies support for new sensors. Sensors can be configured from Python. with a minimal sampling loop written in C.</p>
 <h3 id="power-supply-filtering">Power Supply Filtering<a class="headerlink" href="#power-supply-filtering" title="Permanent link">&para;</a></h3>

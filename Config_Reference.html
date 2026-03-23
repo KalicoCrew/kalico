@@ -2091,6 +2091,24 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#ads131m02" class="md-nav__link">
+    <span class="md-ellipsis">
+      ADS131M02
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ads131m04" class="md-nav__link">
+    <span class="md-ellipsis">
+      ADS131M04
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -5455,6 +5473,24 @@
   <a href="#ads1220" class="md-nav__link">
     <span class="md-ellipsis">
       ADS1220
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ads131m02" class="md-nav__link">
+    <span class="md-ellipsis">
+      ADS131M02
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ads131m04" class="md-nav__link">
+    <span class="md-ellipsis">
+      ADS131M04
     </span>
   </a>
   
@@ -11094,6 +11130,69 @@ data_ready_pin:
 #vref:
 #   The selected voltage reference. Valid values are: &#39;internal&#39;, &#39;REF0&#39;, &#39;REF1&#39;
 #   and &#39;analog_supply&#39;. Default is &#39;internal&#39;.
+</code></pre></div>
+
+<h4 id="ads131m02">ADS131M02<a class="headerlink" href="#ads131m02" title="Permanent link">&para;</a></h4>
+<p>The ADS131M02 is a 24 bit, 2-channel delta-sigma ADC with simultaneous
+sampling. It uses SPI communication and provides high precision measurements
+suitable for load cell probing.</p>
+<div class="highlight"><pre><span></span><code>[load_cell]
+sensor_type: ads131m02
+cs_pin:
+#   The pin connected to the ADS131M02 chip select line. This parameter must
+#   be provided.
+#spi_speed: 8192000
+#   SPI bus speed. The default is 8.192 MHz.
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the &quot;common SPI settings&quot; section for a description of the
+#   above parameters.
+data_ready_pin:
+#   Pin connected to the ADS131M02 data ready (DRDY) line. This parameter must
+#   be provided.
+#gain: 128
+#   Programmable gain amplifier setting. Valid values are 1, 2, 4, 8, 16, 32,
+#   64, and 128. The default is 128.
+#sample_rate: 500
+#   Sample rate in samples per second. Valid values are 250, 500, 1000, 2000,
+#   4000, 8000, 16000, and 32000. The default is 500.
+#enable_global_chop: False
+#   Enable the global chopper mode. This mode alternats the polarity of the inputs
+#   for each samlple. This reduces noise but also reduces the effective 
+#   sample rate to 1/3rd of its face value. Off by default.
+#gloabl_chop_delay: 16
+#   The delay, in clock cycles, between sample in global chop mode. This allows 
+#   additional time for settling before sampling starts. The chip default is 16 
+#   clock cycles. Values are powers of 2 from 2 to 65536. 
+#channels: 0
+#   Comma separated list of input channels to enable and sum. Valid channels are 0 and 1.
+#   The default is 0.
+</code></pre></div>
+
+<h4 id="ads131m04">ADS131M04<a class="headerlink" href="#ads131m04" title="Permanent link">&para;</a></h4>
+<p>The ADS131M04 is a 24 bit, 4-channel delta-sigma ADC with simultaneous
+sampling. It uses SPI communication and provides high precision measurements
+suitable for load cell probing. Up to 4 channels can be combined into a single
+sensor ideal for under bed load cells.</p>
+<div class="highlight"><pre><span></span><code>[load_cell]
+sensor_type: ads131m04
+cs_pin:
+#spi_speed: 8192000
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+data_ready_pin:
+#gain: 128
+#sample_rate: 500
+#enable_global_chop: False
+#gloabl_chop_delay: 16
+#   See the &quot;ADS131M02&quot; sections for details on these parameters.
+#channels: 0
+#   Comma separated list of input channels to enable and sum. Valid channels
+#   are: 0, 1, 2, 3. The default is 0.
 </code></pre></div>
 
 <h3 id="load_cell_probe">[load_cell_probe]<a class="headerlink" href="#load_cell_probe" title="Permanent link">&para;</a></h3>
