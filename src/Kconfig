@@ -288,7 +288,7 @@ config WANT_HX71X
 config WANT_ADS1220
     bool "Support ADS 1220 ADC chip"
     depends on WANT_SPI
-config WANT_ADS131M0X
+config WANT_ADS131MX
     bool "Support ADS131M02 and ADS131M04 ADC chips"
     depends on WANT_SPI
 config WANT_LDC1612
