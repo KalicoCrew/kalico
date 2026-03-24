@@ -610,6 +610,34 @@ setting in the [heated_fan config section](Config_Reference.md#heated_fan)
 until Kalico is restarted. Useful for slicers to set different heated fan
 temperatures at different layers.
 
+### [cflap]
+
+The following command is available when a
+[cflap config section](Config_Reference.md#cflap) is
+enabled.
+
+### M106
+`M106 P<1|3> S<0-255> V<stepper speed>`
+P specifies what is controlled:
+    - if P is 1 or not defined, the flap will move to the position specified by S
+    - if P is 3, the fan will be controlled
+V defaults to the windup speed in the config
+
+### M107
+`M107 P<1|3> V<stepper speed>`
+P specifies what is controlled:
+    - if P is 1 or not defined, the flap will be closed
+    - if P is 3, the fan will be controlled
+V defaults to the windup speed in the config
+
+#### SET_FAN_SPEED
+`SET_FAN_SPEED FAN=CFLAP_FAN SPEED=<speed>` This command sets the
+speed of the fan. "speed" must be between 0.0 and 1.0.
+
+#### CFLAP_SET_WINDUP_SPEED
+`CFLAP_SET_WINDUP_SPEED SPEED=<speed>` This command sets the
+windup speed of the fan. "speed" must be between 0.0 and 1.0.
+
 ### [fan_generic]
 
 The following command is available when a
