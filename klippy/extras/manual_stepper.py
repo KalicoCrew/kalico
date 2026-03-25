@@ -34,7 +34,7 @@ class ManualStepper:
         self.rail.setup_itersolve("cartesian_stepper_alloc", b"x")
         self.rail.set_trapq(self.trapq)
         # Register commands
-        stepper_name = config.get_name().split()[1]
+        stepper_name = config.get_name().split()[-1]
         gcode = self.printer.lookup_object("gcode")
         gcode.register_mux_command(
             "MANUAL_STEPPER",
