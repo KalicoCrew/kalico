@@ -3972,6 +3972,7 @@ control: curve
 ### [cflap]
 
 Flap controlled Cpap cooling.
+To define a TMC section for it, just add `[tmcXXXX cflap]` to your config and add the necessary configuration there.
 
 ```
 [cflap]
