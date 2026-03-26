@@ -1,3 +1,5 @@
+import logging
+
 from . import pulse_counter, manual_stepper
 
 
@@ -30,6 +32,8 @@ class CFlap:
         self.move_stepper(value * 255.0)
 
     def enable_stepper(self, enable, v):
+        logging.info(f"enable cflap stepper: {enable}")
+        logging.info(f"cflap stepper status: {self.stepper_enable.lookup_enable(self.name).is_motor_enabled()}")
         if enable != self.stepper_enable.lookup_enable(self.name).is_motor_enabled():
             if enable:
                 self.stepper.do_enable(True)
