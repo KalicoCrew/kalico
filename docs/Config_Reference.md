@@ -5920,6 +5920,20 @@ dout_pin:
 #   in software.
 ```
 
+#### HX71708
+The HX71708 is a single channel, fixed gain amplifier version of
+the HX717 with software selectable sample rates.
+```
+[load_cell]
+sensor_type: hx71708
+sclk_pin:
+#   The pin connected to the HX71708 clock line. This parameter must be provided.
+dout_pin:
+#   The pin connected to the HX71708 data output line. This parameter must be provided.
+#sample_rate: 320
+#   Valid values for sample_rate are: 10, 20, 80, 320. The default is 320.
+```
+
 #### ADS1220
 The ADS1220 is a 24 bit ADC supporting up to a 2Khz sample rate configurable in
 software.

@@ -18,9 +18,7 @@
 
 struct hx71x_adc {
     struct timer timer;
-    uint8_t gain_or_sps;
-    uint8_t sps_bits;
-    uint8_t gain_channel;   // the gain+channel selection (1-4)
+    uint8_t setting_pulses;     // additional clock pulses after 24-bit read (1-4)
     uint8_t flags;
     uint32_t rest_ticks;
     uint32_t last_error;
@@ -150,16 +148,8 @@ static void
 hx71x_read_adc(struct hx71x_adc *hx71x, uint8_t oid)
 {
     // Read from sensor
-    uint_fast8_t gain_channel = hx71x->gain_channel;
-    uint_fast8_t gain_or_sps = hx71x->gain_or_sps;
-
-    uint_fast8_t extra_bits;
-    if (gain_or_sps == 1) {
-        extra_bits = hx71x->sps_bits;
-    } else {
-        extra_bits = hx71x->gain_channel;
-    }
-    uint32_t adc = hx71x_raw_read(hx71x->dout, hx71x->sclk, 24u + extra_bits);
+    uint_fast8_t setting_pulses = hx71x->setting_pulses;
+    uint32_t adc = hx71x_raw_read(hx71x->dout, hx71x->sclk, 24u + setting_pulses);
 
     // Clear pending flag (and note if an overflow occurred)
     irq_disable();
@@ -168,12 +158,12 @@ hx71x_read_adc(struct hx71x_adc *hx71x, uint8_t oid)
     irq_enable();
 
     // Extract report from raw data
-    uint32_t counts = adc >> extra_bits;
+    uint32_t counts = adc >> setting_pulses;
     if (counts & 0x800000)
         counts |= 0xFF000000;
 
     // Check for errors
-    uint_fast8_t extras_mask = (1 << extra_bits) - 1;
+    uint_fast8_t extras_mask = (1 << setting_pulses) - 1;
     if ((adc & extras_mask) != extras_mask) {
         // Transfer did not complete correctly
         hx71x->last_error = SAMPLE_ERROR_DESYNC;
@@ -203,24 +193,17 @@ command_config_hx71x(uint32_t *args)
     struct hx71x_adc *hx71x = oid_alloc(args[0]
                 , command_config_hx71x, sizeof(*hx71x));
     hx71x->timer.func = hx71x_event;
-    uint8_t gain_or_sps = args[1];
-    uint8_t sps_bits = args[2];
-    uint8_t gain_channel = args[3];
-    if (gain_or_sps == 0 && (gain_channel < 1 || gain_channel > 4)) {
-        shutdown("HX71x gain/channel out of range 1-4");
+    uint8_t setting_pulses = args[1];
+    if (setting_pulses < 1 || setting_pulses > 4) {
+        shutdown("HX71x setting_pulses out of range 1-4");
     }
-    if (gain_or_sps == 1 && (sps_bits < 1 || sps_bits > 4)) {
-        shutdown("HX71x sample_rate out of range 1-4");
-    }
-    hx71x->gain_or_sps = gain_or_sps;
-    hx71x->sps_bits = sps_bits;
-    hx71x->gain_channel = gain_channel;
-    hx71x->dout = gpio_in_setup(args[4], 1);
-    hx71x->sclk = gpio_out_setup(args[5], 0);
+    hx71x->setting_pulses = setting_pulses;
+    hx71x->dout = gpio_in_setup(args[2], 1);
+    hx71x->sclk = gpio_out_setup(args[3], 0);
     gpio_out_write(hx71x->sclk, 1); // put chip in power down state
 }
-DECL_COMMAND(command_config_hx71x, "config_hx71x oid=%c gain_or_sps=%c"
-             " sps_bits=%c gain_channel=%c dout_pin=%u sclk_pin=%u");
+DECL_COMMAND(command_config_hx71x, "config_hx71x oid=%c setting_pulses=%c"
+             " dout_pin=%u sclk_pin=%u");
 
 void
 hx71x_attach_load_cell_probe(uint32_t *args) {
