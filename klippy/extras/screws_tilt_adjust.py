@@ -42,10 +42,19 @@ class ScrewsTiltAdjust:
             "CW-M8": 8,
             "CCW-M8": 9,
         }
-        screw_thread = config.getchoice(
-            "screw_thread", self.threads, default="CW-M3"
-        )
-
+        threads_factor = {
+            0: 0.5,
+            1: 0.5,
+            2: 0.7,
+            3: 0.7,
+            4: 0.8,
+            5: 0.8,
+            6: 1.0,
+            7: 1.0,
+            8: 1.25,
+            9: 1.25,
+        }
+        screw_thread = config.get("screw_thread", None)
         screw_pitch = config.getfloat("screw_pitch", None, above=0.0)
         screw_direction = config.get("screw_direction", None)
         if not (
@@ -57,14 +66,18 @@ class ScrewsTiltAdjust:
                 "or both 'screw_pitch' and 'screw_direction', but not both"
             )
         if screw_thread is not None:
-            screw_thread_result = SCREW_THREAD_MAP.get(screw_thread.upper())
-            if screw_thread_result is None:
+            # Validate the screw_thread choice manually
+            if screw_thread not in self.threads:
                 raise config.error(
                     "screws_tilt_adjust: Invalid screw_thread '%s'. "
                     "Accepted values: %s"
-                    % (screw_thread, ", ".join(sorted(SCREW_THREAD_MAP.keys())))
+                    % (screw_thread, ", ".join(sorted(self.threads.keys())))
                 )
-            self.screw_pitch, self.screw_direction = screw_thread_result
+            # config.get returns the string key directly
+            thread_value = self.threads[screw_thread]
+            self.thread = screw_thread
+            self.screw_pitch = threads_factor[thread_value]
+            self.screw_direction = "CW" if (thread_value & 1) == 0 else "CCW"
         else:
             if screw_pitch is None or screw_direction is None:
                 raise config.error(
@@ -75,6 +88,7 @@ class ScrewsTiltAdjust:
             self.screw_direction = config.getchoice(
                 "screw_direction", {"CW": "CW", "CCW": "CCW"}
             )
+            self.thread = None
         # Initialize ProbePointsHelper
         points = [coord for coord, name in self.screws]
         self.probe_helper = probe.ProbePointsHelper(
@@ -133,7 +147,10 @@ class ScrewsTiltAdjust:
             8: 1.25,
             9: 1.25,
         }
-        is_clockwise_thread = (self.thread & 1) == 0
+        if hasattr(self, 'thread') and self.thread is not None:
+            is_clockwise_thread = (self.threads[self.thread] & 1) == 0
+        else:
+            is_clockwise_thread = self.screw_direction == "CW"
         screw_diff = []
         # Process the read Z values
         if self.direction is not None:
@@ -176,7 +193,11 @@ class ScrewsTiltAdjust:
                 if abs(diff) < 0.001:
                     adjust = 0
                 else:
-                    adjust = diff / threads_factor.get(self.thread, 0.5)
+                    if hasattr(self, 'thread') and self.thread is not None:
+                        factor = threads_factor[self.threads[self.thread]]
+                    else:
+                        factor = self.screw_pitch
+                    adjust = diff / factor
                 if is_clockwise_thread:
                     sign = "CW" if adjust >= 0 else "CCW"
                 else:
