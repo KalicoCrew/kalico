@@ -1495,24 +1495,24 @@ information.
 #   'screw_pitch' and 'screw_direction' must be specified.
 #screw_pitch:
 #   The thread pitch (in mm) of the bed leveling screw. This allows
-#   using any screw size, not just the predefined ones in
+#   the use of any screw size, not just those predefined in
 #   'screw_thread'. This option cannot be used together with 'screw_thread'.
-#   Must be specified together with 'screw_direction' if 'screw_thread'
+#   It must be specified together with 'screw_direction' if 'screw_thread'
 #   is not used.
-#   Calculation: screw_pitch is the bed movement for one full turn of
-#   the leveling screw. For most single-start metric screws, this is
-#   the thread pitch itself (for example, M3x0.5 -> 0.5, M4x0.7 -> 0.7,
-#   M5x0.8 -> 0.8). For multi-start screws, use the lead
-#   (lead = pitch * number_of_starts).
-#   Relation to adjustment output: required turns are calculated as
-#   abs(z_error) / screw_pitch, then shown as full turns and minutes
-#   (01:20 = 1 turn + 20/60 turn).
-#   Note: this is not the same as a stepper's 'rotation_distance' value
-#   unless your manual bed screw is exactly that same screw/lead.
+#   Calculation: screw_pitch is the displacement of the print bed for one full
+#   rotation of the Z-axis screw. For most metric screws, this corresponds
+#   to the thread pitch itself (e.g., M3x0.5 -> 0.5, M4x0.7 -> 0.7,
+#   M5x0.8 -> 0.8).
+#   Relation to adjustment output: the required turns are calculated as
+#   abs(z_error) / screw_pitch, then displayed as full turns and minutes
+#   (01:20 = 1 turn + 20/60 turns).
+#   NOTE: in an ideal case, the value of 'screw_pitch' should be equal to the 'rotation_distance' of the Z axis.
+#   However, since the sampling point does not overlap with the screw, a slightly different 'screw_pitch'
+#   value may be needed to achieve accurate calibration.
 #screw_direction:
-#   The rotation direction of the knob used to level the bed. Accepted
-#   values: CW, CCW. Rotation in this direction decreases the gap between the nozzle and the bed. This option
-#   cannot be used together with 'screw_thread'. Must be specified
+#   The rotation direction of the knob used to level the bed. Accepted values:
+#   CW, CCW. Rotating in this direction reduces the gap between the nozzle and the bed.
+#   This option cannot be used together with 'screw_thread'. It must be specified
 #   together with 'screw_pitch' if 'screw_thread' is not used.
 #use_probe_xy_offsets: False
 #   If True, apply the `[probe]` XY offsets to the probed positions. The
