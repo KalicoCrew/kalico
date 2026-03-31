@@ -61,10 +61,9 @@ class ScrewsTiltAdjust:
         screw_thread = config.get("screw_thread", None)
         screw_pitch = config.getfloat("screw_pitch", None, above=0.0)
         screw_direction = config.get("screw_direction", None)
-        if not (
-            (screw_thread is not None)
-            ^ (screw_pitch is not None or screw_direction is not None)
-        ):
+        has_screw_thread = screw_thread is not None
+        has_screw_pitch = screw_pitch is not None or screw_direction is not None
+        if has_screw_thread == has_screw_pitch:
             raise config.error(
                 "screws_tilt_adjust: Must specify either 'screw_thread' "
                 "or both 'screw_pitch' and 'screw_direction', but not both"
