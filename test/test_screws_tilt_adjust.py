@@ -82,7 +82,10 @@ def test_error_screw_pitch_only(tmp_path):
 
 
 def test_error_screw_direction_only(tmp_path):
-    with pytest.raises(configparser.Error, match="Must specify both 'screw_pitch' and 'screw_direction'"):
+    with pytest.raises(
+        configparser.Error,
+        match="Must specify both 'screw_pitch' and 'screw_direction'",
+    ):
         _build_sta(tmp_path, "screw_direction: CCW")
 
 
@@ -105,7 +108,10 @@ def test_error_invalid_screw_direction(tmp_path):
 
 
 def test_error_invalid_screw_thread(tmp_path):
-    with pytest.raises(configparser.Error, match="Choice 'CW-M99' for option 'screw_thread' in section 'screws_tilt_adjust' is not a valid choice"):
+    with pytest.raises(
+        configparser.Error,
+        match="Choice 'CW-M99' for option 'screw_thread' in section 'screws_tilt_adjust' is not a valid choice",
+    ):
         _build_sta(tmp_path, "screw_thread: CW-M99")
 
 
@@ -117,6 +123,7 @@ def test_error_screw_pitch_zero(tmp_path):
 def test_error_screw_pitch_negative(tmp_path):
     with pytest.raises(configparser.Error):
         _build_sta(tmp_path, "screw_pitch: -1.0\nscrew_direction: CW")
+
 
 # --- probe_finalize calculation tests ---
 

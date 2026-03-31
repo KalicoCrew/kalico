@@ -41,7 +41,7 @@ class ScrewsTiltAdjust:
             "CCW-M6": 7,
             "CW-M8": 8,
             "CCW-M8": 9,
-            None: None
+            None: None,
         }
         self.thread = config.getchoice(
             "screw_thread", self.threads, default="CW-M3"
@@ -150,7 +150,7 @@ class ScrewsTiltAdjust:
             8: 1.25,
             9: 1.25,
         }
-        if hasattr(self, 'thread') and self.thread is not None:
+        if hasattr(self, "thread") and self.thread is not None:
             is_clockwise_thread = (self.threads[self.thread] & 1) == 0
         else:
             is_clockwise_thread = self.screw_direction == "CW"
@@ -196,7 +196,7 @@ class ScrewsTiltAdjust:
                 if abs(diff) < 0.001:
                     adjust = 0
                 else:
-                    if hasattr(self, 'thread') and self.thread is not None:
+                    if hasattr(self, "thread") and self.thread is not None:
                         factor = threads_factor[self.threads[self.thread]]
                     else:
                         factor = self.screw_pitch
