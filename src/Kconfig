@@ -178,6 +178,10 @@ config WANT_ADS1220
     bool
     depends on WANT_SPI
     default y
+config WANT_ADS131MX
+    bool
+    depends on WANT_SPI
+    default y
 config WANT_LDC1612
     bool
     depends on WANT_I2C
@@ -201,11 +205,12 @@ config WANT_GPIO_I2C
 config NEED_SENSOR_BULK
     bool
     depends on WANT_ADXL345 || WANT_LIS2DW || WANT_MPU9250 || WANT_ICM20948 \
-        || WANT_HX71X || WANT_ADS1220 || WANT_LDC1612 || WANT_SENSOR_ANGLE
+        || WANT_HX71X || WANT_ADS1220 || WANT_ADS131MX \
+        || WANT_LDC1612 || WANT_SENSOR_ANGLE
     default y
 config NEED_LOAD_CELL_PROBE
     bool
-    depends on WANT_HX71X || WANT_ADS1220
+    depends on WANT_HX71X || WANT_ADS1220 || WANT_ADS131MX
     default y
 config NEED_SOS_FILTER
     bool
@@ -282,6 +287,9 @@ config WANT_HX71X
     depends on HAVE_GPIO
 config WANT_ADS1220
     bool "Support ADS 1220 ADC chip"
+    depends on WANT_SPI
+config WANT_ADS131MX
+    bool "Support ADS131M02 and ADS131M04 ADC chips"
     depends on WANT_SPI
 config WANT_LDC1612
     bool "Support ldc1612 eddy current sensor chip"

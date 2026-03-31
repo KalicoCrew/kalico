@@ -271,6 +271,9 @@ class SelectReactor:
         # This greenlet activated from g.timer.callback (via _check_timers)
         return eventtime
 
+    def delay_for_ms(self, milliseconds: float):
+        self.pause(self.monotonic() + milliseconds / 1000.0)
+
     def _end_greenlet(self, g_old):
         # Cache this greenlet for later use
         self._greenlets.append(g_old)

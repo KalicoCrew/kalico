@@ -6,13 +6,17 @@
 from klippy.configfile import ConfigWrapper
 from klippy.printer import Printer, SubsystemComponentCollection
 
-from . import ads1220, hx71x
+from . import ads131m0x, ads1220, hx71x
 from .load_cell import LoadCell
 
 
 # register sensors that implement BulkAdcSensor
 def register_components(subsystem: SubsystemComponentCollection):
-    sensors = hx71x.HX71X_SENSOR_TYPES | ads1220.ADS1220_SENSOR_TYPE
+    sensors = (
+        hx71x.HX71X_SENSOR_TYPES
+        | ads1220.ADS1220_SENSOR_TYPE
+        | ads131m0x.ADS131M0X_SENSOR_TYPES
+    )
     for name, sensor in sensors.items():
         subsystem.register_component("load_cell_sensors", name, sensor)
 
