@@ -105,7 +105,7 @@ def test_error_invalid_screw_direction(tmp_path):
 
 
 def test_error_invalid_screw_thread(tmp_path):
-    with pytest.raises(configparser.Error, match="Invalid screw_thread 'CW-M99'. Accepted values:"):
+    with pytest.raises(configparser.Error, match="Choice 'CW-M99' for option 'screw_thread' in section 'screws_tilt_adjust' is not a valid choice"):
         _build_sta(tmp_path, "screw_thread: CW-M99")
 
 

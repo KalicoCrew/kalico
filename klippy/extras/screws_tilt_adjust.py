@@ -41,7 +41,11 @@ class ScrewsTiltAdjust:
             "CCW-M6": 7,
             "CW-M8": 8,
             "CCW-M8": 9,
+            None: None
         }
+        self.thread = config.getchoice(
+            "screw_thread", self.threads, default="CW-M3"
+        )
         threads_factor = {
             0: 0.5,
             1: 0.5,
