@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+import logging
 
 from klippy.configfile import ConfigWrapper
 from klippy.extras.bulk_sensor import BatchWebhooksClient
@@ -397,8 +398,8 @@ class LoadCellSampleCollector:
             if result is None:
                 self._finish_collecting()
                 raise self._printer.command_error(
-                    "LoadCellSampleCollector timed out! Errors: %i,"
-                    " Overflows: %i" % (self._errors, self._overflows)
+                    f"LoadCellSampleCollector timed out! Errors: {self._errors},"
+                    f" Overflows: {self._overflows}"
                 )
         return self._finish_collecting()
 
@@ -463,7 +464,13 @@ class LoadCell:
         LoadCellCommandHelper(config, self)
         # Client support:
         self.clients = ApiClientHelper(printer)
-        header = {"header": ["time", "force (g)", "counts", "tare_counts"]}
+        self.channel_count = self.sensor.get_channel_count()
+        header_labels = ["time", "force (g)", "counts", "tare_counts"]
+        if self.channel_count > 1:
+            for idx in range(self.channel_count):
+                header_labels.append(f"channel-{idx} force (g)")
+                header_labels.append(f"channel-{idx} counts")
+        header = {"header": header_labels}
         self.clients.add_mux_endpoint(
             "load_cell/dump_force", "load_cell", self.name, header
         )
@@ -488,10 +495,25 @@ class LoadCell:
             return None
         samples = []
         for row in data:
-            # [time, grams, counts, tare_counts]
-            samples.append(
-                [row[0], self.counts_to_grams(row[1]), row[1], self.tare_counts]
-            )
+            channel_counts = row[1:][::2]
+            if len(channel_counts) != self.channel_count:
+                logging.info(
+                    f"Missing Sensor Channels! Expected: "
+                    f"{self.channel_count}, found "
+                    f"{len(channel_counts)}"
+                )
+            sum_counts = sum(channel_counts)
+            sample = [
+                row[0],
+                self.counts_to_grams(sum_counts),
+                sum_counts,
+                self.tare_counts,
+            ]
+            if self.channel_count > 1:
+                for counts in channel_counts:
+                    sample.append(self.counts_to_grams(counts))
+                    sample.append(counts)
+            samples.append(sample)
         msg = {"data": samples, "errors": errors, "overflows": overflows}
         self.clients.send(msg)
         return True
@@ -538,9 +560,14 @@ class LoadCell:
         sample_delta = float(sample - self.tare_counts)
         return self.invert * (sample_delta / self.counts_per_gram)
 
-    # The maximum range of the sensor based on its bit width
-    def saturation_range(self):
+    # The maximum range of a single ADC channel, based on its bit width
+    def channel_saturation_range(self):
         return self.sensor.get_range()
+
+    # The maximum range for the sum of all channels
+    def saturation_range(self):
+        range_min, range_max = self.channel_saturation_range()
+        return range_min * self.channel_count, range_max * self.channel_count
 
     # convert raw counts to a +/- percentage of the sensors range
     def counts_to_percent(self, counts):
@@ -558,13 +585,18 @@ class LoadCell:
                 "Sensor reported %i errors while sampling"
                 % (errors[0] + errors[1])
             )
-        # check samples for saturated readings
-        range_min, range_max = self.saturation_range()
+        # check individual channels for saturated readings
+        range_min, range_max = self.channel_saturation_range()
         for sample in samples:
-            if sample[2] >= range_max or sample[2] <= range_min:
-                raise self.printer.command_error(
-                    "Some samples are saturated (+/-100%)"
-                )
+            if self.channel_count > 1:
+                channel_counts = sample[5::2]
+            else:
+                channel_counts = [sample[2]]
+            for counts in channel_counts:
+                if counts >= range_max or counts <= range_min:
+                    raise self.printer.command_error(
+                        "Some samples are saturated (+/-100%)"
+                    )
         return avg(select_column(samples, 2))
 
     # Provide ongoing force tracking/averaging for status updates

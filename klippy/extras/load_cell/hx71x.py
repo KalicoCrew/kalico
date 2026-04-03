@@ -107,6 +107,9 @@ class HX71xBase(LoadCellSensor):
     def get_range(self) -> tuple[int, int]:
         return -0x800000, 0x7FFFFF
 
+    def get_channel_count(self) -> int:
+        return 1
+
     # add_client interface, direct pass through to bulk_sensor API
     def add_client(self, callback: BulkAdcDataCallback):
         self.batch_bulk.add_client(callback)

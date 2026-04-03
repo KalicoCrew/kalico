@@ -25,6 +25,8 @@ reference_tare_counts: 12345
   * [`hx711`](Config_Reference.md#hx711)
   * [`hx717`](Config_Reference.md#hx717)
   * [`ads1220`](Config_Reference.md#ads1220)
+  * [`ads131m02`](Config_Reference.md#ads131m02)
+  * [`ads131m04`](Config_Reference.md#ads131m04)
 
 - `counts_per_gram: 245`\
   _Default Value: None_\
@@ -332,7 +334,7 @@ Recommended sensor characteristics:
 - Programmable gain amplifier with 128× gain to eliminate external amplifiers
 - SPI reset indication to detect sensor restarts, a common indication of electrical problems
 - Selectable sample rate between 350 Hz and 2 kHz (rates below 250 Hz require slower probing speeds and increase toolhead force)
-- For under-bed applications with multiple load cells, simultaneous sampling on all channels (multiplexed ADCs have settling delays after channel switches)
+- For under-bed applications with multiple load cells, use an ADC with simultaneous sampling on all channels, such as the [ADS131M04](Config_Reference.md#ads131m04). Multiplexed ADCs have settling delays after channel switches and issues with time smearing of the readings which reduce accuracy.
 
 Klipper's `bulk_sensor` and `load_cell_probe` infrastructure simplifies support for new sensors. Sensors can be configured from Python. with a minimal sampling loop written in C.
 

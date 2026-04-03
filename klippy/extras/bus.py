@@ -129,6 +129,11 @@ class MCU_SPI:
             [self.oid, data], minclock=minclock, reqclock=reqclock
         )
 
+    def spi_send_wait_ack(self, data, minclock=0, reqclock=0):
+        self.spi_send_cmd.send_wait_ack(
+            [self.oid, data], minclock=minclock, reqclock=reqclock
+        )
+
     def spi_transfer(self, data, minclock=0, reqclock=0):
         return self.spi_transfer_cmd.send(
             [self.oid, data], minclock=minclock, reqclock=reqclock
