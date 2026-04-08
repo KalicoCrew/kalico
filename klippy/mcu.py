@@ -883,10 +883,11 @@ class MCU:
         self._shutdown_msg = msg = params["static_string_id"]
         if get_danger_options().log_shutdown_info:
             logging.info(
-                "MCU '%s' %s: %s\n%s\n%s",
+                "MCU '%s' %s: %s\n%s\n%s\n%s",
                 self._name,
                 params["#name"],
                 self._shutdown_msg,
+                self.dump_debug(),
                 self._clocksync.dump_debug(),
                 self._serial.dump_debug(),
             )
@@ -1250,6 +1251,7 @@ class MCU:
                 f"MCU {self._name!r} currently has firmware compiled for {app} (version {version})."
                 f" It is recommended to re-flash for best compatiblity with Kalico"
             )
+
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
@@ -1496,6 +1498,14 @@ class MCU:
         logging.info(
             "Timeout with MCU '%s' (eventtime=%f)", self._name, eventtime
         )
+        if get_danger_options().log_shutdown_info:
+            logging.info(
+                "MCU '%s' disconnected: Timeout\n%s\n%s\n%s",
+                self._name,
+                self.dump_debug(),
+                self._clocksync.dump_debug(),
+                self._serial.dump_debug(),
+            )
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
@@ -1512,6 +1522,18 @@ class MCU:
 
     def get_status(self, eventtime=None):
         return dict(self._get_status_info)
+
+    def dump_debug(self):
+        out = []
+        cmds = self._config_cmds
+
+        out.append(
+            f"Dumping config commands, {len(cmds)} commands, {self._oid_count} oids"
+        )
+        for idx, cmd in enumerate(cmds):
+            out.append(f"Config {idx}: {cmd}")
+
+        return "\n".join(out)
 
     def stats(self, eventtime):
         load = "mcu_awake=%.03f mcu_task_avg=%.06f mcu_task_stddev=%.06f" % (
