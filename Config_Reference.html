@@ -7944,7 +7944,7 @@ z_offset:
 #   printers that have an outlier first sample.
 #⚠️ bad_probe_strategy: RETRY
 #   Strategy to apply when a probe attempt is considered &quot;bad&quot; based on
-#   the probe&#39;s quality detection logic. If the probe doesnt support 
+#   the probe&#39;s quality detection logic. If the probe doesn&#39;t support 
 #   quality detection all probes are assumed to be good.
 #   One of: fail, ignore, retry or circle.
 #   - fail: Stop immediately with an error on first bad probe.
@@ -11197,6 +11197,7 @@ data_ready_pin:
 
 <h3 id="load_cell_probe">[load_cell_probe]<a class="headerlink" href="#load_cell_probe" title="Permanent link">&para;</a></h3>
 <p>Load Cell Probe. This combines the functionality of a [probe] and a [load_cell].</p>
+<p>See also [simple_tap_classifier] for tap validation configuration.</p>
 <div class="highlight"><pre><span></span><code>[load_cell_probe]
 sensor_type:
 #   This must be one of the supported bulk ADC sensor types and support
@@ -11206,9 +11207,13 @@ sensor_type:
 #sensor_orientation:
 #   These parameters must be configured before the probe will operate.
 #   See the [load_cell] section for further details.
-#force_safety_limit: 5000
-#   The safe limit for probing force relative to the reference_tare_counts on
-#   the load_cell. The default is +/-2Kg.
+#force_safety_limit: 2000
+#   The safe force limit for starting a probe. This is relative to the 
+#   reference_tare_counts which is the sensor&#39;s absolute 0 force value.
+#   Set to 0 to disable. The default is +/-2Kg.
+#drift_safety_limit: 1000
+#   The maximum absolute force change allowed while probing. Set to 0 to disable.
+#   The default is +/-1Kg.
 #trigger_force: 75.0
 #   The force that the probe will trigger at. 75g is the default.
 #drift_filter_cutoff_frequency: 0.8
@@ -11239,6 +11244,36 @@ sensor_type:
 #   The time in seconds used for taring the load_cell before each probe. The
 #   default value is: 5 / 50 = 0.1. This collects samples from 5 cycles of
 #   50Hz / 6 cycles of 60Hz mains power to cancel power line noise.
+#disable_pullback_move: False
+#   When True, disables the pullback move and tap analysis after probe trigger.
+#   The probe will use the raw trigger position instead of the calculated Z=0
+#   from tap analysis. This reduces probe accuracy but may be useful for
+#   troubleshooting or compatibility testing. The default is False.
+#pullback_distance: 0.2
+#   The distance in mm to slowly raise the probe to perform precise Z=0
+#   measurments. This move occurs immediately after the probe detects contact.
+#   The distance needs to be approximatly 2x the distance required for the probe
+#   to break contact with the bed. Valid range is 0.01 to 2.0 mm.
+#   The default is 0.2 mm.
+#pullback_speed:
+#   The speed in mm/s for the pullback move after probe trigger. Valid range is
+#   0.1 to 1.0 mm/s. The default is set to 1 micron (0.001mm) per sensor sample.
+#tap_classifier_module:
+#   Optional module for custom tap validation. The default is TapQualityClassifier.
+#   Setting a custom classifier overrides TapQualityClassifier with your implementation.
+#min_tap_quality: 40.0
+#   The minimum acceptable tap quality score. Valid range is 0 to 100 percent.
+#   The default is 40%.
+#decompression_angle:
+#   The average angle of the decompression line for clean taps. The further the
+#   measured decompression angle is from this angle, the worse its tap quality score.
+#   There is no default, this must be measured. It is a number in degrees
+#   between 0 and 90.
+#max_approach_force: 50
+#max_departure_force: 25
+#max_baseline_force_delta: 25
+#max_dwell_force_drop: 75
+#   Maximums for tap quality checks expressed as a percentage.
 #z_offset:
 #speed:
 #samples:
@@ -11252,6 +11287,7 @@ sensor_type:
 #   See the &quot;[probe]&quot; section for a description of the above parameters.
 </code></pre></div>
 
+<p>See <a href="Load_Cell.html#tap-quality-components">Tap Quality Components</a> for more details on maximum for tap quality.</p>
 <h2 id="board-specific-hardware-support">Board specific hardware support<a class="headerlink" href="#board-specific-hardware-support" title="Permanent link">&para;</a></h2>
 <h3 id="sx1509">[sx1509]<a class="headerlink" href="#sx1509" title="Permanent link">&para;</a></h3>
 <p>Configure an SX1509 I2C to GPIO expander. Due to the delay incurred by
