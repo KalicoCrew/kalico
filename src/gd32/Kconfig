@@ -1,0 +1,216 @@
+# Kconfig settings for GD32F30x processors
+
+if MACH_GD32
+
+config GD32_SELECT
+    bool
+    default y
+    select HAVE_GPIO
+    select HAVE_GPIO_ADC
+    select HAVE_GPIO_I2C
+    select HAVE_GPIO_SPI
+    select HAVE_GPIO_HARD_PWM
+    select HAVE_STRICT_TIMING
+    select HAVE_CHIPID
+    select HAVE_STEPPER_OPTIMIZED_BOTH_EDGE
+    select HAVE_BOOTLOADER_REQUEST
+    select HAVE_LIMITED_CODE_SIZE if FLASH_SIZE < 0x10000
+
+config BOARD_DIRECTORY
+    string
+    default "gd32"
+
+
+######################################################################
+# Processor model
+######################################################################
+
+choice
+    prompt "Processor model"
+    config MACH_GD32F303XB
+        bool "GD32F303xB (128K Flash, 32K RAM)"
+        select MACH_GD32F30X_HD
+        select MACH_GD32F30X
+    config MACH_GD32F303XC
+        bool "GD32F303xC (256K Flash, 48K RAM)"
+        select MACH_GD32F30X_HD
+        select MACH_GD32F30X
+    config MACH_GD32F303XE
+        bool "GD32F303xE (512K Flash, 64K RAM)"
+        select MACH_GD32F30X_HD
+        select MACH_GD32F30X
+    config MACH_GD32F303XG
+        bool "GD32F303xG (1M Flash, 96K RAM)"
+        select MACH_GD32F30X_XD
+        select MACH_GD32F30X
+    config MACH_GD32F303XI
+        bool "GD32F303xI (2M Flash, 96K RAM)"
+        select MACH_GD32F30X_XD
+        select MACH_GD32F30X
+    config MACH_GD32F303XK
+        bool "GD32F303xK (3M Flash, 96K RAM)"
+        select MACH_GD32F30X_XD
+        select MACH_GD32F30X
+    config MACH_GD32F305XB
+        bool "GD32F305xB (128K Flash, 32K RAM)"
+        select MACH_GD32F30X_CL
+        select MACH_GD32F30X
+    config MACH_GD32F305XC
+        bool "GD32F305xC (256K Flash, 48K RAM)"
+        select MACH_GD32F30X_CL
+        select MACH_GD32F30X
+    config MACH_GD32F305XE
+        bool "GD32F305xE (512K Flash, 64K RAM)"
+        select MACH_GD32F30X_CL
+        select MACH_GD32F30X
+    config MACH_GD32F307XC
+        bool "GD32F307xC (256K Flash, 48K RAM)"
+        select MACH_GD32F30X_CL
+        select MACH_GD32F30X
+    config MACH_GD32F307XE
+        bool "GD32F307xE (512K Flash, 64K RAM)"
+        select MACH_GD32F30X_CL
+        select MACH_GD32F30X
+endchoice
+
+config MACH_GD32F30X_HD
+    bool
+config MACH_GD32F30X_XD
+    bool
+config MACH_GD32F30X_CL
+    bool
+config MACH_GD32F30X
+    bool
+
+config MCU
+    string
+    default "gd32f303xb" if MACH_GD32F303XB
+    default "gd32f303xc" if MACH_GD32F303XC
+    default "gd32f303xe" if MACH_GD32F303XE
+    default "gd32f303xg" if MACH_GD32F303XG
+    default "gd32f303xi" if MACH_GD32F303XI
+    default "gd32f303xk" if MACH_GD32F303XK
+    default "gd32f305xb" if MACH_GD32F305XB
+    default "gd32f305xc" if MACH_GD32F305XC
+    default "gd32f305xe" if MACH_GD32F305XE
+    default "gd32f307xc" if MACH_GD32F307XC
+    default "gd32f307xe" if MACH_GD32F307XE
+
+config CLOCK_FREQ
+    int
+    default 120000000
+
+config FLASH_SIZE
+    hex
+    default 0x20000 if MACH_GD32F303XB || MACH_GD32F305XB
+    default 0x40000 if MACH_GD32F303XC || MACH_GD32F305XC || MACH_GD32F307XC
+    default 0x80000 if MACH_GD32F303XE || MACH_GD32F305XE || MACH_GD32F307XE
+    default 0x100000 if MACH_GD32F303XG
+    default 0x200000 if MACH_GD32F303XI
+    default 0x300000 if MACH_GD32F303XK
+
+config FLASH_BOOT_ADDRESS
+    hex
+    default 0x8000000
+
+config RAM_START
+    hex
+    default 0x20000000
+
+config RAM_SIZE
+    hex
+    default 0x8000 if MACH_GD32F303XB || MACH_GD32F305XB
+    default 0xC000 if MACH_GD32F303XC || MACH_GD32F305XC || MACH_GD32F307XC
+    default 0x10000 if MACH_GD32F303XE || MACH_GD32F305XE || MACH_GD32F307XE
+    default 0x18000 if MACH_GD32F303XG || MACH_GD32F303XI || MACH_GD32F303XK
+
+config STACK_SIZE
+    int
+    default 512
+
+
+######################################################################
+# Bootloader
+######################################################################
+
+choice
+    prompt "Bootloader offset"
+    config GD32_FLASH_START_2000
+        bool "8KiB bootloader"
+    config GD32_FLASH_START_5000
+        bool "20KiB bootloader"
+    config GD32_FLASH_START_7000
+        bool "28KiB bootloader"
+    config GD32_FLASH_START_8000
+        bool "32KiB bootloader"
+    config GD32_FLASH_START_800
+        bool "2KiB bootloader"
+    config GD32_FLASH_START_1000
+        bool "4KiB bootloader"
+    config GD32_FLASH_START_0000
+        bool "No bootloader"
+endchoice
+
+config FLASH_APPLICATION_ADDRESS
+    hex
+    default 0x8000800 if GD32_FLASH_START_800
+    default 0x8001000 if GD32_FLASH_START_1000
+    default 0x8002000 if GD32_FLASH_START_2000
+    default 0x8005000 if GD32_FLASH_START_5000
+    default 0x8007000 if GD32_FLASH_START_7000
+    default 0x8008000 if GD32_FLASH_START_8000
+    default 0x8000000
+
+config ARMCM_RAM_VECTORTABLE
+    bool
+    default n
+
+
+######################################################################
+# Clock reference
+######################################################################
+
+choice
+    prompt "Clock Reference" if LOW_LEVEL_OPTIONS
+    config GD32_CLOCK_REF_8M
+        bool "8 MHz crystal"
+    config GD32_CLOCK_REF_12M
+        bool "12 MHz crystal"
+    config GD32_CLOCK_REF_25M
+        bool "25 MHz crystal (CL series)"
+endchoice
+
+config CLOCK_REF_FREQ
+    int
+    default 25000000 if GD32_CLOCK_REF_25M
+    default 12000000 if GD32_CLOCK_REF_12M
+    default 8000000
+
+
+######################################################################
+# Communication interface
+######################################################################
+
+choice
+    prompt "Communication interface"
+    config GD32_USB
+        bool "USB (PA11/PA12)"
+        select USBSERIAL
+    config GD32_SERIAL_USART1
+        bool "Serial (PA10 & PA9)"
+        select SERIAL
+    config GD32_SERIAL_USART1_ALT_PB7_PB6
+        bool "Serial (PB7 & PB6)"
+        select SERIAL
+    config GD32_SERIAL_USART2
+        bool "Serial (PA3 & PA2)"
+        select SERIAL
+    config GD32_SERIAL_USART3
+        bool "Serial (PB11 & PB10)"
+        select SERIAL
+    config GD32_SERIAL_USART3_ALT_PD9_PD8
+        bool "Serial (PD9 & PD8)"
+        select SERIAL
+endchoice
+
+endif
