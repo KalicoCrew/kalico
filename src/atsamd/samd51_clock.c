@@ -15,6 +15,7 @@
 
 #define FREQ_MAIN CONFIG_CLOCK_FREQ
 #define FREQ_32K 32768
+#define FREQ_96M 96000000
 #define FREQ_48M 48000000
 #define FREQ_2M 2000000
 
@@ -147,11 +148,11 @@ clock_init_25m(void)
     // Switch main clock to 120Mhz PLL0
     gen_clock(CLKGEN_MAIN, GCLK_GENCTRL_SRC_DPLL0);
 
-    // Generate 48Mhz clock on PLL1 (with XOSC1 as reference)
-    uint32_t p1div = 50, p1mul = DIV_ROUND_CLOSEST(FREQ_48M, freq_xosc/p1div);
+    // Generate 96MHz clock on PLL1 (with XOSC1 as reference), divide by 2 for GCLK = 48 MHz
+    uint32_t p1div = 50, p1mul = DIV_ROUND_CLOSEST(FREQ_96M, freq_xosc/p1div);
     uint32_t p1ctrlb = OSCCTRL_DPLLCTRLB_DIV(p1div / 2 - 1);
     config_dpll(1, p1mul, p1ctrlb | OSCCTRL_DPLLCTRLB_REFCLK_XOSC1);
-    gen_clock(CLKGEN_48M, GCLK_GENCTRL_SRC_DPLL1);
+    gen_clock(CLKGEN_48M, GCLK_GENCTRL_SRC_DPLL1 | GCLK_GENCTRL_DIV(FREQ_96M / FREQ_48M));
 }
 
 // Initialize clocks from factory calibrated internal clock
