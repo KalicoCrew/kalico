@@ -42,8 +42,10 @@ class PIDCalibrate:
                     )
 
                 gcmd.respond_info(
-                    "Calibrating secondary pid loop (target=%.1f)"
-                    % (heater.control.inner_target_temp)
+                    "Calibrating secondary pid loop around %.1fC. "
+                    "The inner sensor temperature will oscillate above "
+                    "and below this target during calibration; this is "
+                    "expected." % (heater.control.inner_target_temp)
                 )
                 calibrate = ControlAutoTune(
                     heater,
