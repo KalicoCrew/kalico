@@ -66,7 +66,7 @@ class PIDCalibrate:
                 max_temp = max(0.0, calibrate.temp_low - 5.0)
                 gcmd.respond_info(
                     "Waiting for heater %s to cool down to %.1f for calibration."
-                    % (heater.get_name(), target)
+                    % (heater.get_name(), max_temp)
                 )
                 pheaters.set_temperature(heater, max_temp, True)
         else:
