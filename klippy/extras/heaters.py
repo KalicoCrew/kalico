@@ -1158,12 +1158,14 @@ class ControlDualLoopPID:
         if secondary_temp is None:
             raise ValueError("Secondary temperature must be provided!")
 
+        primary_prev_temp_integ = self.primary_pid.prev_temp_integ
         primary_co, _ = self.primary_pid.calculate_output(
             read_time,
             primary_temp,
             target_temp,
         )
 
+        secondary_prev_temp_integ = self.secondary_pid.prev_temp_integ
         secondary_co, _ = self.secondary_pid.calculate_output(
             read_time,
             secondary_temp,
@@ -1172,6 +1174,14 @@ class ControlDualLoopPID:
 
         co = min(primary_co, secondary_co)
         bounded_co = max(0.0, min(self.heater_max_power, co))
+
+        # If the other loop reduced the final heater output, don't let this
+        # loop retain an integrator update based on power that was never
+        # actually applied to the heater.
+        if primary_co != bounded_co:
+            self.primary_pid.prev_temp_integ = primary_prev_temp_integ
+        if secondary_co != bounded_co:
+            self.secondary_pid.prev_temp_integ = secondary_prev_temp_integ
 
         self.heater.set_pwm(read_time, bounded_co)
 
