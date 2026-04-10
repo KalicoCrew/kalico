@@ -122,10 +122,10 @@ clock_init_32k(void)
     // Switch main clock to 120Mhz PLL0
     gen_clock(CLKGEN_MAIN, GCLK_GENCTRL_SRC_DPLL0);
 
-    // Generate 48Mhz clock on PLL1 (with XOSC32 as reference)
-    mul = DIV_ROUND_CLOSEST(FREQ_48M, FREQ_32K);
+    // Generate 96MHz clock on PLL1 (with XOSC32 as reference), divide by 2 for GCLK = 48 MHz
+    mul = DIV_ROUND_CLOSEST(FREQ_96M, FREQ_32K);
     config_dpll(1, mul, OSCCTRL_DPLLCTRLB_REFCLK_XOSC32);
-    gen_clock(CLKGEN_48M, GCLK_GENCTRL_SRC_DPLL1);
+    gen_clock(CLKGEN_48M, GCLK_GENCTRL_SRC_DPLL1 | GCLK_GENCTRL_DIV(FREQ_96M / FREQ_48M));
 }
 
 // Initialize the clocks using an external 25M crystal
