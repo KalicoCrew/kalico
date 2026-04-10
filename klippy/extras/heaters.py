@@ -35,6 +35,31 @@ PID_PROFILE_OPTIONS = {
     "pid_ki": (float, "%.3f"),
     "pid_kd": (float, "%.3f"),
 }
+DUAL_LOOP_PID_INNER_TARGET_OPTION = "inner_target_temp"
+DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION = "inner_max_temp"
+
+
+def lookup_dual_loop_pid_inner_target_temp(config):
+    inner_target_temp = config.getfloat(
+        DUAL_LOOP_PID_INNER_TARGET_OPTION, None
+    )
+    inner_max_temp = config.getfloat(
+        DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION, None
+    )
+    if inner_target_temp is not None and inner_max_temp is not None:
+        raise config.error(
+            "Options '%s' and '%s' may not both be specified"
+            % (
+                DUAL_LOOP_PID_INNER_TARGET_OPTION,
+                DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION,
+            )
+        )
+    if inner_target_temp is not None:
+        return inner_target_temp
+    if inner_max_temp is not None:
+        config.deprecate(DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION)
+        return inner_max_temp
+    return config.getfloat(DUAL_LOOP_PID_INNER_TARGET_OPTION)
 
 
 class Heater:
@@ -1119,7 +1144,9 @@ class ControlDualLoopPID:
             load_clean=load_clean,
         )
 
-        self.secondary_max_temp = self.heater.config.getfloat("inner_max_temp")
+        self.inner_target_temp = lookup_dual_loop_pid_inner_target_temp(
+            self.heater.config
+        )
 
     def temperature_update(
         self,
@@ -1140,7 +1167,7 @@ class ControlDualLoopPID:
         secondary_co, _ = self.secondary_pid.calculate_output(
             read_time,
             secondary_temp,
-            self.secondary_max_temp,
+            self.inner_target_temp,
         )
 
         co = min(primary_co, secondary_co)

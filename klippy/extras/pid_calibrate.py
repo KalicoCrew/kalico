@@ -31,10 +31,10 @@ class PIDCalibrate:
     ):
         if isinstance(heater.control, heaters.ControlDualLoopPID):
             if calibrate_secondary:
-                delta = heater.control.secondary_max_temp - target
+                delta = heater.control.inner_target_temp - target
                 if delta <= 15.0:
                     gcmd.respond_raw(
-                        "!! Target calibration temperature of %d°C is <= 15°C below `secondary_max_temp`."
+                        "!! Target calibration temperature of %d°C is <= 15°C below `inner_target_temp`."
                         % target
                     )
                     gcmd.respond_raw(
@@ -43,11 +43,11 @@ class PIDCalibrate:
 
                 gcmd.respond_info(
                     "Calibrating secondary pid loop (target=%.1f)"
-                    % (heater.control.secondary_max_temp)
+                    % (heater.control.inner_target_temp)
                 )
                 calibrate = ControlAutoTune(
                     heater,
-                    heater.control.secondary_max_temp,
+                    heater.control.inner_target_temp,
                     tolerance,
                     calibrate_secondary=calibrate_secondary,
                 )
@@ -332,7 +332,7 @@ class ControlAutoTune:
             is_dual_loop = isinstance(self.control, heaters.ControlDualLoopPID)
             if is_dual_loop and not self.calibrate_secondary:
                 pid = self.control.secondary_pid
-                secondary_target_temp = self.control.secondary_max_temp
+                secondary_target_temp = self.control.inner_target_temp
                 _, bounded_co = pid.calculate_output(
                     read_time, secondary_temp, secondary_target_temp
                 )
