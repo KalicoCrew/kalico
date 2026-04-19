@@ -56,8 +56,8 @@
 
 - [`[temperature_fan] control: curve`](./Config_Reference.md#temperature_fan) lets you set a fan curve instead of linear control
 - [`[temperature_fan] reverse: True`](./Config_Reference.md#temperature_fan) will let you control a fan in reverse to temperature control. The lower the temperature, the higher the fan runs.
-- Fans now normalize PWM power within `off_below` and `max_power`, so setting a fan to 10% will get you 10% fan speed within your configured off/max range.
-
+- Fans now normalize PWM power within `min_power` and `max_power`, so setting a fan to 10% will get you 10% fan speed within your configured min/max range.
+- Dual-loop PID control to accurately manage the bed's temperature while limiting heater power to prevent exceeding a maximum temperature.
 
 ## TMC Drivers
 
@@ -70,6 +70,7 @@
 - New [`RELOAD_GCODE_MACROS`](./G-Codes.md#reload_gcode_macros) G-Code command to reload `[gcode_macro]` templates without requiring a restart.
 - G-Code Macros can be written in Python. Read more [here](./Command_Templates.md)
   - Macros may also be loaded from other files, using `!!include path/to/file.py`
+- Inside a macro you can use `RETURN` to end macro execution early without raising an error.
 
 ## Plugins
 

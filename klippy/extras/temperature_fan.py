@@ -62,7 +62,7 @@ class TemperatureFan:
             desc=self.cmd_SET_TEMPERATURE_FAN_TARGET_help,
         )
 
-    def set_speed(self, read_time, value):
+    def set_tf_speed(self, read_time, value):
         if value <= 0.0:
             value = 0.0
         elif value < self.min_speed:
@@ -77,7 +77,7 @@ class TemperatureFan:
         speed_time = read_time + self.speed_delay
         self.next_speed_time = speed_time + 0.75 * MAX_FAN_TIME
         self.last_speed_value = value
-        self.fan.set_speed(speed_time, value)
+        self.fan.set_speed(value, speed_time)
 
     def temperature_callback(self, read_time, temp):
         self.last_temp = temp
@@ -171,9 +171,9 @@ class ControlBangBang:
         ):
             self.heating = not self.reverse
         if self.heating:
-            self.temperature_fan.set_speed(read_time, 0.0)
+            self.temperature_fan.set_tf_speed(read_time, 0.0)
         else:
-            self.temperature_fan.set_speed(
+            self.temperature_fan.set_tf_speed(
                 read_time, self.temperature_fan.get_max_speed()
             )
 
@@ -226,7 +226,7 @@ class ControlPID:
         co = self.Kp * temp_err + self.Ki * temp_integ - self.Kd * temp_deriv
         bounded_co = max(0.0, min(self.temperature_fan.get_max_speed(), co))
         if not self.reverse:
-            self.temperature_fan.set_speed(
+            self.temperature_fan.set_tf_speed(
                 read_time,
                 max(
                     self.temperature_fan.get_min_speed(),
@@ -234,7 +234,7 @@ class ControlPID:
                 ),
             )
         else:
-            self.temperature_fan.set_speed(
+            self.temperature_fan.set_tf_speed(
                 read_time, max(self.temperature_fan.get_min_speed(), bounded_co)
             )
         # Store state for next measurement
@@ -334,7 +334,7 @@ class ControlCurve:
         else:
             next_speed = current_speed
 
-        self.temperature_fan.set_speed(read_time, next_speed)
+        self.temperature_fan.set_tf_speed(read_time, next_speed)
 
     def get_type(self):
         return "curve"

@@ -5,14 +5,18 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import optparse, os, pathlib, sys
+import optparse
+import os
+import pathlib
+import sys
 from textwrap import wrap
-import numpy as np, matplotlib
+
+import matplotlib
+import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from klippy.extras import shaper_calibrate  # noqa:E402
-
 
 MAX_TITLE_LENGTH = 65
 
@@ -258,7 +262,9 @@ def setup_matplotlib(output):
     if output:
         matplotlib.rcParams.update({"figure.autolayout": True})
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 

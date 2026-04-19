@@ -1,0 +1,7 @@
+# Test that bed_mesh_default loads a profile at startup without crashing
+CONFIG bed_mesh_default.cfg
+DICTIONARY atmega2560.dict
+
+# Startup with bed_mesh_default should have loaded the "manual" profile
+# If we get here, the startup didn't crash (regression test for #817)
+G28

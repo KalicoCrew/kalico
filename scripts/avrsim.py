@@ -4,7 +4,15 @@
 # Copyright (C) 2015-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, optparse, time, os, pty, fcntl, termios, errno
+import errno
+import fcntl
+import optparse
+import os
+import pty
+import sys
+import termios
+import time
+
 import pysimulavr
 
 SERIALBITS = 10  # 8N1 = 1 start, 8 data, 1 stop

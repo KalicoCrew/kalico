@@ -4,8 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus
 
+from . import bus
 from .danger_options import get_danger_options
 
 REPORT_TIME = 0.8
@@ -198,6 +198,10 @@ class BME280:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
+        )
         self.last_gas_time = 0
 
     def handle_connect(self):
@@ -331,7 +335,7 @@ class BME280:
             )
 
         # Reset chip
-        self.write_register("RESET", [RESET_CHIP_VALUE], wait=True)
+        self.write_register("RESET", [RESET_CHIP_VALUE])
         self.reactor.pause(self.reactor.monotonic() + 0.5)
 
         # Make sure non-volatile memory has been copied to registers
@@ -447,7 +451,7 @@ class BME280:
                 self.write_register("CTRL_HUM", self.os_hum)
             # Enter normal (periodic) mode
             meas = self.os_temp << 5 | self.os_pres << 2 | MODE_PERIODIC
-            self.write_register("CTRL_MEAS", meas, wait=True)
+            self.write_register("CTRL_MEAS", meas)
 
         if self.chip_type == "BME680":
             self.write_register("CONFIG", self.iir_filter << 2)
@@ -584,7 +588,7 @@ class BME280:
 
         # Enter forced mode
         meas = self.os_temp << 5 | self.os_pres << 2 | MODE
-        self.write_register("CTRL_MEAS", meas, wait=True)
+        self.write_register("CTRL_MEAS", meas)
         max_sample_time = self.max_sample_time
         if run_gas:
             max_sample_time += self.gas_heat_duration / 1000
@@ -865,15 +869,12 @@ class BME280:
         params = self.i2c.i2c_read(regs, read_len)
         return bytearray(params["response"])
 
-    def write_register(self, reg_name, data, wait=False):
+    def write_register(self, reg_name, data):
         if type(data) is not list:
             data = [data]
         reg = self.chip_registers[reg_name]
         data.insert(0, reg)
-        if not wait:
-            self.i2c.i2c_write(data)
-        else:
-            self.i2c.i2c_write_wait_ack(data)
+        self.i2c.i2c_write(data)
 
     def get_status(self, eventtime):
         data = {"temperature": round(self.temp, 2), "pressure": self.pressure}

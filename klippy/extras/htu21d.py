@@ -4,8 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus
 
+from . import bus
 from .danger_options import get_danger_options
 
 ######################################################################
@@ -98,6 +98,7 @@ class HTU21D:
         self.i2c = bus.MCU_I2C_from_config(
             config, default_addr=HTU21D_I2C_ADDR, default_speed=100000
         )
+        self.mcu = self.i2c.get_mcu()
         self.hold_master_mode = config.getboolean("htu21d_hold_master", False)
         self.resolution = config.get("htu21d_resolution", "TEMP12_HUM08")
         self.report_time = config.getint("htu21d_report_time", 30, minval=5)
@@ -112,6 +113,10 @@ class HTU21D:
         self.printer.add_object("htu21d " + self.name, self)
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
+        )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
         )
 
     def handle_connect(self):

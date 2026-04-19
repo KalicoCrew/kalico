@@ -9,8 +9,8 @@
 # Usage:
 #   avr-objdump -d out/klipper.elf | scripts/checkstack.py
 
-import sys
 import re
+import sys
 
 # Functions that change stacks
 STACKHOP = []

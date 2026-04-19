@@ -5,11 +5,11 @@
 # Copied from Marlin and modified.
 # Licensed under GPL-3.0
 
+import hashlib
 import os
 import struct
-import uuid
 import sys
-import hashlib
+import uuid
 
 
 def calculate_crc(contents, seed):

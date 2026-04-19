@@ -18,6 +18,10 @@ on:
       - "scripts/ci-build.sh"
       - ".github/workflows/ci-builder.yaml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   login:
     runs-on: ubuntu-latest

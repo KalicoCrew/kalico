@@ -10,7 +10,9 @@ exceptiongroup==1.2.2 ; python_full_version < '3.11'
     # via pytest
 execnet==2.1.1
     # via pytest-xdist
-filelock==3.17.0
+filelock==3.19.1 ; python_full_version < '3.10'
+    # via virtualenv
+filelock==3.20.3 ; python_full_version >= '3.10'
     # via virtualenv
 identify==2.6.6
     # via pre-commit
@@ -33,5 +35,7 @@ pyyaml==6.0.2
 ruff==0.9.3
 tomli==2.2.1 ; python_full_version < '3.11'
     # via pytest
-virtualenv==20.29.1
+typing-extensions==4.13.2 ; python_full_version < '3.11'
+    # via virtualenv
+virtualenv==20.36.1
     # via pre-commit

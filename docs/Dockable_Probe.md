@@ -261,6 +261,13 @@ home_xy_position: 150,150
 z_hop: 10
 ```
 
+When using `safe_z_home`, the probe can be made to detach automatically when Z 
+is homed.
+```elixir
+[dockable_probe]
+detach_dockable_before_z_home: True
+```
+
 
 ### Probe Attachment Verification
 

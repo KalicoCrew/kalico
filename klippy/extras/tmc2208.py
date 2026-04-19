@@ -3,7 +3,7 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-from . import tmc, tmc_uart, tmc2130
+from . import tmc, tmc2130, tmc_uart
 
 TMC_FREQUENCY = 12000000.0
 
@@ -196,7 +196,7 @@ class TMC2208:
         self.get_status = cmdhelper.get_status
         # Setup basic register values
         self.fields.set_field("mstep_reg_select", True)
-        tmc.TMCStealthchopHelper(config, self.mcu_tmc, TMC_FREQUENCY)
+        tmc.TMCStealthchopHelper(config, self.mcu_tmc)
         # Allow other registers to be set from the config
         set_config_field = self.fields.set_config_field
         # GCONF

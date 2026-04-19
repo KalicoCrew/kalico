@@ -1,10 +1,18 @@
 # File descriptor and timer event helper
 #
-# Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, gc, select, math, time, logging, queue
+import gc
+import logging
+import math
+import os
+import queue
+import select
+import time
+
 import greenlet
+
 from . import chelper, util
 
 _NOW = 0.0
@@ -15,6 +23,7 @@ class ReactorTimer:
     def __init__(self, callback, waketime):
         self.callback = callback
         self.waketime = waketime
+        self.timer_is_running = False
 
 
 class ReactorCompletion:
@@ -138,6 +147,8 @@ class SelectReactor:
 
     # Timers
     def update_timer(self, timer_handler, waketime):
+        if timer_handler.timer_is_running:
+            return
         timer_handler.waketime = waketime
         self._next_timer = min(self._next_timer, waketime)
 
@@ -178,7 +189,9 @@ class SelectReactor:
             waketime = t.waketime
             if eventtime >= waketime:
                 t.waketime = self.NEVER
+                t.timer_is_running = True
                 t.waketime = waketime = t.callback(eventtime)
+                t.timer_is_running = False
                 if g_dispatch is not self._g_dispatch:
                     self._next_timer = min(self._next_timer, waketime)
                     self._end_greenlet(g_dispatch)
@@ -257,6 +270,9 @@ class SelectReactor:
         eventtime = g_next.switch()
         # This greenlet activated from g.timer.callback (via _check_timers)
         return eventtime
+
+    def delay_for_ms(self, milliseconds: float):
+        self.pause(self.monotonic() + milliseconds / 1000.0)
 
     def _end_greenlet(self, g_old):
         # Cache this greenlet for later use

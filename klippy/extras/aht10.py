@@ -4,8 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus
 
+from . import bus
 from .danger_options import get_danger_options
 
 ######################################################################
@@ -34,12 +34,17 @@ class AHT10:
         self.i2c = bus.MCU_I2C_from_config(
             config, default_addr=AHT10_I2C_ADDR, default_speed=100000
         )
+        self.mcu = self.i2c.get_mcu()
         self.report_time = config.getint("aht10_report_time", 30, minval=5)
         self.temp = self.min_temp = self.max_temp = self.humidity = 0.0
         self.sample_timer = self.reactor.register_timer(self._sample_aht10)
         self.printer.add_object("aht10 " + self.name, self)
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
+        )
+        self.printer.register_event_handler(
+            self.mcu.get_non_critical_reconnect_event_name(),
+            self.handle_connect,
         )
         self.is_calibrated = False
         self.init_sent = False

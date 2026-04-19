@@ -6,6 +6,7 @@
 import logging
 
 from klippy import mcu
+
 from .danger_options import get_danger_options
 
 DS18_REPORT_TIME = 3.0

@@ -3,7 +3,11 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, optparse, logging, subprocess
+import logging
+import optparse
+import os
+import subprocess
+import sys
 
 TEMP_GCODE_FILE = "_test_.gcode"
 TEMP_LOG_FILE = "_test_.log"

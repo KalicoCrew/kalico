@@ -40,6 +40,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [heaters: expose heater thermistor out of min/max](https://github.com/KalicoCrew/kalico/pull/182)
 
+- [heaters: dual loop pid control](https://github.com/KalicoCrew/kalico/pull/735)
+
 - [heaters/fan: new heated_fan module](https://github.com/KalicoCrew/kalico/pull/259)
 
 - [gcode: jinja2.ext.do extension](https://github.com/KalicoCrew/kalico/pull/26) ([klipper#5149](https://github.com/Klipper3d/klipper/pull/5149))
@@ -139,6 +141,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 - [danger_options: configurable homing constants](https://github.com/KalicoCrew/kalico/pull/378)
 
 - [tmc2240: adjustable driver_CS and current_range](https://github.com/KalicoCrew/kalico/pull/556)
+
+- [extruder: cold_extrude](https://github.com/KalicoCrew/kalico/pull/750)
 
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):

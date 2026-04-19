@@ -1,19 +1,29 @@
 # Interface to Klipper micro-controller code
 #
-# Copyright (C) 2016-2023  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import math
 import os
 import zlib
-from . import serialhdl, msgproto, pins, chelper, clocksync
+
+from . import chelper, clocksync, msgproto, pins, serialhdl
 from .extras.danger_options import get_danger_options
 
 
 class error(Exception):
     pass
 
+
+# Minimum time host needs to get scheduled events queued into mcu
+MIN_SCHEDULE_TIME = 0.100
+# The maximum number of clock cycles an MCU is expected
+# to schedule into the future, due to the protocol and firmware.
+MAX_SCHEDULE_TICKS = (1 << 31) - 1
+# Maximum time all MCUs can internally schedule into the future.
+# Directly caused by the limitation of MAX_SCHEDULE_TICKS.
+MAX_NOMINAL_DURATION = 3.0
 
 ######################################################################
 # Command transmit helper classes
@@ -40,18 +50,20 @@ class RetryAsyncCommand:
             self.need_response = False
             self.reactor.async_complete(self.completion, params)
 
-    def get_response(self, cmds, cmd_queue, minclock=0, reqclock=0):
+    def get_response(self, cmds, cmd_queue, minclock=0, reqclock=0, retry=True):
         (cmd,) = cmds
         self.serial.raw_send_wait_ack(cmd, minclock, reqclock, cmd_queue)
         self.min_query_time = 0.0
-        first_query_time = query_time = self.reactor.monotonic()
+        timeout_time = query_time = self.reactor.monotonic()
+        if retry:
+            timeout_time += self.TIMEOUT_TIME
         while 1:
             params = self.completion.wait(query_time + self.RETRY_TIME)
             if params is not None:
                 self.serial.register_response(None, self.name, self.oid)
                 return params
             query_time = self.reactor.monotonic()
-            if query_time > first_query_time + self.TIMEOUT_TIME:
+            if query_time > timeout_time:
                 self.serial.register_response(None, self.name, self.oid)
                 raise serialhdl.error(
                     "Timeout on wait for '%s' response" % (self.name,)
@@ -84,22 +96,32 @@ class CommandQueryWrapper:
             cmd_queue = serial.get_default_command_queue()
         self._cmd_queue = cmd_queue
 
-    def _do_send(self, cmds, minclock, reqclock):
+    def _do_send(self, cmds, minclock, reqclock, retry):
         xh = self._xmit_helper(self._serial, self._response, self._oid)
         reqclock = max(minclock, reqclock)
         try:
-            return xh.get_response(cmds, self._cmd_queue, minclock, reqclock)
+            return xh.get_response(
+                cmds, self._cmd_queue, minclock, reqclock, retry
+            )
         except serialhdl.error as e:
             raise self._error(str(e))
 
-    def send(self, data=(), minclock=0, reqclock=0):
-        return self._do_send([self._cmd.encode(data)], minclock, reqclock)
+    def send(self, data=(), minclock=0, reqclock=0, retry=True):
+        return self._do_send(
+            [self._cmd.encode(data)], minclock, reqclock, retry
+        )
 
     def send_with_preface(
-        self, preface_cmd, preface_data=(), data=(), minclock=0, reqclock=0
+        self,
+        preface_cmd,
+        preface_data=(),
+        data=(),
+        minclock=0,
+        reqclock=0,
+        retry=True,
     ):
         cmds = [preface_cmd._cmd.encode(preface_data), self._cmd.encode(data)]
-        return self._do_send(cmds, minclock, reqclock)
+        return self._do_send(cmds, minclock, reqclock, retry)
 
 
 # Wrapper around command sending
@@ -270,12 +292,12 @@ class MCU_trsync:
         )
         self._trsync_start_cmd.send(
             [self._oid, report_clock, report_ticks, self.REASON_COMMS_TIMEOUT],
-            reqclock=report_clock,
+            reqclock=clock,
         )
         for s in self._steppers:
             self._stepper_stop_cmd.send([s.get_oid(), self._oid])
         self._trsync_set_timeout_cmd.send(
-            [self._oid, expire_clock], reqclock=expire_clock
+            [self._oid, expire_clock], reqclock=clock
         )
 
     def set_home_end_time(self, home_end_time):
@@ -490,7 +512,7 @@ class MCU_digital_out:
                 " value equal to shutdown value"
             )
         mdur_ticks = self._mcu.seconds_to_clock(self._max_duration)
-        if mdur_ticks >= 1 << 31:
+        if mdur_ticks > MAX_SCHEDULE_TICKS:
             raise pins.error("Digital pin max duration too large")
         self._mcu.request_move_queue_slot()
         self._oid = self._mcu.create_oid()
@@ -573,7 +595,7 @@ class MCU_pwm:
         self._last_clock = self._mcu.print_time_to_clock(printtime + 0.200)
         cycle_ticks = self._mcu.seconds_to_clock(self._cycle_time)
         mdur_ticks = self._mcu.seconds_to_clock(self._max_duration)
-        if mdur_ticks >= 1 << 31:
+        if mdur_ticks > MAX_SCHEDULE_TICKS:
             raise pins.error("PWM pin max duration too large")
         if self._hardware_pwm:
             self._pwm_max = self._mcu.get_constant_float("PWM_MAX")
@@ -604,7 +626,7 @@ class MCU_pwm:
         # Software PWM
         if self._shutdown_value not in [0.0, 1.0]:
             raise pins.error("shutdown value must be 0.0 or 1.0 on soft pwm")
-        if cycle_ticks >= 1 << 31:
+        if cycle_ticks > MAX_SCHEDULE_TICKS:
             raise pins.error("PWM pin cycle time too large")
         self._mcu.request_move_queue_slot()
         self._oid = self._mcu.create_oid()
@@ -813,8 +835,6 @@ class MCU:
             self.non_critical_recon_timer = self._reactor.register_timer(
                 self.non_critical_recon_event
             )
-            if canbus_uuid:
-                raise error("CAN MCUs can't be non-critical yet!")
         self.non_critical_disconnected = False
         self._non_critical_reconnect_event_name = (
             f"danger:non_critical_mcu_{self.get_name()}:reconnected"
@@ -863,10 +883,11 @@ class MCU:
         self._shutdown_msg = msg = params["static_string_id"]
         if get_danger_options().log_shutdown_info:
             logging.info(
-                "MCU '%s' %s: %s\n%s\n%s",
+                "MCU '%s' %s: %s\n%s\n%s\n%s",
                 self._name,
                 params["#name"],
                 self._shutdown_msg,
+                self.dump_debug(),
                 self._clocksync.dump_debug(),
                 self._serial.dump_debug(),
             )
@@ -1143,16 +1164,15 @@ class MCU:
         self._printer.set_rollover_info(self._name, log_info, log=False)
 
     def _check_serial_exists(self):
-        # if self._canbus_iface is not None:
-        #     cbid = self._printer.lookup_object("canbus_ids")
-        #     nodeid = cbid.get_nodeid(self._serialport)
-        #     # self._serial.check_canbus_connect is not functional yet
-        #     return self._serial.check_canbus_connect(
-        #         self._serialport, nodeid, self._canbus_iface
-        #     )
-        # else:
-        rts = self._restart_method != "cheetah"
-        return self._serial.check_connect(self._serialport, self._baud, rts)
+        if self._canbus_iface is not None:
+            cbid = self._printer.lookup_object("canbus_ids")
+            nodeid = cbid.get_nodeid(self._serialport)
+            return self._serial.check_canbus_connect(
+                self._serialport, nodeid, self._canbus_iface
+            )
+        else:
+            rts = self._restart_method != "cheetah"
+            return self._serial.check_connect(self._serialport, self._baud, rts)
 
     def _mcu_identify(self):
         if self.is_non_critical and not self._check_serial_exists():
@@ -1197,6 +1217,14 @@ class MCU:
                 for pin in value.split(","):
                     pin_resolver.reserve_pin(pin, cname[13:])
         self._mcu_freq = self.get_constant_float("CLOCK_FREQ")
+        if MAX_NOMINAL_DURATION * self._mcu_freq > MAX_SCHEDULE_TICKS:
+            max_possible = MAX_SCHEDULE_TICKS / self._mcu_freq
+            raise error(
+                "Too high clock speed for MCU '%s' " % (self._name,)
+                + "to be able to resolve a maximum nominal duration "
+                + "of %ds. " % (MAX_NOMINAL_DURATION,)
+                + "Max possible duration: %ds" % (max_possible,)
+            )
         self._stats_sumsq_base = self.get_constant_float("STATS_SUMSQ_BASE")
         self._emergency_stop_cmd = self.lookup_command("emergency_stop")
         self._reset_cmd = self.try_lookup_command("reset")
@@ -1217,6 +1245,13 @@ class MCU:
         self._get_status_info["mcu_version"] = version
         self._get_status_info["mcu_build_versions"] = build_versions
         self._get_status_info["mcu_constants"] = msgparser.get_constants()
+        if app in ("Klipper", "Danger-Klipper"):
+            pconfig = self._printer.lookup_object("configfile")
+            pconfig.runtime_warning(
+                f"MCU {self._name!r} currently has firmware compiled for {app} (version {version})."
+                f" It is recommended to re-flash for best compatiblity with Kalico"
+            )
+
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
@@ -1279,6 +1314,12 @@ class MCU:
 
     def get_max_stepper_error(self):
         return self._max_stepper_error
+
+    def min_schedule_time(self):
+        return MIN_SCHEDULE_TIME
+
+    def max_nominal_duration(self):
+        return MAX_NOMINAL_DURATION
 
     # Wrapper functions
     def get_printer(self):
@@ -1457,6 +1498,14 @@ class MCU:
         logging.info(
             "Timeout with MCU '%s' (eventtime=%f)", self._name, eventtime
         )
+        if get_danger_options().log_shutdown_info:
+            logging.info(
+                "MCU '%s' disconnected: Timeout\n%s\n%s\n%s",
+                self._name,
+                self.dump_debug(),
+                self._clocksync.dump_debug(),
+                self._serial.dump_debug(),
+            )
         self._printer.invoke_shutdown(
             "Lost communication with MCU '%s'" % (self._name,)
         )
@@ -1473,6 +1522,18 @@ class MCU:
 
     def get_status(self, eventtime=None):
         return dict(self._get_status_info)
+
+    def dump_debug(self):
+        out = []
+        cmds = self._config_cmds
+
+        out.append(
+            f"Dumping config commands, {len(cmds)} commands, {self._oid_count} oids"
+        )
+        for idx, cmd in enumerate(cmds):
+            out.append(f"Config {idx}: {cmd}")
+
+        return "\n".join(out)
 
     def stats(self, eventtime):
         load = "mcu_awake=%.03f mcu_task_avg=%.06f mcu_task_stddev=%.06f" % (

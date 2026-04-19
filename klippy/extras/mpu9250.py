@@ -5,7 +5,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-from . import bus, adxl345, bulk_sensor
+
+from . import adxl345, bulk_sensor, bus
 
 MPU9250_ADDR = 0x68
 

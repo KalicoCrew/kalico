@@ -4,7 +4,15 @@
 # Copyright (C) 2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, optparse, socket, fcntl, select, json, errno, time
+import errno
+import fcntl
+import json
+import optparse
+import os
+import select
+import socket
+import sys
+import time
 
 
 # Set a file-descriptor as non-blocking

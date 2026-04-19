@@ -49,7 +49,7 @@
 
 
 import sys
-from math import hypot, atan2, pi
+from math import atan2, hypot, pi
 
 from . import cartesian
 

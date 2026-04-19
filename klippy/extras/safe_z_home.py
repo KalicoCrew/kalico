@@ -87,6 +87,11 @@ class SafeZHoming:
             ):
                 raise gcmd.error("Must home X and Y axes first")
 
+            # Do we need to detach the probe?
+            dockable = self.printer.lookup_object("dockable_probe", None)
+            if dockable is not None and dockable.detach_dockable_before_z_home:
+                dockable.detach_probe()
+
             # Move to safe XY homing position
             prevpos = toolhead.get_position()
             toolhead.manual_move([self.home_x_pos, self.home_y_pos], self.speed)

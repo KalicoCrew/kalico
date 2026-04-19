@@ -8,9 +8,11 @@ greenlet==2.0.2 ; python_full_version < '3.12'
     # via kalico
 greenlet==3.0.3 ; python_full_version == '3.12.*'
     # via kalico
-greenlet==3.1.0 ; python_full_version >= '3.13'
+greenlet==3.1.0 ; python_full_version == '3.13.*'
     # via kalico
-jinja2==3.1.5
+greenlet==3.3.0 ; python_full_version >= '3.14'
+    # via kalico
+jinja2==3.1.6
     # via kalico
 markupsafe==2.1.5
     # via

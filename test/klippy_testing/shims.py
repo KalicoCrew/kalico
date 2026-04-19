@@ -1,7 +1,8 @@
 import typing
+
 import klippy.configfile
-import klippy.gcode
 import klippy.extras.danger_options
+import klippy.gcode
 
 
 class Restart(Exception): ...

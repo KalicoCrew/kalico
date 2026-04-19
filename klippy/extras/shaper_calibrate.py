@@ -363,10 +363,10 @@ class ShaperCalibrate:
         # for max_accel without much smoothing
         TARGET_SMOOTHING = 0.12
         max_accel = self._bisect(
-            lambda test_accel: self._get_shaper_smoothing(
-                shaper, test_accel, scv
+            lambda test_accel: (
+                self._get_shaper_smoothing(shaper, test_accel, scv)
+                <= TARGET_SMOOTHING
             )
-            <= TARGET_SMOOTHING
         )
         return max_accel
 

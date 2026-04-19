@@ -1,26 +1,27 @@
 class DangerOptions:
     def __init__(self, config):
         self.minimal_logging = config.getboolean("minimal_logging", False)
-        self.log_statistics = config.getboolean("log_statistics", True)
+        verbose = not self.minimal_logging
+        self.log_statistics = config.getboolean("log_statistics", verbose)
         self.log_config_file_at_startup = config.getboolean(
-            "log_config_file_at_startup", True
+            "log_config_file_at_startup", verbose
         )
         self.log_bed_mesh_at_startup = config.getboolean(
-            "log_bed_mesh_at_startup", True
+            "log_bed_mesh_at_startup", verbose
         )
         self.log_velocity_limit_changes = config.getboolean(
-            "log_velocity_limit_changes", True
+            "log_velocity_limit_changes", verbose
         )
         self.log_pressure_advance_changes = config.getboolean(
-            "log_pressure_advance_changes", True
+            "log_pressure_advance_changes", verbose
         )
-        self.log_shutdown_info = config.getboolean("log_shutdown_info", True)
+        self.log_shutdown_info = config.getboolean("log_shutdown_info", verbose)
         self.log_serial_reader_warnings = config.getboolean(
-            "log_serial_reader_warnings", True
+            "log_serial_reader_warnings", verbose
         )
-        self.log_startup_info = config.getboolean("log_startup_info", True)
+        self.log_startup_info = config.getboolean("log_startup_info", verbose)
         self.log_webhook_method_register_messages = config.getboolean(
-            "log_webhook_method_register_messages", False
+            "log_webhook_method_register_messages", verbose
         )
         self.error_on_unused_config_options = config.getboolean(
             "error_on_unused_config_options", True
@@ -62,17 +63,10 @@ class DangerOptions:
         self.endstop_sample_count = config.getint(
             "endstop_sample_count", 4, minval=1
         )
-
-        if self.minimal_logging:
-            self.log_statistics = False
-            self.log_config_file_at_startup = False
-            self.log_bed_mesh_at_startup = False
-            self.log_velocity_limit_changes = False
-            self.log_pressure_advance_changes = False
-            self.log_shutdown_info = False
-            self.log_serial_reader_warnings = False
-            self.log_startup_info = False
-            self.log_webhook_method_register_messages = False
+        # Extruder safety limit overrides
+        self.override_pressure_advance_smooth_time_max = config.getfloat(
+            "override_pressure_advance_smooth_time_max", 0.200, above=0.0
+        )
 
 
 DANGER_OPTIONS: DangerOptions = None

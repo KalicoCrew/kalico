@@ -4,8 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os
-import sys
 import pathlib
+import sys
 
 KLIPPER_DIR = pathlib.Path(__file__).parent.parent.parent
 sys.path.insert(0, str(KLIPPER_DIR))

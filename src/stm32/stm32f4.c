@@ -18,7 +18,7 @@
  * Clock setup
  ****************************************************************/
 
-#define FREQ_PERIPH_DIV (CONFIG_MACH_STM32F401 ? 2 : 4)
+#define FREQ_PERIPH_DIV ((CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F411) ? 2 : 4)
 #define FREQ_PERIPH (CONFIG_CLOCK_FREQ / FREQ_PERIPH_DIV)
 #define FREQ_USB 48000000
 
@@ -57,6 +57,11 @@ gpio_clock_enable(GPIO_TypeDef *regs)
     RCC->AHB1ENR;
 }
 
+// PLL (f207) input: 0.95 to 2.1Mhz, vco: 192 to 432Mhz, output: 24 to 120Mhz
+// PLL (f401) input: 0.95 to 2.1Mhz, vco: 192 to 432Mhz, output: 24 to 84Mhz
+// PLL (f405/7) input: 0.95 to 2.1Mhz, vco: 100 to 432Mhz, output: 24 to 168Mhz
+// PLL (f446) input: 0.95 to 2.1Mhz, vco: 100 to 432Mhz, output: 12.5 to 180Mhz
+
 #if !CONFIG_STM32_CLOCK_REF_INTERNAL
 DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PH0,PH1");
 #endif
@@ -87,9 +92,9 @@ enable_clock_stm32f20x(void)
 static void
 enable_clock_stm32f40x(void)
 {
-#if CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F4x5
+#if CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F411 || CONFIG_MACH_STM32F4x5
     uint32_t pll_base = (CONFIG_STM32_CLOCK_REF_25M) ? 1000000 : 2000000;
-    uint32_t pllp = (CONFIG_MACH_STM32F401) ? 4 : 2;
+    uint32_t pllp = (CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F411) ? 4 : 2;
     uint32_t pll_freq = CONFIG_CLOCK_FREQ * pllp, pllcfgr;
     if (!CONFIG_STM32_CLOCK_REF_INTERNAL) {
         // Configure 168Mhz PLL from external crystal (HSE)
@@ -169,17 +174,27 @@ enable_clock_stm32f446(void)
 static void
 clock_setup(void)
 {
+    // Set voltage scaling to support 96MHz for F411
+#if CONFIG_MACH_STM32F411
+    enable_pclock(PWR_BASE);
+    MODIFY_REG(PWR->CR, PWR_CR_VOS_Msk, (3u << PWR_CR_VOS_Pos));
+#endif
+
     // Configure and enable PLL
     if (CONFIG_MACH_STM32F207)
         enable_clock_stm32f20x();
-    else if (CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F4x5)
+    else if (CONFIG_MACH_STM32F401 || CONFIG_MACH_STM32F411 || CONFIG_MACH_STM32F4x5)
         enable_clock_stm32f40x();
     else
         enable_clock_stm32f446();
 
     // Set flash latency
+#if CONFIG_MACH_STM32F411
+    FLASH->ACR = (FLASH_ACR_LATENCY_3WS | FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_PRFTEN);
+#else
     FLASH->ACR = (FLASH_ACR_LATENCY_5WS | FLASH_ACR_ICEN | FLASH_ACR_DCEN
                   | FLASH_ACR_PRFTEN);
+#endif
 
     // Wait for PLL lock
     while (!(RCC->CR & RCC_CR_PLLRDY))

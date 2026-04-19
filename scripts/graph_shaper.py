@@ -5,7 +5,9 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import optparse, math
+import math
+import optparse
+
 import matplotlib
 
 # A set of damping ratios to calculate shaper response for
@@ -276,7 +278,9 @@ def setup_matplotlib(output_to_file):
     global matplotlib
     if output_to_file:
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 

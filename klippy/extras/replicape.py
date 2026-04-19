@@ -3,8 +3,11 @@
 # Copyright (C) 2017-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, os
-from klippy import pins, mcu
+import logging
+import os
+
+from klippy import mcu, pins
+
 from . import bus
 
 REPLICAPE_MAX_CURRENT = 3.84
@@ -96,11 +99,8 @@ class pca9685_pwm:
             self._is_enable = is_enable
             self._reactor.register_async_callback(
                 (
-                    lambda e,
-                    s=self,
-                    pt=print_time,
-                    ie=is_enable: s._replicape.note_pwm_enable(
-                        pt, s._channel, ie
+                    lambda e, s=self, pt=print_time, ie=is_enable: (
+                        s._replicape.note_pwm_enable(pt, s._channel, ie)
                     )
                 )
             )

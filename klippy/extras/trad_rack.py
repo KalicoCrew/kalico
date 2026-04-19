@@ -4,13 +4,17 @@
 # based on code by Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, os, time
+import logging
+import math
+import os
+import time
 from collections import deque
-from .homing import Homing, HomingMove
+
 from .. import chelper, toolhead
 from ..gcode import CommandError
-from ..stepper import LookupMultiRail
 from ..kinematics import extruder
+from ..stepper import LookupMultiRail
+from .homing import Homing, HomingMove
 
 SERVO_NAME = "servo tr_servo"
 SELECTOR_STEPPER_NAME = "stepper_tr_selector"
@@ -835,8 +839,10 @@ class TradRack:
                 # (and wait for user to resume)
                 resume_kwargs = {
                     "condition": (
-                        lambda: self.active_lane is not None
-                        or not self._query_selector_sensor()
+                        lambda: (
+                            self.active_lane is not None
+                            or not self._query_selector_sensor()
+                        )
                     ),
                     "action": self._resume_act_locate_selector,
                     "fail_msg": (

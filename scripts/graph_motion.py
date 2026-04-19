@@ -7,6 +7,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math
 import optparse
+
 import matplotlib
 
 SEG_TIME = 0.000100
@@ -469,7 +470,9 @@ def setup_matplotlib(output_to_file):
     global matplotlib
     if output_to_file:
         matplotlib.use("Agg")
-    import matplotlib.pyplot, matplotlib.dates, matplotlib.font_manager
+    import matplotlib.dates
+    import matplotlib.font_manager
+    import matplotlib.pyplot
     import matplotlib.ticker
 
 

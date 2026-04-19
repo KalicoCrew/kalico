@@ -4,7 +4,9 @@
 # Copyright (C) 2023  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, pathlib, optparse
+import optparse
+import pathlib
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 

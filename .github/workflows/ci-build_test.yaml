@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -66,3 +70,6 @@ jobs:
 
       - name: Test Klippy (Python 3.13)
         run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.13 py.test -n auto
+
+      - name: Test Klippy (Python 3.14)
+        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.14 py.test -n auto

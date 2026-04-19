@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import mmap
 import argparse
+import mmap
 import sys
 
 FW_START = 0x00004000

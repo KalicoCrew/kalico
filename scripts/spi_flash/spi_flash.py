@@ -5,22 +5,23 @@
 # Copyright (C) 2022 H. Gregor Molter <gregor.molter@secretlab.de>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys
 import argparse
-import os
-import zlib
-import hashlib
-import logging
 import collections
+import hashlib
+import json
+import logging
+import os
+import pathlib
+import sys
 import time
 import traceback
-import json
+import zlib
+
 import board_defs
 import fatfs_lib
-import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
-from klippy import reactor, serialhdl, clocksync, mcu
+from klippy import clocksync, mcu, reactor, serialhdl
 
 ###########################################################
 #
@@ -1472,7 +1473,9 @@ class MCUConnection:
         else:
             if bus not in bus_enums:
                 raise SPIFlashError("Invalid SPI Bus: %s" % (bus,))
-            bus_cmds = SPI_BUS_CMD % (SPI_OID, bus, SPI_MODE, SD_SPI_SPEED)
+            bus_cmds = [
+                SPI_BUS_CMD % (SPI_OID, bus, SPI_MODE, SD_SPI_SPEED),
+            ]
         if cs_pin not in pin_enums:
             raise SPIFlashError("Invalid CS Pin: %s" % (cs_pin,))
         cfg_cmds = [
@@ -1485,7 +1488,6 @@ class MCUConnection:
         ]
         cfg_cmds.append(self._try_send_command(spi_cfg_cmds))
         cfg_cmds.append(self._try_send_command(bus_cmds))
-        self._try_send_command(cfg_cmds)
         config_crc = zlib.crc32("\n".join(cfg_cmds).encode()) & 0xFFFFFFFF
         self._serial.send(FINALIZE_CFG_CMD % (config_crc,))
         config = self.get_mcu_config()

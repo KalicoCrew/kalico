@@ -5,17 +5,16 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import sys
 import argparse
-import os
-import traceback
 import logging
+import os
 import pathlib
+import sys
+import traceback
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from klippy import clocksync, serialhdl, reactor
-
+from klippy import clocksync, reactor, serialhdl
 
 ###########################################################
 #

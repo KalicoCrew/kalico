@@ -1,11 +1,9 @@
 # Queued PWM gpio output
 #
-# Copyright (C) 2017-2023  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2017-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from klippy import chelper
-
-MAX_SCHEDULE_TIME = 5.0
 
 
 class error(Exception):
@@ -170,8 +168,9 @@ class PrinterOutputPin:
         # Determine pin type
         pin_params = ppins.lookup_pin(config.get("pin"), can_invert=True)
         self.mcu_pin = MCU_queued_pwm(pin_params)
+        max_duration = self.mcu_pin.get_mcu().max_nominal_duration()
         cycle_time = config.getfloat(
-            "cycle_time", 0.100, above=0.0, maxval=MAX_SCHEDULE_TIME
+            "cycle_time", 0.100, above=0.0, maxval=max_duration
         )
         hardware_pwm = config.getboolean("hardware_pwm", False)
         self.mcu_pin.setup_cycle_time(cycle_time, hardware_pwm)
@@ -179,7 +178,7 @@ class PrinterOutputPin:
         self.last_print_time = 0.0
         # Support mcu checking for maximum duration
         max_mcu_duration = config.getfloat(
-            "maximum_mcu_duration", 0.0, minval=0.500, maxval=MAX_SCHEDULE_TIME
+            "maximum_mcu_duration", 0.0, minval=0.500, maxval=max_duration
         )
         self.mcu_pin.setup_max_duration(max_mcu_duration)
         # Determine start and shutdown values

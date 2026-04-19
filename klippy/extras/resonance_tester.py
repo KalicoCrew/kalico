@@ -3,11 +3,12 @@
 # Copyright (C) 2020-2024  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 import math
 import os
 import time
-import logging
 from contextlib import contextmanager
+
 from . import shaper_calibrate
 
 

@@ -3,9 +3,12 @@
 # Copyright (C) 2021-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, bisect
+import bisect
+import math
+
 from klippy import mcu
-from . import ldc1612, probe, manual_probe
+
+from . import ldc1612, manual_probe, probe
 
 
 # Tool for calibrating the sensor Z detection and applying that calibration
@@ -301,7 +304,7 @@ class EddyEndstopWrapper:
         return False  # XXX
 
     # Interface for ProbeEndstopWrapper
-    def probing_move(self, pos, speed):
+    def probing_move(self, pos, speed, gcmd):
         # Perform probing move
         phoming = self._printer.lookup_object("homing")
         trig_pos = phoming.probing_move(self, pos, speed)

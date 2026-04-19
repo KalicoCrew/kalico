@@ -3,10 +3,13 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, threading, os
+import logging
+import os
+import threading
+
 import serial
 
-from . import msgproto, chelper, util
+from . import chelper, msgproto, util
 from .extras.danger_options import get_danger_options
 
 
@@ -128,19 +131,8 @@ class SerialReader:
     def check_canbus_connect(
         self, canbus_uuid, canbus_nodeid, canbus_iface="can0"
     ):
-        # this doesn't work
-        # because we don't have a way to query for the _existence_ of a device
-        # on the network, without "assigning" the device.
-        # if we query for unassigned, we get a response from the device
-        # but then klipper can't connect to it.
-        # same reason we klipper can't connect to a can device after we
-        # do a ~/scripts/canbus_query.py command
         import can  # XXX
 
-        logging.getLogger("can").setLevel(logging.WARN)
-        txid = canbus_nodeid * 2 + 256
-        filters = [{"can_id": txid + 1, "can_mask": 0x7FF, "extended": False}]
-        # Prep for SET_NODEID command
         try:
             uuid = int(canbus_uuid, 16)
         except ValueError:
@@ -150,7 +142,9 @@ class SerialReader:
 
         CANBUS_ID_ADMIN = 0x3F0
         CMD_QUERY_UNASSIGNED = 0x00
+        CMD_QUERY_UNASSIGNED_EXTENDED = 0x01
         RESP_NEED_NODEID = 0x20
+        RESP_HAVE_NODEID = 0x21
         filters = [
             {
                 "can_id": CANBUS_ID_ADMIN + 1,
@@ -161,7 +155,7 @@ class SerialReader:
 
         msg = can.Message(
             arbitration_id=CANBUS_ID_ADMIN,
-            data=[CMD_QUERY_UNASSIGNED],
+            data=[CMD_QUERY_UNASSIGNED, CMD_QUERY_UNASSIGNED_EXTENDED],
             is_extended_id=False,
         )
         try:
@@ -186,19 +180,19 @@ class SerialReader:
                 msg is None
                 or msg.arbitration_id != CANBUS_ID_ADMIN + 1
                 or msg.dlc < 7
-                or msg.data[0] != RESP_NEED_NODEID
+                or msg.data[0] not in (RESP_NEED_NODEID, RESP_HAVE_NODEID)
             ):
                 continue
             found_uuid = sum(
                 [v << ((5 - i) * 8) for i, v in enumerate(msg.data[1:7])]
             )
-            logging.info(f"found_uuid: {found_uuid}")
+            # logging.info(f"found_uuid: {hex(found_uuid)[2:]}")
             if found_uuid == uuid:
                 self.disconnect()
                 bus.close = bus.shutdown  # XXX
                 return True
         bus.close = bus.shutdown  # XXX
-        # logging.info(f"couldn't find uuid: {uuid}")
+        # logging.info(f"couldn't find uuid: {hex(uuid)[2:]}")
         return False
 
     def connect_canbus(self, canbus_uuid, canbus_nodeid, canbus_iface="can0"):
@@ -488,10 +482,12 @@ class SerialRetryCommand:
     def handle_callback(self, params):
         self.last_params = params
 
-    def get_response(self, cmds, cmd_queue, minclock=0, reqclock=0):
+    def get_response(self, cmds, cmd_queue, minclock=0, reqclock=0, retry=True):
         retries = 5
         retry_delay = 0.010
-        while True:
+        if not retry:
+            retries = 0
+        while 1:
             for cmd in cmds[:-1]:
                 self.serial.raw_send(cmd, minclock, reqclock, cmd_queue)
             self.serial.raw_send_wait_ack(

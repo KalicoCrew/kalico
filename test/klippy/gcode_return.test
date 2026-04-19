@@ -1,0 +1,5 @@
+# Test case for probe:drop_first_result support
+CONFIG gcode_return.cfg
+DICTIONARY atmega2560.dict
+
+RETURN_OR_CRASH

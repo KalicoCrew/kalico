@@ -5,8 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import math
-from . import manual_probe, bed_mesh
 
+from . import bed_mesh, manual_probe
 
 DEFAULT_SAMPLE_COUNT = 3
 DEFAULT_SPEED = 50.0
@@ -51,6 +51,26 @@ class AxisTwistCompensation:
         self.zy_compensations = config.getlists(
             "zy_compensations", default=[], parser=float
         )
+
+        # validate that compensation values have required start/end points
+        if self.z_compensations:
+            if (
+                self.compensation_start_x is None
+                or self.compensation_end_x is None
+            ):
+                raise config.error(
+                    "z_compensations requires compensation_start_x and "
+                    "compensation_end_x to be set"
+                )
+        if self.zy_compensations:
+            if (
+                self.compensation_start_y is None
+                or self.compensation_end_y is None
+            ):
+                raise config.error(
+                    "zy_compensations requires compensation_start_y and "
+                    "compensation_end_y to be set"
+                )
 
         # setup calibrater
         self.calibrater = Calibrater(self, config)

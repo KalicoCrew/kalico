@@ -3,7 +3,11 @@
 # Copyright (C) 2018-2019 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, json, collections
+import collections
+import json
+import logging
+import math
+
 from . import probe
 from .danger_options import get_danger_options
 
@@ -114,7 +118,6 @@ class BedMesh:
         self.printer.register_event_handler(
             "klippy:connect", self.handle_connect
         )
-        config_file = self.printer.lookup_object("configfile")
         self.last_position = [0.0, 0.0, 0.0, 0.0]
         self.bmc = BedMeshCalibrate(config, self)
         self.z_mesh = None
@@ -135,15 +138,6 @@ class BedMesh:
         self.pmgr = ProfileManager(config, self)
         self.save_profile = self.pmgr.save_profile
         self.default_mesh_name = config.get("bed_mesh_default", None)
-        if self.default_mesh_name:
-            if self.default_mesh_name in self.pmgr.get_profiles():
-                self.pmgr.load_profile(self.default_mesh_name)
-            else:
-                config_file.warn(
-                    "config",
-                    f"Selected default bed mesh profile '{self.default_mesh_name}' not in available profiles.",
-                    "Invalid profile name",
-                )
         # register gcodes
         self.gcode.register_command(
             "BED_MESH_OUTPUT",
@@ -178,6 +172,18 @@ class BedMesh:
 
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        if self.default_mesh_name:
+            if self.default_mesh_name in self.pmgr.get_profiles():
+                self.pmgr.load_profile(self.default_mesh_name)
+            else:
+                configfile = self.printer.lookup_object("configfile")
+                configfile.warn(
+                    "config",
+                    f"Selected default bed mesh profile"
+                    f" '{self.default_mesh_name}'"
+                    f" not in available profiles.",
+                    "Invalid profile name",
+                )
         if get_danger_options().log_bed_mesh_at_startup:
             self.bmc.print_generated_points(logging.info, truncate=True)
 
@@ -487,6 +493,7 @@ class BedMeshCalibrate:
             self.probe_finalize,
             self._get_adjusted_points(),
             use_offsets=True,
+            enable_horizontal_z_clearance=True,
         )
         self.probe_helper.minimum_points(3)
         self.gcode = self.printer.lookup_object("gcode")

@@ -3,7 +3,8 @@
 # Copyright (C) 2020-2021  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import collections, math
+import collections
+import math
 
 SHAPER_VIBRATION_REDUCTION = 20.0
 DEFAULT_DAMPING_RATIO = 0.1

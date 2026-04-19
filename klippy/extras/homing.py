@@ -3,16 +3,14 @@
 # Copyright (C) 2016-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math
 import logging
+import math
+
 from .danger_options import get_danger_options
 
-# HOMING_START_DELAY = 0.001
-# ENDSTOP_SAMPLE_TIME = 0.000015
-# ENDSTOP_SAMPLE_COUNT = 4
-HOMING_START_DELAY = get_danger_options().homing_start_delay
-ENDSTOP_SAMPLE_TIME = get_danger_options().endstop_sample_time
-ENDSTOP_SAMPLE_COUNT = get_danger_options().endstop_sample_count
+HOMING_START_DELAY = 0.001
+ENDSTOP_SAMPLE_TIME = 0.000015
+ENDSTOP_SAMPLE_COUNT = 4
 
 
 # Return a completion that completes when all completions in a list complete
@@ -479,4 +477,10 @@ class PrinterHoming:
 
 
 def load_config(config):
+    global HOMING_START_DELAY
+    HOMING_START_DELAY = get_danger_options().homing_start_delay
+    global ENDSTOP_SAMPLE_TIME
+    ENDSTOP_SAMPLE_TIME = get_danger_options().endstop_sample_time
+    global ENDSTOP_SAMPLE_COUNT
+    ENDSTOP_SAMPLE_COUNT = get_danger_options().endstop_sample_count
     return PrinterHoming(config)
