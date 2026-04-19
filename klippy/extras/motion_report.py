@@ -120,7 +120,7 @@ class DumpTrapQ:
             "motion_report/dump_trapq", "name", name, api_resp
         )
 
-    def extract_trapq(self, start_time, end_time):
+    def extract_trapq(self, start_time, end_time=NEVER_TIME):
         ffi_main, ffi_lib = chelper.get_ffi()
         res = []
         while True:
@@ -180,7 +180,7 @@ class DumpTrapQ:
 
     def _process_batch(self, eventtime):
         qtime = self.last_batch_msg[0] + min(self.last_batch_msg[1], 0.100)
-        data, cdata = self.extract_trapq(qtime, NEVER_TIME)
+        data, cdata = self.extract_trapq(qtime)
         d = [
             (
                 m.print_time,

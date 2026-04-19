@@ -291,7 +291,7 @@ class KeyboardReader:
             if msg is None:
                 continue
             try:
-                self.ser.send(msg.encode("utf-8"))
+                self.ser.send(msg)
             except msgproto.error as e:
                 self.output("Error: %s" % (str(e),))
         self.data = kbdlines[-1]
