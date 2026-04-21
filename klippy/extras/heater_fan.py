@@ -69,10 +69,18 @@ class PrinterHeaterFan:
 
     def get_status(self, eventtime):
         if self._delegate_target is not None:
-            # Merge target's status; floor takes precedence over any
-            # same-named key the target might add in the future.
+            # In delegate mode this section reports its own floor state,
+            # not the target fan's user-commanded speed. That way the
+            # heater_fan card in a UI shows the floor % (0 when the
+            # heater is cold, `fan_speed` when hot), independent of what
+            # M106/SET_FAN_SPEED is doing to the target fan. Keep rpm
+            # from the target since that's the physical fan's actual RPM.
+            target_status = self._delegate_target.get_status(eventtime)
             return {
-                **self._delegate_target.get_status(eventtime),
+                "power": self.last_speed,
+                "value": self.last_speed,
+                "speed": self.last_speed,
+                "rpm": target_status.get("rpm"),
                 "floor": self.last_speed,
             }
         return self.fan.get_status(eventtime)

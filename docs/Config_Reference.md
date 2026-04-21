@@ -3825,8 +3825,9 @@ a shutdown_speed equal to max_power.
 #   normally to M106/M107 or SET_FAN_SPEED above the floor. "fan:" and
 #   "pin:" are mutually exclusive. The default is to use "pin:"
 #   (classic standalone heater_fan). In delegate mode this section's
-#   status object reflects the referenced fan's state with an added
-#   "floor" key (the speed the heater_fan is currently imposing), and
+#   status reports the heater_fan's own floor state (power/value/speed
+#   /floor all equal the currently applied floor: 0 when the heater is
+#   cold, fan_speed when hot; rpm is taken from the target fan), and
 #   fan-hardware options like "pin:", "max_power:", "kick_start_time:",
 #   etc. are not accepted.
 #heater: extruder
