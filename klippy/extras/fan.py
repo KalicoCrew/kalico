@@ -17,16 +17,12 @@ class FanFloorRegistry:
 
     def register_floor(self, source_id):
         if source_id in self._floors:
-            raise ValueError(
-                "fan floor %r already registered" % (source_id,)
-            )
+            raise ValueError("fan floor %r already registered" % (source_id,))
         self._floors[source_id] = 0.0
 
     def update_floor(self, source_id, speed):
         if source_id not in self._floors:
-            raise KeyError(
-                "fan floor %r not registered" % (source_id,)
-            )
+            raise KeyError("fan floor %r not registered" % (source_id,))
         self._floors[source_id] = speed
         return self._effective()
 

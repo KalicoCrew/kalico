@@ -139,7 +139,7 @@ def test_fan_set_speed_zero_clamps_to_active_floor():
     f, stub = _make_fan_with_stub()
     f.register_floor("hotend")
     f.update_floor("hotend", 0.4)
-    f.set_speed(0.0)                          # M107 analog
+    f.set_speed(0.0)  # M107 analog
     assert stub.async_calls[-1] == (0.4, None)
 
 
