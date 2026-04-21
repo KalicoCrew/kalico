@@ -1,0 +1,4 @@
+# Config error: pin: and fan: are mutually exclusive.
+DICTIONARY atmega2560.dict
+CONFIG heater_fan_delegate_pin_and_fan.cfg
+SHOULD_FAIL

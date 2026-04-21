@@ -1,0 +1,3 @@
+# Parse + resolve a [heater_fan] in delegate mode (fan: fan).
+DICTIONARY atmega2560.dict
+CONFIG heater_fan_delegate.cfg
