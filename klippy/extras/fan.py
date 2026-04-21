@@ -44,6 +44,7 @@ class Fan:
     def __init__(self, config, default_shutdown_speed=0.0):
         self.printer = config.get_printer()
         self.last_fan_value = self.last_req_value = 0.0
+        self._floor_registry = FanFloorRegistry()
         self.last_pwm_value = 0.0
         # Read config
         self.kick_start_time = config.getfloat(
@@ -163,10 +164,19 @@ class Fan:
         self.mcu_fan.set_pwm(print_time, pwm_value)
 
     def set_speed(self, value, print_time=None):
-        self.gcrq.send_async_request(value, print_time)
+        effective = self._floor_registry.set_user_speed(value)
+        self.gcrq.send_async_request(effective, print_time)
 
     def set_speed_from_command(self, value):
-        self.gcrq.queue_gcode_request(value)
+        effective = self._floor_registry.set_user_speed(value)
+        self.gcrq.queue_gcode_request(effective)
+
+    def register_floor(self, source_id):
+        self._floor_registry.register_floor(source_id)
+
+    def update_floor(self, source_id, speed, print_time=None):
+        effective = self._floor_registry.update_floor(source_id, speed)
+        self.gcrq.send_async_request(effective, print_time)
 
     def _handle_request_restart(self, print_time):
         self.set_speed(0.0, print_time)
