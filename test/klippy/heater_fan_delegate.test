@@ -1,3 +1,8 @@
-# Parse + resolve a [heater_fan] in delegate mode (fan: fan).
+# Verifies that [heater_fan] with fan: (no pin:) parses and reaches
+# klippy:ready without error when the referenced [fan] section exists.
+# M106/M107 below exercise that the delegated target fan still accepts
+# manual commands while a floor source is registered on it.
 DICTIONARY atmega2560.dict
 CONFIG heater_fan_delegate.cfg
+M106 S255
+M107
