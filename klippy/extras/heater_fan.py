@@ -58,6 +58,10 @@ class PrinterHeaterFan:
                 )
             self._delegate_target = target_fan
             self._delegate_target.register_floor(self._section_name)
+            # Synchronize: the diff-check in callback pairs last_speed with
+            # the registered floor; force them both to 0.0 explicitly so the
+            # invariant doesn't depend on FanFloorRegistry's default.
+            self._delegate_target.update_floor(self._section_name, 0.0)
         reactor = self.printer.get_reactor()
         reactor.register_timer(
             self.callback, reactor.monotonic() + PIN_MIN_TIME
@@ -65,9 +69,12 @@ class PrinterHeaterFan:
 
     def get_status(self, eventtime):
         if self._delegate_target is not None:
-            status = dict(self._delegate_target.get_status(eventtime))
-            status["floor"] = self.last_speed
-            return status
+            # Merge target's status; floor takes precedence over any
+            # same-named key the target might add in the future.
+            return {
+                **self._delegate_target.get_status(eventtime),
+                "floor": self.last_speed,
+            }
         return self.fan.get_status(eventtime)
 
     def callback(self, eventtime):
