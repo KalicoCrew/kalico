@@ -144,6 +144,8 @@ See the [Kalico Additions document](https://docs.kalico.gg/Kalico_Additions.html
 
 - [extruder: cold_extrude](https://github.com/KalicoCrew/kalico/pull/750)
 
+- [heater_fan: delegate mode to impose a speed floor on an existing fan](https://github.com/KalicoCrew/kalico/pull/875)
+
 If you're feeling adventurous, take a peek at the extra features in the bleeding-edge-v2 branch [feature documentation](docs/Bleeding_Edge.md)
 and [feature configuration reference](docs/Config_Reference_Bleeding_Edge.md):
 
