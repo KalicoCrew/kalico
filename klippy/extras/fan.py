@@ -151,23 +151,25 @@ class Fan:
             and (not self.last_fan_value or value - self.last_fan_value > 0.5)
         ):
             # Run fan at full speed for specified kick_start_time
-            self.last_req_value = value
-
             self.last_fan_value = 1.0
             self.last_pwm_value = self.max_power
 
             self.mcu_fan.set_pwm(print_time, self.max_power)
 
             return "delay", self.kick_start_time
-        self.last_fan_value = self.last_req_value = value
+        self.last_fan_value = value
         self.last_pwm_value = pwm_value
         self.mcu_fan.set_pwm(print_time, pwm_value)
 
     def set_speed(self, value, print_time=None):
+        # last_req_value reflects the caller's commanded value so get_status
+        # reports user intent, not post-floor effective speed.
+        self.last_req_value = value
         effective = self._floor_registry.set_user_speed(value)
         self.gcrq.send_async_request(effective, print_time)
 
     def set_speed_from_command(self, value):
+        self.last_req_value = value
         effective = self._floor_registry.set_user_speed(value)
         self.gcrq.queue_gcode_request(effective)
 

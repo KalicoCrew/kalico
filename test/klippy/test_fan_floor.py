@@ -106,6 +106,7 @@ def _make_fan_with_stub():
     f = _FanLike()
     f._floor_registry = FanFloorRegistry()
     f.gcrq = stub
+    f.last_req_value = 0.0
     # Bind the real methods unchanged
     f.set_speed = Fan.set_speed.__get__(f, _FanLike)
     f.set_speed_from_command = Fan.set_speed_from_command.__get__(f, _FanLike)
@@ -151,4 +152,27 @@ def test_fan_set_speed_from_command_dispatches_effective_gcode():
     assert stub.gcode_calls[-1] == 0.3
 
     f.set_speed_from_command(0.8)
+    assert stub.gcode_calls[-1] == 0.8
+
+
+def test_fan_last_req_value_reflects_user_intent_not_floor():
+    # Regression: get_status reports last_req_value as `value`. Mainsail
+    # and similar UIs bind their fan slider to this. When the user issues
+    # M107 while a floor holds the fan up, the slider must show the
+    # commanded 0, not the effective floor speed.
+    f, stub = _make_fan_with_stub()
+    f.register_floor("hotend")
+    f.update_floor("hotend", 0.3)
+
+    f.set_speed_from_command(0.5)
+    assert f.last_req_value == 0.5
+
+    # Floor climbs — user intent unchanged.
+    f.update_floor("hotend", 0.8)
+    assert f.last_req_value == 0.5
+
+    # M107 analog while floor is active: user intent is 0, fan effective
+    # is the floor (0.8), but reported value stays the user's 0.
+    f.set_speed_from_command(0.0)
+    assert f.last_req_value == 0.0
     assert stub.gcode_calls[-1] == 0.8
