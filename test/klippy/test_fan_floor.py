@@ -127,6 +127,20 @@ def test_fan_set_speed_dispatches_effective_async():
     f.set_speed(0.9, print_time=12.5)
     assert stub.async_calls[-1] == (0.9, 12.5)
 
+    # Drop user speed back down so the floor dominates, then verify
+    # update_floor forwards its print_time kwarg through to gcrq.
+    f.set_speed(0.0)
+    f.update_floor("hotend", 0.6, print_time=5.0)
+    assert stub.async_calls[-1] == (0.6, 5.0)
+
+
+def test_fan_set_speed_zero_clamps_to_active_floor():
+    f, stub = _make_fan_with_stub()
+    f.register_floor("hotend")
+    f.update_floor("hotend", 0.4)
+    f.set_speed(0.0)                          # M107 analog
+    assert stub.async_calls[-1] == (0.4, None)
+
 
 def test_fan_set_speed_from_command_dispatches_effective_gcode():
     f, stub = _make_fan_with_stub()
