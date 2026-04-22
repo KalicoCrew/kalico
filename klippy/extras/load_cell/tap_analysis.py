@@ -433,6 +433,11 @@ class TapAnalysis:
         dist = self._move_dist(move, print_time)
         return self._move_pos(move, dist)
 
+    def log_trapq(self):
+        logging.info("TapAnalysis - Trapezoidal Movement Queue contents:")
+        for i, move in enumerate(self._moves):
+            logging.info(f"Move {i}: {move.to_dict()}")
+
     # adjust move_t of PROBE_CRUISE to match the toolhead position of PROBE_HALT
     def _recalculate_homing_end(self):
         homing_move = self._moves[PROBE_CRUISE]
@@ -452,14 +457,9 @@ class TapAnalysis:
     # extract and save TrapQueue moves
     def _extract_trapq(self, printer):
         trapq = printer.lookup_object("motion_report").trapqs["toolhead"]
-        moves, _ = trapq.extract_trapq(
-            float(self._time[0] + self._time_offset),
-            float(self._time[-1] + self._time_offset),
-        )
+        moves, _ = trapq.extract_trapq(float(self._time[0] + self._time_offset))
         for move in moves:
             self._moves.append(TrapezoidalMove(move, self._time_offset))
-            # DEBUG: enable to see trapq contents
-            # logging.info("trapq move: %s" % (moves_out[-1].to_dict(),))
 
     # perform analysis, throws exceptions
     def analyze(self, printer):
@@ -685,6 +685,7 @@ class TapAnalysisHelper:
         except TapValidationError as ve:
             tap_analysis.set_is_valid(False)
             tap_analysis.set_validation_error(ve)
+            tap_analysis.log_trapq()
         # tap classifier always gets to process the data
         try:
             self._tap_classifier.classify(tap_analysis, gcmd)
