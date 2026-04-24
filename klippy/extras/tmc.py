@@ -263,14 +263,16 @@ class TMCErrorCheck:
             self.last_drv_fields = {n: v for n, v in fields.items() if v}
         return {"drv_status": self.last_drv_fields, "temperature": temp}
 
+
 ######################################################################
 # Record driver status
 ######################################################################
 
+
 class TMCStallguardDump:
     def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
-        self.stepper_name = ' '.join(config.get_name().split()[1:])
+        self.stepper_name = " ".join(config.get_name().split()[1:])
         self.mcu_tmc = mcu_tmc
         self.mcu = self.mcu_tmc.get_mcu()
         self.fields = self.mcu_tmc.get_fields()
@@ -298,29 +300,33 @@ class TMCStallguardDump:
         self.query_timer = None
         self.error = None
         self.batch_bulk = bulk_sensor.BatchBulkHelper(
-            self.printer, self._dump, self._start, self._stop)
-        api_resp = {'header': ('time', 'sg_result', 'cs_actual')}
-        self.batch_bulk.add_mux_endpoint("tmc/stallguard_dump", "name",
-                                         self.stepper_name, api_resp)
+            self.printer, self._dump, self._start, self._stop
+        )
+        api_resp = {"header": ("time", "sg_result", "cs_actual")}
+        self.batch_bulk.add_mux_endpoint(
+            "tmc/stallguard_dump", "name", self.stepper_name, api_resp
+        )
+
     def _start(self):
         self.error = None
         status = self.mcu_tmc.get_register_raw("DRV_STATUS")
         if status.get("spi_status"):
             self.optimized_spi = True
         reactor = self.printer.get_reactor()
-        self.query_timer = reactor.register_timer(self._query_tmc,
-                                                  reactor.NOW)
+        self.query_timer = reactor.register_timer(self._query_tmc, reactor.NOW)
+
     def _stop(self):
         self.printer.get_reactor().unregister_timer(self.query_timer)
         self.query_timer = None
         self.samples = []
+
     def _query_tmc(self, eventtime):
         sg_result = -1
         cs_actual = -1
         recv_time = eventtime
         try:
             if self.optimized_spi or self.sg4_reg_name == "SG4_RESULT":
-                #TMC2130/TMC5160/TMC2240
+                # TMC2130/TMC5160/TMC2240
                 status = self.mcu_tmc.get_register_raw("DRV_STATUS")
                 reg_val = status["data"]
                 cs_actual = self.fields.get_field("cs_actual", reg_val)
@@ -346,12 +352,13 @@ class TMCStallguardDump:
             return eventtime + 0.001
         # UART queried as fast as possible
         return eventtime + 0.005
+
     def _dump(self, eventtime):
-            if self.error:
-                raise self.error
-            samples = self.samples
-            self.samples = []
-            return {"data": samples}
+        if self.error:
+            raise self.error
+        samples = self.samples
+        self.samples = []
+        return {"data": samples}
 
 
 ######################################################################
