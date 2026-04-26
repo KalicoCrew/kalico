@@ -207,6 +207,36 @@ fn boehm_insert_unweighted<T: Float>(
     new_cps
 }
 
+/// Raise every interior knot's multiplicity to `degree`, producing a curve
+/// whose representation decomposes cleanly into Bézier pieces. Geometric
+/// invariance preserved.
+pub fn refined_to_full_multiplicity<T: Float>(curve: &ScalarNurbs<T>) -> ScalarNurbs<T> {
+    let p = curve.degree() as usize;
+    let mut current = curve.clone();
+
+    // Collect unique interior knot values.
+    let knots_snapshot: Vec<T> = current.knots().to_vec();
+    let mut interior: Vec<T> = Vec::new();
+    let mut i = p + 1;
+    while i < knots_snapshot.len() - p - 1 {
+        let u = knots_snapshot[i];
+        if !interior.contains(&u) {
+            interior.push(u);
+        }
+        i += 1;
+    }
+
+    for u in interior {
+        let existing = current.knots().iter().filter(|k| **k == u).count();
+        if existing < p {
+            current = insert_knot(&current, u, p - existing)
+                .expect("refined_to_full_multiplicity: insertion should be valid");
+        }
+    }
+
+    current
+}
+
 /// Homogeneous variant: blends (num, w) tuples.
 fn boehm_insert_homogeneous<T: Float>(
     homo: &[(T, T)],
@@ -273,6 +303,25 @@ mod tests {
         assert_eq!(kv.multiplicity_at(0.5), 2);
         assert_eq!(kv.multiplicity_at(1.0), 2);
         assert_eq!(kv.multiplicity_at(0.25), 0);
+    }
+
+    #[test]
+    fn refined_to_full_multiplicity_raises_interior_knots() {
+        // Cubic with one interior knot at 0.5 (multiplicity 1).
+        let curve = ScalarNurbs::<f64>::try_new(
+            3, vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 3.0, 4.0], None,
+        ).unwrap();
+
+        let refined = refined_to_full_multiplicity(&curve);
+
+        // Interior knot 0.5 should now have multiplicity = degree = 3.
+        assert_eq!(refined.knots(), &[0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]);
+        for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let before = eval(&curve.as_view(), u);
+            let after = eval(&refined.as_view(), u);
+            assert!((before - after).abs() < 1e-10, "u={u}: before={before}, after={after}");
+        }
     }
 
     #[test]
