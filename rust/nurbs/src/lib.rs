@@ -29,6 +29,11 @@ mod scalar;
 pub use scalar::ScalarNurbs;
 pub use scalar::ScalarNurbsRef;
 
+mod vector;
+#[cfg(feature = "host")]
+pub use vector::VectorNurbs;
+pub use vector::VectorNurbsRef;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
