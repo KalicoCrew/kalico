@@ -195,6 +195,47 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(
     result
 }
 
+/// Compute the parametric derivative `dP/du` as a new owned NURBS via degree
+/// lowering. Result has degree `p - 1`, knot vector with the first and last
+/// knots dropped, and control points
+///   `Q_i = p * (P_{i+1} - P_i) / (u_{i+p+1} - u_{i+1})`.
+///
+/// Host-only — allocates new `Vec`s. For weighted (rational) NURBS, the host
+/// pre-bake pipeline should project to homogeneous coordinates first; this
+/// function handles unweighted (B-spline) NURBS only. Rational derivative is
+/// the consumer's responsibility (composed via the quotient rule downstream).
+///
+/// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 / Algorithm A3.3.
+#[cfg(feature = "host")]
+pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs<T> {
+    let p = curve.degree();
+    assert!(p >= 1, "derivative requires degree >= 1");
+
+    let cps = curve.control_points();
+    let knots = curve.knots();
+    let new_degree = p - 1;
+    let new_n = cps.len() - 1;
+
+    let p_t = T::from_f64(p as f64);
+
+    let mut new_cps: Vec<T> = Vec::with_capacity(new_n);
+    for i in 0..new_n {
+        let denom = knots[i + p as usize + 1] - knots[i + 1];
+        let q = if denom > T::ZERO {
+            p_t * (cps[i + 1] - cps[i]) / denom
+        } else {
+            T::ZERO
+        };
+        new_cps.push(q);
+    }
+
+    // New knot vector drops the first and last entries.
+    let new_knots: Vec<T> = knots[1..knots.len() - 1].to_vec();
+
+    crate::ScalarNurbs::try_new(new_degree, new_knots, new_cps, None)
+        .expect("degree-lowered NURBS satisfies invariants by construction")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +383,29 @@ mod tests {
             assert!((result[axis] - expected).abs() < 1e-12,
                 "axis {axis}: got {}, expected {}", result[axis], expected);
         }
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn derivative_of_linear_is_constant() {
+        // Derivative of a linear NURBS is a degree-0 NURBS with control points
+        // equal to (cp[1] - cp[0]) / (u_max - u_min) = 1.0 for our linear curve.
+        let curve = linear_curve_f64();
+        let d = derivative(&curve);
+        assert_eq!(d.degree(), 0);
+        // Eval at any u should give 1.0
+        assert!((eval(&d.as_view(), 0.5_f64) - 1.0).abs() < 1e-12);
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn derivative_of_quadratic_at_midpoint_matches_central_difference() {
+        let curve = quadratic_curve_f64();
+        let d = derivative(&curve);
+        let v = d.as_view();
+        let h = 1e-6_f64;
+        let expected = (eval(&curve.as_view(), 0.5 + h) - eval(&curve.as_view(), 0.5 - h)) / (2.0 * h);
+        let actual = eval(&v, 0.5);
+        assert!((actual - expected).abs() < 1e-6, "got {actual}, expected {expected}");
     }
 }
