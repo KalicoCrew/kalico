@@ -18,6 +18,7 @@ mcu-f4 = ["dep:libm"]
 
 [dev-dependencies]
 proptest = "1.5"
+serde_json = "1.0"
 
 [lints.rust]
 unsafe_code = "deny"
