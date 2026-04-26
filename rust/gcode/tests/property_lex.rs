@@ -13,7 +13,25 @@ proptest! {
 
     #[test]
     fn lexer_never_panics_on_arbitrary_text(s in ".{0,4096}") {
-        let _: Vec<_> = lex(&s).collect();
+        let line_count = s.lines().count() as u32;
+        for item in lex(&s) {
+            match item {
+                Ok(gcode::Token::Command { letter, line_no, .. }) => {
+                    prop_assert!(letter.is_ascii_uppercase(),
+                        "Command letter must be uppercase ASCII; got {letter}");
+                    prop_assert!(line_no >= 1 && line_no <= line_count,
+                        "line_no {line_no} out of range 1..={line_count}");
+                }
+                Ok(gcode::Token::Comment { line_no, .. }
+                    | gcode::Token::Marker { line_no, .. }) => {
+                    prop_assert!(line_no >= 1 && line_no <= line_count,
+                        "line_no {line_no} out of range 1..={line_count}");
+                }
+                // Token is non_exhaustive; ParseError doesn't expose line_no uniformly;
+                // both arms exist purely for the no-panic guarantee.
+                Ok(_) | Err(_) => {}
+            }
+        }
     }
 
     #[test]
@@ -21,13 +39,19 @@ proptest! {
         lines in proptest::collection::vec(".{0,128}", 0..64)
     ) {
         let s = lines.join("\n");
-        let _: Vec<_> = lex(&s).collect();
+        let line_count = s.lines().count() as u32;
+        for item in lex(&s) {
+            if let Ok(gcode::Token::Command { letter, line_no, .. }) = item {
+                prop_assert!(letter.is_ascii_uppercase());
+                prop_assert!(line_no >= 1 && line_no <= line_count);
+            }
+        }
     }
 
     #[test]
     fn lexer_terminates_on_long_input(s in ".{0,16384}") {
         let count = lex(&s).count();
-        // Per-line tokens at most; must terminate.
-        prop_assert!(count <= s.lines().count() + 1);
+        // At most one token per line; must terminate.
+        prop_assert!(count <= s.lines().count());
     }
 }
