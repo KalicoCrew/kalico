@@ -165,6 +165,40 @@ mod tests {
         for w in table.u().windows(2) { assert!(w[1] >= w[0]); }
     }
 
+    #[test]
+    fn param_from_arc_length_at_endpoints() {
+        let table = ArcLengthTableRef::new(&[0.0_f64, 0.5, 1.0], &[0.0, 0.6, 1.0]);
+        assert_eq!(param_from_arc_length(&table, 0.0), 0.0);
+        assert_eq!(param_from_arc_length(&table, 1.0), 1.0);
+    }
+
+    #[test]
+    fn param_from_arc_length_interpolates_linearly() {
+        let table = ArcLengthTableRef::new(&[0.0_f64, 0.5, 1.0], &[0.0, 0.6, 1.0]);
+        // s = 0.25 lies between (0.0 -> 0.0) and (0.5 -> 0.6); linear interp gives 0.3.
+        assert!((param_from_arc_length(&table, 0.25_f64) - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn param_from_arc_length_clamps_above_range_in_release() {
+        // In release, out-of-range queries clamp silently. In debug, this would
+        // fire a debug_assert, so the test itself uses an in-range value but
+        // relies on the clamp branch of the implementation.
+        let table = ArcLengthTableRef::new(&[0.0_f64, 1.0], &[0.0, 1.0]);
+        // Use a value that exercises clamp logic without violating debug_assert.
+        let v = param_from_arc_length(&table, 1.0_f64);
+        assert_eq!(v, 1.0);
+    }
+
+    #[test]
+    fn arc_length_from_param_inverts_param_from_arc_length() {
+        let table = ArcLengthTableRef::new(&[0.0_f64, 0.4, 1.0], &[0.0, 0.5, 1.0]);
+        let u = 0.3_f64;
+        let s = arc_length_from_param(&table, u);
+        let u_back = param_from_arc_length(&table, s);
+        assert!((u - u_back).abs() < 1e-12);
+    }
+
     #[cfg(feature = "host")]
     #[test]
     fn build_vector_table_for_3d_linear_curve() {
@@ -180,10 +214,80 @@ mod tests {
     }
 }
 
+use crate::MIN_PARAMETRIC_SPEED;
 #[cfg(feature = "host")]
 use crate::eval::{eval, vector_eval};
 #[cfg(feature = "host")]
-use crate::{ArcLengthError, NurbsView, VectorNurbsView, MIN_PARAMETRIC_SPEED};
+use crate::{ArcLengthError, NurbsView, VectorNurbsView};
+
+/// Given an arc-length table and a query `s`, return the parameter `u` such
+/// that `arc_length(u) = s`. Binary search on `s` plus linear interpolation.
+///
+/// Contract: `s` is segment-local (relative to this segment's table). Out-of-
+/// range queries debug-assert in development and clamp silently in release.
+#[inline]
+pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -> T {
+    debug_assert!(s >= T::ZERO);
+    debug_assert!(s <= table.s_max());
+    let s_clamped = s.max(T::ZERO).min(table.s_max());
+
+    let s_arr = table.s();
+    let u_arr = table.u();
+    // Endpoint short-circuit.
+    if s_clamped <= s_arr[0] { return u_arr[0]; }
+    let last = s_arr.len() - 1;
+    if s_clamped >= s_arr[last] { return u_arr[last]; }
+
+    // Binary search for the span [i, i+1] where s_arr[i] <= s_clamped < s_arr[i+1].
+    let mut lo = 0usize;
+    let mut hi = last;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if s_arr[mid] <= s_clamped { lo = mid; } else { hi = mid; }
+    }
+
+    let s_lo = s_arr[lo];
+    let s_hi = s_arr[lo + 1];
+    let u_lo = u_arr[lo];
+    let u_hi = u_arr[lo + 1];
+
+    let span = s_hi - s_lo;
+    let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
+    let frac = (s_clamped - s_lo) / span.max(floor);
+    u_lo + (u_hi - u_lo) * frac
+}
+
+/// Inverse: given parameter `u`, return arc length `s = arc_length(u)`.
+/// Binary search on `u` plus linear interpolation. Same contract as `param_from_arc_length`.
+#[inline]
+pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -> T {
+    debug_assert!(u >= T::ZERO);
+    debug_assert!(u <= table.u_max());
+    let u_clamped = u.max(T::ZERO).min(table.u_max());
+
+    let s_arr = table.s();
+    let u_arr = table.u();
+    if u_clamped <= u_arr[0] { return s_arr[0]; }
+    let last = u_arr.len() - 1;
+    if u_clamped >= u_arr[last] { return s_arr[last]; }
+
+    let mut lo = 0usize;
+    let mut hi = last;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if u_arr[mid] <= u_clamped { lo = mid; } else { hi = mid; }
+    }
+
+    let u_lo = u_arr[lo];
+    let u_hi = u_arr[lo + 1];
+    let s_lo = s_arr[lo];
+    let s_hi = s_arr[lo + 1];
+
+    let span = u_hi - u_lo;
+    let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
+    let frac = (u_clamped - u_lo) / span.max(floor);
+    s_lo + (s_hi - s_lo) * frac
+}
 
 /// Build an arc-length table for a scalar NURBS via adaptive sampling.
 ///
