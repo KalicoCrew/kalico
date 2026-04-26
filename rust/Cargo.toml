@@ -1,5 +1,5 @@
 [workspace]
-members = ["nurbs"]
+members = ["nurbs", "nurbs-c-api"]
 resolver = "2"
 
 [workspace.dependencies]
