@@ -23,3 +23,6 @@ site/
 env/
 venv/
 mkdocs-env/
+
+# fitter prototype run outputs
+scripts/fitter_prototype/corpus_results/
