@@ -3,7 +3,7 @@
 //! G2/G3, and `JunctionDeviation` at every G1-G1 transition.
 
 use crate::{
-    reduce::{reduce, MotionMarkerKind, ReduceEvent},
+    reduce::{reduce, MotionMarkerKind, ParseErrorKind, ReduceEvent},
     ArcSegment, Fatal, FittedSegment, FitterParams, JunctionDeviation, Recovery, Segment,
     SourceRange, TelemetryEvent,
 };
@@ -187,6 +187,31 @@ impl Segments<'_> {
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
             }
+            ReduceEvent::ParseError { line_no, kind, text } => {
+                let recovery = match kind {
+                    ParseErrorKind::MalformedNumber
+                    | ParseErrorKind::DuplicateParam
+                    | ParseErrorKind::EmptyCommand => {
+                        Recovery::MalformedParams { line_no, raw: text }
+                    }
+                    ParseErrorKind::UnrecognizedHead => {
+                        Recovery::UnrecognizedCommand { line_no, head: text }
+                    }
+                };
+                // Dual-emit: sink fires first per §5.1 ordering contract.
+                (self.sink)(TelemetryEvent::Recovery(recovery.clone()));
+                // Synthetic zero-length junction at the previous position (or
+                // origin if none) so the consumer's segment stream sees
+                // Item::Recovered without losing the error.
+                let pos = self.prev_g1_end.unwrap_or([0.0, 0.0, 0.0]);
+                let jd = JunctionDeviation {
+                    position: pos,
+                    angle_deg: 0.0,
+                    feedrate_mm_s: self.prev_g1_feedrate.unwrap_or(0.0),
+                    source: SourceRange { start_line: line_no, end_line: line_no },
+                };
+                self.queue.push_back(Item::Recovered(Segment::Junction(jd), recovery));
+            }
         }
     }
 }
@@ -282,7 +307,7 @@ fn build_arc_nurbs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Item, Segment, FittedSegment, JunctionDeviation, TelemetryEvent};
+    use crate::{Item, Recovery, Segment, FittedSegment, JunctionDeviation, TelemetryEvent};
 
     fn collect(text: &str) -> Vec<Item> {
         let mut p = GeometryPipeline::new(FitterParams::default());
@@ -424,6 +449,26 @@ mod tests {
             }
             other => panic!("expected Retraction, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_error_yields_recovered() {
+        let mut events = vec![];
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            p.process("G1 X1.2.3\n", &mut sink).collect()
+        };
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            Item::Recovered(_, Recovery::MalformedParams { line_no: 1, .. }) => {}
+            other => panic!("expected Recovered, got {other:?}"),
+        }
+        // Sink should also see Recovery (dual-emit).
+        assert!(matches!(
+            events.as_slice(),
+            [TelemetryEvent::Recovery(Recovery::MalformedParams { line_no: 1, .. })]
+        ));
     }
 
     #[test]

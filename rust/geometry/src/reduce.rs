@@ -67,6 +67,11 @@ pub(crate) enum ReduceEvent {
         kind: MarkerKind,
         line_no: u32,
     },
+    ParseError {
+        line_no: u32,
+        kind: ParseErrorKind,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +91,15 @@ pub(crate) enum MotionMarkerKind {
     T,
     /// End of input
     EndOfFile,
+}
+
+/// Classification of the parse error that caused a `ReduceEvent::ParseError`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParseErrorKind {
+    MalformedNumber,
+    UnrecognizedHead,
+    EmptyCommand,
+    DuplicateParam,
 }
 
 /// Walk a token iterator, maintain modal state, and emit `ReduceEvent`s.
@@ -136,7 +150,23 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tok = self.tokens.next()?;
-            let Ok(tok) = tok else { continue }; // parse errors handled at pipeline layer
+            let tok = match tok {
+                Ok(t) => t,
+                Err(e) => {
+                    let (kind, line_no, text) = match e {
+                        ParseError::MalformedNumber { line_no, text } =>
+                            (ParseErrorKind::MalformedNumber, line_no, String::from(text)),
+                        ParseError::UnrecognizedHead { line_no, head } =>
+                            (ParseErrorKind::UnrecognizedHead, line_no, String::from(head)),
+                        ParseError::EmptyCommand { line_no } =>
+                            (ParseErrorKind::EmptyCommand, line_no, String::new()),
+                        ParseError::DuplicateParam { line_no, letter } =>
+                            (ParseErrorKind::DuplicateParam, line_no, letter.to_string()),
+                        _ => (ParseErrorKind::MalformedNumber, 0u32, format!("{e:?}")),
+                    };
+                    return Some(ReduceEvent::ParseError { line_no, kind, text });
+                }
+            };
             match tok {
                 Token::Command { letter: b'G', major: 0, params, line_no, .. } => {
                     // G0 — update position state, emit G0 marker.
