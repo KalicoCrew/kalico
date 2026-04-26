@@ -1,6 +1,7 @@
 //! Algebraic operations on NURBS. Host-only.
 //! See spec §algebra module.
 
+use crate::bezier::binomial;
 use crate::{AlgebraError, Float};
 
 /// Multiply control points by a scalar. Weights, knots, degree unchanged.
@@ -198,6 +199,155 @@ fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
     out
 }
 
+/// Integrate `∫ x(s) w(u - s) ds` over the (s, u) region where x's piece i and
+/// w's piece j are simultaneously active, for u in `[α, β]`. Returns the
+/// contribution as a `BezierPiece` on `[α, β]` with degree `d_x + d_w + 1`.
+///
+/// Algorithm sketch (per spec §6.4):
+/// 1. Re-express `w(u-s)` in s-basis with u-dependent coefficients (binomial expansion).
+/// 2. Multiply by `x(s)`; result is a polynomial in s with u-dependent coefficients.
+/// 3. Integrate `s^k → s^(k+1)/(k+1)`, evaluate at `s_hi(u)` and `s_lo(u)`.
+/// 4. Both `s_lo` and `s_hi` are linear in u, so output is polynomial in u.
+#[cfg(feature = "host")]
+fn integrate_product_piece<T: Float>(
+    x: &crate::bezier::BezierPiece<T>,
+    w: &crate::bezier::BezierPiece<T>,
+    alpha: T,
+    beta: T,
+) -> crate::bezier::BezierPiece<T> {
+    let d_x = x.degree();
+    let d_w = w.degree();
+    let out_degree = d_x + d_w + 1;
+
+    // Integration limits as polynomials in u (degree 1, in absolute u, NOT shifted).
+    // s_lo(u) = max(x.u_start, u - w.u_end)
+    // s_hi(u) = min(x.u_end,   u - w.u_start)
+    //
+    // For u in [α, β] by construction of out_breaks, the active branch of max/min
+    // is constant; we can determine it from the value at u = (α + β) / 2.
+    let u_mid = (alpha + beta) * T::from_f64(0.5);
+    let lo_branch_curve = u_mid - w.u_end > x.u_start; // true → s_lo(u) = u - w.u_end
+    let hi_branch_curve = u_mid - w.u_start < x.u_end; // true → s_hi(u) = u - w.u_start
+
+    // s_lo(u) and s_hi(u) as (constant, linear-in-u-coeff) tuples.
+    let (s_lo_c, s_lo_u): (T, T) = if lo_branch_curve {
+        (-w.u_end, T::ONE)
+    } else {
+        (x.u_start, T::ZERO)
+    };
+    let (s_hi_c, s_hi_u): (T, T) = if hi_branch_curve {
+        (-w.u_start, T::ONE)
+    } else {
+        (x.u_end, T::ZERO)
+    };
+
+    // The integrand is x(s) * w(u - s).
+    // Step A: Convert x.coeffs to absolute-s monomial basis.
+    let x_abs = pascal_shift_to_absolute(&x.coeffs, x.u_start);
+
+    // Step B: Convert w.coeffs to absolute-(u-s) monomial basis (in z = u-s).
+    let w_abs_z = pascal_shift_to_absolute(&w.coeffs, w.u_start);
+    // Then expand each z^j as (u - s)^j via binomial, giving polynomial in u and s.
+    // w_abs_z[j] * (u - s)^j = w_abs_z[j] * Σ_l C(j, l) * u^(j-l) * (-s)^l
+    //                        = Σ_l w_abs_z[j] * C(j, l) * (-1)^l * u^(j-l) * s^l
+
+    // Build a 2D coefficient table: integrand[m][n] = coefficient of u^m * s^n.
+    let max_m = d_w;
+    let max_n = d_x + d_w;
+    let mut integrand = vec![vec![T::ZERO; max_n + 1]; max_m + 1];
+
+    for j in 0..=d_w {
+        for l in 0..=j {
+            let m = j - l;
+            let sign = if l % 2 == 0 { T::ONE } else { -T::ONE };
+            let c_jl = T::from_f64(binomial(j, l) as f64);
+            let coef = sign * c_jl * w_abs_z[j];
+            for i in 0..=d_x {
+                let n = l + i;
+                integrand[m][n] = integrand[m][n] + coef * x_abs[i];
+            }
+        }
+    }
+
+    // Step C: Integrate s^n → s^(n+1) / (n+1), evaluate at s_hi(u) - s_lo(u).
+    let mut y_abs = vec![T::ZERO; out_degree + 1];
+    for m in 0..=max_m {
+        for n in 0..=max_n {
+            if integrand[m][n] == T::ZERO { continue; }
+            let inv = integrand[m][n] / T::from_f64((n + 1) as f64);
+            let hi_pow = power_of_linear(s_hi_c, s_hi_u, n + 1);
+            let lo_pow = power_of_linear(s_lo_c, s_lo_u, n + 1);
+            for k in 0..hi_pow.len() {
+                let target = k + m;
+                if target <= out_degree {
+                    y_abs[target] = y_abs[target] + inv * (hi_pow[k] - lo_pow[k]);
+                }
+            }
+        }
+    }
+
+    // Convert from absolute-u monomial to Pascal-shifted-at-α basis.
+    let y_shifted = absolute_to_pascal_shift(&y_abs, alpha);
+    crate::bezier::BezierPiece {
+        u_start: alpha,
+        u_end: beta,
+        coeffs: y_shifted,
+    }
+}
+
+/// Expand `(c + a*u)^p` as a polynomial in u (length `p+1`, ascending power).
+#[cfg(feature = "host")]
+fn power_of_linear<T: Float>(c: T, a: T, p: usize) -> Vec<T> {
+    let mut out = vec![T::ZERO; p + 1];
+    let mut c_pow = vec![T::ONE; p + 1];
+    let mut a_pow = vec![T::ONE; p + 1];
+    for k in 1..=p {
+        c_pow[k] = c_pow[k - 1] * c;
+        a_pow[k] = a_pow[k - 1] * a;
+    }
+    for k in 0..=p {
+        let bin = T::from_f64(binomial(p, k) as f64);
+        out[k] = bin * c_pow[p - k] * a_pow[k];
+    }
+    out
+}
+
+/// Convert Pascal-shifted-at-`shift` coefficients to absolute monomial.
+/// `p(u) = Σ c_k * (u - shift)^k → Σ c'_n * u^n`
+#[cfg(feature = "host")]
+fn pascal_shift_to_absolute<T: Float>(shifted: &[T], shift: T) -> Vec<T> {
+    let d = shifted.len() - 1;
+    let mut out = vec![T::ZERO; d + 1];
+    for k in 0..=d {
+        // (u - shift)^k = (-shift + u)^k
+        let exp = power_of_linear(-shift, T::ONE, k);
+        for n in 0..exp.len() {
+            out[n] = out[n] + shifted[k] * exp[n];
+        }
+    }
+    out
+}
+
+/// Inverse: convert absolute monomial to Pascal-shifted-at-`shift`.
+/// `Σ c_n * u^n → Σ c'_k * (u - shift)^k` where
+/// `u^n = Σ_k C(n, k) * shift^(n-k) * (u - shift)^k`.
+#[cfg(feature = "host")]
+fn absolute_to_pascal_shift<T: Float>(absolute: &[T], shift: T) -> Vec<T> {
+    let d = absolute.len() - 1;
+    let mut out = vec![T::ZERO; d + 1];
+    let mut shift_pow = vec![T::ONE; d + 1];
+    for k in 1..=d {
+        shift_pow[k] = shift_pow[k - 1] * shift;
+    }
+    for n in 0..=d {
+        for k in 0..=n {
+            let bin = T::from_f64(binomial(n, k) as f64);
+            out[k] = out[k] + absolute[n] * bin * shift_pow[n - k];
+        }
+    }
+    out
+}
+
 /// Iterate over interior knots and apply `remove_knot` with the given tolerance,
 /// dropping knots whose removal preserves the curve within `tol`. Used by
 /// `multiply` and `convolve` to expose natural smoothness of the result.
@@ -229,9 +379,39 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
 }
 
 #[cfg(all(test, feature = "host"))]
+#[allow(clippy::float_cmp)] // tests assert exact stored coords / round-trip values, not arithmetic results
 mod tests {
     use super::*;
     use crate::eval::eval;
+
+    #[test]
+    fn integrate_product_constant_input_constant_kernel_yields_linear_result() {
+        // x(s) = 2 on [0, 1], w(t) = 3 on [-0.5, 0.5].
+        // y(u) = ∫ x(s) w(u - s) ds, integration range = intersection of
+        // [u - 0.5, u + 0.5] with [0, 1].
+        // For u ∈ [0.5, 0.5] (single point), y = 2*3*1 = 6.
+        // Generally y(u) = 6 * (length of overlap window).
+
+        let x = crate::bezier::BezierPiece::<f64> {
+            u_start: 0.0, u_end: 1.0, coeffs: vec![2.0],  // constant 2
+        };
+        let w = crate::bezier::BezierPiece::<f64> {
+            u_start: -0.5, u_end: 0.5, coeffs: vec![3.0],  // constant 3
+        };
+
+        // Integrate over output sub-interval [0.5, 1.0] where the kernel window
+        // shrinks linearly (from full overlap to half overlap at u=1.0).
+        let contribution = integrate_product_piece(&x, &w, 0.5, 1.0);
+
+        // Expected: y(u) = 6 * (1.0 - (u - 0.5)) for u ∈ [0.5, 1.0]
+        //                = 6 * (1.5 - u)
+        //                = 9 - 6u
+        // In Pascal-shifted basis at α = 0.5: y(u) = 9 - 6u = 9 - 6*(0.5 + (u - 0.5))
+        //                                          = 6 - 6 * (u - 0.5)
+        // So coeffs at u_start = 0.5 should be [6.0, -6.0].
+        assert!((contribution.coeffs[0] - 6.0).abs() < 1e-10);
+        assert!((contribution.coeffs[1] - (-6.0)).abs() < 1e-10);
+    }
 
     #[test]
     fn convolve_rejects_rational_input() {
