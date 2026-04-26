@@ -128,6 +128,7 @@ where
 {
     type Item = ReduceEvent;
 
+    #[allow(clippy::too_many_lines)]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tok = self.tokens.next()?;
@@ -223,7 +224,35 @@ where
                         e_delta_mm: None,
                     });
                 }
-                // Arc + comment forwarding handled in Tasks 15 / 16.
+                Token::Command {
+                    letter: b'G', major: g, params, line_no, ..
+                } if g == 2 || g == 3 => {
+                    let start = self.state.position;
+                    let i = params.i().unwrap_or(0.0);
+                    let j = params.j().unwrap_or(0.0);
+                    let center = [start[0] + i, start[1] + j, start[2]];
+                    let new_x = params.x().unwrap_or(start[0]);
+                    let new_y = params.y().unwrap_or(start[1]);
+                    let new_z = params.z().unwrap_or(start[2]);
+                    let end = [new_x, new_y, new_z];
+                    let z_delta = new_z - start[2];
+                    let clockwise = g == 2;
+                    if let Some(f) = params.f() {
+                        self.state.feedrate_mm_s = Some(f_to_mm_s(f));
+                    }
+                    let e_delta = params.e().map(|new_e| {
+                        let d = new_e - self.state.e;
+                        self.state.e = new_e;
+                        d
+                    });
+                    self.state.position = end;
+                    let feedrate_mm_s = self.state.feedrate_mm_s.unwrap_or(0.0);
+                    return Some(ReduceEvent::Arc {
+                        start, end, center, clockwise, z_delta, e_delta,
+                        feedrate_mm_s, line_no,
+                    });
+                }
+                // Comment forwarding handled in Task 16.
                 _ => {}
             }
         }
@@ -346,6 +375,62 @@ mod tests {
         match &events[0] {
             ReduceEvent::Marker { kind: MotionMarkerKind::T, tool: Some(2), .. } => {}
             other => panic!("expected T Marker with tool=2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g2_emits_arc_clockwise() {
+        // Set position to (1, 0, 0), then arc to (0, 1, 0) around (0, 0).
+        let toks = vec![
+            cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'Y', 0.0), (b'F', 1500.0)])),
+            cmd(b'G', 2, 2, p(&[(b'X', 0.0), (b'Y', 1.0), (b'I', -1.0), (b'J', 0.0)])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            ReduceEvent::Arc { start, end, center, clockwise, z_delta, .. } => {
+                assert_eq!(*start, [1.0, 0.0, 0.0]);
+                assert_eq!(*end, [0.0, 1.0, 0.0]);
+                assert_eq!(*center, [0.0, 0.0, 0.0]);
+                assert!(*clockwise);
+                assert_eq!(*z_delta, 0.0);
+            }
+            other => panic!("expected Arc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g3_emits_arc_counter_clockwise() {
+        let toks = vec![
+            cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'F', 1500.0)])),
+            cmd(b'G', 3, 2, p(&[(b'X', 0.0), (b'Y', 1.0), (b'I', -1.0), (b'J', 0.0)])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[1] {
+            ReduceEvent::Arc { clockwise: false, .. } => {}
+            other => panic!("expected counter-clockwise Arc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g2_with_z_delta_yields_z_delta_field() {
+        // Helical arc: end Z differs from start Z.
+        let toks = vec![
+            cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'Z', 0.0), (b'F', 1500.0)])),
+            cmd(b'G', 2, 2, p(&[
+                (b'X', 0.0), (b'Y', 1.0), (b'Z', 0.5),
+                (b'I', -1.0), (b'J', 0.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[1] {
+            ReduceEvent::Arc { z_delta, end, .. } => {
+                assert!((z_delta - 0.5).abs() < 1e-12);
+                assert_eq!(end[2], 0.5);
+            }
+            other => panic!("expected helical Arc, got {other:?}"),
         }
     }
 
