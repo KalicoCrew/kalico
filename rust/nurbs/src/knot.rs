@@ -625,6 +625,38 @@ mod tests {
     }
 
     #[test]
+    fn insert_knot_into_rational_curve_preserves_evaluation() {
+        // Quarter-arc rational quadratic NURBS (y-component of a unit circle
+        // from (1, 0) to (0, 1)). Exercises the boehm_insert_homogeneous path
+        // which Layer 1 will use on G2/G3 arcs.
+        let w_mid = (2.0_f64).sqrt() / 2.0;
+        let curve = ScalarNurbs::<f64>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 1.0],
+            Some(vec![1.0, w_mid, 1.0]),
+        ).unwrap();
+
+        let samples = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let before: Vec<f64> = samples.iter().map(|&u| eval(&curve.as_view(), u)).collect();
+
+        let inserted = insert_knot(&curve, 0.5, 1).unwrap();
+
+        assert_eq!(inserted.knots(), &[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]);
+        assert!(inserted.weights().is_some());
+        assert_eq!(inserted.weights().unwrap().len(), 4);
+
+        for (i, &u) in samples.iter().enumerate() {
+            let after = eval(&inserted.as_view(), u);
+            assert!(
+                (before[i] - after).abs() < 1e-12,
+                "u={u}: before={} vs after={after}",
+                before[i],
+            );
+        }
+    }
+
+    #[test]
     fn insert_knot_into_simple_curve_preserves_evaluation() {
         // Linear curve from 0 to 2 over [0, 1]. Insert knot at u=0.5.
         let curve = ScalarNurbs::<f64>::try_new(
