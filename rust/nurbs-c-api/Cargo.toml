@@ -15,7 +15,7 @@ path = "src/bin/gen_headers.rs"
 required-features = ["host"]
 
 [features]
-default = ["mcu-h7"]
+default = ["host"]
 mcu-h7 = ["nurbs/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4"]
 host = ["nurbs/host", "dep:cbindgen"]

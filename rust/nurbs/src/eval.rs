@@ -501,8 +501,6 @@ mod tests {
     #[cfg(feature = "host")]
     #[test]
     fn curvature_of_straight_line_is_zero() {
-        let curve = linear_3d_curve_f64();
-        let first = vector_derivative(&curve);
         // Second derivative of a linear curve is zero — but degree-lowering can't
         // produce a degree -1 curve. We need a degree-2 curve to take two derivatives.
         // Use a parabolic 3D curve instead.
