@@ -24,6 +24,11 @@ pub use error::{
 mod view;
 pub use view::{NurbsView, VectorNurbsView};
 
+mod scalar;
+#[cfg(feature = "host")]
+pub use scalar::ScalarNurbs;
+pub use scalar::ScalarNurbsRef;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
