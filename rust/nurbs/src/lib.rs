@@ -21,6 +21,9 @@ pub use error::{
     AlgebraError, ArcLengthError, ConstructError, NurbsError, WireError,
 };
 
+mod view;
+pub use view::{NurbsView, VectorNurbsView};
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
