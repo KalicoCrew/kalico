@@ -400,6 +400,22 @@ mod tests {
     }
 
     #[test]
+    fn remove_knot_returns_zero_when_tolerance_not_met() {
+        // A real C^0 corner at u=0.5: knot at multiplicity 2 (== degree), and
+        // CPs chosen so removal would visibly displace.
+        let curve = ScalarNurbs::<f64>::try_new(
+            2, vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 5.0, 0.0, 1.0],  // sharp jump at the corner
+            None,
+        ).unwrap();
+
+        let (result, removed) = remove_knot(&curve, 0.5, 1, 1e-9);
+        assert_eq!(removed, 0);
+        // Curve unchanged.
+        assert_eq!(result.knots(), curve.knots());
+    }
+
+    #[test]
     fn remove_knot_undoes_insertion_within_tolerance() {
         let curve = ScalarNurbs::<f64>::try_new(
             2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 1.0, 2.0], None,
