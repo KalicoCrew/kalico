@@ -237,6 +237,100 @@ pub fn refined_to_full_multiplicity<T: Float>(curve: &ScalarNurbs<T>) -> ScalarN
     current
 }
 
+/// Tiller knot removal (P&T §5.4, Algorithm A5.8). Removes knot ū up to
+/// `count` times if removal preserves the curve within chord-error `tol` in
+/// control-point space. Returns the new curve and the number of removals
+/// actually performed (may be less than `count`).
+///
+/// For unweighted curves only in v1; weighted (rational) curves return the
+/// input unchanged with count 0 (no error — caller can detect via the count).
+pub fn remove_knot<T: Float>(
+    curve: &ScalarNurbs<T>,
+    u: T,
+    count: usize,
+    tol: T,
+) -> (ScalarNurbs<T>, usize) {
+    if curve.weights().is_some() {
+        // v1: rational removal not supported; return input unchanged.
+        return (curve.clone(), 0);
+    }
+    let p = curve.degree() as usize;
+    let knots = curve.knots();
+    let cps = curve.control_points();
+    let n = cps.len();
+
+    // Find span and existing multiplicity.
+    let s = knots.iter().filter(|k| **k == u).count();
+    if s == 0 {
+        return (curve.clone(), 0);  // u not in knot vector
+    }
+    let r = find_knot_span(knots, p, n, u);
+
+    let mut new_cps = cps.to_vec();
+    let mut new_knots = knots.to_vec();
+    let mut removed = 0;
+    let mut current_s = s;
+
+    while removed < count && current_s > 0 {
+        // Try one removal (A5.8).
+        let first = r - p;
+        let last = r - current_s;
+        let mut temp = vec![T::ZERO; (last - first + 2).max(2)];
+
+        temp[0] = new_cps[first - 1];
+        temp[last - first + 1] = new_cps[last + 1];
+
+        let mut i = first;
+        let mut j = last;
+        let mut ii = 1;
+        let mut jj = last - first;
+        let mut converged = true;
+
+        // `j - i > 0` on usize underflows when boundaries cross; use `j > i`.
+        while j > i {
+            let alpha_i = (u - new_knots[i]) / (new_knots[i + p + 1] - new_knots[i]);
+            let alpha_j = (u - new_knots[j]) / (new_knots[j + p + 1] - new_knots[j]);
+
+            temp[ii] = (new_cps[i] - (T::ONE - alpha_i) * temp[ii - 1]) / alpha_i;
+            temp[jj] = (new_cps[j] - alpha_j * temp[jj + 1]) / (T::ONE - alpha_j);
+
+            i += 1; ii += 1; j -= 1; jj -= 1;
+        }
+
+        // Convergence check: chord-error tolerance.
+        // After loop, i may exceed j by 1; treat that as "boundaries met".
+        if i >= j {
+            let err = (temp[ii - 1] - temp[jj + 1]).abs();
+            if err > tol {
+                converged = false;
+            }
+        }
+
+        if !converged {
+            break;
+        }
+
+        // Apply: shift CPs down, drop one knot.
+        let mut i2 = first;
+        let mut j2 = last;
+        while j2 > i2 {
+            new_cps[i2] = temp[i2 - first + 1];
+            new_cps[j2] = temp[j2 - first + 1];
+            i2 += 1; j2 -= 1;
+        }
+        // Remove one cp (the duplicate at center) and one knot.
+        new_cps.remove((first + last) / 2 + 1);
+        new_knots.remove(r);
+
+        removed += 1;
+        current_s -= 1;
+    }
+
+    let new_curve = ScalarNurbs::try_new(curve.degree(), new_knots, new_cps, None)
+        .expect("remove_knot: result invariants should hold");
+    (new_curve, removed)
+}
+
 /// Homogeneous variant: blends (num, w) tuples.
 fn boehm_insert_homogeneous<T: Float>(
     homo: &[(T, T)],
@@ -303,6 +397,22 @@ mod tests {
         assert_eq!(kv.multiplicity_at(0.5), 2);
         assert_eq!(kv.multiplicity_at(1.0), 2);
         assert_eq!(kv.multiplicity_at(0.25), 0);
+    }
+
+    #[test]
+    fn remove_knot_undoes_insertion_within_tolerance() {
+        let curve = ScalarNurbs::<f64>::try_new(
+            2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 1.0, 2.0], None,
+        ).unwrap();
+
+        let inserted = insert_knot(&curve, 0.5, 1).unwrap();
+        let (removed, count) = remove_knot(&inserted, 0.5, 1, 1e-10);
+
+        assert_eq!(count, 1);
+        assert_eq!(removed.knots(), curve.knots());
+        for (a, b) in removed.control_points().iter().zip(curve.control_points()) {
+            assert!((a - b).abs() < 1e-10, "cp mismatch: {a} vs {b}");
+        }
     }
 
     #[test]
