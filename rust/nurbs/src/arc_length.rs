@@ -144,4 +144,161 @@ mod tests {
         let result = integrate_arc_length(|u: f64| u * u, 0.0, 1.0, 5);
         assert!((result - 1.0 / 3.0).abs() < 1e-12);
     }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn build_scalar_table_for_linear_curve() {
+        // Linear curve from 0 to 1 over u in [0, 1]: arc length = 1.
+        let curve = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0],
+            None,
+        ).unwrap();
+        let table = build_arc_length_table_scalar(&curve, 1e-6, 64).unwrap();
+        assert!((table.s_max() - 1.0).abs() < 1e-6);
+        assert!(table.u_max() == 1.0);
+        // Monotonicity check
+        for w in table.s().windows(2) { assert!(w[1] >= w[0]); }
+        for w in table.u().windows(2) { assert!(w[1] >= w[0]); }
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn build_vector_table_for_3d_linear_curve() {
+        // 3D linear curve from origin to (3, 0, 4): arc length = 5.
+        let curve = crate::VectorNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [3.0, 0.0, 4.0]],
+            None,
+        ).unwrap();
+        let table = build_arc_length_table_vector(&curve, 1e-5, 64).unwrap();
+        assert!((table.s_max() - 5.0).abs() < 1e-4);
+    }
+}
+
+#[cfg(feature = "host")]
+use crate::eval::{eval, vector_eval};
+#[cfg(feature = "host")]
+use crate::{ArcLengthError, NurbsView, VectorNurbsView, MIN_PARAMETRIC_SPEED};
+
+/// Build an arc-length table for a scalar NURBS via adaptive sampling.
+///
+/// Strategy: start with a small uniform grid in u; at each step, double the
+/// sample count if the linear-interpolation residual against a refined estimate
+/// exceeds `tolerance`. Cap at `max_samples`.
+///
+/// Integrand is `|dP/du|`; for scalar curves we use the absolute value of the
+/// scalar derivative evaluated by central difference (we don't take a
+/// degree-lowered derivative here because it'd allocate twice for the same
+/// information; central difference is cheap on the host).
+#[cfg(feature = "host")]
+pub fn build_arc_length_table_scalar<T: Float, V: NurbsView<T>>(
+    curve: &V,
+    tolerance: T,
+    max_samples: usize,
+) -> Result<ArcLengthTable<T>, ArcLengthError<T>> {
+    let h = T::from_f64(1e-6);
+    let knots = curve.knots();
+    let u_start = knots[0];
+    let u_end = knots[knots.len() - 1];
+
+    let integrand = |u: T| {
+        let u_safe = u.max(u_start + h).min(u_end - h);
+        let plus = eval(curve, u_safe + h);
+        let minus = eval(curve, u_safe - h);
+        ((plus - minus) / (h + h)).abs()
+    };
+
+    build_table_via_integrand(integrand, u_start, u_end, tolerance, max_samples)
+}
+
+/// Build an arc-length table for a vector NURBS in R^3.
+#[cfg(feature = "host")]
+pub fn build_arc_length_table_vector<T: Float, V: VectorNurbsView<T, 3>>(
+    curve: &V,
+    tolerance: T,
+    max_samples: usize,
+) -> Result<ArcLengthTable<T>, ArcLengthError<T>> {
+    let h = T::from_f64(1e-6);
+    let knots = curve.knots();
+    let u_start = knots[0];
+    let u_end = knots[knots.len() - 1];
+
+    let integrand = |u: T| {
+        let u_safe = u.max(u_start + h).min(u_end - h);
+        let plus = vector_eval(curve, u_safe + h);
+        let minus = vector_eval(curve, u_safe - h);
+        let two_h = h + h;
+        let dx = (plus[0] - minus[0]) / two_h;
+        let dy = (plus[1] - minus[1]) / two_h;
+        let dz = (plus[2] - minus[2]) / two_h;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+
+    build_table_via_integrand(integrand, u_start, u_end, tolerance, max_samples)
+}
+
+/// Adaptive table builder. Doubles sample count until linear-interp residual
+/// is below tolerance or we hit the cap.
+#[cfg(feature = "host")]
+fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
+    integrand: F,
+    u_start: T,
+    u_end: T,
+    tolerance: T,
+    max_samples: usize,
+) -> Result<ArcLengthTable<T>, ArcLengthError<T>> {
+    let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
+
+    let mut count = 8.max(2);
+    loop {
+        // Build a table at this sample count by integrating between adjacent u's.
+        let mut u_samples: Vec<T> = Vec::with_capacity(count);
+        let mut s_samples: Vec<T> = Vec::with_capacity(count);
+
+        let span = u_end - u_start;
+        for i in 0..count {
+            let frac = T::from_f64(i as f64 / (count - 1) as f64);
+            u_samples.push(u_start + span * frac);
+        }
+
+        s_samples.push(T::ZERO);
+        for i in 1..count {
+            // Check for degeneracy at integration sample points.
+            let u_mid = (u_samples[i - 1] + u_samples[i]) * T::from_f64(0.5);
+            if integrand(u_mid) < floor {
+                return Err(ArcLengthError::DegenerateCurve);
+            }
+            let segment_length = integrate_arc_length(integrand, u_samples[i - 1], u_samples[i], 5);
+            let prev = s_samples[i - 1];
+            s_samples.push(prev + segment_length);
+        }
+
+        // Estimate residual: refine to 2*count and compare s_max.
+        let span_full = u_end - u_start;
+        let s_refined: T = {
+            let count_refined = (count - 1) * 2 + 1;
+            let mut acc = T::ZERO;
+            for i in 1..count_refined {
+                let a = u_start + span_full * T::from_f64((i - 1) as f64 / (count_refined - 1) as f64);
+                let b = u_start + span_full * T::from_f64(i as f64 / (count_refined - 1) as f64);
+                acc = acc + integrate_arc_length(integrand, a, b, 5);
+            }
+            acc
+        };
+
+        let residual = (s_samples[count - 1] - s_refined).abs();
+        if residual <= tolerance {
+            return Ok(ArcLengthTable::new(s_samples, u_samples));
+        }
+        if count * 2 > max_samples {
+            return Err(ArcLengthError::ToleranceNotMet {
+                achieved_residual: residual,
+                samples_used: count,
+            });
+        }
+        count *= 2;
+    }
 }
