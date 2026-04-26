@@ -73,6 +73,7 @@ The three corner paths form a fallback chain: **fitter handles what it can → c
 Depends on Layer 1 NURBS output. Produces v(s) per segment.
 
 - **TOPP-RA implementation.** Time-optimal velocity scheduling against acceleration, jerk, and curvature constraints. Host-side, runs at receive time. Porting + adaptation work — `toppra` Python library exists but is offline-robotics-oriented; needs adaptation for streaming use, not novel research.
+- **Junction velocity from curvature continuity.** v_max at any segment boundary derives from the curvature on both sides at the junction parameter (u=1 of segment N, u=0 of segment N+1) under the centripetal-acceleration constraint v²·κ ≤ a_max. The Sonny-Jeon junction-deviation algorithm is the **degenerate special case** for G1↔G1 boundaries — both sides have zero curvature except a delta at the corner; JD computes the deviation budget against a chord-error tolerance. G1↔G5, G5↔G5, fitter-output↔anything, and future G6.2 NURBS↔anything all flow through the same computation; only the curvature-evaluation source changes (zero for G1, NURBS κ(u) for any smooth segment). Implication for Layer 1: do not fabricate "virtual G1 directions" at smooth-curve endpoints to feed JD — break the G1-tangent chain at any non-G1 segment, and let Layer 2 evaluate end-tangents and end-curvatures from the NURBS itself.
 - **Lookahead-window joining.** Two-pass forward/reverse smoothing across the segment buffer to reconcile end-of-N velocities with start-of-N+1 velocities. Standard planner work.
 - **Limit-change invalidation logic.** Mark unprocessed segments dirty on M-code limit changes, recompute v(s) only for them.
 
@@ -198,7 +199,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 1. [x] **NURBS library** (host + MCU) and arc-length tools — Layer 0
 2. [x] **G-code parser and geometric reduction** (no fitting yet, just direct NURBS from G0/G1/G2/G3/G5) — partial Layer 1
    - G0/G1 → degree-1 NURBS, G2/G3 → 3D rational quadratic NURBS (helical-capable), JunctionDeviation between consecutive G1s. Telemetry routing for LayerChange / ToolChange / Retraction. **G5/G5.1 not yet handled** — lexer parses them but reduce silently drops; deferred until needed.
-3. [ ] **G5 / G5.1 reduction** — closes the remaining gap in step 2. Lexer already tokenizes G5/G5.1 (Task 6 of the Phase 1 plan); reduce + pipeline need to construct a degree-3 single-piece NURBS with 4 control points (P0=current position, P1=current+I,J, P2=end+P,Q, P3=end) and emit `Segment::Fitted { degree: 3 }`. Small follow-up to step 2; should land before step 7's spline-fitter work begins.
+3. [ ] **G5 / G5.1 reduction** — closes the remaining gap in step 2. Lexer already tokenizes G5/G5.1 (Task 6 of the Phase 1 plan). Per LinuxCNC RS274NGC convention: **G5** → degree-3 single-piece NURBS with 4 control points (P0=current, P1=current+I,J, P2=end+P,Q, P3=end); **G5.1** → degree-2 single-piece NURBS with 3 control points (P0=current, P1=current+I,J, P2=end), restricted to the active plane (G17/G18/G19). Implement the RS274NGC modal-chain implicit-tangent rule for G5: when a G5 immediately follows another G5 with both I,J omitted, default I,J to −(prev P, prev Q) for C¹ continuity; emit a parser error if the implicit tangent is unavailable (chain broken by intervening motion-producing g-code) and explicit I,J are missing. Both G5 and G5.1 break the G1-tangent chain — Layer 2 derives endpoint curvature from the NURBS per the curvature-continuity principle (Layer 2 description above). Small follow-up to step 2; should land before step 7's spline-fitter work begins.
 4. [ ] **TOPP-RA prototype on synthetic input** — partial Layer 2
 5. [ ] **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
 6. [ ] **Communication protocol and clock sync** — Layer 5
@@ -220,4 +221,14 @@ Steps 8–11 are where it becomes high-performance. Steps 12–14 are polish and
 Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order items, layer scopes, or constraints change. Each entry: date, what changed, why, evidence link.
 
 <!-- entries below -->
+
+## 2026-04-27
+
+**Changed:**
+- **Layer 2:** added the "Junction velocity from curvature continuity" bullet — formalizes that v_max at every segment boundary derives from the same centripetal-acceleration-against-curvature formulation; junction-deviation is the degenerate G1↔G1 case, not a separate algorithm.
+- **Build-order Step 3 (G5 / G5.1 reduction):** rewrote to specify per-LinuxCNC semantics — G5 is degree-3 with 4 CPs, G5.1 is degree-2 with 3 CPs (restricted to the active plane). Added the RS274NGC modal-chain implicit-tangent rule for G5. Removed the `Segment::Fitted { degree: 3 }` wire-format hint (that's plan-level detail; build-order items stay at semantic-spec granularity).
+
+**Why:** The original Step 3 wording conflated G5 and G5.1 into a single degree-3 recipe, which is wrong for G5.1 under the canonical LinuxCNC convention (G5.1 is a non-rational quadratic B-spline, not a degenerate cubic). Research during brainstorming confirmed Marlin lacks G5.1 entirely, RepRapFirmware lacks both, grblHAL matches LinuxCNC, and Fanuc's `G05.1 Q1` is an unrelated AICC mode toggle on a colliding number — LinuxCNC is the only meaningful spec for G5/G5.1 in the open-source space, so kalico adopts it. The curvature-continuity framing was articulated during Q3 of Step 3 brainstorming as the unifying architectural principle behind G1↔G1 (JD), G5↔G1, G5↔G5, and future fitter-output↔anything junction handling; recorded in CLAUDE.md so it governs all subsequent planner-stage design.
+
+**Evidence:** `brainstormer-step-3` round 1 transcript; two `kalico-researcher` reports (G5.1 cross-firmware semantics; RS274NGC §G5 modal-chain rule); user direction confirmation in this session.
 
