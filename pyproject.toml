@@ -25,6 +25,9 @@ dev = [
   "pytest-xdist>=3.6.1",
   "pytest>=8.3.4",
 ]
+prototype = [
+  "matplotlib>=3.8",
+]
 
 [project.urls]
 homepage = "https://kalico.gg/"
