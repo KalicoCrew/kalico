@@ -195,20 +195,27 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 
 ## Suggested build order
 
-1. **NURBS library** (host + MCU) and arc-length tools — Layer 0
-2. **G-code parser and geometric reduction** (no fitting yet, just direct NURBS from G0/G1/G2/G3/G5) — partial Layer 1
-3. **TOPP-RA prototype on synthetic input** — partial Layer 2
-4. **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
-5. **Communication protocol and clock sync** — Layer 5
-6. **First-print MVP: end-to-end with junction-deviation on G1, plus G2/G3 native, plus ZV shaper. No PA, no fitting, no smooth shapers.** This actually prints from existing slicers — the corner velocities will be conservative (no fitting means lots of velocity reductions at slicer-emitted G1 vertices) but it produces parts.
-7. **Spline fitter and parameterized corner-blend emission** — completes Layer 1's geometric output. Until Layer 3 corner-blend finalization lands (step 8), corner-blend slots fall back to junction-deviation.
-8. **Smooth shapers, shaper-aware TOPP-RA, and corner-blend shape finalization** — completes Layer 3 and refines Layer 2.
-9. **Tanh PA on MCU** (runtime evaluation against base E NURBS) — refines Layer 4
-10. **Phase stepping current synthesis** — completes Layer 4
-11. **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
-12. **Mechanical-frequency tracking** — Layer 6
-13. **EtherCAT backend** — Layer 6, after everything else
+1. [ ] **NURBS library** (host + MCU) and arc-length tools — Layer 0
+2. [ ] **G-code parser and geometric reduction** (no fitting yet, just direct NURBS from G0/G1/G2/G3/G5) — partial Layer 1
+3. [ ] **TOPP-RA prototype on synthetic input** — partial Layer 2
+4. [ ] **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
+5. [ ] **Communication protocol and clock sync** — Layer 5
+6. [ ] **First-print MVP: end-to-end with junction-deviation on G1, plus G2/G3 native, plus ZV shaper. No PA, no fitting, no smooth shapers.** This actually prints from existing slicers — the corner velocities will be conservative (no fitting means lots of velocity reductions at slicer-emitted G1 vertices) but it produces parts.
+7. [ ] **Spline fitter and parameterized corner-blend emission** — completes Layer 1's geometric output. Until Layer 3 corner-blend finalization lands (step 8), corner-blend slots fall back to junction-deviation.
+8. [ ] **Smooth shapers, shaper-aware TOPP-RA, and corner-blend shape finalization** — completes Layer 3 and refines Layer 2.
+9. [ ] **Tanh PA on MCU** (runtime evaluation against base E NURBS) — refines Layer 4
+10. [ ] **Phase stepping current synthesis** — completes Layer 4
+11. [ ] **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
+12. [ ] **Mechanical-frequency tracking** — Layer 6
+13. [ ] **EtherCAT backend** — Layer 6, after everything else
 
 Step 6 is the minimum viable proof of concept — a printer that prints, with most things in their final architectural shape but limited features. **Note that PA is deliberately absent from MVP.** The user committed to tanh PA (nonlinear, runtime-evaluated), so introducing a linear-PA path that gets thrown away would be dead code. First-print validation can be done without PA; it just shows blob/zit at corners until step 9 lands.
 
 Steps 7–10 are where it becomes high-performance. Steps 11–13 are polish and future-proofing. **The transition from step 6 to step 7 is psychologically the hardest** — you have something that works, and you're tearing into it to add features that may break it. Plan for that.
+
+# Plan changes log
+
+Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order items, layer scopes, or constraints change. Each entry: date, what changed, why, evidence link.
+
+<!-- entries below -->
+
