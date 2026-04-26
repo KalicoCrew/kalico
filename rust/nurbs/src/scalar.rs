@@ -10,7 +10,7 @@ use crate::{ConstructError, Float, NurbsView, MAX_DEGREE};
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScalarNurbs<T: Float> {
     degree: u8,
-    knots: Vec<T>,
+    knots: crate::knot::KnotVector<T>,
     control_points: Vec<T>,
     weights: Option<Vec<T>>,
 }
@@ -25,9 +25,11 @@ impl<T: Float> ScalarNurbs<T> {
         weights: Option<Vec<T>>,
     ) -> Result<Self, ConstructError> {
         validate(degree, &knots, control_points.len(), weights.as_deref())?;
+        let knot_vector = crate::knot::KnotVector::try_new(knots)
+            .expect("validate already ensured monotone + length");
         Ok(Self {
             degree,
-            knots,
+            knots: knot_vector,
             control_points,
             weights,
         })
@@ -39,7 +41,7 @@ impl<T: Float> ScalarNurbs<T> {
     }
     #[must_use]
     pub fn knots(&self) -> &[T] {
-        &self.knots
+        self.knots.as_slice()
     }
     #[must_use]
     pub fn control_points(&self) -> &[T] {
@@ -56,7 +58,7 @@ impl<T: Float> ScalarNurbs<T> {
     pub fn as_view(&self) -> ScalarNurbsRef<'_, T> {
         ScalarNurbsRef {
             degree: self.degree,
-            knots: &self.knots,
+            knots: self.knots.as_slice(),
             control_points: &self.control_points,
             weights: self.weights.as_deref(),
         }
@@ -66,7 +68,7 @@ impl<T: Float> ScalarNurbs<T> {
     /// build new NURBS by transformation.
     #[must_use]
     pub fn into_parts(self) -> (u8, Vec<T>, Vec<T>, Option<Vec<T>>) {
-        (self.degree, self.knots, self.control_points, self.weights)
+        (self.degree, self.knots.into_inner(), self.control_points, self.weights)
     }
 }
 
@@ -78,7 +80,7 @@ impl<T: Float> NurbsView<T> for ScalarNurbs<T> {
     }
     #[inline]
     fn knots(&self) -> &[T] {
-        &self.knots
+        self.knots.as_slice()
     }
     #[inline]
     fn control_points(&self) -> &[T] {

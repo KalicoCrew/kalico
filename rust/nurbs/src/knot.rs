@@ -40,6 +40,11 @@ impl<T: Float> KnotVector<T> {
     pub fn is_empty(&self) -> bool {
         self.knots.is_empty()
     }
+
+    /// Consume the wrapper, returning the underlying `Vec<T>`.
+    pub fn into_inner(self) -> Vec<T> {
+        self.knots
+    }
 }
 
 /// Find the knot span `k` such that `knots[k] <= u < knots[k+1]`, with the
