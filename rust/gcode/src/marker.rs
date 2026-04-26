@@ -1,2 +1,2 @@
-//! Slicer-dialect comment-pattern matchers. Covers OrcaSlicer / PrusaSlicer
-//! / BambuStudio.
+//! Slicer-dialect comment-pattern matchers. Covers `OrcaSlicer` / `PrusaSlicer`
+//! / `BambuStudio`.
