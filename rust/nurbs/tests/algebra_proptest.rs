@@ -38,4 +38,29 @@ proptest! {
             );
         }
     }
+
+    #[test]
+    fn multiply_degree_equals_sum(
+        a in arb_simple_polynomial_curve(),
+        b in arb_simple_polynomial_curve(),
+    ) {
+        let c = nurbs::algebra::multiply(&a, &b).unwrap();
+        prop_assert_eq!(c.degree(), a.degree() + b.degree());
+    }
+
+    #[test]
+    fn multiply_eval_matches_pointwise_product(
+        a in arb_simple_polynomial_curve(),
+        b in arb_simple_polynomial_curve(),
+    ) {
+        let c = nurbs::algebra::multiply(&a, &b).unwrap();
+        for u in [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
+            let exp = nurbs::eval::eval(&a.as_view(), u) * nurbs::eval::eval(&b.as_view(), u);
+            let got = nurbs::eval::eval(&c.as_view(), u);
+            prop_assert!(
+                (exp - got).abs() < 1e-9,
+                "u={u}: a*b={exp}, multiply={got}"
+            );
+        }
+    }
 }
