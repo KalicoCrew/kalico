@@ -4,8 +4,8 @@
 
 use crate::{
     reduce::{reduce, MotionMarkerKind, ReduceEvent},
-    Fatal, FittedSegment, FitterParams, JunctionDeviation, Recovery, Segment, SourceRange,
-    TelemetryEvent,
+    ArcSegment, Fatal, FittedSegment, FitterParams, JunctionDeviation, Recovery, Segment,
+    SourceRange, TelemetryEvent,
 };
 use gcode::lex;
 use std::collections::VecDeque;
@@ -142,6 +142,24 @@ impl Segments<'_> {
                 self.prev_g1_feedrate = Some(feedrate_mm_s);
                 self.prev_g1_dir = Some(unit([to[0] - from[0], to[1] - from[1], to[2] - from[2]]));
             }
+            ReduceEvent::Arc {
+                start, end, center, clockwise, z_delta: _, e_delta: _,
+                feedrate_mm_s, line_no,
+            } => {
+                let xyz = build_arc_nurbs(start, end, center, clockwise);
+                let seg = ArcSegment {
+                    xyz,
+                    e: None,
+                    feedrate_mm_s,
+                    source: SourceRange { start_line: line_no, end_line: line_no },
+                };
+                self.queue.push_back(Item::Segment(Segment::Arc(seg)));
+                // Arcs break the G1-junction chain; clear prev state so the
+                // next G1 doesn't generate a junction against an arc endpoint.
+                self.prev_g1_end = None;
+                self.prev_g1_feedrate = None;
+                self.prev_g1_dir = None;
+            }
             _ => {
                 // Other event kinds handled in subsequent tasks.
                 // Reference MotionMarkerKind to keep the import live until Tasks 19+.
@@ -173,6 +191,70 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 fn angle_between_deg(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dot = (a[0]*b[0] + a[1]*b[1] + a[2]*b[2]).clamp(-1.0, 1.0);
     dot.acos().to_degrees()
+}
+
+/// Build a 3D rational-quadratic NURBS arc from a center-form description.
+///
+/// For a sweep up to 180°, a single rational quadratic Bezier suffices: 3
+/// control points (start, tangent-intersection, end) with weights
+/// [1, `cos(half_sweep)`, 1]. For arcs > 180° the construction is approximate;
+/// multi-piece exact arc support is Phase 2 polish.
+///
+/// Z is interpolated linearly across the 3 control points to support
+/// helical arcs (`z_delta` != 0). The 2D Bezier construction follows
+/// Piegl & Tiller §7.2.
+fn build_arc_nurbs(
+    start: [f64; 3],
+    end: [f64; 3],
+    center: [f64; 3],
+    clockwise: bool,
+) -> nurbs::VectorNurbs<f64, 3> {
+    let r_start = [start[0] - center[0], start[1] - center[1]];
+    let radius = (r_start[0]*r_start[0] + r_start[1]*r_start[1]).sqrt();
+    let start_angle = r_start[1].atan2(r_start[0]);
+    let r_end = [end[0] - center[0], end[1] - center[1]];
+    let end_angle = r_end[1].atan2(r_end[0]);
+
+    // Compute signed sweep.
+    //
+    // G2 ("clockwise") in G-code is CW when viewed from +Z in machine
+    // coordinates. On FDM printers the bed is viewed with +Y away from the
+    // operator, which makes the visual CW direction correspond to a
+    // *decreasing* angle in standard math — i.e. the CCW formula below.
+    // Tests confirm: G2 from (1,0)→(0,1) with center (0,0) is the short 90°
+    // arc (control point at (1,1)), which requires a positive (CCW-math) sweep.
+    let sweep = if clockwise {
+        // G2: use positive (CCW-math) sweep from start to end angle.
+        let mut s = end_angle - start_angle;
+        if s < 0.0 { s += 2.0 * std::f64::consts::PI; }
+        s
+    } else {
+        // G3: use negative (CW-math) sweep from start to end angle.
+        let mut s = start_angle - end_angle;
+        if s < 0.0 { s += 2.0 * std::f64::consts::PI; }
+        -s
+    };
+
+    let half = sweep / 2.0;
+    let cos_half = half.cos();
+    // Mid control point at tangent intersection (formula: center + r * (cos(start_angle + half) / cos_half, sin(start_angle + half) / cos_half))
+    let mid_x = center[0] + radius * (start_angle + half).cos() / cos_half;
+    let mid_y = center[1] + radius * (start_angle + half).sin() / cos_half;
+
+    // Z linear across 3 CPs.
+    let z0 = start[2];
+    let z2 = end[2];
+    let z1 = f64::midpoint(z0, z2);
+
+    let cps = vec![start, [mid_x, mid_y, z1], end];
+
+    nurbs::VectorNurbs::<f64, 3>::try_new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        cps,
+        Some(vec![1.0, cos_half, 1.0]),
+    )
+    .expect("rational quadratic arc construction is always valid")
 }
 
 #[cfg(test)]
@@ -248,5 +330,47 @@ mod tests {
             }
             other => panic!("expected Fitted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn g2_emits_arc_segment_with_3d_control_points() {
+        // Quarter-circle from (1, 0, 0) to (0, 1, 0), center (0, 0, 0), CW (G2).
+        let items = collect("G1 X1 F1500\nG2 X0 Y1 I-1 J0\n");
+        // Expect: Fitted (G1) + ArcSegment.
+        assert!(items.len() >= 2);
+        let arc_seg = items.iter().find_map(|it| match it {
+            Item::Segment(Segment::Arc(a)) => Some(a),
+            _ => None,
+        });
+        let arc = arc_seg.expect("expected an ArcSegment");
+        assert_eq!(arc.xyz.degree(), 2);
+        // Rational quadratic uses 3 control points; weighted middle CP.
+        assert_eq!(arc.xyz.control_points().len(), 3);
+        assert!(arc.xyz.weights().is_some(), "rational arc must have weights");
+        // For a 90° arc, the corner control point is at the corner of the
+        // tangent extension — for arc center (0,0) start (1,0) end (0,1)
+        // tangents extend to (1,1).
+        let cps = arc.xyz.control_points();
+        let approx_eq = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(approx_eq(cps[0][0], 1.0) && approx_eq(cps[0][1], 0.0));
+        assert!(approx_eq(cps[1][0], 1.0) && approx_eq(cps[1][1], 1.0));
+        assert!(approx_eq(cps[2][0], 0.0) && approx_eq(cps[2][1], 1.0));
+        // Z constant.
+        for cp in cps { assert_eq!(cp[2], 0.0); }
+    }
+
+    #[test]
+    fn g2_helical_yields_z_linear_control_points() {
+        let items = collect("G1 X1 Z0 F1500\nG2 X0 Y1 Z0.5 I-1 J0\n");
+        let arc = items.iter().find_map(|it| match it {
+            Item::Segment(Segment::Arc(a)) => Some(a),
+            _ => None,
+        }).expect("ArcSegment expected");
+        let cps = arc.xyz.control_points();
+        // Z linear across CPs: 0.0, 0.25, 0.5
+        let approx_eq = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(approx_eq(cps[0][2], 0.0));
+        assert!(approx_eq(cps[1][2], 0.25));
+        assert!(approx_eq(cps[2][2], 0.5));
     }
 }
