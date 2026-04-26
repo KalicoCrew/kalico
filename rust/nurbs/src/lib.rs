@@ -49,6 +49,11 @@ pub mod knot;
 #[cfg(feature = "host")]
 pub use knot::KnotVector;
 
+#[cfg(feature = "host")]
+pub mod bezier;
+#[cfg(feature = "host")]
+pub use bezier::BezierPiece;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
