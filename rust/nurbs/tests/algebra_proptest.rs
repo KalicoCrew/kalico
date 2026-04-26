@@ -22,6 +22,13 @@ fn arb_simple_polynomial_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64
     })
 }
 
+fn arb_single_poly_kernel() -> impl Strategy<Value = nurbs::algebra::PiecewisePolynomialKernel<f64>> {
+    (1usize..=4, 0.05..0.4_f64).prop_map(|(d, half)| {
+        let coeffs: Vec<f64> = (0..=d).map(|i| (i as f64 + 1.0) * 0.5).collect();
+        nurbs::algebra::PiecewisePolynomialKernel::single_poly(coeffs, (-half, half))
+    })
+}
+
 proptest! {
     #[test]
     fn insert_knot_preserves_evaluation(
@@ -62,5 +69,30 @@ proptest! {
                 "u={u}: a*b={exp}, multiply={got}"
             );
         }
+    }
+}
+
+proptest! {
+    #[test]
+    fn convolve_degree_equals_input_plus_kernel_plus_one(
+        curve in arb_simple_polynomial_curve(),
+        kernel in arb_single_poly_kernel(),
+    ) {
+        let y = nurbs::algebra::convolve(&curve, &kernel).unwrap();
+        let expected = curve.degree() as usize + kernel.pieces[0].degree() + 1;
+        prop_assert_eq!(y.degree() as usize, expected);
+    }
+
+    #[test]
+    fn convolve_support_is_minkowski_sum(
+        curve in arb_simple_polynomial_curve(),
+        kernel in arb_single_poly_kernel(),
+    ) {
+        let y = nurbs::algebra::convolve(&curve, &kernel).unwrap();
+        let (k_lo, k_hi) = kernel.support();
+        let expected_lo = curve.knots()[0] + k_lo;
+        let expected_hi = curve.knots()[curve.knots().len() - 1] + k_hi;
+        prop_assert!((y.knots()[0] - expected_lo).abs() < 1e-12);
+        prop_assert!((y.knots()[y.knots().len() - 1] - expected_hi).abs() < 1e-12);
     }
 }
