@@ -14,11 +14,11 @@ use std::path::PathBuf;
 
 const TOLERANCE: f64 = 1e-4; // numerical-quadrature reference, not exact
 
-/// Convert absolute-monomial coefficients (Σ a_n * u^n) to Pascal-shifted
-/// coefficients (Σ c_k * (u - shift)^k). Mirrors the algebra crate's internal
+/// Convert absolute-monomial coefficients (Σ `a_n` * u^n) to Pascal-shifted
+/// coefficients (Σ `c_k` * (u - shift)^k). Mirrors the algebra crate's internal
 /// helper; needed because the JSON stores the kernel in absolute form
 /// (the natural Klipper / `init_smoother` convention) while
-/// `PiecewisePolynomialKernel::single_poly` expects Pascal-shifted-at-u_start.
+/// `PiecewisePolynomialKernel::single_poly` expects Pascal-shifted-at-`u_start`.
 fn absolute_to_pascal_shift(absolute: &[f64], shift: f64) -> Vec<f64> {
     let d = absolute.len() - 1;
     let mut out = vec![0.0; d + 1];

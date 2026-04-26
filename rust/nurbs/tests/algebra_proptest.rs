@@ -22,7 +22,8 @@ fn arb_simple_polynomial_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64
     })
 }
 
-fn arb_single_poly_kernel() -> impl Strategy<Value = nurbs::algebra::PiecewisePolynomialKernel<f64>> {
+fn arb_single_poly_kernel() -> impl Strategy<Value = nurbs::algebra::PiecewisePolynomialKernel<f64>>
+{
     (1usize..=4, 0.05..0.4_f64).prop_map(|(d, half)| {
         let coeffs: Vec<f64> = (0..=d).map(|i| (i as f64 + 1.0) * 0.5).collect();
         nurbs::algebra::PiecewisePolynomialKernel::single_poly(coeffs, (-half, half))

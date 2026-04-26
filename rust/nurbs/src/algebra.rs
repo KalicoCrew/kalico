@@ -66,12 +66,17 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
             u_end: support.1,
             coeffs,
         };
-        Self { pieces: vec![piece] }
+        Self {
+            pieces: vec![piece],
+        }
     }
 
     /// Total support of the kernel: from first piece's `u_start` to last piece's `u_end`.
     pub fn support(&self) -> (T, T) {
-        (self.pieces.first().unwrap().u_start, self.pieces.last().unwrap().u_end)
+        (
+            self.pieces.first().unwrap().u_start,
+            self.pieces.last().unwrap().u_end,
+        )
     }
 
     /// Build a multi-piece kernel from already-constructed pieces.
@@ -204,13 +209,21 @@ pub fn convolve<T: Float>(
     // Compute output breakpoints: cross-sum of input and kernel breakpoints.
     let x_breaks: Vec<T> = {
         let mut v: Vec<T> = Vec::new();
-        for p in &x_pieces { if !v.contains(&p.u_start) { v.push(p.u_start); } }
+        for p in &x_pieces {
+            if !v.contains(&p.u_start) {
+                v.push(p.u_start);
+            }
+        }
         v.push(x_pieces.last().unwrap().u_end);
         v
     };
     let w_breaks: Vec<T> = {
         let mut v: Vec<T> = Vec::new();
-        for p in w_pieces { if !v.contains(&p.u_start) { v.push(p.u_start); } }
+        for p in w_pieces {
+            if !v.contains(&p.u_start) {
+                v.push(p.u_start);
+            }
+        }
         v.push(w_pieces.last().unwrap().u_end);
         v
     };
@@ -227,7 +240,8 @@ pub fn convolve<T: Float>(
 
     let degree = x_pieces[0].degree() + w_pieces[0].degree() + 1;
 
-    let mut out_pieces: Vec<crate::bezier::BezierPiece<T>> = Vec::with_capacity(out_breaks.len() - 1);
+    let mut out_pieces: Vec<crate::bezier::BezierPiece<T>> =
+        Vec::with_capacity(out_breaks.len() - 1);
     for win in out_breaks.windows(2) {
         let alpha = win[0];
         let beta = win[1];
@@ -238,7 +252,9 @@ pub fn convolve<T: Float>(
                 let u_mid = (alpha + beta) * T::from_f64(0.5);
                 let s_lo = (x_p.u_start).max(u_mid - w_p.u_end);
                 let s_hi = (x_p.u_end).min(u_mid - w_p.u_start);
-                if s_lo >= s_hi { continue; }
+                if s_lo >= s_hi {
+                    continue;
+                }
 
                 let contribution = integrate_product_piece(x_p, w_p, alpha, beta);
                 accum = (&accum + &contribution).expect("same-support accumulation");
@@ -338,7 +354,9 @@ fn integrate_product_piece<T: Float>(
     let mut y_abs = vec![T::ZERO; out_degree + 1];
     for m in 0..=max_m {
         for n in 0..=max_n {
-            if integrand[m][n] == T::ZERO { continue; }
+            if integrand[m][n] == T::ZERO {
+                continue;
+            }
             let inv = integrand[m][n] / T::from_f64((n + 1) as f64);
             let hi_pow = power_of_linear(s_hi_c, s_hi_u, n + 1);
             let lo_pow = power_of_linear(s_lo_c, s_lo_u, n + 1);
@@ -439,7 +457,9 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
                 removed_any = true;
             }
         }
-        if !removed_any { break; }
+        if !removed_any {
+            break;
+        }
     }
 }
 
@@ -455,9 +475,9 @@ mod tests {
         // y(u) = ∫_{u-0.25}^{u+0.25} s ds = (1/2) * ((u+0.25)^2 - (u-0.25)^2) = u/2
         // for u in [0.25, 0.75] (kernel window fully inside x's support).
         // y(0.5) = 0.5/2 = 0.25.  Equivalently: width * average = 0.5 * 0.5 = 0.25.
-        let x = crate::ScalarNurbs::<f64>::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
-        ).unwrap();
+        let x =
+            crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+                .unwrap();
         let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.25, 0.25));
 
         let y = convolve(&x, &kernel).unwrap();
@@ -471,9 +491,9 @@ mod tests {
         // x(s) = 2 on [0, 1], w(t) = 3 on [-0.5, 0.5].
         // Convolution support: [0 + (-0.5), 1 + 0.5] = [-0.5, 1.5].
         // Output: triangle peaking in [0.5, 0.5] at value 6, sloping linearly to 0 at boundaries.
-        let x = crate::ScalarNurbs::<f64>::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 2.0], None,
-        ).unwrap();
+        let x =
+            crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 2.0], None)
+                .unwrap();
         let kernel = PiecewisePolynomialKernel::single_poly(vec![3.0_f64], (-0.5, 0.5));
 
         let y = convolve(&x, &kernel).unwrap();
@@ -501,10 +521,14 @@ mod tests {
         // Generally y(u) = 6 * (length of overlap window).
 
         let x = crate::bezier::BezierPiece::<f64> {
-            u_start: 0.0, u_end: 1.0, coeffs: vec![2.0],  // constant 2
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![2.0], // constant 2
         };
         let w = crate::bezier::BezierPiece::<f64> {
-            u_start: -0.5, u_end: 0.5, coeffs: vec![3.0],  // constant 3
+            u_start: -0.5,
+            u_end: 0.5,
+            coeffs: vec![3.0], // constant 3
         };
 
         // Integrate over output sub-interval [0.5, 1.0] where the kernel window
@@ -524,13 +548,20 @@ mod tests {
     #[test]
     fn convolve_rejects_rational_input() {
         let curve = crate::ScalarNurbs::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0_f64, 1.0], Some(vec![1.0, 1.0]),
-        ).unwrap();
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0_f64, 1.0],
+            Some(vec![1.0, 1.0]),
+        )
+        .unwrap();
         let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.1, 0.1));
         let result = convolve(&curve, &kernel);
         assert!(matches!(
             result,
-            Err(AlgebraError::RationalNotSupported { operation: "convolve", .. })
+            Err(AlgebraError::RationalNotSupported {
+                operation: "convolve",
+                ..
+            })
         ));
     }
 
@@ -551,9 +582,9 @@ mod tests {
 
     #[test]
     fn knot_remove_redundant_simplifies_overproduct() {
-        let a = crate::ScalarNurbs::<f64>::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
-        ).unwrap();
+        let a =
+            crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+                .unwrap();
         let b = a.clone();
         let mut c = multiply(&a, &b).unwrap();
         let initial_knot_count = c.knots().len();
@@ -578,13 +609,15 @@ mod tests {
             vec![0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0],
             vec![0.0, 1.0, 2.0, 3.0],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let b = crate::ScalarNurbs::<f64>::try_new(
             2,
             vec![0.0, 0.0, 0.0, 0.7, 1.0, 1.0, 1.0],
             vec![1.0, 2.0, 0.0, 1.0],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let c = multiply(&a, &b).unwrap();
         assert_eq!(c.degree(), 4);
         for u in [0.0, 0.2, 0.4, 0.5, 0.7, 0.9, 1.0] {
@@ -597,12 +630,12 @@ mod tests {
     #[test]
     fn multiply_two_linear_curves_gives_quadratic() {
         // a(u) = u, b(u) = 2u + 1, expected c(u) = u(2u + 1) = 2u^2 + u.
-        let a = crate::ScalarNurbs::<f64>::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
-        ).unwrap();
-        let b = crate::ScalarNurbs::<f64>::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![1.0, 3.0], None,
-        ).unwrap();
+        let a =
+            crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+                .unwrap();
+        let b =
+            crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![1.0, 3.0], None)
+                .unwrap();
         let c = multiply(&a, &b).unwrap();
         assert_eq!(c.degree(), 2);
         for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -663,21 +696,36 @@ mod tests {
     #[test]
     fn multiply_rejects_rational_input() {
         let a = crate::ScalarNurbs::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], Some(vec![1.0, 1.0]),
-        ).unwrap();
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0],
+            Some(vec![1.0, 1.0]),
+        )
+        .unwrap();
         let b = a.clone();
         let result = multiply(&a, &b);
         assert!(matches!(
             result,
-            Err(crate::AlgebraError::RationalNotSupported { operation: "multiply", .. })
+            Err(crate::AlgebraError::RationalNotSupported {
+                operation: "multiply",
+                ..
+            })
         ));
     }
 
     #[test]
     fn from_pieces_accepts_contiguous_kernel() {
         let pieces = vec![
-            crate::bezier::BezierPiece { u_start: -0.5, u_end: 0.0, coeffs: vec![1.0_f64] },
-            crate::bezier::BezierPiece { u_start: 0.0, u_end: 0.5, coeffs: vec![2.0_f64] },
+            crate::bezier::BezierPiece {
+                u_start: -0.5,
+                u_end: 0.0,
+                coeffs: vec![1.0_f64],
+            },
+            crate::bezier::BezierPiece {
+                u_start: 0.0,
+                u_end: 0.5,
+                coeffs: vec![2.0_f64],
+            },
         ];
         let k = PiecewisePolynomialKernel::from_pieces(pieces).unwrap();
         assert_eq!(k.pieces.len(), 2);
@@ -687,8 +735,16 @@ mod tests {
     #[test]
     fn from_pieces_rejects_non_contiguous() {
         let pieces = vec![
-            crate::bezier::BezierPiece { u_start: -0.5_f64, u_end: 0.0, coeffs: vec![1.0] },
-            crate::bezier::BezierPiece { u_start: 0.1, u_end: 0.5, coeffs: vec![2.0] },  // gap
+            crate::bezier::BezierPiece {
+                u_start: -0.5_f64,
+                u_end: 0.0,
+                coeffs: vec![1.0],
+            },
+            crate::bezier::BezierPiece {
+                u_start: 0.1,
+                u_end: 0.5,
+                coeffs: vec![2.0],
+            }, // gap
         ];
         let result = PiecewisePolynomialKernel::from_pieces(pieces);
         assert!(matches!(result, Err(AlgebraError::SupportMismatch)));
@@ -710,7 +766,9 @@ mod tests {
         for i in 0..coeffs.len() {
             assert!(
                 (back[i] - coeffs[i]).abs() < 1e-12,
-                "coeff[{i}]: original {} != round-tripped {}", coeffs[i], back[i],
+                "coeff[{i}]: original {} != round-tripped {}",
+                coeffs[i],
+                back[i],
             );
         }
     }
@@ -719,20 +777,26 @@ mod tests {
     fn multiply_quadratic_x_linear_gives_cubic() {
         // a(u) = u^2 (Bernstein cps [0, 0, 1] for monomial u^2 on [0, 1]).
         let a = crate::ScalarNurbs::<f64>::try_new(
-            2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 0.0, 1.0], None,
-        ).unwrap();
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0],
+            None,
+        )
+        .unwrap();
         // b(u) = u, same as before.
-        let b = crate::ScalarNurbs::<f64>::try_new(
-            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
-        ).unwrap();
+        let b =
+            crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+                .unwrap();
         let c = multiply(&a, &b).unwrap();
         assert_eq!(c.degree(), 3);
         // Expected: c(u) = u^3.
         for u in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
             let exp = u * u * u;
             let got = eval(&c.as_view(), u);
-            assert!((exp - got).abs() < 1e-12, "u={u}: u^3={exp}, multiply={got}");
+            assert!(
+                (exp - got).abs() < 1e-12,
+                "u={u}: u^3={exp}, multiply={got}"
+            );
         }
     }
-
 }

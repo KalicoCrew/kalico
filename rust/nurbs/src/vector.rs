@@ -60,7 +60,12 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
 
     #[must_use]
     pub fn into_parts(self) -> (u8, Vec<T>, Vec<[T; N]>, Option<Vec<T>>) {
-        (self.degree, self.knots.into_inner(), self.control_points, self.weights)
+        (
+            self.degree,
+            self.knots.into_inner(),
+            self.control_points,
+            self.weights,
+        )
     }
 }
 

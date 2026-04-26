@@ -68,7 +68,12 @@ impl<T: Float> ScalarNurbs<T> {
     /// build new NURBS by transformation.
     #[must_use]
     pub fn into_parts(self) -> (u8, Vec<T>, Vec<T>, Option<Vec<T>>) {
-        (self.degree, self.knots.into_inner(), self.control_points, self.weights)
+        (
+            self.degree,
+            self.knots.into_inner(),
+            self.control_points,
+            self.weights,
+        )
     }
 }
 

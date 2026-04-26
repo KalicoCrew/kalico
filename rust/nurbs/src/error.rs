@@ -97,7 +97,10 @@ impl<T: Float> core::error::Error for ArcLengthError<T> {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlgebraError {
-    DegreeExceeded { result_degree: u8, max: u8 },
+    DegreeExceeded {
+        result_degree: u8,
+        max: u8,
+    },
     KnotMismatch,
     NotImplemented(&'static str),
     SupportMismatch,
@@ -116,8 +119,14 @@ impl fmt::Display for AlgebraError {
             Self::KnotMismatch => write!(f, "operands have incompatible knot vectors"),
             Self::NotImplemented(s) => write!(f, "algorithm not implemented: {s}"),
             Self::SupportMismatch => write!(f, "Bezier pieces have mismatched support"),
-            Self::RationalNotSupported { operation, workaround } => {
-                write!(f, "{operation} does not support rational input; {workaround}")
+            Self::RationalNotSupported {
+                operation,
+                workaround,
+            } => {
+                write!(
+                    f,
+                    "{operation} does not support rational input; {workaround}"
+                )
             }
         }
     }
@@ -128,7 +137,11 @@ impl core::error::Error for AlgebraError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KnotError {
     BoundaryInsertion,
-    MultiplicityExceeded { existing: u8, requested: u8, max: u8 },
+    MultiplicityExceeded {
+        existing: u8,
+        requested: u8,
+        max: u8,
+    },
     OutOfRange,
     Invalid,
 }
@@ -139,8 +152,15 @@ impl fmt::Display for KnotError {
             Self::BoundaryInsertion => {
                 write!(f, "cannot insert knot at clamped boundary")
             }
-            Self::MultiplicityExceeded { existing, requested, max } => {
-                write!(f, "knot multiplicity {existing} + {requested} exceeds max {max}")
+            Self::MultiplicityExceeded {
+                existing,
+                requested,
+                max,
+            } => {
+                write!(
+                    f,
+                    "knot multiplicity {existing} + {requested} exceeds max {max}"
+                )
             }
             Self::OutOfRange => write!(f, "knot value out of knot vector range"),
             Self::Invalid => write!(f, "knot vector violates monotone or length invariants"),
@@ -250,7 +270,11 @@ mod tests {
 
     #[test]
     fn knot_error_displays_clearly() {
-        let e = KnotError::MultiplicityExceeded { existing: 2, requested: 2, max: 3 };
+        let e = KnotError::MultiplicityExceeded {
+            existing: 2,
+            requested: 2,
+            max: 3,
+        };
         let s = format!("{e}");
         assert!(s.contains("multiplicity"));
         assert!(s.contains('2'));

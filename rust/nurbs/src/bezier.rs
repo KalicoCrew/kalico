@@ -91,7 +91,11 @@ impl<T: Float> BezierPiece<T> {
             coeffs[k] = acc / h_pow;
             h_pow = h_pow * h;
         }
-        Self { u_start, u_end, coeffs }
+        Self {
+            u_start,
+            u_end,
+            coeffs,
+        }
     }
 }
 
@@ -270,7 +274,11 @@ mod tests {
 
     #[test]
     fn evaluate_constant_polynomial_is_constant() {
-        let p = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![3.5] };
+        let p = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![3.5],
+        };
         assert_eq!(p.evaluate(0.0), 3.5);
         assert_eq!(p.evaluate(0.5), 3.5);
         assert_eq!(p.evaluate(1.0), 3.5);
@@ -279,7 +287,11 @@ mod tests {
     #[test]
     fn evaluate_linear_polynomial() {
         // p(u) = 1 + 2 * (u - 0)
-        let p = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0] };
+        let p = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0, 2.0],
+        };
         assert_eq!(p.evaluate(0.0), 1.0);
         assert_eq!(p.evaluate(0.5), 2.0);
         assert_eq!(p.evaluate(1.0), 3.0);
@@ -288,7 +300,11 @@ mod tests {
     #[test]
     fn evaluate_uses_shifted_basis() {
         // p(u) = 1 + 2 * (u - 5), so p(5) = 1, p(6) = 3.
-        let p = BezierPiece::<f64> { u_start: 5.0, u_end: 7.0, coeffs: vec![1.0, 2.0] };
+        let p = BezierPiece::<f64> {
+            u_start: 5.0,
+            u_end: 7.0,
+            coeffs: vec![1.0, 2.0],
+        };
         assert_eq!(p.evaluate(5.0), 1.0);
         assert_eq!(p.evaluate(6.0), 3.0);
         assert_eq!(p.evaluate(7.0), 5.0);
@@ -306,7 +322,9 @@ mod tests {
     fn bernstein_round_trip_preserves_polynomial() {
         // Quadratic in monomial form: p(u) = 1 + 2u + 3u^2 on [0, 1].
         let monom = BezierPiece::<f64> {
-            u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0, 3.0],
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0, 2.0, 3.0],
         };
         let bernstein = monom.to_bernstein();
         let back = BezierPiece::from_bernstein(&bernstein, 0.0, 1.0);
@@ -347,8 +365,16 @@ mod tests {
 
     #[test]
     fn add_two_pieces_same_support() {
-        let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0] };
-        let b = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![3.0, 4.0] };
+        let a = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0, 2.0],
+        };
+        let b = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![3.0, 4.0],
+        };
         let sum = (&a + &b).unwrap();
         assert_eq!(sum.coeffs, vec![4.0, 6.0]);
         assert_eq!(sum.u_start, 0.0);
@@ -357,16 +383,32 @@ mod tests {
 
     #[test]
     fn add_two_pieces_mismatched_degrees_pads_with_zero() {
-        let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0, 3.0] };
-        let b = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0] };
+        let a = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0, 2.0, 3.0],
+        };
+        let b = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0],
+        };
         let sum = (&a + &b).unwrap();
         assert_eq!(sum.coeffs, vec![2.0, 2.0, 3.0]);
     }
 
     #[test]
     fn add_two_pieces_mismatched_support_errors() {
-        let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0] };
-        let b = BezierPiece::<f64> { u_start: 0.5, u_end: 1.0, coeffs: vec![1.0] };
+        let a = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0],
+        };
+        let b = BezierPiece::<f64> {
+            u_start: 0.5,
+            u_end: 1.0,
+            coeffs: vec![1.0],
+        };
         assert!(matches!(&a + &b, Err(AlgebraError::SupportMismatch)));
     }
 
@@ -376,8 +418,12 @@ mod tests {
     fn extract_single_bezier_piece_from_clamped_curve() {
         // Quadratic with no interior knots — already a single Bezier piece.
         let curve = ScalarNurbs::<f64>::try_new(
-            2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 1.0, 4.0], None,
-        ).unwrap();
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 4.0],
+            None,
+        )
+        .unwrap();
 
         let pieces = extract_bezier_pieces(&curve);
         assert_eq!(pieces.len(), 1);
@@ -401,7 +447,8 @@ mod tests {
             vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
             vec![0.0, 1.0, 2.0, 3.0],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let pieces = extract_bezier_pieces(&curve);
         assert_eq!(pieces.len(), 2);
@@ -429,7 +476,11 @@ mod tests {
     #[test]
     fn split_piece_at_preserves_evaluation_on_each_side() {
         // p(u) = 1 + 2 * (u - 0) on [0, 1].
-        let original = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0] };
+        let original = BezierPiece::<f64> {
+            u_start: 0.0,
+            u_end: 1.0,
+            coeffs: vec![1.0, 2.0],
+        };
         let (left, right) = split_piece_at(&original, 0.4);
 
         assert_eq!(left.u_start, 0.0);
@@ -457,7 +508,8 @@ mod tests {
             vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
             vec![0.0, 1.0, 2.0, 3.0],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let pieces = extract_bezier_pieces(&original);
         let recomposed = bezier_pieces_to_nurbs(&pieces);
