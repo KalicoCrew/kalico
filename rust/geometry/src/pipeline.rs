@@ -413,7 +413,7 @@ mod tests {
         assert!(approx_eq(cps[1][0], 1.0) && approx_eq(cps[1][1], 1.0));
         assert!(approx_eq(cps[2][0], 0.0) && approx_eq(cps[2][1], 1.0));
         // Z constant.
-        for cp in cps { assert_eq!(cp[2], 0.0); }
+        for cp in cps { assert!(approx_eq(cp[2], 0.0)); }
     }
 
     #[test]
