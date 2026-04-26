@@ -1,7 +1,7 @@
 //! Bézier piece in Pascal-shifted monomial basis. Host-only.
 //! See `docs/superpowers/specs/2026-04-26-nurbs-algebra-design.md` §5.
 
-use crate::{AlgebraError, Float};
+use crate::{AlgebraError, Float, ScalarNurbs};
 
 /// One Bézier piece as a polynomial in the *Pascal-shifted monomial basis*:
 /// p(u) = Σ_{k=0..d} coeffs[k] * (u - u_start)^k
@@ -117,6 +117,43 @@ impl<T: Float> std::ops::Add<&BezierPiece<T>> for &BezierPiece<T> {
     }
 }
 
+/// Decompose a polynomial NURBS into its constituent Bézier pieces in the
+/// Pascal-shifted monomial basis. Internally raises every interior knot to
+/// multiplicity = degree (Boehm), then converts each Bernstein piece to monomial.
+pub fn extract_bezier_pieces<T: Float>(curve: &ScalarNurbs<T>) -> Vec<BezierPiece<T>> {
+    assert!(
+        curve.weights().is_none(),
+        "extract_bezier_pieces: rational input not supported in v1"
+    );
+
+    let refined = crate::knot::refined_to_full_multiplicity(curve);
+    let p = refined.degree() as usize;
+    let knots = refined.knots();
+    let cps = refined.control_points();
+
+    // Identify unique breakpoints (excluding clamping at endpoints, only counted once).
+    let mut breakpoints: Vec<T> = Vec::new();
+    let mut last: Option<T> = None;
+    for k in knots {
+        if last.is_none_or(|l| *k != l) {
+            breakpoints.push(*k);
+            last = Some(*k);
+        }
+    }
+
+    let mut pieces = Vec::with_capacity(breakpoints.len() - 1);
+    let mut cp_idx = 0;
+    for window in breakpoints.windows(2) {
+        let u_start = window[0];
+        let u_end = window[1];
+        let bernstein: Vec<T> = cps[cp_idx..cp_idx + p + 1].to_vec();
+        pieces.push(BezierPiece::from_bernstein(&bernstein, u_start, u_end));
+        cp_idx += p; // Shared boundary CP between adjacent pieces.
+    }
+
+    pieces
+}
+
 /// Binomial coefficient C(n, k). Integer-valued; safe for k, n ≤ 30 or so.
 /// `pub(crate)` so `algebra.rs` can reuse it (DRY — defined here, used in convolve too).
 pub(crate) fn binomial(n: usize, k: usize) -> u64 {
@@ -217,5 +254,28 @@ mod tests {
         let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0] };
         let b = BezierPiece::<f64> { u_start: 0.5, u_end: 1.0, coeffs: vec![1.0] };
         assert!(matches!(&a + &b, Err(AlgebraError::SupportMismatch)));
+    }
+
+    use crate::ScalarNurbs;
+
+    #[test]
+    fn extract_single_bezier_piece_from_clamped_curve() {
+        // Quadratic with no interior knots — already a single Bezier piece.
+        let curve = ScalarNurbs::<f64>::try_new(
+            2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 1.0, 4.0], None,
+        ).unwrap();
+
+        let pieces = extract_bezier_pieces(&curve);
+        assert_eq!(pieces.len(), 1);
+        let p = &pieces[0];
+        assert_eq!(p.u_start, 0.0);
+        assert_eq!(p.u_end, 1.0);
+        assert_eq!(p.degree(), 2);
+        // Eval at sample points matches.
+        for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let exp = crate::eval::eval(&curve.as_view(), u);
+            let got = p.evaluate(u);
+            assert!((exp - got).abs() < 1e-12, "u={u}: exp={exp}, got={got}");
+        }
     }
 }
