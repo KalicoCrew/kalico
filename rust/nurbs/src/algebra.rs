@@ -185,6 +185,30 @@ mod tests {
     use crate::eval::eval;
 
     #[test]
+    fn multiply_curves_with_different_interior_knots() {
+        // a has interior knot at 0.4, b has interior knot at 0.7.
+        let a = crate::ScalarNurbs::<f64>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 3.0],
+            None,
+        ).unwrap();
+        let b = crate::ScalarNurbs::<f64>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.7, 1.0, 1.0, 1.0],
+            vec![1.0, 2.0, 0.0, 1.0],
+            None,
+        ).unwrap();
+        let c = multiply(&a, &b).unwrap();
+        assert_eq!(c.degree(), 4);
+        for u in [0.0, 0.2, 0.4, 0.5, 0.7, 0.9, 1.0] {
+            let exp = eval(&a.as_view(), u) * eval(&b.as_view(), u);
+            let got = eval(&c.as_view(), u);
+            assert!((exp - got).abs() < 1e-10, "u={u}: exp={exp}, got={got}");
+        }
+    }
+
+    #[test]
     fn multiply_two_linear_curves_gives_quadratic() {
         // a(u) = u, b(u) = 2u + 1, expected c(u) = u(2u + 1) = 2u^2 + u.
         let a = crate::ScalarNurbs::<f64>::try_new(
