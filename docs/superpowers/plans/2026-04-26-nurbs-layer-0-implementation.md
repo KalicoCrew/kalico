@@ -44,7 +44,7 @@ Cargo.lock.bak
 
 ```toml
 [toolchain]
-channel = "1.83.0"
+channel = "1.85.0"
 components = ["rustfmt", "clippy"]
 targets = [
     "thumbv7em-none-eabihf",
@@ -157,7 +157,7 @@ git commit -m "nurbs: scaffold rust workspace skeleton"
 name = "nurbs"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 publish = false
 description = "Layer 0 NURBS substrate: eval, arc-length, algebra"
 
@@ -3600,7 +3600,7 @@ In Task 2 the workspace `members` list was trimmed to `["nurbs"]` because `nurbs
 name = "nurbs-c-api"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 publish = false
 description = "Stable C ABI surface for the nurbs crate"
 

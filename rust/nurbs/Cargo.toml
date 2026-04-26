@@ -2,7 +2,7 @@
 name = "nurbs"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 publish = false
 description = "Layer 0 NURBS substrate: eval, arc-length, algebra"
 
