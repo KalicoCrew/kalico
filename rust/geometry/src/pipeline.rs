@@ -256,6 +256,12 @@ fn build_arc_nurbs(
     center: [f64; 3],
     clockwise: bool,
 ) -> nurbs::VectorNurbs<f64, 3> {
+    // Phase 1 limitation: the single rational-quadratic Bezier representation
+    // is only valid for |sweep| < π (cos(sweep/2) > 0 required as NURBS weight).
+    // Arcs with |sweep| ≥ π are clamped here — geometry is approximate but valid;
+    // multi-piece exact representation is a Phase 2 item.
+    const MAX_SWEEP: f64 = std::f64::consts::PI * (1.0 - 1e-9);
+
     let r_start = [start[0] - center[0], start[1] - center[1]];
     let radius = (r_start[0]*r_start[0] + r_start[1]*r_start[1]).sqrt();
     let start_angle = r_start[1].atan2(r_start[0]);
@@ -282,8 +288,12 @@ fn build_arc_nurbs(
         -s
     };
 
+    // Clamp to the Phase 1 valid range so cos_half stays positive.
+    let sweep = sweep.clamp(-MAX_SWEEP, MAX_SWEEP);
+
     let half = sweep / 2.0;
     let cos_half = half.cos();
+    // cos_half is guaranteed positive by the clamp above.
     // Mid control point at tangent intersection (formula: center + r * (cos(start_angle + half) / cos_half, sin(start_angle + half) / cos_half))
     let mid_x = center[0] + radius * (start_angle + half).cos() / cos_half;
     let mid_y = center[1] + radius * (start_angle + half).sin() / cos_half;
@@ -301,7 +311,7 @@ fn build_arc_nurbs(
         cps,
         Some(vec![1.0, cos_half, 1.0]),
     )
-    .expect("rational quadratic arc construction is always valid")
+    .expect("rational quadratic arc construction is always valid after sweep clamp")
 }
 
 #[cfg(test)]
