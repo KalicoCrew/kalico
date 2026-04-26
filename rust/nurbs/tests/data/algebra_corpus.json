@@ -1,0 +1,133 @@
+{
+  "fixtures": [
+    {
+      "name": "multiply_linear_squared",
+      "operation": "multiply",
+      "a": {
+        "degree": 1,
+        "knots": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          0.0,
+          1.0
+        ],
+        "weights": null
+      },
+      "b": {
+        "degree": 1,
+        "knots": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          0.0,
+          1.0
+        ],
+        "weights": null
+      },
+      "samples": [
+        {
+          "u": 0.0,
+          "value": 0.0
+        },
+        {
+          "u": 0.1,
+          "value": 0.010000000000000002
+        },
+        {
+          "u": 0.25,
+          "value": 0.0625
+        },
+        {
+          "u": 0.5,
+          "value": 0.25
+        },
+        {
+          "u": 0.75,
+          "value": 0.5625
+        },
+        {
+          "u": 0.9,
+          "value": 0.81
+        },
+        {
+          "u": 1.0,
+          "value": 1.0
+        }
+      ]
+    },
+    {
+      "name": "convolve_constant_x_constant",
+      "operation": "convolve",
+      "curve": {
+        "degree": 1,
+        "knots": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          2.0,
+          2.0
+        ],
+        "weights": null
+      },
+      "kernel": {
+        "pieces": [
+          {
+            "u_start": -0.5,
+            "u_end": 0.5,
+            "coeffs": [
+              3.0
+            ]
+          }
+        ]
+      },
+      "samples": [
+        {
+          "u": -0.5,
+          "value": 0
+        },
+        {
+          "u": -0.25,
+          "value": 1.5
+        },
+        {
+          "u": 0.0,
+          "value": 3.0
+        },
+        {
+          "u": 0.25,
+          "value": 4.5
+        },
+        {
+          "u": 0.5,
+          "value": 6
+        },
+        {
+          "u": 0.75,
+          "value": 4.5
+        },
+        {
+          "u": 1.0,
+          "value": 3.0
+        },
+        {
+          "u": 1.25,
+          "value": 1.5
+        },
+        {
+          "u": 1.5,
+          "value": 0
+        }
+      ]
+    }
+  ]
+}
