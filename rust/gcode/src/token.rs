@@ -5,27 +5,20 @@ use crate::marker::MarkerKind;
 /// Parameter words for a single G-code line, indexed by uppercase ASCII letter.
 /// `Params::get(b'X')` returns `Some(value)` if the line had `X<value>`.
 ///
-/// Stored as `[Option<f64>; 26]` for O(1) access and zero allocations. 208 bytes
-/// per `Params`; tokens stream through and don't accumulate.
-#[derive(Debug, Clone, PartialEq)]
+/// Stored as `[Option<f64>; 26]` for O(1) access and zero allocations.
+/// `Option<f64>` is 16 bytes (no niche on f64), so this array is 416 bytes;
+/// tokens stream through and don't accumulate.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Params {
     words: [Option<f64>; 26],
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for Params {
-    fn default() -> Self {
-        Self { words: [None; 26] }
-    }
 }
 
 impl Params {
     /// Look up a parameter by its uppercase letter byte.
     /// Returns `None` for non-letter bytes or unset parameters.
     #[must_use]
-    #[allow(clippy::manual_is_ascii_check)]
     pub fn get(&self, letter: u8) -> Option<f64> {
-        if (b'A'..=b'Z').contains(&letter) {
+        if letter.is_ascii_uppercase() {
             self.words[(letter - b'A') as usize]
         } else {
             None
@@ -33,9 +26,8 @@ impl Params {
     }
 
     /// Set a parameter by its uppercase letter byte. No-op for non-letter bytes.
-    #[allow(clippy::manual_is_ascii_check)]
     pub fn set(&mut self, letter: u8, value: f64) {
-        if (b'A'..=b'Z').contains(&letter) {
+        if letter.is_ascii_uppercase() {
             self.words[(letter - b'A') as usize] = Some(value);
         }
     }
@@ -103,6 +95,24 @@ mod tests {
     }
 
     #[test]
+    fn params_get_returns_none_for_non_letter_bytes() {
+        let p = Params::default();
+        assert_eq!(p.get(b'1'), None);
+        assert_eq!(p.get(b'a'), None);
+        assert_eq!(p.get(b' '), None);
+        assert_eq!(p.get(0), None);
+    }
+
+    #[test]
+    fn params_set_is_no_op_for_non_uppercase() {
+        let mut p = Params::default();
+        p.set(b'a', 1.0);
+        p.set(b'1', 2.0);
+        assert_eq!(p.get(b'A'), None);
+        assert_eq!(p.get(b'a'), None);
+    }
+
+    #[test]
     fn token_command_round_trip() {
         let mut params = Params::default();
         params.set(b'X', 10.0);
@@ -114,9 +124,11 @@ mod tests {
             line_no: 42,
         };
         match t {
-            Token::Command { letter, major, line_no, .. } => {
+            Token::Command { letter, major, minor, params, line_no } => {
                 assert_eq!(letter, b'G');
                 assert_eq!(major, 1);
+                assert_eq!(minor, None);
+                assert_eq!(params.x(), Some(10.0));
                 assert_eq!(line_no, 42);
             }
             _ => panic!("expected Command"),
@@ -125,9 +137,9 @@ mod tests {
 
     #[test]
     fn marker_kind_layer_change() {
-        let m = crate::marker::MarkerKind::LayerChange { layer: 5 };
+        let m = MarkerKind::LayerChange { layer: 5 };
         match m {
-            crate::marker::MarkerKind::LayerChange { layer } => assert_eq!(layer, 5),
+            MarkerKind::LayerChange { layer } => assert_eq!(layer, 5),
             _ => panic!("expected LayerChange"),
         }
     }
