@@ -70,7 +70,6 @@ pub struct Segments<'a> {
     params: &'a FitterParams,
     events: Box<dyn Iterator<Item = ReduceEvent> + 'a>,
     queue: VecDeque<Item>,
-    #[allow(dead_code)] // consumed in Tasks 18-22
     sink: &'a mut dyn FnMut(TelemetryEvent),
     terminal: bool,
     /// End-position of the previous emitted G1 segment, for junction-deviation construction.
@@ -160,10 +159,33 @@ impl Segments<'_> {
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
             }
-            _ => {
-                // Other event kinds handled in subsequent tasks.
-                // Reference MotionMarkerKind to keep the import live until Tasks 19+.
-                let _: Option<MotionMarkerKind> = None;
+            ReduceEvent::CommentMarker { kind, line_no } => {
+                // LayerType, EndOfPrint, and unknown markers have no Phase 1 telemetry mapping.
+                if let gcode::MarkerKind::LayerChange { layer } = kind {
+                    (self.sink)(TelemetryEvent::LayerChange { layer, line_no });
+                }
+                // Marker terminates G1 chain.
+                self.prev_g1_end = None;
+                self.prev_g1_feedrate = None;
+                self.prev_g1_dir = None;
+            }
+            ReduceEvent::Marker { kind, line_no, tool, e_delta_mm } => {
+                match kind {
+                    MotionMarkerKind::T => {
+                        if let Some(tool) = tool {
+                            (self.sink)(TelemetryEvent::ToolChange { tool, line_no });
+                        }
+                    }
+                    MotionMarkerKind::EOnly => {
+                        if let Some(e_delta_mm) = e_delta_mm {
+                            (self.sink)(TelemetryEvent::Retraction { e_delta_mm, line_no });
+                        }
+                    }
+                    _ => {}
+                }
+                self.prev_g1_end = None;
+                self.prev_g1_feedrate = None;
+                self.prev_g1_dir = None;
             }
         }
     }
@@ -260,7 +282,7 @@ fn build_arc_nurbs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Item, Segment, FittedSegment, JunctionDeviation};
+    use crate::{Item, Segment, FittedSegment, JunctionDeviation, TelemetryEvent};
 
     fn collect(text: &str) -> Vec<Item> {
         let mut p = GeometryPipeline::new(FitterParams::default());
@@ -357,6 +379,51 @@ mod tests {
         assert!(approx_eq(cps[2][0], 0.0) && approx_eq(cps[2][1], 1.0));
         // Z constant.
         for cp in cps { assert_eq!(cp[2], 0.0); }
+    }
+
+    #[test]
+    fn layer_change_marker_fires_telemetry() {
+        let mut events = vec![];
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let _items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            p.process(";LAYER:5\n", &mut sink).collect()
+        };
+        assert!(matches!(
+            events.as_slice(),
+            [TelemetryEvent::LayerChange { layer: Some(5), line_no: 1 }]
+        ));
+    }
+
+    #[test]
+    fn tool_change_fires_telemetry() {
+        let mut events = vec![];
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let _items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            p.process("T1\n", &mut sink).collect()
+        };
+        assert!(matches!(
+            events.as_slice(),
+            [TelemetryEvent::ToolChange { tool: 1, line_no: 1 }]
+        ));
+    }
+
+    #[test]
+    fn retraction_fires_telemetry() {
+        let mut events = vec![];
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let _items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            p.process("G1 E-1.5 F3000\n", &mut sink).collect()
+        };
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            TelemetryEvent::Retraction { e_delta_mm, line_no: 1 } => {
+                assert!((e_delta_mm - (-1.5)).abs() < 1e-12);
+            }
+            other => panic!("expected Retraction, got {other:?}"),
+        }
     }
 
     #[test]
