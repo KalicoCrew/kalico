@@ -21,10 +21,9 @@ fn header_in_repo_matches_generated() {
     regenerated.write(&mut buf);
     let regenerated_str = String::from_utf8(buf).expect("utf-8 output");
 
-    if committed != regenerated_str {
-        panic!(
-            "kalico_nurbs.h is out of date. Run:\n  \
-             cargo run -p nurbs-c-api --bin gen-headers --features host"
-        );
-    }
+    assert!(
+        committed == regenerated_str,
+        "kalico_nurbs.h is out of date. Run:\n  \
+         cargo run -p nurbs-c-api --bin gen-headers --features host"
+    );
 }

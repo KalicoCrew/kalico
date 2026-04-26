@@ -23,17 +23,14 @@ fn arb_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64>> {
             let cps = prop::collection::vec(-10.0..10.0_f64, n);
             cps.prop_map(move |cps_vec| {
                 // Build a clamped uniform knot vector.
-                let mut knots = Vec::with_capacity(n + p as usize + 1);
-                for _ in 0..=p {
-                    knots.push(0.0);
-                }
+                let pad = p as usize + 1;
                 let interior = n.saturating_sub(p as usize + 1);
+                let mut knots = Vec::with_capacity(2 * pad + interior);
+                knots.resize(pad, 0.0);
                 for i in 1..=interior {
                     knots.push(i as f64 / (interior + 1) as f64);
                 }
-                for _ in 0..=p {
-                    knots.push(1.0);
-                }
+                knots.resize(knots.len() + pad, 1.0);
                 nurbs::ScalarNurbs::try_new(p, knots, cps_vec, None).unwrap()
             })
         })
@@ -62,12 +59,15 @@ proptest! {
     #[test]
     fn derivative_of_constant_curve_is_zero(p in 1u8..=5) {
         let n = (p as usize) + 1;
-        let cps = vec![3.14_f64; n];
-        let mut knots = Vec::new();
-        for _ in 0..=p { knots.push(0.0); }
+        let cps = vec![2.5_f64; n];
+        let pad = p as usize + 1;
         let interior = n.saturating_sub(p as usize + 1);
-        for i in 1..=interior { knots.push(i as f64 / (interior + 1) as f64); }
-        for _ in 0..=p { knots.push(1.0); }
+        let mut knots = Vec::with_capacity(2 * pad + interior);
+        knots.resize(pad, 0.0);
+        for i in 1..=interior {
+            knots.push(i as f64 / (interior + 1) as f64);
+        }
+        knots.resize(knots.len() + pad, 1.0);
         let curve = nurbs::ScalarNurbs::try_new(p, knots, cps, None).unwrap();
         let d = nurbs::eval::derivative(&curve);
         for u in [0.0, 0.25, 0.5, 0.75, 1.0] {

@@ -57,17 +57,5 @@ pub const WORKSPACE_SIZE: usize = MAX_DEGREE + 1;
 /// Exposed as f64 so callers and `Float::from_f64` see a single source of truth.
 pub const MIN_PARAMETRIC_SPEED: f64 = 1e-9;
 
-#[cfg(test)]
-mod constants_tests {
-    use super::*;
-
-    #[test]
-    fn workspace_size_matches_max_degree() {
-        assert_eq!(WORKSPACE_SIZE, MAX_DEGREE + 1);
-    }
-
-    #[test]
-    fn min_parametric_speed_is_positive() {
-        assert!(MIN_PARAMETRIC_SPEED > 0.0);
-    }
-}
+const _: () = assert!(WORKSPACE_SIZE == MAX_DEGREE + 1);
+const _: () = assert!(MIN_PARAMETRIC_SPEED > 0.0);
