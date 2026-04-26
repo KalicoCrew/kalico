@@ -2,7 +2,7 @@
 //! import via `#[cfg(test)] pub use`.
 //! Phase 1 implementation is filled in across Tasks 13-17.
 
-use gcode::{ParseError, Token};
+use gcode::{MarkerKind, ParseError, Token};
 
 /// Convert F-word (mm/min) to mm/s.
 #[allow(dead_code)]
@@ -62,6 +62,10 @@ pub(crate) enum ReduceEvent {
         tool: Option<u32>,
         /// For E-only G1 markers, the signed E delta (mm).
         e_delta_mm: Option<f64>,
+    },
+    CommentMarker {
+        kind: MarkerKind,
+        line_no: u32,
     },
 }
 
@@ -252,7 +256,9 @@ where
                         feedrate_mm_s, line_no,
                     });
                 }
-                // Comment forwarding handled in Task 16.
+                Token::Marker { kind, line_no } => {
+                    return Some(ReduceEvent::CommentMarker { kind, line_no });
+                }
                 _ => {}
             }
         }
@@ -449,6 +455,27 @@ mod tests {
                 assert_eq!(*to, [2.0, 0.0, 0.0]);
             }
             other => panic!("expected G1Move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comment_marker_layer_change_is_forwarded() {
+        let toks = vec![
+            Token::Marker {
+                kind: gcode::MarkerKind::LayerChange { layer: Some(7) },
+                line_no: 42,
+            },
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ReduceEvent::CommentMarker { kind, line_no: 42 } => {
+                match kind {
+                    gcode::MarkerKind::LayerChange { layer } => assert_eq!(*layer, Some(7)),
+                    _ => panic!("expected LayerChange"),
+                }
+            }
+            other => panic!("expected CommentMarker, got {other:?}"),
         }
     }
 }
