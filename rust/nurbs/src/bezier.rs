@@ -4,7 +4,7 @@
 use crate::{AlgebraError, Float, ScalarNurbs};
 
 /// One Bézier piece as a polynomial in the *Pascal-shifted monomial basis*:
-/// p(u) = Σ_{k=0..d} coeffs[k] * (u - u_start)^k
+/// `p(u) = Σ_{k=0..d} coeffs[k] * (u - u_start)^k`
 #[derive(Debug, Clone, PartialEq)]
 pub struct BezierPiece<T: Float> {
     pub u_start: T,
@@ -13,7 +13,7 @@ pub struct BezierPiece<T: Float> {
 }
 
 impl<T: Float> BezierPiece<T> {
-    /// Polynomial degree (= coeffs.len() - 1).
+    /// Polynomial degree (= `coeffs.len()` - 1).
     pub fn degree(&self) -> usize {
         self.coeffs.len().saturating_sub(1)
     }
@@ -28,7 +28,7 @@ impl<T: Float> BezierPiece<T> {
         acc
     }
 
-    /// Zero polynomial of the given degree on [u_start, u_end].
+    /// Zero polynomial of the given degree on `[u_start, u_end]`.
     /// Used as the accumulator inside `convolve`.
     pub fn zero(u_start: T, u_end: T, degree: usize) -> Self {
         Self {
@@ -39,8 +39,8 @@ impl<T: Float> BezierPiece<T> {
     }
 
     /// Convert this monomial-basis polynomial to Bernstein control points on
-    /// [u_start, u_end]. Length = degree + 1.
-    /// Formula: B_k = Σ_{i=0..k} C(k,i) / C(d,i) * c_i_norm, where c_i_norm = c_i * h^i, h = u_end - u_start.
+    /// `[u_start, u_end]`. Length = degree + 1.
+    /// Formula: `B_k = Σ_{i=0..k} C(k,i) / C(d,i) * c_i_norm`, where `c_i_norm = c_i * h^i`, `h = u_end - u_start`.
     /// (Per Farin §5.7.)
     pub fn to_bernstein(&self) -> Vec<T> {
         let d = self.degree();
@@ -71,9 +71,9 @@ impl<T: Float> BezierPiece<T> {
         bernstein
     }
 
-    /// Build a Bézier piece from Bernstein control points on [u_start, u_end].
+    /// Build a Bézier piece from Bernstein control points on `[u_start, u_end]`.
     /// Inverse of `to_bernstein`. Length of `bernstein` = degree + 1.
-    /// Formula: c_k = C(d,k) * Σ_{i=0..k} (-1)^{k-i} * C(k,i) * B_i / h^k.
+    /// Formula: `c_k = C(d,k) * Σ_{i=0..k} (-1)^{k-i} * C(k,i) * B_i / h^k`.
     pub fn from_bernstein(bernstein: &[T], u_start: T, u_end: T) -> Self {
         let d = bernstein.len() - 1;
         let h = u_end - u_start;
@@ -146,7 +146,7 @@ pub fn extract_bezier_pieces<T: Float>(curve: &ScalarNurbs<T>) -> Vec<BezierPiec
     for window in breakpoints.windows(2) {
         let u_start = window[0];
         let u_end = window[1];
-        let bernstein: Vec<T> = cps[cp_idx..cp_idx + p + 1].to_vec();
+        let bernstein: Vec<T> = cps[cp_idx..=(cp_idx + p)].to_vec();
         pieces.push(BezierPiece::from_bernstein(&bernstein, u_start, u_end));
         cp_idx += p; // Shared boundary CP between adjacent pieces.
     }
@@ -199,7 +199,7 @@ pub fn bezier_pieces_to_nurbs<T: Float>(pieces: &[BezierPiece<T>]) -> ScalarNurb
 }
 
 /// Split a Bézier piece at an interior point `u_split`, producing two pieces
-/// covering [u_start, u_split] and [u_split, u_end] with the same polynomial
+/// covering `[u_start, u_split]` and `[u_split, u_end]` with the same polynomial
 /// degree. The polynomial value is preserved on each side.
 pub fn split_piece_at<T: Float>(
     piece: &BezierPiece<T>,
@@ -262,6 +262,7 @@ pub(crate) fn binomial(n: usize, k: usize) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // tests assert exact stored coords / round-trip values, not arithmetic results
 mod tests {
     use super::*;
 
