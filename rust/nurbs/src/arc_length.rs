@@ -412,10 +412,10 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // tests assert exact endpoint values (s_max/u_max == 1.0, clamp == bound)
 mod tests {
     use super::*;
 
+    #[allow(clippy::float_cmp)]
     #[test]
     fn ref_provides_borrowed_access() {
         let s = [0.0_f64, 0.5, 1.0];
@@ -426,6 +426,7 @@ mod tests {
     }
 
     #[cfg(feature = "host")]
+    #[allow(clippy::float_cmp)]
     #[test]
     fn owned_as_view_round_trips() {
         let owned = ArcLengthTable::new(vec![0.0, 0.5, 1.0], vec![0.0, 0.4, 1.0]);
@@ -458,6 +459,7 @@ mod tests {
     }
 
     #[cfg(feature = "host")]
+    #[allow(clippy::float_cmp)]
     #[test]
     fn build_scalar_table_for_linear_curve() {
         // Linear curve from 0 to 1 over u in [0, 1]: arc length = 1.
@@ -476,6 +478,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::float_cmp)]
     #[test]
     fn param_from_arc_length_at_endpoints() {
         let table = ArcLengthTableRef::new(&[0.0_f64, 0.5, 1.0], &[0.0, 0.6, 1.0]);
@@ -490,6 +493,7 @@ mod tests {
         assert!((param_from_arc_length(&table, 0.25_f64) - 0.3).abs() < 1e-12);
     }
 
+    #[allow(clippy::float_cmp)]
     #[test]
     fn param_from_arc_length_clamps_above_range_in_release() {
         // In release, out-of-range queries clamp silently. In debug, this would
