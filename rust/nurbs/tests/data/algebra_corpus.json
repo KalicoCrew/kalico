@@ -63,6 +63,133 @@
       ]
     },
     {
+      "name": "multiply_quadratic_x_linear",
+      "operation": "multiply",
+      "a": {
+        "degree": 2,
+        "knots": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "weights": null
+      },
+      "b": {
+        "degree": 1,
+        "knots": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          0.0,
+          1.0
+        ],
+        "weights": null
+      },
+      "samples": [
+        {
+          "u": 0.0,
+          "value": 0.0
+        },
+        {
+          "u": 0.1,
+          "value": 0.0010000000000000002
+        },
+        {
+          "u": 0.25,
+          "value": 0.015625
+        },
+        {
+          "u": 0.5,
+          "value": 0.125
+        },
+        {
+          "u": 0.75,
+          "value": 0.421875
+        },
+        {
+          "u": 0.9,
+          "value": 0.7290000000000001
+        },
+        {
+          "u": 1.0,
+          "value": 1.0
+        }
+      ]
+    },
+    {
+      "name": "multiply_with_interior_knot",
+      "operation": "multiply",
+      "a": {
+        "degree": 2,
+        "knots": [
+          0.0,
+          0.0,
+          0.0,
+          0.5,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          0.0,
+          1.0,
+          2.0,
+          3.0
+        ],
+        "weights": null
+      },
+      "b": {
+        "degree": 2,
+        "knots": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "control_points": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "weights": null
+      },
+      "samples": [
+        {
+          "u": 0.1,
+          "value": 0.0038000000000000017
+        },
+        {
+          "u": 0.3,
+          "value": 0.09179999999999999
+        },
+        {
+          "u": 0.5,
+          "value": 0.375
+        },
+        {
+          "u": 0.7,
+          "value": 0.9701999999999997
+        },
+        {
+          "u": 0.9,
+          "value": 2.1222000000000003
+        }
+      ]
+    },
+    {
       "name": "convolve_constant_x_constant",
       "operation": "convolve",
       "curve": {
