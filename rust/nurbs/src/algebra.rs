@@ -66,7 +66,7 @@ impl<T: Float> PolynomialKernel<T> {
 /// Multiply two scalar NURBS pointwise: `c(u) = a(u) * b(u)`.
 /// Result degree = `degree(a) + degree(b)`.
 ///
-/// Polynomial inputs only in v1; rational inputs return RationalNotSupported.
+/// Polynomial inputs only in v1; rational inputs return `RationalNotSupported`.
 #[cfg(feature = "host")]
 pub fn multiply<T: Float>(
     a: &crate::ScalarNurbs<T>,
@@ -78,7 +78,90 @@ pub fn multiply<T: Float>(
             workaround: "use polynomial_refit (Layer 3 utility) before calling",
         });
     }
-    todo!("multiply: per-piece product implementation")
+    let a_pieces = crate::bezier::extract_bezier_pieces(a);
+    let b_pieces = crate::bezier::extract_bezier_pieces(b);
+
+    // Refine to common breakpoint set.
+    let breakpoints = union_breakpoints(&a_pieces, &b_pieces);
+    let a_refined = refine_pieces_to_breakpoints(&a_pieces, &breakpoints);
+    let b_refined = refine_pieces_to_breakpoints(&b_pieces, &breakpoints);
+    debug_assert_eq!(a_refined.len(), b_refined.len());
+
+    // Per-piece product.
+    let mut out_pieces = Vec::with_capacity(a_refined.len());
+    for (a_p, b_p) in a_refined.iter().zip(b_refined.iter()) {
+        let coeffs = poly_multiply(&a_p.coeffs, &b_p.coeffs);
+        out_pieces.push(crate::bezier::BezierPiece {
+            u_start: a_p.u_start,
+            u_end: a_p.u_end,
+            coeffs,
+        });
+    }
+
+    let result = crate::bezier::bezier_pieces_to_nurbs(&out_pieces);
+    Ok(result)
+}
+
+/// Compute the union of distinct breakpoints from two piecewise representations.
+#[cfg(feature = "host")]
+fn union_breakpoints<T: Float>(
+    a: &[crate::bezier::BezierPiece<T>],
+    b: &[crate::bezier::BezierPiece<T>],
+) -> Vec<T> {
+    let mut breaks: Vec<T> = Vec::new();
+    let push_unique = |u: T, breaks: &mut Vec<T>| {
+        if !breaks.iter().any(|x| *x == u) {
+            breaks.push(u);
+        }
+    };
+    for piece in a {
+        push_unique(piece.u_start, &mut breaks);
+        push_unique(piece.u_end, &mut breaks);
+    }
+    for piece in b {
+        push_unique(piece.u_start, &mut breaks);
+        push_unique(piece.u_end, &mut breaks);
+    }
+    breaks.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    breaks
+}
+
+/// Refine a list of contiguous Bézier pieces so that the piece boundaries
+/// coincide with the given (sorted) breakpoints.
+#[cfg(feature = "host")]
+fn refine_pieces_to_breakpoints<T: Float>(
+    pieces: &[crate::bezier::BezierPiece<T>],
+    breakpoints: &[T],
+) -> Vec<crate::bezier::BezierPiece<T>> {
+    let mut result: Vec<crate::bezier::BezierPiece<T>> = Vec::new();
+    for piece in pieces {
+        let mut current = piece.clone();
+        let mut interior: Vec<T> = breakpoints
+            .iter()
+            .filter(|&&b| b > current.u_start && b < current.u_end)
+            .copied()
+            .collect();
+        interior.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        for u in interior {
+            let (left, right) = crate::bezier::split_piece_at(&current, u);
+            result.push(left);
+            current = right;
+        }
+        result.push(current);
+    }
+    result
+}
+
+/// Polynomial coefficient convolution: out[k] = Σ_{i+j=k} a[i] * b[j].
+#[cfg(feature = "host")]
+fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut out = vec![T::ZERO; a.len() + b.len() - 1];
+    for (i, ai) in a.iter().enumerate() {
+        for (j, bj) in b.iter().enumerate() {
+            out[i + j] = out[i + j] + *ai * *bj;
+        }
+    }
+    out
 }
 
 /// Convolve a NURBS with a polynomial kernel. Result degree = degree(curve) + `kernel.degree()`.
@@ -100,6 +183,24 @@ pub fn convolve_with_polynomial_kernel<T: Float>(
 mod tests {
     use super::*;
     use crate::eval::eval;
+
+    #[test]
+    fn multiply_two_linear_curves_gives_quadratic() {
+        // a(u) = u, b(u) = 2u + 1, expected c(u) = u(2u + 1) = 2u^2 + u.
+        let a = crate::ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+        let b = crate::ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![1.0, 3.0], None,
+        ).unwrap();
+        let c = multiply(&a, &b).unwrap();
+        assert_eq!(c.degree(), 2);
+        for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let exp = eval(&a.as_view(), u) * eval(&b.as_view(), u);
+            let got = eval(&c.as_view(), u);
+            assert!((exp - got).abs() < 1e-12, "u={u}: exp={exp}, got={got}");
+        }
+    }
 
     #[test]
     fn scalar_multiply_doubles_evaluation() {
