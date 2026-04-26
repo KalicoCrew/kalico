@@ -276,6 +276,16 @@ mod tests {
     }
 
     #[test]
+    fn insert_knot_rejects_clamped_boundary() {
+        let curve = ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+
+        assert!(matches!(insert_knot(&curve, 0.0, 1), Err(KnotError::BoundaryInsertion)));
+        assert!(matches!(insert_knot(&curve, 1.0, 1), Err(KnotError::BoundaryInsertion)));
+    }
+
+    #[test]
     fn insert_knot_into_simple_curve_preserves_evaluation() {
         // Linear curve from 0 to 2 over [0, 1]. Insert knot at u=0.5.
         let curve = ScalarNurbs::<f64>::try_new(
