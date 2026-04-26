@@ -276,6 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn insert_knot_rejects_multiplicity_exceeded() {
+        // Quadratic curve with interior knot at 0.5 (multiplicity 1, so we can add 1 more).
+        let curve = ScalarNurbs::<f64>::try_new(
+            2, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], vec![0.0, 1.0, 2.0, 3.0], None,
+        ).unwrap();
+
+        // Insert 2 more at u=0.5: existing=1 + 2 = 3 > degree 2.
+        let result = insert_knot(&curve, 0.5, 2);
+        assert!(matches!(
+            result,
+            Err(KnotError::MultiplicityExceeded { existing: 1, requested: 2, max: 2 })
+        ));
+    }
+
+    #[test]
     fn insert_knot_rejects_clamped_boundary() {
         let curve = ScalarNurbs::<f64>::try_new(
             1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
