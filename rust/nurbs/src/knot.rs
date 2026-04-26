@@ -148,11 +148,8 @@ pub fn insert_knot<T: Float>(
         boehm_insert_unweighted(cps, knots, p, k, u, existing, multiplicity)
     };
 
-    let new_weights = if let Some(w) = weights {
-        Some(boehm_insert_unweighted(w, knots, p, k, u, existing, multiplicity))
-    } else {
-        None
-    };
+    let new_weights =
+        weights.map(|w| boehm_insert_unweighted(w, knots, p, k, u, existing, multiplicity));
 
     ScalarNurbs::try_new(curve.degree(), new_knots, new_cps, new_weights)
         .map_err(|_| KnotError::Invalid)
@@ -173,12 +170,10 @@ fn boehm_insert_unweighted<T: Float>(
     let mut new_cps = vec![T::ZERO; new_n];
 
     // Unaffected CPs pass through.
-    for i in 0..=k - p {
-        new_cps[i] = cps[i];
-    }
-    for i in (k - existing)..n {
-        new_cps[i + r] = cps[i];
-    }
+    let lead = k - p + 1;
+    new_cps[..lead].copy_from_slice(&cps[..lead]);
+    let tail_start = k - existing;
+    new_cps[(tail_start + r)..(n + r)].copy_from_slice(&cps[tail_start..n]);
 
     // Working buffer for the r-fold blend.
     let mut work: Vec<T> = (0..=p - existing).map(|i| cps[k - p + i]).collect();

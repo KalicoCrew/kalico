@@ -244,7 +244,7 @@ mod tests {
         let e = KnotError::MultiplicityExceeded { existing: 2, requested: 2, max: 3 };
         let s = format!("{e}");
         assert!(s.contains("multiplicity"));
-        assert!(s.contains("2"));
-        assert!(s.contains("3"));
+        assert!(s.contains('2'));
+        assert!(s.contains('3'));
     }
 }
