@@ -998,4 +998,111 @@ mod tests {
             );
         }
     }
+
+    /// Diagnostic: convolve preserves the natural multiplicity at cross-sum
+    /// kink images, and produces correct eval, on a multi-piece input with a
+    /// C0 kink. This is the convolve analog of the multi-piece multiply
+    /// regression test from Fix 1 (Mørken-bounded knot removal).
+    ///
+    /// Mathematical setup (per the convolution-continuity rule):
+    /// - `x` is degree 2 with interior knot at `u_x = 0.3` of multiplicity
+    ///   `m_x = 2` (a C0 kink — slope jumps across `u = 0.3`).
+    /// - `w` is the constant kernel `1` on `[-0.1, 0.1]` (single-piece, no
+    ///   interior knots, kernel degree `d_w = 0`).
+    /// - Output `y` has degree `p_y = d_x + d_w + 1 = 3`.
+    /// - The kink images in `y` are at `u = u_x ± t_w_endpoint = {0.2, 0.4}`.
+    ///   Per the convolution-continuity rule, `μ_y` at each kink image equals
+    ///   `m_x = 2` (input C0 → output `C^{0 + d_w + 1}` = C1 → `μ_y = p_y − 1 = 2`).
+    ///
+    /// This test asserts BOTH:
+    ///   (A) `μ_y(0.2) = μ_y(0.4) = 2` — the kink images are preserved at the
+    ///       natural multiplicity, not over-peeled like multiply pre-Fix 1.
+    ///   (B) `y(0.2)` and `y(0.4)` match closed-form integrals of `x` against
+    ///       the constant kernel — the load-bearing eval check.
+    ///
+    /// Note: this test deliberately does NOT assert `μ_y = 0` at the boundary
+    /// cross-sums `u ∈ {0.1, 0.9}`. The spec's convolution-continuity rule
+    /// predicts `μ_y = 0` there (no real continuity break), but in practice the
+    /// post-pass `knot_remove_redundant` (Tiller A5.8 with chord-error tol)
+    /// can only peel a knot when both polynomial pieces match as polynomial
+    /// expressions, not just as functions agreeing at the join. At a boundary
+    /// cross-sum the left and right pieces of `y` differ by `(u − u_break)^k`
+    /// terms that vanish at the join but not elsewhere, so Tiller refuses
+    /// removal even though geometrically the curve is C-infinity there. This
+    /// leaves extra multiplicity at boundary cross-sums; harmless (eval is
+    /// correct, downstream ops don't care) and not the bug class tested here.
+    #[test]
+    fn convolve_multi_piece_input_with_c0_kink_preserves_natural_multiplicity() {
+        // x: degree 2, knots [0,0,0, 0.3,0.3, 1,1,1], asymmetric CPs.
+        // Two pieces, sharing x(0.3) = 4 with a slope jump (C⁰ kink at 0.3).
+        let x = crate::ScalarNurbs::<f64>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.3, 0.3, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 4.0, 0.5, 0.2],
+            None,
+        )
+        .unwrap();
+        // w(t) = 1 on [-0.1, 0.1] — single piece, no interior knots.
+        let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.1, 0.1));
+
+        let y = convolve(&x, &kernel).unwrap();
+
+        // Output degree = d_x + d_w + 1 = 2 + 0 + 1 = 3.
+        assert_eq!(y.degree(), 3, "output degree");
+
+        // (A) Multiplicity at kink images: μ_y(0.2) = μ_y(0.4) = m_x = 2.
+        let p = y.degree() as usize;
+        let interior = &y.knots()[p + 1..y.knots().len() - p - 1];
+        let mult_at_02 = interior.iter().filter(|k| (**k - 0.2).abs() < 1e-9).count();
+        let mult_at_04 = interior.iter().filter(|k| (**k - 0.4).abs() < 1e-9).count();
+        assert_eq!(
+            mult_at_02, 2,
+            "expected μ_y(0.2) = m_x = 2 (kink image), got {mult_at_02}; full interior = {interior:?}",
+        );
+        assert_eq!(
+            mult_at_04, 2,
+            "expected μ_y(0.4) = m_x = 2 (kink image), got {mult_at_04}; full interior = {interior:?}",
+        );
+
+        // (B) Pointwise eval check vs hand-computed integrals.
+        // x_1(s) = (20/3) s + (200/9) s² on [0, 0.3];
+        // x_2(s) = 4 − 10 (s − 0.3) + (320/49) (s − 0.3)² on [0.3, 1.0].
+        //   y(0.2) = ∫_{0.1}^{0.3} x_1(s) ds
+        //          = (10/3)(0.09 − 0.01) + (200/27)(0.027 − 0.001)
+        //          = 0.8/3 + 5.2/27.
+        //   y(0.4) = ∫_{0.3}^{0.5} x_2(s) ds
+        //          = 4·0.2 − 5·(0.2)² + (320/147)·(0.2)³
+        //          = 0.6 + 2.56/147.
+        let exp_02 = 0.8 / 3.0 + 5.2 / 27.0;
+        let exp_04 = 0.6 + 2.56 / 147.0;
+        let got_02 = eval(&y.as_view(), 0.2);
+        let got_04 = eval(&y.as_view(), 0.4);
+        assert!(
+            (got_02 - exp_02).abs() < 1e-10,
+            "y(0.2): expected {exp_02}, got {got_02}, diff {}",
+            (got_02 - exp_02).abs(),
+        );
+        assert!(
+            (got_04 - exp_04).abs() < 1e-10,
+            "y(0.4): expected {exp_04}, got {got_04}, diff {}",
+            (got_04 - exp_04).abs(),
+        );
+
+        // Also spot-check eval at a non-kink interior point — confirms the
+        // entire shape (not just kink-image samples) matches the convolution
+        // integral. At u = 0.5 the kernel window [0.4, 0.6] is fully inside
+        // x's piece-2 support [0.3, 1.0], so:
+        //   y(0.5) = ∫_{0.4}^{0.6} x_2(s) ds
+        //          = ∫_{0.1}^{0.3} (4 − 10·v + (320/49)·v²) dv  (v = s − 0.3)
+        //          = 4·0.2 − 5·(0.09 − 0.01) + (320/147)·(0.027 − 0.001)
+        //          = 0.8 − 0.4 + (320·0.026)/147
+        //          = 0.4 + 8.32/147.
+        let exp_05 = 0.4 + 8.32 / 147.0;
+        let got_05 = eval(&y.as_view(), 0.5);
+        assert!(
+            (got_05 - exp_05).abs() < 1e-10,
+            "y(0.5): expected {exp_05}, got {got_05}, diff {}",
+            (got_05 - exp_05).abs(),
+        );
+    }
 }
