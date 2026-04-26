@@ -73,6 +73,21 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
     pub fn support(&self) -> (T, T) {
         (self.pieces.first().unwrap().u_start, self.pieces.last().unwrap().u_end)
     }
+
+    /// Build a multi-piece kernel from already-constructed pieces.
+    /// Validates non-empty + contiguous (`pieces[i].u_end == pieces[i+1].u_start`).
+    /// Returns `SupportMismatch` if pieces are non-contiguous.
+    pub fn from_pieces(pieces: Vec<crate::bezier::BezierPiece<T>>) -> Result<Self, AlgebraError> {
+        if pieces.is_empty() {
+            return Err(AlgebraError::SupportMismatch);
+        }
+        for w in pieces.windows(2) {
+            if w[0].u_end != w[1].u_start {
+                return Err(AlgebraError::SupportMismatch);
+            }
+        }
+        Ok(Self { pieces })
+    }
 }
 
 /// Multiply two scalar NURBS pointwise: `c(u) = a(u) * b(u)`.
@@ -437,8 +452,9 @@ mod tests {
     #[test]
     fn convolve_linear_input_with_constant_kernel_yields_correct_integral() {
         // x(s) = s on [0, 1], w(t) = 1 on [-0.25, 0.25].
-        // y(u) = ∫_{u-0.25}^{u+0.25} s ds = ((u+0.25)^2 - (u-0.25)^2) / 2 = u/2... wait
-        // y(0.5) = ∫_{0.25}^{0.75} s ds = (0.75^2 - 0.25^2) / 2 = 0.25
+        // y(u) = ∫_{u-0.25}^{u+0.25} s ds = (1/2) * ((u+0.25)^2 - (u-0.25)^2) = u/2
+        // for u in [0.25, 0.75] (kernel window fully inside x's support).
+        // y(0.5) = 0.5/2 = 0.25.  Equivalently: width * average = 0.5 * 0.5 = 0.25.
         let x = crate::ScalarNurbs::<f64>::try_new(
             1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
         ).unwrap();
@@ -655,6 +671,68 @@ mod tests {
             result,
             Err(crate::AlgebraError::RationalNotSupported { operation: "multiply", .. })
         ));
+    }
+
+    #[test]
+    fn from_pieces_accepts_contiguous_kernel() {
+        let pieces = vec![
+            crate::bezier::BezierPiece { u_start: -0.5, u_end: 0.0, coeffs: vec![1.0_f64] },
+            crate::bezier::BezierPiece { u_start: 0.0, u_end: 0.5, coeffs: vec![2.0_f64] },
+        ];
+        let k = PiecewisePolynomialKernel::from_pieces(pieces).unwrap();
+        assert_eq!(k.pieces.len(), 2);
+        assert_eq!(k.support(), (-0.5, 0.5));
+    }
+
+    #[test]
+    fn from_pieces_rejects_non_contiguous() {
+        let pieces = vec![
+            crate::bezier::BezierPiece { u_start: -0.5_f64, u_end: 0.0, coeffs: vec![1.0] },
+            crate::bezier::BezierPiece { u_start: 0.1, u_end: 0.5, coeffs: vec![2.0] },  // gap
+        ];
+        let result = PiecewisePolynomialKernel::from_pieces(pieces);
+        assert!(matches!(result, Err(AlgebraError::SupportMismatch)));
+    }
+
+    #[test]
+    fn from_pieces_rejects_empty() {
+        let result = PiecewisePolynomialKernel::<f64>::from_pieces(vec![]);
+        assert!(matches!(result, Err(AlgebraError::SupportMismatch)));
+    }
+
+    #[test]
+    fn pascal_shift_round_trip_preserves_polynomial() {
+        // Cubic with non-zero shift — exercises both directions of basis conversion.
+        let coeffs = vec![1.0, 2.0, 3.0, -1.5_f64];
+        let shift = 0.7;
+        let absolute = pascal_shift_to_absolute(&coeffs, shift);
+        let back = absolute_to_pascal_shift(&absolute, shift);
+        for i in 0..coeffs.len() {
+            assert!(
+                (back[i] - coeffs[i]).abs() < 1e-12,
+                "coeff[{i}]: original {} != round-tripped {}", coeffs[i], back[i],
+            );
+        }
+    }
+
+    #[test]
+    fn multiply_quadratic_x_linear_gives_cubic() {
+        // a(u) = u^2 (Bernstein cps [0, 0, 1] for monomial u^2 on [0, 1]).
+        let a = crate::ScalarNurbs::<f64>::try_new(
+            2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 0.0, 1.0], None,
+        ).unwrap();
+        // b(u) = u, same as before.
+        let b = crate::ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+        let c = multiply(&a, &b).unwrap();
+        assert_eq!(c.degree(), 3);
+        // Expected: c(u) = u^3.
+        for u in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+            let exp = u * u * u;
+            let got = eval(&c.as_view(), u);
+            assert!((exp - got).abs() < 1e-12, "u={u}: u^3={exp}, multiply={got}");
+        }
     }
 
 }
