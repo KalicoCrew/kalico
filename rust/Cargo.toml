@@ -1,5 +1,5 @@
 [workspace]
-members = ["nurbs", "nurbs-c-api", "gcode"]
+members = ["nurbs", "nurbs-c-api", "gcode", "geometry"]
 exclude = ["gcode/fuzz"]
 resolver = "2"
 
