@@ -116,12 +116,38 @@ impl fmt::Display for AlgebraError {
 
 impl core::error::Error for AlgebraError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KnotError {
+    BoundaryInsertion,
+    MultiplicityExceeded { existing: u8, requested: u8, max: u8 },
+    OutOfRange,
+    Invalid,
+}
+
+impl fmt::Display for KnotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BoundaryInsertion => {
+                write!(f, "cannot insert knot at clamped boundary")
+            }
+            Self::MultiplicityExceeded { existing, requested, max } => {
+                write!(f, "knot multiplicity {existing} + {requested} exceeds max {max}")
+            }
+            Self::OutOfRange => write!(f, "knot value out of knot vector range"),
+            Self::Invalid => write!(f, "knot vector violates monotone or length invariants"),
+        }
+    }
+}
+
+impl core::error::Error for KnotError {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NurbsError<T: Float> {
     Construct(ConstructError),
     Wire(WireError),
     ArcLength(ArcLengthError<T>),
     Algebra(AlgebraError),
+    Knot(KnotError),
 }
 
 impl<T: Float> fmt::Display for NurbsError<T> {
@@ -131,6 +157,7 @@ impl<T: Float> fmt::Display for NurbsError<T> {
             Self::Wire(e) => write!(f, "{e}"),
             Self::ArcLength(e) => write!(f, "{e}"),
             Self::Algebra(e) => write!(f, "{e}"),
+            Self::Knot(e) => write!(f, "{e}"),
         }
     }
 }
@@ -155,6 +182,11 @@ impl<T: Float> From<ArcLengthError<T>> for NurbsError<T> {
 impl<T: Float> From<AlgebraError> for NurbsError<T> {
     fn from(e: AlgebraError) -> Self {
         Self::Algebra(e)
+    }
+}
+impl<T: Float> From<KnotError> for NurbsError<T> {
+    fn from(e: KnotError) -> Self {
+        Self::Knot(e)
     }
 }
 
@@ -198,5 +230,21 @@ mod tests {
         let s = format!("{e}");
         assert!(s.contains("30"));
         assert!(s.contains("20"));
+    }
+
+    #[test]
+    fn knot_error_converts_to_nurbs_error() {
+        let e = KnotError::BoundaryInsertion;
+        let n: NurbsError<f64> = e.into();
+        assert!(matches!(n, NurbsError::Knot(KnotError::BoundaryInsertion)));
+    }
+
+    #[test]
+    fn knot_error_displays_clearly() {
+        let e = KnotError::MultiplicityExceeded { existing: 2, requested: 2, max: 3 };
+        let s = format!("{e}");
+        assert!(s.contains("multiplicity"));
+        assert!(s.contains("2"));
+        assert!(s.contains("3"));
     }
 }

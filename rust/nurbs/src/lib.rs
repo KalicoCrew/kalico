@@ -17,7 +17,7 @@ mod float;
 pub use float::Float;
 
 pub mod error;
-pub use error::{AlgebraError, ArcLengthError, ConstructError, NurbsError, WireError};
+pub use error::{AlgebraError, ArcLengthError, ConstructError, KnotError, NurbsError, WireError};
 
 mod view;
 pub use view::{NurbsView, VectorNurbsView};
