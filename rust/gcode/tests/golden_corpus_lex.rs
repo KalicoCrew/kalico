@@ -48,7 +48,7 @@ fn arc_fitted_corpus_lexes_without_panic() {
     );
 
     assert!(commands > 100_000, "expected > 100k Command tokens, got {commands}");
-    assert!(markers >= 1, "expected at least one marker (TYPE, LayerChange, EndOfPrint, etc.)");
+    assert!(layer_changes >= 1, "expected at least one LayerChange marker");
     assert!(
         errors < commands / 100,
         "more than 1% of commands errored: {errors} errors vs {commands} commands"

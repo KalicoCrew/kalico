@@ -137,9 +137,9 @@ mod tests {
 
     #[test]
     fn marker_kind_layer_change() {
-        let m = MarkerKind::LayerChange { layer: 5 };
+        let m = MarkerKind::LayerChange { layer: Some(5) };
         match m {
-            MarkerKind::LayerChange { layer } => assert_eq!(layer, 5),
+            MarkerKind::LayerChange { layer } => assert_eq!(layer, Some(5)),
             _ => panic!("expected LayerChange"),
         }
     }

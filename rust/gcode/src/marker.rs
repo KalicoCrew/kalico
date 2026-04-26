@@ -5,8 +5,10 @@
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum MarkerKind {
-    /// `;LAYER:5` and equivalents.
-    LayerChange { layer: u32 },
+    /// Layer boundary marker. `layer` is `Some(N)` when the slicer emits a
+    /// numbered marker (`;LAYER:N`, Cura dialect) and `None` for unnumbered
+    /// boundary markers (`;LAYER_CHANGE`, `OrcaSlicer` / `PrusaSlicer` / Bambu dialect).
+    LayerChange { layer: Option<u32> },
     /// `;TYPE:WALL-OUTER`, `;TYPE:INFILL`, etc.
     LayerType { name: Box<str> },
     /// `;END_OF_PRINT` and equivalents.
@@ -21,11 +23,17 @@ pub fn match_comment(comment_line: &str) -> Option<MarkerKind> {
     // Strip leading ';' and surrounding whitespace within the comment.
     let body = comment_line.strip_prefix(';')?.trim();
 
-    // ;LAYER:N (Orca, Prusa, Bambu)
+    // ;LAYER:N (Cura)
     if let Some(rest) = body.strip_prefix("LAYER:") {
         if let Ok(n) = rest.trim().parse::<u32>() {
-            return Some(MarkerKind::LayerChange { layer: n });
+            return Some(MarkerKind::LayerChange { layer: Some(n) });
         }
+    }
+
+    // ;LAYER_CHANGE (OrcaSlicer / PrusaSlicer / Bambu — boundary marker
+    // without a layer number; layer height comes in a following ;Z: comment).
+    if body == "LAYER_CHANGE" {
+        return Some(MarkerKind::LayerChange { layer: None });
     }
 
     // ;TYPE:NAME (Orca, Prusa, Bambu)
@@ -50,15 +58,17 @@ mod tests {
 
     #[test]
     fn matches_orca_layer_change() {
-        assert_eq!(match_comment(";LAYER:5"), Some(MarkerKind::LayerChange { layer: 5 }));
-        assert_eq!(match_comment(";LAYER:0"), Some(MarkerKind::LayerChange { layer: 0 }));
+        assert_eq!(match_comment(";LAYER:5"), Some(MarkerKind::LayerChange { layer: Some(5) }));
+        assert_eq!(match_comment(";LAYER:0"), Some(MarkerKind::LayerChange { layer: Some(0) }));
+        // OrcaSlicer / PrusaSlicer emit `;LAYER_CHANGE` without a number.
+        assert_eq!(match_comment(";LAYER_CHANGE"), Some(MarkerKind::LayerChange { layer: None }));
     }
 
     #[test]
     fn matches_prusa_layer() {
-        assert_eq!(match_comment(";LAYER_CHANGE"), None); // tag-only; layer number in next ;Z line
-        // PrusaSlicer also emits ;LAYER:N; treat both.
-        assert_eq!(match_comment(";LAYER:12"), Some(MarkerKind::LayerChange { layer: 12 }));
+        // PrusaSlicer also emits ;LAYER_CHANGE (handled in matches_orca_layer_change).
+        // Cura-style numbered marker:
+        assert_eq!(match_comment(";LAYER:12"), Some(MarkerKind::LayerChange { layer: Some(12) }));
     }
 
     #[test]

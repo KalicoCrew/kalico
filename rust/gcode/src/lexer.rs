@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(toks.len(), 1);
         match &toks[0] {
             Ok(Token::Marker { kind, line_no }) => {
-                assert_eq!(*kind, crate::marker::MarkerKind::LayerChange { layer: 5 });
+                assert_eq!(*kind, crate::marker::MarkerKind::LayerChange { layer: Some(5) });
                 assert_eq!(*line_no, 1);
             }
             other => panic!("expected Marker, got {other:?}"),
