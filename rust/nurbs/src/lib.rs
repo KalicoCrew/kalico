@@ -44,6 +44,11 @@ pub use arc_length::ArcLengthTableRef;
 #[cfg(feature = "host")]
 pub mod algebra;
 
+#[cfg(feature = "host")]
+pub mod knot;
+#[cfg(feature = "host")]
+pub use knot::KnotVector;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
