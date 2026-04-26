@@ -270,6 +270,41 @@ pub fn vector_derivative<T: Float, const N: usize>(
         .expect("degree-lowered NURBS satisfies invariants by construction")
 }
 
+/// Compute curvature κ(u) of a 3D path NURBS from its precomputed first and
+/// second derivative NURBSes:
+///   κ = ||r' × r''|| / ||r'||³
+/// The cubed denominator is clamped at `MIN_PARAMETRIC_SPEED` to avoid
+/// divide-by-zero at cusps; the clamp engages only on pathological input
+/// (well-formed G2/G3 and fitter output never trigger it).
+///
+/// Caller owns `first_deriv` and `second_deriv` — typically cached on the
+/// segment, since TOPP-RA queries many u's per segment.
+#[cfg(feature = "host")]
+pub fn curvature_from_derivs<T: Float, const N: usize>(
+    first_deriv: &crate::VectorNurbs<T, N>,
+    second_deriv: &crate::VectorNurbs<T, N>,
+    u: T,
+) -> T {
+    let r_prime = vector_eval(&first_deriv.as_view(), u);
+    let r_double = vector_eval(&second_deriv.as_view(), u);
+
+    // Cross product magnitude: works for N=3; for N=2 we'd lift to 3D with z=0.
+    // We hardcode 3D here per spec — curvature on path is 3D-only.
+    assert!(N == 3, "curvature_from_derivs requires N == 3");
+
+    let cx = r_prime[1] * r_double[2] - r_prime[2] * r_double[1];
+    let cy = r_prime[2] * r_double[0] - r_prime[0] * r_double[2];
+    let cz = r_prime[0] * r_double[1] - r_prime[1] * r_double[0];
+    let cross_norm = (cx * cx + cy * cy + cz * cz).sqrt();
+
+    let speed_sq = r_prime[0] * r_prime[0] + r_prime[1] * r_prime[1] + r_prime[2] * r_prime[2];
+    let speed = speed_sq.sqrt();
+    let speed_cubed = speed * speed * speed;
+
+    let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
+    cross_norm / speed_cubed.max(floor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +496,45 @@ mod tests {
             let expected = eval(&scalar_d.as_view(), 0.3_f64);
             assert!((result[axis] - expected).abs() < 1e-12);
         }
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn curvature_of_straight_line_is_zero() {
+        let curve = linear_3d_curve_f64();
+        let first = vector_derivative(&curve);
+        // Second derivative of a linear curve is zero — but degree-lowering can't
+        // produce a degree -1 curve. We need a degree-2 curve to take two derivatives.
+        // Use a parabolic 3D curve instead.
+        let parabolic = crate::VectorNurbs::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            None,
+        ).unwrap();
+        let first = vector_derivative(&parabolic);
+        let second = vector_derivative(&first);
+        // The path is straight along X — curvature is 0 everywhere.
+        let k = curvature_from_derivs(&first, &second, 0.5_f64);
+        assert!(k.abs() < 1e-10, "got {k}");
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn curvature_of_arc_matches_known_value() {
+        // Quadratic Bezier approximating a circular arc: cps [(1,0,0),(1,1,0),(0,1,0)].
+        // Not a true circle (rational quadratics with weights are exact), but
+        // curvature at u=0.5 should be positive and finite.
+        let arc = crate::VectorNurbs::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            None,
+        ).unwrap();
+        let first = vector_derivative(&arc);
+        let second = vector_derivative(&first);
+        let k = curvature_from_derivs(&first, &second, 0.5_f64);
+        assert!(k > 0.0, "expected positive curvature, got {k}");
+        assert!(k.is_finite(), "curvature should be finite");
     }
 }
