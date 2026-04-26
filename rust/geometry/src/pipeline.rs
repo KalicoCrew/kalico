@@ -102,7 +102,7 @@ impl Iterator for Segments<'_> {
             }
             // Drive the reduce iterator forward until something queues an item.
             let event = self.events.next()?;
-            self.handle_event(&event);
+            self.handle_event(event);
             debug_assert!(self.queue.len() <= QUEUE_HARD_BOUND,
                 "queue grew beyond bound: {}", self.queue.len());
         }
@@ -111,11 +111,11 @@ impl Iterator for Segments<'_> {
 
 impl Segments<'_> {
     #[allow(clippy::unused_self)] // self.queue populated once Tasks 18-22 fill this in
-    fn handle_event(&mut self, event: &ReduceEvent) {
+    #[allow(clippy::needless_pass_by_value)] // body filled in Tasks 18-22; will consume the event
+    fn handle_event(&mut self, _event: ReduceEvent) {
         // Filled in across Tasks 18-22.
         // Reference MotionMarkerKind to keep the import live until Tasks 18-22.
         let _: Option<MotionMarkerKind> = None;
-        let _ = event;
     }
 }
 
