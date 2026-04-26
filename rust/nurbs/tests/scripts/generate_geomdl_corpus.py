@@ -10,7 +10,9 @@ Run with:
 """
 
 import json
-from geomdl import BSpline, NURBS
+
+from geomdl import NURBS, BSpline
+
 
 def linear_curve():
     c = BSpline.Curve()
