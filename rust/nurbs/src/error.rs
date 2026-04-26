@@ -101,6 +101,10 @@ pub enum AlgebraError {
     KnotMismatch,
     NotImplemented(&'static str),
     SupportMismatch,
+    RationalNotSupported {
+        operation: &'static str,
+        workaround: &'static str,
+    },
 }
 
 impl fmt::Display for AlgebraError {
@@ -112,6 +116,9 @@ impl fmt::Display for AlgebraError {
             Self::KnotMismatch => write!(f, "operands have incompatible knot vectors"),
             Self::NotImplemented(s) => write!(f, "algorithm not implemented: {s}"),
             Self::SupportMismatch => write!(f, "Bezier pieces have mismatched support"),
+            Self::RationalNotSupported { operation, workaround } => {
+                write!(f, "{operation} does not support rational input; {workaround}")
+            }
         }
     }
 }
@@ -248,5 +255,16 @@ mod tests {
         assert!(s.contains("multiplicity"));
         assert!(s.contains('2'));
         assert!(s.contains('3'));
+    }
+
+    #[test]
+    fn rational_not_supported_displays_with_workaround() {
+        let e = AlgebraError::RationalNotSupported {
+            operation: "multiply",
+            workaround: "use polynomial_refit",
+        };
+        let s = format!("{e}");
+        assert!(s.contains("multiply"));
+        assert!(s.contains("polynomial_refit"));
     }
 }
