@@ -223,6 +223,7 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
 }
 
 #[cfg(all(test, feature = "host"))]
+#[allow(clippy::float_cmp)] // tests assert exact stored control-point values, no arithmetic
 mod tests {
     use super::*;
 

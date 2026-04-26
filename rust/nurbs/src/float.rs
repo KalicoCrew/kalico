@@ -146,6 +146,7 @@ impl Float for f64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // tests assert exact bit-for-bit values for constants and round-trips
 mod tests {
     use super::*;
 

@@ -412,6 +412,7 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // tests assert exact endpoint values (s_max/u_max == 1.0, clamp == bound)
 mod tests {
     use super::*;
 
@@ -465,7 +466,7 @@ mod tests {
                 .unwrap();
         let table = build_arc_length_table_scalar(&curve, 1e-6, 64).unwrap();
         assert!((table.s_max() - 1.0).abs() < 1e-6);
-        assert!(table.u_max() == 1.0);
+        assert_eq!(table.u_max(), 1.0);
         // Monotonicity check
         for w in table.s().windows(2) {
             assert!(w[1] >= w[0]);
