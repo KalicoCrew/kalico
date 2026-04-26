@@ -17,9 +17,7 @@ mod float;
 pub use float::Float;
 
 pub mod error;
-pub use error::{
-    AlgebraError, ArcLengthError, ConstructError, NurbsError, WireError,
-};
+pub use error::{AlgebraError, ArcLengthError, ConstructError, NurbsError, WireError};
 
 mod view;
 pub use view::{NurbsView, VectorNurbsView};
@@ -54,7 +52,7 @@ pub const WORKSPACE_SIZE: usize = MAX_DEGREE + 1;
 
 /// Numerical floor for parametric speed |dP/du|, weight denominators, and
 /// curvature-divisor cubed-norms. Below this, the corresponding computation
-/// either clamps (release) or fires a debug_assert (debug).
+/// either clamps (release) or fires a `debug_assert` (debug).
 ///
 /// Exposed as f64 so callers and `Float::from_f64` see a single source of truth.
 pub const MIN_PARAMETRIC_SPEED: f64 = 1e-9;

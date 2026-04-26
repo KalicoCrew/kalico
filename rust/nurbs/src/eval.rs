@@ -12,8 +12,12 @@ use crate::{Float, NurbsView, VectorNurbsView, MAX_DEGREE, MIN_PARAMETRIC_SPEED,
 pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize {
     debug_assert!(knots.len() == n + p + 1);
     // Clamped endpoint cases.
-    if u >= knots[n] { return n - 1; }
-    if u <= knots[p] { return p; }
+    if u >= knots[n] {
+        return n - 1;
+    }
+    if u <= knots[p] {
+        return p;
+    }
 
     let mut low = p;
     let mut high = n;
@@ -74,9 +78,8 @@ pub fn eval<T: Float, V: NurbsView<T>>(curve: &V, u: T) -> T {
     match curve.weights() {
         None => de_boor_inner(curve.control_points(), curve.knots(), curve.degree(), u),
         Some(w) => {
-            let numer = de_boor_homogeneous(
-                curve.control_points(), w, curve.knots(), curve.degree(), u,
-            );
+            let numer =
+                de_boor_homogeneous(curve.control_points(), w, curve.knots(), curve.degree(), u);
             let denom = de_boor_inner(w, curve.knots(), curve.degree(), u);
             let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
             debug_assert!(denom.abs() > floor);
@@ -129,10 +132,7 @@ pub(crate) fn de_boor_homogeneous<T: Float>(
 /// computation across the N axes — meaningfully cheaper than N independent
 /// scalar `eval` calls for shared-knot vector NURBS.
 #[inline]
-pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(
-    curve: &V,
-    u: T,
-) -> [T; N] {
+pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V, u: T) -> [T; N] {
     debug_assert!((curve.degree() as usize) <= MAX_DEGREE);
     let p = curve.degree() as usize;
     let knots = curve.knots();
@@ -170,7 +170,8 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(
                 T::ZERO
             };
             for axis in 0..N {
-                d_axes[axis][j] = (d_axes[axis][j] - d_axes[axis][j - 1]).mul_add(alpha, d_axes[axis][j - 1]);
+                d_axes[axis][j] =
+                    (d_axes[axis][j] - d_axes[axis][j - 1]).mul_add(alpha, d_axes[axis][j - 1]);
             }
             if has_weights {
                 d_w[j] = (d_w[j] - d_w[j - 1]).mul_add(alpha, d_w[j - 1]);
@@ -207,6 +208,7 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(
 ///
 /// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 / Algorithm A3.3.
 #[cfg(feature = "host")]
+#[must_use]
 pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs<T> {
     let p = curve.degree();
     assert!(p >= 1, "derivative requires degree >= 1");
@@ -216,7 +218,7 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
     let new_degree = p - 1;
     let new_n = cps.len() - 1;
 
-    let p_t = T::from_f64(p as f64);
+    let p_t = T::from_f64(f64::from(p));
 
     let mut new_cps: Vec<T> = Vec::with_capacity(new_n);
     for i in 0..new_n {
@@ -240,6 +242,7 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
 /// Same algorithm as scalar `derivative` applied per axis; knot vector and
 /// degree handled once.
 #[cfg(feature = "host")]
+#[must_use]
 pub fn vector_derivative<T: Float, const N: usize>(
     curve: &crate::VectorNurbs<T, N>,
 ) -> crate::VectorNurbs<T, N> {
@@ -250,7 +253,7 @@ pub fn vector_derivative<T: Float, const N: usize>(
     let knots = curve.knots();
     let new_degree = p - 1;
     let new_n = cps.len() - 1;
-    let p_t = T::from_f64(p as f64);
+    let p_t = T::from_f64(f64::from(p));
 
     let mut new_cps: Vec<[T; N]> = Vec::with_capacity(new_n);
     for i in 0..new_n {
@@ -310,12 +313,7 @@ mod tests {
     use super::*;
 
     fn linear_curve_f64() -> crate::ScalarNurbs<f64> {
-        crate::ScalarNurbs::try_new(
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![0.0, 1.0],
-            None,
-        ).unwrap()
+        crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap()
     }
 
     fn quadratic_curve_f64() -> crate::ScalarNurbs<f64> {
@@ -325,7 +323,8 @@ mod tests {
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             vec![0.0, 0.5, 1.0],
             None,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -390,7 +389,8 @@ mod tests {
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             vec![1.0, 1.0, 0.0],
             Some(vec![1.0, std::f64::consts::SQRT_2 / 2.0, 1.0]),
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -419,7 +419,8 @@ mod tests {
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
             None,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -445,12 +446,16 @@ mod tests {
         // Reconstruct each axis as a scalar curve and compare.
         for axis in 0..3 {
             let cps_axis: Vec<f64> = v.control_points().iter().map(|cp| cp[axis]).collect();
-            let scalar = crate::ScalarNurbs::try_new(
-                v.degree(), v.knots().to_vec(), cps_axis, None,
-            ).unwrap();
+            let scalar =
+                crate::ScalarNurbs::try_new(v.degree(), v.knots().to_vec(), cps_axis, None)
+                    .unwrap();
             let expected = eval(&scalar.as_view(), 0.3_f64);
-            assert!((result[axis] - expected).abs() < 1e-12,
-                "axis {axis}: got {}, expected {}", result[axis], expected);
+            assert!(
+                (result[axis] - expected).abs() < 1e-12,
+                "axis {axis}: got {}, expected {}",
+                result[axis],
+                expected
+            );
         }
     }
 
@@ -473,9 +478,13 @@ mod tests {
         let d = derivative(&curve);
         let v = d.as_view();
         let h = 1e-6_f64;
-        let expected = (eval(&curve.as_view(), 0.5 + h) - eval(&curve.as_view(), 0.5 - h)) / (2.0 * h);
+        let expected =
+            (eval(&curve.as_view(), 0.5 + h) - eval(&curve.as_view(), 0.5 - h)) / (2.0 * h);
         let actual = eval(&v, 0.5);
-        assert!((actual - expected).abs() < 1e-6, "got {actual}, expected {expected}");
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "got {actual}, expected {expected}"
+        );
     }
 
     #[cfg(feature = "host")]
@@ -489,9 +498,9 @@ mod tests {
 
         for axis in 0..3 {
             let cps_axis: Vec<f64> = curve.control_points().iter().map(|cp| cp[axis]).collect();
-            let scalar = crate::ScalarNurbs::try_new(
-                curve.degree(), curve.knots().to_vec(), cps_axis, None,
-            ).unwrap();
+            let scalar =
+                crate::ScalarNurbs::try_new(curve.degree(), curve.knots().to_vec(), cps_axis, None)
+                    .unwrap();
             let scalar_d = derivative(&scalar);
             let expected = eval(&scalar_d.as_view(), 0.3_f64);
             assert!((result[axis] - expected).abs() < 1e-12);
@@ -509,7 +518,8 @@ mod tests {
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let first = vector_derivative(&parabolic);
         let second = vector_derivative(&first);
         // The path is straight along X — curvature is 0 everywhere.
@@ -528,7 +538,8 @@ mod tests {
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let first = vector_derivative(&arc);
         let second = vector_derivative(&first);
         let k = curvature_from_derivs(&first, &second, 0.5_f64);

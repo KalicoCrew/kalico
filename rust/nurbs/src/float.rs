@@ -48,36 +48,56 @@ impl Float for f32 {
         // In `no_std` MCU builds it falls back to the trait method via name
         // resolution and recurses; route to `libm::fmaf` instead.
         #[cfg(feature = "host")]
-        { f32::mul_add(self, a, b) }
+        {
+            f32::mul_add(self, a, b)
+        }
         #[cfg(not(feature = "host"))]
-        { libm::fmaf(self, a, b) }
+        {
+            libm::fmaf(self, a, b)
+        }
     }
 
     #[inline]
     fn sqrt(self) -> Self {
         // libm-style: hardware on M7/M4; std::f32::sqrt on host.
         #[cfg(feature = "host")]
-        { f32::sqrt(self) }
+        {
+            f32::sqrt(self)
+        }
         #[cfg(not(feature = "host"))]
-        { libm::sqrtf(self) }
+        {
+            libm::sqrtf(self)
+        }
     }
 
     #[inline]
     fn abs(self) -> Self {
         #[cfg(feature = "host")]
-        { f32::abs(self) }
+        {
+            f32::abs(self)
+        }
         #[cfg(not(feature = "host"))]
-        { libm::fabsf(self) }
+        {
+            libm::fabsf(self)
+        }
     }
 
     #[inline]
     fn min(self, other: Self) -> Self {
-        if self < other { self } else { other }
+        if self < other {
+            self
+        } else {
+            other
+        }
     }
 
     #[inline]
     fn max(self, other: Self) -> Self {
-        if self > other { self } else { other }
+        if self > other {
+            self
+        } else {
+            other
+        }
     }
 }
 
@@ -87,7 +107,9 @@ impl Float for f64 {
     const ONE: Self = 1.0;
 
     #[inline]
-    fn from_f64(x: f64) -> Self { x }
+    fn from_f64(x: f64) -> Self {
+        x
+    }
 
     #[inline]
     fn mul_add(self, a: Self, b: Self) -> Self {
@@ -95,19 +117,31 @@ impl Float for f64 {
     }
 
     #[inline]
-    fn sqrt(self) -> Self { f64::sqrt(self) }
+    fn sqrt(self) -> Self {
+        f64::sqrt(self)
+    }
 
     #[inline]
-    fn abs(self) -> Self { f64::abs(self) }
+    fn abs(self) -> Self {
+        f64::abs(self)
+    }
 
     #[inline]
     fn min(self, other: Self) -> Self {
-        if self < other { self } else { other }
+        if self < other {
+            self
+        } else {
+            other
+        }
     }
 
     #[inline]
     fn max(self, other: Self) -> Self {
-        if self > other { self } else { other }
+        if self > other {
+            self
+        } else {
+            other
+        }
     }
 }
 

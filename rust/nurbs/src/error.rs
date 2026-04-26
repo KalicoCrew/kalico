@@ -1,4 +1,4 @@
-//! Per-module error types with From-conversions to top-level NurbsError.
+//! Per-module error types with From-conversions to top-level `NurbsError`.
 //! See spec §Substrate / Error taxonomy.
 
 use crate::Float;
@@ -18,15 +18,20 @@ pub enum ConstructError {
 impl fmt::Display for ConstructError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DegreeExceeded { actual, max } =>
-                write!(f, "degree {actual} exceeds maximum {max}"),
-            Self::KnotCountMismatch { expected, got } =>
-                write!(f, "knot count: expected {expected}, got {got}"),
+            Self::DegreeExceeded { actual, max } => {
+                write!(f, "degree {actual} exceeds maximum {max}")
+            }
+            Self::KnotCountMismatch { expected, got } => {
+                write!(f, "knot count: expected {expected}, got {got}")
+            }
             Self::KnotsNotClamped => write!(f, "knot vector is not clamped open"),
             Self::KnotsNotMonotone => write!(f, "knot vector is not non-decreasing"),
-            Self::DegenerateKnotRange => write!(f, "knot range is degenerate (knots[last] <= knots[0])"),
-            Self::WeightCountMismatch { expected, got } =>
-                write!(f, "weight count: expected {expected}, got {got}"),
+            Self::DegenerateKnotRange => {
+                write!(f, "knot range is degenerate (knots[last] <= knots[0])")
+            }
+            Self::WeightCountMismatch { expected, got } => {
+                write!(f, "weight count: expected {expected}, got {got}")
+            }
             Self::NonPositiveWeight => write!(f, "weight is non-positive"),
         }
     }
@@ -48,10 +53,14 @@ impl fmt::Display for WireError {
         match self {
             Self::Misaligned => write!(f, "wire buffer not aligned to T"),
             Self::UnknownVersion(v) => write!(f, "unknown wire format version {v}"),
-            Self::TruncatedBuffer { expected_len, got } =>
-                write!(f, "wire buffer truncated: expected {expected_len} bytes, got {got}"),
-            Self::AxisCountMismatch { expected, got } =>
-                write!(f, "axis count mismatch: header says {got}, type expects {expected}"),
+            Self::TruncatedBuffer { expected_len, got } => write!(
+                f,
+                "wire buffer truncated: expected {expected_len} bytes, got {got}"
+            ),
+            Self::AxisCountMismatch { expected, got } => write!(
+                f,
+                "axis count mismatch: header says {got}, type expects {expected}"
+            ),
             Self::Construct(e) => write!(f, "wire content invalid: {e}"),
         }
     }
@@ -60,12 +69,17 @@ impl fmt::Display for WireError {
 impl core::error::Error for WireError {}
 
 impl From<ConstructError> for WireError {
-    fn from(e: ConstructError) -> Self { Self::Construct(e) }
+    fn from(e: ConstructError) -> Self {
+        Self::Construct(e)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArcLengthError<T: Float> {
-    ToleranceNotMet { achieved_residual: T, samples_used: usize },
+    ToleranceNotMet {
+        achieved_residual: T,
+        samples_used: usize,
+    },
     DegenerateCurve,
 }
 
@@ -91,8 +105,9 @@ pub enum AlgebraError {
 impl fmt::Display for AlgebraError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DegreeExceeded { result_degree, max } =>
-                write!(f, "result degree {result_degree} exceeds maximum {max}"),
+            Self::DegreeExceeded { result_degree, max } => {
+                write!(f, "result degree {result_degree} exceeds maximum {max}")
+            }
             Self::KnotMismatch => write!(f, "operands have incompatible knot vectors"),
             Self::NotImplemented(s) => write!(f, "algorithm not implemented: {s}"),
         }
@@ -123,16 +138,24 @@ impl<T: Float> fmt::Display for NurbsError<T> {
 impl<T: Float> core::error::Error for NurbsError<T> {}
 
 impl<T: Float> From<ConstructError> for NurbsError<T> {
-    fn from(e: ConstructError) -> Self { Self::Construct(e) }
+    fn from(e: ConstructError) -> Self {
+        Self::Construct(e)
+    }
 }
 impl<T: Float> From<WireError> for NurbsError<T> {
-    fn from(e: WireError) -> Self { Self::Wire(e) }
+    fn from(e: WireError) -> Self {
+        Self::Wire(e)
+    }
 }
 impl<T: Float> From<ArcLengthError<T>> for NurbsError<T> {
-    fn from(e: ArcLengthError<T>) -> Self { Self::ArcLength(e) }
+    fn from(e: ArcLengthError<T>) -> Self {
+        Self::ArcLength(e)
+    }
 }
 impl<T: Float> From<AlgebraError> for NurbsError<T> {
-    fn from(e: AlgebraError) -> Self { Self::Algebra(e) }
+    fn from(e: AlgebraError) -> Self {
+        Self::Algebra(e)
+    }
 }
 
 #[cfg(test)]
@@ -141,9 +164,15 @@ mod tests {
 
     #[test]
     fn construct_error_converts_to_nurbs_error() {
-        let e = ConstructError::DegreeExceeded { actual: 25, max: 20 };
+        let e = ConstructError::DegreeExceeded {
+            actual: 25,
+            max: 20,
+        };
         let n: NurbsError<f32> = e.into();
-        assert!(matches!(n, NurbsError::Construct(ConstructError::DegreeExceeded { .. })));
+        assert!(matches!(
+            n,
+            NurbsError::Construct(ConstructError::DegreeExceeded { .. })
+        ));
     }
 
     #[test]
@@ -161,7 +190,11 @@ mod tests {
 
     #[test]
     fn display_renders_messages() {
-        let e: NurbsError<f32> = ConstructError::DegreeExceeded { actual: 30, max: 20 }.into();
+        let e: NurbsError<f32> = ConstructError::DegreeExceeded {
+            actual: 30,
+            max: 20,
+        }
+        .into();
         let s = format!("{e}");
         assert!(s.contains("30"));
         assert!(s.contains("20"));

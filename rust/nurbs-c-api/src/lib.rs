@@ -6,6 +6,10 @@
 //! produces a no-op diff.
 
 #![cfg_attr(not(feature = "host"), no_std)]
+// FFI surface is inherently unsafe; the workspace-wide `unsafe_code = deny`
+// applies to the pure Rust nurbs crate, but this crate's reason to exist is the
+// `extern "C"` boundary, so we opt out at the crate level.
+#![allow(unsafe_code)]
 
 use nurbs::{ArcLengthTableRef, ScalarNurbsRef, VectorNurbsRef};
 

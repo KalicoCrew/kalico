@@ -24,12 +24,16 @@ fn arb_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64>> {
             cps.prop_map(move |cps_vec| {
                 // Build a clamped uniform knot vector.
                 let mut knots = Vec::with_capacity(n + p as usize + 1);
-                for _ in 0..=p { knots.push(0.0); }
+                for _ in 0..=p {
+                    knots.push(0.0);
+                }
                 let interior = n.saturating_sub(p as usize + 1);
                 for i in 1..=interior {
                     knots.push(i as f64 / (interior + 1) as f64);
                 }
-                for _ in 0..=p { knots.push(1.0); }
+                for _ in 0..=p {
+                    knots.push(1.0);
+                }
                 nurbs::ScalarNurbs::try_new(p, knots, cps_vec, None).unwrap()
             })
         })

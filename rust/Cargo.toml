@@ -5,6 +5,36 @@ resolver = "2"
 [workspace.dependencies]
 # Shared deps versioned here from day one.
 
+# Workspace-wide lint configuration. Crates opt in via `[lints] workspace = true`.
+# Pedantic-tier lints are enabled at warn (with `-D warnings` they fail CI).
+# A handful of categories are explicitly allowed because they fire pervasively
+# on patterns that are correct for this codebase: stub functions awaiting Layer 1+
+# integration (missing-docs nags), FFI/wire-format pointer casts (cast nags),
+# numerical-array index loops in eval/de Boor (needless-range-loop), and
+# NaN-rejecting `!(x > y)` validation (neg_cmp_op_on_partial_ord).
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+# Allowed pervasively (see workspace-lints rationale above):
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_safety_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_ptr_alignment = "allow"
+needless_range_loop = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+many_single_char_names = "allow"
+type_complexity = "allow"
+
 [profile.release]
 opt-level = "z"
 lto = "fat"

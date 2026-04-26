@@ -7,11 +7,10 @@
 fn header_in_repo_matches_generated() {
     let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let header_path = crate_dir.join("include").join("kalico_nurbs.h");
-    let committed = std::fs::read_to_string(&header_path)
-        .expect("committed header must exist");
+    let committed = std::fs::read_to_string(&header_path).expect("committed header must exist");
 
-    let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml"))
-        .expect("cbindgen config");
+    let config =
+        cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).expect("cbindgen config");
     let regenerated = cbindgen::Builder::new()
         .with_crate(&crate_dir)
         .with_config(config)

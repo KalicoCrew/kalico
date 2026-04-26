@@ -1,4 +1,4 @@
-//! Vector NURBS types in R^N: VectorNurbs<T, N> (owned) and VectorNurbsRef<T, N> (borrowed).
+//! Vector NURBS types in R^N: `VectorNurbs`<T, N> (owned) and `VectorNurbsRef`<T, N> (borrowed).
 
 use crate::{scalar::validate, ConstructError, Float, VectorNurbsView};
 
@@ -20,15 +20,33 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
         weights: Option<Vec<T>>,
     ) -> Result<Self, ConstructError> {
         validate(degree, &knots, control_points.len(), weights.as_deref())?;
-        Ok(Self { degree, knots, control_points, weights })
+        Ok(Self {
+            degree,
+            knots,
+            control_points,
+            weights,
+        })
     }
 
-    pub fn degree(&self) -> u8 { self.degree }
-    pub fn knots(&self) -> &[T] { &self.knots }
-    pub fn control_points(&self) -> &[[T; N]] { &self.control_points }
-    pub fn weights(&self) -> Option<&[T]> { self.weights.as_deref() }
+    #[must_use]
+    pub fn degree(&self) -> u8 {
+        self.degree
+    }
+    #[must_use]
+    pub fn knots(&self) -> &[T] {
+        &self.knots
+    }
+    #[must_use]
+    pub fn control_points(&self) -> &[[T; N]] {
+        &self.control_points
+    }
+    #[must_use]
+    pub fn weights(&self) -> Option<&[T]> {
+        self.weights.as_deref()
+    }
 
     #[inline]
+    #[must_use]
     pub fn as_view(&self) -> VectorNurbsRef<'_, T, N> {
         VectorNurbsRef {
             degree: self.degree,
@@ -38,6 +56,7 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
         }
     }
 
+    #[must_use]
     pub fn into_parts(self) -> (u8, Vec<T>, Vec<[T; N]>, Option<Vec<T>>) {
         (self.degree, self.knots, self.control_points, self.weights)
     }
@@ -45,10 +64,22 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
 
 #[cfg(feature = "host")]
 impl<T: Float, const N: usize> VectorNurbsView<T, N> for VectorNurbs<T, N> {
-    #[inline] fn degree(&self) -> u8 { self.degree }
-    #[inline] fn knots(&self) -> &[T] { &self.knots }
-    #[inline] fn control_points(&self) -> &[[T; N]] { &self.control_points }
-    #[inline] fn weights(&self) -> Option<&[T]> { self.weights.as_deref() }
+    #[inline]
+    fn degree(&self) -> u8 {
+        self.degree
+    }
+    #[inline]
+    fn knots(&self) -> &[T] {
+        &self.knots
+    }
+    #[inline]
+    fn control_points(&self) -> &[[T; N]] {
+        &self.control_points
+    }
+    #[inline]
+    fn weights(&self) -> Option<&[T]> {
+        self.weights.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,23 +98,55 @@ impl<'a, T: Float, const N: usize> VectorNurbsRef<'a, T, N> {
         weights: Option<&'a [T]>,
     ) -> Result<Self, ConstructError> {
         validate(degree, knots, control_points.len(), weights)?;
-        Ok(Self { degree, knots, control_points, weights })
+        Ok(Self {
+            degree,
+            knots,
+            control_points,
+            weights,
+        })
     }
 
-    pub fn degree(&self) -> u8 { self.degree }
-    pub fn knots(&self) -> &[T] { self.knots }
-    pub fn control_points(&self) -> &[[T; N]] { self.control_points }
-    pub fn weights(&self) -> Option<&[T]> { self.weights }
+    #[must_use]
+    pub fn degree(&self) -> u8 {
+        self.degree
+    }
+    #[must_use]
+    pub fn knots(&self) -> &[T] {
+        self.knots
+    }
+    #[must_use]
+    pub fn control_points(&self) -> &[[T; N]] {
+        self.control_points
+    }
+    #[must_use]
+    pub fn weights(&self) -> Option<&[T]> {
+        self.weights
+    }
 }
 
-impl<'a, T: Float, const N: usize> VectorNurbsView<T, N> for VectorNurbsRef<'a, T, N> {
-    #[inline] fn degree(&self) -> u8 { self.degree }
-    #[inline] fn knots(&self) -> &[T] { self.knots }
-    #[inline] fn control_points(&self) -> &[[T; N]] { self.control_points }
-    #[inline] fn weights(&self) -> Option<&[T]> { self.weights }
+impl<T: Float, const N: usize> VectorNurbsView<T, N> for VectorNurbsRef<'_, T, N> {
+    #[inline]
+    fn degree(&self) -> u8 {
+        self.degree
+    }
+    #[inline]
+    fn knots(&self) -> &[T] {
+        self.knots
+    }
+    #[inline]
+    fn control_points(&self) -> &[[T; N]] {
+        self.control_points
+    }
+    #[inline]
+    fn weights(&self) -> Option<&[T]> {
+        self.weights
+    }
 }
 
-use crate::{wire::{FORMAT_VERSION_V1, VECTOR_HEADER_BYTES}, WireError};
+use crate::{
+    wire::{FORMAT_VERSION_V1, VECTOR_HEADER_BYTES},
+    WireError,
+};
 
 impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
     /// Zero-copy parse of a wire-format buffer. Same alignment / endianness
@@ -94,7 +157,8 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
         }
         if buf.len() < VECTOR_HEADER_BYTES {
             return Err(WireError::TruncatedBuffer {
-                expected_len: VECTOR_HEADER_BYTES, got: buf.len(),
+                expected_len: VECTOR_HEADER_BYTES,
+                got: buf.len(),
             });
         }
         let version = buf[0];
@@ -105,17 +169,27 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
         let has_weights = buf[2];
         let axes_n = buf[3];
         if axes_n as usize != N {
-            return Err(WireError::AxisCountMismatch { expected: N, got: axes_n });
+            return Err(WireError::AxisCountMismatch {
+                expected: N,
+                got: axes_n,
+            });
         }
         let knot_count = u16::from_ne_bytes([buf[4], buf[5]]) as usize;
         let cp_count = u16::from_ne_bytes([buf[6], buf[7]]) as usize;
 
         let knots_bytes = knot_count * core::mem::size_of::<f32>();
         let cps_bytes = cp_count * N * core::mem::size_of::<f32>();
-        let weights_bytes = if has_weights == 1 { cp_count * core::mem::size_of::<f32>() } else { 0 };
+        let weights_bytes = if has_weights == 1 {
+            cp_count * core::mem::size_of::<f32>()
+        } else {
+            0
+        };
         let total = VECTOR_HEADER_BYTES + knots_bytes + cps_bytes + weights_bytes;
         if buf.len() < total {
-            return Err(WireError::TruncatedBuffer { expected_len: total, got: buf.len() });
+            return Err(WireError::TruncatedBuffer {
+                expected_len: total,
+                got: buf.len(),
+            });
         }
 
         // SAFETY: alignment checked above; lengths checked above; f32 has no
@@ -125,12 +199,18 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
         // arrays occupy exactly `cp_count * N * 4` contiguous bytes.
         #[allow(unsafe_code)]
         let (knots, cps, weights) = unsafe {
-            let knots_ptr = buf.as_ptr().add(VECTOR_HEADER_BYTES) as *const f32;
-            let cps_ptr = buf.as_ptr().add(VECTOR_HEADER_BYTES + knots_bytes) as *const [f32; N];
+            let knots_ptr = buf.as_ptr().add(VECTOR_HEADER_BYTES).cast::<f32>();
+            let cps_ptr = buf
+                .as_ptr()
+                .add(VECTOR_HEADER_BYTES + knots_bytes)
+                .cast::<[f32; N]>();
             let knots = core::slice::from_raw_parts(knots_ptr, knot_count);
             let cps = core::slice::from_raw_parts(cps_ptr, cp_count);
             let weights = if has_weights == 1 {
-                let w_ptr = buf.as_ptr().add(VECTOR_HEADER_BYTES + knots_bytes + cps_bytes) as *const f32;
+                let w_ptr = buf
+                    .as_ptr()
+                    .add(VECTOR_HEADER_BYTES + knots_bytes + cps_bytes)
+                    .cast::<f32>();
                 Some(core::slice::from_raw_parts(w_ptr, cp_count))
             } else {
                 None
@@ -152,7 +232,8 @@ mod tests {
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
             None,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -164,24 +245,21 @@ mod tests {
 
     #[test]
     fn try_new_rejects_degree_exceeded() {
-        let result = VectorNurbs::<f64, 3>::try_new(
-            21,
-            vec![0.0; 23],
-            vec![[0.0; 3]; 1],
-            None,
-        );
-        assert!(matches!(result, Err(crate::ConstructError::DegreeExceeded { .. })));
+        let result = VectorNurbs::<f64, 3>::try_new(21, vec![0.0; 23], vec![[0.0; 3]; 1], None);
+        assert!(matches!(
+            result,
+            Err(crate::ConstructError::DegreeExceeded { .. })
+        ));
     }
 
     #[test]
     fn try_new_rejects_knot_count_mismatch() {
-        let result = VectorNurbs::<f64, 3>::try_new(
-            1,
-            vec![0.0, 0.0, 1.0],
-            vec![[0.0; 3], [1.0; 3]],
-            None,
-        );
-        assert!(matches!(result, Err(crate::ConstructError::KnotCountMismatch { .. })));
+        let result =
+            VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0], vec![[0.0; 3], [1.0; 3]], None);
+        assert!(matches!(
+            result,
+            Err(crate::ConstructError::KnotCountMismatch { .. })
+        ));
     }
 
     #[test]
@@ -197,9 +275,9 @@ mod tests {
         // Layout: u8 version, u8 degree, u8 has_weights, u8 axes_n,
         //         u16 knot_count, u16 cp_count, then knots + cps (interleaved).
         let mut buf = Vec::new();
-        buf.extend_from_slice(&[1, 1, 0, 3]);                         // version, degree, has_weights, axes_n
-        buf.extend_from_slice(&4u16.to_ne_bytes());                   // knot_count
-        buf.extend_from_slice(&2u16.to_ne_bytes());                   // cp_count
+        buf.extend_from_slice(&[1, 1, 0, 3]); // version, degree, has_weights, axes_n
+        buf.extend_from_slice(&4u16.to_ne_bytes()); // knot_count
+        buf.extend_from_slice(&2u16.to_ne_bytes()); // cp_count
         buf.extend_from_slice(&0.0_f32.to_ne_bytes());
         buf.extend_from_slice(&0.0_f32.to_ne_bytes());
         buf.extend_from_slice(&1.0_f32.to_ne_bytes());
@@ -225,7 +303,13 @@ mod tests {
         buf.resize(64, 0);
         let aligned = test_align_buf(&buf, 4);
         let result = VectorNurbsRef::<f32, 3>::try_from_wire(aligned.as_slice());
-        assert!(matches!(result, Err(crate::WireError::AxisCountMismatch { expected: 3, got: 4 })));
+        assert!(matches!(
+            result,
+            Err(crate::WireError::AxisCountMismatch {
+                expected: 3,
+                got: 4
+            })
+        ));
     }
 
     /// Test-only owner; same shape as `align_buf` in scalar.rs (see Task 9).
@@ -249,10 +333,12 @@ mod tests {
         let mut backing: Vec<u32> = vec![0; n];
         // SAFETY: backing owns n*4 bytes 4-byte aligned; we write data.len() <= n*4.
         #[allow(unsafe_code)]
-        let bytes: &mut [u8] = unsafe {
-            core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4)
-        };
+        let bytes: &mut [u8] =
+            unsafe { core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4) };
         bytes[..data.len()].copy_from_slice(data);
-        AlignedBytes { backing, len: data.len() }
+        AlignedBytes {
+            backing,
+            len: data.len(),
+        }
     }
 }

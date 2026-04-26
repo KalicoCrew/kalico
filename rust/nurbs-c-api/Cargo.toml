@@ -23,3 +23,6 @@ host = ["nurbs/host", "dep:cbindgen"]
 [dependencies]
 nurbs = { path = "../nurbs", default-features = false }
 cbindgen = { version = "0.27", optional = true }
+
+[lints]
+workspace = true

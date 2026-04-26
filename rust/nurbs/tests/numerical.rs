@@ -5,12 +5,9 @@
 
 #[test]
 fn tiny_knot_range_evaluates_without_nan() {
-    let curve = nurbs::ScalarNurbs::try_new(
-        1,
-        vec![0.0_f64, 0.0, 1e-8, 1e-8],
-        vec![0.0, 1.0],
-        None,
-    ).expect("tiny but positive range is valid");
+    let curve =
+        nurbs::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1e-8, 1e-8], vec![0.0, 1.0], None)
+            .expect("tiny but positive range is valid");
     let mid = nurbs::eval::eval(&curve.as_view(), 5e-9);
     assert!(mid.is_finite(), "expected finite eval, got {mid}");
 }
@@ -29,7 +26,8 @@ fn near_zero_weight_evaluates_within_clamp() {
         vec![0.0_f64, 0.0, 1.0, 1.0],
         vec![1.0, 2.0],
         Some(vec![1.0, 1e-6]),
-    ).expect("positive weight passes validation");
+    )
+    .expect("positive weight passes validation");
     let v = nurbs::eval::eval(&curve.as_view(), 1.0);
     assert!(v.is_finite(), "expected finite, got {v}");
 }
@@ -43,7 +41,8 @@ fn curvature_clamps_at_cusp_like_input() {
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1e-10, 0.0, 0.0], [1.0, 0.0, 0.0]],
         None,
-    ).unwrap();
+    )
+    .unwrap();
     let first = nurbs::eval::vector_derivative(&curve);
     let second = nurbs::eval::vector_derivative(&first);
     let k = nurbs::eval::curvature_from_derivs(&first, &second, 0.0_f64);
@@ -58,7 +57,11 @@ fn arc_length_builder_rejects_truly_degenerate_curve() {
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
         None,
-    ).unwrap();
+    )
+    .unwrap();
     let result = nurbs::arc_length::build_arc_length_table_vector(&curve, 1e-6, 64);
-    assert!(matches!(result, Err(nurbs::ArcLengthError::DegenerateCurve)));
+    assert!(matches!(
+        result,
+        Err(nurbs::ArcLengthError::DegenerateCurve)
+    ));
 }
