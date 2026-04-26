@@ -236,6 +236,40 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
         .expect("degree-lowered NURBS satisfies invariants by construction")
 }
 
+/// Compute the parametric derivative of a vector NURBS as a new owned NURBS.
+/// Same algorithm as scalar `derivative` applied per axis; knot vector and
+/// degree handled once.
+#[cfg(feature = "host")]
+pub fn vector_derivative<T: Float, const N: usize>(
+    curve: &crate::VectorNurbs<T, N>,
+) -> crate::VectorNurbs<T, N> {
+    let p = curve.degree();
+    assert!(p >= 1, "derivative requires degree >= 1");
+
+    let cps = curve.control_points();
+    let knots = curve.knots();
+    let new_degree = p - 1;
+    let new_n = cps.len() - 1;
+    let p_t = T::from_f64(p as f64);
+
+    let mut new_cps: Vec<[T; N]> = Vec::with_capacity(new_n);
+    for i in 0..new_n {
+        let denom = knots[i + p as usize + 1] - knots[i + 1];
+        let mut q = [T::ZERO; N];
+        if denom > T::ZERO {
+            for axis in 0..N {
+                q[axis] = p_t * (cps[i + 1][axis] - cps[i][axis]) / denom;
+            }
+        }
+        new_cps.push(q);
+    }
+
+    let new_knots: Vec<T> = knots[1..knots.len() - 1].to_vec();
+
+    crate::VectorNurbs::try_new(new_degree, new_knots, new_cps, None)
+        .expect("degree-lowered NURBS satisfies invariants by construction")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +441,25 @@ mod tests {
         let expected = (eval(&curve.as_view(), 0.5 + h) - eval(&curve.as_view(), 0.5 - h)) / (2.0 * h);
         let actual = eval(&v, 0.5);
         assert!((actual - expected).abs() < 1e-6, "got {actual}, expected {expected}");
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn vector_derivative_matches_per_axis_scalar() {
+        let curve = linear_3d_curve_f64();
+        let d = vector_derivative(&curve);
+        assert_eq!(d.degree(), 0);
+        let v = d.as_view();
+        let result = vector_eval(&v, 0.3_f64);
+
+        for axis in 0..3 {
+            let cps_axis: Vec<f64> = curve.control_points().iter().map(|cp| cp[axis]).collect();
+            let scalar = crate::ScalarNurbs::try_new(
+                curve.degree(), curve.knots().to_vec(), cps_axis, None,
+            ).unwrap();
+            let scalar_d = derivative(&scalar);
+            let expected = eval(&scalar_d.as_view(), 0.3_f64);
+            assert!((result[axis] - expected).abs() < 1e-12);
+        }
     }
 }
