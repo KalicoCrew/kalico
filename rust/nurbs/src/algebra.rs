@@ -98,7 +98,8 @@ pub fn multiply<T: Float>(
         });
     }
 
-    let result = crate::bezier::bezier_pieces_to_nurbs(&out_pieces);
+    let mut result = crate::bezier::bezier_pieces_to_nurbs(&out_pieces);
+    knot_remove_redundant(&mut result, T::from_f64(1e-12));
     Ok(result)
 }
 
@@ -179,10 +180,61 @@ pub fn convolve_with_polynomial_kernel<T: Float>(
     ))
 }
 
+/// Iterate over interior knots and apply `remove_knot` with the given tolerance,
+/// dropping knots whose removal preserves the curve within `tol`. Used by
+/// `multiply` and `convolve` to expose natural smoothness of the result.
+#[cfg(feature = "host")]
+pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>, tol: T) {
+    let p = curve.degree() as usize;
+    loop {
+        let knots: Vec<T> = curve.knots().to_vec();
+        let interior: Vec<T> = {
+            let mut seen: Vec<T> = Vec::new();
+            for &k in &knots[p + 1..knots.len() - p - 1] {
+                if !seen.contains(&k) {
+                    seen.push(k);
+                }
+            }
+            seen
+        };
+
+        let mut removed_any = false;
+        for u in interior {
+            let (new_curve, count) = crate::knot::remove_knot(curve, u, 1, tol);
+            if count > 0 {
+                *curve = new_curve;
+                removed_any = true;
+            }
+        }
+        if !removed_any { break; }
+    }
+}
+
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
     use crate::eval::eval;
+
+    #[test]
+    fn knot_remove_redundant_simplifies_overproduct() {
+        let a = crate::ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+        let b = a.clone();
+        let mut c = multiply(&a, &b).unwrap();
+        let initial_knot_count = c.knots().len();
+
+        knot_remove_redundant(&mut c, 1e-10);
+
+        // For a single-piece input, no interior knots to remove; result unchanged.
+        assert_eq!(c.knots().len(), initial_knot_count);
+        // Eval still correct.
+        for u in [0.0, 0.5, 1.0] {
+            let exp = eval(&a.as_view(), u) * eval(&b.as_view(), u);
+            let got = eval(&c.as_view(), u);
+            assert!((exp - got).abs() < 1e-10);
+        }
+    }
 
     #[test]
     fn multiply_curves_with_different_interior_knots() {
