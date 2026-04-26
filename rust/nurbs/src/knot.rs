@@ -82,6 +82,11 @@ impl<T: Float> KnotVector<T> {
     pub fn find_span(&self, u: T, p: usize, n: usize) -> usize {
         find_knot_span(&self.knots, p, n, u)
     }
+
+    /// Count consecutive equal knots at value `u`. Returns 0 if `u` is not present.
+    pub fn multiplicity_at(&self, u: T) -> usize {
+        self.knots.iter().filter(|k| **k == u).count()
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +127,14 @@ mod tests {
     fn knot_vector_find_span_delegates() {
         let kv = KnotVector::<f64>::try_new(vec![0.0, 0.0, 0.5, 1.0, 1.0]).unwrap();
         assert_eq!(kv.find_span(0.25, 1, 3), 1);
+    }
+
+    #[test]
+    fn multiplicity_at_counts_repeated_knots() {
+        let kv = KnotVector::<f64>::try_new(vec![0.0, 0.0, 0.5, 0.5, 1.0, 1.0]).unwrap();
+        assert_eq!(kv.multiplicity_at(0.0), 2);
+        assert_eq!(kv.multiplicity_at(0.5), 2);
+        assert_eq!(kv.multiplicity_at(1.0), 2);
+        assert_eq!(kv.multiplicity_at(0.25), 0);
     }
 }
