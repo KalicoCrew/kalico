@@ -85,8 +85,9 @@ Depends on Layers 1 and 2. This is where the algebraic-closure principle plays o
 ### Pre-bakes on the host
 
 - **Impulse-shaper application:** produce per-axis impulse table that travels with the segment.
-- **Smooth-shaper application:** convolve base NURBS with polynomial kernel analytically, produce shaped (higher-degree) NURBS.
-- **Shaper-aware acceleration constraint:** modify TOPP-RA's accel constraint based on closed-form shaper-overshoot factor. This is the Layer 2 ↔ Layer 3 feedback. Implement Layer 2 first without it; add as refinement.
+- **Reparameterize geometry to time.** After TOPP-RA produces v(s), compose the geometric NURBS in s with the time-mapping s(t) (inverse of t(s) = ∫ds/v) to get a time-parameterized piecewise NURBS x(t). This is a NURBS-of-piecewise-polynomial composition; result has more pieces per segment (~3–7) but stays piecewise-polynomial. Required because the shaper math is time-domain.
+- **Smooth-shaper application:** convolve the time-reparameterized NURBS x(t) with the polynomial kernel w(t) analytically, produce shaped (higher-degree) NURBS in t. Kernel support is a few ms; output piece count grows by O(input pieces × kernel pieces).
+- **Shaper-aware acceleration constraint:** because x(t) is known in closed form post-shaping, peak shaped acceleration is derivable from its derivatives directly. Feed this back to TOPP-RA as a constraint. The "shaper-overshoot factor" is a derived quantity, not a magic number. This is the Layer 2 ↔ Layer 3 feedback. Implement Layer 2 first without it; add as refinement.
 
 ### Defers to Layer 4 (does not pre-bake)
 
