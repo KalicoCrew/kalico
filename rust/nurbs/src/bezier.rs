@@ -198,6 +198,55 @@ pub fn bezier_pieces_to_nurbs<T: Float>(pieces: &[BezierPiece<T>]) -> ScalarNurb
         .expect("bezier_pieces_to_nurbs: invariants should hold")
 }
 
+/// Split a Bézier piece at an interior point `u_split`, producing two pieces
+/// covering [u_start, u_split] and [u_split, u_end] with the same polynomial
+/// degree. The polynomial value is preserved on each side.
+pub fn split_piece_at<T: Float>(
+    piece: &BezierPiece<T>,
+    u_split: T,
+) -> (BezierPiece<T>, BezierPiece<T>) {
+    assert!(
+        u_split > piece.u_start && u_split < piece.u_end,
+        "u_split must be strictly interior"
+    );
+    let d = piece.degree();
+
+    // Left piece: same monomial coefficients (basis at u_start unchanged); just narrower support.
+    let left = BezierPiece {
+        u_start: piece.u_start,
+        u_end: u_split,
+        coeffs: piece.coeffs.clone(),
+    };
+
+    // Right piece: re-shift the basis from u_start to u_split.
+    // p(u) = Σ c_k (u - u_start)^k. Substitute (u - u_start) = (u - u_split) + delta where delta = u_split - u_start.
+    // Expand via binomial: (u - u_start)^k = Σ_{i=0..k} C(k,i) (u - u_split)^i delta^{k-i}.
+    // So new_coeff[i] = Σ_{k=i..d} c_k * C(k,i) * delta^{k-i}.
+    let delta = u_split - piece.u_start;
+    let mut right_coeffs = vec![T::ZERO; d + 1];
+    let mut delta_pow = vec![T::ONE; d + 1];
+    for k in 1..=d {
+        delta_pow[k] = delta_pow[k - 1] * delta;
+    }
+
+    for i in 0..=d {
+        let mut acc = T::ZERO;
+        for k in i..=d {
+            let c_k_i = T::from_f64(binomial(k, i) as f64);
+            acc = acc + piece.coeffs[k] * c_k_i * delta_pow[k - i];
+        }
+        right_coeffs[i] = acc;
+    }
+
+    let right = BezierPiece {
+        u_start: u_split,
+        u_end: piece.u_end,
+        coeffs: right_coeffs,
+    };
+
+    (left, right)
+}
+
 /// Binomial coefficient C(n, k). Integer-valued; safe for k, n ≤ 30 or so.
 /// `pub(crate)` so `algebra.rs` can reuse it (DRY — defined here, used in convolve too).
 pub(crate) fn binomial(n: usize, k: usize) -> u64 {
@@ -352,6 +401,30 @@ mod tests {
         for u in [0.5, 0.75, 1.0] {
             let exp = crate::eval::eval(&curve.as_view(), u);
             let got = pieces[1].evaluate(u);
+            assert!((exp - got).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn split_piece_at_preserves_evaluation_on_each_side() {
+        // p(u) = 1 + 2 * (u - 0) on [0, 1].
+        let original = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0] };
+        let (left, right) = split_piece_at(&original, 0.4);
+
+        assert_eq!(left.u_start, 0.0);
+        assert_eq!(left.u_end, 0.4);
+        assert_eq!(right.u_start, 0.4);
+        assert_eq!(right.u_end, 1.0);
+
+        // Evaluation matches on each side.
+        for u in [0.0, 0.2, 0.4] {
+            let exp = original.evaluate(u);
+            let got = left.evaluate(u);
+            assert!((exp - got).abs() < 1e-12);
+        }
+        for u in [0.4, 0.7, 1.0] {
+            let exp = original.evaluate(u);
+            let got = right.evaluate(u);
             assert!((exp - got).abs() < 1e-12);
         }
     }
