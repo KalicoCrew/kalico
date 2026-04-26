@@ -3,22 +3,22 @@
 
 use crate::{Float, NurbsView, VectorNurbsView, MAX_DEGREE, MIN_PARAMETRIC_SPEED, WORKSPACE_SIZE};
 
-/// Find the knot span `k` such that `knots[k] <= u < knots[k+1]`, with the
-/// clamped-end special case mapping `u >= knots[n]` to the last span.
-/// Reference: Piegl & Tiller "The NURBS Book" Algorithm A2.1.
-///
-/// Inputs: `knots` is a clamped open knot vector (validated upstream),
-/// `p` is the degree, `n` is the control-point count.
+// Re-export from knot module for transitional internal use. Eventually
+// callers should import directly from `crate::knot::find_knot_span`.
+#[cfg(feature = "host")]
+pub(crate) use crate::knot::find_knot_span;
+
+// MCU build needs an inline copy since knot module is host-only.
+#[cfg(not(feature = "host"))]
+#[inline]
 pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize {
     debug_assert!(knots.len() == n + p + 1);
-    // Clamped endpoint cases.
     if u >= knots[n] {
         return n - 1;
     }
     if u <= knots[p] {
         return p;
     }
-
     let mut low = p;
     let mut high = n;
     let mut mid = (low + high) / 2;
