@@ -74,13 +74,15 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
     for tok in line[after_head_idx..].split_whitespace() {
         let mut tc = tok.chars();
         let Some(letter_ch) = tc.next() else { continue };
-        let letter = letter_ch.to_ascii_uppercase() as u8;
-        if !letter.is_ascii_uppercase() {
+        // Reject non-ASCII-uppercase letters consistently with the head check above.
+        // Slicer output is always uppercase; tolerating lowercase silently can mask bugs.
+        if !letter_ch.is_ascii_uppercase() {
             return Err(ParseError::MalformedNumber {
                 line_no,
                 text: tok.to_string().into_boxed_str(),
             });
         }
+        let letter = letter_ch as u8;
         let num_str = &tok[letter_ch.len_utf8()..];
         let value: f64 = num_str.parse().map_err(|_| ParseError::MalformedNumber {
             line_no,
@@ -236,6 +238,50 @@ mod tests {
                 assert_eq!(params.y(), Some(2.0));
             }
             other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_param_value_returns_error() {
+        // "X" with no number after it — different branch from "X1.2.3"
+        let toks = collect("G1 X\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Err(ParseError::MalformedNumber { line_no: 1, .. }) => {}
+            other => panic!("expected MalformedNumber for missing value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn numeric_token_without_letter_returns_error() {
+        // "1.0" as a parameter — first character isn't a letter
+        let toks = collect("G1 1.0\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Err(ParseError::MalformedNumber { line_no: 1, .. }) => {}
+            other => panic!("expected MalformedNumber for digit-leading param, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowercase_param_letter_returns_error() {
+        // After Fix 1: lowercase param letters reject consistently with lowercase heads.
+        let toks = collect("G1 x10\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Err(ParseError::MalformedNumber { line_no: 1, .. }) => {}
+            other => panic!("expected MalformedNumber for lowercase param letter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn head_with_no_number_returns_error() {
+        // "G" alone — head letter without a number portion.
+        let toks = collect("G\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Err(ParseError::UnrecognizedHead { line_no: 1, .. }) => {}
+            other => panic!("expected UnrecognizedHead for bare head letter, got {other:?}"),
         }
     }
 }
