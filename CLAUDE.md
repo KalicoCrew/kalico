@@ -12,7 +12,7 @@ We are working on a complete rewrite of the motion planner and more:
 - Non-linear PA from bleeding-edge kalico, applied IS-then-PA
 - Axis limits are calculated against shaped dynamics (shaper aware TOPP-RA, not fixed de-rating)
 - Third order motion as primary profile
-- User configurable corner rounding, shape selected to minimize the time through the corner at given quality (ringing), and respecting current limits.sed offload
+- User configurable corner rounding. Optimal blend shape (curve family + control parameters) is genuinely dynamic-limit-dependent — the curve that minimizes time through a corner at a given tolerance differs across accel/jerk regimes — so shape selection happens in Layer 3 with full dynamic-limit context, not at geometric receive time.
 - Real time communication with MCUs, no queue-based offload.
 - Trajectory evaluation on MCU at modulation rate (20-40kHz) for true phase stepping. MCU receives the shape with PA and IS already baked in, to reduce load.
 - Telemetry as a first-class subsystem
@@ -64,7 +64,7 @@ Depends on Layer 0. Produces NURBS segments from g-code input.
 - **Geometric reduction:** G0/G1 → degree-1 NURBS, G2/G3 → exact rational quadratic NURBS, G5 → direct.
 - **G1-sequence spline fitter.** Windowed B-spline fitting with configurable tolerance. **This is the highest-risk item in the spec by a meaningful margin** — offline fitting literature exists (Tajima/Sencer, Beudaert) but the streaming/windowed/real-time-tolerance case in a hobby-firmware context is genuinely novel research, not just porting. Build a prototype early.
 - **Junction-deviation fallback** for G1 sequences the fitter can't smooth (very short, deliberate sharp corners, explicit non-smoothable). The machine drives through the geometric corner with velocity reduction; geometry stays exact.
-- **Cubic-Bezier corner blends** as a third path for deliberately sharp corners that need smoothing but aren't fittable as continuous curves. Tolerance-sized geometry, dynamic-limit-invariant. Cubic Beziers are degenerate cubic NURBS, so they integrate cleanly.
+- **Parameterized corner-blend slots** as a third path for deliberately sharp corners that need smoothing but aren't fittable as continuous curves. Layer 1 emits the slot — in/out tangents, tolerance budget, segment-length context — but defers curve-family choice and control-point placement to Layer 3 where dynamic limits are known. Cubic Bezier is the default family (degenerate cubic NURBS, integrates cleanly); per Tajima & Sencer 2016, optimal-time-through-corner shape genuinely varies with accel/jerk ratio, so this is not a fixed-geometry path.
 
 The three corner paths form a fallback chain: **fitter handles what it can → cubic Bezier blends explicitly-marked sharp corners → junction-deviation handles the rest.** Output: a stream of NURBS segments with metadata about source g-code.
 
@@ -84,6 +84,7 @@ Depends on Layers 1 and 2. This is where the algebraic-closure principle plays o
 
 ### Pre-bakes on the host
 
+- **Corner-blend shape finalization.** Take Layer 1's parameterized blend slots (tolerance budget + tangent + segment-length context) and select curve family + control-point placement to minimize time through the corner under current dynamic limits and ringing budget. Output replaces the slot with a finalized NURBS in the segment stream. Per Tajima & Sencer 2016. Runs before TOPP-RA — geometry must be finalized before v(s) is computed against it.
 - **Impulse-shaper application:** produce per-axis impulse table that travels with the segment.
 - **Reparameterize geometry to time.** After TOPP-RA produces v(s), compose the geometric NURBS in s with the time-mapping s(t) (inverse of t(s) = ∫ds/v) to get a time-parameterized piecewise NURBS x(t). This is a NURBS-of-piecewise-polynomial composition; result has more pieces per segment (~3–7) but stays piecewise-polynomial. Required because the shaper math is time-domain.
 - **Smooth-shaper application:** convolve the time-reparameterized NURBS x(t) with the polynomial kernel w(t) analytically, produce shaped (higher-degree) NURBS in t. Kernel support is a few ms; output piece count grows by O(input pieces × kernel pieces).
@@ -154,6 +155,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
              ▼
   ┌─────────────────────────────────────────────────────────┐
   │ Layer 3: Trajectory transformations (pre-bake)          │
+  │ - Corner-blend shape finalization (host)                │
   │ - Impulse-shaper application (host)                     │
   │ - Smooth-shaper convolution into NURBS (host)           │
   │ - Shaper-aware accel constraint ──┐ feedback to Layer 2 │
@@ -168,7 +170,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
   │ - Invalidation logic    │  │ - Spline fitter         │
   │                         │  │ - Junction-deviation    │
   │                         │  │   fallback              │
-  │                         │  │ - Cubic-Bezier blends   │
+  │                         │  │ - Corner-blend slots    │
   └──────────┬──────────────┘  └────────────┬────────────┘
              │                              │
              └──────────────┬───────────────┘
@@ -199,8 +201,8 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 4. **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
 5. **Communication protocol and clock sync** — Layer 5
 6. **First-print MVP: end-to-end with junction-deviation on G1, plus G2/G3 native, plus ZV shaper. No PA, no fitting, no smooth shapers.** This actually prints from existing slicers — the corner velocities will be conservative (no fitting means lots of velocity reductions at slicer-emitted G1 vertices) but it produces parts.
-7. **Spline fitter** — completes Layer 1, dramatically improves throughput on slicer-emitted G1
-8. **Smooth shapers and shaper-aware TOPP-RA** — completes Layer 3 and refines Layer 2
+7. **Spline fitter and parameterized corner-blend emission** — completes Layer 1's geometric output. Until Layer 3 corner-blend finalization lands (step 8), corner-blend slots fall back to junction-deviation.
+8. **Smooth shapers, shaper-aware TOPP-RA, and corner-blend shape finalization** — completes Layer 3 and refines Layer 2.
 9. **Tanh PA on MCU** (runtime evaluation against base E NURBS) — refines Layer 4
 10. **Phase stepping current synthesis** — completes Layer 4
 11. **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
