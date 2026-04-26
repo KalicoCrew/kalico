@@ -1,0 +1,18 @@
+[workspace]
+members = ["nurbs", "nurbs-c-api"]
+resolver = "2"
+
+[workspace.dependencies]
+# Shared deps versioned here from day one.
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = true
+overflow-checks = false
+
+[profile.dev]
+opt-level = 1            # eval correctness tests run faster than -O0; still debuggable
+debug = true

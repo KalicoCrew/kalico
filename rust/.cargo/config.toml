@@ -1,0 +1,6 @@
+[target.thumbv7em-none-eabihf]
+rustflags = [
+    "-C", "target-cpu=cortex-m7",
+    "-C", "target-feature=+fp-armv8d16,+strict-align",
+    "-C", "link-arg=--nmagic",
+]
