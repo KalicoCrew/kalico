@@ -5,8 +5,10 @@ import numpy as np
 from scripts.fitter_prototype.fit import (
     build_basis_matrix,
     chord_length_parameterize,
+    fit_smooth_run,
     lspia_fit,
     make_clamped_knot_vector,
+    measure_chord_error_per_piece,
 )
 from scripts.fitter_prototype.params import FitterParams
 
@@ -58,3 +60,37 @@ def test_lspia_fits_a_circle_within_tolerance():
     residuals = np.linalg.norm(spline(t) - pts, axis=1)
     # Cubic NURBS approximation of a circle quadrant: realistic floor ~1e-3.
     assert residuals.max() < 5e-3
+
+
+def test_fit_smooth_run_returns_fitted_nurbs_within_tolerance():
+    # Sample a half-circle. With initial 4 interior knots the chord error
+    # exceeds 25 µm; refinement must add knots until tolerance is met.
+    angles = np.linspace(0.0, np.pi, 60)
+    pts = np.column_stack([np.cos(angles), np.sin(angles)])
+    params = FitterParams(eps_chord_mm=0.025, max_refine_iter=20)
+    fit = fit_smooth_run(pts, source_vertex_range=(0, 60), params=params)
+    assert fit.max_residual <= params.eps_chord_mm * 1.05  # 5% slack on numerical eval
+
+
+def test_chord_error_decreases_with_refinement():
+    # Same half-circle: track that refinement reduces error.
+    angles = np.linspace(0.0, np.pi, 60)
+    pts = np.column_stack([np.cos(angles), np.sin(angles)])
+    params_loose = FitterParams(eps_chord_mm=0.05, max_refine_iter=20)
+    params_tight = FitterParams(eps_chord_mm=0.001, max_refine_iter=30)
+    fit_loose = fit_smooth_run(pts, (0, 60), params_loose)
+    fit_tight = fit_smooth_run(pts, (0, 60), params_tight)
+    # Tighter tolerance produces more knots and smaller max residual.
+    assert fit_tight.max_residual < fit_loose.max_residual
+    assert len(fit_tight.knots) > len(fit_loose.knots)
+
+
+def test_measure_chord_error_basic():
+    # Straight-line input: all per-piece errors should be ~0.
+    pts = np.array([[i * 0.5, i * 0.5] for i in range(20)])
+    params = FitterParams()
+    cps, knots, t = lspia_fit(pts, params)
+    errors = measure_chord_error_per_piece(
+        cps, knots, params.degree, params.n_chord_samples
+    )
+    assert max(errors) < 1e-6

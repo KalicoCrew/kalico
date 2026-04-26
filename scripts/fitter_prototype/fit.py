@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import BSpline
 
+from scripts.fitter_prototype.output import FittedNurbs
 from scripts.fitter_prototype.params import FitterParams
 
 
@@ -117,3 +118,120 @@ def max_residual(
 ) -> float:
     eval_pts = evaluate_fit(cps, knots, degree, t)
     return float(np.linalg.norm(eval_pts - points, axis=1).max())
+
+
+def _unique_interior_breakpoints(
+    knots: np.ndarray, degree: int
+) -> np.ndarray:
+    """Strictly interior breakpoints (not the clamped endpoints), with
+    duplicates collapsed."""
+    interior = knots[degree + 1 : -(degree + 1)]
+    if len(interior) == 0:
+        return interior
+    return np.unique(interior)
+
+
+def _piece_breakpoints(knots: np.ndarray, degree: int) -> np.ndarray:
+    """Full breakpoint list including clamped start and end."""
+    interior = _unique_interior_breakpoints(knots, degree)
+    return np.concatenate(
+        [[knots[degree]], interior, [knots[-degree - 1]]]
+    )
+
+
+def measure_chord_error_per_piece(
+    cps: np.ndarray,
+    knots: np.ndarray,
+    degree: int,
+    n_samples: int,
+) -> list[float]:
+    """For each piece between adjacent breakpoints, sample the curve and
+    return max distance from sampled points to the chord between piece
+    endpoints.
+
+    This is a sample-based approximation of the analytical chord-bound.
+    It overestimates a tiny bit — fine for prototype, replace with proper
+    convex-hull bound when porting to Rust.
+    """
+    breakpoints = _piece_breakpoints(knots, degree)
+    spline = BSpline(knots, cps, degree, extrapolate=False)
+    errors: list[float] = []
+    for k in range(len(breakpoints) - 1):
+        t0, t1 = breakpoints[k], breakpoints[k + 1]
+        ts = np.linspace(t0, t1, n_samples)
+        pts = spline(ts)
+        # Right-boundary safety.
+        if np.any(np.isnan(pts[-1])):
+            pts[-1] = cps[-1]
+        chord_start, chord_end = pts[0], pts[-1]
+        chord_vec = chord_end - chord_start
+        chord_len = float(np.linalg.norm(chord_vec))
+        if chord_len < 1e-12:
+            errors.append(0.0)
+            continue
+        chord_dir = chord_vec / chord_len
+        offsets = pts - chord_start
+        parallel = (offsets @ chord_dir)[:, None] * chord_dir
+        perp = offsets - parallel
+        dists = np.linalg.norm(perp, axis=1)
+        errors.append(float(dists.max()))
+    return errors
+
+
+def _worst_piece_param(
+    cps: np.ndarray,
+    knots: np.ndarray,
+    degree: int,
+    piece_idx: int,
+    n_samples: int,
+) -> float:
+    breakpoints = _piece_breakpoints(knots, degree)
+    t0, t1 = breakpoints[piece_idx], breakpoints[piece_idx + 1]
+    ts = np.linspace(t0, t1, n_samples)
+    spline = BSpline(knots, cps, degree, extrapolate=False)
+    pts = spline(ts)
+    if np.any(np.isnan(pts[-1])):
+        pts[-1] = cps[-1]
+    chord_start, chord_end = pts[0], pts[-1]
+    chord_vec = chord_end - chord_start
+    chord_len = float(np.linalg.norm(chord_vec))
+    if chord_len < 1e-12:
+        return float((t0 + t1) / 2.0)
+    chord_dir = chord_vec / chord_len
+    offsets = pts - chord_start
+    parallel = (offsets @ chord_dir)[:, None] * chord_dir
+    perp = offsets - parallel
+    dists = np.linalg.norm(perp, axis=1)
+    return float(ts[int(np.argmax(dists))])
+
+
+def fit_smooth_run(
+    points: np.ndarray,
+    source_vertex_range: tuple[int, int],
+    params: FitterParams,
+) -> FittedNurbs:
+    """LSPIA + chord-bound refinement."""
+    cps, knots, t = lspia_fit(points, params)
+
+    for _ in range(params.max_refine_iter):
+        errors = measure_chord_error_per_piece(
+            cps, knots, params.degree, params.n_chord_samples,
+        )
+        worst_err = max(errors) if errors else 0.0
+        if worst_err <= params.eps_chord_mm:
+            break
+        worst_idx = int(np.argmax(errors))
+        new_knot = _worst_piece_param(
+            cps, knots, params.degree, worst_idx, params.n_chord_samples,
+        )
+        # Insert at the worst-residual parameter location.
+        knots = np.sort(np.concatenate([knots, [new_knot]]))
+        cps, knots, t = lspia_fit(points, params, knots_override=knots)
+
+    return FittedNurbs(
+        control_points=cps,
+        knots=knots,
+        degree=params.degree,
+        source_vertex_range=source_vertex_range,
+        max_residual=max_residual(cps, knots, params.degree, t, points),
+    )
