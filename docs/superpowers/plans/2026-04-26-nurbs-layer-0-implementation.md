@@ -406,7 +406,13 @@ impl Float for f32 {
 
     #[inline]
     fn mul_add(self, a: Self, b: Self) -> Self {
-        f32::mul_add(self, a, b)
+        // Inherent f32::mul_add is std-only; in no_std MCU builds the call
+        // would resolve to the trait method and infinite-recurse. Gate the
+        // same way as sqrt/abs.
+        #[cfg(feature = "host")]
+        { f32::mul_add(self, a, b) }
+        #[cfg(not(feature = "host"))]
+        { libm::fmaf(self, a, b) }
     }
 
     #[inline]
