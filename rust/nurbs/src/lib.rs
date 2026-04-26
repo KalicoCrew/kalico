@@ -36,6 +36,8 @@ pub use vector::VectorNurbsRef;
 
 pub mod wire;
 
+pub mod eval;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
