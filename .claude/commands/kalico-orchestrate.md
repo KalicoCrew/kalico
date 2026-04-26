@@ -75,10 +75,37 @@ Once the plan is approved, invoke `superpowers:subagent-driven-development` with
 
 Worker model selection follows whatever the SDD skill specifies — do not override that.
 
-### Phase 5 — Tick & continue
+### Phase 5 — Code review
 
-- After the SDD execution succeeds for this item, edit `CLAUDE.md` to tick the checkbox.
-- After 2–3 completed build-order items, **stop**. Print the end-of-session summary. Suggest the user `/clear` and re-enter `/kalico-orchestrate` to continue.
+After SDD reports completion, dispatch the `superpowers:code-reviewer` subagent to verify the work is sound. Pass:
+
+- Path to the plan that was just executed.
+- The build-order item it addresses.
+- References to `CLAUDE.md` (architectural constraints, layer rules, feature scope) and `docs/research/firmware-survey.md` (standards baseline).
+- Instruction: review only — do not modify code or files.
+
+The code reviewer returns either approval or a list of issues to fix.
+
+**If any issues exist, fix them before continuing — even small ones. No exceptions.** Don't patch directly; route through the full pipeline:
+
+1. Spawn a fresh `kalico-brainstormer` (name like `brainstormer-fixes-N`) with a brief containing:
+   - The code reviewer's issue list (verbatim).
+   - The original plan path.
+   - The instruction: "Brainstorm a fix plan for these issues. Use return-then-resume. Even if the issues are small, produce a plan."
+2. Run Phases 1–3 again (brainstorm → write plan → plan review) for the fix plan. Same 10-round iteration cap on brainstorm↔review.
+3. Run Phase 4 (SDD execute) on the fix plan, with the same SDD reviewer-model override rules.
+4. Re-run Phase 5 (code review) on the fixes.
+
+Loop until the code reviewer returns no actionable issues.
+
+**Fix-loop cap: 5 cycles per build-order item.** If you hit the cap without a clean review, stop and report to the user with the open findings.
+
+The fix loop is part of the same build-order item — it does not advance you toward the 2–3-item pause.
+
+### Phase 6 — Tick & continue
+
+- Only after Phase 5 returns clean, edit `CLAUDE.md` to tick the build-order item's checkbox.
+- After 2–3 build-order items have completed code review cleanly, **stop**. Print the end-of-session summary. Suggest the user `/clear` and re-enter `/kalico-orchestrate` to continue.
 
 ## Plan-gap discovery
 
@@ -91,16 +118,19 @@ If brainstorming or research reveals a gap or inaccuracy in `CLAUDE.md`:
 
 ## End-of-session summary
 
-At the end of every session — after 2–3 items, after hitting the iteration cap, or whenever you pause — output to the user:
+At the end of every session — after 2–3 items, after hitting any cap, or whenever you pause — output to the user:
 
 ```
 ## Session summary
 
-### Items completed
+### Items completed (code-review clean)
 - [x] Step N: <title>
 
 ### Plans written
-- docs/superpowers/plans/<file>.md — <one-line description>
+- docs/superpowers/plans/<file>.md — <one-line description, mark as (initial) or (fixes for Step N))>
+
+### Code review summary (per item)
+- Step N: <cycles> code-review cycle(s); <brief note on findings and fixes applied>
 
 ### CLAUDE.md edits
 - <section>: <what changed and why>
