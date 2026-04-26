@@ -158,12 +158,98 @@ def convolve_fixture_constant_x_constant():
     }
 
 
+def absolute_to_pascal_shift(absolute, shift):
+    """Convert absolute-monomial coefficients (Σ a_n * u^n) to
+    Pascal-shifted-at-`shift` coefficients (Σ c_k * (u - shift)^k).
+
+    Mirrors `algebra::absolute_to_pascal_shift` in the Rust crate. The kernel
+    storage convention in `PiecewisePolynomialKernel::single_poly` is
+    Pascal-shifted at the piece's `u_start`, so kernels expressed naturally
+    around t=0 (e.g., bleeding-edge-v2's smooth_zv) need this conversion
+    before they can be passed to `convolve`."""
+    from math import comb
+
+    d = len(absolute) - 1
+    out = [0.0] * (d + 1)
+    shift_pow = [1.0] * (d + 1)
+    for k in range(1, d + 1):
+        shift_pow[k] = shift_pow[k - 1] * shift
+    for n in range(d + 1):
+        for k in range(n + 1):
+            out[k] += absolute[n] * comb(n, k) * shift_pow[n - k]
+    return out
+
+
+def convolve_fixture_smooth_zv_x_linear():
+    """x(s) = s on [0, 1], w = bleeding-edge-v2 smooth_zv kernel (shaper_freq=1).
+
+    Reference values via sympy.integrate — this is the whole point of having
+    an oracle: cross-check our convolve against an independent symbolic
+    integrator, not against a hand-derived closed form.
+
+    The kernel coefficients are computed in absolute monomial form around t=0
+    (Σ c_i * t^i) per Klipper's `init_smoother`, then converted to the
+    Pascal-shifted-at-u_start basis used by `PiecewisePolynomialKernel`."""
+    # Match init_smoother(...) for shaper_freq=1: descending raw coeffs become
+    # ascending normalized coeffs c[i] for c[i] * t^i.
+    raw_coeffs = [
+        -118.4265334338076,
+        5.861885495127615,
+        29.52796003014231,
+        -1.465471373781904,
+        0.01966833207740377,
+    ]
+    smooth_time = 0.8025
+    inv_t = 1.0 / smooth_time
+    inv_t_n = inv_t
+    n = len(raw_coeffs)
+    c = [0.0] * n  # Σ c[i] * t^i  (absolute monomial around t=0)
+    for i in range(n - 1, -1, -1):
+        c[n - i - 1] = raw_coeffs[i] * inv_t_n
+        inv_t_n *= inv_t
+    half = smooth_time / 2
+
+    s, u, t = sp.symbols("s u t", real=True)
+    x_sym = s  # input x(s) = s on [0, 1]
+    w_sym = sum(sp.Float(c[i]) * t ** i for i in range(n))
+    integrand_full = x_sym * w_sym.subs(t, u - s)
+
+    samples = []
+    for u_val in [0.0, 0.5, 1.0]:
+        s_lo = max(0.0, u_val - half)
+        s_hi = min(1.0, u_val + half)
+        if s_lo >= s_hi:
+            samples.append({"u": u_val, "value": 0.0})
+            continue
+        integrand = integrand_full.subs(u, sp.Float(u_val))
+        y_val = float(sp.integrate(integrand, (s, sp.Float(s_lo), sp.Float(s_hi))))
+        samples.append({"u": u_val, "value": y_val})
+
+    # Convert the absolute-monomial-around-t=0 coefficients to the kernel's
+    # Pascal-shifted basis (shift = u_start = -half).
+    c_shifted = absolute_to_pascal_shift(c, -half)
+
+    kernel = {
+        "pieces": [
+            {"u_start": -half, "u_end": half, "coeffs": c_shifted},
+        ],
+    }
+    return {
+        "name": "convolve_smooth_zv_x_linear",
+        "operation": "convolve",
+        "curve": linear_curve_data(),
+        "kernel": kernel,
+        "samples": samples,
+    }
+
+
 def main():
     fixtures = [
         multiply_fixture_linear_x_linear(),
         multiply_fixture_quadratic_x_linear(),
         multiply_fixture_with_interior_knot(),
         convolve_fixture_constant_x_constant(),
+        convolve_fixture_smooth_zv_x_linear(),
     ]
     print(json.dumps({"fixtures": fixtures}, indent=2))
 
