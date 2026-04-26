@@ -16,6 +16,11 @@ compile_error!("must specify exactly one of: `host`, `mcu-h7`, `mcu-f4`");
 mod float;
 pub use float::Float;
 
+pub mod error;
+pub use error::{
+    AlgebraError, ArcLengthError, ConstructError, NurbsError, WireError,
+};
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
