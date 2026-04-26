@@ -212,6 +212,53 @@ mod tests {
         let table = build_arc_length_table_vector(&curve, 1e-5, 64).unwrap();
         assert!((table.s_max() - 5.0).abs() < 1e-4);
     }
+
+    #[test]
+    fn try_from_wire_parses_small_table() {
+        // Layout: u8 version, u8 reserved, u16 sample_count, u32 reserved2,
+        //         T[sample_count] s, T[sample_count] u
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[1u8, 0]);                         // version, reserved
+        buf.extend_from_slice(&3u16.to_ne_bytes());               // sample_count
+        buf.extend_from_slice(&[0u8; 4]);                         // reserved2
+        for v in [0.0_f32, 0.5, 1.0] { buf.extend_from_slice(&v.to_ne_bytes()); }
+        for v in [0.0_f32, 0.6, 1.0] { buf.extend_from_slice(&v.to_ne_bytes()); }
+
+        let aligned = test_align(&buf, 4);
+        let r = ArcLengthTableRef::<f32>::try_from_wire(aligned.as_slice()).unwrap();
+        assert_eq!(r.s(), &[0.0_f32, 0.5, 1.0]);
+        assert_eq!(r.u(), &[0.0_f32, 0.6, 1.0]);
+    }
+
+    /// Test-only owner; same shape as `align_buf` in scalar.rs (Task 9).
+    struct AlignedBytes {
+        backing: Vec<u32>,
+        len: usize,
+    }
+
+    impl AlignedBytes {
+        fn as_slice(&self) -> &[u8] {
+            // SAFETY: `Vec<u32>` is 4-byte aligned and `len <= backing.len() * 4`.
+            // `u32` has no padding and any bit pattern is a valid `u8` byte.
+            #[allow(unsafe_code)]
+            unsafe {
+                core::slice::from_raw_parts(self.backing.as_ptr().cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    fn test_align(data: &[u8], _align: usize) -> AlignedBytes {
+        let n = data.len().div_ceil(4);
+        let mut backing: Vec<u32> = vec![0; n];
+        // SAFETY: `backing` owns `n*4` bytes 4-byte aligned; `data.len() <= n*4`.
+        // `u32` has no padding so writing arbitrary bytes is well-defined.
+        #[allow(unsafe_code)]
+        let bytes: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4)
+        };
+        bytes[..data.len()].copy_from_slice(data);
+        AlignedBytes { backing, len: data.len() }
+    }
 }
 
 use crate::MIN_PARAMETRIC_SPEED;
@@ -344,6 +391,59 @@ pub fn build_arc_length_table_vector<T: Float, V: VectorNurbsView<T, 3>>(
     };
 
     build_table_via_integrand(integrand, u_start, u_end, tolerance, max_samples)
+}
+
+use crate::wire::{ARC_LENGTH_HEADER_BYTES, FORMAT_VERSION_V1};
+use crate::WireError;
+
+impl<'a> ArcLengthTableRef<'a, f32> {
+    /// Zero-copy parse of a wire-format buffer.
+    ///
+    /// Layout: `u8 version, u8 reserved, u16 sample_count, u32 reserved2,`
+    /// `f32[sample_count] s, f32[sample_count] u`.
+    pub fn try_from_wire(buf: &'a [u8]) -> Result<Self, WireError> {
+        if (buf.as_ptr() as usize) % core::mem::align_of::<f32>() != 0 {
+            return Err(WireError::Misaligned);
+        }
+        if buf.len() < ARC_LENGTH_HEADER_BYTES {
+            return Err(WireError::TruncatedBuffer {
+                expected_len: ARC_LENGTH_HEADER_BYTES,
+                got: buf.len(),
+            });
+        }
+        let version = buf[0];
+        if version != FORMAT_VERSION_V1 {
+            return Err(WireError::UnknownVersion(version));
+        }
+        let sample_count = u16::from_ne_bytes([buf[2], buf[3]]) as usize;
+        if sample_count < 2 {
+            return Err(WireError::TruncatedBuffer {
+                expected_len: ARC_LENGTH_HEADER_BYTES + 2 * core::mem::size_of::<f32>() * 2,
+                got: buf.len(),
+            });
+        }
+
+        let bytes_per_axis = sample_count * core::mem::size_of::<f32>();
+        let total = ARC_LENGTH_HEADER_BYTES + 2 * bytes_per_axis;
+        if buf.len() < total {
+            return Err(WireError::TruncatedBuffer { expected_len: total, got: buf.len() });
+        }
+
+        // SAFETY: alignment of `buf` to `align_of::<f32>()` is checked above; the
+        // header is 8 bytes (multiple of 4) so `s_ptr` and `u_ptr` remain 4-byte
+        // aligned. The total length covers `2 * sample_count * size_of::<f32>()`
+        // bytes after the header. Lifetime `'a` is inherited from `buf`.
+        #[allow(unsafe_code)]
+        let (s, u) = unsafe {
+            let s_ptr = buf.as_ptr().add(ARC_LENGTH_HEADER_BYTES) as *const f32;
+            let u_ptr = buf.as_ptr().add(ARC_LENGTH_HEADER_BYTES + bytes_per_axis) as *const f32;
+            (
+                core::slice::from_raw_parts(s_ptr, sample_count),
+                core::slice::from_raw_parts(u_ptr, sample_count),
+            )
+        };
+        Ok(Self::new(s, u))
+    }
 }
 
 /// Adaptive table builder. Doubles sample count until linear-interp residual
