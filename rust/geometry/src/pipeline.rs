@@ -4,7 +4,7 @@
 
 use crate::{
     reduce::{reduce, MotionMarkerKind, ReduceEvent},
-    Fatal, FitterParams, Recovery, Segment, TelemetryEvent,
+    Fatal, FittedSegment, FitterParams, Recovery, Segment, SourceRange, TelemetryEvent,
 };
 use gcode::lex;
 use std::collections::VecDeque;
@@ -73,10 +73,8 @@ pub struct Segments<'a> {
     sink: &'a mut dyn FnMut(TelemetryEvent),
     terminal: bool,
     /// End-position of the previous emitted G1 segment, for junction-deviation construction.
-    #[allow(dead_code)] // consumed in Tasks 18-22
     prev_g1_end: Option<[f64; 3]>,
     /// Feedrate of the previous emitted G1, for junction-deviation construction.
-    #[allow(dead_code)] // consumed in Tasks 18-22
     prev_g1_feedrate: Option<f64>,
     /// 3D unit direction of the previous emitted G1 segment, used to compute
     /// the junction angle when the next G1 arrives. Cleared at any marker break.
@@ -110,18 +108,52 @@ impl Iterator for Segments<'_> {
 }
 
 impl Segments<'_> {
-    #[allow(clippy::unused_self)] // self.queue populated once Tasks 18-22 fill this in
-    #[allow(clippy::needless_pass_by_value)] // body filled in Tasks 18-22; will consume the event
-    fn handle_event(&mut self, _event: ReduceEvent) {
-        // Filled in across Tasks 18-22.
-        // Reference MotionMarkerKind to keep the import live until Tasks 18-22.
-        let _: Option<MotionMarkerKind> = None;
+    #[allow(clippy::needless_pass_by_value)] // G1Move arm destructures and consumes; other arms handled in Tasks 19+
+    fn handle_event(&mut self, event: ReduceEvent) {
+        match event {
+            ReduceEvent::G1Move { from, to, e_delta: _, feedrate_mm_s, line_no } => {
+                let xyz = degree_1_nurbs(from, to);
+                let seg = FittedSegment {
+                    xyz,
+                    e: None, // Phase 1: E carried as marker-break or per-segment scalar; full E NURBS is Phase 2.
+                    feedrate_mm_s,
+                    degree: 1,
+                    max_residual_mm: 0.0,
+                    source: SourceRange { start_line: line_no, end_line: line_no },
+                };
+                self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
+                self.prev_g1_end = Some(to);
+                self.prev_g1_feedrate = Some(feedrate_mm_s);
+            }
+            _ => {
+                // Other event kinds handled in subsequent tasks.
+                // Reference MotionMarkerKind to keep the import live until Tasks 19+.
+                let _: Option<MotionMarkerKind> = None;
+            }
+        }
     }
+}
+
+fn degree_1_nurbs(from: [f64; 3], to: [f64; 3]) -> nurbs::VectorNurbs<f64, 3> {
+    nurbs::VectorNurbs::<f64, 3>::try_new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![from, to],
+        None,
+    )
+    .expect("degree-1 NURBS with 2 CPs is always valid")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Item, Segment, FittedSegment};
+
+    fn collect(text: &str) -> Vec<Item> {
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let mut sink = |_: crate::TelemetryEvent| {};
+        p.process(text, &mut sink).collect()
+    }
 
     #[test]
     fn empty_input_yields_no_items() {
@@ -137,5 +169,27 @@ mod tests {
         let mut sink = |_e: crate::TelemetryEvent| {};
         let items: Vec<_> = p.process("\n\n   \n", &mut sink).collect();
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn single_g1_emits_degree_1_fitted() {
+        let items = collect("G1 X10 Y0 F1500\n");
+        // First G1 from origin to (10,0): 1 FittedSegment (no preceding G1, so no junction).
+        assert_eq!(items.len(), 1, "expected 1 item, got {items:#?}");
+        match &items[0] {
+            Item::Segment(Segment::Fitted(FittedSegment { xyz, degree, feedrate_mm_s, .. })) => {
+                assert_eq!(*degree, 1);
+                assert!((*feedrate_mm_s - 25.0).abs() < 1e-9);
+                assert_eq!(xyz.degree(), 1);
+                assert_eq!(xyz.control_points().len(), 2);
+                // Control points are exact integral values set by us — bitwise equality is correct.
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(xyz.control_points()[0], [0.0_f64, 0.0, 0.0]);
+                    assert_eq!(xyz.control_points()[1], [10.0_f64, 0.0, 0.0]);
+                }
+            }
+            other => panic!("expected Fitted, got {other:?}"),
+        }
     }
 }
