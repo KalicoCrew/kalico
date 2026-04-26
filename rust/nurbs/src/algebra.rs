@@ -435,6 +435,22 @@ mod tests {
     use crate::eval::eval;
 
     #[test]
+    fn convolve_linear_input_with_constant_kernel_yields_correct_integral() {
+        // x(s) = s on [0, 1], w(t) = 1 on [-0.25, 0.25].
+        // y(u) = ∫_{u-0.25}^{u+0.25} s ds = ((u+0.25)^2 - (u-0.25)^2) / 2 = u/2... wait
+        // y(0.5) = ∫_{0.25}^{0.75} s ds = (0.75^2 - 0.25^2) / 2 = 0.25
+        let x = crate::ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+        let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.25, 0.25));
+
+        let y = convolve(&x, &kernel).unwrap();
+
+        let val = eval(&y.as_view(), 0.5);
+        assert!((val - 0.25).abs() < 1e-10, "y(0.5) = {val}, expected 0.25");
+    }
+
+    #[test]
     fn convolve_constant_input_with_constant_kernel_gives_triangle() {
         // x(s) = 2 on [0, 1], w(t) = 3 on [-0.5, 0.5].
         // Convolution support: [0 + (-0.5), 1 + 0.5] = [-0.5, 1.5].
