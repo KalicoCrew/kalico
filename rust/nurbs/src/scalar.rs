@@ -165,6 +165,62 @@ pub(crate) fn validate<T: Float>(
     Ok(())
 }
 
+use crate::{wire::{FORMAT_VERSION_V1, SCALAR_HEADER_BYTES}, WireError};
+
+impl<'a> ScalarNurbsRef<'a, f32> {
+    /// Zero-copy parse of a wire-format buffer into a borrowed scalar NURBS.
+    /// See spec §Substrate / Wire format for the byte layout.
+    ///
+    /// Caller responsibilities (Layer 5 contract):
+    /// - `buf` is aligned to `align_of::<f32>()` (4 bytes).
+    /// - `buf` is in host-native endianness.
+    pub fn try_from_wire(buf: &'a [u8]) -> Result<Self, WireError> {
+        if (buf.as_ptr() as usize) % core::mem::align_of::<f32>() != 0 {
+            return Err(WireError::Misaligned);
+        }
+        if buf.len() < SCALAR_HEADER_BYTES {
+            return Err(WireError::TruncatedBuffer {
+                expected_len: SCALAR_HEADER_BYTES, got: buf.len(),
+            });
+        }
+        let version = buf[0];
+        if version != FORMAT_VERSION_V1 {
+            return Err(WireError::UnknownVersion(version));
+        }
+        let degree = buf[1];
+        let has_weights = buf[2];
+        let knot_count = u16::from_ne_bytes([buf[4], buf[5]]) as usize;
+        let cp_count = u16::from_ne_bytes([buf[6], buf[7]]) as usize;
+
+        let knots_bytes = knot_count * core::mem::size_of::<f32>();
+        let cps_bytes = cp_count * core::mem::size_of::<f32>();
+        let weights_bytes = if has_weights == 1 { cps_bytes } else { 0 };
+        let total = SCALAR_HEADER_BYTES + knots_bytes + cps_bytes + weights_bytes;
+        if buf.len() < total {
+            return Err(WireError::TruncatedBuffer { expected_len: total, got: buf.len() });
+        }
+
+        // SAFETY: alignment checked above; lengths checked above; T = f32 has
+        // no invalid bit patterns for any 4-byte sequence.
+        #[allow(unsafe_code)]
+        let (knots, cps, weights) = unsafe {
+            let knots_ptr = buf.as_ptr().add(SCALAR_HEADER_BYTES) as *const f32;
+            let cps_ptr = buf.as_ptr().add(SCALAR_HEADER_BYTES + knots_bytes) as *const f32;
+            let knots = core::slice::from_raw_parts(knots_ptr, knot_count);
+            let cps = core::slice::from_raw_parts(cps_ptr, cp_count);
+            let weights = if has_weights == 1 {
+                let w_ptr = buf.as_ptr().add(SCALAR_HEADER_BYTES + knots_bytes + cps_bytes) as *const f32;
+                Some(core::slice::from_raw_parts(w_ptr, cp_count))
+            } else {
+                None
+            };
+            (knots, cps, weights)
+        };
+
+        Self::try_new(degree, knots, cps, weights).map_err(WireError::from)
+    }
+}
+
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
@@ -290,5 +346,93 @@ mod tests {
         let cps = [0.0_f64, 1.0];
         let r = ScalarNurbsRef::try_new(1, &knots, &cps, None).unwrap();
         assert_eq!(r.degree(), 1);
+    }
+
+    #[test]
+    fn try_from_wire_parses_unweighted_linear() {
+        // Layout: u8 version, u8 degree, u8 has_weights, u8 reserved,
+        //         u16 knot_count, u16 cp_count, then knots + cps (both as f32).
+        // Linear curve: degree=1, knots=[0,0,1,1], cps=[0.0, 1.0]
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[1, 1, 0, 0]);                         // version, degree, has_weights, reserved
+        buf.extend_from_slice(&4u16.to_ne_bytes());                   // knot_count
+        buf.extend_from_slice(&2u16.to_ne_bytes());                   // cp_count
+        buf.extend_from_slice(&0.0_f32.to_ne_bytes());
+        buf.extend_from_slice(&0.0_f32.to_ne_bytes());
+        buf.extend_from_slice(&1.0_f32.to_ne_bytes());
+        buf.extend_from_slice(&1.0_f32.to_ne_bytes());
+        buf.extend_from_slice(&0.0_f32.to_ne_bytes());
+        buf.extend_from_slice(&1.0_f32.to_ne_bytes());
+
+        // Ensure 4-byte alignment by allocating into an aligned buffer
+        let aligned = align_buf(&buf, 4);
+        let r = ScalarNurbsRef::<f32>::try_from_wire(aligned.as_slice()).unwrap();
+        assert_eq!(r.degree(), 1);
+        assert_eq!(r.control_points(), &[0.0_f32, 1.0]);
+        assert!(r.weights().is_none());
+    }
+
+    #[test]
+    fn try_from_wire_rejects_misaligned_buffer() {
+        let mut buf = vec![0u8; 32 + 1];
+        buf[0] = 1;
+        // Slice starting at offset 1 → guaranteed misaligned for f32.
+        let result = ScalarNurbsRef::<f32>::try_from_wire(&buf[1..]);
+        assert!(matches!(result, Err(crate::WireError::Misaligned)));
+    }
+
+    #[test]
+    fn try_from_wire_rejects_unknown_version() {
+        let buf = align_buf(&[0xFFu8, 1, 0, 0, 4, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 4);
+        let result = ScalarNurbsRef::<f32>::try_from_wire(buf.as_slice());
+        assert!(matches!(result, Err(crate::WireError::UnknownVersion(0xFF))));
+    }
+
+    #[test]
+    fn try_from_wire_rejects_truncated_header() {
+        let buf = align_buf(&[1u8, 1, 0, 0], 4);   // only 4 bytes; 8-byte header missing
+        let result = ScalarNurbsRef::<f32>::try_from_wire(buf.as_slice());
+        assert!(matches!(result, Err(crate::WireError::TruncatedBuffer { .. })));
+    }
+
+    /// Owns a 4-byte-aligned byte buffer for wire-format tests. The backing
+    /// storage is a `Vec<u32>` (alignment 4); we expose its bytes via `as_slice`.
+    /// Using a wrapper avoids the layout-mismatch UB that would arise from
+    /// transmuting `Vec<u32>` → `Vec<u8>` and letting the latter free with the
+    /// wrong alignment.
+    struct AlignedBytes {
+        backing: Vec<u32>,
+        len: usize,
+    }
+
+    impl AlignedBytes {
+        fn as_slice(&self) -> &[u8] {
+            // SAFETY: `Vec<u32>` is 4-byte aligned and `len <= backing.len() * 4`.
+            // `u32` has no padding and any bit pattern is a valid `u8` byte.
+            #[allow(unsafe_code)]
+            unsafe {
+                core::slice::from_raw_parts(self.backing.as_ptr().cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    /// Allocate a buffer aligned to `align` bytes containing `data`.
+    fn align_buf(data: &[u8], align: usize) -> AlignedBytes {
+        match align {
+            4 => {
+                let n = data.len().div_ceil(4);
+                let mut backing: Vec<u32> = vec![0; n];
+                // SAFETY: `backing` owns `n * 4` bytes with 4-byte alignment;
+                // we write exactly `data.len() <= n * 4` bytes via the
+                // `&mut [u8]` view, then release it before returning.
+                #[allow(unsafe_code)]
+                let bytes: &mut [u8] = unsafe {
+                    core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4)
+                };
+                bytes[..data.len()].copy_from_slice(data);
+                AlignedBytes { backing, len: data.len() }
+            }
+            _ => unimplemented!(),
+        }
     }
 }
