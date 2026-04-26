@@ -1,7 +1,7 @@
 //! Bézier piece in Pascal-shifted monomial basis. Host-only.
 //! See `docs/superpowers/specs/2026-04-26-nurbs-algebra-design.md` §5.
 
-use crate::Float;
+use crate::{AlgebraError, Float};
 
 /// One Bézier piece as a polynomial in the *Pascal-shifted monomial basis*:
 /// p(u) = Σ_{k=0..d} coeffs[k] * (u - u_start)^k
@@ -95,6 +95,28 @@ impl<T: Float> BezierPiece<T> {
     }
 }
 
+impl<T: Float> std::ops::Add<&BezierPiece<T>> for &BezierPiece<T> {
+    type Output = Result<BezierPiece<T>, AlgebraError>;
+    fn add(self, rhs: &BezierPiece<T>) -> Self::Output {
+        if self.u_start != rhs.u_start || self.u_end != rhs.u_end {
+            return Err(AlgebraError::SupportMismatch);
+        }
+        let max_len = self.coeffs.len().max(rhs.coeffs.len());
+        let mut coeffs = vec![T::ZERO; max_len];
+        for (i, c) in self.coeffs.iter().enumerate() {
+            coeffs[i] = coeffs[i] + *c;
+        }
+        for (i, c) in rhs.coeffs.iter().enumerate() {
+            coeffs[i] = coeffs[i] + *c;
+        }
+        Ok(BezierPiece {
+            u_start: self.u_start,
+            u_end: self.u_end,
+            coeffs,
+        })
+    }
+}
+
 /// Binomial coefficient C(n, k). Integer-valued; safe for k, n ≤ 30 or so.
 /// `pub(crate)` so `algebra.rs` can reuse it (DRY — defined here, used in convolve too).
 pub(crate) fn binomial(n: usize, k: usize) -> u64 {
@@ -170,5 +192,30 @@ mod tests {
         // Equivalent monomial: p(u) = u, so coeffs = [0, 1].
         assert!((p.coeffs[0] - 0.0).abs() < 1e-12);
         assert!((p.coeffs[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn add_two_pieces_same_support() {
+        let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0] };
+        let b = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![3.0, 4.0] };
+        let sum = (&a + &b).unwrap();
+        assert_eq!(sum.coeffs, vec![4.0, 6.0]);
+        assert_eq!(sum.u_start, 0.0);
+        assert_eq!(sum.u_end, 1.0);
+    }
+
+    #[test]
+    fn add_two_pieces_mismatched_degrees_pads_with_zero() {
+        let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0, 2.0, 3.0] };
+        let b = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0] };
+        let sum = (&a + &b).unwrap();
+        assert_eq!(sum.coeffs, vec![2.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn add_two_pieces_mismatched_support_errors() {
+        let a = BezierPiece::<f64> { u_start: 0.0, u_end: 1.0, coeffs: vec![1.0] };
+        let b = BezierPiece::<f64> { u_start: 0.5, u_end: 1.0, coeffs: vec![1.0] };
+        assert!(matches!(&a + &b, Err(AlgebraError::SupportMismatch)));
     }
 }

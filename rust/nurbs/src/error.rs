@@ -100,6 +100,7 @@ pub enum AlgebraError {
     DegreeExceeded { result_degree: u8, max: u8 },
     KnotMismatch,
     NotImplemented(&'static str),
+    SupportMismatch,
 }
 
 impl fmt::Display for AlgebraError {
@@ -110,6 +111,7 @@ impl fmt::Display for AlgebraError {
             }
             Self::KnotMismatch => write!(f, "operands have incompatible knot vectors"),
             Self::NotImplemented(s) => write!(f, "algorithm not implemented: {s}"),
+            Self::SupportMismatch => write!(f, "Bezier pieces have mismatched support"),
         }
     }
 }
