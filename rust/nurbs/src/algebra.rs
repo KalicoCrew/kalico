@@ -38,6 +38,52 @@ pub fn add<T: Float>(
         .map_err(|_| AlgebraError::KnotMismatch)
 }
 
+/// Polynomial kernel for convolution. Coefficients are dense, low-to-high.
+#[cfg(feature = "host")]
+#[derive(Debug, Clone)]
+pub struct PolynomialKernel<T: Float> {
+    pub coefficients: Vec<T>,
+    pub support: (T, T),
+}
+
+#[cfg(feature = "host")]
+impl<T: Float> PolynomialKernel<T> {
+    pub fn degree(&self) -> u8 {
+        // Highest non-trivial coefficient; for v1 stub, just length - 1.
+        (self.coefficients.len().saturating_sub(1)) as u8
+    }
+}
+
+/// Multiply two scalar NURBS. Result degree = degree(a) + degree(b).
+///
+/// Algorithm: deferred to a follow-up spec. See spec §algebra module —
+/// well-trodden (Piegl & Tiller ch. 5) but verbose with non-uniform knots
+/// and weights.
+#[cfg(feature = "host")]
+pub fn multiply<T: Float>(
+    _a: &crate::ScalarNurbs<T>,
+    _b: &crate::ScalarNurbs<T>,
+) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
+    Err(AlgebraError::NotImplemented(
+        "multiply — see Piegl & Tiller ch. 5; lands when needed by Layer 3 pre-bake",
+    ))
+}
+
+/// Convolve a NURBS with a polynomial kernel. Result degree = degree(curve) + kernel.degree().
+///
+/// Algorithm: deferred to a follow-up spec. Research-flavored (derived from
+/// B-spline basis-function math). Lands when smooth shapers come online at
+/// CLAUDE.md build step 8.
+#[cfg(feature = "host")]
+pub fn convolve_with_polynomial_kernel<T: Float>(
+    _curve: &crate::ScalarNurbs<T>,
+    _kernel: &PolynomialKernel<T>,
+) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
+    Err(AlgebraError::NotImplemented(
+        "convolve_with_polynomial_kernel — research-flavored; lands at build step 8",
+    ))
+}
+
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
@@ -85,5 +131,28 @@ mod tests {
         ).unwrap();
         let result = add(&a, &b);
         assert!(matches!(result, Err(crate::AlgebraError::KnotMismatch)));
+    }
+
+    #[test]
+    fn multiply_returns_not_implemented_error() {
+        let a = crate::ScalarNurbs::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+        let b = a.clone();
+        let result = multiply(&a, &b);
+        assert!(matches!(result, Err(crate::AlgebraError::NotImplemented(_))));
+    }
+
+    #[test]
+    fn convolve_returns_not_implemented_error() {
+        let a = crate::ScalarNurbs::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None,
+        ).unwrap();
+        let kernel = PolynomialKernel {
+            coefficients: vec![1.0, 0.0],
+            support: (0.0, 1.0),
+        };
+        let result = convolve_with_polynomial_kernel(&a, &kernel);
+        assert!(matches!(result, Err(crate::AlgebraError::NotImplemented(_))));
     }
 }
