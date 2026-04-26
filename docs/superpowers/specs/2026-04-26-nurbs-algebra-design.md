@@ -316,24 +316,55 @@ multiply(a, b) -> ScalarNurbs:
         out_coeffs = poly_multiply(a_p.coeffs, b_p.coeffs)  // O(d_a · d_b)
         BezierPiece { u_start: a_p.u_start, u_end: a_p.u_end, coeffs: out_coeffs }
 
-    result = bezier_pieces_to_nurbs(&out_pieces)
+    // Capture the original interior-knot multiplicities BEFORE Bezier extraction,
+    // since extract_bezier_pieces lifts everything to full Bezier multiplicity.
+    a_mults = {u: a.multiplicity_at(u) for u in interior breakpoints of a}
+    b_mults = {u: b.multiplicity_at(u) for u in interior breakpoints of b}
 
-    // Knot-removal post-pass: at a breakpoint where `a` has knot multiplicity
-    // m_a and `b` has m_b, the product's natural multiplicity is
-    // max(m_a + d_b, m_b + d_a). Remove redundant interior knots within tol.
-    knot_remove_redundant(&mut result, tol = 1e-12)
+    result = bezier_pieces_to_nurbs(&out_pieces)
+    // result has every interior breakpoint at multiplicity = degree+1 (full Bezier).
+
+    // Bounded knot removal: at each interior breakpoint u, compute the Mørken
+    // target multiplicity (Eq. (1)) and remove EXACTLY (current_mult - target)
+    // knots there, no more. Never let A5.8 peel past the natural multiplicity
+    // regardless of tolerance — see docs/superpowers/specs/2026-04-26-nurbs-multiplication-morken-correctness.md
+    // for why the unbounded knot-remove-redundant is structurally wrong here.
+    for u in interior breakpoints of result:
+        m_a = a_mults.get(u, 0)
+        m_b = b_mults.get(u, 0)
+        target = morken_multiplicity(d_a, m_a, d_b, m_b)
+        n_to_remove = (current multiplicity of u in result) - target
+        if n_to_remove > 0:
+            (result, _) = remove_knot(&result, u, n_to_remove, tol = 1e-12)
 
     Ok(result)
+
+morken_multiplicity(p1, m1, p2, m2) -> usize:
+    if m1 > 0 and m2 > 0: return max(p1 + m2, p2 + m1)
+    if m1 == 0 and m2 > 0: return p1 + m2
+    if m1 > 0 and m2 == 0: return p2 + m1
+    return 0  // not a breakpoint of either factor; should not appear in product
 ```
 
 **Continuity invariant:** if `a ∈ C^k, b ∈ C^l` at a breakpoint, then
 `c = a·b ∈ C^min(k,l)`. Encoded via output knot multiplicity
 `max(m_a + d_b, m_b + d_a)` per Mørken Thm 3.1.
 
-**References:** Piegl & Tiller §5.6.3 (product of two B-splines), §5.4
-(knot removal, Tiller's algorithm). Mørken K. (1991) "Some identities
-for products and degree raising of splines" *Constructive Approximation*
-7:195–208.
+**Pipeline note:** `multiply` callers may pass NURBS with C⁰ continuity at
+interior knots. The canonical case is shaper-aware TOPP-RA composing v(s)²
+with derivative magnitudes, where v(s) from TOPP-RA has C⁰ kinks at
+constraint-switching points. The algorithm above handles this correctly;
+the unbounded `knot_remove_redundant` post-pass we initially shipped did
+NOT — see the design note referenced below.
+
+**References:** Piegl & Tiller §5.6.3 (product of two B-splines, Bezier
+route), §5.4 (knot removal, Tiller's algorithm). Mørken K. (1991) "Some
+identities for products and degree raising of splines" *Constructive
+Approximation* 7:195–208 (the canonical knot-vector formula). Patrizi &
+Sestini (2026) arXiv:2601.17432 (modern revival, alternative direct
+algorithm for Fix 3 if needed). See
+`docs/superpowers/specs/2026-04-26-nurbs-multiplication-morken-correctness.md`
+for full context on why Tiller A5.8 alone is not sufficient.
 
 ### 6.4 Convolve (`algebra.rs`)
 
