@@ -257,73 +257,152 @@ pub fn remove_knot<T: Float>(
     // Find span and existing multiplicity.
     let s = knots.iter().filter(|k| **k == u).count();
     if s == 0 {
-        return (curve.clone(), 0);  // u not in knot vector
+        return (curve.clone(), 0); // u not in knot vector
     }
     let r = find_knot_span(knots, p, n, u);
 
-    let mut new_cps = cps.to_vec();
-    let mut new_knots = knots.to_vec();
-    let mut removed = 0;
-    let mut current_s = s;
+    // Cap requested removals to multiplicity.
+    let num = count.min(s);
 
-    while removed < count && current_s > 0 {
-        // Try one removal (A5.8).
-        let first = r - p;
-        let last = r - current_s;
-        let mut temp = vec![T::ZERO; (last - first + 2).max(2)];
+    // Working copies. We mutate `pw` in place per the canonical algorithm and
+    // perform a single final compression at the end. Knots are dropped in one
+    // batch as well.
+    let mut pw = cps.to_vec();
+    let knots_ref = knots; // borrow for alpha lookups; never mutated until the end
 
-        temp[0] = new_cps[first - 1];
-        temp[last - first + 1] = new_cps[last + 1];
+    // Canonical bookkeeping.
+    let ord = p + 1;
+    let fout = (2 * r).saturating_sub(s + p) / 2; // first cp out (canonical: integer)
+    let mut first = r - p;
+    let mut last = r - s;
+
+    // `temp` must hold indices [0 ..= last + 1 - off] where `off = first - 1`.
+    // After `t` successful iterations, first decreases by t and last increases
+    // by t, so the maximum needed size is the original (last - first + 2) plus
+    // 2 * (num - 1). Worst case across all attempts: 2*p + 2*num is plenty.
+    let mut temp: Vec<T> = vec![T::ZERO; 2 * p + 2 * num + 2];
+
+    // Number of removals actually performed.
+    let mut t: usize = 0;
+    while t < num {
+        let off = first - 1; // index offset between pw[] and temp[]
+        temp[0] = pw[off];
+        temp[last + 1 - off] = pw[last + 1];
 
         let mut i = first;
         let mut j = last;
-        let mut ii = 1;
-        let mut jj = last - first;
-        let mut converged = true;
+        let mut ii: usize = 1;
+        let mut jj: usize = last - off; // canonical: last - off, i.e. last - first + 1
 
-        // `j - i > 0` on usize underflows when boundaries cross; use `j > i`.
-        while j > i {
-            let alpha_i = (u - new_knots[i]) / (new_knots[i + p + 1] - new_knots[i]);
-            let alpha_j = (u - new_knots[j]) / (new_knots[j + p + 1] - new_knots[j]);
+        // Compute new control points into temp[].
+        // Loop while `j - i > t` (in canonical signed arithmetic). Because
+        // `j` and `i` are usize, evaluate as `j > i + t` (equivalent for
+        // non-negative `i + t <= j` and prevents underflow when j < i).
+        while j > i + t {
+            let alfi = (u - knots_ref[i]) / (knots_ref[i + ord + t] - knots_ref[i]);
+            let alfj = (u - knots_ref[j - t]) / (knots_ref[j + ord] - knots_ref[j - t]);
 
-            temp[ii] = (new_cps[i] - (T::ONE - alpha_i) * temp[ii - 1]) / alpha_i;
-            temp[jj] = (new_cps[j] - alpha_j * temp[jj + 1]) / (T::ONE - alpha_j);
+            temp[ii] = (pw[i] - (T::ONE - alfi) * temp[ii - 1]) / alfi;
+            temp[jj] = (pw[j] - alfj * temp[jj + 1]) / (T::ONE - alfj);
 
-            i += 1; ii += 1; j -= 1; jj -= 1;
+            i += 1;
+            ii += 1;
+            j -= 1;
+            jj -= 1;
         }
 
-        // Convergence check: chord-error tolerance.
-        // After loop, i may exceed j by 1; treat that as "boundaries met".
-        if i >= j {
-            let err = (temp[ii - 1] - temp[jj + 1]).abs();
-            if err > tol {
-                converged = false;
-            }
-        }
+        // Convergence check (two-branch per A5.8). `j - i < t` corresponds to
+        // "the inner loop ran enough that the two halves met"; otherwise the
+        // single remaining cp in the middle is checked against the blended
+        // value.
+        let remflag = if j + t < i {
+            // j - i < t (signed): symmetric meeting in the middle.
+            // ii - 1 and jj + 1 are valid since the loop ran at least once
+            // (the first iteration ran when j > i + t held initially, which
+            // it must have for this branch to be reachable).
+            (temp[ii - 1] - temp[jj + 1]).abs() <= tol
+        } else {
+            let alfi = (u - knots_ref[i]) / (knots_ref[i + ord + t] - knots_ref[i]);
+            let blended = alfi * temp[ii + t + 1] + (T::ONE - alfi) * temp[ii - 1];
+            (pw[i] - blended).abs() <= tol
+        };
 
-        if !converged {
+        if !remflag {
             break;
         }
 
-        // Apply: shift CPs down, drop one knot.
+        // Apply: write the new cps from temp[] back into pw[].
         let mut i2 = first;
         let mut j2 = last;
-        while j2 > i2 {
-            new_cps[i2] = temp[i2 - first + 1];
-            new_cps[j2] = temp[j2 - first + 1];
-            i2 += 1; j2 -= 1;
+        while j2 > i2 + t {
+            pw[i2] = temp[i2 - off];
+            pw[j2] = temp[j2 - off];
+            i2 += 1;
+            j2 -= 1;
         }
-        // Remove one cp (the duplicate at center) and one knot.
-        new_cps.remove((first + last) / 2 + 1);
-        new_knots.remove(r);
 
-        removed += 1;
-        current_s -= 1;
+        first -= 1;
+        last += 1;
+        t += 1;
     }
+
+    if t == 0 {
+        // Nothing removed: return input unchanged.
+        return (curve.clone(), 0);
+    }
+
+    // Final compression: drop `t` knots starting at index r, and `t` cps from
+    // around the center `fout`. Per canonical A5.8 the cps to discard sit in
+    // a window centered on `fout` with one extra cp going to the right side
+    // each odd step and to the left each even step.
+    let mut new_knots = Vec::with_capacity(knots_ref.len() - t);
+    new_knots.extend_from_slice(&knots_ref[..=(r - t)]);
+    new_knots.extend_from_slice(&knots_ref[(r + 1)..]);
+
+    // Compute the index range to drop from pw. Canonical:
+    //   j = fout; i = j;
+    //   for k = 1 to t-1: if k odd { i += 1 } else { j -= 1 }
+    //   then drop pw[j+1 ..= i]   (i.e. write pw[j+1 ..] = pw[i+1 ..])
+    // For t = 1 the for-loop doesn't run, so j = i = fout; drop pw[fout+1..=fout]
+    // which is empty — but we still need to drop one cp. The canonical text
+    // discards a single cp at index fout when t = 1; the indices above end up
+    // shifting pw[fout+1..] down to pw[fout..], i.e. dropping pw[fout].
+    //
+    // To keep the implementation simple and bisect-friendly, compute the
+    // exact set of indices to retain.
+    let (drop_lo, drop_hi) = {
+        let mut j_idx = fout;
+        let mut i_idx = fout;
+        for k in 1..t {
+            if k % 2 == 1 {
+                i_idx += 1;
+            } else {
+                j_idx -= 1;
+            }
+        }
+        // Canonical post-loop: write pw[j_idx + 1 ..] = pw[i_idx + 1 ..],
+        // which deletes the half-open range (j_idx, i_idx]. Equivalently we
+        // drop indices [j_idx, i_idx) of length `t` after accounting for the
+        // off-by-one between "last index written to" and "first index read
+        // from". Working it out: for t = 1, j = i = fout, and we shift
+        // pw[fout+1..] down by one — i.e. retain everything except pw[fout].
+        // For t = 2, j = fout, i = fout + 1, we shift pw[fout+2..] down to
+        // pw[fout+1..] — drop pw[fout] and pw[fout+1].
+        // So the drop range in original indices is [j_idx ..= i_idx], inclusive
+        // of length `t`.
+        (j_idx, i_idx)
+    };
+
+    let mut new_cps = Vec::with_capacity(pw.len() - t);
+    new_cps.extend_from_slice(&pw[..drop_lo]);
+    new_cps.extend_from_slice(&pw[(drop_hi + 1)..]);
+
+    debug_assert_eq!(new_cps.len(), pw.len() - t);
+    debug_assert_eq!(new_knots.len(), knots_ref.len() - t);
 
     let new_curve = ScalarNurbs::try_new(curve.degree(), new_knots, new_cps, None)
         .expect("remove_knot: result invariants should hold");
-    (new_curve, removed)
+    (new_curve, t)
 }
 
 /// Homogeneous variant: blends (num, w) tuples.
@@ -423,6 +502,34 @@ mod tests {
         assert_eq!(removed.knots(), curve.knots());
         for (a, b) in removed.control_points().iter().zip(curve.control_points()) {
             assert!((a - b).abs() < 1e-10, "cp mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn remove_knot_undoes_insertion_for_cubic_with_irregular_cps() {
+        // Cubic curve, irregular non-symmetric, non-linear CPs so any indexing
+        // bug yields a numerically distinct wrong answer. Inner loop runs more
+        // than once for p=3. With 5 cps and degree 3 we need one interior knot
+        // (n + p + 1 = 9 knots), placed away from the insertion point so the
+        // removal target is a fresh single-multiplicity knot.
+        let curve = ScalarNurbs::<f64>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.7, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 4.0, 9.0, 16.0],
+            None,
+        ).unwrap();
+
+        let inserted = insert_knot(&curve, 0.4, 1).unwrap();
+        let (recovered, count) = remove_knot(&inserted, 0.4, 1, 1e-10);
+
+        assert_eq!(count, 1);
+        assert_eq!(recovered.knots().len(), curve.knots().len());
+        for (a, b) in recovered.knots().iter().zip(curve.knots()) {
+            assert!((a - b).abs() < 1e-9, "knot mismatch: {a} vs {b}");
+        }
+        assert_eq!(recovered.control_points().len(), curve.control_points().len());
+        for (a, b) in recovered.control_points().iter().zip(curve.control_points()) {
+            assert!((a - b).abs() < 1e-9, "cp mismatch: {a} vs {b}");
         }
     }
 
