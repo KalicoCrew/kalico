@@ -13,6 +13,9 @@ compile_error!("feature `host` is incompatible with `mcu-*` features");
 #[cfg(not(any(feature = "host", feature = "mcu-h7", feature = "mcu-f4")))]
 compile_error!("must specify exactly one of: `host`, `mcu-h7`, `mcu-f4`");
 
+mod float;
+pub use float::Float;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 

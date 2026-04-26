@@ -6,12 +6,15 @@ rust-version = "1.85"
 publish = false
 description = "Layer 0 NURBS substrate: eval, arc-length, algebra"
 
+[dependencies]
+libm = { version = "0.2", optional = true }
+
 [features]
 default = ["host"]
 f64 = []
 host = ["f64"]
-mcu-h7 = []
-mcu-f4 = []
+mcu-h7 = ["dep:libm"]
+mcu-f4 = ["dep:libm"]
 
 [dev-dependencies]
 proptest = "1.5"
