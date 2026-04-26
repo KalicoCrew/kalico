@@ -1,5 +1,6 @@
 [workspace]
 members = ["nurbs", "nurbs-c-api", "gcode"]
+exclude = ["gcode/fuzz"]
 resolver = "2"
 
 [workspace.dependencies]
