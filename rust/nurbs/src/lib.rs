@@ -38,6 +38,11 @@ pub mod wire;
 
 pub mod eval;
 
+pub mod arc_length;
+#[cfg(feature = "host")]
+pub use arc_length::ArcLengthTable;
+pub use arc_length::ArcLengthTableRef;
+
 /// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
