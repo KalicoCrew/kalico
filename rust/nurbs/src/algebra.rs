@@ -47,19 +47,30 @@ pub fn add<T: Float>(
         .map_err(|_| AlgebraError::KnotMismatch)
 }
 
-/// Polynomial kernel for convolution. Coefficients are dense, low-to-high.
+/// Polynomial kernel for convolution. Pieces are contiguous and ordered.
+/// Each piece is a polynomial in the Pascal-shifted monomial basis.
 #[cfg(feature = "host")]
 #[derive(Debug, Clone)]
-pub struct PolynomialKernel<T: Float> {
-    pub coefficients: Vec<T>,
-    pub support: (T, T),
+pub struct PiecewisePolynomialKernel<T: Float> {
+    pub pieces: Vec<crate::bezier::BezierPiece<T>>,
 }
 
 #[cfg(feature = "host")]
-impl<T: Float> PolynomialKernel<T> {
-    pub fn degree(&self) -> u8 {
-        // Highest non-trivial coefficient; for v1 stub, just length - 1.
-        (self.coefficients.len().saturating_sub(1)) as u8
+impl<T: Float> PiecewisePolynomialKernel<T> {
+    /// Build a single-piece kernel from monomial coefficients
+    /// `coeffs[k] * (u - u_start)^k` on the interval `support`.
+    pub fn single_poly(coeffs: Vec<T>, support: (T, T)) -> Self {
+        let piece = crate::bezier::BezierPiece {
+            u_start: support.0,
+            u_end: support.1,
+            coeffs,
+        };
+        Self { pieces: vec![piece] }
+    }
+
+    /// Total support of the kernel: from first piece's `u_start` to last piece's `u_end`.
+    pub fn support(&self) -> (T, T) {
+        (self.pieces.first().unwrap().u_start, self.pieces.last().unwrap().u_end)
     }
 }
 
@@ -165,21 +176,6 @@ fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
     out
 }
 
-/// Convolve a NURBS with a polynomial kernel. Result degree = degree(curve) + `kernel.degree()`.
-///
-/// Algorithm: deferred to a follow-up spec. Research-flavored (derived from
-/// B-spline basis-function math). Lands when smooth shapers come online at
-/// CLAUDE.md build step 8.
-#[cfg(feature = "host")]
-pub fn convolve_with_polynomial_kernel<T: Float>(
-    _curve: &crate::ScalarNurbs<T>,
-    _kernel: &PolynomialKernel<T>,
-) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
-    Err(AlgebraError::NotImplemented(
-        "convolve_with_polynomial_kernel — research-flavored; lands at build step 8",
-    ))
-}
-
 /// Iterate over interior knots and apply `remove_knot` with the given tolerance,
 /// dropping knots whose removal preserves the curve within `tol`. Used by
 /// `multiply` and `convolve` to expose natural smoothness of the result.
@@ -214,6 +210,21 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
 mod tests {
     use super::*;
     use crate::eval::eval;
+
+    #[test]
+    fn single_poly_kernel_constructs_one_piece() {
+        let k = PiecewisePolynomialKernel::single_poly(vec![1.0, 0.5_f64], (-1.0, 1.0));
+        assert_eq!(k.pieces.len(), 1);
+        assert_eq!(k.pieces[0].u_start, -1.0);
+        assert_eq!(k.pieces[0].u_end, 1.0);
+        assert_eq!(k.pieces[0].coeffs, vec![1.0, 0.5]);
+    }
+
+    #[test]
+    fn kernel_support_returns_endpoints() {
+        let k = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.5, 0.5));
+        assert_eq!(k.support(), (-0.5, 0.5));
+    }
 
     #[test]
     fn knot_remove_redundant_simplifies_overproduct() {
@@ -339,18 +350,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn convolve_returns_not_implemented_error() {
-        let a =
-            crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
-        let kernel = PolynomialKernel {
-            coefficients: vec![1.0, 0.0],
-            support: (0.0, 1.0),
-        };
-        let result = convolve_with_polynomial_kernel(&a, &kernel);
-        assert!(matches!(
-            result,
-            Err(crate::AlgebraError::NotImplemented(_))
-        ));
-    }
 }
