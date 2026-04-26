@@ -284,4 +284,45 @@ mod tests {
             other => panic!("expected UnrecognizedHead for bare head letter, got {other:?}"),
         }
     }
+
+    #[test]
+    fn parses_g5_1() {
+        let toks = collect("G5.1 X10 Y20 I1 J2\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Ok(Token::Command { letter, major, minor, .. }) => {
+                assert_eq!(*letter, b'G');
+                assert_eq!(*major, 5);
+                assert_eq!(*minor, Some(1));
+            }
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_m104() {
+        let toks = collect("M104 S210\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Ok(Token::Command { letter, major, params, .. }) => {
+                assert_eq!(*letter, b'M');
+                assert_eq!(*major, 104);
+                assert_eq!(params.get(b'S'), Some(210.0));
+            }
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_t0() {
+        let toks = collect("T0\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Ok(Token::Command { letter, major, .. }) => {
+                assert_eq!(*letter, b'T');
+                assert_eq!(*major, 0);
+            }
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
 }
