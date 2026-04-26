@@ -123,8 +123,31 @@ pub fn multiply<T: Float>(
             workaround: "use polynomial_refit (Layer 3 utility) before calling",
         });
     }
-    let a_pieces = crate::bezier::extract_bezier_pieces(a);
-    let b_pieces = crate::bezier::extract_bezier_pieces(b);
+    // Capture original interior knot multiplicities BEFORE Bezier extraction
+    // lifts everything to full multiplicity. The post-pass needs the original
+    // multiplicities to compute Mørken Eq. (1) target multiplicities for the
+    // product; without this, an unbounded knot-removal can peel below the
+    // natural multiplicity at a shared C⁰ kink and produce the wrong curve.
+    let a_mults = collect_interior_multiplicities(a);
+    let b_mults = collect_interior_multiplicities(b);
+
+    // Pre-condition: bring each input to full interior multiplicity by
+    // iterative SINGLE knot insertions. `extract_bezier_pieces` internally
+    // calls `refined_to_full_multiplicity`, which does a single multi-fold
+    // `insert_knot(curve, u, p - existing)`. The Boehm A5.3 implementation
+    // in `knot::insert_knot` is correct only when `r == 1` OR `existing == 0`;
+    // it produces wrong control points (and a wrong curve) when both `r > 1`
+    // and `existing > 0` simultaneously. By raising multiplicity one knot at
+    // a time, the inner call sees only `r == 1` cases and stays correct.
+    //
+    // This is a workaround — the upstream bug should be fixed in
+    // `boehm_insert_unweighted` so any caller is safe. Once that lands,
+    // these `pre_refine_full_mult` lines become a perf-only no-op.
+    let a_pre = pre_refine_full_mult(a);
+    let b_pre = pre_refine_full_mult(b);
+
+    let a_pieces = crate::bezier::extract_bezier_pieces(&a_pre);
+    let b_pieces = crate::bezier::extract_bezier_pieces(&b_pre);
 
     // Refine to common breakpoint set.
     let breakpoints = union_breakpoints(&a_pieces, &b_pieces);
@@ -144,8 +167,133 @@ pub fn multiply<T: Float>(
     }
 
     let mut result = crate::bezier::bezier_pieces_to_nurbs(&out_pieces);
-    knot_remove_redundant(&mut result, T::from_f64(1e-12));
+
+    // Compute Mørken target multiplicity per interior breakpoint of the
+    // product. For a breakpoint that is interior in only one factor, the
+    // other factor's multiplicity is 0 — the breakpoint may still appear in
+    // the product because Bezier extraction created it. The Mørken formula
+    // with m=0 in one factor reduces to "degree of the other factor + m of
+    // this factor", which is the natural multiplicity contributed by the
+    // factor that has a real knot there.
+    let d_a = a.degree() as usize;
+    let d_b = b.degree() as usize;
+    let p = result.degree() as usize;
+    let interior_breakpoints = collect_interior_breakpoints(&result);
+    let targets: Vec<(T, usize)> = interior_breakpoints
+        .into_iter()
+        .map(|u| {
+            let m_a = a_mults
+                .iter()
+                .find(|(uu, _)| *uu == u)
+                .map_or(0, |(_, m)| *m);
+            let m_b = b_mults
+                .iter()
+                .find(|(uu, _)| *uu == u)
+                .map_or(0, |(_, m)| *m);
+            let target = morken_multiplicity(d_a, m_a, d_b, m_b);
+            debug_assert!(target <= p, "Mørken target {target} exceeds product degree {p}");
+            (u, target)
+        })
+        .collect();
+
+    knot_remove_to_morken_targets(&mut result, &targets, T::from_f64(1e-12));
     Ok(result)
+}
+
+/// Raise every interior knot of `curve` to multiplicity = degree by issuing
+/// one `insert_knot(_, u, 1)` call at a time. Equivalent in result to
+/// `refined_to_full_multiplicity`, but avoids the upstream Boehm-A5.3 bug
+/// that mis-blends control points when an `r > 1` insertion meets an
+/// existing positive multiplicity. See the comment in `multiply` for details.
+#[cfg(feature = "host")]
+fn pre_refine_full_mult<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs<T> {
+    let p = curve.degree() as usize;
+    let mut current = curve.clone();
+    let interior_values: Vec<T> = collect_interior_breakpoints(&current);
+    for u in interior_values {
+        loop {
+            let existing = current.knots().iter().filter(|k| **k == u).count();
+            if existing >= p {
+                break;
+            }
+            current = crate::knot::insert_knot(&current, u, 1)
+                .expect("pre_refine_full_mult: single insertion is always valid");
+        }
+    }
+    current
+}
+
+/// Mørken Eq. (1) target multiplicity for a shared breakpoint in the product
+/// of two polynomial NURBS. Returns 0 if the breakpoint isn't a knot of
+/// either factor (which shouldn't happen for a real product breakpoint, but
+/// is a safe no-op).
+#[cfg(feature = "host")]
+fn morken_multiplicity(d_a: usize, m_a: usize, d_b: usize, m_b: usize) -> usize {
+    match (m_a > 0, m_b > 0) {
+        (true, true) => (d_a + m_b).max(d_b + m_a),
+        (false, true) => d_a + m_b,
+        (true, false) => d_b + m_a,
+        (false, false) => 0,
+    }
+}
+
+/// Collect `(knot value, multiplicity)` for each unique INTERIOR knot value
+/// (i.e., excluding the clamped endpoints).
+#[cfg(feature = "host")]
+fn collect_interior_multiplicities<T: Float>(curve: &crate::ScalarNurbs<T>) -> Vec<(T, usize)> {
+    let p = curve.degree() as usize;
+    let knots = curve.knots();
+    if knots.len() <= 2 * (p + 1) {
+        return Vec::new();
+    }
+    let interior_slice = &knots[p + 1..knots.len() - p - 1];
+    let mut out: Vec<(T, usize)> = Vec::new();
+    for &k in interior_slice {
+        if let Some(entry) = out.iter_mut().find(|(u, _)| *u == k) {
+            entry.1 += 1;
+        } else {
+            out.push((k, 1));
+        }
+    }
+    out
+}
+
+/// List of unique interior knot values in `curve` (no multiplicities).
+#[cfg(feature = "host")]
+fn collect_interior_breakpoints<T: Float>(curve: &crate::ScalarNurbs<T>) -> Vec<T> {
+    collect_interior_multiplicities(curve)
+        .into_iter()
+        .map(|(u, _)| u)
+        .collect()
+}
+
+/// Reduce each interior knot's multiplicity to the Mørken target — never
+/// below. `target_mults` maps breakpoint value to the target multiplicity
+/// per Mørken Eq. (1). Tolerance is for the inner Tiller A5.8 numerical
+/// check; if removal is rejected within tolerance for a knot that should
+/// be removable per Mørken, that's a numerical-precision issue (widen tol
+/// or accept the redundant knot — both are safer than peeling past the
+/// target).
+#[cfg(feature = "host")]
+fn knot_remove_to_morken_targets<T: Float>(
+    curve: &mut crate::ScalarNurbs<T>,
+    target_mults: &[(T, usize)],
+    tol: T,
+) {
+    for &(u, target) in target_mults {
+        let current = curve.knots().iter().filter(|k| **k == u).count();
+        if current > target {
+            let n_to_remove = current - target;
+            let (new_curve, _actually_removed) =
+                crate::knot::remove_knot(curve, u, n_to_remove, tol);
+            *curve = new_curve;
+            // Note: we don't assert `_actually_removed == n_to_remove`. If the
+            // inner chord-error check rejects a removal we'd want, the
+            // redundant knot stays in place — wrong knot vector but correct
+            // curve. A future Fix 2 (target-aware bezier_pieces_to_nurbs)
+            // eliminates this case entirely.
+        }
+    }
 }
 
 /// Compute the union of distinct breakpoints from two piecewise representations.
@@ -828,6 +976,38 @@ mod tests {
                 "t={t}: absolute={absolute_val}, pascal={pascal_val}"
             );
         }
+    }
+
+    #[test]
+    fn multiply_regression_proptest_shrunk_failing_input() {
+        // Captured from algebra_proptest::multiply_multi_piece_eval_matches_pointwise_product
+        // pre-Fix-1 (Mørken-bounded knot removal). At u=0.1, b has C⁰ kink (m_b=1, d_b=1)
+        // and a has interior multiplicity-1 knot (m_a=1, d_a=3). Per Mørken Eq. (1):
+        // μ_target(0.1) = max(3+1, 1+1) = 4. Pre-Fix-1 the unbounded knot_remove_redundant
+        // peeled below 4, smearing the C⁰ kink and producing wrong eval at u=0.1.
+        let a = crate::ScalarNurbs::<f64>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.1, 0.55, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.181_828_016_839_598_23, 0.0, 0.0],
+            None,
+        )
+        .unwrap();
+        let b = crate::ScalarNurbs::<f64>::try_new(
+            1,
+            vec![0.0, 0.0, 0.1, 1.0, 1.0],
+            vec![0.0, 4.267_190_258_636_853, 0.0],
+            None,
+        )
+        .unwrap();
+        let c = multiply(&a, &b).unwrap();
+        // Pointwise product at u=0.1 should be ≈ 0.014107177131003477.
+        // Pre-fix `multiply` returned ≈ 0.007758947422051913.
+        let exp = eval(&a.as_view(), 0.1) * eval(&b.as_view(), 0.1);
+        let got = eval(&c.as_view(), 0.1);
+        assert!(
+            (exp - got).abs() < 1e-10,
+            "u=0.1: pointwise={exp}, multiply={got} (regression)"
+        );
     }
 
     #[test]

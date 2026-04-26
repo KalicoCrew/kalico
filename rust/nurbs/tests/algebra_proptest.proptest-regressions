@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 98e10e5d363af3301917e212f799a2be098ca5ff5e661e4903987ed0cf6d4fe8 # shrinks to a = ScalarNurbs { degree: 3, knots: KnotVector { knots: [0.0, 0.0, 0.0, 0.0, 0.1, 0.55, 1.0, 1.0, 1.0, 1.0] }, control_points: [0.0, 0.0, 0.0, 0.18182801683959823, 0.0, 0.0], weights: None }, b = ScalarNurbs { degree: 1, knots: KnotVector { knots: [0.0, 0.0, 0.1, 1.0, 1.0] }, control_points: [0.0, 4.267190258636853, 0.0], weights: None }
