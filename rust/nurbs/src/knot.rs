@@ -315,7 +315,7 @@ pub fn remove_knot<T: Float>(
         // "the inner loop ran enough that the two halves met"; otherwise the
         // single remaining cp in the middle is checked against the blended
         // value.
-        let remflag = if j + t < i {
+        let remflag = if j < i + t {
             // j - i < t (signed): symmetric meeting in the middle.
             // ii - 1 and jj + 1 are valid since the loop ran at least once
             // (the first iteration ran when j > i + t held initially, which
@@ -527,6 +527,35 @@ mod tests {
         for (a, b) in recovered.knots().iter().zip(curve.knots()) {
             assert!((a - b).abs() < 1e-9, "knot mismatch: {a} vs {b}");
         }
+        assert_eq!(recovered.control_points().len(), curve.control_points().len());
+        for (a, b) in recovered.control_points().iter().zip(curve.control_points()) {
+            assert!((a - b).abs() < 1e-9, "cp mismatch: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn remove_knot_two_round_trips_for_cubic_with_irregular_cps() {
+        // Degree-4 curve with no interior knots, irregular non-symmetric CPs.
+        // Insert at u=0.4 twice to lift multiplicity to 2, then attempt to
+        // remove both. With p=4 and s=2, iteration t=1 of remove_knot exits its
+        // inner loop with j == i (i.e. j < i + t strictly), exercising the
+        // convergence-branch predicate. With the buggy `j + t < i` predicate
+        // this routes to the else branch, reads outside the temp window, and
+        // either panics or returns count=1 with displaced cps.
+        let curve = ScalarNurbs::<f64>::try_new(
+            4,
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 2.5, -1.0, 3.0, 0.5],
+            None,
+        ).unwrap();
+
+        let inserted_once = insert_knot(&curve, 0.4, 1).unwrap();
+        let inserted_twice = insert_knot(&inserted_once, 0.4, 1).unwrap();
+        let (recovered, count) = remove_knot(&inserted_twice, 0.4, 2, 1e-10);
+
+        assert_eq!(count, 2);
+        // Knot vector should be byte-identical post round-trip.
+        assert_eq!(recovered.knots(), curve.knots());
         assert_eq!(recovered.control_points().len(), curve.control_points().len());
         for (a, b) in recovered.control_points().iter().zip(curve.control_points()) {
             assert!((a - b).abs() < 1e-9, "cp mismatch: {a} vs {b}");
