@@ -46,6 +46,17 @@ impl<T: Float> KnotVector<T> {
     pub fn into_inner(self) -> Vec<T> {
         self.knots
     }
+
+    /// Find the knot span containing `u` for a curve of given degree `p` with
+    /// `n` control points. Delegates to the free function `find_knot_span`.
+    pub fn find_span(&self, u: T, p: usize, n: usize) -> usize {
+        find_knot_span(&self.knots, p, n, u)
+    }
+
+    /// Count consecutive equal knots at value `u`. Returns 0 if `u` is not present.
+    pub fn multiplicity_at(&self, u: T) -> usize {
+        self.knots.iter().filter(|k| **k == u).count()
+    }
 }
 
 /// Find the knot span `k` such that `knots[k] <= u < knots[k+1]`, with the
@@ -74,19 +85,6 @@ pub fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize 
         mid = (low + high) / 2;
     }
     mid
-}
-
-impl<T: Float> KnotVector<T> {
-    /// Find the knot span containing `u` for a curve of given degree `p` with
-    /// `n` control points. Delegates to the free function `find_knot_span`.
-    pub fn find_span(&self, u: T, p: usize, n: usize) -> usize {
-        find_knot_span(&self.knots, p, n, u)
-    }
-
-    /// Count consecutive equal knots at value `u`. Returns 0 if `u` is not present.
-    pub fn multiplicity_at(&self, u: T) -> usize {
-        self.knots.iter().filter(|k| **k == u).count()
-    }
 }
 
 /// Insert ū into a curve with the given multiplicity (number of repeated insertions).
