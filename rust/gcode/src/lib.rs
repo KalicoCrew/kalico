@@ -8,8 +8,9 @@ pub mod lexer;
 pub mod marker;
 pub mod token;
 
-// TODO(task 2/4): restore plan re-exports once lexer.rs / token.rs / marker.rs are populated:
+pub use marker::MarkerKind;
+pub use token::{Params, Token};
+
+// TODO(task 3/4): restore plan re-exports once error.rs / lexer.rs are populated:
 //   pub use error::ParseError;
 //   pub use lexer::lex;
-//   pub use marker::MarkerKind;
-//   pub use token::{Params, Token};
