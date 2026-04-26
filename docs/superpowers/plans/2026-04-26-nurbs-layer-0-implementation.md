@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn try_new_rejects_degree_exceeded() {
-        let result = ScalarNurbs::try_new::<>(
+        let result = ScalarNurbs::<f64>::try_new(
             21,
             vec![0.0; 23],
             vec![0.0; 1],
