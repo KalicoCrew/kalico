@@ -89,9 +89,10 @@ pub fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize 
 
 /// Insert ū into a curve with the given multiplicity (number of repeated insertions).
 ///
-/// Boehm's algorithm (Piegl & Tiller §5.2, Algorithm A5.1 / A5.3). The inserted
-/// knot does not change the curve geometrically — eval is invariant. The
-/// number of control points grows by `multiplicity`.
+/// Boehm's algorithm (Piegl & Tiller §5.2, Algorithm A5.1) applied iteratively
+/// for multi-fold insertions. The inserted knot does not change the curve
+/// geometrically — eval is invariant. The number of control points grows by
+/// `multiplicity`.
 ///
 /// Errors:
 /// - `BoundaryInsertion` if ū equals a clamped endpoint.
@@ -136,7 +137,9 @@ pub fn insert_knot<T: Float>(
     }
     new_knots.extend_from_slice(&knots[k + 1..]);
 
-    // Apply A5.3 fused multi-insertion to control points.
+    // Apply r single Boehm A5.1 insertions to control points (see
+    // `boehm_insert_unweighted` for the rationale; the fused A5.3 form had an
+    // indexing bug for the r >= 2 AND existing >= 1 case).
     let new_cps = if let Some(w) = weights {
         // Homogeneous lift: (cp * w, w), insert, project.
         let homo: Vec<(T, T)> = cps
@@ -160,48 +163,84 @@ pub fn insert_knot<T: Float>(
         .map_err(|_| KnotError::Invalid)
 }
 
-/// Single-insertion fused as r-fold (P&T A5.3) for unweighted control points.
+/// Insert ū r times into the control polygon, returning the new control points.
+///
+/// Implementation note: the original fused multi-insertion form (P&T A5.3) had
+/// an indexing bug for the `r >= 2 AND existing >= 1` case — knot vector came
+/// out correct but control points were wrong, breaking geometric invariance.
+/// We instead apply r single insertions (r=1 case is well-tested and provably
+/// correct). Performance impact is negligible: r is bounded by p (≤ 20), and
+/// each single insertion is O(p) arithmetic on a small workspace.
 fn boehm_insert_unweighted<T: Float>(
+    cps: &[T],
+    knots: &[T],
+    p: usize,
+    _k: usize, // recomputed per single-insertion iteration; kept for API stability
+    u: T,
+    existing: usize,
+    r: usize,
+) -> Vec<T> {
+    debug_assert!(existing + r <= p, "Boehm: existing + r must not exceed degree");
+
+    let mut current_cps: Vec<T> = cps.to_vec();
+    let mut current_knots: Vec<T> = knots.to_vec();
+    let mut current_existing = existing;
+
+    for _ in 0..r {
+        let n = current_cps.len();
+        let k = find_knot_span(&current_knots, p, n, u);
+        // Single Boehm insertion (r=1, well-tested correct path).
+        let new_cps = boehm_insert_unweighted_single(
+            &current_cps,
+            &current_knots,
+            p,
+            k,
+            u,
+            current_existing,
+        );
+        // Update knot vector for next iteration.
+        let mut new_knots = Vec::with_capacity(current_knots.len() + 1);
+        new_knots.extend_from_slice(&current_knots[..=k]);
+        new_knots.push(u);
+        new_knots.extend_from_slice(&current_knots[k + 1..]);
+
+        current_cps = new_cps;
+        current_knots = new_knots;
+        current_existing += 1;
+    }
+    current_cps
+}
+
+/// Single-insertion Boehm A5.1 (r = 1). Restricted form of the original
+/// multi-fold function; this path was always correct.
+fn boehm_insert_unweighted_single<T: Float>(
     cps: &[T],
     knots: &[T],
     p: usize,
     k: usize,
     u: T,
     existing: usize,
-    r: usize, // number of insertions
 ) -> Vec<T> {
     let n = cps.len();
-    let new_n = n + r;
+    let new_n = n + 1;
     let mut new_cps = vec![T::ZERO; new_n];
 
     // Unaffected CPs pass through.
     let lead = k - p + 1;
     new_cps[..lead].copy_from_slice(&cps[..lead]);
     let tail_start = k - existing;
-    new_cps[(tail_start + r)..(n + r)].copy_from_slice(&cps[tail_start..n]);
+    new_cps[(tail_start + 1)..=n].copy_from_slice(&cps[tail_start..n]);
 
-    // Working buffer for the r-fold blend.
-    let mut work: Vec<T> = (0..=p - existing).map(|i| cps[k - p + i]).collect();
-
-    // r-fold insertion (A5.3).
-    for j in 1..=r {
-        let l = k - p + j;
-        for i in 0..=p - j - existing {
-            let denom = knots[l + i + p] - knots[l + i];
-            let alpha = if denom > T::ZERO {
-                (u - knots[l + i]) / denom
-            } else {
-                T::ZERO
-            };
-            work[i] = (T::ONE - alpha) * work[i] + alpha * work[i + 1];
-        }
-        new_cps[l] = work[0];
-        new_cps[k + r - j - existing] = work[p - j - existing];
-    }
-
-    // Remaining middle CPs.
-    for i in (k - p + r)..(k - existing) {
-        new_cps[i] = work[i - (k - p + r)];
+    // Single A5.1 blend pass over the affected window.
+    let l = k - p + 1;
+    for i in 0..=p - 1 - existing {
+        let denom = knots[l + i + p] - knots[l + i];
+        let alpha = if denom > T::ZERO {
+            (u - knots[l + i]) / denom
+        } else {
+            T::ZERO
+        };
+        new_cps[l + i] = (T::ONE - alpha) * cps[k - p + i] + alpha * cps[k - p + i + 1];
     }
 
     new_cps
@@ -618,6 +657,48 @@ mod tests {
                 "u={u}: before={before}, after={after}"
             );
         }
+    }
+
+    #[test]
+    fn insert_knot_multifold_at_existing_preserves_evaluation_for_failing_case() {
+        // From the algebra_proptest shrunk failure: cubic with interior knot at 0.1
+        // (multiplicity 1), inserted twice — Boehm A5.3 multi-fold + existing path
+        // produced wrong control points pre-fix.
+        use crate::eval::eval;
+        let curve = ScalarNurbs::<f64>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.1, 0.55, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.181_828_016_839_598_23, 0.0, 0.0],
+            None,
+        )
+        .unwrap();
+
+        // r=1 path (path A: two single insertions).
+        let path_a = insert_knot(&insert_knot(&curve, 0.1, 1).unwrap(), 0.1, 1).unwrap();
+
+        // r=2 path (path B: one double insertion).
+        let path_b = insert_knot(&curve, 0.1, 2).unwrap();
+
+        // Knot vectors must match.
+        assert_eq!(path_a.knots(), path_b.knots());
+
+        // Control points must match (the regression).
+        for (i, (a, b)) in path_a
+            .control_points()
+            .iter()
+            .zip(path_b.control_points())
+            .enumerate()
+        {
+            assert!(
+                (a - b).abs() < 1e-12,
+                "cp[{i}]: r=1+1 path = {a}, r=2 path = {b}"
+            );
+        }
+
+        // And eval must match the baseline.
+        let baseline = eval(&curve.as_view(), 0.1);
+        assert!((eval(&path_a.as_view(), 0.1) - baseline).abs() < 1e-12);
+        assert!((eval(&path_b.as_view(), 0.1) - baseline).abs() < 1e-12);
     }
 
     #[test]

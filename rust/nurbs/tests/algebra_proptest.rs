@@ -52,6 +52,55 @@ fn arb_single_poly_kernel() -> impl Strategy<Value = nurbs::algebra::PiecewisePo
     })
 }
 
+fn arb_curve_with_existing_interior_multiplicity()
+    -> impl Strategy<Value = (nurbs::ScalarNurbs<f64>, f64, usize, usize)>
+{
+    // Generates (curve, u_knot, p, existing_mult_at_u) where the curve has
+    // an interior knot at u with multiplicity `existing_mult_at_u >= 1`,
+    // PLUS one additional interior knot at a different value. Both
+    // ingredients matter:
+    //   - `existing >= 1` to enter the multi-fold + existing path.
+    //   - At least one OTHER interior knot, otherwise the local control
+    //     polygon around u is fully determined by interpolation against
+    //     uniformly-spaced surrounding knots and the buggy CPs happen to
+    //     produce the right eval. Adding a second distinct interior knot
+    //     breaks that symmetry and surfaces the eval discrepancy.
+    // Constraint `existing < p` so r_max = p - existing >= 1; we further
+    // require `existing <= p - 2` so r_max >= 2 (the regime that triggers
+    // the original A5.3 bug). This rules out p=2 entirely.
+    (3u8..=4, 0.1..0.45_f64, 0.55..0.9_f64, prop::bool::ANY)
+        .prop_flat_map(|(p, ka, kb, swap)| {
+            // Choose which of the two break values gets the "existing"
+            // multiplicity. The other holds a single knot.
+            let (u_knot, other_knot) = if swap { (ka, kb) } else { (kb, ka) };
+            // existing in 1..=(p-2) so r_max = p - existing >= 2.
+            let existing_strategy: BoxedStrategy<usize> = (1usize..=(p as usize - 2)).boxed();
+            existing_strategy.prop_flat_map(move |existing| {
+                // total knots = 2*(p+1) + existing + 1; n = p+2+existing.
+                let n = p as usize + 2 + existing;
+                let pad = p as usize + 1;
+                prop::collection::vec(-3.0..3.0_f64, n).prop_map(move |cps| {
+                    let mut knots = vec![0.0; pad];
+                    // Interior knots in sorted order.
+                    let (lo_val, lo_mult, hi_val, hi_mult) = if u_knot < other_knot {
+                        (u_knot, existing, other_knot, 1)
+                    } else {
+                        (other_knot, 1, u_knot, existing)
+                    };
+                    for _ in 0..lo_mult {
+                        knots.push(lo_val);
+                    }
+                    for _ in 0..hi_mult {
+                        knots.push(hi_val);
+                    }
+                    knots.extend(vec![1.0; pad]);
+                    let curve = nurbs::ScalarNurbs::try_new(p, knots, cps, None).unwrap();
+                    (curve, u_knot, p as usize, existing)
+                })
+            })
+        })
+}
+
 fn arb_curve_with_c0_kink() -> impl Strategy<Value = (nurbs::ScalarNurbs<f64>, f64)> {
     // Generates a NURBS with degree 1-3 and a single interior knot at multiplicity = degree
     // (i.e., a C⁰ kink at that knot). Returns (curve, kink_location) so the property test
@@ -87,6 +136,33 @@ proptest! {
                 (before - after).abs() < 1e-9,
                 "u={sample_u}: before={before}, after={after}"
             );
+        }
+    }
+
+    #[test]
+    fn insert_knot_multifold_preserves_evaluation(
+        (curve, u, p, existing) in arb_curve_with_existing_interior_multiplicity(),
+    ) {
+        // The strategy guarantees r_max = p - existing >= 2, so we always
+        // exercise the multi-fold path that historically broke geometric
+        // invariance when an existing positive multiplicity was present.
+        let r_max = p - existing;
+        debug_assert!(r_max >= 2);
+        for r in 1..=r_max {
+            let inserted = nurbs::knot::insert_knot(&curve, u, r).unwrap();
+            // Sample at the inserted-knot location specifically — the bug
+            // displaces the local control polygon and is most visible there.
+            // Also include broad-coverage points to catch any global effect.
+            let mut samples = vec![0.0_f64, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0, u];
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for sample_u in samples {
+                let before = nurbs::eval::eval(&curve.as_view(), sample_u);
+                let after = nurbs::eval::eval(&inserted.as_view(), sample_u);
+                prop_assert!(
+                    (before - after).abs() < 1e-9,
+                    "p={p}, existing={existing}, r={r}, u={sample_u}: before={before}, after={after}"
+                );
+            }
         }
     }
 
