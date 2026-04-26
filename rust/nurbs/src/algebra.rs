@@ -131,23 +131,8 @@ pub fn multiply<T: Float>(
     let a_mults = collect_interior_multiplicities(a);
     let b_mults = collect_interior_multiplicities(b);
 
-    // Pre-condition: bring each input to full interior multiplicity by
-    // iterative SINGLE knot insertions. `extract_bezier_pieces` internally
-    // calls `refined_to_full_multiplicity`, which does a single multi-fold
-    // `insert_knot(curve, u, p - existing)`. The Boehm A5.3 implementation
-    // in `knot::insert_knot` is correct only when `r == 1` OR `existing == 0`;
-    // it produces wrong control points (and a wrong curve) when both `r > 1`
-    // and `existing > 0` simultaneously. By raising multiplicity one knot at
-    // a time, the inner call sees only `r == 1` cases and stays correct.
-    //
-    // This is a workaround — the upstream bug should be fixed in
-    // `boehm_insert_unweighted` so any caller is safe. Once that lands,
-    // these `pre_refine_full_mult` lines become a perf-only no-op.
-    let a_pre = pre_refine_full_mult(a);
-    let b_pre = pre_refine_full_mult(b);
-
-    let a_pieces = crate::bezier::extract_bezier_pieces(&a_pre);
-    let b_pieces = crate::bezier::extract_bezier_pieces(&b_pre);
+    let a_pieces = crate::bezier::extract_bezier_pieces(a);
+    let b_pieces = crate::bezier::extract_bezier_pieces(b);
 
     // Refine to common breakpoint set.
     let breakpoints = union_breakpoints(&a_pieces, &b_pieces);
@@ -198,29 +183,6 @@ pub fn multiply<T: Float>(
 
     knot_remove_to_morken_targets(&mut result, &targets, T::from_f64(1e-12));
     Ok(result)
-}
-
-/// Raise every interior knot of `curve` to multiplicity = degree by issuing
-/// one `insert_knot(_, u, 1)` call at a time. Equivalent in result to
-/// `refined_to_full_multiplicity`, but avoids the upstream Boehm-A5.3 bug
-/// that mis-blends control points when an `r > 1` insertion meets an
-/// existing positive multiplicity. See the comment in `multiply` for details.
-#[cfg(feature = "host")]
-fn pre_refine_full_mult<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs<T> {
-    let p = curve.degree() as usize;
-    let mut current = curve.clone();
-    let interior_values: Vec<T> = collect_interior_breakpoints(&current);
-    for u in interior_values {
-        loop {
-            let existing = current.knots().iter().filter(|k| **k == u).count();
-            if existing >= p {
-                break;
-            }
-            current = crate::knot::insert_knot(&current, u, 1)
-                .expect("pre_refine_full_mult: single insertion is always valid");
-        }
-    }
-    current
 }
 
 /// Mørken Eq. (1) target multiplicity for a shared breakpoint in the product
