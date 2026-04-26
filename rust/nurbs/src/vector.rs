@@ -6,7 +6,7 @@ use crate::{scalar::validate, ConstructError, Float, VectorNurbsView};
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorNurbs<T: Float, const N: usize> {
     degree: u8,
-    knots: Vec<T>,
+    knots: crate::knot::KnotVector<T>,
     control_points: Vec<[T; N]>,
     weights: Option<Vec<T>>,
 }
@@ -20,9 +20,11 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
         weights: Option<Vec<T>>,
     ) -> Result<Self, ConstructError> {
         validate(degree, &knots, control_points.len(), weights.as_deref())?;
+        let knot_vector = crate::knot::KnotVector::try_new(knots)
+            .expect("validate already ensured monotone + length");
         Ok(Self {
             degree,
-            knots,
+            knots: knot_vector,
             control_points,
             weights,
         })
@@ -34,7 +36,7 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
     }
     #[must_use]
     pub fn knots(&self) -> &[T] {
-        &self.knots
+        self.knots.as_slice()
     }
     #[must_use]
     pub fn control_points(&self) -> &[[T; N]] {
@@ -50,7 +52,7 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
     pub fn as_view(&self) -> VectorNurbsRef<'_, T, N> {
         VectorNurbsRef {
             degree: self.degree,
-            knots: &self.knots,
+            knots: self.knots.as_slice(),
             control_points: &self.control_points,
             weights: self.weights.as_deref(),
         }
@@ -58,7 +60,7 @@ impl<T: Float, const N: usize> VectorNurbs<T, N> {
 
     #[must_use]
     pub fn into_parts(self) -> (u8, Vec<T>, Vec<[T; N]>, Option<Vec<T>>) {
-        (self.degree, self.knots, self.control_points, self.weights)
+        (self.degree, self.knots.into_inner(), self.control_points, self.weights)
     }
 }
 
@@ -70,7 +72,7 @@ impl<T: Float, const N: usize> VectorNurbsView<T, N> for VectorNurbs<T, N> {
     }
     #[inline]
     fn knots(&self) -> &[T] {
-        &self.knots
+        self.knots.as_slice()
     }
     #[inline]
     fn control_points(&self) -> &[[T; N]] {
