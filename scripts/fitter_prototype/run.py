@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from scripts.fitter_prototype.analyze import render_all
 from scripts.fitter_prototype.classify import VertexLabel, classify_polyline
 from scripts.fitter_prototype.corner_blend import make_slot
 from scripts.fitter_prototype.fit import fit_smooth_run
@@ -140,7 +141,10 @@ def main() -> None:
         segments = process_gcode(text, params)
         out_path = args.out / f"{path.stem}.segments.json"
         out_path.write_text(json.dumps(serialize(segments), indent=2))
-        print(f"{path.name}: {len(segments)} segments → {out_path}")
+        render_all(segments, args.out, path.stem)
+        print(
+            f"{path.name}: {len(segments)} segments → {out_path} (+ plots)"
+        )
 
 
 if __name__ == "__main__":
