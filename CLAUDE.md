@@ -37,11 +37,6 @@ We are working on a complete rewrite of the motion planner and more:
 
 
 
-There was a previous attempt on this, but proper research haven't been done and some things were made with wrong assumptions. but some solutions could be reused. so use it for
-reference, but carefully. The branch is magnum-opus.
-
-
-
 Following Dependency graph is AI generated and might contain small
 errors, please point out if you notice one.
 
@@ -59,7 +54,7 @@ Pure libraries with no firmware coupling. Unit-testable in isolation against syn
 
 - **NURBS evaluation library.** de Boor's algorithm, derivative computation (degree-lowering), curvature κ(u) from first and second derivatives. Both host (double precision) and MCU (single precision, M7-optimized) implementations. The MCU version is the hot path — every cycle here costs you on every sample.
 - **Arc-length parameterization.** u(s) computation for a given NURBS, via Gaussian quadrature with caching or precomputed monotone tables. Host-only.
-- **NURBS algebraic operations.** Multiplication-by-scalar, sum-of-NURBS, polynomial composition, and *convolution-with-polynomial-kernel* (this last one is what makes smooth-shaper pre-bake possible and is the least standard operation — likely something to implement from the basis-function math). Host-only.
+- **NURBS algebraic operations.** Multiplication-by-scalar, sum-of-NURBS, NURBS multiplication (pointwise product, Piegl & Tiller ch. 5), and *convolution-with-polynomial-kernel* (this last one is what makes smooth-shaper pre-bake possible and is the least standard operation — likely something to implement from the basis-function math, builds on NURBS multiplication). Host-only.
 
 ## Layer 1 — Geometry pipeline
 
