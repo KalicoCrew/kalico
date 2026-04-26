@@ -119,9 +119,13 @@ impl Iterator for Lexer<'_> {
             if trimmed_full.is_empty() {
                 continue;
             }
-            if let Some(stripped) = trimmed_full.strip_prefix(';') {
+            if trimmed_full.starts_with(';') {
+                if let Some(kind) = crate::marker::match_comment(trimmed_full) {
+                    return Some(Ok(Token::Marker { kind, line_no }));
+                }
+                let stripped = trimmed_full.trim_start_matches(';').trim();
                 return Some(Ok(Token::Comment {
-                    text: stripped.trim().to_string().into_boxed_str(),
+                    text: stripped.to_string().into_boxed_str(),
                     line_no,
                 }));
             }
@@ -323,6 +327,19 @@ mod tests {
                 assert_eq!(*major, 0);
             }
             other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_change_comment_is_marker_token() {
+        let toks = collect(";LAYER:5\n");
+        assert_eq!(toks.len(), 1);
+        match &toks[0] {
+            Ok(Token::Marker { kind, line_no }) => {
+                assert_eq!(*kind, crate::marker::MarkerKind::LayerChange { layer: 5 });
+                assert_eq!(*line_no, 1);
+            }
+            other => panic!("expected Marker, got {other:?}"),
         }
     }
 }
