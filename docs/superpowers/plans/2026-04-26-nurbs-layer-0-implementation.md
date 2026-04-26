@@ -1470,7 +1470,7 @@ Append to `rust/nurbs/src/scalar.rs` test module:
 
         // Ensure 4-byte alignment by allocating into an aligned buffer
         let aligned = align_buf(&buf, 4);
-        let r = ScalarNurbsRef::<f32>::try_from_wire(&aligned).unwrap();
+        let r = ScalarNurbsRef::<f32>::try_from_wire(aligned.as_slice()).unwrap();
         assert_eq!(r.degree(), 1);
         assert_eq!(r.control_points(), &[0.0_f32, 1.0]);
         assert!(r.weights().is_none());
@@ -1487,40 +1487,59 @@ Append to `rust/nurbs/src/scalar.rs` test module:
 
     #[test]
     fn try_from_wire_rejects_unknown_version() {
-        let mut buf = align_buf(&[0xFFu8, 1, 0, 0, 4, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 4);
-        let result = ScalarNurbsRef::<f32>::try_from_wire(&buf);
+        let buf = align_buf(&[0xFFu8, 1, 0, 0, 4, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 4);
+        let result = ScalarNurbsRef::<f32>::try_from_wire(buf.as_slice());
         assert!(matches!(result, Err(crate::WireError::UnknownVersion(0xFF))));
     }
 
     #[test]
     fn try_from_wire_rejects_truncated_header() {
         let buf = align_buf(&[1u8, 1, 0, 0], 4);   // only 4 bytes; 8-byte header missing
-        let result = ScalarNurbsRef::<f32>::try_from_wire(&buf);
+        let result = ScalarNurbsRef::<f32>::try_from_wire(buf.as_slice());
         assert!(matches!(result, Err(crate::WireError::TruncatedBuffer { .. })));
     }
 
-    /// Allocate a buffer aligned to `align` bytes containing `data`.
-    fn align_buf(data: &[u8], align: usize) -> Vec<u8> {
-        // Vec<f32> guarantees 4-byte alignment; Vec<u64> guarantees 8.
+    /// Test-only owner of a 4-byte-aligned byte buffer.
+    /// We can't deallocate a `Vec<u8>` produced from a `Vec<u32>`'s raw parts —
+    /// the allocator layouts differ (alignment 1 vs 4) and `Vec::from_raw_parts`
+    /// in that direction is UB. So we keep the `Vec<u32>` alive and hand out
+    /// a borrowed `&[u8]` view via `as_slice`.
+    struct AlignedBytes {
+        backing: Vec<u32>,
+        len: usize,
+    }
+
+    impl AlignedBytes {
+        fn as_slice(&self) -> &[u8] {
+            // SAFETY: `Vec<u32>` is 4-byte aligned; `len <= backing.len() * 4`;
+            // `u32` has no padding and any bit pattern is a valid `u8`.
+            #[allow(unsafe_code)]
+            unsafe {
+                core::slice::from_raw_parts(self.backing.as_ptr().cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    fn align_buf(data: &[u8], align: usize) -> AlignedBytes {
         match align {
             4 => {
-                let n = (data.len() + 3) / 4;
+                let n = data.len().div_ceil(4);
                 let mut backing: Vec<u32> = vec![0; n];
+                // SAFETY: backing owns `n*4` bytes with 4-byte alignment;
+                // we write `data.len() <= n*4` bytes through the &mut [u8] view.
+                #[allow(unsafe_code)]
                 let bytes: &mut [u8] = unsafe {
-                    core::slice::from_raw_parts_mut(backing.as_mut_ptr() as *mut u8, n * 4)
+                    core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4)
                 };
                 bytes[..data.len()].copy_from_slice(data);
-                let raw = backing.as_ptr() as *const u8;
-                let len = data.len();
-                core::mem::forget(backing);
-                unsafe { Vec::from_raw_parts(raw as *mut u8, len, n * 4) }
+                AlignedBytes { backing, len: data.len() }
             }
             _ => unimplemented!(),
         }
     }
 ```
 
-(This test helper allocates a 4-byte-aligned `Vec<u8>`. A simpler approach for a test-only helper is acceptable; the production wire-format does not allocate.)
+(Test-only helper. Earlier (now-deleted) drafts used `Vec::from_raw_parts` to convert the `Vec<u32>` backing into a `Vec<u8>`; that's UB because the allocator layouts differ. The `AlignedBytes` owner-and-view shape avoids the UB and serves the same purpose. Earlier call sites that passed `&buf` to `try_from_wire` change to `buf.as_slice()`.)
 
 - [ ] **Step 2: Create wire-format module**
 
@@ -1660,7 +1679,7 @@ Append to `rust/nurbs/src/vector.rs` test module:
             buf.extend_from_slice(&v.to_ne_bytes());
         }
         let aligned = test_align_buf(&buf, 4);
-        let r = VectorNurbsRef::<f32, 3>::try_from_wire(&aligned).unwrap();
+        let r = VectorNurbsRef::<f32, 3>::try_from_wire(aligned.as_slice()).unwrap();
         assert_eq!(r.degree(), 1);
         assert_eq!(r.control_points()[1], [1.0, 2.0, 3.0]);
     }
@@ -1675,22 +1694,36 @@ Append to `rust/nurbs/src/vector.rs` test module:
         // pad to enough bytes so we get past the axis check
         buf.resize(64, 0);
         let aligned = test_align_buf(&buf, 4);
-        let result = VectorNurbsRef::<f32, 3>::try_from_wire(&aligned);
+        let result = VectorNurbsRef::<f32, 3>::try_from_wire(aligned.as_slice());
         assert!(matches!(result, Err(crate::WireError::AxisCountMismatch { expected: 3, got: 4 })));
     }
 
-    fn test_align_buf(data: &[u8], align: usize) -> Vec<u8> {
-        // Vec<u32> guarantees 4-byte alignment.
-        let n = (data.len() + align - 1) / align;
+    /// Test-only owner; same shape as `align_buf` in scalar.rs (see Task 9).
+    struct AlignedBytes {
+        backing: Vec<u32>,
+        len: usize,
+    }
+
+    impl AlignedBytes {
+        fn as_slice(&self) -> &[u8] {
+            // SAFETY: `Vec<u32>` is 4-byte aligned; len ≤ backing.len()*4.
+            #[allow(unsafe_code)]
+            unsafe {
+                core::slice::from_raw_parts(self.backing.as_ptr().cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    fn test_align_buf(data: &[u8], _align: usize) -> AlignedBytes {
+        let n = data.len().div_ceil(4);
         let mut backing: Vec<u32> = vec![0; n];
+        // SAFETY: backing owns n*4 bytes 4-byte aligned; we write data.len() ≤ n*4.
+        #[allow(unsafe_code)]
         let bytes: &mut [u8] = unsafe {
-            core::slice::from_raw_parts_mut(backing.as_mut_ptr() as *mut u8, n * 4)
+            core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4)
         };
         bytes[..data.len()].copy_from_slice(data);
-        let raw = backing.as_ptr() as *const u8;
-        let len = data.len();
-        core::mem::forget(backing);
-        unsafe { Vec::from_raw_parts(raw as *mut u8, len, n * 4) }
+        AlignedBytes { backing, len: data.len() }
     }
 ```
 
@@ -3202,22 +3235,37 @@ Append to `arc_length` tests:
         for v in [0.0_f32, 0.6, 1.0] { buf.extend_from_slice(&v.to_ne_bytes()); }
 
         let aligned = test_align(&buf, 4);
-        let r = ArcLengthTableRef::<f32>::try_from_wire(&aligned).unwrap();
+        let r = ArcLengthTableRef::<f32>::try_from_wire(aligned.as_slice()).unwrap();
         assert_eq!(r.s(), &[0.0_f32, 0.5, 1.0]);
         assert_eq!(r.u(), &[0.0_f32, 0.6, 1.0]);
     }
 
-    fn test_align(data: &[u8], align: usize) -> Vec<u8> {
-        let n = (data.len() + align - 1) / align;
+    /// Test-only owner; same shape as `align_buf` in scalar.rs (Task 9).
+    struct AlignedBytes {
+        backing: Vec<u32>,
+        len: usize,
+    }
+
+    impl AlignedBytes {
+        fn as_slice(&self) -> &[u8] {
+            // SAFETY: Vec<u32> is 4-byte aligned; len ≤ backing.len()*4.
+            #[allow(unsafe_code)]
+            unsafe {
+                core::slice::from_raw_parts(self.backing.as_ptr().cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    fn test_align(data: &[u8], _align: usize) -> AlignedBytes {
+        let n = data.len().div_ceil(4);
         let mut backing: Vec<u32> = vec![0; n];
+        // SAFETY: backing owns n*4 bytes 4-byte aligned; data.len() ≤ n*4.
+        #[allow(unsafe_code)]
         let bytes: &mut [u8] = unsafe {
-            core::slice::from_raw_parts_mut(backing.as_mut_ptr() as *mut u8, n * 4)
+            core::slice::from_raw_parts_mut(backing.as_mut_ptr().cast::<u8>(), n * 4)
         };
         bytes[..data.len()].copy_from_slice(data);
-        let raw = backing.as_ptr() as *const u8;
-        let len = data.len();
-        core::mem::forget(backing);
-        unsafe { Vec::from_raw_parts(raw as *mut u8, len, n * 4) }
+        AlignedBytes { backing, len: data.len() }
     }
 ```
 
