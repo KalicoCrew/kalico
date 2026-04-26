@@ -125,6 +125,76 @@ pub(crate) fn de_boor_homogeneous<T: Float>(
     d[p]
 }
 
+/// Evaluate a vector NURBS at parameter `u`. Shares knot-span lookup and alpha
+/// computation across the N axes — meaningfully cheaper than N independent
+/// scalar `eval` calls for shared-knot vector NURBS.
+#[inline]
+pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(
+    curve: &V,
+    u: T,
+) -> [T; N] {
+    debug_assert!((curve.degree() as usize) <= MAX_DEGREE);
+    let p = curve.degree() as usize;
+    let knots = curve.knots();
+    let cps = curve.control_points();
+    let n = cps.len();
+    let k = find_knot_span(knots, p, n, u);
+
+    let has_weights = curve.weights().is_some();
+
+    let mut d_axes: [[T; WORKSPACE_SIZE]; N] = [[T::ZERO; WORKSPACE_SIZE]; N];
+    let mut d_w = [T::ZERO; WORKSPACE_SIZE];
+
+    // Initialize active CPs for this span.
+    for j in 0..=p {
+        let cp = cps[k - p + j];
+        if let Some(w) = curve.weights() {
+            for axis in 0..N {
+                d_axes[axis][j] = cp[axis] * w[k - p + j];
+            }
+            d_w[j] = w[k - p + j];
+        } else {
+            for axis in 0..N {
+                d_axes[axis][j] = cp[axis];
+            }
+        }
+    }
+
+    // de Boor recurrence — shared alphas across axes.
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let denom = knots[k + 1 + j - r] - knots[k - p + j];
+            let alpha = if denom > T::ZERO {
+                (u - knots[k - p + j]) / denom
+            } else {
+                T::ZERO
+            };
+            for axis in 0..N {
+                d_axes[axis][j] = (d_axes[axis][j] - d_axes[axis][j - 1]).mul_add(alpha, d_axes[axis][j - 1]);
+            }
+            if has_weights {
+                d_w[j] = (d_w[j] - d_w[j - 1]).mul_add(alpha, d_w[j - 1]);
+            }
+        }
+    }
+
+    let mut result = [T::ZERO; N];
+    if has_weights {
+        let denom = d_w[p];
+        let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
+        debug_assert!(denom.abs() > floor);
+        let denom_clamp = denom.max(floor);
+        for axis in 0..N {
+            result[axis] = d_axes[axis][p] / denom_clamp;
+        }
+    } else {
+        for axis in 0..N {
+            result[axis] = d_axes[axis][p];
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +301,46 @@ mod tests {
             / ((std::f64::consts::SQRT_2 / 2.0_f64).powi(2) + 0.5_f64);
         // simpler check: result lies in (0.69, 0.72) for this specific arc
         assert!(mid > 0.69 && mid < 0.72, "got {mid}, expected ~{expected}");
+    }
+
+    fn linear_3d_curve_f64() -> crate::VectorNurbs<f64, 3> {
+        crate::VectorNurbs::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
+            None,
+        ).unwrap()
+    }
+
+    #[test]
+    fn vector_eval_linear_endpoints() {
+        let curve = linear_3d_curve_f64();
+        let v = curve.as_view();
+        let p0 = vector_eval(&v, 0.0_f64);
+        assert!((p0[0] - 0.0).abs() < 1e-12);
+        assert!((p0[1] - 0.0).abs() < 1e-12);
+        assert!((p0[2] - 0.0).abs() < 1e-12);
+        let p1 = vector_eval(&v, 1.0_f64);
+        assert!((p1[0] - 1.0).abs() < 1e-12);
+        assert!((p1[1] - 2.0).abs() < 1e-12);
+        assert!((p1[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn vector_eval_matches_per_axis_scalar() {
+        let curve = linear_3d_curve_f64();
+        let v = curve.as_view();
+        let result = vector_eval(&v, 0.3_f64);
+
+        // Reconstruct each axis as a scalar curve and compare.
+        for axis in 0..3 {
+            let cps_axis: Vec<f64> = v.control_points().iter().map(|cp| cp[axis]).collect();
+            let scalar = crate::ScalarNurbs::try_new(
+                v.degree(), v.knots().to_vec(), cps_axis, None,
+            ).unwrap();
+            let expected = eval(&scalar.as_view(), 0.3_f64);
+            assert!((result[axis] - expected).abs() < 1e-12,
+                "axis {axis}: got {}, expected {}", result[axis], expected);
+        }
     }
 }
