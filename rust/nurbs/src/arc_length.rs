@@ -59,6 +59,7 @@ impl<'a, T: Float> ArcLengthTableRef<'a, T> {
 
 /// 5-point Gauss-Legendre nodes (in [-1, 1]) and weights. Exact for polynomials
 /// up to degree 9. Sufficient for our integrand magnitudes.
+#[cfg(feature = "host")]
 const GAUSS_LEGENDRE_5_NODES: [f64; 5] = [
     -0.906_179_845_938_664_0,
     -0.538_469_310_105_683_1,
@@ -66,6 +67,7 @@ const GAUSS_LEGENDRE_5_NODES: [f64; 5] = [
      0.538_469_310_105_683_1,
      0.906_179_845_938_664_0,
 ];
+#[cfg(feature = "host")]
 const GAUSS_LEGENDRE_5_WEIGHTS: [f64; 5] = [
     0.236_926_885_056_189_1,
     0.478_628_670_499_366_5,
