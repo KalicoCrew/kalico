@@ -276,6 +276,24 @@ mod tests {
     }
 
     #[test]
+    fn insert_knot_at_existing_multiplicity_preserves_evaluation() {
+        // Quadratic curve with interior knot at 0.5 (multiplicity 1).
+        let curve = ScalarNurbs::<f64>::try_new(
+            2, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], vec![0.0, 1.0, 2.0, 3.0], None,
+        ).unwrap();
+
+        // Insert one more at u=0.5: existing=1 + 1 = 2 == degree, allowed.
+        let inserted = insert_knot(&curve, 0.5, 1).unwrap();
+        assert_eq!(inserted.knots(), &[0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0]);
+
+        for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let before = eval(&curve.as_view(), u);
+            let after = eval(&inserted.as_view(), u);
+            assert!((before - after).abs() < 1e-12, "u={u}: before={before}, after={after}");
+        }
+    }
+
+    #[test]
     fn insert_knot_rejects_multiplicity_exceeded() {
         // Quadratic curve with interior knot at 0.5 (multiplicity 1, so we can add 1 more).
         let curve = ScalarNurbs::<f64>::try_new(
