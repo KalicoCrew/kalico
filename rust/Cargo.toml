@@ -1,9 +1,10 @@
 [workspace]
-members = ["nurbs", "nurbs-c-api"]
+members = ["nurbs", "nurbs-c-api", "gcode"]
 resolver = "2"
 
 [workspace.dependencies]
 # Shared deps versioned here from day one.
+thiserror = "2"
 
 # Workspace-wide lint configuration. Crates opt in via `[lints] workspace = true`.
 # Pedantic-tier lints are enabled at warn (with `-D warnings` they fail CI).
