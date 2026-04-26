@@ -247,7 +247,9 @@ pub fn split_piece_at<T: Float>(
     (left, right)
 }
 
-/// Binomial coefficient C(n, k). Integer-valued; safe for k, n ≤ 30 or so.
+/// Binomial coefficient C(n, k). Integer-valued.
+/// Safe for `n ≤ 50` (largest intermediate ≈ C(50, 25) × 25 ≈ 3e15, well under u64 max).
+/// Crate-wide `MAX_DEGREE = 20`; convolve worst case is `n = 2 * MAX_DEGREE = 40`, comfortably safe.
 /// `pub(crate)` so `algebra.rs` can reuse it (DRY — defined here, used in convolve too).
 pub(crate) fn binomial(n: usize, k: usize) -> u64 {
     if k > n {
@@ -311,6 +313,24 @@ mod tests {
 
         for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let exp = monom.evaluate(u);
+            let got = back.evaluate(u);
+            assert!((exp - got).abs() < 1e-12, "u={u}: exp={exp}, got={got}");
+        }
+    }
+
+    #[test]
+    fn cubic_bernstein_round_trip_on_shifted_support() {
+        // Cubic with non-[0,1] support — exercises `h_pow` scaling AND degree-3
+        // binomial-denominator handling in both directions.
+        let p = BezierPiece::<f64> {
+            u_start: 1.0,
+            u_end: 3.0,
+            coeffs: vec![1.0, -2.0, 3.0, -4.0],
+        };
+        let bern = p.to_bernstein();
+        let back = BezierPiece::from_bernstein(&bern, 1.0, 3.0);
+        for u in [1.0, 1.5, 2.0, 2.5, 3.0] {
+            let exp = p.evaluate(u);
             let got = back.evaluate(u);
             assert!((exp - got).abs() < 1e-12, "u={u}: exp={exp}, got={got}");
         }
