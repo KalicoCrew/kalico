@@ -164,6 +164,28 @@ fn refine_pieces_to_breakpoints<T: Float>(
     result
 }
 
+/// Convolve a polynomial NURBS with a piecewise polynomial kernel:
+/// `y(u) = ∫ x(s) w(u - s) ds`.
+///
+/// Output domain = Minkowski sum of input and kernel supports. Caller
+/// (Layer 3) handles cross-segment stitching for trajectories.
+///
+/// Polynomial inputs only in v1.
+#[cfg(feature = "host")]
+pub fn convolve<T: Float>(
+    curve: &crate::ScalarNurbs<T>,
+    kernel: &PiecewisePolynomialKernel<T>,
+) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
+    if curve.weights().is_some() {
+        return Err(AlgebraError::RationalNotSupported {
+            operation: "convolve",
+            workaround: "use polynomial_refit (Layer 3 utility) before calling",
+        });
+    }
+    let _ = kernel;
+    todo!("convolve: piecewise integration implementation")
+}
+
 /// Polynomial coefficient convolution: out[k] = Σ_{i+j=k} a[i] * b[j].
 #[cfg(feature = "host")]
 fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
@@ -210,6 +232,19 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
 mod tests {
     use super::*;
     use crate::eval::eval;
+
+    #[test]
+    fn convolve_rejects_rational_input() {
+        let curve = crate::ScalarNurbs::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0_f64, 1.0], Some(vec![1.0, 1.0]),
+        ).unwrap();
+        let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.1, 0.1));
+        let result = convolve(&curve, &kernel);
+        assert!(matches!(
+            result,
+            Err(AlgebraError::RationalNotSupported { operation: "convolve", .. })
+        ));
+    }
 
     #[test]
     fn single_poly_kernel_constructs_one_piece() {
