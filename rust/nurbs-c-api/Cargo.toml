@@ -9,14 +9,17 @@ description = "Stable C ABI surface for the nurbs crate"
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[[bin]]
+name = "gen-headers"
+path = "src/bin/gen_headers.rs"
+required-features = ["host"]
+
 [features]
 default = ["mcu-h7"]
 mcu-h7 = ["nurbs/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4"]
-host = ["nurbs/host"]
+host = ["nurbs/host", "dep:cbindgen"]
 
 [dependencies]
 nurbs = { path = "../nurbs", default-features = false }
-
-[build-dependencies]
-cbindgen = "0.27"
+cbindgen = { version = "0.27", optional = true }
