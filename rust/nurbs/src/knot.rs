@@ -1,7 +1,8 @@
 //! Knot vector type and host-only knot operations (insertion, removal, span queries).
 //! See `docs/superpowers/specs/2026-04-26-nurbs-algebra-design.md` §4–§6.
-
-#![cfg(feature = "host")]
+//!
+//! Module-level host-only gating is applied at the `pub mod knot;` site in
+//! `lib.rs`; an inner `#![cfg(feature = "host")]` here would be redundant.
 
 use crate::{ConstructError, Float};
 
