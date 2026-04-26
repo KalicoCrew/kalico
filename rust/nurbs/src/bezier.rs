@@ -278,4 +278,37 @@ mod tests {
             assert!((exp - got).abs() < 1e-12, "u={u}: exp={exp}, got={got}");
         }
     }
+
+    #[test]
+    fn extract_two_bezier_pieces_from_curve_with_interior_knot() {
+        // Quadratic with an interior knot at 0.5.
+        let curve = ScalarNurbs::<f64>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 3.0],
+            None,
+        ).unwrap();
+
+        let pieces = extract_bezier_pieces(&curve);
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].u_start, 0.0);
+        assert_eq!(pieces[0].u_end, 0.5);
+        assert_eq!(pieces[1].u_start, 0.5);
+        assert_eq!(pieces[1].u_end, 1.0);
+        // Eval continuity: pieces[0].evaluate(0.5) == pieces[1].evaluate(0.5).
+        let mid_left = pieces[0].evaluate(0.5);
+        let mid_right = pieces[1].evaluate(0.5);
+        assert!((mid_left - mid_right).abs() < 1e-12);
+        // Each piece evaluates correctly.
+        for u in [0.0, 0.25, 0.5] {
+            let exp = crate::eval::eval(&curve.as_view(), u);
+            let got = pieces[0].evaluate(u);
+            assert!((exp - got).abs() < 1e-12);
+        }
+        for u in [0.5, 0.75, 1.0] {
+            let exp = crate::eval::eval(&curve.as_view(), u);
+            let got = pieces[1].evaluate(u);
+            assert!((exp - got).abs() < 1e-12);
+        }
+    }
 }
