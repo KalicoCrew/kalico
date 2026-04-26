@@ -183,8 +183,58 @@ pub fn convolve<T: Float>(
             workaround: "use polynomial_refit (Layer 3 utility) before calling",
         });
     }
-    let _ = kernel;
-    todo!("convolve: piecewise integration implementation")
+    let x_pieces = crate::bezier::extract_bezier_pieces(curve);
+    let w_pieces = &kernel.pieces;
+
+    // Compute output breakpoints: cross-sum of input and kernel breakpoints.
+    let x_breaks: Vec<T> = {
+        let mut v: Vec<T> = Vec::new();
+        for p in &x_pieces { if !v.contains(&p.u_start) { v.push(p.u_start); } }
+        v.push(x_pieces.last().unwrap().u_end);
+        v
+    };
+    let w_breaks: Vec<T> = {
+        let mut v: Vec<T> = Vec::new();
+        for p in w_pieces { if !v.contains(&p.u_start) { v.push(p.u_start); } }
+        v.push(w_pieces.last().unwrap().u_end);
+        v
+    };
+    let mut out_breaks: Vec<T> = Vec::new();
+    for xb in &x_breaks {
+        for wb in &w_breaks {
+            let s = *xb + *wb;
+            if !out_breaks.iter().any(|x| *x == s) {
+                out_breaks.push(s);
+            }
+        }
+    }
+    out_breaks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let degree = x_pieces[0].degree() + w_pieces[0].degree() + 1;
+
+    let mut out_pieces: Vec<crate::bezier::BezierPiece<T>> = Vec::with_capacity(out_breaks.len() - 1);
+    for win in out_breaks.windows(2) {
+        let alpha = win[0];
+        let beta = win[1];
+        let mut accum = crate::bezier::BezierPiece::<T>::zero(alpha, beta, degree);
+
+        for x_p in &x_pieces {
+            for w_p in w_pieces {
+                let u_mid = (alpha + beta) * T::from_f64(0.5);
+                let s_lo = (x_p.u_start).max(u_mid - w_p.u_end);
+                let s_hi = (x_p.u_end).min(u_mid - w_p.u_start);
+                if s_lo >= s_hi { continue; }
+
+                let contribution = integrate_product_piece(x_p, w_p, alpha, beta);
+                accum = (&accum + &contribution).expect("same-support accumulation");
+            }
+        }
+        out_pieces.push(accum);
+    }
+
+    let mut result = crate::bezier::bezier_pieces_to_nurbs(&out_pieces);
+    knot_remove_redundant(&mut result, T::from_f64(1e-12));
+    Ok(result)
 }
 
 /// Polynomial coefficient convolution: out[k] = Σ_{i+j=k} a[i] * b[j].
@@ -383,6 +433,32 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
 mod tests {
     use super::*;
     use crate::eval::eval;
+
+    #[test]
+    fn convolve_constant_input_with_constant_kernel_gives_triangle() {
+        // x(s) = 2 on [0, 1], w(t) = 3 on [-0.5, 0.5].
+        // Convolution support: [0 + (-0.5), 1 + 0.5] = [-0.5, 1.5].
+        // Output: triangle peaking in [0.5, 0.5] at value 6, sloping linearly to 0 at boundaries.
+        let x = crate::ScalarNurbs::<f64>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 2.0], None,
+        ).unwrap();
+        let kernel = PiecewisePolynomialKernel::single_poly(vec![3.0_f64], (-0.5, 0.5));
+
+        let y = convolve(&x, &kernel).unwrap();
+
+        // Spot-check: at u = 0.5, the kernel window [0.0, 1.0] is fully inside x's support,
+        // so y(0.5) = ∫_{0}^{1} 2 * 3 ds = 6.
+        let val = eval(&y.as_view(), 0.5);
+        assert!((val - 6.0).abs() < 1e-10, "y(0.5) = {val}, expected 6");
+
+        // At u = -0.5 (left boundary of output), y = 0.
+        let val_lo = eval(&y.as_view(), -0.5);
+        assert!(val_lo.abs() < 1e-10, "y(-0.5) = {val_lo}, expected 0");
+
+        // At u = 1.5 (right boundary), y = 0.
+        let val_hi = eval(&y.as_view(), 1.5);
+        assert!(val_hi.abs() < 1e-10, "y(1.5) = {val_hi}, expected 0");
+    }
 
     #[test]
     fn integrate_product_constant_input_constant_kernel_yields_linear_result() {
