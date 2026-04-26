@@ -71,6 +71,19 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
         }
     }
 
+    /// Build a single-piece kernel from coefficients in **absolute monomial basis**:
+    /// `Σ coeffs[k] * u^k`. Internally converts to the Pascal-shifted-at-u_start basis
+    /// that `single_poly` expects.
+    ///
+    /// Use this when your kernel coefficients come from sources that don't know
+    /// about Bézier-piece basis conventions — e.g. Klipper's `init_smoother`,
+    /// scipy / sympy expressions, or the bleeding-edge-v2 smooth-shaper polynomials.
+    #[allow(clippy::needless_pass_by_value)] // API symmetry with `single_poly`
+    pub fn single_poly_from_absolute(coeffs: Vec<T>, support: (T, T)) -> Self {
+        let shifted = absolute_to_pascal_shift(&coeffs, support.0);
+        Self::single_poly(shifted, support)
+    }
+
     /// Total support of the kernel: from first piece's `u_start` to last piece's `u_end`.
     pub fn support(&self) -> (T, T) {
         (
@@ -769,6 +782,50 @@ mod tests {
                 "coeff[{i}]: original {} != round-tripped {}",
                 coeffs[i],
                 back[i],
+            );
+        }
+    }
+
+    #[test]
+    fn single_poly_from_absolute_constructs_kernel_with_correct_polynomial() {
+        // Absolute form: w(t) = 1 + 2t on [0.5, 1.5].
+        // Pascal-shifted at u_start = 0.5: w(u) = 1 + 2*(u - 0.5 + 0.5) = 2 + 2*(u - 0.5).
+        let k = PiecewisePolynomialKernel::single_poly_from_absolute(
+            vec![1.0_f64, 2.0],  // 1 + 2t in absolute t
+            (0.5, 1.5),
+        );
+        assert_eq!(k.pieces.len(), 1);
+        assert_eq!(k.pieces[0].u_start, 0.5);
+        assert_eq!(k.pieces[0].u_end, 1.5);
+        // Pascal-shifted coeffs at u_start=0.5: c_0 = 1 + 2*0.5 = 2.0, c_1 = 2.0.
+        assert!((k.pieces[0].coeffs[0] - 2.0).abs() < 1e-12);
+        assert!((k.pieces[0].coeffs[1] - 2.0).abs() < 1e-12);
+        // Polynomial value at t=0.5 (u=1.0) should be 1 + 2*0.5 = 2.0 in original basis.
+        // In Pascal-shifted basis: c_0 + c_1*(1 - 0.5) = 2 + 2*0.5 = 3.0... wait.
+        // Let me recheck: w_absolute(t) = 1 + 2t evaluated at t=1.0 = 3.0.
+        // In Pascal-shifted basis with u_start=0.5: shifted polynomial is the same function,
+        // i.e., w(u) = 1 + 2u (the absolute t IS the absolute u for a kernel),
+        // expressed as Σ c_k * (u - 0.5)^k.
+        // At u=1.0 (which is t=1.0 since t=u for a kernel): expected 1 + 2*1.0 = 3.0.
+        // Pascal: c_0 + c_1*(1 - 0.5) = 2 + 2*0.5 = 3.0 ✓
+        let val_at_one = k.pieces[0].evaluate(1.0);
+        assert!((val_at_one - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn single_poly_from_absolute_round_trips_via_evaluate() {
+        // Quadratic kernel: w(t) = 1 - 2t + 3t^2, on [-0.5, 0.5].
+        let k = PiecewisePolynomialKernel::single_poly_from_absolute(
+            vec![1.0_f64, -2.0, 3.0],
+            (-0.5, 0.5),
+        );
+        // Sample at three points and confirm Pascal-shifted eval == absolute eval.
+        for t in [-0.5_f64, 0.0, 0.25, 0.5] {
+            let absolute_val = 1.0 - 2.0 * t + 3.0 * t * t;
+            let pascal_val = k.pieces[0].evaluate(t);
+            assert!(
+                (absolute_val - pascal_val).abs() < 1e-12,
+                "t={t}: absolute={absolute_val}, pascal={pascal_val}"
             );
         }
     }

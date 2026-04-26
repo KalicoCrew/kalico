@@ -102,6 +102,32 @@ def evaluate_nurbs_symbolic(degree, knots_sym, cps, var, u_val):
     return float(sp.simplify(val))
 
 
+def sanity_check_evaluator():
+    """Verify the Cox-de Boor evaluator against a known closed-form case before
+    using it to generate fixture reference values. If this fires, the corpus
+    is suspect — fix the evaluator before regenerating fixtures."""
+    u = sp.symbols("u", real=True)
+    # Single-piece quadratic: knots [0,0,0,1,1,1], cps [0,0,1] → polynomial u^2.
+    # Eval at u=0.5 should give 0.25.
+    knots = [sp.Rational(0), sp.Rational(0), sp.Rational(0),
+             sp.Rational(1), sp.Rational(1), sp.Rational(1)]
+    cps = [0.0, 0.0, 1.0]
+    val = evaluate_nurbs_symbolic(2, knots, cps, u, 0.5)
+    expected = 0.25  # 0.5^2 = 0.25
+    assert abs(val - expected) < 1e-12, (
+        f"Cox-de Boor evaluator failed sanity check: u=0.5 of u^2 returned {val}, expected {expected}"
+    )
+
+    # Linear: knots [0,0,1,1], cps [0,1] → polynomial u.
+    knots_lin = [sp.Rational(0), sp.Rational(0), sp.Rational(1), sp.Rational(1)]
+    cps_lin = [0.0, 1.0]
+    val_lin = evaluate_nurbs_symbolic(1, knots_lin, cps_lin, u, 1.0 / 3.0)
+    expected_lin = 1.0 / 3.0
+    assert abs(val_lin - expected_lin) < 1e-12, (
+        f"Cox-de Boor evaluator failed sanity check: u=1/3 of u returned {val_lin}, expected {expected_lin}"
+    )
+
+
 def multiply_fixture_with_interior_knot():
     """Multiply curves where one has an interior knot. Reference values via
     Cox–de Boor evaluation in sympy (so this test catches real bugs in our
@@ -244,6 +270,7 @@ def convolve_fixture_smooth_zv_x_linear():
 
 
 def main():
+    sanity_check_evaluator()
     fixtures = [
         multiply_fixture_linear_x_linear(),
         multiply_fixture_quadratic_x_linear(),

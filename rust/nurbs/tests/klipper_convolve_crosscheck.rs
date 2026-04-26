@@ -14,39 +14,6 @@ use std::path::PathBuf;
 
 const TOLERANCE: f64 = 1e-4; // numerical-quadrature reference, not exact
 
-/// Convert absolute-monomial coefficients (Σ `a_n` * u^n) to Pascal-shifted
-/// coefficients (Σ `c_k` * (u - shift)^k). Mirrors the algebra crate's internal
-/// helper; needed because the JSON stores the kernel in absolute form
-/// (the natural Klipper / `init_smoother` convention) while
-/// `PiecewisePolynomialKernel::single_poly` expects Pascal-shifted-at-`u_start`.
-fn absolute_to_pascal_shift(absolute: &[f64], shift: f64) -> Vec<f64> {
-    let d = absolute.len() - 1;
-    let mut out = vec![0.0; d + 1];
-    let mut shift_pow = vec![1.0; d + 1];
-    for k in 1..=d {
-        shift_pow[k] = shift_pow[k - 1] * shift;
-    }
-    for n in 0..=d {
-        for k in 0..=n {
-            let bin = binomial(n, k) as f64;
-            out[k] += absolute[n] * bin * shift_pow[n - k];
-        }
-    }
-    out
-}
-
-fn binomial(n: usize, k: usize) -> u64 {
-    if k > n {
-        return 0;
-    }
-    let k = k.min(n - k);
-    let mut acc: u64 = 1;
-    for i in 0..k {
-        acc = acc * (n - i) as u64 / (i + 1) as u64;
-    }
-    acc
-}
-
 #[test]
 fn convolve_matches_scipy_reference_for_smooth_zv_kernel() {
     let path: PathBuf = [
@@ -60,7 +27,7 @@ fn convolve_matches_scipy_reference_for_smooth_zv_kernel() {
     let raw = fs::read_to_string(&path).expect("reference file must exist");
     let v: Value = serde_json::from_str(&raw).expect("valid JSON");
 
-    let kernel_coeffs_abs: Vec<f64> = v["kernel_coeffs"]
+    let kernel_coeffs: Vec<f64> = v["kernel_coeffs"]
         .as_array()
         .unwrap()
         .iter()
@@ -82,13 +49,9 @@ fn convolve_matches_scipy_reference_for_smooth_zv_kernel() {
         nurbs::ScalarNurbs::try_new(2, vec![0.0, 0.0, 0.0, t_end, t_end, t_end], bernstein, None)
             .unwrap();
 
-    // Kernel coeffs are absolute monomial around t=0; convert to the
-    // Pascal-shifted basis used by PiecewisePolynomialKernel (shift = u_start = -t_sm/2).
-    let half = t_sm / 2.0;
-    let kernel_coeffs_shifted = absolute_to_pascal_shift(&kernel_coeffs_abs, -half);
-    let kernel = nurbs::algebra::PiecewisePolynomialKernel::single_poly(
-        kernel_coeffs_shifted,
-        (-half, half),
+    let kernel = nurbs::algebra::PiecewisePolynomialKernel::single_poly_from_absolute(
+        kernel_coeffs,
+        (-t_sm / 2.0, t_sm / 2.0),
     );
     let y = nurbs::algebra::convolve(&curve, &kernel).unwrap();
 
