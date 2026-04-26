@@ -7,17 +7,25 @@ use crate::marker::MarkerKind;
 ///
 /// Stored as `[Option<f64>; 26]` for O(1) access and zero allocations. 208 bytes
 /// per `Params`; tokens stream through and don't accumulate.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Params {
     words: [Option<f64>; 26],
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for Params {
+    fn default() -> Self {
+        Self { words: [None; 26] }
+    }
 }
 
 impl Params {
     /// Look up a parameter by its uppercase letter byte.
     /// Returns `None` for non-letter bytes or unset parameters.
     #[must_use]
+    #[allow(clippy::manual_is_ascii_check)]
     pub fn get(&self, letter: u8) -> Option<f64> {
-        if letter.is_ascii_uppercase() {
+        if (b'A'..=b'Z').contains(&letter) {
             self.words[(letter - b'A') as usize]
         } else {
             None
@@ -25,8 +33,9 @@ impl Params {
     }
 
     /// Set a parameter by its uppercase letter byte. No-op for non-letter bytes.
+    #[allow(clippy::manual_is_ascii_check)]
     pub fn set(&mut self, letter: u8, value: f64) {
-        if letter.is_ascii_uppercase() {
+        if (b'A'..=b'Z').contains(&letter) {
             self.words[(letter - b'A') as usize] = Some(value);
         }
     }
@@ -60,12 +69,13 @@ impl Params {
 /// `Marker` carries slicer-dialect-recognized comment markers (layer changes, etc.).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)]
 pub enum Token {
     Command {
         letter: u8,
         major: u32,
         minor: Option<u32>,
-        params: Box<Params>,
+        params: Params,
         line_no: u32,
     },
     Comment {
@@ -100,7 +110,7 @@ mod tests {
             letter: b'G',
             major: 1,
             minor: None,
-            params: Box::new(params),
+            params,
             line_no: 42,
         };
         match t {
