@@ -63,19 +63,22 @@ impl<T: Float> PolynomialKernel<T> {
     }
 }
 
-/// Multiply two scalar NURBS. Result degree = degree(a) + degree(b).
+/// Multiply two scalar NURBS pointwise: `c(u) = a(u) * b(u)`.
+/// Result degree = `degree(a) + degree(b)`.
 ///
-/// Algorithm: deferred to a follow-up spec. See spec §algebra module —
-/// well-trodden (Piegl & Tiller ch. 5) but verbose with non-uniform knots
-/// and weights.
+/// Polynomial inputs only in v1; rational inputs return RationalNotSupported.
 #[cfg(feature = "host")]
 pub fn multiply<T: Float>(
-    _a: &crate::ScalarNurbs<T>,
-    _b: &crate::ScalarNurbs<T>,
+    a: &crate::ScalarNurbs<T>,
+    b: &crate::ScalarNurbs<T>,
 ) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
-    Err(AlgebraError::NotImplemented(
-        "multiply — see Piegl & Tiller ch. 5; lands when needed by Layer 3 pre-bake",
-    ))
+    if a.weights().is_some() || b.weights().is_some() {
+        return Err(AlgebraError::RationalNotSupported {
+            operation: "multiply",
+            workaround: "use polynomial_refit (Layer 3 utility) before calling",
+        });
+    }
+    todo!("multiply: per-piece product implementation")
 }
 
 /// Convolve a NURBS with a polynomial kernel. Result degree = degree(curve) + `kernel.degree()`.
@@ -147,14 +150,15 @@ mod tests {
     }
 
     #[test]
-    fn multiply_returns_not_implemented_error() {
-        let a =
-            crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
+    fn multiply_rejects_rational_input() {
+        let a = crate::ScalarNurbs::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], Some(vec![1.0, 1.0]),
+        ).unwrap();
         let b = a.clone();
         let result = multiply(&a, &b);
         assert!(matches!(
             result,
-            Err(crate::AlgebraError::NotImplemented(_))
+            Err(crate::AlgebraError::RationalNotSupported { operation: "multiply", .. })
         ));
     }
 
