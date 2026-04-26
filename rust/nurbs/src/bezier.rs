@@ -154,6 +154,50 @@ pub fn extract_bezier_pieces<T: Float>(curve: &ScalarNurbs<T>) -> Vec<BezierPiec
     pieces
 }
 
+/// Recompose contiguous Bézier pieces into a single NURBS. Inverse of
+/// `extract_bezier_pieces` (modulo knot-multiplicity, which is `degree` at
+/// each interior breakpoint = piecewise-Bézier representation).
+///
+/// Panics if pieces are non-contiguous or have inconsistent degrees.
+pub fn bezier_pieces_to_nurbs<T: Float>(pieces: &[BezierPiece<T>]) -> ScalarNurbs<T> {
+    assert!(!pieces.is_empty(), "bezier_pieces_to_nurbs: empty input");
+    let p = pieces[0].degree();
+    for w in pieces.windows(2) {
+        assert!(w[0].u_end == w[1].u_start, "non-contiguous Bezier pieces");
+        assert!(w[1].degree() == p, "inconsistent degrees");
+    }
+
+    // Build knot vector: u_start[0] repeated p+1 times, then each interior
+    // boundary repeated p times, then u_end[last] repeated p+1 times.
+    let mut knots = Vec::with_capacity((pieces.len() + 1) * p + 2);
+    for _ in 0..=p {
+        knots.push(pieces[0].u_start);
+    }
+    for piece in &pieces[..pieces.len() - 1] {
+        for _ in 0..p {
+            knots.push(piece.u_end);
+        }
+    }
+    for _ in 0..=p {
+        knots.push(pieces[pieces.len() - 1].u_end);
+    }
+
+    // Build CPs: each piece's Bernstein CPs, with shared boundaries.
+    let mut cps: Vec<T> = Vec::with_capacity(pieces.len() * p + 1);
+    for (i, piece) in pieces.iter().enumerate() {
+        let bernstein = piece.to_bernstein();
+        if i == 0 {
+            cps.extend_from_slice(&bernstein);
+        } else {
+            // Skip first CP (shared boundary with previous piece's last).
+            cps.extend_from_slice(&bernstein[1..]);
+        }
+    }
+
+    ScalarNurbs::try_new(p as u8, knots, cps, None)
+        .expect("bezier_pieces_to_nurbs: invariants should hold")
+}
+
 /// Binomial coefficient C(n, k). Integer-valued; safe for k, n ≤ 30 or so.
 /// `pub(crate)` so `algebra.rs` can reuse it (DRY — defined here, used in convolve too).
 pub(crate) fn binomial(n: usize, k: usize) -> u64 {
@@ -309,6 +353,26 @@ mod tests {
             let exp = crate::eval::eval(&curve.as_view(), u);
             let got = pieces[1].evaluate(u);
             assert!((exp - got).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn bezier_pieces_to_nurbs_round_trips_extraction() {
+        let original = ScalarNurbs::<f64>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 3.0],
+            None,
+        ).unwrap();
+
+        let pieces = extract_bezier_pieces(&original);
+        let recomposed = bezier_pieces_to_nurbs(&pieces);
+
+        // Eval-equivalence at sample points (knot vector may differ in multiplicity).
+        for u in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+            let exp = crate::eval::eval(&original.as_view(), u);
+            let got = crate::eval::eval(&recomposed.as_view(), u);
+            assert!((exp - got).abs() < 1e-10, "u={u}: exp={exp}, got={got}");
         }
     }
 }
