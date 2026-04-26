@@ -37,7 +37,7 @@ pub struct InternalDetails {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InternalKind {
     NonMonotoneKnotVector,
-    NaNDetected,
+    NaNDetected { stage: &'static str },
     KnotInsertionFailed,
     BasisMatrixSingular,
     DegreeOutOfBounds,
