@@ -3587,6 +3587,11 @@ git commit -am "nurbs: add algebra::multiply and convolve interface stubs (algor
 - Create: `rust/nurbs-c-api/src/lib.rs`
 - Create: `rust/nurbs-c-api/cbindgen.toml`
 - Create: `rust/nurbs-c-api/include/.gitkeep`
+- Modify: `rust/Cargo.toml` (re-add `"nurbs-c-api"` to workspace `members`)
+
+- [ ] **Step 0: Re-add `nurbs-c-api` to the workspace members**
+
+In Task 2 the workspace `members` list was trimmed to `["nurbs"]` because `nurbs-c-api` didn't exist yet. Now it does. Edit `rust/Cargo.toml` so that `members = ["nurbs", "nurbs-c-api"]`. Without this, workspace-wide commands (`cargo build --workspace`, `cargo test --workspace`) silently skip the c-api crate.
 
 - [ ] **Step 1: Create `rust/nurbs-c-api/Cargo.toml`**
 
