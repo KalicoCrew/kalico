@@ -9,7 +9,6 @@ pub mod marker;
 pub mod token;
 
 pub use error::ParseError;
+pub use lexer::lex;
 pub use marker::MarkerKind;
 pub use token::{Params, Token};
-
-// TODO(task 4): lexer::lex function body—streaming lexer over bytes, emitting Token or ParseError
