@@ -5,6 +5,8 @@
 use crate::{GridConfig, TopProfile, Limits};
 use nurbs::VectorNurbs;
 
+pub mod path;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ScheduleError {
     #[error("invalid endpoint velocity: {0}")]
