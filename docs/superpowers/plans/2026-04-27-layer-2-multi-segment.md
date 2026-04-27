@@ -14,7 +14,7 @@
 
 ## Pre-Flight
 
-Before Task 1: read the spec end-to-end. Particularly:
+Before Task 0: read the spec end-to-end. Particularly:
 - §2.2 junction velocity formula (in particular the half-angle-identity numerical-safety note for the JD branch)
 - §2.5 adaptive-N policy
 - §3.2 public API surface (every type listed there must end up in `multi/mod.rs`)
@@ -22,13 +22,118 @@ Before Task 1: read the spec end-to-end. Particularly:
 - §7 risks (read all of these — implementation may surface edge cases the tests don't cover)
 - The "Post-review revisions" sections at the end — they record bugs we already fixed in earlier drafts; don't re-introduce them
 
-Verify the workspace builds clean before starting:
+**Hard prerequisites (per review-1 of this plan):**
+
+1. **Step 4 / Step 9 must be fully committed before starting Task 7.** Task 7 modifies `topp::mod::schedule_segment`'s public signature; the parallel Step-4 agent has been actively committing to `topp/mod.rs` and `topp/solver.rs`. Pre-flight check:
+   ```bash
+   git status   # rust/temporal/src/topp/* must NOT show as modified
+   git log --oneline -5   # most recent commit on Step 4/9 should be present
+   ```
+   If `topp/mod.rs`, `topp/solver.rs`, or `tests/prototype.rs` shows uncommitted, stop and coordinate with the Step-4-agent session first. Optionally, run this plan in a worktree:
+   ```bash
+   git worktree add ../kalico-step-4.5 sota-motion
+   cd ../kalico-step-4.5
+   ```
+2. **Verify the workspace builds clean before starting:**
+   ```bash
+   cd rust && cargo test -p temporal --release 2>&1 | tail -10
+   ```
+   Expected: all tests pass. If any fail, do not start — the failure is likely an in-flight test from Step 4/9 that needs to be resolved first.
+
+---
+
+### Task 0: NURBS API audit + `Limits` hardening (added per review-1)
+
+**Files:**
+- Read-only: `rust/nurbs/src/lib.rs`, `rust/nurbs/src/eval.rs`, `rust/nurbs/src/vector.rs`
+- Modify: `rust/temporal/src/limits.rs`
+
+**Why:** review-1 of this plan caught that the `derivative_at` API the original Task 3 assumed does not exist; the actual surface is `nurbs::eval::vector_derivative` (degree-lowering) + `nurbs::eval::vector_eval` (point evaluation on a view) + `nurbs::eval::curvature_from_derivs` (precomputed-derivative curvature). Lock the API choice up-front so Task 3 doesn't get blocked.
+
+Also: `Limits` should be `#[non_exhaustive]` so Step 9 can additively add a shaper-aware acceleration constraint without breaking Step 4.5 callers (spec §7.3).
+
+- [ ] **Step 1: Audit nurbs::eval public surface**
 
 ```bash
-cd rust && cargo test -p temporal --release
+grep -nE "^pub fn" rust/nurbs/src/eval.rs
 ```
 
-Expected: all tests pass (one test in `tests/prototype.rs` may currently fail if the Step-4 agent has uncommitted in-flight work; check `git status` and stash any uncommitted prototype.rs work first).
+Expected to find at least:
+- `pub fn vector_eval<T, V: VectorNurbsView<T, N>, const N>(curve: &V, u: T) -> [T; N]` (point evaluation on a view)
+- `pub fn vector_derivative<T, const N>(curve: &VectorNurbs<T, N>) -> VectorNurbs<T, N>` (degree-lowering — returns a new owned NURBS of degree p-1)
+- `pub fn curvature_from_derivs<T, const N>(first_deriv: &VectorNurbs, second_deriv: &VectorNurbs, u: T) -> T` (κ from precomputed derivatives)
+
+If the API is materially different, **stop and update Task 3 of this plan** rather than guessing. Don't proceed until the API contract is locked.
+
+- [ ] **Step 2: Make `Limits` `#[non_exhaustive]` + verify it derives `Copy`**
+
+In `rust/temporal/src/limits.rs`:
+
+```rust
+//! Per-axis kinematic limits and centripetal cap. Pure data.
+//!
+//! Spec §4.4. Per-axis centripetal limits are deferred (§4.4 / §11).
+//! `#[non_exhaustive]` per Step-4.5 spec §7.3: Step 9 will additively add
+//! a shaper-aware acceleration constraint field.
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Per-axis [X, Y, Z] velocity bound, mm/s.
+    pub v_max: [f64; 3],
+    /// Per-axis [X, Y, Z] acceleration bound, mm/s².
+    pub a_max: [f64; 3],
+    /// Per-axis [X, Y, Z] jerk bound, mm/s³.
+    pub j_max: [f64; 3],
+    /// Centripetal-acceleration cap, mm/s² (scalar; per-axis deferred).
+    pub a_centripetal_max: f64,
+}
+```
+
+Add `#[non_exhaustive]` if not already present. Confirm `derive(Copy)` is present (it should be — current code already has it).
+
+**Internal-construction note:** `#[non_exhaustive]` forbids constructing `Limits { v_max: ..., ... }` from outside the `temporal` crate. All external callers must use a constructor or the `..` rest-syntax. Add a constructor for outside use:
+
+```rust
+impl Limits {
+    /// Construct a `Limits` from all required fields. The struct is
+    /// `#[non_exhaustive]` to allow Step 9 additive extension; external
+    /// callers must use this constructor (or `..` rest-syntax inside the
+    /// crate).
+    #[must_use]
+    pub fn new(
+        v_max: [f64; 3],
+        a_max: [f64; 3],
+        j_max: [f64; 3],
+        a_centripetal_max: f64,
+    ) -> Self {
+        Self { v_max, a_max, j_max, a_centripetal_max }
+    }
+}
+```
+
+- [ ] **Step 3: Verify all existing internal `Limits` literals still work**
+
+```bash
+cd rust && cargo build -p temporal --release 2>&1 | tail -3
+```
+
+Expected: clean build. `#[non_exhaustive]` permits literal construction inside the defining crate.
+
+- [ ] **Step 4: Run existing tests**
+
+```bash
+cd rust && cargo test -p temporal --release 2>&1 | grep -E "test result|FAILED" | tail -5
+```
+
+Expected: all previously-passing tests still pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add rust/temporal/src/limits.rs
+git commit -m "temporal/limits: #[non_exhaustive] + new() constructor (spec §7.3)"
+```
 
 ---
 
@@ -571,71 +676,61 @@ cd rust && cargo test -p temporal --release multi::junction::tests::jd_90 2>&1 |
 
 Expected: PASS within ε.
 
-- [ ] **Step 5: Wire Layer-0 NURBS tangent + curvature evaluation**
+- [ ] **Step 5: Wire Layer-0 NURBS tangent + curvature evaluation (using audited nurbs::eval API)**
 
-Replace the four `todo!()` stubs with real Layer-0 calls. The nurbs crate has tangent and second-derivative evaluation; combine them per the standard formulas:
+Per Task 0's audit: actual API is `nurbs::eval::vector_derivative` (degree-lowering — returns a new NURBS of degree p-1) + `nurbs::eval::vector_eval` (point evaluation on a view) + `nurbs::eval::curvature_from_derivs`. Replace the four `todo!()` stubs:
 
 ```rust
+use nurbs::eval::{vector_derivative, vector_eval, curvature_from_derivs};
+
 fn forward_unit_tangent_at_end(curve: &VectorNurbs<f64, 3>) -> [f64; 3] {
     let u_end = curve.knots()[curve.knots().len() - 1];
-    let d1 = curve.derivative_at(u_end, 1);  // first derivative
-    normalize_3(d1)
+    let d1 = vector_derivative(curve);
+    let t = vector_eval(&d1.as_view(), u_end);
+    normalize_3(t)
 }
 
 fn forward_unit_tangent_at_start(curve: &VectorNurbs<f64, 3>) -> [f64; 3] {
     let u_start = curve.knots()[0];
-    let d1 = curve.derivative_at(u_start, 1);
-    normalize_3(d1)
+    let d1 = vector_derivative(curve);
+    let t = vector_eval(&d1.as_view(), u_start);
+    normalize_3(t)
 }
 
 fn curvature_at_end(curve: &VectorNurbs<f64, 3>) -> f64 {
+    if curve.degree() < 2 {
+        return 0.0;  // degree-1 NURBS (G1 segment) has zero curvature.
+    }
     let u_end = curve.knots()[curve.knots().len() - 1];
-    curvature_at(curve, u_end)
+    let d1 = vector_derivative(curve);
+    let d2 = vector_derivative(&d1);
+    curvature_from_derivs(&d1, &d2, u_end)
 }
 
 fn curvature_at_start(curve: &VectorNurbs<f64, 3>) -> f64 {
-    let u_start = curve.knots()[0];
-    curvature_at(curve, u_start)
-}
-
-/// Curvature `κ = |C' × C''| / |C'|³` at parameter u.
-fn curvature_at(curve: &VectorNurbs<f64, 3>, u: f64) -> f64 {
-    let d1 = curve.derivative_at(u, 1);
-    let d2 = curve.derivative_at(u, 2);
-    let cross = cross_3(d1, d2);
-    let norm_d1 = mag_3(d1);
-    if norm_d1 < 1e-12 {
-        return 0.0;  // degenerate — shouldn't happen for well-formed NURBS
+    if curve.degree() < 2 {
+        return 0.0;
     }
-    mag_3(cross) / norm_d1.powi(3)
+    let u_start = curve.knots()[0];
+    let d1 = vector_derivative(curve);
+    let d2 = vector_derivative(&d1);
+    curvature_from_derivs(&d1, &d2, u_start)
 }
 
 #[inline]
 fn normalize_3(v: [f64; 3]) -> [f64; 3] {
-    let m = mag_3(v);
+    let m = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
     if m < 1e-12 {
         [0.0; 3]
     } else {
         [v[0]/m, v[1]/m, v[2]/m]
     }
 }
-
-#[inline]
-fn mag_3(v: [f64; 3]) -> f64 {
-    (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt()
-}
-
-#[inline]
-fn cross_3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1]*b[2] - a[2]*b[1],
-        a[2]*b[0] - a[0]*b[2],
-        a[0]*b[1] - a[1]*b[0],
-    ]
-}
 ```
 
-**Note:** the exact `derivative_at` API may differ; check `rust/nurbs/src/lib.rs` and adapt. If only `evaluate` exists, derive via finite differences as a fallback (less precise but correct).
+**Implementation efficiency note:** computing `d1` and `d2` per-junction is O(p) work each via the degree-lowering algorithm — fine for the ~1 junction-velocity-call-per-segment pattern. A future optimization could cache `(d1, d2)` per segment in `SegmentInput`, but unnecessary for Step 4.5 prototype.
+
+**Degree-1 special case:** G1 segments have zero curvature by definition. The `degree() < 2` guard avoids calling `vector_derivative` on a degree-0 result (which would have no derivative). For G1↔G1 junctions both sides report κ=0, the JD sharp-corner sub-case fires correctly.
 
 - [ ] **Step 6: Add end-to-end test using two G1 segments**
 
@@ -872,91 +967,123 @@ git commit -m "temporal/multi/joining: reverse sweep (spec §2.3)"
 
 **Spec sections:** §2.3 (convergence loop), §6.5 (acceptance ≤3 sweeps for normal fixtures, ≤5 for star).
 
-- [ ] **Step 1: Add the convergence loop**
+- [ ] **Step 1: Add the convergence loop with in-loop re-solves (corrected per review-1)**
+
+The convergence loop **must invoke `fan_out_solves` between sweeps**, not just at the end. Spec §2.3 says: "if `v_start_proposed[k]` is higher than the SOCP can absorb given the desired `v_end`, mark the segment dirty and recompute via `schedule_segment`." Original draft of this task only ran sweeps without re-solves, which would converge on stale velocity caps + leave profiles inconsistent with the final boundary velocities (review-1 finding F8 / Codex finding I).
 
 ```rust
-use crate::multi::JoiningStatus;
+use crate::multi::{BatchError, JoiningStatus, SegmentInput};
+use crate::multi::parallel::fan_out_solves;
+use crate::GridConfig;
 
-/// Hard cap on joining sweeps (forward+reverse pair = one sweep). Per spec §2.3
-/// + §6.5: typical convergence is 1–3 sweeps; cap at 10 to detect bugs.
+/// Hard cap on joining sweeps. Per spec §2.3 + §6.5: typical convergence is
+/// 1–3 sweeps; cap at 10 to detect bugs.
 const MAX_SWEEPS: u32 = 10;
 
 pub(crate) fn join_until_converged(
+    inputs: &[SegmentInput<'_>],
+    grids: &[GridConfig],
     states: &mut [SegmentState],
     junctions: &[JunctionResult],
-) -> (u32, JoiningStatus) {
+    n_threads: usize,
+) -> Result<(u32, JoiningStatus), BatchError> {
     for sweep in 1..=MAX_SWEEPS {
         let f_dirty = forward_sweep(states, junctions);
         let r_dirty = reverse_sweep(states, junctions);
         if f_dirty == 0 && r_dirty == 0 {
-            return (sweep, JoiningStatus::Converged);
+            // Velocities stable AND no dirty segments need re-solving — done.
+            // (fan_out_solves clears `dirty` on success, so any `dirty == true`
+            // remaining after the previous iteration's fan-out means a solve
+            // failed; that should already be a returned error.)
+            if states.iter().all(|s| !s.dirty) {
+                return Ok((sweep, JoiningStatus::Converged));
+            }
+            // Else: re-solve the dirty stragglers and check again.
         }
+        fan_out_solves(inputs, states, grids, n_threads)?;
     }
     let last_dirty = states.iter().filter(|s| s.dirty).count();
-    (MAX_SWEEPS, JoiningStatus::CappedAtMaxSweeps { last_dirty_count: last_dirty })
+    Ok((MAX_SWEEPS, JoiningStatus::CappedAtMaxSweeps { last_dirty_count: last_dirty }))
 }
 ```
 
-- [ ] **Step 2: Add test for converging-in-one-sweep**
+**Why the re-solve goes inside the loop:** when forward/reverse sweep changes `v_start[k]` or `v_end[k]`, segment k's existing `profile` is stale relative to the new boundary conditions. The next sweep iteration would propagate from `state[k].v_end` — but that field reflects the *previously-solved* SOCP output. To get a true convergence, we must re-solve stale segments before re-checking propagation. (For the simple case where the initial junction-velocity seeds are already feasible everywhere, the loop terminates in 1 iteration with no re-solves — same outcome as the original buggy version, but correctness preserved on the harder cases.)
+
+**Note on `fan_out_solves` dirty-clearing semantics:** Task 8 must clear `dirty` only on actual solver-success (`SolverStatus::Solved` or `SolvedInexact`), not on `MaxIter` / `Infeasible` / `DivergedSlp`. Codex review-1 found that returning `Ok(profile)` from `schedule_segment` doesn't imply the profile is feasible — non-success statuses still construct a `TopProfile`. Task 8 implementation must inspect `profile.status` and propagate failures.
+
+- [ ] **Step 2: Add test — converges-in-one-sweep on consistent input + signature change**
 
 ```rust
 #[test]
 fn converges_in_one_sweep_on_already_consistent() {
+    // Stub test — full plan_batch test in Task 9. Direct join_until_converged
+    // requires SegmentInput + GridConfig setup, which is integration-test scope.
+    // Unit-test path: assert forward_sweep + reverse_sweep both no-op on a
+    // pre-balanced state.
     let mut states = vec![
         make_state(0.0, 150.0),
         make_state(150.0, 200.0),
     ];
     let junctions = vec![make_junction(150.0)];
-    let (sweeps, status) = join_until_converged(&mut states, &junctions);
-    assert_eq!(sweeps, 1);
-    assert!(matches!(status, JoiningStatus::Converged));
+    let f_dirty = forward_sweep(&mut states, &junctions);
+    let r_dirty = reverse_sweep(&mut states, &junctions);
+    assert_eq!(f_dirty, 0);
+    assert_eq!(r_dirty, 0);
+    // join_until_converged would return Converged in one sweep with no re-solves.
 }
 ```
+
+(The full join_until_converged integration test moves to Task 9; this unit test only exercises the sweep helpers, which is what `joining.rs` exposes for unit-testing.)
 
 - [ ] **Step 3: Run**
 
 ```bash
-cd rust && cargo test -p temporal --release multi::joining::tests::converges 2>&1 | tail -5
+cd rust && cargo test -p temporal --release multi::joining::tests 2>&1 | tail -5
 ```
 
-Expected: PASS.
+Expected: 3 passed (forward_propagates, reverse_propagates, converges_in_one_sweep_on_already_consistent).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add rust/temporal/src/multi/joining.rs
-git commit -m "temporal/multi/joining: convergence loop with cap (spec §2.3, §6.5)"
+git commit -m "temporal/multi/joining: convergence loop with in-loop re-solve (spec §2.3, §6.5; review-1 fix)"
 ```
 
 ---
 
-### Task 7: Adaptive-tolerance fallback API on `schedule_segment`
+### Task 7: Adaptive-tolerance fallback API — backward-compatible wrapper (revised per review-1)
 
 **Files:**
-- Modify: `rust/temporal/src/topp/mod.rs` — add `ToleranceMode` parameter
-- Modify: `rust/temporal/src/topp/solver.rs` — accept tolerance arg
+- Modify: `rust/temporal/src/topp/mod.rs` — add `ToleranceMode` enum + `schedule_segment_with_tolerance` wrapper
+- Modify: `rust/temporal/src/topp/solver.rs` — plumb `tol` through `slp_solve_with_axis_jerk` (the actual entry called by `schedule_segment`) AND every Clarabel `DefaultSettings` construction site
 - Modify: `rust/temporal/src/lib.rs` — re-export `ToleranceMode`
 
-**Spec sections:** §2.1 (option A); Codex review-2 fallback recommendation in spec post-review section + `docs/research/pi5-socp-throughput-investigation.md` "Recommendation for Step 4.5" item 2.
+**Spec sections:** §2.1 (option A); the Pi 5 throughput investigation `Recommendation for Step 4.5` item 2 + Finding 2 SAFETY UPDATE.
+
+**Hard prerequisite:** Step 4 / Step 9 fully committed before starting this task. See Pre-Flight #1.
 
 **Why this isn't optional:** without it, `plan_batch` either (a) uses default 1e-8 tolerance everywhere and burns ~10× the planning latency on the regime where 1e-5 is safe, or (b) uses 1e-5 unconditionally and breaks fixture 4 (G5 cubic with non-zero endpoint κ). Adaptive fallback gets us the 11×-on-bench speedup on the convergent regime + correctness on the fragile regime.
 
+**Backward-compatibility approach** (per Codex review-1): rather than mutate the existing `schedule_segment` signature, add a new `schedule_segment_with_tolerance(...)` that takes a `ToleranceMode`, and have `schedule_segment(...)` delegate with `ToleranceMode::Tight` (preserving existing behavior). This avoids touching every existing test caller and reduces merge-conflict risk with the parallel Step 4/9 work.
+
 - [ ] **Step 1: Add `ToleranceMode` enum to `topp::mod`**
 
-In `rust/temporal/src/topp/mod.rs`:
+In `rust/temporal/src/topp/mod.rs`, near the top:
 
 ```rust
-/// Solver tolerance strategy. Per spec §2.1 + Pi 5 throughput investigation.
+/// Solver tolerance strategy. Per Pi 5 throughput investigation Finding 2 +
+/// Step-4.5 spec §2.1 (Codex review-1 corrected version).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToleranceMode {
     /// Default Clarabel tolerances (1e-8). Always safe, slowest.
     Tight,
     /// Loosened tolerances (1e-5). ~11× faster on convergent geometry.
-    /// May trigger DivergedSlp on fragile geometry (G5 cubic with endpoint κ etc).
+    /// May trigger DivergedSlp on fragile geometry (G5 cubic with endpoint κ).
     Fast,
-    /// Try `Fast` first; on any non-success status, fall back to `Tight` and re-solve.
-    /// **Default**: per Codex review-2 broadened fallback trigger.
+    /// Try `Fast` first; on any non-success status, fall back to `Tight`.
+    /// **Default for `schedule_segment_with_tolerance`.**
     Auto,
 }
 
@@ -967,12 +1094,25 @@ impl Default for ToleranceMode {
 }
 ```
 
-- [ ] **Step 2: Modify `schedule_segment` to accept `ToleranceMode`**
+- [ ] **Step 2: Add `schedule_segment_with_tolerance` wrapper; existing `schedule_segment` delegates with Tight**
 
-Change the signature and routing:
+Keep the existing 5-arg `schedule_segment(curve, limits, grid, v_start, v_end)` signature unchanged. Refactor its body to call the new 6-arg form:
 
 ```rust
+/// Backward-compatible: equivalent to
+/// `schedule_segment_with_tolerance(..., ToleranceMode::Tight)`.
 pub fn schedule_segment(
+    curve: &VectorNurbs<f64, 3>,
+    limits: &Limits,
+    grid: &GridConfig,
+    v_start: f64,
+    v_end: f64,
+) -> Result<TopProfile, ScheduleError> {
+    schedule_segment_with_tolerance(curve, limits, grid, v_start, v_end, ToleranceMode::Tight)
+}
+
+/// New entry point with adaptive-tolerance support. Per Step-4.5 spec §2.1.
+pub fn schedule_segment_with_tolerance(
     curve: &VectorNurbs<f64, 3>,
     limits: &Limits,
     grid: &GridConfig,
@@ -980,57 +1120,94 @@ pub fn schedule_segment(
     v_end: f64,
     tolerance: ToleranceMode,
 ) -> Result<TopProfile, ScheduleError> {
-    // ... existing setup-time validation ...
+    // ... existing setup-time validation: NaN/negative endpoint velocities,
+    //     unsupported grid scheme — copy from current schedule_segment ...
 
-    // Stage 3 (modified): solver with tolerance routing.
+    // Stage 1-2 unchanged: arclength grid + constraint bundle.
+    let arc_grid = path::sample_arclength_grid(curve, grid.n)
+        .map_err(|e| ScheduleError::PathParam(format!("{e}")))?;
+    let bundle = match build(&arc_grid, limits, EndpointVelocities { v_start, v_end }) {
+        BuildOutcome::Ok(b) => b,
+        BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
+            return Ok(boundary_infeasible_profile(
+                &arc_grid, *grid, crate::BoundarySide::Start, mvc_b, 0,
+            ));
+        }
+        BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc { mvc_b }) => {
+            let last = arc_grid.s.len() - 1;
+            return Ok(boundary_infeasible_profile(
+                &arc_grid, *grid, crate::BoundarySide::End, mvc_b, last,
+            ));
+        }
+    };
+
+    // Stage 3 (modified): adaptive-tolerance routing through slp_solve_with_axis_jerk.
     let (solver_result, slp_outcome) = match tolerance {
-        ToleranceMode::Tight => solver::slp_solve(&bundle, /* tol = */ 1e-8)
+        ToleranceMode::Tight => solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-8)
             .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?,
-        ToleranceMode::Fast => solver::slp_solve(&bundle, /* tol = */ 1e-5)
+        ToleranceMode::Fast => solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
             .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?,
         ToleranceMode::Auto => {
-            let (fast_result, fast_outcome) = solver::slp_solve(&bundle, 1e-5)
+            let (fast_result, fast_outcome) =
+                solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
                 .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?;
-            if is_success(&fast_result, &fast_outcome) {
+            if solver_outcome_is_success(&fast_result, &fast_outcome) {
                 (fast_result, fast_outcome)
             } else {
-                // Fallback: re-solve at tight tolerance.
-                solver::slp_solve(&bundle, 1e-8)
+                // Fallback: re-solve at tight tolerance. Codex review-1: trigger
+                // on ANY non-success status, not just DivergedSlp.
+                solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-8)
                     .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?
             }
         }
     };
 
-    // ... rest of pipeline unchanged ...
+    // Stage 4-5 unchanged: verify + assemble.
+    let verify_report = verify::check(&arc_grid, &solver_result, limits);
+    Ok(output::assemble(&arc_grid, &solver_result, &verify_report, *grid, slp_outcome))
 }
 
-fn is_success(result: &solver::SolverResult, outcome: &solver::SlpOutcome) -> bool {
-    use crate::SolveStatus;
-    use solver::SlpOutcome;
+/// Per Codex review-1: `is_success` check uses solver-internal `SolverStatus`
+/// (and `SlpOutcome`), not the public `SolveStatus`. The two differ — public
+/// `SolveStatus` is set later by `output::assemble`.
+fn solver_outcome_is_success(
+    result: &solver::SolverResult,
+    outcome: &solver::SlpOutcome,
+) -> bool {
     let status_ok = matches!(
         result.status,
-        SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+        solver::SolverStatus::Solved | solver::SolverStatus::SolvedInexact { .. }
     );
-    let outcome_ok = matches!(outcome, SlpOutcome::Converged { .. });
+    // Per Codex review-1: any non-success outcome triggers fallback. Update this
+    // match if `SlpOutcome` adds new success variants.
+    let outcome_ok = matches!(outcome, solver::SlpOutcome::Converged { .. });
     status_ok && outcome_ok
 }
 ```
 
-- [ ] **Step 3: Modify `solver::slp_solve` to accept tolerance**
+**Important:** the `solver::SolverStatus` type is `pub(crate)` per `rust/temporal/src/topp/solver.rs:161`, distinct from `crate::SolveStatus` (the public-API enum at `lib.rs:71`). The `is_success` helper must inspect the internal type, not the public one. Codex review-1 caught this — the original draft of this task referenced the wrong type.
 
-In `rust/temporal/src/topp/solver.rs`, change the signature:
+- [ ] **Step 3: Plumb `tol` through `slp_solve_with_axis_jerk` AND every Clarabel construction site**
 
+In `rust/temporal/src/topp/solver.rs`, change the signature of `slp_solve_with_axis_jerk` to accept `tol: f64`, and pass it through to:
+
+1. The inner `slp_solve` (path-jerk SLP loop) — also extend its signature with `tol`.
+2. `solve_with_cuts` and `solve_with_cuts_and_trust_region` — these construct `DefaultSettings` and need the tolerance.
+3. ANY OTHER Clarabel construction site — search:
+   ```bash
+   grep -n "DefaultSettings::<f64>" rust/temporal/src/topp/solver.rs
+   ```
+   Each match needs the tolerance threaded through.
+
+For each `DefaultSettings` construction, replace:
 ```rust
-pub(crate) fn slp_solve(
-    bundle: &ConstraintBundle,
-    tol: f64,
-) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
-    // ... existing implementation, but pass `tol` into the inner solve ...
-}
+let settings = DefaultSettings::<f64> {
+    verbose: false,
+    max_iter: 1000,
+    ..Default::default()
+};
 ```
-
-And in `solve_with_cuts` (and any other Clarabel construction sites), use the `tol` value:
-
+with:
 ```rust
 let settings = DefaultSettings::<f64> {
     verbose: false,
@@ -1042,59 +1219,103 @@ let settings = DefaultSettings::<f64> {
 };
 ```
 
-(Plumb `tol` through `solve_with_cuts` and any sub-helpers.)
+**Codex review-1 finding F2 / kalico-plan-reviewer #2:** the original draft of this task only mentioned plumbing through `solve_with_cuts`, missing the per-axis SLP path's Clarabel construction site. ALL sites must be plumbed or `Auto` mode silently uses 1e-8 in some code paths.
 
 - [ ] **Step 4: Re-export from `lib.rs`**
 
 ```rust
-pub use topp::ToleranceMode;
+pub use topp::{schedule_segment_with_tolerance, ToleranceMode};
 ```
 
-- [ ] **Step 5: Update existing test callers to pass `ToleranceMode::default()` (or `Tight`)**
+- [ ] **Step 5: Update existing tests — NO CHANGES NEEDED**
 
-All existing tests that call `schedule_segment` need a sixth argument. For backward-compatibility intent, pass `ToleranceMode::Tight` to preserve existing behavior:
+The backward-compat shim means existing 5-arg `schedule_segment(...)` callers continue to work unchanged with `ToleranceMode::Tight` semantics. Verify:
 
 ```bash
-grep -n "schedule_segment(" rust/temporal/tests/ rust/temporal/src/ -r
+cd rust && cargo test -p temporal --release 2>&1 | grep -E "test result|FAILED" | tail -5
 ```
 
-For each match, add `ToleranceMode::Tight` as the last argument. Verify tests still pass:
+Expected: same set of tests pass as before (no caller-side updates required).
 
-```bash
-cd rust && cargo test -p temporal --release 2>&1 | grep -E "test result|FAILED"
-```
+- [ ] **Step 6: Add tests for `Auto` mode**
 
-Expected: same number of passes as before.
-
-- [ ] **Step 6: Add test that `Auto` mode succeeds on a fixture-4-style problem**
-
-Add to `rust/temporal/tests/prototype.rs` (or a new test file `tests/adaptive_tolerance.rs`):
+In a new file `rust/temporal/tests/adaptive_tolerance.rs`:
 
 ```rust
+//! Adaptive-tolerance regression tests. Spec §2.1 + Pi 5 investigation Finding 2.
+
+use nurbs::VectorNurbs;
+use temporal::{
+    schedule_segment_with_tolerance, GridConfig, GridScheme, Limits,
+    SolveStatus, ToleranceMode,
+};
+
+fn textbook_limits() -> Limits {
+    Limits::new(
+        [500.0; 3],
+        [5_000.0; 3],
+        [100_000.0; 3],
+        2_500.0,
+    )
+}
+
 #[test]
-fn auto_tolerance_succeeds_on_fixture_4_class() {
-    // Reuse fixture 4's curve (G5 cubic with non-zero endpoint κ).
-    // Without Auto fallback, Fast mode would DivergeSlp.
-    // ... construct fixture 4 ...
-    let result = schedule_segment(&curve, &limits, &grid, v_start, v_end, ToleranceMode::Auto)
-        .expect("Auto should fall back successfully");
-    assert!(matches!(result.status, SolveStatus::Solved | SolveStatus::SolvedInexact { .. }));
+fn auto_succeeds_on_straight_line() {
+    let curve = VectorNurbs::<f64, 3>::try_new(
+        1, vec![0.0, 0.0, 1.0, 1.0],
+        vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]], None,
+    ).unwrap();
+    let grid = GridConfig { scheme: GridScheme::UniformArclength, n: 50 };
+    let profile = schedule_segment_with_tolerance(
+        &curve, &textbook_limits(), &grid, 0.0, 0.0, ToleranceMode::Auto,
+    ).expect("Auto should succeed on straight line");
+    assert!(matches!(
+        profile.status,
+        SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+    ));
+}
+
+#[test]
+fn auto_falls_back_on_fixture_4_class() {
+    // G5-style cubic with non-zero endpoint curvature — the Pi 5 investigation
+    // Finding 2 SAFETY UPDATE failure case at tol=1e-5. Auto must fall back to
+    // 1e-8 silently and succeed.
+    let curve = VectorNurbs::<f64, 3>::try_new(
+        3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 30.0, 0.0],
+            [40.0, 30.0, 0.0],
+            [50.0, 0.0, 0.0],
+        ], None,
+    ).unwrap();
+    let grid = GridConfig { scheme: GridScheme::UniformArclength, n: 100 };
+    // Endpoint velocity at the centripetal cap (use a small fraction; full
+    // setup is fixture-4 territory in tests/prototype.rs).
+    let v_endpoint = 30.0;
+    let profile = schedule_segment_with_tolerance(
+        &curve, &textbook_limits(), &grid, v_endpoint, v_endpoint, ToleranceMode::Auto,
+    ).expect("Auto should fall back on fixture-4-class geometry");
+    assert!(matches!(
+        profile.status,
+        SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+    ));
 }
 ```
 
-- [ ] **Step 7: Run**
+- [ ] **Step 7: Run all tests**
 
 ```bash
-cd rust && cargo test -p temporal --release 2>&1 | grep -E "test result|FAILED"
+cd rust && cargo test -p temporal --release 2>&1 | grep -E "test result|FAILED" | tail -5
 ```
 
-Expected: all tests pass + new auto_tolerance test passes.
+Expected: all previous tests pass + 2 new adaptive_tolerance tests pass.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add rust/temporal/src/topp/mod.rs rust/temporal/src/topp/solver.rs rust/temporal/src/lib.rs rust/temporal/tests/
-git commit -m "temporal/topp: ToleranceMode + Auto fallback (spec §2.1, Codex review-2)"
+git add rust/temporal/src/topp/mod.rs rust/temporal/src/topp/solver.rs rust/temporal/src/lib.rs rust/temporal/tests/adaptive_tolerance.rs
+git commit -m "temporal/topp: ToleranceMode + Auto fallback via wrapper (spec §2.1, review-1)"
 ```
 
 ---
@@ -1106,23 +1327,31 @@ git commit -m "temporal/topp: ToleranceMode + Auto fallback (spec §2.1, Codex r
 
 **Spec sections:** §2.6 + §3.3.
 
-- [ ] **Step 1: Write the parallel-fan-out function**
+- [ ] **Step 1: Write the parallel-fan-out function (scoped-threads only — review-1 dropped the unsafe alternative)**
 
 In `rust/temporal/src/multi/parallel.rs`:
 
 ```rust
-//! 3-thread work-stealing fan-out for re-solving dirty segments. Per spec §2.6.
+//! 3-thread fan-out for re-solving dirty segments. Per spec §2.6.
 
 use crate::multi::joining::SegmentState;
-use crate::multi::SegmentInput;
-use crate::multi::BatchError;
-use crate::topp::{schedule_segment, ToleranceMode};
+use crate::multi::{BatchError, SegmentInput};
+use crate::topp::{schedule_segment_with_tolerance, ToleranceMode, SolveStatus};
 use crate::GridConfig;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::thread;
 
-/// Re-solve all `dirty` segments in parallel across `n_threads` workers.
-/// Updates `states[i].profile` in place; clears `states[i].dirty` on success.
+/// Re-solve all `dirty` segments in parallel across `n_threads` workers using
+/// `std::thread::scope` (no unsafe; works because Rust 1.63+ scoped threads
+/// borrow for the scope lifetime, which encloses the call). MSRV is 1.85.
+///
+/// Per Codex review-1 finding I + kalico-plan-reviewer #8: a profile returned
+/// from `schedule_segment` is `Ok(_)` even when the SOCP returned `MaxIter`,
+/// `Infeasible`, or the SLP outer loop returned `DivergedSlp`. We MUST inspect
+/// the public `SolveStatus` and only clear `dirty` on `Solved` /
+/// `SolvedInexact`. Other statuses leave the segment dirty for the caller to
+/// notice and either re-attempt with looser endpoints or surface as a batch
+/// error.
 pub(crate) fn fan_out_solves(
     inputs: &[SegmentInput<'_>],
     states: &mut [SegmentState],
@@ -1136,99 +1365,63 @@ pub(crate) fn fan_out_solves(
         return Ok(());
     }
 
-    // Shared work queue + result collection. Result is per-index
-    // (idx, Result<TopProfile, BatchError>).
-    type WorkItem = usize;
-    type WorkResult = (usize, Result<crate::topp::TopProfile, BatchError>);
-    let queue = Arc::new(Mutex::new(dirty_indices));
-    let results = Arc::new(Mutex::new(Vec::<WorkResult>::new()));
+    let queue = Mutex::new(dirty_indices);
+    let results: Mutex<Vec<(usize, Result<crate::topp::TopProfile, crate::topp::ScheduleError>)>>
+        = Mutex::new(Vec::new());
 
-    // SAFETY note: inputs / grids are borrowed for the lifetime of plan_batch
-    // and outlive the worker threads (we join before returning).
-    let inputs_ptr = inputs.as_ptr() as usize;
-    let inputs_len = inputs.len();
-    let grids_ptr = grids.as_ptr() as usize;
+    // Snapshot endpoint velocities into thread-shared Vec (avoids passing
+    // &states across the scope boundary).
     let v_starts: Vec<f64> = states.iter().map(|s| s.v_start).collect();
     let v_ends: Vec<f64> = states.iter().map(|s| s.v_end).collect();
 
-    let mut handles = Vec::with_capacity(n_threads);
-    for _ in 0..n_threads {
-        let queue = Arc::clone(&queue);
-        let results = Arc::clone(&results);
-        let v_starts = v_starts.clone();
-        let v_ends = v_ends.clone();
-        handles.push(thread::spawn(move || {
-            // SAFETY: see above note. Reconstruct slices from raw pointers.
-            let inputs: &[SegmentInput<'_>] = unsafe {
-                std::slice::from_raw_parts(inputs_ptr as *const _, inputs_len)
-            };
-            let grids: &[GridConfig] = unsafe {
-                std::slice::from_raw_parts(grids_ptr as *const _, inputs_len)
-            };
-            loop {
-                let idx = {
-                    let mut q = queue.lock().unwrap();
-                    match q.pop() {
+    thread::scope(|s| {
+        for _ in 0..n_threads {
+            s.spawn(|| {
+                loop {
+                    let idx = match queue.lock().unwrap().pop() {
                         Some(i) => i,
                         None => break,
-                    }
-                };
-                let r = schedule_segment(
-                    inputs[idx].curve,
-                    &inputs[idx].limits,
-                    &grids[idx],
-                    v_starts[idx],
-                    v_ends[idx],
-                    ToleranceMode::Auto,
-                ).map_err(|e| BatchError::Segment(idx, e));
-                results.lock().unwrap().push((idx, r));
-            }
-        }));
-    }
-    for h in handles {
-        let _ = h.join();
-    }
+                    };
+                    let r = schedule_segment_with_tolerance(
+                        inputs[idx].curve,
+                        &inputs[idx].limits,
+                        &grids[idx],
+                        v_starts[idx],
+                        v_ends[idx],
+                        ToleranceMode::Auto,
+                    );
+                    results.lock().unwrap().push((idx, r));
+                }
+            });
+        }
+    });
 
-    // Apply results back to states.
-    let results_vec = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
-    for (idx, r) in results_vec {
+    // Apply results. Per Codex review-1: only clear dirty on actual success.
+    for (idx, r) in results.into_inner().unwrap() {
         match r {
             Ok(profile) => {
+                let success = matches!(
+                    profile.status,
+                    SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+                );
                 states[idx].profile = Some(profile);
-                states[idx].dirty = false;
+                if success {
+                    states[idx].dirty = false;
+                }
+                // else: leave dirty=true so join_until_converged knows the segment
+                // didn't actually solve; the convergence loop's MAX_SWEEPS cap
+                // will catch persistent failures.
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(BatchError::Segment(idx, e)),
         }
     }
     Ok(())
 }
 ```
 
-**Note on the unsafe slice reconstruction:** this is the standard "Rust threads can't easily borrow non-static slices" workaround. An alternative is `std::thread::scope` (Rust 1.63+), which is cleaner. Use scoped threads if the workspace's MSRV permits:
+**Lock contention is not a concern at 3 workers** (per Codex review-1 finding C): each worker locks only to pop one index or push one result; SOCP solve dominates wall-clock by orders of magnitude.
 
-```rust
-pub(crate) fn fan_out_solves(...) -> Result<(), BatchError> {
-    // ... dirty_indices setup ...
-    let queue = Mutex::new(dirty_indices);
-    let results = Mutex::new(Vec::new());
-    thread::scope(|s| {
-        for _ in 0..n_threads {
-            s.spawn(|| {
-                loop {
-                    let idx = match queue.lock().unwrap().pop() {
-                        Some(i) => i, None => break,
-                    };
-                    // ... call schedule_segment ...
-                    results.lock().unwrap().push(...);
-                }
-            });
-        }
-    });
-    // ... apply results ...
-}
-```
-
-The MSRV is 1.85 per `rust-toolchain.toml`, so scoped threads are available — **prefer the scoped-threads form** to avoid the unsafe pointer dance.
+**The unsafe raw-pointer alternative shown in earlier draft of this task is REMOVED** per review-1 finding C — it was unsound (`'static` lifetime forgery) and unnecessary given MSRV 1.85.
 
 - [ ] **Step 2: Add a unit test that fan-out completes for 4 dirty segments**
 
@@ -1343,12 +1536,10 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     // Stage 4: initial fan-out (all dirty).
     parallel::fan_out_solves(input.segments, &mut states, &grids, input.worker_threads)?;
 
-    // Stage 5: joining loop.
-    let (sweeps, joining_status) = joining::join_until_converged(&mut states, &junctions);
-    if states.iter().any(|s| s.dirty) {
-        // Re-solve any segments dirty after the final convergence check.
-        parallel::fan_out_solves(input.segments, &mut states, &grids, input.worker_threads)?;
-    }
+    // Stage 5: joining loop with in-loop re-solves (review-1 corrected algorithm).
+    let (sweeps, joining_status) = joining::join_until_converged(
+        input.segments, &grids, &mut states, &junctions, input.worker_threads,
+    )?;
 
     // Stage 6: assemble output.
     let profiles: Vec<_> = states.into_iter()
@@ -1465,6 +1656,28 @@ fn adaptive() -> GridStrategy {
     GridStrategy::Adaptive { min_n: 10, max_n: 200, target_grid_spacing_mm: 0.5 }
 }
 
+/// Spec §6.2 acceptance: every junction's v_end[k] ≈ v_start[k+1] ≈ v_junction
+/// within ε_velocity = 1 mm/s. Reusable across all multi-segment fixtures
+/// (review-1 finding F9: previously only fixture 1 enforced this).
+fn assert_junction_continuity_for_all(
+    output: &temporal::BatchOutput,
+    eps_mm_s: f64,
+) {
+    for (k, junction) in output.junctions.iter().enumerate() {
+        let v_jct = junction.v_junction;
+        let v_end_left = output.profiles[k].samples.last().unwrap().v;
+        let v_start_right = output.profiles[k + 1].samples[0].v;
+        assert!(
+            (v_end_left - v_jct).abs() < eps_mm_s,
+            "junction {k}: v_end_left={v_end_left} vs v_jct={v_jct} (ε={eps_mm_s})",
+        );
+        assert!(
+            (v_start_right - v_jct).abs() < eps_mm_s,
+            "junction {k}: v_start_right={v_start_right} vs v_jct={v_jct} (ε={eps_mm_s})",
+        );
+    }
+}
+
 mod fixture_1_two_g1_sharp_corner {
     use super::*;
 
@@ -1491,13 +1704,9 @@ mod fixture_1_two_g1_sharp_corner {
         assert_eq!(output.profiles.len(), 2);
 
         // Acceptance §6.2: junction continuity. v_end of seg 0 ≈ v_start of seg 1 ≈ v_junction.
+        // Use shared helper (review-1 finding F9).
+        assert_junction_continuity_for_all(&output, 1.0);
         let v_jct = output.junctions[0].v_junction;
-        let v_end_left = output.profiles[0].samples.last().unwrap().v;
-        let v_start_right = output.profiles[1].samples[0].v;
-        assert!((v_end_left - v_jct).abs() < 1.0,
-            "v_end_left {} vs v_jct {}", v_end_left, v_jct);
-        assert!((v_start_right - v_jct).abs() < 1.0,
-            "v_start_right {} vs v_jct {}", v_start_right, v_jct);
 
         // §6.2: sharp-corner cap. Expected ≈ sqrt(2500 · 0.05 · 2.414) ≈ 17.4 mm/s.
         let expected = (2500.0_f64 * 0.05 * 2.414213562).sqrt();
@@ -1575,6 +1784,9 @@ mod fixture_2_g1_to_g5_smooth {
 
         assert!(output.joining_sweeps <= 3);
         assert!(matches!(output.joining_status, JoiningStatus::Converged));
+
+        // §6.2 (review-1 helper): junction continuity.
+        assert_junction_continuity_for_all(&output, 1.0);
     }
 }
 ```
@@ -1708,8 +1920,25 @@ mod fixture_4_per_segment_limits_change {
         assert!(max_a_seg1 <= 2_500.0 * 1.001,
             "seg 1 peak accel {} exceeds reduced a_max 2500", max_a_seg1);
 
-        // §6.4: seg 0/2 may use higher peaks (textbook a_max).
-        // No assertion needed beyond existing per-segment feasibility.
+        // §6.4 (review-1 fix): seg 0 / seg 2 actually reach textbook a_max,
+        // confirming they're using their own (looser) limits, not the reduced
+        // ones from seg 1. If joining incorrectly propagated reduced limits
+        // outside seg 1's range, this would catch it.
+        let max_a_seg0 = output.profiles[0].samples.iter()
+            .map(|s| s.a.abs())
+            .fold(0.0_f64, f64::max);
+        let max_a_seg2 = output.profiles[2].samples.iter()
+            .map(|s| s.a.abs())
+            .fold(0.0_f64, f64::max);
+        // Sanity: seg 0/2 peak accel should be much closer to 5000 (textbook)
+        // than to 2500 (reduced). Allow 5% slack for adaptive-N quantization.
+        assert!(max_a_seg0 > 2_500.0 * 1.5,
+            "seg 0 peak accel {} suggests reduced limits leaked outside seg 1", max_a_seg0);
+        assert!(max_a_seg2 > 2_500.0 * 1.5,
+            "seg 2 peak accel {} suggests reduced limits leaked outside seg 1", max_a_seg2);
+
+        // §6.2 (review-1 helper): junction continuity at both interior junctions.
+        assert_junction_continuity_for_all(&output, 1.0);
     }
 }
 ```
@@ -1773,6 +2002,10 @@ mod fixture_5_star_pattern {
         // §6.5: converges in ≤5 sweeps.
         assert!(output.joining_sweeps <= 5, "joining took {} sweeps", output.joining_sweeps);
         assert!(matches!(output.joining_status, JoiningStatus::Converged));
+
+        // §6.2 (review-1 helper): junction continuity at every junction.
+        // Star pattern has 9 junctions (n_points*2 - 1 segments).
+        assert_junction_continuity_for_all(&output, 1.0);
     }
 }
 ```
@@ -1867,6 +2100,9 @@ mod fixture_6_long_realistic_chain {
         // §6.5: convergence in ≤3 sweeps.
         assert!(output.joining_sweeps <= 3);
 
+        // §6.2 (review-1 helper): junction continuity at every junction.
+        assert_junction_continuity_for_all(&output, 1.0);
+
         // §6.6: performance sanity log (not acceptance). Expect <100ms on Pi 5.
         eprintln!("fixture_6 wall-clock: {:.2} ms (no acceptance threshold)", elapsed_ms);
     }
@@ -1897,12 +2133,16 @@ git commit -m "temporal/tests: fixture 6 — long realistic chain perf sanity (s
 
 **Spec sections:** §5.1 fixture 7, §6.6.5 inter-grid sanity methodology.
 
-- [ ] **Step 1: Add fixture 7 test with explicit MIN_N=10 + 4× resampling**
+- [ ] **Step 1: Add fixture 7 test with full cubic Hermite + per-axis Cartesian checks**
 
 ```rust
 mod fixture_7_curvature_spike_intergrid_sanity {
     use super::*;
-    use temporal::{schedule_segment, GridConfig, GridScheme, ToleranceMode};
+    use nurbs::eval::{vector_derivative, vector_eval, curvature_from_derivs};
+    use temporal::{
+        schedule_segment_with_tolerance, GridConfig, GridScheme, Limits, ToleranceMode,
+    };
+    use temporal::topp::GridSample;
 
     #[test]
     fn fixture_7() {
@@ -1923,30 +2163,110 @@ mod fixture_7_curvature_spike_intergrid_sanity {
             scheme: GridScheme::UniformArclength,
             n: 10,
         };
-        let profile = schedule_segment(&curve, &limits, &grid, 0.0, 0.0, ToleranceMode::Auto)
-            .expect("schedule_segment");
+        let profile = schedule_segment_with_tolerance(
+            &curve, &limits, &grid, 0.0, 0.0, ToleranceMode::Auto,
+        ).expect("schedule_segment_with_tolerance");
 
-        // §6.6.5 methodology: re-evaluate (v, a, j, centripetal) at 4× density via
-        // piecewise-cubic Hermite interpolation between solver grid points.
+        // Pre-compute derivative NURBSes once for the entire resampling pass.
+        let d1 = vector_derivative(&curve);
+        let d2 = vector_derivative(&d1);
+        let d3 = vector_derivative(&d2);
+
+        // §6.6.5 methodology: re-evaluate per-axis Cartesian (v, a, j) +
+        // centripetal at 4× density via piecewise-cubic Hermite of (v_i, a_i)
+        // pairs from solver. Compute geometric κ and tangent direction
+        // directly from NURBS at each resampled point (NOT interpolated κ).
         let n_resampled = 4 * profile.samples.len();
         let mut violations = Vec::new();
+        let u_start = curve.knots()[0];
+        let u_end = curve.knots()[curve.knots().len() - 1];
         for k in 0..n_resampled {
-            let s_normalized = (k as f64) / (n_resampled as f64 - 1.0);
-            let (v, _a, _j) = hermite_interp(&profile.samples, s_normalized);
+            let t = (k as f64) / (n_resampled as f64 - 1.0);
+            let (v_path, a_path, j_path) = hermite_interp(&profile.samples, t);
 
-            // Re-evaluate κ from geometry directly (NOT interpolated).
-            let u = s_normalized;  // approximation; ideally use arclength→u inverse.
-            let kappa = curvature_at(&curve, u);
+            // Map normalized t ∈ [0,1] → u via uniform-in-u proxy. Approximation:
+            // the solver grid is uniform-in-arclength, but for this spike-at-the-
+            // middle test the segment is short enough that u ≈ s/L is acceptable.
+            // For longer segments, replace with arclength→u inverse from Layer 0.
+            let u = u_start + (u_end - u_start) * t;
 
-            // Check centripetal: v² · κ ≤ a_centripetal · (1 + ε).
-            if v * v * kappa > limits.a_centripetal_max * 1.001 {
+            // Geometric quantities at u.
+            let r1 = vector_eval(&d1.as_view(), u);     // dC/du
+            let r2 = vector_eval(&d2.as_view(), u);     // d²C/du²
+            let r3 = vector_eval(&d3.as_view(), u);     // d³C/du³
+            let kappa = curvature_from_derivs(&d1, &d2, u);
+            let speed_param = mag_3(r1);                 // |dC/du|
+            if speed_param < 1e-12 { continue; }
+
+            // Per-axis Cartesian time-derivatives at this resampled point.
+            // Chain rule with arclength parameterization (|C'(s)|=1 in the
+            // path-arclength frame; here we work in u-frame and convert via
+            // |dC/du| for tangent magnitude):
+            //   T(u) = r1 / |r1|     (unit tangent in motion direction)
+            //   dx/dt   = T · v_path
+            //   d²x/dt² = T · a_path + (curvature term · v_path²)
+            //   d³x/dt³ = T · j_path + (mixed terms with κ, v_path²·a_path,
+            //                           and the third derivative of position)
+            let inv_speed = 1.0 / speed_param;
+            let tangent = [r1[0] * inv_speed, r1[1] * inv_speed, r1[2] * inv_speed];
+            // Normal-direction component of acceleration: a_n = κ · v² along the
+            // principal normal. Direction: (r2 - (r2·T)T) / |...|. We just need
+            // its per-axis projection onto each axis = perpendicular_component[axis].
+            let r2_dot_t = r2[0]*tangent[0] + r2[1]*tangent[1] + r2[2]*tangent[2];
+            let r2_perp = [
+                r2[0] - r2_dot_t * tangent[0],
+                r2[1] - r2_dot_t * tangent[1],
+                r2[2] - r2_dot_t * tangent[2],
+            ];
+            let r2_perp_mag = mag_3(r2_perp);
+            let normal_dir = if r2_perp_mag < 1e-12 {
+                [0.0; 3]
+            } else {
+                [r2_perp[0]/r2_perp_mag, r2_perp[1]/r2_perp_mag, r2_perp[2]/r2_perp_mag]
+            };
+            let v_squared = v_path * v_path;
+            let a_axis = [
+                tangent[0] * a_path + normal_dir[0] * kappa * v_squared,
+                tangent[1] * a_path + normal_dir[1] * kappa * v_squared,
+                tangent[2] * a_path + normal_dir[2] * kappa * v_squared,
+            ];
+            // Per-axis jerk: full derivation involves r3, but for the inter-grid
+            // sanity check we use the path-jerk projected onto tangent + the
+            // centripetal-rate-of-change. Conservative upper bound:
+            //   |j_axis| ≤ |T·j_path| + |κ·v²·j_path/v_path · 1/v_path| + ...
+            // For sentinel-quality (per spec §6.6.5 explicit "not a proof"),
+            // bound |j_axis| ≤ |j_path| + |κ · v · a_path| as a coarse upper bound.
+            let j_bound = j_path.abs() + kappa * v_path.abs() * a_path.abs();
+
+            // Per-axis velocity check.
+            for axis in 0..3 {
+                let v_axis = tangent[axis].abs() * v_path;
+                if v_axis > limits.v_max[axis] * 1.001 {
+                    violations.push(format!(
+                        "v_axis at u={u}, axis={axis}: {v_axis} > v_max={}",
+                        limits.v_max[axis],
+                    ));
+                }
+                if a_axis[axis].abs() > limits.a_max[axis] * 1.001 {
+                    violations.push(format!(
+                        "a_axis at u={u}, axis={axis}: {} > a_max={}",
+                        a_axis[axis].abs(), limits.a_max[axis],
+                    ));
+                }
+                if j_bound > limits.j_max[axis] * 1.001 {
+                    violations.push(format!(
+                        "j_bound at u={u}, axis={axis}: {j_bound} > j_max={}",
+                        limits.j_max[axis],
+                    ));
+                }
+            }
+            // Centripetal check.
+            if v_squared * kappa > limits.a_centripetal_max * 1.001 {
                 violations.push(format!(
-                    "s={} v={} κ={} v²·κ={} > a_cent={}",
-                    s_normalized, v, kappa, v*v*kappa, limits.a_centripetal_max,
+                    "centripetal at u={u}: v²·κ={} > a_cent={}",
+                    v_squared * kappa, limits.a_centripetal_max,
                 ));
             }
-            // Check per-axis velocity (need to re-evaluate forward-tangent at this u).
-            // (Omitted in this draft for brevity — add per spec §6.6.5 item 4.)
         }
 
         if !violations.is_empty() {
@@ -1957,36 +2277,81 @@ mod fixture_7_curvature_spike_intergrid_sanity {
         }
     }
 
-    // Hermite interpolation of solver samples at normalized parameter t ∈ [0,1].
-    // Returns (v, a, j) where j is finite-difference of a between adjacent samples.
-    fn hermite_interp(samples: &[temporal::topp::GridSample], t: f64) -> (f64, f64, f64) {
-        // ... implementation per spec §6.6.5 item 2 (cubic Hermite). Omitted here
-        // for spec-comment brevity — implement in the actual fixture.
+    /// Piecewise-cubic Hermite interpolation of (v, a) solver samples at
+    /// normalized parameter t ∈ [0,1]. Per spec §6.6.5 item 2.
+    ///
+    /// Treats sample.v as the function value and sample.a (path acceleration =
+    /// dv/dt) as its time-derivative. The Hermite basis on [0,1] is:
+    ///   h00(s) = 2s³ − 3s² + 1
+    ///   h10(s) = s³ − 2s² + s
+    ///   h01(s) = −2s³ + 3s²
+    ///   h11(s) = s³ − s²
+    /// f(s) = h00·v_i + h10·dt·a_i + h01·v_{i+1} + h11·dt·a_{i+1}
+    /// where `dt` is the time between samples (≈ sample arclength / mean v).
+    ///
+    /// Returns (v_interp, a_interp, j_interp) where:
+    ///   - v_interp = Hermite-interpolated value
+    ///   - a_interp = derivative of Hermite (closed-form)
+    ///   - j_interp = second-derivative of Hermite (closed-form)
+    fn hermite_interp(samples: &[GridSample], t: f64) -> (f64, f64, f64) {
         let n = samples.len();
-        let idx = ((n - 1) as f64 * t) as usize;
-        let idx = idx.min(n - 1);
-        // Simplified linear interp for plan readability; replace with cubic Hermite
-        // in actual implementation.
-        (samples[idx].v, samples[idx].a, 0.0)
+        if n < 2 {
+            return (samples.first().map_or(0.0, |s| s.v), 0.0, 0.0);
+        }
+        let pos = t * ((n - 1) as f64);
+        let i = (pos.floor() as usize).min(n - 2);
+        let s = pos - (i as f64);  // fractional [0,1) within segment i..i+1
+
+        let v_i = samples[i].v;
+        let v_ip1 = samples[i + 1].v;
+        let a_i = samples[i].a;
+        let a_ip1 = samples[i + 1].a;
+
+        // Approximate Δt between samples from arclength + average speed.
+        let ds = samples[i + 1].s - samples[i].s;
+        let v_avg = 0.5 * (v_i + v_ip1).max(1e-9);  // avoid div0 at zero speed
+        let dt = ds / v_avg;
+
+        let s2 = s * s;
+        let s3 = s2 * s;
+        let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+        let h10 = s3 - 2.0 * s2 + s;
+        let h01 = -2.0 * s3 + 3.0 * s2;
+        let h11 = s3 - s2;
+        let v_interp = h00 * v_i + h10 * dt * a_i + h01 * v_ip1 + h11 * dt * a_ip1;
+
+        // Derivatives of Hermite basis (w.r.t. s, then chain-rule by 1/dt).
+        let dh00 = 6.0 * s2 - 6.0 * s;
+        let dh10 = 3.0 * s2 - 4.0 * s + 1.0;
+        let dh01 = -6.0 * s2 + 6.0 * s;
+        let dh11 = 3.0 * s2 - 2.0 * s;
+        let dv_ds = dh00 * v_i + dh10 * dt * a_i + dh01 * v_ip1 + dh11 * dt * a_ip1;
+        let a_interp = dv_ds / dt;
+
+        // Second derivative for j_interp.
+        let ddh00 = 12.0 * s - 6.0;
+        let ddh10 = 6.0 * s - 4.0;
+        let ddh01 = -12.0 * s + 6.0;
+        let ddh11 = 6.0 * s - 2.0;
+        let ddv_ds2 = ddh00 * v_i + ddh10 * dt * a_i + ddh01 * v_ip1 + ddh11 * dt * a_ip1;
+        let j_interp = ddv_ds2 / (dt * dt);
+
+        (v_interp, a_interp, j_interp)
     }
 
-    fn curvature_at(curve: &VectorNurbs<f64, 3>, u: f64) -> f64 {
-        // Same formula as multi/junction.rs. Refactor into nurbs::curvature_at later.
-        let d1 = curve.derivative_at(u, 1);
-        let d2 = curve.derivative_at(u, 2);
-        let cross = [
-            d1[1]*d2[2] - d1[2]*d2[1],
-            d1[2]*d2[0] - d1[0]*d2[2],
-            d1[0]*d2[1] - d1[1]*d2[0],
-        ];
-        let norm_d1 = (d1[0]*d1[0] + d1[1]*d1[1] + d1[2]*d1[2]).sqrt();
-        let norm_cross = (cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2]).sqrt();
-        if norm_d1 < 1e-12 { 0.0 } else { norm_cross / norm_d1.powi(3) }
+    #[inline]
+    fn mag_3(v: [f64; 3]) -> f64 {
+        (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt()
     }
 }
 ```
 
-**Implementation note:** the Hermite interpolation in this stub is simplified to linear; a proper cubic Hermite would use the (v, a) pair as (value, slope-derivative-in-time). Implement the full Hermite when actually writing the test — the simplified version above is for plan readability only.
+**Spec §6.6.5 conformance** (review-1 finding F5/F6 + Codex finding D, F):
+- Per-axis Cartesian velocity / acceleration / jerk: implemented above. Per-axis jerk uses a coarse upper-bound (`|j_axis| ≤ |j_path| + |κ·v·a_path|`); a fully-rigorous projection would also include the `r3`-based third-derivative term, but since the spec explicitly frames fixture 7 as a "sentinel, not a proof," the bound is acceptable for the v1-vs-v2 gate.
+- Centripetal: `v²·κ ≤ a_centripetal_max` checked directly.
+- Snap / jerk-of-jerk: NOT checked (per spec §6.6.5 item 5 — "those aren't constraints we enforce, so they shouldn't be acceptance gates here either").
+- Cubic-Hermite interpolation of (v, a) solver samples: implemented per spec §6.6.5 item 2.
+- Geometric κ resampled from NURBS via Layer 0's `curvature_from_derivs` (NOT interpolated): implemented.
 
 - [ ] **Step 2: Run**
 
@@ -2093,6 +2458,40 @@ git commit -m "CLAUDE.md plan-changes-log: Step 4.5 Layer 2 multi-segment comple
 
 ---
 
+## Post-review revisions (Plan review-1: kalico-plan-reviewer + Codex)
+
+Both reviewers ran in parallel and converged on the same critical findings. Substantial revisions applied:
+
+**Algorithmic correctness fixes:**
+- **Task 6 + Task 9 joining loop**: original draft ran sweeps without re-solving dirty segments between them, which would converge on stale velocity caps + leave profiles inconsistent with final boundary velocities. This collapses option (A) "SOCP per joining iteration" into something closer to (B) "SOCP at finalize" — exactly what the throughput-non-negotiable principle disallows. Fixed: `join_until_converged` now invokes `fan_out_solves` between each forward+reverse pair, signature extended to take inputs/grids/n_threads.
+- **Task 7 plumbing**: original draft called `solver::slp_solve(&bundle, tol)` but the actual entry point used by `schedule_segment` is `solver::slp_solve_with_axis_jerk` (added by the parallel Step 4/9 agent during this session). The original would have silently bypassed Step 9's per-axis Cartesian jerk SLP, regressing verifier feasibility. Fixed: tolerance plumbs through the actual entry point AND every Clarabel `DefaultSettings` construction site (search command added to ensure no site is missed).
+- **Task 7 `is_success` types**: original draft used `crate::SolveStatus` (the public enum), but `SolverResult.status` is the internal `solver::SolverStatus` (different type). Wouldn't have compiled. Fixed.
+- **Task 8 `fan_out_solves` dirty-clearing**: original cleared `dirty` on any `Ok(profile)` from `schedule_segment`, but `Ok` is returned even for non-success statuses (`MaxIter`, `Infeasible`, `DivergedSlp`). Fixed: only clear `dirty` on `Solved` / `SolvedInexact`; non-success leaves dirty=true so the convergence loop catches it.
+
+**Compilation fixes:**
+- **Task 3 nurbs API**: original draft used `curve.derivative_at(u, n)` which doesn't exist. Actual nurbs API is `nurbs::eval::vector_derivative` (degree-lowering returns new NURBS) + `nurbs::eval::vector_eval` (point evaluation on a view) + `nurbs::eval::curvature_from_derivs`. Rewrote Task 3 against the audited surface. Added Task 0 to lock the audit before Task 3 starts.
+
+**Architectural-stability fixes:**
+- **Task 7 backward-compat wrapper**: original draft mutated `schedule_segment`'s 5-arg signature to 6-arg, breaking every existing caller (~10 sites in tests + unit tests). Codex review-1 suggested keeping the 5-arg form unchanged and adding a new `schedule_segment_with_tolerance` wrapper. Adopted — eliminates merge-conflict risk with parallel Step 4/9 work, eliminates the test-mass-edit step, preserves backward compat.
+- **Task 0 `Limits` `#[non_exhaustive]`**: spec §7.3 calls for additive-extension safety so Step 9 can add a shaper-aware acceleration constraint field without breaking Step 4.5 callers. Added Task 0 sub-step + a `Limits::new` constructor for external use.
+
+**Acceptance-gate fixes:**
+- **Task 16 fixture 7**: original draft stubbed Hermite interpolation as linear ("simplified linear interp for plan readability; replace with cubic Hermite in actual implementation") and explicitly omitted per-axis Cartesian checks ("omitted in this draft for brevity"). Both are placeholders the writing-plans skill prohibits, AND fixture 7 is the v1-vs-v2 gate — a linear-interp stub would systematically under-detect the inter-grid violations the gate is designed to catch. Spelled out the cubic Hermite formulas (h00/h10/h01/h11 basis with `dt = ds/v_avg` time scaling), added per-axis velocity / acceleration / jerk-bound checks, kept centripetal check, explicitly excluded snap/jerk-of-jerk per spec §6.6.5 item 5.
+- **§6.2 acceptance helper**: original draft only enforced junction-velocity continuity in fixture 1 (Task 10). Lifted to a shared `assert_junction_continuity_for_all` helper used by every multi-segment fixture (Tasks 11, 13, 14, 15).
+- **§6.4 seg 0/2 assertions**: Task 13 originally said "No assertion needed beyond existing per-segment feasibility" for the unchanged-limits segments. That misses the spec §6.4 implicit requirement: seg 0/2 must reach textbook a_max (confirming reduced limits did NOT leak outside seg 1's range). Added explicit `max_a_seg0/2 > 2_500.0 * 1.5` assertion.
+
+**Code-quality fixes:**
+- **Task 8 unsafe parallel option dropped**: original presented two implementations of `fan_out_solves` — one with `unsafe` raw-pointer slice reconstruction (transmutes `'a` lifetime to `'static`, unsound), one with `std::thread::scope`. Codex correctly flagged the unsafe variant as unsound + unnecessary at MSRV 1.85. Removed entirely; only scoped-threads form remains.
+
+**Pre-Flight hardening:**
+- Added explicit hard prerequisite that Step 4/9 must be committed before Task 7 starts. Added optional `git worktree add` recipe for executing Step 4.5 in isolation if the parallel Step 4/9 work is still in flight.
+
+**Findings reviewers raised that this revision did NOT change** (intentionally):
+- Some reviewer-suggested style tightenings (e.g., extracting `2.414213562` magic number to a constant) deferred to executor's discretion — small enough to not warrant explicit plan instruction.
+- The MAX_SWEEPS = 10 cap kept as-is even though spec §10 says "might tighten to 5 once we have real-fixture data." Keeping looser cap during initial implementation; can tighten once fixtures pass with smaller sweep counts.
+
+---
+
 ## Plan complete
 
-**Saved to** `docs/superpowers/plans/2026-04-27-layer-2-multi-segment.md`. Ready to commit and execute.
+**Saved to** `docs/superpowers/plans/2026-04-27-layer-2-multi-segment.md`. Revised after dual review-1 (kalico-plan-reviewer + Codex). Ready to commit and execute.
