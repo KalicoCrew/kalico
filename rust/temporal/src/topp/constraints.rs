@@ -16,7 +16,8 @@
 //!
 //! ```text
 //! indices  0..N     : b_i  — squared path-speed  ṡ_i²  (= v_i²)
-//! indices  N..2N    : a_i  — path-accel auxiliary s̈_i ≈ ½·b'(s_i)
+//! indices  N..2N    : a_i  — path-accel  s̈_i = ½·b'(s_i) (≡ central FD on b
+//!                            with coefficient ±1/(4h); see block (b))
 //! indices  2N..3N-2 : t_i  — jerk-envelope slack  t_i ≥ h/√b_i  (interior i=1..N-2)
 //! indices  3N-2..4N-4: x1_i — rotated-SOC aux, x1_i² ≤ t_i·b_i·h  (interior)
 //! indices  4N-4..5N-6: x2_i — rotated-SOC aux, x2_i² ≤ t_i·h      (interior)
@@ -30,7 +31,9 @@
 //!    `b_0 = v_start²`, `b_{N-1} = v_end²`
 //!
 //! 2. **(b) Acceleration linkage** — zero cone, N rows
-//!    `a_i = (b_{i+1}-b_{i-1})/(2h)` interior; forward/backward diff at endpoints.
+//!    `a_i = (b_{i+1}-b_{i-1})/(4h)` interior; forward/backward diff at
+//!    endpoints with coefficient `±1/(2h)`. The factor of ½ vs. the raw
+//!    central FD on b is the `s̈ = ½·b'(s)` identity (see block (b) docs).
 //!
 //! 3. **(c) Per-axis velocity UB** — nonneg cone, up to 3N rows
 //!    `(v_max,axis / |c'_axis|)² - b_i ≥ 0`; skip axis when `|c'_axis| < 1e-12`.
@@ -42,7 +45,8 @@
 //!    `b_max_cent[i] - b_i ≥ 0`
 //!
 //! 6. **(f) Scalar-tangential jerk envelope** — nonneg cone, 2·(N-2) rows
-//!    `t_i ± (b_{i-1} - 2b_i + b_{i+1}) / (h·J_path) ≥ 0`
+//!    `t_i ± (b_{i-1} - 2b_i + b_{i+1}) / (2h·J_path) ≥ 0` — derived from
+//!    `|s⃛| ≤ J_path` via `s⃛ = ½·b''(s)·√b` ⇒ `|b''(s)| ≤ 2J/√b`.
 //!
 //! 7. **(g) x1,x2 nonnegativity** — nonneg cone, 2·(N-2) rows
 //!    `x1_i ≥ 0`, `x2_i ≥ 0`
@@ -294,21 +298,31 @@ pub fn build(
     // -------------------------------------------------------------------------
     // Block (b): Acceleration linkage — zero cone, N rows.
     //
-    // a_i = (b_{i+1} - b_{i-1}) / (2h)   for i = 1..N-2  (interior)
-    // a_0 = (b_1 - b_0) / h               (forward diff)
-    // a_{N-1} = (b_{N-1} - b_{N-2}) / h   (backward diff)
+    // a_i ≡ s̈_i (path acceleration). Since b(s) = ṡ², we have
+    // b'(s) = 2·s̈, so s̈_i = ½·b'(s_i). The finite-difference coefficients
+    // therefore carry an extra factor of ½ relative to a raw `b'` estimator:
+    //
+    // a_i = (b_{i+1} - b_{i-1}) / (4h)   for i = 1..N-2  (interior, central)
+    // a_0 = (b_1 - b_0) / (2h)            (forward diff)
+    // a_{N-1} = (b_{N-1} - b_{N-2}) / (2h) (backward diff)
+    //
+    // Block (d) and verify::check both consume `a_i` as `s̈` directly via the
+    // per-axis Cartesian-acceleration identity `d²x/dt² = c''·b + c'·s̈`.
+    // Encoding `a_i` as the unhalved `b'(s)` would silently halve the
+    // effective straight-line acceleration limit (it did, for many commits —
+    // see Plan changes log, 2026-04-27 entry on the factor-of-2 fix).
     //
     // Rewrite as  A·x + b_rhs = 0:
-    //   a_i - (b_{i+1} - b_{i-1}) / (2h) = 0
-    //   → row: +1 on a[i],  -1/(2h) on b[i+1],  +1/(2h) on b[i-1],  rhs = 0
+    //   a_i - (b_{i+1} - b_{i-1}) / (4h) = 0
+    //   → row: +1 on a[i],  -1/(4h) on b[i+1],  +1/(4h) on b[i-1],  rhs = 0
     //
     // For i=0 (forward diff):
-    //   a_0 - (b_1 - b_0) / h = 0
-    //   → row: +1 on a[0],  -1/h on b[1],  +1/h on b[0],  rhs = 0
+    //   a_0 - (b_1 - b_0) / (2h) = 0
+    //   → row: +1 on a[0],  -1/(2h) on b[1],  +1/(2h) on b[0],  rhs = 0
     //
     // For i=N-1 (backward diff):
-    //   a_{N-1} - (b_{N-1} - b_{N-2}) / h = 0
-    //   → row: +1 on a[N-1],  -1/h on b[N-1],  +1/h on b[N-2],  rhs = 0
+    //   a_{N-1} - (b_{N-1} - b_{N-2}) / (2h) = 0
+    //   → row: +1 on a[N-1],  -1/(2h) on b[N-1],  +1/(2h) on b[N-2],  rhs = 0
     // -------------------------------------------------------------------------
     {
         let count = n;
@@ -317,9 +331,9 @@ pub fn build(
             &mut a_rows,
             &mut b_rhs,
             &[
-                (off_a,         1.0),      // +1 on a[0]
-                (off_b + 1,    -1.0 / h),  // -1/h on b[1]
-                (off_b,         1.0 / h),  // +1/h on b[0]
+                (off_a,         1.0),              // +1 on a[0]
+                (off_b + 1,    -1.0 / (2.0 * h)),  // -1/(2h) on b[1]
+                (off_b,         1.0 / (2.0 * h)),  // +1/(2h) on b[0]
             ],
             0.0,
         );
@@ -330,8 +344,8 @@ pub fn build(
                 &mut b_rhs,
                 &[
                     (off_a + i,       1.0),              // +1 on a[i]
-                    (off_b + i + 1,  -1.0 / (2.0 * h)), // -1/(2h) on b[i+1]
-                    (off_b + i - 1,   1.0 / (2.0 * h)), // +1/(2h) on b[i-1]
+                    (off_b + i + 1,  -1.0 / (4.0 * h)), // -1/(4h) on b[i+1]
+                    (off_b + i - 1,   1.0 / (4.0 * h)), // +1/(4h) on b[i-1]
                 ],
                 0.0,
             );
@@ -341,9 +355,9 @@ pub fn build(
             &mut a_rows,
             &mut b_rhs,
             &[
-                (off_a + n - 1,     1.0),      // +1 on a[N-1]
-                (off_b + n - 1,    -1.0 / h),  // -1/h on b[N-1]
-                (off_b + n - 2,     1.0 / h),  // +1/h on b[N-2]
+                (off_a + n - 1,     1.0),              // +1 on a[N-1]
+                (off_b + n - 1,    -1.0 / (2.0 * h)),  // -1/(2h) on b[N-1]
+                (off_b + n - 2,     1.0 / (2.0 * h)),  // +1/(2h) on b[N-2]
             ],
             0.0,
         );
@@ -471,30 +485,38 @@ pub fn build(
     // -------------------------------------------------------------------------
     // Block (f): Scalar-tangential jerk envelope — nonneg cone, 2·(N-2) rows.
     //
-    // The scalar tangential jerk along the path satisfies (paper eq. 8):
-    //   |b_{i-1} - 2b_i + b_{i+1}| / h² ≤ J_path / √b_i
+    // Derivation. With b(s) = ṡ², s̈ = ½·b'(s), and s⃛ = d s̈/dt = ½·b''(s)·ṡ
+    // = ½·b''(s)·√b. So |s⃛| ≤ J_path is equivalent to
+    //   |b''(s)| ≤ 2·J_path / √b.
     //
-    // Introduce t_i as the slack for this constraint (paper §8):
-    //   t_i ≥ (b_{i-1} - 2b_i + b_{i+1}) / (h · J_path)
-    //   t_i ≥ -(b_{i-1} - 2b_i + b_{i+1}) / (h · J_path)
+    // Discretizing b''(s) by central differences,
+    // b''(s_i) ≈ (b_{i-1} - 2 b_i + b_{i+1}) / h², the constraint becomes
+    //   |Δ²b_i| / h² ≤ 2·J_path / √b_i.
     //
-    // (The division by h comes from rewriting: |Δ²b_i| / h² ≤ J/√b_i
-    //  ↔ |Δ²b_i| / (h · J) ≤ h/√b_i ≡ t_i,
-    //  so t_i ≥ ±Δ²b_i / (h·J) where Δ²b_i = b_{i-1} - 2b_i + b_{i+1}.)
+    // Introduce t_i as the slack for the rotated-SOC chain `t_i ≥ h/√b_i`
+    // (paper §8). Multiplying both sides by `h / (2·J_path)` we get
+    //   |Δ²b_i| / (2·h·J_path) ≤ h/√b_i ≡ t_i,
+    // so t_i ≥ ±Δ²b_i / (2·h·J_path). Letting `hj := 2·h·J_path` keeps the
+    // row coefficients identical to the older form modulo the factor-of-2.
+    //
+    // Encoding `hj := h·J_path` (without the factor of 2) silently enforced
+    // |b''(s)| ≤ J_path/√b — half the correct slack — and combined with the
+    // block-(b) factor-of-2 to halve every effective limit. See Plan changes
+    // log, 2026-04-27 entry on the factor-of-2 fix.
     //
     // In A·x + b_rhs ≥ 0 form, for the positive-side row at interior point i
     // (slot k = i-1):
-    //   t_i - (b_{i-1} - 2b_i + b_{i+1}) / (h·J_path) ≥ 0
-    //   → row: +1 on t[k],  -1/(hJ) on b[i-1],  +2/(hJ) on b[i],  -1/(hJ) on b[i+1]
+    //   t_i - (b_{i-1} - 2b_i + b_{i+1}) / hj ≥ 0
+    //   → row: +1 on t[k],  -1/hj on b[i-1],  +2/hj on b[i],  -1/hj on b[i+1]
     //      rhs = 0
     //
     // Negative-side row:
-    //   t_i + (b_{i-1} - 2b_i + b_{i+1}) / (h·J_path) ≥ 0
-    //   → row: +1 on t[k],  +1/(hJ) on b[i-1],  -2/(hJ) on b[i],  +1/(hJ) on b[i+1]
+    //   t_i + (b_{i-1} - 2b_i + b_{i+1}) / hj ≥ 0
+    //   → row: +1 on t[k],  +1/hj on b[i-1],  -2/hj on b[i],  +1/hj on b[i+1]
     //      rhs = 0
     // -------------------------------------------------------------------------
     {
-        let hj = h * j_path;
+        let hj = 2.0 * h * j_path;
         let mut count = 0_usize;
         for k in 0..n_interior {
             let i = k + 1; // interior grid index (1..N-2 inclusive)
