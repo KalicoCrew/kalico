@@ -3,7 +3,7 @@
 //! Spec §4.3 stage 5, §4.4.
 
 use crate::topp::path::ArclengthGrid;
-use crate::topp::solver::{SolverResult, SolverStatus};
+use crate::topp::solver::{SlpOutcome, SolverResult, SolverStatus};
 use crate::topp::verify::VerifyReport;
 use crate::{
     GridConfig, GridSample, InfeasibleReason, SolveStatus, TopProfile,
@@ -14,6 +14,7 @@ pub(crate) fn assemble(
     result: &SolverResult,
     verify: &VerifyReport,
     grid_config: GridConfig,
+    slp_outcome: SlpOutcome,
 ) -> TopProfile {
     let n = grid.s.len();
     debug_assert_eq!(result.b.len(), n);
@@ -46,7 +47,7 @@ pub(crate) fn assemble(
 
     TopProfile {
         samples,
-        status: map_status(result.status, verify),
+        status: map_status(result.status, verify, slp_outcome),
         grid_scheme: grid_config.scheme,
         total_time,
     }
@@ -54,18 +55,22 @@ pub(crate) fn assemble(
 
 /// Convert internal solver status into public `SolveStatus`. Carries `verify`
 /// so we can override Clarabel-success with feasibility-failure (relaxation
-/// tightness gap, per spec §7.1).
+/// tightness gap, per spec §7.1) and `slp_outcome` so SLP-converged /
+/// diverged / max-iter cases get distinct public statuses (spec §11).
 pub(crate) fn map_status(
     solver_status: SolverStatus,
     verify: &VerifyReport,
+    slp_outcome: SlpOutcome,
 ) -> SolveStatus {
-    match solver_status {
+    // First decide based on the inner solver. SLP-driven statuses can only
+    // override a feasible-looking inner outcome.
+    let base = match solver_status {
         SolverStatus::Solved if verify.feasible => SolveStatus::Solved,
         SolverStatus::SolvedInexact { residual } if verify.feasible => {
             SolveStatus::SolvedInexact { residual }
         }
         SolverStatus::Solved | SolverStatus::SolvedInexact { .. } => {
-            // Solver succeeded but verifier disagrees: tightness gap.
+            // Inner solver succeeded but verifier disagrees: relaxation-gap.
             SolveStatus::Infeasible {
                 at_grid: verify.worst_violation_grid,
                 reason: InfeasibleReason::SolverInfeasible,
@@ -78,6 +83,35 @@ pub(crate) fn map_status(
         SolverStatus::MaxIter { residual } => {
             SolveStatus::MaxIter { last_residual: residual }
         }
+    };
+
+    // SLP outcome refines the public status when it carries useful additional
+    // information that isn't already captured by the inner solver / verifier.
+    match (slp_outcome, &base) {
+        // SLP cuts were required and converged. Promote a feasible inner
+        // outcome to `SolvedSlp{outer_iters}`; verifier-rejected inner
+        // outcomes pass through as Infeasible (the SLP loop only adds
+        // path-jerk cuts, so an axis-accel verifier veto is still a real
+        // failure even when SLP terminates cleanly).
+        (
+            SlpOutcome::Converged { outer_iters },
+            SolveStatus::Solved | SolveStatus::SolvedInexact { .. },
+        ) if outer_iters > 0 => SolveStatus::SolvedSlp { outer_iters },
+        (SlpOutcome::Diverged { last_max_ratio, outer_iters }, _) => {
+            SolveStatus::DivergedSlp {
+                last_max_ratio,
+                outer_iters,
+            }
+        }
+        (SlpOutcome::MaxIters { last_max_ratio }, _) => {
+            SolveStatus::MaxIterSlp { last_max_ratio }
+        }
+        // Iteration-0 convergence (no cuts), verifier-rejected SLP-converged
+        // outcomes, and inner-solver failures all pass `base` through unchanged.
+        (
+            SlpOutcome::Converged { .. } | SlpOutcome::InnerSolverFailure,
+            _,
+        ) => base,
     }
 }
 
@@ -118,7 +152,13 @@ mod tests {
             feasible: true,
         };
         let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 3 };
-        let p = assemble(&grid, &result, &verify, cfg);
+        let p = assemble(
+            &grid,
+            &result,
+            &verify,
+            cfg,
+            SlpOutcome::Converged { outer_iters: 0 },
+        );
         assert_eq!(p.samples.len(), 3);
         assert!((p.samples[1].v - 10.0).abs() < 1e-9);
         assert!(matches!(p.status, SolveStatus::Solved));

@@ -86,15 +86,25 @@ pub fn schedule_segment(
         }
     };
 
-    // Stage 3: solver.
-    let solver_result = solver::solve(&bundle)
+    // Stage 3: solver. SLP outer iteration (Lee 2024) wraps the inner SOCP;
+    // for the common straight-line case the loop converges at iteration 0
+    // with no cuts, leaving runtime identical to the original SOCP. The
+    // outer loop only fires when the path-jerk relaxation gap (CL-2024
+    // Conjecture 4.1 counterexample) shows up — see spec §11.
+    let (solver_result, slp_outcome) = solver::slp_solve(&bundle)
         .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?;
 
     // Stage 4: verify.
     let verify_report = verify::check(&arc_grid, &solver_result, limits);
 
     // Stage 5: assemble.
-    Ok(output::assemble(&arc_grid, &solver_result, &verify_report, *grid))
+    Ok(output::assemble(
+        &arc_grid,
+        &solver_result,
+        &verify_report,
+        *grid,
+        slp_outcome,
+    ))
 }
 
 fn boundary_infeasible_profile(

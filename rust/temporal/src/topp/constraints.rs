@@ -10,6 +10,12 @@
 //! kalico adopts the paper's scalar-tangential form with
 //! `J_path = min(j_max.x, j_max.y, j_max.z)`.
 //!
+//! The post-solve verifier (`topp::verify::check`) checks the same scalar
+//! quantity — verification scope tracks SOCP scope by design. Per-axis
+//! Cartesian jerk verification is co-deferred to Step 9 alongside the
+//! per-axis SOC relaxation; both are blocked by the same non-convex
+//! cross-term `3·c''·v·a` (≡ `q² ≥ b·a²`, indefinite Hessian).
+//!
 //! ## Decision variables
 //!
 //! For grid points `i ∈ 0..N` (N = grid size):
@@ -103,6 +109,14 @@ pub struct ConstraintBundle {
     /// Per-grid-point centripetal MVC `b_max_cent(s_i)` = `a_centripetal_max / κ(s_i)`,
     /// clamped by [`B_MAX_CENT_CAP`]. Used for the boundary-infeasibility check.
     pub b_max_cent: Vec<f64>,
+    /// Uniform arclength grid spacing `h = s[1] − s[0]`. Used by the SLP
+    /// outer-iteration solver to construct linearized cuts on `1/√b` at
+    /// violator grid points (spec §11; Lee 2024 fallback).
+    pub h: f64,
+    /// Scalar tangential jerk bound `J_path = min(j_max,x, j_max,y, j_max,z)`,
+    /// matching block (f). Used by the SLP outer-iteration solver to assemble
+    /// the cut RHS and the violator predicate.
+    pub j_path: f64,
 }
 
 /// Pre-solver boundary infeasibility (start or end velocity exceeds centripetal MVC).
@@ -224,12 +238,17 @@ pub fn build(
     // Conservative but provably tight for the paper's setup (Cor. 5.1).
     //
     // MAINTAINER WARNING: Do NOT "improve" J_path to a per-axis projected bound
-    // (e.g., sum_axis |c'_axis|·j_max,axis). The SOC chain in block (h) is only
-    // convex for a SINGLE scalar J_path; replacing it with a per-axis bound would
-    // silently violate the relaxation's convexity guarantee from Consolini-Locatelli
-    // 2024 §3-§4. Per-axis Cartesian jerk relaxation is deferred per spec §11
-    // (Step 9 territory; requires bilinear/cubic envelope auxiliaries the paper
-    // doesn't address).
+    // (e.g., sum_axis |c'_axis|·j_max,axis), and do NOT add per-axis Cartesian
+    // jerk rows here OR in topp::verify::check. The SOC chain in block (h) is
+    // only convex for a SINGLE scalar J_path; replacing it with a per-axis
+    // bound would silently violate the convexity guarantee from
+    // Consolini-Locatelli 2024 §3-§4. Symmetrically, having the verifier check
+    // per-axis Cartesian jerk while the SOCP cannot enforce it produces false
+    // negatives on every curved fixture (the cross-term `3·c''·v·a` requires
+    // bounding the non-convex set `{q² ≥ b·a²}`). Per-axis Cartesian jerk —
+    // both SOCP relaxation AND verification — is deferred to Step 9 (likely
+    // SLP / Lee-2024 outer iteration); the two MUST land together.
+    // BindingConstraint::AxisJerk{axis} is reserved for that path.
     let j_path = limits.j_max[0].min(limits.j_max[1]).min(limits.j_max[2]);
     debug_assert!(j_path > 0.0, "jerk limit must be positive");
 
@@ -702,6 +721,8 @@ pub fn build(
         b_rhs,
         objective,
         b_max_cent,
+        h,
+        j_path,
     })
 }
 
