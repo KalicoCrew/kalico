@@ -6,6 +6,7 @@ resolver = "2"
 [workspace.dependencies]
 # Shared deps versioned here from day one.
 thiserror = "2"
+clarabel = "0.11"  # Pinned to current minor at implementation time (0.11.1). Task 5.
 
 # Workspace-wide lint configuration. Crates opt in via `[lints] workspace = true`.
 # Pedantic-tier lints are enabled at warn (with `-D warnings` they fail CI).

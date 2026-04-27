@@ -10,6 +10,7 @@ description = "Layer 2 temporal scheduling for the kalico motion planner. Single
 nurbs = { path = "../nurbs", features = ["host"] }
 geometry = { path = "../geometry" }
 thiserror = { workspace = true }
+clarabel = { workspace = true }
 
 [lints]
 workspace = true
