@@ -277,6 +277,7 @@ where
                 if let Some(f) = params.f() {
                     state.feedrate_mm_s = Some(f_to_mm_s(f));
                 }
+                state.prev_g5_pq = None;
                 return Some(ReduceEvent::Marker {
                     kind: MotionMarkerKind::G0,
                     line_no,
@@ -295,6 +296,7 @@ where
                 if !xy_changed && z_changed && !e_present {
                     // Z-only move: marker, but update position.
                     update_position_in(state, &params);
+                    state.prev_g5_pq = None;
                     return Some(ReduceEvent::Marker {
                         kind: MotionMarkerKind::ZOnly,
                         line_no,
@@ -307,6 +309,7 @@ where
                     let new_e = params.e().unwrap();
                     let delta = new_e - state.e;
                     state.e = new_e;
+                    state.prev_g5_pq = None;
                     return Some(ReduceEvent::Marker {
                         kind: MotionMarkerKind::EOnly,
                         line_no,
@@ -315,10 +318,10 @@ where
                     });
                 }
                 if !xy_changed && !z_changed && !e_present {
-                    // G1 with only F — no motion, treated as no-op.
+                    // F-only no-op: no motion, no chain break.
                     continue;
                 }
-                // Real move: update position and E, emit G1Move.
+                // Real move: update position and E, emit Curve(Linear).
                 update_position_in(state, &params);
                 let e_delta = params.e().map(|new_e| {
                     let d = new_e - state.e;
@@ -327,9 +330,10 @@ where
                 });
                 let to = state.position;
                 let feedrate_mm_s = state.feedrate_mm_s.unwrap_or(0.0);
-                return Some(ReduceEvent::G1Move {
-                    from,
-                    to,
+                // G1 clears the G5 modal-chain tangent — non-G5 motion.
+                state.prev_g5_pq = None;
+                return Some(ReduceEvent::Curve {
+                    geom: CurveGeom::Linear { cps: [from, to] },
                     e_delta,
                     feedrate_mm_s,
                     line_no,
@@ -372,7 +376,6 @@ where
                 let new_y = params.y().unwrap_or(start[1]);
                 let new_z = params.z().unwrap_or(start[2]);
                 let end = [new_x, new_y, new_z];
-                let z_delta = new_z - start[2];
                 let clockwise = g == 2;
                 if let Some(f) = params.f() {
                     state.feedrate_mm_s = Some(f_to_mm_s(f));
@@ -383,10 +386,13 @@ where
                     d
                 });
                 state.position = end;
+                state.prev_g5_pq = None; // arcs are non-G5 motion.
                 let feedrate_mm_s = state.feedrate_mm_s.unwrap_or(0.0);
-                return Some(ReduceEvent::Arc {
-                    start, end, center, clockwise, z_delta, e_delta,
-                    feedrate_mm_s, line_no,
+                return Some(ReduceEvent::Curve {
+                    geom: build_arc_curve(start, end, center, clockwise),
+                    e_delta,
+                    feedrate_mm_s,
+                    line_no,
                 });
             }
             Token::Command { letter: b'G', major: 17, .. } => {
@@ -406,6 +412,55 @@ where
             }
             _ => {}
         }
+    }
+}
+
+/// Build the rational-quadratic-Bézier control points and weights for an arc
+/// in 3D. Z is interpolated linearly across the 3 control points (helical
+/// support); the rational-quadratic geometry follows Piegl & Tiller §7.2.
+///
+/// **Phase 1 limitation** (preserved from the original `pipeline::build_arc_nurbs`):
+/// |sweep| < π required; sweeps ≥ π are clamped to (π − ε) so `cos(half_sweep)`
+/// stays positive. Multi-piece exact representation for full circles is a
+/// Phase 2 item.
+#[allow(dead_code)]
+fn build_arc_curve(
+    start: [f64; 3],
+    end: [f64; 3],
+    center: [f64; 3],
+    clockwise: bool,
+) -> CurveGeom {
+    const MAX_SWEEP: f64 = std::f64::consts::PI * (1.0 - 1e-9);
+
+    let r_start = [start[0] - center[0], start[1] - center[1]];
+    let radius = (r_start[0] * r_start[0] + r_start[1] * r_start[1]).sqrt();
+    let start_angle = r_start[1].atan2(r_start[0]);
+    let r_end = [end[0] - center[0], end[1] - center[1]];
+    let end_angle = r_end[1].atan2(r_end[0]);
+
+    let sweep = if clockwise {
+        let mut s = end_angle - start_angle;
+        if s < 0.0 { s += 2.0 * std::f64::consts::PI; }
+        s
+    } else {
+        let mut s = start_angle - end_angle;
+        if s < 0.0 { s += 2.0 * std::f64::consts::PI; }
+        -s
+    };
+    let sweep = sweep.clamp(-MAX_SWEEP, MAX_SWEEP);
+
+    let half = sweep / 2.0;
+    let cos_half = half.cos();
+    let mid_x = center[0] + radius * (start_angle + half).cos() / cos_half;
+    let mid_y = center[1] + radius * (start_angle + half).sin() / cos_half;
+
+    let z0 = start[2];
+    let z2 = end[2];
+    let z1 = f64::midpoint(z0, z2);
+
+    CurveGeom::RationalQuadratic {
+        cps: [start, [mid_x, mid_y, z1], end],
+        weights: [1.0, cos_half, 1.0],
     }
 }
 
@@ -442,20 +497,18 @@ mod tests {
     #[test]
     #[allow(clippy::no_effect_underscore_binding)]
     fn reduce_event_variants_construct() {
-        let _e1 = ReduceEvent::G1Move {
-            from: [0.0, 0.0, 0.0],
-            to: [1.0, 0.0, 0.0],
+        let _e1 = ReduceEvent::Curve {
+            geom: CurveGeom::Linear { cps: [[0.0; 3], [1.0, 0.0, 0.0]] },
             e_delta: Some(0.05),
             feedrate_mm_s: 100.0,
             line_no: 1,
         };
-        let _e2 = ReduceEvent::Arc {
-            start: [0.0, 0.0, 0.0],
-            end: [1.0, 0.0, 0.0],
-            center: [0.5, -0.5, 0.0],
-            clockwise: true,
-            z_delta: 0.0,
-            e_delta: Some(0.05),
+        let _e2 = ReduceEvent::Curve {
+            geom: CurveGeom::RationalQuadratic {
+                cps: [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+                weights: [1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+            },
+            e_delta: None,
             feedrate_mm_s: 100.0,
             line_no: 1,
         };
@@ -469,19 +522,24 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn g1_xy_emits_g1move() {
+    fn g1_xy_emits_curve_linear() {
         let toks = vec![
             cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'Y', 2.0), (b'F', 1500.0)])),
         ];
         let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            ReduceEvent::G1Move { from, to, feedrate_mm_s, .. } => {
-                assert_eq!(*from, [0.0, 0.0, 0.0]);
-                assert_eq!(*to, [1.0, 2.0, 0.0]);
+            ReduceEvent::Curve {
+                geom: CurveGeom::Linear { cps },
+                feedrate_mm_s,
+                line_no: 1,
+                ..
+            } => {
+                assert_eq!(cps[0], [0.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [1.0, 2.0, 0.0]);
                 assert!((feedrate_mm_s - 25.0).abs() < 1e-9, "F1500 → 25 mm/s");
             }
-            other => panic!("expected G1Move, got {other:?}"),
+            other => panic!("expected Curve(Linear), got {other:?}"),
         }
     }
 
@@ -530,8 +588,8 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn g2_emits_arc_clockwise() {
-        // Set position to (1, 0, 0), then arc to (0, 1, 0) around (0, 0).
+    fn g2_emits_curve_rational_quadratic_clockwise() {
+        // Quarter-circle from (1, 0, 0) to (0, 1, 0), center (0, 0, 0), CW (G2).
         let toks = vec![
             cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'Y', 0.0), (b'F', 1500.0)])),
             cmd(b'G', 2, 2, p(&[(b'X', 0.0), (b'Y', 1.0), (b'I', -1.0), (b'J', 0.0)])),
@@ -539,33 +597,55 @@ mod tests {
         let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
         assert_eq!(events.len(), 2);
         match &events[1] {
-            ReduceEvent::Arc { start, end, center, clockwise, z_delta, .. } => {
-                assert_eq!(*start, [1.0, 0.0, 0.0]);
-                assert_eq!(*end, [0.0, 1.0, 0.0]);
-                assert_eq!(*center, [0.0, 0.0, 0.0]);
-                assert!(*clockwise);
-                assert_eq!(*z_delta, 0.0);
+            ReduceEvent::Curve {
+                geom: CurveGeom::RationalQuadratic { cps, weights },
+                line_no: 2,
+                ..
+            } => {
+                let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+                // Tangent intersection of (1,0)→(0,1) on unit circle = (1,1).
+                assert!(approx(cps[0][0], 1.0) && approx(cps[0][1], 0.0));
+                assert!(approx(cps[1][0], 1.0) && approx(cps[1][1], 1.0));
+                assert!(approx(cps[2][0], 0.0) && approx(cps[2][1], 1.0));
+                // Z constant.
+                for cp in cps { assert!(approx(cp[2], 0.0)); }
+                // Weight middle = cos(π/4) = √½.
+                assert!(approx(weights[0], 1.0));
+                assert!(approx(weights[1], std::f64::consts::FRAC_1_SQRT_2));
+                assert!(approx(weights[2], 1.0));
             }
-            other => panic!("expected Arc, got {other:?}"),
+            other => panic!("expected Curve(RationalQuadratic), got {other:?}"),
         }
     }
 
     #[test]
-    fn g3_emits_arc_counter_clockwise() {
+    fn g3_emits_curve_rational_quadratic_counter_clockwise() {
+        // CCW 90° from (0, 1) to (1, 0) around (0, 0). I = -0, J = -1 makes the
+        // center at (0, 0) starting from (0, 1).
         let toks = vec![
-            cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'F', 1500.0)])),
-            cmd(b'G', 3, 2, p(&[(b'X', 0.0), (b'Y', 1.0), (b'I', -1.0), (b'J', 0.0)])),
+            cmd(b'G', 1, 1, p(&[(b'X', 0.0), (b'Y', 1.0), (b'F', 1500.0)])),
+            cmd(b'G', 3, 2, p(&[(b'X', 1.0), (b'Y', 0.0), (b'I', 0.0), (b'J', -1.0)])),
         ];
         let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
         match &events[1] {
-            ReduceEvent::Arc { clockwise: false, .. } => {}
-            other => panic!("expected counter-clockwise Arc, got {other:?}"),
+            ReduceEvent::Curve {
+                geom: CurveGeom::RationalQuadratic { cps, weights },
+                ..
+            } => {
+                let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+                // CCW short way from (0,1) to (1,0): tangent intersection at (1,1).
+                assert!(approx(cps[0][0], 0.0) && approx(cps[0][1], 1.0));
+                assert!(approx(cps[1][0], 1.0) && approx(cps[1][1], 1.0));
+                assert!(approx(cps[2][0], 1.0) && approx(cps[2][1], 0.0));
+                assert!(approx(weights[1], std::f64::consts::FRAC_1_SQRT_2));
+            }
+            other => panic!("expected Curve(RationalQuadratic), got {other:?}"),
         }
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn g2_with_z_delta_yields_z_delta_field() {
+    fn g2_with_z_delta_yields_z_linear_control_points() {
         // Helical arc: end Z differs from start Z.
         let toks = vec![
             cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'Z', 0.0), (b'F', 1500.0)])),
@@ -576,11 +656,17 @@ mod tests {
         ];
         let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
         match &events[1] {
-            ReduceEvent::Arc { z_delta, end, .. } => {
-                assert!((z_delta - 0.5).abs() < 1e-12);
-                assert_eq!(end[2], 0.5);
+            ReduceEvent::Curve {
+                geom: CurveGeom::RationalQuadratic { cps, .. },
+                ..
+            } => {
+                // Z linear across CPs: 0.0, 0.25, 0.5
+                let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+                assert!(approx(cps[0][2], 0.0));
+                assert!(approx(cps[1][2], 0.25));
+                assert!(approx(cps[2][2], 0.5));
             }
-            other => panic!("expected helical Arc, got {other:?}"),
+            other => panic!("expected Curve(RationalQuadratic), got {other:?}"),
         }
     }
 
@@ -589,16 +675,16 @@ mod tests {
     fn modal_position_persists_across_g1s() {
         let toks = vec![
             cmd(b'G', 1, 1, p(&[(b'X', 1.0), (b'Y', 0.0), (b'F', 1500.0)])),
-            cmd(b'G', 1, 2, p(&[(b'X', 2.0)])),  // Y not given, should persist as 0.0
+            cmd(b'G', 1, 2, p(&[(b'X', 2.0)])),
         ];
         let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
         assert_eq!(events.len(), 2);
         match &events[1] {
-            ReduceEvent::G1Move { from, to, .. } => {
-                assert_eq!(*from, [1.0, 0.0, 0.0]);
-                assert_eq!(*to, [2.0, 0.0, 0.0]);
+            ReduceEvent::Curve { geom: CurveGeom::Linear { cps }, .. } => {
+                assert_eq!(cps[0], [1.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [2.0, 0.0, 0.0]);
             }
-            other => panic!("expected G1Move, got {other:?}"),
+            other => panic!("expected Curve(Linear), got {other:?}"),
         }
     }
 
