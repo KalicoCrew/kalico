@@ -1155,14 +1155,18 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
 //      tightening at points where the relaxation is already feasible.
 //
 //   2. **L∞ trust region** on `(b, a)` around the current iterate. Initial
-//      ρ_b = 0.20, ρ_a = 0.30. Adapts: expand by 1.5× on accept, contract
-//      by 0.5× on reject. Caps: ρ_b ∈ [0.05, 0.5], ρ_a ∈ [0.075, 0.75].
+//      ρ_b = 0.05, ρ_a = 0.10 (tightened from the diagnosis's recommended
+//      0.20/0.30 — the non-convex Term 2/Term 3 `a·√b` cross-terms
+//      invalidate the linearization at larger radii in fixture-4 testing).
+//      Adapts: expand by 1.5× on accept, contract by 0.5× on reject.
+//      Caps: ρ_b ∈ [0.005, 0.20], ρ_a ∈ [0.01, 0.40].
 //
 //   3. **Accept-only-if-decrease.** After each inner SOCP, evaluate the
 //      verifier-form max-ratio at the new iterate. If it does not decrease
-//      below the previous best, halve the step (`b_new ← (b̄ + b_new)/2`)
-//      and re-evaluate; up to 3 backtracks per outer iter before giving up
-//      that outer step.
+//      below the previous best, the trust-region radii ρ_b, ρ_a are halved
+//      (ρ ← ρ × 0.5^backtrack_count) and the inner SOCP is re-solved with
+//      the tighter feasibility region, up to MAX_BACKTRACKS=3 retries per
+//      outer iter.
 //
 // Verifier-non-blocker note: future widening to ±2 neighborhood for the
 // active set may help if non-adjacent oscillation appears. Not implemented;

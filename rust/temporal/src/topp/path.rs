@@ -704,8 +704,8 @@ mod tests {
         }
     }
 
-    /// Pin c_double_prime endpoints on the rational quarter-circle. Per
-    /// /tmp/path_verifier.json caveat 1, the rational FD branch also needed
+    /// Pin `c_double_prime` endpoints on the rational quarter-circle. Per
+    /// `/tmp/path_verifier.json` caveat 1, the rational FD branch also needed
     /// to be hardened (Lyness-optimal step instead of `h*0.01`). On a
     /// uniformly-curved arc, |C''(s)| at any s should equal κ = 1/R.
     #[test]

@@ -2,6 +2,9 @@
 //!
 //! Acceptance criteria per spec §6.
 
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::uninlined_format_args)]
+
 mod biagiotti_melchiorri {
     /// Total trajectory time for a 1D rest-to-rest move of length `L` against
     /// `v_max`, `a_max`, `j_max` per Biagiotti & Melchiorri 2008 ch. 3

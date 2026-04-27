@@ -37,6 +37,10 @@
 //!
 //! This test pins that identity numerically.
 
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::items_after_statements)]
+
 use nurbs::VectorNurbs;
 use temporal::topp::path::sample_arclength_grid;
 use temporal::{schedule_segment, GridConfig, GridScheme, Limits};
