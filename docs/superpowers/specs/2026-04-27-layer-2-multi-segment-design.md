@@ -83,21 +83,34 @@ where `T(side)` is the unit tangent of the segment evaluated at u=1 (left side) 
 
 ```
 v_cent_cap(side)  = sqrt(a_centripetal_max / κ(side))     for κ(side) > κ_floor
-v_cent_cap(side)  = ∞                                       for κ(side) ≤ κ_floor
+v_cent_cap(side)  = sqrt(B_MAX_CENT_CAP)                    for κ(side) ≤ κ_floor
 v_centripetal_cap = min over both sides (v_cent_cap)
 ```
 
-with `κ_floor = 1e-12 mm⁻¹` per the toppra-issue-#244 robustness pattern. For a smooth join (κ_left = κ_right = some finite value), this gives the standard centripetal cap. For a sharp G1↔G1 corner (κ = 0 on each side except a delta at the corner), the formula degenerates and Cap 2 alone gives `v = ∞`.
+with `κ_floor = 1e-12 mm⁻¹` per the toppra-issue-#244 robustness pattern, and `B_MAX_CENT_CAP = 1e8 mm²/s²` (= ~10⁴ mm/s, comfortably above any real machine `v_max`) — matching the existing `constraints.rs` constant. The "∞" cap below the floor is conceptual; the implementation uses the finite ceiling for numerical hygiene. For a smooth join (κ_left = κ_right = some finite value), this gives the standard centripetal cap. For a sharp G1↔G1 corner (κ = 0 on each side except a delta at the corner), the formula degenerates and Cap 2 alone gives `v = sqrt(B_MAX_CENT_CAP)`, deferring the actual cornering bound to the sharp-corner sub-case below.
 
 **Sharp-corner sub-case (G1↔G1).** When both sides report κ ≤ κ_floor at the junction (the G1↔G1 degenerate case), kick into chord-error mode: junction velocity is bounded by the Sonny-Jeon JD formula
 
 ```
-v_jd = sqrt(2 · a_centripetal_max · δ_chord · (1 - cos(θ/2)) / (1 + cos(θ/2)))
-                                            -- or equivalently --
-v_jd = sqrt(a_centripetal_max · δ_chord · tan²(θ/2))
+v_jd = sqrt(a_centripetal_max · δ_chord · sin(α/2) / (1 - sin(α/2)))
 ```
 
-where `θ` is the corner angle (between left tangent and right tangent) and `δ_chord` is the chord-error tolerance budget. **`δ_chord` is a per-junction quantity supplied by the input**, not a kalico-internal constant — the slicer (parallel workstream) is the source of truth for per-feature tolerance hints. Default if unsupplied: a conservative value derived from CLAUDE.md (e.g., 50 µm); finalized at implementation time.
+where:
+- **`α` is the *deviation angle*** — the angle by which the path turns at the corner. `α = 0` is collinear (no corner; same direction on both sides). `α = π` is a complete reversal (impossible to actually traverse). Computed from the two tangent unit vectors as `α = π − arccos(t_left · t_right)`. (Equivalently: if `θ_between` is the angle between the two tangent vectors as their dot product reports, `α = π − θ_between`.)
+- **`δ_chord`** is the chord-error tolerance budget for this junction.
+
+**Limit cases handled explicitly:**
+
+- `α ≤ ALPHA_COLLINEAR_THRESHOLD` (default 1e-3 rad ≈ 0.06°): the join is collinear or nearly so — no corner cap from JD. Return `v_jd = ∞` (formally `B_MAX_CENT_CAP = 1e8 mm²/s²` per `constraints.rs`, which is ~10⁴ mm/s, comfortably above any machine `v_max`). Without this guard, the formula reduces to `sin(α/2) → 0` and gives `v_jd = 0` — i.e., a full stop at every collinear G1 split, which slicers emit constantly when discretizing a long straight into multiple G1 commands. **This case is the most common JD-branch trigger by far** and must not be allowed to brake the machine.
+- `α ≥ ALPHA_REVERSAL_THRESHOLD` (default 0.99 · π): the join is approaching a full reversal — `sin(α/2) → 1` and `v_jd → 0` correctly, but the formula's `1 - sin(α/2)` denominator approaches zero from above, risking numerical issues. Cap `v_jd` at a small positive floor (e.g., 1 mm/s) so we get "essentially full stop" rather than `0/0` or `inf`. The downstream solver handles `v_start = 1 mm/s` boundary conditions cleanly.
+
+**`δ_chord`** is a per-junction quantity supplied by the input, not a kalico-internal constant — the slicer (parallel workstream) is the source of truth for per-feature tolerance hints. Default if unsupplied: a conservative value derived from CLAUDE.md (e.g., 50 µm); finalized at implementation time.
+
+**Sign / convention notes** (because the JD formula is famously easy to get wrong):
+
+- This spec uses the Klipper `square_corner_velocity` convention (Sonny-Jeon family). At `α = π/2` (90° corner), `sin(π/4) = √2/2 ≈ 0.707`, so `v_jd² = a · δ · 0.707 / 0.293 ≈ 2.41 · a · δ`, recovering Klipper's `v_jd² ≈ 2.41 · a · scv`. Sanity check: implementations should match Klipper's for the same `(a, δ, α)` to within rounding.
+- Marlin uses a different convention (`junction_deviation` based on `2 · a · δ` directly, no `α`-dependence — they precompute corners differently); ignore that, we're following Klipper.
+- `θ_between` (dot-product angle) is what raw NURBS tangent computation gives you; `α` (deviation) is `π - θ_between`. Implementations must be explicit about which one is being passed to the JD formula. Confusion between these two conventions is exactly Codex's review-2 critique that motivated this rewrite.
 
 **Implementation note.** The formula is unified in the sense that it reduces to the same call-site per junction; whether the cap comes from "smooth κ" or "sharp-corner JD" is a runtime branch on `max(κ_left, κ_right) > κ_floor`. There is one `compute_junction_velocity` function in the codebase, not three.
 
@@ -387,6 +400,12 @@ Six fixtures, designed to exercise each new behavior in isolation. Each is a fun
 - Per-segment N: adaptive default (§2.5).
 - Acceptance: all profiles pass feasibility; joining converges in ≤ 3 sweeps; sanity-log total batch wall-clock (no acceptance threshold) — expectation: <100 ms on a Pi 5.
 
+**Fixture 7 — Adaptive-N curvature-spike sanity (post-Codex-review-1 addition).** A short segment (2–5 mm) with a deliberate localized high-curvature bump (e.g., a hand-rolled degree-3 NURBS with two close interior control points producing a κ spike). Tests whether the v1 arclength-only adaptive-N policy under-resolves the spike (per §7.7).
+- Limits: textbook.
+- Per-segment N: forced to v1-policy minimum (MIN_N=10) — i.e., explicitly NOT bumping N to "fix" the test.
+- Acceptance: solve as usual, then independently re-evaluate (v, a, j, centripetal) from the resulting profile at 4× the solver grid density (interpolating between grid points using the grid-sample structure) and re-check constraints with `ε_feas = 1e-3`. **If the v1 policy passes, fixture passes; if any inter-grid violation is detected, fixture fails and v1 must be escalated to v2 (curvature-aware adaptive N) before Step 4.5 lands.**
+- This fixture is the operational implementation of Codex review-1's concern that "feasibility check only validates grid points." It runs once per CI pass.
+
 ### 5.2 Skipped on purpose
 
 - **Hundreds-of-segments-long buffer.** Would test scale but not new behaviors; defer to Step 7 MVP integration tests.
@@ -433,6 +452,10 @@ For Fixture 4 (per-segment limits change):
 
 If any fixture caps at the hard 10-sweep maximum, that's a test failure indicating either the joining algorithm has a bug or the convergence criterion is too tight. Investigate — don't bump the cap silently.
 
+### 6.6.5 Inter-grid sanity (fixture 7)
+
+After solving fixture 7 with v1 adaptive-N policy at MIN_N=10, re-evaluate `(v, a, j, centripetal)` at 4× the solver grid density (interpolating between solver grid points). All re-evaluated points must satisfy the limits within `ε_feas = 1e-3` (same tolerance as Step 4's per-grid feasibility check). Failure means v1 silently produces inter-grid violations on high-curvature spikes; v1 policy must be escalated to v2 before Step 4.5 lands.
+
 ### 6.6 Performance: non-goal sanity log
 
 Wall-clock per batch is logged to test output but is **not** an acceptance criterion. Expectation: Fixture 6 (10 mixed segments at adaptive N) finishes in <100 ms on a Pi 5 with 3 worker threads. Investigate if observed runtime exceeds ~300 ms (3× margin), but no specific bar is set. Production performance budgets are a Step-7 concern.
@@ -463,9 +486,19 @@ Investigation showed cubic@N=200 = 142 ms at tol=1e-5. **Mitigation:** the `MAX_
 
 Investigation showed 4-thread fights Klipper on cores 0-1. **Mitigation:** default `worker_threads = 3` with thread affinity to cores 1-3. Configurable via `BatchInput.worker_threads` for hosts where Klipper isn't running (developer benchmarking, simulator).
 
-### 7.7 Adaptive-N policy may under-resolve some segments
+### 7.7 Adaptive-N policy may under-resolve high-curvature short segments
 
-Default `TARGET_GRID_SPACING_MM = 0.5` is conservative for typical print quality but might be too loose for high-curvature short segments where 0.5 mm grid spacing samples the curvature poorly. **Mitigation:** the MAX_N cap (200) ensures we never under-resolve egregiously; v2 policy adds a curvature-aware density factor. v1 acceptable based on per-segment feasibility check (which would catch egregious under-resolution).
+Default `TARGET_GRID_SPACING_MM = 0.5` plus `MIN_N = 10` works well for typical-quality slicer output where κ varies smoothly. **Risk surfaced by Codex review:** a short segment (say 2 mm) with a localized high-curvature bump (e.g., a tight corner-blend NURBS from Step 8 future work) at MIN_N=10 has 200 µm grid spacing — comfortable for the bulk of the segment but may straddle a curvature spike between two grid points, leaving the spike's centripetal constraint un-enforced.
+
+**The post-solve feasibility check at grid points (Step 4 spec §6.2, ε_feas = 1e-3) does NOT catch this** — it only validates the (v, a, j, centripetal) at the N evaluated grid points, not between them. An earlier draft of this section claimed it would catch under-resolution; that was wrong (Codex review-1 caught it).
+
+**Mitigations available:**
+
+1. **Curvature-aware adaptive N (v2 policy)**: bump N in proportion to `max(κ) / mean(κ)` along the segment when the ratio exceeds a threshold (say 5×). Cheap to compute (we already evaluate κ at grid points for the centripetal constraint); a single extra pass over κ samples gives the densification factor.
+2. **One-shot "denser-resampling" sanity test in CI**: solve a fixture with N=20, then independently re-evaluate `(v, a, j, centripetal)` from the resulting profile at 4× density (interpolating the grid-point solution and re-checking constraints). Catches systematic inter-grid violations of the v1 policy. Cheap.
+3. **Explicit segment splitting for fitter-emitted high-curvature blends** (Step 8 territory): the corner-blend module emits short NURBS with known high-curvature regions, and can hint at minimum N requirements per segment.
+
+**v1 disposition:** ship the arclength-only `clamp(MIN_N=10, ceil(L/0.5mm), MAX_N=200)` policy for Step 4.5, but **add the denser-resampling sanity test to the fixture suite (§5)** as fixture 7 — pick a segment with a deliberate curvature spike, solve at N=10, validate at 4× resampling. If the v1 policy fails this test, escalate to v2 (curvature-aware) before Step 4.5 lands. Defer v3 (segment-splitting) to Step 8.
 
 ## 8. What deferred / future work picks up
 
@@ -504,7 +537,8 @@ The plan (forthcoming, separate document) will decompose into SDD-worker-sized i
 11. Fixture 4 (per-segment limits change).
 12. Fixture 5 (star pattern — convergence stress).
 13. Fixture 6 (long realistic chain — performance sanity log).
-14. Update CLAUDE.md plan-changes-log on completion.
+14. Fixture 7 (curvature-spike inter-grid sanity — v1-vs-v2 adaptive-N policy gate).
+15. Update CLAUDE.md plan-changes-log on completion.
 
 Items 1–8 are roughly sequential (each pipeline layer); 9–13 are parallel-friendly once 1–8 are in place.
 
@@ -513,7 +547,7 @@ Items 1–8 are roughly sequential (each pipeline layer); 9–13 are parallel-fr
 - **`δ_chord` default value** — placeholder is 50 µm; should be revisited once kalico-aware slicer is emitting real per-feature tolerance hints. Fixture comments flag this.
 - **Joining cap (10 sweeps)** — empirical; might tighten to 5 once we have real-fixture data showing 1–3 is the typical case.
 - **`MAX_N = 200` per-segment cap** — empirical; could be raised if a future tolerance-tuning pass makes large-N solves cheaper.
-- **Adaptive N curvature-density factor** — v2 (§2.5).
+- **Adaptive N curvature-density factor (v2 policy)** — gated by Fixture 7 (§5.1, §6.6.5). v1 ships only if Fixture 7 passes; otherwise escalate to v2 before Step 4.5 lands.
 - **Sub-segment splitting at NURBS knots** — for very-long G5 segments where N=200 is genuinely under-resolved (§7.5).
 - **Skip-base-SOCP heuristic** — per Pi 5 investigation, ~30% savings on cubic-class geometry by detecting "this geometry needs SLP cuts" up-front and starting with cuts. Algorithm work; deferred.
 - **`O(nnz)` constraint-matrix construction** — per Pi 5 investigation, 7-13% savings at N=200; defer until Step 4.5 lands and we have profiling data on real fixtures.
@@ -558,3 +592,18 @@ No other "TBD" / "TODO" / vague requirements.
 - Worker-thread CPU pinning: mentioned in §2.6 as `taskset` / `pthread_setaffinity_np`. Implementation will pick one; current preference is `pthread_setaffinity_np` for portability (works regardless of how the binary is invoked). Plan-level detail.
 
 No remaining ambiguities flagged.
+
+## Post-review revisions (Codex review-1)
+
+External Codex pass surfaced four issues this draft has been amended to address:
+
+- **§2.2 JD formula was ambiguous on θ-convention.** The original wording "where θ is the corner angle (between left tangent and right tangent)" plus the formula `tan²(θ/2)` would have given `v_jd = 0` at every collinear G1↔G1 split (full-stop at every G1 sub-discretization of a long straight), which slicers emit constantly. Rewrote §2.2 sharp-corner sub-case to use the deviation-angle convention (`α`, where `α = 0` means collinear and `v_jd = ∞`), with explicit limit-case handling for collinear and near-reversal joins. Pinned to the Klipper `square_corner_velocity` formulation for sanity-checking.
+- **§2.2 v_cent = ∞ vs `B_MAX_CENT_CAP = 1e8`** spec/code mismatch. Aligned spec wording to the `constraints.rs` ceiling.
+- **§7.7 adaptive-N risk note was wrong** ("feasibility check would catch under-resolution"). Per-grid-point feasibility verification does NOT catch inter-grid violations from a curvature spike between two coarse grid points. Rewrote §7.7 with three mitigation paths and added Fixture 7 (§5.1) as the operational v1-vs-v2 policy gate.
+- **§9 implementation plan envelope** updated to add Fixture 7 + bump CLAUDE.md plan-changes-log task to item 15.
+
+Codex's other findings landed in companion documents:
+- The "(A) feasibility math" critique landed in `docs/research/pi5-socp-throughput-investigation.md` (corrected feasibility framing — offline-batch ratio, not push-per-second-streaming).
+- The "multi-seg SOCP closed too strongly" critique landed in the same artifact (softened to "deferred" — Step 8/9 research item).
+- The "tolerance 1e-5 inter-grid safety" critique landed there too (caveat 8: add denser-resampling validation test).
+- The "math-optimal principle technically un-achievable as written" critique landed in CLAUDE.md (rewording the non-negotiable bullet to acknowledge SLP local optima + finite N as engineering realities).

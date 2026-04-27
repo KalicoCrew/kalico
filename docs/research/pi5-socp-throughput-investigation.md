@@ -10,11 +10,13 @@
 ## TL;DR
 
 - **GPU offload to VideoCore VII is conclusively dead** — no FP64 hardware, GPU FP32 throughput ≤ CPU FP64 throughput, problem size 4–5 orders of magnitude below GPU break-even.
-- **A single one-line patch** (loosen Clarabel tolerances from 1e-8 default to 1e-5) **gives an 11× speedup on the worst case** (cubic@N=200: 1596 ms → 142 ms), with all existing tests still passing.
+- **A single one-line patch** (loosen Clarabel tolerances from 1e-8 default to 1e-5) **gives an 11× speedup on the worst case** (cubic@N=200: 1596 ms → 142 ms), with all existing tests still passing. (Inter-grid feasibility is implicitly assumed adequate at sufficient N — same assumption as at default tolerance — but worth a one-shot validation test; see Caveat 8.)
 - **`opt-level = 3` on the workspace release profile** (was `"z"`, MCU-anticipatory) gives ~25% additional headroom on host builds.
 - **Adaptive N is essential**: N=20 cubic = 6.5 ms; N=200 cubic = 142 ms. A 1mm slicer-output G1 segment doesn't need 200 grid points.
-- **Per-segment parallelism scales near-linearly to 4 cores at small N** (N=20: 3.7× speedup) but breaks at large N due to memory bandwidth saturation on shared L3.
-- **The throughput-non-negotiable principle (CLAUDE.md "Non-negotiable constraints") is satisfiable on this hardware** with these wins. Step 4.5's (A)/(B) joining-vs-solving choice is no longer hardware-feasibility-bound.
+- **Per-segment parallelism scales near-linearly to 4 cores at small N** (N=20: 3.7× speedup) but breaks at large N due to memory bandwidth saturation on shared L3. 3-thread is the safe production default (avoids Klipper contention on cores 0–1).
+- **The throughput-non-negotiable principle (CLAUDE.md "Non-negotiable constraints") is satisfiable on this hardware** in the **offline-batch operating model** (planner finishes ahead of motion or pre-plans the file). It is *not* satisfied as a sustained motion-rate streaming requirement — that framing was wrong, see "(A) joining-with-SOCP-per-iter feasibility math (corrected after Codex review)" below.
+- **Step 4.5's (A) vs (B) joining-vs-solving choice is no longer hardware-feasibility-bound.** Pick (A) per the throughput principle; (B)'s 3–8% trajectory-time regression on ramp-bound segments is a knowing choice we don't make.
+- **Multi-segment SOCP analysis** for Clarabel-as-black-box: per-segment wins for Step 4.5. A purpose-built multi-segment formulation with warm-start / shared factorization could change the answer; deferred to Step 8 / Step 9.
 
 ## Context
 
@@ -230,32 +232,53 @@ The deferred "Cross-segment relaxation effects" item asks whether a single SOCP 
 - **One big N=200 solve, cubic-class geometry**: 142 ms single-thread.
 - **Ten small N=20 solves, cubic-class geometry**: 10 × 6.5 ms = 65 ms single-thread.
 
-**Multi-segment SOCP is ~2.2× slower than per-segment-at-small-N at the same total resolution**, single-threaded. With per-segment parallelism across 4 cores: 10 × N=20 ≈ 25 ms vs 1 × N=200 = 142 ms = **5.7× faster per-segment**.
+**For Clarabel-as-black-box, multi-segment SOCP is ~2.2× slower than per-segment-at-small-N at the same total resolution**, single-threaded. With per-segment parallelism across 4 cores: 10 × N=20 ≈ 25 ms vs 1 × N=200 = 142 ms = **5.7× faster per-segment**.
 
-Why: the SOCP cost scales superlinearly in problem size (sparse Cholesky factorization + IPM iteration count both grow). Splitting into K small problems gives each one a tiny KKT system that fits in cache and converges in fewer IPM iterations. Plus the per-segment shape lets us trivially fan out across cores.
+Why: as currently implemented, both flavors hand Clarabel a fresh problem with no warm-start, no shared symbolic factorization, and no cross-segment KKT-block-structure exploitation. SOCP cost scales superlinearly in problem size (sparse Cholesky factorization + IPM iteration count both grow), so splitting into K small problems gives each one a tiny KKT system that fits in cache and converges in fewer IPM iterations. Plus the per-segment shape lets us trivially fan out across cores.
 
-**Verdict: multi-segment SOCP loses for this regime. Step-4 spec §11's deferred item can be closed.** The right shape is per-segment SOCP at adaptive small N, with junction velocities propagated by the joining algorithm (whichever (A)/(B) flavor Step 4.5 picks).
+**Verdict (qualified after Codex review):** for the implementation regime we have — Clarabel-as-black-box, no warm-start API exposed, no purpose-built cross-segment formulation — **per-segment-with-adaptive-N + parallelism wins for Step 4.5.** We adopt that for Step 4.5 and **defer** (rather than close) the multi-segment SOCP question. A purpose-built multi-segment formulation that exploits shared symbolic factorization, block-tridiagonal KKT structure, or warm starts could change the answer in principle; investigating that is a Step 8 / Step 9 research item, especially once shaper-aware iteration creates repeated related solves on the same constraint shape.
 
-## (A) joining-with-SOCP-per-iter feasibility math at MVP throughput
+## (A) joining-with-SOCP-per-iter feasibility math (corrected after Codex review)
 
-Closing the loop on the original Step 4.5 question. Under the post-investigation cost regime (adaptive N=20 typical, tolerance 1e-5, target-cpu=native, 4-core parallel batch):
+**Earlier draft of this section had a real math error**, caught by an external review pass. The original framing computed "per-push compute = per-segment latency / core count" and concluded Option (A) needed "1.5–3 cores at 100% sustained at 1000 push/sec." That is wrong: Clarabel is single-threaded per solve, so spreading across N cores means doing N independent solves in parallel, not making one solve N× faster. The right metric is solver throughput (segments solved per second across all threads), not amortized latency × push rate. By that metric the original framing was 2–3.6× over the hardware's measured throughput, not 30–60% under it.
 
-- Per-segment SOCP cost: ~6.5 ms cubic, ~3.2 ms straight (single-thread)
-- 4-core parallel amortized (assuming linear scaling at N=20, confirmed in Finding 5): ~1.5–2 ms / segment
+**The architectural conclusion (option A is feasible) holds, but for a different reason** — the planner is offline-batch, not push-per-second-streaming, so the relevant feasibility comparison is `total_planning_time < total_print_time` (or "wait before motion starts"), not "match motion rate."
 
-**Per-push compute under (A) "SOCP per joining iteration":**
-- Per push, the joining algorithm marks ~1–2 segments dirty (the newly pushed segment + sometimes its predecessor as reverse-pass propagates).
-- 1–2 dirty segments × ~6 ms (cubic worst case) = 6–12 ms compute per push (single-thread).
-- 4-core parallel: 1.5–3 ms per push.
+### Corrected feasibility framing
 
-**At MVP-target throughput** (1000 mm/s motion × 1 mm slicer segments = 1000 push/sec):
-- Required compute: 1000 × 1.5–3 ms = 1.5–3 seconds of compute per second of motion.
-- Available compute: 4 cores at ~1.6–2 GHz under load = ~4 effective cores.
-- Headroom: 1.5–3 cores at 100% used; 1–2.5 cores spare for Klipper + comms + telemetry.
+Reframe around the actual operating model: **the planner runs offline against a buffered file, finishes ahead of motion, feeds the MCU's segment buffer.** No "1000 push/sec sustained" requirement exists; that target was a leftover from the streaming-model framing the brainstorming explicitly walked back from.
 
-**Conclusion: option (A) is feasible at MVP throughput on the actual target host.** The throughput-non-negotiable principle is satisfied. The Step-4.5 (A) vs (B) decision is now purely about implementation simplicity vs trajectory-time optimality (the conversation we wanted to be having from the start), not hardware feasibility.
+The relevant per-print metrics:
 
-Caveats: (a) Adaptive-N policy must be implemented; using fixed N=200 reverts to the catastrophic regime. (b) Per-segment parallelism must use 3 threads (avoid 4-core memory-bandwidth cliff at large N or contention with Klipper on cores 0–1). (c) These numbers are for the synthetic worst case; real slicer output mix (~80% straight, ~15% arc, ~5% cubic) is faster.
+- **Total planning time** = (total segments) ÷ (aggregate solver throughput in segments/sec).
+- **Aggregate solver throughput**, measured (Finding 5, cubic-worst-case at adaptive N=20, 3 threads): **~430 seg/sec.** At 4 threads: 550 seg/sec on synthetic-only, but 4th thread fights Klipper on cores 0–1 in real production (Codex's point d), so the safe number to plan against is the 3-thread one.
+- **Per-print segment count**: ~200K G1-dense slicer segments in a long current-style print, or ~10–20K G5 segments under future kalico-aware slicer.
+
+**Worked numbers (offline-batch ratio):**
+
+| Print profile                          | Planning time at 430 seg/s | Acceptable for offline-batch? |
+|----------------------------------------|----------------------------|-------------------------------|
+| 200K G1, all-cubic-worst-case (synthetic) | ~7.7 min                   | Yes, against multi-hour print |
+| 200K G1, realistic mix (~80% straight)    | likely 2–3 min             | Yes                           |
+| 20K G5, all-cubic-worst-case              | ~46 s                      | Yes                           |
+| 20K G5, realistic mix                     | likely 10–20 s             | Yes                           |
+
+Realistic mix throughputs are extrapolations from per-fixture single-call costs; not directly measured. **Real-slicer-output benchmark is a follow-up that would tighten these.**
+
+**Conclusion (corrected):** option (A) is feasible **as offline-batch**, with planning-time-to-print-time ratios that comfortably allow the planner to finish ahead of motion or to pre-plan with a few-minutes wait before the first move. The throughput-non-negotiable principle is satisfied in the form that actually matches the architecture (offline batch with the operator either pre-planning or planning-while-motion-builds-the-buffer), not in the streaming form (sustained motion-rate match) which we never committed to.
+
+The (A) vs (B) decision is genuinely no longer hardware-feasibility-bound; it's about the trajectory-quality regression of (B) (per the verifier: 3–8% on ramp-bound segments) being a knowing choice the throughput-non-negotiable principle disallows.
+
+### Caveats and follow-ups (expanded after Codex review)
+
+1. **Adaptive-N policy must be implemented**; using fixed N=200 reverts to the catastrophic per-segment regime documented in this artifact (cubic@N=200 = 142 ms/solve at tol=1e-5; pre-tolerance-patch was 1.6 s).
+2. **Per-segment parallelism uses 3 threads, not 4** — avoids the 4-core memory-bandwidth cliff at large N AND avoids contention with Klipper on cores 0–1.
+3. **3-thread numbers were measured with `taskset -c 3` pinning the harness, but the parallel benchmark itself did not pin individual workers via `pthread_setaffinity_np`, and Klipper was idle (no print in motion).** Production validation should re-measure with worker-thread affinity (e.g., pin to cores 1, 2, 3) and Klipper actively serving a print on core 0. Codex flagged this; deferred to plan-execution time.
+4. **Synthetic-fixture extrapolations (table above) are not real-slicer-output benchmarks.** Real slicer output (PrusaSlicer / Orca / Super output for representative test prints) is a follow-up that should land before Step 4.5 implementation completes; if real-mix throughput is materially below the extrapolations, the offline-batch ratio narrows.
+5. **Joining iteration count is assumed 1–3 sweeps with 1–2 dirty segments per sweep.** Current code's SLP outer loop has `SLP_MAX_OUTER_ITERS = 50` (path-jerk) plus 30 (per-axis-jerk Step 9). Worst-case joining behavior on real multi-segment input is not yet measured — defer to a `plan_batch` benchmark on representative slicer buffers.
+6. **The current upstream `solver.rs` does not yet have the tolerance patch applied** (Codex correctly flagged this). The Pi numbers in Finding 2 onward were measured against the bench checkout on the Pi with the patch applied locally; the upstream tree's settings are still default 1e-8. The patch lands as a follow-up commit after the in-flight Step-9 work commits.
+7. **The Pi bench checkout was rsync'd from the local working tree at the time of measurement, which already included the in-flight Step-9 axis-jerk SLP work** (the 935-line uncommitted diff in `solver.rs`/`mod.rs`/`prototype.rs`). The benchmarks therefore exercise the Step-9-extended `schedule_segment` path, not the older committed Step-4 surface. (Codex initially worried these numbers might be stale relative to current code; they are not — but worth recording explicitly.)
+8. **Inter-grid feasibility is not independently verified.** Step 4 spec §6.2 verifies velocity / acceleration / jerk / centripetal at grid points only with `ε_feas = 1e-3`. Loosening Clarabel tolerances from 1e-8 to 1e-5 changes grid-point solution magnitudes by O(1e-5), well within the verification tolerance — but inter-grid behavior is dominated by N choice and trajectory interpolation, not solver tolerance, so the relative impact of the tolerance change on inter-grid feasibility is small. Risk is real but bounded by adaptive-N policy. Recommend: add a sanity test that resamples a solved profile at 4× the solver grid density and re-checks feasibility, as a one-shot validation that the tolerance patch doesn't introduce silent inter-grid violations.
 
 ## Open follow-ups
 
