@@ -217,6 +217,14 @@ pub fn build(
 
     // Scalar-tangential jerk bound: J_path = min(j_max,x, j_max,y, j_max,z).
     // Conservative but provably tight for the paper's setup (Cor. 5.1).
+    //
+    // MAINTAINER WARNING: Do NOT "improve" J_path to a per-axis projected bound
+    // (e.g., sum_axis |c'_axis|·j_max,axis). The SOC chain in block (h) is only
+    // convex for a SINGLE scalar J_path; replacing it with a per-axis bound would
+    // silently violate the relaxation's convexity guarantee from Consolini-Locatelli
+    // 2024 §3-§4. Per-axis Cartesian jerk relaxation is deferred per spec §11
+    // (Step 9 territory; requires bilinear/cubic envelope auxiliaries the paper
+    // doesn't address).
     let j_path = limits.j_max[0].min(limits.j_max[1]).min(limits.j_max[2]);
     debug_assert!(j_path > 0.0, "jerk limit must be positive");
 
@@ -790,10 +798,7 @@ mod tests {
             .filter(|(c, _)| matches!(c, Cone::Nonneg))
             .map(|(_, n)| *n)
             .sum();
-        assert!(
-            nonneg_rows >= 25 && nonneg_rows <= 60,
-            "nonneg row count = {nonneg_rows}, expected 25-60"
-        );
+        assert_eq!(nonneg_rows, 32, "structural drift");
 
         // ---- SOC block counts ----
         //
@@ -816,10 +821,7 @@ mod tests {
             .filter(|(c, _)| matches!(c, Cone::Zero))
             .map(|(_, n)| *n)
             .sum::<usize>();
-        assert!(
-            zero_block_count >= 7,
-            "zero cone rows = {zero_block_count}, expected ≥ 7"
-        );
+        assert_eq!(zero_block_count, 7);
 
         // ---- Dimension sanity ----
         let total_cone_dim: usize = bundle.cones.iter().map(|(_, d)| d).sum();
@@ -839,5 +841,32 @@ mod tests {
                 assert_eq!(coeff, 0.0, "var at idx {idx} should have obj coeff 0.0");
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 4 (edge case): N=2 minimum grid, no interior points
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn n_eq_2_minimum_grid_no_interior_points() {
+        // N = 2: only the two boundary points, no interior.
+        // The (N-2)-sized blocks (jerk envelope, x1/x2 nonneg, SOC chain) all become
+        // zero-sized — the implementation guards with `if count > 0` skips so no
+        // zero-dim cones leak into the output. Verifies that contract.
+        let grid = dummy_straight_grid(2, 50.0);
+        let limits = textbook_limits();
+        let bundle = match build(&grid, &limits, EndpointVelocities { v_start: 0.0, v_end: 0.0 }) {
+            BuildOutcome::Ok(b) => b,
+            BuildOutcome::Boundary(_) => panic!("zero endpoints should be feasible"),
+        };
+        assert_eq!(bundle.n_grid, 2);
+        assert_eq!(bundle.n_vars, 5 * 2 - 6); // = 4: only b_0, b_1, a_0, a_1
+        // No SOC blocks should be emitted.
+        let soc_block_count = bundle.cones.iter()
+            .filter(|(c, _)| matches!(c, Cone::SecondOrder))
+            .count();
+        assert_eq!(soc_block_count, 0);
+        // Objective should be zero everywhere (no interior t_i to minimize).
+        assert!(bundle.objective.iter().all(|c| c.abs() < 1e-12));
     }
 }
