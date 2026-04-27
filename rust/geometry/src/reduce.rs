@@ -45,6 +45,34 @@ impl ModalState {
     }
 }
 
+/// Geometry payload of a `ReduceEvent::Curve`. Each variant carries its
+/// control points as a fixed-size array — zero per-segment heap allocation,
+/// type-level enforcement of the correct CP count for each variant.
+///
+/// **Variant choice is by source g-code semantics**, not by mathematical
+/// class: G5.1 (`Quadratic`, non-rational) is distinct from G2/G3
+/// (`RationalQuadratic`) at this layer, so consuming code that handles them
+/// differently does not need to inspect `Option<weights>`.
+///
+/// Future G6.2 NURBS would add a single `Nurbs { cps: SmallVec<…>, weights:
+/// Option<…>, knots: SmallVec<…>, degree: u8 }` variant; the outer
+/// `ReduceEvent::Curve(_, _)` arm doesn't change.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum CurveGeom {
+    /// Degree-1 line segment. G0 (when promoted) and G1 land here.
+    Linear { cps: [[f64; 3]; 2] },
+    /// Degree-2 non-rational Bézier. G5.1 lands here.
+    Quadratic { cps: [[f64; 3]; 3] },
+    /// Degree-2 rational Bézier (NURBS with weights). G2/G3 land here.
+    RationalQuadratic {
+        cps: [[f64; 3]; 3],
+        weights: [f64; 3],
+    },
+    /// Degree-3 non-rational Bézier. G5 lands here.
+    Cubic { cps: [[f64; 3]; 4] },
+}
+
 /// Internal reduce-output events. `pipeline` consumes these.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
@@ -626,6 +654,22 @@ mod tests {
         // Plane selects update modal state silently — they're configuration,
         // not motion, and intentionally do not produce telemetry events.
         assert!(events.is_empty(), "expected no events, got {events:?}");
+    }
+
+    #[test]
+    #[allow(clippy::no_effect_underscore_binding)]
+    fn curve_geom_variants_construct() {
+        let _linear = CurveGeom::Linear { cps: [[0.0; 3], [1.0, 0.0, 0.0]] };
+        let _quad = CurveGeom::Quadratic {
+            cps: [[0.0; 3], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
+        };
+        let _ratquad = CurveGeom::RationalQuadratic {
+            cps: [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            weights: [1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+        };
+        let _cubic = CurveGeom::Cubic {
+            cps: [[0.0; 3], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [3.0, 0.0, 0.0]],
+        };
     }
 
     #[test]
