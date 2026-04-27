@@ -8,6 +8,12 @@ pub use limits::Limits;
 pub mod topp;
 pub use topp::{schedule_segment, ScheduleError};
 
+pub mod multi;
+pub use multi::{
+    plan_batch, BatchError, BatchInput, BatchOutput, GridStrategy,
+    JoiningStatus, JunctionBindingCap, JunctionInfo, SegmentInput,
+};
+
 #[derive(Debug, Clone, Copy)]
 pub struct GridConfig {
     pub scheme: GridScheme,
