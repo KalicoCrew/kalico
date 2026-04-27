@@ -10,7 +10,7 @@
 ## TL;DR
 
 - **GPU offload to VideoCore VII is conclusively dead** — no FP64 hardware, GPU FP32 throughput ≤ CPU FP64 throughput, problem size 4–5 orders of magnitude below GPU break-even.
-- **A single one-line patch** (loosen Clarabel tolerances from 1e-8 default to 1e-5) **gives an 11× speedup on the worst case** (cubic@N=200: 1596 ms → 142 ms), with all existing tests still passing. (Inter-grid feasibility is implicitly assumed adequate at sufficient N — same assumption as at default tolerance — but worth a one-shot validation test; see Caveat 8.)
+- **Loosening Clarabel tolerances 1e-8 → 1e-5 gives 11× speedup on the bench's worst case** (cubic@N=200: 1596 ms → 142 ms), and all existing tests at the time of measurement passed. **However, retest after Codex review-1 against the now-committed full fixture suite shows the patch is unsafe as a blanket change**: fixture 4 (G5 cubic with non-zero endpoint curvature) trips `DivergedSlp` because the SLP outer loop's convergence detection becomes fragile at looser inner-SOCP tolerance. **Recommended approach is per-call adaptive tolerance with automatic fallback to 1e-8 on `DivergedSlp`**, not the unconditional patch originally proposed. See Finding 2 SAFETY UPDATE.
 - **`opt-level = 3` on the workspace release profile** (was `"z"`, MCU-anticipatory) gives ~25% additional headroom on host builds.
 - **Adaptive N is essential**: N=20 cubic = 6.5 ms; N=200 cubic = 142 ms. A 1mm slicer-output G1 segment doesn't need 200 grid points.
 - **Per-segment parallelism scales near-linearly to 4 cores at small N** (N=20: 3.7× speedup) but breaks at large N due to memory bandwidth saturation on shared L3. 3-thread is the safe production default (avoids Klipper contention on cores 0–1).
@@ -83,9 +83,21 @@ let settings = DefaultSettings::<f64> {
 
 The cubic@N=200 catastrophic case was Clarabel's IPM hitting its 1000-iter cap at default tolerance, finishing as `AlmostSolved` after grinding 1.5 seconds. At 1e-5: 42 IPM iters, 66 ms, status `Solved`. **All previously-AlmostSolved cases are now Solved.**
 
-Quality preserved: full `cargo test -p temporal --release` passes, including the closed-form Biagiotti-Melchiorri 7-segment ground-truth check on fixtures 1+2 (which uses 6% tolerance per `tests/prototype.rs`).
+**Quality preserved on the bench fixtures available at measurement time** (straight, arc, hand-rolled cubic NURBS) — Pi 5 ran the full `cargo test -p temporal --release` suite at tol=1e-5 with all tests passing, including the closed-form Biagiotti-Melchiorri 7-segment ground-truth check on fixtures 1+2.
 
-**Failed sub-experiment:** tol=1e-4 is *slower* than tol=1e-5 (cubic@N=200: 167 ms vs 142 ms). Cause: Clarabel's "reduced tolerances" (the AlmostSolved threshold) default to 5e-5 / 1e-4. When primary tol = reduced tol, the two-tier convergence logic degenerates. Sweet spot is **1e-5**.
+**SAFETY UPDATE (Codex review-1, retest on local upstream after re-applying the patch):** the tolerance patch **is unsafe as a blanket change.** When applied to the upstream `solver.rs` and tested against the now-committed full fixture suite (which includes fixtures 4 and 6 added by the parallel Step-9 agent in commits between the original Pi measurements and the Codex review), **fixture 4 (G5 cubic with non-zero endpoint curvature) FAILS** with `DivergedSlp { last_max_ratio: 1.0320..., outer_iters: 7 }` — the SLP outer loop hits 7 iterations without driving the path-jerk constraint violation below 3.2%, then declares divergence.
+
+Mechanism: at default 1e-8 tolerance, the inner SOCP solves are precise enough that the SLP outer loop's convergence detection is reliable. At 1e-5, inner solves return slightly-noisier `b̄` iterates, which makes the SLP's "did we improve enough?" detection fragile on fixtures where the relaxation tightness gap is small (G5 cubic with endpoint curvature is exactly that case). Fixtures 1, 2, 3, 5 still pass at 1e-5 — they have either a tight base relaxation (no SLP needed) or a single trivial SLP iteration (relaxation gap large enough that any improvement is detectable).
+
+**Practical recommendation revised:** do NOT ship the unconditional tol=1e-5 patch. Instead, treat the tolerance as **adaptive per-call**:
+
+1. Default to tight 1e-8 (current upstream behavior; safest).
+2. Add a per-call hint API on `schedule_segment` to allow opting into 1e-5 when the caller is confident the geometry doesn't trip SLP convergence (e.g., straight-line or low-curvature segments).
+3. Or implement automatic fallback: try 1e-5 first; if SLP returns `DivergedSlp`, retry at 1e-8. Cost on convergent cases: zero (one fast solve). Cost on divergent cases: one fast wasted solve + one slow correct solve (still net win on the convergent cases that dominate).
+
+The 11× speedup on `cubic@N=200` for the bench's hand-rolled cubic is real but **does not transfer to G5-derived cubics with non-zero endpoint curvature**, which are the more representative cubic-class geometry for real slicer output. Real-slicer-output benchmarking (already on the follow-up list) becomes more important: it'll determine what fraction of segments are SLP-tolerance-tight vs SLP-tolerance-fragile, and therefore the practical ceiling of any tolerance-loosening strategy.
+
+**Failed sub-experiment:** tol=1e-4 is *slower* than tol=1e-5 (cubic@N=200: 167 ms vs 142 ms). Cause: Clarabel's "reduced tolerances" (the AlmostSolved threshold) default to 5e-5 / 1e-4. When primary tol = reduced tol, the two-tier convergence logic degenerates. Sweet spot for the *bench fixtures* is 1e-5; not safely generalizable per the SAFETY UPDATE above.
 
 ### Finding 3 — `opt-level = "z"` on the workspace was leaving ~25% on the table
 
@@ -251,7 +263,7 @@ Reframe around the actual operating model: **the planner runs offline against a 
 The relevant per-print metrics:
 
 - **Total planning time** = (total segments) ÷ (aggregate solver throughput in segments/sec).
-- **Aggregate solver throughput**, measured (Finding 5, cubic-worst-case at adaptive N=20, 3 threads): **~430 seg/sec.** At 4 threads: 550 seg/sec on synthetic-only, but 4th thread fights Klipper on cores 0–1 in real production (Codex's point d), so the safe number to plan against is the 3-thread one.
+- **Aggregate solver throughput**, measured (Finding 5, cubic-worst-case at adaptive N=20, 3 threads): **~430 seg/sec.** At 4 threads: 550 seg/sec on synthetic-only, but 4th thread fights Klipper on cores 0–1 in real production (Codex's point d), so the safe number to plan against is the 3-thread one. **These numbers were measured at tol=1e-5 on the bench**; per the Finding 2 SAFETY UPDATE, that tolerance is not safely applicable as a blanket change. Realistic production throughput is somewhere between this 430 seg/sec figure (if adaptive-tolerance fallback hits 1e-5 on most segments) and ~40 seg/sec (if forced to 1e-8 default on every segment). Real-slicer-output benchmarking is the missing data point.
 - **Per-print segment count**: ~200K G1-dense slicer segments in a long current-style print, or ~10–20K G5 segments under future kalico-aware slicer.
 
 **Worked numbers (offline-batch ratio):**
