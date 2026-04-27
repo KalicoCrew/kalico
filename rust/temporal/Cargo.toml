@@ -1,0 +1,15 @@
+[package]
+name = "temporal"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Layer 2 temporal scheduling for the kalico motion planner. Single-segment time-optimal velocity profile via Consolini-Locatelli 2024 SOCP. See docs/superpowers/specs/2026-04-27-layer-2-topp-prototype-design.md."
+
+[dependencies]
+nurbs = { path = "../nurbs", features = ["host"] }
+geometry = { path = "../geometry" }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
