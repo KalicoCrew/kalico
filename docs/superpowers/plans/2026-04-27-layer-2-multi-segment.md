@@ -201,7 +201,21 @@ pub struct BatchOutput {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum JoiningStatus {
+    /// Velocities stabilized AND all segments solved cleanly.
     Converged,
+    /// Velocity propagation stabilized, but some segments still have
+    /// non-success solver status (Infeasible / MaxIter / DivergedSlp /
+    /// MaxIterSlp). `schedule_segment` is deterministic, so re-solving with
+    /// the same inputs would produce the same status — no point continuing.
+    /// Diagnostic: indicates pathological segment(s) that need looser
+    /// endpoints, finer N, or v2 algorithmic improvement.
+    /// (Per round-4 review: split out from `CappedAtMaxSweeps` for caller
+    /// diagnostic clarity.)
+    StalledOnInfeasibleSegment { last_dirty_count: usize },
+    /// Reached MAX_SWEEPS without velocity stabilization. Indicates
+    /// joining-loop oscillation — different (and worse) failure mode than
+    /// `StalledOnInfeasibleSegment`. Should not happen on the test fixtures;
+    /// surfacing this means joining algorithm has a bug.
     CappedAtMaxSweeps { last_dirty_count: usize },
 }
 
@@ -912,6 +926,14 @@ pub(crate) fn reverse_sweep(
     junctions: &[JunctionResult],
 ) -> usize {
     const EPS_VEL: f64 = 1e-3;
+    // Defensive guard: 0..(0-1) would underflow `usize` (panic in debug,
+    // wrap in release) per Codex review-4 NIT. The public `plan_batch` path
+    // filters empty buffers via `BatchError::EmptySegments`, but this guard
+    // makes the helper safe to call directly. Single-segment case (len=1)
+    // also has no junctions to propagate, so early-return is correct.
+    if states.len() < 2 {
+        return 0;
+    }
     let mut dirty_count = 0;
     for k in (0..states.len() - 1).rev() {
         let proposed_v_end = junctions[k].v_junction.min(states[k + 1].v_start);
@@ -991,29 +1013,32 @@ pub(crate) fn join_until_converged(
         let r_dirty = reverse_sweep(states, junctions);
         if f_dirty == 0 && r_dirty == 0 {
             // Velocity propagation has stabilized — no segment's joining-decided
-            // (v_start, v_end) changed in either sweep direction. Three cases:
+            // (v_start, v_end) changed in either sweep direction.
             if states.iter().all(|s| !s.dirty) {
-                // (1) All segments solved cleanly. Done.
+                // Velocities stable AND every segment's last fan_out_solves
+                // returned a verifier-feasible success status. Done.
                 return Ok((sweep, JoiningStatus::Converged));
             }
-            // (2) Some segments still have dirty=true because their last
-            // fan_out_solves returned a non-success status (Infeasible /
-            // MaxIter / DivergedSlp / MaxIterSlp — all of which return
-            // Ok(profile) with non-success SolveStatus, leaving dirty=true).
-            // Per kalico-verifier review-3: schedule_segment is deterministic
-            // (Clarabel 0.11.1 with kalico's default-features uses single-
-            // threaded QDLDL; SLP loops have no RNG; constraint construction
-            // is deterministic), so re-solving with unchanged inputs would
-            // produce the same non-success status. Bail early rather than
-            // spin to MAX_SWEEPS.
+            // Velocities stable but some segments still have dirty=true,
+            // meaning their last fan_out_solves returned a non-success
+            // status (Infeasible / MaxIter / DivergedSlp / MaxIterSlp —
+            // all return Ok(profile) with non-success SolveStatus, leaving
+            // dirty=true). Per kalico-verifier review-3: schedule_segment
+            // is deterministic (Clarabel 0.11.1 with kalico's default
+            // features uses single-threaded QDLDL; SLP loops have no RNG;
+            // constraint construction is deterministic), so re-solving with
+            // unchanged inputs would produce the same non-success status.
+            // Bail early via the dedicated StalledOnInfeasibleSegment variant
+            // (round-4 split — distinct from MAX_SWEEPS-exhaustion below).
             let last_dirty_count = states.iter().filter(|s| s.dirty).count();
-            return Ok((sweep, JoiningStatus::CappedAtMaxSweeps { last_dirty_count }));
+            return Ok((sweep, JoiningStatus::StalledOnInfeasibleSegment { last_dirty_count }));
         }
         fan_out_solves(inputs, states, grids, n_threads)?;
     }
-    // (3) Reached MAX_SWEEPS without velocity stabilization — pathological
-    // joining behavior (shouldn't happen on the test fixtures; surfaces as
-    // CappedAtMaxSweeps for diagnostic).
+    // Reached MAX_SWEEPS without velocity stabilization — pathological
+    // joining oscillation (shouldn't happen on the test fixtures; if it
+    // does, the joining algorithm itself has a bug). Distinct from
+    // StalledOnInfeasibleSegment above.
     let last_dirty = states.iter().filter(|s| s.dirty).count();
     Ok((MAX_SWEEPS, JoiningStatus::CappedAtMaxSweeps { last_dirty_count: last_dirty }))
 }
@@ -1216,6 +1241,9 @@ For each `DefaultSettings` construction, replace:
 let settings = DefaultSettings::<f64> {
     verbose: false,
     max_iter: 1000,
+    reduced_tol_gap_abs: 1e-3,
+    reduced_tol_gap_rel: 1e-3,
+    reduced_tol_feas: 1e-3,
     ..Default::default()
 };
 ```
@@ -1224,9 +1252,29 @@ with:
 let settings = DefaultSettings::<f64> {
     verbose: false,
     max_iter: 1000,
+    // Primary tolerances (per-call adaptive — see ToleranceMode).
     tol_gap_abs: tol,
     tol_gap_rel: tol,
     tol_feas: tol,
+    // Reduced (AlmostSolved) tolerances — preserve existing 1e-3 overrides.
+    // These let Clarabel report SolvedInexact (mapped to public SolveStatus
+    // via output::assemble) when the primary tolerance can't be reached;
+    // SLP and downstream verify::check (ε_feas = 1e-3) rely on this gating.
+    // Per Codex review-4: dropping these would silently restore Clarabel
+    // defaults (5e-5 / 5e-5 / 1e-4), changing AlmostSolved semantics.
+    reduced_tol_gap_abs: 1e-3,
+    reduced_tol_gap_rel: 1e-3,
+    reduced_tol_feas: 1e-3,
+    // Determinism pin (per Codex review-4 + kalico-verifier round-3
+    // recommendation): explicitly use single-threaded QDLDL backend so the
+    // joining-loop early-bail's determinism premise stays valid against
+    // future Clarabel versions / feature-flag changes. With Clarabel 0.11.1
+    // default features, these match Clarabel's runtime auto-selection
+    // (since `faer-sparse` is not enabled), but pinning them makes the
+    // dependency on single-threaded determinism explicit in the code rather
+    // than implicit in the Cargo.toml feature configuration.
+    direct_solve_method: "qdldl".to_string(),
+    max_threads: 1,
     ..Default::default()
 };
 ```
@@ -2547,6 +2595,30 @@ Both reviewers ran in parallel and converged on the same critical findings. Subs
 **Findings reviewers raised that this revision did NOT change** (intentionally):
 - Some reviewer-suggested style tightenings (e.g., extracting `2.414213562` magic number to a constant) deferred to executor's discretion — small enough to not warrant explicit plan instruction.
 - The MAX_SWEEPS = 10 cap kept as-is even though spec §10 says "might tighten to 5 once we have real-fixture data." Keeping looser cap during initial implementation; can tighten once fixtures pass with smaller sweep counts.
+
+---
+
+## Post-review revisions (Plan review-4: kalico-plan-reviewer APPROVED + Codex REVISE-MINOR → 4 fixes applied)
+
+Round-4 dual review found 1 MINOR + 3 NITs from Codex (1 verified-and-load-bearing, 3 quality improvements). kalico-plan-reviewer returned APPROVED with 3 advisory items overlapping Codex's findings.
+
+**Verified-and-applied (1 load-bearing):**
+
+1. **`reduced_tol_*` fields silently dropped in Task 7** — Codex MINOR. **Real bug**, verified by direct `grep` of current `solver.rs:811`: existing code sets `reduced_tol_gap_abs/rel/feas = 1e-3` explicitly (Step 9 agent added this). Plan's literal replacement snippet would have restored Clarabel defaults (5e-5/5e-5/1e-4), changing `AlmostSolved` semantics that SLP and downstream `verify::check` rely on. Fixed: snippet now preserves the existing `reduced_tol_*` overrides AND adds the new adaptive `tol_*` fields.
+
+**Applied (3 quality improvements):**
+
+2. **Determinism pin folded into Task 7** — Codex MINOR + verifier round-3 recommendation. Adding `direct_solve_method: "qdldl".to_string()` and `max_threads: 1` to the same `DefaultSettings` snippet keeps the joining-loop early-bail's determinism premise valid against future Clarabel feature-flag changes. Low cost (2 lines) + Task 7 already touches every site, so no extra surface area.
+
+3. **`reverse_sweep` underflow guard** — Codex NIT. `for k in (0..states.len() - 1).rev()` underflows `usize` if `states.len() == 0`. Public path filters via `BatchError::EmptySegments`, but defensive `if states.len() < 2 { return 0; }` guard makes the helper safe to call directly. (`forward_sweep`'s `for k in 1..states.len()` doesn't have this issue — empty range on len ≤ 1.)
+
+4. **Split `JoiningStatus`** into `StalledOnInfeasibleSegment` (early-bail path) vs `CappedAtMaxSweeps` (genuine sweep-budget exhaustion) — Codex NIT + kalico-plan-reviewer NIT. Both reviewers independently flagged the same diagnostic-conflation issue: both paths previously returned the same variant, forcing callers to disambiguate via `joining_sweeps < MAX_SWEEPS` heuristic. Now distinct variants with clear semantics. Existing fixture asserts only check `JoiningStatus::Converged`, so no test changes needed.
+
+**Findings reviewers raised that this revision did NOT change:**
+
+- **kalico-plan-reviewer's prose nit at comment line ~996** ("All segments solved cleanly. Done.") — already updated as part of fix 4's join_until_converged rewrite.
+
+**Net result:** Round 4 caught one real load-bearing issue (`reduced_tol_*` would have silently regressed Clarabel `AlmostSolved` semantics) plus three convergent diagnostic improvements both reviewers asked for. The verify-each-Codex-finding pattern continues to pay off — code-grep verification on the `reduced_tol_*` claim caught it before applying the broken snippet.
 
 ---
 
