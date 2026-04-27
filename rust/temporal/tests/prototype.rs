@@ -100,12 +100,12 @@ mod fixture_1_straight_line_x_aligned {
     use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
 
     fn textbook_limits() -> Limits {
-        Limits {
-            v_max: [500.0, 500.0, 500.0],
-            a_max: [5_000.0, 5_000.0, 5_000.0],
-            j_max: [100_000.0, 100_000.0, 100_000.0],
-            a_centripetal_max: 2_500.0,
-        }
+        Limits::new(
+            [500.0, 500.0, 500.0],
+            [5_000.0, 5_000.0, 5_000.0],
+            [100_000.0, 100_000.0, 100_000.0],
+            2_500.0,
+        )
     }
 
     /// Spec §5.1 fixture 1: degree-1 NURBS from (0,0,0) to (100,0,0).
@@ -173,12 +173,12 @@ mod fixture_2_diagonal {
     use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
 
     fn textbook_limits() -> Limits {
-        Limits {
-            v_max: [500.0, 500.0, 500.0],
-            a_max: [5_000.0, 5_000.0, 5_000.0],
-            j_max: [100_000.0, 100_000.0, 100_000.0],
-            a_centripetal_max: 2_500.0,
-        }
+        Limits::new(
+            [500.0, 500.0, 500.0],
+            [5_000.0, 5_000.0, 5_000.0],
+            [100_000.0, 100_000.0, 100_000.0],
+            2_500.0,
+        )
     }
 
     /// Spec §5.1 fixture 2: degree-1 NURBS from (0,0,0) to (100/√2, 100/√2, 0).
@@ -238,12 +238,12 @@ mod fixture_4_g5_cubic {
     use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
 
     fn textbook_limits() -> Limits {
-        Limits {
-            v_max: [500.0, 500.0, 500.0],
-            a_max: [5_000.0, 5_000.0, 5_000.0],
-            j_max: [100_000.0, 100_000.0, 100_000.0],
-            a_centripetal_max: 2_500.0,
-        }
+        Limits::new(
+            [500.0, 500.0, 500.0],
+            [5_000.0, 5_000.0, 5_000.0],
+            [100_000.0, 100_000.0, 100_000.0],
+            2_500.0,
+        )
     }
 
     /// Spec §5.1 fixture 4: G5 cubic NURBS reused from geometry-crate G5 reduction.
@@ -360,12 +360,12 @@ mod fixture_5_curvature_spike {
     use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
 
     fn textbook_limits() -> Limits {
-        Limits {
-            v_max: [500.0, 500.0, 500.0],
-            a_max: [5_000.0, 5_000.0, 5_000.0],
-            j_max: [100_000.0, 100_000.0, 100_000.0],
-            a_centripetal_max: 2_500.0,
-        }
+        Limits::new(
+            [500.0, 500.0, 500.0],
+            [5_000.0, 5_000.0, 5_000.0],
+            [100_000.0, 100_000.0, 100_000.0],
+            2_500.0,
+        )
     }
 
     /// Spec §5.1 fixture 5: degree-3 NURBS with two close-together interior CPs.
@@ -420,12 +420,12 @@ mod fixture_6_mixed_feature {
     use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
 
     fn textbook_limits() -> Limits {
-        Limits {
-            v_max: [500.0, 500.0, 500.0],
-            a_max: [5_000.0, 5_000.0, 5_000.0],
-            j_max: [100_000.0, 100_000.0, 100_000.0],
-            a_centripetal_max: 2_500.0,
-        }
+        Limits::new(
+            [500.0, 500.0, 500.0],
+            [5_000.0, 5_000.0, 5_000.0],
+            [100_000.0, 100_000.0, 100_000.0],
+            2_500.0,
+        )
     }
 
     pub(super) fn build_mixed_curve() -> nurbs::VectorNurbs<f64, 3> {
@@ -520,12 +520,12 @@ mod fixture_7_convergence {
     /// Spec §6.5 realistic limits. j_max and a_centripetal_max are placeholders
     /// per §6.5 / §11; revisit when measurements are available.
     fn realistic_limits() -> Limits {
-        Limits {
-            v_max: [1_000.0, 1_000.0, 1_000.0],
-            a_max: [65_000.0, 65_000.0, 65_000.0],
-            j_max: [50_000_000.0, 50_000_000.0, 50_000_000.0],
-            a_centripetal_max: 65_000.0,
-        }
+        Limits::new(
+            [1_000.0, 1_000.0, 1_000.0],
+            [65_000.0, 65_000.0, 65_000.0],
+            [50_000_000.0, 50_000_000.0, 50_000_000.0],
+            65_000.0,
+        )
     }
 
     /// Spec §5.1 fixture 7 / §6.4: N ∈ {50, 100, 200, 400} sweep against
@@ -587,12 +587,12 @@ mod fixture_3_constant_curvature_arc {
     };
 
     fn textbook_limits() -> Limits {
-        Limits {
-            v_max: [500.0, 500.0, 500.0],
-            a_max: [5_000.0, 5_000.0, 5_000.0],
-            j_max: [100_000.0, 100_000.0, 100_000.0],
-            a_centripetal_max: 2_500.0,
-        }
+        Limits::new(
+            [500.0, 500.0, 500.0],
+            [5_000.0, 5_000.0, 5_000.0],
+            [100_000.0, 100_000.0, 100_000.0],
+            2_500.0,
+        )
     }
 
     /// Spec §5.1 fixture 3: 90° arc, R = 20 mm, via geometry-crate G2 reduction.

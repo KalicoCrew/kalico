@@ -23,12 +23,12 @@ use nurbs::VectorNurbs;
 use temporal::{schedule_segment, GridConfig, GridScheme, Limits};
 
 fn textbook_limits() -> Limits {
-    Limits {
-        v_max: [500.0, 500.0, 500.0],
-        a_max: [5_000.0, 5_000.0, 5_000.0],
-        j_max: [100_000.0, 100_000.0, 100_000.0],
-        a_centripetal_max: 2_500.0,
-    }
+    Limits::new(
+        [500.0, 500.0, 500.0],
+        [5_000.0, 5_000.0, 5_000.0],
+        [100_000.0, 100_000.0, 100_000.0],
+        2_500.0,
+    )
 }
 
 /// Spec §5.1 fixture 1: degree-1 NURBS from (0,0,0) to (100,0,0).

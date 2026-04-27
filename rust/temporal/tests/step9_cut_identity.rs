@@ -46,12 +46,12 @@ use temporal::topp::path::sample_arclength_grid;
 use temporal::{schedule_segment, GridConfig, GridScheme, Limits};
 
 fn textbook_limits() -> Limits {
-    Limits {
-        v_max: [500.0, 500.0, 500.0],
-        a_max: [5_000.0, 5_000.0, 5_000.0],
-        j_max: [100_000.0, 100_000.0, 100_000.0],
-        a_centripetal_max: 2_500.0,
-    }
+    Limits::new(
+        [500.0, 500.0, 500.0],
+        [5_000.0, 5_000.0, 5_000.0],
+        [100_000.0, 100_000.0, 100_000.0],
+        2_500.0,
+    )
 }
 
 /// Verifier-stencil per-axis Cartesian jerk at iterate `(b̄, ā)`,
