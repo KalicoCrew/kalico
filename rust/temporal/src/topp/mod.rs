@@ -8,6 +8,7 @@ use nurbs::VectorNurbs;
 pub mod path;
 pub mod constraints;
 pub(crate) mod solver;
+pub(crate) mod verify;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScheduleError {
