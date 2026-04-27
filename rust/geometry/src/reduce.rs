@@ -135,7 +135,6 @@ pub(crate) enum ParseErrorKind {
     /// G5.1 line with the active plane (G17/G18/G19) different from G17 (XY).
     /// The active plane is encoded in `text` as the literal G-code number
     /// ("18" or "19"); pipeline parses it back to populate Recovery.
-    #[allow(dead_code)] // emitted by Task 18 (G5.1 reduction); mapping landed early.
     G5PlaneMismatch,
     /// G5/G5.1 with malformed I,J,P,Q (e.g. only I but not J, both zero on
     /// G5.1, etc.). Surfaced as `MalformedParams` equivalent but with G5
