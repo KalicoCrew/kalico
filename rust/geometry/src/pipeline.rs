@@ -112,15 +112,6 @@ impl Segments<'_> {
             ReduceEvent::Curve { geom, e_delta: _, feedrate_mm_s, line_no } => {
                 self.handle_curve(geom, feedrate_mm_s, line_no);
             }
-            ReduceEvent::G1Move { .. } | ReduceEvent::Arc { .. } => {
-                // Legacy variants remain in the enum until Task 9 deletes
-                // them; reduce no longer emits them.
-                debug_assert!(
-                    false,
-                    "legacy ReduceEvent::G1Move / ReduceEvent::Arc reached pipeline; \
-                     reduce should emit ReduceEvent::Curve only",
-                );
-            }
             ReduceEvent::CommentMarker { kind, line_no } => {
                 // LayerType, EndOfPrint, and unknown markers have no Phase 1 telemetry mapping.
                 if let gcode::MarkerKind::LayerChange { layer } = kind {

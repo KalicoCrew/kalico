@@ -85,23 +85,6 @@ pub(crate) enum ReduceEvent {
         feedrate_mm_s: f64,
         line_no: u32,
     },
-    G1Move {
-        from: [f64; 3],
-        to: [f64; 3],
-        e_delta: Option<f64>,
-        feedrate_mm_s: f64,
-        line_no: u32,
-    },
-    Arc {
-        start: [f64; 3],
-        end: [f64; 3],
-        center: [f64; 3],
-        clockwise: bool,
-        z_delta: f64,
-        e_delta: Option<f64>,
-        feedrate_mm_s: f64,
-        line_no: u32,
-    },
     Marker {
         kind: MotionMarkerKind,
         line_no: u32,
