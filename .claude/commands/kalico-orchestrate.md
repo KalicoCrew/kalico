@@ -1,5 +1,6 @@
 ---
 description: Enter kalico orchestrator mode — coordinate brainstormer/researcher/plan-reviewer subagents through grand-plan items without touching source code
+disable-model-invocation: true
 ---
 
 # Kalico orchestrator mode
