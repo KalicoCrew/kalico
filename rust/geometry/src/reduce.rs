@@ -77,6 +77,14 @@ pub(crate) enum CurveGeom {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum ReduceEvent {
+    /// Any curve segment (line, conic, cubic, future NURBS). The geometry
+    /// payload is in the `CurveGeom`; common motion-event fields are inline.
+    Curve {
+        geom: CurveGeom,
+        e_delta: Option<f64>,
+        feedrate_mm_s: f64,
+        line_no: u32,
+    },
     G1Move {
         from: [f64; 3],
         to: [f64; 3],
@@ -669,6 +677,17 @@ mod tests {
         };
         let _cubic = CurveGeom::Cubic {
             cps: [[0.0; 3], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [3.0, 0.0, 0.0]],
+        };
+    }
+
+    #[test]
+    #[allow(clippy::no_effect_underscore_binding)]
+    fn reduce_event_curve_variant_constructs() {
+        let _e = ReduceEvent::Curve {
+            geom: CurveGeom::Linear { cps: [[0.0; 3], [1.0, 0.0, 0.0]] },
+            e_delta: Some(0.1),
+            feedrate_mm_s: 100.0,
+            line_no: 1,
         };
     }
 

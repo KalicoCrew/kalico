@@ -110,6 +110,12 @@ impl Segments<'_> {
     #[allow(clippy::needless_pass_by_value)] // G1Move arm destructures and consumes; other arms handled in Tasks 19+
     fn handle_event(&mut self, event: ReduceEvent) {
         match event {
+            // Task 5: Curve variant exists in the enum but is not yet emitted
+            // by `reduce`. Tasks 6-9 migrate G1Move/Arc onto this shape and
+            // wire pipeline handling. Until then this arm is unreachable.
+            ReduceEvent::Curve { .. } => {
+                unreachable!("ReduceEvent::Curve is not emitted until Tasks 6-9");
+            }
             ReduceEvent::G1Move { from, to, e_delta: _, feedrate_mm_s, line_no } => {
                 // Emit a JunctionDeviation if we have a previous G1 direction.
                 if let (Some(prev_dir), Some(prev_f)) = (self.prev_g1_dir, self.prev_g1_feedrate) {
