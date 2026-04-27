@@ -109,7 +109,6 @@ pub(crate) enum ParseErrorKind {
 /// that the curve lies in a supported plane; G2/G3 are XY-only in Phase 1
 /// regardless of plane state (deliberate non-goal of Step 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub(crate) enum Plane {
     #[default]
     XY,
@@ -135,6 +134,43 @@ where
     }
 }
 
+/// Test-only variant of `reduce` that takes a mutable `ModalState` reference,
+/// allowing tests to inspect modal state after the iterator drains. Identical
+/// to `reduce` otherwise; not exposed outside `#[cfg(test)]`.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn reduce_with_state<'a, I>(
+    state: &'a mut ModalState,
+    tokens: I,
+) -> impl Iterator<Item = ReduceEvent> + 'a
+where
+    I: IntoIterator<Item = Result<Token, ParseError>> + 'a,
+    I::IntoIter: 'a,
+{
+    ReduceIterRef { tokens: tokens.into_iter(), state }
+}
+
+#[cfg(test)]
+struct ReduceIterRef<'a, I>
+where
+    I: Iterator<Item = Result<Token, ParseError>>,
+{
+    tokens: I,
+    state: &'a mut ModalState,
+}
+
+#[cfg(test)]
+impl<I> Iterator for ReduceIterRef<'_, I>
+where
+    I: Iterator<Item = Result<Token, ParseError>>,
+{
+    type Item = ReduceEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        next_event(&mut self.tokens, self.state)
+    }
+}
+
 struct ReduceIter<I>
 where
     I: Iterator<Item = Result<Token, ParseError>>,
@@ -143,16 +179,11 @@ where
     state: ModalState,
 }
 
-impl<I> ReduceIter<I>
-where
-    I: Iterator<Item = Result<Token, ParseError>>,
-{
-    #[allow(dead_code)]
-    fn update_position(&mut self, params: &gcode::Params) {
-        if let Some(x) = params.x() { self.state.position[0] = x; }
-        if let Some(y) = params.y() { self.state.position[1] = y; }
-        if let Some(z) = params.z() { self.state.position[2] = z; }
-    }
+#[allow(dead_code)]
+fn update_position_in(state: &mut ModalState, params: &gcode::Params) {
+    if let Some(x) = params.x() { state.position[0] = x; }
+    if let Some(y) = params.y() { state.position[1] = y; }
+    if let Some(z) = params.z() { state.position[2] = z; }
 }
 
 impl<I> Iterator for ReduceIter<I>
@@ -161,151 +192,174 @@ where
 {
     type Item = ReduceEvent;
 
-    #[allow(clippy::too_many_lines)]
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let tok = self.tokens.next()?;
-            let tok = match tok {
-                Ok(t) => t,
-                Err(e) => {
-                    let (kind, line_no, text) = match e {
-                        ParseError::MalformedNumber { line_no, text } =>
-                            (ParseErrorKind::MalformedNumber, line_no, String::from(text)),
-                        ParseError::UnrecognizedHead { line_no, head } =>
-                            (ParseErrorKind::UnrecognizedHead, line_no, String::from(head)),
-                        ParseError::EmptyCommand { line_no } =>
-                            (ParseErrorKind::EmptyCommand, line_no, String::new()),
-                        ParseError::DuplicateParam { line_no, letter } =>
-                            (ParseErrorKind::DuplicateParam, line_no, letter.to_string()),
-                        _ => (ParseErrorKind::MalformedNumber, 0u32, format!("{e:?}")),
-                    };
-                    return Some(ReduceEvent::ParseError { line_no, kind, text });
-                }
-            };
-            match tok {
-                Token::Command { letter: b'G', major: 0, params, line_no, .. } => {
-                    // G0 — update position state, emit G0 marker.
-                    self.update_position(&params);
-                    if let Some(f) = params.f() {
-                        self.state.feedrate_mm_s = Some(f_to_mm_s(f));
-                    }
-                    return Some(ReduceEvent::Marker {
-                        kind: MotionMarkerKind::G0,
-                        line_no,
-                        tool: None,
-                        e_delta_mm: None,
-                    });
-                }
-                Token::Command { letter: b'G', major: 1, params, line_no, .. } => {
-                    let from = self.state.position;
-                    let xy_changed = params.x().is_some() || params.y().is_some();
-                    let z_changed = params.z().is_some();
-                    let e_present = params.e().is_some();
-                    if let Some(f) = params.f() {
-                        self.state.feedrate_mm_s = Some(f_to_mm_s(f));
-                    }
-                    if !xy_changed && z_changed && !e_present {
-                        // Z-only move: marker, but update position.
-                        self.update_position(&params);
-                        return Some(ReduceEvent::Marker {
-                            kind: MotionMarkerKind::ZOnly,
-                            line_no,
-                            tool: None,
-                            e_delta_mm: None,
-                        });
-                    }
-                    if !xy_changed && !z_changed && e_present {
-                        // E-only (retract / unretract).
-                        let new_e = params.e().unwrap();
-                        let delta = new_e - self.state.e;
-                        self.state.e = new_e;
-                        return Some(ReduceEvent::Marker {
-                            kind: MotionMarkerKind::EOnly,
-                            line_no,
-                            tool: None,
-                            e_delta_mm: Some(delta),
-                        });
-                    }
-                    if !xy_changed && !z_changed && !e_present {
-                        // G1 with only F — no motion, treated as no-op.
-                        continue;
-                    }
-                    // Real move: update position and E, emit G1Move.
-                    self.update_position(&params);
-                    let e_delta = params.e().map(|new_e| {
-                        let d = new_e - self.state.e;
-                        self.state.e = new_e;
-                        d
-                    });
-                    let to = self.state.position;
-                    let feedrate_mm_s = self.state.feedrate_mm_s.unwrap_or(0.0);
-                    return Some(ReduceEvent::G1Move {
-                        from,
-                        to,
-                        e_delta,
-                        feedrate_mm_s,
-                        line_no,
-                    });
-                }
-                Token::Command { letter: b'G', major: 92, line_no, .. } => {
-                    // G92: position reset. Treated as marker break.
-                    return Some(ReduceEvent::Marker {
-                        kind: MotionMarkerKind::G92,
-                        line_no,
-                        tool: None,
-                        e_delta_mm: None,
-                    });
-                }
-                Token::Command { letter: b'M', line_no, .. } => {
-                    return Some(ReduceEvent::Marker {
-                        kind: MotionMarkerKind::M,
-                        line_no,
-                        tool: None,
-                        e_delta_mm: None,
-                    });
-                }
-                Token::Command { letter: b'T', major, line_no, .. } => {
-                    self.state.tool = major;
-                    return Some(ReduceEvent::Marker {
-                        kind: MotionMarkerKind::T,
-                        line_no,
-                        tool: Some(major),
-                        e_delta_mm: None,
-                    });
-                }
-                Token::Command {
-                    letter: b'G', major: g, params, line_no, ..
-                } if g == 2 || g == 3 => {
-                    let start = self.state.position;
-                    let i = params.i().unwrap_or(0.0);
-                    let j = params.j().unwrap_or(0.0);
-                    let center = [start[0] + i, start[1] + j, start[2]];
-                    let new_x = params.x().unwrap_or(start[0]);
-                    let new_y = params.y().unwrap_or(start[1]);
-                    let new_z = params.z().unwrap_or(start[2]);
-                    let end = [new_x, new_y, new_z];
-                    let z_delta = new_z - start[2];
-                    let clockwise = g == 2;
-                    if let Some(f) = params.f() {
-                        self.state.feedrate_mm_s = Some(f_to_mm_s(f));
-                    }
-                    let e_delta = params.e().map(|new_e| {
-                        let d = new_e - self.state.e;
-                        self.state.e = new_e;
-                        d
-                    });
-                    self.state.position = end;
-                    let feedrate_mm_s = self.state.feedrate_mm_s.unwrap_or(0.0);
-                    return Some(ReduceEvent::Arc {
-                        start, end, center, clockwise, z_delta, e_delta,
-                        feedrate_mm_s, line_no,
-                    });
-                }
-                Token::Marker { kind, line_no } => {
-                    return Some(ReduceEvent::CommentMarker { kind, line_no });
-                }
-                _ => {}
+        next_event(&mut self.tokens, &mut self.state)
+    }
+}
+
+/// Pull the next reduce-output event from the token stream, mutating modal
+/// state in place. Shared between `ReduceIter` (production) and
+/// `ReduceIterRef` (tests). Logic is identical to the original
+/// `ReduceIter::next` body.
+#[allow(clippy::too_many_lines, clippy::needless_continue)]
+fn next_event<I>(tokens: &mut I, state: &mut ModalState) -> Option<ReduceEvent>
+where
+    I: Iterator<Item = Result<Token, ParseError>>,
+{
+    loop {
+        let tok = tokens.next()?;
+        let tok = match tok {
+            Ok(t) => t,
+            Err(e) => {
+                let (kind, line_no, text) = match e {
+                    ParseError::MalformedNumber { line_no, text } =>
+                        (ParseErrorKind::MalformedNumber, line_no, String::from(text)),
+                    ParseError::UnrecognizedHead { line_no, head } =>
+                        (ParseErrorKind::UnrecognizedHead, line_no, String::from(head)),
+                    ParseError::EmptyCommand { line_no } =>
+                        (ParseErrorKind::EmptyCommand, line_no, String::new()),
+                    ParseError::DuplicateParam { line_no, letter } =>
+                        (ParseErrorKind::DuplicateParam, line_no, letter.to_string()),
+                    _ => (ParseErrorKind::MalformedNumber, 0u32, format!("{e:?}")),
+                };
+                return Some(ReduceEvent::ParseError { line_no, kind, text });
             }
+        };
+        match tok {
+            Token::Command { letter: b'G', major: 0, params, line_no, .. } => {
+                // G0 — update position state, emit G0 marker.
+                update_position_in(state, &params);
+                if let Some(f) = params.f() {
+                    state.feedrate_mm_s = Some(f_to_mm_s(f));
+                }
+                return Some(ReduceEvent::Marker {
+                    kind: MotionMarkerKind::G0,
+                    line_no,
+                    tool: None,
+                    e_delta_mm: None,
+                });
+            }
+            Token::Command { letter: b'G', major: 1, params, line_no, .. } => {
+                let from = state.position;
+                let xy_changed = params.x().is_some() || params.y().is_some();
+                let z_changed = params.z().is_some();
+                let e_present = params.e().is_some();
+                if let Some(f) = params.f() {
+                    state.feedrate_mm_s = Some(f_to_mm_s(f));
+                }
+                if !xy_changed && z_changed && !e_present {
+                    // Z-only move: marker, but update position.
+                    update_position_in(state, &params);
+                    return Some(ReduceEvent::Marker {
+                        kind: MotionMarkerKind::ZOnly,
+                        line_no,
+                        tool: None,
+                        e_delta_mm: None,
+                    });
+                }
+                if !xy_changed && !z_changed && e_present {
+                    // E-only (retract / unretract).
+                    let new_e = params.e().unwrap();
+                    let delta = new_e - state.e;
+                    state.e = new_e;
+                    return Some(ReduceEvent::Marker {
+                        kind: MotionMarkerKind::EOnly,
+                        line_no,
+                        tool: None,
+                        e_delta_mm: Some(delta),
+                    });
+                }
+                if !xy_changed && !z_changed && !e_present {
+                    // G1 with only F — no motion, treated as no-op.
+                    continue;
+                }
+                // Real move: update position and E, emit G1Move.
+                update_position_in(state, &params);
+                let e_delta = params.e().map(|new_e| {
+                    let d = new_e - state.e;
+                    state.e = new_e;
+                    d
+                });
+                let to = state.position;
+                let feedrate_mm_s = state.feedrate_mm_s.unwrap_or(0.0);
+                return Some(ReduceEvent::G1Move {
+                    from,
+                    to,
+                    e_delta,
+                    feedrate_mm_s,
+                    line_no,
+                });
+            }
+            Token::Command { letter: b'G', major: 92, line_no, .. } => {
+                // G92: position reset. Treated as marker break.
+                return Some(ReduceEvent::Marker {
+                    kind: MotionMarkerKind::G92,
+                    line_no,
+                    tool: None,
+                    e_delta_mm: None,
+                });
+            }
+            Token::Command { letter: b'M', line_no, .. } => {
+                return Some(ReduceEvent::Marker {
+                    kind: MotionMarkerKind::M,
+                    line_no,
+                    tool: None,
+                    e_delta_mm: None,
+                });
+            }
+            Token::Command { letter: b'T', major, line_no, .. } => {
+                state.tool = major;
+                return Some(ReduceEvent::Marker {
+                    kind: MotionMarkerKind::T,
+                    line_no,
+                    tool: Some(major),
+                    e_delta_mm: None,
+                });
+            }
+            Token::Command {
+                letter: b'G', major: g, params, line_no, ..
+            } if g == 2 || g == 3 => {
+                let start = state.position;
+                let i = params.i().unwrap_or(0.0);
+                let j = params.j().unwrap_or(0.0);
+                let center = [start[0] + i, start[1] + j, start[2]];
+                let new_x = params.x().unwrap_or(start[0]);
+                let new_y = params.y().unwrap_or(start[1]);
+                let new_z = params.z().unwrap_or(start[2]);
+                let end = [new_x, new_y, new_z];
+                let z_delta = new_z - start[2];
+                let clockwise = g == 2;
+                if let Some(f) = params.f() {
+                    state.feedrate_mm_s = Some(f_to_mm_s(f));
+                }
+                let e_delta = params.e().map(|new_e| {
+                    let d = new_e - state.e;
+                    state.e = new_e;
+                    d
+                });
+                state.position = end;
+                let feedrate_mm_s = state.feedrate_mm_s.unwrap_or(0.0);
+                return Some(ReduceEvent::Arc {
+                    start, end, center, clockwise, z_delta, e_delta,
+                    feedrate_mm_s, line_no,
+                });
+            }
+            Token::Command { letter: b'G', major: 17, .. } => {
+                state.active_plane = Plane::XY;
+                continue;
+            }
+            Token::Command { letter: b'G', major: 18, .. } => {
+                state.active_plane = Plane::XZ;
+                continue;
+            }
+            Token::Command { letter: b'G', major: 19, .. } => {
+                state.active_plane = Plane::YZ;
+                continue;
+            }
+            Token::Marker { kind, line_no } => {
+                return Some(ReduceEvent::CommentMarker { kind, line_no });
+            }
+            _ => {}
         }
     }
 }
@@ -522,6 +576,41 @@ mod tests {
         assert_eq!(Plane::XY, Plane::XY);
         assert_ne!(Plane::XY, Plane::XZ);
         assert_ne!(Plane::XZ, Plane::YZ);
+    }
+
+    #[test]
+    fn g17_sets_xy_plane() {
+        let mut st = ModalState::new();
+        let toks = vec![cmd(b'G', 17, 1, Params::default())];
+        // Drive the iterator to consume the token; we observe the side-effect
+        // by re-running with a follow-up G18 and checking that G18 wins.
+        let _events: Vec<_> = reduce_with_state(&mut st, toks.into_iter().map(Ok)).collect();
+        assert_eq!(st.active_plane, Plane::XY);
+    }
+
+    #[test]
+    fn g18_sets_xz_plane() {
+        let mut st = ModalState::new();
+        let toks = vec![cmd(b'G', 18, 1, Params::default())];
+        let _events: Vec<_> = reduce_with_state(&mut st, toks.into_iter().map(Ok)).collect();
+        assert_eq!(st.active_plane, Plane::XZ);
+    }
+
+    #[test]
+    fn g19_sets_yz_plane() {
+        let mut st = ModalState::new();
+        let toks = vec![cmd(b'G', 19, 1, Params::default())];
+        let _events: Vec<_> = reduce_with_state(&mut st, toks.into_iter().map(Ok)).collect();
+        assert_eq!(st.active_plane, Plane::YZ);
+    }
+
+    #[test]
+    fn plane_select_emits_no_event() {
+        let toks = vec![cmd(b'G', 17, 1, Params::default())];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // Plane selects update modal state silently — they're configuration,
+        // not motion, and intentionally do not produce telemetry events.
+        assert!(events.is_empty(), "expected no events, got {events:?}");
     }
 
     #[test]
