@@ -3,6 +3,13 @@
 //!
 //! # Sign-convention note
 //!
+//! This module's docs reference math symbols (`b̄`, `ā`, `√b`, `s⃛`, …) and
+//! enum/variant names (`AxisJerk`, `StartBoundary`, …) inline; clippy's
+//! `doc_markdown` lint flags every non-backtick CamelCase / unicode-math
+//! identifier and is too noisy here. Disable at module scope.
+
+#![allow(clippy::doc_markdown)]
+//!
 //! Clarabel solves: `Ax + s = b`, `s ∈ K`
 //! The "point in K" is the slack `s = b - Ax`.
 //!
@@ -58,22 +65,80 @@ use clarabel::solver::{
 
 use crate::topp::constraints::{Cone, ConstraintBundle};
 
-/// One linearized Taylor cut on `1/√b` produced by the SLP outer loop.
+/// One linearized Taylor cut produced by the SLP outer loop.
 ///
-/// Encodes the constraint
+/// Two flavors are emitted:
 ///
-/// ```text
-/// |Δ²b_i| ≤ 2J·h² · (1/√b̄_i − (b_i − b̄_i)/(2·b̄_i^{3/2}))
-/// ```
+/// - `PathJerk { i, b_bar }`: scalar-tangential path-jerk envelope cut. Two
+///   `Nonneg` rows are appended per cut, encoding the convex first-order
+///   Taylor expansion of `1/√b` at iterate `b̄_i = b_bar`. Convex-down
+///   tangent ⇒ global underestimator ⇒ tightens the relaxation. See
+///   `append_path_jerk_cut_to_clarabel` for the row-coefficient derivation.
 ///
-/// at iterate `b̄_i = b_bar`. Two `Nonneg` rows (positive and negative side)
-/// are appended per cut. See `slp_solve` for the row-coefficient derivation.
+/// - `AxisJerk { ... }`: per-axis Cartesian jerk cut at the verifier-stencil
+///   linearization (Step 9). Two `Nonneg` rows per cut (positive and
+///   negative side, |j_axis| ≤ j_max bound). Couples `b_i` and the
+///   neighborhood of `a` (3 nonzeros interior, 2 nonzeros at boundaries).
+///   See `append_axis_jerk_cut_to_clarabel`.
+///
+///   The AxisJerk cut linearizes `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛`
+///   at the iterate, where `s⃛ = (da/ds)·√b` is reconstructed from the
+///   verifier's central / one-sided FD on `a`. The Taylor expansion is exact
+///   at the iterate (verified numerically by
+///   `tests/step9_cut_identity.rs`); convexity is *not* global because the
+///   cross-term `a·√b` is bilinear-times-sqrt (indefinite Hessian on
+///   `(a,b)`), so the cut is a LOCAL approximation. The L∞ trust region
+///   on `(b, a)` plus accept-only-if-decrease backtracking in
+///   `slp_solve_with_axis_jerk` is what makes the SLP converge despite the
+///   non-convex linearization.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SlpCut {
-    /// Interior grid index `i` (must satisfy `1 ≤ i ≤ N − 2`).
+pub(crate) enum SlpCut {
+    /// Scalar-tangential path-jerk cut (Lee 2024 §III–§IV; spec §11).
+    /// Interior grid index `i` (1 ≤ i ≤ N − 2); iterate value `b̄_i = b_bar`.
+    PathJerk { i: usize, b_bar: f64 },
+    /// Per-axis Cartesian jerk cut at the verifier stencil (Step 9; spec §11).
+    AxisJerk(AxisJerkCut),
+}
+
+/// Per-axis Cartesian jerk cut details. See `SlpCut::AxisJerk` doc.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AxisJerkCut {
+    /// Grid index at which the cut is anchored (`0 ≤ i ≤ N−1`).
     pub i: usize,
-    /// Iterate value `b̄_i` at which the linearization is taken.
+    /// Axis index (0 = X, 1 = Y, 2 = Z). Held for diagnostic / future
+    /// telemetry; the row coefficients only depend on `(cp, cpp, cppp)` for
+    /// that axis, which the caller pre-extracts.
+    #[allow(dead_code)]
+    pub axis: usize,
+    /// Stencil kind — controls FD shape and which `a`-variables the row touches.
+    pub stencil: AxisJerkStencil,
+    /// Iterate values, indexed in stencil order.
+    /// Interior: `[ā_{i-1}, ā_i, ā_{i+1}]`.
+    /// StartBoundary: `[ā_0, ā_1, *_]` (third slot unused).
+    /// EndBoundary: `[ā_{N-2}, ā_{N-1}, *_]` (third slot unused).
+    pub a_bars: [f64; 3],
+    /// Iterate value `b̄_i` at the anchor index.
     pub b_bar: f64,
+    /// Path derivatives at `s_i` along `axis`: `(c', c'', c''')`.
+    pub cp: f64,
+    pub cpp: f64,
+    pub cppp: f64,
+    /// Per-axis jerk bound `j_max[axis]` ·(1+ε), inflated by the SLP feasibility
+    /// margin. Used directly as the cut RHS magnitude.
+    pub j_lim_inflated: f64,
+}
+
+/// Discrete shape of the `da/ds` finite-difference stencil used by the cut.
+/// Mirrors `topp::verify::da_ds_at` exactly (Step 9 design constraint:
+/// SOCP cut and verifier check against the same FD stencil).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AxisJerkStencil {
+    /// Central FD: row touches `b_i`, `a_{i-1}`, `a_i`, `a_{i+1}`.
+    Interior,
+    /// Forward FD at i=0: row touches `b_0`, `a_0`, `a_1`.
+    StartBoundary,
+    /// Backward FD at i=N-1: row touches `b_{N-1}`, `a_{N-2}`, `a_{N-1}`.
+    EndBoundary,
 }
 
 // ---------------------------------------------------------------------------
@@ -95,11 +160,15 @@ pub(crate) struct SolverResult {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SolverStatus {
     Solved,
-    SolvedInexact { residual: f64 },
+    SolvedInexact {
+        residual: f64,
+    },
     Infeasible,
     /// Renamed from `last_residual` to `residual` for consistency with
     /// `SolvedInexact`; both encode `max(r_prim, r_dual)`.
-    MaxIter { residual: f64 },
+    MaxIter {
+        residual: f64,
+    },
 }
 
 /// Error from solver setup (invalid bundle). Not a solver runtime infeasibility.
@@ -226,9 +295,9 @@ pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSet
     solve_with_cuts(bundle, &[])
 }
 
-/// Append one SLP cut as two `Nonneg` rows (positive- and negative-side) to
-/// the Clarabel-format `A` and `b_rhs` accumulators. The current row count
-/// `n_rows` is also updated.
+/// Append one path-jerk SLP cut as two `Nonneg` rows (positive- and
+/// negative-side) to the Clarabel-format `A` and `b_rhs` accumulators. The
+/// current row count `n_rows` is also updated.
 ///
 /// # Cut algebra (sign-checked by hand)
 ///
@@ -260,8 +329,9 @@ pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSet
 /// `b̄` MUST be positive; the SLP loop guarantees this by clamping with a
 /// small floor before constructing each cut.
 #[allow(clippy::too_many_arguments)] // CSC builder has many concurrent state vectors.
-fn append_slp_cut_to_clarabel(
-    cut: &SlpCut,
+fn append_path_jerk_cut_to_clarabel(
+    i: usize,
+    b_bar: f64,
     j_path: f64,
     h: f64,
     n_rows: &mut usize,
@@ -270,8 +340,6 @@ fn append_slp_cut_to_clarabel(
     b_rhs: &mut Vec<f64>,
     n_grid: usize,
 ) {
-    let b_bar = cut.b_bar;
-    let i = cut.i;
     let sqrt_b = b_bar.sqrt();
     let alpha = j_path * h * h / (b_bar * sqrt_b); // = J·h² / b̄^{3/2}
     let rhs = 3.0 * j_path * h * h / sqrt_b;
@@ -302,6 +370,195 @@ fn append_slp_cut_to_clarabel(
     *n_rows += 1;
 }
 
+/// Append one per-axis Cartesian jerk SLP cut as two `Nonneg` rows
+/// (positive- and negative-side ⇒ |j_axis| ≤ j_max·(1+ε)). Spec §11; Step 9.
+///
+/// # Cut algebra
+///
+/// The verifier-stencil per-axis Cartesian jerk at iterate `(b̄, ā)`:
+///
+/// ```text
+///   j_axis = c'''·b̄^(3/2) + 3·c''·ā_i·√b̄ + c'·s⃛
+/// ```
+///
+/// where `s⃛ = (da/ds)·√b̄` and `da/ds` uses the central FD interior or
+/// one-sided FD at the boundaries (matching `verify::da_ds_at`).
+///
+/// First-order Taylor expansion (linearization at the iterate) gives the row
+/// coefficients per the Step 9 derivation in `/tmp/pf_diagnosis.json`:
+///
+/// **Interior** (touches `b_i`, `a_{i-1}`, `a_i`, `a_{i+1}`):
+/// ```text
+///   α_b      = (3/2)·c'''·√b̄  +  3·c''·ā_i / (2·√b̄)
+///                              +  c'·(ā_{i+1} − ā_{i-1}) / (4h·√b̄)
+///   α_a_im1  = −c'·√b̄ / (2h)
+///   α_a_i    = 3·c''·√b̄
+///   α_a_ip1  = +c'·√b̄ / (2h)
+///   K        = −(1/2)·c'''·b̄^(3/2)
+///              − (3/2)·c''·ā_i·√b̄
+///              − c'·(ā_{i+1} − ā_{i-1})·√b̄ / (4h)
+/// ```
+///
+/// **StartBoundary i=0** (forward FD: touches `b_0`, `a_0`, `a_1`):
+/// ```text
+///   α_b      = (3/2)·c'''·√b̄  +  3·c''·ā_0 / (2·√b̄)
+///                              +  c'·(ā_1 − ā_0) / (2h·√b̄)
+///   α_a_0    = 3·c''·√b̄ − c'·√b̄ / h
+///   α_a_1    = +c'·√b̄ / h
+///   K        = −(1/2)·c'''·b̄^(3/2)
+///              − (3/2)·c''·ā_0·√b̄
+///              − c'·(ā_1 − ā_0)·√b̄ / (2h)
+/// ```
+///
+/// **EndBoundary i=N-1** (backward FD: touches `b_{N-1}`, `a_{N-2}`, `a_{N-1}`):
+/// ```text
+///   α_b        = (3/2)·c'''·√b̄  +  3·c''·ā_{N-1} / (2·√b̄)
+///                                +  c'·(ā_{N-1} − ā_{N-2}) / (2h·√b̄)
+///   α_a_Nm2    = −c'·√b̄ / h
+///   α_a_Nm1    = 3·c''·√b̄ + c'·√b̄ / h
+///   K          = −(1/2)·c'''·b̄^(3/2)
+///                − (3/2)·c''·ā_{N-1}·√b̄
+///                − c'·(ā_{N-1} − ā_{N-2})·√b̄ / (2h)
+/// ```
+///
+/// The two `Nonneg` rows in `A·x + b_rhs ≥ 0` form:
+///
+/// ```text
+///   (+):  J − (Σ α·x + K)  ≥ 0   ⇒   row = [-α₁, …, -αₖ],  rhs = J − K
+///   (−):  J + (Σ α·x + K)  ≥ 0   ⇒   row = [+α₁, …, +αₖ],  rhs = J + K
+/// ```
+///
+/// `b̄` MUST be ≥ a positive floor; the caller floors via `SLP_B_FLOOR` to
+/// avoid `1/√0` blowing up the row-coefficient magnitudes.
+///
+/// Identity check (numerical pin): see `rust/temporal/tests/step9_cut_identity.rs`.
+/// At the iterate, Σ α·x̄ + K must equal `verify::check`'s `j_axis` to within
+/// floating-point round-off.
+///
+/// **Note on non-adjacent oscillation.** This cut anchors at three or four
+/// neighboring grid points only. If the SLP exhibits non-adjacent oscillation
+/// (cuts at i unmask violators at i±2 on the next iterate), widening the
+/// active set to ±2 neighborhood may help. None observed on the kalico
+/// fixtures so far; keep the implementation simple until evidence demands it.
+#[allow(clippy::too_many_arguments)]
+fn append_axis_jerk_cut_to_clarabel(
+    cut: &AxisJerkCut,
+    h: f64,
+    n_rows: &mut usize,
+    rowval: &mut [Vec<usize>],
+    nzval: &mut [Vec<f64>],
+    b_rhs: &mut Vec<f64>,
+    n_grid: usize,
+) {
+    let i = cut.i;
+    let b_bar = cut.b_bar;
+    let cp = cut.cp;
+    let cpp = cut.cpp;
+    let cppp = cut.cppp;
+    let j = cut.j_lim_inflated;
+
+    // Floor sqrt(b̄) to keep coefficients finite when the iterate's b̄ is tiny.
+    let sqrt_b = b_bar.max(SLP_B_FLOOR).sqrt();
+    let b_pow_3_2 = sqrt_b * sqrt_b * sqrt_b;
+
+    // Variable indices (off_b = 0; off_a = n_grid in the bundle layout).
+    let off_a = n_grid;
+
+    // Compute (α_b, α_a*, K) per stencil, plus the variable indices the row
+    // touches.
+    let (alpha_b, alpha_a_entries, k_const): (f64, [(usize, f64); 3], f64) = match cut.stencil {
+        AxisJerkStencil::Interior => {
+            debug_assert!(i >= 1 && i + 1 < n_grid, "interior index out of range");
+            let a_im1 = cut.a_bars[0];
+            let a_i = cut.a_bars[1];
+            let a_ip1 = cut.a_bars[2];
+            let alpha_b = 1.5 * cppp * sqrt_b
+                + 3.0 * cpp * a_i / (2.0 * sqrt_b)
+                + cp * (a_ip1 - a_im1) / (4.0 * h * sqrt_b);
+            let alpha_a_im1 = -cp * sqrt_b / (2.0 * h);
+            let alpha_a_i = 3.0 * cpp * sqrt_b;
+            let alpha_a_ip1 = cp * sqrt_b / (2.0 * h);
+            let k = -0.5 * cppp * b_pow_3_2
+                - 1.5 * cpp * a_i * sqrt_b
+                - cp * (a_ip1 - a_im1) * sqrt_b / (4.0 * h);
+            (
+                alpha_b,
+                [
+                    (off_a + i - 1, alpha_a_im1),
+                    (off_a + i, alpha_a_i),
+                    (off_a + i + 1, alpha_a_ip1),
+                ],
+                k,
+            )
+        }
+        AxisJerkStencil::StartBoundary => {
+            debug_assert_eq!(i, 0, "StartBoundary stencil expects i = 0");
+            debug_assert!(n_grid >= 2);
+            let a_0 = cut.a_bars[0];
+            let a_1 = cut.a_bars[1];
+            let alpha_b = 1.5 * cppp * sqrt_b
+                + 3.0 * cpp * a_0 / (2.0 * sqrt_b)
+                + cp * (a_1 - a_0) / (2.0 * h * sqrt_b);
+            let alpha_a_0 = 3.0 * cpp * sqrt_b - cp * sqrt_b / h;
+            let alpha_a_1 = cp * sqrt_b / h;
+            let k = -0.5 * cppp * b_pow_3_2
+                - 1.5 * cpp * a_0 * sqrt_b
+                - cp * (a_1 - a_0) * sqrt_b / (2.0 * h);
+            (
+                alpha_b,
+                [(off_a, alpha_a_0), (off_a + 1, alpha_a_1), (0, 0.0)],
+                k,
+            )
+        }
+        AxisJerkStencil::EndBoundary => {
+            debug_assert_eq!(i, n_grid - 1, "EndBoundary stencil expects i = N-1");
+            debug_assert!(n_grid >= 2);
+            let a_nm2 = cut.a_bars[0];
+            let a_nm1 = cut.a_bars[1];
+            let alpha_b = 1.5 * cppp * sqrt_b
+                + 3.0 * cpp * a_nm1 / (2.0 * sqrt_b)
+                + cp * (a_nm1 - a_nm2) / (2.0 * h * sqrt_b);
+            let alpha_a_nm2 = -cp * sqrt_b / h;
+            let alpha_a_nm1 = 3.0 * cpp * sqrt_b + cp * sqrt_b / h;
+            let k = -0.5 * cppp * b_pow_3_2
+                - 1.5 * cpp * a_nm1 * sqrt_b
+                - cp * (a_nm1 - a_nm2) * sqrt_b / (2.0 * h);
+            (
+                alpha_b,
+                [
+                    (off_a + n_grid - 2, alpha_a_nm2),
+                    (off_a + n_grid - 1, alpha_a_nm1),
+                    (0, 0.0),
+                ],
+                k,
+            )
+        }
+    };
+
+    // Sign-convention negation: A_clarabel = -A_k.
+    // Positive side: A_k = [-α_b, -α_a*];  rhs = J − K.
+    let pos_row = *n_rows;
+    push_nz(rowval, nzval, i, pos_row, -(-alpha_b)); // = +alpha_b on b_i
+    for &(col, alpha_a) in &alpha_a_entries {
+        if alpha_a != 0.0 {
+            push_nz(rowval, nzval, col, pos_row, -(-alpha_a)); // = +alpha_a
+        }
+    }
+    b_rhs.push(j - k_const);
+    *n_rows += 1;
+
+    // Negative side: A_k = [+α_b, +α_a*]; rhs = J + K.
+    let neg_row = *n_rows;
+    push_nz(rowval, nzval, i, neg_row, -alpha_b); // = -alpha_b
+    for &(col, alpha_a) in &alpha_a_entries {
+        if alpha_a != 0.0 {
+            push_nz(rowval, nzval, col, neg_row, -alpha_a);
+        }
+    }
+    b_rhs.push(j + k_const);
+    *n_rows += 1;
+}
+
 /// Helper: append a single non-zero entry into a column-bucketed CSC builder.
 #[inline]
 fn push_nz(rowval: &mut [Vec<usize>], nzval: &mut [Vec<f64>], col: usize, row: usize, v: f64) {
@@ -311,24 +568,85 @@ fn push_nz(rowval: &mut [Vec<usize>], nzval: &mut [Vec<f64>], col: usize, row: u
     }
 }
 
-/// Construct the Clarabel SOCP from `bundle` and solve it, with optional SLP
-/// cut rows appended to the constraint matrix.
+/// L∞ trust region on `(b, a)` around iterate `(b̄, ā)`.
 ///
-/// `cuts`, when non-empty, becomes additional `Nonneg` rows of the SOCP — one
-/// fresh `NonnegativeConeT` block of dim `2·cuts.len()` is added. The cuts
-/// reference only `b_i` variables that already exist in the bundle; no new
-/// variables are introduced (`n_vars` unchanged).
+/// Used by the per-axis-jerk SLP outer loop (Step 9) to keep the inner SOCP
+/// from leaving the local-validity neighborhood of the non-convex cut
+/// linearization. Box rows enforce
+/// `b̄_i·(1−ρ_b) ≤ b_i ≤ b̄_i·max(1+ρ_b, B_FLOOR_REL)` and
+/// `ā_i − ρ_a·max(|ā_i|, A_TR_FLOOR) ≤ a_i ≤ ā_i + ρ_a·max(|ā_i|, A_TR_FLOOR)`,
+/// for all grid points.
+///
+/// Boundary `b` rows are skipped — the boundary equality in block (a) of
+/// the bundle pins `b_0` and `b_{N-1}` exactly; layering trust-region inequalities
+/// on top is redundant and risks infeasibility if the iterate's b̄_0 already
+/// equals v_start² but not exactly (numerical drift).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TrustRegion {
+    pub rho_b: f64,
+    pub rho_a: f64,
+}
+
+/// Floor on |ā_i| used when sizing the a-trust-region radius. Pure-zero `ā`
+/// would give zero-width trust region and pin `a_i` to its previous iterate;
+/// a positive floor on the order of `a_max` lets the inner SOCP swing `a`
+/// across the per-axis acceleration range when the iterate's `ā` is small
+/// or has the wrong sign at a grid point. Verifier non-blocker: tuned
+/// against fixture 4; revisit if observed to over-relax.
+const A_TR_FLOOR: f64 = 5_000.0; // mm/s² (≈ a_max)
+
+/// Floor on `b̄_i` used when sizing the b-trust-region radius. Without this,
+/// a small iterate value (cruise drop, near-boundary ramp-up) gives a
+/// near-zero TR that the SOCP can't satisfy against block (e) centripetal
+/// caps or other lower bounds. Floor = (50 mm/s)² = 2500.
+const B_TR_FLOOR: f64 = 2_500.0;
+
+/// Construct the Clarabel SOCP from `bundle` and solve it, with optional SLP
+/// cut rows and trust-region rows appended.
+///
+/// `cuts`, when non-empty, becomes additional `Nonneg` rows of the SOCP. The
+/// cuts reference only `b` and `a` variables that already exist in the bundle;
+/// no new variables are introduced (`n_vars` unchanged).
+///
+/// `trust_region`, when `Some`, additionally appends 2-sided box rows on every
+/// `b_i` (interior) and every `a_i`, anchored at `(b_bar, a_bar)`.
 fn solve_with_cuts(
     bundle: &ConstraintBundle,
     cuts: &[SlpCut],
 ) -> Result<SolverResult, SolverSetupError> {
+    solve_with_cuts_and_trust_region(bundle, cuts, None, &[], &[])
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn solve_with_cuts_and_trust_region(
+    bundle: &ConstraintBundle,
+    cuts: &[SlpCut],
+    trust_region: Option<TrustRegion>,
+    b_bar: &[f64],
+    a_bar: &[f64],
+) -> Result<SolverResult, SolverSetupError> {
     let n_vars = bundle.n_vars;
     let n_grid = bundle.n_grid;
 
-    // Step 1: cones — append a Nonneg block for SLP cuts (2 rows per cut).
+    // Step 1: cones — append a Nonneg block for SLP cuts and trust region.
     let mut cones_clarabel = map_clarabel_cones(bundle)?;
-    if !cuts.is_empty() {
-        cones_clarabel.push(NonnegativeConeT(2 * cuts.len()));
+    let cut_rows = 2 * cuts.len();
+    if cut_rows > 0 {
+        cones_clarabel.push(NonnegativeConeT(cut_rows));
+    }
+    // Trust-region rows: for each interior `b_i` two rows (lower + upper),
+    // for every `a_i` two rows. Boundary b rows skipped (pinned by block (a)).
+    let tr_rows = if trust_region.is_some() {
+        if n_grid >= 2 {
+            2 * (n_grid - 2) + 2 * n_grid
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    if tr_rows > 0 {
+        cones_clarabel.push(NonnegativeConeT(tr_rows));
     }
 
     // Step 2: build sparse A column-bucketed (with sign-convention negation
@@ -355,20 +673,103 @@ fn solve_with_cuts(
     // Step 3b: append SLP-cut rows (negation already baked into the helper).
     let j_path = bundle.j_path;
     let h = bundle.h;
-    debug_assert!(j_path > 0.0 && h > 0.0, "bundle must carry positive j_path/h");
+    debug_assert!(
+        j_path > 0.0 && h > 0.0,
+        "bundle must carry positive j_path/h"
+    );
     for cut in cuts {
-        let b_bar_floored = cut.b_bar.max(SLP_B_FLOOR);
-        let cut = SlpCut { i: cut.i, b_bar: b_bar_floored };
-        append_slp_cut_to_clarabel(
-            &cut,
-            j_path,
-            h,
-            &mut n_rows,
-            &mut rowval_per_col,
-            &mut nzval_per_col,
-            &mut b_rhs,
-            n_grid,
-        );
+        match cut {
+            SlpCut::PathJerk { i, b_bar } => {
+                let b_bar_floored = b_bar.max(SLP_B_FLOOR);
+                append_path_jerk_cut_to_clarabel(
+                    *i,
+                    b_bar_floored,
+                    j_path,
+                    h,
+                    &mut n_rows,
+                    &mut rowval_per_col,
+                    &mut nzval_per_col,
+                    &mut b_rhs,
+                    n_grid,
+                );
+            }
+            SlpCut::AxisJerk(axis_cut) => {
+                append_axis_jerk_cut_to_clarabel(
+                    axis_cut,
+                    h,
+                    &mut n_rows,
+                    &mut rowval_per_col,
+                    &mut nzval_per_col,
+                    &mut b_rhs,
+                    n_grid,
+                );
+            }
+        }
+    }
+
+    // Step 3c: append trust-region rows.
+    if let Some(tr) = trust_region {
+        debug_assert_eq!(b_bar.len(), n_grid);
+        debug_assert_eq!(a_bar.len(), n_grid);
+        // b_i interior: |b_i − b̄_i| ≤ ρ_b · max(b̄_i, B_TR_FLOOR)
+        // (boundary b_0, b_{N-1} pinned by block (a); skip).
+        let off_b = 0;
+        for i in 1..n_grid.saturating_sub(1) {
+            let bb = b_bar[i].max(0.0);
+            let radius = tr.rho_b * bb.max(B_TR_FLOOR);
+            let lo = bb - radius;
+            let hi = bb + radius;
+            // Lower: b_i − lo ≥ 0  →  A_k row [+1 on b_i], rhs = −lo
+            // Upper: hi − b_i ≥ 0  →  A_k row [−1 on b_i], rhs = +hi
+            let row_lo = n_rows;
+            push_nz(
+                &mut rowval_per_col,
+                &mut nzval_per_col,
+                off_b + i,
+                row_lo,
+                -1.0,
+            );
+            b_rhs.push(-lo);
+            n_rows += 1;
+            let row_hi = n_rows;
+            push_nz(
+                &mut rowval_per_col,
+                &mut nzval_per_col,
+                off_b + i,
+                row_hi,
+                1.0,
+            );
+            b_rhs.push(hi);
+            n_rows += 1;
+        }
+        // a_i: ā_i − ρ_a·max(|ā|, FLOOR) ≤ a_i ≤ ā_i + ρ_a·max(|ā|, FLOOR).
+        let off_a = n_grid;
+        for i in 0..n_grid {
+            let ab = a_bar[i];
+            let radius = tr.rho_a * ab.abs().max(A_TR_FLOOR);
+            let lo = ab - radius;
+            let hi = ab + radius;
+            let row_lo = n_rows;
+            push_nz(
+                &mut rowval_per_col,
+                &mut nzval_per_col,
+                off_a + i,
+                row_lo,
+                -1.0,
+            );
+            b_rhs.push(-lo);
+            n_rows += 1;
+            let row_hi = n_rows;
+            push_nz(
+                &mut rowval_per_col,
+                &mut nzval_per_col,
+                off_a + i,
+                row_hi,
+                1.0,
+            );
+            b_rhs.push(hi);
+            n_rows += 1;
+        }
     }
 
     // Step 4: assemble final CSC.
@@ -381,7 +782,13 @@ fn solve_with_cuts(
         nzval.extend_from_slice(&nzval_per_col[col]);
         colptr.push(nzval.len());
     }
-    let a_csc = CscMatrix { m: n_rows, n: n_vars, colptr, rowval, nzval };
+    let a_csc = CscMatrix {
+        m: n_rows,
+        n: n_vars,
+        colptr,
+        rowval,
+        nzval,
+    };
 
     // Step 5: zero P for pure linear objective.
     let p_zero = build_p_zero(n_vars);
@@ -403,9 +810,8 @@ fn solve_with_cuts(
     };
 
     // Step 8: construct and run.
-    let mut solver =
-        DefaultSolver::new(&p_zero, q, &a_csc, &b_rhs, &cones_clarabel, settings)
-            .map_err(|e| SolverSetupError::InvalidBundle(e.to_string()))?;
+    let mut solver = DefaultSolver::new(&p_zero, q, &a_csc, &b_rhs, &cones_clarabel, settings)
+        .map_err(|e| SolverSetupError::InvalidBundle(e.to_string()))?;
 
     solver.solve();
 
@@ -600,7 +1006,7 @@ pub(crate) fn slp_solve(
             if b_bar < SLP_B_CUT_FLOOR {
                 continue;
             }
-            cuts.push(SlpCut { i, b_bar });
+            cuts.push(SlpCut::PathJerk { i, b_bar });
             added += 1;
         }
         if added == 0 {
@@ -724,6 +1130,425 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
     vs.iter().map(|v| v.ratio).fold(0.0_f64, f64::max)
 }
 
+// ---------------------------------------------------------------------------
+// Per-axis Cartesian jerk SLP outer loop (Step 9; spec §11)
+// ---------------------------------------------------------------------------
+//
+// Layered on top of `slp_solve` (path-jerk SLP). The path-jerk loop tightens
+// the SOCP relaxation against `|s⃛| ≤ J_path` (scalar tangential jerk). That
+// is necessary but insufficient: per-axis Cartesian jerk
+//
+//     j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛
+//
+// is what the verifier (and physical hardware) checks. On curved paths with
+// non-zero endpoint velocity (fixture 4), the path-jerk-feasible iterate
+// can violate per-axis jerk by tens of percent at the boundary.
+//
+// Mitigation: a SECOND SLP loop using verifier-stencil cuts on j_axis. The
+// cuts are first-order Taylor expansions of `j_axis(b, a)` at the iterate;
+// because `j_axis` has bilinear-times-sqrt cross-terms (term 2: 3·c''·a·√b,
+// term 3 via `s⃛`), the linearization is non-convex (Hessian indefinite on
+// `(a, b)`). Three coupled remedies make convergence reliable:
+//
+//   1. **Active-set placement.** Cut only at (i, axis) pairs where the
+//      verifier-form ratio > 1 + ε at the current iterate. Avoids over-
+//      tightening at points where the relaxation is already feasible.
+//
+//   2. **L∞ trust region** on `(b, a)` around the current iterate. Initial
+//      ρ_b = 0.20, ρ_a = 0.30. Adapts: expand by 1.5× on accept, contract
+//      by 0.5× on reject. Caps: ρ_b ∈ [0.05, 0.5], ρ_a ∈ [0.075, 0.75].
+//
+//   3. **Accept-only-if-decrease.** After each inner SOCP, evaluate the
+//      verifier-form max-ratio at the new iterate. If it does not decrease
+//      below the previous best, halve the step (`b_new ← (b̄ + b_new)/2`)
+//      and re-evaluate; up to 3 backtracks per outer iter before giving up
+//      that outer step.
+//
+// Verifier-non-blocker note: future widening to ±2 neighborhood for the
+// active set may help if non-adjacent oscillation appears. Not implemented;
+// add if observed.
+//
+// Source: Nocedal & Wright Numerical Optimization 2e, §18.5 (trust-region
+// SQP). Step 9 design: /tmp/pf_diagnosis.json, spec §11.
+
+/// Maximum per-axis-jerk SLP outer iterations. Verifier non-blocker note
+/// requested 30 (bumped from 15) with a soft warning at iter 15.
+const SLP9_MAX_OUTER_ITERS: u32 = 30;
+
+/// Soft-warning threshold for slow per-axis SLP convergence.
+const SLP9_WARN_AT_ITER: u32 = 15;
+
+/// Per-axis-jerk feasibility tolerance. Mirrors `verify::EPS_FEAS = 1e-3`
+/// (spec §6.2): the SOCP cut and the verifier check use the SAME stencil,
+/// so the cut tolerance can match the verifier tolerance directly.
+const SLP9_EPS_FEAS: f64 = 1e-3;
+
+/// Initial L∞ trust-region radii. Diagnosis recommendation was 0.20/0.30,
+/// but empirically those values let the inner SOCP move far enough that the
+/// non-convex `a·√b` cross-terms invalidate the linearization (cuts at
+/// the iterate are satisfied at the new point, but the verifier-form ratio
+/// at the new point is significantly worse than the cut model predicted).
+/// Tightening to 0.05/0.10 keeps the iterate in the local-validity
+/// neighborhood. The tighter step costs more outer iterations but converges
+/// reliably on fixture 4 (v_end=0).
+const SLP9_RHO_B_INIT: f64 = 0.05;
+const SLP9_RHO_A_INIT: f64 = 0.10;
+const SLP9_RHO_B_MIN: f64 = 0.005;
+const SLP9_RHO_B_MAX: f64 = 0.20;
+const SLP9_RHO_A_MIN: f64 = 0.01;
+const SLP9_RHO_A_MAX: f64 = 0.40;
+
+/// Maximum backtracks per outer iter before giving up the step and treating
+/// the outer iter as a no-op (will retry from a contracted trust region next
+/// outer iter).
+const SLP9_MAX_BACKTRACKS: u32 = 3;
+
+/// Continuation factor on the cut RHS. When the iterate's verifier-form
+/// per-axis ratio is `R > 1`, an iter-1 cut at the strict feasibility
+/// tolerance `j_max·(1 + ε)` is infeasible inside any reasonable trust
+/// region (the iterate lies far outside the cut). We instead inflate the
+/// cut RHS to `j_max · target_ratio_k`, where
+///
+/// ```text
+///     target_ratio_k = max(1 + ε, R_k · SLP9_TARGET_DECAY)
+/// ```
+///
+/// and `R_k` is the best ratio seen at outer iter `k`. This is a
+/// continuation / homotopy schedule: the cut starts loose enough to admit
+/// the current iterate, then tightens by `SLP9_TARGET_DECAY` per outer iter
+/// until it matches the verifier's `1 + ε` feasibility tolerance.
+///
+/// `SLP9_TARGET_DECAY = 0.85` — gentle geometric tightening per outer iter.
+/// More-aggressive decay (0.5) is feasible inside the trust region only when
+/// the iterate is already close to feasibility; for fixture 4 (initial
+/// ratio R ≈ 1.24 at v_end=0), even target_ratio = 1.001 with R · 0.5 = 0.62
+/// (clamped) leaves the inner SOCP infeasible because the cut at the worst
+/// violator demands a linear improvement that's too large for the
+/// trust-region neighborhood. A gentle 0.85 decay allows the SOCP to make
+/// incremental progress; ~30 iters from R=1.24 to R=1.001.
+const SLP9_TARGET_DECAY: f64 = 0.85;
+
+/// Run the per-axis Cartesian jerk SLP outer loop on top of the path-jerk
+/// SLP. Spec §11; Step 9.
+///
+/// 1. Calls `slp_solve` to get a path-jerk-feasible iterate (b̄_0, ā_0).
+/// 2. Checks per-axis jerk violators using the verifier stencil.
+/// 3. If any violator exceeds (1 + SLP9_EPS_FEAS), enters the per-axis SLP
+///    outer loop with active-set cuts + L∞ trust region + accept-only-if-
+///    decrease backtracking.
+///
+/// Returns the converged iterate plus the worst-case `SlpOutcome` across the
+/// two stages (path-jerk and per-axis). Path-jerk failures (Diverged,
+/// InnerSolverFailure) short-circuit per-axis processing.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn slp_solve_with_axis_jerk(
+    bundle: &ConstraintBundle,
+    grid: &crate::topp::path::ArclengthGrid,
+    limits: &crate::Limits,
+) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
+    // Stage 1: path-jerk SLP. Existing logic, untouched.
+    let (path_result, path_outcome) = slp_solve(bundle)?;
+
+    // Path-jerk failure modes: surface immediately. The per-axis loop has
+    // nothing useful to add when the inner SOCP is already not producing a
+    // trustworthy iterate.
+    if matches!(
+        path_outcome,
+        SlpOutcome::InnerSolverFailure | SlpOutcome::Diverged { .. } | SlpOutcome::MaxIters { .. }
+    ) {
+        return Ok((path_result, path_outcome));
+    }
+
+    debug_assert_eq!(grid.s.len(), path_result.b.len());
+
+    // Stage 2: per-axis-jerk active-set + trust-region SLP.
+    let mut last_result = path_result.clone();
+    // path_outer_iters: how many path-jerk outer iters were used (carried into
+    // the final SlpOutcome::Converged so the caller sees total work).
+    let path_outer_iters = match path_outcome {
+        SlpOutcome::Converged { outer_iters } => outer_iters,
+        _ => 0,
+    };
+
+    // Initial violator scan.
+    let initial_max = max_axis_ratio(&last_result, grid, limits);
+    if initial_max <= 1.0 + SLP9_EPS_FEAS {
+        // Path-jerk-feasible iterate is also per-axis-feasible. Return it.
+        return Ok((
+            last_result,
+            SlpOutcome::Converged {
+                outer_iters: path_outer_iters,
+            },
+        ));
+    }
+
+    let mut best_result = last_result.clone();
+    let mut best_ratio = initial_max;
+    let mut rho_b = SLP9_RHO_B_INIT;
+    let mut rho_a = SLP9_RHO_A_INIT;
+
+    for outer in 1..=SLP9_MAX_OUTER_ITERS {
+        if outer == SLP9_WARN_AT_ITER {
+            // Soft warning to log; do not fail.
+            eprintln!(
+                "slp9 warning: per-axis SLP not converged at iter {outer} \
+                 (best ratio = {best_ratio:.4})",
+            );
+        }
+
+        // Continuation schedule on the cut RHS: tighten geometrically toward
+        // (1 + ε) from the current best ratio. The first cuts are loose
+        // enough that the current iterate isn't trivially infeasible inside
+        // the trust region.
+        let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(1.0 + SLP9_EPS_FEAS);
+
+        // Build active-set cuts at violators (and immediate neighbors to
+        // avoid one-sided over-tightening; ±0 for now per task brief, the
+        // ±1 widening is reserved for the diagnosis non-blocker note).
+        let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio);
+        if cuts.is_empty() {
+            // No violators above threshold: converged.
+            return Ok((
+                last_result,
+                SlpOutcome::Converged {
+                    outer_iters: path_outer_iters + outer,
+                },
+            ));
+        }
+
+        // ---- Inner solve sequence: first try with trust region (the
+        // standard SLP iteration); if that's infeasible, retry without
+        // the trust region (allowing a larger jump). The second case is
+        // common on the first iteration when the path-jerk-converged
+        // iterate is far outside per-axis feasibility (e.g. fixture 4
+        // boundary, ratio = 185×).
+        let mut accepted: Option<SolverResult> = None;
+        for backtrack in 0..=SLP9_MAX_BACKTRACKS {
+            let bt_i32 = i32::try_from(backtrack).unwrap_or(i32::MAX);
+            let tr = TrustRegion {
+                rho_b: rho_b * 0.5_f64.powi(bt_i32),
+                rho_a: rho_a * 0.5_f64.powi(bt_i32),
+            };
+            let candidate = solve_with_cuts_and_trust_region(
+                bundle,
+                &cuts,
+                Some(tr),
+                &last_result.b,
+                &last_result.a,
+            )?;
+            if matches!(
+                candidate.status,
+                SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
+            ) {
+                // Inner SOCP failed at this trust-region size; halve and retry.
+                continue;
+            }
+            // Evaluate verifier-form max-ratio at the candidate.
+            let cand_ratio = max_axis_ratio(&candidate, grid, limits);
+            if cand_ratio < best_ratio {
+                accepted = Some(candidate);
+                best_ratio = cand_ratio;
+                break;
+            }
+            // Strict decrease failed; backtrack.
+        }
+        if accepted.is_none() {
+            // Fallback: solve with cuts but NO trust region. The trust
+            // region is a stability device; on iterations where the
+            // iterate is far outside the cut-feasible region (typical
+            // first per-axis SLP iter on fixture 4 with high-curvature
+            // boundary), no point inside the TR satisfies the cut.
+            // Without the TR, Clarabel can jump to a cut-feasible iterate
+            // (potentially far). We still gate acceptance on max-ratio
+            // decrease — non-decrease is a signal the cut linearization
+            // was poor and the iterate shouldn't be trusted.
+            let candidate = solve_with_cuts(bundle, &cuts)?;
+            if !matches!(
+                candidate.status,
+                SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
+            ) {
+                let cand_ratio = max_axis_ratio(&candidate, grid, limits);
+                if cand_ratio < best_ratio {
+                    accepted = Some(candidate);
+                    best_ratio = cand_ratio;
+                }
+            }
+        }
+
+        if let Some(new_result) = accepted {
+            last_result = new_result.clone();
+            best_result = new_result;
+            // Expand trust region for the next outer iter (rewards
+            // good steps with bigger ones).
+            rho_b = (rho_b * 1.5).min(SLP9_RHO_B_MAX);
+            rho_a = (rho_a * 1.5).min(SLP9_RHO_A_MAX);
+
+            if best_ratio <= 1.0 + SLP9_EPS_FEAS {
+                return Ok((
+                    last_result,
+                    SlpOutcome::Converged {
+                        outer_iters: path_outer_iters + outer,
+                    },
+                ));
+            }
+        } else {
+            // No accepted step in any of the backtracks. Contract the
+            // trust region for next iter and try again.
+            rho_b = (rho_b * 0.5).max(SLP9_RHO_B_MIN);
+            rho_a = (rho_a * 0.5).max(SLP9_RHO_A_MIN);
+            // If we're already at the minimum and still no step, declare
+            // divergence so the caller sees the best-so-far iterate.
+            if rho_b <= SLP9_RHO_B_MIN * 1.0001 && rho_a <= SLP9_RHO_A_MIN * 1.0001 {
+                return Ok((
+                    best_result,
+                    SlpOutcome::Diverged {
+                        last_max_ratio: best_ratio,
+                        outer_iters: path_outer_iters + outer,
+                    },
+                ));
+            }
+        }
+    }
+
+    Ok((
+        best_result,
+        SlpOutcome::MaxIters {
+            last_max_ratio: best_ratio,
+        },
+    ))
+}
+
+/// Verifier-form per-axis Cartesian jerk ratio at every (i, axis), max over
+/// the whole grid. Mirrors `verify::check`'s formula and FD stencil exactly.
+fn max_axis_ratio(
+    result: &SolverResult,
+    grid: &crate::topp::path::ArclengthGrid,
+    limits: &crate::Limits,
+) -> f64 {
+    let n = result.b.len();
+    debug_assert_eq!(grid.s.len(), n);
+    let mut worst: f64 = 0.0;
+    for i in 0..n {
+        let s_dot = result.b[i].max(0.0).sqrt();
+        let s_dot3 = s_dot * s_dot * s_dot;
+        let s_ddot = result.a[i];
+        let da_ds = da_ds_along(&result.a, &grid.s, i);
+        let s_dddot = da_ds * s_dot;
+        for ax in 0..3 {
+            let cp = grid.c_prime[i][ax];
+            let cpp = grid.c_double_prime[i][ax];
+            let cppp = grid.c_triple_prime[i][ax];
+            let j = cppp * s_dot3 + 3.0 * cpp * s_dot * s_ddot + cp * s_dddot;
+            let lim = limits.j_max[ax];
+            let ratio = j.abs() / lim;
+            if ratio > worst {
+                worst = ratio;
+            }
+        }
+    }
+    worst
+}
+
+/// Build the active set of per-axis jerk cuts: one cut per (i, axis) pair
+/// whose verifier-form ratio exceeds 1 + SLP9_EPS_FEAS at the current iterate.
+///
+/// `target_ratio` controls the cut RHS via continuation: cuts demand
+/// `|j_axis| ≤ j_max · target_ratio` rather than `|j_axis| ≤ j_max·(1+ε)`
+/// directly. The caller schedules `target_ratio` to decay from
+/// `R_current · SLP9_TARGET_DECAY` toward `1 + ε` over outer iters; iter-1
+/// thus solves a relaxation that admits the (still-inflated) iterate, with
+/// successive iters tightening. Without this, the iter-1 cut at strict
+/// `(1+ε)` is infeasible inside the trust region whenever `R_current ≫ 1`.
+///
+/// Cuts at i=0 use forward FD; cuts at i=N-1 use backward FD; interior cuts
+/// use central FD (matching `verify::da_ds_at`). See
+/// `append_axis_jerk_cut_to_clarabel` for the row-coefficient algebra.
+fn build_axis_jerk_cuts(
+    result: &SolverResult,
+    grid: &crate::topp::path::ArclengthGrid,
+    limits: &crate::Limits,
+    target_ratio: f64,
+) -> Vec<SlpCut> {
+    let n = result.b.len();
+    let mut cuts: Vec<SlpCut> = Vec::new();
+    for i in 0..n {
+        let s_dot = result.b[i].max(0.0).sqrt();
+        let s_dot3 = s_dot * s_dot * s_dot;
+        let s_ddot = result.a[i];
+        let da_ds = da_ds_along(&result.a, &grid.s, i);
+        let s_dddot = da_ds * s_dot;
+        for ax in 0..3 {
+            let cp = grid.c_prime[i][ax];
+            let cpp = grid.c_double_prime[i][ax];
+            let cppp = grid.c_triple_prime[i][ax];
+            let j = cppp * s_dot3 + 3.0 * cpp * s_dot * s_ddot + cp * s_dddot;
+            let lim = limits.j_max[ax];
+            let ratio = j.abs() / lim;
+            // Active-set: only cut at indices that violate strict feasibility.
+            // The cut's RHS uses the (looser) target_ratio so the iterate is
+            // not trivially-infeasible against the cut at iter 1.
+            if ratio <= 1.0 + SLP9_EPS_FEAS {
+                continue;
+            }
+
+            let stencil = if i == 0 {
+                AxisJerkStencil::StartBoundary
+            } else if i == n - 1 {
+                AxisJerkStencil::EndBoundary
+            } else {
+                AxisJerkStencil::Interior
+            };
+            let a_bars: [f64; 3] = match stencil {
+                AxisJerkStencil::Interior => [result.a[i - 1], result.a[i], result.a[i + 1]],
+                AxisJerkStencil::StartBoundary => [result.a[0], result.a[1], 0.0],
+                AxisJerkStencil::EndBoundary => [result.a[n - 2], result.a[n - 1], 0.0],
+            };
+            cuts.push(SlpCut::AxisJerk(AxisJerkCut {
+                i,
+                axis: ax,
+                stencil,
+                a_bars,
+                b_bar: result.b[i],
+                cp,
+                cpp,
+                cppp,
+                j_lim_inflated: lim * target_ratio,
+            }));
+        }
+    }
+    cuts
+}
+
+/// `da/ds` at grid index `i`, mirroring `verify::da_ds_at` exactly. Central
+/// FD interior, one-sided FD at boundaries.
+fn da_ds_along(a: &[f64], s: &[f64], i: usize) -> f64 {
+    let n = s.len();
+    if n <= 1 {
+        return 0.0;
+    }
+    if i == 0 {
+        let ds = s[1] - s[0];
+        if ds.abs() > 1e-15 {
+            (a[1] - a[0]) / ds
+        } else {
+            0.0
+        }
+    } else if i == n - 1 {
+        let ds = s[n - 1] - s[n - 2];
+        if ds.abs() > 1e-15 {
+            (a[n - 1] - a[n - 2]) / ds
+        } else {
+            0.0
+        }
+    } else {
+        let ds = s[i + 1] - s[i - 1];
+        if ds.abs() > 1e-15 {
+            (a[i + 1] - a[i - 1]) / ds
+        } else {
+            0.0
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -768,7 +1593,10 @@ mod tests {
         let bundle = match build(
             &grid,
             &limits,
-            EndpointVelocities { v_start: 0.0, v_end: 0.0 },
+            EndpointVelocities {
+                v_start: 0.0,
+                v_end: 0.0,
+            },
         ) {
             BuildOutcome::Ok(b) => b,
             BuildOutcome::Boundary(b) => panic!("expected Ok, got Boundary({b:?})"),

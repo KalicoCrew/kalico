@@ -2,15 +2,15 @@
 //!
 //! Spec §4.3.
 
-use crate::{GridConfig, TopProfile, Limits};
-use nurbs::VectorNurbs;
+use crate::{GridConfig, Limits, TopProfile};
 use constraints::{build, BoundaryInfeasibility, BuildOutcome, EndpointVelocities};
+use nurbs::VectorNurbs;
 
-pub mod path;
 pub mod constraints;
+pub(crate) mod output;
+pub mod path;
 pub(crate) mod solver;
 pub(crate) mod verify;
-pub(crate) mod output;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScheduleError {
@@ -56,14 +56,7 @@ pub fn schedule_segment(
         .map_err(|e| ScheduleError::PathParam(format!("{e}")))?;
 
     // Stage 2: constraint bundle (also catches boundary-above-MVC).
-    let bundle = match build(
-        &arc_grid,
-        limits,
-        EndpointVelocities {
-            v_start,
-            v_end,
-        },
-    ) {
+    let bundle = match build(&arc_grid, limits, EndpointVelocities { v_start, v_end }) {
         BuildOutcome::Ok(b) => b,
         BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
             return Ok(boundary_infeasible_profile(
@@ -86,12 +79,16 @@ pub fn schedule_segment(
         }
     };
 
-    // Stage 3: solver. SLP outer iteration (Lee 2024) wraps the inner SOCP;
-    // for the common straight-line case the loop converges at iteration 0
-    // with no cuts, leaving runtime identical to the original SOCP. The
-    // outer loop only fires when the path-jerk relaxation gap (CL-2024
-    // Conjecture 4.1 counterexample) shows up — see spec §11.
-    let (solver_result, slp_outcome) = solver::slp_solve(&bundle)
+    // Stage 3: solver. Two-stage SLP (Lee 2024 + Step 9 verifier-stencil
+    // per-axis Cartesian jerk SLP). Stage 1 (path-jerk) tightens the SOCP
+    // relaxation against the scalar-tangential jerk constraint
+    // `|s⃛| ≤ J_path`. Stage 2 layers per-axis Cartesian jerk cuts on top
+    // (active-set + L∞ trust region + accept-only-if-decrease) to drive
+    // verifier-form `|j_axis| ≤ j_max[axis]` below ε_feas. For the common
+    // straight-line / centripetal-cruise cases both loops converge at iter
+    // 0 with no cuts, leaving runtime identical to the original SOCP. See
+    // spec §11; Step 9 design notes in /tmp/pf_diagnosis.json.
+    let (solver_result, slp_outcome) = solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits)
         .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?;
 
     // Stage 4: verify.
@@ -171,8 +168,7 @@ mod tests {
         assert!(profile.samples[0].v < 1e-3);
         assert!(profile.samples[49].v < 1e-3);
         assert!(profile.samples[25].v > 100.0); // ≥ 100 mm/s
-        // Total time should be finite and positive.
+                                                // Total time should be finite and positive.
         assert!(profile.total_time.is_finite() && profile.total_time > 0.0);
     }
 }
-

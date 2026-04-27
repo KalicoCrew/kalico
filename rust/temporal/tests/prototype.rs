@@ -115,15 +115,22 @@ mod fixture_1_straight_line_x_aligned {
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let limits = textbook_limits();
-        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,
+        };
         let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
 
         // §6.1: status must be Solved or SolvedInexact.
         assert!(
-            matches!(profile.status, SolveStatus::Solved | SolveStatus::SolvedInexact { .. }),
+            matches!(
+                profile.status,
+                SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+            ),
             "fixture 1 status: {:?}",
             profile.status,
         );
@@ -138,18 +145,23 @@ mod fixture_1_straight_line_x_aligned {
         // Diagnostic sweep: N=200→0.332 (5.1%), N=400→0.341 (2.7%),
         //                   N=800→0.338 (3.6%), N=1600→0.350 (0.09%).
         // Tolerance set to 6% to bracket the N=200 observation of 5.15%.
-        let t_closed = total_time_double_s(100.0, limits.v_max[0], limits.a_max[0], limits.j_max[0]);
+        let t_closed =
+            total_time_double_s(100.0, limits.v_max[0], limits.a_max[0], limits.j_max[0]);
         let rel_err = (profile.total_time - t_closed).abs() / t_closed;
         assert!(
             rel_err <= 0.06,
             "fixture 1 §6.3: T_topp = {} vs T_closed = {} (rel_err = {:.4})",
-            profile.total_time, t_closed, rel_err,
+            profile.total_time,
+            t_closed,
+            rel_err,
         );
 
         // Sanity-log wall clock per spec §6.6 (non-goal but useful).
-        eprintln!("fixture 1: T_topp = {:.6}, T_closed = {:.6}", profile.total_time, t_closed);
+        eprintln!(
+            "fixture 1: T_topp = {:.6}, T_closed = {:.6}",
+            profile.total_time, t_closed
+        );
     }
-
 }
 
 mod fixture_2_diagonal {
@@ -176,13 +188,20 @@ mod fixture_2_diagonal {
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [h, h, 0.0]],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let limits = textbook_limits();
-        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,
+        };
         let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
 
-        assert!(matches!(profile.status, SolveStatus::Solved | SolveStatus::SolvedInexact { .. }));
+        assert!(matches!(
+            profile.status,
+            SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+        ));
 
         // §6.3: closed-form with diagonal projection.
         // Total speed = total accel = total jerk all gain factor √2 vs per-axis bound,
@@ -197,15 +216,146 @@ mod fixture_2_diagonal {
         let j_eff = limits.j_max[0] * sqrt2;
         let t_closed = total_time_double_s(100.0, v_eff, a_eff, j_eff);
         let rel_err = (profile.total_time - t_closed).abs() / t_closed;
-        assert!(rel_err <= 0.05, "fixture 2 §6.3: T_topp = {} vs T_closed = {} (rel = {:.4})",
-            profile.total_time, t_closed, rel_err);
+        assert!(
+            rel_err <= 0.05,
+            "fixture 2 §6.3: T_topp = {} vs T_closed = {} (rel = {:.4})",
+            profile.total_time,
+            t_closed,
+            rel_err
+        );
 
-        eprintln!("fixture 2: T_topp = {:.6}, T_closed = {:.6}", profile.total_time, t_closed);
+        eprintln!(
+            "fixture 2: T_topp = {:.6}, T_closed = {:.6}",
+            profile.total_time, t_closed
+        );
+    }
+}
+
+mod fixture_4_g5_cubic {
+    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+
+    fn textbook_limits() -> Limits {
+        Limits {
+            v_max: [500.0, 500.0, 500.0],
+            a_max: [5_000.0, 5_000.0, 5_000.0],
+            j_max: [100_000.0, 100_000.0, 100_000.0],
+            a_centripetal_max: 2_500.0,
+        }
+    }
+
+    /// Spec §5.1 fixture 4: G5 cubic NURBS reused from geometry-crate G5 reduction.
+    /// Boundary v at 50% of MVC. Acceptance: §6.1 status, §6.2 post-solve feasibility.
+    #[test]
+    fn fixture_4() {
+        let curve = build_g5_via_geometry();
+
+        let limits = textbook_limits();
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,
+        };
+
+        // Compute MVC at s=0 and s=L from κ at endpoints. The implementer
+        // does this by sampling the curve once at u=0 / u=1 via Layer 0 eval
+        // and computing κ. For the chosen G5 case, document the κ values
+        // inline so the reviewer can sanity-check.
+        let (mvc_b_start, mvc_b_end) = mvc_endpoints(&curve, &limits);
+        let v_start = 0.5 * mvc_b_start.sqrt();
+        let v_end = 0.5 * mvc_b_end.sqrt();
+
+        eprintln!(
+            "fixture 4: mvc_b_start = {:.4}, mvc_b_end = {:.4}, v_start = {:.4}, v_end = {:.4}",
+            mvc_b_start, mvc_b_end, v_start, v_end,
+        );
+
+        let profile = schedule_segment(&curve, &limits, &cfg, v_start, v_end).expect("schedule");
+
+        // §6.1: status must be Solved, SolvedInexact, or SolvedSlp.
+        // SolvedSlp is intentionally included per commits 0177d53a + 86f48c70:
+        // curved paths trigger the SLP outer iteration when the path-jerk
+        // relaxation has a slackness gap at the optimum.
+        assert!(
+            matches!(
+                profile.status,
+                SolveStatus::Solved
+                    | SolveStatus::SolvedInexact { .. }
+                    | SolveStatus::SolvedSlp { .. }
+            ),
+            "fixture 4 status: {:?}",
+            profile.status,
+        );
+        // §6.2 (post-solve feasibility) is enforced inside the pipeline; if
+        // the relaxation is loose, the status above already flips Infeasible.
+
+        eprintln!(
+            "fixture 4: status = {:?}, total_time = {:.6}",
+            profile.status, profile.total_time
+        );
+    }
+
+    /// Build the G5 cubic from `single_g5_emits_one_cubic_fitted_segment` in
+    /// rust/geometry/tests/g5_reduction.rs.
+    ///
+    /// G-code: `G1 X0 Y0 F1500` → `G5 X10 Y0 I3 J3 P-3 Q3`
+    /// Produces degree-3 non-rational NURBS with CPs:
+    ///   P0=(0,0,0), P1=(3,3,0), P2=(7,3,0), P3=(10,0,0)
+    ///
+    /// κ at s=0 (P0 end): tangent = (9,9,0)/9√2, 2nd deriv non-zero → smoothly
+    /// varying curvature. κ at s=L (P3 end): symmetric by the symmetric control
+    /// polygon geometry. Exact values are computed numerically via mvc_endpoints.
+    fn build_g5_via_geometry() -> nurbs::VectorNurbs<f64, 3> {
+        use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
+
+        let src = "G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n";
+        let mut pipeline = GeometryPipeline::new(FitterParams::default());
+        let mut events: Vec<TelemetryEvent> = vec![];
+        let items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            pipeline.process(src, &mut sink).collect()
+        };
+
+        // Find the degree-3 Fitted segment emitted by G5 reduction.
+        items
+            .into_iter()
+            .find_map(|it| match it {
+                Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f.xyz),
+                _ => None,
+            })
+            .expect("G5 reduction must emit exactly one degree-3 FittedSegment")
+    }
+
+    /// Compute the centripetal MVC upper bound b_max_cent = a_centripetal_max / κ
+    /// at s=0 and s=L. The formula per spec §3.3 / §4.2:
+    ///   b_max_cent = (a_centripetal_max / κ).min(1e8)   [κ clamped ≥ 1e-12]
+    ///
+    /// κ is evaluated by sampling the arclength grid at n=3, taking kappa[0] and
+    /// kappa[2] as the endpoint curvature values (same chain-rule as topp::path).
+    fn mvc_endpoints(curve: &nurbs::VectorNurbs<f64, 3>, limits: &Limits) -> (f64, f64) {
+        use temporal::topp::path::sample_arclength_grid;
+
+        // n=3: s=0, s=L/2, s=L — cheap; we only use the endpoints.
+        let grid = sample_arclength_grid(curve, 3)
+            .expect("arclength grid must succeed for a valid G5 NURBS");
+
+        let kappa_start = grid.kappa[0];
+        let kappa_end = *grid.kappa.last().expect("grid has ≥ 2 points");
+
+        eprintln!(
+            "fixture 4 mvc_endpoints: κ_start = {:.6e}, κ_end = {:.6e}",
+            kappa_start, kappa_end,
+        );
+
+        let b_start = (limits.a_centripetal_max / kappa_start.max(1e-12)).min(1e8);
+        let b_end = (limits.a_centripetal_max / kappa_end.max(1e-12)).min(1e8);
+
+        (b_start, b_end)
     }
 }
 
 mod fixture_3_constant_curvature_arc {
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus, BindingConstraint};
+    use temporal::{
+        schedule_segment, BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus,
+    };
 
     fn textbook_limits() -> Limits {
         Limits {
@@ -229,7 +379,10 @@ mod fixture_3_constant_curvature_arc {
         let curve = build_g2_arc_via_geometry();
 
         let limits = textbook_limits();
-        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,
+        };
         let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
 
         // §6.1: status must be Solved, SolvedInexact, or SolvedSlp.
@@ -258,7 +411,8 @@ mod fixture_3_constant_curvature_arc {
         assert!(
             (v_mid - v_cruise_expected).abs() / v_cruise_expected < 0.05,
             "fixture 3 cruise: v_mid = {}, expected ~{} (5% tolerance)",
-            v_mid, v_cruise_expected,
+            v_mid,
+            v_cruise_expected,
         );
         assert!(
             matches!(profile.samples[mid].binding, BindingConstraint::Centripetal),
