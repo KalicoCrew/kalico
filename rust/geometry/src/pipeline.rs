@@ -230,26 +230,38 @@ impl Segments<'_> {
                 self.prev_g1_dir = None;
             }
             CurveGeom::Quadratic { cps } => {
-                // Implemented in Task 19. For now, surface as Fatal so the
+                // Implemented in Task 18. For now, surface as Fatal so the
                 // workspace compiles and any inadvertent emission is loud.
-                // After Task 19 this arm constructs a degree-2 NURBS and emits
+                // After Task 18 this arm constructs a degree-2 NURBS and emits
                 // Segment::Fitted { degree: 2 }.
                 self.emit_unimplemented_curve("Quadratic", line_no);
                 let _ = cps;
+                // Even when stubbed, break the G1 chain — curve endpoints are not G1 motion.
+                self.prev_g1_end = None;
+                self.prev_g1_feedrate = None;
+                self.prev_g1_dir = None;
             }
             CurveGeom::Cubic { cps } => {
+                // Implemented in Task 17. For now, surface as Fatal so the
+                // workspace compiles and any inadvertent emission is loud.
+                // After Task 17 this arm constructs a degree-3 NURBS and emits
+                // Segment::Fitted { degree: 3 }.
                 self.emit_unimplemented_curve("Cubic", line_no);
                 let _ = cps;
+                // Even when stubbed, break the G1 chain — curve endpoints are not G1 motion.
+                self.prev_g1_end = None;
+                self.prev_g1_feedrate = None;
+                self.prev_g1_dir = None;
             }
         }
     }
 
     #[allow(clippy::unused_self)]
     fn emit_unimplemented_curve(&mut self, kind: &'static str, _line_no: u32) {
-        // Stub for Tasks 19 & 20. Production code never reaches here in
+        // Stub for Tasks 17 & 18. Production code never reaches here in
         // Tasks 6-12 because reduce does not yet emit Quadratic / Cubic.
         // debug_assert! lets tests catch a stray emission at developer time.
-        debug_assert!(false, "CurveGeom::{kind} reached pipeline before Task 19/20 implementation");
+        debug_assert!(false, "CurveGeom::{kind} reached pipeline before Task 17/18 implementation");
     }
 }
 

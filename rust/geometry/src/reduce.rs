@@ -423,7 +423,6 @@ where
 /// |sweep| < π required; sweeps ≥ π are clamped to (π − ε) so `cos(half_sweep)`
 /// stays positive. Multi-piece exact representation for full circles is a
 /// Phase 2 item.
-#[allow(dead_code)]
 fn build_arc_curve(
     start: [f64; 3],
     end: [f64; 3],
