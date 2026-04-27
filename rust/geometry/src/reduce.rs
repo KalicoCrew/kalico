@@ -130,6 +130,17 @@ pub(crate) enum ParseErrorKind {
     UnrecognizedHead,
     EmptyCommand,
     DuplicateParam,
+    /// G5 line missing both I,J with no previous G5 in modal chain.
+    G5MissingTangent,
+    /// G5.1 line with the active plane (G17/G18/G19) different from G17 (XY).
+    /// The active plane is encoded in `text` as the literal G-code number
+    /// ("18" or "19"); pipeline parses it back to populate Recovery.
+    #[allow(dead_code)] // emitted by Task 18 (G5.1 reduction); mapping landed early.
+    G5PlaneMismatch,
+    /// G5/G5.1 with malformed I,J,P,Q (e.g. only I but not J, both zero on
+    /// G5.1, etc.). Surfaced as `MalformedParams` equivalent but with G5
+    /// context; pipeline maps to `Recovery::MalformedParams`.
+    G5MalformedTangent,
 }
 
 /// Active machining plane per RS274NGC §3.5.1. Tracked across the gcode
@@ -348,6 +359,90 @@ where
                     e_delta_mm: None,
                 });
             }
+            // G5: cubic Bézier with control points P0=current, P1=current+(I,J),
+            // P2=end+(P,Q), P3=end. Per LinuxCNC RS274NGC §3.5.5.
+            // Distinguished from G5.1 by the absence of `minor`.
+            Token::Command {
+                letter: b'G', major: 5, minor: None, params, line_no, ..
+            } => {
+                let p0 = state.position;
+
+                let i_present = params.i().is_some();
+                let j_present = params.j().is_some();
+
+                // Resolve I,J: explicit if present, modal-chain rule if both
+                // absent and prev_g5_pq is set, error otherwise.
+                let (i, j) = match (params.i(), params.j(), state.prev_g5_pq) {
+                    (Some(i), Some(j), _) => (i, j),
+                    (None, None, Some([prev_p, prev_q])) => (-prev_p, -prev_q),
+                    (None, None, None) => {
+                        state.prev_g5_pq = None; // already None, but explicit for symmetry
+                        return Some(ReduceEvent::ParseError {
+                            line_no,
+                            kind: ParseErrorKind::G5MissingTangent,
+                            text: String::new(),
+                        });
+                    }
+                    _ => {
+                        state.prev_g5_pq = None;
+                        // Single I or single J specified — invalid per LinuxCNC.
+                        return Some(ReduceEvent::ParseError {
+                            line_no,
+                            kind: ParseErrorKind::G5MalformedTangent,
+                            text: format!("G5: I and J must both be specified or both omitted (i_present={i_present}, j_present={j_present})"),
+                        });
+                    }
+                };
+
+                // P, Q are required and explicit on every G5.
+                let (Some(pp), Some(qq)) = (params.p(), params.q()) else {
+                    state.prev_g5_pq = None;
+                    return Some(ReduceEvent::ParseError {
+                        line_no,
+                        kind: ParseErrorKind::G5MalformedTangent,
+                        text: format!(
+                            "G5: P and Q are required (got p={:?}, q={:?})",
+                            params.p(), params.q()
+                        ),
+                    });
+                };
+
+                // End position: X/Y/Z modal — inherit from current position
+                // for any axis not specified.
+                let new_x = params.x().unwrap_or(p0[0]);
+                let new_y = params.y().unwrap_or(p0[1]);
+                let new_z = params.z().unwrap_or(p0[2]);
+                let p3 = [new_x, new_y, new_z];
+
+                // Z linearly interpolated across the four control points so
+                // the curve remains exactly the planar cubic Bézier in XY
+                // and linear in Z. Spacing 0, ⅓, ⅔, 1 along the parameter.
+                let dz = p3[2] - p0[2];
+                let p1 = [p0[0] + i, p0[1] + j, p0[2] + dz / 3.0];
+                let p2 = [p3[0] + pp, p3[1] + qq, p0[2] + 2.0 * dz / 3.0];
+
+                // Feedrate update.
+                if let Some(f) = params.f() {
+                    state.feedrate_mm_s = Some(f_to_mm_s(f));
+                }
+                let e_delta = params.e().map(|new_e| {
+                    let d = new_e - state.e;
+                    state.e = new_e;
+                    d
+                });
+
+                // State updates: position, prev_g5_pq for the next link.
+                state.position = p3;
+                state.prev_g5_pq = Some([pp, qq]);
+
+                let feedrate_mm_s = state.feedrate_mm_s.unwrap_or(0.0);
+                return Some(ReduceEvent::Curve {
+                    geom: CurveGeom::Cubic { cps: [p0, p1, p2, p3] },
+                    e_delta,
+                    feedrate_mm_s,
+                    line_no,
+                });
+            }
             Token::Command {
                 letter: b'G', major: g, params, line_no, ..
             } if g == 2 || g == 3 => {
@@ -457,6 +552,10 @@ mod tests {
 
     fn cmd(letter: u8, major: u32, line_no: u32, params: Params) -> Token {
         Token::Command { letter, major, minor: None, params, line_no }
+    }
+
+    fn cmd_with_minor(letter: u8, major: u32, minor: Option<u32>, line_no: u32, params: Params) -> Token {
+        Token::Command { letter, major, minor, params, line_no }
     }
 
     fn p(setters: &[(u8, f64)]) -> Params {
@@ -757,6 +856,80 @@ mod tests {
             feedrate_mm_s: 100.0,
             line_no: 1,
         };
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_with_explicit_ijpq_emits_curve_cubic() {
+        // Position at origin, G5 to (10, 0) with tangent params I=3, J=3, P=-3, Q=3.
+        // Expected control points:
+        //   P0 = (0, 0, 0)
+        //   P1 = (0+3, 0+3, 0) = (3, 3, 0)
+        //   P2 = (10+(-3), 0+3, 0) = (7, 3, 0)
+        //   P3 = (10, 0, 0)
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ReduceEvent::Curve {
+                geom: CurveGeom::Cubic { cps },
+                feedrate_mm_s,
+                line_no: 1,
+                ..
+            } => {
+                assert_eq!(cps[0], [0.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [3.0, 3.0, 0.0]);
+                assert_eq!(cps[2], [7.0, 3.0, 0.0]);
+                assert_eq!(cps[3], [10.0, 0.0, 0.0]);
+                assert!((feedrate_mm_s - 25.0).abs() < 1e-9);
+            }
+            other => panic!("expected Curve(Cubic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_error_path_clears_prev_g5_pq() {
+        // First G5 succeeds and would normally extend the chain.
+        // Second G5 errors (missing P) — must clear prev_g5_pq.
+        // Third G5 has no I,J — must produce G5MissingTangent
+        // (proves the second G5's error cleared the chain).
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+            // Second G5: P omitted -> G5MalformedTangent.
+            cmd_with_minor(b'G', 5, None, 2, p(&[
+                (b'X', 20.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'Q', 3.0),
+            ])),
+            // Third G5: no I,J. If the second G5 didn't clear, this would
+            // silently link to the *first* G5's (P, Q) — wrong. Must error.
+            cmd_with_minor(b'G', 5, None, 3, p(&[
+                (b'X', 30.0), (b'Y', 0.0),
+                (b'P', -2.0), (b'Q', 2.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        match &events[1] {
+            ReduceEvent::ParseError { line_no: 2, kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("[1] expected G5MalformedTangent, got {other:?}"),
+        }
+        match &events[2] {
+            ReduceEvent::ParseError { line_no: 3, kind: ParseErrorKind::G5MissingTangent, .. } => {}
+            other => panic!("[2] expected G5MissingTangent (error path must clear chain), got {other:?}"),
+        }
     }
 
     #[test]

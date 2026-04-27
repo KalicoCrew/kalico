@@ -144,11 +144,19 @@ impl Segments<'_> {
                 let recovery = match kind {
                     ParseErrorKind::MalformedNumber
                     | ParseErrorKind::DuplicateParam
-                    | ParseErrorKind::EmptyCommand => {
+                    | ParseErrorKind::EmptyCommand
+                    | ParseErrorKind::G5MalformedTangent => {
                         Recovery::MalformedParams { line_no, raw: text }
                     }
                     ParseErrorKind::UnrecognizedHead => {
                         Recovery::UnrecognizedCommand { line_no, head: text }
+                    }
+                    ParseErrorKind::G5MissingTangent => {
+                        Recovery::G5MissingTangent { line_no }
+                    }
+                    ParseErrorKind::G5PlaneMismatch => {
+                        let active_plane_g_code = text.parse::<u32>().unwrap_or(17);
+                        Recovery::G5PlaneMismatch { line_no, active_plane_g_code }
                     }
                 };
                 // Dual-emit: sink fires first per §5.1 ordering contract.
@@ -457,6 +465,26 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [TelemetryEvent::Recovery(Recovery::MalformedParams { line_no: 1, .. })]
+        ));
+    }
+
+    #[test]
+    fn g5_missing_tangent_yields_recovered() {
+        // G1 followed directly by G5 with no I,J — chain has no prev G5.
+        let mut events = vec![];
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            p.process("G1 X1 Y0 F1500\nG5 X10 Y0 P-1 Q-1\n", &mut sink).collect()
+        };
+        let recovered = items.iter().find_map(|it| match it {
+            Item::Recovered(_, Recovery::G5MissingTangent { line_no: 2 }) => Some(()),
+            _ => None,
+        });
+        assert!(recovered.is_some(), "expected G5MissingTangent recovery, got {items:#?}");
+        assert!(matches!(
+            events.last(),
+            Some(TelemetryEvent::Recovery(Recovery::G5MissingTangent { line_no: 2 }))
         ));
     }
 
