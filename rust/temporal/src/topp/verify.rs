@@ -31,8 +31,6 @@
 //! This is purely a deterministic label choice; feasibility depends only on
 //! the worst normalised ratio.
 
-#![allow(dead_code)] // wired in Task 8 via schedule_segment
-
 use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::SolverResult;
 use crate::{Axis, BindingConstraint, Limits};
@@ -54,6 +52,7 @@ pub(crate) struct VerifyReport {
     pub binding_per_grid: Vec<BindingConstraint>,
     /// `max_i(worst_ratio_at_i) − 1.0`.  Positive means infeasible; negative
     /// means every constraint is slack; 0.0 means right at the limit.
+    #[allow(dead_code)]
     pub worst_violation: f64,
     /// Index into the grid where the worst violation occurred.
     pub worst_violation_grid: usize,

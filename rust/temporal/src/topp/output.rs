@@ -2,8 +2,6 @@
 //!
 //! Spec §4.3 stage 5, §4.4.
 
-#![allow(dead_code)] // wired in Task 8
-
 use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SolverResult, SolverStatus};
 use crate::topp::verify::VerifyReport;

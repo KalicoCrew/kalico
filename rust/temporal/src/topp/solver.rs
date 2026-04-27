@@ -63,8 +63,6 @@ use crate::topp::constraints::{Cone, ConstraintBundle};
 // ---------------------------------------------------------------------------
 
 /// Result of a successful SOCP solve.
-// removed in Task 8 when schedule_segment is wired
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct SolverResult {
     /// Solved primal `b_i = ṡ²` per grid point.
@@ -76,8 +74,6 @@ pub(crate) struct SolverResult {
 }
 
 /// Kalico-internal solver status. No Clarabel types.
-// removed in Task 8 when schedule_segment is wired
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SolverStatus {
     Solved,
@@ -89,8 +85,6 @@ pub(crate) enum SolverStatus {
 }
 
 /// Error from solver setup (invalid bundle). Not a solver runtime infeasibility.
-// removed in Task 8 when schedule_segment is wired
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SolverSetupError {
     #[error("invalid constraint bundle: {0}")]
