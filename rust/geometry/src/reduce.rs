@@ -367,9 +367,6 @@ where
             } => {
                 let p0 = state.position;
 
-                let i_present = params.i().is_some();
-                let j_present = params.j().is_some();
-
                 // Resolve I,J: explicit if present, modal-chain rule if both
                 // absent and prev_g5_pq is set, error otherwise.
                 let (i, j) = match (params.i(), params.j(), state.prev_g5_pq) {
@@ -384,6 +381,8 @@ where
                         });
                     }
                     _ => {
+                        let i_present = params.i().is_some();
+                        let j_present = params.j().is_some();
                         state.prev_g5_pq = None;
                         // Single I or single J specified — invalid per LinuxCNC.
                         return Some(ReduceEvent::ParseError {

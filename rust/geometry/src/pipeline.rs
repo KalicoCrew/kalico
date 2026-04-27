@@ -155,7 +155,12 @@ impl Segments<'_> {
                         Recovery::G5MissingTangent { line_no }
                     }
                     ParseErrorKind::G5PlaneMismatch => {
-                        let active_plane_g_code = text.parse::<u32>().unwrap_or(17);
+                        // TODO(task-18): when G5.1 plane-mismatch reduce arm
+                        // lands, add a round-trip test asserting text="18"
+                        // → active_plane_g_code=18.
+                        let active_plane_g_code = text.parse::<u32>().expect(
+                            "G5PlaneMismatch.text must be numeric per reduce-side contract (Task 18 emit format)"
+                        );
                         Recovery::G5PlaneMismatch { line_no, active_plane_g_code }
                     }
                 };
