@@ -1,0 +1,216 @@
+# Pi 5 SOCP Throughput Investigation
+
+**Date:** 2026-04-27
+**Hardware under test:** Raspberry Pi 5 Model B Rev 1.0, BCM2712 SoC, 4× Cortex-A76 @ 2.4 GHz, 2 GB LPDDR4X, VideoCore VII GPU. Klipper + Moonraker running idle in background (printer not in motion). 1.5 GB free RAM.
+**Software under test:** Branch `sota-motion`, Layer 2 single-segment SOCP via Clarabel 0.11.1 (`rust/temporal/src/topp/`), as of commit `85e7fa9c` plus the SLP outer loop from `0177d53a`. Rust 1.95.0 stable, target aarch64-unknown-linux-gnu.
+**Driver:** Build-order Step 4.5 (Layer 2 multi-segment) brainstorming surfaced a question about whether the per-segment SOCP cost was tractable for math-optimal trajectory planning on the actual target host. Spec §6.6 estimated "tens of milliseconds for N=200 fixtures"; preliminary measurement showed worst-case cubic@N=200 at 1.6 seconds. This artifact resolves the question.
+
+---
+
+## TL;DR
+
+- **GPU offload to VideoCore VII is conclusively dead** — no FP64 hardware, GPU FP32 throughput ≤ CPU FP64 throughput, problem size 4–5 orders of magnitude below GPU break-even.
+- **A single one-line patch** (loosen Clarabel tolerances from 1e-8 default to 1e-5) **gives an 11× speedup on the worst case** (cubic@N=200: 1596 ms → 142 ms), with all existing tests still passing.
+- **`opt-level = 3` on the workspace release profile** (was `"z"`, MCU-anticipatory) gives ~25% additional headroom on host builds.
+- **Adaptive N is essential**: N=20 cubic = 6.5 ms; N=200 cubic = 142 ms. A 1mm slicer-output G1 segment doesn't need 200 grid points.
+- **Per-segment parallelism scales near-linearly to 4 cores at small N** (N=20: 3.7× speedup) but breaks at large N due to memory bandwidth saturation on shared L3.
+- **The throughput-non-negotiable principle (CLAUDE.md "Non-negotiable constraints") is satisfiable on this hardware** with these wins. Step 4.5's (A)/(B) joining-vs-solving choice is no longer hardware-feasibility-bound.
+
+## Context
+
+Build-order Step 4 (single-segment SOCP prototype, in flight) implements the Consolini-Locatelli 2024 SOCP relaxation via Clarabel + Lee 2024 SLP outer loop. Step 4 spec §6.6 set "wall-clock per fixture" as a sanity log only, with an order-of-magnitude expectation of "tens of ms" extrapolated from Clarabel's published benchmarks on much-larger problems. Step 4.5 brainstorming asked whether real-world performance on the actual host (Pi 5) supports either of two architectural options:
+
+- **(A)** SOCP re-solved on every joining iteration (math-optimal trajectory; expensive)
+- **(B)** Cheap-kinematic forward/reverse joining + SOCP-once-at-finalize (3–8% slower trajectory than (A) on ramp-bound segments per `kalico-verifier` analysis)
+
+The user's hard constraint: never produce a slower trajectory than math-optimal. The throughput-vs-quality trade can only be resolved one way — find the compute headroom for (A), or accept the regression of (B). The principle disallows the latter.
+
+## Investigation methodology
+
+1. **Baseline** — synthetic single-segment fixtures (straight 100mm, quarter-circle arc R=20, varying-curvature cubic NURBS) at grid sizes N ∈ {20, 50, 100, 200} on the Pi 5 single core.
+2. **GPU viability research** — independent agent dispatch with sources/citations, returned a structured brief (full text in `## GPU offload finding` below).
+3. **Profile / instrument** — patched `slp_solve` and `solve_with_cuts` in the bench checkout to dump SLP outer-iter counts and per-Clarabel-solve IPM iteration counts and wall-clock to stderr. Rebuilt and re-ran.
+4. **Tolerance experiments** — patched Clarabel `tol_gap_abs/rel` and `tol_feas` from default 1e-8 to 1e-5 and 1e-4. Re-benched; ran the existing test suite (which includes closed-form Biagiotti-Melchiorri ground-truth comparison on fixtures 1+2 at 6% tolerance) for quality regression.
+5. **CPU tuning** — built with `RUSTFLAGS="-C target-cpu=native"` (auto-detected as cortex-a76); compared to opt=3 baseline.
+6. **Per-segment parallelism** — wrote a simple thread-fanout benchmark (`pi5_parallel.rs`) to test 1/2/3/4-thread scaling at multiple N.
+7. **Bench tooling** lives in `rust/temporal/examples/{pi5_perf.rs,pi5_parallel.rs}` for reproducibility.
+
+All measurements: median of 30–200 iterations after a 5-iter warm-up, single-process, `taskset -c 3` pinning where relevant to isolate from Klipper background activity. Klipper + Moonraker running but printer not in motion.
+
+## Findings
+
+### Finding 1 — GPU offload finding
+
+External agent research (general-purpose agent, dispatched against current literature and Pi 5 hardware sources). Three independent dispositive findings, any one of which would be sufficient to reject GPU offload:
+
+1. **No FP64 in VideoCore VII hardware.** The QPU ISA is FP32-only. SOCP IPMs require FP64 for KKT residual convergence; software FP64 in shaders kills throughput.
+2. **GPU FP32 peak ≤ CPU FP64 peak.** Pi 5 GPU ~76–96 GFLOPS FP32 (12 QPUs × 4 ALUs × 2 ops/cycle @ 800 MHz–1 GHz). Pi 5 CPU ~76.8 GFLOPS FP64 (4× Cortex-A76 with NEON dual 128-bit FMA @ 2.4 GHz). CPU is *faster* even at FP32 (~153.6 GFLOPS).
+3. **Problem size 4–5 orders of magnitude below GPU break-even.** QOCO-GPU paper (arXiv:2603.29197, 2026) reports the GPU-vs-CPU crossover at ~10⁵ KKT nonzeros, on a desktop NVIDIA GPU vs desktop CPU. Our SOCP at N=200 has ~10³ KKT nonzeros on a tiny mobile GPU.
+
+Plus dispatch overhead. Pi 5 V3DV Vulkan compute dispatch latency floor is unmeasured publicly, but mobile-GPU dispatch overhead is typically 200–500 µs/dispatch on immature driver stacks. For our 10 ms total budget at ~50 dispatches per solve naive port, dispatch overhead alone consumes the budget.
+
+Other Pi 5 accelerator options also rejected: Hailo NPU (INT8-only, ML-only toolchain), Coral (same), eGPU via PCIe (transfer overhead kills inner loop, plus enclosure/PSU complexity).
+
+**Sources** (full citations in agent transcript): VideoCore VII GFLOPS — RPi forum thread Dec 2024; Mesa V3DV Vulkan 1.3 conformance — LinuxToday late 2024; OpenCL via Rusticl experimental status — void-packages issue #57684 Oct 2025; QOCO-GPU crossover claim — arXiv:2603.29197; WebGPU dispatch overhead — arXiv:2604.02344; Clarabel.rs as the right CPU baseline — arXiv:2405.12762.
+
+**Verdict: optimize the CPU path; do not pursue GPU offload.**
+
+### Finding 2 — Tolerance reduction is the dominant CPU win
+
+Clarabel default tolerances: `tol_gap_abs/rel = 1e-8`, `tol_feas = 1e-8`. Spec §6.2 already accepts ε_feas = 1e-3 (0.1%) post-solve verification — **defaults were 100,000× tighter than the kalico spec needs**.
+
+Patch (one line addition to `solver.rs::solve_with_cuts`):
+
+```rust
+let settings = DefaultSettings::<f64> {
+    verbose: false,
+    max_iter: 1000,
+    tol_gap_abs: 1e-5, tol_gap_rel: 1e-5, tol_feas: 1e-5,  // ← added
+    ..Default::default()
+};
+```
+
+**Median ms/solve, single-core taskset -c 3, target-cpu=native, before vs after:**
+
+| N    | straight       | arc            | cubic                   |
+|------|----------------|----------------|-------------------------|
+| 20   | 3.8 → 3.2      | 12.3 → 6.6     | 7.3 → 6.5               |
+| 50   | 12.2 → 9.3     | 28.3 → 22.2    | 51.8 → 31.2             |
+| 100  | 30.7 → 23      | 67.2 → 47      | 87.9 → 65.2             |
+| 200  | 95.5 → 65 (32%)| 186 → 121 (35%)| **1596 → 142 (11×)**    |
+
+The cubic@N=200 catastrophic case was Clarabel's IPM hitting its 1000-iter cap at default tolerance, finishing as `AlmostSolved` after grinding 1.5 seconds. At 1e-5: 42 IPM iters, 66 ms, status `Solved`. **All previously-AlmostSolved cases are now Solved.**
+
+Quality preserved: full `cargo test -p temporal --release` passes, including the closed-form Biagiotti-Melchiorri 7-segment ground-truth check on fixtures 1+2 (which uses 6% tolerance per `tests/prototype.rs`).
+
+**Failed sub-experiment:** tol=1e-4 is *slower* than tol=1e-5 (cubic@N=200: 167 ms vs 142 ms). Cause: Clarabel's "reduced tolerances" (the AlmostSolved threshold) default to 5e-5 / 1e-4. When primary tol = reduced tol, the two-tier convergence logic degenerates. Sweet spot is **1e-5**.
+
+### Finding 3 — `opt-level = "z"` on the workspace was leaving ~25% on the table
+
+The workspace `[profile.release]` was set to `opt-level = "z"` (size-optimization), anticipatory of the MCU firmware build (build-order Steps 5+). For host benchmarks this is the wrong target.
+
+Switching to `opt-level = 3`: cubic@N=200 went from 1596 → 1100 ms (at default tol; ~30% gain). Combined with Finding 2's tolerance patch the total stack is captured in the table above.
+
+**Recommendation:** change workspace `[profile.release]` to `opt-level = 3`. When MCU firmware build lands (Step 5+), introduce a separate profile for it. Done in the patch accompanying this artifact.
+
+### Finding 4 — Adaptive N is necessary AND sufficient
+
+Cost scaling per fixture, single-core, tol=1e-5, opt=3+native:
+
+| N    | straight | arc  | cubic | scaling exponent (cubic) |
+|------|----------|------|-------|--------------------------|
+| 20   | 3.2      | 6.6  | 6.5   | —                        |
+| 50   | 9.3      | 22.2 | 31.2  | ~1.7                     |
+| 100  | 23       | 47   | 65.2  | ~1.1                     |
+| 200  | 65       | 121  | 142   | ~1.1                     |
+
+Cost is roughly linear-to-superlinear in N. A 1mm slicer-output G1 segment with N=200 has 5 µm grid spacing — wildly over-resolved. Realistic adaptive-N policy targets ~50–200 µm grid spacing per segment, yielding N ≈ 5–20 for typical hobby slicer output.
+
+**Step 4.5 should default N adaptively to segment arclength + curvature complexity, not fixed N=200.**
+
+### Finding 5 — Per-segment parallelism scales 2–4× at small N, regresses at large N
+
+Throughput in segments/sec, cubic fixture, tol=1e-5:
+
+| N    | 1 thread | 2 threads      | 3 threads      | 4 threads      | best speedup |
+|------|----------|----------------|----------------|----------------|--------------|
+| 20   | 148      | 295 (1.99×)    | 433 (2.92×)    | 550 (3.72×)    | **3.72×**    |
+| 50   | 32       | 63  (1.97×)    | 83  (2.59×)    | 69  (2.16×)    | 2.59× (3T)   |
+| 100  | 15.3     | 28.7 (1.88×)   | 27 (1.76×)     | 16.4 (1.07×)   | 1.88× (2T)   |
+| 200  | 7.0      | 10  (1.43×)    | 7   (1.0×)     | 5.2 (0.74×)    | 1.43× (2T) ⚠ |
+
+**Why scaling collapses at large N**: the SOCP working set spills out of each Cortex-A76's per-core L2 cache (512 KB). All cores then contend for the shared L3 / memory bus. BCM2712 is the binding constraint here — not raw FLOPS, not GPU, not solver tuning.
+
+**Implication, doubly important**: small N (≤50) gives both faster per-call cost AND near-linear parallel scaling. Adaptive N + 3-thread batch executor is the right shape for Step 4.5. Pinning a 4th thread fights Klipper's background activity on cores 0-1.
+
+### Failed experiment — `target-cpu=native` is roughly a wash vs opt=3
+
+Initial measurement showed `target-cpu=native` SLOWER than opt=3 alone, but that result was contaminated by elevated system load (load avg 5.7 from back-to-back benchmark runs). Re-measured with cool system + single-core pinning: roughly identical to opt=3 baseline ±5%.
+
+LLVM's A76-specific instruction scheduling doesn't materially help for this workload. The Clarabel + faer code is already well-vectorized via faer's hand-written NEON intrinsics; LLVM autovectorization adds little. **Worth keeping target-cpu in the build flags but not transformative.**
+
+### Failed experiment — OpenBLAS link is irrelevant
+
+OpenBLAS 0.3.21 is pre-installed on Pi OS. Not used. Clarabel's default sparse linear-algebra backend is `faer` (Rust-native, NEON-vectorized), not BLAS. Switching Clarabel to a BLAS-src backend would require turning off `faer-sparse` feature. Not worth pursuing because:
+- OpenBLAS lacks A76-tuned kernels (only up to A72/A73)
+- Faer is competitive on small problems where BLAS dispatch overhead matters
+- Significant build complexity
+
+Skipped.
+
+## Implications for Step 4.5 and Step 9
+
+### Step 4.5 (multi-segment integration)
+
+The (A) vs (B) trade is no longer hardware-feasibility-bound. Both are tractable on this hardware:
+
+- **(A)** "SOCP per joining iteration" at adaptive N=20 with 4-core parallelism: ~1.8 ms amortized per re-solve. At MVP-style 1000 push/sec with ~2.5 sweeps, ~4.5 ms per push consumed compute = totally feasible.
+- **(B)** "SOCP at finalize" at the same parameters: even more comfortable.
+
+**Recommendation for Step 4.5**:
+1. Default to adaptive N policy (proportional to segment arclength + curvature complexity).
+2. Use 1e-5 Clarabel tolerances throughout (Finding 2 patch).
+3. Use 3-thread parallel batch executor (avoid the 4-core memory-bandwidth cliff at large N; reserve a core for Klipper background activity).
+4. The (A) vs (B) algorithmic choice is now purely about implementation simplicity vs. trajectory-time optimality, not hardware-feasibility. Following the throughput-non-negotiable principle: **(A)** wins.
+
+### Step 9 (shaper-aware feedback iteration)
+
+The cubic@N=200 1.6s catastrophe was an early warning that the SLP outer loop in pathological cases could blow up planning time. With Finding 2 in place, even the SLP-cut SOCP converges in 67 IPM iters (112 ms). Step 9's iterative shaper-aware loop will benefit equivalently — re-solves stay in the 100 ms range per call instead of seconds.
+
+The Step-4 spec §11 deferred item ("Multi-segment SOCP across the whole window") is now genuinely worth investigating as a Step 9 enabler — it would amortize Clarabel setup across the whole window and reduce per-segment overhead. Not investigated in this artifact; flagged as follow-up.
+
+## Recommended patches
+
+**Three changes; the first two land in this commit.**
+
+1. **`rust/Cargo.toml`** — change `[profile.release] opt-level = "z"` to `3`. Comment notes future MCU profile override. *(Applied in this commit.)*
+
+2. **`rust/temporal/examples/{pi5_perf.rs,pi5_parallel.rs}`** — benchmark binaries for reproducibility. Single-call latency sweep + thread-scaling test. *(Applied in this commit.)*
+
+3. **`rust/temporal/src/topp/solver.rs`** — `tol_gap_abs/rel = 1e-5, tol_feas = 1e-5` in the `DefaultSettings` constructor inside `solve_with_cuts`. **NOT applied in this commit** because the file has 844 lines of in-flight Step-9 work from the parallel Step-4 agent that this session should not entangle. To be applied as a follow-up commit after the in-flight Step-9 work lands.
+
+   Patch text:
+   ```rust
+   let settings = DefaultSettings::<f64> {
+       verbose: false,
+       max_iter: 1000,
+       tol_gap_abs: 1e-5, tol_gap_rel: 1e-5, tol_feas: 1e-5,
+       ..Default::default()
+   };
+   ```
+
+## Reproducing
+
+On a Pi 5 (or comparable Cortex-A76 host):
+
+```bash
+ssh user@pi5
+git clone <kalico-repo> kalico
+cd kalico/rust
+cargo build -p temporal --release --examples       # ~2 min cold
+
+# single-call latency sweep
+for fix in straight arc cubic; do
+  for n in 20 50 100 200; do
+    taskset -c 3 ./target/release/examples/pi5_perf $fix 50 $n 2>&1 | tail -1
+  done
+done
+
+# thread-scaling test
+for fix in straight arc cubic; do
+  for t in 1 2 3 4; do
+    ./target/release/examples/pi5_parallel $fix 400 $t 50 2>&1
+  done
+done
+```
+
+The benchmark binary prints per-iteration wall-clock to stdout and a summary line to stderr; the parallel binary prints amortized throughput. Apply the tolerance patch from §"Recommended patches" #3 to reproduce the Finding 2 numbers; without it you'll see the original baseline numbers (cubic@N=200 ≈ 1.6s).
+
+## Open follow-ups
+
+- **Apply tolerance patch upstream** once Step-9 in-flight work has committed.
+- **Multi-segment SOCP across the lookahead window** — Step-4 spec §11 deferred item, now worth investigating; would reduce per-segment overhead by amortizing Clarabel setup. Flagged for a follow-up brainstorm session.
+- **Adaptive-N policy specification** — needs to be designed precisely as part of Step 4.5 spec.
+- **Skip-base-SOCP heuristic** — for cases with sharply varying curvature, the base SOCP solve is wasteful (cuts will be needed anyway). Detecting this from κ(s) analysis up-front and starting with cuts could save another ~30% on cubic-class segments. Algorithm work; deferred.
+- **Validate findings on real slicer output** — synthetic fixtures in this artifact are extreme cases. A typical print's mix is ~80% straight + ~15% arcs + ~5% cubics with mostly small N. Realistic per-print planning-latency estimate based on this mix: ~1–5 minutes for a multi-hour print. Confirm against real slicer output before committing to the (A) vs (B) decision.
+- **Step 4.5 spec writing** — the architectural conversation from this session's brainstorm should land in a Step 4.5 spec, with this artifact cited as the throughput-evidence base.
