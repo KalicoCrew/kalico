@@ -990,17 +990,30 @@ pub(crate) fn join_until_converged(
         let f_dirty = forward_sweep(states, junctions);
         let r_dirty = reverse_sweep(states, junctions);
         if f_dirty == 0 && r_dirty == 0 {
-            // Velocities stable AND no dirty segments need re-solving — done.
-            // (fan_out_solves clears `dirty` on success, so any `dirty == true`
-            // remaining after the previous iteration's fan-out means a solve
-            // failed; that should already be a returned error.)
+            // Velocity propagation has stabilized — no segment's joining-decided
+            // (v_start, v_end) changed in either sweep direction. Three cases:
             if states.iter().all(|s| !s.dirty) {
+                // (1) All segments solved cleanly. Done.
                 return Ok((sweep, JoiningStatus::Converged));
             }
-            // Else: re-solve the dirty stragglers and check again.
+            // (2) Some segments still have dirty=true because their last
+            // fan_out_solves returned a non-success status (Infeasible /
+            // MaxIter / DivergedSlp / MaxIterSlp — all of which return
+            // Ok(profile) with non-success SolveStatus, leaving dirty=true).
+            // Per kalico-verifier review-3: schedule_segment is deterministic
+            // (Clarabel 0.11.1 with kalico's default-features uses single-
+            // threaded QDLDL; SLP loops have no RNG; constraint construction
+            // is deterministic), so re-solving with unchanged inputs would
+            // produce the same non-success status. Bail early rather than
+            // spin to MAX_SWEEPS.
+            let last_dirty_count = states.iter().filter(|s| s.dirty).count();
+            return Ok((sweep, JoiningStatus::CappedAtMaxSweeps { last_dirty_count }));
         }
         fan_out_solves(inputs, states, grids, n_threads)?;
     }
+    // (3) Reached MAX_SWEEPS without velocity stabilization — pathological
+    // joining behavior (shouldn't happen on the test fixtures; surfaces as
+    // CappedAtMaxSweeps for diagnostic).
     let last_dirty = states.iter().filter(|s| s.dirty).count();
     Ok((MAX_SWEEPS, JoiningStatus::CappedAtMaxSweeps { last_dirty_count: last_dirty }))
 }
@@ -1008,7 +1021,7 @@ pub(crate) fn join_until_converged(
 
 **Why the re-solve goes inside the loop:** when forward/reverse sweep changes `v_start[k]` or `v_end[k]`, segment k's existing `profile` is stale relative to the new boundary conditions. The next sweep iteration would propagate from `state[k].v_end` — but that field reflects the *previously-solved* SOCP output. To get a true convergence, we must re-solve stale segments before re-checking propagation. (For the simple case where the initial junction-velocity seeds are already feasible everywhere, the loop terminates in 1 iteration with no re-solves — same outcome as the original buggy version, but correctness preserved on the harder cases.)
 
-**Note on `fan_out_solves` dirty-clearing semantics:** Task 8 must clear `dirty` only on actual solver-success (`SolverStatus::Solved` or `SolvedInexact`), not on `MaxIter` / `Infeasible` / `DivergedSlp`. Codex review-1 found that returning `Ok(profile)` from `schedule_segment` doesn't imply the profile is feasible — non-success statuses still construct a `TopProfile`. Task 8 implementation must inspect `profile.status` and propagate failures.
+**Note on `fan_out_solves` dirty-clearing semantics:** Task 8 must clear `dirty` only on the verifier-feasible public success statuses — `SolveStatus::Solved`, `SolveStatus::SolvedInexact`, AND `SolveStatus::SolvedSlp` (kalico-verifier round-3 confirmed: SolvedSlp passes the same verifier::check feasibility gate as the others). Failures (`MaxIter`, `Infeasible`, `DivergedSlp`, `MaxIterSlp`) leave dirty=true. Codex review-1 found that returning `Ok(profile)` from `schedule_segment` doesn't imply the profile is feasible — non-success statuses still construct a `TopProfile`. Task 8 implementation must inspect `profile.status` and propagate failures.
 
 - [ ] **Step 2: Add test — converges-in-one-sweep on consistent input + signature change**
 
@@ -1270,7 +1283,7 @@ fn auto_succeeds_on_straight_line() {
     ).expect("Auto should succeed on straight line");
     assert!(matches!(
         profile.status,
-        SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+        SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
     ));
 }
 
@@ -1297,7 +1310,7 @@ fn auto_falls_back_on_fixture_4_class() {
     ).expect("Auto should fall back on fixture-4-class geometry");
     assert!(matches!(
         profile.status,
-        SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+        SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
     ));
 }
 ```
@@ -1345,13 +1358,26 @@ use std::thread;
 /// `std::thread::scope` (no unsafe; works because Rust 1.63+ scoped threads
 /// borrow for the scope lifetime, which encloses the call). MSRV is 1.85.
 ///
-/// Per Codex review-1 finding I + kalico-plan-reviewer #8: a profile returned
-/// from `schedule_segment` is `Ok(_)` even when the SOCP returned `MaxIter`,
-/// `Infeasible`, or the SLP outer loop returned `DivergedSlp`. We MUST inspect
-/// the public `SolveStatus` and only clear `dirty` on `Solved` /
-/// `SolvedInexact`. Other statuses leave the segment dirty for the caller to
-/// notice and either re-attempt with looser endpoints or surface as a batch
-/// error.
+/// Per Codex review-1 finding I + kalico-plan-reviewer #8 + Codex review-3 +
+/// kalico-verifier confirmation: a profile returned from `schedule_segment` is
+/// `Ok(_)` even when the SOCP returned `MaxIter`, `Infeasible`, or the SLP outer
+/// loop returned `DivergedSlp` / `MaxIterSlp`. We MUST inspect the public
+/// `SolveStatus` and only clear `dirty` on the verifier-feasible success
+/// statuses: `Solved`, `SolvedInexact`, AND `SolvedSlp`.
+///
+/// `SolvedSlp` is critical to include — it represents a feasible solve where
+/// the SLP outer loop materially required cuts (the actual termination path on
+/// curved geometry like the cubic-with-endpoint-κ class). Verified via
+/// kalico-verifier (this session): SolvedSlp is only reachable when both
+/// (a) the inner solver returned Solved/SolvedInexact and (b) verify::check
+/// passed feasibility at ε_feas = 1e-3. Treating it as failure would leave
+/// every SLP-required-cuts segment dirty forever, breaking convergence on
+/// curved geometry.
+///
+/// Failure statuses (`Infeasible`, `MaxIter`, `DivergedSlp`, `MaxIterSlp`)
+/// fall into the catch-all `_` arm and leave dirty=true for the caller to
+/// notice. The convergence loop's `MAX_SWEEPS` cap (Task 6) catches persistent
+/// failures and surfaces them via `JoiningStatus::CappedAtMaxSweeps`.
 pub(crate) fn fan_out_solves(
     inputs: &[SegmentInput<'_>],
     states: &mut [SegmentState],
@@ -1366,7 +1392,7 @@ pub(crate) fn fan_out_solves(
     }
 
     let queue = Mutex::new(dirty_indices);
-    let results: Mutex<Vec<(usize, Result<crate::topp::TopProfile, crate::topp::ScheduleError>)>>
+    let results: Mutex<Vec<(usize, Result<crate::TopProfile, crate::ScheduleError>)>>
         = Mutex::new(Vec::new());
 
     // Snapshot endpoint velocities into thread-shared Vec (avoids passing
@@ -1402,7 +1428,9 @@ pub(crate) fn fan_out_solves(
             Ok(profile) => {
                 let success = matches!(
                     profile.status,
-                    SolveStatus::Solved | SolveStatus::SolvedInexact { .. }
+                    SolveStatus::Solved
+                    | SolveStatus::SolvedInexact { .. }
+                    | SolveStatus::SolvedSlp { .. }
                 );
                 states[idx].profile = Some(profile);
                 if success {
@@ -2154,7 +2182,7 @@ git commit -m "temporal/tests: fixture 6 — long realistic chain perf sanity (s
 
 **Spec sections:** §5.1 fixture 7, §6.6.5 inter-grid sanity methodology.
 
-- [ ] **Step 1: Add fixture 7 test with full cubic Hermite + per-axis Cartesian checks**
+- [ ] **Step 1: Add fixture 7 test with cubic Hermite + per-axis Cartesian (v, a) + centripetal checks** (per-axis-jerk deferred to v2; see plan §"Spec §6.6.5 conformance" below)
 
 ```rust
 mod fixture_7_curvature_spike_intergrid_sanity {
@@ -2193,20 +2221,19 @@ mod fixture_7_curvature_spike_intergrid_sanity {
         let d1 = vector_derivative(&curve);
         let d2 = vector_derivative(&d1);
 
-        // §6.6.5 methodology: re-evaluate per-axis Cartesian (v, a, j) +
-        // centripetal at 4× density via piecewise-cubic Hermite of (v_i, a_i)
-        // pairs from solver. Compute geometric κ and tangent direction
-        // directly from NURBS at each resampled point (NOT interpolated κ).
+        // §6.6.5 methodology (v1, jerk deferred): re-evaluate per-axis Cartesian
+        // velocity + acceleration + centripetal at 4× density via piecewise-cubic
+        // Hermite of (v_i, a_i) pairs from solver. Compute geometric κ and
+        // tangent direction directly from NURBS at each resampled point (NOT
+        // interpolated κ). Per-axis-jerk validation deferred — see comment in
+        // the per-axis check loop below + the conformance summary at section end.
         let n_resampled = 4 * profile.samples.len();
         let mut violations = Vec::new();
         let u_start = curve.knots()[0];
         let u_end = curve.knots()[curve.knots().len() - 1];
         for k in 0..n_resampled {
             let t = (k as f64) / (n_resampled as f64 - 1.0);
-            // j_path returned but not consumed in v1 fixture 7 (per-axis-jerk
-            // check intentionally deferred — see comment below). Kept in the
-            // helper return signature for future use when per-axis-jerk lands.
-            let (v_path, a_path, _j_path) = hermite_interp(&profile.samples, t);
+            let (v_path, a_path) = hermite_interp(&profile.samples, t);
 
             // Map normalized t ∈ [0,1] → u via uniform-in-u proxy. Approximation:
             // the solver grid is uniform-in-arclength, but for this spike-at-the-
@@ -2318,14 +2345,17 @@ mod fixture_7_curvature_spike_intergrid_sanity {
     /// f(s) = h00·v_i + h10·dt·a_i + h01·v_{i+1} + h11·dt·a_{i+1}
     /// where `dt` is the time between samples (≈ sample arclength / mean v).
     ///
-    /// Returns (v_interp, a_interp, j_interp) where:
-    ///   - v_interp = Hermite-interpolated value
-    ///   - a_interp = derivative of Hermite (closed-form)
-    ///   - j_interp = second-derivative of Hermite (closed-form)
-    fn hermite_interp(samples: &[GridSample], t: f64) -> (f64, f64, f64) {
+    /// Returns (v_interp, a_interp). The third return slot (`j_interp`) was
+    /// dropped per review-3 cleanup since v1 fixture 7 doesn't validate
+    /// per-axis Cartesian jerk (deferred to v2 once arclength→u inversion +
+    /// third-derivative APIs are exposed from Layer 0). When v2 lands and
+    /// per-axis-jerk validation is implemented, recompute `j_interp` here as
+    /// the closed-form second-derivative of the Hermite (formula left in the
+    /// commit history at b03684c5 if needed for reference).
+    fn hermite_interp(samples: &[GridSample], t: f64) -> (f64, f64) {
         let n = samples.len();
         if n < 2 {
-            return (samples.first().map_or(0.0, |s| s.v), 0.0, 0.0);
+            return (samples.first().map_or(0.0, |s| s.v), 0.0);
         }
         let pos = t * ((n - 1) as f64);
         let i = (pos.floor() as usize).min(n - 2);
@@ -2357,15 +2387,7 @@ mod fixture_7_curvature_spike_intergrid_sanity {
         let dv_ds = dh00 * v_i + dh10 * dt * a_i + dh01 * v_ip1 + dh11 * dt * a_ip1;
         let a_interp = dv_ds / dt;
 
-        // Second derivative for j_interp.
-        let ddh00 = 12.0 * s - 6.0;
-        let ddh10 = 6.0 * s - 4.0;
-        let ddh01 = -12.0 * s + 6.0;
-        let ddh11 = 6.0 * s - 2.0;
-        let ddv_ds2 = ddh00 * v_i + ddh10 * dt * a_i + ddh01 * v_ip1 + ddh11 * dt * a_ip1;
-        let j_interp = ddv_ds2 / (dt * dt);
-
-        (v_interp, a_interp, j_interp)
+        (v_interp, a_interp)
     }
 
     #[inline]
@@ -2490,7 +2512,7 @@ git commit -m "CLAUDE.md plan-changes-log: Step 4.5 Layer 2 multi-segment comple
 - `ToleranceMode` consistent across Tasks 7, 8, 9, 12, 16 ✓
 - `compute_n` signature: `(&GridStrategy, &VectorNurbs<f64, 3>) -> usize` — consistent in Tasks 2 and 9 ✓
 
-**Real-life caveat:** the exact `nurbs::VectorNurbs::derivative_at` API is referenced but unverified — Task 3 Step 5 says "the exact `derivative_at` API may differ; check `rust/nurbs/src/lib.rs` and adapt." This is intentional — the executor must read the actual API surface and adapt. If the API doesn't exist or has a different signature, the fix is to extend nurbs (out of Step 4.5 scope; flag as a Layer-0 follow-up) or use available evaluators + manual finite differences as a temporary bridge. The plan's intent is "compute κ and forward tangent at u=0/u=1 of each segment" — implementation detail.
+**Real-life caveat:** ~~the exact `nurbs::VectorNurbs::derivative_at` API is referenced but unverified~~ **(superseded by review-1)**: Task 0 now locks the audited nurbs API surface (`vector_derivative` + `vector_eval` + `curvature_from_derivs` per `rust/nurbs/src/eval.rs`) before Task 3 begins, and Task 3 Step 5 uses those exact functions. No remaining unverified API caveat.
 
 ---
 
@@ -2525,6 +2547,35 @@ Both reviewers ran in parallel and converged on the same critical findings. Subs
 **Findings reviewers raised that this revision did NOT change** (intentionally):
 - Some reviewer-suggested style tightenings (e.g., extracting `2.414213562` magic number to a constant) deferred to executor's discretion — small enough to not warrant explicit plan instruction.
 - The MAX_SWEEPS = 10 cap kept as-is even though spec §10 says "might tighten to 5 once we have real-fixture data." Keeping looser cap during initial implementation; can tighten once fixtures pass with smaller sweep counts.
+
+---
+
+## Post-review revisions (Plan review-3: kalico-plan-reviewer APPROVED + Codex NEEDS-REVISION → all findings verified + applied)
+
+Round-3 dual review found two MAJORs (one Codex-only, one missed by reviewer-1's local grep) and three MINORs. Critically, this round adopted a **per-Codex-finding kalico-verifier verification** pattern: rather than applying Codex's suggestions blindly, each load-bearing claim was independently adversarially verified before applying.
+
+**Verified-then-applied:**
+
+1. **`SolvedSlp` missing from Task 8 dirty-clearing success arm** — Codex MAJOR. Verified by kalico-verifier (`docs/research/...verifier transcript`): SolvedSlp is a fully verifier-feasible success status (only emitted when both `verify::check` passes AND inner solver returned Solved/SolvedInexact AND SLP cuts were materially required). The original `Solved | SolvedInexact` success match would have left every SLP-required-cuts segment dirty forever, breaking convergence on cubic-class geometry. Fixed: success arm is now `SolveStatus::Solved | SolvedInexact { .. } | SolvedSlp { .. }`. The verifier also caught two corollary issues Codex missed: (a) the prose mistakenly named `SolverStatus::Solved` (internal type) when it should be `SolveStatus::Solved` (public); (b) `MaxIterSlp` falls into the catch-all `_` arm correctly. Both fixed. Same updates applied to the `auto_succeeds_on_*` test asserts in Task 7's adaptive-tolerance test file.
+
+2. **Joining-loop dirty-spin early-bail** — Codex MAJOR + kalico-plan-reviewer MAJOR. Both reviewers proposed slightly different early-bail conditions; verified by kalico-verifier that the simpler Codex variant ("after fan_out_solves, if velocities have stabilized AND segments are still dirty, immediately return CappedAtMaxSweeps") is sound. Verification chain: (i) Clarabel 0.11.1 with kalico's default features (no `faer-sparse`) uses single-threaded QDLDL → fully deterministic IPM; (ii) SLP outer loops have no RNG / no time / no parallelism; (iii) constraint matrix construction is deterministic; (iv) `forward_sweep`/`reverse_sweep` only read `state.v_start`/`state.v_end` (joining-decided), never `state.profile.last_sample.v` (SOCP-actual), so post-fan_out velocity stability genuinely implies no further propagation. Conclusion: re-solving a still-dirty segment with unchanged inputs always produces the same non-success status; bailing immediately is strictly correct. Fixed: `join_until_converged` now returns `CappedAtMaxSweeps` after the first stable-velocities + still-dirty observation, bounding waste at ~1 sweep × |dirty| instead of 10 × N. Misleading comment ("dirty == true ... should already be a returned error") replaced with accurate three-case explanation.
+
+**Compile blockers found and fixed:**
+
+3. **`crate::topp::TopProfile` at plan line 1369** — Codex MAJOR. Round-2 grep only matched `use` statements; missed inline type annotation in the `Mutex<Vec<(usize, Result<crate::topp::TopProfile, crate::topp::ScheduleError>)>>` declaration. Fixed.
+
+**Cleanup edits (no verification needed):**
+
+4. **Hermite helper's `j_interp` is dead code** since per-axis-jerk check was deferred. Both reviewers flagged it. Helper now returns `(f64, f64)` instead of `(f64, f64, f64)`; `_j_path` destructuring at the call site dropped. Old formula left in commit history (b03684c5) for reference when v2 jerk validation lands.
+5. **Task 16 Step 1 heading** still said "per-axis Cartesian checks (v, a, j)" despite the jerk drop. Updated to "per-axis Cartesian (v, a) + centripetal checks; per-axis-jerk deferred to v2."
+6. **Self-review's stale `derivative_at` caveat** at the bottom of the plan — superseded by Task 0's NURBS API audit. Annotated as superseded.
+7. **Spec §6.6.5 deferral note added** — kalico-plan-reviewer flagged that the spec listed per-axis Cartesian jerk as required without a matching deferral note; future reader sees mismatch. Added explicit deferral paragraph in the spec referencing this round-3 review.
+
+**Findings reviewers raised that this revision did NOT change** (with rationale):
+
+- **Codex's "consider pinning Clarabel determinism"** — verifier suggested explicitly setting `direct_solve_method: "qdldl"` + `max_threads: 1` in `DefaultSettings` (`solver.rs:811`) as insurance against future Clarabel feature-flag changes. Defensible, but lives in upstream `solver.rs` (Step 4/9 surface), not in Step 4.5's new code. Treating as a follow-up to coordinate with the Step-4-agent rather than a Step-4.5 plan correction.
+
+**Net result:** Round 3 was meaningfully productive — caught one real correctness bug (SolvedSlp omission would have broken convergence on cubic-class fixtures), one real efficiency bug (dirty-spin to MAX_SWEEPS without progress), one missed compile-blocker, and three cleanup items. **All Codex's substantive claims that I applied went through kalico-verifier first**, which both validated them AND surfaced corollary issues Codex missed (SolverStatus naming, MaxIterSlp categorization, comment correctness, determinism insurance). The verify-each-Codex-finding pattern paid off and should be reused.
 
 ---
 
