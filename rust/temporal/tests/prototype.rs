@@ -355,6 +355,66 @@ mod fixture_4_g5_cubic {
     }
 }
 
+mod fixture_5_curvature_spike {
+    use nurbs::VectorNurbs;
+    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+
+    fn textbook_limits() -> Limits {
+        Limits {
+            v_max: [500.0, 500.0, 500.0],
+            a_max: [5_000.0, 5_000.0, 5_000.0],
+            j_max: [100_000.0, 100_000.0, 100_000.0],
+            a_centripetal_max: 2_500.0,
+        }
+    }
+
+    /// Spec §5.1 fixture 5: degree-3 NURBS with two close-together interior CPs.
+    /// Stress test for Clarabel tolerance handling; acceptance §6.1 (Solved or
+    /// SolvedInexact) + §6.2 post-solve feasibility (enforced by pipeline).
+    #[test]
+    fn fixture_5() {
+        // Degree-3 NURBS, 4 control points, clamped knot vector, two interior
+        // CPs close together to create a localized high-κ peak.
+        // Endpoints (0,0,0) and (60, 0, 0); interior CPs near (29, 5, 0) and
+        // (31, 5, 0) — ~2 mm apart at y=5. Visualize: the curve detours up
+        // and right back, creating a sharp κ peak around u=0.5.
+        let curve = VectorNurbs::<f64, 3>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                [0.0, 0.0, 0.0],
+                [29.0, 5.0, 0.0],
+                [31.0, 5.0, 0.0],
+                [60.0, 0.0, 0.0],
+            ],
+            None,
+        ).unwrap();
+
+        let limits = textbook_limits();
+        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
+
+        // §6.1: status must be Solved, SolvedInexact, or SolvedSlp.
+        // SolvedSlp is intentionally included: curved paths with a localized
+        // high-κ spike trigger the per-axis Cartesian jerk SLP outer iteration
+        // (commits 269498ed + 03aa47bc + ce5e962f + e540aa42 + 52e9bece) when
+        // the path-jerk relaxation has a slackness gap at the optimum.
+        assert!(matches!(profile.status,
+            SolveStatus::Solved
+            | SolveStatus::SolvedInexact { .. }
+            | SolveStatus::SolvedSlp { .. }),
+            "fixture 5 status: {:?} (relaxation tightness gap or numerical pathology, see spec §7.1, §7.2)",
+            profile.status);
+        // If this fails with Infeasible/MaxIter, the spec response (§6.1) is to
+        // file the failure with reproducer rather than fix-the-solver.
+
+        eprintln!(
+            "fixture 5: status = {:?}, total_time = {:.6}",
+            profile.status, profile.total_time
+        );
+    }
+}
+
 mod fixture_3_constant_curvature_arc {
     use temporal::{
         schedule_segment, BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus,
