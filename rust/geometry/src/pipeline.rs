@@ -234,38 +234,38 @@ impl Segments<'_> {
                 self.prev_g1_dir = None;
             }
             CurveGeom::Quadratic { cps } => {
-                // Implemented in Task 18. For now, surface as Fatal so the
-                // workspace compiles and any inadvertent emission is loud.
-                // After Task 18 this arm constructs a degree-2 NURBS and emits
-                // Segment::Fitted { degree: 2 }.
-                self.emit_unimplemented_curve("Quadratic", line_no);
-                let _ = cps;
-                // Even when stubbed, break the G1 chain — curve endpoints are not G1 motion.
+                let xyz = nurbs_from_quadratic(cps);
+                let seg = FittedSegment {
+                    xyz,
+                    e: None,
+                    feedrate_mm_s,
+                    degree: 2,
+                    max_residual_mm: 0.0,
+                    source: SourceRange { start_line: line_no, end_line: line_no },
+                };
+                self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
+                // G5.1 also breaks the G1-tangent chain (curvature-continuity principle).
                 self.prev_g1_end = None;
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
             }
             CurveGeom::Cubic { cps } => {
-                // Implemented in Task 17. For now, surface as Fatal so the
-                // workspace compiles and any inadvertent emission is loud.
-                // After Task 17 this arm constructs a degree-3 NURBS and emits
-                // Segment::Fitted { degree: 3 }.
-                self.emit_unimplemented_curve("Cubic", line_no);
-                let _ = cps;
-                // Even when stubbed, break the G1 chain — curve endpoints are not G1 motion.
+                let xyz = nurbs_from_cubic(cps);
+                let seg = FittedSegment {
+                    xyz,
+                    e: None,
+                    feedrate_mm_s,
+                    degree: 3,
+                    max_residual_mm: 0.0,
+                    source: SourceRange { start_line: line_no, end_line: line_no },
+                };
+                self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
+                // G5 breaks the G1-tangent chain (curvature-continuity principle).
                 self.prev_g1_end = None;
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
             }
         }
-    }
-
-    #[allow(clippy::unused_self)]
-    fn emit_unimplemented_curve(&mut self, kind: &'static str, _line_no: u32) {
-        // Stub for Tasks 17 & 18. Production code never reaches here in
-        // Tasks 6-12 because reduce does not yet emit Quadratic / Cubic.
-        // debug_assert! lets tests catch a stray emission at developer time.
-        debug_assert!(false, "CurveGeom::{kind} reached pipeline before Task 17/18 implementation");
     }
 }
 
@@ -290,6 +290,26 @@ fn nurbs_from_rational_quadratic(
         Some(weights.to_vec()),
     )
     .expect("rational quadratic from reduce is always valid")
+}
+
+fn nurbs_from_quadratic(cps: [[f64; 3]; 3]) -> nurbs::VectorNurbs<f64, 3> {
+    nurbs::VectorNurbs::<f64, 3>::try_new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        cps.to_vec(),
+        None,
+    )
+    .expect("non-rational quadratic Bézier with 3 CPs and clamped knots is always valid")
+}
+
+fn nurbs_from_cubic(cps: [[f64; 3]; 4]) -> nurbs::VectorNurbs<f64, 3> {
+    nurbs::VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        cps.to_vec(),
+        None,
+    )
+    .expect("non-rational cubic Bézier with 4 CPs and clamped knots is always valid")
 }
 
 fn unit(v: [f64; 3]) -> [f64; 3] {
@@ -490,6 +510,99 @@ mod tests {
         assert!(matches!(
             events.last(),
             Some(TelemetryEvent::Recovery(Recovery::G5MissingTangent { line_no: 2 }))
+        ));
+    }
+
+    #[test]
+    fn g5_emits_fitted_degree_3() {
+        let items = collect("G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n");
+        // Expect: G1 fitted (degree 1) + G5 fitted (degree 3). No Junction
+        // between them because G5 breaks the G1-tangent chain.
+        let g5 = items.iter().find_map(|it| match it {
+            Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f),
+            _ => None,
+        });
+        let f = g5.expect("expected a degree-3 FittedSegment");
+        assert_eq!(f.xyz.degree(), 3);
+        let cps = f.xyz.control_points();
+        assert_eq!(cps.len(), 4);
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(approx(cps[0][0], 0.0) && approx(cps[0][1], 0.0));
+        assert!(approx(cps[1][0], 3.0) && approx(cps[1][1], 3.0));
+        assert!(approx(cps[2][0], 7.0) && approx(cps[2][1], 3.0));
+        assert!(approx(cps[3][0], 10.0) && approx(cps[3][1], 0.0));
+        // Knot vector [0,0,0,0,1,1,1,1].
+        let knots = f.xyz.knots();
+        assert_eq!(knots, &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+        // Non-rational.
+        assert!(f.xyz.weights().is_none(), "G5 cubic must be non-rational");
+        // Quality metric: exact construction → zero residual.
+        #[allow(clippy::float_cmp)]
+        { assert_eq!(f.max_residual_mm, 0.0); }
+        // No JD between the G1 and the G5.
+        assert!(
+            !items.iter().any(|it| matches!(it, Item::Segment(Segment::Junction(_)))),
+            "G5 must break the G1-tangent chain — no Junction expected, got {items:#?}"
+        );
+    }
+
+    #[test]
+    fn g5_is_followed_by_g1_with_no_junction() {
+        // After a G5 endpoint, a G1 should not produce a JunctionDeviation
+        // because G5 broke the chain.
+        let items = collect("G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\nG1 X20 Y0\n");
+        let junctions: Vec<_> = items.iter().filter_map(|it| match it {
+            Item::Segment(Segment::Junction(_)) => Some(()),
+            _ => None,
+        }).collect();
+        assert!(junctions.is_empty(), "expected no junctions, got {} in {items:#?}", junctions.len());
+    }
+
+    #[test]
+    fn g5_1_emits_fitted_degree_2_non_rational() {
+        let items = collect("G1 X0 Y0 F1500\nG5.1 X10 Y0 I3 J3\n");
+        let g5_1 = items.iter().find_map(|it| match it {
+            Item::Segment(Segment::Fitted(f)) if f.degree == 2 => Some(f),
+            _ => None,
+        });
+        let f = g5_1.expect("expected a degree-2 FittedSegment");
+        assert_eq!(f.xyz.degree(), 2);
+        let cps = f.xyz.control_points();
+        assert_eq!(cps.len(), 3);
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(approx(cps[0][0], 0.0) && approx(cps[0][1], 0.0));
+        assert!(approx(cps[1][0], 3.0) && approx(cps[1][1], 3.0));
+        assert!(approx(cps[2][0], 10.0) && approx(cps[2][1], 0.0));
+        // Knot vector [0,0,0,1,1,1].
+        let knots = f.xyz.knots();
+        assert_eq!(knots, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        // Non-rational — distinguishes from rational-quadratic Arc.
+        assert!(f.xyz.weights().is_none(), "G5.1 quadratic must be non-rational");
+        #[allow(clippy::float_cmp)]
+        { assert_eq!(f.max_residual_mm, 0.0); }
+        // G5.1 also breaks the G1-tangent chain — no Junction in the output.
+        assert!(
+            !items.iter().any(|it| matches!(it, Item::Segment(Segment::Junction(_)))),
+            "G5.1 must break the G1-tangent chain"
+        );
+    }
+
+    #[test]
+    fn g5_1_outside_xy_plane_yields_recovered() {
+        let mut events = vec![];
+        let mut p = GeometryPipeline::new(FitterParams::default());
+        let items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            p.process("G18\nG5.1 X10 Z1 I3 J3\n", &mut sink).collect()
+        };
+        let recovered = items.iter().find_map(|it| match it {
+            Item::Recovered(_, Recovery::G5PlaneMismatch { line_no: 2, active_plane_g_code: 18 }) => Some(()),
+            _ => None,
+        });
+        assert!(recovered.is_some(), "expected G5PlaneMismatch, got {items:#?}");
+        assert!(matches!(
+            events.last(),
+            Some(TelemetryEvent::Recovery(Recovery::G5PlaneMismatch { line_no: 2, active_plane_g_code: 18 }))
         ));
     }
 
