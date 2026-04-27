@@ -6,6 +6,7 @@ use crate::{GridConfig, TopProfile, Limits};
 use nurbs::VectorNurbs;
 
 pub mod path;
+pub mod constraints;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScheduleError {
