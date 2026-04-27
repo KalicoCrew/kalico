@@ -9,6 +9,7 @@ pub mod path;
 pub mod constraints;
 pub(crate) mod solver;
 pub(crate) mod verify;
+pub(crate) mod output;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScheduleError {
