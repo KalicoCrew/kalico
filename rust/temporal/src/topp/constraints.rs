@@ -137,6 +137,7 @@ const COMP_FLOOR: f64 = 1e-12;
 ///
 /// Returns [`BuildOutcome::Boundary`] if the start or end velocity exceeds the
 /// centripetal maximum-velocity curve at that endpoint (§7.3 pre-check).
+#[allow(clippy::too_many_lines)]
 pub fn build(
     grid: &ArclengthGrid,
     limits: &Limits,
@@ -709,6 +710,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn straight_line_zero_endpoints_builds_ok() {
         let grid = dummy_straight_grid(10, 100.0);
         let limits = textbook_limits();
@@ -754,6 +756,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    #[allow(clippy::float_cmp, clippy::manual_range_contains)]
     fn straight_line_n_vars_and_cone_count_match_design() {
         // N = 5, straight X line, zero endpoints.
         // Expect: n_vars = 5N - 6 = 5*5 - 6 = 19.

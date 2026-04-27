@@ -21,7 +21,7 @@
 //! | `Zero`                   | `ZeroConeT(dim)`           |
 //! | `Nonneg`                 | `NonnegativeConeT(dim)`    |
 //! | `SecondOrder`            | `SecondOrderConeT(dim)`    |
-//! | `RotatedSecondOrder`     | (not emitted by build())   |
+//! | `RotatedSecondOrder`     | (not emitted by `build()`) |
 //!
 //! Note: `RotatedSecondOrderConeT` does not exist in Clarabel 0.11. The
 //! `constraints::build()` function never emits `Cone::RotatedSecondOrder`;
@@ -43,10 +43,12 @@
 //! | `MaxIterations`                  | `SolverStatus::MaxIter{..}`        |
 //! | `MaxTime`                        | `SolverStatus::MaxIter{..}`        |
 //! | `NumericalError`                 | `SolverStatus::Infeasible`         |
-//! | `InsufficientProgress`           | `SolverStatus::Infeasible`         |
-//! | `CallbackTerminated` / `Unsolved`| `SolverStatus::Infeasible`         |
+//! | `InsufficientProgress`           | `SolverStatus::MaxIter{..}`        |
+//! | `CallbackTerminated`             | `SolverStatus::Infeasible`         |
+//! | `Unsolved`                       | `SolverStatus::Infeasible`         |
 //!
-//! Spec §4.2.
+//! `InsufficientProgress` maps to `MaxIter` (closer to "gave up" than
+//! "structurally infeasible"). Spec §4.2.
 
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{
@@ -61,26 +63,34 @@ use crate::topp::constraints::{Cone, ConstraintBundle};
 // ---------------------------------------------------------------------------
 
 /// Result of a successful SOCP solve.
+// removed in Task 8 when schedule_segment is wired
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct SolverResult {
     /// Solved primal `b_i = ṡ²` per grid point.
     pub b: Vec<f64>,
-    /// Solved auxiliary `a_i` per grid point (path acceleration s̈_i).
+    /// Solved auxiliary `a_i` per grid point (path acceleration `s̈_i`).
     pub a: Vec<f64>,
     /// Solver status, mapped to a kalico-defined enum (no Clarabel types).
     pub status: SolverStatus,
 }
 
 /// Kalico-internal solver status. No Clarabel types.
+// removed in Task 8 when schedule_segment is wired
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SolverStatus {
     Solved,
     SolvedInexact { residual: f64 },
     Infeasible,
-    MaxIter { last_residual: f64 },
+    /// Renamed from `last_residual` to `residual` for consistency with
+    /// `SolvedInexact`; both encode `max(r_prim, r_dual)`.
+    MaxIter { residual: f64 },
 }
 
 /// Error from solver setup (invalid bundle). Not a solver runtime infeasibility.
+// removed in Task 8 when schedule_segment is wired
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SolverSetupError {
     #[error("invalid constraint bundle: {0}")]
@@ -88,26 +98,69 @@ pub(crate) enum SolverSetupError {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// Helper: build CSC matrix A for Clarabel
 // ---------------------------------------------------------------------------
 
-/// Construct the Clarabel SOCP from `bundle` and solve it.
+/// Convert the dense row-major `ConstraintBundle::a_rows` into a
+/// Clarabel-format `CscMatrix`.
 ///
-/// Returns `SolverResult` for both feasible and infeasible outcomes (the
-/// solver runtime infeasibility surfaces in `SolverResult::status`).
-/// `SolverSetupError` is only for programming errors caught before `solve()`.
-pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSetupError> {
+/// Sign convention: Clarabel wants `A_clarabel = -A_k` (see module-level
+/// note). Every non-zero entry is negated here.
+fn build_a_csc(bundle: &ConstraintBundle) -> CscMatrix<f64> {
     let n_vars = bundle.n_vars;
-    let n_grid = bundle.n_grid;
+    let n_rows = bundle.a_rows.len();
 
-    // -----------------------------------------------------------------------
-    // Step 1: Convert kalico cones → Clarabel SupportedConeT.
-    //
-    // Clarabel 0.11 does not have RotatedSecondOrderConeT; constraints::build()
-    // never emits it (jerk blocks use standard SOC via norm-form identity).
-    // We return SolverSetupError if a bundle somehow contains it.
-    // -----------------------------------------------------------------------
-    let mut cones_clarabel = Vec::with_capacity(bundle.cones.len());
+    let mut colptr: Vec<usize> = Vec::with_capacity(n_vars + 1);
+    let mut rowval: Vec<usize> = Vec::new();
+    let mut nzval: Vec<f64> = Vec::new();
+
+    colptr.push(0);
+    for col in 0..n_vars {
+        for row in 0..n_rows {
+            let v = bundle.a_rows[row][col];
+            if v != 0.0 {
+                rowval.push(row);
+                // Sign-convention negation: A_clarabel = -A_k (see module-level note).
+                nzval.push(-v);
+            }
+        }
+        colptr.push(nzval.len());
+    }
+
+    CscMatrix { m: n_rows, n: n_vars, colptr, rowval, nzval }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: zero P matrix (pure linear objective)
+// ---------------------------------------------------------------------------
+
+/// Build the zero `n_vars × n_vars` upper-triangle CSC matrix for
+/// Clarabel's quadratic objective term.
+///
+/// For a pure linear objective there is no quadratic term. CSC encoding of
+/// the zero matrix: `colptr = [0; n_vars+1]`, `rowval = []`, `nzval = []`.
+fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
+    CscMatrix::<f64> {
+        m: n_vars,
+        n: n_vars,
+        colptr: vec![0usize; n_vars + 1],
+        rowval: vec![],
+        nzval: vec![],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: map kalico cones → Clarabel SupportedConeT
+// ---------------------------------------------------------------------------
+
+/// Convert each kalico `Cone` to the matching Clarabel cone.
+///
+/// Returns `SolverSetupError` if a `RotatedSecondOrder` cone is encountered
+/// (not supported in Clarabel 0.11; `build()` should never emit it).
+fn map_clarabel_cones(
+    bundle: &ConstraintBundle,
+) -> Result<Vec<clarabel::solver::SupportedConeT<f64>>, SolverSetupError> {
+    let mut out = Vec::with_capacity(bundle.cones.len());
     for &(ref cone, dim) in &bundle.cones {
         let c = match cone {
             Cone::Zero => ZeroConeT(dim),
@@ -121,121 +174,113 @@ pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSet
                 ));
             }
         };
-        cones_clarabel.push(c);
+        out.push(c);
     }
+    Ok(out)
+}
 
-    // -----------------------------------------------------------------------
-    // Step 2: Convert dense A (row-major Vec<Vec<f64>>) → Clarabel CscMatrix.
-    //
-    // Sign convention: Clarabel wants A_c = -A_k (see module-level note).
-    // We negate every entry when building column-major CSC.
-    //
-    // Bundle stores rows; Clarabel wants CSC (column-major).
-    // We iterate columns c = 0..n_vars and accumulate non-zeros from each row.
-    // -----------------------------------------------------------------------
-    let n_rows = bundle.a_rows.len();
+// ---------------------------------------------------------------------------
+// Helper: map Clarabel SolverStatus → kalico SolverStatus
+// ---------------------------------------------------------------------------
 
-    // Build CSC: colptr, rowval, nzval — column by column.
-    let mut colptr: Vec<usize> = Vec::with_capacity(n_vars + 1);
-    let mut rowval: Vec<usize> = Vec::new();
-    let mut nzval: Vec<f64> = Vec::new();
+/// Map a Clarabel `SolverStatus` to the kalico-internal `SolverStatus`.
+///
+/// `residual` is `max(r_prim, r_dual)` from the solution, passed through for
+/// inexact / max-iter outcomes.
+///
+/// The match is exhaustive against Clarabel 0.11.1's enum so that a future
+/// Clarabel bump that adds a new variant will fail to compile — intentional.
+fn map_status(status: ClarabelStatus, residual: f64) -> SolverStatus {
+    match status {
+        // Clean solve.
+        ClarabelStatus::Solved => SolverStatus::Solved,
 
-    colptr.push(0);
-    for col in 0..n_vars {
-        for row in 0..n_rows {
-            let v = bundle.a_rows[row][col];
-            if v != 0.0 {
-                rowval.push(row);
-                // spec §sign-convention: negate A rows
-                nzval.push(-v);
-            }
-        }
-        colptr.push(nzval.len());
+        // Near-optimal: feasible but residuals above tolerance.
+        ClarabelStatus::AlmostSolved => SolverStatus::SolvedInexact { residual },
+
+        // Iteration / time budget exhausted — no certificate either way.
+        // InsufficientProgress is also "gave up" rather than "infeasible",
+        // so it maps here rather than to Infeasible.
+        ClarabelStatus::MaxIterations
+        | ClarabelStatus::MaxTime
+        | ClarabelStatus::InsufficientProgress => SolverStatus::MaxIter { residual },
+
+        // Structural infeasibility certificates, solver errors, user-aborted,
+        // and never-ran all map to Infeasible — no usable primal solution.
+        ClarabelStatus::PrimalInfeasible
+        | ClarabelStatus::DualInfeasible
+        | ClarabelStatus::AlmostPrimalInfeasible
+        | ClarabelStatus::AlmostDualInfeasible
+        | ClarabelStatus::NumericalError
+        | ClarabelStatus::CallbackTerminated
+        | ClarabelStatus::Unsolved => SolverStatus::Infeasible,
     }
+}
 
-    let a_csc = CscMatrix {
-        m: n_rows,
-        n: n_vars,
-        colptr,
-        rowval,
-        nzval,
-    };
+// ---------------------------------------------------------------------------
+// Helper: extract b and a from solution vector
+// ---------------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
-    // Step 3: RHS vector b_clarabel = bundle.b_rhs (sign-convention: unchanged).
-    // -----------------------------------------------------------------------
+/// Slice the Clarabel primal solution `x` into per-grid-point `b` and `a`
+/// vectors.
+///
+/// Variable layout (pinned in `constraints.rs`):
+///   - `x[0..n_grid]`          → `b_i = ṡ²`
+///   - `x[n_grid..2*n_grid]`   → `a_i = s̈_i`
+fn extract_solution(x: &[f64], n_grid: usize, status: SolverStatus) -> SolverResult {
+    let b: Vec<f64> = x[..n_grid].to_vec();
+    let a: Vec<f64> = x[n_grid..2 * n_grid].to_vec();
+    SolverResult { b, a, status }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/// Construct the Clarabel SOCP from `bundle` and solve it.
+///
+/// Returns `SolverResult` for both feasible and infeasible outcomes (the
+/// solver runtime infeasibility surfaces in `SolverResult::status`).
+/// `SolverSetupError` is only for programming errors caught before `solve()`.
+// removed in Task 8 when schedule_segment is wired
+#[allow(dead_code)]
+pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSetupError> {
+    let n_vars = bundle.n_vars;
+    let n_grid = bundle.n_grid;
+
+    // Step 1: map cones.
+    let cones_clarabel = map_clarabel_cones(bundle)?;
+
+    // Step 2: build sparse A (with sign-convention negation applied inside).
+    let a_csc = build_a_csc(bundle);
+
+    // Step 3: RHS vector (sign-convention: unchanged from bundle).
     let b_rhs: &[f64] = &bundle.b_rhs;
 
-    // -----------------------------------------------------------------------
-    // Step 4: Zero P (pure linear objective, no quadratic term).
-    //
-    // Clarabel's P is n_vars × n_vars upper triangle. For a linear problem
-    // P is the zero matrix, which CSC encodes as colptr = [0, 0, ..., 0]
-    // (all n_vars+1 entries zero), rowval = [], nzval = [].
-    // -----------------------------------------------------------------------
-    let p_zero = CscMatrix::<f64> {
-        m: n_vars,
-        n: n_vars,
-        colptr: vec![0usize; n_vars + 1],
-        rowval: vec![],
-        nzval: vec![],
-    };
+    // Step 4: zero P for pure linear objective.
+    let p_zero = build_p_zero(n_vars);
 
-    // -----------------------------------------------------------------------
-    // Step 5: Objective vector q = bundle.objective.
-    // -----------------------------------------------------------------------
+    // Step 5: objective vector.
     let q: &[f64] = &bundle.objective;
 
-    // -----------------------------------------------------------------------
-    // Step 6: Settings.
-    //
-    // spec §4.2: Clarabel defaults except verbose = false (suppress solver
-    // output in test and production runs; diagnostics go through kalico
-    // telemetry, not stdout).
-    // -----------------------------------------------------------------------
-    let mut settings = DefaultSettings::<f64>::default();
-    // spec §4.2: suppress Clarabel's banner/iteration output
-    settings.verbose = false;
+    // Step 6: settings — spec §4.2: Clarabel defaults except verbose = false
+    // (suppress solver output; diagnostics go through kalico telemetry).
+    let settings = DefaultSettings::<f64> { verbose: false, ..Default::default() };
 
-    // -----------------------------------------------------------------------
-    // Step 7: Construct and run.
-    // -----------------------------------------------------------------------
+    // Step 7: construct and run.
     let mut solver =
         DefaultSolver::new(&p_zero, q, &a_csc, b_rhs, &cones_clarabel, settings)
             .map_err(|e| SolverSetupError::InvalidBundle(e.to_string()))?;
 
     solver.solve();
 
-    // -----------------------------------------------------------------------
-    // Step 8: Map Clarabel SolverStatus → kalico SolverStatus.
-    //
-    // Residual for inexact / max-iter: use max(r_prim, r_dual) from solution.
-    // -----------------------------------------------------------------------
+    // Step 8: map status; residual = max(r_prim, r_dual).
     let soln = &solver.solution;
     let residual = soln.r_prim.max(soln.r_dual);
+    let status = map_status(soln.status, residual);
 
-    let status = match soln.status {
-        ClarabelStatus::Solved => SolverStatus::Solved,
-        ClarabelStatus::AlmostSolved => SolverStatus::SolvedInexact { residual },
-        ClarabelStatus::MaxIterations | ClarabelStatus::MaxTime => {
-            SolverStatus::MaxIter { last_residual: residual }
-        }
-        // All infeasibility / error / progress codes map to Infeasible.
-        // Callers check SolverStatus::Infeasible and surface as SolveStatus::Infeasible.
-        _ => SolverStatus::Infeasible,
-    };
-
-    // -----------------------------------------------------------------------
-    // Step 9: Extract b_i and a_i from solution.x per the variable layout
-    // pinned in constraints.rs:
-    //   indices [0, n_grid)      : b_i
-    //   indices [n_grid, 2*n_grid): a_i
-    // -----------------------------------------------------------------------
-    let x = &soln.x;
-    let b: Vec<f64> = x[..n_grid].to_vec();
-    let a: Vec<f64> = x[n_grid..2 * n_grid].to_vec();
-
-    Ok(SolverResult { b, a, status })
+    // Step 9: extract b_i and a_i.
+    Ok(extract_solution(&soln.x, n_grid, status))
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +329,7 @@ mod tests {
             EndpointVelocities { v_start: 0.0, v_end: 0.0 },
         ) {
             BuildOutcome::Ok(b) => b,
-            other => panic!("expected Ok, got {other:?}"),
+            BuildOutcome::Boundary(b) => panic!("expected Ok, got Boundary({b:?})"),
         };
         let result = solve(&bundle).expect("solver setup");
         assert!(
@@ -296,7 +341,8 @@ mod tests {
             result.status
         );
         assert_eq!(result.b.len(), 50);
-        // Endpoints clamped to 0; interior must be > 0.
+
+        // Endpoints clamped to zero (v_start = v_end = 0).
         assert!(
             result.b[0].abs() < 1e-6,
             "b[0] should be ~0, got {}",
@@ -307,10 +353,51 @@ mod tests {
             "b[49] should be ~0, got {}",
             result.b[49]
         );
+
+        // For length=100mm, zero endpoints, v_max=500 mm/s, a_max=5000 mm/s²:
+        //   - If accel-bound throughout: b_max ≈ 2·a·s_peak where s_peak = 50mm,
+        //     so b_max ≈ 2·5000·50 = 500_000 (mm/s)².
+        //   - If velocity-bound: b_max = v_max² = 250_000 (mm/s)².
+        //   - Actual answer is min of the two regimes.
+        // Bracket the midpoint: must be substantially > 0 (not just barely-feasible)
+        // and below v_max² (the global cap).
+        let b_mid = result.b[25];
         assert!(
-            result.b[25] > 1.0,
-            "b[25] should be > 1.0 (nontrivial speed), got {}",
-            result.b[25]
+            b_mid > 1e4,
+            "b[25] = {b_mid}, expected > 1e4 (substantially accelerating)"
+        );
+        assert!(
+            b_mid <= 250_000.0 * 1.01,
+            "b[25] = {b_mid}, expected ≤ v_max² + tolerance"
+        );
+
+        // Sign check: from rest, the path must be ACCELERATING in the first half
+        // and DECELERATING in the second half. A sign-flip in the constraint
+        // matrix could produce a profile where b is monotonically increasing or
+        // decreasing, which we'd miss without these checks.
+        assert!(
+            result.b[10] > result.b[1],
+            "must accelerate from rest: b[1]={}, b[10]={}",
+            result.b[1],
+            result.b[10]
+        );
+        assert!(
+            result.b[40] < result.b[25],
+            "must decelerate toward end: b[25]={}, b[40]={}",
+            result.b[25],
+            result.b[40]
+        );
+
+        // Path acceleration sign: a > 0 in first half, a < 0 in second.
+        assert!(
+            result.a[5] > 0.0,
+            "a[5] = {} should be positive (accelerating)",
+            result.a[5]
+        );
+        assert!(
+            result.a[44] < 0.0,
+            "a[44] = {} should be negative (decelerating)",
+            result.a[44]
         );
     }
 }
