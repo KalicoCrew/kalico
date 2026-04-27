@@ -447,6 +447,85 @@ where
                     line_no,
                 });
             }
+            // G5.1: quadratic Bézier with control points P0=current,
+            // P1=current+(I,J), P2=end. Per LinuxCNC RS274NGC §G5.1.
+            // Restricted to the active plane (G17/G18/G19); Phase 1 supports
+            // only XY (G17). Both I and J must be specified and at least one
+            // must be non-zero (a fully-zero tangent collapses to G1).
+            Token::Command {
+                letter: b'G', major: 5, minor: Some(1), params, line_no, ..
+            } => {
+                // Plane check (Phase 1: XY only).
+                if state.active_plane != Plane::XY {
+                    let plane_g_code = match state.active_plane {
+                        Plane::XY => 17,
+                        Plane::XZ => 18,
+                        Plane::YZ => 19,
+                    };
+                    state.prev_g5_pq = None;
+                    return Some(ReduceEvent::ParseError {
+                        line_no,
+                        kind: ParseErrorKind::G5PlaneMismatch,
+                        text: plane_g_code.to_string(),
+                    });
+                }
+
+                // I,J both required and at least one non-zero.
+                let (i, j) = match (params.i(), params.j()) {
+                    (Some(i), Some(j)) if i != 0.0 || j != 0.0 => (i, j),
+                    (Some(_), Some(_)) => {
+                        // Both zero — degenerate, equivalent to G1.
+                        state.prev_g5_pq = None;
+                        return Some(ReduceEvent::ParseError {
+                            line_no,
+                            kind: ParseErrorKind::G5MalformedTangent,
+                            text: "G5.1: I and J both zero".to_string(),
+                        });
+                    }
+                    _ => {
+                        state.prev_g5_pq = None;
+                        return Some(ReduceEvent::ParseError {
+                            line_no,
+                            kind: ParseErrorKind::G5MalformedTangent,
+                            text: format!(
+                                "G5.1: both I and J required (got i={:?}, j={:?})",
+                                params.i(), params.j()
+                            ),
+                        });
+                    }
+                };
+
+                let p0 = state.position;
+                let new_x = params.x().unwrap_or(p0[0]);
+                let new_y = params.y().unwrap_or(p0[1]);
+                let new_z = params.z().unwrap_or(p0[2]);
+                let p2 = [new_x, new_y, new_z];
+
+                // Z linearly interpolated across 3 control points: 0, ½, 1.
+                let z1 = f64::midpoint(p0[2], p2[2]);
+                let p1 = [p0[0] + i, p0[1] + j, z1];
+
+                if let Some(f) = params.f() {
+                    state.feedrate_mm_s = Some(f_to_mm_s(f));
+                }
+                let e_delta = params.e().map(|new_e| {
+                    let d = new_e - state.e;
+                    state.e = new_e;
+                    d
+                });
+
+                state.position = p2;
+                // G5.1 is non-G5 motion: clear the modal chain.
+                state.prev_g5_pq = None;
+
+                let feedrate_mm_s = state.feedrate_mm_s.unwrap_or(0.0);
+                return Some(ReduceEvent::Curve {
+                    geom: CurveGeom::Quadratic { cps: [p0, p1, p2] },
+                    e_delta,
+                    feedrate_mm_s,
+                    line_no,
+                });
+            }
             Token::Command {
                 letter: b'G', major: g, params, line_no, ..
             } if g == 2 || g == 3 => {
@@ -1130,6 +1209,234 @@ mod tests {
         match &events[0] {
             ReduceEvent::ParseError { line_no: 1, kind: ParseErrorKind::G5MalformedTangent, .. } => {}
             other => panic!("expected G5MalformedTangent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_with_z_delta_interpolates_z_at_thirds() {
+        // From (0,0,0) to (10, 0, 0.3). Expected Z at CPs: 0, 0.1, 0.2, 0.3.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0), (b'Z', 0.3),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::Curve { geom: CurveGeom::Cubic { cps }, .. } => {
+                let approx = |a: f64, b: f64| (a - b).abs() < 1e-12;
+                assert!(approx(cps[0][2], 0.0));
+                assert!(approx(cps[1][2], 0.1));
+                assert!(approx(cps[2][2], 0.2));
+                assert!(approx(cps[3][2], 0.3));
+            }
+            other => panic!("expected Curve(Cubic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_1_with_z_delta_interpolates_z_at_midpoint() {
+        // From (0,0,0) to (10, 0, 0.4). Expected Z at the three CPs:
+        //   P0.z = 0, P1.z = 0.2 (midpoint), P2.z = 0.4.
+        // Spec §6.2: "G5.1 with Z delta → control-point Z values at midpoint
+        // (0, dz/2, dz)." Mirrors the cubic-at-thirds test above for G5.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, Some(1), 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0), (b'Z', 0.4),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::Curve { geom: CurveGeom::Quadratic { cps }, .. } => {
+                let approx = |a: f64, b: f64| (a - b).abs() < 1e-12;
+                assert!(approx(cps[0][2], 0.0));
+                assert!(approx(cps[1][2], 0.2));
+                assert!(approx(cps[2][2], 0.4));
+            }
+            other => panic!("expected Curve(Quadratic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_1_with_explicit_ij_emits_curve_quadratic() {
+        // From (0,0,0) to (10,0). I=3, J=3. Expected:
+        //   P0 = (0, 0, 0), P1 = (3, 3, 0), P2 = (10, 0, 0).
+        let toks = vec![
+            cmd_with_minor(b'G', 5, Some(1), 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ReduceEvent::Curve {
+                geom: CurveGeom::Quadratic { cps },
+                feedrate_mm_s,
+                line_no: 1,
+                ..
+            } => {
+                assert_eq!(cps[0], [0.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [3.0, 3.0, 0.0]);
+                assert_eq!(cps[2], [10.0, 0.0, 0.0]);
+                assert!((feedrate_mm_s - 25.0).abs() < 1e-9);
+            }
+            other => panic!("expected Curve(Quadratic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_1_outside_xy_plane_emits_recovery() {
+        // G18 sets XZ plane; G5.1 should error.
+        let toks = vec![
+            cmd(b'G', 18, 1, Params::default()),
+            cmd_with_minor(b'G', 5, Some(1), 2, p(&[
+                (b'X', 10.0), (b'Z', 1.0),
+                (b'I', 3.0), (b'J', 3.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // G18 emits no event, so we have 1 event total (the G5.1 ParseError).
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ReduceEvent::ParseError {
+                line_no: 2,
+                kind: ParseErrorKind::G5PlaneMismatch,
+                text,
+            } => {
+                assert_eq!(text, "18", "expected active plane G-code 18, got {text:?}");
+            }
+            other => panic!("expected G5PlaneMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_1_with_both_ij_zero_is_malformed() {
+        let toks = vec![
+            cmd_with_minor(b'G', 5, Some(1), 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 0.0), (b'J', 0.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::ParseError { kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("expected G5MalformedTangent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_1_missing_j_is_malformed() {
+        let toks = vec![
+            cmd_with_minor(b'G', 5, Some(1), 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::ParseError { kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("expected G5MalformedTangent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_1_missing_i_is_malformed() {
+        // J specified but I omitted — invalid (G5.1 has no modal-chain rule;
+        // both I and J are required). Symmetric to g5_1_missing_j_is_malformed.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, Some(1), 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'J', 3.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::ParseError { kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("expected G5MalformedTangent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_1_no_ij_is_malformed() {
+        // Neither I nor J — G5.1 has no modal-chain rule, so this is invalid.
+        // (Per spec §6.2: "G5.1 with no I, J → Recovery::MalformedParams.
+        // No modal-chain rule for G5.1.")
+        let toks = vec![
+            cmd_with_minor(b'G', 5, Some(1), 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::ParseError { kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("expected G5MalformedTangent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_1_outside_g19_plane_emits_recovery() {
+        // G19 sets YZ plane; G5.1 should error.
+        // Symmetric to g5_1_outside_xy_plane_emits_recovery (which uses G18).
+        let toks = vec![
+            cmd(b'G', 19, 1, Params::default()),
+            cmd_with_minor(b'G', 5, Some(1), 2, p(&[
+                (b'Y', 10.0), (b'Z', 1.0),
+                (b'I', 3.0), (b'J', 3.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // G19 emits no event, so we have 1 event total (the G5.1 ParseError).
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ReduceEvent::ParseError {
+                line_no: 2,
+                kind: ParseErrorKind::G5PlaneMismatch,
+                text,
+            } => {
+                assert_eq!(text, "19", "expected active plane G-code 19, got {text:?}");
+            }
+            other => panic!("expected G5PlaneMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_1_after_g18_then_g17_succeeds() {
+        // G18 (sets XZ — would error if G5.1 followed) → G17 (resets to XY)
+        // → G5.1 should now succeed. Asserts the plane-mismatch error path
+        // is not sticky and that G17 properly resets the active plane.
+        let toks = vec![
+            cmd(b'G', 18, 1, Params::default()),
+            cmd(b'G', 17, 2, Params::default()),
+            cmd_with_minor(b'G', 5, Some(1), 3, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // G18 and G17 emit no events; G5.1 emits one Curve(Quadratic) event.
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ReduceEvent::Curve {
+                geom: CurveGeom::Quadratic { cps },
+                line_no: 3,
+                ..
+            } => {
+                assert_eq!(cps[0], [0.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [3.0, 3.0, 0.0]);
+                assert_eq!(cps[2], [10.0, 0.0, 0.0]);
+            }
+            other => panic!("expected Curve(Quadratic) after G18→G17 reset, got {other:?}"),
         }
     }
 
