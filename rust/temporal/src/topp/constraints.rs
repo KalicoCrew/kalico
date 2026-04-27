@@ -449,8 +449,17 @@ pub fn build(
     //
     // Skip row when both |c''_ax| < COMP_FLOOR AND |c'_ax| < COMP_FLOOR
     // (constraint is vacuous: 0·x ≤ a_max is always satisfied).
+    //
+    // # Feasibility-redundancy prune (spec §11)
+    //
+    // Skip block-(d) rows that cannot bind. Worst-case LHS bounded by triangle
+    // inequality (local b_cap + stencil-aware a_cap); if < 10% of a_max, the
+    // row is feasibility-redundant. Mirrors block-(c) cap pattern. Spec §11.
     // -------------------------------------------------------------------------
     {
+        /// Safety fraction: skip block-(d) rows whose worst-case LHS falls
+        /// below this fraction of `a_max`. Mirrors block-(c) cap pattern.
+        const BLOCK_D_SAFETY: f64 = 0.1;
         let mut count = 0_usize;
         for i in 0..n {
             for ax in 0..3 {
@@ -460,6 +469,14 @@ pub fn build(
                     continue;
                 }
                 let a_ax = limits.a_max[ax];
+                // Feasibility-redundancy prune: skip both +cut and -cut row
+                // when the worst-case LHS is physically vacuous.
+                let b_cap_i = b_max_cent[i].min(B_MAX_CENT_CAP);
+                let a_cap_i = b_cap_i / (2.0 * h);
+                let worst_case_lhs = gpp.abs() * b_cap_i + gp.abs() * a_cap_i;
+                if worst_case_lhs < BLOCK_D_SAFETY * a_ax {
+                    continue;
+                }
                 // Positive side: a_max - c''·b_i - c'·a_i ≥ 0
                 push_row(
                     &mut a_rows,

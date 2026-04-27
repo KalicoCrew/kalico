@@ -4,7 +4,7 @@
 
 use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SlpOutcome, SolverResult, SolverStatus};
-use crate::topp::verify::VerifyReport;
+use crate::topp::verify::{self, VerifyReport};
 use crate::{
     GridConfig, GridSample, InfeasibleReason, SolveStatus, TopProfile,
 };
@@ -81,7 +81,16 @@ pub(crate) fn map_status(
             reason: InfeasibleReason::SolverInfeasible,
         },
         SolverStatus::MaxIter { residual } => {
-            SolveStatus::MaxIter { last_residual: residual }
+            // Per spec §6.2, verify::check accepts at EPS_FEAS=1e-3. If
+            // Clarabel terminates with residual below verifier tolerance, the
+            // iterate IS feasible by our standard — promote MaxIter→SolvedInexact
+            // rather than fail. Discovered during fixture_7 N=200
+            // InsufficientProgress investigation; see CLAUDE.md plan-changes-log.
+            if residual < verify::EPS_FEAS && verify.feasible {
+                SolveStatus::SolvedInexact { residual }
+            } else {
+                SolveStatus::MaxIter { last_residual: residual }
+            }
         }
     };
 

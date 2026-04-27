@@ -803,9 +803,17 @@ fn solve_with_cuts_and_trust_region(
     // and the default 200-iter budget produces `InsufficientProgress` on
     // the empirical CL-2024 counterexample fixture. 1000 iters is enough
     // headroom; runtime is still ≤ 1 s per outer iteration on N=200 grids.
+    //
+    // Reduced tolerances match verify::check's EPS_FEAS=1e-3 (spec §6.2).
+    // Allows AlmostSolved states at this tolerance to map to SolvedInexact
+    // instead of MaxIter; SLP outer loop can then continue with cuts.
+    // Solved gating remains at default eps_abs.
     let settings = DefaultSettings::<f64> {
         verbose: false,
         max_iter: 1000,
+        reduced_tol_gap_abs: 1e-3,
+        reduced_tol_gap_rel: 1e-3,
+        reduced_tol_feas: 1e-3,
         ..Default::default()
     };
 
