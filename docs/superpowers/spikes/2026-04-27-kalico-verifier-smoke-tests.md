@@ -104,4 +104,55 @@ This is the core relation underpinning Layer 2's "junction velocity from curvatu
 - `Research artifact`: present iff web research occurred; otherwise the literal "No new research artifact (verified from existing knowledge)." line.
 
 ### Result
-<filled in by Task 6>
+
+**Run:** 2026-04-27
+**Verdict returned:** VERIFIED
+**Pass / fail:** PASS — verdict matches expectation; nine distinct adversarial probes attempted (Frenet-Serret decomposition / total-vs-lateral, per-axis vs. magnitude limits, `C¹`-jump curvature, `C⁰`-corner JD-as-virtual-κ, NURBS cusps, 3D torsion, time-varying `v`, shaper interaction, literature search). `Unchecked assumptions` calls out one-sided-κ evaluation at `C¹`-non-`C²` boundaries, virtual-κ construction for `C⁰` corners, and `a_max` semantic hazards.
+**Research artifact written:** none (verifier returned the literal "No new research artifact (verified from existing knowledge)." line — correct, since no web research was performed).
+
+**Behavioral note (does not affect verdict):** Verifier prefixed its formal report with its working notes (Workflow steps 3–5 prose). The spec says working notes should stay private; the formal seven-section report follows the working notes correctly. Not a verdict failure but a minor prompt-adherence drift — candidate for a Task 7 round if you want it tightened. Recorded here for visibility; not blocking.
+
+**Verifier report (formal sections only, verbatim):**
+
+```
+## Claim restated
+
+At any point on a `C¹`-smooth NURBS path with finite, well-defined curvature `κ`, the inequality `v² · κ ≤ a_max` (where `v` is tangential speed and `a_max` is the budget for the *lateral / centripetal* component of acceleration) is a valid pointwise upper bound on permissible tangential speed. Equivalently, `v ≤ sqrt(a_max / κ)` whenever `κ > 0`.
+
+## Verification approach
+
+Decomposed acceleration in the Frenet-Serret frame: `a = v̇·T̂ + v²κ·N̂` (in 3D the binormal component is zero). Verified that `v²κ` is exactly the magnitude of the centripetal (normal) component, so requiring it `≤ a_max` directly enforces a lateral-budget limit. Cross-checked against the firmware survey's account of Sonny Jeon junction deviation (`v²_max = a·R`, `R = δ·sin(θ/2)/(1−sin(θ/2))`) and the Verscheure-2009 / Pham-2018 TOPP convex-program formulation — all use the same algebra. Adversarial probes targeted: dimensional/component mismatches (total vs. lateral), per-axis vs. magnitude limits, `C¹`-non-`C²` curvature jumps, `C⁰` (tangent-discontinuous) corners, NURBS cusps from high-multiplicity knots, 3D torsion, time-varying speed, and literature contradictions.
+
+## Adversarial findings
+
+- **Total-vs-lateral acceleration confusion (does not break claim, but documentation hazard).** `|a|² = v̇² + (v²κ)²`. The bound `v²κ ≤ a_max` covers *only the lateral/normal component*, not the magnitude of total acceleration. The claim is correctly scoped to "lateral-acceleration budget", so it stands; but if downstream code accidentally feeds the global axis-acceleration limit as `a_max` here while also enforcing a separate global accel cap on `v̇`, it will be conservative (safe) — never a violation. Worth a comment in the implementation.
+- **`C¹`-non-`C²` knot points produce one-sided curvatures.** At a `C¹` NURBS junction (knot multiplicity = degree − 1), the second derivative jumps and `κ` has different left/right limits. The formula remains pointwise valid on each side, but Layer 2 must evaluate `max(κ_left, κ_right)` to bound `v` correctly at the junction. The claim does not break; it requires the implementation to take both sides.
+- **`C⁰` corners (G1↔G1 junctions) are explicitly outside the claim's stated `C¹` hypothesis.** The "JD is the degenerate case of curvature continuity" framing in CLAUDE.md is correct in algebraic form but operates on a *virtual* circle radius derived from the deviation tolerance `δ`, not the path's intrinsic curvature (which is a Dirac at the corner). Implementation must construct `κ_virtual` rather than reading `κ` off the geometry at `C⁰` corners. Not a flaw in the claim, but a non-trivial step in applying it to JD.
+- **Per-axis vs. isotropic `a_max`.** On Cartesian or CoreXY hardware, lateral-acceleration limits are per-axis. The scalar bound is conservative when `a_max` is taken as `min(a_x_max, a_y_max)` — never violates. A direction-aware variant (project `N̂` onto axes) would be tighter but more expensive; the conservative scalar form remains a valid upper bound.
+- **Cusps from high-multiplicity knots.** Already excluded by the "finite curvature" wording — at a cusp `κ → ∞`, the hypothesis fails and the bound vacuously requires `v = 0`, which is the physically correct answer.
+- **3D paths (helical G2/G3, future fitter output).** Frenet-Serret gives zero binormal acceleration; the lateral-acceleration vector has magnitude exactly `v²κ`. Bound holds in 3D.
+- **Literature search for contradictions.** Verscheure 2009, Pham 2018 (TOPP-RA), Tajima & Sencer 2016, Sonny Jeon 2011, Bobrow/Dubowsky/Gibson 1985, Shin & McKay 1985 — all use this exact constraint. No contradicting result found.
+
+## Sources consulted
+
+- Existing research: `/Users/daniladergachev/Developer/kalico/docs/research/firmware-survey.md` (lines 51, 99–101: confirms the algebra and the canonical TOPP/JD literature).
+- Web sources: none (no gaps required lookup; all sub-claims resolve from standard differential geometry and the firmware survey's existing citations).
+
+## Unchecked assumptions
+
+- Layer 2 implementation correctly evaluates **both one-sided curvatures** at every `C¹`-non-`C²` boundary and uses the larger value to bound junction velocity.
+- Layer 2 implementation distinguishes **intrinsic-`κ` evaluation** (smooth segments) from **virtual-`κ` construction** (`C⁰` JD corners) — the unifying-formula framing in CLAUDE.md is algebraically right but the data source for `κ` differs by case.
+- `a_max` in the calling convention is the **lateral / centripetal acceleration budget**, not the total acceleration magnitude or per-axis cap. If the convention drifts, the bound becomes either conservative (safe) or invalid (unsafe) depending on direction of confusion. Recommend the variable name include the word "lateral" or "centripetal" in the implementation.
+- "Finite curvature" excludes cusps; assumed the implementation handles `κ = ∞` (or `1/κ = 0`) by clamping `v = 0` at that point, which is what TOPP-RA naturally does.
+- No interaction with shaper-aware constraints checked here — that's a separate Layer 2 ↔ Layer 3 feedback claim.
+
+## Verdict
+
+**VERIFIED**
+
+High confidence. The inequality `v² · κ ≤ a_max` is the textbook expression of the centripetal-acceleration constraint applied as a pointwise speed bound, and is unambiguously correct under the stated `C¹`-smoothness and lateral-acceleration-budget hypotheses. Every adversarial probe either failed to land or revealed an implementation hazard rather than a mathematical flaw. The Layer 2 unifying-principle framing in CLAUDE.md is algebraically sound; the practical risks are (a) ensuring both one-sided curvatures are considered at `C¹`-only boundaries, (b) constructing the virtual `κ` correctly for `C⁰` JD corners, and (c) keeping `a_max`'s semantics (lateral, not total) clear in the calling code. None of these risks invalidate the claim.
+
+## Research artifact
+
+No new research artifact (verified from existing knowledge).
+```
