@@ -7,9 +7,9 @@
 //!
 //! Usage: `pi5_parallel <fixture> <total_iters> <threads> [grid_n]`
 //!   fixture     ∈ { straight, arc, cubic }
-//!   total_iters > 0     (split evenly across threads)
-//!   threads     1..=4   (Pi 5 has 4 A76 cores)
-//!   grid_n      default 100
+//!   `total_iters` > 0     (split evenly across threads)
+//!   `threads`     1..=4   (Pi 5 has 4 A76 cores)
+//!   `grid_n`      default 100
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -77,8 +77,7 @@ fn main() {
         .expect("parse");
     let grid_n: usize = args
         .next()
-        .map(|s| s.parse().expect("parse"))
-        .unwrap_or(100);
+        .map_or(100, |s| s.parse().expect("parse"));
 
     let curve = Arc::new(match fixture.as_str() {
         "straight" => straight(),

@@ -19,7 +19,7 @@ fn main() {
             let mut x: f64 = (tid as f64) + 1.0;
             while !stop.load(Ordering::Relaxed) {
                 for _ in 0..10_000 {
-                    x = (x * 1.0000001 + 0.0000001).sin().abs() + 1.0;
+                    x = (x * 1.000_000_1 + 0.000_000_1).sin().abs() + 1.0;
                 }
                 std::hint::black_box(x);
             }

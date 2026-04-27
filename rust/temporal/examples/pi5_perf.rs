@@ -7,8 +7,8 @@
 //!
 //! Usage: `pi5_perf <fixture> <iters> [grid_n]`
 //!   fixture  ∈ { straight, arc, cubic }
-//!   iters    > 0
-//!   grid_n   default 200
+//!   `iters`    > 0
+//!   `grid_n`   default 200
 //!
 //! Emits one line per iteration: `<idx> <wallclock_ns>`. Final line: `summary
 //! min=<ns> p50=<ns> p95=<ns> p99=<ns> p999=<ns> max=<ns> mean=<ns> stdev=<ns>
@@ -84,8 +84,7 @@ fn main() {
         .expect("iters must parse");
     let grid_n: usize = args
         .next()
-        .map(|s| s.parse().expect("grid_n must parse"))
-        .unwrap_or(200);
+        .map_or(200, |s| s.parse().expect("grid_n must parse"));
 
     let curve = match fixture.as_str() {
         "straight" => straight(),
@@ -123,7 +122,9 @@ fn main() {
     sorted.sort_unstable();
     let n = sorted.len();
     let pct = |p: f64| -> u64 {
-        let idx = ((p * (n as f64)) as usize).min(n - 1);
+        // p is always in [0,1]; floor is non-negative. Suppress sign-loss lint.
+        #[allow(clippy::cast_sign_loss)]
+        let idx = ((p * (n as f64)).floor() as usize).min(n - 1);
         sorted[idx]
     };
     let min = sorted[0];

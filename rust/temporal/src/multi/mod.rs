@@ -18,6 +18,7 @@ pub enum GridStrategy {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct SegmentInput<'a> {
     pub curve: &'a VectorNurbs<f64, 3>,
     pub limits: Limits,
@@ -27,6 +28,7 @@ pub struct SegmentInput<'a> {
     pub trailing_junction_chord_tolerance_mm: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct BatchInput<'a> {
     pub segments: &'a [SegmentInput<'a>],
     pub grid_strategy: GridStrategy,
@@ -34,6 +36,7 @@ pub struct BatchInput<'a> {
     pub worker_threads: usize,
 }
 
+#[derive(Debug)]
 pub struct BatchOutput {
     pub profiles: Vec<TopProfile>,
     pub junctions: Vec<JunctionInfo>,
@@ -47,15 +50,15 @@ pub enum JoiningStatus {
     /// Velocities stabilized AND all segments solved cleanly.
     Converged,
     /// Velocity propagation stabilized, but some segments still have
-    /// non-success solver status (Infeasible / MaxIter / DivergedSlp /
-    /// MaxIterSlp). `schedule_segment` is deterministic, so re-solving with
+    /// non-success solver status (`Infeasible` / `MaxIter` / `DivergedSlp` /
+    /// `MaxIterSlp`). `schedule_segment` is deterministic, so re-solving with
     /// the same inputs would produce the same status — no point continuing.
     /// Diagnostic: indicates pathological segment(s) that need looser
     /// endpoints, finer N, or v2 algorithmic improvement.
     /// (Per round-4 review: split out from `CappedAtMaxSweeps` for caller
     /// diagnostic clarity.)
     StalledOnInfeasibleSegment { last_dirty_count: usize },
-    /// Reached MAX_SWEEPS without velocity stabilization. Indicates
+    /// Reached `MAX_SWEEPS` without velocity stabilization. Indicates
     /// joining-loop oscillation — different (and worse) failure mode than
     /// `StalledOnInfeasibleSegment`. Should not happen on the test fixtures;
     /// surfacing this means joining algorithm has a bug.
@@ -97,6 +100,6 @@ pub fn plan_batch(_input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
 }
 
 mod grid;
-mod junction;
 mod joining;
+mod junction;
 mod parallel;
