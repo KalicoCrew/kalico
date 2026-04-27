@@ -1,5 +1,9 @@
 We are working on a complete rewrite of the motion planner and more:
 
+# Non-negotiable constraints
+
+- **Print throughput is non-negotiable. The planner never produces a slower trajectory than the math-optimal one** for the given geometry, dynamic limits, and shaper. "Math-optimal" means the time-minimum trajectory under the active constraint set; "slower" means measurably more wall-clock time on representative slicer output. Host compute is something we spend in service of trajectory optimality — not the other way around. If the Pi can't keep up, the answer is to optimize the implementation, parallelize across cores, or upgrade the host; the answer is never to ship a cheaper algorithm that produces a slower trajectory. State-of-the-art is the target, not safe-and-good-enough.
+
 # High level feature scope
 - Rust end-to-end for new code; single source compiled f64 host / f32 MCU. Rust links as staticlib into Klipper's existing C MCU build, which stays C for now.
 - NURBS-native, internal primitive through the planner.
@@ -189,7 +193,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 ## Critical-path observations
 
 - **Layer 0 NURBS evaluation on the MCU is the most performance-critical code in the entire stack.** Every cycle saved on de Boor pays back at 40 kHz × axes × impulses. Optimize this last but design the API early — the rest of Layer 4 has to assume it exists and call it heavily.
-- **The spline fitter (Layer 1) is the highest-risk item in the spec.** Streaming/windowed/real-time-tolerance fitting in a hobby-firmware context is genuinely novel. TOPP-RA (Layer 2) is porting work by comparison — well-published with reference implementations. Build the fitter prototype early in Python or similar before committing to C/C++.
+- **The spline fitter (Layer 1) has been demoted to an optional / offline G1-compatibility addon (build-order Step 13).** Original framing — streaming/windowed/real-time-tolerance fitting as the highest-risk item in the spec — was driven by the assumption that all input would be G1-dense forever. With kalico-aware slicer emission of G5 directly (parallel workstream by user, see below), the fitter becomes a one-shot offline file pre-processor only used to support legacy slicers, where the standard CNC literature (Tajima/Sencer 2016, Beudaert 2012) applies directly and the streaming/online-tolerance properties are not needed. Risk: low. Critical-path: no longer.
 - **Shaper-aware TOPP-RA (Layer 3 → Layer 2 feedback) is the highest-leverage throughput optimization in the spec, but it's a refinement, not an independent feature.** Build the planner first without it; add the shaper-aware constraint once you have something running. Don't try to implement them simultaneously.
 - **Phase stepping (Layer 4) requires Layer 0 MCU NURBS eval but is otherwise independent of higher math layers.** Build a "dumb" version that takes pre-computed step times and does phase modulation, validate the phase-stepping firmware on its own, then integrate with the trajectory evaluator. De-risks two complex things developing in parallel.
 - **EtherCAT is genuinely additive, not coupled.** Layers 1–3 don't change for EtherCAT; only Layer 4 swaps. The architectural commitment ("planner output is curve + v(s), backend evaluates") is what makes this true. Don't build EtherCAT until phase stepping works end-to-end.
@@ -200,21 +204,24 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 2. [x] **G-code parser and geometric reduction** (no fitting yet, just direct NURBS from G0/G1/G2/G3/G5) — partial Layer 1
    - G0/G1 → degree-1 NURBS, G2/G3 → 3D rational quadratic NURBS (helical-capable), JunctionDeviation between consecutive G1s. Telemetry routing for LayerChange / ToolChange / Retraction. **G5/G5.1 not yet handled** — lexer parses them but reduce silently drops; deferred until needed.
 3. [x] **G5 / G5.1 reduction** — closes the remaining gap in step 2. Lexer already tokenizes G5/G5.1 (Task 6 of the Phase 1 plan). Per LinuxCNC RS274NGC convention: **G5** → degree-3 single-piece NURBS with 4 control points (P0=current, P1=current+I,J, P2=end+P,Q, P3=end); **G5.1** → degree-2 single-piece NURBS with 3 control points (P0=current, P1=current+I,J, P2=end), restricted to the active plane (G17/G18/G19). Implement the RS274NGC modal-chain implicit-tangent rule for G5: when a G5 immediately follows another G5 with both I,J omitted, default I,J to −(prev P, prev Q) for C¹ continuity; emit a parser error if the implicit tangent is unavailable (chain broken by intervening motion-producing g-code) and explicit I,J are missing. Both G5 and G5.1 break the G1-tangent chain — Layer 2 derives endpoint curvature from the NURBS per the curvature-continuity principle (Layer 2 description above). Small follow-up to step 2; should land before step 7's spline-fitter work begins.
-4. [ ] **TOPP-RA prototype on synthetic input** — partial Layer 2
+4. [ ] **TOPP-RA prototype on synthetic input** — partial Layer 2. De-risk the algorithm itself: time-optimal v(s) on a single synthetic NURBS at a time, against accel + jerk + curvature constraints, with externally-supplied (or zero) endpoint velocities. No cross-segment glue, no streaming/invalidation. Validates jerk-bounded TOPP-RA on a NURBS path with proper discretization before it gets wired to multi-segment input.
+4.5. [ ] **Layer 2 multi-segment integration on synthetic input** — completes Layer 2. Junction velocity from curvature continuity (subsumes Sonny-Jeon JD as the G1↔G1 degenerate case), lookahead-window joining (two-pass forward/reverse smoothing across the segment buffer), and limit-change invalidation logic. Operates on a synthetic multi-segment NURBS buffer; wiring to live Layer 1 output is implicit in step 7. Must precede step 7 (MVP needs JD-quality cornering for G1↔G1, which is now a degenerate path through this same machinery).
 5. [ ] **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
 6. [ ] **Communication protocol and clock sync** — Layer 5
-7. [ ] **First-print MVP: end-to-end with junction-deviation on G1, plus G2/G3 native, plus ZV shaper. No PA, no fitting, no smooth shapers.** This actually prints from existing slicers — the corner velocities will be conservative (no fitting means lots of velocity reductions at slicer-emitted G1 vertices) but it produces parts.
-8. [ ] **Spline fitter and parameterized corner-blend emission** — completes Layer 1's geometric output. Until Layer 3 corner-blend finalization lands (step 9), corner-blend slots fall back to junction-deviation.
-9. [ ] **Smooth shapers, shaper-aware TOPP-RA, and corner-blend shape finalization** — completes Layer 3 and refines Layer 2.
-10. [ ] **Tanh PA on MCU** (runtime evaluation against base E NURBS) — refines Layer 4
-11. [ ] **Phase stepping current synthesis** — completes Layer 4
-12. [ ] **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
-13. [ ] **Mechanical-frequency tracking** — Layer 6
+7. [ ] **First-print MVP: end-to-end with junction-deviation on G1, plus G2/G3 native, plus ZV shaper. No PA, no fitting, no smooth shapers.** Prints from existing slicers — corner velocities will be conservative on G1-dense input (lots of velocity reductions at slicer-emitted G1 vertices). If the parallel kalico-aware-slicer workstream (see below) is ready by MVP time, the same MVP also prints kalico-slicer output with G5-rich corners that look better; the wording above is the floor MVP guarantees, not the ceiling.
+8. [ ] **Smooth shapers, shaper-aware TOPP-RA, and corner-blend shape finalization** — completes Layer 3 and refines Layer 2.
+9. [ ] **Tanh PA on MCU** (runtime evaluation against base E NURBS) — refines Layer 4
+10. [ ] **Phase stepping current synthesis** — completes Layer 4
+11. [ ] **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
+12. [ ] **Mechanical-frequency tracking** — Layer 6
+13. [ ] **Spline fitter — optional, offline G1-compatibility addon.** Pre-processes G1-dense input from legacy (non-kalico-aware) slicers into G5-rich form as a one-shot file pass. Standard CNC literature applies (Tajima/Sencer 2016, Beudaert 2012) — none of the streaming/windowed/online-tolerance properties of the original framing are required. Output flows through the normal Layer 1+ pipeline. Optional: users on a kalico-aware slicer never invoke this.
 14. [ ] **EtherCAT backend** — Layer 6, after everything else
 
-Step 7 is the minimum viable proof of concept — a printer that prints, with most things in their final architectural shape but limited features. **Note that PA is deliberately absent from MVP.** The user committed to tanh PA (nonlinear, runtime-evaluated), so introducing a linear-PA path that gets thrown away would be dead code. First-print validation can be done without PA; it just shows blob/zit at corners until step 10 lands.
+**Parallel workstream (user, not on the kalico build-order critical path):** kalico-aware slicer fork emitting G5 directly for smooth toolpath segments and G1+tolerance hints for sharp corners (Layer 3 picks blend NURBS shape under dynamic limits per the existing CLAUDE.md feature-scope bullet). Independent of the kalico-side numbering above; affects MVP's corner quality (better with kalico-aware slicer output) but does not gate any kalico-side build-order item.
 
-Steps 8–11 are where it becomes high-performance. Steps 12–14 are polish and future-proofing. **The transition from step 7 to step 8 is psychologically the hardest** — you have something that works, and you're tearing into it to add features that may break it. Plan for that.
+Step 7 is the minimum viable proof of concept — a printer that prints, with most things in their final architectural shape but limited features. **Note that PA is deliberately absent from MVP.** The user committed to tanh PA (nonlinear, runtime-evaluated), so introducing a linear-PA path that gets thrown away would be dead code. First-print validation can be done without PA; it just shows blob/zit at corners until step 9 lands.
+
+Steps 8–10 are where it becomes high-performance. Steps 11–14 are polish and future-proofing. **The transition from step 7 to step 8 is psychologically the hardest** — you have something that works, and you're tearing into it to add features that may break it. Plan for that.
 
 # Plan changes log
 
@@ -237,4 +244,50 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 **Build-order Step 3 (G5 / G5.1 reduction): completed.** Implementation per `docs/superpowers/plans/2026-04-27-layer-1-g5-reduction.md`. Reduce + pipeline now construct exact non-rational NURBS for G5 (degree-3, 4 CPs) and G5.1 (degree-2, 3 CPs); G5 modal-chain implicit-tangent rule, G5.1 active-plane validation, defensive `prev_g5_pq` clearing on every G5 error path, and curvature-continuity G1-chain break all in place. `ReduceEvent` shape refactored to `ReduceEvent::Curve(CurveGeom, …)` with fixed-size-array variants per the Q5 brainstorm decision (no per-segment heap allocation, distinct `Quadratic` vs `RationalQuadratic` variants per the user-chosen ontology).
 
 **Evidence:** Plan + 18 commits on this branch (range `9c21b59f..` head). Spec at `docs/superpowers/specs/2026-04-27-layer-1-g5-reduction-design.md`. Integration tests at `rust/geometry/tests/g5_reduction.rs` (9/9 passing). Top-level code review by `superpowers:code-reviewer` (opus): approved.
+
+---
+
+**Build-order Step 4 split into Step 4 + Step 4.5.** Step 4 is now narrowed to "TOPP-RA core on single-segment synthetic NURBS" — a de-risk milestone for the algorithm itself (jerk-bounded RA, NURBS-path discretization, convex-program structure). Step 4.5, newly inserted, captures the remaining Layer 2 bullets (junction velocity from curvature continuity, lookahead-window joining, limit-change invalidation) on synthetic multi-segment input. Step 4.5 must precede Step 7 (MVP) since MVP requires JD-quality G1↔G1 cornering, which now flows through the unified curvature-continuity machinery.
+
+**Why:** The build-order phrase "prototype on synthetic input" reads as de-risk, not feature-complete Layer 2. Folding all four Layer-2 bullets into one step diluted what the prototype was validating and risked making it a months-long effort that no longer functioned as an early algorithm-de-risk milestone. Splitting also keeps each step independently reviewable and lets Step 4.5/5/6 develop in parallel across layers without reordering the rest of the plan. User-confirmed direction call recorded by orchestrator (`brainstormer-step-4` round 1, Q1 `[DIRECTION]`).
+
+---
+
+**Added top-level "Non-negotiable constraints" section: print throughput is non-negotiable.** The planner never produces a slower trajectory than the math-optimal one for given geometry, dynamic limits, and shaper. Host compute is spent in service of trajectory optimality, not the other way around — if the host can't keep up the answer is to optimize/parallelize/upgrade, never to ship a cheaper algorithm that produces a slower trajectory.
+
+**Why:** During Step 4.5 (Layer 2 multi-segment) brainstorming, two architectures surfaced: (A) per-segment SOCP re-solve on every joining iteration (math-optimal trajectory; potentially expensive on host), vs. (B) cheap-kinematic forward/reverse joining + SOCP-once-at-finalization (decoupled, ~3–8% slower trajectory than (A) on ramp-bound segments per kalico-verifier analysis, which dominate real slicer output). User direction: a measurable trajectory-time regression vs. math-optimal is never an acceptable trade. The principle generalizes beyond Step 4.5; recording at top level so it governs all subsequent algorithmic-vs-implementation-cost trades.
+
+**Evidence:** Step 4.5 brainstorming this session; two `kalico-verifier` reports (one on M-code-handling option (i)/(ii)/(iii), one on joining-vs-solving option (A)/(B)/(C)). The (B) verification (INCONCLUSIVE — directional correction) explicitly quantifies the 3–8% throughput gap on ramp-bound segments and notes that with kalico's realistic limits (a=65000, j=5e7, v=1000) ramp-bound segments dominate any slicer output with sub-25mm segments.
+
+---
+
+**Spline fitter (formerly build-order Step 8) demoted to optional / offline G1-compatibility addon (now Step 13).** No longer the highest-risk item in the spec; no longer critical-path; no longer ahead of MVP. Standard CNC literature (Tajima/Sencer 2016, Beudaert 2012) applies directly because none of the streaming/windowed/online-tolerance properties from the original framing are required for an offline file pre-processor. Build-order Steps 9–14 renumbered down by one to fill the gap (smooth-shapers/PA/phase/skip/mech-freq), and the EtherCAT backend stays at the end. Critical-path-observation about the fitter being highest-risk replaced with a note that its risk evaporates under the offline framing.
+
+**Added parallel workstream note** (kalico-aware slicer fork emitting G5 directly for smooth paths + G1+tolerance for sharp corners). Documented as a non-build-order parallel item driven by the user; affects MVP corner-quality but does not gate any kalico-side step. CLAUDE.md's existing feature-scope bullet about "Layer 3 picks the optimal blend NURBS under dynamic limits given a slicer-supplied tolerance" continues to govern the slicer↔kalico contract.
+
+**MVP (Step 7) wording adjusted** to clarify that the JD-only-on-G1 description is the *floor* MVP guarantees, not the ceiling — if the parallel slicer workstream is ready in time, the same MVP also handles G5-rich slicer output with better corners, no MVP-side rework required.
+
+**Why:** Conversation surfaced that future kalico-aware slicers will emit G5 directly with proper corner-tolerance hints, eliminating the need for a streaming windowed real-time-tolerance fitter on the kalico host. The fitter remains useful as a one-shot offline pre-processor for legacy G1-only slicer output (PrusaSlicer / Orca / Super / Cura users without the kalico fork), but at that scope it inherits offline literature directly and the framing as "the highest-risk item by a meaningful margin" no longer holds. Critical-path observation accordingly rewritten; build-order Step 8 demoted to Step 13.
+
+**Evidence:** Brainstorming this session — user direction call. Spline-fitter risk reframing was triggered by user observation that "spline fitting should be like an addon you can enable to add compatibility with older gcode," and the parallel-slicer-workstream commitment ("I will work on the slicer in parallel, to emit proper splines"). Edits scoped tightly to user-confirmed changes; broader exploration (cache layer, offline-batch reframe, throughput-as-discretization-bounded) discussed in the same conversation but not adopted.
+
+# Babysitter
+
+Babysitter wraps the existing `kalico-orchestrate → kalico-brainstormer → kalico-researcher → kalico-plan-reviewer` flow into a persistent run-state with retry/refine loops, so brainstorm/research/plan-review cycles run to completion without user nagging. The eventual fix is a bespoke `kalico/ceo-brainstorm` babysitter process that replaces the `/kalico-orchestrate` slash command end-to-end (auto-routing technical questions to `kalico-researcher`, surfacing only intent-level questions). Until that process is authored, `cradle/project-install` has produced the encoded project profile at `.a5c/project-profile.json` and stop-gap reference processes are listed below.
+
+## Recommended commands
+
+- `babysitter:project-install` — already run; produces / updates `.a5c/project-profile.json`. Re-run only if project state changes materially (new layer started, build order revised, methodology swap).
+- *Future* `kalico/ceo-brainstorm` — to be designed in a follow-up. Replaces `/kalico-orchestrate` for the brainstorm/research/plan-review pipeline. Build with `babysitter:assimilate` + `specializations/meta/process-creation.js` as references.
+- Stop-gap reference processes adopted until the custom process lands:
+  - `methodologies/spec-kit` — primary spine. Maps onto the existing `docs/superpowers/{specs,plans}/YYYY-MM-DD-<topic>` flow; CLAUDE.md grand-plan + Plan-changes-log slot in as the constitution.
+  - `methodologies/gsd/iterative-convergence` — quality-gated implement→test→score→refine loop, intended for the highest-risk research items (notably the streaming windowed spline fitter; build-order step 8).
+
+## Behavior notes (CEO-mode)
+
+- Breakpoints fire to the user only on **vision questions** ("why are we building this") and **scope-boundary decisions**. Implementation-approach choices, operator-visible behavior knobs, and CLAUDE.md plan-changes-log additions are auto-routed to `kalico-researcher` or answered by the orchestrator.
+- Reviewer subagents (`kalico-plan-reviewer`, `superpowers:code-reviewer`) always run on opus.
+- No CI/CD integration. Babysitter is host-only; sota-motion's linear-rebase discipline stays the integration story.
+
+Full encoded profile: `.a5c/project-profile.json`. Adopted-process detail per run: `artifacts/tool-recommendations.json` inside each run dir under `.a5c/runs/`.
 
