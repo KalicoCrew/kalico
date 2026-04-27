@@ -36,6 +36,39 @@ pub(crate) fn forward_sweep(
     dirty_count
 }
 
+/// Propagate junction velocities backward, marking dirty any segment whose
+/// `v_end` changed beyond `EPS_VEL` since the last reverse sweep.
+///
+/// Returns the number of segments marked dirty.
+///
+/// **Empty-buffer guard:** `if states.len() < 2` early-returns 0 to prevent
+/// `usize` underflow on `0..states.len() - 1` when `states.len()` is 0 or 1.
+/// The public `plan_batch` path filters empty buffers via
+/// `BatchError::EmptySegments`, but this guard makes the helper safe to call
+/// directly. A single-segment buffer has no junctions to propagate, so
+/// early-return is correct. (Per round-4 review, Codex NIT.)
+// TODO(task-9): wired in plan_batch
+#[allow(dead_code)]
+pub(crate) fn reverse_sweep(
+    states: &mut [SegmentState],
+    junctions: &[JunctionResult],
+) -> usize {
+    const EPS_VEL: f64 = 1e-3;
+    if states.len() < 2 {
+        return 0;
+    }
+    let mut dirty_count = 0;
+    for k in (0..states.len() - 1).rev() {
+        let proposed_v_end = junctions[k].v_junction.min(states[k + 1].v_start);
+        if (proposed_v_end - states[k].v_end).abs() > EPS_VEL {
+            states[k].v_end = proposed_v_end;
+            states[k].dirty = true;
+            dirty_count += 1;
+        }
+    }
+    dirty_count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +111,18 @@ mod tests {
         let dirty = forward_sweep(&mut states, &junctions);
         assert_eq!(dirty, 0);
         assert!(!states[1].dirty);
+    }
+
+    #[test]
+    fn reverse_propagates_v_start_to_prev_v_end() {
+        let mut states = vec![
+            make_state(0.0, 200.0),
+            make_state(100.0, 200.0),
+        ];
+        let junctions = vec![make_junction(150.0)];
+        let dirty = reverse_sweep(&mut states, &junctions);
+        // junctions[0] = 150, states[1].v_start = 100; min = 100. New v_end[0] = 100.
+        assert_eq!(dirty, 1);
+        assert!((states[0].v_end - 100.0).abs() < 1e-6);
     }
 }
