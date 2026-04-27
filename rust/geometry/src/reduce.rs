@@ -21,6 +21,14 @@ pub(crate) struct ModalState {
     pub feedrate_mm_s: Option<f64>,
     pub tool: u32,
     pub active_plane: Plane,
+    /// (P, Q) of the previous G5 segment, or `None` if the previous motion
+    /// was not G5 (or no motion has occurred). Carried across an
+    /// uninterrupted G5→G5 chain to support the RS274NGC §3.5.5 implicit
+    /// next-tangent rule (I, J default to `−prev_pq` componentwise).
+    /// **Cleared by every motion-producing g-code other than G5** (G0, G1,
+    /// G2, G3, G5.1). Plane selects (G17/G18/G19), M-codes, and T-codes do
+    /// **not** clear it — they don't move the machine.
+    pub prev_g5_pq: Option<[f64; 2]>,
 }
 
 impl ModalState {
@@ -32,6 +40,7 @@ impl ModalState {
             feedrate_mm_s: None,
             tool: 0,
             active_plane: Plane::XY,
+            prev_g5_pq: None,
         }
     }
 }
@@ -561,6 +570,12 @@ mod tests {
     fn modal_state_plane_defaults_to_xy() {
         let st = ModalState::new();
         assert_eq!(st.active_plane, Plane::XY);
+    }
+
+    #[test]
+    fn modal_state_prev_g5_pq_defaults_to_none() {
+        let st = ModalState::new();
+        assert_eq!(st.prev_g5_pq, None);
     }
 
     #[test]
