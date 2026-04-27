@@ -203,3 +203,100 @@ mod fixture_2_diagonal {
         eprintln!("fixture 2: T_topp = {:.6}, T_closed = {:.6}", profile.total_time, t_closed);
     }
 }
+
+mod fixture_3_constant_curvature_arc {
+    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus, BindingConstraint};
+
+    fn textbook_limits() -> Limits {
+        Limits {
+            v_max: [500.0, 500.0, 500.0],
+            a_max: [5_000.0, 5_000.0, 5_000.0],
+            j_max: [100_000.0, 100_000.0, 100_000.0],
+            a_centripetal_max: 2_500.0,
+        }
+    }
+
+    /// Spec §5.1 fixture 3: 90° arc, R = 20 mm, via geometry-crate G2 reduction.
+    ///
+    /// Expected cruise speed: v_cruise = sqrt(a_centripetal / κ) = sqrt(2500 / 0.05)
+    ///                       = sqrt(50_000) ≈ 223.6 mm/s, well below v_max = 500.
+    /// Acceptance: §6.1 status, §6.2 post-solve feasibility (handled by pipeline).
+    #[test]
+    fn fixture_3() {
+        // Construct the NURBS by running a synthetic G2 G-code line through
+        // geometry::pipeline. Arc: start (0,0), center (0,20) [I=0,J=20],
+        // end (20,20), 90° CW — radius 20 mm, κ = 1/R = 0.05 mm⁻¹.
+        let curve = build_g2_arc_via_geometry();
+
+        let limits = textbook_limits();
+        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
+
+        // §6.1: status must be Solved, SolvedInexact, or SolvedSlp.
+        // SolvedSlp is intentionally included per commits 0177d53a + 86f48c70:
+        // curved paths trigger the SLP outer iteration when the path-jerk
+        // relaxation has a slackness gap at the optimum.
+        assert!(
+            matches!(
+                profile.status,
+                SolveStatus::Solved
+                    | SolveStatus::SolvedInexact { .. }
+                    | SolveStatus::SolvedSlp { .. }
+            ),
+            "fixture 3 status: got {:?}",
+            profile.status,
+        );
+
+        // §6.2 is verified by the pipeline (post-solve check is built in).
+
+        // Centripetal-cruise sanity: at the middle of the arc, v should be
+        // close to sqrt(2500 / 0.05) ≈ 223.6 mm/s, and the binding constraint
+        // should be Centripetal.
+        let mid = profile.samples.len() / 2;
+        let v_cruise_expected = (2_500.0_f64 / 0.05).sqrt();
+        let v_mid = profile.samples[mid].v;
+        assert!(
+            (v_mid - v_cruise_expected).abs() / v_cruise_expected < 0.05,
+            "fixture 3 cruise: v_mid = {}, expected ~{} (5% tolerance)",
+            v_mid, v_cruise_expected,
+        );
+        assert!(
+            matches!(profile.samples[mid].binding, BindingConstraint::Centripetal),
+            "fixture 3: binding at mid should be Centripetal, got {:?}",
+            profile.samples[mid].binding,
+        );
+
+        eprintln!(
+            "fixture 3: v_mid = {:.4}, v_cruise_expected = {:.4}, status = {:?}",
+            v_mid, v_cruise_expected, profile.status,
+        );
+    }
+
+    /// Build a 90° arc, R=20 mm via geometry::pipeline::GeometryPipeline.
+    ///
+    /// G-code: `G1 X0 Y0 F1000` positions at origin; `G2 X20 Y20 I0 J20` draws
+    /// a 90° CW arc from (0,0) to (20,20) with centre offset I=0, J=20 (centre at
+    /// (0,20)), radius 20 mm, curvature κ = 1/20 = 0.05 mm⁻¹.
+    ///
+    /// Pattern from rust/geometry/tests/g5_reduction.rs (canonical pipeline-driving).
+    fn build_g2_arc_via_geometry() -> nurbs::VectorNurbs<f64, 3> {
+        use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
+
+        let src = "G17\nG1 X0 Y0 F1000\nG2 X20 Y20 I0 J20\n";
+        let mut pipeline = GeometryPipeline::new(FitterParams::default());
+        let mut events: Vec<TelemetryEvent> = vec![];
+        let items: Vec<_> = {
+            let mut sink = |e: TelemetryEvent| events.push(e);
+            pipeline.process(src, &mut sink).collect()
+        };
+
+        // Find the Arc segment emitted by G2 reduction.
+        items
+            .into_iter()
+            .find_map(|it| match it {
+                Item::Segment(Segment::Arc(arc)) => Some(arc.xyz),
+                _ => None,
+            })
+            .expect("G2 reduction must emit exactly one ArcSegment")
+    }
+}
