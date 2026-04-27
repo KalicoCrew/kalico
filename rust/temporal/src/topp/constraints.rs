@@ -360,6 +360,22 @@ pub fn build(
     // Skip when |g| < COMP_FLOOR (axis not active at this point).
     //
     // NOTE: the nonneg cone uses the same A·x + b_rhs ≥ 0 form.
+    //
+    // # Numerical-conditioning cap (spec §11, §7.2)
+    //
+    // Block (c) shares the [`B_MAX_CENT_CAP`] feasibility cap with block (e):
+    // when `(v_max/|g|)² > B_MAX_CENT_CAP`, the row is vacuous because block
+    // (e) already enforces `b_i ≤ B_MAX_CENT_CAP` for every grid point. The
+    // skip is required because finite-difference noise in `c_prime` at
+    // endpoints where one Cartesian tangent component is mathematically zero
+    // (e.g. a rational-quadratic quarter-arc has `c'_y = 0` at u=0 and
+    // `c'_x = 0` at u=1) produces `|g|` on the order of 1e-6. That gives
+    // RHS ≈ 1e15 — purely vacuous, but injected into the SOCP it destroys
+    // Clarabel's interior-point conditioning and yields `MaxIter` on any
+    // non-trivial curved input. The dropped rows are dominated either by
+    // block (e)'s cap on `b_i` or by the same-axis row at neighboring grid
+    // points where `c'_axis` is well clear of zero, so the feasible region
+    // is unchanged.
     // -------------------------------------------------------------------------
     {
         let mut count = 0_usize;
@@ -371,6 +387,12 @@ pub fn build(
                 }
                 let v_ax = limits.v_max[ax];
                 let rhs = (v_ax / g).powi(2); // = (v_max / |g|)²  (g² in denom)
+                if rhs > B_MAX_CENT_CAP {
+                    // Row is dominated by block (e)'s b ≤ B_MAX_CENT_CAP cap;
+                    // keeping it injects FD-noise-driven 1e15 RHS values that
+                    // wreck SOCP conditioning. See block-doc above.
+                    continue;
+                }
                 push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], rhs);
                 count += 1;
             }
