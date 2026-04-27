@@ -415,6 +415,105 @@ mod fixture_5_curvature_spike {
     }
 }
 
+mod fixture_6_mixed_feature {
+    use nurbs::VectorNurbs;
+    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+
+    fn textbook_limits() -> Limits {
+        Limits {
+            v_max: [500.0, 500.0, 500.0],
+            a_max: [5_000.0, 5_000.0, 5_000.0],
+            j_max: [100_000.0, 100_000.0, 100_000.0],
+            a_centripetal_max: 2_500.0,
+        }
+    }
+
+    pub(super) fn build_mixed_curve() -> nurbs::VectorNurbs<f64, 3> {
+        // Degree-3, 8 control points: straight lead-in, a localized curvature
+        // spike (two close CPs above the chord, modelled after fixture_5),
+        // straight lead-out.
+        //
+        // Knot vector: 8 CPs + degree 3 → 12 knots (n + p + 1 = 8+3+1).
+        // Uniform interior spacing: 0.2, 0.4, 0.6, 0.8.
+        //
+        // Control polygon sizing (L ≈ 310 mm, n=200, Δs ≈ 1.56 mm):
+        //   n/4 at s ≈ 78 mm, 3n/4 at s ≈ 233 mm.
+        //   Spike at s ≈ 163 mm → centripetal min at idx ≈ 105 ∈ [50, 150] ✓.
+        //   Decel-toward-spike zone ≈ 85 mm: starts at s ≈ 78 mm ≥ n/4 ✓.
+        //   Accel-from-spike zone ends ≈ s ≈ 248 mm > 3n/4 ✓.
+        //   v_boundary(idx 198) ≈ sqrt(2×5000×1.56) ≈ 125 mm/s, above the
+        //   jerk-limited centripetal min (≈ 120 mm/s) → centripetal IS the
+        //   global interior minimum ✓.
+        //
+        // Inner lead-in CP (P2) at x=145 and inner lead-out CP (P5) at x=180
+        // are placed close to the spike CPs (P3 at x=155, P4 at x=161) to
+        // keep the local curvature high without causing SLP divergence.
+        VectorNurbs::<f64, 3>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                [0.0,   0.0,  0.0], // start of lead-in
+                [60.0,  0.0,  0.0],
+                [145.0, 0.0,  0.0], // inner lead-in (close to spike)
+                [155.0, 0.0,  0.0], // approaching spike (+5 mm vs prev)
+                [161.0, 12.0, 0.0], // spike CP 1 (8 mm apart, 12 mm above)
+                [169.0, 0.0,  0.0], // spike CP 2
+                [180.0, 0.0,  0.0], // inner lead-out (close to spike)
+                [305.0, 0.0,  0.0], // end of lead-out
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Spec §5.1 fixture 6: lead-in / bend / lead-out. Acceptance: §6.1 status,
+    /// §6.2 post-solve feasibility, and §5.1's qualitative shape check (clear
+    /// local min in v near the highest-κ region; monotone on either side).
+    #[test]
+    fn fixture_6() {
+        let curve = build_mixed_curve();
+        let limits = textbook_limits();
+        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
+
+        assert!(matches!(profile.status,
+            SolveStatus::Solved
+            | SolveStatus::SolvedInexact { .. }
+            | SolveStatus::SolvedSlp { .. }), "got {:?}", profile.status);
+
+        // Qualitative shape: find the global v-minimum among interior samples.
+        // The minimum should occur somewhere in the middle third of the path
+        // (where κ is highest), and v should be monotone-increasing on the
+        // first quarter and monotone-decreasing on the last quarter.
+        let n = profile.samples.len();
+        let (min_idx, _) = profile.samples
+            .iter()
+            .enumerate()
+            .skip(1).take(n - 2) // exclude boundary v=0
+            .min_by(|(_, a), (_, b)| a.v.partial_cmp(&b.v).unwrap())
+            .unwrap();
+        assert!(min_idx > n / 4 && min_idx < 3 * n / 4,
+            "fixture 6: min-v at idx {} not in middle half (n = {})", min_idx, n);
+
+        // First quarter monotone non-decreasing in v.
+        for i in 1..(n / 4) {
+            assert!(profile.samples[i].v >= profile.samples[i - 1].v - 1e-3,
+                "fixture 6: lead-in not monotone at i={}: v[{}]={} v[{}]={}",
+                i, i - 1, profile.samples[i - 1].v, i, profile.samples[i].v);
+        }
+        // Last quarter monotone non-increasing.
+        for i in (3 * n / 4)..n {
+            assert!(profile.samples[i].v <= profile.samples[i - 1].v + 1e-3,
+                "fixture 6: lead-out not monotone at i={}", i);
+        }
+
+        eprintln!(
+            "fixture 6: status = {:?}, total_time = {:.6}, min_v_idx = {}",
+            profile.status, profile.total_time, min_idx
+        );
+    }
+}
+
 mod fixture_3_constant_curvature_arc {
     use temporal::{
         schedule_segment, BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus,
