@@ -139,7 +139,18 @@ fn eval_kth_deriv(
             ]
         }
         3 => {
-            // Third central difference: (-C(u+2h) + 2C(u+h) - 2C(u-h) + C(u-2h)) / (2h³)
+            // Third central difference: (C(u+2h) - 2C(u+h) + 2C(u-h) - C(u-2h)) / (2h³)
+            //
+            // Derivation: expand C(u ± kh) in Taylor series and collect the h³ coefficient.
+            // The antisymmetric combination that isolates f'''(u):
+            //   C(u+2h) - 2C(u+h) + 2C(u-h) - C(u-2h)
+            //   = [... + (2h)³/6·f''' + ...] - 2[... + h³/6·f''' + ...] + 2[... - h³/6·f''' + ...] - [... - (2h)³/6·f''' + ...]
+            //   = (8/6 - 2/6 - 2/6 + 8/6)·h³·f''' + O(h⁵) = (12/6)·h³·f''' + O(h⁵) = 2h³·f''' + O(h⁵)
+            //
+            // NOTE: an earlier version used (-pp + 2p - 2m + mm) which is the negation of the
+            // correct stencil and gives -f'''(u). That sign error was caught by the
+            // `cubic_bezier_pins_third_derivative_at_start` test.
+            //
             // Symmetric clamp: maximum step that fits in the domain.
             let avail_h = ((u - u_start) / 2.0).min((u_end - u) / 2.0).min(h);
             let avail_h = avail_h.max(h * 0.01);
@@ -149,9 +160,9 @@ fn eval_kth_deriv(
             let mm = vector_eval(&view, u - 2.0 * avail_h);
             let two_h3 = 2.0 * avail_h * avail_h * avail_h;
             [
-                (-pp[0] + 2.0 * p[0] - 2.0 * m[0] + mm[0]) / two_h3,
-                (-pp[1] + 2.0 * p[1] - 2.0 * m[1] + mm[1]) / two_h3,
-                (-pp[2] + 2.0 * p[2] - 2.0 * m[2] + mm[2]) / two_h3,
+                (pp[0] - 2.0 * p[0] + 2.0 * m[0] - mm[0]) / two_h3,
+                (pp[1] - 2.0 * p[1] + 2.0 * m[1] - mm[1]) / two_h3,
+                (pp[2] - 2.0 * p[2] + 2.0 * m[2] - mm[2]) / two_h3,
             ]
         }
         _ => [0.0, 0.0, 0.0],
@@ -419,5 +430,90 @@ mod tests {
         // Total arclength of a quarter-circle of radius R = π·R/2.
         let expected_length = std::f64::consts::FRAC_PI_2 * r;
         assert!((grid.total_length - expected_length).abs() / expected_length < 0.01);
+    }
+
+    /// Pin `c_triple_prime` to a known closed-form value on a non-trivial cubic Bezier.
+    ///
+    /// # Fixture
+    ///
+    /// Degree-3 non-rational NURBS, knots `[0,0,0,0,1,1,1,1]`, control points:
+    ///   P0=(0,0,0), P1=(1,0,0), P2=(2,0,0), P3=(3,1,0).
+    ///
+    /// # Closed-form algebra at u=0
+    ///
+    /// For a cubic Bezier C(u) = (1-u)³P0 + 3(1-u)²u P1 + 3(1-u)u² P2 + u³ P3:
+    ///
+    ///   dC/du  = 3[(1-u)²(P1-P0) + 2(1-u)u(P2-P1) + u²(P3-P2)]
+    ///            At u=0: 3·(1,0,0) = (3,0,0)    → f = |dC/du| = 3
+    ///
+    ///   d²C/du² = 6[(1-u)(P2-2P1+P0) + u(P3-2P2+P1)]
+    ///             P2-2P1+P0 = (2,0,0)-(2,0,0)+(0,0,0) = (0,0,0)
+    ///             P3-2P2+P1 = (3,1,0)-(4,0,0)+(1,0,0) = (0,1,0)
+    ///             At u=0: 6·[(1)·(0,0,0) + 0·(0,1,0)] = (0,0,0)
+    ///
+    ///   d³C/du³ = 6(P3-3P2+3P1-P0) = 6·((3,1,0)-(6,0,0)+(3,0,0)-(0,0,0))
+    ///           = 6·(0,1,0) = (0,6,0)   (constant in u for a cubic Bezier)
+    ///
+    ///   df/du     = dot(d²C/du², dC/du) / f = dot((0,0,0),(3,0,0)) / 3 = 0
+    ///   d²f/du²   = (|d²C/du²|² + dot(dC/du, d³C/du³)) / f - (df/du)²/f
+    ///             = (0 + dot((3,0,0),(0,6,0))) / 3 - 0 = 0
+    ///
+    ///   du/ds = 1/f = 1/3
+    ///   d²u/ds² = -df/du / f³ = 0
+    ///   d³u/ds³ = -d²f/du² / f⁴ + 3(df/du)² / f⁵ = 0
+    ///
+    ///   d³C/ds³ = d³C/du³ · (du/ds)³  +  3·d²C/du²·(du/ds)·d²u/ds²  +  dC/du·d³u/ds³
+    ///           = (0,6,0) · (1/3)³     +  3·(0,0,0)·(1/3)·0           +  (3,0,0)·0
+    ///           = (0,6,0) / 27
+    ///           = (0, 2/9, 0)  ≈  (0, 0.22222…, 0)
+    ///
+    /// # Why this fixture catches chain-rule bugs
+    ///
+    /// At u=0 all the "speed-variation" terms (df/du, d²f/du², d²u/ds², d³u/ds³) vanish,
+    /// so `d³C/ds³` reduces to the cleanest possible form: `d³C/du³ / f³`. Any
+    /// implementation error in those terms would go undetected here — but that is
+    /// precisely the value: the surviving term `(0,6,0)/27` directly checks that the
+    /// `d³C/du³ · (du/ds)³` branch is wired correctly. The vanishing of the other terms
+    /// also guarantees a correct zero contribution from each of them; a sign error
+    /// or wrong coefficient in those branches that produces a non-zero contribution at
+    /// this point would corrupt the result and fail the test.
+    #[test]
+    fn cubic_bezier_pins_third_derivative_at_start() {
+        // Degree-3 non-rational NURBS, knots [0,0,0,0,1,1,1,1].
+        // At u=0: dC/du=(3,0,0), d²C/du²=(0,0,0), d³C/du³=(0,6,0) (constant).
+        // All speed-variation terms vanish → d³C/ds³ = (0,6,0)/27 = (0, 2/9, 0).
+        //
+        // Note: at the endpoint (grid index 0), the k=3 FD stencil in eval_kth_deriv
+        // uses avail_h = fd_h * 0.01 = 1e-7 and evaluates at slightly negative u,
+        // which for a non-rational polynomial NURBS is valid de Boor extrapolation —
+        // no clamping occurs in de_boor_inner for a polynomial Bezier patch.
+        let curve = VectorNurbs::<f64, 3>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0]],
+            None,
+        )
+        .unwrap();
+
+        // n=5 is sufficient; we only assert on index 0 (s=0, u=0).
+        let grid = sample_arclength_grid(&curve, 5).unwrap();
+
+        let triple_at_start = grid.c_triple_prime[0];
+        let expected = [0.0_f64, 2.0 / 9.0, 0.0];
+
+        // Tolerance: 5 % relative to the y-component (the only non-zero component).
+        // The FD stencil for d³C/du³ on a degree-3 polynomial is exact to floating-
+        // point precision, so the error budget is dominated by the u(s) inversion
+        // round-off, not by FD truncation error.
+        let scale = expected[1].abs(); // 2/9
+        let err = (triple_at_start[0] - expected[0]).abs()
+            + (triple_at_start[1] - expected[1]).abs()
+            + (triple_at_start[2] - expected[2]).abs();
+        assert!(
+            err / scale < 0.05,
+            "c_triple_prime[0] = {triple_at_start:?}, expected ≈ {expected:?}, \
+             relative err = {:.4} (limit 0.05)",
+            err / scale
+        );
     }
 }
