@@ -1,7 +1,64 @@
 //! Lookahead joining via SOCP-per-iteration (option A). Spec §2.3.
 
 use crate::multi::junction::JunctionResult;
+use crate::multi::parallel::fan_out_solves;
+use crate::multi::{BatchError, JoiningStatus, SegmentInput};
+use crate::GridConfig;
 use crate::TopProfile;
+
+/// Hard cap on joining sweeps. Per spec §2.3 + §6.5: typical convergence is
+/// 1–3 sweeps; cap at 10 to detect bugs.
+// TODO(task-9): called from plan_batch
+#[allow(dead_code)]
+const MAX_SWEEPS: u32 = 10;
+
+/// Run forward + reverse sweep pairs, re-solving dirty segments between sweeps,
+/// until velocity propagation stabilizes or the sweep cap is reached.
+///
+/// Returns `(sweeps_used, JoiningStatus)`. Per spec §2.3 + §6.5.
+// TODO(task-9): wired in plan_batch
+#[allow(dead_code)]
+pub(crate) fn join_until_converged(
+    inputs: &[SegmentInput<'_>],
+    grids: &[GridConfig],
+    states: &mut [SegmentState],
+    junctions: &[JunctionResult],
+    n_threads: usize,
+) -> Result<(u32, JoiningStatus), BatchError> {
+    for sweep in 1..=MAX_SWEEPS {
+        let f_dirty = forward_sweep(states, junctions);
+        let r_dirty = reverse_sweep(states, junctions);
+        if f_dirty == 0 && r_dirty == 0 {
+            // Velocity propagation has stabilized — no segment's joining-decided
+            // (v_start, v_end) changed in either sweep direction.
+            if states.iter().all(|s| !s.dirty) {
+                // Velocities stable AND every segment's last fan_out_solves
+                // returned a verifier-feasible success status. Done.
+                return Ok((sweep, JoiningStatus::Converged));
+            }
+            // Velocities stable but some segments still have dirty=true,
+            // meaning their last fan_out_solves returned a non-success
+            // status (Infeasible / MaxIter / DivergedSlp / MaxIterSlp —
+            // all return Ok(profile) with non-success SolveStatus, leaving
+            // dirty=true). Per kalico-verifier review-3: schedule_segment
+            // is deterministic (Clarabel 0.11.1 with kalico's default
+            // features uses single-threaded QDLDL; SLP loops have no RNG;
+            // constraint construction is deterministic), so re-solving with
+            // unchanged inputs would produce the same non-success status.
+            // Bail early via the dedicated StalledOnInfeasibleSegment variant
+            // (round-4 split — distinct from MAX_SWEEPS-exhaustion below).
+            let last_dirty_count = states.iter().filter(|s| s.dirty).count();
+            return Ok((sweep, JoiningStatus::StalledOnInfeasibleSegment { last_dirty_count }));
+        }
+        fan_out_solves(inputs, states, grids, n_threads)?;
+    }
+    // Reached MAX_SWEEPS without velocity stabilization — pathological
+    // joining oscillation (shouldn't happen on the test fixtures; if it
+    // does, the joining algorithm itself has a bug). Distinct from
+    // StalledOnInfeasibleSegment above.
+    let last_dirty = states.iter().filter(|s| s.dirty).count();
+    Ok((MAX_SWEEPS, JoiningStatus::CappedAtMaxSweeps { last_dirty_count: last_dirty }))
+}
 
 /// Per-segment scratch state during joining.
 // TODO(task-9): wired in plan_batch
@@ -124,5 +181,23 @@ mod tests {
         // junctions[0] = 150, states[1].v_start = 100; min = 100. New v_end[0] = 100.
         assert_eq!(dirty, 1);
         assert!((states[0].v_end - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn converges_in_one_sweep_on_already_consistent() {
+        // Stub test — full plan_batch test in Task 9. Direct join_until_converged
+        // requires SegmentInput + GridConfig setup, which is integration-test scope.
+        // Unit-test path: assert forward_sweep + reverse_sweep both no-op on a
+        // pre-balanced state.
+        let mut states = vec![
+            make_state(0.0, 150.0),
+            make_state(150.0, 200.0),
+        ];
+        let junctions = vec![make_junction(150.0)];
+        let f_dirty = forward_sweep(&mut states, &junctions);
+        let r_dirty = reverse_sweep(&mut states, &junctions);
+        assert_eq!(f_dirty, 0);
+        assert_eq!(r_dirty, 0);
+        // join_until_converged would return Converged in one sweep with no re-solves.
     }
 }
