@@ -206,6 +206,57 @@ done
 
 The benchmark binary prints per-iteration wall-clock to stdout and a summary line to stderr; the parallel binary prints amortized throughput. Apply the tolerance patch from §"Recommended patches" #3 to reproduce the Finding 2 numbers; without it you'll see the original baseline numbers (cubic@N=200 ≈ 1.6s).
 
+## Phase-level cost decomposition (post-tolerance-patch)
+
+Instrumented `schedule_segment` with per-stage `Instant::now()` timing on the bench (`rust/temporal/src/topp/mod.rs::schedule_segment`, Pi-only patch, not committed upstream). Median ms per stage at tol=1e-5, target-cpu=native:
+
+| Fixture           | arclen | build | solve  | verify |
+|-------------------|--------|-------|--------|--------|
+| straight, N=50    | 0.05   | 0.30  | 13.0   | 0.01   |
+| straight, N=200   | 0.10   | 7.2   | 57.5   | 0.01   |
+| arc, N=50         | 0.05   | 0.31  | 21.8   | 0.00   |
+| arc, N=200        | 0.16   | 8.7   | 112.2  | 0.01   |
+| cubic, N=50       | 0.06   | 0.30  | 30.7   | 0.00   |
+| cubic, N=200      | 0.16   | 8.8   | 132.6  | 0.02   |
+
+**Solver (Clarabel) dominates: 85–95% of total at N=200, ~99% at N=50.** The next slice is `build` (constraint-matrix construction, the column-bucketed CSC-builder in `solve_with_cuts`) at 7–13% of N=200 cost. Arclength sampling and verification are noise.
+
+The `build` cost is `O(N²)` (iterating over `bundle.a_rows` × `n_vars` to bucket sparse entries). Could be reduced to `O(nnz)` by emitting CSC directly in `constraints::build`, saving 7–13% per solve at N=200. Worth doing eventually but not high-leverage relative to the solver-dominated regime.
+
+## Multi-segment SOCP analysis (Step-4 spec §11 deferred item)
+
+The deferred "Cross-segment relaxation effects" item asks whether a single SOCP across the whole lookahead window would amortize Clarabel setup vs many per-segment solves. With the post-tolerance-patch numbers in hand:
+
+- **One big N=200 solve, cubic-class geometry**: 142 ms single-thread.
+- **Ten small N=20 solves, cubic-class geometry**: 10 × 6.5 ms = 65 ms single-thread.
+
+**Multi-segment SOCP is ~2.2× slower than per-segment-at-small-N at the same total resolution**, single-threaded. With per-segment parallelism across 4 cores: 10 × N=20 ≈ 25 ms vs 1 × N=200 = 142 ms = **5.7× faster per-segment**.
+
+Why: the SOCP cost scales superlinearly in problem size (sparse Cholesky factorization + IPM iteration count both grow). Splitting into K small problems gives each one a tiny KKT system that fits in cache and converges in fewer IPM iterations. Plus the per-segment shape lets us trivially fan out across cores.
+
+**Verdict: multi-segment SOCP loses for this regime. Step-4 spec §11's deferred item can be closed.** The right shape is per-segment SOCP at adaptive small N, with junction velocities propagated by the joining algorithm (whichever (A)/(B) flavor Step 4.5 picks).
+
+## (A) joining-with-SOCP-per-iter feasibility math at MVP throughput
+
+Closing the loop on the original Step 4.5 question. Under the post-investigation cost regime (adaptive N=20 typical, tolerance 1e-5, target-cpu=native, 4-core parallel batch):
+
+- Per-segment SOCP cost: ~6.5 ms cubic, ~3.2 ms straight (single-thread)
+- 4-core parallel amortized (assuming linear scaling at N=20, confirmed in Finding 5): ~1.5–2 ms / segment
+
+**Per-push compute under (A) "SOCP per joining iteration":**
+- Per push, the joining algorithm marks ~1–2 segments dirty (the newly pushed segment + sometimes its predecessor as reverse-pass propagates).
+- 1–2 dirty segments × ~6 ms (cubic worst case) = 6–12 ms compute per push (single-thread).
+- 4-core parallel: 1.5–3 ms per push.
+
+**At MVP-target throughput** (1000 mm/s motion × 1 mm slicer segments = 1000 push/sec):
+- Required compute: 1000 × 1.5–3 ms = 1.5–3 seconds of compute per second of motion.
+- Available compute: 4 cores at ~1.6–2 GHz under load = ~4 effective cores.
+- Headroom: 1.5–3 cores at 100% used; 1–2.5 cores spare for Klipper + comms + telemetry.
+
+**Conclusion: option (A) is feasible at MVP throughput on the actual target host.** The throughput-non-negotiable principle is satisfied. The Step-4.5 (A) vs (B) decision is now purely about implementation simplicity vs trajectory-time optimality (the conversation we wanted to be having from the start), not hardware feasibility.
+
+Caveats: (a) Adaptive-N policy must be implemented; using fixed N=200 reverts to the catastrophic regime. (b) Per-segment parallelism must use 3 threads (avoid 4-core memory-bandwidth cliff at large N or contention with Klipper on cores 0–1). (c) These numbers are for the synthetic worst case; real slicer output mix (~80% straight, ~15% arc, ~5% cubic) is faster.
+
 ## Open follow-ups
 
 - **Apply tolerance patch upstream** once Step-9 in-flight work has committed.
