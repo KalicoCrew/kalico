@@ -1,6 +1,11 @@
 //! `GeometryPipeline`, `Segments`, `Item`. Drives reduce events into typed
-//! segments. Phase 1 emits degree-1 NURBS for G1, 3D rational quadratic for
-//! G2/G3, and `JunctionDeviation` at every G1-G1 transition.
+//! segments. Emits degree-1 NURBS for G0/G1, 3D rational quadratic NURBS for
+//! G2/G3, degree-2 non-rational NURBS for G5.1 (`Segment::Fitted { degree: 2 }`),
+//! and degree-3 non-rational NURBS for G5 (`Segment::Fitted { degree: 3 }`).
+//! `JunctionDeviation` is emitted only at G1-G1 transitions; smooth curves
+//! (G2/G3/G5/G5.1) break the G1-tangent chain per the curvature-continuity
+//! principle (CLAUDE.md Layer 2) — endpoint curvature is derived downstream
+//! from the NURBS itself.
 
 use crate::{
     reduce::{reduce, CurveGeom, MotionMarkerKind, ParseErrorKind, ReduceEvent},
@@ -155,9 +160,6 @@ impl Segments<'_> {
                         Recovery::G5MissingTangent { line_no }
                     }
                     ParseErrorKind::G5PlaneMismatch => {
-                        // TODO(task-18): when G5.1 plane-mismatch reduce arm
-                        // lands, add a round-trip test asserting text="18"
-                        // → active_plane_g_code=18.
                         let active_plane_g_code = text.parse::<u32>().expect(
                             "G5PlaneMismatch.text must be numeric per reduce-side contract (Task 18 emit format)"
                         );
