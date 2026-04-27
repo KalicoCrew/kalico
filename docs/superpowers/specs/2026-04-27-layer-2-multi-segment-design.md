@@ -49,7 +49,7 @@ What this spec does not re-litigate:
 - **NURBS-native pipeline.** Input is a sequence of NURBS segments from Layer 1.
 - **Third-order motion as primary profile.** Inherited from Step 4's SOCP formulation; no change.
 - **Curvature-continuity-based junction handling** (CLAUDE.md 2026-04-27). Layer 2 derives end-tangents and end-curvatures from each segment's NURBS at u=0 / u=1; no virtual G1 directions for smooth-curve endpoints.
-- **Throughput is non-negotiable** (CLAUDE.md 2026-04-27 "Non-negotiable constraints"). The planner never produces a slower trajectory than the math-optimal one. Drives the (A) vs (B) decision below.
+- **Throughput is non-negotiable** (CLAUDE.md 2026-04-27 "Non-negotiable constraints"). The planner never knowingly chooses a cheaper architecture that produces a measurably slower trajectory than the best we can compute under finite N, SLP local convergence, and tolerance settings tuned to the hardware budget. Drives the (A) vs (B) decision below.
 
 ## 2. Algorithm choice
 
@@ -63,8 +63,8 @@ The other option considered (and rejected):
 
 (B) was the more conservative choice when (A)'s hardware-feasibility was unknown. The Pi 5 investigation closes that question:
 
-- (A) needs ~1.5–3 cores at 100% sustained at MVP-target 1000 push/sec with adaptive N=20 typical and 4-core parallelism. Available: 4 cores. Headroom: 1–2.5 cores spare for Klipper + comms + telemetry.
-- See `docs/research/pi5-socp-throughput-investigation.md` "(A) joining-with-SOCP-per-iter feasibility math" section for the full derivation.
+- The planner is offline-batch (not motion-rate-streaming); the relevant feasibility metric is `total_planning_time < total_print_time` or "operator waits before motion starts," not "match motion-rate sustained throughput." With 3-thread aggregate solver throughput of ~430 seg/sec cubic-worst-case at adaptive N=20, total planning latency for a 200K-segment-long G1-dense print is ~3–5 minutes (weighted-mix estimate); for a 20K-segment G5 print is well under a minute. Comfortably acceptable for the offline-batch operating model.
+- See `docs/research/pi5-socp-throughput-investigation.md` "(A) joining-with-SOCP-per-iter feasibility math" section for the full derivation, **including the round-1-Codex-corrected math** (the original framing as "1.5–3 cores at 100% sustained at 1000 push/sec" had a real arithmetic error and was based on a streaming-rate target the brainstorming explicitly walked back from).
 
 ### 2.2 Junction velocity: unified centripetal-against-curvature formula
 
@@ -89,28 +89,34 @@ v_centripetal_cap = min over both sides (v_cent_cap)
 
 with `κ_floor = 1e-12 mm⁻¹` per the toppra-issue-#244 robustness pattern, and `B_MAX_CENT_CAP = 1e8 mm²/s²` (= ~10⁴ mm/s, comfortably above any real machine `v_max`) — matching the existing `constraints.rs` constant. The "∞" cap below the floor is conceptual; the implementation uses the finite ceiling for numerical hygiene. For a smooth join (κ_left = κ_right = some finite value), this gives the standard centripetal cap. For a sharp G1↔G1 corner (κ = 0 on each side except a delta at the corner), the formula degenerates and Cap 2 alone gives `v = sqrt(B_MAX_CENT_CAP)`, deferring the actual cornering bound to the sharp-corner sub-case below.
 
-**Sharp-corner sub-case (G1↔G1).** When both sides report κ ≤ κ_floor at the junction (the G1↔G1 degenerate case), kick into chord-error mode: junction velocity is bounded by the Sonny-Jeon JD formula
+**Sharp-corner sub-case (G1↔G1).** When both sides report κ ≤ κ_floor at the junction (the G1↔G1 degenerate case), kick into chord-error mode. Junction velocity is bounded by the Sonny-Jeon family chord-error formula, expressed in the **deviation-angle convention** `α` where `α = 0` is collinear and `α = π` is a complete reversal:
 
 ```
-v_jd = sqrt(a_centripetal_max · δ_chord · sin(α/2) / (1 - sin(α/2)))
+v_jd² = a_centripetal_max · δ_chord · cos(α/2) / (1 − cos(α/2))
 ```
 
 where:
-- **`α` is the *deviation angle*** — the angle by which the path turns at the corner. `α = 0` is collinear (no corner; same direction on both sides). `α = π` is a complete reversal (impossible to actually traverse). Computed from the two tangent unit vectors as `α = π − arccos(t_left · t_right)`. (Equivalently: if `θ_between` is the angle between the two tangent vectors as their dot product reports, `α = π − θ_between`.)
+- **`α` is the deviation angle** — the angle by which the path turns at the corner. `α = 0` is collinear (no corner; same direction on both sides). `α = π` is a complete reversal.
+- **Computation:** `α = arccos(t_left · t_right)` (forward unit tangents on both sides, taking the dot product, then arccos). Collinear → `dot = 1` → `α = 0`. 90° corner → `dot = 0` → `α = π/2`. Reversal → `dot = -1` → `α = π`.
 - **`δ_chord`** is the chord-error tolerance budget for this junction.
 
 **Limit cases handled explicitly:**
 
-- `α ≤ ALPHA_COLLINEAR_THRESHOLD` (default 1e-3 rad ≈ 0.06°): the join is collinear or nearly so — no corner cap from JD. Return `v_jd = ∞` (formally `B_MAX_CENT_CAP = 1e8 mm²/s²` per `constraints.rs`, which is ~10⁴ mm/s, comfortably above any machine `v_max`). Without this guard, the formula reduces to `sin(α/2) → 0` and gives `v_jd = 0` — i.e., a full stop at every collinear G1 split, which slicers emit constantly when discretizing a long straight into multiple G1 commands. **This case is the most common JD-branch trigger by far** and must not be allowed to brake the machine.
-- `α ≥ ALPHA_REVERSAL_THRESHOLD` (default 0.99 · π): the join is approaching a full reversal — `sin(α/2) → 1` and `v_jd → 0` correctly, but the formula's `1 - sin(α/2)` denominator approaches zero from above, risking numerical issues. Cap `v_jd` at a small positive floor (e.g., 1 mm/s) so we get "essentially full stop" rather than `0/0` or `inf`. The downstream solver handles `v_start = 1 mm/s` boundary conditions cleanly.
+- `α ≤ ALPHA_COLLINEAR_THRESHOLD` (default 1e-3 rad ≈ 0.06°): the join is collinear or nearly so. The formula already gives `v_jd → ∞` as `α → 0` because `cos(α/2) → 1` and the denominator `(1 − cos(α/2)) → 0`. The threshold guard is for numerical hygiene — return the finite ceiling `B_MAX_CENT_CAP = 1e8 mm²/s²` (~10⁴ mm/s, comfortably above any machine `v_max`) rather than letting the division blow up.
+- `α ≥ ALPHA_REVERSAL_THRESHOLD` (default 0.99 · π): the join is approaching a full reversal. The formula correctly approaches `v_jd → 0`, but the numerator `cos(α/2) → 0` plus the denominator `(1 − cos(α/2)) → 1` is well-behaved; this guard exists only to cap `v_jd` at a small positive floor (e.g., 1 mm/s) so that downstream Step-4 solver doesn't see exactly-zero boundary conditions, which can confuse the SOCP setup.
 
 **`δ_chord`** is a per-junction quantity supplied by the input, not a kalico-internal constant — the slicer (parallel workstream) is the source of truth for per-feature tolerance hints. Default if unsupplied: a conservative value derived from CLAUDE.md (e.g., 50 µm); finalized at implementation time.
 
-**Sign / convention notes** (because the JD formula is famously easy to get wrong):
+**Sign / convention notes** (because the JD formula is famously easy to get wrong — and we got it wrong twice in earlier drafts of this spec, which motivated this version):
 
-- This spec uses the Klipper `square_corner_velocity` convention (Sonny-Jeon family). At `α = π/2` (90° corner), `sin(π/4) = √2/2 ≈ 0.707`, so `v_jd² = a · δ · 0.707 / 0.293 ≈ 2.41 · a · δ`, recovering Klipper's `v_jd² ≈ 2.41 · a · scv`. Sanity check: implementations should match Klipper's for the same `(a, δ, α)` to within rounding.
-- Marlin uses a different convention (`junction_deviation` based on `2 · a · δ` directly, no `α`-dependence — they precompute corners differently); ignore that, we're following Klipper.
-- `θ_between` (dot-product angle) is what raw NURBS tangent computation gives you; `α` (deviation) is `π - θ_between`. Implementations must be explicit about which one is being passed to the JD formula. Confusion between these two conventions is exactly Codex's review-2 critique that motivated this rewrite.
+- This spec uses the **deviation-angle convention** consistently: `α = 0` for collinear, `α = π` for reversal. The formula is `v_jd² = a · δ · cos(α/2) / (1 − cos(α/2))`.
+- Klipper's `square_corner_velocity` uses the **complementary "junction angle" convention** `θ` where `θ = π` for collinear, `θ = 0` for reversal, and the formula is `v_jd² = scv² · sin(θ/2) / (1 − sin(θ/2))`. The two are equivalent: `α = π − θ`, and `sin(θ/2) = cos((π−θ)/2) = cos(α/2)`. Numerical sanity check at 90° (where the two conventions are symmetric): `cos(π/4) = sin(π/4) = √2/2 ≈ 0.707`, so `v_jd² ≈ 2.414 · a · δ`. Match Klipper to within rounding.
+- Sanity-check at 45° corner (gentler corner, should allow much higher v): `α = π/4`, `cos(π/8) ≈ 0.924`, `v_jd² ≈ a · δ · 0.924 / 0.076 ≈ 12.16 · a · δ`. Implementations significantly off this value have a sign/convention bug.
+- **Earlier-draft bug history** (preserved here so future-me doesn't repeat it):
+  - Draft 1 of this section used the formula `sin(α/2) / (1 − sin(α/2))` with `α = π − arccos(...)` (i.e., it actually computed Klipper's `θ` despite labeling it as deviation `α`). The two errors canceled at the output but the labels were inconsistent. Codex review-1 caught the inconsistency.
+  - Draft 2 (Codex's proposed fix in review-2): change just the computation to `α = arccos(...)` while leaving `sin(α/2)` in the formula. **This is wrong**: it gives `v_jd = 0` at collinear (α=0 → sin(0) = 0), exactly the full-stop-on-every-G1-split bug we're trying to avoid. The 45° check would give 0.62·a·δ instead of the correct 12.16·a·δ.
+  - Draft 3 (current): use deviation-angle convention throughout — `α = arccos(t_left · t_right)`, formula uses `cos(α/2)` not `sin(α/2)`. Both halves of the convention now align, and the limit cases are explicit.
+- Marlin uses a different parameterization (`junction_deviation` based directly on `2 · a · δ` per-corner); ignore that path, we're following Klipper/Sonny-Jeon.
 
 **Implementation note.** The formula is unified in the sense that it reduces to the same call-site per junction; whether the cap comes from "smooth κ" or "sharp-corner JD" is a runtime branch on `max(κ_left, κ_right) > κ_floor`. There is one `compute_junction_velocity` function in the codebase, not three.
 
@@ -452,9 +458,22 @@ For Fixture 4 (per-segment limits change):
 
 If any fixture caps at the hard 10-sweep maximum, that's a test failure indicating either the joining algorithm has a bug or the convergence criterion is too tight. Investigate — don't bump the cap silently.
 
-### 6.6.5 Inter-grid sanity (fixture 7)
+### 6.6.5 Inter-grid sanity (fixture 7) — methodology
 
-After solving fixture 7 with v1 adaptive-N policy at MIN_N=10, re-evaluate `(v, a, j, centripetal)` at 4× the solver grid density (interpolating between solver grid points). All re-evaluated points must satisfy the limits within `ε_feas = 1e-3` (same tolerance as Step 4's per-grid feasibility check). Failure means v1 silently produces inter-grid violations on high-curvature spikes; v1 policy must be escalated to v2 before Step 4.5 lands.
+A cheap CI sentinel for the v1 adaptive-N policy, **not** a proof of general safety (a narrow-enough curvature spike can still hide between any finite-density resampling). Methodology specifics, per Codex review-2 tightening:
+
+1. **Resample density**: 4× the solver grid (i.e., 4·N evaluation points on the segment). Sentinel-quality only.
+2. **Reconstruction of `v(s)`, `a(s)`, `j(s)` between solver grid points**: piecewise-cubic Hermite interpolation of the solver-supplied `(b_i, a_i)` samples (matching the trajectory representation Layer 3 will eventually consume; if Layer 3 ends up using a different interpolation, this fixture's reconstruction must be updated to match). Document the interpolation choice explicitly in the fixture code so a future Layer-3-design change has a clear update point.
+3. **Curvature `κ(s)` at resampled points**: re-evaluate from the NURBS geometry directly (using Layer-0 NURBS derivative routines), **not** by interpolating κ between grid points. Geometric κ varies smoothly and can spike between grid points; interpolating κ would mask exactly the under-resolution failure mode this fixture is designed to catch.
+4. **Constraints checked at resampled points** (within `ε_feas = 1e-3`):
+   - Per-axis Cartesian velocity: `|dx_axis/dt| ≤ v_max,axis` for axis ∈ {X, Y, Z}
+   - Per-axis Cartesian acceleration: `|d²x_axis/dt²| ≤ a_max,axis`
+   - Per-axis Cartesian jerk: `|d³x_axis/dt³| ≤ j_max,axis` (or scalar tangential `J_path` if scalar-jerk regime)
+   - Centripetal: `v² · κ ≤ a_centripetal_max`
+5. **Constraints NOT checked**: snap, jerk-of-jerk, or any higher-order derivative not in the Layer-2 constraint set. Per Codex review-2: those aren't constraints we enforce, so they shouldn't be acceptance gates here either.
+6. **Segment-boundary continuity** (for multi-segment fixtures, not directly applicable to fixture 7's single-segment scope but documented here for the analogous v2 fixture if added): at junctions between segments, the resampled `v` and `a` from the left side at the junction point must match the resampled `v` and `a` from the right side, within the same `ε_feas`.
+
+**Failure semantics:** if any resampled point violates a constraint, fixture 7 fails and the v1 adaptive-N policy must be escalated to v2 (curvature-aware densification) before Step 4.5 lands. Pass means v1 is acceptable for the test set; it does not prove v1 is safe in general (which would require systematic curvature-spike fuzzing — out of Step-4.5 scope).
 
 ### 6.6 Performance: non-goal sanity log
 
@@ -607,3 +626,26 @@ Codex's other findings landed in companion documents:
 - The "multi-seg SOCP closed too strongly" critique landed in the same artifact (softened to "deferred" — Step 8/9 research item).
 - The "tolerance 1e-5 inter-grid safety" critique landed there too (caveat 8: add denser-resampling validation test).
 - The "math-optimal principle technically un-achievable as written" critique landed in CLAUDE.md (rewording the non-negotiable bullet to acknowledge SLP local optima + finite N as engineering realities).
+
+## Post-review revisions (Codex review-2)
+
+Second Codex pass surfaced six additional issues — five corrected here / in the research artifact, one (the JD formula) where Codex's specific proposed fix was actually wrong and required deeper analysis to correct properly:
+
+- **§2.2 JD formula was internally inconsistent** (review-1 fix introduced its own bug). The angle definition (deviation: collinear=0, reversal=π) didn't match the computation (`α = π − arccos(...)` actually produced Klipper's junction angle: collinear=π, reversal=0) which didn't match the formula (`sin(α/2) / (1 − sin(α/2))` is Klipper's formula expecting Klipper's angle convention). The two convention errors canceled at the output, so the *trajectories* were correct, but the spec text was incoherent. Codex review-2 caught the inconsistency and proposed `α = arccos(...)` (changing only the computation). **That fix is wrong**: leaving `sin(α/2)` in the formula then breaks collinear (gives `v_jd = 0` for straight-line G1 splits — exactly the catastrophic bug the spec was trying to avoid; Codex's own 45° check shows 0.62·a·δ instead of the correct 12.16·a·δ). **Correct fix (this revision)**: use deviation-angle convention consistently — `α = arccos(t_left · t_right)` (no `π −`), formula `cos(α/2) / (1 − cos(α/2))` (cos, not sin). Limits then work: collinear (α→0) → cos(0)=1 → denominator=0 → v_jd=∞; reversal (α=π) → cos(π/2)=0 → v_jd=0; 90° (α=π/2) → cos(π/4)=sin(π/4) → 2.41·a·δ matches Klipper. Bug history preserved in §2.2 sign-convention notes so future-me doesn't re-litigate.
+- **§2.1 still had the obsolete "1.5–3 cores at 100% sustained at MVP-target 1000 push/sec" claim** from the round-1-superseded streaming-rate framing. Replaced with the offline-batch ratio framing (3-threaded ~430 seg/s aggregate cubic-worst-case → ~3-5 min planning latency for a 200K G1 print).
+- **§1.2 throughput-non-negotiable bullet still said "never produces a slower trajectory than the math-optimal one"** — should match CLAUDE.md's corrected wording. Updated to "never knowingly chooses a cheaper architecture that produces a measurably slower trajectory than the best we can compute under finite N, SLP local convergence, and tolerance settings tuned to the hardware budget."
+- **§6.6.5 fixture 7 methodology was hand-wavy** ("re-evaluate at 4× density" with no specifics). Tightened: piecewise-cubic Hermite interpolation of solver samples (matching what Layer 3 will consume); geometric κ resampled from NURBS directly (not interpolated, which would mask spike under-resolution); per-axis Cartesian velocity/accel/jerk + centripetal as the constraint set (not snap or jerk-of-jerk — those aren't Layer-2 constraints); segment-boundary continuity flagged for the analogous v2 multi-segment fixture.
+- **Fixture 7 framed honestly as a sentinel, not a proof.** A narrow-enough κ spike can hide between any finite resampling; passing fixture 7 means "v1 is acceptable for the test set," not "v1 is provably safe."
+
+Codex review-2's other findings landed in the research artifact:
+- The "realistic mix likely 2–3 min" estimate was under-supported. Replaced with weighted-throughput math (~3–5 min) and explicitly labeled hypothesis-of-an-extrapolation rather than measurement; real-slicer-output benchmarking promoted from nice-to-have to needed-before-committing.
+- Adaptive-tolerance fallback trigger was too narrow ("only on `DivergedSlp`"). Broadened to any non-success status (`DivergedSlp`, `MaxIterSlp`, inner `MaxIter`, verifier `Infeasible`).
+- Stale "Use 1e-5 throughout" recommendation in another section contradicted the safety update; replaced with the adaptive recommendation.
+- "Recommended patches" section's unconditional patch text replaced with the adaptive-API recommendation.
+
+Issues Codex flagged that are NOT yet addressed in code (correctly identified, but they're Step-4.5 implementation work, not spec-level fixes):
+- Code doesn't implement per-call adaptive tolerance (no `ToleranceMode` API on `schedule_segment`).
+- Code doesn't implement adaptive grid (`GridScheme` only has `UniformArclength`).
+- Prototype tests don't implement fixture 7 (the existing `fixture_5_curvature_spike` does something different — N=200 status check, not MIN_N=10 with 4× resampling).
+
+These are tracked in §9 implementation plan envelope; they land when Step 4.5 implementation begins.

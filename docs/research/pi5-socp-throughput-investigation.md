@@ -158,13 +158,12 @@ Skipped.
 
 The (A) vs (B) trade is no longer hardware-feasibility-bound. Both are tractable on this hardware:
 
-- **(A)** "SOCP per joining iteration" at adaptive N=20 with 4-core parallelism: ~1.8 ms amortized per re-solve. At MVP-style 1000 push/sec with ~2.5 sweeps, ~4.5 ms per push consumed compute = totally feasible.
-- **(B)** "SOCP at finalize" at the same parameters: even more comfortable.
+**Both feasible in the offline-batch operating model** — see "(A) joining-with-SOCP-per-iter feasibility math (corrected after Codex review)" above for the full derivation. (Original section under this heading framed feasibility per-push compute amortized across cores at MVP-style 1000 push/sec; that math was wrong, see the corrected section.)
 
 **Recommendation for Step 4.5**:
 1. Default to adaptive N policy (proportional to segment arclength + curvature complexity).
-2. Use 1e-5 Clarabel tolerances throughout (Finding 2 patch).
-3. Use 3-thread parallel batch executor (avoid the 4-core memory-bandwidth cliff at large N; reserve a core for Klipper background activity).
+2. **Adaptive Clarabel tolerance per call**: try 1e-5 first; on any non-success status from the SLP/inner solver/verifier (`DivergedSlp`, `MaxIterSlp`, inner `MaxIter`, `Infeasible`, etc.), fall back to default 1e-8 and re-solve. **Do not apply 1e-5 unconditionally** — fixture 4 (G5 cubic with non-zero endpoint κ) trips `DivergedSlp` at 1e-5 because the SLP outer loop's convergence detection becomes fragile on small-relaxation-gap geometries (Finding 2 SAFETY UPDATE). The adaptive approach gets the 11×-on-bench speedup on convergent cases at near-zero cost on divergent cases (one fast wasted solve + one slow correct solve). API surface needs a `ToleranceMode::{Tight, Fast, Auto}` (or equivalent) on `schedule_segment` to expose this; current `solver.rs` hardcodes default settings.
+3. Use 3-thread parallel batch executor (avoid the 4-core memory-bandwidth cliff at large N; reserve a core for Klipper background activity). Validate in production with explicit `pthread_setaffinity_np` pinning + Klipper actively serving a print on core 0 (current measurements were `taskset` on the harness only, with Klipper idle).
 4. The (A) vs (B) algorithmic choice is now purely about implementation simplicity vs. trajectory-time optimality, not hardware-feasibility. Following the throughput-non-negotiable principle: **(A)** wins.
 
 ### Step 9 (shaper-aware feedback iteration)
@@ -173,25 +172,19 @@ The cubic@N=200 1.6s catastrophe was an early warning that the SLP outer loop in
 
 The Step-4 spec §11 deferred item ("Multi-segment SOCP across the whole window") is now genuinely worth investigating as a Step 9 enabler — it would amortize Clarabel setup across the whole window and reduce per-segment overhead. Not investigated in this artifact; flagged as follow-up.
 
-## Recommended patches
+## Recommended patches (revised after Codex review-1 + retest)
 
-**Three changes; the first two land in this commit.**
+**Two patches landed in this commit; the third was tried, broke fixture 4, reverted, and replaced by an adaptive recommendation.**
 
-1. **`rust/Cargo.toml`** — change `[profile.release] opt-level = "z"` to `3`. Comment notes future MCU profile override. *(Applied in this commit.)*
+1. **`rust/Cargo.toml`** — change `[profile.release] opt-level = "z"` to `3`. Comment notes future MCU profile override. *(Applied.)*
 
-2. **`rust/temporal/examples/{pi5_perf.rs,pi5_parallel.rs}`** — benchmark binaries for reproducibility. Single-call latency sweep + thread-scaling test. *(Applied in this commit.)*
+2. **`rust/temporal/examples/{pi5_perf.rs,pi5_parallel.rs,cpu_stress.rs}`** — benchmark binaries for reproducibility. Single-call latency sweep + thread-scaling test + CPU-stress utility for under-load measurements. *(Applied.)*
 
-3. **`rust/temporal/src/topp/solver.rs`** — `tol_gap_abs/rel = 1e-5, tol_feas = 1e-5` in the `DefaultSettings` constructor inside `solve_with_cuts`. **NOT applied in this commit** because the file has 844 lines of in-flight Step-9 work from the parallel Step-4 agent that this session should not entangle. To be applied as a follow-up commit after the in-flight Step-9 work lands.
+3. ~~**Unconditional `tol_gap_abs/rel = 1e-5, tol_feas = 1e-5` patch in `solver.rs`** — was the original recommendation; **REVERTED**~~. When tried on the upstream code against the now-committed full fixture suite, **fixture 4 (G5 cubic with non-zero endpoint κ) failed** with `DivergedSlp { last_max_ratio: 1.032..., outer_iters: 7 }`. The patch is unsafe as a blanket change. See Finding 2 SAFETY UPDATE.
 
-   Patch text:
-   ```rust
-   let settings = DefaultSettings::<f64> {
-       verbose: false,
-       max_iter: 1000,
-       tol_gap_abs: 1e-5, tol_gap_rel: 1e-5, tol_feas: 1e-5,
-       ..Default::default()
-   };
-   ```
+   **Replacement: adaptive per-call tolerance API.** Add a `ToleranceMode::{Tight, Fast, Auto}` parameter (or equivalent) to `schedule_segment`'s public surface, with `Auto` as the default. `Auto` semantics: try 1e-5 first; on any non-success status from the inner solver (`MaxIter`, `Infeasible`), the SLP outer loop (`DivergedSlp`, `MaxIterSlp`), or the post-solve verifier (`Infeasible`), fall back to default 1e-8 and re-solve. Cost on convergent cases: zero (one fast solve). Cost on divergent cases: one fast wasted solve + one slow correct solve.
+
+   Implementation note: log fallback rate by geometry class (straight / arc / cubic / G5) so the policy can later be tuned to skip the fast attempt on known-fragile geometry classes. This becomes Step-4.5 implementation work, not a one-line patch — flagged as a follow-up below.
 
 ## Reproducing
 
@@ -268,14 +261,16 @@ The relevant per-print metrics:
 
 **Worked numbers (offline-batch ratio):**
 
-| Print profile                          | Planning time at 430 seg/s | Acceptable for offline-batch? |
-|----------------------------------------|----------------------------|-------------------------------|
-| 200K G1, all-cubic-worst-case (synthetic) | ~7.7 min                   | Yes, against multi-hour print |
-| 200K G1, realistic mix (~80% straight)    | likely 2–3 min             | Yes                           |
-| 20K G5, all-cubic-worst-case              | ~46 s                      | Yes                           |
-| 20K G5, realistic mix                     | likely 10–20 s             | Yes                           |
+| Print profile                          | Planning time at 430 seg/s | Hypothesis-quality? |
+|----------------------------------------|----------------------------|---------------------|
+| 200K G1, all-cubic-worst-case (synthetic) | ~7.7 min                   | Direct from measurement |
+| 200K G1, realistic mix (~80% straight) ¹  | ~3–5 min (hypothesis)      | Extrapolation, not measured |
+| 20K G5, all-cubic-worst-case              | ~46 s                      | Direct from measurement |
+| 20K G5, realistic mix                     | <1 min (hypothesis)        | Extrapolation, not measured |
 
-Realistic mix throughputs are extrapolations from per-fixture single-call costs; not directly measured. **Real-slicer-output benchmark is a follow-up that would tighten these.**
+¹ Weighted throughput estimate for "realistic mix" = 0.8 · 940 (straight 3-thread, ~3 × 313 seg/s) + 0.15 · 600 (arc 3-thread) + 0.05 · 430 (cubic 3-thread) ≈ 860 seg/sec aggregate. 200K / 860 ≈ 232 seconds = ~3.9 minutes; rounded to 3–5 min. **The straight/arc 3-thread numbers are themselves extrapolated from per-segment single-call costs (Finding 5 explicitly measured cubic, not all three fixtures, at 3-thread aggregate)**, so the 3–5 minute estimate is a hypothesis-of-an-extrapolation. Real-slicer-output benchmarking is the missing data point that would replace these hypotheses with measurements; promoted from "follow-up nice-to-have" to "needed before tolerance + adaptive-N strategy can be committed for production."
+
+Worth flagging: if adaptive-tolerance-fallback (Finding 2 SAFETY UPDATE) is hit on a non-trivial fraction of segments — e.g., if a typical print has 5–20% G5-cubic-with-endpoint-κ class segments that need fallback to 1e-8 — the realistic-mix numbers degrade meaningfully (each fallback segment costs ~10× the converged-fast time). Worst case if every segment falls back: throughput drops to roughly the default-1e-8 numbers (~40 seg/sec for cubic), making the 200K-G1 realistic-mix planning time ~80 minutes instead of ~4. Real-slicer benchmarking would close this uncertainty.
 
 **Conclusion (corrected):** option (A) is feasible **as offline-batch**, with planning-time-to-print-time ratios that comfortably allow the planner to finish ahead of motion or to pre-plan with a few-minutes wait before the first move. The throughput-non-negotiable principle is satisfied in the form that actually matches the architecture (offline batch with the operator either pre-planning or planning-while-motion-builds-the-buffer), not in the streaming form (sustained motion-rate match) which we never committed to.
 
