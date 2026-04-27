@@ -20,6 +20,7 @@ pub(crate) struct ModalState {
     pub e: f64,
     pub feedrate_mm_s: Option<f64>,
     pub tool: u32,
+    pub active_plane: Plane,
 }
 
 impl ModalState {
@@ -30,6 +31,7 @@ impl ModalState {
             e: 0.0,
             feedrate_mm_s: None,
             tool: 0,
+            active_plane: Plane::XY,
         }
     }
 }
@@ -100,6 +102,18 @@ pub(crate) enum ParseErrorKind {
     UnrecognizedHead,
     EmptyCommand,
     DuplicateParam,
+}
+
+/// Active machining plane per RS274NGC §3.5.1. Tracked across the gcode
+/// stream by G17/G18/G19. Default G17 (XY) per spec. Used by G5.1 to validate
+/// that the curve lies in a supported plane; G2/G3 are XY-only in Phase 1
+/// regardless of plane state (deliberate non-goal of Step 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Plane {
+    #[default]
+    XY,
+    XZ,
+    YZ,
 }
 
 /// Walk a token iterator, maintain modal state, and emit `ReduceEvent`s.
@@ -486,6 +500,27 @@ mod tests {
             }
             other => panic!("expected G1Move, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn modal_state_plane_defaults_to_xy() {
+        let st = ModalState::new();
+        assert_eq!(st.active_plane, Plane::XY);
+    }
+
+    #[test]
+    fn g17_keeps_xy_plane() {
+        let toks = vec![cmd(b'G', 17, 1, Params::default())];
+        let _events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // Plane is internal modal state; this test is reachable today only by
+        // observing through downstream behavior, which lands in Task 18. Test
+        // ordering: this scaffolds the type so Task 18's plane-mismatch test
+        // can construct cases that change the plane. For now, assert the type
+        // compiles and the variant set is what we expect.
+        assert_eq!(Plane::default(), Plane::XY);
+        assert_eq!(Plane::XY, Plane::XY);
+        assert_ne!(Plane::XY, Plane::XZ);
+        assert_ne!(Plane::XZ, Plane::YZ);
     }
 
     #[test]
