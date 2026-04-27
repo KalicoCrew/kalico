@@ -334,7 +334,12 @@ where
                 });
             }
             Token::Command { letter: b'G', major: 92, line_no, .. } => {
-                // G92: position reset. Treated as marker break.
+                // G92: position reset. Treated as marker break. G92
+                // redefines the coordinate frame, so any pending
+                // `prev_g5_pq` deltas (expressed in the prior frame)
+                // become semantically stale — clear the chain per
+                // spec §3.5 clearing-discipline table.
+                state.prev_g5_pq = None;
                 return Some(ReduceEvent::Marker {
                     kind: MotionMarkerKind::G92,
                     line_no,
@@ -928,6 +933,203 @@ mod tests {
         match &events[2] {
             ReduceEvent::ParseError { line_no: 3, kind: ParseErrorKind::G5MissingTangent, .. } => {}
             other => panic!("[2] expected G5MissingTangent (error path must clear chain), got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_chain_implicit_tangent_from_prev_pq() {
+        // Three-G5 chain. Second and third have no I,J — should default to
+        // -(prev P, prev Q).
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+            // Second G5: I,J implicit. Should be -(P,Q) of prev = (3, -3).
+            cmd_with_minor(b'G', 5, None, 2, p(&[
+                (b'X', 20.0), (b'Y', 0.0),
+                (b'P', -2.0), (b'Q', 2.0),
+            ])),
+            // Third G5: I,J implicit. Should be -(P,Q) of second = (2, -2).
+            cmd_with_minor(b'G', 5, None, 3, p(&[
+                (b'X', 30.0), (b'Y', 0.0),
+                (b'P', 0.0), (b'Q', 0.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+
+        // Second G5: P0=(10,0,0), P1=(10+3, 0+(-3), 0)=(13, -3, 0).
+        match &events[1] {
+            ReduceEvent::Curve { geom: CurveGeom::Cubic { cps }, .. } => {
+                assert_eq!(cps[0], [10.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [13.0, -3.0, 0.0]);
+                assert_eq!(cps[2], [20.0 + (-2.0), 0.0 + 2.0, 0.0]);
+                assert_eq!(cps[3], [20.0, 0.0, 0.0]);
+            }
+            other => panic!("[1] expected Curve(Cubic), got {other:?}"),
+        }
+
+        // Third G5: P0=(20,0,0), P1=(20+2, 0+(-2), 0)=(22, -2, 0).
+        match &events[2] {
+            ReduceEvent::Curve { geom: CurveGeom::Cubic { cps }, .. } => {
+                assert_eq!(cps[0], [20.0, 0.0, 0.0]);
+                assert_eq!(cps[1], [22.0, -2.0, 0.0]);
+                assert_eq!(cps[2], [30.0 + 0.0, 0.0 + 0.0, 0.0]);
+                assert_eq!(cps[3], [30.0, 0.0, 0.0]);
+            }
+            other => panic!("[2] expected Curve(Cubic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_chain_broken_by_g1_emits_recovery() {
+        // G5 → G1 (breaks chain) → G5 with no I,J → expect ParseError.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+            cmd(b'G', 1, 2, p(&[(b'X', 11.0), (b'Y', 0.0)])),
+            cmd_with_minor(b'G', 5, None, 3, p(&[
+                (b'X', 20.0), (b'Y', 0.0),
+                (b'P', -2.0), (b'Q', 2.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        match &events[2] {
+            ReduceEvent::ParseError { line_no: 3, kind: ParseErrorKind::G5MissingTangent, .. } => {}
+            other => panic!("[2] expected G5MissingTangent ParseError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_chain_preserved_by_plane_select() {
+        // G5 → G17 (no motion, doesn't break chain) → G5 with no I,J → uses prev_g5_pq.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+            cmd(b'G', 17, 2, Params::default()),
+            cmd_with_minor(b'G', 5, None, 3, p(&[
+                (b'X', 20.0), (b'Y', 0.0),
+                (b'P', -2.0), (b'Q', 2.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // G17 emits no event, so we have 2 events total (the two G5s).
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            ReduceEvent::Curve { geom: CurveGeom::Cubic { cps }, .. } => {
+                // Modal-chain implicit I,J = -(prev P, prev Q) = (3, -3).
+                assert_eq!(cps[1], [13.0, -3.0, 0.0]);
+            }
+            other => panic!("[1] expected Curve(Cubic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn g5_chain_preserved_by_m_and_t_codes() {
+        // G5 → M104 → T0 → G5 with no I,J. M and T don't move; chain intact.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+            cmd(b'M', 104, 2, p(&[(b'S', 210.0)])),
+            cmd(b'T', 0, 3, Params::default()),
+            cmd_with_minor(b'G', 5, None, 4, p(&[
+                (b'X', 20.0), (b'Y', 0.0),
+                (b'P', -2.0), (b'Q', 2.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // M and T emit Marker events; G5s emit Curve events; total = 4.
+        assert_eq!(events.len(), 4);
+        match &events[3] {
+            ReduceEvent::Curve { geom: CurveGeom::Cubic { cps }, .. } => {
+                assert_eq!(cps[1], [13.0, -3.0, 0.0]);
+            }
+            other => panic!("[3] expected Curve(Cubic), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_chain_broken_by_g92_emits_recovery() {
+        // G5 → G92 (redefines coordinate frame; clears chain per spec §3.5)
+        // → G5 with no I,J → expect ParseError::G5MissingTangent.
+        // (G5 → G92 → G5(no IJ) → Recovery::G5MissingTangent — derived behavior.)
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+            // G92 redefines the current position / coordinate frame; (P, Q)
+            // become semantically stale because they are deltas in the prior
+            // frame. Spec §3.5 chooses to clear conservatively.
+            cmd(b'G', 92, 2, p(&[(b'X', 0.0), (b'Y', 0.0)])),
+            cmd_with_minor(b'G', 5, None, 3, p(&[
+                (b'X', 20.0), (b'Y', 0.0),
+                (b'P', -2.0), (b'Q', 2.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        // The trailing G5 must produce a ParseError, not silently link to
+        // the pre-G92 G5's (P, Q).
+        let last = events.last().expect("expected at least one event");
+        match last {
+            ReduceEvent::ParseError { line_no: 3, kind: ParseErrorKind::G5MissingTangent, .. } => {}
+            other => panic!("expected G5MissingTangent on trailing G5 (G92 must clear chain), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_single_i_only_is_malformed() {
+        // I given but J omitted — invalid.
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0),
+                (b'P', -3.0), (b'Q', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::ParseError { line_no: 1, kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("expected G5MalformedTangent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g5_missing_pq_is_malformed() {
+        // P,Q absent on G5 — invalid (P,Q are required on every G5 line).
+        let toks = vec![
+            cmd_with_minor(b'G', 5, None, 1, p(&[
+                (b'X', 10.0), (b'Y', 0.0),
+                (b'I', 3.0), (b'J', 3.0),
+                (b'F', 1500.0),
+            ])),
+        ];
+        let events = reduce(toks.into_iter().map(Ok)).collect::<Vec<_>>();
+        match &events[0] {
+            ReduceEvent::ParseError { line_no: 1, kind: ParseErrorKind::G5MalformedTangent, .. } => {}
+            other => panic!("expected G5MalformedTangent, got {other:?}"),
         }
     }
 
