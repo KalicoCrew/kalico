@@ -109,6 +109,7 @@ pub(crate) enum ParseErrorKind {
 /// that the curve lies in a supported plane; G2/G3 are XY-only in Phase 1
 /// regardless of plane state (deliberate non-goal of Step 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
 pub(crate) enum Plane {
     #[default]
     XY,
