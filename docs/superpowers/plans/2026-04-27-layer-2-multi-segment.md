@@ -158,8 +158,7 @@ touch rust/temporal/src/multi/mod.rs
 //! Layer 2 multi-segment integration. See spec
 //! `docs/superpowers/specs/2026-04-27-layer-2-multi-segment-design.md`.
 
-use crate::topp::TopProfile;
-use crate::Limits;
+use crate::{Limits, TopProfile};
 use nurbs::VectorNurbs;
 use thiserror::Error;
 
@@ -792,7 +791,7 @@ In `rust/temporal/src/multi/joining.rs`:
 //! Lookahead joining via SOCP-per-iteration (option A). Spec §2.3.
 
 use crate::multi::junction::JunctionResult;
-use crate::topp::TopProfile;
+use crate::TopProfile;
 
 /// Per-segment scratch state during joining.
 pub(crate) struct SegmentState {
@@ -1336,7 +1335,8 @@ In `rust/temporal/src/multi/parallel.rs`:
 
 use crate::multi::joining::SegmentState;
 use crate::multi::{BatchError, SegmentInput};
-use crate::topp::{schedule_segment_with_tolerance, ToleranceMode, SolveStatus};
+use crate::topp::{schedule_segment_with_tolerance, ToleranceMode};
+use crate::SolveStatus;
 use crate::GridConfig;
 use std::sync::Mutex;
 use std::thread;
@@ -1430,8 +1430,7 @@ pub(crate) fn fan_out_solves(
 mod tests {
     use super::*;
     use crate::multi::SegmentInput;
-    use crate::topp::TopProfile;
-    use crate::{GridConfig, GridScheme, Limits};
+    use crate::{GridConfig, GridScheme, Limits, TopProfile};
     use nurbs::VectorNurbs;
 
     fn straight() -> VectorNurbs<f64, 3> {
@@ -1646,10 +1645,16 @@ use temporal::{
 };
 
 fn textbook_limits() -> Limits {
-    Limits {
-        v_max: [500.0; 3], a_max: [5_000.0; 3], j_max: [100_000.0; 3],
-        a_centripetal_max: 2_500.0,
-    }
+    // Use Limits::new(...) — `Limits` is `#[non_exhaustive]` (Task 0), so
+    // struct-literal construction is forbidden across the integration-test
+    // crate boundary. Per review-2 (Codex BLOCKER + kalico-plan-reviewer
+    // advisory).
+    Limits::new(
+        [500.0; 3],
+        [5_000.0; 3],
+        [100_000.0; 3],
+        2_500.0,
+    )
 }
 
 fn adaptive() -> GridStrategy {
@@ -1820,7 +1825,7 @@ git commit -m "temporal/tests: fixture 2 — G1+G5 smooth junction (spec §5.1)"
 ```rust
 mod fixture_3_long_straight_then_corner {
     use super::*;
-    use temporal::{schedule_segment, GridConfig, GridScheme, ToleranceMode};
+    use temporal::{schedule_segment_with_tolerance, GridConfig, GridScheme, ToleranceMode};
 
     #[test]
     fn fixture_3() {
@@ -1850,13 +1855,23 @@ mod fixture_3_long_straight_then_corner {
             scheme: GridScheme::UniformArclength,
             n: 200,  // fixed grid for the comparison solve
         };
-        let solo = schedule_segment(&straight, &limits, &solo_grid, 0.0, 500.0, ToleranceMode::Auto)
-            .expect("solo solve");
+        let solo = schedule_segment_with_tolerance(
+            &straight, &limits, &solo_grid, 0.0, 500.0, ToleranceMode::Auto,
+        ).expect("solo solve");
         let t_joined = output.profiles[0].total_time;
         let t_solo = solo.total_time;
         assert!(t_joined > t_solo,
             "joined seg 0 should take longer (decel for corner): joined={} solo={}",
             t_joined, t_solo);
+
+        // §6.2 (review-2 fix): junction continuity helper applied to fixture 3
+        // too — has 2 segments + 1 junction, same as fixture 1.
+        assert_junction_continuity_for_all(&output, 1.0);
+
+        // §6.5 convergence (review-2 fix): fixture 3 should also satisfy ≤3 sweeps.
+        assert!(output.joining_sweeps <= 3,
+            "lookahead fixture should converge in ≤3 sweeps");
+        assert!(matches!(output.joining_status, temporal::JoiningStatus::Converged));
     }
 }
 ```
@@ -1939,6 +1954,10 @@ mod fixture_4_per_segment_limits_change {
 
         // §6.2 (review-1 helper): junction continuity at both interior junctions.
         assert_junction_continuity_for_all(&output, 1.0);
+
+        // §6.5 convergence (review-2 fix): fixture 4 also expects ≤3 sweeps.
+        assert!(output.joining_sweeps <= 3);
+        assert!(matches!(output.joining_status, JoiningStatus::Converged));
     }
 }
 ```
@@ -2042,12 +2061,14 @@ mod fixture_6_long_realistic_chain {
     use std::time::Instant;
 
     fn realistic_machine_limits() -> Limits {
-        Limits {
-            v_max: [1000.0; 3],
-            a_max: [65_000.0; 3],
-            j_max: [50_000_000.0; 3],
-            a_centripetal_max: 65_000.0,
-        }
+        // Limits::new because integration tests are external to temporal crate
+        // (review-2 fix).
+        Limits::new(
+            [1000.0; 3],
+            [65_000.0; 3],
+            [50_000_000.0; 3],
+            65_000.0,
+        )
     }
 
     #[test]
@@ -2140,9 +2161,8 @@ mod fixture_7_curvature_spike_intergrid_sanity {
     use super::*;
     use nurbs::eval::{vector_derivative, vector_eval, curvature_from_derivs};
     use temporal::{
-        schedule_segment_with_tolerance, GridConfig, GridScheme, Limits, ToleranceMode,
+        schedule_segment_with_tolerance, GridConfig, GridScheme, GridSample, Limits, ToleranceMode,
     };
-    use temporal::topp::GridSample;
 
     #[test]
     fn fixture_7() {
@@ -2168,9 +2188,10 @@ mod fixture_7_curvature_spike_intergrid_sanity {
         ).expect("schedule_segment_with_tolerance");
 
         // Pre-compute derivative NURBSes once for the entire resampling pass.
+        // d3 (third derivative) intentionally NOT computed here — see the
+        // per-axis-jerk discussion below + spec deferral note.
         let d1 = vector_derivative(&curve);
         let d2 = vector_derivative(&d1);
-        let d3 = vector_derivative(&d2);
 
         // §6.6.5 methodology: re-evaluate per-axis Cartesian (v, a, j) +
         // centripetal at 4× density via piecewise-cubic Hermite of (v_i, a_i)
@@ -2182,7 +2203,10 @@ mod fixture_7_curvature_spike_intergrid_sanity {
         let u_end = curve.knots()[curve.knots().len() - 1];
         for k in 0..n_resampled {
             let t = (k as f64) / (n_resampled as f64 - 1.0);
-            let (v_path, a_path, j_path) = hermite_interp(&profile.samples, t);
+            // j_path returned but not consumed in v1 fixture 7 (per-axis-jerk
+            // check intentionally deferred — see comment below). Kept in the
+            // helper return signature for future use when per-axis-jerk lands.
+            let (v_path, a_path, _j_path) = hermite_interp(&profile.samples, t);
 
             // Map normalized t ∈ [0,1] → u via uniform-in-u proxy. Approximation:
             // the solver grid is uniform-in-arclength, but for this spike-at-the-
@@ -2193,7 +2217,6 @@ mod fixture_7_curvature_spike_intergrid_sanity {
             // Geometric quantities at u.
             let r1 = vector_eval(&d1.as_view(), u);     // dC/du
             let r2 = vector_eval(&d2.as_view(), u);     // d²C/du²
-            let r3 = vector_eval(&d3.as_view(), u);     // d³C/du³
             let kappa = curvature_from_derivs(&d1, &d2, u);
             let speed_param = mag_3(r1);                 // |dC/du|
             if speed_param < 1e-12 { continue; }
@@ -2230,15 +2253,27 @@ mod fixture_7_curvature_spike_intergrid_sanity {
                 tangent[1] * a_path + normal_dir[1] * kappa * v_squared,
                 tangent[2] * a_path + normal_dir[2] * kappa * v_squared,
             ];
-            // Per-axis jerk: full derivation involves r3, but for the inter-grid
-            // sanity check we use the path-jerk projected onto tangent + the
-            // centripetal-rate-of-change. Conservative upper bound:
-            //   |j_axis| ≤ |T·j_path| + |κ·v²·j_path/v_path · 1/v_path| + ...
-            // For sentinel-quality (per spec §6.6.5 explicit "not a proof"),
-            // bound |j_axis| ≤ |j_path| + |κ · v · a_path| as a coarse upper bound.
-            let j_bound = j_path.abs() + kappa * v_path.abs() * a_path.abs();
+            // Per-axis jerk: NOT checked in v1 fixture 7 (per review-2 fix).
+            // The full Cartesian per-axis jerk in arclength parameterization is
+            //   j_axis_i = C'''_i · v³ + 3 · C''_i · v · a + C'_i · j
+            // Implementing this correctly requires (a) computing d3 = third
+            // NURBS derivative and (b) doing arclength→u inversion to map the
+            // resampled t to the right u (so that C'(s)·... terms are valid in
+            // the arclength frame). An earlier draft of this fixture used a
+            // coarse bound `|j_path| + κ·|v·a_path|` that omitted the C''' term
+            // and had the wrong factor on the middle term — Codex review-2
+            // correctly flagged it as anti-conservative (could PASS when actual
+            // jerk exceeds limit, defeating the sentinel's purpose). Rather
+            // than ship a wrong bound, we drop the per-axis-jerk check from
+            // v1's fixture 7. Centripetal + per-axis velocity + per-axis
+            // acceleration are still strong enough to detect the κ-spike
+            // under-resolution failure mode this fixture is designed to gate.
+            // **Follow-up:** add a separate fixture (or extend fixture 7) once
+            // arclength-inversion API is exposed from Layer 0 + we've audited
+            // the full per-axis-jerk derivation. Until then, the per-axis-jerk
+            // gap in this fixture is a known limitation, documented here.
 
-            // Per-axis velocity check.
+            // Per-axis velocity + acceleration checks.
             for axis in 0..3 {
                 let v_axis = tangent[axis].abs() * v_path;
                 if v_axis > limits.v_max[axis] * 1.001 {
@@ -2251,12 +2286,6 @@ mod fixture_7_curvature_spike_intergrid_sanity {
                     violations.push(format!(
                         "a_axis at u={u}, axis={axis}: {} > a_max={}",
                         a_axis[axis].abs(), limits.a_max[axis],
-                    ));
-                }
-                if j_bound > limits.j_max[axis] * 1.001 {
-                    violations.push(format!(
-                        "j_bound at u={u}, axis={axis}: {j_bound} > j_max={}",
-                        limits.j_max[axis],
                     ));
                 }
             }
@@ -2346,12 +2375,19 @@ mod fixture_7_curvature_spike_intergrid_sanity {
 }
 ```
 
-**Spec §6.6.5 conformance** (review-1 finding F5/F6 + Codex finding D, F):
-- Per-axis Cartesian velocity / acceleration / jerk: implemented above. Per-axis jerk uses a coarse upper-bound (`|j_axis| ≤ |j_path| + |κ·v·a_path|`); a fully-rigorous projection would also include the `r3`-based third-derivative term, but since the spec explicitly frames fixture 7 as a "sentinel, not a proof," the bound is acceptable for the v1-vs-v2 gate.
-- Centripetal: `v²·κ ≤ a_centripetal_max` checked directly.
-- Snap / jerk-of-jerk: NOT checked (per spec §6.6.5 item 5 — "those aren't constraints we enforce, so they shouldn't be acceptance gates here either").
-- Cubic-Hermite interpolation of (v, a) solver samples: implemented per spec §6.6.5 item 2.
-- Geometric κ resampled from NURBS via Layer 0's `curvature_from_derivs` (NOT interpolated): implemented.
+**Spec §6.6.5 conformance** (review-1 findings F5/F6 + Codex review-1 D/F + Codex review-2 jerk-bound math correction):
+
+- **Centripetal**: `v²·κ ≤ a_centripetal_max` checked directly.
+- **Per-axis Cartesian velocity**: `|t_axis · v_path| ≤ v_max,axis` checked.
+- **Per-axis Cartesian acceleration**: full path-frame decomposition `T·a_path + N·κ·v²` with per-axis projection checked.
+- **Per-axis Cartesian jerk**: **NOT checked in v1 fixture 7** (review-2 deferral). Implementing the correct upper bound requires `C'''_i · v³ + 3·C''_i · v · a + C'_i · j` in the arclength frame, which needs (a) third-derivative NURBS computation and (b) arclength→u inversion API from Layer 0. An earlier draft used a coarse bound that omitted `C'''` and had a wrong middle-term coefficient — Codex review-2 correctly flagged it as anti-conservative (could PASS while actual jerk exceeded limits). Rather than ship a wrong gate, defer per-axis-jerk validation. **The other checks (centripetal + per-axis v + per-axis a) are still strong enough to detect the κ-spike under-resolution failure mode this fixture is designed to gate** — the spike's primary signature is centripetal-cap violation, not jerk violation.
+- **Snap / jerk-of-jerk**: NOT checked (per spec §6.6.5 item 5 — not in our constraint set).
+- **Cubic-Hermite interpolation** of (v, a) solver samples: implemented per spec §6.6.5 item 2.
+- **Geometric κ resampled** from NURBS via Layer 0's `curvature_from_derivs` (NOT interpolated): implemented.
+
+**Known limitations** (acknowledged in spec §6.6.5 framing as "sentinel, not proof"):
+1. Per-axis-jerk gap noted above.
+2. Resampled `u` is computed via `u ≈ u_start + (u_end − u_start) · t` — uniform-in-`u` proxy for arclength-uniform `t`. For Fixture 7's short curvature-spike geometry this is acceptable (spike is broad enough to span multiple resampled points) but for sharper localized spikes a proper arclength→u inversion would be more robust. Defer to a v2 fixture.
 
 - [ ] **Step 2: Run**
 
@@ -2492,6 +2528,40 @@ Both reviewers ran in parallel and converged on the same critical findings. Subs
 
 ---
 
+## Post-review revisions (Plan review-2: kalico-plan-reviewer APPROVED + Codex NEEDS REVISION)
+
+Round-2 re-review of the post-review-1 plan. **Both reviewers converged on the same compile-blocker findings** — strong signal these were real:
+
+**Compile blockers found and fixed:**
+
+1. **`crate::topp::TopProfile` import wrong** — `TopProfile` is defined in `lib.rs` and re-exported at crate root, not under `topp::`. Fixed at three sites: Task 1 (`multi/mod.rs`), Task 4 (`multi/joining.rs::SegmentState`), Task 8 (`multi/parallel.rs` unit-test mod). Now use `crate::TopProfile`.
+
+2. **`crate::topp::SolveStatus` import wrong** — same root issue. Fixed in Task 7 — now `crate::SolveStatus`.
+
+3. **`temporal::topp::GridSample` import wrong** — `GridSample` is at `temporal::GridSample` (root), not under `topp::`. Fixed in Task 16.
+
+4. **Fixture 3 calling `schedule_segment` with 6 args** — review-1 added the backward-compat wrapper but missed updating fixture 3's solo-comparison call site. Now uses `schedule_segment_with_tolerance(..., ToleranceMode::Auto)`.
+
+5. **`#[non_exhaustive] Limits` external-literal construction** — Task 0 made `Limits` non-exhaustive, but the integration-test helpers `textbook_limits()` (Task 10) and `realistic_machine_limits()` (Task 15) used struct-literal construction, which is forbidden across the test-crate boundary. Both rewritten to `Limits::new(...)`.
+
+**Math correctness fix (Codex review-2 caught, kalico-plan-reviewer didn't):**
+
+6. **Fixture 7 per-axis jerk bound was anti-conservative** — original draft used `j_bound = |j_path| + κ·|v·a_path|` as the per-axis Cartesian jerk upper bound. Codex review-2 correctly observed: the full Cartesian formula in arclength parameterization is `C'''_i · v³ + 3·C''_i · v · a + C'_i · j` — my bound omitted the `C'''_i · v³` term entirely AND had factor 1 instead of 3 on the middle term. This means the bound could report PASS when actual jerk exceeded the limit — defeating the v1-vs-v2 gate's purpose. **Fixed by dropping the per-axis-jerk check from v1 fixture 7 entirely with explicit "deferred to v2" documentation.** Implementing the full formula correctly requires the third NURBS derivative + arclength→u inversion from Layer 0, neither of which are needed for the centripetal + per-axis-v + per-axis-a checks that ARE the primary signatures of κ-spike under-resolution. The fixture remains effective at its intended job; the per-axis-jerk gate becomes a follow-up fixture once the supporting Layer 0 API is exposed.
+
+**Coverage gaps fixed:**
+
+7. **Fixture 3 missing junction-continuity helper** — added.
+8. **Fixture 3 + Fixture 4 missing convergence (≤3 sweeps + Converged) assertions** — added.
+
+**Findings reviewers raised that this revision did NOT change** (with rationale):
+
+- **Dirty-on-non-success can spin to MAX_SWEEPS** — kalico-plan-reviewer ruled it acceptable (bounded by MAX_SWEEPS × dirty count, surfaces failure via `JoiningStatus::CappedAtMaxSweeps { last_dirty_count }`); Codex called it MAJOR. Both have merit. We're keeping current behavior because (a) MAX_SWEEPS = 10 caps the waste at ~10× per-segment cost on persistently-infeasible segments, (b) the failure surfaces explicitly to the caller via the `joining_status` field, (c) implementing endpoint-relaxation-on-failure is a more substantial algorithmic change appropriate for a v2 of Step 4.5 once we have real-fixture data on how often this matters in practice.
+- **Codex's "placeholder scan inaccurate" claim re Task 3 Step 1's `todo!()` stubs** — these get replaced in Step 5 of the same task; standard TDD scaffolding within a task's flow, not a cross-task placeholder. Acceptable.
+
+**Net result:** kalico-plan-reviewer round-2 returned APPROVED with these advisories; Codex returned NEEDS REVISION with these blockers. Both reviewers' load-bearing findings now addressed. Plan is ready to execute.
+
+---
+
 ## Plan complete
 
-**Saved to** `docs/superpowers/plans/2026-04-27-layer-2-multi-segment.md`. Revised after dual review-1 (kalico-plan-reviewer + Codex). Ready to commit and execute.
+**Saved to** `docs/superpowers/plans/2026-04-27-layer-2-multi-segment.md`. Revised after dual review-1 + dual review-2 (kalico-plan-reviewer + Codex, both rounds run in parallel for cross-validation). Ready to commit and execute.
