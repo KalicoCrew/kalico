@@ -84,7 +84,7 @@ Each MCU runs the same kalico runtime (Step-5 substrate), refactored into a half
 
 **MCU → host (control plane responses + async events):**
 - `kalico_load_curve_response result=%i` (Step-5)
-- `kalico_push_response result=%i accepted_through_segment_id=%u credit_epoch=%u` *(extended)*
+- `kalico_push_response result=%i accepted_segment_id=%u credit_epoch=%u` *(extended)*
 - `kalico_stream_*_response` *(NEW)*
 - `kalico_clock_sync_response mcu_clock=%llu` *(NEW)*
 - `kalico_status engine_status=%c queue_depth=%c current_segment_id=%u last_fault=%hu fault_detail=%u mcu_clock_now=%llu` *(extended; periodic ~10 Hz, primary clock-sync sample piggyback)*
@@ -397,11 +397,13 @@ In a CoreXY+Z setup, the F4 (Z) MCU has long idle stretches during a print — e
 
 **Hold-segment representation:** Add a `SegmentKind::Hold` variant to the segment payload (§4.2 v1 schema). A hold segment carries:
 - `t_start, t_end` in MCU-local cycles (same as motion segments).
-- `kinematics` field encodes "hold last position" (no curve_handle reference; CurveHandle = 0 sentinel).
-- `flags` includes `HOLD_SEGMENT` bit.
+- `kinematics` field encodes "hold last position" (no curve evaluation needed).
+- `flags` includes the `HOLD_SEGMENT` bit (bit 0 of the segment-flags byte).
+- `curve_handle` field: ignored (Round 2 fix — previous draft used `CurveHandle = 0` sentinel, which collided with the legitimate first-allocation `(slot=0, gen=0)`. Step 6 instead dispatches on `flags & HOLD_SEGMENT` *before* curve lookup; the `curve_handle` field is parsed but never resolved through `CurvePool::lookup` for hold segments).
 
-ISR semantics for `Hold`:
-- During its `[t_start, t_end]` window, ISR continues to fire at 40 kHz but emits no motor-position changes; the previous motor position is repeated each tick (or a no-op trace sample with `HOLD_SAMPLE` flag is emitted at lower cadence — TBD by trace bandwidth measurement).
+ISR semantics for `Hold` (Round 2 fix — spec now explicit about the ISR short-circuit):
+- ISR's per-tick `evaluate_segment(seg)` checks `if seg.flags & HOLD_SEGMENT { /* skip curve lookup; skip evaluation */ } else { lookup curve via §10.5 → evaluate via Layer-0 NURBS → emit motor positions }`.
+- During the hold's `[t_start, t_end]` window, ISR continues to fire at 40 kHz but emits no motor-position changes. The previous motor position is repeated each tick. A throttled `HOLD_SAMPLE` trace event may be emitted at lower cadence (e.g., once per 10 ms) for diagnostics; full per-tick trace samples during long holds would saturate the trace ring under no real benefit.
 - At `t_end`, hold retires normally; emits `kalico_credit_freed` and `SEGMENT_END` like a motion segment. Stream stays alive.
 
 **Planner responsibility:** Layer 3 (or the host's stream coordinator) emits hold segments to the F4 to fill idle stretches. Granularity TBD: 100 ms hold segments would generate 10 Hz credit traffic on the F4 — exactly the periodic-status-frame cadence. Alternative: emit a single long hold segment (multi-second) and rely on the periodic status frame for liveness — saves wire chatter but increases the host-stall blast radius (the hold can't be safely shortened mid-stream without flush+rearm).
@@ -419,16 +421,18 @@ Per brainstorm Q7 (decision (p), settled after kalico-verifier round 2): Step 6 
 | Parameter | Source | Default (pending measurement) |
 |---|---|---|
 | `MIN_TICKS_PER_SEGMENT` | `max(4, ceil(WORST_ISR_CYCLES / CYCLES_PER_TICK))`; `WORST_ISR_CYCLES` from M2 measurement, `CYCLES_PER_TICK = clock_freq / 40000` | 4 (initial estimate; Step-5 cycle bench was ~5.5–7.3 µs / 25 µs tick → ratio &lt; 1, so floor of 4 binds) |
-| `MIN_SEGMENT_DURATION_MS` | `MIN_TICKS_PER_SEGMENT × tick_period_ms` = `MIN_TICKS_PER_SEGMENT / 40` | 0.1 ms (4 ticks × 25 µs); pending M2 |
+| `MIN_SEGMENT_DURATION_MS` | `max(MIN_TICKS_PER_SEGMENT × tick_period_ms, DTCM_FLOOR_MS)` where `DTCM_FLOOR_MS = HOST_STALL_BUDGET_MS / Q_N_MAX` (see Q_N_MAX row) | 0.1 ms (4-tick physics floor; DTCM floor at default Q_N_MAX=256 and HOST_STALL=20 ms = 0.078 ms; physics binds) |
 | `HOST_STALL_BUDGET_MS` | Measured p99.99 host-side tail latency on Pi 5 + Bookworm desktop + production load (M1) | 20 ms (initial estimate) |
 | `Q_N_BUFFER_MS` | `max(HOST_STALL_BUDGET_MS, 4 × MIN_SEGMENT_DURATION_MS)` | derived |
-| `Q_N` | Smallest power of 2 ≥ `ceil(Q_N_BUFFER_MS / MIN_SEGMENT_DURATION_MS) + 1` (heapless effective-cap = N-1 rule); subject to `Q_N ≤ CURVE_POOL_MAX = 65535` from §10.1 handle layout | derived; ≤ 65535 |
-| `CURVE_POOL_N` | `Q_N` (worst case is one distinct curve per segment) | derived |
+| `Q_N_MAX` | Hard ceiling on `Q_N` from DTCM-fit + ABA-defense margin: `Q_N_MAX = 256` (Round 2 fix). DTCM analysis in §13.1 shows Q_N=256 fits with ~12 KB headroom; ABA-defense window at Q_N=256 over u16 generation = 65536 - 256 = 65280 allocations — far larger than any realistic stale-handle window. | 256 |
+| `Q_N` | `min(Q_N_MAX, smallest power of 2 ≥ ceil(Q_N_BUFFER_MS / MIN_SEGMENT_DURATION_MS) + 1)` (heapless effective-cap = N-1 rule). If Q_N would exceed Q_N_MAX, framework escalates: tighten `MIN_SEGMENT_DURATION_MS` upward via Layer-3 enforcement, OR reduce `HOST_STALL_BUDGET_MS` via host-side optimization. | derived; ≤ 256 |
+| `CURVE_POOL_N` | `Q_N` (worst case is one distinct curve per segment) | derived; ≤ 256 |
 | `MAX_BOUNDARY_ITERS` | `Q_N - 1` (effective capacity); predicate `iters > MAX_BOUNDARY_ITERS` | derived |
 | `MAX_RESIDUAL_US` | Measured clock-freq estimator p99.99 residual on production link (M3) | 100 µs (initial estimate) |
-| `TRACE_RING_DURATION_MS` | `2 × HOST_STALL_BUDGET_MS` (safety margin against overflow under stall) | derived |
-| `TRACE_RING_N` | `TRACE_RING_DURATION_MS × 40` (40 kHz sample rate) | derived |
-| `TRACE_RING_LOCATION` | DTCM (§13.1 math: 128 KB DTCM has ~40 KB headroom at default sizing). AXI SRAM is contingency requiring MPU non-cacheable config — out of scope for Step 6 unless DTCM measurements force it. | DTCM |
+| `TRACE_RING_SAFETY_MARGIN_MS` | Margin above `HOST_STALL_BUDGET_MS` to absorb burst-jitter without DTCM blowup. Default 10 ms (yields TRACE_RING_DURATION_MS = 30 ms at HOST_STALL=20 ms). | 10 ms |
+| `TRACE_RING_DURATION_MS` | `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` | derived |
+| `TRACE_RING_N` | `(TRACE_RING_DURATION_MS × 40) + 1` (40 kHz sample rate; +1 for heapless effective-cap-N-1 rule) | derived |
+| `TRACE_RING_LOCATION` | DTCM (§13.1 math: 128 KB DTCM has ~12 KB headroom at default sizing with Q_N=256). AXI SRAM is contingency requiring MPU non-cacheable config — out of scope for Step 6 unless DTCM measurements force it. | DTCM |
 
 ### 7.2 Layer-3 minimum-segment-duration enforcement
 
@@ -515,25 +519,31 @@ kalico_stream_terminal segment_id=%u
   → kalico_stream_terminal_response result=%i
 
 kalico_stream_flush
-  → kalico_stream_flush_response result=%i
+  → kalico_stream_flush_response result=%i credit_epoch=%u
 ```
 
 ### 8.4 Multi-MCU coordination
 
 Host issues `kalico_stream_open` / `kalico_stream_arm` / etc. to all participating MCUs. Each per-MCU state machine advances independently; the host's aggregate state machine progresses only when all per-MCU states reach the next gate. Any per-MCU FAULT or NACK aborts the aggregate to FAULT and triggers `kalico_stream_flush` to clean up the surviving MCUs.
 
-### 8.5 Flush atomicity and idempotency (Round 1 review fixes)
+### 8.5 Flush atomicity and idempotency (Round 1 + 2 review fixes)
 
-**Flush atomicity:** `kalico_stream_flush` atomically:
-1. Clears `stream_open: AtomicBool` (so any in-flight boundary-loop drain branch returns Drained, not Underrun).
-2. Drains the segment queue (pops all entries, no retire events emitted for flushed segments — they were never executed).
-3. Resets `last_retired_gen` to current `current_gen` for all curve-pool slots (curves stay loaded but are immediately reusable).
-4. Increments `credit_epoch` (so any pending credit events from before the flush are detectable as stale).
-5. Returns `kalico_stream_flush_response result=0 credit_epoch=<new>`.
+**Flush mechanism (Round 2 fix — actor was undefined):** Because the §11.1 split puts `queue_producer` on foreground but `queue_consumer` on the ISR, the foreground cannot drain the queue without preempting the ISR. Flush executes as:
 
-The atomicity is enforced by holding the foreground task lock during all five operations; the ISR observes `stream_open == false` first and treats the in-flight segment as the last one (retires normally on its t_end, no underrun).
+1. Foreground sets `stream_open.store(false, Release)`. Any in-flight boundary-loop drain branch returns `Drained`, not `Underrun`.
+2. Foreground waits for the ISR to retire its current segment (polled via `current_segment_id` advancing past the segment that was active at flush-issue time, OR a 100 ms timeout — whichever first). This bounds the wait to one segment duration, typically &lt;10 ms.
+3. Foreground IRQ-disables (`__disable_irq()`), transiently asserts exclusive access to `IsrState.queue_consumer`, drains the queue (pops remaining entries; no retire events emitted because they were never executed), then IRQ-re-enables (`__enable_irq()`). The IRQ-disable window is bounded by the queue length × pop cost — at Q_N=256 with each pop ~10 cycles, ≤ 2560 cycles ≈ 13 µs at 200 MHz. Acceptable jitter for foreground operation.
+4. Foreground resets `last_retired_gen.store(current_gen, Release)` for all curve-pool slots (curves stay loaded but are immediately reusable). Per §10.4: this only happens *after* step 2 confirms no in-flight ISR access remains.
+5. Foreground increments `credit_epoch` (so any pending credit events from before the flush are detectable as stale by the host).
+6. Returns `kalico_stream_flush_response result=0 credit_epoch=<new>`.
 
-**Command idempotency under msgproto retransmits:** msgproto's NAK+retransmit can deliver the same command payload twice if the host's first ACK was lost on the wire. The Step-6 protocol must handle this gracefully:
+The wait in step 2 is bounded; the IRQ-disable window in step 3 is bounded; total flush latency &lt; (one segment duration + 50 µs). Hold-off on real-time safety: a 13 µs IRQ-disable on a 25 µs tick interval is potentially missing one tick, which the engine state machine handles via the boundary-loop on the next ISR fire. Acceptable for flush; this idiom is NOT used on the segment-push hot path (§11.2 retires that idiom by making `widen_state` ISR-private with seqlock publication).
+
+**Command idempotency under msgproto retransmits (Round 2 review fix — rationale corrected):** Klipper's MCU msgproto layer dedups in transport: when a retransmitted block arrives with `msgseq != next_sequence`, the MCU NAKs and re-emits the response without re-dispatching the command (per `src/command.c` of the Klipper baseline). So the duplicate-command-delivery hazard is NOT a transport-layer concern. However, the Step-6 protocol still implements idempotency defensively to:
+- Catch host-side double-issue bugs (a host that re-sends a command without waiting for response).
+- Stay robust against future wire-bridge implementations (CDC-over-Ethernet, EtherCAT shim, etc.) that may not preserve end-to-end sequence-number guarantees.
+
+The defensive idempotency contract:
 
 - `kalico_stream_open` with the same `stream_id` twice in a row: second response carries `result=KALICO_OK, credit_epoch=<unchanged>` (idempotent).
 - `kalico_stream_arm` with the same `t_start_t0` twice: second response carries `result=KALICO_OK, armed_t_start=<unchanged>`.
@@ -601,8 +611,10 @@ Step 5's `KalicoErr` enum (numeric codes in `error.rs`, exposed via `last_error:
 The 32-bit `fault_detail` carries fault-code-specific context:
 - `BAD_CRC`: number of consecutive failures.
 - `CLOCK_SYNC_QUALITY`: encoded `(residual_us << 16 | drift_ppm)`.
-- `INVALID_CURVE_HANDLE`: encoded `(slot_idx << 24 | observed_gen << 16 | expected_gen)`.
+- `INVALID_CURVE_HANDLE`: encoded `(slot_idx << 16 | (observed_gen ^ expected_gen) & 0xFFFF)` — Round 2 fix: previous draft tried to pack two u16 gens + u8 slot into 32 bits which is impossible. Step 6 reports slot_idx (u16) plus the XOR of observed and expected generations (u16) so a non-zero value flags mismatch direction without losing information; for full-precision diagnosis the host queries via `kalico_query_status` which carries the unmasked values.
 - `SEGMENT_TOO_SHORT`: actual duration in cycles.
+- `TRACE_OVERFLOW`: number of dropped samples since last drain.
+- `STREAM_STATE_VIOLATION`: encoded `(observed_state << 8 | expected_state)` where states are u8 enum.
 - (etc; spec amendments can extend per fault code.)
 
 ---
@@ -651,7 +663,7 @@ After SEGMENT_END for handle (N, gen=1): foreground confirms no queued segment r
 
 The predicate `current_gen == last_retired_gen` is **modulo u16 wrap**: when both have advanced through 65535 → 0, the equality holds again naturally. There is no separate wrap-cooldown state machine, no special-case rule. The previous draft's "rejected for one cycle" mechanism with no defined wake-up was the deadlock; removing it removes the bug.
 
-ABA defense: a stale handle `(N, gen=g)` cannot match a freshly-allocated `(N, gen=g)` because for that to happen, the slot's `current_gen` must have wrapped through all 65535 intermediate values. At 4M allocations between wraps and a maximum host buffer of `Q_N` outstanding segments per slot (typically ≤64), a stale handle would have to survive `(65536 - Q_N)` allocations on the same slot — physically impossible because the host releases handles via the trace pipeline, not by holding them indefinitely. If a host bug causes a stale handle to leak, the worst-case ABA window is one print's duration; mitigation is the §10.4 ISR-side validation which still catches mismatches.
+ABA defense: a stale handle `(N, gen=g)` cannot match a freshly-allocated `(N, gen=g)` because for that to happen, the slot's `current_gen` must have wrapped through all 65535 intermediate values. The hard ceiling `Q_N ≤ Q_N_MAX = 256` (§7.1) bounds the maximum number of outstanding segments per slot to ≤ 256, so the **ABA window is at least 65536 - 256 = 65280 allocations on the same slot** — physically impossible to hit because the host releases handles via the trace pipeline at sub-print cadence. Round-2 review correctly flagged that without the Q_N_MAX ceiling, the ABA window collapses to 1 at Q_N=65535; the ceiling closes that hole. If a host bug causes a stale handle to leak across a wrap, the §10.5 ISR-side validation catches the mismatch before evaluation.
 
 ### 10.4 Reclaim mechanism (with TraceRing-overflow backstop)
 
@@ -661,9 +673,12 @@ Primary path:
 - Producer: `try_alloc(slot=N)` succeeds per §10.2 predicate.
 
 Backstop path (covers Round 1 review concern: TraceRing overflow can drop SEGMENT_END events under sustained host stall):
-- TraceRing is dimensioned per §13.1 to **2× HOST_STALL_BUDGET_MS** (with safety margin) so overflow is operationally rare.
-- If the ISR detects that it has had to drop a sample with `SEGMENT_END` flag, it latches `KALICO_FAULT_TRACE_OVERFLOW`. This is a hard fault — the print aborts. The host learns of the lost reclaim event via fault rather than silent slot starvation.
-- Foreground also runs a periodic reclaim sweep (~1 Hz, on the same cadence as the periodic status frame): for each pool slot N where `current_gen != last_retired_gen` and the periodic status reports `retired_through_segment_id ≥ all queued segments referencing slot N`, foreground forces `last_retired_gen.store(current_gen, Release)`. This is a soft backstop that recovers if SEGMENT_END events were dropped *and* the trace-overflow fault didn't fire (e.g., a different fault preempted, or the overflow was a near-miss). On forced reclaim, foreground emits a warning event to telemetry.
+- TraceRing is dimensioned per §13.1 to `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` (with safety margin) so overflow is operationally rare.
+- If the ISR detects that it has had to drop a sample with `SEGMENT_END` flag (or any flagged sample), it sets `SAMPLE_DROP_PENDING` in `SharedState`. Foreground latches `KALICO_FAULT_TRACE_OVERFLOW`. This is a hard fault — the print aborts. The host learns of the lost reclaim event via fault rather than silent slot starvation.
+
+**Round 2 review fix — periodic-sweep race:** the previous draft included a continuous periodic reclaim sweep that could incorrectly reclaim a freshly-allocated-but-not-yet-pushed slot (because "no queued segments referencing slot N" trivially holds in that window). Step 6 instead runs the periodic sweep **only after `KALICO_FAULT_TRACE_OVERFLOW` has fired**, as part of the post-fault recovery state. Because faults latch and the print aborts, recovery is host-orchestrated; the post-fault sweep walks each slot, observes its current `(current_gen, last_retired_gen)` state, and reports it via a dedicated diagnostic command for host inspection. No automatic resync; the host decides whether to power-cycle or attempt recovery.
+
+**Allocation race protection (Round 2 review fix):** `try_alloc(slot=N)` performs both predicate check and `current_gen` increment atomically (under foreground exclusive access since alloc is foreground-only). The §8.5 flush operation must NOT reset `last_retired_gen` while the ISR is mid-evaluation of a segment that references that slot — flush sequencing in §8.5 is updated to wait for the ISR to retire the active segment before resetting per-slot state.
 
 ### 10.5 ISR validation on every segment evaluation
 
@@ -734,11 +749,14 @@ pub struct SharedState {
 }
 ```
 
-`FgState` and `IsrState` are wrapped in `UnsafeCell` because each is mutated through a raw pointer without ever forming a `&mut RuntimeContext`. `Sync` is implemented on `RuntimeContext` (manual `unsafe impl`) with the discipline contract that `FgState` is touched only from foreground and `IsrState` only from the ISR.
+`FgState` and `IsrState` are wrapped in `UnsafeCell` because each is mutated through a raw pointer without ever forming a `&mut RuntimeContext`. `Sync` is implemented on `RuntimeContext` (manual `unsafe impl`) with the discipline contract:
+- `FgState` is touched only from the foreground command-dispatch task.
+- `IsrState` is touched only from the **TIM5 ISR** (Round 2 fix: scope made explicit). If any other interrupt source needs to read MCU state, it MUST go through `SharedState`'s atomics — never through `IsrState` directly. This contract is enforced by code-review discipline; no compiler check.
+- `SharedState` is touched concurrently from both contexts via atomics only.
 
 ### 11.2 FFI surface evolution (raw-pointer projection)
 
-The init function returns a `*mut KalicoRuntime`, but every subsequent FFI call projects directly to the relevant half via `core::ptr::addr_of_mut!` without creating a `&mut RuntimeContext`. The opaque handle never resolves to `&mut` of the parent.
+The init function returns a `*mut KalicoRuntime`, but every subsequent FFI call projects directly to the relevant half via `core::ptr::addr_of!` and `UnsafeCell::raw_get`, without creating a `&mut RuntimeContext`. The opaque handle never resolves to `&mut` of the parent.
 
 ```rust
 #[no_mangle]
@@ -848,9 +866,9 @@ fn read_widened_now(shared: &SharedState) -> u64 {
 ```
 
 Properties:
-- Wait-free for the writer (ISR), bounded-retry for the reader (foreground).
+- Wait-free for the writer (ISR).
+- For the reader (foreground), retry is theoretically unbounded but practically bounded by ISR cadence: the ISR's publish window is 4 atomic stores ≈ 4–10 cycles. Foreground reader hits a write-in-progress only if it samples within that ~10-cycle window of an ISR fire. At 40 kHz ISR cadence and 200 MHz clock, the ISR fires every 5000 cycles; the contention probability per foreground read is ~10/5000 = 0.2%. Each retry walks 3 atomic loads ≈ 6 cycles, so worst-case retry count is small (under a single-core M7, a retry CANNOT extend beyond the next ISR fire, bounding it to 1 retry per ISR period). In practice 0 retries because foreground reads happen at coarse cadence (status-frame ~10 Hz, clock-sync responder per request).
 - The seqlock is exactly Linux kernel's `seqcount_t`; Rust port via `AtomicU32` is straightforward.
-- Foreground worst case: 2-3 retries on a contention burst; in practice 0 retries because the ISR's publish window is ~3 instructions and foreground reads happen at coarse cadence (status-frame ~10 Hz, clock-sync responder per request).
 - AtomicU64 lock-free constraint sidestepped: only AtomicU32 used.
 - Loom test (§11.3) gates correctness.
 
@@ -885,13 +903,17 @@ struct ClockSyncEstimator {
 }
 
 struct Sample {
-    host_time_at_send: f64,
-    mcu_clock_at_send: u64,  // back-calculated from response: mcu_at_response - rtt/2 × freq
-    rtt_us: u32,
+    host_time: f64,           // host wall-clock at the moment paired with mcu_clock
+    mcu_clock: u64,           // MCU widened CYCCNT
+    rtt_us: u32,              // round-trip time; 0 for piggyback samples (no RTT info)
 }
 ```
 
-Linear regression: `mcu_clock = clock_freq × host_time + offset`. Update on every sample; recompute residual_max as the max abs(observed - predicted) over the current window.
+Two sample sources:
+- **Dedicated `kalico_clock_sync_request/response` exchange (§12.1)**: host has both `host_send_time` and `host_recv_time`; estimates one-way as `RTT/2`; `host_time` is back-calculated to send-instant via `host_recv_time - RTT/2`; `mcu_clock` is back-calculated to that instant via `mcu_at_response - (RTT/2) × current_freq_estimate`. `rtt_us` recorded.
+- **Status-frame piggyback (§12.3)**: foreground receives an unsolicited status frame; `host_time = host_recv_time` (one-way; cannot adjust); `mcu_clock = mcu_clock_now from frame`. `rtt_us = 0`. Constant one-way-latency offset gets absorbed into the regression's y-intercept; **frequency estimate stays unbiased**, only the absolute offset is biased — fine for §12.4's purposes which gate on residual and drift, not absolute offset.
+
+Linear regression: `mcu_clock = clock_freq × host_time + offset`. Update on every sample; recompute residual_max as the max abs(observed - predicted) over the current window. Both sample sources feed the same regression; the regression converges on the underlying frequency.
 
 ### 12.3 Sample cadence
 
@@ -923,22 +945,26 @@ Round 1 review (kalico-verifier) found: (a) the previous draft's AXI SRAM reloca
 
 ### 13.1 Sizing rule
 
-`TRACE_RING_DURATION_MS = 2 × HOST_STALL_BUDGET_MS` (overflow safety margin). Example at default 20 ms host-stall: `TRACE_RING_DURATION_MS = 40 ms`, `TRACE_RING_N = 1600` slots × 32 B = 51.2 KB. Total kalico DTCM footprint at default sizing:
+`TRACE_RING_DURATION_MS = HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` (Round 2 revision: previous "2× host stall" rule yielded 51.2 KB trace ring which over-ran DTCM at Q_N=256). At default 20 ms host-stall + 10 ms safety margin: `TRACE_RING_DURATION_MS = 30 ms`, `TRACE_RING_N = 1201` slots × 32 B ≈ 38.4 KB.
+
+DTCM budget table at default `Q_N=256` (worst case: HOST_STALL_BUDGET_MS=20 ms, MIN_SEGMENT_DURATION_MS=0.1 ms; Q_N hits Q_N_MAX ceiling):
 
 | Component | Size |
 |---|---|
-| `TraceRing` (1600 × 32 B) | 51.2 KB |
-| `Queue<Segment, Q_N=64>` (64 × ~32 B) | 2 KB |
-| `CurvePool<CURVE_POOL_N=64>` (64 × ~184 B) | 11.5 KB |
+| `TraceRing` (1201 × 32 B) | 38.4 KB |
+| `Queue<Segment, Q_N=256>` (256 × ~32 B) | 8.0 KB |
+| `CurvePool<CURVE_POOL_N=256>` (256 × ~184 B) | 47.1 KB |
 | `widen_state`, `engine`, `stream_state`, atomics | ~1 KB |
-| Stack | ~2 KB |
-| **Subtotal kalico** | **~68 KB** |
+| Stack reserve | ~2 KB |
+| **Subtotal kalico** | **~96.5 KB** |
 | Klipper baseline (.bss/.data) | ~20 KB |
-| **Total** | **~88 KB** |
+| **Total** | **~116.5 KB** |
 
-H723 DTCM = 128 KB; ~40 KB headroom remains. If implementation-time measurements push the total over 100 KB, revisit; AXI SRAM relocation is the contingency, gated on adding MPU configuration to mark the region non-cacheable (Strongly-Ordered or Device memory) so producer/consumer cache lines stay coherent without software flush.
+H723 DTCM = 128 KB; ~11.5 KB headroom remains at the worst-case operating point. At more typical operating points where measurements push `MIN_SEGMENT_DURATION_MS` to ≥ 0.5 ms (per §7.2 Layer-3 typical post-shaper range), Q_N drops to 64 and total kalico DTCM consumption falls to ~57 KB, leaving ~50 KB headroom. The framework's hard ceiling at `Q_N_MAX = 256` ensures DTCM never overruns regardless of measured `MIN_SEGMENT_DURATION_MS`.
 
-**Overflow handling:** If the ISR observes that the TraceRing write would overwrite an unread sample (i.e., consumer hasn't drained fast enough), it sets a `SAMPLE_DROP_PENDING` sticky flag in `SharedState`. Foreground observes this on its drain pass and emits `KALICO_FAULT_TRACE_OVERFLOW` (latched). This is a hard fault: the print aborts. The 2× safety margin makes overflow physically impossible under the stated host-stall budget; if it fires, it indicates either the host-stall budget was set wrong (host stalled longer than measured) or a consumer bug.
+If implementation-time measurements show DTCM pressure beyond this envelope (e.g., Klipper baseline grows past 20 KB), revisit by tightening Layer-3 enforced minimum segment duration upward (which lowers Q_N) or relocating non-ISR-hot data structures to AXI SRAM with proper MPU configuration. AXI SRAM relocation requires adding MPU configuration to mark the region non-cacheable (Strongly-Ordered or Device memory) so producer/consumer cache lines stay coherent without software flush.
+
+**Overflow handling:** If the ISR observes that the TraceRing write would overwrite an unread sample (i.e., consumer hasn't drained fast enough), it sets a `SAMPLE_DROP_PENDING` sticky flag in `SharedState`. Foreground observes this on its drain pass and emits `KALICO_FAULT_TRACE_OVERFLOW` (latched). This is a hard fault: the print aborts. The safety margin (default 10 ms above `HOST_STALL_BUDGET_MS`) provides 50% headroom over the host-stall p99.99; if overflow fires, it indicates either the host-stall budget was set wrong (host stalled longer than M1 measured) or a consumer bug.
 
 ### 13.2 Trace schema (`repr(C)`, naturally aligned)
 
@@ -1052,6 +1078,33 @@ After committing the round-2 spec, both reviewers ran in parallel against the as
 
 Net round 3: spec converged on raw-pointer FFI projection (closes the actual UB), corrected curve-pool generation predicate (deadlock-free), DTCM-only TraceRing with overflow fault, framework-flexible curve-handle layout, and explicit-seqlock widened-clock publication. Concrete numbers still fall out at Step-6 implementation time after §7.3 measurements run.
 
+### Round 2 of autonomous loop: Codex + kalico-verifier parallel re-review
+
+After applying Round 1 fixes (commit 2cc9618b), both reviewers re-ran in parallel and surfaced additional issues. Round 2 fixes:
+
+**Both reviewers converged on:**
+- **§10.4 reclaim sweep / §8.5 flush slot-reuse race.** Continuous periodic sweep can reclaim a freshly-allocated-not-yet-pushed slot (predicate "no queued segments" holds trivially). Fix: scope the sweep to post-trace-overflow recovery only; flush sequencing waits for ISR retire of in-flight segment before resetting per-slot state (§10.4 + §8.5).
+- **Wire-schema cross-section consistency.** §2.2 had `accepted_through_segment_id` while §5.4 had `accepted_segment_id`; §8.3 flush-response was `result=%i` while §8.5 specified `result=0 credit_epoch=<new>`. Fix: §2.2 and §8.3 aligned to match §5.4 and §8.5 respectively.
+
+**Codex (round 2) unique blocking findings:**
+- **ABA at very high Q_N**: spec previously allowed Q_N up to 65535, collapsing the ABA window to 1 allocation. Fix: explicit `Q_N_MAX = 256` ceiling in §7.1, gives ≥ 65280-allocation ABA defense window.
+
+**Verifier (round 2) unique blocking findings:**
+- **§13.1 DTCM math contradiction with §7.1 defaults.** At default HOST_STALL=20 ms and MIN_SEGMENT_DURATION=0.1 ms (4-tick physics floor), Q_N derivation yields 256 → total kalico+Klipper ~129 KB exceeds 128 KB DTCM by ~1 KB. Fix: TRACE_RING multiplier reduced from 2× to "HOST_STALL + 10 ms safety margin" (default 30 ms); §13.1 budget table recomputed at Q_N=256 with explicit ~12 KB DTCM headroom.
+- **§8.5 flush atomicity actor undefined.** Foreground holds `queue_producer`, ISR holds `queue_consumer`; flush "drains the queue" needs explicit sequence. Fix: IRQ-disable + transient consumer access during atomic region; wait for ISR retire of in-flight segment before resetting per-slot generation state.
+- **§8.5 retransmit-dup rationale wrong.** Klipper's MCU C source (`src/command.c`) dedups in transport: a retransmitted block with `msgseq != next_sequence` is NAK'd without re-dispatch. Fix: §8.5 rationale paragraph corrected; defensive idempotency stays as design but is now framed as "future-proofing against host bugs and non-msgproto wire-bridges" rather than "msgproto duplicate hazard."
+- **§6.5 hold-segment sentinel collision**: `CurveHandle = 0` collides with legitimate first-allocation `(slot=0, gen=0)`. Fix: ISR short-circuits on `flags & HOLD_SEGMENT` before curve lookup; `curve_handle` field is parsed but ignored for hold segments.
+- **§12.2/§12.3 Sample form mismatch**: Sample struct required RTT but piggyback path doesn't have it. Fix: explicit two-source design (dedicated request/response carries RTT; status-frame piggyback sets `rtt_us = 0` and accepts constant-offset bias which doesn't affect frequency estimation).
+
+**Verifier (round 2) nice-to-haves applied:**
+- §11.4 retry semantics — clarified "bounded by ISR cadence" with concrete cycle-count analysis (worst case 1 retry per ISR period).
+- §11.2 prose-vs-code — aligned prose to use `addr_of!` + `UnsafeCell::raw_get` (matches code).
+- §11.1 Sync impl scope — explicit "TIM5 ISR is sole IsrState writer" contract.
+- §17 summary cadence — updated stale "10 Hz warmup / 1 Hz steady" to "50 Hz warmup / 10 Hz steady" matching §12.3.
+- §9.2 fault_detail bit-packing — corrected for u16 generation widths.
+
+Net round 2: spec now has internally-consistent wire schema, executable DTCM math, explicit flush sequence, ABA-defense ceiling, and clarified retry/sample-form semantics. The architectural shape is unchanged from Round 1; Round 2 was tightening, not redesign.
+
 ---
 
 ## 17. Summary of decisions
@@ -1066,6 +1119,6 @@ Net round 3: spec converged on raw-pointer FFI projection (closes the actual UB)
 - **Fault taxonomy:** transport, clock-sync, multi-MCU, buffer, time-domain, curve-pool, runtime-numerical — enumerated.
 - **Curve-pool:** generation-counter handles `(slot, gen)`, deferred reclaim via SEGMENT_END trace flag.
 - **FFI aliasing UB:** half-split SPSC, FgState/IsrState disjoint memory.
-- **Clock sync:** Klipper-style sliding-window linear regression, 10 Hz warmup / 1 Hz steady-state, quality gate on residual + drift + sample-age.
+- **Clock sync:** Klipper-style sliding-window linear regression, 50 Hz warmup / 10 Hz steady-state via status-frame piggyback (every status frame contributes a sample; dedicated request/response is reserved for arm-time quality validation), with high-residual-mode 0.5/0.25 hysteresis, quality gate on residual + drift + sample-age.
 - **Telemetry transport:** TraceRing kept in DTCM, sized at 2× host-stall budget; overflow is a hard fault. AXI SRAM relocation is a future contingency that requires MPU non-cacheable configuration (out of scope for Step 6).
 - **Host runtime:** standalone Rust kalico-host-rt owns USB-CDC fd directly; Klippy-replacement non-motion subsystems are Step 7 MVP scope.
