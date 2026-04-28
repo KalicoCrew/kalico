@@ -3,7 +3,7 @@
 // H723-specific TIM5 init + IRQ handler. Spec §2.4 / §4.1 / §4.2 / §4.4.
 
 #include "autoconf.h"
-#include "armcm_boot.h"        // DECL_ARMCM_IRQ
+#include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
 #include "kalico_h7_timer.h"   // shared bench buffer + helper sigs

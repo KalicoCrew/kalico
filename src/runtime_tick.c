@@ -3,10 +3,11 @@
 // Klipper-side portable glue for kalico runtime. Spec §2.4 / §4.5 / §5.7.
 
 #include "autoconf.h"
-#include "board/gpio.h"  // gpio_out_setup / gpio_out_write
-#include "board/misc.h"  // timer_read_time
-#include "command.h"     // DECL_COMMAND
-#include "sched.h"       // DECL_INIT, DECL_TASK
+#include "board/gpio.h"     // gpio_out_setup / gpio_out_write
+#include "board/internal.h" // GPIO macro, NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
+#include "board/misc.h"     // timer_read_time
+#include "command.h"        // DECL_COMMAND
+#include "sched.h"          // DECL_INIT, DECL_TASK
 #include "kalico_runtime.h"
 
 #if CONFIG_KALICO_RUNTIME
