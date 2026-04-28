@@ -128,3 +128,54 @@ mod fixture_2_g1_to_g5_smooth {
         assert_junction_continuity_for_all(&output, 1.0);
     }
 }
+
+mod fixture_3_long_straight_then_corner {
+    use super::*;
+    use temporal::{schedule_segment_with_tolerance, GridConfig, GridScheme, ToleranceMode};
+
+    #[test]
+    fn fixture_3() {
+        let straight = VectorNurbs::<f64, 3>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]], None,
+        ).unwrap();
+        let corner_right = VectorNurbs::<f64, 3>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0],
+            vec![[100.0, 0.0, 0.0], [100.0, 50.0, 0.0]], None,
+        ).unwrap();
+        let limits = textbook_limits();
+        let segments = [
+            SegmentInput { curve: &straight, limits, trailing_junction_chord_tolerance_mm: 0.05 },
+            SegmentInput { curve: &corner_right, limits, trailing_junction_chord_tolerance_mm: 0.05 },
+        ];
+        let input = BatchInput { segments: &segments, grid_strategy: adaptive(), worker_threads: 3 };
+        let output = plan_batch(input).expect("should succeed");
+
+        // §6.3 lookahead: profile of seg 0 at u=1 has v < v_max (decel happening).
+        let v_end_seg0 = output.profiles[0].samples.last().unwrap().v;
+        assert!(v_end_seg0 < 499.0, "seg 0 should be braking, v_end = {v_end_seg0}");
+
+        // §6.3: total time of seg 0 in joined batch > seg 0 in isolation with v_end=v_max.
+        // Solve seg 0 alone with v_end=v_max for comparison.
+        let solo_grid = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,  // fixed grid for the comparison solve
+        };
+        let solo = schedule_segment_with_tolerance(
+            &straight, &limits, &solo_grid, 0.0, 500.0, ToleranceMode::Auto,
+        ).expect("solo solve");
+        let t_joined = output.profiles[0].total_time;
+        let t_solo = solo.total_time;
+        assert!(t_joined > t_solo,
+            "joined seg 0 should take longer (decel for corner): joined={t_joined} solo={t_solo}");
+
+        // §6.2 (review-2 fix): junction continuity helper applied to fixture 3
+        // too — has 2 segments + 1 junction, same as fixture 1.
+        assert_junction_continuity_for_all(&output, 1.0);
+
+        // §6.5 convergence (review-2 fix): fixture 3 should also satisfy ≤3 sweeps.
+        assert!(output.joining_sweeps <= 3,
+            "lookahead fixture should converge in ≤3 sweeps");
+        assert!(matches!(output.joining_status, temporal::JoiningStatus::Converged));
+    }
+}
