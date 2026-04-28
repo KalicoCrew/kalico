@@ -48,13 +48,22 @@ kalico_h7_enable_tim5(void)
 void
 kalico_h7_timer_init(void)
 {
-    // Init invariant (spec §2.4): MUST disable + clear before any path could fire.
-    TIM5->CR1 &= ~TIM_CR1_CEN;
-    TIM5->SR = 0;
+    // Disable IRQ at the NVIC first — that's safe even with TIM5 clock off,
+    // since NVIC is core-local. Touching TIM5 registers before its peripheral
+    // clock is enabled raises a bus fault on H7 (caused first-light hangs in
+    // early bring-up, manifesting as USB-CDC enumerating briefly then the MCU
+    // resetting in a loop). So clock-on must come first.
     NVIC_DisableIRQ(TIM5_IRQn);
 
-    // Enable TIM5 clock.
+    // Enable TIM5 peripheral clock. APB1L bus, gated by RCC. The RMB barrier
+    // (DSB) ensures the clock is up before subsequent register accesses.
     RCC->APB1LENR |= RCC_APB1LENR_TIM5EN;
+    __DSB();
+
+    // Now safe to touch TIM5 registers. Per spec §2.4 init invariant: clear
+    // CEN + SR.UIF before any path could fire.
+    TIM5->CR1 &= ~TIM_CR1_CEN;
+    TIM5->SR = 0;
 
     // 40 kHz tick: PSC = 0, ARR = (clock_freq / 40000) - 1.
     TIM5->PSC = 0;
