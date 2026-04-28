@@ -24,17 +24,27 @@ def main():
     p = argparse.ArgumentParser(description="kalico H723 soak test")
     p.add_argument("--port", required=True)
     p.add_argument("--baud", type=int, default=250000)
-    p.add_argument("--minutes", type=float, default=30.0,
-                   help="duration in minutes (default 30)")
-    p.add_argument("--poll-interval", type=float, default=1.0,
-                   help="poll period in seconds")
+    p.add_argument(
+        "--minutes",
+        type=float,
+        default=30.0,
+        help="duration in minutes (default 30)",
+    )
+    p.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        help="poll period in seconds",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
     end_at = time.monotonic() + args.minutes * 60.0
-    print("Soaking %s for %.1f min (poll every %.1fs) ..."
-          % (args.port, args.minutes, args.poll_interval))
+    print(
+        "Soaking %s for %.1f min (poll every %.1fs) ..."
+        % (args.port, args.minutes, args.poll_interval)
+    )
     io = KalicoHostIO(args.port, args.baud)
     poll_count = 0
     fault_count = 0
@@ -56,11 +66,15 @@ def main():
                     % (poll_count, last_err)
                 )
             if poll_count % 60 == 0:
-                print("  %d polls; last status=%s last_err=%d"
-                      % (poll_count, STATUS_NAMES.get(status, status), last_err))
+                print(
+                    "  %d polls; last status=%s last_err=%d"
+                    % (poll_count, STATUS_NAMES.get(status, status), last_err)
+                )
             time.sleep(args.poll_interval)
-        print("PASS — soaked %.1f min, %d polls, no FAULT"
-              % (args.minutes, poll_count))
+        print(
+            "PASS — soaked %.1f min, %d polls, no FAULT"
+            % (args.minutes, poll_count)
+        )
     finally:
         io.disconnect()
 

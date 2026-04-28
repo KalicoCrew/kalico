@@ -67,9 +67,7 @@ def write_stats(segments: list[Segment], out_path: Path) -> None:
     out_path.write_text(json.dumps(compute_stats(segments), indent=2))
 
 
-def plot_residual_histogram(
-    segments: list[Segment], out_path: Path
-) -> None:
+def plot_residual_histogram(segments: list[Segment], out_path: Path) -> None:
     residuals = [s.max_residual for s in segments if isinstance(s, FittedNurbs)]
     if not residuals:
         return
@@ -83,9 +81,7 @@ def plot_residual_histogram(
     plt.close(fig)
 
 
-def plot_piece_count_histogram(
-    segments: list[Segment], out_path: Path
-) -> None:
+def plot_piece_count_histogram(segments: list[Segment], out_path: Path) -> None:
     fitted = [s for s in segments if isinstance(s, FittedNurbs)]
     if not fitted:
         return
@@ -149,9 +145,7 @@ def plot_geometry_overlay(
             n_drawn += 1
         elif isinstance(seg, CornerBlendSlot):
             cps = placeholder_finalize(seg)
-            ax.plot(
-                cps[:, 0], cps[:, 1], linewidth=0.5, color="C1", alpha=0.6
-            )
+            ax.plot(cps[:, 0], cps[:, 1], linewidth=0.5, color="C1", alpha=0.6)
         elif isinstance(seg, JunctionDeviation):
             ax.plot(
                 seg.position[0],
@@ -182,9 +176,7 @@ def plot_geometry_overlay(
     plt.close(fig)
 
 
-def render_all(
-    segments: list[Segment], out_dir: Path, stem: str
-) -> None:
+def render_all(segments: list[Segment], out_dir: Path, stem: str) -> None:
     plot_residual_histogram(segments, out_dir / f"{stem}.residuals.png")
     plot_piece_count_histogram(segments, out_dir / f"{stem}.pieces.png")
     plot_classification_breakdown(segments, out_dir / f"{stem}.kinds.png")

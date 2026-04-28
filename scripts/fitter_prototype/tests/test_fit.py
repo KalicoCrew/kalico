@@ -14,7 +14,9 @@ from scripts.fitter_prototype.params import FitterParams
 
 
 def test_chord_length_parameterize():
-    pts = np.array([[0.0, 0.0], [3.0, 0.0], [3.0, 4.0]])  # lengths 3, 4 → cum 0, 3, 7
+    pts = np.array(
+        [[0.0, 0.0], [3.0, 0.0], [3.0, 4.0]]
+    )  # lengths 3, 4 → cum 0, 3, 7
     t = chord_length_parameterize(pts)
     np.testing.assert_allclose(t, [0.0, 3.0 / 7.0, 1.0])
 
@@ -43,6 +45,7 @@ def test_lspia_fits_a_straight_line_exactly():
     pts = np.array([[i * 0.5, i * 0.5] for i in range(20)])
     cps, knots, t = lspia_fit(pts, FitterParams())
     from scipy.interpolate import BSpline
+
     spline = BSpline(knots, cps, FitterParams().degree, extrapolate=False)
     eval_pts = spline(t)
     residuals = np.linalg.norm(eval_pts - pts, axis=1)
@@ -56,6 +59,7 @@ def test_lspia_fits_a_circle_within_tolerance():
     params = FitterParams(n_init_interior=6)
     cps, knots, t = lspia_fit(pts, params)
     from scipy.interpolate import BSpline
+
     spline = BSpline(knots, cps, params.degree, extrapolate=False)
     residuals = np.linalg.norm(spline(t) - pts, axis=1)
     # Cubic NURBS approximation of a circle quadrant: realistic floor ~1e-3.
@@ -69,7 +73,9 @@ def test_fit_smooth_run_returns_fitted_nurbs_within_tolerance():
     pts = np.column_stack([np.cos(angles), np.sin(angles)])
     params = FitterParams(eps_chord_mm=0.025, max_refine_iter=20)
     fit = fit_smooth_run(pts, source_vertex_range=(0, 60), params=params)
-    assert fit.max_residual <= params.eps_chord_mm * 1.05  # 5% slack on numerical eval
+    assert (
+        fit.max_residual <= params.eps_chord_mm * 1.05
+    )  # 5% slack on numerical eval
 
 
 def test_chord_error_decreases_with_refinement():

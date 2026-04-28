@@ -47,7 +47,11 @@ def test_arc_passthrough_breaks_polyline():
         Move("G1", 0.0, 10.0, 4),
     ]
     segs = reduce_tokens(tokens)
-    assert [type(s).__name__ for s in segs] == ["Polyline", "ArcSegment", "Polyline"]
+    assert [type(s).__name__ for s in segs] == [
+        "Polyline",
+        "ArcSegment",
+        "Polyline",
+    ]
     arc = segs[1]
     np.testing.assert_array_equal(arc.start, [10.0, 0.0])
     np.testing.assert_array_equal(arc.end, [10.0, 10.0])
@@ -58,8 +62,8 @@ def test_arc_passthrough_breaks_polyline():
 def test_carry_forward_missing_xy():
     tokens = [
         Move("G1", 0.0, 0.0, 1),
-        Move("G1", 10.0, None, 2),       # Y carries forward as 0
-        Move("G1", None, 10.0, 3),       # X carries forward as 10
+        Move("G1", 10.0, None, 2),  # Y carries forward as 0
+        Move("G1", None, 10.0, 3),  # X carries forward as 10
     ]
     segs = reduce_tokens(tokens)
     poly = segs[0]

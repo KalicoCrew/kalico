@@ -68,10 +68,7 @@ def _process_polyline(
             t_out = next_pt - corner
             cos = float(
                 np.dot(t_in, t_out)
-                / (
-                    np.linalg.norm(t_in) * np.linalg.norm(t_out)
-                    + 1e-12
-                )
+                / (np.linalg.norm(t_in) * np.linalg.norm(t_out) + 1e-12)
             )
             cos = max(-1.0, min(1.0, cos))
             angle = float(np.degrees(np.arccos(cos)))
@@ -120,12 +117,8 @@ def process_gcode(text: str, params: FitterParams) -> list[Segment]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "gcode", type=Path, nargs="+", help="input .gcode file(s)"
-    )
-    ap.add_argument(
-        "--out", type=Path, required=True, help="output directory"
-    )
+    ap.add_argument("gcode", type=Path, nargs="+", help="input .gcode file(s)")
+    ap.add_argument("--out", type=Path, required=True, help="output directory")
     ap.add_argument("--eps-chord-mm", type=float, default=0.025)
     ap.add_argument("--theta-smooth-deg", type=float, default=15.0)
     ap.add_argument("--theta-hard-deg", type=float, default=60.0)
@@ -142,9 +135,7 @@ def main() -> None:
         out_path = args.out / f"{path.stem}.segments.json"
         out_path.write_text(json.dumps(serialize(segments), indent=2))
         render_all(segments, args.out, path.stem)
-        print(
-            f"{path.name}: {len(segments)} segments → {out_path} (+ plots)"
-        )
+        print(f"{path.name}: {len(segments)} segments → {out_path} (+ plots)")
 
 
 if __name__ == "__main__":

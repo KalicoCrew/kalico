@@ -54,7 +54,7 @@ def multiply_fixture_quadratic_x_linear():
     a = quadratic_curve_data()
     b = linear_curve_data()
     samples_u = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
-    samples = [{"u": u, "value": u ** 3} for u in samples_u]
+    samples = [{"u": u, "value": u**3} for u in samples_u]
     return {
         "name": "multiply_quadratic_x_linear",
         "operation": "multiply",
@@ -75,10 +75,18 @@ def cox_de_boor_basis(i, p, knots, var):
     right_denom = knots[i + p + 1] - knots[i + 1]
     left = sp.Integer(0)
     if left_denom != 0:
-        left = (var - knots[i]) / left_denom * cox_de_boor_basis(i, p - 1, knots, var)
+        left = (
+            (var - knots[i])
+            / left_denom
+            * cox_de_boor_basis(i, p - 1, knots, var)
+        )
     right = sp.Integer(0)
     if right_denom != 0:
-        right = (knots[i + p + 1] - var) / right_denom * cox_de_boor_basis(i + 1, p - 1, knots, var)
+        right = (
+            (knots[i + p + 1] - var)
+            / right_denom
+            * cox_de_boor_basis(i + 1, p - 1, knots, var)
+        )
     return left + right
 
 
@@ -91,7 +99,7 @@ def evaluate_nurbs_symbolic(degree, knots_sym, cps, var, u_val):
     last = knots_sym[-1]
     # Half-open spans cause N_{i,p}(last) = 0 trivially. Approach from the left.
     if u_val == float(last):
-        eps = sp.Rational(1, 10 ** 12)
+        eps = sp.Rational(1, 10**12)
         u_eval = sp.Float(u_val) - eps
     else:
         u_eval = sp.Float(u_val)
@@ -110,8 +118,14 @@ def sanity_check_evaluator():
     u = sp.symbols("u", real=True)
     # Single-piece quadratic: knots [0,0,0,1,1,1], cps [0,0,1] → polynomial u^2.
     # Eval at u=0.5 should give 0.25.
-    knots = [sp.Rational(0), sp.Rational(0), sp.Rational(0),
-             sp.Rational(1), sp.Rational(1), sp.Rational(1)]
+    knots = [
+        sp.Rational(0),
+        sp.Rational(0),
+        sp.Rational(0),
+        sp.Rational(1),
+        sp.Rational(1),
+        sp.Rational(1),
+    ]
     cps = [0.0, 0.0, 1.0]
     val = evaluate_nurbs_symbolic(2, knots, cps, u, 0.5)
     expected = 0.25  # 0.5^2 = 0.25
@@ -147,8 +161,12 @@ def multiply_fixture_with_interior_knot():
 
     samples = []
     for u_val in [0.1, 0.3, 0.5, 0.7, 0.9]:
-        a_val = evaluate_nurbs_symbolic(a["degree"], a_knots, a["control_points"], u, u_val)
-        b_val = evaluate_nurbs_symbolic(b["degree"], b_knots, b["control_points"], u, u_val)
+        a_val = evaluate_nurbs_symbolic(
+            a["degree"], a_knots, a["control_points"], u, u_val
+        )
+        b_val = evaluate_nurbs_symbolic(
+            b["degree"], b_knots, b["control_points"], u, u_val
+        )
         samples.append({"u": u_val, "value": a_val * b_val})
     return {
         "name": "multiply_with_interior_knot",
@@ -238,7 +256,7 @@ def convolve_fixture_smooth_zv_x_linear():
 
     s, u, t = sp.symbols("s u t", real=True)
     x_sym = s  # input x(s) = s on [0, 1]
-    w_sym = sum(sp.Float(c[i]) * t ** i for i in range(n))
+    w_sym = sum(sp.Float(c[i]) * t**i for i in range(n))
     integrand_full = x_sym * w_sym.subs(t, u - s)
 
     samples = []
@@ -249,7 +267,9 @@ def convolve_fixture_smooth_zv_x_linear():
             samples.append({"u": u_val, "value": 0.0})
             continue
         integrand = integrand_full.subs(u, sp.Float(u_val))
-        y_val = float(sp.integrate(integrand, (s, sp.Float(s_lo), sp.Float(s_hi))))
+        y_val = float(
+            sp.integrate(integrand, (s, sp.Float(s_lo), sp.Float(s_hi)))
+        )
         samples.append({"u": u_val, "value": y_val})
 
     # Convert the absolute-monomial-around-t=0 coefficients to the kernel's

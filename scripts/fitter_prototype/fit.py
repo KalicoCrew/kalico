@@ -18,18 +18,18 @@ def chord_length_parameterize(points: np.ndarray) -> np.ndarray:
     return cumulative / total
 
 
-def make_clamped_knot_vector(
-    degree: int, n_interior: int
-) -> np.ndarray:
+def make_clamped_knot_vector(degree: int, n_interior: int) -> np.ndarray:
     """Clamped knot vector on [0, 1] with `n_interior` uniformly-spaced
     interior knots. Total length = 2*(degree+1) + n_interior; total control
     points = degree + 1 + n_interior."""
     interior = np.linspace(0.0, 1.0, n_interior + 2)[1:-1]
-    return np.concatenate([
-        np.zeros(degree + 1),
-        interior,
-        np.ones(degree + 1),
-    ])
+    return np.concatenate(
+        [
+            np.zeros(degree + 1),
+            interior,
+            np.ones(degree + 1),
+        ]
+    )
 
 
 def build_basis_matrix(
@@ -71,9 +71,7 @@ def lspia_fit(
         knots = knots_override
         n_control = len(knots) - params.degree - 1
     else:
-        knots = make_clamped_knot_vector(
-            params.degree, params.n_init_interior
-        )
+        knots = make_clamped_knot_vector(params.degree, params.n_init_interior)
         n_control = params.degree + 1 + params.n_init_interior
     B = build_basis_matrix(t, knots, params.degree, n_control)
 
@@ -120,9 +118,7 @@ def max_residual(
     return float(np.linalg.norm(eval_pts - points, axis=1).max())
 
 
-def _unique_interior_breakpoints(
-    knots: np.ndarray, degree: int
-) -> np.ndarray:
+def _unique_interior_breakpoints(knots: np.ndarray, degree: int) -> np.ndarray:
     """Strictly interior breakpoints (not the clamped endpoints), with
     duplicates collapsed."""
     interior = knots[degree + 1 : -(degree + 1)]
@@ -134,9 +130,7 @@ def _unique_interior_breakpoints(
 def _piece_breakpoints(knots: np.ndarray, degree: int) -> np.ndarray:
     """Full breakpoint list including clamped start and end."""
     interior = _unique_interior_breakpoints(knots, degree)
-    return np.concatenate(
-        [[knots[degree]], interior, [knots[-degree - 1]]]
-    )
+    return np.concatenate([[knots[degree]], interior, [knots[-degree - 1]]])
 
 
 def measure_chord_error_per_piece(
@@ -215,14 +209,21 @@ def fit_smooth_run(
 
     for _ in range(params.max_refine_iter):
         errors = measure_chord_error_per_piece(
-            cps, knots, params.degree, params.n_chord_samples,
+            cps,
+            knots,
+            params.degree,
+            params.n_chord_samples,
         )
         worst_err = max(errors) if errors else 0.0
         if worst_err <= params.eps_chord_mm:
             break
         worst_idx = int(np.argmax(errors))
         new_knot = _worst_piece_param(
-            cps, knots, params.degree, worst_idx, params.n_chord_samples,
+            cps,
+            knots,
+            params.degree,
+            worst_idx,
+            params.n_chord_samples,
         )
         # Insert at the worst-residual parameter location.
         knots = np.sort(np.concatenate([knots, [new_knot]]))

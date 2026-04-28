@@ -54,7 +54,7 @@ def main():
     def kernel(t):
         if abs(t) > t_sm / 2:
             return 0.0
-        return sum(c * t ** i for i, c in enumerate(coeffs))
+        return sum(c * t**i for i, c in enumerate(coeffs))
 
     samples = []
     for sample_t in [0.05, 0.1, 0.2, 0.3, 0.4, 0.45]:
@@ -63,7 +63,11 @@ def main():
         if s_lo >= s_hi:
             samples.append({"T": sample_t, "value": 0.0})
             continue
-        y, _ = si.quad(lambda s, sample_t=sample_t: x_input(s) * kernel(sample_t - s), s_lo, s_hi)
+        y, _ = si.quad(
+            lambda s, sample_t=sample_t: x_input(s) * kernel(sample_t - s),
+            s_lo,
+            s_hi,
+        )
         samples.append({"T": sample_t, "value": y})
 
     out = {

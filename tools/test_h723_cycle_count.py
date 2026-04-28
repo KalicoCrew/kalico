@@ -26,12 +26,17 @@ from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
     """Run one bench pass; return list of cycle counts and the parsed done dict."""
-    io.send("kalico_bench_run isolate=%d samples=%d" % (1 if isolate else 0, samples))
+    io.send(
+        "kalico_bench_run isolate=%d samples=%d"
+        % (1 if isolate else 0, samples)
+    )
     # Warmup is fixed at 8 inside the MCU; we expect (samples - 8) sample
     # responses, then a kalico_bench_done.
     expected = samples - 8
     if expected <= 0:
-        raise SystemExit("FAIL: --samples must exceed warmup (8); got %d" % samples)
+        raise SystemExit(
+            "FAIL: --samples must exceed warmup (8); got %d" % samples
+        )
     cycles = []
     deadline = time.monotonic() + response_timeout
     # Eagerly drain bench_sample then check for bench_done — bench_done arrives
@@ -47,16 +52,18 @@ def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
             )
         if len(cycles) < expected:
             try:
-                params = io.wait_for_response("kalico_bench_sample",
-                                              timeout=min(remaining, 1.0))
+                params = io.wait_for_response(
+                    "kalico_bench_sample", timeout=min(remaining, 1.0)
+                )
                 cycles.append(int(params["value"]))
                 continue
             except HostIoError:
                 pass
         # Try bench_done.
         try:
-            done_params = io.wait_for_response("kalico_bench_done",
-                                               timeout=min(remaining, 1.0))
+            done_params = io.wait_for_response(
+                "kalico_bench_done", timeout=min(remaining, 1.0)
+            )
             break
         except HostIoError:
             continue
@@ -66,14 +73,15 @@ def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
         # (runtime_tick.c canonicalizes the sendf format to the single shape
         # `kalico_bench_done count=%hu error=%i`).
         reason_map = {
-            -7:   "not_init",
-            -4:   "samples_below_warmup",
+            -7: "not_init",
+            -4: "samples_below_warmup",
             -100: "liveness_already_tripped",
             -101: "isr_timeout",
         }
         reason = reason_map.get(error, "<unknown>")
-        raise SystemExit("FAIL: kalico_bench_done error=%d reason=%s"
-                         % (error, reason))
+        raise SystemExit(
+            "FAIL: kalico_bench_done error=%d reason=%s" % (error, reason)
+        )
     if len(cycles) != expected:
         raise SystemExit(
             "FAIL: collected %d samples, expected %d" % (len(cycles), expected)
@@ -98,16 +106,30 @@ def main():
     p = argparse.ArgumentParser(description="kalico H723 cycle-count benchmark")
     p.add_argument("--port", required=True)
     p.add_argument("--baud", type=int, default=250000)
-    p.add_argument("--samples", type=int, default=512,
-                   help="total samples; first 8 are warmup, rest reported")
-    p.add_argument("--clock-freq", type=int, default=180_000_000,
-                   help="DWT->CYCCNT runs at the core clock (default 180 MHz)")
-    p.add_argument("--p99-budget-us", type=float, default=15.0,
-                   help="FAIL if either pass's p99 exceeds this (µs)")
-    p.add_argument("--skip-isolate", action="store_true",
-                   help="Skip Pass A (isolate=1)")
-    p.add_argument("--skip-noisy", action="store_true",
-                   help="Skip Pass B (isolate=0)")
+    p.add_argument(
+        "--samples",
+        type=int,
+        default=512,
+        help="total samples; first 8 are warmup, rest reported",
+    )
+    p.add_argument(
+        "--clock-freq",
+        type=int,
+        default=180_000_000,
+        help="DWT->CYCCNT runs at the core clock (default 180 MHz)",
+    )
+    p.add_argument(
+        "--p99-budget-us",
+        type=float,
+        default=15.0,
+        help="FAIL if either pass's p99 exceeds this (µs)",
+    )
+    p.add_argument(
+        "--skip-isolate", action="store_true", help="Skip Pass A (isolate=1)"
+    )
+    p.add_argument(
+        "--skip-noisy", action="store_true", help="Skip Pass B (isolate=0)"
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
@@ -118,15 +140,23 @@ def main():
         results = {}
         if not args.skip_isolate:
             print("Pass A (isolate=1, USB+USART masked) ...")
-            cycles, _ = run_pass(io, isolate=True, samples=args.samples,
-                                 clock_freq_hz=args.clock_freq)
+            cycles, _ = run_pass(
+                io,
+                isolate=True,
+                samples=args.samples,
+                clock_freq_hz=args.clock_freq,
+            )
             mn, p50, p99 = stats_us(cycles, args.clock_freq)
             results["A"] = (mn, p50, p99)
             print(fmt_pass("Pass A", mn, p50, p99))
         if not args.skip_noisy:
             print("Pass B (isolate=0, full IRQ load) ...")
-            cycles, _ = run_pass(io, isolate=False, samples=args.samples,
-                                 clock_freq_hz=args.clock_freq)
+            cycles, _ = run_pass(
+                io,
+                isolate=False,
+                samples=args.samples,
+                clock_freq_hz=args.clock_freq,
+            )
             mn, p50, p99 = stats_us(cycles, args.clock_freq)
             results["B"] = (mn, p50, p99)
             print(fmt_pass("Pass B", mn, p50, p99))

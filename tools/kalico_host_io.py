@@ -157,7 +157,10 @@ class KalicoHostIO:
 
         identify_data = b""
         while True:
-            cmd = "identify offset=%d count=%d" % (len(identify_data), self.IDENTIFY_CHUNK)
+            cmd = "identify offset=%d count=%d" % (
+                len(identify_data),
+                self.IDENTIFY_CHUNK,
+            )
             params = None
             for attempt in range(20):
                 self._send_raw(cmd)
@@ -165,14 +168,17 @@ class KalicoHostIO:
                 params = self._wait_packet_sync(
                     "identify_response", attempt_deadline, sync_seq=True
                 )
-                if params is not None and params.get("offset") == len(identify_data):
+                if params is not None and params.get("offset") == len(
+                    identify_data
+                ):
                     break
                 params = None  # stale or wrong offset; retry with synced seq
                 if time.monotonic() >= deadline:
                     break
             if params is None:
                 raise HostIoError(
-                    "Timed out waiting for identify_response from %s" % (self._port,)
+                    "Timed out waiting for identify_response from %s"
+                    % (self._port,)
                 )
             data = params["data"]
             if not data:
@@ -270,7 +276,8 @@ class KalicoHostIO:
             return q.get(timeout=timeout)
         except _queue.Empty:
             raise HostIoError(
-                "Timed out after %.2fs waiting for response %r" % (timeout, name)
+                "Timed out after %.2fs waiting for response %r"
+                % (timeout, name)
             )
 
     def collect_responses(self, name, count, timeout):
@@ -328,8 +335,11 @@ class KalicoHostIO:
                     # Some MCU responses (NAKs, malformed) blow up the
                     # parser. Log + skip — never let a bad packet kill
                     # the whole RX thread.
-                    logging.warning("kalico-host-io: parse error on pkt %s: %s",
-                                    pkt.hex() if hasattr(pkt, "hex") else pkt, exc)
+                    logging.warning(
+                        "kalico-host-io: parse error on pkt %s: %s",
+                        pkt.hex() if hasattr(pkt, "hex") else pkt,
+                        exc,
+                    )
                     continue
                 name = params.get("#name", "<noname>")
                 self._ensure_queue(name).put(params)

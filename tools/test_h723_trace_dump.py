@@ -24,8 +24,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 TOLERANCE_MM = 0.05
-TRACE_SAMPLE_FMT = "<QfffIB7x"  # u64 tick, 3×f32, u32 segment_id, u8 flags, 7 pad
+TRACE_SAMPLE_FMT = (
+    "<QfffIB7x"  # u64 tick, 3×f32, u32 segment_id, u8 flags, 7 pad
+)
 TRACE_SAMPLE_SIZE = 32
+
 
 # CoreXY+E kinematic transform (matches runtime/src/kinematics.rs).
 def corexy_e(x, y, _z, e):
@@ -38,6 +41,7 @@ def floats_to_blob(values):
 
 
 # --- Pure-Python NURBS evaluation (de Boor's algorithm). -------------------
+
 
 def find_span(degree, knots, u):
     """Return knot span index k such that knots[k] <= u < knots[k+1]."""
@@ -97,6 +101,7 @@ def eval_nurbs(degree, control_points, knots, weights, u):
 
 # --- Bench harness ---------------------------------------------------------
 
+
 def load_fixture(io, fixture, slot=0, timeout=3.0):
     cps = []
     for cp in fixture["control_points"]:
@@ -109,31 +114,41 @@ def load_fixture(io, fixture, slot=0, timeout=3.0):
     # n_cp / n_knots are derived MCU-side from the %*s blob byte-lengths
     # (12 bytes per cp, 4 bytes per knot/weight). The format string carries
     # only `slot`, `degree`, and the three blobs.
-    cmd = (
-        "kalico_load_curve slot=%d degree=%d "
-        "cps=%s knots=%s weights=%s"
-        % (slot, degree,
-           floats_to_blob(cps), floats_to_blob(knots), floats_to_blob(weights))
+    cmd = "kalico_load_curve slot=%d degree=%d cps=%s knots=%s weights=%s" % (
+        slot,
+        degree,
+        floats_to_blob(cps),
+        floats_to_blob(knots),
+        floats_to_blob(weights),
     )
     io.send(cmd)
     resp = io.wait_for_response("kalico_load_curve_response", timeout)
     if int(resp["result"]) != 0:
-        raise SystemExit("FAIL: kalico_load_curve_response result=%s" % resp["result"])
+        raise SystemExit(
+            "FAIL: kalico_load_curve_response result=%s" % resp["result"]
+        )
 
 
 def push_segment(io, seg_id, slot, t_start, t_end, kin=0, timeout=3.0):
     cmd = (
         "kalico_push_segment id=%d curve=%d t_start_hi=%d t_start_lo=%d "
         "t_end_hi=%d t_end_lo=%d kinematics=%d"
-        % (seg_id, slot,
-           (t_start >> 32) & 0xFFFFFFFF, t_start & 0xFFFFFFFF,
-           (t_end >> 32) & 0xFFFFFFFF, t_end & 0xFFFFFFFF,
-           kin)
+        % (
+            seg_id,
+            slot,
+            (t_start >> 32) & 0xFFFFFFFF,
+            t_start & 0xFFFFFFFF,
+            (t_end >> 32) & 0xFFFFFFFF,
+            t_end & 0xFFFFFFFF,
+            kin,
+        )
     )
     io.send(cmd)
     resp = io.wait_for_response("kalico_push_response", timeout)
     if int(resp["result"]) != 0:
-        raise SystemExit("FAIL: kalico_push_response result=%s" % resp["result"])
+        raise SystemExit(
+            "FAIL: kalico_push_response result=%s" % resp["result"]
+        )
 
 
 def drain_traces(io, duration_s, timeout=2.0):
@@ -143,7 +158,8 @@ def drain_traces(io, duration_s, timeout=2.0):
     while time.monotonic() < deadline:
         try:
             resp = io.wait_for_response(
-                "kalico_trace", timeout=min(timeout, max(0.05, deadline - time.monotonic()))
+                "kalico_trace",
+                timeout=min(timeout, max(0.05, deadline - time.monotonic())),
             )
         except HostIoError:
             continue
@@ -153,14 +169,22 @@ def drain_traces(io, duration_s, timeout=2.0):
             data = data.encode("latin-1")
         # data length should be count * TRACE_SAMPLE_SIZE
         for i in range(count):
-            chunk = data[i * TRACE_SAMPLE_SIZE:(i + 1) * TRACE_SAMPLE_SIZE]
+            chunk = data[i * TRACE_SAMPLE_SIZE : (i + 1) * TRACE_SAMPLE_SIZE]
             if len(chunk) != TRACE_SAMPLE_SIZE:
                 break
-            tick, ma, mb, me, sid, flags = struct.unpack(TRACE_SAMPLE_FMT, chunk)
-            samples.append({
-                "tick": tick, "motor_a": ma, "motor_b": mb, "motor_e": me,
-                "segment_id": sid, "flags": flags,
-            })
+            tick, ma, mb, me, sid, flags = struct.unpack(
+                TRACE_SAMPLE_FMT, chunk
+            )
+            samples.append(
+                {
+                    "tick": tick,
+                    "motor_a": ma,
+                    "motor_b": mb,
+                    "motor_e": me,
+                    "segment_id": sid,
+                    "flags": flags,
+                }
+            )
     return samples
 
 
@@ -178,8 +202,9 @@ def analytical_motor_at(fixture, t_start, t_end, tick):
     u_min = knots[degree]
     u_max = knots[len(knots) - degree - 1]
     u_curve = u_min + u * (u_max - u_min)
-    x, y, z = eval_nurbs(degree, fixture["control_points"], knots,
-                         fixture["weights"], u_curve)
+    x, y, z = eval_nurbs(
+        degree, fixture["control_points"], knots, fixture["weights"], u_curve
+    )
     # E channel is zero for these fixtures (no E in the geometric data).
     return corexy_e(x, y, z, 0.0)
 
@@ -188,15 +213,21 @@ def compare(samples, fixture, t_start, t_end):
     max_err = 0.0
     n_compared = 0
     for s in samples:
-        if s["segment_id"] != 0 and s["segment_id"] != int(fixture.get("segment_id", s["segment_id"])):
+        if s["segment_id"] != 0 and s["segment_id"] != int(
+            fixture.get("segment_id", s["segment_id"])
+        ):
             # In practice segment_id is set by push_segment caller; we don't
             # filter strictly here.
             pass
         if s["tick"] < t_start or s["tick"] > t_end:
             continue
-        ma_an, mb_an, me_an = analytical_motor_at(fixture, t_start, t_end, s["tick"])
+        ma_an, mb_an, me_an = analytical_motor_at(
+            fixture, t_start, t_end, s["tick"]
+        )
         for traced, analytical in (
-            (s["motor_a"], ma_an), (s["motor_b"], mb_an), (s["motor_e"], me_an)
+            (s["motor_a"], ma_an),
+            (s["motor_b"], mb_an),
+            (s["motor_e"], me_an),
         ):
             err = abs(traced - analytical)
             if err > max_err:
@@ -211,8 +242,10 @@ def main():
     p.add_argument("--baud", type=int, default=250000)
     p.add_argument(
         "--fixtures",
-        default=str(pathlib.Path(__file__).resolve().parent.parent /
-                    "rust/runtime/tests/fixtures/step5_segments.json"),
+        default=str(
+            pathlib.Path(__file__).resolve().parent.parent
+            / "rust/runtime/tests/fixtures/step5_segments.json"
+        ),
     )
     p.add_argument("--clock-freq", type=int, default=180_000_000)
     p.add_argument("--tolerance-mm", type=float, default=TOLERANCE_MM)
@@ -232,23 +265,33 @@ def main():
             slot = idx % 4  # runtime supports a small number of slots
             duration_us = int(fx["duration_us"])
             duration_ticks = int(duration_us * 1e-6 * args.clock_freq)
-            print("Fixture %d %r — %d µs (%d ticks)"
-                  % (idx, fx["name"], duration_us, duration_ticks))
+            print(
+                "Fixture %d %r — %d µs (%d ticks)"
+                % (idx, fx["name"], duration_us, duration_ticks)
+            )
             load_fixture(io, fx, slot=slot)
             t_start = t_cursor + int(0.005 * args.clock_freq)  # +5 ms head-room
             t_end = t_start + duration_ticks
-            push_segment(io, seg_id=idx + 1, slot=slot, t_start=t_start, t_end=t_end)
+            push_segment(
+                io, seg_id=idx + 1, slot=slot, t_start=t_start, t_end=t_end
+            )
             samples = drain_traces(io, duration_s=duration_us * 1e-6 + 0.050)
             max_err, n_compared = compare(samples, fx, t_start, t_end)
-            print("  collected %d trace samples; %d in-range; max error = %.6f mm"
-                  % (len(samples), n_compared, max_err))
+            print(
+                "  collected %d trace samples; %d in-range; max error = %.6f mm"
+                % (len(samples), n_compared, max_err)
+            )
             if n_compared == 0:
-                print("  WARN: no in-range samples — runtime may not be RUNNING")
+                print(
+                    "  WARN: no in-range samples — runtime may not be RUNNING"
+                )
                 fail_count += 1
                 continue
             if max_err >= args.tolerance_mm:
-                print("  FAIL: max_err %.6f mm >= tolerance %.6f mm"
-                      % (max_err, args.tolerance_mm))
+                print(
+                    "  FAIL: max_err %.6f mm >= tolerance %.6f mm"
+                    % (max_err, args.tolerance_mm)
+                )
                 fail_count += 1
             else:
                 print("  PASS")

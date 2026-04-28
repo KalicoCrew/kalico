@@ -33,10 +33,12 @@ def _flush_polyline(
     out: list[GeometricSegment],
 ) -> None:
     if len(accum) >= 2:
-        out.append(Polyline(
-            points=np.asarray(accum, dtype=float),
-            line_range=(line_lo or 0, line_hi or 0),
-        ))
+        out.append(
+            Polyline(
+                points=np.asarray(accum, dtype=float),
+                line_range=(line_lo or 0, line_hi or 0),
+            )
+        )
 
 
 def reduce_tokens(tokens: list[Token]) -> list[GeometricSegment]:
@@ -72,13 +74,15 @@ def reduce_tokens(tokens: list[Token]) -> list[GeometricSegment]:
             i = tok.i if tok.i is not None else 0.0
             j = tok.j if tok.j is not None else 0.0
             center = np.array([cur_x + i, cur_y + j])
-            out.append(ArcSegment(
-                start=np.array([cur_x, cur_y]),
-                end=np.array([new_x, new_y]),
-                center=center,
-                clockwise=(tok.kind == "G2"),
-                line_no=tok.line_no,
-            ))
+            out.append(
+                ArcSegment(
+                    start=np.array([cur_x, cur_y]),
+                    end=np.array([new_x, new_y]),
+                    center=center,
+                    clockwise=(tok.kind == "G2"),
+                    line_no=tok.line_no,
+                )
+            )
             cur_x, cur_y = new_x, new_y
             last_was_arc = True
         elif isinstance(tok, Marker):

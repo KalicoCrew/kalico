@@ -21,6 +21,7 @@ def linear_curve():
     c.knotvector = [0.0, 0.0, 1.0, 1.0]
     return c
 
+
 def quadratic_arc():
     """Rational quadratic 90 degree arc from (1,0) to (0,1)."""
     c = NURBS.Curve()
@@ -33,14 +34,19 @@ def quadratic_arc():
     c.knotvector = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
     return c
 
+
 def cubic_curve():
     c = BSpline.Curve()
     c.degree = 3
     c.ctrlpts = [
-        [0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [3.0, 2.0, 1.0], [4.0, 0.0, 0.0]
+        [0.0, 0.0, 0.0],
+        [1.0, 2.0, 0.0],
+        [3.0, 2.0, 1.0],
+        [4.0, 0.0, 0.0],
     ]
     c.knotvector = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
     return c
+
 
 def serialize(name, curve):
     return {
@@ -48,12 +54,15 @@ def serialize(name, curve):
         "degree": curve.degree,
         "knots": list(curve.knotvector),
         "control_points": [list(p) for p in curve.ctrlpts],
-        "weights": list(curve.weights) if hasattr(curve, "weights") and curve.weights else None,
+        "weights": list(curve.weights)
+        if hasattr(curve, "weights") and curve.weights
+        else None,
         "samples": [
             {"u": u, "point": curve.evaluate_single(u)}
             for u in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
         ],
     }
+
 
 def main():
     corpus = {
@@ -64,6 +73,7 @@ def main():
         ],
     }
     print(json.dumps(corpus, indent=2))
+
 
 if __name__ == "__main__":
     main()

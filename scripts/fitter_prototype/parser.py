@@ -41,9 +41,7 @@ def _strip_comment(line: str) -> str:
 
 
 def _parse_params(rest: str) -> dict[str, float]:
-    return {
-        m.group(1): float(m.group(2)) for m in _PARAM_RE.finditer(rest)
-    }
+    return {m.group(1): float(m.group(2)) for m in _PARAM_RE.finditer(rest)}
 
 
 def parse(text: str) -> list[Token]:
@@ -62,9 +60,7 @@ def parse(text: str) -> list[Token]:
                 # Z-only or E-only move: marker, breaks polyline
                 tokens.append(Marker(reason="Z_only", line_no=line_no))
             else:
-                tokens.append(
-                    Move(kind="G1", x=x, y=y, line_no=line_no)
-                )
+                tokens.append(Move(kind="G1", x=x, y=y, line_no=line_no))
         elif head in ("G2", "G3"):
             params = _parse_params(rest)
             tokens.append(

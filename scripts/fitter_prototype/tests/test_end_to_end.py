@@ -8,7 +8,7 @@ from scripts.fitter_prototype.run import process_gcode
 
 
 def test_end_to_end_smooth_polyline_produces_fit():
-    text = "\n".join(f"G1 X{i*0.1} Y{i*0.1}" for i in range(50))
+    text = "\n".join(f"G1 X{i * 0.1} Y{i * 0.1}" for i in range(50))
     segs = process_gcode(text, FitterParams())
     fitted = [s for s in segs if isinstance(s, FittedNurbs)]
     assert len(fitted) == 1
