@@ -2,6 +2,7 @@
 //
 // Klipper-side portable glue for kalico runtime. Spec §2.4 / §4.5 / §5.7.
 
+#include <string.h>         // memcpy
 #include "autoconf.h"
 #include "board/internal.h" // NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
 #include "board/misc.h"     // timer_read_time
@@ -144,6 +145,22 @@ DECL_TASK(runtime_drain);
 // 4 bytes = 12 bytes; each knot/weight is a single f32 (4 bytes). We
 // derive `n_cp`, `n_knots`, `n_weights` from the blob byte-lengths and
 // validate self-consistency before calling into Rust.
+// Aligned scratch buffers for the load_curve handler. Klipper's RX buffer
+// places the %*s payload at an arbitrary byte offset (typically not 4-byte
+// aligned), so passing those pointers directly to Rust yields an unaligned
+// `&[f32]` — UB on construction even though Cortex-M7 happens to allow
+// unaligned word reads at the CPU level. Empirically this hardfaults the
+// MCU and triggers a USB renumerate. Copy into 4-byte-aligned static
+// buffers first, then pass to Rust.
+//
+// Sizing matches CurvePool's compile-time bounds (8 control points, 12
+// knot vector entries, 8 weights). Static rather than stack: the load
+// handler runs in command-dispatch foreground context and stack is only
+// 512 B; ~144 B of locals would be tight.
+static float kalico_aligned_cps[8 * 3];
+static float kalico_aligned_knots[12];
+static float kalico_aligned_weights[8];
+
 void
 command_kalico_load_curve(uint32_t *args)
 {
@@ -154,11 +171,11 @@ command_kalico_load_curve(uint32_t *args)
     uint16_t slot         = args[0];
     uint8_t  degree       = args[1];
     uint16_t cps_len      = args[2];
-    const float *cps      = (const float*)command_decode_ptr(args[3]);
+    const uint8_t *cps_b  = command_decode_ptr(args[3]);
     uint16_t knots_len    = args[4];
-    const float *knots    = (const float*)command_decode_ptr(args[5]);
+    const uint8_t *knots_b = command_decode_ptr(args[5]);
     uint16_t weights_len  = args[6];
-    const float *weights  = (const float*)command_decode_ptr(args[7]);
+    const uint8_t *weights_b = command_decode_ptr(args[7]);
 
     // Producer-side validation: cps must be a multiple of 12 (xyz × f32);
     // knots and weights must be a multiple of 4 (f32); weights count must
@@ -174,10 +191,26 @@ command_kalico_load_curve(uint32_t *args)
         sendf("kalico_load_curve_response result=%i", -2);
         return;
     }
+    if (cps_len > sizeof(kalico_aligned_cps) ||
+        knots_len > sizeof(kalico_aligned_knots) ||
+        weights_len > sizeof(kalico_aligned_weights)) {
+        sendf("kalico_load_curve_response result=%i", -2);
+        return;
+    }
+
+    // Byte-copy into the aligned scratch buffers. memcpy on Cortex-M7 with
+    // -O2 lowers to a tight LDR/STR loop; the source unalignment is fine
+    // because we copy bytes, not words.
+    memcpy(kalico_aligned_cps, cps_b, cps_len);
+    memcpy(kalico_aligned_knots, knots_b, knots_len);
+    memcpy(kalico_aligned_weights, weights_b, weights_len);
 
     int32_t r = kalico_runtime_load_curve(
-        kalico_rt_handle, slot, cps, n_cp, knots, n_knots,
-        weights, n_weights, degree);
+        kalico_rt_handle, slot,
+        kalico_aligned_cps, n_cp,
+        kalico_aligned_knots, n_knots,
+        kalico_aligned_weights, n_weights,
+        degree);
     sendf("kalico_load_curve_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_load_curve,
