@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: thumbv7em-none-eabihf
+          targets: thumbv7em-none-eabi
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -79,7 +79,7 @@ jobs:
         run: >
           cargo build -p kalico-c-api --no-default-features
           --features mcu-h7,header-nurbs,header-runtime
-          --target thumbv7em-none-eabihf
+          --target thumbv7em-none-eabi
 
   rust-mcu-f4:
     needs: changes
@@ -93,7 +93,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: thumbv7em-none-eabihf
+          targets: thumbv7em-none-eabi
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -102,7 +102,7 @@ jobs:
         run: >
           cargo build -p kalico-c-api --no-default-features
           --features mcu-f4,header-nurbs,header-runtime
-          --target thumbv7em-none-eabihf
+          --target thumbv7em-none-eabi
 
   rust-cbindgen-drift:
     needs: changes
@@ -155,7 +155,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          arguments: --manifest-path rust/Cargo.toml check
+          manifest-path: rust/Cargo.toml
 
   rust-miri:
     needs: changes
@@ -189,7 +189,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: thumbv7em-none-eabihf
+          targets: thumbv7em-none-eabi
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -198,13 +198,13 @@ jobs:
         run: >
           cargo rustc -p kalico-c-api --release
           --no-default-features --features mcu-h7,header-nurbs,header-runtime
-          --target thumbv7em-none-eabihf -- --emit=llvm-ir
+          --target thumbv7em-none-eabi -- --emit=llvm-ir
       - name: Grep for panic symbols
         shell: bash
         run: |
           set -eo pipefail
           shopt -s nullglob
-          ll_files=(target/thumbv7em-none-eabihf/release/deps/*.ll)
+          ll_files=(target/thumbv7em-none-eabi/release/deps/*.ll)
           if [ ${#ll_files[@]} -eq 0 ]; then
             echo "No LLVM-IR files emitted; build step likely failed silently"
             exit 1
