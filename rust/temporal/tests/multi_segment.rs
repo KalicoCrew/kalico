@@ -356,7 +356,16 @@ mod fixture_6_long_realistic_chain {
         let output = plan_batch(input).expect("should succeed");
         let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        // §6.5: convergence in ≤3 sweeps.
+        // §6.5: convergence in ≤3 sweeps. NOTE: this fixture currently
+        // returns `StalledOnInfeasibleSegment { last_dirty_count: 1 }` — one
+        // of the 10 mixed-type segments under realistic-machine limits
+        // (a=65k, j=5e7, v=1000) doesn't reach a clean Solved status. The
+        // joining loop still stabilizes in 1 sweep (early-bail per spec
+        // §2.3 round-3 review), and junction continuity holds. Asserting
+        // `JoiningStatus::Converged` here surfaces the underlying segment
+        // infeasibility — out of Step 4.5 scope. Tracked as a follow-up in
+        // CLAUDE.md plan-changes-log; needs Step-9 SLP-tightening or
+        // geometry/limits adjustment before this assertion can tighten.
         assert!(output.joining_sweeps <= 3);
 
         // §6.2 (review-1 helper): junction continuity at every junction.
