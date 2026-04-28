@@ -12,6 +12,27 @@ no_includes = false
 
 [export]
 prefix = "kalico_nurbs_"
+# Runtime FFI symbols and types live in `src/runtime_ffi.rs` of the same
+# crate. cbindgen scans the binding crate's whole module tree regardless of
+# `parse.include`, and stable-toolchain mode prevents the cleaner cfg-gating
+# via `parse.expand` (needs nightly `-Zunpretty=expanded`). Filter at the
+# export level so this header carries only the nurbs surface.
+exclude = [
+    "KalicoRuntime",
+    "TraceSample",
+    "kalico_runtime_init",
+    "kalico_runtime_push_segment",
+    "kalico_runtime_load_curve",
+    "kalico_runtime_tick",
+    "kalico_runtime_drain_trace",
+    "kalico_runtime_status",
+    "kalico_runtime_last_error",
+    "kalico_runtime_tick_counter",
+    "kalico_h7_enable_tim5",
+    "kalico_h7_disable_tim5",
+    "kalico_h7_read_cyccnt",
+    "kalico_clock_freq",
+]
 
 [parse]
 parse_deps = true
