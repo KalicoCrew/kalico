@@ -40,11 +40,16 @@ proptest! {
     ) {
         let s = lines.join("\n");
         let line_count = s.lines().count() as u32;
-        for item in lex(&s) {
-            if let Ok(gcode::Token::Command { letter, line_no, .. }) = item {
-                prop_assert!(letter.is_ascii_uppercase());
-                prop_assert!(line_no >= 1 && line_no <= line_count);
+        let commands = lex(&s).flatten().filter_map(|t| {
+            if let gcode::Token::Command { letter, line_no, .. } = t {
+                Some((letter, line_no))
+            } else {
+                None
             }
+        });
+        for (letter, line_no) in commands {
+            prop_assert!(letter.is_ascii_uppercase());
+            prop_assert!(line_no >= 1 && line_no <= line_count);
         }
     }
 

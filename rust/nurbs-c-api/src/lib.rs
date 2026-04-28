@@ -17,7 +17,7 @@ use nurbs::{ArcLengthTableRef, ScalarNurbsRef, VectorNurbsRef};
 ///
 /// Caller must guarantee `curve` is a valid (non-null, properly initialized)
 /// pointer to a `ScalarNurbsRef<f32>` with stable lifetime through the call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kalico_nurbs_eval_f32(
     curve: *const ScalarNurbsRef<'_, f32>,
     u: f32,
@@ -28,7 +28,7 @@ pub unsafe extern "C" fn kalico_nurbs_eval_f32(
 
 /// Evaluate a vector NURBS in R^3 at parameter `u`. Writes the resulting
 /// 3-vector into `out` (caller-allocated, length 3).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kalico_nurbs_vector_eval_3_f32(
     curve: *const VectorNurbsRef<'_, f32, 3>,
     u: f32,
@@ -41,7 +41,7 @@ pub unsafe extern "C" fn kalico_nurbs_vector_eval_3_f32(
 }
 
 /// Look up a parameter `u` corresponding to arc length `s` in a precomputed table.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kalico_nurbs_param_from_arc_length_f32(
     table: *const ArcLengthTableRef<'_, f32>,
     s: f32,

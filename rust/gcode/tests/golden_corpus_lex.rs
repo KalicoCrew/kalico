@@ -62,8 +62,8 @@ fn straight_line_corpus_lexes_without_panic() {
         return;
     };
     let mut commands = 0u64;
-    for item in lex(&text) {
-        if let Ok(Token::Command { .. }) = item {
+    for token in lex(&text).flatten() {
+        if matches!(token, Token::Command { .. }) {
             commands += 1;
         }
     }
