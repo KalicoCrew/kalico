@@ -101,19 +101,29 @@ runtime_drain(void)
         sendf("kalico_trace count=%u data=%*s", n, n * 32, batch_buf);
     }
 
-    // Liveness check.
+    // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
+    // is deliberately disabled in IDLE/DRAINED (no segment pushed yet) and
+    // tick_counter cannot advance, so we'd trip a false positive within
+    // KALICO_LIVENESS_THRESHOLD_MS of boot otherwise. We refresh the
+    // last_progress_time anchor in non-RUNNING states so a state transition
+    // INTO RUNNING doesn't immediately trip on a stale anchor.
     uint32_t cur_counter = kalico_runtime_tick_counter(kalico_rt_handle);
     uint32_t cur_time = timer_read_time();
-    if (cur_counter != last_seen_tick_counter) {
-        last_seen_tick_counter = cur_counter;
+    uint8_t cur_status = kalico_runtime_status(kalico_rt_handle);
+    if (cur_status == 1 /* RUNNING */) {
+        if (cur_counter != last_seen_tick_counter) {
+            last_seen_tick_counter = cur_counter;
+            last_progress_time = cur_time;
+        } else if ((cur_time - last_progress_time) > KALICO_LIVENESS_THRESHOLD_TICKS) {
+            // ISR has stalled while RUNNING. Stop kicking the watchdog.
+            kalico_liveness_ok = 0;
+        }
+    } else {
         last_progress_time = cur_time;
-    } else if ((cur_time - last_progress_time) > KALICO_LIVENESS_THRESHOLD_TICKS) {
-        // ISR has stalled. Stop kicking the watchdog.
-        kalico_liveness_ok = 0;
+        last_seen_tick_counter = cur_counter;
     }
 
-    // Or fault → also block kicks.
-    uint8_t cur_status = kalico_runtime_status(kalico_rt_handle);
+    // FAULT → also block kicks.
     if (cur_status == 3 /* FAULT */) {
         kalico_liveness_ok = 0;
     }
