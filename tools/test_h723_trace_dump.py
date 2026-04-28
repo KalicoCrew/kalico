@@ -15,14 +15,13 @@
 import argparse
 import json
 import logging
-import math
 import pathlib
 import struct
 import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from kalico_host_io import KalicoHostIO, HostIoError  # noqa: E402
+from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 TOLERANCE_MM = 0.05
 TRACE_SAMPLE_FMT = "<QfffIB7x"  # u64 tick, 3×f32, u32 segment_id, u8 flags, 7 pad

@@ -16,7 +16,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from kalico_host_io import KalicoHostIO, HostIoError  # noqa: E402
+from kalico_host_io import KalicoHostIO  # noqa: E402
 
 # Runtime status byte values per `runtime/src/engine.rs::RuntimeStatus`:
 #   0 = IDLE, 1 = RUNNING, 2 = DRAINED, 3 = FAULT

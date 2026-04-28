@@ -21,10 +21,8 @@
 # `identify_response` packets only flow in response to `identify` queries.
 import argparse
 import logging
-import os
 import pathlib
 import queue as _queue
-import struct
 import sys
 import threading
 import time

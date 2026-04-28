@@ -15,7 +15,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from kalico_host_io import KalicoHostIO, HostIoError  # noqa: E402
+from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 STATUS_NAMES = {0: "IDLE", 1: "LOADED", 2: "RUNNING", 3: "FAULT"}
 

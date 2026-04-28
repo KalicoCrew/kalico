@@ -17,12 +17,11 @@
 import argparse
 import logging
 import pathlib
-import statistics
 import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from kalico_host_io import KalicoHostIO, HostIoError  # noqa: E402
+from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 
 def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
