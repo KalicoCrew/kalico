@@ -38,7 +38,7 @@ fn load_fixture(pool: &mut CurvePool, handle: u16, name: &str) {
 fn tick_on_empty_queue_returns_idle() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let r = engine.tick(0, &mut SegmentQueue::new(), &CurvePool::new(),
-                       &mut TraceRing::<1024>::new());
+                       &mut TraceRing::<128>::new());
     assert!(r.is_ok());
     assert_eq!(engine.status(), RuntimeStatus::Idle);
 }
@@ -48,7 +48,7 @@ fn tick_processes_one_segment_to_completion() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<1024>::new();
+    let mut trace = TraceRing::<128>::new();
 
     load_fixture(&mut pool, 0, "straight_line_x");
 
@@ -84,7 +84,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<1024>::new();
+    let mut trace = TraceRing::<128>::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
     // Two distinct fixtures back-to-back — exercise sub-tick boundary carry.
@@ -151,7 +151,7 @@ fn invalid_curve_handle_latches_fault() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let pool = CurvePool::new();   // empty — handle 0 is unloaded
-    let mut trace = TraceRing::<1024>::new();
+    let mut trace = TraceRing::<128>::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
     queue.try_push(Segment {

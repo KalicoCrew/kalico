@@ -180,10 +180,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Step 1 + 2: queue + idle check, segment activation. See spec §4.2.
-        // Idle path with §4.4 ISR-disable protocol.
-        // (Caller observes status == Idle and clears CR1.CEN.)
+        // Idle/Drained path with §4.4 ISR-disable protocol.
+        // (Producer protocol at runtime_ffi.rs:172-186 re-enables TIM5 on
+        // either Idle or Drained, so we keep the two distinct: Idle is the
+        // initial post-init state set in Engine::new; Drained is set by the
+        // boundary loop below when the queue is exhausted. We must NOT clobber
+        // Drained back to Idle on subsequent empty-queue ticks — that would
+        // mask the completed-segment state from the host's status query.)
         let Some(current) = self.current.take() else {
-            self.status.store(RuntimeStatus::Idle as u8, Ordering::Release);
             // Re-check queue with Acquire — race against producer's enqueue.
             if !queue.is_empty() {
                 self.current = queue.try_pop();

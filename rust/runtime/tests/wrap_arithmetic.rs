@@ -33,7 +33,7 @@ fn boundary_loop_works_near_u64_max() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<1024>::new();
+    let mut trace = TraceRing::<128>::new();
 
     // Construct a segment whose t_start, t_end are near u64::MAX.
     let near_max = u64::MAX - tc * 100;

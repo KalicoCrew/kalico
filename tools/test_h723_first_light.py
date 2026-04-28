@@ -18,13 +18,15 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import KalicoHostIO, HostIoError  # noqa: E402
 
-# Runtime status byte values per `runtime/src/state.rs`:
-#   0 = IDLE, 1 = LOADED, 2 = RUNNING, 3 = FAULT
+# Runtime status byte values per `runtime/src/engine.rs::RuntimeStatus`:
+#   0 = IDLE, 1 = RUNNING, 2 = DRAINED, 3 = FAULT
+# (No LOADED state — load_curve only populates the curve pool slot, doesn't
+# transition the runtime state machine.)
 STATUS_IDLE = 0
-STATUS_LOADED = 1
-STATUS_RUNNING = 2
+STATUS_RUNNING = 1
+STATUS_DRAINED = 2
 STATUS_FAULT = 3
-STATUS_NAMES = {0: "IDLE", 1: "LOADED", 2: "RUNNING", 3: "FAULT"}
+STATUS_NAMES = {0: "IDLE", 1: "RUNNING", 2: "DRAINED", 3: "FAULT"}
 
 
 def floats_to_blob(values):
@@ -107,8 +109,8 @@ def main():
         default=str(pathlib.Path(__file__).resolve().parent.parent /
                     "rust/runtime/tests/fixtures/step5_segments.json"),
     )
-    p.add_argument("--clock-freq", type=int, default=180_000_000,
-                   help="MCU CLOCK_FREQ; H723 default is 180 MHz")
+    p.add_argument("--clock-freq", type=int, default=520_000_000,
+                   help="MCU CLOCK_FREQ; H723 Klipper Kconfig default is 520 MHz")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
@@ -124,29 +126,33 @@ def main():
         status, last_err = expect_status(io, STATUS_IDLE, label="(initial)")
         print("  initial: status=%s last_err=%d" % (STATUS_NAMES[status], last_err))
 
-        # Step 2: load curve into slot 0 → status moves to LOADED.
+        # Step 2: load curve into slot 0. The curve pool is independent of
+        # the runtime state machine — load_curve populates a slot but does
+        # not transition status, so it stays at IDLE.
         fx = fixtures[0]
         duration_us = load_first_fixture(io, fx, slot=0)
         print("  loaded curve %r (%d us)" % (fx["name"], duration_us))
-        # NOTE: load alone may or may not transition LOADED depending on the
-        # state machine — re-read and accept either IDLE or LOADED.
         status, last_err = query_status(io, timeout=1.0)
-        if status not in (STATUS_IDLE, STATUS_LOADED):
+        if status != STATUS_IDLE:
             raise SystemExit(
-                "FAIL: post-load status=%s last_err=%d (expected IDLE or LOADED)"
+                "FAIL: post-load status=%s last_err=%d (expected IDLE)"
                 % (STATUS_NAMES.get(status, status), last_err)
             )
         print("  post-load: status=%s last_err=%d" % (STATUS_NAMES[status], last_err))
 
-        # Step 3: push a segment covering the full curve duration → RUNNING.
+        # Step 3: push a segment → RUNNING (mid-segment) or DRAINED (queue
+        # exhausted). With t_start=0 sent verbatim and the widened CYCCNT
+        # well past the segment duration on the first ISR fire, the engine
+        # transitions Idle→Running→Drained inside a single tick, so the
+        # host typically sees DRAINED here. Both are valid PASS states.
         push_segment(io, seg_id=1, slot=0, duration_us=duration_us,
                      clock_freq=args.clock_freq)
         # Give the MCU one drain tick (~1 ms) to advance the state machine.
         time.sleep(0.005)
         status, last_err = query_status(io, timeout=1.0)
-        if status not in (STATUS_LOADED, STATUS_RUNNING):
+        if status not in (STATUS_RUNNING, STATUS_DRAINED):
             raise SystemExit(
-                "FAIL: post-push status=%s last_err=%d (expected LOADED or RUNNING)"
+                "FAIL: post-push status=%s last_err=%d (expected RUNNING or DRAINED)"
                 % (STATUS_NAMES.get(status, status), last_err)
             )
         print("  post-push: status=%s last_err=%d" % (STATUS_NAMES[status], last_err))
