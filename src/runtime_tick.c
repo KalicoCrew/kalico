@@ -207,7 +207,10 @@ DECL_COMMAND(command_kalico_push_segment,
 void
 command_kalico_query_status(uint32_t *args)
 {
-    if (!kalico_rt_handle) { sendf("kalico_status status=255 last_err=-7"); return; }
+    if (!kalico_rt_handle) {
+        sendf("kalico_status status=%c last_err=%i", (uint8_t)255, -7);
+        return;
+    }
     uint8_t status = kalico_runtime_status(kalico_rt_handle);
     int32_t last_err = kalico_runtime_last_error(kalico_rt_handle);
     sendf("kalico_status status=%c last_err=%i", status, last_err);
