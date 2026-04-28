@@ -22,7 +22,8 @@ pub struct FixtureSet {
 }
 
 pub fn load() -> FixtureSet {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/step5_segments.json");
-    let raw = std::fs::read_to_string(path).expect("fixture file missing");
-    serde_json::from_str(&raw).expect("fixture parse failed")
+    // Embedded at compile time so the test runs under Miri, which blocks
+    // host filesystem access by default.
+    const RAW: &str = include_str!("step5_segments.json");
+    serde_json::from_str(RAW).expect("fixture parse failed")
 }
