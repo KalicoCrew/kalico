@@ -6,6 +6,10 @@
 [target.thumbv7em-none-eabi]
 rustflags = [
     "-C", "target-cpu=cortex-m7",
-    "-C", "target-feature=+strict-align",
+    # No `+strict-align`: it forces compiler_builtins to emit byte-by-byte
+    # memcpy/memset that get linked as weak symbols and override libgcc's
+    # word-aligned versions for the entire firmware, including Klipper's
+    # USB stack. Cortex-M7 permits unaligned word/halfword access by default
+    # (CCR.UNALIGN_TRP=0 at reset) so the standard fast copies are correct.
     "-C", "link-arg=--nmagic",
 ]
