@@ -1,0 +1,44 @@
+{
+  "fixtures": [
+    {
+      "name": "straight_line_x",
+      "description": "Degree-1 line from origin to (10, 0, 0).",
+      "control_points": [[0, 0, 0], [10, 0, 0]],
+      "knots": [0, 0, 1, 1],
+      "weights": [1, 1],
+      "degree": 1,
+      "duration_us": 5000,
+      "kinematics": "CoreXyAndE"
+    },
+    {
+      "name": "rational_quadratic_arc",
+      "description": "Quarter-circle arc (rational quadratic NURBS).",
+      "control_points": [[10, 0, 0], [10, 10, 0], [0, 10, 0]],
+      "knots": [0, 0, 0, 1, 1, 1],
+      "weights": [1, 0.7071068, 1],
+      "degree": 2,
+      "duration_us": 15000,
+      "kinematics": "CoreXyAndE"
+    },
+    {
+      "name": "smooth_corner_cubic",
+      "description": "Cubic Bezier corner blend.",
+      "control_points": [[0, 10, 0], [-3, 10, 0], [-10, 10, 0], [-10, 5, 0]],
+      "knots": [0, 0, 0, 0, 1, 1, 1, 1],
+      "weights": [1, 1, 1, 1],
+      "degree": 3,
+      "duration_us": 10000,
+      "kinematics": "CoreXyAndE"
+    },
+    {
+      "name": "halt_sentinel",
+      "description": "Static point — used as the soft halt at chain end.",
+      "control_points": [[-10, 5, 0], [-10, 5, 0]],
+      "knots": [0, 0, 1, 1],
+      "weights": [1, 1],
+      "degree": 1,
+      "duration_us": 2000,
+      "kinematics": "CoreXyAndE"
+    }
+  ]
+}

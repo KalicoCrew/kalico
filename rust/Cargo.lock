@@ -580,6 +580,8 @@ dependencies = [
  "heapless",
  "nurbs",
  "proptest",
+ "serde",
+ "serde_json",
  "static_assertions",
 ]
 
