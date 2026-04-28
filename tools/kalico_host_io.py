@@ -129,13 +129,29 @@ class KalicoHostIO:
     # --- identify (synchronous, pre-thread) --------------------------------
 
     def _do_identify(self, timeout):
-        """Pull the identify_data dictionary and load it into MessageParser."""
+        """Pull the identify_data dictionary and load it into MessageParser.
+
+        MCU's next_sequence may be at any value 0..15 depending on prior
+        klippy interactions (it only resets on MCU reset). We use NAK-driven
+        sync: if our send doesn't get a response within ~150 ms, we look at
+        any NAK packet the MCU sent (header-only, length 5) — its seq byte
+        IS the MCU's expected next_sequence — and align our counter to it.
+        """
         deadline = time.monotonic() + timeout
         identify_data = b""
         while True:
             cmd = "identify offset=%d count=%d" % (len(identify_data), self.IDENTIFY_CHUNK)
-            self._send_raw(cmd)
-            params = self._wait_packet_sync("identify_response", deadline)
+            params = None
+            for attempt in range(20):
+                self._send_raw(cmd)
+                attempt_deadline = min(deadline, time.monotonic() + 0.15)
+                params = self._wait_packet_sync(
+                    "identify_response", attempt_deadline, sync_seq=True
+                )
+                if params is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    break
             if params is None:
                 raise HostIoError(
                     "Timed out waiting for identify_response from %s" % (self._port,)
@@ -149,8 +165,15 @@ class KalicoHostIO:
             identify_data += data
         self._parser.process_identify(identify_data)
 
-    def _wait_packet_sync(self, name, deadline):
-        """Block (in the foreground thread) until a packet of `name` arrives."""
+    def _wait_packet_sync(self, name, deadline, sync_seq=False):
+        """Block (in the foreground thread) until a packet of `name` arrives.
+
+        If sync_seq is True, every received packet (including NAKs, which are
+        header-only length-5 packets with no msgid) updates self._seq to the
+        MCU's expected next_sequence. NAKs raise during _parser.parse because
+        they have no msgid; we extract the seq directly from the packet bytes
+        and swallow the parse error.
+        """
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -158,7 +181,20 @@ class KalicoHostIO:
             self._ser.timeout = max(0.05, min(remaining, 0.5))
             chunk = self._ser.read(256)
             for pkt in self._rxbuf.feed(chunk):
-                params = self._parser.parse(pkt)
+                if sync_seq and len(pkt) >= 2:
+                    # MCU's seq byte tells us its current next_sequence.
+                    # On match: this is the response to our last send and
+                    # our seq has already advanced past it. On mismatch
+                    # (NAK or other in-flight): align to MCU.
+                    mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
+                    with self._lock:
+                        self._seq = mcu_next
+                try:
+                    params = self._parser.parse(pkt)
+                except Exception:
+                    # NAK packets have no msgid → parse fails. We've
+                    # already extracted the seq above; drop the packet.
+                    continue
                 if params.get("#name") == name:
                     return params
                 # Pre-identify, drop everything else.
