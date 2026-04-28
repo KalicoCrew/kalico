@@ -177,8 +177,18 @@ class KalicoHostIO:
         if not cmd:
             return
         seq = self._next_seq()
-        block = self._parser.encode_msgblock(seq, cmd)
-        self._ser.write(bytes(block))
+        # Frame the message inline. msgproto.encode_msgblock has a latent
+        # bug where it `append`s the CRC as a 2-element list instead of
+        # `extend`ing it (Klipper itself avoids this path — production
+        # framing happens in chelper/serialqueue.c). Open-coding the
+        # framing here keeps us independent of that bug.
+        msglen = msgproto.MESSAGE_MIN + len(cmd)
+        seq_byte = (seq & msgproto.MESSAGE_SEQ_MASK) | msgproto.MESSAGE_DEST
+        payload = [msglen, seq_byte] + list(cmd)
+        crc = msgproto.crc16_ccitt(payload)  # returns [hi, lo]
+        payload.extend(crc)
+        payload.append(msgproto.MESSAGE_SYNC)
+        self._ser.write(bytes(payload))
         self._ser.flush()
 
     def send(self, cmd_str):
