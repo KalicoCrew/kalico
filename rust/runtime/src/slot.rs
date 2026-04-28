@@ -19,12 +19,12 @@ pub trait IsSlot {
     fn apply(&mut self, _state: &mut TickState) {}
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NoopPa;
 
 impl PaSlot for NoopPa {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NoopIs;
 
 impl IsSlot for NoopIs {}
