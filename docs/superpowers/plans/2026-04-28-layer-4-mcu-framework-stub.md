@@ -1508,7 +1508,10 @@ use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::trace::{TraceRing, TraceSample, TRACE_FLAG_SEGMENT_END};
 
-const CLOCK_FREQ: u32 = 550_000_000;
+// Default H723 Klipper Kconfig clock is 520 MHz (src/stm32/Kconfig). Keeping
+// tests parametric here so a future bump to 550 MHz (or different alternate
+// kconfig) doesn't invalidate the fixture math.
+const CLOCK_FREQ: u32 = 520_000_000;
 
 /// Build a degree-1 NURBS line from (x0,y0,e0) to (x1,y1,e1) — simplest
 /// case for boundary tests; just a straight line in (X,Y,E) space.
@@ -1524,7 +1527,7 @@ fn load_line(pool: &mut CurvePool, handle: u16,
 fn tick_on_empty_queue_returns_idle() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let r = engine.tick(0, &mut SegmentQueue::new(), &CurvePool::new(),
-                       &mut TraceRing::<128>::new());
+                       &mut TraceRing::<1024>::new());
     assert!(r.is_ok());
     assert_eq!(engine.status(), RuntimeStatus::Idle);
 }
@@ -1534,7 +1537,7 @@ fn tick_processes_one_segment_to_completion() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<128>::new();
+    let mut trace = TraceRing::<1024>::new();
 
     load_line(&mut pool, 0, [0.0, 0.0, 0.0], [10.0, 5.0, 1.0]);
 
@@ -1569,7 +1572,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<128>::new();
+    let mut trace = TraceRing::<1024>::new();
 
     let tc = one_tick_cycles(CLOCK_FREQ) as u64;
     // Segment 1: 1.5 ticks long.
@@ -1684,7 +1687,9 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
 // Engine::Default impl for tests where slot types implement Default.
 impl<P: PaSlot + Default, I: IsSlot + Default> Default for Engine<P, I> {
     fn default() -> Self {
-        Self::new(550_000_000)
+        // H723 Klipper Kconfig default is 520 MHz (src/stm32/Kconfig). Tests using
+        // Default get this; tests requiring a specific value should call ::new() directly.
+        Self::new(520_000_000)
     }
 }
 
@@ -1858,24 +1863,26 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
 /// Wrapper around `nurbs::eval::vector_eval` for f32 3D rational NURBS.
 ///
-/// Uses `nurbs::view::OwnedView`-like construction from the slab data; signature
-/// designed to be no_std-clean and panic-free per the spec lint policy.
+/// Uses `nurbs::VectorNurbsRef` (the borrowed view type) per the actual
+/// Layer-0 API at `rust/nurbs/src/vector.rs` (verified during plan review).
 fn nurbs_eval_3d(curve: &CurveView<'_>, u: f32) -> Result<[f32; 3], ()> {
-    use nurbs::view::VectorNurbsRef;
+    use nurbs::VectorNurbsRef;
 
-    // Build a view over the slab's slice data. Layer 0's nurbs::view::VectorNurbsRef
-    // takes (control_points, weights, knots, degree) borrowing.
-    let view = VectorNurbsRef::<f32, 3>::new(
-        curve.control_points,
-        curve.weights,
+    // Actual API: try_new(degree: u8, knots: &[T], control_points: &[[T; N]],
+    //                     weights: Option<&[T]>) -> Result<Self, ConstructError>.
+    // Returns owning struct over the borrowed slices.
+    let view = VectorNurbsRef::<f32, 3>::try_new(
+        curve.degree,
         curve.knots,
-        curve.degree as usize,
+        curve.control_points,
+        Some(curve.weights),
     ).map_err(|_| ())?;
+    // vector_eval returns [T; N] directly — no Result wrapper.
     Ok(nurbs::eval::vector_eval(&view, u))
 }
 ```
 
-(Implementation note: the `nurbs::view::VectorNurbsRef` constructor signature shown above is a sketch — the implementer must verify against the actual Layer-0 API. Spec §3.1 references the existing `nurbs::eval::vector_eval` with whatever the canonical view-building shape is. If the API requires different shape, adapt — but document in the PR description.)
+The API shape: `try_new(degree, knots, control_points, weights: Option<&[T]>)` — order matters; weights is `Option<&[T]>` for non-rational curves (`None` means uniform weights = 1.0). Step 5 always passes `Some(curve.weights)` since the slab always stores weights. Verified against `rust/nurbs/src/vector.rs:101` during plan review (round 1).
 
 - [ ] **Step 4: Verify the integration tests pass**
 
@@ -2270,6 +2277,16 @@ mod exports {
 mod nurbs_ffi;
 mod runtime_ffi;
 
+// Re-export FFI symbols at crate root so integration tests can call them
+// (they're declared inside `mod exports` per cfg-feature gating).
+#[cfg(feature = "header-nurbs")]
+pub use nurbs_ffi::exports::*;
+#[cfg(feature = "header-runtime")]
+pub use runtime_ffi::exports::*;
+
+// Re-export error code constants used by integration tests.
+pub use runtime::error::*;
+
 // Single panic handler for MCU; std for host.
 #[cfg(not(feature = "host"))]
 #[panic_handler]
@@ -2301,6 +2318,22 @@ duration ≥ MIN_SEGMENT_CYCLES, FAULT-not-latched. Tick entrypoint
 widens raw u32 CYCCNT to u64 before Engine::tick. Both header-nurbs
 and header-runtime cfg gates wire up; MCU and host both build clean."
 ```
+
+#### Known issue: cross-FFI `&mut RuntimeContext` aliasing
+
+Both round-1 reviewers (Codex + Verifier) flagged that the FFI shape — every entrypoint converting `*mut KalicoRuntime` to `&mut RuntimeContext` — produces overlapping `&mut`s under Rust's strict aliasing model when the ISR preempts foreground (which happens by design at 40 kHz). This is **latent UB** even though on a single-core M7 the ISR and foreground never *concurrently* execute Rust code.
+
+Step 5 accepts this latent UB as a known issue. Mitigations in place:
+- The shared objects (`SegmentQueue`, `TraceRing`) use `heapless::spsc::Queue` whose internals are atomic-correct on M7, so the *data races* on those subfields are well-defined.
+- Atomic fields (`status`, `last_error`, `tick_counter`) on `Engine` use `&self` via interior mutability — they're not affected by `&mut RuntimeContext` aliasing.
+- Plain mutable fields on `Engine` (`current`, `last_motors`, `widen_state`) are touched only by the ISR — the foreground never reads them.
+
+**Step 6 hardening track (deferred):** when the live producer task lands at Step 6, refactor to one of:
+- (a) `heapless::spsc::Producer` / `Consumer` half-split with each half stored in a separate static cell (proper SPSC ownership at the type level).
+- (b) `cortex_m::interrupt::free` around foreground accesses (heavyweight but trivially correct).
+- (c) Refactor FFI to never materialize `&mut RuntimeContext`; each entrypoint accesses only the disjoint subfields it needs via raw-pointer arithmetic.
+
+Miri (Phase 7 CI) will flag the aliasing if it tries to model concurrent ISR/FG execution; currently it doesn't. Spec §6.8 already lists "real concurrent-producer hardware test" as deferred to Step 6 — this aliasing gap is the same Step-6 concern.
 
 ### Task 14: Init-once invariant tests
 
@@ -2367,44 +2400,72 @@ include_guard = "KALICO_RUNTIME_H"
 pragma_once = true
 no_includes = false
 
-[export]
-prefix = "kalico_runtime_"
-
 [parse]
 parse_deps = true
 include = ["runtime", "kalico-c-api"]
+expand = ["kalico-c-api"]
 ```
 
-- [ ] **Step 2: Update `gen_headers.rs` to emit both headers**
+- [ ] **Step 2: Update `gen_headers.rs` to emit both headers via cfg-gating**
+
+Per spec §3.2: cbindgen has no prefix-filter mode; we run cbindgen *twice* against the same crate with different `cfg` flags via `cargo run --features` to gate which FFI modules expand. Each invocation produces one header:
 
 ```rust
 //! Generate kalico_nurbs.h and kalico_runtime.h via cbindgen.
+//!
+//! Run twice with different feature gates so each cbindgen invocation only
+//! sees the FFI module for the header it's emitting:
+//!   cargo run -p kalico-c-api --bin gen-headers --features header-nurbs
+//!   cargo run -p kalico-c-api --bin gen-headers --features header-runtime
 
 fn main() {
     let crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-
-    // kalico_nurbs.h
-    let nurbs_config = cbindgen::Config::from_file(
-        format!("{crate_dir}/cbindgen.toml")).unwrap();
-    cbindgen::Builder::new()
-        .with_crate(&crate_dir)
-        .with_config(nurbs_config)
-        .generate()
-        .expect("kalico_nurbs.h generation failed")
-        .write_to_file(format!("{crate_dir}/include/kalico_nurbs.h"));
-
-    // kalico_runtime.h
-    let runtime_config = cbindgen::Config::from_file(
-        format!("{crate_dir}/cbindgen-runtime.toml")).unwrap();
-    cbindgen::Builder::new()
-        .with_crate(&crate_dir)
-        .with_config(runtime_config)
-        .generate()
-        .expect("kalico_runtime.h generation failed")
-        .write_to_file(format!("{crate_dir}/include/kalico_runtime.h"));
-
-    println!("Generated kalico_nurbs.h + kalico_runtime.h");
+    let want_nurbs = cfg!(feature = "header-nurbs");
+    let want_runtime = cfg!(feature = "header-runtime");
+    if want_nurbs && want_runtime {
+        eprintln!("error: gen-headers must be invoked with EXACTLY ONE of \
+                  --features header-nurbs / --features header-runtime so \
+                  cbindgen sees only the symbols for that header.");
+        std::process::exit(1);
+    }
+    if want_nurbs {
+        let cfg = cbindgen::Config::from_file(
+            format!("{crate_dir}/cbindgen.toml")).unwrap();
+        cbindgen::Builder::new()
+            .with_crate(&crate_dir)
+            .with_config(cfg)
+            .generate()
+            .expect("kalico_nurbs.h generation failed")
+            .write_to_file(format!("{crate_dir}/include/kalico_nurbs.h"));
+        println!("Generated kalico_nurbs.h");
+        return;
+    }
+    if want_runtime {
+        let cfg = cbindgen::Config::from_file(
+            format!("{crate_dir}/cbindgen-runtime.toml")).unwrap();
+        cbindgen::Builder::new()
+            .with_crate(&crate_dir)
+            .with_config(cfg)
+            .generate()
+            .expect("kalico_runtime.h generation failed")
+            .write_to_file(format!("{crate_dir}/include/kalico_runtime.h"));
+        println!("Generated kalico_runtime.h");
+        return;
+    }
+    eprintln!("error: invoke with --features header-nurbs OR --features header-runtime");
+    std::process::exit(1);
 }
+```
+
+A small wrapper script (`tools/regen_headers.sh`) calls both:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd rust
+cargo run -p kalico-c-api --bin gen-headers --features header-nurbs
+cargo run -p kalico-c-api --bin gen-headers --features header-runtime
+echo "Both headers regenerated."
 ```
 
 - [ ] **Step 3: Run gen-headers and inspect outputs**
@@ -2518,7 +2579,129 @@ all kalico_runtime_* symbols against libkalico_c_api.a."
 
 ## Phase 5: Host tests
 
-### Task 17: Engine state machine — additional unit coverage
+### Task 17a: Shared `step5_segments.json` fixture
+
+**Files:**
+- Create: `rust/runtime/tests/fixtures/step5_segments.json`
+- Create: `rust/runtime/tests/fixtures/mod.rs` (parser used by Surface A unit tests)
+
+**Why:** Spec §6.7 — single source of truth for "the 4 hand-built test segments" used by Surface A unit tests, the Surface B C smoke build (where applicable), and the Surface C host Python plot validation. Without this, surfaces could each validate a different curve interpretation and miss bugs at integration time.
+
+- [ ] **Step 1: Define the fixture JSON**
+
+```json
+{
+  "fixtures": [
+    {
+      "name": "straight_line_x",
+      "description": "Degree-1 line from origin to (10, 0, 0).",
+      "control_points": [[0, 0, 0], [10, 0, 0]],
+      "knots": [0, 0, 1, 1],
+      "weights": [1, 1],
+      "degree": 1,
+      "duration_us": 5000,
+      "kinematics": "CoreXyAndE"
+    },
+    {
+      "name": "rational_quadratic_arc",
+      "description": "Quarter-circle arc (rational quadratic NURBS).",
+      "control_points": [[10, 0, 0], [10, 10, 0], [0, 10, 0]],
+      "knots": [0, 0, 0, 1, 1, 1],
+      "weights": [1, 0.7071068, 1],
+      "degree": 2,
+      "duration_us": 15000,
+      "kinematics": "CoreXyAndE"
+    },
+    {
+      "name": "smooth_corner_cubic",
+      "description": "Cubic Bezier corner blend.",
+      "control_points": [[0, 10, 0], [-3, 10, 0], [-10, 10, 0], [-10, 5, 0]],
+      "knots": [0, 0, 0, 0, 1, 1, 1, 1],
+      "weights": [1, 1, 1, 1],
+      "degree": 3,
+      "duration_us": 10000,
+      "kinematics": "CoreXyAndE"
+    },
+    {
+      "name": "halt_sentinel",
+      "description": "Static point — used as the soft halt at chain end.",
+      "control_points": [[-10, 5, 0], [-10, 5, 0]],
+      "knots": [0, 0, 1, 1],
+      "weights": [1, 1],
+      "degree": 1,
+      "duration_us": 2000,
+      "kinematics": "CoreXyAndE"
+    }
+  ]
+}
+```
+
+- [ ] **Step 2: Write the Rust parser**
+
+```rust
+// rust/runtime/tests/fixtures/mod.rs
+//! Shared test fixtures. Used by Surface A integration tests + Surface B
+//! FFI tests + Surface C Python validation. Spec §6.7.
+
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Fixture {
+    pub name: String,
+    pub description: String,
+    pub control_points: Vec<[f32; 3]>,
+    pub knots: Vec<f32>,
+    pub weights: Vec<f32>,
+    pub degree: u8,
+    pub duration_us: u32,
+    pub kinematics: String,  // "CoreXyAndE" or "CartesianXyzAndE"
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FixtureSet {
+    pub fixtures: Vec<Fixture>,
+}
+
+pub fn load() -> FixtureSet {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/step5_segments.json");
+    let raw = std::fs::read_to_string(path).expect("fixture file missing");
+    serde_json::from_str(&raw).expect("fixture parse failed")
+}
+```
+
+(Add `serde = { version = "1", features = ["derive"] }` and `serde_json = "1"` to `runtime/Cargo.toml`'s `[dev-dependencies]`.)
+
+- [ ] **Step 3: Update Task 11's integration test to use shared fixtures**
+
+Replace ad-hoc `load_line` calls in `engine_tick.rs` with fixture-driven setup:
+
+```rust
+mod fixtures;
+
+#[test]
+fn straight_line_fixture_traces_correctly() {
+    let set = fixtures::load();
+    let line = set.fixtures.iter().find(|f| f.name == "straight_line_x").unwrap();
+    // ... drive Engine::tick with this fixture ...
+}
+```
+
+(Surface C's host Python script reads the same JSON file, so a divergence between the Rust integration test trace and the hardware trace points at the same fixture.)
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add rust/runtime/tests/fixtures/ rust/runtime/Cargo.toml rust/runtime/tests/engine_tick.rs
+git commit -m "runtime/tests: shared step5_segments.json fixture (Step 5)
+
+Spec §6.7. Single source of truth for the 4 Step-5 test curves —
+Surface A integration tests, Surface B FFI tests (where curve data
+matters), and Surface C host Python validation all parse the same
+JSON. Fixtures: straight line, rational quadratic arc, cubic Bezier
+smooth corner, halt sentinel."
+```
+
+### Task 17b: Engine state machine — additional unit coverage
 
 **Files:**
 - Modify: `rust/runtime/tests/engine_tick.rs` (extend)
@@ -2533,7 +2716,7 @@ fn invalid_curve_handle_latches_fault() {
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let pool = CurvePool::new();   // empty — handle 0 is unloaded
-    let mut trace = TraceRing::<128>::new();
+    let mut trace = TraceRing::<1024>::new();
 
     let tc = one_tick_cycles(CLOCK_FREQ) as u64;
     queue.try_push(Segment {
@@ -2602,13 +2785,16 @@ fn boundary_loop_works_near_u64_max() {
     use runtime::slot::*;
     use runtime::trace::*;
 
-    const CLOCK_FREQ: u32 = 550_000_000;
+    // Default H723 Klipper Kconfig clock is 520 MHz (src/stm32/Kconfig). Keeping
+// tests parametric here so a future bump to 550 MHz (or different alternate
+// kconfig) doesn't invalidate the fixture math.
+const CLOCK_FREQ: u32 = 520_000_000;
     let tc = one_tick_cycles(CLOCK_FREQ) as u64;
 
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
     let mut queue = SegmentQueue::new();
     let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<128>::new();
+    let mut trace = TraceRing::<1024>::new();
 
     // Construct a segment whose t_start, t_end are near u64::MAX.
     let near_max = u64::MAX - tc * 100;
@@ -2732,8 +2918,10 @@ Patch the file to add:
 ```c
 #if CONFIG_KALICO_RUNTIME
 // Spec §5.7 — kalico runtime liveness gate. Foreground (runtime_drain task)
-// is the sole writer; this file only reads.
-volatile uint8_t kalico_liveness_ok = 1;
+// is the sole writer; this file only reads. __attribute__((used,
+// externally_visible)) survives Klipper's -fwhole-program --gc-sections.
+volatile uint8_t kalico_liveness_ok __attribute__((used, externally_visible))
+    = 1;
 #endif
 
 void
@@ -2800,24 +2988,46 @@ const uint32_t kalico_clock_freq __attribute__((used, externally_visible))
 
 extern volatile uint8_t kalico_liveness_ok;  // defined in src/stm32/watchdog.c
 
-static void* kalico_rt = 0;
+void* kalico_rt_handle = 0;            // exposed (non-static) for kalico_h7_timer.c
 static struct task_wake runtime_drain_wake;
+static struct timer runtime_drain_timer;
 
 // Liveness monitor state.
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
 
+// Periodic timer callback at ~1 kHz: sets the drain wake flag.
+// Per spec §4.5 — sched_check_wake throttle prevents spinning the drain
+// task at full FG iteration rate when the trace ring is empty.
+static uint_fast8_t
+runtime_drain_event(struct timer *t)
+{
+    sched_wake_task(&runtime_drain_wake);
+    t->waketime += timer_from_us(1000);  // 1 kHz
+    return SF_RESCHEDULE;
+}
+
 void
 runtime_init(void)
 {
-    kalico_rt = kalico_runtime_init();
-    if (!kalico_rt) {
-        // Init failed — leave liveness flag at default (1 = OK) but rt unset;
+    kalico_rt_handle = kalico_runtime_init();
+    if (!kalico_rt_handle) {
+        // Init failed — leave liveness flag at default (1 = OK) but handle unset;
         // calls into the runtime will short-circuit safely.
         return;
     }
-    last_seen_tick_counter = kalico_runtime_tick_counter(kalico_rt);
+    last_seen_tick_counter = kalico_runtime_tick_counter(kalico_rt_handle);
     last_progress_time = timer_read_time();
+
+    // Initialize H7 timer hardware (TIM5) — DOES NOT enable yet; first segment
+    // push triggers enable via the producer protocol (§4.4).
+    extern void kalico_h7_timer_init(void);
+    kalico_h7_timer_init();
+
+    // Wire the periodic 1 kHz drain wake.
+    runtime_drain_timer.func = runtime_drain_event;
+    runtime_drain_timer.waketime = timer_read_time() + timer_from_us(1000);
+    sched_add_timer(&runtime_drain_timer);
 }
 DECL_INIT(runtime_init);
 
@@ -2829,19 +3039,19 @@ DECL_INIT(runtime_init);
 void
 runtime_drain(void)
 {
-    if (!kalico_rt) return;
+    if (!kalico_rt_handle) return;
     if (!sched_check_wake(&runtime_drain_wake)) return;
 
     // Drain a batch.
     static uint8_t batch_buf[KALICO_TRACE_BATCH * 32];  // 32 bytes per sample
     uint32_t n = kalico_runtime_drain_trace(
-        kalico_rt, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH);
+        kalico_rt_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH);
     if (n > 0) {
         sendf("kalico_trace count=%u data=%*s", n, n * 32, batch_buf);
     }
 
     // Liveness check.
-    uint32_t cur_counter = kalico_runtime_tick_counter(kalico_rt);
+    uint32_t cur_counter = kalico_runtime_tick_counter(kalico_rt_handle);
     uint32_t cur_time = timer_read_time();
     if (cur_counter != last_seen_tick_counter) {
         last_seen_tick_counter = cur_counter;
@@ -2852,7 +3062,7 @@ runtime_drain(void)
     }
 
     // Or fault → also block kicks.
-    if (kalico_runtime_status(kalico_rt) == 3 /* FAULT */) {
+    if (kalico_runtime_status(kalico_rt_handle) == 3 /* FAULT */) {
         kalico_liveness_ok = 0;
     }
 }
@@ -2862,7 +3072,7 @@ DECL_TASK(runtime_drain);
 void
 command_kalico_load_curve(uint32_t *args)
 {
-    if (!kalico_rt) {
+    if (!kalico_rt_handle) {
         sendf("kalico_load_curve_response result=%d", -7);
         return;
     }
@@ -2874,7 +3084,7 @@ command_kalico_load_curve(uint32_t *args)
     const float *knots = (const float*)args[5];
     const float *weights = (const float*)args[6];
     int32_t r = kalico_runtime_load_curve(
-        kalico_rt, slot, cps, n_cp, knots, n_knots, weights, n_cp, degree);
+        kalico_rt_handle, slot, cps, n_cp, knots, n_knots, weights, n_cp, degree);
     sendf("kalico_load_curve_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_load_curve,
@@ -2884,14 +3094,14 @@ DECL_COMMAND(command_kalico_load_curve,
 void
 command_kalico_push_segment(uint32_t *args)
 {
-    if (!kalico_rt) { sendf("kalico_push_response result=%d", -7); return; }
+    if (!kalico_rt_handle) { sendf("kalico_push_response result=%d", -7); return; }
     uint32_t id = args[0];
     uint16_t curve = args[1];
     uint64_t t_start = ((uint64_t)args[2] << 32) | args[3];
     uint64_t t_end   = ((uint64_t)args[4] << 32) | args[5];
     uint8_t kin = args[6];
     int32_t r = kalico_runtime_push_segment(
-        kalico_rt, id, curve, t_start, t_end, kin);
+        kalico_rt_handle, id, curve, t_start, t_end, kin);
     sendf("kalico_push_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_push_segment,
@@ -2901,9 +3111,9 @@ DECL_COMMAND(command_kalico_push_segment,
 void
 command_kalico_query_status(uint32_t *args)
 {
-    if (!kalico_rt) { sendf("kalico_status status=255 last_err=-7"); return; }
-    uint8_t status = kalico_runtime_status(kalico_rt);
-    int32_t last_err = kalico_runtime_last_error(kalico_rt);
+    if (!kalico_rt_handle) { sendf("kalico_status status=255 last_err=-7"); return; }
+    uint8_t status = kalico_runtime_status(kalico_rt_handle);
+    int32_t last_err = kalico_runtime_last_error(kalico_rt_handle);
     sendf("kalico_status status=%c last_err=%i", status, last_err);
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
@@ -2953,10 +3163,9 @@ the IWDG on stall or FAULT (§5.7)."
 // H723-specific TIM5 init + IRQ handler. Spec §2.4 / §4.1 / §4.2 / §4.4.
 
 #include "autoconf.h"
-#include "board/armcm_boot.h"  // armcm_enable_irq
-#include "internal.h"          // STM32-internal helpers
+#include "armcm_boot.h"        // DECL_ARMCM_IRQ
+#include "board/internal.h"    // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
-#include "stm32h7xx.h"         // TIM5, NVIC
 
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
@@ -3022,24 +3231,19 @@ TIM5_IRQHandler(void)
     // No late ack.
 }
 
+// Klipper's IRQ vector-table dispatch is generated by scripts/buildcommands.py
+// from DECL_ARMCM_IRQ entries. Without this, TIM5_IRQHandler will not be wired
+// into the vector table and the IRQ silently drops.
+DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
+
 #endif // CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 ```
 
 (Note the `kalico_rt_handle` reference — `src/runtime_tick.c` from Task 22 exposes a global. Update Task 22 to define `void* kalico_rt_handle = 0;` at file scope, set in `runtime_init`.)
 
-- [ ] **Step 2: Update `src/runtime_tick.c` to export `kalico_rt_handle`**
+- [ ] **Step 2: Verify `kalico_rt_handle` is already exported by Task 22**
 
-```c
-// in src/runtime_tick.c — change `static void* kalico_rt = 0;` to:
-void* kalico_rt_handle = 0;
-
-void runtime_init(void) {
-    kalico_rt_handle = kalico_runtime_init();
-    // ... rest of init ...
-}
-```
-
-(Find/replace all `kalico_rt` → `kalico_rt_handle` within `runtime_tick.c`.)
+Task 22 already declares `void* kalico_rt_handle = 0;` at file scope and sets it in `runtime_init`. No additional changes needed in `runtime_tick.c`.
 
 - [ ] **Step 3: Commit**
 
@@ -3072,19 +3276,25 @@ config KALICO_RUNTIME
       40 kHz trajectory-evaluation ISR. Step 5 — see CLAUDE.md.
 ```
 
-- [ ] **Step 2: Add the C sources to `src/stm32/Makefile`**
+- [ ] **Step 2: Add the C sources and link config to `src/stm32/Makefile`**
+
+The Klipper STM32 Makefile uses `CFLAGS_klipper.elf` for both compile flags AND extra link inputs (verified at `src/stm32/Makefile:35` — line ends with `-nostdlib -lgcc -lc_nano`). Append the staticlib to that variable, ensuring it lands AFTER the C objects but BEFORE `-lgcc -lc_nano` for archive-extraction order:
 
 ```makefile
 src-$(CONFIG_KALICO_RUNTIME) += stm32/kalico_h7_timer.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 
-# Link libkalico_c_api.a after C objects, before -lgcc -lc_nano.
+# Link libkalico_c_api.a. Place ahead of -lgcc/-lc_nano on the link line —
+# archive extraction is demand-driven and order-sensitive (spec §2.4 link-line
+# pitfalls). Empirically, prepending to CFLAGS_klipper.elf works because
+# Klipper's link rule is `$(CC) $(OBJS) $(CFLAGS_klipper.elf) -o $@` and
+# the existing -lgcc tail stays at the end.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
-LIBS_klipper.elf += rust/target/thumbv7em-none-eabihf/release/libkalico_c_api.a
+KALICO_LIB := rust/target/thumbv7em-none-eabihf/release/libkalico_c_api.a
+CFLAGS_klipper.elf := $(KALICO_LIB) $(CFLAGS_klipper.elf)
+$(OUT)klipper.elf: $(KALICO_LIB)
 endif
 ```
-
-(Adapt to Klipper's actual link-line variable names; check `src/Makefile` for the canonical form.)
 
 - [ ] **Step 3: Add a Cargo build hook**
 
@@ -3242,10 +3452,45 @@ If anything fires:
 - cbindgen-drift: regenerate headers locally and commit.
 - watchdog-canary: re-add the gate.
 
+- [ ] **Step 3.5: Create concrete `rust/deny.toml` for the cargo-deny job**
+
+```toml
+# rust/deny.toml — cargo-deny policy for Step-5 dependency graph.
+# Spec §6.6 quality gate; supply-chain audit on heapless + transitive deps.
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "deny"
+yanked = "deny"
+notice = "warn"
+
+[licenses]
+unlicensed = "deny"
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "ISC", "Unicode-DFS-2016", "Zlib"]
+copyleft = "deny"  # GPL/AGPL/LGPL excluded; the Rust workspace is GPLv3-from-Klipper but our own crates target permissive
+default = "deny"
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    # add rejected crates here as they surface
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+```
+
+(Tune `licenses.copyleft` if the GPLv3 inheritance from Klipper requires loosening — verify against the existing `nurbs-c-api` license header before locking the policy.)
+
 - [ ] **Step 4: Commit**
 
 ```bash
-git add .github/workflows/*.yml deny.toml   # cargo-deny config if needed
+git add .github/workflows/*.yml rust/deny.toml
 git commit -m "ci: add Step-5 CI matrix (host + MCU + drift + miri + panic-grep)
 
 Spec §6.6. host: build/test/clippy/fmt. MCU: dual-target H7 + F4
@@ -3348,55 +3593,127 @@ static uint32_t bench_count = 0;
 
 (Iterate on Surface C until both Pass A and Pass B numbers fit the budget; document in spec §4.8 as actuals.)
 
-- [ ] **Step 2-5: Standard bench → measure → record → commit cycle**
+- [ ] **Step 2: Write the cycle-count script with programmatic gate**
 
-Run the bench, capture min/p50/p99 over ≥10k samples, write the result to `docs/research/step5-h723-cycle-budget.md`, commit.
+`tools/test_h723_cycle_count.py`:
+
+```python
+#!/usr/bin/env python3
+"""Measure Engine::tick cycle cost via DWT CYCCNT instrumentation.
+
+Two passes:
+  - Pass A (isolated): IRQ_FENCE=on; non-kalico IRQs masked during measurement.
+  - Pass B (production): full IRQs enabled; mimics real load.
+
+Reports min/p50/p99 for each pass; FAILs if Pass-B p99 exceeds budget.
+"""
+import argparse, sys, json, statistics, serial, time
+
+p = argparse.ArgumentParser()
+p.add_argument("port", help="USB-CDC device, e.g. /dev/ttyACM0")
+p.add_argument("--p99-budget-us", type=float, default=15.0,
+               help="Acceptance threshold; Pass-B p99 must be below this.")
+p.add_argument("--samples", type=int, default=10_000,
+               help="Sample count per pass (defaults match spec §6.4).")
+args = p.parse_args()
+
+ser = serial.Serial(args.port, 250000, timeout=2)
+
+def collect(pass_name: str, isolate: int) -> list[int]:
+    ser.write(f"kalico_bench_run isolate={isolate} samples={args.samples}\n".encode())
+    out = b""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        chunk = ser.read(4096)
+        out += chunk
+        if b'kalico_bench_done' in out: break
+    line = next((l for l in out.split(b'\n') if l.startswith(b'kalico_bench_result')), None)
+    if not line: print("FAIL"); sys.exit(1)
+    return [int(x) for x in line.split(b' ')[1:] if x.isdigit()]
+
+CLOCK_FREQ = 520_000_000  # H723 default Kconfig
+
+def stats(samples: list[int]) -> dict:
+    samples_us = [s * 1_000_000 / CLOCK_FREQ for s in samples]
+    return {
+        "min_us": min(samples_us),
+        "p50_us": statistics.median(samples_us),
+        "p99_us": statistics.quantiles(samples_us, n=100)[98],
+    }
+
+a = stats(collect("A_isolated", isolate=1))
+b = stats(collect("B_production", isolate=0))
+
+print(json.dumps({"pass_a": a, "pass_b": b}, indent=2))
+
+if b["p99_us"] > args.p99_budget_us:
+    print(f"FAIL: Pass-B p99 = {b['p99_us']:.2f} µs > budget {args.p99_budget_us} µs")
+    sys.exit(1)
+print(f"PASS: Pass-B p99 = {b['p99_us']:.2f} µs (budget {args.p99_budget_us} µs)")
+```
+
+This makes the acceptance threshold a programmatic CI-able gate, not a manual review item. The MCU side (Task 22 / Task 23) must expose a `kalico_bench_run` debug command that does the bracketed measurement and replies with `kalico_bench_result <s1> <s2> ... <sN>`. Implement when wiring Surface C.
+
+- [ ] **Step 3: Run the gate and document the result**
 
 ```bash
-git add docs/research/step5-h723-cycle-budget.md src/runtime_tick.c
-git commit -m "test/h723: cycle-count Pass A+B measurement results (Step 5)
+make test-h723 FLASH_DEVICE=0483:df11 SERIAL_PORT=/dev/ttyACM0
+# Inspect target/h723-test-$(git rev-parse --short HEAD)/cycle_count.log
+# Record results in docs/research/step5-h723-cycle-budget.md (template:
+# date | git SHA | clock freq | Pass A min/p50/p99 | Pass B min/p50/p99 | budget | result)
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/research/step5-h723-cycle-budget.md tools/test_h723_cycle_count.py src/runtime_tick.c
+git commit -m "test/h723: cycle-count Pass A+B measurement with programmatic gate
 
 Spec §6.4 / §4.8. Pass A (isolated): X cycles min, Y p50, Z p99.
 Pass B (USB+USART concurrent): X cycles min, Y p50, Z p99.
-Acceptance: Pass-B p99 < 15 µs (60% of 25 µs tick budget). Result: PASS."
+Acceptance: Pass-B p99 < 15 µs (60% of 25 µs tick budget) — script
+asserts via --p99-budget-us 15 and exits non-zero on breach. Result: PASS."
 ```
 
-### Task 28: Trace-dump fixture + host plot
+### Task 28: Trace-dump host script — uses Task-17a's shared fixture
 
 **Files:**
-- Create: `runtime/tests/fixtures/step5_segments.json` (shared across surfaces A/B/C)
 - Create: `tools/test_h723_trace_dump.py`
 
-- [ ] **Step 1: Define the fixture JSON**
+(The fixture itself, `rust/runtime/tests/fixtures/step5_segments.json`, was created in Task 17a per spec §6.7. Task 28 builds the host-side validator that consumes it.)
 
-```json
-{
-  "fixtures": [
-    {
-      "name": "straight_line",
-      "curve": { "control_points": [[0,0,0], [10,0,0]], "knots": [0,0,1,1], "weights": [1,1], "degree": 1 },
-      "duration_ms": 5,
-      "kinematics": "CoreXyAndE"
-    },
-    { "name": "circular_arc",  "curve": { ... rational quadratic ... }, "duration_ms": 15, "kinematics": "CoreXyAndE" },
-    { "name": "smooth_corner", "curve": { ... cubic Bezier ... },        "duration_ms": 10, "kinematics": "CoreXyAndE" },
-    { "name": "halt_sentinel", "curve": { ... point ... },               "duration_ms":  2, "kinematics": "CoreXyAndE" }
-  ]
-}
-```
-
-- [ ] **Step 2: Write the host script**
+- [ ] **Step 1: Write the host script**
 
 ```python
-# tools/test_h723_trace_dump.py — load segments, drive runtime, drain trace,
-# plot against analytical evaluation. PASS if max position error < 1 mm.
+#!/usr/bin/env python3
+"""Drive runtime over USB-CDC, drain trace, plot against analytical eval.
+
+Reads the shared fixture file (rust/runtime/tests/fixtures/step5_segments.json),
+loads each curve into the MCU's CurvePool slab, pushes a chained segment
+sequence, drains the trace ring, validates trace continuity + position-error
+bound against an analytical Python NURBS evaluator (e.g., scipy.interpolate
+or a from-scratch de Boor for parity).
+
+Acceptance: max |motor_pos_traced - motor_pos_analytical| < 0.05 mm
+across all fixture chains.
+"""
+import argparse, json, sys, struct, serial, time
+# ... full implementation ...
 ```
 
-- [ ] **Step 3-5: Run on hardware, iterate, commit**
+(Full Python implementation: ~150 lines. The skeleton above shows shape; the implementer writes details using `pyserial` for CDC and matplotlib for the optional plot output. Acceptance threshold of 0.05 mm = 50 µm matches the sub-tick-boundary motion-loss budget at 1000 mm/s × 25 µs = 25 µm; doubled for measurement noise.)
+
+- [ ] **Step 2: Run on hardware, iterate, commit**
 
 ```bash
-git add runtime/tests/fixtures/step5_segments.json tools/test_h723_trace_dump.py
-git commit -m "test/h723: 4-segment trace-dump fixture + host plot validation"
+make test-h723 FLASH_DEVICE=0483:df11 SERIAL_PORT=/dev/ttyACM0
+git add tools/test_h723_trace_dump.py
+git commit -m "test/h723: trace-dump host validator (Step 5 Surface C)
+
+Spec §6.4 / §6.7. Loads shared step5_segments.json, drives runtime
+over USB-CDC, drains trace, validates against analytical NURBS eval
+with 50 µm position-error budget. PASS/FAIL programmatic gate via
+non-zero exit code."
 ```
 
 ### Task 29: 30-min soak + `make test-h723` script
@@ -3407,16 +3724,33 @@ git commit -m "test/h723: 4-segment trace-dump fixture + host plot validation"
 - [ ] **Step 1: Write the orchestration script**
 
 ```makefile
+# Use Klipper's flash_usb.py — it handles bootloader entry, ModemManager
+# inhibition, USB udev permissions, port discovery. Manual dfu-util
+# invocations break in too many environment-specific ways.
+
 test-h723:
 	@echo "=== Step 5 Surface-C: flash + bring-up + soak ==="
-	dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D out/klipper.bin
-	sleep 3
-	python3 tools/test_h723_first_light.py
-	python3 tools/test_h723_cycle_count.py
-	python3 tools/test_h723_trace_dump.py
-	python3 tools/test_h723_soak.py --minutes 30
-	@echo "=== Surface-C complete; artifacts in target/h723-test-$$(git rev-parse HEAD).log ==="
+	@SHA=$$(git rev-parse --short HEAD); \
+	  ARTIFACTS_DIR="target/h723-test-$$SHA"; \
+	  mkdir -p $$ARTIFACTS_DIR; \
+	  echo "Artifacts → $$ARTIFACTS_DIR"; \
+	  $(PYTHON) ./scripts/flash_usb.py -t stm32h723xx -d "$(FLASH_DEVICE)" -s 0x8000000 out/klipper.bin > $$ARTIFACTS_DIR/flash.log 2>&1 || \
+	    { cat $$ARTIFACTS_DIR/flash.log; exit 1; }; \
+	  sleep 3; \
+	  python3 tools/test_h723_first_light.py "$(SERIAL_PORT)" \
+	      | tee $$ARTIFACTS_DIR/first_light.log || exit 1; \
+	  python3 tools/test_h723_cycle_count.py "$(SERIAL_PORT)" \
+	      --p99-budget-us 15 \
+	      | tee $$ARTIFACTS_DIR/cycle_count.log || exit 1; \
+	  python3 tools/test_h723_trace_dump.py "$(SERIAL_PORT)" \
+	      --fixture rust/runtime/tests/fixtures/step5_segments.json \
+	      | tee $$ARTIFACTS_DIR/trace_dump.log || exit 1; \
+	  python3 tools/test_h723_soak.py "$(SERIAL_PORT)" --minutes 30 \
+	      | tee $$ARTIFACTS_DIR/soak.log || exit 1; \
+	  echo "=== Surface-C PASS — artifacts in $$ARTIFACTS_DIR ==="
 ```
+
+Each Python script must emit `PASS` or `FAIL` and exit non-zero on failure; `tee` preserves output for archiving while the underlying exit code propagates. The cycle-count script programmatically asserts `p99 < 15 µs` (per `--p99-budget-us 15` argument); Task 27 above is responsible for producing that script with the threshold check baked in. `FLASH_DEVICE` and `SERIAL_PORT` are caller-supplied (`make test-h723 FLASH_DEVICE=0483:df11 SERIAL_PORT=/dev/ttyACM0`).
 
 - [ ] **Step 2: Verify the script runs and saves artifacts under the build SHA**
 
