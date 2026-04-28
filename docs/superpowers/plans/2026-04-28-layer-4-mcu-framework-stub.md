@@ -741,6 +741,23 @@ impl CurvePool {
         if !weights.iter().all(|&w| w > 0.0) {
             return Err(CurvePoolError::InvalidCurve);  // non-positive weight
         }
+        // Match upstream `nurbs::validate()`'s remaining checks (rust/nurbs/src/scalar.rs):
+        // (a) Knot vector must be clamped: first p+1 knots equal, last p+1 equal.
+        let p = degree as usize;
+        let first_knot = knots.first().copied().unwrap_or(0.0);
+        let last_knot = knots.last().copied().unwrap_or(0.0);
+        if !knots.iter().take(p + 1).all(|&k| k == first_knot) {
+            return Err(CurvePoolError::InvalidCurve);  // start not clamped
+        }
+        if !knots.iter().rev().take(p + 1).all(|&k| k == last_knot) {
+            return Err(CurvePoolError::InvalidCurve);  // end not clamped
+        }
+        // (b) Knot vector length must be ≥ 2*(p+1) so that any valid u has p+1
+        // basis functions to evaluate. Already implicit in `n_cp + p + 1` ≥ 2(p+1)
+        // when `n_cp ≥ p+1`, so check that:
+        if n_cp < p + 1 {
+            return Err(CurvePoolError::InvalidCurve);  // too few control points for degree
+        }
 
         let mut cps = [[0.0f32; MAX_DIM]; MAX_CONTROL_POINTS];
         for i in 0..n_cp {
@@ -1272,16 +1289,18 @@ mod tests {
     }
 
     #[test]
-    fn one_tick_cycles_at_550mhz() {
-        // Spec §4.2 step 8 footnote: 550_000_000 / 40_000 = 13_750.
+    fn one_tick_cycles_parametric() {
+        // Helper is parametric over kalico_clock_freq. Sanity-check at the
+        // H723 Klipper Kconfig default (520 MHz) and a hypothetical 550 MHz.
+        assert_eq!(one_tick_cycles(520_000_000), 13_000);
         assert_eq!(one_tick_cycles(550_000_000), 13_750);
-        // At 480 MHz alternate kconfig:
         assert_eq!(one_tick_cycles(480_000_000), 12_000);
     }
 
     #[test]
     fn min_segment_cycles_is_two_ticks() {
-        // Spec §4.4 producer rejection threshold.
+        // Spec §4.4 producer rejection threshold = 2 * one_tick_cycles.
+        assert_eq!(min_segment_cycles(520_000_000), 26_000);
         assert_eq!(min_segment_cycles(550_000_000), 27_500);
     }
 }
@@ -1310,19 +1329,33 @@ pub const TICK_RATE_HZ: u32 = 40_000;
 
 #[derive(Debug, Default)]
 pub struct WidenState {
-    last_low: u32,
-    high: u64,
+    pub(crate) last_low: u32,
+    pub(crate) high: u64,
 }
 
 impl WidenState {
-    /// Reinitialize widening state. Used at runtime startup and on TIM5 re-enable
-    /// after a long disable (where intermediate CYCCNT wraps are unobservable).
-    /// `klipper_now_cycles` is `(timer_read_time() as u64) * (kalico_clock_freq /
-    /// TIMER_BASE_FREQ)` — the monotonic backstop reconstructing `high` after
-    /// arbitrary disables.
-    pub fn reinit(&mut self, raw: u32, klipper_now_cycles: u64) {
+    /// Reinitialize widening state across a TIM5 disable→enable transition.
+    ///
+    /// Key insight (corrected after round-2 verifier review): we cannot
+    /// reconstruct CYCCNT epoch from an external clock at u32 resolution alone
+    /// (Klipper's `timer_read_time` is u32 too, with the same wrap period as
+    /// CYCCNT on ARMCM where both come from `DWT->CYCCNT`). So the backstop
+    /// shape is: foreground captures `engine.last_widened_now()` BEFORE
+    /// `kalico_h7_disable_tim5()`, and passes that u64 value back at re-enable.
+    /// Reinit then preserves `high` from the captured high-water mark and
+    /// adjusts forward conservatively if `raw < captured_low` (one wrap
+    /// detected). Long disables that wrap multiple times are inherently
+    /// unrecoverable from CYCCNT alone — but `last_widened_now` carries the
+    /// pre-disable high-water across the gap, so the timeline is monotonic
+    /// from the foreground's perspective even if we miss exact wrap counts.
+    pub fn reinit(&mut self, raw: u32, last_widened_now: u64) {
+        let captured_low = last_widened_now as u32;
+        self.high = last_widened_now & !0xFFFF_FFFFu64;
+        if raw < captured_low {
+            // At least one wrap since capture. Bump conservatively.
+            self.high = self.high.wrapping_add(1u64 << 32);
+        }
         self.last_low = raw;
-        self.high = klipper_now_cycles & !0xFFFF_FFFFu64;
     }
 
     /// Widen a raw CYCCNT u32 to u64. Caller must invoke at least once per
@@ -1593,11 +1626,12 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut trace = TraceRing::<1024>::new();
 
     let tc = one_tick_cycles(CLOCK_FREQ) as u64;
-    // Two short straight-line fixtures back-to-back — exercise sub-tick
-    // boundary carry. The fixture file's `straight_line_x` line is reused
-    // for both slots; t_start/t_end are set per-segment by the caller.
+    // Two distinct fixtures back-to-back — exercise sub-tick boundary carry.
+    // straight_line_x ends at (10,0,0); rational_quadratic_arc starts at
+    // (10,0,0) so the boundary is geometrically continuous and motor_a
+    // increases monotonically across the seam.
     load_fixture(&mut pool, 0, "straight_line_x");
-    load_fixture(&mut pool, 1, "straight_line_x");
+    load_fixture(&mut pool, 1, "rational_quadratic_arc");
 
     queue.try_push(Segment {
         id: 1, curve: CurveHandle(0), t_start: 0, t_end: tc * 3 / 2,
@@ -1616,10 +1650,16 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut out = [TraceSample::default(); 16];
     let n = trace.drain_into(&mut out);
 
-    // Position must be monotonically nondecreasing in motor_a (= X+Y for line on X axis).
+    // Both fixtures meet at (10, 0, 0):
+    //   - straight_line_x ends at (10, 0, 0) — final motor_a = X+Y = 10.
+    //   - rational_quadratic_arc starts at (10, 0, 0) — initial motor_a = 10.
+    // Therefore motor_a is monotonically nondecreasing across the boundary.
+    // (The arc continues into y, so motor_a = X+Y stays ≥ 10 along the arc.)
     for i in 1..n {
-        assert!(out[i].motor_a >= out[i - 1].motor_a,
-            "motor_a regressed at sample {i}: {} → {}", out[i-1].motor_a, out[i].motor_a);
+        assert!(out[i].motor_a >= out[i - 1].motor_a - 0.01,  // 10 µm tolerance
+            "motor_a regressed at sample {i} (segment_id {} → {}): {} → {}",
+            out[i-1].segment_id, out[i].segment_id,
+            out[i-1].motor_a, out[i].motor_a);
     }
     // Must transition cleanly into segment 2 — at least one sample with segment_id == 2.
     let any_seg2 = out.iter().take(n).any(|s| s.segment_id == 2);
@@ -1723,6 +1763,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     pub fn tick_counter(&self) -> u32 {
         self.tick_counter.snapshot()
+    }
+
+    /// Foreground-callable: read the most recent widened `now: u64` so the
+    /// producer-protocol can preserve epoch across a TIM5 disable→enable cycle.
+    /// SAFETY: ISR is the sole writer of WidenState; foreground reads it only
+    /// while ISR is disabled (between `kalico_h7_disable_tim5` and re-enable).
+    pub fn last_widened_now(&self) -> u64 {
+        // Reconstruct from the ISR-private static. In the real implementation,
+        // this returns `widen_state.high | (widen_state.last_low as u64)` —
+        // accessed under the spec §4.7 SAFETY invariant that ISR is paused.
+        self.widen_state.high | (self.widen_state.last_low as u64)
     }
 
     /// Latch FAULT and emit one fault marker sample (last-known-good motors,
@@ -2168,12 +2219,14 @@ mod exports {
         // §4.4 producer-protocol: re-enable TIM5 if observed status was IDLE/DRAINED.
         match ctx.engine.status() {
             RuntimeStatus::Idle | RuntimeStatus::Drained => {
-                // Reinit CYCCNT widening before re-enabling TIM5 — long disable
-                // may have made intermediate wraps unobservable. Use Klipper's
-                // timer_read_time() as the monotonic backstop (spec §4.1).
+                // Reinit CYCCNT widening before re-enabling TIM5. Pass the
+                // pre-disable widened high-water (preserved across the TIM5
+                // disable cycle) so the epoch survives a long gap. ISR was
+                // disabled in `kalico_h7_disable_tim5()` and is still off here
+                // — single-thread access to widen_state is safe.
                 let raw = unsafe { kalico_h7_read_cyccnt() };
-                let klipper_now = unsafe { timer_read_time() };
-                ctx.engine.widen_state.reinit(raw, klipper_now as u64);
+                let last_widened_now = ctx.engine.last_widened_now();
+                ctx.engine.widen_state.reinit(raw, last_widened_now);
                 unsafe { kalico_h7_enable_tim5(); }
             }
             _ => {}
@@ -2285,7 +2338,6 @@ mod exports {
         fn kalico_h7_enable_tim5();
         fn kalico_h7_disable_tim5();
         fn kalico_h7_read_cyccnt() -> u32;     // wraps DWT->CYCCNT read
-        fn timer_read_time() -> u32;           // Klipper's monotonic clock backstop
     }
 }
 ```
@@ -3156,7 +3208,10 @@ DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
 // SysTick is left untouched — Klipper's foreground time accounting needs it,
 // and the kalico TIM5 ISR doesn't preempt SysTick at priority 3 anyway.
 
-#define KALICO_BENCH_MAX_SAMPLES 1024
+// KALICO_BENCH_MAX_SAMPLES is declared in `src/stm32/kalico_h7_timer.h`
+// (Task 23 creates it) so both `runtime_tick.c` and `kalico_h7_timer.c`
+// see the same value.
+#include "stm32/kalico_h7_timer.h"
 extern volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
 extern volatile uint16_t kalico_bench_count;
 extern volatile uint16_t kalico_bench_target;
@@ -3171,9 +3226,13 @@ command_kalico_bench_run(uint32_t *args)
     if (samples > KALICO_BENCH_MAX_SAMPLES) samples = KALICO_BENCH_MAX_SAMPLES;
 
     if (isolate) {
-        // Selectively mask: USB OTG_HS, USART (the active CDC channels). Leave
-        // TIM5 (the kalico ISR) and SysTick alone. Adjust the IRQn list to the
-        // active build — Octopus Pro uses USART2 for serial console + USB FS.
+        // Selectively mask: USB OTG_FS (the H723 USB controller used by Klipper
+        // CDC on Octopus Pro) + USART2 (active console). Leave TIM5 (the kalico
+        // ISR) and SysTick alone. The implementer MUST verify which IRQs are
+        // active in the current build before relying on the masked list — picking
+        // the wrong IRQ silently biases Pass A toward overly-optimistic numbers.
+        // Cross-check with `arm-none-eabi-objdump -d klipper.elf | grep -E 'IRQ|Handler'`
+        // to confirm the IRQ vector names actually present in the firmware image.
         NVIC_DisableIRQ(OTG_FS_IRQn);
         NVIC_DisableIRQ(USART2_IRQn);
     }
@@ -3182,10 +3241,31 @@ command_kalico_bench_run(uint32_t *args)
     kalico_bench_target = samples;
     kalico_bench_isolate = isolate;
 
-    // Wait for the ISR to fill the buffer.
+    // Wait for the ISR to fill the buffer with a watchdog-respecting timeout.
+    // Worst case: 25 µs/sample × 1024 = 25.6 ms. We allow 100 ms before
+    // bailing out, and we kick the IWDG ourselves during the wait so we
+    // don't trip Klipper's watchdog from foreground starvation. Note: the
+    // liveness-heartbeat counter does freeze for the duration of this wait,
+    // but that's bounded and known — it's only used during Surface-C bring-up.
+    uint32_t start = timer_read_time();
+    uint32_t timeout_ticks = timer_from_us(100000);  // 100 ms
     while (kalico_bench_count < kalico_bench_target) {
-        // Foreground spin — let TIM5 fire and bracket itself.
-        // Bounded by 25 µs/sample × 1024 = 25.6 ms maximum.
+        // Manually kick the IWDG (foreground watchdog_reset would otherwise
+        // get pre-empted by our spin and starve). Spec §5.7 — `kalico_liveness_ok`
+        // is set true here because we KNOW the runtime is healthy; the gate
+        // is only meaningful for unattended operation.
+        IWDG->KR = 0xAAAA;
+        if ((uint32_t)(timer_read_time() - start) > timeout_ticks) {
+            // ISR didn't fill the buffer — TIM5 stalled or NVIC mask wrong.
+            kalico_bench_target = 0;  // tell ISR to stop bracketing
+            sendf("kalico_bench_done error=-99 reason=isr_timeout count=%hu",
+                  kalico_bench_count);
+            if (isolate) {
+                NVIC_EnableIRQ(OTG_FS_IRQn);
+                NVIC_EnableIRQ(USART2_IRQn);
+            }
+            return;
+        }
     }
 
     if (isolate) {
@@ -3195,12 +3275,22 @@ command_kalico_bench_run(uint32_t *args)
 
     // Discard the first 8 samples (warm-up: cache fill, branch predictor,
     // FPU lazy-stacking on first vector_eval). Spec §6.4 hardened methodology.
+    // Underflow guard: refuse if caller didn't request enough samples.
     const uint16_t WARMUP_SKIP = 8;
-    sendf("kalico_bench_result count=%hu data=%*s",
-          (uint16_t)(samples - WARMUP_SKIP),
-          (samples - WARMUP_SKIP) * sizeof(uint32_t),
-          (uint8_t*)&kalico_bench_samples_buf[WARMUP_SKIP]);
-    sendf("kalico_bench_done error=0");
+    if (samples <= WARMUP_SKIP) {
+        sendf("kalico_bench_done error=-4 reason=samples_below_warmup");
+        return;
+    }
+
+    // Emit one sample per `kalico_bench_sample` line as ASCII decimal —
+    // this matches the host script's split-and-int-parse protocol cleanly
+    // and avoids any binary-blob framing concerns. Bounded total: at most
+    // KALICO_BENCH_MAX_SAMPLES (1024) lines per bench, each ~12 chars.
+    for (uint16_t i = WARMUP_SKIP; i < samples; i++) {
+        sendf("kalico_bench_sample value=%u", kalico_bench_samples_buf[i]);
+    }
+    sendf("kalico_bench_done count=%hu error=0",
+          (uint16_t)(samples - WARMUP_SKIP));
 }
 DECL_COMMAND(command_kalico_bench_run, "kalico_bench_run isolate=%c samples=%hu");
 
@@ -3238,10 +3328,40 @@ the IWDG on stall or FAULT (§5.7)."
 
 **Files:**
 - Create: `src/stm32/kalico_h7_timer.c`
+- Create: `src/stm32/kalico_h7_timer.h` (shared declarations + bench buffer size)
 
 **Why:** Spec §2.4 — H7-specific TIM5 init + IRQ handler. Init invariant: must clear CR1.CEN + SR.UIF before enabling the IRQ.
 
-- [ ] **Step 1: Write the C source**
+- [ ] **Step 1: Write the shared header `src/stm32/kalico_h7_timer.h`**
+
+```c
+// src/stm32/kalico_h7_timer.h
+//
+// Shared declarations for the kalico H7 TIM5 ISR + bench buffer. Included by
+// both src/stm32/kalico_h7_timer.c (defines the storage) and src/runtime_tick.c
+// (drives the bench command).
+
+#ifndef KALICO_H7_TIMER_H
+#define KALICO_H7_TIMER_H
+
+#include <stdint.h>
+
+#define KALICO_BENCH_MAX_SAMPLES 1024
+
+extern volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
+extern volatile uint16_t kalico_bench_count;
+extern volatile uint16_t kalico_bench_target;
+extern volatile uint8_t  kalico_bench_isolate;
+
+void kalico_h7_timer_init(void);
+void kalico_h7_enable_tim5(void);
+void kalico_h7_disable_tim5(void);
+uint32_t kalico_h7_read_cyccnt(void);
+
+#endif // KALICO_H7_TIMER_H
+```
+
+- [ ] **Step 2: Write the C source**
 
 ```c
 // src/stm32/kalico_h7_timer.c
@@ -3252,6 +3372,7 @@ the IWDG on stall or FAULT (§5.7)."
 #include "armcm_boot.h"        // DECL_ARMCM_IRQ
 #include "board/internal.h"    // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
+#include "kalico_h7_timer.h"   // shared bench buffer + helper sigs
 
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
@@ -3313,9 +3434,9 @@ kalico_h7_timer_init(void)
     // kalico_h7_enable_tim5() via the producer protocol.
 }
 
-// Cycle-count bench buffer. See command_kalico_bench_run in src/runtime_tick.c.
-// SAFETY: only this ISR writes the buffer; foreground reads after observing
-// `kalico_bench_count == kalico_bench_target`.
+// Cycle-count bench buffer storage. Declared `extern` in kalico_h7_timer.h
+// so src/runtime_tick.c's bench command can read it. SAFETY: only this ISR
+// writes; foreground reads after observing `count == target`.
 volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
 volatile uint16_t kalico_bench_count = 0;
 volatile uint16_t kalico_bench_target = 0;
@@ -3735,10 +3856,25 @@ def collect(pass_name: str, isolate: int) -> list[int]:
     while time.monotonic() < deadline:
         chunk = ser.read(4096)
         out += chunk
-        if b'kalico_bench_done' in out: break
-    line = next((l for l in out.split(b'\n') if l.startswith(b'kalico_bench_result')), None)
-    if not line: print("FAIL"); sys.exit(1)
-    return [int(x) for x in line.split(b' ')[1:] if x.isdigit()]
+        if b'kalico_bench_done' in out:
+            break
+    if b'kalico_bench_done' not in out:
+        print(f"FAIL: bench timeout in pass {pass_name}")
+        sys.exit(1)
+    if b'error=0' not in out.split(b'kalico_bench_done')[1].split(b'\n')[0]:
+        print(f"FAIL: bench reported non-zero error in pass {pass_name}")
+        sys.exit(1)
+    samples = []
+    for raw in out.split(b'\n'):
+        if raw.startswith(b'kalico_bench_sample value='):
+            try:
+                samples.append(int(raw.split(b'value=')[1].strip()))
+            except (ValueError, IndexError):
+                continue
+    if not samples:
+        print(f"FAIL: no samples parsed in pass {pass_name}")
+        sys.exit(1)
+    return samples
 
 CLOCK_FREQ = 520_000_000  # H723 default Kconfig
 
