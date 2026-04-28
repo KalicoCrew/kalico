@@ -167,9 +167,13 @@ class KalicoHostIO:
 
     def _next_seq(self):
         # Klipper's 4-bit sequence number. Wire: (seq & 0x0F) | DEST.
+        # MCU's next_sequence starts at MESSAGE_DEST=0x10 (i.e. seq_num=0),
+        # so the very first packet we send must have seq_num=0; otherwise
+        # the MCU NAKs and silently drops it. Read-then-increment.
         with self._lock:
+            seq = self._seq
             self._seq = (self._seq + 1) & msgproto.MESSAGE_SEQ_MASK
-            return self._seq
+            return seq
 
     def _send_raw(self, cmd_str):
         """Encode `cmd_str` via MessageParser and write the framed bytes."""
