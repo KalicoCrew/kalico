@@ -287,12 +287,12 @@ fn extract_solution(x: &[f64], n_grid: usize, status: SolverStatus) -> SolverRes
 
 /// Construct the Clarabel SOCP from `bundle` and solve it.
 ///
-/// Equivalent to `solve_with_cuts(bundle, &[])` — kept as the public(crate)
+/// Equivalent to `solve_with_cuts(bundle, &[], tol)` — kept as the public(crate)
 /// entry point for the unit-test surface (no cuts → original Consolini-Locatelli
 /// SOCP).
 #[allow(dead_code)]
 pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSetupError> {
-    solve_with_cuts(bundle, &[])
+    solve_with_cuts(bundle, &[], 1e-8)
 }
 
 /// Append one path-jerk SLP cut as two `Nonneg` rows (positive- and
@@ -613,8 +613,9 @@ const B_TR_FLOOR: f64 = 2_500.0;
 fn solve_with_cuts(
     bundle: &ConstraintBundle,
     cuts: &[SlpCut],
+    tol: f64,
 ) -> Result<SolverResult, SolverSetupError> {
-    solve_with_cuts_and_trust_region(bundle, cuts, None, &[], &[])
+    solve_with_cuts_and_trust_region(bundle, cuts, None, &[], &[], tol)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -624,6 +625,7 @@ fn solve_with_cuts_and_trust_region(
     trust_region: Option<TrustRegion>,
     b_bar: &[f64],
     a_bar: &[f64],
+    tol: f64,
 ) -> Result<SolverResult, SolverSetupError> {
     let n_vars = bundle.n_vars;
     let n_grid = bundle.n_grid;
@@ -808,12 +810,29 @@ fn solve_with_cuts_and_trust_region(
     // Allows AlmostSolved states at this tolerance to map to SolvedInexact
     // instead of MaxIter; SLP outer loop can then continue with cuts.
     // Solved gating remains at default eps_abs.
+    #[allow(clippy::similar_names)]
     let settings = DefaultSettings::<f64> {
         verbose: false,
         max_iter: 1000,
+        // Primary tolerances (per-call adaptive — see `ToleranceMode`).
+        tol_gap_abs: tol,
+        tol_gap_rel: tol,
+        tol_feas: tol,
+        // Reduced (AlmostSolved) tolerances — preserve existing 1e-3 overrides.
+        // These let Clarabel report `SolvedInexact` (mapped to public `SolveStatus`
+        // via `output::assemble`) when the primary tolerance can't be reached;
+        // SLP and downstream `verify::check` (ε_feas = 1e-3) rely on this gating.
+        // Per Codex review-4: dropping these would silently restore Clarabel
+        // defaults (5e-5 / 5e-5 / 1e-4), changing `AlmostSolved` semantics.
         reduced_tol_gap_abs: 1e-3,
         reduced_tol_gap_rel: 1e-3,
         reduced_tol_feas: 1e-3,
+        // Determinism pin (per Codex review-4 + kalico-verifier round-3
+        // recommendation): explicitly use single-threaded QDLDL backend so the
+        // joining-loop early-bail's determinism premise stays valid against
+        // future Clarabel versions / feature-flag changes.
+        direct_solve_method: "qdldl".to_string(),
+        max_threads: 1,
         ..Default::default()
     };
 
@@ -957,13 +976,14 @@ pub(crate) enum SlpOutcome {
 /// full-grid-vs-active-set rationale) and re-solves.
 pub(crate) fn slp_solve(
     bundle: &ConstraintBundle,
+    tol: f64,
 ) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
     let h = bundle.h;
     let j_path = bundle.j_path;
     debug_assert!(h > 0.0 && j_path > 0.0);
 
     let mut cuts: Vec<SlpCut> = Vec::new();
-    let mut last_result = solve_with_cuts(bundle, &cuts)?;
+    let mut last_result = solve_with_cuts(bundle, &cuts, tol)?;
 
     // Iteration-0: structurally-infeasible or solver-MaxIter at iter 0 means
     // there's no usable primal to scan; surface that without iterating.
@@ -1030,7 +1050,7 @@ pub(crate) fn slp_solve(
             ));
         }
 
-        let new_result = solve_with_cuts(bundle, &cuts)?;
+        let new_result = solve_with_cuts(bundle, &cuts, tol)?;
         // Structural infeasibility / Clarabel MaxIter on the inner solve:
         // the new primal is not trustworthy as an iterate. Stop iterating
         // and surface the best-so-far iterate with a `MaxIters` outcome so
@@ -1257,9 +1277,10 @@ pub(crate) fn slp_solve_with_axis_jerk(
     bundle: &ConstraintBundle,
     grid: &crate::topp::path::ArclengthGrid,
     limits: &crate::Limits,
+    tol: f64,
 ) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
     // Stage 1: path-jerk SLP. Existing logic, untouched.
-    let (path_result, path_outcome) = slp_solve(bundle)?;
+    let (path_result, path_outcome) = slp_solve(bundle, tol)?;
 
     // Path-jerk failure modes: surface immediately. The per-axis loop has
     // nothing useful to add when the inner SOCP is already not producing a
@@ -1347,6 +1368,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
                 Some(tr),
                 &last_result.b,
                 &last_result.a,
+                tol,
             )?;
             if matches!(
                 candidate.status,
@@ -1374,7 +1396,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
             // (potentially far). We still gate acceptance on max-ratio
             // decrease — non-decrease is a signal the cut linearization
             // was poor and the iterate shouldn't be trusted.
-            let candidate = solve_with_cuts(bundle, &cuts)?;
+            let candidate = solve_with_cuts(bundle, &cuts, tol)?;
             if !matches!(
                 candidate.status,
                 SolverStatus::Infeasible | SolverStatus::MaxIter { .. }

@@ -6,7 +6,7 @@ pub mod limits;
 pub use limits::Limits;
 
 pub mod topp;
-pub use topp::{schedule_segment, ScheduleError};
+pub use topp::{schedule_segment, schedule_segment_with_tolerance, ScheduleError, ToleranceMode};
 
 pub mod multi;
 pub use multi::{
