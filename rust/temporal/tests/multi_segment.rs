@@ -85,3 +85,46 @@ mod fixture_1_two_g1_sharp_corner {
         assert!(matches!(output.joining_status, JoiningStatus::Converged));
     }
 }
+
+mod fixture_2_g1_to_g5_smooth {
+    use super::*;
+
+    #[test]
+    fn fixture_2() {
+        // G1 ending at (50, 0, 0) with tangent +X.
+        let left = VectorNurbs::<f64, 3>::try_new(
+            1, vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]], None,
+        ).unwrap();
+        // Cubic G5-style with tangent matching at u=0 (also +X), curving away.
+        let right = VectorNurbs::<f64, 3>::try_new(
+            3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                [50.0, 0.0, 0.0],
+                [60.0, 0.0, 0.0],     // CP1: tangent direction at u=0 = +X (matches left)
+                [70.0, 30.0, 0.0],
+                [100.0, 50.0, 0.0],
+            ], None,
+        ).unwrap();
+        let limits = textbook_limits();
+        let segments = [
+            SegmentInput { curve: &left, limits, trailing_junction_chord_tolerance_mm: 0.05 },
+            SegmentInput { curve: &right, limits, trailing_junction_chord_tolerance_mm: 0.05 },
+        ];
+        let input = BatchInput { segments: &segments, grid_strategy: adaptive(), worker_threads: 3 };
+        let output = plan_batch(input).expect("should succeed");
+
+        // §6.2: smooth-κ branch. Junction κ on right side > 0 (G5 has curvature at u=0).
+        let j = &output.junctions[0];
+        assert!(j.kappa_right.abs() > 1e-6, "G5 should have nonzero κ at u=0, got {}", j.kappa_right);
+        // Expect Centripetal cap, not SharpCornerChord.
+        assert!(matches!(j.binding_cap, JunctionBindingCap::Centripetal | JunctionBindingCap::PerAxisVelocity | JunctionBindingCap::GlobalVMax),
+            "smooth junction should not trigger SharpCornerChord, got {:?}", j.binding_cap);
+
+        assert!(output.joining_sweeps <= 3);
+        assert!(matches!(output.joining_status, JoiningStatus::Converged));
+
+        // §6.2 (review-1 helper): junction continuity.
+        assert_junction_continuity_for_all(&output, 1.0);
+    }
+}
