@@ -13,7 +13,9 @@ use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::SegmentQueue;
 use runtime::segment::{CurveHandle, KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
-use runtime::trace::{TraceRing, TraceSample, TRACE_FLAG_SEGMENT_END};
+use runtime::trace::{
+    TraceRing, TraceSample, TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END,
+};
 
 // Default H723 Klipper Kconfig clock is 520 MHz (src/stm32/Kconfig). Keeping
 // tests parametric here so a future bump to 550 MHz (or different alternate
@@ -141,3 +143,78 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     assert!((first2.motor_e - last1.motor_e).abs() < SEAM_TOL_MM,
         "motor_e discontinuous at seam: {} → {}", last1.motor_e, first2.motor_e);
 }
+
+#[test]
+fn invalid_curve_handle_latches_fault() {
+    // Spec §5.5. Engine resolves an unloaded handle → InvalidHandle fault,
+    // status latches to Fault, last_error code is set, fault marker emitted.
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+    let mut queue = SegmentQueue::new();
+    let pool = CurvePool::new();   // empty — handle 0 is unloaded
+    let mut trace = TraceRing::<1024>::new();
+
+    let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
+    queue.try_push(Segment {
+        id: 1,
+        curve: CurveHandle(0),
+        t_start: 0,
+        t_end: tc * 2,
+        kinematics: KinematicTag::CoreXyAndE,
+    }).unwrap();
+
+    let r = engine.tick(0, &mut queue, &pool, &mut trace);
+    assert!(r.is_err());
+    assert_eq!(engine.status(), RuntimeStatus::Fault);
+    assert_eq!(engine.last_error(), runtime::error::KALICO_ERR_INVALID_HANDLE);
+
+    // Trace has a fault-marker sample (last-known-good motors, segment_id=1).
+    let mut out = [TraceSample::default(); 8];
+    let n = trace.drain_into(&mut out);
+    assert_eq!(n, 1, "exactly one fault-marker sample expected");
+    assert_ne!(out[0].flags & TRACE_FLAG_FAULT_MARKER, 0,
+        "fault marker bit must be set");
+    assert_eq!(out[0].segment_id, 1, "fault marker carries the active segment id");
+}
+
+// `boundary_loop_exhausted_latches_fault`: deferred to Step 6+.
+//
+// The plan (Task 17b, lines 2828–2829) calls for pushing 9+ short segments
+// to drive the boundary loop past `MAX_BOUNDARY_ITERS = 8`. With the current
+// `SegmentQueue` (heapless 0.8 `Queue<_, Q_N>` where Q_N=8 → effective
+// capacity 7), the maximum number of segments accessible to a single tick is
+// 1 (already in `engine.current` after the idle-pop) + 7 (queued) = 8. The
+// boundary loop's 8th `try_pop` returns `None` and the engine takes the
+// "drained" branch (status = Drained, no error) before the `iters > 8` check
+// can fire on a 9th iteration. So `BoundaryLoopExhausted` is defense-in-depth
+// code today, not reachable through the public API surface.
+//
+// TODO Step-6: when `Q_N` is bumped or the boundary-loop bound changes, add
+// a real test here. Options surveyed:
+//   (a) Bump `Q_N` to ≥10 to allow 9 successful pops in one tick.
+//   (b) Lower `MAX_BOUNDARY_ITERS` (would change defense-in-depth headroom).
+//   (c) Add a `#[cfg(test)] pub fn force_boundary_iters(...)` injection point.
+// Decision deferred until Step 6's live producer protocol is in place — the
+// final shape of `Q_N` and the bound is best resolved then, not now.
+
+// `nan_or_inf_from_eval_latches_fault`: deferred to Step 6+.
+//
+// `CurvePool::load` performs producer-side validation (NaN/Inf rejection,
+// non-monotone knots, non-positive weights, clamping, n_cp ≥ degree+1) so
+// every curve that enters the pool is well-formed. With the Step-5 stub
+// evaluator (`nurbs::vector_eval`) on a validated curve, NaN-from-eval is
+// not reachable through the public API. The plan (Task 17b lines 2829–
+// 2830) explicitly anticipates this case and instructs to skip it with a
+// TODO when both upstream-rejection routes (degree-1 with `weights[0]=0`
+// and `f32::NAN` in a control point) are blocked at load time:
+//   - `weights[0] = 0.0` → rejected by `CurvePoolError::InvalidCurve`
+//     (non-positive weight check).
+//   - `f32::NAN` in any field → rejected by `CurvePoolError::NonFiniteData`.
+//
+// TODO Step-6: revisit when (a) the evaluator gains arc-length parameter
+// inversion that can introduce floating-point ill-conditioning at runtime
+// or (b) Step-9 tanh-PA introduces a runtime-evaluated transform that can
+// produce NaN from finite inputs (tanh-of-large is fine, but division paths
+// inside PA may not be). The fault path itself is exercised by
+// `invalid_curve_handle_latches_fault` above (same code path: `latch_fault`
+// + trace marker + last_error), so the *fault-handling machinery* is
+// already covered; only the specific NaN-detection trigger is not.
