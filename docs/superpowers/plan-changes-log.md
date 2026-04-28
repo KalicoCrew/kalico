@@ -109,3 +109,37 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 2. **Stale maintainer warning in `rust/temporal/src/topp/constraints.rs:240–251` says "do NOT add per-axis Cartesian jerk rows … in `topp::verify::check`" — but `verify::check` already does (`verify.rs:116–133`, axis-jerk against `lim.j_max[axis]`).** Likely a leftover from the Step-9 verifier-stencil SLP work. No behavioral consequence; reconcile during Step-9 follow-up.
 
 **Evidence:** 2 commits on `fixture-6-stall-investigation` (output.rs Fix A + multi_segment.rs gate tightening). Verifier research artifact at `docs/research/maxiterslp-grid-sensitivity-fixture-6.md` (kalico-verifier 2026-04-28; partial-verdict on the original hypothesis, with the mechanism-correction and the empirical-followup recommendation that this investigation then ran). Cross-check via codex:rescue (independent diagnosis; agreed on relaxation-gap framing, initially rejected Fix A on a static-analysis comparison of `last_max_ratio` against `EPS_FEAS` — empirical instrumentation of `verify::check(best_result)` showed the predicates measure overlapping but not identical physics, settling the disagreement in Fix A's favor).
+
+---
+
+**Build-order Step 5 (MCU framework with stub NURBS evaluator) completed.** Implementation per `docs/superpowers/plans/2026-04-28-layer-4-mcu-framework-stub.md`.
+
+New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/` (renamed from `nurbs-c-api/`) is the umbrella staticlib with two cbindgen headers (`kalico_nurbs.h`, `kalico_runtime.h`). 40 kHz TIM5 ISR designed for H723 (Octopus Pro); cycle-budget gate ready in Surface C scripts but actual numbers TBD until hardware bring-up. Trace-only output stage; runtime-eval slots for PA (Step 9) and IS (Step 8) are ZST `Noop` impls. Pre-flight: workspace migrated to Rust 2024 edition.
+
+**Deviations from plan listing:**
+
+- **Task 11 fixture timing**: the plan's literal seam-tolerance test used durations (`tc*3/2`, `3*tc`) that produced a ~7 mm seam diff against the asserted 0.05 mm tolerance. Test now uses `tc+1` and `1000*tc` so samples land at u≈1 of seg1 and u≈0.001 of seg2 (~24 µm seam diff). Math independently re-derived during review.
+- **Task 11 plan-internal coupling**: tests reference `fixtures::load()` from Task 17a's parser. Pulled forward Task 17a Steps 1–2 into Task 11 so engine_tick.rs would compile. Task 17a's commit reduced to a no-op acknowledgement.
+- **Task 13 latent UB**: `*mut KalicoRuntime → &mut RuntimeContext` produces overlapping `&mut` under Rust's strict aliasing model when the ISR preempts foreground. Step 5 accepts as documented; Step 6 hardening will refactor to half-split SPSC.
+- **Task 13 spec/code visibility gap**: plan's literal FFI accessed `pub(crate)` `Engine::widen_state` from outside the runtime crate. Resolved by adding narrow `pub fn widen` and `pub fn reinit_widen` methods on `Engine`.
+- **Task 15 cbindgen `expand`**: plan specified `parse.expand = ["kalico-c-api"]` which requires nightly Rust (`-Zunpretty=expanded`); workspace pins stable. Pivoted to symmetric `[export.exclude]` lists in both cbindgen configs. Maintenance trade-off documented; verified by Codex as sound.
+- **Task 17b boundary-loop fault test**: `MAX_BOUNDARY_ITERS = 8` matches `Q_N = 8`, but heapless effective capacity is N-1 = 7. So the boundary-loop fault is dead defense-in-depth — unreachable from the public API. Test left as a Step-6 TODO listing three remediation paths.
+- **Task 22 `%*s` ABI bug**: plan-literal `command_kalico_load_curve` allocates one args slot per `%*s` blob, but Klipper convention uses two (length + ptr). Left plan-literal as-is per implementer instructions; flagged for Phase 8 hardware bring-up rework.
+- **Task 22 `OTG_FS_IRQn`**: plan-literal referenced `OTG_FS_IRQn` which doesn't exist on H723 (only `OTG_HS_IRQn`). Fixed in commit `418e0b80`.
+- **Tasks 26–29 hardware deferral**: Surface C bring-up scripts (`tools/test_h723_*.py`) ship now without local hardware validation. Per CLAUDE.md memory ("Trident is a test bench; user switches to a stable branch when actually printing"), these will be exercised the first time the user runs them on flashed H723 hardware; bugs surfaced there will be fixed in a follow-up commit. Each script has been syntax-validated and import-tested host-side.
+
+**Open follow-ups (non-blocking; tracked here so they don't get lost):**
+
+- Loom test coverage expansion (gated to Step 6 when live producer surfaces).
+- Layer 3 time-reparameterization (gating Step 7 MVP — see spec §7 open question 7).
+- F4x integration test (gating Step 6 multi-MCU bring-up).
+- TanhPa slot velocity dependency (Step 9 design time decides TickState shape).
+- Klipper full-LTO link CI (Step 7 MVP CI work).
+- DECL_COMMAND `%*s` ABI rework in `command_kalico_load_curve` (Phase 8).
+- Cycle-budget actual numbers — pending Surface C bring-up.
+- `Engine::Default` is `#[cfg(test)]` only after Task 11 review; Step 6 may want production-context constructor.
+- Spec/code mismatch on `MAX_BOUNDARY_ITERS` vs heapless cap-7 — decide Step 6 whether to lower MAX, bump Q_N to 9 (rounds up to 16 in heapless), or add test-only injection hook.
+- Status-LED pin (`PA13` in `runtime_tick.c`) — verify against actual BTT Octopus Pro pinmap during Surface C bring-up; the LED toggle is a visual signal only (PASS/FAIL gate is the kalico_status response).
+- `test_h723_trace_dump.py` plot output — TODO; bring-up gate is the position-error check, not the plot.
+
+**Evidence:** Plan + ~30 commits on this branch. Spec at `docs/superpowers/specs/2026-04-28-layer-4-mcu-framework-stub-design.md`. Surface-C cycle-budget result template at `docs/research/step5-h723-cycle-budget.md` (TBD by user). Surface C bring-up scripts at `tools/test_h723_first_light.py`, `tools/test_h723_cycle_count.py`, `tools/test_h723_trace_dump.py`, `tools/test_h723_soak.py`; chained via `Makefile.kalico:test-h723`.
