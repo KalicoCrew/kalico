@@ -528,16 +528,20 @@ Host issues `kalico_stream_open` / `kalico_stream_arm` / etc. to all participati
 
 ### 8.5 Flush atomicity and idempotency (Round 1 + 2 review fixes)
 
-**Flush mechanism (Round 2 fix — actor was undefined):** Because the §11.1 split puts `queue_producer` on foreground but `queue_consumer` on the ISR, the foreground cannot drain the queue without preempting the ISR. Flush executes as:
+**Flush mechanism (Round 2 + Round 3 fixes):** Because the §11.1 split puts `queue_producer` on foreground but `queue_consumer` on the ISR, the foreground cannot drain the queue without preempting the ISR. Furthermore, Round 3 review found that the previous "wait for current_segment_id to advance" approach didn't halt the ISR's segment evaluation — the ISR could pop a new segment from the queue and make it active in the same window the foreground was about to drain. Flush now uses an **explicit `force_idle` handshake** to definitively halt ISR segment evaluation before per-slot state reset:
 
-1. Foreground sets `stream_open.store(false, Release)`. Any in-flight boundary-loop drain branch returns `Drained`, not `Underrun`.
-2. Foreground waits for the ISR to retire its current segment (polled via `current_segment_id` advancing past the segment that was active at flush-issue time, OR a 100 ms timeout — whichever first). This bounds the wait to one segment duration, typically &lt;10 ms.
-3. Foreground IRQ-disables (`__disable_irq()`), transiently asserts exclusive access to `IsrState.queue_consumer`, drains the queue (pops remaining entries; no retire events emitted because they were never executed), then IRQ-re-enables (`__enable_irq()`). The IRQ-disable window is bounded by the queue length × pop cost — at Q_N=256 with each pop ~10 cycles, ≤ 2560 cycles ≈ 13 µs at 200 MHz. Acceptable jitter for foreground operation.
-4. Foreground resets `last_retired_gen.store(current_gen, Release)` for all curve-pool slots (curves stay loaded but are immediately reusable). Per §10.4: this only happens *after* step 2 confirms no in-flight ISR access remains.
-5. Foreground increments `credit_epoch` (so any pending credit events from before the flush are detectable as stale by the host).
-6. Returns `kalico_stream_flush_response result=0 credit_epoch=<new>`.
+1. Foreground sets `stream_open.store(false, Release)` AND `force_idle.store(true, Release)` (both atomics in `SharedState`). The first makes any boundary-loop drain branch return `Drained` instead of `Underrun`; the second instructs the ISR to abort segment evaluation on its next tick.
+2. ISR observes `force_idle == true` at the top of its tick handler — BEFORE any segment evaluation, BEFORE any `queue.try_pop()`, BEFORE any `widen_state` mutation. ISR transitions engine state to a transient `FORCE_IDLE_ACK` state, clears its current-segment slot to `None`, sets `acked_force_idle.store(true, Release)`, and returns. The ISR is now guaranteed not to access the queue or any curve-pool slot until `force_idle` is cleared.
+3. Foreground spin-waits on `acked_force_idle.load(Acquire) == true` with a 1-ms timeout (well above the 25 µs ISR period at 40 kHz, even with reasonable preemption from higher-priority ISRs like USB-CDC). Spin uses `core::hint::spin_loop()` between checks. If the timeout fires (which would indicate ISR is stuck — should never happen in normal operation), foreground latches `KALICO_FAULT_LIVENESS_STALLED` and aborts the flush. Worst-case wait: ~50 µs in normal operation, 1 ms timeout for fault-detection.
+4. Foreground IRQ-disables (`__disable_irq()`), transiently asserts exclusive access to `IsrState.queue_consumer`, drains the queue (pops remaining entries; no retire events emitted because they were never executed), then IRQ-re-enables (`__enable_irq()`). The IRQ-disable window is bounded by the queue length × pop cost — at Q_N=256 with each pop ~10 cycles, ≤ 2560 cycles ≈ 13 µs at 200 MHz. Acceptable jitter for foreground operation; well below USB-CDC SOF interval (1 ms full-speed) so USB hardware FIFO absorbs the gap.
+5. Foreground resets `last_retired_gen.store(current_gen, Release)` for all curve-pool slots. **Now safe** because step 2's handshake guarantees no ISR is referencing any slot. Curves stay loaded but are immediately reusable.
+6. Foreground increments `credit_epoch` (so any pending credit events from before the flush are detectable as stale by the host).
+7. Foreground clears `force_idle.store(false, Release)` and `acked_force_idle.store(false, Release)`. ISR resumes normal operation on next tick (engine state is IDLE; awaits next stream-open/arm).
+8. Returns `kalico_stream_flush_response result=0 credit_epoch=<new>`.
 
-The wait in step 2 is bounded; the IRQ-disable window in step 3 is bounded; total flush latency &lt; (one segment duration + 50 µs). Hold-off on real-time safety: a 13 µs IRQ-disable on a 25 µs tick interval is potentially missing one tick, which the engine state machine handles via the boundary-loop on the next ISR fire. Acceptable for flush; this idiom is NOT used on the segment-push hot path (§11.2 retires that idiom by making `widen_state` ISR-private with seqlock publication).
+**Hold-segment compatibility (Round 3 fix):** Hold segments (§6.5) are evaluated by the ISR in the same dispatch loop as motion segments. The `force_idle` flag is checked at tick-entry, BEFORE the `flags & HOLD_SEGMENT` short-circuit. So flush during a multi-second hold segment correctly aborts the hold within one ISR period (~25 µs), regardless of the hold's nominal `t_end`. Previous draft's "wait for current_segment_id to advance" approach would have required up to t_end - now to elapse during a hold; the new force_idle handshake bounds wait to ~50 µs in all cases.
+
+Total flush latency in normal operation: ~50 µs handshake + 13 µs queue drain + ~10 µs reset/clear ≈ 75 µs. Bounded by 1 ms timeout in pathological cases. This idiom (force_idle + IRQ-disable transient consumer access) is NOT used on the segment-push hot path; §11.2 retires the disable-around-push pattern by making `widen_state` ISR-private with seqlock publication.
 
 **Command idempotency under msgproto retransmits (Round 2 review fix — rationale corrected):** Klipper's MCU msgproto layer dedups in transport: when a retransmitted block arrives with `msgseq != next_sequence`, the MCU NAKs and re-emits the response without re-dispatching the command (per `src/command.c` of the Klipper baseline). So the duplicate-command-delivery hazard is NOT a transport-layer concern. However, the Step-6 protocol still implements idempotency defensively to:
 - Catch host-side double-issue bugs (a host that re-sends a command without waiting for response).
@@ -584,7 +588,7 @@ Step 5's `KalicoErr` enum (numeric codes in `error.rs`, exposed via `last_error:
 - `KALICO_FAULT_UNDERRUN` — queue empty while stream-open.
 - `KALICO_FAULT_QUEUE_OVERRUN` — host pushed without credit and we accepted then ran out (defensive; should never fire if host obeys credit).
 - `KALICO_FAULT_LIVENESS_STALLED` — `kalico_liveness_ok` cleared, foreground task not running.
-- `KALICO_FAULT_TRACE_OVERFLOW` — TraceRing overwrote an undrained sample (host trace consumer too slow). Sized at 2× host-stall budget (§13.1) so this should never fire under stated assumptions; if it does, it indicates either a wrong host-stall budget or a host-side bug.
+- `KALICO_FAULT_TRACE_OVERFLOW` — TraceRing overwrote an undrained sample (host trace consumer too slow). Sized at `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` (§13.1) so this should never fire under stated assumptions; if it does, it indicates either a wrong host-stall budget or a host-side bug.
 
 **Protocol/state machine (Round 1 fix):**
 - `KALICO_FAULT_STREAM_STATE_VIOLATION` — stream-control command issued in wrong state (e.g., `arm` before `open`); reported as FFI rejection code, NOT latched into engine FAULT.
@@ -669,8 +673,8 @@ ABA defense: a stale handle `(N, gen=g)` cannot match a freshly-allocated `(N, g
 
 Primary path:
 - ISR emits a `SEGMENT_END` trace sample at retirement, including the segment's `curve_handle = (slot, gen)`.
-- Foreground drains trace; on `SEGMENT_END(slot=N, gen=G)`, checks: any queued segment references `(slot=N, gen=G or earlier)`? If no, `slot.last_retired_gen.store(G, Release)`.
-- Producer: `try_alloc(slot=N)` succeeds per §10.2 predicate.
+- Foreground drains trace stream; on `SEGMENT_END(slot=N, gen=G)`, foreground sets `slot[N].last_retired_gen.store(G, Release)`. **FIFO ordering of SEGMENT_END events** (guaranteed by single-ISR-writer + heapless ring semantics) implies all prior generations for slot N have already retired by the time we see gen=G; no separate "any queued segment references this slot" inspection is needed (foreground producer cannot inspect ISR's queue contents per §11.1 ownership split).
+- Producer: `try_alloc(slot=N)` succeeds per §10.2 predicate. Producer is **expected to drain pending trace samples before failing alloc due to "no reclaimable slot"** — this ensures any in-flight SEGMENT_END events propagate before treating the pool as exhausted. If alloc still fails after a full trace drain, that's a real exhaustion (planner is producing curves faster than the MCU is retiring them — a Layer-3 throughput violation).
 
 Backstop path (covers Round 1 review concern: TraceRing overflow can drop SEGMENT_END events under sustained host stall):
 - TraceRing is dimensioned per §13.1 to `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` (with safety margin) so overflow is operationally rare.
@@ -741,6 +745,9 @@ pub struct SharedState {
     last_error: AtomicI32,
     runtime_status: AtomicU8,
     stream_open: AtomicBool,
+    // §8.5 flush handshake (foreground sets force_idle, ISR acks via acked_force_idle)
+    force_idle: AtomicBool,
+    acked_force_idle: AtomicBool,
     // §11.4 widened-clock seqlock fields (foreground reads, ISR writes)
     widened_now_lo: AtomicU32,
     widened_now_hi: AtomicU32,
@@ -867,7 +874,7 @@ fn read_widened_now(shared: &SharedState) -> u64 {
 
 Properties:
 - Wait-free for the writer (ISR).
-- For the reader (foreground), retry is theoretically unbounded but practically bounded by ISR cadence: the ISR's publish window is 4 atomic stores ≈ 4–10 cycles. Foreground reader hits a write-in-progress only if it samples within that ~10-cycle window of an ISR fire. At 40 kHz ISR cadence and 200 MHz clock, the ISR fires every 5000 cycles; the contention probability per foreground read is ~10/5000 = 0.2%. Each retry walks 3 atomic loads ≈ 6 cycles, so worst-case retry count is small (under a single-core M7, a retry CANNOT extend beyond the next ISR fire, bounding it to 1 retry per ISR period). In practice 0 retries because foreground reads happen at coarse cadence (status-frame ~10 Hz, clock-sync responder per request).
+- For the reader (foreground), retry is theoretically unbounded but practically bounded by realistic interrupt priorities: the ISR's publish window is 4 atomic stores ≈ 4–10 cycles. Foreground reader hits a write-in-progress only if it samples within that ~10-cycle window of an ISR fire. At 40 kHz ISR cadence and 200 MHz clock, the ISR fires every 5000 cycles; the contention probability per foreground read is ~10/5000 = 0.2%. Each retry walks 3 atomic loads ≈ 6 cycles. **Bound argument**: 1 retry per TIM5 fire that interleaves the read; foreground preemption by lower-priority ISRs (USB-CDC, etc.) may compound, but realistic interrupt priorities keep the ISR fire frequency bounded so the loop terminates within microseconds. In practice 0 retries because foreground reads happen at coarse cadence (status-frame ~10 Hz, clock-sync responder per request).
 - The seqlock is exactly Linux kernel's `seqcount_t`; Rust port via `AtomicU32` is straightforward.
 - AtomicU64 lock-free constraint sidestepped: only AtomicU32 used.
 - Loom test (§11.3) gates correctness.
@@ -913,7 +920,7 @@ Two sample sources:
 - **Dedicated `kalico_clock_sync_request/response` exchange (§12.1)**: host has both `host_send_time` and `host_recv_time`; estimates one-way as `RTT/2`; `host_time` is back-calculated to send-instant via `host_recv_time - RTT/2`; `mcu_clock` is back-calculated to that instant via `mcu_at_response - (RTT/2) × current_freq_estimate`. `rtt_us` recorded.
 - **Status-frame piggyback (§12.3)**: foreground receives an unsolicited status frame; `host_time = host_recv_time` (one-way; cannot adjust); `mcu_clock = mcu_clock_now from frame`. `rtt_us = 0`. Constant one-way-latency offset gets absorbed into the regression's y-intercept; **frequency estimate stays unbiased**, only the absolute offset is biased — fine for §12.4's purposes which gate on residual and drift, not absolute offset.
 
-Linear regression: `mcu_clock = clock_freq × host_time + offset`. Update on every sample; recompute residual_max as the max abs(observed - predicted) over the current window. Both sample sources feed the same regression; the regression converges on the underlying frequency.
+Linear regression: `mcu_clock = clock_freq × host_time + offset`. Update on every sample; recompute residual_max as the max abs(observed - predicted) over the current window. Both sample sources MAY feed the same regression, but **§12.3 is authoritative on cadence**: in steady-state only piggyback samples are added to the regression; dedicated `kalico_clock_sync_request/response` samples are used only at arm-time (for quality-gate validation) and after fault recovery (resync). This avoids mixing two sample populations with different one-way-latency biases over a long window — the dedicated samples retain RTT awareness for arm-time precision; the piggyback stream provides the steady-state slope/drift estimate without bias contamination.
 
 ### 12.3 Sample cadence
 
@@ -1002,7 +1009,7 @@ Per §10.4, `SEGMENT_END` flag drives generation-handle reclaim; foreground obse
 | Klipper full-LTO link CI | Step 7 MVP scope. |
 | Cycle-budget actual numbers | §7.3 M2 measurement protocol re-runs Step-5 cycle-budget bench against Step-6 additions. |
 | `Engine::Default` `#[cfg(test)]`-only | Production-context constructor (above) supersedes. |
-| TraceRing 128/1024 mismatch | §13.1 — reconciled against host-stall budget; sized at 2× host-stall, kept in DTCM (Round 3 dropped AXI SRAM relocation per cache-coherency review). |
+| TraceRing 128/1024 mismatch | §13.1 — reconciled against host-stall budget; sized at `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` (default 30 ms), kept in DTCM. |
 | Bench-loop manual IWDG kicking | §9 fault taxonomy includes `KALICO_FAULT_LIVENESS_STALLED`; comms-protocol benches that need to bypass liveness must be guarded by `#[cfg(test)]` and emit a warning trace event on entry. Permanent benches in production firmware are forbidden. |
 
 ---
@@ -1105,6 +1112,21 @@ After applying Round 1 fixes (commit 2cc9618b), both reviewers re-ran in paralle
 
 Net round 2: spec now has internally-consistent wire schema, executable DTCM math, explicit flush sequence, ABA-defense ceiling, and clarified retry/sample-form semantics. The architectural shape is unchanged from Round 1; Round 2 was tightening, not redesign.
 
+### Round 3 of autonomous loop: Codex + kalico-verifier parallel re-review
+
+After Round 2 fixes (commit 74682f69), both reviewers re-ran in parallel.
+
+**Both reviewers converged on:**
+- **§8.5 flush race with ISR-active segment.** The previous "wait for current_segment_id to advance past flush-time-active segment" approach didn't actually halt ISR segment evaluation — the ISR could pop a new segment from the queue and make it active in the same window foreground was about to drain. Verifier additionally noted this fails badly for multi-second hold segments where the wait would block flush for seconds. Fix: replaced wait-for-advance with explicit `force_idle` / `acked_force_idle` handshake — foreground sets force_idle, ISR observes on next tick (≤ 25 µs), aborts current evaluation, sets ack; foreground waits on ack with 1 ms timeout. Bounded ~50 µs in normal operation, regardless of segment type or duration. Hold segments handled correctly because the force_idle check happens before the HOLD_SEGMENT short-circuit at tick entry.
+
+**Verifier (round 3) unique non-blocking findings (applied):**
+- Stale "2× host-stall" wording in §9.1 KALICO_FAULT_TRACE_OVERFLOW description, §17 summary, and §14 carryover table — replaced with `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` to match §13.1 actual rule.
+- §10.4 wording loose ("any queued segment references" implied foreground inspects ISR queue, which it can't). Fix: clarified that FIFO ordering of SEGMENT_END events implies all-prior-gens-retired by the time gen=G is observed, so no separate inspection is needed. Added explicit "drain trace before alloc-fail" requirement.
+- §12.2 vs §12.3 contradiction (Both sources feed regression vs steady-state piggyback only). Fix: clarified §12.3 is authoritative — dedicated samples used only at arm-time and post-fault, not steady-state — to avoid mixing two latency-bias populations over the regression window.
+- §11.4 retry-bound wording too strong ("1 retry per ISR period"). Fix: relaxed to "bounded by realistic interrupt priorities" with explicit cycle-count analysis; loop termination guaranteed.
+
+Net round 3: spec converged. Architectural shape unchanged across all three rounds; Rounds 2 and 3 were tightening of executable details (DTCM numbers, flush sequence, sample-source semantics, retry-bound argument). All blocking issues across both reviewers' parallel findings now closed.
+
 ---
 
 ## 17. Summary of decisions
@@ -1120,5 +1142,5 @@ Net round 2: spec now has internally-consistent wire schema, executable DTCM mat
 - **Curve-pool:** generation-counter handles `(slot, gen)`, deferred reclaim via SEGMENT_END trace flag.
 - **FFI aliasing UB:** half-split SPSC, FgState/IsrState disjoint memory.
 - **Clock sync:** Klipper-style sliding-window linear regression, 50 Hz warmup / 10 Hz steady-state via status-frame piggyback (every status frame contributes a sample; dedicated request/response is reserved for arm-time quality validation), with high-residual-mode 0.5/0.25 hysteresis, quality gate on residual + drift + sample-age.
-- **Telemetry transport:** TraceRing kept in DTCM, sized at 2× host-stall budget; overflow is a hard fault. AXI SRAM relocation is a future contingency that requires MPU non-cacheable configuration (out of scope for Step 6).
+- **Telemetry transport:** TraceRing kept in DTCM, sized at `HOST_STALL_BUDGET_MS + TRACE_RING_SAFETY_MARGIN_MS` (default 30 ms = 1.5× host-stall); overflow is a hard fault. AXI SRAM relocation is a future contingency that requires MPU non-cacheable configuration (out of scope for Step 6).
 - **Host runtime:** standalone Rust kalico-host-rt owns USB-CDC fd directly; Klippy-replacement non-motion subsystems are Step 7 MVP scope.
