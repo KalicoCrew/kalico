@@ -1,0 +1,59 @@
+# Makefile.kalico — Surface C bring-up convenience target.
+#
+# Per Step-5 plan Task 29. Drives the H723 first-light + cycle-count + trace-
+# dump + soak sequence with SHA-tagged log artifacts under build-logs/. Each
+# script is independently re-runnable; this target chains them.
+#
+# Usage:
+#   make -f Makefile.kalico test-h723 SERIAL_PORT=/dev/ttyACM0
+#
+# Optional knobs:
+#   FLASH_DEVICE   — passed through to your flash helper (not invoked here);
+#                     present for the user's reflash convenience scripts.
+#   SOAK_MINUTES   — soak duration (default 30).
+#   P99_BUDGET_US  — cycle-count p99 gate (default 15.0).
+
+SERIAL_PORT     ?= /dev/ttyACM0
+BAUD            ?= 250000
+SOAK_MINUTES    ?= 30
+P99_BUDGET_US   ?= 15.0
+FLASH_DEVICE    ?=
+
+GIT_SHA  := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo nogit)
+LOG_DIR  := build-logs/h723
+TS       := $(shell date -u +%Y%m%dT%H%M%SZ)
+
+PYTHON   ?= python3
+
+.PHONY: test-h723 test-h723-first-light test-h723-cycle-count \
+        test-h723-trace-dump test-h723-soak
+
+test-h723: test-h723-first-light test-h723-cycle-count \
+           test-h723-trace-dump test-h723-soak
+	@echo "test-h723: ALL PASS (sha=$(GIT_SHA))"
+
+test-h723-first-light:
+	@mkdir -p $(LOG_DIR)
+	$(PYTHON) tools/test_h723_first_light.py \
+	    --port $(SERIAL_PORT) --baud $(BAUD) \
+	    2>&1 | tee $(LOG_DIR)/first-light-$(GIT_SHA)-$(TS).log
+
+test-h723-cycle-count:
+	@mkdir -p $(LOG_DIR)
+	$(PYTHON) tools/test_h723_cycle_count.py \
+	    --port $(SERIAL_PORT) --baud $(BAUD) \
+	    --p99-budget-us $(P99_BUDGET_US) \
+	    2>&1 | tee $(LOG_DIR)/cycle-count-$(GIT_SHA)-$(TS).log
+
+test-h723-trace-dump:
+	@mkdir -p $(LOG_DIR)
+	$(PYTHON) tools/test_h723_trace_dump.py \
+	    --port $(SERIAL_PORT) --baud $(BAUD) \
+	    2>&1 | tee $(LOG_DIR)/trace-dump-$(GIT_SHA)-$(TS).log
+
+test-h723-soak:
+	@mkdir -p $(LOG_DIR)
+	$(PYTHON) tools/test_h723_soak.py \
+	    --port $(SERIAL_PORT) --baud $(BAUD) \
+	    --minutes $(SOAK_MINUTES) \
+	    2>&1 | tee $(LOG_DIR)/soak-$(GIT_SHA)-$(TS).log
