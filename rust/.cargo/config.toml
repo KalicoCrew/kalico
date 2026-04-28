@@ -1,6 +1,11 @@
-[target.thumbv7em-none-eabihf]
+# Klipper's H7 build uses soft-float ABI (no -mfloat-abi=hard in CFLAGS),
+# so the kalico staticlib must match or the linker rejects archive merge
+# with "uses VFP register arguments, klipper.elf does not". Use the
+# soft-ABI target. Step 6 (phase stepping) may revisit and switch the
+# whole H7 firmware to hard-float if the cycle budget demands it.
+[target.thumbv7em-none-eabi]
 rustflags = [
     "-C", "target-cpu=cortex-m7",
-    "-C", "target-feature=+fp-armv8d16,+strict-align",
+    "-C", "target-feature=+strict-align",
     "-C", "link-arg=--nmagic",
 ]

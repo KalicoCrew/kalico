@@ -46,7 +46,7 @@ $(OUT)klipper.elf: $(OUT)src/generic/armcm_link.ld
 # Klipper's link rule is `$(CC) $(OBJS) $(CFLAGS_klipper.elf) -o $@` and
 # the existing -lgcc tail stays at the end.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
-KALICO_LIB := rust/target/thumbv7em-none-eabihf/release/libkalico_c_api.a
+KALICO_LIB := rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a
 CFLAGS_klipper.elf := $(KALICO_LIB) $(CFLAGS_klipper.elf)
 $(OUT)klipper.elf: $(KALICO_LIB)
 endif

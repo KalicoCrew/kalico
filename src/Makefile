@@ -40,10 +40,10 @@ ifeq ($(CONFIG_KALICO_RUNTIME),y)
 # rustup-installed cargo lives in ~/.cargo/bin which isn't on
 # non-interactive shell $PATH; prepend it so `make` works without
 # requiring the user to source ~/.cargo/env.
-rust/target/thumbv7em-none-eabihf/release/libkalico_c_api.a: FORCE
+rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
 	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" cargo build -p kalico-c-api \
 		--no-default-features \
 		--features mcu-h7,header-nurbs,header-runtime \
-		--target thumbv7em-none-eabihf --release
+		--target thumbv7em-none-eabi --release
 .PHONY: FORCE
 endif

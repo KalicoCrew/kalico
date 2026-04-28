@@ -16,9 +16,9 @@ Host (default — for tests, linting, host-side use):
 
 MCU (H723 = Cortex-M7 with double-precision FPU):
 
-    cargo build --release --no-default-features --features mcu-h7 --target thumbv7em-none-eabihf
+    cargo build --release --no-default-features --features mcu-h7 --target thumbv7em-none-eabi
 
-The Klipper Make build picks up the resulting staticlib at `target/thumbv7em-none-eabihf/release/libkalico_c_api.a` and the C header at `kalico-c-api/include/kalico_nurbs.h`.
+The Klipper Make build picks up the resulting staticlib at `target/thumbv7em-none-eabi/release/libkalico_c_api.a` and the C header at `kalico-c-api/include/kalico_nurbs.h`.
 
 ## Toolchain
 
