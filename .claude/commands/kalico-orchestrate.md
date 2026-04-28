@@ -37,7 +37,9 @@ If you find yourself drafting a message like "should I continue?" or "here are t
 - **Read-only — never edit:** `src/`, `klippy/`, `rust/`, `lib/`, `config/`, `test/`, build files, anything else in the repo.
 - **Read source code? No.** Even read-only, source-code reading is for subagents (during SDD execution). You operate from the plan and knowledge.
 
-For `CLAUDE.md`: tick checkboxes and append to the plan-changes log freely. **Coordinate with the user before any structural rewrite, layer reordering, scope change, or removal of an item.** Tiny corrections (typos, factual fixes) are fine without asking.
+For `CLAUDE.md`: tick checkboxes freely. **Coordinate with the user before any structural rewrite, layer reordering, scope change, or removal of an item.** Tiny corrections (typos, factual fixes) are fine without asking.
+
+For `docs/superpowers/plan-changes-log.md`: append entries freely whenever build-order items, layer scopes, or constraints change. The log was extracted from `CLAUDE.md` so the always-loaded grand-plan stays compact; new entries always go in this file, never back into `CLAUDE.md`.
 
 ## Startup
 
@@ -144,7 +146,7 @@ Loop until the code reviewer returns no actionable issues.
 If brainstorming or research reveals a gap or inaccuracy in `CLAUDE.md`:
 
 1. Confirm with deeper research (another `kalico-researcher` dispatch is fine).
-2. **Small change** (clarification, factual fix, typo): edit `CLAUDE.md` directly. Note in the plan-changes log.
+2. **Small change** (clarification, factual fix, typo): edit `CLAUDE.md` directly. Note in `docs/superpowers/plan-changes-log.md`.
 3. **Structural change** (reordering, scope change, new layer, item removal): present the proposed change with evidence and ask the user yes/no. **One-question confirmation, not a session pause** — once they answer, edit (or skip) and resume the loop immediately on the same turn if possible.
 4. All edits go in the end-of-session summary (printed only when a real pause triggers).
 
@@ -164,8 +166,8 @@ When you actually pause for one of the triggers in "Operating mode: autonomous,"
 ### Code review summary (per item)
 - Step N: <cycles> code-review cycle(s); <brief note on findings and fixes applied>
 
-### CLAUDE.md edits
-- <section>: <what changed and why>
+### CLAUDE.md / plan-changes-log edits
+- <file + section>: <what changed and why>
 
 ### Open questions / blockers
 - <question>
