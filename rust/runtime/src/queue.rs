@@ -85,10 +85,7 @@ mod tests {
                 "push {i} should succeed"
             );
         }
-        assert!(
-            q.try_push(seg(7, 0, 100)).is_err(),
-            "8th push must fail"
-        );
+        assert!(q.try_push(seg(7, 0, 100)).is_err(), "8th push must fail");
     }
 
     #[test]

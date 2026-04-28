@@ -43,7 +43,7 @@
 
 use nurbs::VectorNurbs;
 use temporal::topp::path::sample_arclength_grid;
-use temporal::{schedule_segment, GridConfig, GridScheme, Limits};
+use temporal::{GridConfig, GridScheme, Limits, schedule_segment};
 
 fn textbook_limits() -> Limits {
     Limits::new(

@@ -176,7 +176,10 @@ pub fn multiply<T: Float>(
                 .find(|(uu, _)| *uu == u)
                 .map_or(0, |(_, m)| *m);
             let target = morken_multiplicity(d_a, m_a, d_b, m_b);
-            debug_assert!(target <= p, "Mørken target {target} exceeds product degree {p}");
+            debug_assert!(
+                target <= p,
+                "Mørken target {target} exceeds product degree {p}"
+            );
             (u, target)
         })
         .collect();
@@ -901,7 +904,7 @@ mod tests {
         // Absolute form: w(t) = 1 + 2t on [0.5, 1.5].
         // Pascal-shifted at u_start = 0.5: w(u) = 1 + 2*(u - 0.5 + 0.5) = 2 + 2*(u - 0.5).
         let k = PiecewisePolynomialKernel::single_poly_from_absolute(
-            vec![1.0_f64, 2.0],  // 1 + 2t in absolute t
+            vec![1.0_f64, 2.0], // 1 + 2t in absolute t
             (0.5, 1.5),
         );
         assert_eq!(k.pieces.len(), 1);

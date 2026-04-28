@@ -5,9 +5,7 @@
 use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SlpOutcome, SolverResult, SolverStatus};
 use crate::topp::verify::{self, VerifyReport};
-use crate::{
-    GridConfig, GridSample, InfeasibleReason, SolveStatus, TopProfile,
-};
+use crate::{GridConfig, GridSample, InfeasibleReason, SolveStatus, TopProfile};
 
 pub(crate) fn assemble(
     grid: &ArclengthGrid,
@@ -89,7 +87,9 @@ pub(crate) fn map_status(
             if residual < verify::EPS_FEAS && verify.feasible {
                 SolveStatus::SolvedInexact { residual }
             } else {
-                SolveStatus::MaxIter { last_residual: residual }
+                SolveStatus::MaxIter {
+                    last_residual: residual,
+                }
             }
         }
     };
@@ -106,12 +106,16 @@ pub(crate) fn map_status(
             SlpOutcome::Converged { outer_iters },
             SolveStatus::Solved | SolveStatus::SolvedInexact { .. },
         ) if outer_iters > 0 => SolveStatus::SolvedSlp { outer_iters },
-        (SlpOutcome::Diverged { last_max_ratio, outer_iters }, _) => {
-            SolveStatus::DivergedSlp {
+        (
+            SlpOutcome::Diverged {
                 last_max_ratio,
                 outer_iters,
-            }
-        }
+            },
+            _,
+        ) => SolveStatus::DivergedSlp {
+            last_max_ratio,
+            outer_iters,
+        },
         (SlpOutcome::MaxIters { last_max_ratio }, _) => {
             // Symmetric with the Clarabel-MaxIter promotion at the inner-solver
             // match above: the SLP outer loop's `last_max_ratio` measures the
@@ -126,17 +130,16 @@ pub(crate) fn map_status(
             // different inner solver. Carries the verifier's measured
             // violation as the residual to keep semantics consistent.
             if verify.feasible {
-                SolveStatus::SolvedInexact { residual: verify.worst_violation }
+                SolveStatus::SolvedInexact {
+                    residual: verify.worst_violation,
+                }
             } else {
                 SolveStatus::MaxIterSlp { last_max_ratio }
             }
         }
         // Iteration-0 convergence (no cuts), verifier-rejected SLP-converged
         // outcomes, and inner-solver failures all pass `base` through unchanged.
-        (
-            SlpOutcome::Converged { .. } | SlpOutcome::InnerSolverFailure,
-            _,
-        ) => base,
+        (SlpOutcome::Converged { .. } | SlpOutcome::InnerSolverFailure, _) => base,
     }
 }
 
@@ -155,7 +158,16 @@ mod tests {
         let c_double_prime = vec![[0.0, 0.0, 0.0]; n];
         let c_triple_prime = vec![[0.0, 0.0, 0.0]; n];
         let kappa = vec![0.0; n];
-        ArclengthGrid { s, u, c, c_prime, c_double_prime, c_triple_prime, kappa, total_length: length }
+        ArclengthGrid {
+            s,
+            u,
+            c,
+            c_prime,
+            c_double_prime,
+            c_triple_prime,
+            kappa,
+            total_length: length,
+        }
     }
 
     #[test]
@@ -176,7 +188,10 @@ mod tests {
             worst_violation_grid: 0,
             feasible: true,
         };
-        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 3 };
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 3,
+        };
         let p = assemble(
             &grid,
             &result,

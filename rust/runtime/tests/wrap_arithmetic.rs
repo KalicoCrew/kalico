@@ -1,7 +1,7 @@
 //! Wrap-arithmetic tests. Spec §5.8.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-use runtime::clock::{one_tick_cycles, WidenState};
+use runtime::clock::{WidenState, one_tick_cycles};
 use runtime::curve_pool::CurvePool;
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::SegmentQueue;
@@ -40,14 +40,17 @@ fn boundary_loop_works_near_u64_max() {
     let cps = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0];
     let knots = [0.0f32, 0.0, 1.0, 1.0];
     let weights = [1.0f32, 1.0];
-    pool.load(CurveHandle(0), &cps, &knots, &weights, 1).unwrap();
-    queue.try_push(Segment {
-        id: 1,
-        curve: CurveHandle(0),
-        t_start: near_max,
-        t_end: near_max + tc * 4,
-        kinematics: KinematicTag::CoreXyAndE,
-    }).unwrap();
+    pool.load(CurveHandle(0), &cps, &knots, &weights, 1)
+        .unwrap();
+    queue
+        .try_push(Segment {
+            id: 1,
+            curve: CurveHandle(0),
+            t_start: near_max,
+            t_end: near_max + tc * 4,
+            kinematics: KinematicTag::CoreXyAndE,
+        })
+        .unwrap();
 
     let r = engine.tick(near_max + tc, &mut queue, &pool, &mut trace);
     assert!(r.is_ok(), "tick near u64::MAX should not panic or fault");

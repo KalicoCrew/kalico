@@ -3,7 +3,7 @@
 //! Spec §4.3.
 
 use crate::{GridConfig, Limits, TopProfile};
-use constraints::{build, BoundaryInfeasibility, BuildOutcome, EndpointVelocities};
+use constraints::{BoundaryInfeasibility, BuildOutcome, EndpointVelocities, build};
 use nurbs::VectorNurbs;
 
 pub mod constraints;
@@ -125,14 +125,10 @@ pub fn schedule_segment_with_tolerance(
     // Stage 3 (modified): adaptive-tolerance routing through
     // `slp_solve_with_axis_jerk`. See `ToleranceMode` for semantics.
     let (solver_result, slp_outcome) = match tolerance {
-        ToleranceMode::Tight => {
-            solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-8)
-                .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?
-        }
-        ToleranceMode::Fast => {
-            solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
-                .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?
-        }
+        ToleranceMode::Tight => solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-8)
+            .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?,
+        ToleranceMode::Fast => solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
+            .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?,
         ToleranceMode::Auto => {
             let (fast_result, fast_outcome) =
                 solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
@@ -164,10 +160,7 @@ pub fn schedule_segment_with_tolerance(
 /// Per Codex review-1: `is_success` check uses solver-internal `SolverStatus`
 /// (and `SlpOutcome`), not the public `SolveStatus`. The two differ — public
 /// `SolveStatus` is set later by `output::assemble`.
-fn solver_outcome_is_success(
-    result: &solver::SolverResult,
-    outcome: &solver::SlpOutcome,
-) -> bool {
+fn solver_outcome_is_success(result: &solver::SolverResult, outcome: &solver::SlpOutcome) -> bool {
     let status_ok = matches!(
         result.status,
         solver::SolverStatus::Solved | solver::SolverStatus::SolvedInexact { .. }
@@ -242,7 +235,7 @@ mod tests {
         assert!(profile.samples[0].v < 1e-3);
         assert!(profile.samples[49].v < 1e-3);
         assert!(profile.samples[25].v > 100.0); // ≥ 100 mm/s
-                                                // Total time should be finite and positive.
+        // Total time should be finite and positive.
         assert!(profile.total_time.is_finite() && profile.total_time > 0.0);
     }
 }

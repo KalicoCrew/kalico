@@ -33,25 +33,45 @@ impl Params {
     }
 
     #[must_use]
-    pub fn x(&self) -> Option<f64> { self.get(b'X') }
+    pub fn x(&self) -> Option<f64> {
+        self.get(b'X')
+    }
     #[must_use]
-    pub fn y(&self) -> Option<f64> { self.get(b'Y') }
+    pub fn y(&self) -> Option<f64> {
+        self.get(b'Y')
+    }
     #[must_use]
-    pub fn z(&self) -> Option<f64> { self.get(b'Z') }
+    pub fn z(&self) -> Option<f64> {
+        self.get(b'Z')
+    }
     #[must_use]
-    pub fn e(&self) -> Option<f64> { self.get(b'E') }
+    pub fn e(&self) -> Option<f64> {
+        self.get(b'E')
+    }
     #[must_use]
-    pub fn f(&self) -> Option<f64> { self.get(b'F') }
+    pub fn f(&self) -> Option<f64> {
+        self.get(b'F')
+    }
     #[must_use]
-    pub fn i(&self) -> Option<f64> { self.get(b'I') }
+    pub fn i(&self) -> Option<f64> {
+        self.get(b'I')
+    }
     #[must_use]
-    pub fn j(&self) -> Option<f64> { self.get(b'J') }
+    pub fn j(&self) -> Option<f64> {
+        self.get(b'J')
+    }
     #[must_use]
-    pub fn r(&self) -> Option<f64> { self.get(b'R') }
+    pub fn r(&self) -> Option<f64> {
+        self.get(b'R')
+    }
     #[must_use]
-    pub fn p(&self) -> Option<f64> { self.get(b'P') }
+    pub fn p(&self) -> Option<f64> {
+        self.get(b'P')
+    }
     #[must_use]
-    pub fn q(&self) -> Option<f64> { self.get(b'Q') }
+    pub fn q(&self) -> Option<f64> {
+        self.get(b'Q')
+    }
 }
 
 /// A single tokenized G-code line.
@@ -124,7 +144,13 @@ mod tests {
             line_no: 42,
         };
         match t {
-            Token::Command { letter, major, minor, params, line_no } => {
+            Token::Command {
+                letter,
+                major,
+                minor,
+                params,
+                line_no,
+            } => {
                 assert_eq!(letter, b'G');
                 assert_eq!(major, 1);
                 assert_eq!(minor, None);

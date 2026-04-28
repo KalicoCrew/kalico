@@ -13,10 +13,13 @@ fn run(text: &str) -> Vec<Item> {
 fn helical_g2_quarter_with_z_progression() {
     // Quarter-circle in XY from (1,0,0) to (0,1,0), Z progresses 0 → 0.5.
     let items = run("G1 X1 Z0 F1500\nG2 X0 Y1 Z0.5 I-1 J0\n");
-    let arc = items.iter().find_map(|it| match it {
-        Item::Segment(Segment::Arc(a)) => Some(a),
-        _ => None,
-    }).expect("expected ArcSegment");
+    let arc = items
+        .iter()
+        .find_map(|it| match it {
+            Item::Segment(Segment::Arc(a)) => Some(a),
+            _ => None,
+        })
+        .expect("expected ArcSegment");
     // Rational quadratic with 3 control points.
     assert_eq!(arc.xyz.degree(), 2);
     let cps = arc.xyz.control_points();

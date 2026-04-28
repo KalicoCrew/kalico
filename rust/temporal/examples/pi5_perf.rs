@@ -20,7 +20,7 @@
 use std::time::Instant;
 
 use nurbs::VectorNurbs;
-use temporal::{schedule_segment, GridConfig, GridScheme, Limits};
+use temporal::{GridConfig, GridScheme, Limits, schedule_segment};
 
 fn textbook_limits() -> Limits {
     Limits::new(
@@ -108,8 +108,7 @@ fn main() {
     let start = Instant::now();
     for i in 0..iters {
         let t0 = Instant::now();
-        let profile =
-            schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("schedule_segment");
+        let profile = schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("schedule_segment");
         let ns = t0.elapsed().as_nanos() as u64;
         // Black-box prevent the compiler from optimizing the call away.
         std::hint::black_box(&profile);
@@ -130,8 +129,11 @@ fn main() {
     let min = sorted[0];
     let max = sorted[n - 1];
     let mean: f64 = samples.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
-    let var: f64 =
-        samples.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n as f64;
+    let var: f64 = samples
+        .iter()
+        .map(|&x| (x as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n as f64;
     let stdev = var.sqrt();
 
     eprintln!(

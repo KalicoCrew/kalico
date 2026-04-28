@@ -74,13 +74,25 @@ fn da_ds_at(result: &SolverResult, s: &[f64], i: usize) -> f64 {
     let a = &result.a;
     if i == 0 {
         let ds = s[1] - s[0];
-        if ds.abs() > 1e-15 { (a[1] - a[0]) / ds } else { 0.0 }
+        if ds.abs() > 1e-15 {
+            (a[1] - a[0]) / ds
+        } else {
+            0.0
+        }
     } else if i == n - 1 {
         let ds = s[n - 1] - s[n - 2];
-        if ds.abs() > 1e-15 { (a[n - 1] - a[n - 2]) / ds } else { 0.0 }
+        if ds.abs() > 1e-15 {
+            (a[n - 1] - a[n - 2]) / ds
+        } else {
+            0.0
+        }
     } else {
         let ds = s[i + 1] - s[i - 1];
-        if ds.abs() > 1e-15 { (a[i + 1] - a[i - 1]) / ds } else { 0.0 }
+        if ds.abs() > 1e-15 {
+            (a[i + 1] - a[i - 1]) / ds
+        } else {
+            0.0
+        }
     }
 }
 
@@ -122,16 +134,46 @@ fn worst_ratio_at(p: &PointInputs<'_>) -> (f64, BindingConstraint) {
     // Build (ratio, tag) pairs in precedence order.
     let lim = p.limits;
     let entries: [(f64, BindingConstraint); 10] = [
-        (vel[0].abs() / lim.v_max[0],   BindingConstraint::Velocity  { axis: Axis::X }),
-        (vel[1].abs() / lim.v_max[1],   BindingConstraint::Velocity  { axis: Axis::Y }),
-        (vel[2].abs() / lim.v_max[2],   BindingConstraint::Velocity  { axis: Axis::Z }),
-        (accel[0].abs() / lim.a_max[0], BindingConstraint::AxisAccel { axis: Axis::X }),
-        (accel[1].abs() / lim.a_max[1], BindingConstraint::AxisAccel { axis: Axis::Y }),
-        (accel[2].abs() / lim.a_max[2], BindingConstraint::AxisAccel { axis: Axis::Z }),
-        (jerk[0].abs() / lim.j_max[0],  BindingConstraint::AxisJerk  { axis: Axis::X }),
-        (jerk[1].abs() / lim.j_max[1],  BindingConstraint::AxisJerk  { axis: Axis::Y }),
-        (jerk[2].abs() / lim.j_max[2],  BindingConstraint::AxisJerk  { axis: Axis::Z }),
-        (p.b_i.max(0.0) * p.kappa / lim.a_centripetal_max, BindingConstraint::Centripetal),
+        (
+            vel[0].abs() / lim.v_max[0],
+            BindingConstraint::Velocity { axis: Axis::X },
+        ),
+        (
+            vel[1].abs() / lim.v_max[1],
+            BindingConstraint::Velocity { axis: Axis::Y },
+        ),
+        (
+            vel[2].abs() / lim.v_max[2],
+            BindingConstraint::Velocity { axis: Axis::Z },
+        ),
+        (
+            accel[0].abs() / lim.a_max[0],
+            BindingConstraint::AxisAccel { axis: Axis::X },
+        ),
+        (
+            accel[1].abs() / lim.a_max[1],
+            BindingConstraint::AxisAccel { axis: Axis::Y },
+        ),
+        (
+            accel[2].abs() / lim.a_max[2],
+            BindingConstraint::AxisAccel { axis: Axis::Z },
+        ),
+        (
+            jerk[0].abs() / lim.j_max[0],
+            BindingConstraint::AxisJerk { axis: Axis::X },
+        ),
+        (
+            jerk[1].abs() / lim.j_max[1],
+            BindingConstraint::AxisJerk { axis: Axis::Y },
+        ),
+        (
+            jerk[2].abs() / lim.j_max[2],
+            BindingConstraint::AxisJerk { axis: Axis::Z },
+        ),
+        (
+            p.b_i.max(0.0) * p.kappa / lim.a_centripetal_max,
+            BindingConstraint::Centripetal,
+        ),
     ];
 
     let mut worst_ratio = 0.0_f64;
@@ -155,11 +197,7 @@ fn worst_ratio_at(p: &PointInputs<'_>) -> (f64, BindingConstraint) {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub(crate) fn check(
-    grid: &ArclengthGrid,
-    result: &SolverResult,
-    limits: &Limits,
-) -> VerifyReport {
+pub(crate) fn check(grid: &ArclengthGrid, result: &SolverResult, limits: &Limits) -> VerifyReport {
     let n = grid.s.len();
     debug_assert_eq!(result.b.len(), n);
     debug_assert_eq!(result.a.len(), n);
@@ -232,8 +270,8 @@ pub(crate) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topp::solver::{SolverResult, SolverStatus};
     use crate::Limits;
+    use crate::topp::solver::{SolverResult, SolverStatus};
 
     fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
         let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
@@ -276,10 +314,12 @@ mod tests {
         let report = check(&grid, &result, &limits);
         assert!(report.feasible);
         assert!(report.worst_violation < EPS_FEAS);
-        assert!(report.binding_per_grid.iter().all(|b| matches!(
-            b,
-            BindingConstraint::Boundary | BindingConstraint::None
-        )));
+        assert!(
+            report
+                .binding_per_grid
+                .iter()
+                .all(|b| matches!(b, BindingConstraint::Boundary | BindingConstraint::None))
+        );
     }
 
     #[test]
@@ -408,7 +448,10 @@ mod tests {
             status: SolverStatus::Solved,
         };
         let report = check(&grid, &result, &limits);
-        assert!(!report.feasible, "over-centripetal profile should be infeasible");
+        assert!(
+            !report.feasible,
+            "over-centripetal profile should be infeasible"
+        );
         // At least one interior point should be tagged Centripetal.
         let has_centripetal = report
             .binding_per_grid

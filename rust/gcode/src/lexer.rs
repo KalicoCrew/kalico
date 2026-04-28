@@ -48,7 +48,12 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
     if !head_char.is_ascii_uppercase() {
         return Err(ParseError::UnrecognizedHead {
             line_no,
-            head: line.split_whitespace().next().unwrap_or(line).to_string().into_boxed_str(),
+            head: line
+                .split_whitespace()
+                .next()
+                .unwrap_or(line)
+                .to_string()
+                .into_boxed_str(),
         });
     }
     let head_byte = head_char as u8;
@@ -59,12 +64,11 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
 
     // Head number runs up to the first whitespace.
     let head_number_str = after_letter.split_whitespace().next().unwrap_or("");
-    let (major, minor) = parse_head_number(head_number_str).ok_or_else(|| {
-        ParseError::UnrecognizedHead {
+    let (major, minor) =
+        parse_head_number(head_number_str).ok_or_else(|| ParseError::UnrecognizedHead {
             line_no,
             head: format!("{head_char}{head_number_str}").into_boxed_str(),
-        }
-    })?;
+        })?;
 
     // Parse remaining whitespace-separated tokens as `<letter><number>`.
     let mut params = crate::Params::default();
@@ -184,7 +188,13 @@ mod tests {
         let toks = collect("G1 X10 Y-5\n");
         assert_eq!(toks.len(), 1);
         match &toks[0] {
-            Ok(Token::Command { letter, major, minor, params, line_no }) => {
+            Ok(Token::Command {
+                letter,
+                major,
+                minor,
+                params,
+                line_no,
+            }) => {
                 assert_eq!(*letter, b'G');
                 assert_eq!(*major, 1);
                 assert_eq!(*minor, None);
@@ -227,7 +237,10 @@ mod tests {
         let toks = collect("G1 X1 X2\n");
         assert_eq!(toks.len(), 1);
         match &toks[0] {
-            Err(ParseError::DuplicateParam { line_no: 1, letter: 'X' }) => {}
+            Err(ParseError::DuplicateParam {
+                line_no: 1,
+                letter: 'X',
+            }) => {}
             other => panic!("expected DuplicateParam, got {other:?}"),
         }
     }
@@ -294,7 +307,12 @@ mod tests {
         let toks = collect("G5.1 X10 Y20 I1 J2\n");
         assert_eq!(toks.len(), 1);
         match &toks[0] {
-            Ok(Token::Command { letter, major, minor, .. }) => {
+            Ok(Token::Command {
+                letter,
+                major,
+                minor,
+                ..
+            }) => {
                 assert_eq!(*letter, b'G');
                 assert_eq!(*major, 5);
                 assert_eq!(*minor, Some(1));
@@ -308,7 +326,12 @@ mod tests {
         let toks = collect("M104 S210\n");
         assert_eq!(toks.len(), 1);
         match &toks[0] {
-            Ok(Token::Command { letter, major, params, .. }) => {
+            Ok(Token::Command {
+                letter,
+                major,
+                params,
+                ..
+            }) => {
                 assert_eq!(*letter, b'M');
                 assert_eq!(*major, 104);
                 assert_eq!(params.get(b'S'), Some(210.0));
@@ -336,7 +359,10 @@ mod tests {
         assert_eq!(toks.len(), 1);
         match &toks[0] {
             Ok(Token::Marker { kind, line_no }) => {
-                assert_eq!(*kind, crate::marker::MarkerKind::LayerChange { layer: Some(5) });
+                assert_eq!(
+                    *kind,
+                    crate::marker::MarkerKind::LayerChange { layer: Some(5) }
+                );
                 assert_eq!(*line_no, 1);
             }
             other => panic!("expected Marker, got {other:?}"),

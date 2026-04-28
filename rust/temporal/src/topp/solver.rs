@@ -1591,9 +1591,9 @@ fn da_ds_along(a: &[f64], s: &[f64], i: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topp::constraints::{build, BuildOutcome, EndpointVelocities};
-    use crate::topp::path::ArclengthGrid;
     use crate::Limits;
+    use crate::topp::constraints::{BuildOutcome, EndpointVelocities, build};
+    use crate::topp::path::ArclengthGrid;
 
     fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
         let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();

@@ -38,11 +38,7 @@ mod tests {
         let bits = |a: [f32; 3]| a.map(f32::to_bits);
         for (xyz_e, expected_motors) in cases {
             let motors = corexy_with_e(xyz_e);
-            assert_eq!(
-                bits(motors),
-                bits(expected_motors),
-                "transform({xyz_e:?})"
-            );
+            assert_eq!(bits(motors), bits(expected_motors), "transform({xyz_e:?})");
 
             // Round-trip via inverse.
             let xyz_e_back = [

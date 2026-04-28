@@ -23,12 +23,12 @@ impl Limits {
     /// callers must use this constructor (or `..` rest-syntax inside the
     /// crate).
     #[must_use]
-    pub fn new(
-        v_max: [f64; 3],
-        a_max: [f64; 3],
-        j_max: [f64; 3],
-        a_centripetal_max: f64,
-    ) -> Self {
-        Self { v_max, a_max, j_max, a_centripetal_max }
+    pub fn new(v_max: [f64; 3], a_max: [f64; 3], j_max: [f64; 3], a_centripetal_max: f64) -> Self {
+        Self {
+            v_max,
+            a_max,
+            j_max,
+            a_centripetal_max,
+        }
     }
 }

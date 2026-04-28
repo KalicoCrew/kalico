@@ -76,9 +76,9 @@
 //! is more robust to numerical drift.
 
 use nurbs::{
+    MIN_PARAMETRIC_SPEED, VectorNurbs,
     arc_length::{build_arc_length_table_vector, param_from_arc_length},
     eval::{vector_derivative, vector_eval},
-    VectorNurbs, MIN_PARAMETRIC_SPEED,
 };
 
 /// Evaluate the k-th parametric derivative of a *rational* NURBS at `u` via
@@ -328,7 +328,7 @@ pub fn sample_arclength_grid(
         // du/ds, d²u/ds², d³u/ds³
         let du_ds = 1.0 / f;
         let d2u_ds2 = -df_du / (f * f * f); // = -(df/du) / f³
-                                            // d³u/ds³ = -(d²f/du²)/f⁴  +  3(df/du)²/f⁵  (see module-level derivation)
+        // d³u/ds³ = -(d²f/du²)/f⁴  +  3(df/du)²/f⁵  (see module-level derivation)
         let f4 = f * f * f * f;
         let f5 = f4 * f;
         let d3u_ds3 = -(d2f_du2) / f4 + 3.0 * df_du * df_du / f5;
@@ -723,7 +723,7 @@ mod tests {
         let grid = sample_arclength_grid(&curve, 51).unwrap();
 
         let kappa_expected = 1.0 / r; // 0.05
-                                      // |C''(s)| = κ on an arclength-parameterized curve.
+        // |C''(s)| = κ on an arclength-parameterized curve.
         let c2_start_mag = {
             let v = grid.c_double_prime[0];
             (v[0].powi(2) + v[1].powi(2) + v[2].powi(2)).sqrt()

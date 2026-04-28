@@ -32,7 +32,9 @@ fn arb_multi_piece_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64>> {
         let cps = prop::collection::vec(-5.0..5.0_f64, n);
         let interiors: proptest::strategy::BoxedStrategy<Vec<f64>> = match num_interior {
             1 => (0.1..0.9_f64).prop_map(|k| vec![k]).boxed(),
-            2 => (0.1..0.45_f64, 0.55..0.9_f64).prop_map(|(a, b)| vec![a, b]).boxed(),
+            2 => (0.1..0.45_f64, 0.55..0.9_f64)
+                .prop_map(|(a, b)| vec![a, b])
+                .boxed(),
             _ => unreachable!(),
         };
         (cps, interiors).prop_map(move |(cps_vec, ints)| {
@@ -53,8 +55,7 @@ fn arb_single_poly_kernel() -> impl Strategy<Value = nurbs::algebra::PiecewisePo
 }
 
 fn arb_curve_with_existing_interior_multiplicity()
-    -> impl Strategy<Value = (nurbs::ScalarNurbs<f64>, f64, usize, usize)>
-{
+-> impl Strategy<Value = (nurbs::ScalarNurbs<f64>, f64, usize, usize)> {
     // Generates (curve, u_knot, p, existing_mult_at_u) where the curve has
     // an interior knot at u with multiplicity `existing_mult_at_u >= 1`,
     // PLUS one additional interior knot at a different value. Both
@@ -68,37 +69,36 @@ fn arb_curve_with_existing_interior_multiplicity()
     // Constraint `existing < p` so r_max = p - existing >= 1; we further
     // require `existing <= p - 2` so r_max >= 2 (the regime that triggers
     // the original A5.3 bug). This rules out p=2 entirely.
-    (3u8..=4, 0.1..0.45_f64, 0.55..0.9_f64, prop::bool::ANY)
-        .prop_flat_map(|(p, ka, kb, swap)| {
-            // Choose which of the two break values gets the "existing"
-            // multiplicity. The other holds a single knot.
-            let (u_knot, other_knot) = if swap { (ka, kb) } else { (kb, ka) };
-            // existing in 1..=(p-2) so r_max = p - existing >= 2.
-            let existing_strategy: BoxedStrategy<usize> = (1usize..=(p as usize - 2)).boxed();
-            existing_strategy.prop_flat_map(move |existing| {
-                // total knots = 2*(p+1) + existing + 1; n = p+2+existing.
-                let n = p as usize + 2 + existing;
-                let pad = p as usize + 1;
-                prop::collection::vec(-3.0..3.0_f64, n).prop_map(move |cps| {
-                    let mut knots = vec![0.0; pad];
-                    // Interior knots in sorted order.
-                    let (lo_val, lo_mult, hi_val, hi_mult) = if u_knot < other_knot {
-                        (u_knot, existing, other_knot, 1)
-                    } else {
-                        (other_knot, 1, u_knot, existing)
-                    };
-                    for _ in 0..lo_mult {
-                        knots.push(lo_val);
-                    }
-                    for _ in 0..hi_mult {
-                        knots.push(hi_val);
-                    }
-                    knots.extend(vec![1.0; pad]);
-                    let curve = nurbs::ScalarNurbs::try_new(p, knots, cps, None).unwrap();
-                    (curve, u_knot, p as usize, existing)
-                })
+    (3u8..=4, 0.1..0.45_f64, 0.55..0.9_f64, prop::bool::ANY).prop_flat_map(|(p, ka, kb, swap)| {
+        // Choose which of the two break values gets the "existing"
+        // multiplicity. The other holds a single knot.
+        let (u_knot, other_knot) = if swap { (ka, kb) } else { (kb, ka) };
+        // existing in 1..=(p-2) so r_max = p - existing >= 2.
+        let existing_strategy: BoxedStrategy<usize> = (1usize..=(p as usize - 2)).boxed();
+        existing_strategy.prop_flat_map(move |existing| {
+            // total knots = 2*(p+1) + existing + 1; n = p+2+existing.
+            let n = p as usize + 2 + existing;
+            let pad = p as usize + 1;
+            prop::collection::vec(-3.0..3.0_f64, n).prop_map(move |cps| {
+                let mut knots = vec![0.0; pad];
+                // Interior knots in sorted order.
+                let (lo_val, lo_mult, hi_val, hi_mult) = if u_knot < other_knot {
+                    (u_knot, existing, other_knot, 1)
+                } else {
+                    (other_knot, 1, u_knot, existing)
+                };
+                for _ in 0..lo_mult {
+                    knots.push(lo_val);
+                }
+                for _ in 0..hi_mult {
+                    knots.push(hi_val);
+                }
+                knots.extend(vec![1.0; pad]);
+                let curve = nurbs::ScalarNurbs::try_new(p, knots, cps, None).unwrap();
+                (curve, u_knot, p as usize, existing)
             })
         })
+    })
 }
 
 fn arb_curve_with_c0_kink() -> impl Strategy<Value = (nurbs::ScalarNurbs<f64>, f64)> {

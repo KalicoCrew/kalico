@@ -25,9 +25,8 @@ pub mod exports {
     use runtime::curve_pool::{CurvePool, MAX_DIM};
     use runtime::engine::{Engine, RuntimeStatus};
     use runtime::error::{
-        KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_CURVE,
-        KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT,
+        KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION,
+        KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT,
         KALICO_ERR_NULL_PTR, KALICO_ERR_QUEUE_FULL, KALICO_OK,
     };
     use runtime::queue::SegmentQueue;
@@ -67,8 +66,7 @@ pub mod exports {
         pub(super) trace: TraceRing<128>,
     }
 
-    pub(super) static RT_CELL: RuntimeCell =
-        RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
+    pub(super) static RT_CELL: RuntimeCell = RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 
     pub(super) const INIT_UNINIT: u8 = 0;
     pub(super) const INIT_INITING: u8 = 1;
@@ -148,8 +146,9 @@ pub mod exports {
         }
         // MIN_SEGMENT_CYCLES check.
         // SAFETY: C-side immutable constant set at static-init time in src/runtime_tick.c.
-        let min_seg_cycles =
-            u64::from(runtime::clock::min_segment_cycles(unsafe { kalico_clock_freq }));
+        let min_seg_cycles = u64::from(runtime::clock::min_segment_cycles(unsafe {
+            kalico_clock_freq
+        }));
         if t_end - t_start < min_seg_cycles {
             return KALICO_ERR_INVALID_DURATION;
         }
@@ -202,11 +201,7 @@ pub mod exports {
         n_weights: u16,
         degree: u8,
     ) -> i32 {
-        if rt.is_null()
-            || control_points_flat.is_null()
-            || knots.is_null()
-            || weights.is_null()
-        {
+        if rt.is_null() || control_points_flat.is_null() || knots.is_null() || weights.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
@@ -218,13 +213,10 @@ pub mod exports {
         // SAFETY: caller must ensure each pointer is valid for `n_*` reads of f32
         // and that the buffers do not alias the curve pool. n_cp * MAX_DIM bounds
         // the cps buffer per the producer protocol.
-        let cps_slice = unsafe {
-            core::slice::from_raw_parts(control_points_flat, n_cp as usize * MAX_DIM)
-        };
-        let knots_slice =
-            unsafe { core::slice::from_raw_parts(knots, n_knots as usize) };
-        let weights_slice =
-            unsafe { core::slice::from_raw_parts(weights, n_weights as usize) };
+        let cps_slice =
+            unsafe { core::slice::from_raw_parts(control_points_flat, n_cp as usize * MAX_DIM) };
+        let knots_slice = unsafe { core::slice::from_raw_parts(knots, n_knots as usize) };
+        let weights_slice = unsafe { core::slice::from_raw_parts(weights, n_weights as usize) };
         match ctx.pool.load(
             CurveHandle(slot_idx),
             cps_slice,
@@ -245,10 +237,7 @@ pub mod exports {
     /// `raw_cyccnt` is the raw 32-bit DWT->CYCCNT value; Rust widens to u64.
     /// Skips null-check (caller is the C ISR shim with stable handle).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_tick(
-        rt: *mut KalicoRuntime,
-        raw_cyccnt: u32,
-    ) {
+    pub unsafe extern "C" fn kalico_runtime_tick(rt: *mut KalicoRuntime, raw_cyccnt: u32) {
         // Defensive Acquire-load — guards against early-fire during INITING.
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return;
@@ -257,7 +246,9 @@ pub mod exports {
         // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
         let now = ctx.engine.widen(raw_cyccnt);
-        let _ = ctx.engine.tick(now, &mut ctx.queue, &ctx.pool, &mut ctx.trace);
+        let _ = ctx
+            .engine
+            .tick(now, &mut ctx.queue, &ctx.pool, &mut ctx.trace);
     }
 
     /// Foreground drain. Returns count of samples written.
@@ -278,8 +269,7 @@ pub mod exports {
         let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
         // SAFETY: caller must ensure out_buf is valid for out_cap writes of TraceSample,
         // properly aligned, and not aliased.
-        let out_slice =
-            unsafe { core::slice::from_raw_parts_mut(out_buf, out_cap as usize) };
+        let out_slice = unsafe { core::slice::from_raw_parts_mut(out_buf, out_cap as usize) };
         ctx.trace.drain_into(out_slice) as u32
     }
 

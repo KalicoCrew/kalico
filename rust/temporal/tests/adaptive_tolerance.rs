@@ -3,8 +3,8 @@
 use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 use nurbs::VectorNurbs;
 use temporal::{
-    schedule_segment_with_tolerance, topp::path::sample_arclength_grid, GridConfig, GridScheme,
-    Limits, SolveStatus, ToleranceMode,
+    GridConfig, GridScheme, Limits, SolveStatus, ToleranceMode, schedule_segment_with_tolerance,
+    topp::path::sample_arclength_grid,
 };
 
 fn textbook_limits() -> Limits {
@@ -118,15 +118,18 @@ fn auto_falls_back_on_fixture_4_class() {
     // Leg 1: Fast (tol=1e-5) must return a non-success status.
     // Pi5 investigation reports DivergedSlp { last_max_ratio: 1.0320..., outer_iters: 7 }.
     let fast = schedule_segment_with_tolerance(
-        &curve, &limits, &grid, v_start, v_end, ToleranceMode::Fast,
+        &curve,
+        &limits,
+        &grid,
+        v_start,
+        v_end,
+        ToleranceMode::Fast,
     )
     .expect("Fast must not return ScheduleError");
     assert!(
         !matches!(
             fast.status,
-            SolveStatus::Solved
-                | SolveStatus::SolvedInexact { .. }
-                | SolveStatus::SolvedSlp { .. }
+            SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
         ),
         "Fast must fail on this fixture (expected DivergedSlp/MaxIter/Infeasible); got {:?}",
         fast.status,
@@ -134,15 +137,18 @@ fn auto_falls_back_on_fixture_4_class() {
 
     // Leg 2: Tight (tol=1e-8) must return a success status on the same fixture.
     let tight = schedule_segment_with_tolerance(
-        &curve, &limits, &grid, v_start, v_end, ToleranceMode::Tight,
+        &curve,
+        &limits,
+        &grid,
+        v_start,
+        v_end,
+        ToleranceMode::Tight,
     )
     .expect("Tight must not return ScheduleError");
     assert!(
         matches!(
             tight.status,
-            SolveStatus::Solved
-                | SolveStatus::SolvedInexact { .. }
-                | SolveStatus::SolvedSlp { .. }
+            SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
         ),
         "Tight must succeed on this fixture; got {:?}",
         tight.status,
@@ -150,15 +156,18 @@ fn auto_falls_back_on_fixture_4_class() {
 
     // Leg 3: Auto must return a success status (fallback recovered the Fast failure).
     let auto_profile = schedule_segment_with_tolerance(
-        &curve, &limits, &grid, v_start, v_end, ToleranceMode::Auto,
+        &curve,
+        &limits,
+        &grid,
+        v_start,
+        v_end,
+        ToleranceMode::Auto,
     )
     .expect("Auto must not return ScheduleError");
     assert!(
         matches!(
             auto_profile.status,
-            SolveStatus::Solved
-                | SolveStatus::SolvedInexact { .. }
-                | SolveStatus::SolvedSlp { .. }
+            SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
         ),
         "Auto must succeed (fallback to Tight recovered the Fast failure); got {:?}",
         auto_profile.status,

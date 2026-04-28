@@ -1,10 +1,10 @@
 //! Lookahead joining via SOCP-per-iteration (option A). Spec §2.3.
 
+use crate::GridConfig;
+use crate::TopProfile;
 use crate::multi::junction::JunctionResult;
 use crate::multi::parallel::fan_out_solves;
 use crate::multi::{BatchError, JoiningStatus, SegmentInput};
-use crate::GridConfig;
-use crate::TopProfile;
 
 /// Hard cap on joining sweeps. Per spec §2.3 + §6.5: typical convergence is
 /// 1–3 sweeps; cap at 10 to detect bugs.
@@ -44,7 +44,10 @@ pub(crate) fn join_until_converged(
             // Bail early via the dedicated StalledOnInfeasibleSegment variant
             // (round-4 split — distinct from MAX_SWEEPS-exhaustion below).
             let last_dirty_count = states.iter().filter(|s| s.dirty).count();
-            return Ok((sweep, JoiningStatus::StalledOnInfeasibleSegment { last_dirty_count }));
+            return Ok((
+                sweep,
+                JoiningStatus::StalledOnInfeasibleSegment { last_dirty_count },
+            ));
         }
         fan_out_solves(inputs, states, grids, n_threads)?;
     }
@@ -53,7 +56,12 @@ pub(crate) fn join_until_converged(
     // does, the joining algorithm itself has a bug). Distinct from
     // StalledOnInfeasibleSegment above.
     let last_dirty = states.iter().filter(|s| s.dirty).count();
-    Ok((MAX_SWEEPS, JoiningStatus::CappedAtMaxSweeps { last_dirty_count: last_dirty }))
+    Ok((
+        MAX_SWEEPS,
+        JoiningStatus::CappedAtMaxSweeps {
+            last_dirty_count: last_dirty,
+        },
+    ))
 }
 
 /// Per-segment scratch state during joining.
@@ -68,10 +76,7 @@ pub(crate) struct SegmentState {
 /// `v_start` changed beyond `EPS_VEL` since the last forward sweep.
 ///
 /// Returns the number of segments marked dirty.
-pub(crate) fn forward_sweep(
-    states: &mut [SegmentState],
-    junctions: &[JunctionResult],
-) -> usize {
+pub(crate) fn forward_sweep(states: &mut [SegmentState], junctions: &[JunctionResult]) -> usize {
     const EPS_VEL: f64 = 1e-3;
     let mut dirty_count = 0;
     for k in 1..states.len() {
@@ -96,10 +101,7 @@ pub(crate) fn forward_sweep(
 /// `BatchError::EmptySegments`, but this guard makes the helper safe to call
 /// directly. A single-segment buffer has no junctions to propagate, so
 /// early-return is correct. (Per round-4 review, Codex NIT.)
-pub(crate) fn reverse_sweep(
-    states: &mut [SegmentState],
-    junctions: &[JunctionResult],
-) -> usize {
+pub(crate) fn reverse_sweep(states: &mut [SegmentState], junctions: &[JunctionResult]) -> usize {
     const EPS_VEL: f64 = 1e-3;
     if states.len() < 2 {
         return 0;
@@ -122,7 +124,12 @@ mod tests {
     use crate::multi::JunctionBindingCap;
 
     fn make_state(v_start: f64, v_end: f64) -> SegmentState {
-        SegmentState { v_start, v_end, profile: None, dirty: false }
+        SegmentState {
+            v_start,
+            v_end,
+            profile: None,
+            dirty: false,
+        }
     }
 
     fn make_junction(v: f64) -> JunctionResult {
@@ -136,10 +143,7 @@ mod tests {
 
     #[test]
     fn forward_propagates_v_end_to_next_v_start() {
-        let mut states = vec![
-            make_state(0.0, 100.0),
-            make_state(0.0, 200.0),
-        ];
+        let mut states = vec![make_state(0.0, 100.0), make_state(0.0, 200.0)];
         let junctions = vec![make_junction(150.0)];
         let dirty = forward_sweep(&mut states, &junctions);
         // junctions[0] = 150, states[0].v_end = 100; min = 100. New v_start[1] = 100.
@@ -150,10 +154,7 @@ mod tests {
 
     #[test]
     fn forward_no_change_no_dirty() {
-        let mut states = vec![
-            make_state(0.0, 150.0),
-            make_state(150.0, 200.0),
-        ];
+        let mut states = vec![make_state(0.0, 150.0), make_state(150.0, 200.0)];
         let junctions = vec![make_junction(150.0)];
         let dirty = forward_sweep(&mut states, &junctions);
         assert_eq!(dirty, 0);
@@ -162,10 +163,7 @@ mod tests {
 
     #[test]
     fn reverse_propagates_v_start_to_prev_v_end() {
-        let mut states = vec![
-            make_state(0.0, 200.0),
-            make_state(100.0, 200.0),
-        ];
+        let mut states = vec![make_state(0.0, 200.0), make_state(100.0, 200.0)];
         let junctions = vec![make_junction(150.0)];
         let dirty = reverse_sweep(&mut states, &junctions);
         // junctions[0] = 150, states[1].v_start = 100; min = 100. New v_end[0] = 100.
@@ -179,10 +177,7 @@ mod tests {
         // requires SegmentInput + GridConfig setup, which is integration-test scope.
         // Unit-test path: assert forward_sweep + reverse_sweep both no-op on a
         // pre-balanced state.
-        let mut states = vec![
-            make_state(0.0, 150.0),
-            make_state(150.0, 200.0),
-        ];
+        let mut states = vec![make_state(0.0, 150.0), make_state(150.0, 200.0)];
         let junctions = vec![make_junction(150.0)];
         let f_dirty = forward_sweep(&mut states, &junctions);
         let r_dirty = reverse_sweep(&mut states, &junctions);

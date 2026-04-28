@@ -8,9 +8,9 @@
 //! from the NURBS itself.
 
 use crate::{
-    reduce::{reduce, CurveGeom, MotionMarkerKind, ParseErrorKind, ReduceEvent},
     ArcSegment, Fatal, FittedSegment, FitterParams, JunctionDeviation, Recovery, Segment,
     SourceRange, TelemetryEvent,
+    reduce::{CurveGeom, MotionMarkerKind, ParseErrorKind, ReduceEvent, reduce},
 };
 use gcode::lex;
 use std::collections::VecDeque;
@@ -23,11 +23,16 @@ pub struct GeometryPipeline {
 impl GeometryPipeline {
     #[must_use]
     pub fn new(params: FitterParams) -> Self {
-        debug_assert!(params.degree >= 1 && params.degree <= 5,
-            "degree must be in [1, 5], got {}", params.degree);
-        debug_assert!(params.theta_smooth_deg > 0.0
-            && params.theta_smooth_deg < params.theta_hard_deg
-            && params.theta_hard_deg < 180.0);
+        debug_assert!(
+            params.degree >= 1 && params.degree <= 5,
+            "degree must be in [1, 5], got {}",
+            params.degree
+        );
+        debug_assert!(
+            params.theta_smooth_deg > 0.0
+                && params.theta_smooth_deg < params.theta_hard_deg
+                && params.theta_hard_deg < 180.0
+        );
         debug_assert!(params.eps_chord_mm > 0.0);
         debug_assert!(params.max_window_vertices >= u32::from(params.degree) + 2);
         Self { params }
@@ -105,8 +110,11 @@ impl Iterator for Segments<'_> {
             // Drive the reduce iterator forward until something queues an item.
             let event = self.events.next()?;
             self.handle_event(event);
-            debug_assert!(self.queue.len() <= QUEUE_HARD_BOUND,
-                "queue grew beyond bound: {}", self.queue.len());
+            debug_assert!(
+                self.queue.len() <= QUEUE_HARD_BOUND,
+                "queue grew beyond bound: {}",
+                self.queue.len()
+            );
         }
     }
 }
@@ -114,7 +122,12 @@ impl Iterator for Segments<'_> {
 impl Segments<'_> {
     fn handle_event(&mut self, event: ReduceEvent) {
         match event {
-            ReduceEvent::Curve { geom, e_delta: _, feedrate_mm_s, line_no } => {
+            ReduceEvent::Curve {
+                geom,
+                e_delta: _,
+                feedrate_mm_s,
+                line_no,
+            } => {
                 self.handle_curve(geom, feedrate_mm_s, line_no);
             }
             ReduceEvent::CommentMarker { kind, line_no } => {
@@ -127,7 +140,12 @@ impl Segments<'_> {
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
             }
-            ReduceEvent::Marker { kind, line_no, tool, e_delta_mm } => {
+            ReduceEvent::Marker {
+                kind,
+                line_no,
+                tool,
+                e_delta_mm,
+            } => {
                 match kind {
                     MotionMarkerKind::T => {
                         if let Some(tool) = tool {
@@ -136,7 +154,10 @@ impl Segments<'_> {
                     }
                     MotionMarkerKind::EOnly => {
                         if let Some(e_delta_mm) = e_delta_mm {
-                            (self.sink)(TelemetryEvent::Retraction { e_delta_mm, line_no });
+                            (self.sink)(TelemetryEvent::Retraction {
+                                e_delta_mm,
+                                line_no,
+                            });
                         }
                     }
                     _ => {}
@@ -145,7 +166,11 @@ impl Segments<'_> {
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
             }
-            ReduceEvent::ParseError { line_no, kind, text } => {
+            ReduceEvent::ParseError {
+                line_no,
+                kind,
+                text,
+            } => {
                 let recovery = match kind {
                     ParseErrorKind::MalformedNumber
                     | ParseErrorKind::DuplicateParam
@@ -153,17 +178,19 @@ impl Segments<'_> {
                     | ParseErrorKind::G5MalformedTangent => {
                         Recovery::MalformedParams { line_no, raw: text }
                     }
-                    ParseErrorKind::UnrecognizedHead => {
-                        Recovery::UnrecognizedCommand { line_no, head: text }
-                    }
-                    ParseErrorKind::G5MissingTangent => {
-                        Recovery::G5MissingTangent { line_no }
-                    }
+                    ParseErrorKind::UnrecognizedHead => Recovery::UnrecognizedCommand {
+                        line_no,
+                        head: text,
+                    },
+                    ParseErrorKind::G5MissingTangent => Recovery::G5MissingTangent { line_no },
                     ParseErrorKind::G5PlaneMismatch => {
                         let active_plane_g_code = text.parse::<u32>().expect(
                             "G5PlaneMismatch.text must be numeric per reduce-side contract (Task 18 emit format)"
                         );
-                        Recovery::G5PlaneMismatch { line_no, active_plane_g_code }
+                        Recovery::G5PlaneMismatch {
+                            line_no,
+                            active_plane_g_code,
+                        }
                     }
                 };
                 // Dual-emit: sink fires first per §5.1 ordering contract.
@@ -176,9 +203,13 @@ impl Segments<'_> {
                     position: pos,
                     angle_deg: 0.0,
                     feedrate_mm_s: self.prev_g1_feedrate.unwrap_or(0.0),
-                    source: SourceRange { start_line: line_no, end_line: line_no },
+                    source: SourceRange {
+                        start_line: line_no,
+                        end_line: line_no,
+                    },
                 };
-                self.queue.push_back(Item::Recovered(Segment::Junction(jd), recovery));
+                self.queue
+                    .push_back(Item::Recovered(Segment::Junction(jd), recovery));
             }
         }
     }
@@ -190,18 +221,17 @@ impl Segments<'_> {
                 let from = cps[0];
                 let to = cps[1];
                 // Junction-deviation against previous G1 (if any).
-                if let (Some(prev_dir), Some(prev_f)) =
-                    (self.prev_g1_dir, self.prev_g1_feedrate)
-                {
-                    let cur_dir = unit([
-                        to[0] - from[0], to[1] - from[1], to[2] - from[2],
-                    ]);
+                if let (Some(prev_dir), Some(prev_f)) = (self.prev_g1_dir, self.prev_g1_feedrate) {
+                    let cur_dir = unit([to[0] - from[0], to[1] - from[1], to[2] - from[2]]);
                     let angle_deg = angle_between_deg(prev_dir, cur_dir);
                     let jd = JunctionDeviation {
                         position: from,
                         angle_deg,
                         feedrate_mm_s: prev_f.min(feedrate_mm_s),
-                        source: SourceRange { start_line: line_no, end_line: line_no },
+                        source: SourceRange {
+                            start_line: line_no,
+                            end_line: line_no,
+                        },
                     };
                     self.queue.push_back(Item::Segment(Segment::Junction(jd)));
                 }
@@ -212,14 +242,15 @@ impl Segments<'_> {
                     feedrate_mm_s,
                     degree: 1,
                     max_residual_mm: 0.0,
-                    source: SourceRange { start_line: line_no, end_line: line_no },
+                    source: SourceRange {
+                        start_line: line_no,
+                        end_line: line_no,
+                    },
                 };
                 self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
                 self.prev_g1_end = Some(to);
                 self.prev_g1_feedrate = Some(feedrate_mm_s);
-                self.prev_g1_dir = Some(unit([
-                    to[0] - from[0], to[1] - from[1], to[2] - from[2],
-                ]));
+                self.prev_g1_dir = Some(unit([to[0] - from[0], to[1] - from[1], to[2] - from[2]]));
             }
             CurveGeom::RationalQuadratic { cps, weights } => {
                 let xyz = nurbs_from_rational_quadratic(cps, weights);
@@ -227,7 +258,10 @@ impl Segments<'_> {
                     xyz,
                     e: None,
                     feedrate_mm_s,
-                    source: SourceRange { start_line: line_no, end_line: line_no },
+                    source: SourceRange {
+                        start_line: line_no,
+                        end_line: line_no,
+                    },
                 };
                 self.queue.push_back(Item::Segment(Segment::Arc(seg)));
                 // Arcs break the G1-junction chain (curvature-continuity principle).
@@ -243,7 +277,10 @@ impl Segments<'_> {
                     feedrate_mm_s,
                     degree: 2,
                     max_residual_mm: 0.0,
-                    source: SourceRange { start_line: line_no, end_line: line_no },
+                    source: SourceRange {
+                        start_line: line_no,
+                        end_line: line_no,
+                    },
                 };
                 self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
                 // G5.1 also breaks the G1-tangent chain (curvature-continuity principle).
@@ -259,7 +296,10 @@ impl Segments<'_> {
                     feedrate_mm_s,
                     degree: 3,
                     max_residual_mm: 0.0,
-                    source: SourceRange { start_line: line_no, end_line: line_no },
+                    source: SourceRange {
+                        start_line: line_no,
+                        end_line: line_no,
+                    },
                 };
                 self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
                 // G5 breaks the G1-tangent chain (curvature-continuity principle).
@@ -272,13 +312,8 @@ impl Segments<'_> {
 }
 
 fn nurbs_from_linear(cps: [[f64; 3]; 2]) -> nurbs::VectorNurbs<f64, 3> {
-    nurbs::VectorNurbs::<f64, 3>::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        cps.to_vec(),
-        None,
-    )
-    .expect("degree-1 NURBS with 2 CPs is always valid")
+    nurbs::VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], cps.to_vec(), None)
+        .expect("degree-1 NURBS with 2 CPs is always valid")
 }
 
 fn nurbs_from_rational_quadratic(
@@ -295,13 +330,8 @@ fn nurbs_from_rational_quadratic(
 }
 
 fn nurbs_from_quadratic(cps: [[f64; 3]; 3]) -> nurbs::VectorNurbs<f64, 3> {
-    nurbs::VectorNurbs::<f64, 3>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        cps.to_vec(),
-        None,
-    )
-    .expect("non-rational quadratic Bézier with 3 CPs and clamped knots is always valid")
+    nurbs::VectorNurbs::<f64, 3>::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], cps.to_vec(), None)
+        .expect("non-rational quadratic Bézier with 3 CPs and clamped knots is always valid")
 }
 
 fn nurbs_from_cubic(cps: [[f64; 3]; 4]) -> nurbs::VectorNurbs<f64, 3> {
@@ -315,23 +345,23 @@ fn nurbs_from_cubic(cps: [[f64; 3]; 4]) -> nurbs::VectorNurbs<f64, 3> {
 }
 
 fn unit(v: [f64; 3]) -> [f64; 3] {
-    let n = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if n < 1e-12 {
         [0.0, 0.0, 0.0]
     } else {
-        [v[0]/n, v[1]/n, v[2]/n]
+        [v[0] / n, v[1] / n, v[2] / n]
     }
 }
 
 fn angle_between_deg(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dot = (a[0]*b[0] + a[1]*b[1] + a[2]*b[2]).clamp(-1.0, 1.0);
+    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0);
     dot.acos().to_degrees()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Item, Recovery, Segment, FittedSegment, JunctionDeviation, TelemetryEvent};
+    use crate::{FittedSegment, Item, JunctionDeviation, Recovery, Segment, TelemetryEvent};
 
     fn collect(text: &str) -> Vec<Item> {
         let mut p = GeometryPipeline::new(FitterParams::default());
@@ -366,11 +396,21 @@ mod tests {
             other => panic!("[0] expected Fitted, got {other:?}"),
         }
         match &items[1] {
-            Item::Segment(Segment::Junction(JunctionDeviation { position, angle_deg, feedrate_mm_s, .. })) => {
+            Item::Segment(Segment::Junction(JunctionDeviation {
+                position,
+                angle_deg,
+                feedrate_mm_s,
+                ..
+            })) => {
                 #[allow(clippy::float_cmp)]
-                { assert_eq!(*position, [10.0, 0.0, 0.0]); }
+                {
+                    assert_eq!(*position, [10.0, 0.0, 0.0]);
+                }
                 // First leg goes (0,0)→(10,0), second leg (10,0)→(10,10): 90° turn.
-                assert!((angle_deg - 90.0).abs() < 1e-6, "expected ~90°, got {angle_deg}");
+                assert!(
+                    (angle_deg - 90.0).abs() < 1e-6,
+                    "expected ~90°, got {angle_deg}"
+                );
                 assert!((feedrate_mm_s - 25.0).abs() < 1e-9);
             }
             other => panic!("[1] expected Junction, got {other:?}"),
@@ -387,7 +427,12 @@ mod tests {
         // First G1 from origin to (10,0): 1 FittedSegment (no preceding G1, so no junction).
         assert_eq!(items.len(), 1, "expected 1 item, got {items:#?}");
         match &items[0] {
-            Item::Segment(Segment::Fitted(FittedSegment { xyz, degree, feedrate_mm_s, .. })) => {
+            Item::Segment(Segment::Fitted(FittedSegment {
+                xyz,
+                degree,
+                feedrate_mm_s,
+                ..
+            })) => {
                 assert_eq!(*degree, 1);
                 assert!((*feedrate_mm_s - 25.0).abs() < 1e-9);
                 assert_eq!(xyz.degree(), 1);
@@ -417,7 +462,10 @@ mod tests {
         assert_eq!(arc.xyz.degree(), 2);
         // Rational quadratic uses 3 control points; weighted middle CP.
         assert_eq!(arc.xyz.control_points().len(), 3);
-        assert!(arc.xyz.weights().is_some(), "rational arc must have weights");
+        assert!(
+            arc.xyz.weights().is_some(),
+            "rational arc must have weights"
+        );
         // For a 90° arc, the corner control point is at the corner of the
         // tangent extension — for arc center (0,0) start (1,0) end (0,1)
         // tangents extend to (1,1).
@@ -427,7 +475,9 @@ mod tests {
         assert!(approx_eq(cps[1][0], 1.0) && approx_eq(cps[1][1], 1.0));
         assert!(approx_eq(cps[2][0], 0.0) && approx_eq(cps[2][1], 1.0));
         // Z constant.
-        for cp in cps { assert!(approx_eq(cp[2], 0.0)); }
+        for cp in cps {
+            assert!(approx_eq(cp[2], 0.0));
+        }
     }
 
     #[test]
@@ -440,7 +490,10 @@ mod tests {
         };
         assert!(matches!(
             events.as_slice(),
-            [TelemetryEvent::LayerChange { layer: Some(5), line_no: 1 }]
+            [TelemetryEvent::LayerChange {
+                layer: Some(5),
+                line_no: 1
+            }]
         ));
     }
 
@@ -454,7 +507,10 @@ mod tests {
         };
         assert!(matches!(
             events.as_slice(),
-            [TelemetryEvent::ToolChange { tool: 1, line_no: 1 }]
+            [TelemetryEvent::ToolChange {
+                tool: 1,
+                line_no: 1
+            }]
         ));
     }
 
@@ -468,7 +524,10 @@ mod tests {
         };
         assert_eq!(events.len(), 1);
         match &events[0] {
-            TelemetryEvent::Retraction { e_delta_mm, line_no: 1 } => {
+            TelemetryEvent::Retraction {
+                e_delta_mm,
+                line_no: 1,
+            } => {
                 assert!((e_delta_mm - (-1.5)).abs() < 1e-12);
             }
             other => panic!("expected Retraction, got {other:?}"),
@@ -491,7 +550,10 @@ mod tests {
         // Sink should also see Recovery (dual-emit).
         assert!(matches!(
             events.as_slice(),
-            [TelemetryEvent::Recovery(Recovery::MalformedParams { line_no: 1, .. })]
+            [TelemetryEvent::Recovery(Recovery::MalformedParams {
+                line_no: 1,
+                ..
+            })]
         ));
     }
 
@@ -502,16 +564,22 @@ mod tests {
         let mut p = GeometryPipeline::new(FitterParams::default());
         let items: Vec<_> = {
             let mut sink = |e: TelemetryEvent| events.push(e);
-            p.process("G1 X1 Y0 F1500\nG5 X10 Y0 P-1 Q-1\n", &mut sink).collect()
+            p.process("G1 X1 Y0 F1500\nG5 X10 Y0 P-1 Q-1\n", &mut sink)
+                .collect()
         };
         let recovered = items.iter().find_map(|it| match it {
             Item::Recovered(_, Recovery::G5MissingTangent { line_no: 2 }) => Some(()),
             _ => None,
         });
-        assert!(recovered.is_some(), "expected G5MissingTangent recovery, got {items:#?}");
+        assert!(
+            recovered.is_some(),
+            "expected G5MissingTangent recovery, got {items:#?}"
+        );
         assert!(matches!(
             events.last(),
-            Some(TelemetryEvent::Recovery(Recovery::G5MissingTangent { line_no: 2 }))
+            Some(TelemetryEvent::Recovery(Recovery::G5MissingTangent {
+                line_no: 2
+            }))
         ));
     }
 
@@ -540,10 +608,14 @@ mod tests {
         assert!(f.xyz.weights().is_none(), "G5 cubic must be non-rational");
         // Quality metric: exact construction → zero residual.
         #[allow(clippy::float_cmp)]
-        { assert_eq!(f.max_residual_mm, 0.0); }
+        {
+            assert_eq!(f.max_residual_mm, 0.0);
+        }
         // No JD between the G1 and the G5.
         assert!(
-            !items.iter().any(|it| matches!(it, Item::Segment(Segment::Junction(_)))),
+            !items
+                .iter()
+                .any(|it| matches!(it, Item::Segment(Segment::Junction(_)))),
             "G5 must break the G1-tangent chain — no Junction expected, got {items:#?}"
         );
     }
@@ -553,11 +625,18 @@ mod tests {
         // After a G5 endpoint, a G1 should not produce a JunctionDeviation
         // because G5 broke the chain.
         let items = collect("G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\nG1 X20 Y0\n");
-        let junctions: Vec<_> = items.iter().filter_map(|it| match it {
-            Item::Segment(Segment::Junction(_)) => Some(()),
-            _ => None,
-        }).collect();
-        assert!(junctions.is_empty(), "expected no junctions, got {} in {items:#?}", junctions.len());
+        let junctions: Vec<_> = items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Segment(Segment::Junction(_)) => Some(()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            junctions.is_empty(),
+            "expected no junctions, got {} in {items:#?}",
+            junctions.len()
+        );
     }
 
     #[test]
@@ -579,12 +658,19 @@ mod tests {
         let knots = f.xyz.knots();
         assert_eq!(knots, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
         // Non-rational — distinguishes from rational-quadratic Arc.
-        assert!(f.xyz.weights().is_none(), "G5.1 quadratic must be non-rational");
+        assert!(
+            f.xyz.weights().is_none(),
+            "G5.1 quadratic must be non-rational"
+        );
         #[allow(clippy::float_cmp)]
-        { assert_eq!(f.max_residual_mm, 0.0); }
+        {
+            assert_eq!(f.max_residual_mm, 0.0);
+        }
         // G5.1 also breaks the G1-tangent chain — no Junction in the output.
         assert!(
-            !items.iter().any(|it| matches!(it, Item::Segment(Segment::Junction(_)))),
+            !items
+                .iter()
+                .any(|it| matches!(it, Item::Segment(Segment::Junction(_)))),
             "G5.1 must break the G1-tangent chain"
         );
     }
@@ -598,23 +684,38 @@ mod tests {
             p.process("G18\nG5.1 X10 Z1 I3 J3\n", &mut sink).collect()
         };
         let recovered = items.iter().find_map(|it| match it {
-            Item::Recovered(_, Recovery::G5PlaneMismatch { line_no: 2, active_plane_g_code: 18 }) => Some(()),
+            Item::Recovered(
+                _,
+                Recovery::G5PlaneMismatch {
+                    line_no: 2,
+                    active_plane_g_code: 18,
+                },
+            ) => Some(()),
             _ => None,
         });
-        assert!(recovered.is_some(), "expected G5PlaneMismatch, got {items:#?}");
+        assert!(
+            recovered.is_some(),
+            "expected G5PlaneMismatch, got {items:#?}"
+        );
         assert!(matches!(
             events.last(),
-            Some(TelemetryEvent::Recovery(Recovery::G5PlaneMismatch { line_no: 2, active_plane_g_code: 18 }))
+            Some(TelemetryEvent::Recovery(Recovery::G5PlaneMismatch {
+                line_no: 2,
+                active_plane_g_code: 18
+            }))
         ));
     }
 
     #[test]
     fn g2_helical_yields_z_linear_control_points() {
         let items = collect("G1 X1 Z0 F1500\nG2 X0 Y1 Z0.5 I-1 J0\n");
-        let arc = items.iter().find_map(|it| match it {
-            Item::Segment(Segment::Arc(a)) => Some(a),
-            _ => None,
-        }).expect("ArcSegment expected");
+        let arc = items
+            .iter()
+            .find_map(|it| match it {
+                Item::Segment(Segment::Arc(a)) => Some(a),
+                _ => None,
+            })
+            .expect("ArcSegment expected");
         let cps = arc.xyz.control_points();
         // Z linear across CPs: 0.0, 0.25, 0.5
         let approx_eq = |a: f64, b: f64| (a - b).abs() < 1e-9;

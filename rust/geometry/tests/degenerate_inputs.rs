@@ -26,7 +26,10 @@ fn comment_only_file_with_layer() {
     let (items, events) = run(";LAYER:0\n; just a comment\n");
     assert!(items.is_empty(), "comments alone produce no segments");
     assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], TelemetryEvent::LayerChange { layer: Some(0), .. }));
+    assert!(matches!(
+        events[0],
+        TelemetryEvent::LayerChange { layer: Some(0), .. }
+    ));
 }
 
 #[test]
@@ -40,12 +43,18 @@ fn single_g1_no_junction_emitted() {
 fn malformed_line_yields_recovered() {
     let (items, _) = run("G1 X1.2.3\n");
     assert_eq!(items.len(), 1);
-    assert!(matches!(items[0], Item::Recovered(_, Recovery::MalformedParams { .. })));
+    assert!(matches!(
+        items[0],
+        Item::Recovered(_, Recovery::MalformedParams { .. })
+    ));
 }
 
 #[test]
 fn unknown_command_yields_recovered() {
     let (items, _) = run("123 X1\n");
     assert_eq!(items.len(), 1);
-    assert!(matches!(items[0], Item::Recovered(_, Recovery::UnrecognizedCommand { .. })));
+    assert!(matches!(
+        items[0],
+        Item::Recovered(_, Recovery::UnrecognizedCommand { .. })
+    ));
 }

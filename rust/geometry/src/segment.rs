@@ -82,7 +82,10 @@ mod tests {
             feedrate_mm_s: 100.0,
             degree: 1,
             max_residual_mm: 0.0,
-            source: SourceRange { start_line: 1, end_line: 2 },
+            source: SourceRange {
+                start_line: 1,
+                end_line: 2,
+            },
         };
         let seg_fitted: Segment = Segment::Fitted(f);
         assert!(matches!(seg_fitted, Segment::Fitted(_)));
@@ -91,7 +94,10 @@ mod tests {
             xyz,
             e: None,
             feedrate_mm_s: 100.0,
-            source: SourceRange { start_line: 3, end_line: 3 },
+            source: SourceRange {
+                start_line: 3,
+                end_line: 3,
+            },
         };
         let seg_arc: Segment = Segment::Arc(arc);
         assert!(matches!(seg_arc, Segment::Arc(_)));
@@ -105,7 +111,10 @@ mod tests {
             tolerance_budget_mm: 0.05,
             default_family: BlendFamily::CubicBezier,
             feedrate_mm_s: 100.0,
-            source: SourceRange { start_line: 5, end_line: 5 },
+            source: SourceRange {
+                start_line: 5,
+                end_line: 5,
+            },
         };
         let seg_slot: Segment = Segment::CornerBlend(slot);
         assert!(matches!(seg_slot, Segment::CornerBlend(_)));
@@ -114,7 +123,10 @@ mod tests {
             position: [0.0; 3],
             angle_deg: 90.0,
             feedrate_mm_s: 100.0,
-            source: SourceRange { start_line: 7, end_line: 7 },
+            source: SourceRange {
+                start_line: 7,
+                end_line: 7,
+            },
         };
         let seg_jd: Segment = Segment::Junction(jd);
         assert!(matches!(seg_jd, Segment::Junction(_)));

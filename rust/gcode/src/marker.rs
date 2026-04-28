@@ -58,24 +58,38 @@ mod tests {
 
     #[test]
     fn matches_orca_layer_change() {
-        assert_eq!(match_comment(";LAYER:5"), Some(MarkerKind::LayerChange { layer: Some(5) }));
-        assert_eq!(match_comment(";LAYER:0"), Some(MarkerKind::LayerChange { layer: Some(0) }));
+        assert_eq!(
+            match_comment(";LAYER:5"),
+            Some(MarkerKind::LayerChange { layer: Some(5) })
+        );
+        assert_eq!(
+            match_comment(";LAYER:0"),
+            Some(MarkerKind::LayerChange { layer: Some(0) })
+        );
         // OrcaSlicer / PrusaSlicer emit `;LAYER_CHANGE` without a number.
-        assert_eq!(match_comment(";LAYER_CHANGE"), Some(MarkerKind::LayerChange { layer: None }));
+        assert_eq!(
+            match_comment(";LAYER_CHANGE"),
+            Some(MarkerKind::LayerChange { layer: None })
+        );
     }
 
     #[test]
     fn matches_prusa_layer() {
         // PrusaSlicer also emits ;LAYER_CHANGE (handled in matches_orca_layer_change).
         // Cura-style numbered marker:
-        assert_eq!(match_comment(";LAYER:12"), Some(MarkerKind::LayerChange { layer: Some(12) }));
+        assert_eq!(
+            match_comment(";LAYER:12"),
+            Some(MarkerKind::LayerChange { layer: Some(12) })
+        );
     }
 
     #[test]
     fn matches_type() {
         assert_eq!(
             match_comment(";TYPE:WALL-OUTER"),
-            Some(MarkerKind::LayerType { name: "WALL-OUTER".to_string().into_boxed_str() })
+            Some(MarkerKind::LayerType {
+                name: "WALL-OUTER".to_string().into_boxed_str()
+            })
         );
     }
 

@@ -18,10 +18,7 @@ pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) ->
             let l = control_polygon_length_mm(curve);
             // `l / target_grid_spacing_mm` is non-negative (both positive by construction)
             // and bounded by `max_n` after the clamp, so truncation is lossless.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
-            )]
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let n = (l / target_grid_spacing_mm).ceil() as usize;
             n.clamp(min_n, max_n)
         }

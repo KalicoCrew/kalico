@@ -1,6 +1,6 @@
 //! Scalar (1D) NURBS types: `ScalarNurbs` (owned, host) and `ScalarNurbsRef` (borrowed).
 
-use crate::{ConstructError, Float, NurbsView, MAX_DEGREE};
+use crate::{ConstructError, Float, MAX_DEGREE, NurbsView};
 
 /// Owned, heap-backed scalar NURBS. Host-only.
 ///
@@ -239,8 +239,8 @@ pub(crate) fn validate<T: Float>(
 }
 
 use crate::{
-    wire::{FORMAT_VERSION_V1, SCALAR_HEADER_BYTES},
     WireError,
+    wire::{FORMAT_VERSION_V1, SCALAR_HEADER_BYTES},
 };
 
 impl<'a> ScalarNurbsRef<'a, f32> {

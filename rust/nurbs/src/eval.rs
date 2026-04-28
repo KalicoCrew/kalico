@@ -1,7 +1,7 @@
 //! NURBS evaluation: de Boor, vector eval, derivative, curvature.
 //! See spec §eval module.
 
-use crate::{Float, NurbsView, VectorNurbsView, MAX_DEGREE, MIN_PARAMETRIC_SPEED, WORKSPACE_SIZE};
+use crate::{Float, MAX_DEGREE, MIN_PARAMETRIC_SPEED, NurbsView, VectorNurbsView, WORKSPACE_SIZE};
 
 // Re-export from knot module for transitional internal use. Eventually
 // callers should import directly from `crate::knot::find_knot_span`.

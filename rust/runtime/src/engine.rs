@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
-use crate::clock::{one_tick_cycles, TickCounter, WidenState};
+use crate::clock::{TickCounter, WidenState, one_tick_cycles};
 use crate::curve_pool::{CurvePool, CurveView};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
@@ -10,9 +10,7 @@ use crate::queue::SegmentQueue;
 use crate::segment::{KinematicTag, Segment};
 use crate::slot::{IsSlot, PaSlot};
 use crate::state::TickState;
-use crate::trace::{
-    TraceRing, TraceSample, TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END,
-};
+use crate::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TraceRing, TraceSample};
 
 /// Bounded sub-tick boundary-loop iteration count.
 /// Matches `Q_N` (queue capacity = 8) so a single tick can at most carry
@@ -51,7 +49,7 @@ impl RuntimeStatus {
 #[allow(missing_debug_implementations)] // P, I are open trait bounds; ISR-internal struct.
 pub struct Engine<P: PaSlot, I: IsSlot> {
     current: Option<Segment>,
-    last_motors: [f32; 3],     // last-known-good motor positions (used in FAULT marker)
+    last_motors: [f32; 3], // last-known-good motor positions (used in FAULT marker)
     pa_slot: P,
     is_slot: I,
     one_tick_cycles_value: u64,
@@ -152,7 +150,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         trace: &mut TraceRing<TRACE_RING_N>,
     ) {
         self.last_error.store(i32::from(code), Ordering::Release);
-        self.status.store(RuntimeStatus::Fault as u8, Ordering::Release);
+        self.status
+            .store(RuntimeStatus::Fault as u8, Ordering::Release);
         let _ = trace.try_emit(TraceSample {
             tick: now,
             motor_a: self.last_motors[0],
@@ -192,7 +191,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             if !queue.is_empty() {
                 self.current = queue.try_pop();
                 if let Some(seg) = self.current {
-                    self.status.store(RuntimeStatus::Running as u8, Ordering::Release);
+                    self.status
+                        .store(RuntimeStatus::Running as u8, Ordering::Release);
                     // Fall through with the freshly dequeued segment.
                     return self.tick_with_current(seg, now, queue, pool, trace);
                 }
@@ -227,7 +227,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             let Some(next) = queue.try_pop() else {
                 // No next segment — drained. Set status; return.
                 self.current = None;
-                self.status.store(RuntimeStatus::Drained as u8, Ordering::Release);
+                self.status
+                    .store(RuntimeStatus::Drained as u8, Ordering::Release);
                 return Ok(());
             };
             current = next;
@@ -239,7 +240,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             self.latch_fault(RuntimeError::InvalidHandle, current.id, now, trace);
             return Err(RuntimeError::InvalidHandle);
         };
-        let duration = current.duration().max(1) as f32;  // saturating_sub avoids 0
+        let duration = current.duration().max(1) as f32; // saturating_sub avoids 0
         let u = (t_segment as f32 / duration).clamp(0.0, 1.0);
         let Ok(xyz_e) = nurbs_eval_3d(&curve_view, u) else {
             self.latch_fault(RuntimeError::InvalidCurve, current.id, now, trace);
@@ -288,7 +289,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.tick_counter.increment();
 
         // Step 10: status update.
-        self.status.store(RuntimeStatus::Running as u8, Ordering::Release);
+        self.status
+            .store(RuntimeStatus::Running as u8, Ordering::Release);
         Ok(())
     }
 }

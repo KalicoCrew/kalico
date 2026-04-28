@@ -11,14 +11,14 @@ pub const TRACE_FLAG_FAULT_MARKER: u8 = 1 << 2;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TraceSample {
-    pub tick: u64,         // offset 0, 8 bytes (struct alignment 8)
-    pub motor_a: f32,      // offset 8
-    pub motor_b: f32,      // offset 12
-    pub motor_e: f32,      // offset 16
-    pub segment_id: u32,   // offset 20
-    pub flags: u8,         // offset 24
+    pub tick: u64,       // offset 0, 8 bytes (struct alignment 8)
+    pub motor_a: f32,    // offset 8
+    pub motor_b: f32,    // offset 12
+    pub motor_e: f32,    // offset 16
+    pub segment_id: u32, // offset 20
+    pub flags: u8,       // offset 24
     #[allow(clippy::pub_underscore_fields)]
-    pub _pad: [u8; 7],     // offsets 25..31 — explicit padding to 32-byte total
+    pub _pad: [u8; 7], // offsets 25..31 — explicit padding to 32-byte total
 }
 
 impl Default for TraceSample {
@@ -81,7 +81,9 @@ impl<const N: usize> TraceRing<N> {
     pub fn drain_into(&mut self, out: &mut [TraceSample]) -> usize {
         let mut count = 0;
         while count < out.len() {
-            let Some(sample) = self.inner.dequeue() else { break };
+            let Some(sample) = self.inner.dequeue() else {
+                break;
+            };
             // Bounded by `count < out.len()`.
             if let Some(slot) = out.get_mut(count) {
                 *slot = sample;

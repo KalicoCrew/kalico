@@ -40,15 +40,7 @@ fn second_init_returns_null() {
 
 #[test]
 fn null_handle_returns_null_ptr_error() {
-    let r = unsafe {
-        kalico_c_api::kalico_runtime_push_segment(
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            100,
-            0,
-        )
-    };
+    let r =
+        unsafe { kalico_c_api::kalico_runtime_push_segment(std::ptr::null_mut(), 0, 0, 0, 100, 0) };
     assert_eq!(r, kalico_c_api::KALICO_ERR_NULL_PTR);
 }

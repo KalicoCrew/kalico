@@ -2,8 +2,8 @@
 //! process runs the SOCP benchmark. Prints `started <n>` then runs forever
 //! until SIGTERM/SIGINT. Use `pkill cpu_stress` to stop.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn main() {
     let n: usize = std::env::args()

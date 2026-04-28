@@ -140,9 +140,9 @@ pub(crate) fn integrate_arc_length<T: Float, F: Fn(T) -> T>(
     sum * half_range
 }
 
+use crate::MIN_PARAMETRIC_SPEED;
 #[cfg(feature = "host")]
 use crate::eval::{eval, vector_eval};
-use crate::MIN_PARAMETRIC_SPEED;
 #[cfg(feature = "host")]
 use crate::{ArcLengthError, NurbsView, VectorNurbsView};
 
@@ -288,8 +288,8 @@ pub fn build_arc_length_table_vector<T: Float, V: VectorNurbsView<T, 3>>(
     build_table_via_integrand(integrand, u_start, u_end, tolerance, max_samples)
 }
 
-use crate::wire::{ARC_LENGTH_HEADER_BYTES, FORMAT_VERSION_V1};
 use crate::WireError;
+use crate::wire::{ARC_LENGTH_HEADER_BYTES, FORMAT_VERSION_V1};
 
 impl<'a> ArcLengthTableRef<'a, f32> {
     /// Zero-copy parse of a wire-format buffer.

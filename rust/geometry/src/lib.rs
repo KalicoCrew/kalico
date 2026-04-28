@@ -14,7 +14,7 @@ pub use error::{Fatal, InternalDetails, InternalKind, Recovery, SlotDegeneracy};
 pub use params::FitterParams;
 pub use pipeline::{GeometryPipeline, Item, Segments};
 pub use segment::{
-    ArcSegment, BlendFamily, CornerBlendSlot, FittedSegment, JunctionDeviation,
-    Segment, SourceRange,
+    ArcSegment, BlendFamily, CornerBlendSlot, FittedSegment, JunctionDeviation, Segment,
+    SourceRange,
 };
 pub use telemetry::TelemetryEvent;

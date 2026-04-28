@@ -5,15 +5,15 @@
 //!  - Segment counts are within sane order-of-magnitude.
 //!  - Telemetry sees expected events.
 
-use geometry::{
-    FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent,
-};
+use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 use std::path::Path;
 
 const CORPUS_DIR: &str = "../../scripts/fitter_prototype/corpus";
 
 fn read_corpus_file(name: &str) -> Option<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CORPUS_DIR).join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(CORPUS_DIR)
+        .join(name);
     std::fs::read_to_string(&path).ok()
 }
 
@@ -69,13 +69,28 @@ fn arc_fitted_corpus_runs_end_to_end() {
     eprintln!(
         "arc_fitted: fitted={} arc={} junction={} cornerblend={} recovered={} \
          fatal={} layers={} tools={} retracts={}",
-        c.fitted, c.arc, c.junction, c.corner_blend, c.recovered,
-        c.fatal, c.layer_changes, c.tool_changes, c.retractions,
+        c.fitted,
+        c.arc,
+        c.junction,
+        c.corner_blend,
+        c.recovered,
+        c.fatal,
+        c.layer_changes,
+        c.tool_changes,
+        c.retractions,
     );
     assert_eq!(c.fatal, 0, "Phase 1 should not fatal on legitimate input");
     assert_eq!(c.corner_blend, 0, "Phase 1 emits no CornerBlendSlot");
-    assert!(c.fitted > 100_000, "expected > 100k FittedSegments, got {}", c.fitted);
-    assert!(c.arc > 5_000, "expected > 5k ArcSegments (corpus has ~9710 G2/G3), got {}", c.arc);
+    assert!(
+        c.fitted > 100_000,
+        "expected > 100k FittedSegments, got {}",
+        c.fitted
+    );
+    assert!(
+        c.arc > 5_000,
+        "expected > 5k ArcSegments (corpus has ~9710 G2/G3), got {}",
+        c.arc
+    );
     assert!(c.layer_changes >= 1, "expected at least one LayerChange");
 }
 
@@ -88,10 +103,21 @@ fn straight_line_corpus_runs_end_to_end() {
     eprintln!(
         "straight_line: fitted={} arc={} junction={} cornerblend={} recovered={} \
          fatal={} layers={} tools={} retracts={}",
-        c.fitted, c.arc, c.junction, c.corner_blend, c.recovered,
-        c.fatal, c.layer_changes, c.tool_changes, c.retractions,
+        c.fitted,
+        c.arc,
+        c.junction,
+        c.corner_blend,
+        c.recovered,
+        c.fatal,
+        c.layer_changes,
+        c.tool_changes,
+        c.retractions,
     );
     assert_eq!(c.fatal, 0);
     assert_eq!(c.arc, 0, "straight-line corpus has no G2/G3");
-    assert!(c.fitted > 150_000, "expected > 150k FittedSegments, got {}", c.fitted);
+    assert!(
+        c.fitted > 150_000,
+        "expected > 150k FittedSegments, got {}",
+        c.fitted
+    );
 }

@@ -6,12 +6,12 @@ pub mod limits;
 pub use limits::Limits;
 
 pub mod topp;
-pub use topp::{schedule_segment, schedule_segment_with_tolerance, ScheduleError, ToleranceMode};
+pub use topp::{ScheduleError, ToleranceMode, schedule_segment, schedule_segment_with_tolerance};
 
 pub mod multi;
 pub use multi::{
-    plan_batch, BatchError, BatchInput, BatchOutput, GridStrategy,
-    JoiningStatus, JunctionBindingCap, JunctionInfo, SegmentInput,
+    BatchError, BatchInput, BatchOutput, GridStrategy, JoiningStatus, JunctionBindingCap,
+    JunctionInfo, SegmentInput, plan_batch,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -76,13 +76,22 @@ pub enum InfeasibleReason {
 #[derive(Debug, Clone, Copy)]
 pub enum SolveStatus {
     Solved,
-    SolvedInexact { residual: f64 },
-    Infeasible { at_grid: usize, reason: InfeasibleReason },
-    MaxIter { last_residual: f64 },
+    SolvedInexact {
+        residual: f64,
+    },
+    Infeasible {
+        at_grid: usize,
+        reason: InfeasibleReason,
+    },
+    MaxIter {
+        last_residual: f64,
+    },
     /// Converged via SLP outer iteration (Lee 2024) after `outer_iters`
     /// iterations of the relaxation-tightening loop. Profile is feasible.
     /// Spec §11 (CL-2024 Conjecture-4.1 counterexample fallback).
-    SolvedSlp { outer_iters: u32 },
+    SolvedSlp {
+        outer_iters: u32,
+    },
     /// SLP outer iteration failed to converge — max-violator ratio did not
     /// drop monotonically across the warm-up window, so the loop was aborted
     /// before hitting the iteration cap. Profile is the last iterate;
@@ -93,7 +102,9 @@ pub enum SolveStatus {
     },
     /// SLP outer iteration hit `MAX_OUTER_ITERS` without driving the
     /// max-violator ratio below `1 + ε_feas`. Profile is the last iterate.
-    MaxIterSlp { last_max_ratio: f64 },
+    MaxIterSlp {
+        last_max_ratio: f64,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -13,7 +13,7 @@ pub struct Fixture {
     pub weights: Vec<f32>,
     pub degree: u8,
     pub duration_us: u32,
-    pub kinematics: String,  // "CoreXyAndE" or "CartesianXyzAndE"
+    pub kinematics: String, // "CoreXyAndE" or "CartesianXyzAndE"
 }
 
 #[derive(Debug, Deserialize)]

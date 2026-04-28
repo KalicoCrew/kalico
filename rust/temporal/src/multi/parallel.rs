@@ -1,10 +1,10 @@
 //! 3-thread fan-out for re-solving dirty segments. Per spec §2.6.
 
+use crate::GridConfig;
+use crate::SolveStatus;
 use crate::multi::joining::SegmentState;
 use crate::multi::{BatchError, SegmentInput};
-use crate::topp::{schedule_segment_with_tolerance, ToleranceMode};
-use crate::SolveStatus;
-use crate::GridConfig;
+use crate::topp::{ToleranceMode, schedule_segment_with_tolerance};
 use std::sync::Mutex;
 use std::thread;
 
@@ -150,7 +150,13 @@ mod tests {
                 trailing_junction_chord_tolerance_mm: 0.05,
             })
             .collect();
-        let grids = vec![GridConfig { scheme: GridScheme::UniformArclength, n: 20 }; 4];
+        let grids = vec![
+            GridConfig {
+                scheme: GridScheme::UniformArclength,
+                n: 20
+            };
+            4
+        ];
         let mut states: Vec<_> = (0..4)
             .map(|_| SegmentState {
                 v_start: 0.0,

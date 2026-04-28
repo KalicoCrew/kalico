@@ -61,7 +61,10 @@ mod tests {
             (RuntimeError::InvalidCurve, KALICO_ERR_INVALID_CURVE),
             (RuntimeError::InvalidHandle, KALICO_ERR_INVALID_HANDLE),
             (RuntimeError::InvalidDuration, KALICO_ERR_INVALID_DURATION),
-            (RuntimeError::InvalidKinematics, KALICO_ERR_INVALID_KINEMATICS),
+            (
+                RuntimeError::InvalidKinematics,
+                KALICO_ERR_INVALID_KINEMATICS,
+            ),
             (RuntimeError::FaultLatched, KALICO_ERR_FAULT_LATCHED),
             (RuntimeError::BoundaryLoopExhausted, KALICO_ERR_INTERNAL),
             (RuntimeError::NaNOrInfFromEval, KALICO_ERR_INTERNAL),

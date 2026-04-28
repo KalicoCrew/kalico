@@ -180,7 +180,10 @@ fn boehm_insert_unweighted<T: Float>(
     existing: usize,
     r: usize,
 ) -> Vec<T> {
-    debug_assert!(existing + r <= p, "Boehm: existing + r must not exceed degree");
+    debug_assert!(
+        existing + r <= p,
+        "Boehm: existing + r must not exceed degree"
+    );
 
     let mut current_cps: Vec<T> = cps.to_vec();
     let mut current_knots: Vec<T> = knots.to_vec();
@@ -190,14 +193,8 @@ fn boehm_insert_unweighted<T: Float>(
         let n = current_cps.len();
         let k = find_knot_span(&current_knots, p, n, u);
         // Single Boehm insertion (r=1, well-tested correct path).
-        let new_cps = boehm_insert_unweighted_single(
-            &current_cps,
-            &current_knots,
-            p,
-            k,
-            u,
-            current_existing,
-        );
+        let new_cps =
+            boehm_insert_unweighted_single(&current_cps, &current_knots, p, k, u, current_existing);
         // Update knot vector for next iteration.
         let mut new_knots = Vec::with_capacity(current_knots.len() + 1);
         new_knots.extend_from_slice(&current_knots[..=k]);
@@ -469,8 +466,8 @@ fn boehm_insert_homogeneous<T: Float>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::eval;
     use crate::ScalarNurbs;
+    use crate::eval::eval;
 
     #[test]
     fn try_new_accepts_monotone_knots() {
@@ -807,7 +804,7 @@ mod tests {
 
         assert_eq!(inserted.knots(), &[0.0, 0.0, 0.5, 1.0, 1.0]);
         assert_eq!(inserted.control_points().len(), 3); // was 2, now 3
-                                                        // Geometric invariance: eval at sample points unchanged.
+        // Geometric invariance: eval at sample points unchanged.
         for u in [0.0, 0.1, 0.25, 0.5, 0.75, 1.0] {
             let before = eval(&curve.as_view(), u);
             let after = eval(&inserted.as_view(), u);

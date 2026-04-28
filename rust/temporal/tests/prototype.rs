@@ -97,7 +97,7 @@ mod biagiotti_melchiorri {
 mod fixture_1_straight_line_x_aligned {
     use super::biagiotti_melchiorri::total_time_double_s;
     use nurbs::VectorNurbs;
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+    use temporal::{GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
     fn textbook_limits() -> Limits {
         Limits::new(
@@ -170,7 +170,7 @@ mod fixture_1_straight_line_x_aligned {
 mod fixture_2_diagonal {
     use super::biagiotti_melchiorri::total_time_double_s;
     use nurbs::VectorNurbs;
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+    use temporal::{GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
     fn textbook_limits() -> Limits {
         Limits::new(
@@ -235,7 +235,7 @@ mod fixture_2_diagonal {
 }
 
 mod fixture_4_g5_cubic {
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+    use temporal::{GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
     fn textbook_limits() -> Limits {
         Limits::new(
@@ -357,7 +357,7 @@ mod fixture_4_g5_cubic {
 
 mod fixture_5_curvature_spike {
     use nurbs::VectorNurbs;
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+    use temporal::{GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
     fn textbook_limits() -> Limits {
         Limits::new(
@@ -388,10 +388,14 @@ mod fixture_5_curvature_spike {
                 [60.0, 0.0, 0.0],
             ],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let limits = textbook_limits();
-        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,
+        };
         let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
 
         // §6.1: status must be Solved, SolvedInexact, or SolvedSlp.
@@ -399,12 +403,16 @@ mod fixture_5_curvature_spike {
         // high-κ spike trigger the per-axis Cartesian jerk SLP outer iteration
         // (commits 269498ed + 03aa47bc + ce5e962f + e540aa42 + 52e9bece) when
         // the path-jerk relaxation has a slackness gap at the optimum.
-        assert!(matches!(profile.status,
-            SolveStatus::Solved
-            | SolveStatus::SolvedInexact { .. }
-            | SolveStatus::SolvedSlp { .. }),
+        assert!(
+            matches!(
+                profile.status,
+                SolveStatus::Solved
+                    | SolveStatus::SolvedInexact { .. }
+                    | SolveStatus::SolvedSlp { .. }
+            ),
             "fixture 5 status: {:?} (relaxation tightness gap or numerical pathology, see spec §7.1, §7.2)",
-            profile.status);
+            profile.status
+        );
         // If this fails with Infeasible/MaxIter, the spec response (§6.1) is to
         // file the failure with reproducer rather than fix-the-solver.
 
@@ -417,7 +425,7 @@ mod fixture_5_curvature_spike {
 
 mod fixture_6_mixed_feature {
     use nurbs::VectorNurbs;
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+    use temporal::{GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
     fn textbook_limits() -> Limits {
         Limits::new(
@@ -452,14 +460,14 @@ mod fixture_6_mixed_feature {
             3,
             vec![0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.0, 1.0],
             vec![
-                [0.0,   0.0,  0.0], // start of lead-in
-                [60.0,  0.0,  0.0],
-                [145.0, 0.0,  0.0], // inner lead-in (close to spike)
-                [155.0, 0.0,  0.0], // approaching spike (+5 mm vs prev)
+                [0.0, 0.0, 0.0], // start of lead-in
+                [60.0, 0.0, 0.0],
+                [145.0, 0.0, 0.0],  // inner lead-in (close to spike)
+                [155.0, 0.0, 0.0],  // approaching spike (+5 mm vs prev)
                 [161.0, 12.0, 0.0], // spike CP 1 (8 mm apart, 12 mm above)
-                [169.0, 0.0,  0.0], // spike CP 2
-                [180.0, 0.0,  0.0], // inner lead-out (close to spike)
-                [305.0, 0.0,  0.0], // end of lead-out
+                [169.0, 0.0, 0.0],  // spike CP 2
+                [180.0, 0.0, 0.0],  // inner lead-out (close to spike)
+                [305.0, 0.0, 0.0],  // end of lead-out
             ],
             None,
         )
@@ -473,38 +481,62 @@ mod fixture_6_mixed_feature {
     fn fixture_6() {
         let curve = build_mixed_curve();
         let limits = textbook_limits();
-        let cfg = GridConfig { scheme: GridScheme::UniformArclength, n: 200 };
+        let cfg = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 200,
+        };
         let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule");
 
-        assert!(matches!(profile.status,
-            SolveStatus::Solved
-            | SolveStatus::SolvedInexact { .. }
-            | SolveStatus::SolvedSlp { .. }), "got {:?}", profile.status);
+        assert!(
+            matches!(
+                profile.status,
+                SolveStatus::Solved
+                    | SolveStatus::SolvedInexact { .. }
+                    | SolveStatus::SolvedSlp { .. }
+            ),
+            "got {:?}",
+            profile.status
+        );
 
         // Qualitative shape: find the global v-minimum among interior samples.
         // The minimum should occur somewhere in the middle third of the path
         // (where κ is highest), and v should be monotone-increasing on the
         // first quarter and monotone-decreasing on the last quarter.
         let n = profile.samples.len();
-        let (min_idx, _) = profile.samples
+        let (min_idx, _) = profile
+            .samples
             .iter()
             .enumerate()
-            .skip(1).take(n - 2) // exclude boundary v=0
+            .skip(1)
+            .take(n - 2) // exclude boundary v=0
             .min_by(|(_, a), (_, b)| a.v.partial_cmp(&b.v).unwrap())
             .unwrap();
-        assert!(min_idx > n / 4 && min_idx < 3 * n / 4,
-            "fixture 6: min-v at idx {} not in middle half (n = {})", min_idx, n);
+        assert!(
+            min_idx > n / 4 && min_idx < 3 * n / 4,
+            "fixture 6: min-v at idx {} not in middle half (n = {})",
+            min_idx,
+            n
+        );
 
         // First quarter monotone non-decreasing in v.
         for i in 1..(n / 4) {
-            assert!(profile.samples[i].v >= profile.samples[i - 1].v - 1e-3,
+            assert!(
+                profile.samples[i].v >= profile.samples[i - 1].v - 1e-3,
                 "fixture 6: lead-in not monotone at i={}: v[{}]={} v[{}]={}",
-                i, i - 1, profile.samples[i - 1].v, i, profile.samples[i].v);
+                i,
+                i - 1,
+                profile.samples[i - 1].v,
+                i,
+                profile.samples[i].v
+            );
         }
         // Last quarter monotone non-increasing.
         for i in (3 * n / 4)..n {
-            assert!(profile.samples[i].v <= profile.samples[i - 1].v + 1e-3,
-                "fixture 6: lead-out not monotone at i={}", i);
+            assert!(
+                profile.samples[i].v <= profile.samples[i - 1].v + 1e-3,
+                "fixture 6: lead-out not monotone at i={}",
+                i
+            );
         }
 
         eprintln!(
@@ -515,7 +547,7 @@ mod fixture_6_mixed_feature {
 }
 
 mod fixture_7_convergence {
-    use temporal::{schedule_segment, GridConfig, GridScheme, Limits, SolveStatus};
+    use temporal::{GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
     /// Spec §6.5 realistic limits. j_max and a_centripetal_max are placeholders
     /// per §6.5 / §11; revisit when measurements are available.
@@ -553,14 +585,22 @@ mod fixture_7_convergence {
 
         let mut times = std::collections::BTreeMap::new();
         for &n in &[50_usize, 100, 200, 400] {
-            let cfg = GridConfig { scheme: GridScheme::UniformArclength, n };
+            let cfg = GridConfig {
+                scheme: GridScheme::UniformArclength,
+                n,
+            };
             let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0)
                 .unwrap_or_else(|e| panic!("fixture 7 N={n} schedule error: {e}"));
-            assert!(matches!(profile.status,
-                SolveStatus::Solved
-                | SolveStatus::SolvedInexact { .. }
-                | SolveStatus::SolvedSlp { .. }),
-                "fixture 7 N={n} status: {:?}", profile.status);
+            assert!(
+                matches!(
+                    profile.status,
+                    SolveStatus::Solved
+                        | SolveStatus::SolvedInexact { .. }
+                        | SolveStatus::SolvedSlp { .. }
+                ),
+                "fixture 7 N={n} status: {:?}",
+                profile.status
+            );
             eprintln!("fixture 7 N={n}: total_time = {:.6}", profile.total_time);
             times.insert(n, profile.total_time);
         }
@@ -574,16 +614,22 @@ mod fixture_7_convergence {
 
         // Bounds widened from 0.5% / 1.5% (plan-original) to 5.0% — see
         // module doc comment above for rationale.
-        assert!(rel_400_200 < 0.05,
-            "§6.4: |T(400)-T(200)|/T(400) = {:.5} > 5.0%", rel_400_200);
-        assert!(rel_200_100 < 0.05,
-            "§6.4: |T(200)-T(100)|/T(200) = {:.5} > 5.0%", rel_200_100);
+        assert!(
+            rel_400_200 < 0.05,
+            "§6.4: |T(400)-T(200)|/T(400) = {:.5} > 5.0%",
+            rel_400_200
+        );
+        assert!(
+            rel_200_100 < 0.05,
+            "§6.4: |T(200)-T(100)|/T(200) = {:.5} > 5.0%",
+            rel_200_100
+        );
     }
 }
 
 mod fixture_3_constant_curvature_arc {
     use temporal::{
-        schedule_segment, BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus,
+        BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus, schedule_segment,
     };
 
     fn textbook_limits() -> Limits {

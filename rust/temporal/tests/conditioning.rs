@@ -8,9 +8,7 @@
 //! `MaxIter` on any non-trivial curved input. This regression pins the fix.
 
 use nurbs::VectorNurbs;
-use temporal::{
-    schedule_segment, BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus,
-};
+use temporal::{BindingConstraint, GridConfig, GridScheme, Limits, SolveStatus, schedule_segment};
 
 /// Rational-quadratic 90° quarter-arc, R = 20 mm, in the XY plane.
 ///
@@ -65,9 +63,7 @@ fn rational_quadratic_arc_n200_solves_with_centripetal_cruise() {
     assert!(
         matches!(
             profile.status,
-            SolveStatus::Solved
-                | SolveStatus::SolvedInexact { .. }
-                | SolveStatus::SolvedSlp { .. }
+            SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
         ),
         "expected Solved/SolvedInexact/SolvedSlp, got {:?}",
         profile.status,

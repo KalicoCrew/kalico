@@ -1,9 +1,9 @@
 //! Junction velocity from curvature continuity. Per spec §2.2.
 
-use crate::multi::JunctionBindingCap;
 use crate::Limits;
-use nurbs::eval::{curvature_from_derivs, vector_derivative, vector_eval};
+use crate::multi::JunctionBindingCap;
 use nurbs::VectorNurbs;
+use nurbs::eval::{curvature_from_derivs, vector_derivative, vector_eval};
 
 /// Numerical floor on κ — below this the centripetal cap is treated as ∞ and
 /// we fall back to the JD sharp-corner sub-case. Per spec §2.2.
@@ -50,8 +50,8 @@ pub(crate) fn compute_junction_velocity(
         .min(per_axis_velocity_cap(&t_right, right_limits));
 
     // Cap 2: centripetal cap.
-    let cap_centripetal = centripetal_cap(kappa_left, left_limits)
-        .min(centripetal_cap(kappa_right, right_limits));
+    let cap_centripetal =
+        centripetal_cap(kappa_left, left_limits).min(centripetal_cap(kappa_right, right_limits));
 
     // Cap 3: sharp-corner JD when both sides are below the κ floor.
     let cap_sharp = if kappa_left.abs() <= KAPPA_FLOOR && kappa_right.abs() <= KAPPA_FLOOR {
@@ -116,8 +116,8 @@ fn sharp_corner_jd_cap(
     limits: &Limits,
     chord_tolerance_mm: f64,
 ) -> f64 {
-    let dot = (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2])
-        .clamp(-1.0, 1.0);
+    let dot =
+        (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2]).clamp(-1.0, 1.0);
 
     // Half-angle identity: cos(α/2) = sqrt((1 + dot)/2). Always non-negative.
     let cos_half_alpha = ((1.0 + dot) * 0.5).max(0.0).sqrt();
@@ -214,7 +214,10 @@ mod tests {
         let t_x = [1.0, 0.0, 0.0];
         let cap = sharp_corner_jd_cap(&t_x, &t_x, &textbook_limits(), 0.05);
         // Collinear should give ∞ (or B_MAX_CENT_CAP.sqrt() = 10000 mm/s).
-        assert!(cap >= 9999.9, "collinear should give ~10000 mm/s cap, got {cap}");
+        assert!(
+            cap >= 9999.9,
+            "collinear should give ~10000 mm/s cap, got {cap}"
+        );
     }
 
     #[test]
@@ -256,6 +259,9 @@ mod tests {
             result.v_junction,
             expected
         );
-        assert!(matches!(result.binding_cap, JunctionBindingCap::SharpCornerChord));
+        assert!(matches!(
+            result.binding_cap,
+            JunctionBindingCap::SharpCornerChord
+        ));
     }
 }

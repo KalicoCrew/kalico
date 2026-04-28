@@ -47,8 +47,11 @@ mod tests {
     #[test]
     fn segment_size_is_under_64_bytes() {
         // Spec §4.7 / §3.1: small POD to minimize SPSC enqueue/dequeue memcpy cost.
-        assert!(core::mem::size_of::<Segment>() <= 64,
-            "Segment grew too large: {} bytes", core::mem::size_of::<Segment>());
+        assert!(
+            core::mem::size_of::<Segment>() <= 64,
+            "Segment grew too large: {} bytes",
+            core::mem::size_of::<Segment>()
+        );
     }
 
     #[test]
@@ -66,10 +69,13 @@ mod tests {
     #[test]
     fn segment_is_copy_clone() {
         let seg = Segment {
-            id: 0, curve: CurveHandle(0), t_start: 0, t_end: 100,
+            id: 0,
+            curve: CurveHandle(0),
+            t_start: 0,
+            t_end: 100,
             kinematics: KinematicTag::CoreXyAndE,
         };
-        let _ = seg;     // copy
+        let _ = seg; // copy
         // Verify Clone derive exists; suppress lint since Copy is also derived.
         #[allow(clippy::clone_on_copy)]
         let _ = seg.clone();

@@ -86,9 +86,17 @@ pub enum ArcLengthError<T: Float> {
 impl<T: Float> fmt::Display for ArcLengthError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ToleranceNotMet { achieved_residual, samples_used } =>
-                write!(f, "arc-length builder hit cap of {samples_used} samples; achieved residual {achieved_residual:?}"),
-            Self::DegenerateCurve => write!(f, "arc-length integration encountered |dP/du| < MIN_PARAMETRIC_SPEED"),
+            Self::ToleranceNotMet {
+                achieved_residual,
+                samples_used,
+            } => write!(
+                f,
+                "arc-length builder hit cap of {samples_used} samples; achieved residual {achieved_residual:?}"
+            ),
+            Self::DegenerateCurve => write!(
+                f,
+                "arc-length integration encountered |dP/du| < MIN_PARAMETRIC_SPEED"
+            ),
         }
     }
 }

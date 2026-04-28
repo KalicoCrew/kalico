@@ -27,8 +27,8 @@ fn c_smoke_compiles_and_links() {
     let crate_dir = env!("CARGO_MANIFEST_DIR");
     let c_src = format!("{crate_dir}/tests/c_smoke/main.c");
     let header_dir = format!("{crate_dir}/include");
-    let target_dir = std::env::var("CARGO_TARGET_DIR")
-        .unwrap_or_else(|_| format!("{crate_dir}/../target"));
+    let target_dir =
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| format!("{crate_dir}/../target"));
     let static_lib = format!("{target_dir}/release/libkalico_c_api.a");
     let out = format!("{target_dir}/c_smoke_test");
 

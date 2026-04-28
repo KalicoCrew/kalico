@@ -1,6 +1,6 @@
 //! Vector NURBS types in R^N: `VectorNurbs`<T, N> (owned) and `VectorNurbsRef`<T, N> (borrowed).
 
-use crate::{scalar::validate, ConstructError, Float, VectorNurbsView};
+use crate::{ConstructError, Float, VectorNurbsView, scalar::validate};
 
 #[cfg(feature = "host")]
 #[derive(Debug, Clone, PartialEq)]
@@ -151,8 +151,8 @@ impl<T: Float, const N: usize> VectorNurbsView<T, N> for VectorNurbsRef<'_, T, N
 }
 
 use crate::{
-    wire::{FORMAT_VERSION_V1, VECTOR_HEADER_BYTES},
     WireError,
+    wire::{FORMAT_VERSION_V1, VECTOR_HEADER_BYTES},
 };
 
 impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {

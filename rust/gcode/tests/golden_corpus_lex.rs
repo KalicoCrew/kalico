@@ -4,13 +4,15 @@
 //!  - At least one `LayerChange` marker is recognized.
 //!  - At least 100k Command tokens for G/M/T heads.
 
-use gcode::{lex, Token};
+use gcode::{Token, lex};
 use std::path::Path;
 
 const CORPUS_DIR: &str = "../../scripts/fitter_prototype/corpus";
 
 fn read_corpus_file(name: &str) -> Option<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CORPUS_DIR).join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(CORPUS_DIR)
+        .join(name);
     std::fs::read_to_string(&path).ok()
 }
 
@@ -47,8 +49,14 @@ fn arc_fitted_corpus_lexes_without_panic() {
          errors={errors} layer_changes={layer_changes}"
     );
 
-    assert!(commands > 100_000, "expected > 100k Command tokens, got {commands}");
-    assert!(layer_changes >= 1, "expected at least one LayerChange marker");
+    assert!(
+        commands > 100_000,
+        "expected > 100k Command tokens, got {commands}"
+    );
+    assert!(
+        layer_changes >= 1,
+        "expected at least one LayerChange marker"
+    );
     assert!(
         errors < commands / 100,
         "more than 1% of commands errored: {errors} errors vs {commands} commands"
@@ -67,5 +75,8 @@ fn straight_line_corpus_lexes_without_panic() {
             commands += 1;
         }
     }
-    assert!(commands > 150_000, "expected > 150k Command tokens, got {commands}");
+    assert!(
+        commands > 150_000,
+        "expected > 150k Command tokens, got {commands}"
+    );
 }

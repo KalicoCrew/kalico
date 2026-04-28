@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nurbs::VectorNurbs;
-use temporal::{schedule_segment, GridConfig, GridScheme, Limits};
+use temporal::{GridConfig, GridScheme, Limits, schedule_segment};
 
 fn textbook_limits() -> Limits {
     Limits::new(
@@ -65,19 +65,9 @@ fn cubic() -> VectorNurbs<f64, 3> {
 fn main() {
     let mut args = std::env::args().skip(1);
     let fixture = args.next().expect("fixture: straight|arc|cubic");
-    let total_iters: usize = args
-        .next()
-        .expect("total_iters")
-        .parse()
-        .expect("parse");
-    let threads: usize = args
-        .next()
-        .expect("threads")
-        .parse()
-        .expect("parse");
-    let grid_n: usize = args
-        .next()
-        .map_or(100, |s| s.parse().expect("parse"));
+    let total_iters: usize = args.next().expect("total_iters").parse().expect("parse");
+    let threads: usize = args.next().expect("threads").parse().expect("parse");
+    let grid_n: usize = args.next().map_or(100, |s| s.parse().expect("parse"));
 
     let curve = Arc::new(match fixture.as_str() {
         "straight" => straight(),
@@ -106,8 +96,7 @@ fn main() {
         let limits = Arc::clone(&limits);
         handles.push(std::thread::spawn(move || {
             for _ in 0..per_thread {
-                let profile =
-                    schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("solve");
+                let profile = schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("solve");
                 std::hint::black_box(&profile);
             }
         }));

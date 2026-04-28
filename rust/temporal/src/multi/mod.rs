@@ -138,8 +138,8 @@ pub enum BatchError {
 /// 6. Joining loop via [`multi::joining::join_until_converged`].
 /// 7. Assemble [`BatchOutput`].
 pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
-    use crate::multi::{grid, joining, junction, parallel};
     use crate::GridConfig;
+    use crate::multi::{grid, joining, junction, parallel};
 
     if input.segments.is_empty() {
         return Err(BatchError::EmptySegments);
@@ -176,9 +176,22 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     // Stage 3: seed per-segment states.
     let mut states: Vec<joining::SegmentState> = (0..k)
         .map(|i| {
-            let v_start = if i == 0 { 0.0 } else { junctions[i - 1].v_junction };
-            let v_end = if i == k - 1 { 0.0 } else { junctions[i].v_junction };
-            joining::SegmentState { v_start, v_end, profile: None, dirty: true }
+            let v_start = if i == 0 {
+                0.0
+            } else {
+                junctions[i - 1].v_junction
+            };
+            let v_end = if i == k - 1 {
+                0.0
+            } else {
+                junctions[i].v_junction
+            };
+            joining::SegmentState {
+                v_start,
+                v_end,
+                profile: None,
+                dirty: true,
+            }
         })
         .collect();
 
@@ -220,7 +233,12 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
             }
         })
         .collect();
-    Ok(BatchOutput { profiles, junctions: junction_infos, joining_sweeps: sweeps, joining_status })
+    Ok(BatchOutput {
+        profiles,
+        junctions: junction_infos,
+        joining_sweeps: sweeps,
+        joining_status,
+    })
 }
 
 #[cfg(test)]

@@ -69,8 +69,8 @@
 //! This is the paper's time-integral surrogate: since `t_i ≥ h/√b_i`,
 //! minimizing `Σ t_i` approximates `Σ h/√b_i ≈ ∫ ds/v(s) = T_total`.
 
-use crate::topp::path::ArclengthGrid;
 use crate::Limits;
+use crate::topp::path::ArclengthGrid;
 
 /// Cone descriptor in solver-agnostic form. The solver module (Task 5)
 /// translates these into Clarabel's vocabulary.
@@ -156,11 +156,7 @@ const COMP_FLOOR: f64 = 1e-12;
 /// Returns [`BuildOutcome::Boundary`] if the start or end velocity exceeds the
 /// centripetal maximum-velocity curve at that endpoint (§7.3 pre-check).
 #[allow(clippy::too_many_lines)]
-pub fn build(
-    grid: &ArclengthGrid,
-    limits: &Limits,
-    endpoints: EndpointVelocities,
-) -> BuildOutcome {
+pub fn build(grid: &ArclengthGrid, limits: &Limits, endpoints: EndpointVelocities) -> BuildOutcome {
     let n = grid.s.len();
     debug_assert!(n >= 2, "ArclengthGrid must have at least 2 points");
 
@@ -264,17 +260,15 @@ pub fn build(
     // `entries`: (variable_index, coefficient) pairs. All other coefficients 0.
     // `rhs`: the b_rhs scalar for this row.
     // Accumulates into a_rows / b_rhs.
-    let push_row = |a_rows: &mut Vec<Vec<f64>>,
-                    b_rhs: &mut Vec<f64>,
-                    entries: &[(usize, f64)],
-                    rhs: f64| {
-        let mut row = vec![0.0_f64; n_vars];
-        for &(idx, coeff) in entries {
-            row[idx] = coeff;
-        }
-        a_rows.push(row);
-        b_rhs.push(rhs);
-    };
+    let push_row =
+        |a_rows: &mut Vec<Vec<f64>>, b_rhs: &mut Vec<f64>, entries: &[(usize, f64)], rhs: f64| {
+            let mut row = vec![0.0_f64; n_vars];
+            for &(idx, coeff) in entries {
+                row[idx] = coeff;
+            }
+            a_rows.push(row);
+            b_rhs.push(rhs);
+        };
 
     // -------------------------------------------------------------------------
     // Block (a): Boundary equalities — zero cone, 2 rows.
@@ -296,20 +290,10 @@ pub fn build(
     {
         let mut count = 0_usize;
         // b_0 = v_start²
-        push_row(
-            &mut a_rows,
-            &mut b_rhs,
-            &[(off_b, 1.0)],
-            -b_start,
-        );
+        push_row(&mut a_rows, &mut b_rhs, &[(off_b, 1.0)], -b_start);
         count += 1;
         // b_{N-1} = v_end²
-        push_row(
-            &mut a_rows,
-            &mut b_rhs,
-            &[(off_b + n - 1, 1.0)],
-            -b_end,
-        );
+        push_row(&mut a_rows, &mut b_rhs, &[(off_b + n - 1, 1.0)], -b_end);
         count += 1;
         cones.push((Cone::Zero, count));
     }
@@ -350,9 +334,9 @@ pub fn build(
             &mut a_rows,
             &mut b_rhs,
             &[
-                (off_a,         1.0),              // +1 on a[0]
-                (off_b + 1,    -1.0 / (2.0 * h)),  // -1/(2h) on b[1]
-                (off_b,         1.0 / (2.0 * h)),  // +1/(2h) on b[0]
+                (off_a, 1.0),                  // +1 on a[0]
+                (off_b + 1, -1.0 / (2.0 * h)), // -1/(2h) on b[1]
+                (off_b, 1.0 / (2.0 * h)),      // +1/(2h) on b[0]
             ],
             0.0,
         );
@@ -362,9 +346,9 @@ pub fn build(
                 &mut a_rows,
                 &mut b_rhs,
                 &[
-                    (off_a + i,       1.0),              // +1 on a[i]
-                    (off_b + i + 1,  -1.0 / (4.0 * h)), // -1/(4h) on b[i+1]
-                    (off_b + i - 1,   1.0 / (4.0 * h)), // +1/(4h) on b[i-1]
+                    (off_a + i, 1.0),                  // +1 on a[i]
+                    (off_b + i + 1, -1.0 / (4.0 * h)), // -1/(4h) on b[i+1]
+                    (off_b + i - 1, 1.0 / (4.0 * h)),  // +1/(4h) on b[i-1]
                 ],
                 0.0,
             );
@@ -374,9 +358,9 @@ pub fn build(
             &mut a_rows,
             &mut b_rhs,
             &[
-                (off_a + n - 1,     1.0),              // +1 on a[N-1]
-                (off_b + n - 1,    -1.0 / (2.0 * h)),  // -1/(2h) on b[N-1]
-                (off_b + n - 2,     1.0 / (2.0 * h)),  // +1/(2h) on b[N-2]
+                (off_a + n - 1, 1.0),              // +1 on a[N-1]
+                (off_b + n - 1, -1.0 / (2.0 * h)), // -1/(2h) on b[N-1]
+                (off_b + n - 2, 1.0 / (2.0 * h)),  // +1/(2h) on b[N-2]
             ],
             0.0,
         );
@@ -463,7 +447,7 @@ pub fn build(
         let mut count = 0_usize;
         for i in 0..n {
             for ax in 0..3 {
-                let gp  = grid.c_prime[i][ax];       // c'_ax
+                let gp = grid.c_prime[i][ax]; // c'_ax
                 let gpp = grid.c_double_prime[i][ax]; // c''_ax
                 if gp.abs() < COMP_FLOOR && gpp.abs() < COMP_FLOOR {
                     continue;
@@ -508,12 +492,7 @@ pub fn build(
     {
         let count = n;
         for i in 0..n {
-            push_row(
-                &mut a_rows,
-                &mut b_rhs,
-                &[(off_b + i, -1.0)],
-                b_max_cent[i],
-            );
+            push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], b_max_cent[i]);
         }
         cones.push((Cone::Nonneg, count));
     }
@@ -563,9 +542,9 @@ pub fn build(
                 &mut a_rows,
                 &mut b_rhs,
                 &[
-                    (t_idx,       1.0),
+                    (t_idx, 1.0),
                     (off_b + i - 1, -1.0 / hj),
-                    (off_b + i,      2.0 / hj),
+                    (off_b + i, 2.0 / hj),
                     (off_b + i + 1, -1.0 / hj),
                 ],
                 0.0,
@@ -575,10 +554,10 @@ pub fn build(
                 &mut a_rows,
                 &mut b_rhs,
                 &[
-                    (t_idx,       1.0),
-                    (off_b + i - 1,  1.0 / hj),
-                    (off_b + i,     -2.0 / hj),
-                    (off_b + i + 1,  1.0 / hj),
+                    (t_idx, 1.0),
+                    (off_b + i - 1, 1.0 / hj),
+                    (off_b + i, -2.0 / hj),
+                    (off_b + i + 1, 1.0 / hj),
                 ],
                 0.0,
             );
@@ -667,7 +646,7 @@ pub fn build(
         };
 
         for k in 0..n_interior {
-            let t_idx  = off_t  + k;
+            let t_idx = off_t + k;
             let x1_idx = off_x1 + k;
             let x2_idx = off_x2 + k;
             let bi_idx = b_idx(k);
@@ -687,16 +666,31 @@ pub fn build(
             // Row 1 (tail[0]): 2·x1_k/√h → coeff +2/√h on x1, rhs = 0
             push_row(&mut a_rows, &mut b_rhs, &[(x1_idx, 2.0 / sqrt_h)], 0.0);
             // Row 2 (tail[1]): (t_k - b_i) → coeffs +1 on t, -1 on b_i, rhs = 0
-            push_row(&mut a_rows, &mut b_rhs, &[(t_idx, 1.0), (bi_idx, -1.0)], 0.0);
+            push_row(
+                &mut a_rows,
+                &mut b_rhs,
+                &[(t_idx, 1.0), (bi_idx, -1.0)],
+                0.0,
+            );
             cones.push((Cone::SecondOrder, 3));
 
             // --- Block H3: ||(2h, x1_k - x2_k)|| ≤ x1_k + x2_k ---
             // Row 0 (head): (x1_k + x2_k) → coeffs +1 on x1, +1 on x2, rhs = 0
-            push_row(&mut a_rows, &mut b_rhs, &[(x1_idx, 1.0), (x2_idx, 1.0)], 0.0);
+            push_row(
+                &mut a_rows,
+                &mut b_rhs,
+                &[(x1_idx, 1.0), (x2_idx, 1.0)],
+                0.0,
+            );
             // Row 1 (tail[0]): constant = 2h → no vars, rhs = 2h
             push_row(&mut a_rows, &mut b_rhs, &[], 2.0 * h);
             // Row 2 (tail[1]): (x1_k - x2_k) → coeffs +1 on x1, -1 on x2, rhs = 0
-            push_row(&mut a_rows, &mut b_rhs, &[(x1_idx, 1.0), (x2_idx, -1.0)], 0.0);
+            push_row(
+                &mut a_rows,
+                &mut b_rhs,
+                &[(x1_idx, 1.0), (x2_idx, -1.0)],
+                0.0,
+            );
             cones.push((Cone::SecondOrder, 3));
         }
     }
@@ -720,11 +714,7 @@ pub fn build(
         cones.iter().map(|(_, d)| d).sum::<usize>(),
         "row count / cone dimension mismatch"
     );
-    debug_assert_eq!(
-        a_rows.len(),
-        b_rhs.len(),
-        "a_rows / b_rhs length mismatch"
-    );
+    debug_assert_eq!(a_rows.len(), b_rhs.len(), "a_rows / b_rhs length mismatch");
     debug_assert!(
         a_rows.iter().all(|r| r.len() == n_vars),
         "all A rows must have width n_vars"
@@ -750,8 +740,8 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::topp::path::ArclengthGrid;
     use crate::Limits;
+    use crate::topp::path::ArclengthGrid;
 
     // -------------------------------------------------------------------------
     // Test fixtures
@@ -796,7 +786,14 @@ mod tests {
     fn straight_line_zero_endpoints_builds_ok() {
         let grid = dummy_straight_grid(10, 100.0);
         let limits = textbook_limits();
-        match build(&grid, &limits, EndpointVelocities { v_start: 0.0, v_end: 0.0 }) {
+        match build(
+            &grid,
+            &limits,
+            EndpointVelocities {
+                v_start: 0.0,
+                v_end: 0.0,
+            },
+        ) {
             BuildOutcome::Ok(b) => {
                 assert_eq!(b.n_grid, 10);
                 assert!(b.n_vars >= 10); // at least the b_i variables
@@ -824,7 +821,10 @@ mod tests {
         match build(
             &grid,
             &limits,
-            EndpointVelocities { v_start: 60_000.0, v_end: 0.0 },
+            EndpointVelocities {
+                v_start: 60_000.0,
+                v_end: 0.0,
+            },
         ) {
             BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
                 assert!((mvc_b - 50_000.0).abs() < 1e-3);
@@ -847,7 +847,10 @@ mod tests {
         let bundle = match build(
             &grid,
             &limits,
-            EndpointVelocities { v_start: 0.0, v_end: 0.0 },
+            EndpointVelocities {
+                v_start: 0.0,
+                v_end: 0.0,
+            },
         ) {
             BuildOutcome::Ok(b) => b,
             BuildOutcome::Boundary(_) => panic!("zero endpoints should be feasible"),
@@ -940,14 +943,23 @@ mod tests {
         // zero-dim cones leak into the output. Verifies that contract.
         let grid = dummy_straight_grid(2, 50.0);
         let limits = textbook_limits();
-        let bundle = match build(&grid, &limits, EndpointVelocities { v_start: 0.0, v_end: 0.0 }) {
+        let bundle = match build(
+            &grid,
+            &limits,
+            EndpointVelocities {
+                v_start: 0.0,
+                v_end: 0.0,
+            },
+        ) {
             BuildOutcome::Ok(b) => b,
             BuildOutcome::Boundary(_) => panic!("zero endpoints should be feasible"),
         };
         assert_eq!(bundle.n_grid, 2);
         assert_eq!(bundle.n_vars, 5 * 2 - 6); // = 4: only b_0, b_1, a_0, a_1
         // No SOC blocks should be emitted.
-        let soc_block_count = bundle.cones.iter()
+        let soc_block_count = bundle
+            .cones
+            .iter()
             .filter(|(c, _)| matches!(c, Cone::SecondOrder))
             .count();
         assert_eq!(soc_block_count, 0);
