@@ -131,13 +131,26 @@ class KalicoHostIO:
     def _do_identify(self, timeout):
         """Pull the identify_data dictionary and load it into MessageParser.
 
-        MCU's next_sequence may be at any value 0..15 depending on prior
-        klippy interactions (it only resets on MCU reset). We use NAK-driven
-        sync: if our send doesn't get a response within ~150 ms, we look at
-        any NAK packet the MCU sent (header-only, length 5) — its seq byte
-        IS the MCU's expected next_sequence — and align our counter to it.
+        Two complications when reconnecting to a running MCU:
+        1. The OS USB-CDC buffer may hold stale identify_response chunks
+           from a prior klippy session; reading them naively makes us
+           sync to an outdated MCU seq state.
+        2. MCU's next_sequence is at whatever klippy last advanced it to
+           (only resets on MCU reset).
+        Strategy: drain stale RX bytes first, then send identify with
+        NAK-driven seq resync. NAKs (header-only length-5 packets) carry
+        the MCU's current next_sequence in their seq byte.
         """
         deadline = time.monotonic() + timeout
+        # Drain any stale RX bytes from earlier klippy session.
+        drain_until = time.monotonic() + 0.3
+        while time.monotonic() < drain_until:
+            self._ser.timeout = 0.05
+            n = len(self._ser.read(4096))
+            if n == 0:
+                break
+        self._rxbuf = _RxBuffer(self._parser)  # reset partial-packet state
+
         identify_data = b""
         while True:
             cmd = "identify offset=%d count=%d" % (len(identify_data), self.IDENTIFY_CHUNK)
@@ -148,17 +161,15 @@ class KalicoHostIO:
                 params = self._wait_packet_sync(
                     "identify_response", attempt_deadline, sync_seq=True
                 )
-                if params is not None:
+                if params is not None and params.get("offset") == len(identify_data):
                     break
+                params = None  # stale or wrong offset; retry with synced seq
                 if time.monotonic() >= deadline:
                     break
             if params is None:
                 raise HostIoError(
                     "Timed out waiting for identify_response from %s" % (self._port,)
                 )
-            if params["offset"] != len(identify_data):
-                # Drop and re-query (host-MCU resync).
-                continue
             data = params["data"]
             if not data:
                 break
