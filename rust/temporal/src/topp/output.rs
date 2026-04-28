@@ -113,7 +113,23 @@ pub(crate) fn map_status(
             }
         }
         (SlpOutcome::MaxIters { last_max_ratio }, _) => {
-            SolveStatus::MaxIterSlp { last_max_ratio }
+            // Symmetric with the Clarabel-MaxIter promotion at the inner-solver
+            // match above: the SLP outer loop's `last_max_ratio` measures the
+            // path-jerk RELAXATION gap (Lee 2024 conservative cut on
+            // `|b''|·√b ≤ 2J`), not a direct feasibility residual. The
+            // authoritative bar is `verify::check`, which evaluates per-axis
+            // Cartesian jerk on the assembled time-domain trajectory. When the
+            // SLP loop times out at a band-edge N (e.g. fixture_6 seg-9 at
+            // N=80, where last_max_ratio plateaus at 1.13 while
+            // verify.worst_violation sits at machine epsilon), the iterate IS
+            // feasible at our standard — promote rather than fail. Same logic,
+            // different inner solver. Carries the verifier's measured
+            // violation as the residual to keep semantics consistent.
+            if verify.feasible {
+                SolveStatus::SolvedInexact { residual: verify.worst_violation }
+            } else {
+                SolveStatus::MaxIterSlp { last_max_ratio }
+            }
         }
         // Iteration-0 convergence (no cuts), verifier-rejected SLP-converged
         // outcomes, and inner-solver failures all pass `base` through unchanged.

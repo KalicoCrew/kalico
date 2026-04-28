@@ -356,17 +356,21 @@ mod fixture_6_long_realistic_chain {
         let output = plan_batch(input).expect("should succeed");
         let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        // §6.5: convergence in ≤3 sweeps. NOTE: this fixture currently
-        // returns `StalledOnInfeasibleSegment { last_dirty_count: 1 }` — one
-        // of the 10 mixed-type segments under realistic-machine limits
-        // (a=65k, j=5e7, v=1000) doesn't reach a clean Solved status. The
-        // joining loop still stabilizes in 1 sweep (early-bail per spec
-        // §2.3 round-3 review), and junction continuity holds. Asserting
-        // `JoiningStatus::Converged` here surfaces the underlying segment
-        // infeasibility — out of Step 4.5 scope. Tracked as a follow-up in
-        // CLAUDE.md plan-changes-log; needs Step-9 SLP-tightening or
-        // geometry/limits adjustment before this assertion can tighten.
+        // §6.5: convergence in ≤3 sweeps and clean joining status.
+        // Previously loosened to accept `StalledOnInfeasibleSegment{last_dirty_count:1}`
+        // because seg-9 (terminal G2 quarter-arc, v_start=1000→v_end=0)
+        // returned `MaxIterSlp{1.13}` at the adaptive-N policy's chosen N=80
+        // — a singleton band-edge fragility (N∈{40..78,79,81,82,..,300}
+        // all solve). The SLP `last_max_ratio` measures the path-jerk
+        // RELAXATION gap (Lee 2024 conservative cut on `|b''|·√b ≤ 2J`),
+        // not a direct feasibility residual; `verify::check` measures
+        // per-axis Cartesian jerk on the assembled trajectory and accepts
+        // the iterate at machine epsilon (`worst_violation ≈ 2.2e-16`).
+        // `output::map_status` now promotes MaxIters→SolvedInexact when
+        // `verify.feasible` (symmetric with the existing Clarabel-MaxIter
+        // promotion), letting this fixture converge cleanly.
         assert!(output.joining_sweeps <= 3);
+        assert!(matches!(output.joining_status, JoiningStatus::Converged));
 
         // §6.2 (review-1 helper): junction continuity at every junction.
         assert_junction_continuity_for_all(&output, 1.0);
