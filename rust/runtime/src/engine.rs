@@ -107,6 +107,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.widen_state.high | u64::from(self.widen_state.last_low)
     }
 
+    /// Widen a raw 32-bit CYCCNT sample to a u64 cycle count.
+    ///
+    /// Encapsulates `WidenState::widen` so the ISR FFI shim doesn't need
+    /// crate-private access to `widen_state`. SAFETY: this is the ISR-only
+    /// path; foreground must not call it concurrently with the ISR. Spec §4.7.
+    #[inline]
+    pub fn widen(&mut self, raw: u32) -> u64 {
+        self.widen_state.widen(raw)
+    }
+
     /// Re-initialize CYCCNT widening from the foreground producer protocol.
     ///
     /// Encapsulates `WidenState::reinit` so the FFI surface in `kalico-c-api`
