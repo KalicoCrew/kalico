@@ -1,0 +1,228 @@
+name: Rust runtime (Step 5)
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      headers: ${{ steps.filter.outputs.headers }}
+      klipper-c: ${{ steps.filter.outputs.klipper-c }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'rust/**'
+              - 'Cargo.lock'
+              - '.github/workflows/ci-rust-runtime.yaml'
+            headers:
+              - 'rust/**'
+              - 'tools/regen_headers.sh'
+              - '.github/workflows/ci-rust-runtime.yaml'
+            klipper-c:
+              - 'src/**'
+              - '.github/workflows/ci-rust-runtime.yaml'
+
+  rust-host:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: cargo build (workspace)
+        run: cargo build --workspace
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+      - name: cargo clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo fmt (check)
+        run: cargo fmt --all -- --check
+
+  rust-mcu-h7:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: mcu-h7
+      - name: cargo build (mcu-h7)
+        run: >
+          cargo build -p kalico-c-api --no-default-features
+          --features mcu-h7,header-nurbs,header-runtime
+          --target thumbv7em-none-eabihf
+
+  rust-mcu-f4:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: mcu-f4
+      - name: cargo build (mcu-f4)
+        run: >
+          cargo build -p kalico-c-api --no-default-features
+          --features mcu-f4,header-nurbs,header-runtime
+          --target thumbv7em-none-eabihf
+
+  rust-cbindgen-drift:
+    needs: changes
+    if: needs.changes.outputs.headers == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: cbindgen-drift
+      - name: Regenerate headers
+        run: ./tools/regen_headers.sh
+      - name: Verify headers committed in tree match generated
+        run: git diff --exit-code rust/kalico-c-api/include/
+
+  rust-c-smoke:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: c-smoke
+      - name: Build release staticlib
+        run: >
+          cargo build -p kalico-c-api --no-default-features
+          --features host,header-nurbs,header-runtime --release
+      - name: Run c_smoke_build test
+        run: >
+          cargo test -p kalico-c-api --no-default-features
+          --features host,header-nurbs,header-runtime
+          --test c_smoke_build
+
+  rust-deny:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: --manifest-path rust/Cargo.toml check
+
+  rust-miri:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: miri
+      - name: cargo +nightly miri test (runtime, host)
+        run: cargo +nightly miri test -p runtime --features host
+
+  rust-panic-symbol-grep:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: panic-grep
+      - name: Emit LLVM-IR for release MCU build
+        run: >
+          cargo rustc -p kalico-c-api --release
+          --no-default-features --features mcu-h7,header-nurbs,header-runtime
+          --target thumbv7em-none-eabihf -- --emit=llvm-ir
+      - name: Grep for panic symbols
+        shell: bash
+        run: |
+          set -eo pipefail
+          shopt -s nullglob
+          ll_files=(target/thumbv7em-none-eabihf/release/deps/*.ll)
+          if [ ${#ll_files[@]} -eq 0 ]; then
+            echo "No LLVM-IR files emitted; build step likely failed silently"
+            exit 1
+          fi
+          if grep -E 'core::panicking|panic_bounds_check' "${ll_files[@]}"; then
+            echo "Panic symbols found in MCU build — review src/runtime/src/*.rs for bounds-check or division-by-zero paths"
+            exit 1
+          fi
+          echo "No panic symbols detected in release MCU build."
+
+  watchdog-canary:
+    needs: changes
+    if: needs.changes.outputs.klipper-c == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert kalico_liveness_ok gate present
+        run: grep -F 'kalico_liveness_ok' src/stm32/watchdog.c
+      - name: Assert CONFIG_KALICO_RUNTIME gate present
+        run: grep -F 'CONFIG_KALICO_RUNTIME' src/stm32/watchdog.c

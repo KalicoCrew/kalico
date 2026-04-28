@@ -1,0 +1,29 @@
+# rust/deny.toml — cargo-deny policy for Step-5 dependency graph.
+# Spec §6.6 quality gate; supply-chain audit on heapless + transitive deps.
+# Schema for cargo-deny ≥0.16 (pre-0.16 used `vulnerability=`, `copyleft=`,
+# `default=` keys which are now deprecated; we use the current allow-list shape).
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "deny"
+
+[licenses]
+# Allow-list approach — anything not listed is denied by default in current
+# cargo-deny. The kalico Rust crates can ship under permissive licenses
+# (MIT/Apache-2.0); GPL-compat is preserved at the link-line level when
+# compiled into Klipper (Klipper itself is GPLv3, and permissive Rust deps
+# are GPL-compatible per the GNU GPL FAQ).
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause", "ISC", "Unicode-DFS-2016", "Unicode-3.0", "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+deny = []   # extend as crate-specific rejections surface
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
