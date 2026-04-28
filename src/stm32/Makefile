@@ -32,14 +32,33 @@ CFLAGS-$(CONFIG_MACH_STM32L4) += -mcpu=cortex-m4 -Ilib/stm32l4/include
 CFLAGS-$(CONFIG_MACH_AT32F403) = -mcpu=cortex-m4 -Ilib/stm32f1/include
 CFLAGS += $(CFLAGS-y) -D$(MCU_UPPER) -mthumb -Ilib/cmsis-core -Ilib/fast-hash
 
+ifeq ($(CONFIG_KALICO_RUNTIME),y)
+CFLAGS += -Irust/kalico-c-api/include
+endif
+
 CFLAGS_klipper.elf += -nostdlib -lgcc -lc_nano
 CFLAGS_klipper.elf += -T $(OUT)src/generic/armcm_link.ld
 $(OUT)klipper.elf: $(OUT)src/generic/armcm_link.ld
+
+# Link libkalico_c_api.a. Place ahead of -lgcc/-lc_nano on the link line —
+# archive extraction is demand-driven and order-sensitive (spec §2.4 link-line
+# pitfalls). Empirically, prepending to CFLAGS_klipper.elf works because
+# Klipper's link rule is `$(CC) $(OBJS) $(CFLAGS_klipper.elf) -o $@` and
+# the existing -lgcc tail stays at the end.
+ifeq ($(CONFIG_KALICO_RUNTIME),y)
+KALICO_LIB := rust/target/thumbv7em-none-eabihf/release/libkalico_c_api.a
+CFLAGS_klipper.elf := $(KALICO_LIB) $(CFLAGS_klipper.elf)
+$(OUT)klipper.elf: $(KALICO_LIB)
+endif
 
 # Add source files
 src-y += stm32/watchdog.c stm32/clockline.c stm32/dfu_reboot.c
 src-y += generic/crc16_ccitt.c
 src-y += generic/armcm_boot.c generic/armcm_irq.c generic/armcm_reset.c
+
+# Kalico runtime glue (only meaningful on STM32H7; Kconfig depends on MACH_STM32H7).
+src-$(CONFIG_KALICO_RUNTIME) += stm32/kalico_h7_timer.c
+src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0.c ../lib/stm32f0/system_stm32f0xx.c
 src-$(CONFIG_MACH_STM32F1) += stm32/stm32f1.c ../lib/stm32f1/system_stm32f1xx.c

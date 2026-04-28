@@ -382,4 +382,12 @@ config HAVE_LIMITED_CODE_SIZE
 config HAVE_SOFTWARE_DIVIDE_REQUIRED
     bool
 
+config KALICO_RUNTIME
+    bool "Enable kalico Rust runtime (Layer 4 motion planner)"
+    depends on MACH_STM32H7
+    default n
+    help
+      Links libkalico_c_api.a (Rust staticlib) and enables the
+      40 kHz trajectory-evaluation ISR. Step 5 — see CLAUDE.md.
+
 source "src/extras/Kconfig"

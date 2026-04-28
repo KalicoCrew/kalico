@@ -30,3 +30,16 @@ src-$(CONFIG_WANT_SENSOR_ANGLE) += sensor_angle.c
 src-$(CONFIG_NEED_SENSOR_BULK) += sensor_bulk.c
 src-$(CONFIG_NEED_SOS_FILTER) += sos_filter.c
 src-$(CONFIG_NEED_LOAD_CELL_PROBE) += load_cell_probe.c
+
+# Kalico Rust staticlib build hook. The C-side dependency on the staticlib
+# is declared in src/stm32/Makefile (klipper.elf: $(KALICO_LIB)); this rule
+# tells Make how to build the staticlib in the first place. FORCE ensures
+# cargo is invoked every build — cargo itself handles up-to-date checks
+# (incremental compilation), so this is cheap on no-op builds.
+ifeq ($(CONFIG_KALICO_RUNTIME),y)
+rust/target/thumbv7em-none-eabihf/release/libkalico_c_api.a: FORCE
+	cd rust && cargo build -p kalico-c-api --no-default-features \
+		--features mcu-h7,header-nurbs,header-runtime \
+		--target thumbv7em-none-eabihf --release
+.PHONY: FORCE
+endif
