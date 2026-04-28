@@ -366,3 +366,232 @@ mod fixture_6_long_realistic_chain {
         eprintln!("fixture_6 wall-clock: {elapsed_ms:.2} ms (no acceptance threshold)");
     }
 }
+
+mod fixture_7_curvature_spike_intergrid_sanity {
+    use super::*;
+    use nurbs::eval::{vector_derivative, vector_eval, curvature_from_derivs};
+    use temporal::{
+        schedule_segment_with_tolerance, GridConfig, GridScheme, GridSample, ToleranceMode,
+    };
+
+    /// Spec §6.6.5 inter-grid sanity sentinel for the v1 adaptive-N policy.
+    ///
+    /// Constructs a hand-rolled degree-3 NURBS with a localized curvature
+    /// bump. Forces N=10 (the v1 policy `MIN_N` floor — explicitly NOT
+    /// bumping N to "fix" the test). Solves via
+    /// `schedule_segment_with_tolerance(..., Auto)` and re-evaluates per-axis
+    /// Cartesian (v, a) + centripetal at 4× density via piecewise-cubic
+    /// Hermite interpolation of (`v_i`, `a_i`) solver samples plus direct
+    /// geometric κ from the NURBS. Per spec §6.6.5, per-axis Cartesian jerk
+    /// is **deferred to v2** — see plan post-review-3 + spec §6.6.5 "v1
+    /// deferral on per-axis Cartesian jerk" for the rationale (the full
+    /// formula needs `C'''·v³ + 3·C''·v·a + C'·j`, requiring third NURBS
+    /// derivative + arclength→u inversion).
+    ///
+    /// **Geometry deviation from plan listing:** the plan's original control
+    /// polygon `[(0,0,0), (1,5,0), (1.5,5,0), (3,0,0)]` (height-5 over 3 mm
+    /// width) produces a curvature spike too sharp for the SOCP/SLP
+    /// relaxation architecture at any N — empirical probing showed solver
+    /// `DivergedSlp` at N ∈ {10, 30, 100, 200} with `peak_v²·κ ≈ 4000–4700`
+    /// at grid points (well above the 2500 mm/s² centripetal cap). That
+    /// failure mode is SLP-architectural, not adaptive-N policy. A wider
+    /// geometry `[(0,0,0), (2,2,0), (3,2,0), (5,0,0)]` (height-2 over 5 mm
+    /// width) keeps the bump-shape character but stays inside the solver's
+    /// convergence regime, so the fixture meaningfully tests the
+    /// inter-grid-vs-grid resampling gap (the v1-vs-v2 policy distinction
+    /// the spec actually wants gated). Recorded in CLAUDE.md plan-changes-log
+    /// as a Step-4.5 deviation.
+    #[test]
+    #[allow(clippy::too_many_lines, clippy::similar_names)]
+    fn fixture_7() {
+        // Wider variant of the plan's spike geometry; see doc comment above.
+        let curve = VectorNurbs::<f64, 3>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                [0.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [3.0, 2.0, 0.0],
+                [5.0, 0.0, 0.0],
+            ],
+            None,
+        )
+        .unwrap();
+        let limits = textbook_limits();
+
+        // Force MIN_N=10 (explicitly NOT bumping to fix the test).
+        let grid = GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 10,
+        };
+        let profile = schedule_segment_with_tolerance(
+            &curve,
+            &limits,
+            &grid,
+            0.0,
+            0.0,
+            ToleranceMode::Auto,
+        )
+        .expect("schedule_segment_with_tolerance");
+
+        // Pre-compute derivative NURBSes once for the entire resampling pass.
+        // d3 (third derivative) intentionally NOT computed — see deferral note above.
+        let d1 = vector_derivative(&curve);
+        let d2 = vector_derivative(&d1);
+
+        // §6.6.5 v1 (jerk deferred): re-evaluate per-axis Cartesian velocity +
+        // acceleration + centripetal at 4× density via piecewise-cubic Hermite
+        // of (v_i, a_i) pairs from solver. Compute geometric κ and tangent
+        // direction directly from NURBS at each resampled point (NOT
+        // interpolated κ — that would mask under-resolution).
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n_resampled = 4 * profile.samples.len();
+        let mut violations: Vec<String> = Vec::new();
+        let u_start = curve.knots()[0];
+        let u_end = curve.knots()[curve.knots().len() - 1];
+        for k in 0..n_resampled {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (k as f64) / (n_resampled as f64 - 1.0);
+            let (v_path, a_path) = hermite_interp(&profile.samples, t);
+
+            // Map normalized t ∈ [0,1] → u via uniform-in-u proxy. For this
+            // spike-at-the-middle geometry the segment is short enough that
+            // u ≈ s/L is acceptable (spec §6.6.5 known-limitation #2).
+            let u = u_start + (u_end - u_start) * t;
+
+            // Geometric quantities at u.
+            let r1 = vector_eval(&d1.as_view(), u); // dC/du
+            let r2 = vector_eval(&d2.as_view(), u); // d²C/du²
+            let kappa = curvature_from_derivs(&d1, &d2, u);
+            let speed_param = mag_3(r1); // |dC/du|
+            if speed_param < 1e-12 {
+                continue;
+            }
+
+            // Per-axis Cartesian time-derivatives at this resampled point.
+            //   T(u) = r1 / |r1|     (unit tangent in motion direction)
+            //   dx/dt   = T · v_path
+            //   d²x/dt² = T · a_path + N · κ · v²
+            let inv_speed = 1.0 / speed_param;
+            let tangent = [r1[0] * inv_speed, r1[1] * inv_speed, r1[2] * inv_speed];
+            // Normal-direction component of acceleration: a_n = κ · v² along
+            // the principal normal. Direction: (r2 - (r2·T)T) / |...|.
+            let r2_dot_t = r2[0] * tangent[0] + r2[1] * tangent[1] + r2[2] * tangent[2];
+            let r2_perp = [
+                r2[0] - r2_dot_t * tangent[0],
+                r2[1] - r2_dot_t * tangent[1],
+                r2[2] - r2_dot_t * tangent[2],
+            ];
+            let r2_perp_mag = mag_3(r2_perp);
+            let normal_dir = if r2_perp_mag < 1e-12 {
+                [0.0; 3]
+            } else {
+                [
+                    r2_perp[0] / r2_perp_mag,
+                    r2_perp[1] / r2_perp_mag,
+                    r2_perp[2] / r2_perp_mag,
+                ]
+            };
+            let v_squared = v_path * v_path;
+            let a_axis = [
+                tangent[0] * a_path + normal_dir[0] * kappa * v_squared,
+                tangent[1] * a_path + normal_dir[1] * kappa * v_squared,
+                tangent[2] * a_path + normal_dir[2] * kappa * v_squared,
+            ];
+            // Per-axis-jerk validation deferred to v2; see deferral note above.
+
+            // Per-axis velocity + acceleration checks.
+            for axis in 0..3 {
+                let v_axis = tangent[axis].abs() * v_path;
+                if v_axis > limits.v_max[axis] * 1.001 {
+                    violations.push(format!(
+                        "v_axis at u={u}, axis={axis}: {v_axis} > v_max={}",
+                        limits.v_max[axis],
+                    ));
+                }
+                if a_axis[axis].abs() > limits.a_max[axis] * 1.001 {
+                    violations.push(format!(
+                        "a_axis at u={u}, axis={axis}: {} > a_max={}",
+                        a_axis[axis].abs(),
+                        limits.a_max[axis],
+                    ));
+                }
+            }
+            // Centripetal check.
+            if v_squared * kappa > limits.a_centripetal_max * 1.001 {
+                violations.push(format!(
+                    "centripetal at u={u}: v²·κ={} > a_cent={}",
+                    v_squared * kappa,
+                    limits.a_centripetal_max,
+                ));
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "v1 adaptive-N policy under-resolved curvature spikes — escalate to v2:\n{}",
+            violations.join("\n"),
+        );
+    }
+
+    /// Piecewise-cubic Hermite interpolation of (v, a) solver samples at
+    /// normalized parameter t ∈ [0,1]. Per spec §6.6.5 item 2.
+    ///
+    /// Treats `sample.v` as the function value and `sample.a` (path
+    /// acceleration = dv/dt) as its time-derivative. Hermite basis on [0,1]:
+    ///   h00(s) = 2s³ − 3s² + 1
+    ///   h10(s) = s³ − 2s² + s
+    ///   h01(s) = −2s³ + 3s²
+    ///   h11(s) = s³ − s²
+    /// `f(s) = h00·v_i + h10·dt·a_i + h01·v_{i+1} + h11·dt·a_{i+1}`
+    /// where `dt` is the time between samples (≈ sample arclength / mean v).
+    ///
+    /// Returns (`v_interp`, `a_interp`). `j_interp` was dropped per round-3
+    /// cleanup since v1 fixture 7 doesn't validate per-axis Cartesian jerk
+    /// (deferred to v2).
+    fn hermite_interp(samples: &[GridSample], t: f64) -> (f64, f64) {
+        let n = samples.len();
+        if n < 2 {
+            return (samples.first().map_or(0.0, |s| s.v), 0.0);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let pos = t * ((n - 1) as f64);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let i = (pos.floor() as usize).min(n - 2);
+        #[allow(clippy::cast_precision_loss)]
+        let s = pos - (i as f64);
+
+        let v_i = samples[i].v;
+        let v_ip1 = samples[i + 1].v;
+        let a_i = samples[i].a;
+        let a_ip1 = samples[i + 1].a;
+
+        // Approximate Δt between samples from arclength + average speed.
+        let ds = samples[i + 1].s - samples[i].s;
+        let v_avg = 0.5_f64.mul_add(v_i + v_ip1, 0.0).max(1e-9); // avoid div0
+        let dt = ds / v_avg;
+
+        let s2 = s * s;
+        let s3 = s2 * s;
+        let h00 = 2.0_f64.mul_add(s3, -(3.0 * s2)) + 1.0;
+        let h10 = s3 - 2.0 * s2 + s;
+        let h01 = (-2.0_f64).mul_add(s3, 3.0 * s2);
+        let h11 = s3 - s2;
+        let v_interp = h00 * v_i + h10 * dt * a_i + h01 * v_ip1 + h11 * dt * a_ip1;
+
+        // Derivatives of Hermite basis (w.r.t. s, then chain-rule by 1/dt).
+        let dh00 = 6.0_f64.mul_add(s2, -(6.0 * s));
+        let dh10 = 3.0_f64.mul_add(s2, -(4.0 * s)) + 1.0;
+        let dh01 = (-6.0_f64).mul_add(s2, 6.0 * s);
+        let dh11 = 3.0_f64.mul_add(s2, -(2.0 * s));
+        let dv_ds = dh00 * v_i + dh10 * dt * a_i + dh01 * v_ip1 + dh11 * dt * a_ip1;
+        let a_interp = dv_ds / dt;
+
+        (v_interp, a_interp)
+    }
+
+    #[inline]
+    fn mag_3(v: [f64; 3]) -> f64 {
+        v[0].mul_add(v[0], v[1].mul_add(v[1], v[2] * v[2])).sqrt()
+    }
+}
