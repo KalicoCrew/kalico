@@ -299,21 +299,33 @@ class KalicoHostIO:
             try:
                 self._ser.timeout = 0.1
                 chunk = self._ser.read(512)
-            except (OSError, serial.SerialException) as exc:  # type: ignore[union-attr]
+            except (OSError, serial.SerialException, TypeError) as exc:  # type: ignore[union-attr]
+                if self._stop.is_set():
+                    return
                 logging.warning("kalico-host-io: serial read error: %s", exc)
                 return
             if not chunk:
                 continue
             try:
                 packets = rxbuf.feed(chunk)
-            except msgproto.error as exc:
+            except Exception as exc:
                 logging.warning("kalico-host-io: framing error: %s", exc)
                 continue
             for pkt in packets:
+                # Handler-side seq sync: every received packet's seq byte is
+                # MCU's current next_sequence. Keeping our counter aligned
+                # protects subsequent sends from NAK loops.
+                if len(pkt) >= 2:
+                    with self._lock:
+                        self._seq = pkt[1] & msgproto.MESSAGE_SEQ_MASK
                 try:
                     params = self._parser.parse(pkt)
-                except msgproto.error as exc:
-                    logging.warning("kalico-host-io: parse error: %s", exc)
+                except Exception as exc:
+                    # Some MCU responses (NAKs, malformed) blow up the
+                    # parser. Log + skip — never let a bad packet kill
+                    # the whole RX thread.
+                    logging.warning("kalico-host-io: parse error on pkt %s: %s",
+                                    pkt.hex() if hasattr(pkt, "hex") else pkt, exc)
                     continue
                 name = params.get("#name", "<noname>")
                 self._ensure_queue(name).put(params)
