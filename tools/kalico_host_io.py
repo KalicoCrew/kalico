@@ -100,7 +100,7 @@ class KalicoHostIO:
 
     IDENTIFY_CHUNK = 40
 
-    def __init__(self, port, baud=250000, identify_timeout=5.0):
+    def __init__(self, port, baud=250000, identify_timeout=15.0):
         if serial is None:
             raise HostIoError(
                 "pyserial is required: `pip install pyserial` "
