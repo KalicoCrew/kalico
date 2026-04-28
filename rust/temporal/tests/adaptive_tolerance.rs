@@ -87,6 +87,15 @@ fn auto_succeeds_on_straight_line() {
 ///   1. `Fast` returns a *non-success* status on this fixture.
 ///   2. `Tight` returns a *success* status on the same fixture.
 ///   3. `Auto` returns a *success* status (fallback recovered the failure).
+///
+/// TODO: ignored after b87cd55f ("topp/path: fix 1-ulp overshoot in uniform-s
+/// grid endpoint"). The 1-ulp endpoint fix changed the grid-endpoint sample
+/// just enough that Fast now converges on this fixture in 2 outer iterations
+/// instead of diverging — Pi 5 Finding 2's documented `DivergedSlp` regime no
+/// longer applies here. The fallback chain still exists; this fixture just
+/// stops exercising it. Find a new fixture (different curvature profile or
+/// MVC fraction) that genuinely diverges under Fast, then re-enable.
+#[ignore = "fixture no longer triggers Fast SLP divergence after b87cd55f endpoint fix; needs a new diverging case"]
 #[test]
 fn auto_falls_back_on_fixture_4_class() {
     let limits = textbook_limits();
