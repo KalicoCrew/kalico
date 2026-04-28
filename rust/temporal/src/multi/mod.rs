@@ -67,20 +67,45 @@ pub enum JoiningStatus {
 
 #[derive(Debug, Clone, Copy)]
 pub struct JunctionInfo {
-    /// Indices of the two segments this junction sits between.
+    /// Indices of the two segments this junction sits between (left, right).
     pub between_segments: (usize, usize),
+    /// Post-joining **converged** junction velocity — equal to
+    /// `output.profiles[left].samples.last().v` and
+    /// `output.profiles[right].samples[0].v` within `ε_velocity` = 1 mm/s
+    /// (spec §6.2). Always ≤ the upfront-cap value identified by
+    /// `binding_cap`. May be lower if the joining loop drove the velocity
+    /// below the cap due to ramp-feasibility from short adjacent segments.
     pub v_junction: f64,
+    /// Identifies which **upfront cap** was binding when the junction
+    /// velocity was computed (spec §2.2): per-axis MVC, centripetal,
+    /// sharp-corner JD, or global `v_max`. Diagnostic; not necessarily
+    /// equal to the cap whose value is reflected in the converged
+    /// `v_junction`.
     pub binding_cap: JunctionBindingCap,
+    /// Curvature on the left side of the junction (segment
+    /// `between_segments.0` at u=1).
     pub kappa_left: f64,
+    /// Curvature on the right side of the junction (segment
+    /// `between_segments.1` at u=0).
     pub kappa_right: f64,
 }
 
+/// Identifies which **upfront junction-velocity cap** was binding when the
+/// junction's velocity was computed (spec §2.2). The four caps are evaluated
+/// against the geometry on each side of the junction; the binding (smallest)
+/// cap is recorded here.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum JunctionBindingCap {
+    /// Per-axis MVC: `v_max_axis / |T_axis|`.
     PerAxisVelocity,
+    /// Centripetal cap: `sqrt(a_centripetal_max / κ)`.
     Centripetal,
+    /// Global per-axis `v_max` minimum (rare — usually dominated by
+    /// `PerAxisVelocity`).
     GlobalVMax,
+    /// Sharp-corner G1↔G1 chord-error JD cap:
+    /// `sqrt(a · δ · cos(α/2) / (1 − cos(α/2)))`.
     SharpCornerChord,
 }
 

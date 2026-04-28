@@ -76,7 +76,7 @@ mod fixture_1_two_g1_sharp_corner {
         let v_jct = output.junctions[0].v_junction;
 
         // §6.2: sharp-corner cap. Expected ≈ sqrt(2500 · 0.05 · 2.414) ≈ 17.4 mm/s.
-        let expected = (2_500.0_f64 * 0.05 * 2.414_213_562).sqrt();
+        let expected = (2_500.0_f64 * 0.05 * 2.414_213_562).sqrt(); // 2.414... = 1/(1 - cos(π/4)) for a 90° deviation angle (spec §2.2)
         assert!((v_jct - expected).abs() < 0.1, "v_jct {v_jct} vs expected {expected}");
         assert!(matches!(output.junctions[0].binding_cap, JunctionBindingCap::SharpCornerChord));
 
@@ -272,7 +272,7 @@ mod fixture_5_star_pattern {
         assert!(matches!(output.joining_status, JoiningStatus::Converged));
 
         // §6.2 (review-1 helper): junction continuity at every junction.
-        // Star pattern has 9 junctions (n_points*2 - 1 segments).
+        // Star pattern: 10 points → 9 segments → 8 junctions.
         assert_junction_continuity_for_all(&output, 1.0);
     }
 }
