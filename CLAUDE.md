@@ -314,24 +314,3 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 - **`assert_junction_continuity_for_all` is tautological after library fix #2**: `BatchOutput.junctions[i].v_junction` is set to `profiles[i].samples.last().v`, so `v_end_left ≈ v_jct ≈ v_start_right` holds by construction. The helper still gates a real regression (if `output.junctions[i].v_junction` ever stops being sourced from the profile endpoints, the helper would catch it), but it no longer independently validates the convergence contract. Add a sibling helper that uses the upfront-cap value if/when `JunctionInfo.v_cap_upfront` lands.
 
 **Evidence:** Plan + 19 commits on this branch (range `083c1fff..aa2b63be`). Spec at `docs/superpowers/specs/2026-04-27-layer-2-multi-segment-design.md`; Pi 5 throughput investigation at `docs/research/pi5-socp-throughput-investigation.md`; JD formula verification at `docs/research/junction-deviation-cornering-formula.md`. Multi-segment integration tests at `rust/temporal/tests/multi_segment.rs` (7 fixtures); adaptive-tolerance regression tests at `rust/temporal/tests/adaptive_tolerance.rs`. All 54 tests pass; clippy clean under `-D warnings --all-targets --release`. Per-task spec compliance + code-quality reviews completed by the subagent-driven-development pipeline (`superpowers:code-reviewer` opus on each task).
-
-# Babysitter
-
-Babysitter wraps the existing `kalico-orchestrate → kalico-brainstormer → kalico-researcher → kalico-plan-reviewer` flow into a persistent run-state with retry/refine loops, so brainstorm/research/plan-review cycles run to completion without user nagging. The eventual fix is a bespoke `kalico/ceo-brainstorm` babysitter process that replaces the `/kalico-orchestrate` slash command end-to-end (auto-routing technical questions to `kalico-researcher`, surfacing only intent-level questions). Until that process is authored, `cradle/project-install` has produced the encoded project profile at `.a5c/project-profile.json` and stop-gap reference processes are listed below.
-
-## Recommended commands
-
-- `babysitter:project-install` — already run; produces / updates `.a5c/project-profile.json`. Re-run only if project state changes materially (new layer started, build order revised, methodology swap).
-- *Future* `kalico/ceo-brainstorm` — to be designed in a follow-up. Replaces `/kalico-orchestrate` for the brainstorm/research/plan-review pipeline. Build with `babysitter:assimilate` + `specializations/meta/process-creation.js` as references.
-- Stop-gap reference processes adopted until the custom process lands:
-  - `methodologies/spec-kit` — primary spine. Maps onto the existing `docs/superpowers/{specs,plans}/YYYY-MM-DD-<topic>` flow; CLAUDE.md grand-plan + Plan-changes-log slot in as the constitution.
-  - `methodologies/gsd/iterative-convergence` — quality-gated implement→test→score→refine loop, intended for the highest-risk research items (notably the streaming windowed spline fitter; build-order step 8).
-
-## Behavior notes (CEO-mode)
-
-- Breakpoints fire to the user only on **vision questions** ("why are we building this") and **scope-boundary decisions**. Implementation-approach choices, operator-visible behavior knobs, and CLAUDE.md plan-changes-log additions are auto-routed to `kalico-researcher` or answered by the orchestrator.
-- Reviewer subagents (`kalico-plan-reviewer`, `superpowers:code-reviewer`) always run on opus.
-- No CI/CD integration. Babysitter is host-only; sota-motion's linear-rebase discipline stays the integration story.
-
-Full encoded profile: `.a5c/project-profile.json`. Adopted-process detail per run: `artifacts/tool-recommendations.json` inside each run dir under `.a5c/runs/`.
-
