@@ -1,6 +1,6 @@
 ---
 name: kalico-brainstormer
-description: Use when the kalico orchestrator needs to brainstorm and plan one build-order item from CLAUDE.md. Operates return-then-resume; invokes superpowers:brainstorming and superpowers:writing-plans.
+description: ORCHESTRATOR-INTERNAL. Only dispatched by the `/kalico-orchestrate` slash command — do not invoke directly from the main agent or other subagents. Brainstorms and plans one build-order item from CLAUDE.md; operates return-then-resume; invokes superpowers:brainstorming and superpowers:writing-plans.
 ---
 
 # Kalico brainstormer
