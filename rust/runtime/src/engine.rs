@@ -107,6 +107,21 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.widen_state.high | u64::from(self.widen_state.last_low)
     }
 
+    /// Re-initialize CYCCNT widening from the foreground producer protocol.
+    ///
+    /// Encapsulates `WidenState::reinit` so the FFI surface in `kalico-c-api`
+    /// can drive the spec §4.4 disable→reinit→enable sequence without exposing
+    /// the `widen_state` field. Reads the pre-disable widened high-water mark
+    /// internally via [`Engine::last_widened_now`] and forwards `raw` along.
+    ///
+    /// SAFETY (caller must guarantee): TIM5 is disabled and the ISR has not
+    /// fired since the disable, so `widen_state` access is single-threaded.
+    /// Spec §4.4 / §4.7.
+    pub fn reinit_widen(&mut self, raw: u32) {
+        let last_widened = self.last_widened_now();
+        self.widen_state.reinit(raw, last_widened);
+    }
+
     /// Latch FAULT and emit one fault marker sample (last-known-good motors,
     /// not zero, so host plots show the fault in context). ISR self-disables
     /// the timer in the C wrapper after this returns.
