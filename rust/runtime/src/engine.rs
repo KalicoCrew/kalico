@@ -73,6 +73,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
 }
 
 // Engine::Default impl for tests where slot types implement Default.
+// Production callers must use ::new(clock_freq) — Default hardcodes 520 MHz.
+#[cfg(test)]
 impl<P: PaSlot + Default, I: IsSlot + Default> Default for Engine<P, I> {
     fn default() -> Self {
         // H723 Klipper Kconfig default is 520 MHz (src/stm32/Kconfig). Tests using
@@ -108,15 +110,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// Latch FAULT and emit one fault marker sample (last-known-good motors,
     /// not zero, so host plots show the fault in context). ISR self-disables
     /// the timer in the C wrapper after this returns.
+    /// `segment_id` is passed explicitly by the call site (decoupled from
+    /// `self.current`). Pass `0` only if no segment was active — producer-side
+    /// segment ids start at 1, so `segment_id == 0` ⇒ fault before any segment
+    /// was active.
     fn latch_fault(
         &mut self,
         code: RuntimeError,
+        segment_id: u32,
         now: u64,
         trace: &mut TraceRing<TRACE_RING_N>,
     ) {
         self.last_error.store(i32::from(code), Ordering::Release);
         self.status.store(RuntimeStatus::Fault as u8, Ordering::Release);
-        let segment_id = self.current.as_ref().map_or(0, |s| s.id);
         let _ = trace.try_emit(TraceSample {
             tick: now,
             motor_a: self.last_motors[0],
@@ -144,11 +150,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Step 1 + 2: queue + idle check, segment activation. See spec §4.2.
-        if self.current.is_none() {
-            self.current = queue.try_pop();
-        }
-
-        // Step 1's idle path with §4.4 ISR-disable protocol.
+        // Idle path with §4.4 ISR-disable protocol.
         // (Caller observes status == Idle and clears CR1.CEN.)
         let Some(current) = self.current.take() else {
             self.status.store(RuntimeStatus::Idle as u8, Ordering::Release);
@@ -181,8 +183,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         while t_segment >= current.duration() {
             iters += 1;
             if iters > MAX_BOUNDARY_ITERS {
+                let seg_id = current.id;
                 self.current = Some(current);
-                self.latch_fault(RuntimeError::BoundaryLoopExhausted, now, trace);
+                self.latch_fault(RuntimeError::BoundaryLoopExhausted, seg_id, now, trace);
                 return Err(RuntimeError::BoundaryLoopExhausted);
             }
             let delta_t = t_segment - current.duration();
@@ -197,24 +200,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             current.t_start = now.saturating_sub(delta_t);
             t_segment = delta_t;
         }
-        self.current = Some(current);
-
         // Step 4: curve evaluation. Spec invariant: segments are time-parameterized.
         let Some(curve_view) = pool.resolve(current.curve) else {
-            self.latch_fault(RuntimeError::InvalidHandle, now, trace);
+            self.latch_fault(RuntimeError::InvalidHandle, current.id, now, trace);
             return Err(RuntimeError::InvalidHandle);
         };
         let duration = current.duration().max(1) as f32;  // saturating_sub avoids 0
         let u = (t_segment as f32 / duration).clamp(0.0, 1.0);
         let Ok(xyz_e) = nurbs_eval_3d(&curve_view, u) else {
-            self.latch_fault(RuntimeError::InvalidCurve, now, trace);
+            self.latch_fault(RuntimeError::InvalidCurve, current.id, now, trace);
             return Err(RuntimeError::InvalidCurve);
         };
 
         // Step 5: NaN/Inf check. Spec §5.4 — necessary even with producer-side
         // validation (NaN can arise from finite inputs).
         if !xyz_e.iter().all(|x: &f32| x.is_finite()) {
-            self.latch_fault(RuntimeError::NaNOrInfFromEval, now, trace);
+            self.latch_fault(RuntimeError::NaNOrInfFromEval, current.id, now, trace);
             return Err(RuntimeError::NaNOrInfFromEval);
         }
 
@@ -225,7 +226,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         };
 
         // Step 7: slot pipeline. Noop ZSTs at Step 5.
-        let dt = 1.0 / (40_000.0_f32);
+        let dt = 1.0 / (crate::clock::TICK_RATE_HZ as f32);
         let mut state = TickState { dt, xyz_e, motors };
         self.pa_slot.apply(&mut state);
         self.is_slot.apply(&mut state);
@@ -247,6 +248,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             _pad: [0; 7],
         });
         self.last_motors = state.motors;
+        self.current = Some(current);
 
         // Step 9: tick counter heartbeat.
         self.tick_counter.increment();

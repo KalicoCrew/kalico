@@ -63,7 +63,8 @@ fn tick_processes_one_segment_to_completion() {
     // Tick repeatedly through the segment.
     for tick_idx in 0..=n_ticks {
         let now = tick_idx * tick_cycles;
-        let _ = engine.tick(now, &mut queue, &pool, &mut trace);
+        engine.tick(now, &mut queue, &pool, &mut trace)
+            .expect("tick should succeed in healthy run");
     }
 
     // Drain trace and verify samples emitted along the line.
@@ -108,7 +109,8 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
 
     // Tick at t = 0, tc, 2tc, 3tc — third tick straddles the seg1→seg2 boundary.
     for tick_idx in 0..=3u64 {
-        let _ = engine.tick(tick_idx * tc, &mut queue, &pool, &mut trace);
+        engine.tick(tick_idx * tc, &mut queue, &pool, &mut trace)
+            .expect("tick should succeed in healthy run");
     }
 
     let mut out = [TraceSample::default(); 16];
