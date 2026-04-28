@@ -23,6 +23,9 @@ volatile uint8_t kalico_liveness_ok __attribute__((used, externally_visible))
 void
 watchdog_reset(void)
 {
+#if CONFIG_KALICO_SIM
+    return;  // Renode's IWDG model misbehaves; sim build is silicon-unsafe
+#endif
 #if CONFIG_KALICO_RUNTIME
     if (!kalico_liveness_ok) return;   // kalico runtime detected liveness fault
 #endif
@@ -33,6 +36,9 @@ DECL_TASK(watchdog_reset);
 void
 watchdog_init(void)
 {
+#if CONFIG_KALICO_SIM
+    return;  // Don't arm IWDG in sim — see watchdog_reset
+#endif
     IWDG->KR = 0x5555;
     IWDG->PR = 0;
     IWDG->RLR = 0x0FFF; // 410-512ms timeout (depending on stm32 chip)

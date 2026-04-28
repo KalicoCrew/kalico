@@ -108,7 +108,13 @@ class KalicoHostIO:
             )
         self._port = port
         self._baud = baud
-        self._ser = serial.Serial(port, baud, timeout=0.1)
+        # pyserial routes "socket://host:port" / "loop://" / etc. through
+        # serial_for_url; the bare Serial(port) constructor does not. The sim
+        # bench uses socket:// to talk to Renode's USART2 server-socket.
+        if "://" in port:
+            self._ser = serial.serial_for_url(port, baud, timeout=0.1)
+        else:
+            self._ser = serial.Serial(port, baud, timeout=0.1)
         self._parser = msgproto.MessageParser()
         # Pre-init parser knows DefaultMessages (identify, identify_response).
         self._seq = 0

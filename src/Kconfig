@@ -390,4 +390,14 @@ config KALICO_RUNTIME
       Links libkalico_c_api.a (Rust staticlib) and enables the
       40 kHz trajectory-evaluation ISR. Step 5 — see CLAUDE.md.
 
+config KALICO_SIM
+    bool "Build for Renode simulator (disables IWDG)"
+    depends on KALICO_RUNTIME
+    default n
+    help
+      Builds a sim-flavor image: skips watchdog_init / watchdog_reset
+      so Renode's IWDG model can't trigger spurious resets. NEVER
+      enable for a flashed-to-silicon build — it leaves the IWDG
+      effectively off, which is unsafe on real hardware.
+
 source "src/extras/Kconfig"

@@ -1,0 +1,76 @@
+:name: kalico-h723-sim
+:description: Renode simulator for the kalico runtime on STM32H723 (uses H743 model).
+#
+# Usage (from worktree root):
+#   bash tools/sim/run_sim.sh
+# or manually:
+#   renode --console --disable-gui -e "include @tools/sim/h723_sim.resc"
+#
+# What this simulates:
+# - Klipper firmware running on a Cortex-M7 with TIM5/DWT/NVIC modeled.
+# - Runtime kalico_runtime_init / TIM5 ISR / engine state machine — these are
+#   pure Rust + memory-mapped I/O the H743 .repl already covers.
+# - USART2 (PA2/PA3) bridged to a TCP socket so host tools can talk to the MCU
+#   over `socket://localhost:3334`.
+#
+# What is NOT simulated (use real hardware for these):
+# - DWT->CYCCNT cycle accuracy: Renode CYCCNT advances on virtual time, so
+#   Surface-C cycle benchmarks are meaningless here.
+# - USB-CDC: Renode's H7 .repl tags OTG_HS as opaque memory. We rebuild the
+#   firmware with CONFIG_STM32_SERIAL_USART2=y for the simulator instead.
+# - IWDG real-world timeout pacing.
+# - Real-printer hardware (TMC drivers, motors, sensors).
+
+using sysbus
+mach create "h723"
+
+# Reuse Renode's H743 platform description, then patch in tags for H7-specific
+# peripherals it doesn't model. The Tag value is what the CPU sees on every
+# read from that address — chosen so Klipper's "spin until ready" loops exit.
+machine LoadPlatformDescription @/opt/homebrew/Cellar/renode/1.16.1/libexec/platforms/cpus/stm32h743.repl
+
+# H7 PWR controller (D3 domain). Klipper's stm32h7.c polls D3CR.VOSRDY at boot
+# during voltage-scaling configuration; without this, the firmware spins.
+# PWR_CR1 = 0x100 (DBP set). PWR_CSR1 = 0x2000 (VOSRDY set). PWR_CR2 = 0x1 (BREN).
+# Mirrors the Hubris H753 example shipped with Renode.
+sysbus Tag <0x58024800 4> "PWR_CR1"  0x100
+sysbus Tag <0x58024804 4> "PWR_CSR1" 0x2000
+sysbus Tag <0x58024808 4> "PWR_CR2"  0x1
+
+# RCC->CR PLL1-ready bit. Klipper polls bit 25 (PLL1RDY) after enabling PLL1.
+# Returning 0x02000003 keeps HSI/HSE/PLL1 all "ready" so the wait loops exit.
+sysbus Tag <0x58024400 4> "RCC_CR" 0x02000003
+
+# NOTE on IWDG: Renode's Timers.STM32_IndependentWatchdog model (already
+# present in the H743 .repl at 0x58004800) doesn't honor Klipper's
+# IWDG->KR = 0xAAAA refresh writes the same way real silicon does. With the
+# default config the model fires a reset ~20 s into the sim, halting the CPU
+# (the .repl has no `reset` macro). For runs longer than ~15 s, build the
+# sim firmware with CONFIG_KALICO_SIM=y to skip watchdog_init / kicks. See
+# tools/sim/sim.config for the recommended flag set; tools/sim/README.md
+# explains the trade-off.
+
+# Bridge USART2 (Klipper's CONFIG_STM32_SERIAL_USART2 console + Kalico command
+# surface) to a TCP socket. Host-side `kalico_host_io.py` connects via
+# `socket://localhost:3334`. Default baud 250 kbaud is set in the firmware;
+# Renode's UART model ignores baud rate (timing is virtual).
+emulation CreateServerSocketTerminal 3334 "uart_term" false
+connector Connect sysbus.usart2 uart_term
+
+# Tight quantum: 1 us. Renode's USART model latches one byte at a time into
+# RDR and asserts the IRQ; if the CPU doesn't service the IRQ before the next
+# WriteChar (which happens on the host TCP write loop), RX overrun drops the
+# byte. With a 50 us quantum, ~12 bytes go through unread on a fast TCP burst
+# and 60-byte commands silently fail. 1 us gives the CPU enough chances to
+# read RDR between bytes that no overrun occurs in practice for our 250 kbaud
+# protocol; tradeoff is ~5x slower wall-clock simulation, still fast enough.
+emulation SetGlobalQuantum "0.000001"
+
+# Load the firmware. Klipper's bootloader-aware build uses a vector table at
+# 0x08020000 (CONFIG_STM32_FLASH_START_20000). Renode's CPU reads the initial
+# PC/SP from the ELF entry point and sets VTOR via the heuristic in the log
+# (`Guessing VectorTableOffset value to be 0x8020000.`).
+sysbus LoadELF @out/klipper.elf
+
+echo "Renode kalico-h723-sim ready. UART2 -> tcp localhost:3334"
+echo "Type 'start' to begin emulation, or 'help' for monitor commands."
