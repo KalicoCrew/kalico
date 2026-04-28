@@ -104,6 +104,8 @@ Two C files added under `src/`, matching Klipper convention (per-MCU code under 
 
 - **`src/stm32/kalico_h7_timer.c`** — H723-specific timer init using **TIM5** (32-bit general-purpose timer, not used by Klipper's core-motion or `src/stm32/hard_pwm.c` PWM-pin assignments on Octopus Pro; auto-reload at `(kalico_clock_freq / 40000) - 1`). NVIC priority **3** (Cortex-M priority numbers: lower number = higher urgency; SysTick=2, USB=1 in Klipper's `generic/armcm_timer.c` and STM32 USB drivers). With priority 3, SysTick and USB preempt the kalico ISR. **For Step 5's trace-only output, preemption-induced jitter does not translate to motion artifacts**; for Step 10 (phase stepping), kalico TIM5 will be revisited and likely promoted to highest IRQ priority because output jitter directly affects coil current synthesis.
 
+  **Init ordering invariant**: `kalico_h7_timer_init()` (called from `runtime_init`'s C-side wrapper) MUST clear `TIM5->CR1.CEN` and `TIM5->SR.UIF` and disable the NVIC interrupt **before** any path that could fire the IRQ — this guards against a warm-reboot scenario where TIM5 was left enabled by a prior boot, which would otherwise allow an early ISR fire to call `kalico_runtime_tick` while `INIT_STATE != READY`. The ISR entrypoint also Acquire-loads `INIT_STATE` defensively (§3.2) and early-returns if not READY; the init-ordering rule is the primary guard, the ISR check is the safety net.
+
   The IRQ handler:
   1. Acks `TIM5->SR.UIF` immediately on entry (entry-time ack — avoids tail-chain re-entry / starvation per Codex review).
   2. Reads `DWT->CYCCNT` (raw u32). Does NOT widen to u64 in C; widening lives in Rust (see §4.1).
@@ -112,7 +114,7 @@ Two C files added under `src/`, matching Klipper convention (per-MCU code under 
 
   Timer choice rationale: TIM5 is 32-bit (over-kill for 25 µs auto-reload but harmless) and unused by `hard_pwm.c` on Octopus Pro per current Klipper convention. The implementation task verifies non-conflict with the actively configured peripheral set before locking in; if TIM5 is unavailable, candidates in priority order: TIM4, TIM12, TIM13.
 
-- **`src/runtime_tick.c`** — portable: `DECL_INIT(runtime_init)` calls `kalico_runtime_init` after exposing the Klipper-time-base constant via `const uint32_t kalico_clock_freq = CONFIG_CLOCK_FREQ;` (Rust reads through `extern "C" { static kalico_clock_freq: u32; }` at init); `DECL_TASK(runtime_drain)` calls `kalico_runtime_drain_trace`, ships samples over USB-CDC, and updates the `kalico_liveness_ok` watchdog gate (§5.7); `DECL_COMMAND(...)` exposes the test-harness commands (load_curve, push_segment, query_status, drain_trace). Foreground only — never preempts.
+- **`src/runtime_tick.c`** — portable: `DECL_INIT(runtime_init)` calls `kalico_runtime_init` after exposing the Klipper-time-base constant via `const uint32_t kalico_clock_freq __attribute__((used, externally_visible)) = CONFIG_CLOCK_FREQ;` (`__attribute__((used, externally_visible))` keeps Klipper's `-fwhole-program --gc-sections` from stripping the symbol the Rust side imports). Rust imports via `unsafe extern "C" { static kalico_clock_freq: u32; }` and reads at init. `DECL_TASK(runtime_drain)` calls `kalico_runtime_drain_trace`, ships samples over USB-CDC, and updates the `kalico_liveness_ok` watchdog gate (§5.7); `DECL_COMMAND(...)` exposes the test-harness commands (load_curve, push_segment, query_status, drain_trace). Foreground only — never preempts.
 
   **Why `kalico_clock_freq` as a C constant rather than a hardcoded Rust value**: H7 builds may run at frequencies other than 550 MHz depending on Kconfig (PLL configuration, CSS / SAI MCLK constraints). Reading `CONFIG_CLOCK_FREQ` through C keeps the Rust runtime agnostic to the specific frequency and avoids a `#[cfg]` matrix in Rust.
 
@@ -153,7 +155,11 @@ Key types and rationale:
 
 - **`SegmentQueue`** wraps `heapless::spsc::Queue<Segment, 8>` (effective capacity 7 per heapless 0.8's `N-1` rule). Producer/Consumer halves owned by the foreground (test harness at Step 5; comms task at Step 6+) and the ISR (`Engine::tick`) respectively. heapless's atomics ship correct for ARMv7-M; Step 5 doesn't validate them under concurrency, but they ship with proven correctness from the library.
 - **`Segment { id: u32, curve: CurveHandle, t_start: u64, t_end: u64, kinematics: KinematicTag }`** — small POD; no inline curve data. `enqueue` / `dequeue` `memcpy`s the segment, so keeping it small minimizes ISR-boundary cost. **Ownership note**: `runtime::Segment` is the MCU runtime's per-segment record and is **distinct from `geometry::Segment`** (Layer 1's NURBS segment from the reduce pipeline — heap-allocated, source-line-traced, `'static` curve data inline). The conversion at the Layer-3-to-Layer-4 boundary (geometry → runtime) is Step 7 MVP territory; Step 5 doesn't wire it. The conversion compiles a `geometry::Segment`'s NURBS into a slab slot and produces a `runtime::Segment` with `t_start`/`t_end` derived from Layer 3's time-reparameterization output.
-- **`CurveHandle`** is a small index (u16) into a static slab `static CURVE_POOL: CurvePool<{ CURVE_POOL_N }>`. The slab owns the NURBS data (control points, knots, weights). `CURVE_POOL_N = 16` at Step 5 (see §7 open question 1; revisited at Step 7 MVP). Producer-side rule: a curve must be fully loaded into a slab slot **before** any Segment referencing it is pushed onto the queue. ISR-side rule: handles trusted; no validation in the hot path.
+- **`CurveHandle`** is a small index (u16) into a static slab `static CURVE_POOL: CurvePool<{ CURVE_POOL_N }>`. The slab owns the NURBS data (control points, knots, weights). `CURVE_POOL_N = 16` at Step 5 (see §7 open question 1; revisited at Step 7 MVP).
+
+  **Slot lifetime policy at Step 5: no-overwrite-after-load.** Once a slot is populated by `kalico_runtime_load_curve(slot_idx, ...)`, the producer treats it as immutable for the rest of the test run; subsequent loads to the same slot are rejected with `KALICO_ERR_INVALID_HANDLE` until the runtime is reset (whole-MCU restart at Step 5). This trivially guarantees that any in-flight Segment referencing the handle observes valid curve data, with no refcount or epoch machinery needed. **Step 6+ deferred policy**: when live comms supports curve replacement (e.g., reusing a slot across slicer files), refcount or generation-counter discipline is required. Spec for that lifetime policy lives at Step 6 design time, not here.
+
+  Producer-side rule (Step 5): a curve must be fully loaded into a slab slot **before** any Segment referencing it is pushed onto the queue. ISR-side rule: handles trusted; no validation in the hot path.
 - **`Engine<P: PaSlot, I: IsSlot>`** is the per-axis evaluator. Generic over the two slot types. Concrete instantiation chosen at compile time via Cargo features:
   ```rust
   #[cfg(feature = "pa-tanh")]      type Pa = TanhPa;
@@ -171,6 +177,8 @@ Key types and rationale:
   impl PaSlot for NoopPa {}
   ```
   Optimizer fully removes Noop branches; no runtime overhead vs. open-coding `if has_pa { ... }`.
+
+  **Step-9 forward note (PA velocity dependency)**: tanh PA at Step 9 needs `d motor_e / dt` (extruder velocity) to compute the pressure-advance offset. `TickState` does **not** currently carry derivatives. Two acceptable shapes for Step 9 to extend: (a) widen `TickState` with `xyz_e_prev` / `motors_prev` so the slot computes finite-difference velocity from successive ticks; (b) keep `TickState` lean and require each slot impl to maintain its own one-tick history as `&mut self` state (`TanhPa { last_motor_e: f32, ... }`). Step 5 doesn't pick — Step 9 design time does. Flagged here so the contract change isn't a surprise.
 - **`TraceRing<1024>`** is an SPSC ring (heapless::spsc::Queue underlying), ISR producer / foreground consumer. Sample is `#[repr(C)]` for stable ABI across host-Rust unit tests, the C-side smoke build, and host-Python deserialization:
   ```rust
   #[repr(C)]
@@ -184,7 +192,18 @@ Key types and rationale:
       pub _pad: [u8; 7],     // explicit padding to 32-byte total size
   }
   ```
-  Total `sizeof(TraceSample) == 32`. Compile-time assertion via `static_assertions::assert_eq_size!` and equivalent `_Static_assert` in the C smoke build (§6.3). 1024 samples × 32 bytes = 32 KB. Drop-newest policy with overflow flag carried into the **next** successfully enqueued sample (heapless::spsc doesn't permit modifying an already-enqueued item; see §4.3 trace-overflow protocol).
+  Total `sizeof(TraceSample) == 32`, alignment 8. Compile-time assertions in the C smoke build (§6.3) cover both size **and** field offsets — sizeof alone catches struct-size drift but not field-position drift:
+  ```c
+  _Static_assert(sizeof(TraceSample) == 32, "TraceSample size");
+  _Static_assert(_Alignof(TraceSample) == 8, "TraceSample align");
+  _Static_assert(offsetof(TraceSample, tick) == 0, "TraceSample.tick offset");
+  _Static_assert(offsetof(TraceSample, motor_a) == 8, "TraceSample.motor_a offset");
+  _Static_assert(offsetof(TraceSample, motor_b) == 12, "TraceSample.motor_b offset");
+  _Static_assert(offsetof(TraceSample, motor_e) == 16, "TraceSample.motor_e offset");
+  _Static_assert(offsetof(TraceSample, segment_id) == 20, "TraceSample.segment_id offset");
+  _Static_assert(offsetof(TraceSample, flags) == 24, "TraceSample.flags offset");
+  ```
+  Rust side mirrors with `static_assertions::const_assert_eq!(offset_of!(TraceSample, tick), 0)` etc. 1024 samples × 32 bytes = 32 KB. Drop-newest policy with overflow flag carried into the **next** successfully enqueued sample (heapless::spsc doesn't permit modifying an already-enqueued item; see §4.3 trace-overflow protocol).
 - **Memory placement**: `TraceRing` storage in DTCM (CPU-only access at Step 5; no DMA touches it). Future DMA-driven trace shipping (Step 6+) would relocate to AXI SRAM. `CurvePool` storage in DTCM for fast ISR access. `SegmentQueue` storage in DTCM. Stack allocation per ISR call (de Boor workspace) implicitly DTCM via Klipper's existing stack placement.
 
 ### 3.2 `rust/kalico-c-api/` (renamed from `nurbs-c-api`)
@@ -290,16 +309,20 @@ Workspace edition: migrate from 2021 to **2024** as a prep commit before Step 5 
 
 ### 4.1 Time-unit contract
 
-`now`, `t_start`, `t_end` are all in **MCU clock cycles** at the rate exposed by Klipper's `CONFIG_CLOCK_FREQ` (`kalico_clock_freq` C constant, exposed to Rust via `extern "C" const u32 kalico_clock_freq`; 550 MHz on H723). u64 wraps in ~1063 years — irrelevant. The `DWT->CYCCNT` register is 32-bit and wraps every ~7.8 s at 550 MHz; widening to u64 happens in the **Rust** runtime (`runtime/src/clock.rs::widen_cyccnt`).
+`now`, `t_start`, `t_end` are all in **MCU clock cycles** at the rate exposed by Klipper's `CONFIG_CLOCK_FREQ` (`kalico_clock_freq` C constant, exposed to Rust via `unsafe extern "C" { static kalico_clock_freq: u32; }`; 550 MHz on H723). u64 wraps in ~1063 years — irrelevant. The `DWT->CYCCNT` register is 32-bit and wraps every ~7.8 s at 550 MHz; widening to u64 happens in the **Rust** runtime (`runtime/src/clock.rs::widen_cyccnt`).
 
-Widening algorithm (single-producer ISR; foreground never reads the widening state):
+Widening algorithm uses Klipper's existing `timer_read_time()` (a 32-bit-base-rate clock that Klipper widens internally — exposed via `extern "C" fn timer_read_time() -> u32` already used throughout `src/`) as the **monotonic backstop** so long-disable wrap loss is recoverable:
 
 ```rust
-// Owned by the ISR alone — single-producer access.
+// Owned by the ISR alone — single-producer access. Foreground does NOT read these.
 static mut WIDEN_LAST_LOW: u32 = 0;
 static mut WIDEN_HIGH: u64 = 0;
 
-// SAFETY: caller must invoke only from the kalico ISR.
+extern "C" {
+    fn timer_read_time() -> u32; // Klipper's existing 32-bit timer-base clock
+}
+
+// SAFETY: must invoke only from the kalico ISR (or from runtime_init before TIM5 enable).
 #[inline]
 unsafe fn widen_cyccnt(raw: u32) -> u64 {
     if raw < WIDEN_LAST_LOW {
@@ -310,7 +333,25 @@ unsafe fn widen_cyccnt(raw: u32) -> u64 {
 }
 ```
 
-Correctness requires the ISR to be invoked at least once per CYCCNT half-wrap (~3.9 s at 550 MHz); the 25 µs ISR period satisfies this comfortably during normal operation. **Re-init invariant**: if TIM5 is disabled for longer than one CYCCNT wrap (~7.8 s), the widening state must be reset (`WIDEN_LAST_LOW = current_raw; WIDEN_HIGH = WIDEN_HIGH + (1u64 << 32)` is unsafe in this case because intermediate wraps are unobservable). The runtime's TIM5 re-enable path (§4.4) treats CYCCNT as fresh — calls `widen_cyccnt_reinit()` which resets WIDEN_LAST_LOW to the current raw value and bumps WIDEN_HIGH conservatively. Sealed `static mut` access is safe because only the ISR touches these statics; foreground reads `now_widened: AtomicU64` (Release-stored by ISR after each widen).
+**Normal operation** (ISR fires every 25 µs, CYCCNT half-wrap is ~3.9 s): the algorithm correctly tracks wraps via the `raw < WIDEN_LAST_LOW` check.
+
+**Long-disable case** (TIM5 disabled for > one CYCCNT wrap, ~7.8 s at 550 MHz, e.g. between test runs): a naïve `WIDEN_HIGH += 1u64 << 32` is **incorrect** — intermediate wraps are unobservable. Reinit on TIM5 re-enable (`runtime_init` and the producer-driven re-enable path in §4.4) calls:
+
+```rust
+unsafe fn widen_cyccnt_reinit() {
+    let current_raw = read_cyccnt();
+    let klipper_now = timer_read_time();         // monotonic backstop
+    // Compute conservative WIDEN_HIGH from klipper_now: convert Klipper's u32-base time
+    // to CYCCNT cycles, mask off the low 32, install as WIDEN_HIGH.
+    let cyccnt_estimate: u64 = (klipper_now as u64) * (kalico_clock_freq as u64) / TIMER_BASE_FREQ;
+    WIDEN_HIGH = cyccnt_estimate & !0xFFFF_FFFFu64;
+    WIDEN_LAST_LOW = current_raw;
+}
+```
+
+`timer_read_time()` returns Klipper's wall-monotonic clock (Klipper itself widens internally to handle ≥4 billion clock ticks). Even after a 30-second disable, the backstop reconstructs `WIDEN_HIGH` correctly — the resulting `now: u64` is monotonic across long disables, modulo the precision of Klipper's clock-rate constant.
+
+Single-producer `static mut` access is safe because only the kalico ISR touches these statics. Foreground does **not** read the widening state directly; tick-count diagnostics use `tick_counter: AtomicU32` (see §4.7) which is wrap-tolerant for foreground's "did the value change" usage. **Avoiding `AtomicU64`**: ARMv7-M `target_has_atomic = "64"` may not be lock-free on all M7 cores; torn reads of u64 from foreground would corrupt the widened value. The fix is to never let foreground read `now: u64` — it stays ISR-private.
 
 Widening lives in Rust to keep the wrap-handling invariant testable on the host. One unit, one type, no ambiguity. Field doc strings name the unit.
 
@@ -318,7 +359,8 @@ Widening lives in Rust to keep the wrap-handling invariant testable on the host.
 
 ```
 TIM5 update IRQ fires →
-  C wrapper:  ack SR.UIF; read DWT->CYCCNT into now_clock (u64); call kalico_runtime_tick(rt, now_clock); return.
+  C wrapper:  ack SR.UIF; read DWT->CYCCNT (raw u32) into now_raw; call kalico_runtime_tick(rt, now_raw); return.
+              Rust widens raw_cyccnt → now: u64 (§4.1) before Engine::tick.
   Rust:       Engine::tick(now)
 ```
 
@@ -364,7 +406,7 @@ TIM5 update IRQ fires →
 
 `ONE_TICK_CYCLES = kalico_clock_freq / 40_000` cycles; computed at init time from the C-exposed `kalico_clock_freq` symbol and stored in `RuntimeEngine` (not a compile-time `const`, since `kalico_clock_freq` may differ from 550 MHz in alternate Kconfigs). At 550 MHz this evaluates to 13,750 cycles.
 
-9. **Tick counter** (liveness heartbeat per §6.3): `tick_counter.fetch_add(1, Relaxed)`.
+9. **Tick counter** (liveness heartbeat per §5.7): `tick_counter.fetch_add(1, Relaxed)` — `AtomicU32`. Wrap every ~28 hours at 40 kHz; foreground's "value changed in last 25 ms" check is wrap-tolerant.
 
 10. **Status update.** `runtime_status.store(RUNNING, Release)`. Return `Ok(())`.
 
@@ -445,7 +487,8 @@ Burst behavior: drain pulls whatever's in the ring (up to `out_cap`); if foregro
 ```
 DECL_COMMAND(query_kalico_status):
   → kalico_runtime_status(rt) → u8 (IDLE / RUNNING / DRAINED / FAULT)
-  → Acquire-load of RT_STATE; foreground infers trace visibility from RUNNING / FAULT
+  → Acquire-load of `RuntimeEngine.runtime_status`; foreground infers trace visibility from RUNNING / FAULT
+  → (FFI shim first Acquire-loads `INIT_STATE` and returns KALICO_ERR_NOT_INIT if not READY)
 ```
 
 ### 4.7 Concurrency invariants
@@ -457,9 +500,8 @@ DECL_COMMAND(query_kalico_status):
 | `INIT_STATE: AtomicU8`              | foreground (init only)  | foreground (init + FFI entrypoints) | `compare_exchange` UNINIT→INITING; Release-store READY; Acquire-load on FFI entry |
 | `runtime_status: AtomicU8` (in `RuntimeEngine`) | ISR (Release) | foreground (Acquire) | Release / Acquire so foreground infers trace/error visibility from RUNNING ↔ FAULT |
 | `last_error: AtomicI32`             | ISR                     | foreground          | Release / Acquire                                                      |
-| `tick_counter: AtomicU64`           | ISR                     | foreground          | Relaxed (purely advisory liveness-heartbeat — no payload to publish)   |
-| `now_widened: AtomicU64`            | ISR (Release)           | foreground (Acquire)| Release on store after widen; foreground reads for diagnostics only    |
-| `WIDEN_LAST_LOW`, `WIDEN_HIGH` (`static mut`) | ISR (sole accessor) | —              | single-producer; SAFETY: only the kalico ISR touches these             |
+| `tick_counter: AtomicU32`           | ISR                     | foreground          | Relaxed; advisory liveness-heartbeat. u32 chosen over u64 because ARMv7-M lock-free `AtomicU64` is not guaranteed; foreground uses "value changed?" semantics so wrap (every ~28 hours at 40 kHz) is benign. |
+| `WIDEN_LAST_LOW`, `WIDEN_HIGH` (`static mut`) | ISR (sole accessor) | —              | single-producer; SAFETY: only the kalico ISR touches these. Foreground never reads `now: u64`; widened values stay ISR-internal. |
 | `trace_overflow_pending: AtomicBool` | ISR (RMW)              | foreground (R+clear-on-drain) | Relaxed; carry-into-next-sample. Known race: foreground may emit synthetic OVERFLOW while ISR concurrently enqueues a sample with OVERFLOW already set; result is at-most-one-extra duplicate marker. Host should debounce. |
 | `CurvePool` slot                    | foreground (W)          | ISR (R)             | producer rule: full-load before referencing handle in any pushed Segment |
 | `TIM5 enable bit`                   | FG (set, after enqueue) + ISR (clear, on confirmed-idle) | —                | Pair: §4.4 producer-side push protocol + §4.2 step 1 ISR-side disable protocol. Race-free via IDLE-store-before-recheck on ISR side and Acquire-load-after-enqueue on FG side. |
@@ -469,7 +511,7 @@ DECL_COMMAND(query_kalico_status):
 H723 @ 550 MHz with `-O3 + LTO` (refined by Verifier round 1 reading `nurbs/src/eval.rs`):
 
 - Queue check + bookkeeping: ~100–400 cycles
-- `nurbs::vector_eval` degree-3 3D rational: ~700 cycles arithmetic (knot-span binary search ~50, init loop ~16 FMAs, de Boor recurrence ~180 cycles, weight normalization ~42, miscellaneous ~50) **plus** ~250–500 cycles for stack-workspace zero-init (the existing `WORKSPACE_SIZE = 21` per `nurbs/src/lib.rs:61` zeroes 21 × 3 = 63 f32s + 21-element denom workspace per call). Total `vector_eval`: **~1000–1500 cycles**. The workspace zero-init is the dominant cost driver — a Step-5+ optimization opportunity (degree-3 only needs `WORKSPACE_SIZE = 4`, reducing the zero-init by ~5×) but not blocking.
+- `nurbs::vector_eval` degree-3 3D rational: ~700 cycles arithmetic (knot-span binary search ~50, init loop ~16 FMAs, de Boor recurrence ~180 cycles, weight normalization ~42, miscellaneous ~50) **plus** ~250–500 cycles for stack-workspace zero-init (the existing `WORKSPACE_SIZE = 21` per `nurbs/src/lib.rs:61` zeroes 21 × 3 = 63 f32s + 21-element denom workspace per call). Total `vector_eval`: **~1000–1500 cycles**. The workspace zero-init is the dominant cost driver — a Step-5+ optimization opportunity (degree-3 only needs `WORKSPACE_SIZE = 4`, reducing the zero-init by ~5×) but not blocking. **Surface-C measurement caveat**: whether `[T; 21]` zero-init compiles to scalar stores or a `memset` call (and whether LTO inlines it away when fully overwritten before any read) depends on rustc/LLVM optimization choices. Pass A measurement should include an LLVM-IR / disassembly inspection of the resulting `Engine::tick` — not just DWT timing — to confirm the zero-init shape and rule out a hidden `memset` libcall.
 - CoreXY transform + slot Noop ZSTs: ~10–30 cycles
 - Trace push + status atomic + tick counter + widening: ~50–80 cycles
 - NaN check (3 axes): ~10 cycles
@@ -483,7 +525,7 @@ Total: **~1500–2500 cycles ≈ 2.7–4.5 µs / tick**, well under the 25 µs b
 ### 5.1 Error taxonomy
 
 - **Producer-side errors** (foreground, FFI): rejected at the FFI boundary, return `i32` per the table below.
-- **ISR-side errors**: latched FAULT in `RT_STATE`, code stored in `last_error: AtomicI32`, ISR self-disables TIM5.
+- **ISR-side errors**: latched FAULT in `runtime_status`, code stored in `last_error: AtomicI32`, ISR self-disables TIM5.
 - **System-level errors** (HardFault, BusFault, MemManage, UsageFault): handled by Klipper's existing C-side handlers in `armcm_boot.c`. Rust runtime relies on them; no Rust-side hardware-fault handler.
 
 ### 5.2 FFI return codes
@@ -555,7 +597,9 @@ Every FFI taking `*mut KalicoRuntime` checks `if rt.is_null() { return KALICO_ER
 
 Klipper's C-side watchdog kicks every foreground iteration via `DECL_TASK(watchdog_reset)` in `src/stm32/watchdog.c` writing `IWDG->KR = 0xAAAA` unconditionally. **Watchdog alone is insufficient** — Rust ISR can no-op-loop while foreground keeps kicking (the ISR returns each tick, so foreground sees a healthy ticking machine). Add a **liveness heartbeat** + a **kalico kick gate**:
 
-- **Watchdog gate**: small patch to `src/stm32/watchdog.c` adding `static volatile uint8_t kalico_liveness_ok = 1;`. The `watchdog_reset` task checks this flag before writing `IWDG->KR`. The kalico runtime `runtime_drain` task is the sole writer of the flag (foreground-only; no ISR access).
+- **Watchdog gate**: small patch to `src/stm32/watchdog.c` adding `static volatile uint8_t kalico_liveness_ok = 1;`. The `watchdog_reset` task checks this flag before writing `IWDG->KR`. The kalico runtime `runtime_drain` task is the sole writer of the flag (foreground-only; no ISR access). Both `runtime_drain` and `watchdog_reset` run cooperatively under Klipper's `DECL_TASK` — they never interleave mid-task, so the read/write pair is naturally race-free under Klipper's FG model.
+
+  **Maintenance isolation strategy** (Codex round 2): the patch lives behind `#ifdef CONFIG_KALICO_RUNTIME` in `watchdog.c`, with a CI grep step that asserts the gate's presence (`grep -F 'kalico_liveness_ok' src/stm32/watchdog.c`). If a Klipper rebase silently overwrites the hook, CI fails immediately. Step 5+ may upstream this as a Klipper PR (clean, minimal extension point); until then, the rebase-protection grep is the canary.
 - **Heartbeat counter**: ISR increments `tick_counter: AtomicU64` on every successful tick (post-eval, pre-return).
 - **Foreground monitor** (in the `runtime_drain` `DECL_TASK`): records `last_tick_seen_value` and the wall-clock timestamp at each invocation. If `wall_now - last_tick_seen_wall > 25 ms` AND counter unchanged → write `kalico_liveness_ok = 0` (foreground stops kicking the IWDG; Klipper's existing IWDG interval triggers reset).
 - **25 ms threshold rationale**: at 1000 mm/s, 25 ms = 25 mm of unobserved motion — past collision distance for cramped machines but recoverable margin. Tolerates up to ~5 ms of Klipper foreground-task jitter (USB-CDC bursts, command parsing); falls comfortably below the IWDG default interval. Verifier round 1 flagged the original 100 ms as far too loose.
