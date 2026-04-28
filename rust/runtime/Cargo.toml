@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "Layer 4 MCU runtime — 40 kHz ISR with stub NURBS evaluator. Step 5."
+license.workspace = true
 
 [dependencies]
 nurbs = { path = "../nurbs", default-features = false }

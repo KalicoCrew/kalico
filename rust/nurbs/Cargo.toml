@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "Layer 0 NURBS substrate: eval, arc-length, algebra"
+license.workspace = true
 
 [dependencies]
 libm = { version = "0.2", optional = true }

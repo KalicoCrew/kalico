@@ -3,6 +3,12 @@ members = ["nurbs", "kalico-c-api", "gcode", "geometry", "temporal", "runtime"]
 exclude = ["gcode/fuzz"]
 resolver = "2"
 
+[workspace.package]
+# Permissive license per the deny.toml rationale: the kalico Rust crates ship
+# under MIT/Apache-2.0 so they can be linked into Klipper (GPL-3.0) at the
+# staticlib boundary without leaking copyleft into the Rust crate API.
+license = "MIT OR Apache-2.0"
+
 [workspace.dependencies]
 # Shared deps versioned here from day one.
 thiserror = "2"

@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "Layer 2 temporal scheduling for the kalico motion planner. Single-segment time-optimal velocity profile via Consolini-Locatelli 2024 SOCP. See docs/superpowers/specs/2026-04-27-layer-2-topp-prototype-design.md."
+license.workspace = true
 
 [dependencies]
 nurbs = { path = "../nurbs", features = ["host"] }

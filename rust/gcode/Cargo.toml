@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "G-code lexer for the kalico motion planner. Lexically G-code-aware, motion-semantics-agnostic. See docs/superpowers/specs/2026-04-26-layer-1-rust-architecture-design.md."
+license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }

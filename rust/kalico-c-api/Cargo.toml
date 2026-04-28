@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "Umbrella staticlib + cbindgen FFI surface for kalico's Rust crates (nurbs Layer 0; runtime Layer 4)."
+license.workspace = true
 
 [lib]
 crate-type = ["staticlib", "rlib"]

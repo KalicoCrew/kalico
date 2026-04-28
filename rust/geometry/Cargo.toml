@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "Layer 1 geometry pipeline for the kalico motion planner. Token stream → typed segments. See docs/superpowers/specs/2026-04-26-layer-1-rust-architecture-design.md."
+license.workspace = true
 
 [dependencies]
 nurbs = { path = "../nurbs" }
