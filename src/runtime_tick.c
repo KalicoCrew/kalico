@@ -131,6 +131,14 @@ runtime_drain(void)
 DECL_TASK(runtime_drain);
 
 // DECL_COMMAND surface — test harness loads curves and pushes segments.
+//
+// Klipper's %*s blob format consumes TWO args slots per blob: a length
+// followed by an encoded pointer that must be reconstituted via
+// `command_decode_ptr` (declared in command.h). See src/i2ccmds.c and
+// src/spicmds.c for canonical usage. Each f32 control point is 3 lanes ×
+// 4 bytes = 12 bytes; each knot/weight is a single f32 (4 bytes). We
+// derive `n_cp`, `n_knots`, `n_weights` from the blob byte-lengths and
+// validate self-consistency before calling into Rust.
 void
 command_kalico_load_curve(uint32_t *args)
 {
@@ -138,19 +146,37 @@ command_kalico_load_curve(uint32_t *args)
         sendf("kalico_load_curve_response result=%d", -7);
         return;
     }
-    uint16_t slot = args[0];
-    uint8_t degree = args[1];
-    uint16_t n_cp = args[2];
-    uint16_t n_knots = args[3];
-    const float *cps = (const float*)args[4];
-    const float *knots = (const float*)args[5];
-    const float *weights = (const float*)args[6];
+    uint16_t slot         = args[0];
+    uint8_t  degree       = args[1];
+    uint16_t cps_len      = args[2];
+    const float *cps      = (const float*)command_decode_ptr(args[3]);
+    uint16_t knots_len    = args[4];
+    const float *knots    = (const float*)command_decode_ptr(args[5]);
+    uint16_t weights_len  = args[6];
+    const float *weights  = (const float*)command_decode_ptr(args[7]);
+
+    // Producer-side validation: cps must be a multiple of 12 (xyz × f32);
+    // knots and weights must be a multiple of 4 (f32); weights count must
+    // equal cp count. Mismatch → KALICO_ERR_INVALID_CURVE (-2).
+    if ((cps_len % 12) || (knots_len % 4) || (weights_len % 4)) {
+        sendf("kalico_load_curve_response result=%d", -2);
+        return;
+    }
+    uint16_t n_cp      = cps_len / 12;
+    uint16_t n_knots   = knots_len / 4;
+    uint16_t n_weights = weights_len / 4;
+    if (n_weights != n_cp) {
+        sendf("kalico_load_curve_response result=%d", -2);
+        return;
+    }
+
     int32_t r = kalico_runtime_load_curve(
-        kalico_rt_handle, slot, cps, n_cp, knots, n_knots, weights, n_cp, degree);
+        kalico_rt_handle, slot, cps, n_cp, knots, n_knots,
+        weights, n_weights, degree);
     sendf("kalico_load_curve_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_load_curve,
-    "kalico_load_curve slot=%hu degree=%c n_cp=%hu n_knots=%hu "
+    "kalico_load_curve slot=%hu degree=%c "
     "cps=%*s knots=%*s weights=%*s");
 
 void

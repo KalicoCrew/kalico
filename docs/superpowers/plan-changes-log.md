@@ -124,7 +124,7 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 - **Task 13 spec/code visibility gap**: plan's literal FFI accessed `pub(crate)` `Engine::widen_state` from outside the runtime crate. Resolved by adding narrow `pub fn widen` and `pub fn reinit_widen` methods on `Engine`.
 - **Task 15 cbindgen `expand`**: plan specified `parse.expand = ["kalico-c-api"]` which requires nightly Rust (`-Zunpretty=expanded`); workspace pins stable. Pivoted to symmetric `[export.exclude]` lists in both cbindgen configs. Maintenance trade-off documented; verified by Codex as sound.
 - **Task 17b boundary-loop fault test**: `MAX_BOUNDARY_ITERS = 8` matches `Q_N = 8`, but heapless effective capacity is N-1 = 7. So the boundary-loop fault is dead defense-in-depth — unreachable from the public API. Test left as a Step-6 TODO listing three remediation paths.
-- **Task 22 `%*s` ABI bug**: plan-literal `command_kalico_load_curve` allocates one args slot per `%*s` blob, but Klipper convention uses two (length + ptr). Left plan-literal as-is per implementer instructions; flagged for Phase 8 hardware bring-up rework.
+- **Task 22 `%*s` ABI bug**: plan-literal `command_kalico_load_curve` allocates one args slot per `%*s` blob, but Klipper convention uses two (length + ptr). Left plan-literal as-is per implementer instructions; flagged for Phase 8 hardware bring-up rework. **Resolved 2026-04-28** — `command_kalico_load_curve` now consumes 2 slots per blob (length + `command_decode_ptr(args[i])`), derives `n_cp`/`n_knots`/`n_weights` from blob byte-lengths (12 B/cp, 4 B/knot+weight) with self-consistency validation, and the format string drops the redundant `n_cp=`/`n_knots=` integer args. Host-side `tools/test_h723_first_light.py` and `tools/test_h723_trace_dump.py` updated to match.
 - **Task 22 `OTG_FS_IRQn`**: plan-literal referenced `OTG_FS_IRQn` which doesn't exist on H723 (only `OTG_HS_IRQn`). Fixed in commit `418e0b80`.
 - **Tasks 26–29 hardware deferral**: Surface C bring-up scripts (`tools/test_h723_*.py`) ship now without local hardware validation. Per CLAUDE.md memory ("Trident is a test bench; user switches to a stable branch when actually printing"), these will be exercised the first time the user runs them on flashed H723 hardware; bugs surfaced there will be fixed in a follow-up commit. Each script has been syntax-validated and import-tested host-side.
 
@@ -135,7 +135,6 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 - F4x integration test (gating Step 6 multi-MCU bring-up).
 - TanhPa slot velocity dependency (Step 9 design time decides TickState shape).
 - Klipper full-LTO link CI (Step 7 MVP CI work).
-- DECL_COMMAND `%*s` ABI rework in `command_kalico_load_curve` (Phase 8).
 - Cycle-budget actual numbers — pending Surface C bring-up.
 - `Engine::Default` is `#[cfg(test)]` only after Task 11 review; Step 6 may want production-context constructor.
 - Spec/code mismatch on `MAX_BOUNDARY_ITERS` vs heapless cap-7 — decide Step 6 whether to lower MAX, bump Q_N to 9 (rounds up to 16 in heapless), or add test-only injection hook.

@@ -60,13 +60,14 @@ def load_first_fixture(io, fixture, slot=0, timeout=3.0):
             pass  # already xyz
     knots = list(fixture["knots"])
     weights = list(fixture["weights"])
-    n_cp = len(fixture["control_points"])
-    n_knots = len(knots)
     degree = int(fixture["degree"])
+    # n_cp / n_knots are derived MCU-side from the %*s blob byte-lengths
+    # (12 bytes per cp, 4 bytes per knot/weight). The format string carries
+    # only `slot`, `degree`, and the three blobs.
     cmd = (
-        "kalico_load_curve slot=%d degree=%d n_cp=%d n_knots=%d "
+        "kalico_load_curve slot=%d degree=%d "
         "cps=%s knots=%s weights=%s"
-        % (slot, degree, n_cp, n_knots,
+        % (slot, degree,
            floats_to_blob(cps), floats_to_blob(knots), floats_to_blob(weights))
     )
     io.send(cmd)
