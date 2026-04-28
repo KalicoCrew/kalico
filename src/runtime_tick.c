@@ -12,6 +12,13 @@
 
 #if CONFIG_KALICO_RUNTIME
 
+// H7 CMSIS only defines IWDG1/IWDG2; map the generic name to IWDG1
+// (matching src/stm32/watchdog.c's pattern) so the bench-loop kick
+// compiles cleanly.
+#if CONFIG_MACH_STM32H7
+#define IWDG IWDG1
+#endif
+
 // Exposed to Rust via `extern "C" { static kalico_clock_freq: u32; }`.
 // __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
 const uint32_t kalico_clock_freq __attribute__((used, externally_visible))
