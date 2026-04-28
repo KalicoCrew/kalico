@@ -20,7 +20,12 @@ use crate::trace::{
 const MAX_BOUNDARY_ITERS: u32 = 8;
 
 /// `TraceRing` capacity used by the `Engine` ISR. Spec §3.1.
-const TRACE_RING_N: usize = 1024;
+///
+/// Sized for 1 ms host drain latency at 40 kHz tick: 40 samples/ms × 32 B
+/// = 1280 B steady-state. 128 slots = 4 KB gives ~3 ms of headroom before
+/// overflow. Reduced from 1024 (32 KB) which blew the H723 DTCM budget at
+/// first-light bring-up; revisit once the linker uses AXI SRAM.
+const TRACE_RING_N: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

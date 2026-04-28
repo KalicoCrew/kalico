@@ -14,6 +14,13 @@ extern const uint32_t kalico_clock_freq;
 
 extern void* kalico_rt_handle;   // exposed in src/runtime_tick.c
 
+// These three are referenced ONLY from Rust (kalico-c-api's runtime_ffi.rs),
+// not from any C translation unit. Klipper builds with `-fwhole-program -flto`
+// which would otherwise treat them as internal and either inline them or
+// strip them, leaving the Rust archive with unresolved references. The
+// `used, externally_visible` attribute pair survives LTO + whole-program +
+// --gc-sections, mirroring kalico_clock_freq / kalico_liveness_ok.
+__attribute__((used, externally_visible))
 void
 kalico_h7_disable_tim5(void)
 {
@@ -22,12 +29,14 @@ kalico_h7_disable_tim5(void)
 }
 
 // Helper for Rust's CYCCNT widen-reinit on producer-driven re-enable path.
+__attribute__((used, externally_visible))
 uint32_t
 kalico_h7_read_cyccnt(void)
 {
     return DWT->CYCCNT;
 }
 
+__attribute__((used, externally_visible))
 void
 kalico_h7_enable_tim5(void)
 {

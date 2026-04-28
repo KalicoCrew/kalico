@@ -64,7 +64,7 @@ pub mod exports {
         pub(super) engine: Engine<Pa, Is>,
         pub(super) queue: SegmentQueue,
         pub(super) pool: CurvePool,
-        pub(super) trace: TraceRing<1024>,
+        pub(super) trace: TraceRing<128>,
     }
 
     pub(super) static RT_CELL: RuntimeCell =
@@ -111,7 +111,7 @@ pub mod exports {
                         engine: Engine::<Pa, Is>::new(clock_freq),
                         queue: SegmentQueue::new(),
                         pool: CurvePool::new(),
-                        trace: TraceRing::<1024>::new(),
+                        trace: TraceRing::<128>::new(),
                     });
                 }
                 INIT_STATE.store(INIT_READY, Ordering::Release);
