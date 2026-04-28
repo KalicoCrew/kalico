@@ -1650,20 +1650,30 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut out = [TraceSample::default(); 16];
     let n = trace.drain_into(&mut out);
 
-    // Both fixtures meet at (10, 0, 0):
-    //   - straight_line_x ends at (10, 0, 0) — final motor_a = X+Y = 10.
-    //   - rational_quadratic_arc starts at (10, 0, 0) — initial motor_a = 10.
-    // Therefore motor_a is monotonically nondecreasing across the boundary.
-    // (The arc continues into y, so motor_a = X+Y stays ≥ 10 along the arc.)
-    for i in 1..n {
-        assert!(out[i].motor_a >= out[i - 1].motor_a - 0.01,  // 10 µm tolerance
-            "motor_a regressed at sample {i} (segment_id {} → {}): {} → {}",
-            out[i-1].segment_id, out[i].segment_id,
-            out[i-1].motor_a, out[i].motor_a);
+    // Boundary correctness check: the LAST sample of segment 1 and the FIRST
+    // sample of segment 2 must agree on (motor_a, motor_b, motor_e) to within
+    // the sub-tick boundary tolerance. straight_line_x ends at (10, 0, 0);
+    // rational_quadratic_arc starts at (10, 0, 0) — both yield motor = (10, 10, 0)
+    // at the seam. Per-sample monotonicity over the whole trace is NOT asserted
+    // (the arc's motor_a rises to ~14.14 mid-arc and falls back to 10 at u=1
+    // because motor_a = X+Y and the arc's path through (10,10,0) increases X+Y).
+    let mut last_seg1: Option<&TraceSample> = None;
+    let mut first_seg2: Option<&TraceSample> = None;
+    for s in out.iter().take(n) {
+        if s.segment_id == 1 { last_seg1 = Some(s); }
+        if s.segment_id == 2 && first_seg2.is_none() { first_seg2 = Some(s); }
     }
-    // Must transition cleanly into segment 2 — at least one sample with segment_id == 2.
-    let any_seg2 = out.iter().take(n).any(|s| s.segment_id == 2);
-    assert!(any_seg2, "expected to see a sample from segment 2; trace had only {n} samples");
+    let last1 = last_seg1.expect("expected at least one sample from segment 1");
+    let first2 = first_seg2.expect("expected at least one sample from segment 2");
+
+    // Seam tolerance: 25 µm × 2 (start + end of tick) = 50 µm = 0.05 mm.
+    const SEAM_TOL_MM: f32 = 0.05;
+    assert!((first2.motor_a - last1.motor_a).abs() < SEAM_TOL_MM,
+        "motor_a discontinuous at seam: {} → {}", last1.motor_a, first2.motor_a);
+    assert!((first2.motor_b - last1.motor_b).abs() < SEAM_TOL_MM,
+        "motor_b discontinuous at seam: {} → {}", last1.motor_b, first2.motor_b);
+    assert!((first2.motor_e - last1.motor_e).abs() < SEAM_TOL_MM,
+        "motor_e discontinuous at seam: {} → {}", last1.motor_e, first2.motor_e);
 }
 ```
 
@@ -3200,8 +3210,11 @@ DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
 // ---- Cycle-count bench (Task 27 / spec §6.4) ---------------------------
 //
 // Surface-C only. Captures DWT->CYCCNT around `kalico_runtime_tick` over N
-// samples and replies with `kalico_bench_result <s1> ... <sN>` per the
-// host-side test_h723_cycle_count.py protocol.
+// samples and replies with one `kalico_bench_sample value=<cycles>` response
+// per measurement (after the warmup skip) and a final `kalico_bench_done
+// count=<N> error=0` per the host-side test_h723_cycle_count.py protocol.
+// Wire format is Klipper's standard binary VLQ (sendf); host-side parses
+// via klippy/msgproto.py wrapped by tools/kalico_host_io.py.
 //
 // `isolate=1` selectively masks USB+USART IRQs during the measurement window
 // (TIM5 stays enabled). `isolate=0` runs with full IRQs (production load).
@@ -3221,6 +3234,15 @@ void
 command_kalico_bench_run(uint32_t *args)
 {
     if (!kalico_rt_handle) { sendf("kalico_bench_done error=-7"); return; }
+
+    // Liveness pre-check (round-4 review): if the runtime had already
+    // tripped a liveness fault before we got here, manually kicking IWDG
+    // inside the bench loop would mask it. Refuse to bench in that case.
+    if (!kalico_liveness_ok) {
+        sendf("kalico_bench_done error=-99 reason=liveness_already_tripped");
+        return;
+    }
+
     uint8_t isolate = args[0];
     uint16_t samples = args[1];
     if (samples > KALICO_BENCH_MAX_SAMPLES) samples = KALICO_BENCH_MAX_SAMPLES;
@@ -3735,6 +3757,116 @@ survived any Klipper rebase."
 
 ## Phase 8: Surface C bring-up
 
+### Task 25.5: Host-side communication helper (`tools/kalico_host_io.py`)
+
+**Files:**
+- Create: `tools/kalico_host_io.py`
+
+**Why:** Klipper's `sendf` produces **binary VLQ-encoded message blocks** framed by 0x7E sync bytes with CRC trailers — NOT ASCII newline-terminated lines. Round-2 and round-3 host scripts incorrectly assumed ASCII framing; round-4 review (Verifier) confirmed by reading `src/command.{c,h}` and `klippy/msgproto.py`. Surface-C scripts (Tasks 26–29) must communicate through Klipper's existing host-side msgproto library, not raw `pyserial`.
+
+This helper module wraps the integration so each Surface-C script doesn't have to re-implement it.
+
+- [ ] **Step 1: Write the helper module**
+
+```python
+# tools/kalico_host_io.py
+#
+# Klipper-compatible host-side I/O for kalico Surface-C tests.
+# Wraps klippy/msgproto.py + serialhdl.py to provide a small async API for
+# sending commands and collecting replies.
+#
+# Klipper's serial protocol is binary VLQ; the data dictionary embedded in
+# firmware (zlib-compressed JSON) is downloaded on connect and binds command
+# names ↔ IDs. This helper does that handshake for us.
+
+import os, sys, json, struct, time, zlib, threading
+from queue import Queue, Empty
+
+# Import Klipper's existing host-side library (run scripts from kalico repo root).
+KLIPPER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(KLIPPER_ROOT, "klippy"))
+import msgproto
+import serialhdl, reactor
+
+class KalicoHostIO:
+    """Thin wrapper around klippy.serialhdl.SerialReader for kalico tests.
+
+    Connects to the MCU, downloads its data dictionary, exposes:
+      - `send(cmd_str)`: queue a command for transmission.
+      - `wait_for_response(name, timeout)`: block until a response with the
+         given message name arrives; returns the parsed message params.
+      - `collect_responses(name, count, timeout)`: collect N responses.
+
+    All blocking calls return parsed Python dicts (not raw bytes).
+    """
+
+    def __init__(self, port: str, baud: int = 250000):
+        self._reactor = reactor.Reactor()
+        self._serial = serialhdl.SerialReader(self._reactor, "kalico_test")
+        self._serial.connect_uart(port, baud, rts=False)
+        self._serial.handle_default = self._handle_response
+        self._responses: dict[str, Queue] = {}
+
+    def _handle_response(self, params):
+        name = params['#name']
+        self._responses.setdefault(name, Queue()).put(params)
+
+    def send(self, cmd_str: str):
+        """Send a command using Klipper's `lookup_command`-then-`send` pattern."""
+        msgparser = self._serial.get_msgparser()
+        cmd = msgparser.create_command(cmd_str)
+        self._serial.send(cmd)
+
+    def wait_for_response(self, name: str, timeout: float = 2.0) -> dict:
+        q = self._responses.setdefault(name, Queue())
+        try:
+            return q.get(timeout=timeout)
+        except Empty:
+            raise TimeoutError(f"no '{name}' response within {timeout} s")
+
+    def collect_responses(self, name: str, count: int, timeout: float = 30.0) -> list[dict]:
+        deadline = time.monotonic() + timeout
+        out = []
+        while len(out) < count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"only {len(out)}/{count} '{name}' responses in {timeout} s")
+            out.append(self.wait_for_response(name, timeout=remaining))
+        return out
+
+    def disconnect(self):
+        self._serial.disconnect()
+```
+
+- [ ] **Step 2: Verify the helper compiles + handshakes against a flashed MCU**
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'tools')
+from kalico_host_io import KalicoHostIO
+io = KalicoHostIO('/dev/ttyACM0')
+io.send('kalico_query_status')
+print(io.wait_for_response('kalico_status'))
+io.disconnect()
+"
+```
+
+Expected: prints a dict like `{'#name': 'kalico_status', 'status': 0, 'last_err': 0}`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tools/kalico_host_io.py
+git commit -m "tools/kalico_host_io: msgproto-based host helper (Step 5 Surface C)
+
+Klipper's sendf is binary VLQ-framed, NOT ASCII newline-terminated.
+Surface-C tests need msgproto-aware I/O that downloads the data
+dictionary at connect time and binds command names. This helper
+wraps klippy/serialhdl.py + msgproto.py so each test script reads
+parsed Python dicts instead of decoding the wire format itself."
+```
+
 ### Task 26: First-light test (LED toggle on idle flip)
 
 **Files:**
@@ -3772,19 +3904,52 @@ void runtime_drain(void) {
 }
 ```
 
-- [ ] **Step 3: Write the host-side first-light script**
+- [ ] **Step 3: Write the host-side first-light script (uses Task 25.5 helper)**
 
 ```python
+#!/usr/bin/env python3
 # tools/test_h723_first_light.py
-import serial, time, sys
+#
+# Spec §6.4 first-light. Validates ISR fires + Rust call works at all by
+# observing status transitions in response to a synthetic segment push.
+
+import sys, time
+sys.path.insert(0, 'tools')
+from kalico_host_io import KalicoHostIO
+
 PORT = sys.argv[1] if len(sys.argv) > 1 else '/dev/ttyACM0'
-ser = serial.Serial(PORT, 250000, timeout=1)
-ser.write(b'kalico_query_status\n')
-time.sleep(0.1)
-out = ser.read_all().decode(errors='replace')
-print('Initial:', out)
-assert 'status=' in out, 'no status response — flash + reset?'
-# (Push a stub segment, wait for status flip, observe the LED visually.)
+
+io = KalicoHostIO(PORT)
+try:
+    # Initial status — should be IDLE (0) immediately after flash.
+    io.send('kalico_query_status')
+    initial = io.wait_for_response('kalico_status', timeout=2.0)
+    if initial['status'] != 0:
+        print(f"FAIL: expected status=IDLE (0), got {initial['status']}")
+        sys.exit(1)
+
+    # Load a tiny straight-line curve and push one segment to force RUNNING.
+    # ... (load_curve + push_segment via io.send) ...
+    io.send('kalico_load_curve slot=0 degree=1 n_cp=2 n_knots=4 '
+            'cps=0.0,0.0,0.0,10.0,0.0,0.0 knots=0,0,1,1 weights=1,1')
+    io.wait_for_response('kalico_load_curve_response', timeout=2.0)
+
+    # Push a 5 ms segment.
+    io.send('kalico_push_segment id=1 curve=0 t_start_hi=0 t_start_lo=0 '
+            't_end_hi=0 t_end_lo=2600000 kinematics=0')
+    io.wait_for_response('kalico_push_response', timeout=2.0)
+
+    # Wait briefly for ISR to flip status to RUNNING.
+    time.sleep(0.05)
+    io.send('kalico_query_status')
+    running = io.wait_for_response('kalico_status', timeout=2.0)
+    if running['status'] != 1:
+        print(f"FAIL: expected status=RUNNING (1) after push, got {running['status']}")
+        sys.exit(1)
+
+    print(f"PASS: status transitioned IDLE→RUNNING; LED should have toggled")
+finally:
+    io.disconnect()
 ```
 
 - [ ] **Step 4: Verify on hardware** (manual; this is Surface C)
@@ -3837,7 +4002,9 @@ Two passes:
 
 Reports min/p50/p99 for each pass; FAILs if Pass-B p99 exceeds budget.
 """
-import argparse, sys, json, statistics, serial, time
+import argparse, sys, json, statistics, time
+sys.path.insert(0, 'tools')
+from kalico_host_io import KalicoHostIO
 
 p = argparse.ArgumentParser()
 p.add_argument("port", help="USB-CDC device, e.g. /dev/ttyACM0")
@@ -3847,32 +4014,20 @@ p.add_argument("--samples", type=int, default=10_000,
                help="Sample count per pass (defaults match spec §6.4).")
 args = p.parse_args()
 
-ser = serial.Serial(args.port, 250000, timeout=2)
+io = KalicoHostIO(args.port)
 
-def collect(pass_name: str, isolate: int) -> list[int]:
-    ser.write(f"kalico_bench_run isolate={isolate} samples={args.samples}\n".encode())
-    out = b""
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        chunk = ser.read(4096)
-        out += chunk
-        if b'kalico_bench_done' in out:
-            break
-    if b'kalico_bench_done' not in out:
-        print(f"FAIL: bench timeout in pass {pass_name}")
-        sys.exit(1)
-    if b'error=0' not in out.split(b'kalico_bench_done')[1].split(b'\n')[0]:
-        print(f"FAIL: bench reported non-zero error in pass {pass_name}")
-        sys.exit(1)
-    samples = []
-    for raw in out.split(b'\n'):
-        if raw.startswith(b'kalico_bench_sample value='):
-            try:
-                samples.append(int(raw.split(b'value=')[1].strip()))
-            except (ValueError, IndexError):
-                continue
-    if not samples:
-        print(f"FAIL: no samples parsed in pass {pass_name}")
+def collect(io: KalicoHostIO, pass_name: str, isolate: int) -> list[int]:
+    """Run one bench pass via msgproto. MCU emits one `kalico_bench_sample`
+    response per measurement, then a final `kalico_bench_done`."""
+    io.send(f'kalico_bench_run isolate={isolate} samples={args.samples}')
+    # Effective sample count after warmup skip:
+    expected = args.samples - 8  # WARMUP_SKIP
+    samples = [s['value'] for s in io.collect_responses(
+        'kalico_bench_sample', count=expected, timeout=60.0)]
+    done = io.wait_for_response('kalico_bench_done', timeout=5.0)
+    if done.get('error', -1) != 0:
+        print(f"FAIL: bench done error={done.get('error')} reason={done.get('reason','?')}"
+              f" in pass {pass_name}")
         sys.exit(1)
     return samples
 
@@ -3886,8 +4041,11 @@ def stats(samples: list[int]) -> dict:
         "p99_us": statistics.quantiles(samples_us, n=100)[98],
     }
 
-a = stats(collect("A_isolated", isolate=1))
-b = stats(collect("B_production", isolate=0))
+try:
+    a = stats(collect(io, "A_isolated", isolate=1))
+    b = stats(collect(io, "B_production", isolate=0))
+finally:
+    io.disconnect()
 
 print(json.dumps({"pass_a": a, "pass_b": b}, indent=2))
 
@@ -3897,7 +4055,7 @@ if b["p99_us"] > args.p99_budget_us:
 print(f"PASS: Pass-B p99 = {b['p99_us']:.2f} µs (budget {args.p99_budget_us} µs)")
 ```
 
-This makes the acceptance threshold a programmatic CI-able gate, not a manual review item. The MCU side (Task 22 / Task 23) must expose a `kalico_bench_run` debug command that does the bracketed measurement and replies with `kalico_bench_result <s1> <s2> ... <sN>`. Implement when wiring Surface C.
+This makes the acceptance threshold a programmatic CI-able gate, not a manual review item. The MCU side (Task 22 + Task 23) implements `kalico_bench_run` end-to-end: per-sample `kalico_bench_sample` responses (Klipper-standard binary VLQ wire format), final `kalico_bench_done count=<N> error=<code>`. Host-side parses via `tools/kalico_host_io.py` (Task 25.5).
 
 - [ ] **Step 3: Run the gate and document the result**
 
