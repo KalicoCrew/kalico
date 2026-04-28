@@ -179,3 +179,61 @@ mod fixture_3_long_straight_then_corner {
         assert!(matches!(output.joining_status, temporal::JoiningStatus::Converged));
     }
 }
+
+mod fixture_4_per_segment_limits_change {
+    use super::*;
+
+    #[test]
+    fn fixture_4() {
+        let segments_curves: Vec<_> = (0..3_usize).map(|i| {
+            VectorNurbs::<f64, 3>::try_new(
+                1, vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    [i as f64 * 50.0, 0.0, 0.0],
+                    [(i + 1) as f64 * 50.0, 0.0, 0.0],
+                ], None,
+            ).unwrap()
+        }).collect();
+        let normal_limits = textbook_limits();
+        let mut reduced_limits = normal_limits;
+        reduced_limits.a_max = [2_500.0; 3];  // halved a_max for seg 1
+        let segments = [
+            SegmentInput { curve: &segments_curves[0], limits: normal_limits, trailing_junction_chord_tolerance_mm: 0.05 },
+            SegmentInput { curve: &segments_curves[1], limits: reduced_limits, trailing_junction_chord_tolerance_mm: 0.05 },
+            SegmentInput { curve: &segments_curves[2], limits: normal_limits, trailing_junction_chord_tolerance_mm: 0.05 },
+        ];
+        let input = BatchInput { segments: &segments, grid_strategy: adaptive(), worker_threads: 3 };
+        let output = plan_batch(input).expect("should succeed");
+
+        // §6.4: seg 1 profile peak |s̈| ≤ 2500 (1+ε).
+        let max_a_seg1 = output.profiles[1].samples.iter()
+            .map(|s| s.a.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(max_a_seg1 <= 2_500.0 * 1.001,
+            "seg 1 peak accel {max_a_seg1} exceeds reduced a_max 2500");
+
+        // §6.4 (review-1 fix): seg 0 / seg 2 actually reach textbook a_max,
+        // confirming they're using their own (looser) limits, not the reduced
+        // ones from seg 1. If joining incorrectly propagated reduced limits
+        // outside seg 1's range, this would catch it.
+        let max_a_seg0 = output.profiles[0].samples.iter()
+            .map(|s| s.a.abs())
+            .fold(0.0_f64, f64::max);
+        let max_a_seg2 = output.profiles[2].samples.iter()
+            .map(|s| s.a.abs())
+            .fold(0.0_f64, f64::max);
+        // Sanity: seg 0/2 peak accel should be much closer to 5000 (textbook)
+        // than to 2500 (reduced). Allow 5% slack for adaptive-N quantization.
+        assert!(max_a_seg0 > 2_500.0 * 1.5,
+            "seg 0 peak accel {max_a_seg0} suggests reduced limits leaked outside seg 1");
+        assert!(max_a_seg2 > 2_500.0 * 1.5,
+            "seg 2 peak accel {max_a_seg2} suggests reduced limits leaked outside seg 1");
+
+        // §6.2 (review-1 helper): junction continuity at both interior junctions.
+        assert_junction_continuity_for_all(&output, 1.0);
+
+        // §6.5 convergence (review-2 fix): fixture 4 also expects ≤3 sweeps.
+        assert!(output.joining_sweeps <= 3);
+        assert!(matches!(output.joining_status, JoiningStatus::Converged));
+    }
+}
