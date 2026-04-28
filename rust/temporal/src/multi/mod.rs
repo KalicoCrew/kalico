@@ -177,12 +177,22 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     let junction_infos: Vec<JunctionInfo> = junctions
         .into_iter()
         .enumerate()
-        .map(|(i, j)| JunctionInfo {
-            between_segments: (i, i + 1),
-            v_junction: j.v_junction,
-            binding_cap: j.binding_cap,
-            kappa_left: j.kappa_left,
-            kappa_right: j.kappa_right,
+        .map(|(i, j)| {
+            // Use the actual converged junction speed from the profile pair rather than
+            // the upfront-computed cap (`j.v_junction`). The cap is an upper bound; the
+            // joining loop may have driven the effective velocity lower (e.g., when a
+            // very short segment cannot reach the cap speed). The converged value is the
+            // v_end of profile[i] — which equals v_start of profile[i+1] to within the
+            // joining tolerance. Callers (e.g., `assert_junction_continuity_for_all`)
+            // expect `v_junction` to match the profile endpoints, not the upfront cap.
+            let v_converged = profiles[i].samples.last().map_or(0.0, |s| s.v);
+            JunctionInfo {
+                between_segments: (i, i + 1),
+                v_junction: v_converged,
+                binding_cap: j.binding_cap,
+                kappa_left: j.kappa_left,
+                kappa_right: j.kappa_right,
+            }
         })
         .collect();
     Ok(BatchOutput { profiles, junctions: junction_infos, joining_sweeps: sweeps, joining_status })

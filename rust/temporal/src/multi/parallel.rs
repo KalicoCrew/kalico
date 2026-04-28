@@ -90,6 +90,20 @@ pub(crate) fn fan_out_solves(
                         | SolveStatus::SolvedInexact { .. }
                         | SolveStatus::SolvedSlp { .. }
                 );
+                // Always sync v_start/v_end to the actual profile endpoints.
+                // For infeasible/non-success solves the profile endpoint may be
+                // lower than the requested v_end (e.g., the solver returned a
+                // near-zero velocity on a too-short segment). Propagating the
+                // actual achieved endpoint lets the forward/reverse sweeps reduce
+                // v_jct caps correctly even when the initial cap was infeasible.
+                // Per spec §2.3: the joining loop works on the actual achievable
+                // velocity at each junction, not the upfront cap.
+                if let Some(first) = profile.samples.first() {
+                    states[idx].v_start = first.v;
+                }
+                if let Some(last) = profile.samples.last() {
+                    states[idx].v_end = last.v;
+                }
                 states[idx].profile = Some(profile);
                 if success {
                     states[idx].dirty = false;

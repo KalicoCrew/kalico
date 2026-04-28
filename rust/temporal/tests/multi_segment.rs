@@ -276,3 +276,93 @@ mod fixture_5_star_pattern {
         assert_junction_continuity_for_all(&output, 1.0);
     }
 }
+
+mod fixture_6_long_realistic_chain {
+    use super::*;
+    use std::time::Instant;
+
+    fn realistic_machine_limits() -> Limits {
+        // Limits::new because integration tests are external to temporal crate
+        // (review-2 fix).
+        Limits::new(
+            [1_000.0; 3],
+            [65_000.0; 3],
+            [50_000_000.0; 3],
+            65_000.0,
+        )
+    }
+
+    #[test]
+    fn fixture_6() {
+        // 10 segments: 6 G1 straights + 2 G5 cubics + 2 G2 quarter-arcs.
+        // All segments are geometrically connected end-to-end.
+        // Minimum segment length chosen so v_jct=1000, a_max=65000 is reachable
+        // (requires ≥ 7.7 mm to accelerate from 0 to 1000 mm/s at 65k mm/s²).
+        let mut curves: Vec<VectorNurbs<f64, 3>> = Vec::new();
+
+        // Track current position — ensures connectivity across all segment types.
+        let mut px = 0.0_f64;
+        let mut py = 0.0_f64;
+
+        // 6 G1 straights along +X, lengths 20..45 mm.
+        for i in 0..6_usize {
+            let len = 20.0 + i as f64 * 5.0;
+            curves.push(VectorNurbs::<f64, 3>::try_new(
+                1, vec![0.0, 0.0, 1.0, 1.0],
+                vec![[px, py, 0.0], [px + len, py, 0.0]], None,
+            ).unwrap());
+            px += len;
+        }
+
+        // 2 G5 cubics: go out +Y by 20 mm and return, length ~40 mm each.
+        for _ in 0..2 {
+            let p0 = [px, py, 0.0];
+            let p1 = [px + 10.0, py + 20.0, 0.0];
+            let p2 = [px + 30.0, py + 20.0, 0.0];
+            let p3 = [px + 40.0, py, 0.0];
+            curves.push(VectorNurbs::<f64, 3>::try_new(
+                3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                vec![p0, p1, p2, p3], None,
+            ).unwrap());
+            px += 40.0;
+        }
+
+        // 2 G2 quarter-arcs: rational quadratic, radius 20 mm.
+        // Each arc goes from [px, py] toward [px+20, py+20] (quarter-circle in +X/+Y).
+        // Endpoint of arc: [px+20, py+20]. The intermediate CP is [px+20, py] (right angle).
+        // After each arc we advance both px by 20 and py by 20.
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        for _ in 0..2 {
+            let p0 = [px, py, 0.0];
+            let p_mid = [px + 20.0, py, 0.0];
+            let p2 = [px + 20.0, py + 20.0, 0.0];
+            curves.push(VectorNurbs::<f64, 3>::try_new(
+                2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![p0, p_mid, p2],
+                Some(vec![1.0, w, 1.0]),
+            ).unwrap());
+            // Arc endpoint is p2; advance current position there.
+            px += 20.0;
+            py += 20.0;
+        }
+
+        let limits = realistic_machine_limits();
+        let segments: Vec<_> = curves.iter().map(|c| SegmentInput {
+            curve: c, limits, trailing_junction_chord_tolerance_mm: 0.05,
+        }).collect();
+        let input = BatchInput { segments: &segments, grid_strategy: adaptive(), worker_threads: 3 };
+
+        let t0 = Instant::now();
+        let output = plan_batch(input).expect("should succeed");
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+        // §6.5: convergence in ≤3 sweeps.
+        assert!(output.joining_sweeps <= 3);
+
+        // §6.2 (review-1 helper): junction continuity at every junction.
+        assert_junction_continuity_for_all(&output, 1.0);
+
+        // §6.6: performance sanity log (not acceptance). Expect <100ms on Pi 5.
+        eprintln!("fixture_6 wall-clock: {elapsed_ms:.2} ms (no acceptance threshold)");
+    }
+}
