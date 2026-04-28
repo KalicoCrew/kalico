@@ -188,14 +188,15 @@ command_kalico_bench_run(uint32_t *args)
     if (samples > KALICO_BENCH_MAX_SAMPLES) samples = KALICO_BENCH_MAX_SAMPLES;
 
     if (isolate) {
-        // Selectively mask: USB OTG_FS (the H723 USB controller used by Klipper
-        // CDC on Octopus Pro) + USART2 (active console). Leave TIM5 (the kalico
-        // ISR) and SysTick alone. The implementer MUST verify which IRQs are
-        // active in the current build before relying on the masked list — picking
-        // the wrong IRQ silently biases Pass A toward overly-optimistic numbers.
+        // Selectively mask: USB OTG_HS (Octopus Pro's H723 has only the OTG_HS
+        // controller; Klipper aliases it as OTG_IRQn elsewhere) + USART2 (active
+        // console). Leave TIM5 (the kalico ISR) and SysTick alone. The implementer
+        // MUST verify which IRQs are active in the current build before relying on
+        // the masked list — picking the wrong IRQ silently biases Pass A toward
+        // overly-optimistic numbers.
         // Cross-check with `arm-none-eabi-objdump -d klipper.elf | grep -E 'IRQ|Handler'`
         // to confirm the IRQ vector names actually present in the firmware image.
-        NVIC_DisableIRQ(OTG_FS_IRQn);
+        NVIC_DisableIRQ(OTG_HS_IRQn);
         NVIC_DisableIRQ(USART2_IRQn);
     }
 
@@ -223,7 +224,7 @@ command_kalico_bench_run(uint32_t *args)
             sendf("kalico_bench_done error=-99 reason=isr_timeout count=%hu",
                   kalico_bench_count);
             if (isolate) {
-                NVIC_EnableIRQ(OTG_FS_IRQn);
+                NVIC_EnableIRQ(OTG_HS_IRQn);
                 NVIC_EnableIRQ(USART2_IRQn);
             }
             return;
@@ -231,7 +232,7 @@ command_kalico_bench_run(uint32_t *args)
     }
 
     if (isolate) {
-        NVIC_EnableIRQ(OTG_FS_IRQn);
+        NVIC_EnableIRQ(OTG_HS_IRQn);
         NVIC_EnableIRQ(USART2_IRQn);
     }
 
