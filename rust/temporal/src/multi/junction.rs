@@ -23,7 +23,6 @@ const ALPHA_REVERSAL_THRESHOLD: f64 = std::f64::consts::PI * 0.99;
 /// Floor `v_jd` at this value at near-reversal junctions. Per spec §2.2.
 const V_JD_REVERSAL_FLOOR_MM_S: f64 = 1.0;
 
-#[allow(dead_code)] // TODO(task-9): wired in plan_batch via joining.rs
 pub(crate) struct JunctionResult {
     pub v_junction: f64,
     pub binding_cap: JunctionBindingCap,
@@ -31,7 +30,6 @@ pub(crate) struct JunctionResult {
     pub kappa_right: f64,
 }
 
-#[allow(dead_code)] // TODO(task-9): wired in plan_batch via joining.rs
 pub(crate) fn compute_junction_velocity(
     left: &VectorNurbs<f64, 3>,
     right: &VectorNurbs<f64, 3>,

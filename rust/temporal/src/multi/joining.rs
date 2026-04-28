@@ -8,16 +8,12 @@ use crate::TopProfile;
 
 /// Hard cap on joining sweeps. Per spec §2.3 + §6.5: typical convergence is
 /// 1–3 sweeps; cap at 10 to detect bugs.
-// TODO(task-9): called from plan_batch
-#[allow(dead_code)]
 const MAX_SWEEPS: u32 = 10;
 
 /// Run forward + reverse sweep pairs, re-solving dirty segments between sweeps,
 /// until velocity propagation stabilizes or the sweep cap is reached.
 ///
 /// Returns `(sweeps_used, JoiningStatus)`. Per spec §2.3 + §6.5.
-// TODO(task-9): wired in plan_batch
-#[allow(dead_code)]
 pub(crate) fn join_until_converged(
     inputs: &[SegmentInput<'_>],
     grids: &[GridConfig],
@@ -61,8 +57,6 @@ pub(crate) fn join_until_converged(
 }
 
 /// Per-segment scratch state during joining.
-// TODO(task-9): wired in plan_batch
-#[allow(dead_code)]
 pub(crate) struct SegmentState {
     pub v_start: f64,
     pub v_end: f64,
@@ -74,8 +68,6 @@ pub(crate) struct SegmentState {
 /// `v_start` changed beyond `EPS_VEL` since the last forward sweep.
 ///
 /// Returns the number of segments marked dirty.
-// TODO(task-9): wired in plan_batch
-#[allow(dead_code)]
 pub(crate) fn forward_sweep(
     states: &mut [SegmentState],
     junctions: &[JunctionResult],
@@ -104,8 +96,6 @@ pub(crate) fn forward_sweep(
 /// `BatchError::EmptySegments`, but this guard makes the helper safe to call
 /// directly. A single-segment buffer has no junctions to propagate, so
 /// early-return is correct. (Per round-4 review, Codex NIT.)
-// TODO(task-9): wired in plan_batch
-#[allow(dead_code)]
 pub(crate) fn reverse_sweep(
     states: &mut [SegmentState],
     junctions: &[JunctionResult],

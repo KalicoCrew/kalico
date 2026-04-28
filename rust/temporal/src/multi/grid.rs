@@ -3,9 +3,6 @@
 use crate::multi::GridStrategy;
 use nurbs::VectorNurbs;
 
-// Wired into plan_batch by Task 9. Until then they appear dead from the
-// compiler's perspective. TODO(task-9): drop these attrs when wired up.
-#[allow(dead_code)]
 pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) -> usize {
     match *strategy {
         GridStrategy::Fixed(n) => n,
@@ -37,7 +34,6 @@ pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) ->
 /// higher-degree or rational curves it is a strict upper bound — `compute_n`
 /// only uses it as a heuristic for grid-density and the `max_n` clamp absorbs
 /// over-estimates.
-#[allow(dead_code)]
 fn control_polygon_length_mm(curve: &VectorNurbs<f64, 3>) -> f64 {
     let cps = curve.control_points();
     cps.windows(2)
