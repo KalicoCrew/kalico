@@ -666,6 +666,7 @@ pub enum CurvePoolError {
     DegreeTooHigh,
     InvalidLengths,
     NonFiniteData,
+    InvalidCurve,   // catch-all for non-monotone knots, non-positive weights, etc.
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -724,6 +725,21 @@ impl CurvePool {
         }
         if !control_points_flat.iter().chain(knots).chain(weights).all(|x| x.is_finite()) {
             return Err(CurvePoolError::NonFiniteData);
+        }
+        // Match the precondition set of `nurbs::VectorNurbsRef::try_new` — the
+        // upstream `validate()` checks knot monotonicity and positive weights;
+        // mirroring those here makes producer-side rejection definitive instead
+        // of letting the ISR construct an invalid view.
+        for window in knots.windows(2) {
+            if window[0] > window[1] {
+                return Err(CurvePoolError::InvalidCurve);  // non-monotone knots
+            }
+        }
+        if knots.first().copied().unwrap_or(0.0) >= knots.last().copied().unwrap_or(0.0) {
+            return Err(CurvePoolError::InvalidCurve);  // zero-length knot range
+        }
+        if !weights.iter().all(|&w| w > 0.0) {
+            return Err(CurvePoolError::InvalidCurve);  // non-positive weight
         }
 
         let mut cps = [[0.0f32; MAX_DIM]; MAX_CONTROL_POINTS];
@@ -1513,14 +1529,16 @@ use runtime::trace::{TraceRing, TraceSample, TRACE_FLAG_SEGMENT_END};
 // kconfig) doesn't invalidate the fixture math.
 const CLOCK_FREQ: u32 = 520_000_000;
 
-/// Build a degree-1 NURBS line from (x0,y0,e0) to (x1,y1,e1) — simplest
-/// case for boundary tests; just a straight line in (X,Y,E) space.
-fn load_line(pool: &mut CurvePool, handle: u16,
-             p0: [f32; 3], p1: [f32; 3]) {
-    let cps_flat = [p0[0], p0[1], p0[2], p1[0], p1[1], p1[2]];
-    let knots = [0.0, 0.0, 1.0, 1.0];
-    let weights = [1.0, 1.0];
-    pool.load(CurveHandle(handle), &cps_flat, &knots, &weights, 1).unwrap();
+mod fixtures;  // see Task 17a — shared step5_segments.json parser
+
+/// Load fixture-by-name into the curve pool slot. Single source of truth for
+/// "which curves the Step-5 tests use" — mirrored by Surface C's host script.
+fn load_fixture(pool: &mut CurvePool, handle: u16, name: &str) {
+    let set = fixtures::load();
+    let f = set.fixtures.iter().find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("fixture {name} missing from step5_segments.json"));
+    let cps_flat: Vec<f32> = f.control_points.iter().flat_map(|p| p.iter().copied()).collect();
+    pool.load(CurveHandle(handle), &cps_flat, &f.knots, &f.weights, f.degree).unwrap();
 }
 
 #[test]
@@ -1539,7 +1557,7 @@ fn tick_processes_one_segment_to_completion() {
     let mut pool = CurvePool::new();
     let mut trace = TraceRing::<1024>::new();
 
-    load_line(&mut pool, 0, [0.0, 0.0, 0.0], [10.0, 5.0, 1.0]);
+    load_fixture(&mut pool, 0, "straight_line_x");
 
     let tick_cycles = one_tick_cycles(CLOCK_FREQ) as u64;
     let n_ticks = 4u64;
@@ -1575,10 +1593,11 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut trace = TraceRing::<1024>::new();
 
     let tc = one_tick_cycles(CLOCK_FREQ) as u64;
-    // Segment 1: 1.5 ticks long.
-    load_line(&mut pool, 0, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
-    // Segment 2: 1.5 ticks long.
-    load_line(&mut pool, 1, [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
+    // Two short straight-line fixtures back-to-back — exercise sub-tick
+    // boundary carry. The fixture file's `straight_line_x` line is reused
+    // for both slots; t_start/t_end are set per-segment by the caller.
+    load_fixture(&mut pool, 0, "straight_line_x");
+    load_fixture(&mut pool, 1, "straight_line_x");
 
     queue.try_push(Segment {
         id: 1, curve: CurveHandle(0), t_start: 0, t_end: tc * 3 / 2,
@@ -2149,6 +2168,12 @@ mod exports {
         // §4.4 producer-protocol: re-enable TIM5 if observed status was IDLE/DRAINED.
         match ctx.engine.status() {
             RuntimeStatus::Idle | RuntimeStatus::Drained => {
+                // Reinit CYCCNT widening before re-enabling TIM5 — long disable
+                // may have made intermediate wraps unobservable. Use Klipper's
+                // timer_read_time() as the monotonic backstop (spec §4.1).
+                let raw = unsafe { kalico_h7_read_cyccnt() };
+                let klipper_now = unsafe { timer_read_time() };
+                ctx.engine.widen_state.reinit(raw, klipper_now as u64);
                 unsafe { kalico_h7_enable_tim5(); }
             }
             _ => {}
@@ -2259,6 +2284,8 @@ mod exports {
     unsafe extern "C" {
         fn kalico_h7_enable_tim5();
         fn kalico_h7_disable_tim5();
+        fn kalico_h7_read_cyccnt() -> u32;     // wraps DWT->CYCCNT read
+        fn timer_read_time() -> u32;           // Klipper's monotonic clock backstop
     }
 }
 ```
@@ -3118,6 +3145,65 @@ command_kalico_query_status(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
 
+// ---- Cycle-count bench (Task 27 / spec §6.4) ---------------------------
+//
+// Surface-C only. Captures DWT->CYCCNT around `kalico_runtime_tick` over N
+// samples and replies with `kalico_bench_result <s1> ... <sN>` per the
+// host-side test_h723_cycle_count.py protocol.
+//
+// `isolate=1` selectively masks USB+USART IRQs during the measurement window
+// (TIM5 stays enabled). `isolate=0` runs with full IRQs (production load).
+// SysTick is left untouched — Klipper's foreground time accounting needs it,
+// and the kalico TIM5 ISR doesn't preempt SysTick at priority 3 anyway.
+
+#define KALICO_BENCH_MAX_SAMPLES 1024
+extern volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
+extern volatile uint16_t kalico_bench_count;
+extern volatile uint16_t kalico_bench_target;
+extern volatile uint8_t kalico_bench_isolate;
+
+void
+command_kalico_bench_run(uint32_t *args)
+{
+    if (!kalico_rt_handle) { sendf("kalico_bench_done error=-7"); return; }
+    uint8_t isolate = args[0];
+    uint16_t samples = args[1];
+    if (samples > KALICO_BENCH_MAX_SAMPLES) samples = KALICO_BENCH_MAX_SAMPLES;
+
+    if (isolate) {
+        // Selectively mask: USB OTG_HS, USART (the active CDC channels). Leave
+        // TIM5 (the kalico ISR) and SysTick alone. Adjust the IRQn list to the
+        // active build — Octopus Pro uses USART2 for serial console + USB FS.
+        NVIC_DisableIRQ(OTG_FS_IRQn);
+        NVIC_DisableIRQ(USART2_IRQn);
+    }
+
+    kalico_bench_count = 0;
+    kalico_bench_target = samples;
+    kalico_bench_isolate = isolate;
+
+    // Wait for the ISR to fill the buffer.
+    while (kalico_bench_count < kalico_bench_target) {
+        // Foreground spin — let TIM5 fire and bracket itself.
+        // Bounded by 25 µs/sample × 1024 = 25.6 ms maximum.
+    }
+
+    if (isolate) {
+        NVIC_EnableIRQ(OTG_FS_IRQn);
+        NVIC_EnableIRQ(USART2_IRQn);
+    }
+
+    // Discard the first 8 samples (warm-up: cache fill, branch predictor,
+    // FPU lazy-stacking on first vector_eval). Spec §6.4 hardened methodology.
+    const uint16_t WARMUP_SKIP = 8;
+    sendf("kalico_bench_result count=%hu data=%*s",
+          (uint16_t)(samples - WARMUP_SKIP),
+          (samples - WARMUP_SKIP) * sizeof(uint32_t),
+          (uint8_t*)&kalico_bench_samples_buf[WARMUP_SKIP]);
+    sendf("kalico_bench_done error=0");
+}
+DECL_COMMAND(command_kalico_bench_run, "kalico_bench_run isolate=%c samples=%hu");
+
 #endif // CONFIG_KALICO_RUNTIME
 ```
 
@@ -3180,6 +3266,13 @@ kalico_h7_disable_tim5(void)
     NVIC_DisableIRQ(TIM5_IRQn);
 }
 
+// Helper for Rust's CYCCNT widen-reinit on producer-driven re-enable path.
+uint32_t
+kalico_h7_read_cyccnt(void)
+{
+    return DWT->CYCCNT;
+}
+
 void
 kalico_h7_enable_tim5(void)
 {
@@ -3220,13 +3313,28 @@ kalico_h7_timer_init(void)
     // kalico_h7_enable_tim5() via the producer protocol.
 }
 
+// Cycle-count bench buffer. See command_kalico_bench_run in src/runtime_tick.c.
+// SAFETY: only this ISR writes the buffer; foreground reads after observing
+// `kalico_bench_count == kalico_bench_target`.
+volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
+volatile uint16_t kalico_bench_count = 0;
+volatile uint16_t kalico_bench_target = 0;
+volatile uint8_t  kalico_bench_isolate = 0;
+
 void
 TIM5_IRQHandler(void)
 {
     TIM5->SR = ~TIM_SR_UIF;            // entry-time ack (spec §2.4)
-    uint32_t raw_cyccnt = DWT->CYCCNT;
+    uint32_t before = DWT->CYCCNT;
     if (kalico_rt_handle) {
-        kalico_runtime_tick(kalico_rt_handle, raw_cyccnt);
+        kalico_runtime_tick(kalico_rt_handle, before);
+    }
+    uint32_t after = DWT->CYCCNT;
+
+    // Bench capture (Task 27). Wraps subtract correctly modulo 2^32.
+    if (kalico_bench_count < kalico_bench_target) {
+        kalico_bench_samples_buf[kalico_bench_count] = after - before;
+        kalico_bench_count++;
     }
     // No late ack.
 }
@@ -3457,27 +3565,28 @@ If anything fires:
 ```toml
 # rust/deny.toml — cargo-deny policy for Step-5 dependency graph.
 # Spec §6.6 quality gate; supply-chain audit on heapless + transitive deps.
+# Schema for cargo-deny ≥0.16 (pre-0.16 used `vulnerability=`, `copyleft=`,
+# `default=` keys which are now deprecated; we use the current allow-list shape).
 
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
-unsound = "deny"
 yanked = "deny"
-notice = "warn"
 
 [licenses]
-unlicensed = "deny"
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "ISC", "Unicode-DFS-2016", "Zlib"]
-copyleft = "deny"  # GPL/AGPL/LGPL excluded; the Rust workspace is GPLv3-from-Klipper but our own crates target permissive
-default = "deny"
+# Allow-list approach — anything not listed is denied by default in current
+# cargo-deny. The kalico Rust crates can ship under permissive licenses
+# (MIT/Apache-2.0); GPL-compat is preserved at the link-line level when
+# compiled into Klipper (Klipper itself is GPLv3, and permissive Rust deps
+# are GPL-compatible per the GNU GPL FAQ).
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause", "ISC", "Unicode-DFS-2016", "Unicode-3.0", "Zlib",
+]
 
 [bans]
 multiple-versions = "warn"
-deny = [
-    # add rejected crates here as they surface
-]
+deny = []   # extend as crate-specific rejections surface
 
 [sources]
 unknown-registry = "deny"
@@ -3485,7 +3594,7 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 ```
 
-(Tune `licenses.copyleft` if the GPLv3 inheritance from Klipper requires loosening — verify against the existing `nurbs-c-api` license header before locking the policy.)
+The GPLv3 inheritance question (Codex round-2 point 8): the kalico Rust workspace ships permissive (MIT/Apache-2.0) per crate. When `libkalico_c_api.a` links into a GPLv3 Klipper build, the *combined* binary is GPL-governed per the GNU GPL FAQ on linking — but each Rust crate stays permissive at the source level, which is what cargo-deny enforces. No GPLv3 entries needed in the allow-list because Klipper isn't a Cargo dependency.
 
 - [ ] **Step 4: Commit**
 
