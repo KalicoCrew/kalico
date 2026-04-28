@@ -281,7 +281,7 @@ pub fn sample_arclength_grid(
 
     for i in 0..n {
         // Uniform-in-s grid.
-        let s_i = total_length * (i as f64) / ((n - 1) as f64);
+        let s_i = (i as f64) / ((n - 1) as f64) * total_length;
         let u_i = param_from_arc_length(&table_ref, s_i);
 
         // Curve position.
