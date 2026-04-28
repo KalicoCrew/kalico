@@ -16,6 +16,12 @@ validation:
   unrecognized_links: warn
   anchors: warn
 
+# Planning, research, and spec artifacts live under docs/ for editing
+# convenience but are intentionally excluded from the published site nav.
+not_in_nav: |
+  /research/
+  /superpowers/
+
 # Custom markdown dialect settings
 markdown_extensions:
   - toc:
