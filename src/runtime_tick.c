@@ -237,16 +237,28 @@ extern volatile uint16_t kalico_bench_count;
 extern volatile uint16_t kalico_bench_target;
 extern volatile uint8_t kalico_bench_isolate;
 
+// Bench error codes — all sites use the canonical sendf format
+// `kalico_bench_done count=%hu error=%i` per Klipper's one-format-per-message
+// rule (compile_time_request rejects format conflicts).
+#define KALICO_BENCH_OK             0
+#define KALICO_BENCH_ERR_NOT_INIT  -7
+#define KALICO_BENCH_ERR_BELOW_WARMUP -4
+#define KALICO_BENCH_ERR_LIVENESS  -100
+#define KALICO_BENCH_ERR_ISR_TIMEOUT -101
+
 void
 command_kalico_bench_run(uint32_t *args)
 {
-    if (!kalico_rt_handle) { sendf("kalico_bench_done error=-7"); return; }
+    if (!kalico_rt_handle) {
+        sendf("kalico_bench_done count=%hu error=%i", 0, KALICO_BENCH_ERR_NOT_INIT);
+        return;
+    }
 
     // Liveness pre-check (round-4 review): if the runtime had already
     // tripped a liveness fault before we got here, manually kicking IWDG
     // inside the bench loop would mask it. Refuse to bench in that case.
     if (!kalico_liveness_ok) {
-        sendf("kalico_bench_done error=-99 reason=liveness_already_tripped");
+        sendf("kalico_bench_done count=%hu error=%i", 0, KALICO_BENCH_ERR_LIVENESS);
         return;
     }
 
@@ -288,8 +300,8 @@ command_kalico_bench_run(uint32_t *args)
         if ((uint32_t)(timer_read_time() - start) > timeout_ticks) {
             // ISR didn't fill the buffer — TIM5 stalled or NVIC mask wrong.
             kalico_bench_target = 0;  // tell ISR to stop bracketing
-            sendf("kalico_bench_done error=-99 reason=isr_timeout count=%hu",
-                  kalico_bench_count);
+            sendf("kalico_bench_done count=%hu error=%i",
+                  kalico_bench_count, KALICO_BENCH_ERR_ISR_TIMEOUT);
             if (isolate) {
                 NVIC_EnableIRQ(OTG_HS_IRQn);
                 NVIC_EnableIRQ(USART2_IRQn);
@@ -308,7 +320,8 @@ command_kalico_bench_run(uint32_t *args)
     // Underflow guard: refuse if caller didn't request enough samples.
     const uint16_t WARMUP_SKIP = 8;
     if (samples <= WARMUP_SKIP) {
-        sendf("kalico_bench_done error=-4 reason=samples_below_warmup");
+        sendf("kalico_bench_done count=%hu error=%i", 0,
+              KALICO_BENCH_ERR_BELOW_WARMUP);
         return;
     }
 
@@ -320,8 +333,8 @@ command_kalico_bench_run(uint32_t *args)
     for (uint16_t i = WARMUP_SKIP; i < samples; i++) {
         sendf("kalico_bench_sample value=%u", kalico_bench_samples_buf[i]);
     }
-    sendf("kalico_bench_done count=%hu error=0",
-          (uint16_t)(samples - WARMUP_SKIP));
+    sendf("kalico_bench_done count=%hu error=%i",
+          (uint16_t)(samples - WARMUP_SKIP), KALICO_BENCH_OK);
 }
 DECL_COMMAND(command_kalico_bench_run, "kalico_bench_run isolate=%c samples=%hu");
 

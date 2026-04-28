@@ -63,8 +63,17 @@ def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
             continue
     error = int(done_params.get("error", 0))
     if error != 0:
-        reason = done_params.get("reason", "<unknown>")
-        raise SystemExit("FAIL: kalico_bench_done error=%d reason=%r"
+        # Map MCU-side bench error codes back to human-readable reasons
+        # (runtime_tick.c canonicalizes the sendf format to the single shape
+        # `kalico_bench_done count=%hu error=%i`).
+        reason_map = {
+            -7:   "not_init",
+            -4:   "samples_below_warmup",
+            -100: "liveness_already_tripped",
+            -101: "isr_timeout",
+        }
+        reason = reason_map.get(error, "<unknown>")
+        raise SystemExit("FAIL: kalico_bench_done error=%d reason=%s"
                          % (error, reason))
     if len(cycles) != expected:
         raise SystemExit(
