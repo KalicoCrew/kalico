@@ -151,7 +151,7 @@ void
 command_kalico_load_curve(uint32_t *args)
 {
     if (!kalico_rt_handle) {
-        sendf("kalico_load_curve_response result=%d", -7);
+        sendf("kalico_load_curve_response result=%i", -7);
         return;
     }
     uint16_t slot         = args[0];
@@ -167,14 +167,14 @@ command_kalico_load_curve(uint32_t *args)
     // knots and weights must be a multiple of 4 (f32); weights count must
     // equal cp count. Mismatch → KALICO_ERR_INVALID_CURVE (-2).
     if ((cps_len % 12) || (knots_len % 4) || (weights_len % 4)) {
-        sendf("kalico_load_curve_response result=%d", -2);
+        sendf("kalico_load_curve_response result=%i", -2);
         return;
     }
     uint16_t n_cp      = cps_len / 12;
     uint16_t n_knots   = knots_len / 4;
     uint16_t n_weights = weights_len / 4;
     if (n_weights != n_cp) {
-        sendf("kalico_load_curve_response result=%d", -2);
+        sendf("kalico_load_curve_response result=%i", -2);
         return;
     }
 
@@ -190,7 +190,7 @@ DECL_COMMAND(command_kalico_load_curve,
 void
 command_kalico_push_segment(uint32_t *args)
 {
-    if (!kalico_rt_handle) { sendf("kalico_push_response result=%d", -7); return; }
+    if (!kalico_rt_handle) { sendf("kalico_push_response result=%i", -7); return; }
     uint32_t id = args[0];
     uint16_t curve = args[1];
     uint64_t t_start = ((uint64_t)args[2] << 32) | args[3];
