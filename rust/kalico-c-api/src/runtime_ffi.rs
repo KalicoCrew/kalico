@@ -102,6 +102,7 @@ pub mod exports {
             Ordering::Acquire,
         ) {
             Ok(_) => {
+                // SAFETY: C-side immutable constant set at static-init time in src/runtime_tick.c.
                 let clock_freq = unsafe { kalico_clock_freq };
                 // SAFETY: we hold the INIT_INITING token; no other context
                 // has access to RT_CELL until we publish READY.
@@ -136,6 +137,8 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return KALICO_ERR_NOT_INIT;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
         if ctx.engine.status() == RuntimeStatus::Fault {
             return KALICO_ERR_FAULT_LATCHED;
@@ -144,6 +147,7 @@ pub mod exports {
             return KALICO_ERR_INVALID_DURATION;
         }
         // MIN_SEGMENT_CYCLES check.
+        // SAFETY: C-side immutable constant set at static-init time in src/runtime_tick.c.
         let min_seg_cycles =
             u64::from(runtime::clock::min_segment_cycles(unsafe { kalico_clock_freq }));
         if t_end - t_start < min_seg_cycles {
@@ -171,6 +175,9 @@ pub mod exports {
                 // disabled in `kalico_h7_disable_tim5()` and is still off
                 // here — single-thread access to widen_state is safe per
                 // spec §4.7.
+                // SAFETY: foreground-context access; spec §4.7 invariant — TIM5 was
+                // disabled by C-side caller before push, so widen_state has no
+                // concurrent ISR writer.
                 let raw = unsafe { kalico_h7_read_cyccnt() };
                 ctx.engine.reinit_widen(raw);
                 unsafe {
@@ -205,7 +212,12 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return KALICO_ERR_NOT_INIT;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
+        // SAFETY: caller must ensure each pointer is valid for `n_*` reads of f32
+        // and that the buffers do not alias the curve pool. n_cp * MAX_DIM bounds
+        // the cps buffer per the producer protocol.
         let cps_slice = unsafe {
             core::slice::from_raw_parts(control_points_flat, n_cp as usize * MAX_DIM)
         };
@@ -241,6 +253,8 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
         let now = ctx.engine.widen(raw_cyccnt);
         let _ = ctx.engine.tick(now, &mut ctx.queue, &ctx.pool, &mut ctx.trace);
@@ -259,7 +273,11 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return 0;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
+        // SAFETY: caller must ensure out_buf is valid for out_cap writes of TraceSample,
+        // properly aligned, and not aliased.
         let out_slice =
             unsafe { core::slice::from_raw_parts_mut(out_buf, out_cap as usize) };
         ctx.trace.drain_into(out_slice) as u32
@@ -273,6 +291,8 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return RuntimeStatus::Fault as u8;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // shared `&` ref form; ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
         ctx.engine.status() as u8
     }
@@ -285,6 +305,8 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return KALICO_ERR_NOT_INIT;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // shared `&` ref form; ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
         ctx.engine.last_error()
     }
@@ -297,6 +319,8 @@ pub mod exports {
         if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
             return 0;
         }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
+        // shared `&` ref form; ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
         let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
         ctx.engine.tick_counter()
     }
