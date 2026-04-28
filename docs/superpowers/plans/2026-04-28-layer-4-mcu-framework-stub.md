@@ -3304,10 +3304,11 @@ command_kalico_bench_run(uint32_t *args)
         return;
     }
 
-    // Emit one sample per `kalico_bench_sample` line as ASCII decimal —
-    // this matches the host script's split-and-int-parse protocol cleanly
-    // and avoids any binary-blob framing concerns. Bounded total: at most
-    // KALICO_BENCH_MAX_SAMPLES (1024) lines per bench, each ~12 chars.
+    // Emit one Klipper-framed `kalico_bench_sample value=N` response per
+    // measurement (after warmup). sendf encodes via Klipper's standard
+    // VLQ framing (msgproto.py); host parses with klippy/console.py-style
+    // MessageParser via tools/kalico_host_io.py. Bounded total: at most
+    // KALICO_BENCH_MAX_SAMPLES (1024) responses per bench command.
     for (uint16_t i = WARMUP_SKIP; i < samples; i++) {
         sendf("kalico_bench_sample value=%u", kalico_bench_samples_buf[i]);
     }
@@ -3766,80 +3767,22 @@ survived any Klipper rebase."
 
 This helper module wraps the integration so each Surface-C script doesn't have to re-implement it.
 
-- [ ] **Step 1: Write the helper module**
+**Implementer guidance (round-5 review caveat):** writing this helper correctly requires understanding Klipper's host-side runtime model — specifically how `klippy/reactor.py`'s greenlet-based event loop interacts with `klippy/serialhdl.py`'s identify-handshake protocol. A naïve "construct SerialReader, call connect_uart" wrapper does NOT work because `SerialReader._start_session` blocks on `ReactorCompletion.wait()` which requires the reactor's event loop to be running in some thread; Klipper itself starts the reactor from `Printer.run()` on the main thread, but a standalone test helper has to either (a) run the reactor in a worker thread and route user calls via `reactor.register_async_callback`, or (b) skip `serialhdl.SerialReader` and reuse the standalone-console pattern from `klippy/console.py`.
 
-```python
-# tools/kalico_host_io.py
-#
-# Klipper-compatible host-side I/O for kalico Surface-C tests.
-# Wraps klippy/msgproto.py + serialhdl.py to provide a small async API for
-# sending commands and collecting replies.
-#
-# Klipper's serial protocol is binary VLQ; the data dictionary embedded in
-# firmware (zlib-compressed JSON) is downloaded on connect and binds command
-# names ↔ IDs. This helper does that handshake for us.
+**Recommended path: study `klippy/console.py` first.** It demonstrates a working standalone Klipper-protocol client that does NOT require the full reactor lifecycle, and its pattern is the closest match to what the Surface-C scripts need. The `KeyboardReader` class in `console.py` shows: opening `pyserial`, performing the identify handshake manually using `MessageParser.process_identify()` after reading the zlib-compressed data dictionary, encoding outgoing messages with `MessageParser.encode_msgblock()`, and decoding incoming framed messages with `MessageParser.parse()`.
 
-import os, sys, json, struct, time, zlib, threading
-from queue import Queue, Empty
+- [ ] **Step 1: Read `klippy/console.py` end-to-end before writing any helper code.** Extract the parts you need (identify-handshake, encode_msgblock, parse, RX loop). The Surface-C helper is a subset of `console.py`'s functionality — minus the readline UI and plus a reply-collection API.
 
-# Import Klipper's existing host-side library (run scripts from kalico repo root).
-KLIPPER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(KLIPPER_ROOT, "klippy"))
-import msgproto
-import serialhdl, reactor
+- [ ] **Step 2: Implement `tools/kalico_host_io.py`** as a `console.py`-derived standalone client. Required public API:
+  - `__init__(port, baud=250000)` → opens serial, runs identify, populates `MessageParser`.
+  - `send(cmd_str)` → encodes via `msgparser.create_command(cmd_str)` then writes the framed bytes.
+  - `wait_for_response(name, timeout)` → returns the parsed `dict` for the next response with matching `#name`.
+  - `collect_responses(name, count, timeout)` → returns a list of `count` parsed dicts.
+  - `disconnect()` → closes serial.
 
-class KalicoHostIO:
-    """Thin wrapper around klippy.serialhdl.SerialReader for kalico tests.
+  Background RX thread: reads bytes, hands them to `MessageParser.parse()`, dispatches resulting param dicts to `Queue`s keyed by `#name`. **Do NOT use `klippy/reactor.py`** — the event-loop dependency is the trap.
 
-    Connects to the MCU, downloads its data dictionary, exposes:
-      - `send(cmd_str)`: queue a command for transmission.
-      - `wait_for_response(name, timeout)`: block until a response with the
-         given message name arrives; returns the parsed message params.
-      - `collect_responses(name, count, timeout)`: collect N responses.
-
-    All blocking calls return parsed Python dicts (not raw bytes).
-    """
-
-    def __init__(self, port: str, baud: int = 250000):
-        self._reactor = reactor.Reactor()
-        self._serial = serialhdl.SerialReader(self._reactor, "kalico_test")
-        self._serial.connect_uart(port, baud, rts=False)
-        self._serial.handle_default = self._handle_response
-        self._responses: dict[str, Queue] = {}
-
-    def _handle_response(self, params):
-        name = params['#name']
-        self._responses.setdefault(name, Queue()).put(params)
-
-    def send(self, cmd_str: str):
-        """Send a command using Klipper's `lookup_command`-then-`send` pattern."""
-        msgparser = self._serial.get_msgparser()
-        cmd = msgparser.create_command(cmd_str)
-        self._serial.send(cmd)
-
-    def wait_for_response(self, name: str, timeout: float = 2.0) -> dict:
-        q = self._responses.setdefault(name, Queue())
-        try:
-            return q.get(timeout=timeout)
-        except Empty:
-            raise TimeoutError(f"no '{name}' response within {timeout} s")
-
-    def collect_responses(self, name: str, count: int, timeout: float = 30.0) -> list[dict]:
-        deadline = time.monotonic() + timeout
-        out = []
-        while len(out) < count:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"only {len(out)}/{count} '{name}' responses in {timeout} s")
-            out.append(self.wait_for_response(name, timeout=remaining))
-        return out
-
-    def disconnect(self):
-        self._serial.disconnect()
-```
-
-- [ ] **Step 2: Verify the helper compiles + handshakes against a flashed MCU**
+- [ ] **Step 3: Verify against a flashed MCU before locking in**
 
 ```bash
 python3 -c "
@@ -3852,20 +3795,23 @@ io.disconnect()
 "
 ```
 
-Expected: prints a dict like `{'#name': 'kalico_status', 'status': 0, 'last_err': 0}`.
+Expected: prints a dict like `{'#name': 'kalico_status', 'status': 0, 'last_err': 0}` within ~1 second. If it hangs at connect, the identify handshake is wrong; trace `console.py`'s `_check_data` and `_handle_identify` more carefully.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tools/kalico_host_io.py
 git commit -m "tools/kalico_host_io: msgproto-based host helper (Step 5 Surface C)
 
 Klipper's sendf is binary VLQ-framed, NOT ASCII newline-terminated.
-Surface-C tests need msgproto-aware I/O that downloads the data
-dictionary at connect time and binds command names. This helper
-wraps klippy/serialhdl.py + msgproto.py so each test script reads
-parsed Python dicts instead of decoding the wire format itself."
+Implementation derived from klippy/console.py's standalone-client
+pattern — does NOT use klippy/reactor.py (the event-loop dependency
+deadlocks a worker-thread integration). Identify handshake done
+manually via MessageParser.process_identify; RX loop is a background
+thread that dispatches parsed dicts to Queues keyed by #name."
 ```
+
+**Why the explicit guidance instead of a code drop:** the spec author (Claude, round 5) wrote a non-functional sketch that reused `serialhdl.SerialReader` without running the reactor — verified broken by adversarial review against actual `klippy/serialhdl.py:105–106` (the identify handshake calls `ReactorCompletion.wait()` which requires the reactor to be running). The implementer is in a better position to read `klippy/console.py` directly and produce a correct helper than to debug the broken sketch. Treat the API surface above as the contract; the implementation shape comes from `console.py`.
 
 ### Task 26: First-light test (LED toggle on idle flip)
 
@@ -4089,22 +4035,25 @@ asserts via --p99-budget-us 15 and exits non-zero on breach. Result: PASS."
 
 ```python
 #!/usr/bin/env python3
-"""Drive runtime over USB-CDC, drain trace, plot against analytical eval.
+"""Drive runtime via Klipper-protocol I/O, drain trace, plot against analytical eval.
 
 Reads the shared fixture file (rust/runtime/tests/fixtures/step5_segments.json),
-loads each curve into the MCU's CurvePool slab, pushes a chained segment
-sequence, drains the trace ring, validates trace continuity + position-error
-bound against an analytical Python NURBS evaluator (e.g., scipy.interpolate
-or a from-scratch de Boor for parity).
+loads each curve into the MCU's CurvePool slab via `kalico_load_curve`,
+pushes a chained segment sequence via `kalico_push_segment`, drains the
+trace ring via the trace-drain command, validates trace continuity +
+position-error bound against an analytical Python NURBS evaluator (e.g.,
+scipy.interpolate or a from-scratch de Boor for parity).
 
 Acceptance: max |motor_pos_traced - motor_pos_analytical| < 0.05 mm
 across all fixture chains.
 """
-import argparse, json, sys, struct, serial, time
+import argparse, json, sys, time
+sys.path.insert(0, 'tools')
+from kalico_host_io import KalicoHostIO   # Task 25.5 Klipper-protocol helper
 # ... full implementation ...
 ```
 
-(Full Python implementation: ~150 lines. The skeleton above shows shape; the implementer writes details using `pyserial` for CDC and matplotlib for the optional plot output. Acceptance threshold of 0.05 mm = 50 µm matches the sub-tick-boundary motion-loss budget at 1000 mm/s × 25 µs = 25 µm; doubled for measurement noise.)
+(Full Python implementation: ~150 lines. The skeleton above shows shape; the implementer uses `tools/kalico_host_io.py` for Klipper-framed I/O — NOT raw `pyserial`, since Klipper's `sendf` is binary VLQ-framed not ASCII. Optional plot output via matplotlib. Acceptance threshold of 0.05 mm = 50 µm matches the sub-tick-boundary motion-loss budget at 1000 mm/s × 25 µs = 25 µm; doubled for measurement noise.)
 
 - [ ] **Step 2: Run on hardware, iterate, commit**
 

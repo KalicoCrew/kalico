@@ -314,7 +314,11 @@ Workspace edition: migrate from 2021 to **2024** as a prep commit before Step 5 
 Widening algorithm uses Klipper's existing `timer_read_time()` (a 32-bit-base-rate clock that Klipper widens internally — exposed via `extern "C" fn timer_read_time() -> u32` already used throughout `src/`) as the **monotonic backstop** so long-disable wrap loss is recoverable:
 
 ```rust
-// Owned by the ISR alone — single-producer access. Foreground does NOT read these.
+// ISR is the sole writer. Foreground reads ONLY during the bounded TIM5-disabled
+// window in the producer push protocol (§4.4) — see §4.7 table for the full
+// invariant. The read happens via `Engine::last_widened_now()` so the
+// pre-disable widened value can be passed back to `WidenState::reinit()` to
+// preserve epoch across a disable→enable cycle.
 static mut WIDEN_LAST_LOW: u32 = 0;
 static mut WIDEN_HIGH: u64 = 0;
 
@@ -351,7 +355,7 @@ unsafe fn widen_cyccnt_reinit() {
 
 `timer_read_time()` returns Klipper's wall-monotonic clock (Klipper itself widens internally to handle ≥4 billion clock ticks). Even after a 30-second disable, the backstop reconstructs `WIDEN_HIGH` correctly — the resulting `now: u64` is monotonic across long disables, modulo the precision of Klipper's clock-rate constant.
 
-Single-producer `static mut` access is safe because only the kalico ISR touches these statics. Foreground does **not** read the widening state directly; tick-count diagnostics use `tick_counter: AtomicU32` (see §4.7) which is wrap-tolerant for foreground's "did the value change" usage. **Avoiding `AtomicU64`**: ARMv7-M `target_has_atomic = "64"` may not be lock-free on all M7 cores; torn reads of u64 from foreground would corrupt the widened value. The fix is to never let foreground read `now: u64` — it stays ISR-private.
+Single-writer `static mut` access is safe because the kalico ISR is the **sole writer** of these statics. Foreground reads them ONLY during the bounded TIM5-disabled window in the producer push protocol (§4.4) — by the time the foreground reads, the ISR has already self-disabled TIM5 and observed `runtime_status = IDLE`, so no concurrent writer exists. Tick-count diagnostics use `tick_counter: AtomicU32` (see §4.7) which is wrap-tolerant for foreground's "did the value change" usage. **Avoiding `AtomicU64`**: ARMv7-M `target_has_atomic = "64"` is not enabled by default on `thumbv7em-none-eabihf`; using `AtomicU64` would either fail to compile or use a libcalls-based lock implementation. `AtomicU32` is the correct choice for the heartbeat counter; the widened `now: u64` stays ISR-internal except for the bounded foreground read described above.
 
 Widening lives in Rust to keep the wrap-handling invariant testable on the host. One unit, one type, no ambiguity. Field doc strings name the unit.
 
