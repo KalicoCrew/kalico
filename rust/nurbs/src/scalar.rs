@@ -457,10 +457,13 @@ mod tests {
 
     #[test]
     fn try_from_wire_rejects_misaligned_buffer() {
-        let mut buf = [0u8; 32 + 1];
-        buf[0] = 1;
-        // Slice starting at offset 1 → guaranteed misaligned for f32.
-        let result = ScalarNurbsRef::<f32>::try_from_wire(&buf[1..]);
+        let mut data = [0u8; 32 + 1];
+        data[0] = 1;
+        // Stack-array layout in release can land on an address where `&buf[1..]`
+        // happens to be 4-aligned. Anchor on a 4-aligned base via align_buf, then
+        // slice from offset 1 so misalignment for f32 is guaranteed.
+        let aligned = align_buf(&data, 4);
+        let result = ScalarNurbsRef::<f32>::try_from_wire(&aligned.as_slice()[1..]);
         assert!(matches!(result, Err(crate::WireError::Misaligned)));
     }
 
