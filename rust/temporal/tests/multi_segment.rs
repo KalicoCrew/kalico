@@ -237,3 +237,42 @@ mod fixture_4_per_segment_limits_change {
         assert!(matches!(output.joining_status, JoiningStatus::Converged));
     }
 }
+
+mod fixture_5_star_pattern {
+    use super::*;
+
+    #[test]
+    fn fixture_5() {
+        // 5-pointed star: 5 segments, alternating outward-spike + inward-cusp.
+        // Use 5 short G1 segments forming a star-like pattern.
+        let r_outer: f64 = 30.0;
+        let r_inner: f64 = 12.0;
+        let n_points = 5_usize;
+        let mut points: Vec<[f64; 3]> = Vec::new();
+        for i in 0..n_points * 2 {
+            let theta = i as f64 * std::f64::consts::PI / n_points as f64;
+            let r = if i % 2 == 0 { r_outer } else { r_inner };
+            points.push([r * theta.cos(), r * theta.sin(), 0.0]);
+        }
+        let curves: Vec<_> = points.windows(2).map(|w| {
+            VectorNurbs::<f64, 3>::try_new(
+                1, vec![0.0, 0.0, 1.0, 1.0],
+                vec![w[0], w[1]], None,
+            ).unwrap()
+        }).collect();
+        let limits = textbook_limits();
+        let segments: Vec<_> = curves.iter().map(|c| SegmentInput {
+            curve: c, limits, trailing_junction_chord_tolerance_mm: 0.05,
+        }).collect();
+        let input = BatchInput { segments: &segments, grid_strategy: adaptive(), worker_threads: 3 };
+        let output = plan_batch(input).expect("should succeed");
+
+        // §6.5: converges in ≤5 sweeps.
+        assert!(output.joining_sweeps <= 5, "joining took {} sweeps", output.joining_sweeps);
+        assert!(matches!(output.joining_status, JoiningStatus::Converged));
+
+        // §6.2 (review-1 helper): junction continuity at every junction.
+        // Star pattern has 9 junctions (n_points*2 - 1 segments).
+        assert_junction_continuity_for_all(&output, 1.0);
+    }
+}
