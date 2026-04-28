@@ -1,5 +1,5 @@
 [workspace]
-members = ["nurbs", "nurbs-c-api", "gcode", "geometry", "temporal"]
+members = ["nurbs", "kalico-c-api", "gcode", "geometry", "temporal"]
 exclude = ["gcode/fuzz"]
 resolver = "2"
 

@@ -1,7 +1,7 @@
-//! Stable C ABI surface for the nurbs crate.
+//! Umbrella staticlib + cbindgen FFI surface for kalico's Rust crates.
 //!
-//! All symbols are namespaced `kalico_nurbs_*` and exposed via cbindgen.
-//! The generated header lives at `nurbs-c-api/include/kalico_nurbs.h`
+//! All NURBS symbols are namespaced `kalico_nurbs_*` and exposed via cbindgen.
+//! The generated header lives at `kalico-c-api/include/kalico_nurbs.h`
 //! and is checked into source control; CI verifies that regenerating it
 //! produces a no-op diff.
 

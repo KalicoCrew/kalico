@@ -1,5 +1,5 @@
 //! Verifies that `cargo run --bin gen-headers` produces a no-op diff against
-//! the committed header. Run as `cargo test -p nurbs-c-api --features host
+//! the committed header. Run as `cargo test -p kalico-c-api --features host
 //! --test headers_no_drift`.
 
 #[test]
@@ -24,6 +24,6 @@ fn header_in_repo_matches_generated() {
     assert!(
         committed == regenerated_str,
         "kalico_nurbs.h is out of date. Run:\n  \
-         cargo run -p nurbs-c-api --bin gen-headers --features host"
+         cargo run -p kalico-c-api --bin gen-headers --features host"
     );
 }

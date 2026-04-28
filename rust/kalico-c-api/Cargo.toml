@@ -1,10 +1,10 @@
 [package]
-name = "nurbs-c-api"
+name = "kalico-c-api"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
-description = "Stable C ABI surface for the nurbs crate"
+description = "Umbrella staticlib + cbindgen FFI surface for kalico's Rust crates (nurbs Layer 0; runtime Layer 4)."
 
 [lib]
 crate-type = ["staticlib", "rlib"]

@@ -5,7 +5,7 @@ First-party Rust code for the kalico motion stack rewrite. See `docs/superpowers
 ## Layout
 
 - `nurbs/` — Layer 0 mathematical foundations (NURBS eval, arc-length, algebra).
-- `nurbs-c-api/` — stable C ABI surface for the MCU C build to call into. cbindgen-generated header at `nurbs-c-api/include/kalico_nurbs.h` (checked in).
+- `kalico-c-api/` — umbrella staticlib + cbindgen FFI surface for kalico's Rust crates. cbindgen-generated header at `kalico-c-api/include/kalico_nurbs.h` (checked in).
 
 ## Build
 
@@ -18,7 +18,7 @@ MCU (H723 = Cortex-M7 with double-precision FPU):
 
     cargo build --release --no-default-features --features mcu-h7 --target thumbv7em-none-eabihf
 
-The Klipper Make build picks up the resulting staticlib at `target/thumbv7em-none-eabihf/release/libnurbs_c_api.a` and the C header at `nurbs-c-api/include/kalico_nurbs.h`.
+The Klipper Make build picks up the resulting staticlib at `target/thumbv7em-none-eabihf/release/libkalico_c_api.a` and the C header at `kalico-c-api/include/kalico_nurbs.h`.
 
 ## Toolchain
 
@@ -26,7 +26,7 @@ Pinned via `rust-toolchain.toml`. Update intentionally with regression testing �
 
 ## C link contract
 
-- C side `#include`s `nurbs-c-api/include/kalico_nurbs.h` (committed; CI verifies regen is a no-op).
-- C side links against `libnurbs_c_api.a`.
+- C side `#include`s `kalico-c-api/include/kalico_nurbs.h` (committed; CI verifies regen is a no-op).
+- C side links against `libkalico_c_api.a`.
 - All C symbols are namespaced `kalico_nurbs_*`.
 - Type ownership: C never frees Rust-allocated memory; constructors/destructors come in pairs across the FFI boundary. Pointer types are opaque to C.

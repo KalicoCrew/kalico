@@ -1,5 +1,5 @@
-//! Run with `cargo run -p nurbs-c-api --bin gen-headers --features host`.
-//! Regenerates `nurbs-c-api/include/kalico_nurbs.h` from the cbindgen config.
+//! Run with `cargo run -p kalico-c-api --bin gen-headers --features host`.
+//! Regenerates `kalico-c-api/include/kalico_nurbs.h` from the cbindgen config.
 //! Must produce no diff in CI.
 
 use std::path::PathBuf;

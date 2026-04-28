@@ -373,6 +373,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kalico-c-api"
+version = "0.1.0"
+dependencies = [
+ "cbindgen",
+ "nurbs",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -424,14 +432,6 @@ dependencies = [
  "libm",
  "proptest",
  "serde_json",
-]
-
-[[package]]
-name = "nurbs-c-api"
-version = "0.1.0"
-dependencies = [
- "cbindgen",
- "nurbs",
 ]
 
 [[package]]

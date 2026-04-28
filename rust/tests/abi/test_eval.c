@@ -1,10 +1,10 @@
 /*
- * ABI smoke test: link against libnurbs_c_api.a and call a few core functions
+ * ABI smoke test: link against libkalico_c_api.a and call a few core functions
  * with known inputs. Verifies the C ABI compiles, links, and produces correct
  * results across the language boundary.
  */
 
-#include "../../nurbs-c-api/include/kalico_nurbs.h"
+#include "../../kalico-c-api/include/kalico_nurbs.h"
 #include <stdio.h>
 #include <stdlib.h>
 
