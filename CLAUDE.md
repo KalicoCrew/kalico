@@ -225,4 +225,4 @@ Steps 8–10 are where it becomes high-performance. Steps 11–14 are polish and
 
 # Plan changes log
 
-The running log of build-order/spec/constraint changes lives at [`docs/superpowers/plan-changes-log.md`](docs/superpowers/plan-changes-log.md). The kalico orchestrator (`/kalico-orchestrate`) appends entries there when items change. Format per entry: date, what changed, why, evidence link.
+The running log of build-order/spec/constraint changes lives at [`docs/superpowers/plan-changes-log.md`](docs/superpowers/plan-changes-log.md). Format per entry: date, what changed, why, evidence link.
