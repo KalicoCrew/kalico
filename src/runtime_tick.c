@@ -3,8 +3,7 @@
 // Klipper-side portable glue for kalico runtime. Spec §2.4 / §4.5 / §5.7.
 
 #include "autoconf.h"
-#include "board/gpio.h"     // gpio_out_setup / gpio_out_write
-#include "board/internal.h" // GPIO macro, NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
+#include "board/internal.h" // NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
 #include "board/misc.h"     // timer_read_time
 #include "command.h"        // DECL_COMMAND
 #include "sched.h"          // DECL_INIT, DECL_TASK
@@ -34,19 +33,17 @@ static struct timer runtime_drain_timer;
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
 
-// First-light status LED (Surface C / Step-5 plan Task 26).
-// Toggles in `runtime_drain` when the runtime status byte changes (e.g.
-// IDLE→RUNNING after the first segment push). The PASS/FAIL gate of
-// test_h723_first_light.py is the kalico_status response, not the LED;
-// this is just a visual signal during bench-side bring-up.
+// First-light status LED removed for Surface C bring-up.
 //
-// TODO Surface C: verify status-LED pin against actual BTT Octopus Pro
-// pinmap. Using PA13 per the plan literal as a placeholder; correct on
-// first hardware bring-up if it doesn't match the silkscreen.
-#define KALICO_STATUS_LED_PIN GPIO('A', 13)
-static struct gpio_out kalico_status_led;
-static uint8_t kalico_status_led_inited = 0;
-static uint8_t kalico_status_led_state = 0;
+// The plan-literal placeholder pin was PA13, which is SWDIO on the H7 —
+// reconfiguring it as a GPIO output kills the SWD debugger and is
+// generally hostile to debugability during early bring-up. The PASS/FAIL
+// gate of test_h723_first_light.py is the `kalico_status` response over
+// USB-CDC, not a visual LED, so the visual signal is dispensable.
+//
+// Future work: pick a non-SWD pin from the actual Octopus Pro silkscreen
+// (e.g. one of the unused fan headers or a dedicated debug LED) and
+// reintroduce the toggle. Tracked as a Step-5 follow-up in plan-changes-log.
 static uint8_t last_seen_status = 255;
 
 // Periodic timer callback at ~1 kHz: sets the drain wake flag.
@@ -71,12 +68,6 @@ runtime_init(void)
     }
     last_seen_tick_counter = kalico_runtime_tick_counter(kalico_rt_handle);
     last_progress_time = timer_read_time();
-
-    // Bring up the status LED at IDLE (off). Failure here is non-fatal —
-    // we simply skip toggling later if `kalico_status_led_inited` stays 0.
-    kalico_status_led = gpio_out_setup(KALICO_STATUS_LED_PIN, 0);
-    kalico_status_led_inited = 1;
-    kalico_status_led_state = 0;
     last_seen_status = kalico_runtime_status(kalico_rt_handle);
 
     // Initialize H7 timer hardware (TIM5) — DOES NOT enable yet; first segment
@@ -127,13 +118,9 @@ runtime_drain(void)
         kalico_liveness_ok = 0;
     }
 
-    // First-light: toggle the status LED on every status transition. Visual
-    // signal for Surface C bring-up; PASS/FAIL is gated on the kalico_status
-    // response, not on the LED. See test_h723_first_light.py.
-    if (kalico_status_led_inited && cur_status != last_seen_status) {
+    // Track last status (used by future LED hook on a non-SWD pin).
+    if (cur_status != last_seen_status) {
         last_seen_status = cur_status;
-        kalico_status_led_state ^= 1;
-        gpio_out_write(kalico_status_led, kalico_status_led_state);
     }
 }
 DECL_TASK(runtime_drain);
