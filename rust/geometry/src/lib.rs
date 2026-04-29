@@ -12,7 +12,7 @@ pub mod telemetry;
 
 pub use error::{Fatal, GeometryError, InternalDetails, InternalKind, Recovery, SlotDegeneracy};
 pub use params::FitterParams;
-pub use pipeline::{GeometryPipeline, Item, Segments};
+pub use pipeline::{GeometryPipeline, Item, Segments, degree_elevate_2_to_3};
 pub use segment::{
     BlendFamily, CornerBlendSlot, CubicSegment, EMode, JunctionDeviation, Segment, SourceRange,
     SplitInfo,

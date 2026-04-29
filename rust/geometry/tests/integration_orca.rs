@@ -4,6 +4,12 @@
 //!  - Pipeline runs to completion without panic.
 //!  - Segment counts are within sane order-of-magnitude.
 //!  - Telemetry sees expected events.
+//!
+//! Gated behind `legacy-reference`: corpus is `OrcaSlicer` G0/G1/G2/G3 output
+//! that requires Step-13 normalization before the live G5-only pipeline can
+//! consume it.
+
+#![cfg(feature = "legacy-reference")]
 
 use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 use std::path::Path;

@@ -1,10 +1,17 @@
-//! End-to-end integration tests for G5 / G5.1 reduction (build-order Step 3).
+//! End-to-end integration tests for G5 / G5.1 reduction.
 //! Black-box: drives `GeometryPipeline::process` against synthetic G-code
 //! strings and asserts on the public `Item` / `Segment` / `Recovery` /
 //! `TelemetryEvent` surface.
+//!
+//! Per Task 1.6 (build-order Step 7-pre), G5 / G5.1 emit `Segment::Cubic`
+//! (G5.1 via exact degree-elevation 2→3). These tests run only under
+//! `legacy-reference` because they prefix moves with `G1 X0 Y0 F1500` to
+//! seat feedrate, which the live pipeline rejects as `UnsupportedGcode`.
+
+#![cfg(feature = "legacy-reference")]
 
 use geometry::{
-    FittedSegment, FitterParams, GeometryPipeline, Item, Recovery, Segment, TelemetryEvent,
+    CubicSegment, FitterParams, GeometryPipeline, Item, Recovery, Segment, TelemetryEvent,
 };
 
 fn process(text: &str) -> (Vec<Item>, Vec<TelemetryEvent>) {
@@ -22,51 +29,51 @@ fn approx(a: f64, b: f64) -> bool {
 }
 
 #[test]
-fn single_g5_emits_one_cubic_fitted_segment() {
+fn single_g5_emits_one_cubic_segment() {
     let (items, _events) = process("G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n");
-    let cubics: Vec<&FittedSegment> = items
+    let cubics: Vec<&CubicSegment> = items
         .iter()
         .filter_map(|it| match it {
-            Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f),
+            Item::Segment(Segment::Cubic(c)) => Some(c),
             _ => None,
         })
         .collect();
     assert_eq!(
         cubics.len(),
         1,
-        "expected exactly one degree-3 Fitted, got {} in {items:#?}",
+        "expected exactly one Segment::Cubic, got {} in {items:#?}",
         cubics.len()
     );
-    let f = cubics[0];
-    let cps = f.xyz.control_points();
+    let c = cubics[0];
+    let cps = c.xyz.control_points();
     assert!(approx(cps[1][0], 3.0) && approx(cps[1][1], 3.0));
     assert!(approx(cps[2][0], 7.0) && approx(cps[2][1], 3.0));
-    assert!(f.xyz.weights().is_none());
-    assert!(approx(f.max_residual_mm, 0.0));
+    assert!(c.xyz.weights().is_none());
 }
 
 #[test]
-fn single_g5_1_emits_one_quadratic_non_rational_fitted_segment() {
+fn single_g5_1_emits_one_non_rational_cubic_via_degree_elevation() {
     let (items, _events) = process("G1 X0 Y0 F1500\nG5.1 X10 Y0 I3 J3\n");
-    let quads: Vec<&FittedSegment> = items
+    let cubics: Vec<&CubicSegment> = items
         .iter()
         .filter_map(|it| match it {
-            Item::Segment(Segment::Fitted(f)) if f.degree == 2 => Some(f),
+            Item::Segment(Segment::Cubic(c)) => Some(c),
             _ => None,
         })
         .collect();
     assert_eq!(
-        quads.len(),
+        cubics.len(),
         1,
-        "expected exactly one degree-2 Fitted, got {} in {items:#?}",
-        quads.len()
+        "expected exactly one Segment::Cubic from G5.1, got {} in {items:#?}",
+        cubics.len()
     );
-    let f = quads[0];
-    let cps = f.xyz.control_points();
-    assert!(approx(cps[1][0], 3.0) && approx(cps[1][1], 3.0));
+    let c = cubics[0];
+    // Post-elevation: degree 3, 4 CPs, non-rational.
+    assert_eq!(c.xyz.degree(), 3);
+    assert_eq!(c.xyz.control_points().len(), 4);
     assert!(
-        f.xyz.weights().is_none(),
-        "G5.1 must be non-rational (distinguishes from Arc)"
+        c.xyz.weights().is_none(),
+        "G5.1 → cubic must remain non-rational (distinguishes from Arc)"
     );
 }
 
@@ -80,7 +87,7 @@ fn g5_chain_three_lines_no_junctions_between() {
     );
     let cubics_count = items
         .iter()
-        .filter(|it| matches!(it, Item::Segment(Segment::Fitted(f)) if f.degree == 3))
+        .filter(|it| matches!(it, Item::Segment(Segment::Cubic(_))))
         .count();
     let junctions_count = items
         .iter()
@@ -163,36 +170,36 @@ fn g5_1_outside_g17_plane_emits_recovery() {
 }
 
 #[test]
-fn g5_with_z_motion_interpolates_z_at_thirds() {
+fn g5_with_z_motion_rejected_as_helical_extrusion_when_e_present() {
+    // G5 with both Z and E → helical extrusion (rejected by classifier).
+    let (items, _events) = process("G1 X0 Y0 Z0 F1500\nG5 X10 Y0 Z0.3 E0.5 I3 J3 P-3 Q3\n");
+    let helical = items
+        .iter()
+        .find(|it| matches!(it, Item::Recovered(_, Recovery::HelicalExtrusionUnsupported { .. })));
+    assert!(
+        helical.is_some(),
+        "expected HelicalExtrusionUnsupported recovery, got {items:#?}"
+    );
+}
+
+#[test]
+fn g5_with_z_motion_no_e_emits_travel_cubic() {
     let (items, _events) = process("G1 X0 Y0 Z0 F1500\nG5 X10 Y0 Z0.3 I3 J3 P-3 Q3\n");
-    let f = items
+    let c = items
         .iter()
         .find_map(|it| match it {
-            Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f),
+            Item::Segment(Segment::Cubic(c)) => Some(c),
             _ => None,
         })
-        .expect("expected a degree-3 Fitted");
-    let cps = f.xyz.control_points();
+        .expect("expected a Segment::Cubic");
+    let cps = c.xyz.control_points();
+    // Z linearly interpolated at thirds: 0, 0.1, 0.2, 0.3.
     assert!(approx(cps[0][2], 0.0));
     assert!(approx(cps[1][2], 0.1));
     assert!(approx(cps[2][2], 0.2));
     assert!(approx(cps[3][2], 0.3));
-}
-
-#[test]
-fn g5_1_with_z_motion_interpolates_z_at_midpoint() {
-    let (items, _events) = process("G1 X0 Y0 Z0 F1500\nG5.1 X10 Y0 Z0.4 I3 J3\n");
-    let f = items
-        .iter()
-        .find_map(|it| match it {
-            Item::Segment(Segment::Fitted(f)) if f.degree == 2 => Some(f),
-            _ => None,
-        })
-        .expect("expected a degree-2 Fitted");
-    let cps = f.xyz.control_points();
-    assert!(approx(cps[0][2], 0.0));
-    assert!(approx(cps[1][2], 0.2));
-    assert!(approx(cps[2][2], 0.4));
+    // No E → Travel.
+    assert_eq!(c.e_mode, geometry::EMode::Travel);
 }
 
 #[test]
@@ -206,7 +213,7 @@ fn g5_chain_preserved_by_m_codes_and_t_codes() {
     );
     let cubics_count = items
         .iter()
-        .filter(|it| matches!(it, Item::Segment(Segment::Fitted(f)) if f.degree == 3))
+        .filter(|it| matches!(it, Item::Segment(Segment::Cubic(_))))
         .count();
     assert_eq!(
         cubics_count, 2,

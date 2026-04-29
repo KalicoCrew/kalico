@@ -1,5 +1,10 @@
 //! Helical G2/G3 → 3D rational quadratic `ArcSegment` with linear-Z control points.
 //! Locks the full-3D commitment as a tested invariant.
+//!
+//! Gated behind `legacy-reference`: live pipeline rejects G2/G3 at reduce time
+//! (Step-13 compat-layer territory).
+
+#![cfg(feature = "legacy-reference")]
 
 use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 
