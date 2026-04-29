@@ -1,5 +1,5 @@
 use geometry::{CubicSegment, EMode, GeometryError, SourceRange};
-use nurbs::{VectorNurbs, eval::vector_eval};
+use nurbs::{ScalarNurbs, VectorNurbs, eval::vector_eval};
 
 fn valid_cubic_xyz() -> VectorNurbs<f64, 3> {
     VectorNurbs::<f64, 3>::try_new(
@@ -436,4 +436,95 @@ fn nan_g5_produces_malformed_params_recovery_not_silent_drop() {
         )),
         "expected Item::Recovered(_, MalformedParams), got {items:#?}"
     );
+}
+
+#[test]
+fn try_new_rejects_non_finite_control_point() {
+    let xyz = VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        None,
+    )
+    .expect("VectorNurbs accepts NaN at the type level; CubicSegment::try_new must catch it");
+    let result = CubicSegment::try_new(
+        xyz,
+        EMode::Travel,
+        0.0,
+        None,
+        100.0,
+        SourceRange { start_line: 1, end_line: 1 },
+        None,
+    );
+    assert!(matches!(result, Err(GeometryError::NotSinglePieceCubic { .. })));
+}
+
+#[test]
+fn try_new_rejects_non_finite_feedrate() {
+    let xyz = VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        None,
+    )
+    .unwrap();
+    let result = CubicSegment::try_new(
+        xyz,
+        EMode::Travel,
+        0.0,
+        None,
+        f64::INFINITY,
+        SourceRange { start_line: 1, end_line: 1 },
+        None,
+    );
+    assert!(matches!(result, Err(GeometryError::EModeInvariantViolation { .. })));
+}
+
+#[test]
+fn try_new_rejects_non_finite_extrusion_ratio() {
+    let xyz = VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        None,
+    )
+    .unwrap();
+    let result = CubicSegment::try_new(
+        xyz,
+        EMode::CoupledToXy,
+        f64::NAN,
+        None,
+        100.0,
+        SourceRange { start_line: 1, end_line: 1 },
+        None,
+    );
+    assert!(matches!(result, Err(GeometryError::EModeInvariantViolation { .. })));
+}
+
+#[test]
+fn try_new_rejects_non_finite_e_independent_curve() {
+    let xyz = VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![[0.0; 3]; 4],
+        None,
+    )
+    .unwrap();
+    let bad_e = ScalarNurbs::<f64>::try_new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, f64::INFINITY],
+        None,
+    )
+    .unwrap();
+    let result = CubicSegment::try_new(
+        xyz,
+        EMode::Independent,
+        0.0,
+        Some(bad_e),
+        100.0,
+        SourceRange { start_line: 1, end_line: 1 },
+        None,
+    );
+    assert!(matches!(result, Err(GeometryError::EModeInvariantViolation { .. })));
 }

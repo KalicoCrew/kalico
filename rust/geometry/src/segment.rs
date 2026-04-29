@@ -127,6 +127,48 @@ impl CubicSegment {
             }
         }
 
+        // Defense-in-depth: callers bypassing the lexer (tests, Step-13 output
+        // handlers, hand-built segments) must not be able to construct a
+        // CubicSegment with non-finite values. Non-finite cps poison
+        // xy_arc_length and downstream classification; non-finite feedrate /
+        // extrusion ratio poisons TOPP-RA scheduling; non-finite e_independent
+        // curve poisons E integration on the MCU.
+        for cp in xyz.control_points() {
+            for &v in cp {
+                if !v.is_finite() {
+                    return Err(crate::GeometryError::NotSinglePieceCubic {
+                        reason: "control point contains non-finite value",
+                    });
+                }
+            }
+        }
+        if !feedrate_mm_s.is_finite() {
+            return Err(crate::GeometryError::EModeInvariantViolation {
+                reason: "feedrate_mm_s must be finite",
+            });
+        }
+        if !extrusion_per_xy_mm.is_finite() {
+            return Err(crate::GeometryError::EModeInvariantViolation {
+                reason: "extrusion_per_xy_mm must be finite",
+            });
+        }
+        if let Some(curve) = &e_independent {
+            for &v in curve.control_points() {
+                if !v.is_finite() {
+                    return Err(crate::GeometryError::EModeInvariantViolation {
+                        reason: "e_independent control point contains non-finite value",
+                    });
+                }
+            }
+        }
+        if let Some(info) = &split_info {
+            if !info.s_lo_mm.is_finite() || !info.s_hi_mm.is_finite() {
+                return Err(crate::GeometryError::EModeInvariantViolation {
+                    reason: "split_info arc-length range contains non-finite value",
+                });
+            }
+        }
+
         Ok(Self {
             xyz,
             e_mode,
