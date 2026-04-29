@@ -394,6 +394,98 @@ pub fn convolve<T: Float>(
     Ok(result)
 }
 
+/// Polynomial-of-polynomial composition for a fixed-axis-count vector outer
+/// against a scalar inner. For each axis a, computes `outer_a(inner(t))` in
+/// the Pascal-shifted monomial basis native to `BezierPiece`.
+///
+/// Result domain is `[inner.u_start, inner.u_end]`; output basis is shifted
+/// at `inner.u_start`. Per-axis output degree = `outer.degree() × inner.degree()`.
+///
+/// **Algorithm (direct substitution-and-collect in monomial basis):**
+/// 1. Build `shifted_inner = inner.coeffs` with `shifted_inner[0] -= outer_a.u_start`.
+///    This is `inner(t) − outer_a.u_start` as a polynomial in `(t − inner.u_start)`,
+///    which is exactly what we substitute for `(s − outer_a.u_start)` in `outer_a`.
+/// 2. Build powers `shifted_inner^0 … shifted_inner^d_outer` via `poly_multiply`.
+/// 3. Accumulate `result[k] = Σ_i outer_a.coeffs[i] × powers[i][k]`.
+///
+/// **Precondition (debug-asserted):** `outer[a].u_start == inner.evaluate(inner.u_start)`
+/// and `outer[a].u_end == inner.evaluate(inner.u_end)` for every axis (within `1e-9`).
+/// In other words, the inner's image must align with the outer's s-domain.
+///
+/// Returns `Result` for forward-compatibility with future error paths
+/// (e.g. weighted/rational support, degree-cap checks). The current
+/// implementation never errors; if `D == 0` the returned array has length 0
+/// and the function returns `Ok` with no work done.
+#[cfg(feature = "host")]
+pub fn compose_vector_piece<const D: usize>(
+    outer: &[&crate::bezier::BezierPiece<f64>; D],
+    inner: &crate::bezier::BezierPiece<f64>,
+) -> Result<[crate::bezier::BezierPiece<f64>; D], AlgebraError> {
+    let inner_at_start = inner.evaluate(inner.u_start);
+    let inner_at_end = inner.evaluate(inner.u_end);
+    for outer_axis in outer {
+        debug_assert!(
+            (outer_axis.u_start - inner_at_start).abs() < 1e-9,
+            "compose_vector_piece: outer.u_start {} does not match inner(inner.u_start) {}",
+            outer_axis.u_start,
+            inner_at_start,
+        );
+        debug_assert!(
+            (outer_axis.u_end - inner_at_end).abs() < 1e-9,
+            "compose_vector_piece: outer.u_end {} does not match inner(inner.u_end) {}",
+            outer_axis.u_end,
+            inner_at_end,
+        );
+    }
+
+    let pieces: Vec<crate::bezier::BezierPiece<f64>> = outer
+        .iter()
+        .map(|outer_axis| {
+            let d_outer = outer_axis.degree();
+
+            // shifted_inner(t) = inner(t) - outer_axis.u_start, expressed in
+            // basis (t - inner.u_start). Subtract from the constant term.
+            let mut shifted_inner = inner.coeffs.clone();
+            if shifted_inner.is_empty() {
+                shifted_inner.push(-outer_axis.u_start);
+            } else {
+                shifted_inner[0] -= outer_axis.u_start;
+            }
+
+            // Build powers: powers[i] = shifted_inner^i in basis (t - inner.u_start).
+            // powers[0] = [1] (the constant 1 polynomial).
+            let mut powers: Vec<Vec<f64>> = Vec::with_capacity(d_outer + 1);
+            powers.push(vec![1.0]);
+            for i in 1..=d_outer {
+                let next = poly_multiply(&powers[i - 1], &shifted_inner);
+                powers.push(next);
+            }
+
+            // Result length = d_outer * d_inner + 1.
+            let d_inner = inner.degree();
+            let result_len = d_outer * d_inner + 1;
+            let mut result_coeffs = vec![0.0_f64; result_len];
+            for (i, c_outer) in outer_axis.coeffs.iter().enumerate() {
+                let pow = &powers[i];
+                for (k, p_k) in pow.iter().enumerate() {
+                    result_coeffs[k] += *c_outer * *p_k;
+                }
+            }
+
+            crate::bezier::BezierPiece {
+                u_start: inner.u_start,
+                u_end: inner.u_end,
+                coeffs: result_coeffs,
+            }
+        })
+        .collect();
+
+    pieces.try_into().map_err(|_: Vec<_>| {
+        // Unreachable: we built exactly D pieces from a D-length array.
+        AlgebraError::NotImplemented("compose_vector_piece: array length mismatch (unreachable)")
+    })
+}
+
 /// Polynomial coefficient convolution: out[k] = Σ_{i+j=k} a[i] * b[j].
 #[cfg(feature = "host")]
 fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
