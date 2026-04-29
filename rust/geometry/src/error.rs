@@ -69,6 +69,16 @@ pub enum SlotDegeneracy {
 #[derive(Debug)]
 pub enum Fatal {
     Internal(Box<InternalDetails>),
+    /// Live pipeline received an unsupported G-code (G0/G1/G2/G3). Fail-closed
+    /// because reduce-stage didn't update modal state from the rejected
+    /// command, so subsequent G5 commands would emit cubic segments from
+    /// stale position. The caller must abort the file and re-process via
+    /// the Step-13 compatibility layer (offline G-code normalizer) before
+    /// feeding the live pipeline.
+    UnsupportedGcode {
+        line_no: u32,
+        gcode_kind: &'static str,
+    },
 }
 
 #[derive(Debug)]

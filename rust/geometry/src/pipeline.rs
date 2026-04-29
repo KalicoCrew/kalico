@@ -179,51 +179,64 @@ impl Segments<'_> {
                 line_no,
                 kind,
                 text,
-            } => {
-                let recovery = match kind {
-                    ParseErrorKind::MalformedNumber
-                    | ParseErrorKind::DuplicateParam
-                    | ParseErrorKind::EmptyCommand
-                    | ParseErrorKind::G5MalformedTangent => {
-                        Recovery::MalformedParams { line_no, raw: text }
-                    }
-                    ParseErrorKind::UnrecognizedHead => Recovery::UnrecognizedCommand {
-                        line_no,
-                        head: text,
-                    },
-                    ParseErrorKind::G5MissingTangent => Recovery::G5MissingTangent { line_no },
-                    ParseErrorKind::G5PlaneMismatch => {
-                        let active_plane_g_code = text.parse::<u32>().expect(
-                            "G5PlaneMismatch.text must be numeric per reduce-side contract (Task 18 emit format)"
-                        );
-                        Recovery::G5PlaneMismatch {
-                            line_no,
-                            active_plane_g_code,
-                        }
-                    }
-                    ParseErrorKind::UnsupportedGcode { kind } => Recovery::UnsupportedGcode {
+            } => match kind {
+                ParseErrorKind::UnsupportedGcode { kind } => {
+                    // Live pipeline cannot continue safely: reduce-stage doesn't
+                    // update modal state for rejected G0/G1/G2/G3, so any later
+                    // G5 would emit cubic segments from stale position. Fail-closed;
+                    // user must run Step-13 compat layer on the input first.
+                    self.queue.push_back(Item::Fatal(Fatal::UnsupportedGcode {
                         line_no,
                         gcode_kind: kind,
-                    },
-                };
-                // Dual-emit: sink fires first per §5.1 ordering contract.
-                (self.sink)(TelemetryEvent::Recovery(recovery.clone()));
-                // Synthetic zero-length junction at the previous position (or
-                // origin if none) so the consumer's segment stream sees
-                // Item::Recovered without losing the error.
-                let pos = self.prev_g1_end.unwrap_or([0.0, 0.0, 0.0]);
-                let jd = JunctionDeviation {
-                    position: pos,
-                    angle_deg: 0.0,
-                    feedrate_mm_s: self.prev_g1_feedrate.unwrap_or(0.0),
-                    source: SourceRange {
-                        start_line: line_no,
-                        end_line: line_no,
-                    },
-                };
-                self.queue
-                    .push_back(Item::Recovered(Segment::Junction(jd), recovery));
-            }
+                    }));
+                }
+                other_kind => {
+                    let recovery = match other_kind {
+                        ParseErrorKind::MalformedNumber
+                        | ParseErrorKind::DuplicateParam
+                        | ParseErrorKind::EmptyCommand
+                        | ParseErrorKind::G5MalformedTangent => {
+                            Recovery::MalformedParams { line_no, raw: text }
+                        }
+                        ParseErrorKind::UnrecognizedHead => Recovery::UnrecognizedCommand {
+                            line_no,
+                            head: text,
+                        },
+                        ParseErrorKind::G5MissingTangent => {
+                            Recovery::G5MissingTangent { line_no }
+                        }
+                        ParseErrorKind::G5PlaneMismatch => {
+                            let active_plane_g_code = text.parse::<u32>().expect(
+                                "G5PlaneMismatch.text must be numeric per reduce-side contract (Task 18 emit format)"
+                            );
+                            Recovery::G5PlaneMismatch {
+                                line_no,
+                                active_plane_g_code,
+                            }
+                        }
+                        ParseErrorKind::UnsupportedGcode { .. } => {
+                            unreachable!("handled above")
+                        }
+                    };
+                    // Dual-emit: sink fires first per §5.1 ordering contract.
+                    (self.sink)(TelemetryEvent::Recovery(recovery.clone()));
+                    // Synthetic zero-length junction at the previous position (or
+                    // origin if none) so the consumer's segment stream sees
+                    // Item::Recovered without losing the error.
+                    let pos = self.prev_g1_end.unwrap_or([0.0, 0.0, 0.0]);
+                    let jd = JunctionDeviation {
+                        position: pos,
+                        angle_deg: 0.0,
+                        feedrate_mm_s: self.prev_g1_feedrate.unwrap_or(0.0),
+                        source: SourceRange {
+                            start_line: line_no,
+                            end_line: line_no,
+                        },
+                    };
+                    self.queue
+                        .push_back(Item::Recovered(Segment::Junction(jd), recovery));
+                }
+            },
         }
     }
 

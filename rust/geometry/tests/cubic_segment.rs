@@ -142,7 +142,7 @@ fn try_new_rejects_independent_without_e_curve() {
 #[cfg(not(feature = "legacy-reference"))]
 #[test]
 fn live_reduce_rejects_g1() {
-    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+    use geometry::{Fatal, FitterParams, GeometryPipeline, Item, TelemetryEvent};
 
     let mut events: Vec<TelemetryEvent> = vec![];
     let items: Vec<Item> = {
@@ -156,9 +156,9 @@ fn live_reduce_rejects_g1() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Recovered(_, Recovery::UnsupportedGcode { gcode_kind: "G0/G1", .. })
+            Item::Fatal(Fatal::UnsupportedGcode { gcode_kind: "G0/G1", .. })
         )),
-        "G1 input should produce Item::Recovered(_, Recovery::UnsupportedGcode {{ gcode_kind: \"G0/G1\" }}); got {items:#?}"
+        "G1 input should produce Item::Fatal(Fatal::UnsupportedGcode {{ gcode_kind: \"G0/G1\" }}); got {items:#?}"
     );
 }
 
@@ -193,7 +193,7 @@ fn degree_elevation_preserves_curve() {
 #[cfg(not(feature = "legacy-reference"))]
 #[test]
 fn live_reduce_rejects_g2() {
-    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+    use geometry::{Fatal, FitterParams, GeometryPipeline, Item, TelemetryEvent};
 
     let mut events: Vec<TelemetryEvent> = vec![];
     let items: Vec<Item> = {
@@ -207,9 +207,43 @@ fn live_reduce_rejects_g2() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Recovered(_, Recovery::UnsupportedGcode { gcode_kind: "G2/G3", .. })
+            Item::Fatal(Fatal::UnsupportedGcode { gcode_kind: "G2/G3", .. })
         )),
-        "G2 input should produce Item::Recovered(_, Recovery::UnsupportedGcode {{ gcode_kind: \"G2/G3\" }}); got {items:#?}"
+        "G2 input should produce Item::Fatal(Fatal::UnsupportedGcode {{ gcode_kind: \"G2/G3\" }}); got {items:#?}"
+    );
+}
+
+#[test]
+#[cfg(not(feature = "legacy-reference"))]
+fn live_g0_then_g5_aborts_before_emitting_stale_cubic() {
+    use geometry::{Fatal, FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
+
+    // Pre-fix bug: G0 X10 was rejected without updating state.position, so
+    // the subsequent G5 emitted a cubic with cps[0] = [0,0,0] instead of
+    // [10,0,0] — silent 10mm geometric corruption. Post-fix: G0 produces
+    // Item::Fatal which terminates the iterator before the G5 is processed.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_e: TelemetryEvent| {};
+    let src = "G0 X10 Y0\nG5 X20 Y0 I3 J3 P-3 Q3 F1000\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    // Must contain Item::Fatal for the G0 line.
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Fatal(Fatal::UnsupportedGcode { gcode_kind: "G0/G1", .. })
+        )),
+        "expected Item::Fatal(UnsupportedGcode), got {items:#?}"
+    );
+
+    // Must NOT contain a Segment::Cubic (G5 should not have been processed
+    // because the iterator went terminal on the G0 Fatal).
+    let any_cubic = items
+        .iter()
+        .any(|item| matches!(item, Item::Segment(Segment::Cubic(_))));
+    assert!(
+        !any_cubic,
+        "post-Fatal cubic emission would mean stale-state corruption; got {items:#?}"
     );
 }
 
