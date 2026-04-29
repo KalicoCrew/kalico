@@ -291,6 +291,8 @@ make -C src/Makefile.kalico KCONFIG_CONFIG=tools/sim/sim.config rust-build 2>&1 
 
 - [ ] **Step 7: Create `rust/runtime/src/sim_fixtures.rs`**
 
+Round-4 fix (verifier #1): use Step-5's actual `CurvePool::load` API which takes flat slices, NOT a `LoadedCurve` struct directly (LoadedCurve is private in Step-5). The fixtures helper returns flat (cps, knots, weights, degree) tuples; sim_fixtures FFI wraps the call to existing `pool.load(handle, cps_flat, &knots, &weights, degree)`.
+
 ```rust
 //! Pre-baked NURBS fixtures for sim escape-hatch path. Compiled only when
 //! `kalico-sim` Cargo feature is on (which is gated on CONFIG_KALICO_SIM=y
@@ -299,60 +301,61 @@ make -C src/Makefile.kalico KCONFIG_CONFIG=tools/sim/sim.config rust-build 2>&1 
 
 #![cfg(feature = "kalico-sim")]
 
-use crate::curve_pool::LoadedCurve;
+/// Step-5 `CurvePool::load` takes flat slices; sim fixtures return them.
+/// (degree, control_points_flat[3*n_cp], knots[degree+1+n_cp], weights[n_cp])
 
-/// Fixture index → curve.
+/// Returns (degree, cps_flat as [f32; n_cp*3], knots as [f32; n_cp+degree+1], weights as [f32; n_cp]).
+/// Caller copies into stack buffers and passes to CurvePool::load.
 ///
-/// 0 = `straight_line_x` (degree-1, 2 CP from (0,0,0) to (10,0,0))
-/// 1 = `quarter_arc_xy`  (degree-2 rational, 3 CP, R=20mm quarter)
-/// 2 = `cubic_bezier_xy` (degree-3, 4 CP)
-pub fn lookup(fixture_id: u16) -> Option<LoadedCurve> {
+/// Fixtures:
+///   0 = straight_line_x (degree-1, 2 CP from (0,0,0) to (10,0,0))
+///   1 = quarter_arc_xy  (degree-2 rational, 3 CP, R=20mm quarter)
+///   2 = cubic_bezier_xy (degree-3, 4 CP)
+pub fn lookup(fixture_id: u16, cps_out: &mut [f32; 24], knots_out: &mut [f32; 12], weights_out: &mut [f32; 8])
+    -> Option<(u8, usize, usize, usize)> {
+    // Returns (degree, n_cp, n_knots, n_weights).
     match fixture_id {
-        0 => Some(straight_line_x()),
-        1 => Some(quarter_arc_xy()),
-        2 => Some(cubic_bezier_xy()),
+        0 => Some(straight_line_x(cps_out, knots_out, weights_out)),
+        1 => Some(quarter_arc_xy(cps_out, knots_out, weights_out)),
+        2 => Some(cubic_bezier_xy(cps_out, knots_out, weights_out)),
         _ => None,
     }
 }
 
-fn straight_line_x() -> LoadedCurve {
-    let mut cps = [[0.0_f32; 3]; 8];
-    cps[0] = [0.0, 0.0, 0.0];
-    cps[1] = [10.0, 0.0, 0.0];
-    let mut weights = [1.0_f32; 8];
-    let mut knots = [0.0_f32; 12];
+fn straight_line_x(cps: &mut [f32; 24], knots: &mut [f32; 12], weights: &mut [f32; 8])
+    -> (u8, usize, usize, usize) {
+    cps[0..3].copy_from_slice(&[0.0, 0.0, 0.0]);
+    cps[3..6].copy_from_slice(&[10.0, 0.0, 0.0]);
     knots[..4].copy_from_slice(&[0.0, 0.0, 1.0, 1.0]);
-    LoadedCurve { control_points: cps, weights, knots, n_cp: 2, n_knots: 4, degree: 1 }
+    weights[..2].copy_from_slice(&[1.0, 1.0]);
+    (1, 2, 4, 2)
 }
 
-fn quarter_arc_xy() -> LoadedCurve {
+fn quarter_arc_xy(cps: &mut [f32; 24], knots: &mut [f32; 12], weights: &mut [f32; 8])
+    -> (u8, usize, usize, usize) {
     let r: f32 = 20.0;
-    let mut cps = [[0.0_f32; 3]; 8];
-    cps[0] = [r, 0.0, 0.0];
-    cps[1] = [r, r, 0.0];
-    cps[2] = [0.0, r, 0.0];
-    let mut weights = [1.0_f32; 8];
-    // Round-2 fix B01: no_std context — use core, not std.
-    weights[1] = (core::f32::consts::FRAC_PI_4).cos();
-    let mut knots = [0.0_f32; 12];
+    cps[0..3].copy_from_slice(&[r, 0.0, 0.0]);
+    cps[3..6].copy_from_slice(&[r, r, 0.0]);
+    cps[6..9].copy_from_slice(&[0.0, r, 0.0]);
     knots[..6].copy_from_slice(&[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
-    LoadedCurve { control_points: cps, weights, knots, n_cp: 3, n_knots: 6, degree: 2 }
+    let cos_pi4 = (core::f32::consts::FRAC_PI_4).cos();
+    weights[..3].copy_from_slice(&[1.0, cos_pi4, 1.0]);
+    (2, 3, 6, 3)
 }
 
-fn cubic_bezier_xy() -> LoadedCurve {
-    let mut cps = [[0.0_f32; 3]; 8];
-    cps[0] = [0.0, 0.0, 0.0];
-    cps[1] = [3.0, 5.0, 0.0];
-    cps[2] = [7.0, 5.0, 0.0];
-    cps[3] = [10.0, 0.0, 0.0];
-    let weights = [1.0_f32; 8];
-    let mut knots = [0.0_f32; 12];
+fn cubic_bezier_xy(cps: &mut [f32; 24], knots: &mut [f32; 12], weights: &mut [f32; 8])
+    -> (u8, usize, usize, usize) {
+    cps[0..3].copy_from_slice(&[0.0, 0.0, 0.0]);
+    cps[3..6].copy_from_slice(&[3.0, 5.0, 0.0]);
+    cps[6..9].copy_from_slice(&[7.0, 5.0, 0.0]);
+    cps[9..12].copy_from_slice(&[10.0, 0.0, 0.0]);
     knots[..8].copy_from_slice(&[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
-    LoadedCurve { control_points: cps, weights, knots, n_cp: 4, n_knots: 8, degree: 3 }
+    weights[..4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    (3, 4, 8, 4)
 }
 ```
 
-(Note: `std::f32::consts::FRAC_PI_4` requires `core::f32::consts::FRAC_PI_4` for `no_std`. Adjust import accordingly.)
+The fixture function fills caller-provided buffers; the FFI wrapper allocates the buffers + dispatches via Step-5's `pool.load(handle, &cps[..n_cp*3], &knots[..n_knots], &weights[..n_weights], degree)`.
 
 Add `pub mod sim_fixtures;` (gated by feature) to `rust/runtime/src/lib.rs`:
 
@@ -372,17 +375,28 @@ pub unsafe extern "C" fn kalico_runtime_load_fixture(
     fixture_id: u16,
 ) -> i32 {
     use runtime::sim_fixtures;
-    if rt.is_null() { return KALICO_ERR_NULL_HANDLE; }
-    let Some(curve) = sim_fixtures::lookup(fixture_id) else {
-        return KALICO_ERR_VALIDATION;
+    use runtime::curve_pool::CurveHandle;
+    if rt.is_null() { return runtime::error::KALICO_ERR_NULL_PTR; }
+    let mut cps = [0.0_f32; 24];
+    let mut knots = [0.0_f32; 12];
+    let mut weights = [0.0_f32; 8];
+    let Some((degree, n_cp, n_knots, n_weights)) =
+        sim_fixtures::lookup(fixture_id, &mut cps, &mut knots, &mut weights)
+    else {
+        return runtime::error::KALICO_ERR_INVALID_CURVE;
     };
-    // Phase 0 ordering note (Round-3 fix B-R3-7): at this point Phase 1's
-    // half-split refactor has NOT landed AND Phase 2's try_alloc_and_load
-    // has NOT been introduced. Use the existing Step-5 CurvePool::load API.
-    // Phase 1 Task 1.2 refactors the FFI projection pattern; Phase 2 Task 2.2
-    // mechanically updates this call to try_alloc_and_load.
+    // Round-4 fix (verifier #1): use Step-5's actual API. Step-5
+    // RuntimeContext field is `pool` (not `curve_pool` until Phase 1's
+    // half-split rename). Step-5 CurvePool::load takes flat slices +
+    // CurveHandle, returns Result<(), CurvePoolError>.
     let ctx = unsafe { &mut *(rt as *mut RuntimeContext) };
-    ctx.curve_pool.load(slot_idx as usize, curve)
+    let handle = CurveHandle::from_raw(slot_idx);  // Step-5 CurveHandle is u16
+    match ctx.pool.load(handle,
+        &cps[..n_cp * 3], &knots[..n_knots], &weights[..n_weights], degree)
+    {
+        Ok(()) => 0,
+        Err(_) => runtime::error::KALICO_ERR_INVALID_CURVE,
+    }
 }
 ```
 
@@ -819,14 +833,27 @@ impl RuntimeContext {
 }
 ```
 
-- [ ] **Step 3a: Update `rust/runtime/src/trace.rs::TRACE_RING_N` to the Step-6 value (Phase 5 Task 5.1 will set the new schema; this is just the const)**
+- [ ] **Step 3a: Move `TRACE_RING_N` from engine.rs (private) to trace.rs (pub) and update value**
+
+Round-4 fix (verifier #4): Step-5 has `const TRACE_RING_N: usize = 128;` declared as a **private** const in `engine.rs:26`, NOT a `pub const` in `trace.rs`. Phase 1's RuntimeContext uses it as a const generic from `crate::trace::TRACE_RING_N`, requiring it be public AND in trace.rs.
+
+Concrete edits:
 
 ```rust
-// rust/runtime/src/trace.rs
+// REMOVE from rust/runtime/src/engine.rs (line 26):
+//   const TRACE_RING_N: usize = 128;
+// (Update all engine.rs references to use crate::trace::TRACE_RING_N instead.)
+
+// ADD to rust/runtime/src/trace.rs:
 pub const TRACE_RING_N: usize = 1201;  // §13.1: HOST_STALL + 10 ms safety margin × 40 kHz + 1 (heapless cap-N-1)
 ```
 
-This must precede Phase 5 Task 5.1 because Task 1.1's `RuntimeContext.trace_storage` uses `{ crate::trace::TRACE_RING_N }` as a const generic. Defining the constant value here keeps Phase 1 buildable in isolation; Phase 5 only updates the `TraceSample` struct schema (the count is set here).
+Update engine.rs imports:
+```rust
+use crate::trace::{TRACE_RING_N, TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TraceRing, TraceSample};
+```
+
+This must precede Phase 5 Task 5.1 because Task 1.1's `RuntimeContext.trace_storage` uses `{ crate::trace::TRACE_RING_N }` as a const generic. Phase 5 only updates the `TraceSample` struct schema (the count is set here).
 
 - [ ] **Step 3b: Stub out modules referenced but not yet existing**
 
@@ -993,8 +1020,14 @@ pub unsafe extern "C" fn kalico_runtime_tick(rt: *mut KalicoRuntime, raw_cyccnt:
         let shared: &SharedState = &*shared_ptr;
 
         // Phase 7 will add the §8.5 force_idle check here at the top of tick.
-        // For Phase 1, just delegate to engine.
-        isr.engine.tick(raw_cyccnt, &mut isr.widen_state, pool, shared);
+        // Round-4 fix: Engine::tick takes the queue consumer + trace producer
+        // explicitly so the engine can dequeue segments and emit trace samples
+        // under the half-split. Field-disjoint borrow: we split &mut isr into
+        // multiple disjoint &mut to its fields by spelling them out one at a
+        // time. The borrow checker accepts this when each field-projection
+        // borrow is non-overlapping.
+        let IsrState { engine, widen_state, queue_consumer, trace_producer, .. } = &mut *isr;
+        engine.tick(raw_cyccnt, widen_state, pool, queue_consumer, trace_producer, shared);
     }
 }
 ```
@@ -1474,6 +1507,8 @@ Per spec §10.1."
 
 - [ ] **Step 1: Define the per-slot atomic state**
 
+Round-4 fix: `LoadedCurve` was private in Step-5; Phase 2 makes it `pub` (sim_fixtures FFI in Phase 0 doesn't need to construct it directly — Phase 0 fix uses Step-5's flat-slice `pool.load(...)` API — but the new `try_alloc_and_load(slot, curve)` API takes a `LoadedCurve` so it must be pub).
+
 In `rust/runtime/src/curve_pool.rs`:
 
 ```rust
@@ -1482,6 +1517,7 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 pub const CURVE_POOL_N: usize = 256;  // §7.1 Q_N_MAX
 
+// Round-4 fix: was private in Step-5 (curve_pool.rs:28); now pub.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedCurve {
     pub control_points: [[f32; 3]; 8],
@@ -1742,16 +1778,22 @@ where
 pub mod reclaim;
 ```
 
-- [ ] **Step 3: Define `TRACE_FLAG_SEGMENT_END` in `rust/runtime/src/trace.rs`**
+- [ ] **Step 3: Extend trace flag constants in `rust/runtime/src/trace.rs`**
 
-If not already defined:
+Round-4 fix (verifier #3): Step-5 already defines these constants. Don't redefine — extend at higher bits and use existing names:
 
 ```rust
-pub const TRACE_FLAG_SEGMENT_START: u8 = 1 << 0;
-pub const TRACE_FLAG_SEGMENT_END:   u8 = 1 << 1;
-pub const TRACE_FLAG_FAULT:         u8 = 1 << 2;
-pub const TRACE_FLAG_HOLD_SAMPLE:   u8 = 1 << 3;
+// Step-5 (already defined in trace.rs:7-9):
+//   TRACE_FLAG_OVERFLOW      = 1 << 0;  // existing — KEEP
+//   TRACE_FLAG_SEGMENT_END   = 1 << 1;  // existing — KEEP (used by §10.4 reclaim)
+//   TRACE_FLAG_FAULT_MARKER  = 1 << 2;  // existing — KEEP
+
+// Step-6 additions (new bits, do not collide with above):
+pub const TRACE_FLAG_SEGMENT_START: u8 = 1 << 3;  // §13.3 — start-of-segment marker
+pub const TRACE_FLAG_HOLD_SAMPLE:   u8 = 1 << 4;  // §6.5 — hold-segment throttled marker
 ```
+
+Throughout Phase 2.3 reclaim code and Phase 9 hold-segment code, use the existing Step-5 names: `TRACE_FLAG_SEGMENT_END` and `TRACE_FLAG_FAULT_MARKER` (NOT `TRACE_FLAG_FAULT`). The `TRACE_FLAG_OVERFLOW` semantics from Step-5 (sample-drop carry-into-next-sample) is replaced by the §13.1 `sample_drop_pending: AtomicBool` mechanism in Phase 5 Task 5.2; the `1<<0` flag bit is RETIRED (no longer set/checked by Step-6 code paths) but the constant stays defined for source-level binary compatibility with any older host-side decoders.
 
 - [ ] **Step 4: Add a unit test for the reclaim pipeline**
 
@@ -2281,11 +2323,18 @@ In `rust/runtime/src/error.rs`:
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultCode {
-    // Step-5 Carryovers (preserve numeric values from Step-5)
+    // Round-4 fix (verifier #2): preserve EXISTING Step-5 numeric values
+    // (don't reuse -7 which is NOT_INIT). New Step-6 codes start at -100.
     None = 0,
-    NullHandle = -7,
-    Validation = -2,
-    Internal = -1,
+    QueueFull = -1,         // Step-5 KALICO_ERR_QUEUE_FULL
+    InvalidCurve = -2,      // Step-5 KALICO_ERR_INVALID_CURVE (was Validation)
+    InvalidHandle = -3,     // Step-5 KALICO_ERR_INVALID_HANDLE
+    InvalidDuration = -4,   // Step-5 KALICO_ERR_INVALID_DURATION
+    InvalidKinematics = -5, // Step-5 KALICO_ERR_INVALID_KINEMATICS
+    NullPtr = -6,           // Step-5 KALICO_ERR_NULL_PTR
+    NotInit = -7,           // Step-5 KALICO_ERR_NOT_INIT (was incorrectly NullHandle)
+    FaultLatched = -8,      // Step-5 KALICO_ERR_FAULT_LATCHED
+    Internal = -9,          // Step-5 KALICO_ERR_INTERNAL (was -1)
 
     // Step-6 Transport-layer
     BadCrc = -100,
@@ -3007,7 +3056,9 @@ Implements spec §8.5 flush sequence per Plan-decision A: foreground sets `force
 
 - [ ] **Step 1: Add force_idle check at the top of `tick`**
 
-The canonical `Engine::tick` signature is the one set in Phase 1 Task 1.3:
+**Round-4 fix (verifier #5):** the canonical `Engine::tick` signature must include the queue consumer + trace producer references that the engine uses to dequeue segments and emit trace samples. Existing Step-5 tick takes `&mut TraceRing<TRACE_RING_N>` directly; under the half-split, it takes `&mut Producer<TraceSample, TRACE_RING_N>` and `&mut Consumer<Segment, Q_N>`. This signature is set in Phase 1 Task 1.3 and propagated through every phase.
+
+The canonical signature (single source of truth):
 
 ```rust
 pub fn tick(
@@ -3015,6 +3066,8 @@ pub fn tick(
     raw_cyccnt: u32,
     widen_state: &mut crate::clock::WidenState,
     pool: &crate::curve_pool::CurvePool,
+    queue: &mut heapless::spsc::Consumer<'static, crate::segment::Segment, { crate::queue::Q_N }>,
+    trace: &mut heapless::spsc::Producer<'static, crate::trace::TraceSample, { crate::trace::TRACE_RING_N }>,
     shared: &crate::state::SharedState,
 ) {
     // §8.5 step 2: force_idle short-circuit. BEFORE anything else.
@@ -4823,11 +4876,43 @@ Implements spec §7.3.
 
 ### Task 15.4: Update `docs/research/step6-buffer-budget-measurements.md` with M1/M2/M3 results
 
-- [ ] **Step 1: Run M1, M2, M3 (user-side; outside autonomous scope, may take 1+ days each)**
+**Codex Round 4 clarification — autonomous-scope handling:** the M1/M2/M3 measurement runs themselves require physical hardware (8h Pi soak; H723 hardware bench; 24h dual-MCU soak) which is outside autonomous subagent execution scope. The subagent's job for Task 15.4 is **scaffolding only**:
 
-- [ ] **Step 2: Update `rust/runtime/src/clock.rs` defaults if measurements diverge from initial estimates**
+- [ ] **Step 1: Create `docs/research/step6-buffer-budget-measurements.md` with TODO placeholders**
 
-- [ ] **Step 3: Commit**
+```markdown
+# Step 6 buffer-budget measurements
+
+Status: PLACEHOLDER — measurements pending hardware run by user.
+
+## M1 — Host-stall (Pi 5 + Bookworm + production load, 8h soak)
+- p50: TODO_USER_RUN
+- p95: TODO_USER_RUN
+- ... (etc)
+
+## M2 — MCU runtime cost (H723 cycle-budget rerun)
+- WORST_ISR_CYCLES: TODO_USER_RUN
+- CYCLES_PER_TICK: clock_freq / 40000
+
+## M3 — Clock-sync residual (H723 + F4x sim, 24h soak)
+- max_residual_p99.99: TODO_USER_RUN
+- max_drift_ppm_p99.99: TODO_USER_RUN
+
+After user runs M1/M2/M3, edit this file with actuals; if any value
+diverges from initial estimates in `rust/kalico-host-rt/src/clock_sync.rs`
+or `rust/runtime/src/...`, also update those constants.
+```
+
+- [ ] **Step 2: Commit the placeholder file**
+
+```bash
+git add docs/research/step6-buffer-budget-measurements.md
+git commit -m "docs/research: §7.3 measurement scaffold (M1/M2/M3 user-run pending)"
+```
+
+- [ ] **Step 3: Do NOT block plan completion on measurements**
+
+Subagent proceeds to Phase 16 with the placeholder in place. The Phase 16.2 plan-changes-log entry notes "M1/M2/M3 measurement actuals — user-run, pending" as an open follow-up. Initial-estimate constants in clock_sync.rs / state.rs ship as the Step-6 defaults; user updates them post-measurement.
 
 ---
 
