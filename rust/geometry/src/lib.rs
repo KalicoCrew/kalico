@@ -20,6 +20,4 @@ pub use segment::{
 };
 pub use splitter::{SplitError, split_segment_to_cap};
 
-#[cfg(feature = "legacy-reference")]
-pub use segment::{ArcSegment, FittedSegment};
 pub use telemetry::TelemetryEvent;

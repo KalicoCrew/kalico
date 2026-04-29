@@ -45,27 +45,6 @@ pub enum Recovery {
         line_no: u32,
         active_plane_g_code: u32,
     },
-    /// G5/G5.1 with simultaneous XY + Z + E motion ("helical extrusion") —
-    /// design-rejected per CLAUDE.md (extrusion couples to XY motion only).
-    ///
-    /// **Currently unused in-tree:** the live pipeline now surfaces helical
-    /// extrusion as `Fatal::HelicalExtrusionUnsupported` (round-5 review fix:
-    /// reduce-stage commits modal state before the pipeline classifies, so a
-    /// recoverable rejection would let subsequent G5s start from the rejected
-    /// move's endpoint). Variant retained because `Recovery` is
-    /// `#[non_exhaustive]` and future legacy/test paths (Step-13 compat layer
-    /// or test fixtures normalizing helical inputs) may want Recovery
-    /// semantics.
-    #[allow(dead_code)]
-    HelicalExtrusionUnsupported {
-        line_no: u32,
-    },
-    /// Live pipeline received G0/G1/G2/G3 — must be normalized via Step-13
-    /// compat layer first.
-    UnsupportedGcode {
-        line_no: u32,
-        gcode_kind: &'static str,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

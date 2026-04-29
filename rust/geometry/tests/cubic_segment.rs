@@ -139,7 +139,6 @@ fn try_new_rejects_independent_without_e_curve() {
     ));
 }
 
-#[cfg(not(feature = "legacy-reference"))]
 #[test]
 fn live_reduce_rejects_g1() {
     use geometry::{Fatal, FitterParams, GeometryPipeline, Item, TelemetryEvent};
@@ -190,7 +189,6 @@ fn degree_elevation_preserves_curve() {
     }
 }
 
-#[cfg(not(feature = "legacy-reference"))]
 #[test]
 fn live_reduce_rejects_g2() {
     use geometry::{Fatal, FitterParams, GeometryPipeline, Item, TelemetryEvent};
@@ -214,7 +212,6 @@ fn live_reduce_rejects_g2() {
 }
 
 #[test]
-#[cfg(not(feature = "legacy-reference"))]
 fn live_g0_then_g5_aborts_before_emitting_stale_cubic() {
     use geometry::{Fatal, FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 

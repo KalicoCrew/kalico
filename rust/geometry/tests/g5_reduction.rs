@@ -4,11 +4,8 @@
 //! `TelemetryEvent` surface.
 //!
 //! Per Task 1.6 (build-order Step 7-pre), G5 / G5.1 emit `Segment::Cubic`
-//! (G5.1 via exact degree-elevation 2→3). These tests run only under
-//! `legacy-reference` because they prefix moves with `G1 X0 Y0 F1500` to
-//! seat feedrate, which the live pipeline rejects as `UnsupportedGcode`.
-
-#![cfg(feature = "legacy-reference")]
+//! (G5.1 via exact degree-elevation 2→3). All test inputs are G5-only
+//! (feedrate is carried on the G5 line itself via F word).
 
 use geometry::{
     CubicSegment, FitterParams, GeometryPipeline, Item, Recovery, Segment, TelemetryEvent,
@@ -30,7 +27,7 @@ fn approx(a: f64, b: f64) -> bool {
 
 #[test]
 fn single_g5_emits_one_cubic_segment() {
-    let (items, _events) = process("G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n");
+    let (items, _events) = process("G5 X10 Y0 I3 J3 P-3 Q3 F1500\n");
     let cubics: Vec<&CubicSegment> = items
         .iter()
         .filter_map(|it| match it {
@@ -53,7 +50,7 @@ fn single_g5_emits_one_cubic_segment() {
 
 #[test]
 fn single_g5_1_emits_one_non_rational_cubic_via_degree_elevation() {
-    let (items, _events) = process("G1 X0 Y0 F1500\nG5.1 X10 Y0 I3 J3\n");
+    let (items, _events) = process("G5.1 X10 Y0 I3 J3 F1500\n");
     let cubics: Vec<&CubicSegment> = items
         .iter()
         .filter_map(|it| match it {
@@ -80,8 +77,7 @@ fn single_g5_1_emits_one_non_rational_cubic_via_degree_elevation() {
 #[test]
 fn g5_chain_three_lines_no_junctions_between() {
     let (items, _events) = process(
-        "G1 X0 Y0 F1500\n\
-         G5 X10 Y0 I3 J3 P-3 Q3\n\
+        "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n\
          G5 X20 Y0 P-2 Q2\n\
          G5 X30 Y0 P0 Q0\n",
     );
@@ -102,11 +98,9 @@ fn g5_chain_three_lines_no_junctions_between() {
 
 #[test]
 fn g5_followed_by_g1_breaks_chain_no_junction() {
-    let (items, _events) = process(
-        "G1 X0 Y0 F1500\n\
-         G5 X10 Y0 I3 J3 P-3 Q3\n\
-         G1 X20 Y0\n",
-    );
+    // G5 succeeds; G1 is rejected as UnsupportedGcode (Fatal); iterator goes
+    // terminal. No junction is emitted at any point.
+    let (items, _events) = process("G5 X10 Y0 I3 J3 P-3 Q3 F1500\nG1 X20 Y0\n");
     let junctions_count = items
         .iter()
         .filter(|it| matches!(it, Item::Segment(Segment::Junction(_))))
@@ -119,10 +113,11 @@ fn g5_followed_by_g1_breaks_chain_no_junction() {
 
 #[test]
 fn g5_chain_break_then_implicit_tangent_emits_recovery() {
+    // G5 → G92 (breaks chain) → G5 with no I,J → G5MissingTangent recovery.
+    // Using G92 instead of G1 because G1 is rejected as Fatal (live pipeline).
     let (items, events) = process(
-        "G1 X0 Y0 F1500\n\
-         G5 X10 Y0 I3 J3 P-3 Q3\n\
-         G1 X11 Y0\n\
+        "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n\
+         G92 X10 Y0\n\
          G5 X20 Y0 P-2 Q2\n",
     );
     let recoveries: Vec<_> = items
@@ -176,7 +171,7 @@ fn g5_with_z_motion_rejected_as_helical_extrusion_when_e_present() {
     // reduce-stage commits modal state before classification — recoverable
     // rejection would let subsequent G5s start from the rejected endpoint.
     use geometry::Fatal;
-    let (items, _events) = process("G1 X0 Y0 Z0 F1500\nG5 X10 Y0 Z0.3 E0.5 I3 J3 P-3 Q3\n");
+    let (items, _events) = process("G5 X10 Y0 Z0.3 E0.5 I3 J3 P-3 Q3 F1500\n");
     let helical = items
         .iter()
         .find(|it| matches!(it, Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. })));
@@ -188,7 +183,7 @@ fn g5_with_z_motion_rejected_as_helical_extrusion_when_e_present() {
 
 #[test]
 fn g5_with_z_motion_no_e_emits_travel_cubic() {
-    let (items, _events) = process("G1 X0 Y0 Z0 F1500\nG5 X10 Y0 Z0.3 I3 J3 P-3 Q3\n");
+    let (items, _events) = process("G5 X10 Y0 Z0.3 I3 J3 P-3 Q3 F1500\n");
     let c = items
         .iter()
         .find_map(|it| match it {
@@ -209,8 +204,7 @@ fn g5_with_z_motion_no_e_emits_travel_cubic() {
 #[test]
 fn g5_chain_preserved_by_m_codes_and_t_codes() {
     let (items, _events) = process(
-        "G1 X0 Y0 F1500\n\
-         G5 X10 Y0 I3 J3 P-3 Q3\n\
+        "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n\
          M104 S210\n\
          T0\n\
          G5 X20 Y0 P-2 Q2\n",

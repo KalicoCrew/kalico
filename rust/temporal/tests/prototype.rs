@@ -4,7 +4,6 @@
 
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::uninlined_format_args)]
-#![cfg(feature = "legacy-reference")]
 
 mod biagiotti_melchiorri {
     /// Total trajectory time for a 1D rest-to-rest move of length `L` against
@@ -300,7 +299,7 @@ mod fixture_4_g5_cubic {
     /// Build the G5 cubic from `single_g5_emits_one_cubic_fitted_segment` in
     /// rust/geometry/tests/g5_reduction.rs.
     ///
-    /// G-code: `G1 X0 Y0 F1500` → `G5 X10 Y0 I3 J3 P-3 Q3`
+    /// G-code: `G5 X10 Y0 I3 J3 P-3 Q3 F1500`
     /// Produces degree-3 non-rational NURBS with CPs:
     ///   P0=(0,0,0), P1=(3,3,0), P2=(7,3,0), P3=(10,0,0)
     ///
@@ -310,7 +309,7 @@ mod fixture_4_g5_cubic {
     fn build_g5_via_geometry() -> nurbs::VectorNurbs<f64, 3> {
         use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 
-        let src = "G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n";
+        let src = "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n";
         let mut pipeline = GeometryPipeline::new(FitterParams::default());
         let mut events: Vec<TelemetryEvent> = vec![];
         let items: Vec<_> = {
@@ -704,31 +703,22 @@ mod fixture_3_constant_curvature_arc {
         );
     }
 
-    /// Build a 90° arc, R=20 mm via geometry::pipeline::GeometryPipeline.
+    /// Build a 90° arc, R=20 mm directly as a rational quadratic NURBS.
     ///
-    /// G-code: `G1 X0 Y0 F1000` positions at origin; `G2 X20 Y20 I0 J20` draws
-    /// a 90° CW arc from (0,0) to (20,20) with centre offset I=0, J=20 (centre at
-    /// (0,20)), radius 20 mm, curvature κ = 1/20 = 0.05 mm⁻¹.
-    ///
-    /// Pattern from rust/geometry/tests/g5_reduction.rs (canonical pipeline-driving).
+    /// Geometry: start (0,0), end (20,20), centre (0,20), radius 20 mm,
+    /// κ = 1/R = 0.05 mm⁻¹. Piegl & Tiller §7.2 construction:
+    ///   half-sweep = π/4, cos(π/4) = √2/2.
+    ///   P0 = (0,0,0), P1 = (20,0,0), P2 = (20,20,0).
+    ///   weights = [1, √2/2, 1].
+    /// Knot vector [0,0,0,1,1,1] (clamped quadratic).
     fn build_g2_arc_via_geometry() -> nurbs::VectorNurbs<f64, 3> {
-        use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
-
-        let src = "G17\nG1 X0 Y0 F1000\nG2 X20 Y20 I0 J20\n";
-        let mut pipeline = GeometryPipeline::new(FitterParams::default());
-        let mut events: Vec<TelemetryEvent> = vec![];
-        let items: Vec<_> = {
-            let mut sink = |e: TelemetryEvent| events.push(e);
-            pipeline.process(src, &mut sink).collect()
-        };
-
-        // Find the Arc segment emitted by G2 reduction.
-        items
-            .into_iter()
-            .find_map(|it| match it {
-                Item::Segment(Segment::Arc(arc)) => Some(arc.xyz),
-                _ => None,
-            })
-            .expect("G2 reduction must emit exactly one ArcSegment")
+        let cos_half = std::f64::consts::FRAC_1_SQRT_2; // cos(π/4) = √2/2
+        nurbs::VectorNurbs::<f64, 3>::try_new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [20.0, 20.0, 0.0]],
+            Some(vec![1.0, cos_half, 1.0]),
+        )
+        .expect("rational quadratic arc NURBS always valid")
     }
 }

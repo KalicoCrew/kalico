@@ -1,15 +1,9 @@
 //! `GeometryPipeline`, `Segments`, `Item`. Drives reduce events into typed
-//! segments. In the live (default) build, only G5 / G5.1 produce motion
-//! segments and they emit as `Segment::Cubic` (uniform single-piece cubic
-//! Bézier; G5.1 is degree-elevated 2→3 exactly). G0/G1/G2/G3 are rejected
-//! at reduce time and surface here as `Recovery::UnsupportedGcode`. The
-//! legacy multi-degree code path is gated behind the `legacy-reference`
-//! feature for use by the offline Step-13 compat layer / regression tests.
-//!
-//! `JunctionDeviation` is emitted only at G1↔G1 transitions on the legacy
-//! path; smooth curves (G2/G3/G5/G5.1) break the G1-tangent chain per the
-//! curvature-continuity principle (CLAUDE.md Layer 2) — endpoint curvature
-//! is derived downstream from the NURBS itself.
+//! segments. Only G5 / G5.1 produce motion segments and they emit as
+//! `Segment::Cubic` (uniform single-piece cubic Bézier; G5.1 is
+//! degree-elevated 2→3 exactly). G0/G1/G2/G3 are rejected at reduce time
+//! and surface here as `Fatal::UnsupportedGcode`. Legacy G-code is
+//! normalized offline by the Step-13 compatibility layer.
 
 use crate::{
     CubicSegment, EMode, Fatal, FitterParams, GeometryError, JunctionDeviation, Recovery, Segment,
@@ -19,9 +13,6 @@ use crate::{
 };
 use gcode::lex;
 use std::collections::VecDeque;
-
-#[cfg(feature = "legacy-reference")]
-use crate::{ArcSegment, FittedSegment};
 
 #[derive(Debug)]
 pub struct GeometryPipeline {
@@ -91,7 +82,7 @@ pub struct Segments<'a> {
     sink: &'a mut dyn FnMut(TelemetryEvent),
     terminal: bool,
     /// End-position of the previous emitted G1 segment, for junction-deviation construction.
-    /// Only ever populated under `legacy-reference`; in the live pipeline G1 never reaches `handle_curve`.
+    /// In the live pipeline G1 never reaches `handle_curve`; retained for future use.
     prev_g1_end: Option<[f64; 3]>,
     /// Feedrate of the previous emitted G1, for junction-deviation construction.
     prev_g1_feedrate: Option<f64>,
@@ -255,33 +246,9 @@ impl Segments<'_> {
 
         // Step 1: turn `geom` into a single-piece cubic Bézier xyz NURBS.
         // G5 → already cubic; G5.1 → exact degree-elevation 2→3.
-        // Legacy `Linear` / `RationalQuadratic` only appear under
-        // `legacy-reference` and emit the original FittedSegment / ArcSegment.
         let xyz: nurbs::VectorNurbs<f64, 3> = match geom {
             CurveGeom::Cubic { cps } => nurbs_from_cubic(cps),
             CurveGeom::Quadratic { cps } => degree_elevate_2_to_3(&nurbs_from_quadratic(cps)),
-
-            #[cfg(feature = "legacy-reference")]
-            CurveGeom::Linear { cps } => {
-                self.legacy_emit_linear(cps, feedrate_mm_s, source);
-                return;
-            }
-
-            #[cfg(feature = "legacy-reference")]
-            CurveGeom::RationalQuadratic { cps, weights } => {
-                let arc_xyz = nurbs_from_rational_quadratic(cps, weights);
-                let seg = ArcSegment {
-                    xyz: arc_xyz,
-                    e: None,
-                    feedrate_mm_s,
-                    source,
-                };
-                self.queue.push_back(Item::Segment(Segment::Arc(seg)));
-                self.prev_g1_end = None;
-                self.prev_g1_feedrate = None;
-                self.prev_g1_dir = None;
-                return;
-            }
         };
 
         // Step 2: classify E-mode and construct the segment.
@@ -340,43 +307,6 @@ impl Segments<'_> {
         self.prev_g1_dir = None;
     }
 
-    /// Legacy-only G1 emission path. Preserves the original Junction-then-Fitted
-    /// ordering so `legacy-reference` consumers (Step-13 compat-layer regression
-    /// tests) see the same stream they did before the live-pipeline rewrite.
-    #[cfg(feature = "legacy-reference")]
-    fn legacy_emit_linear(
-        &mut self,
-        cps: [[f64; 3]; 2],
-        feedrate_mm_s: f64,
-        source: SourceRange,
-    ) {
-        let from = cps[0];
-        let to = cps[1];
-        if let (Some(prev_dir), Some(prev_f)) = (self.prev_g1_dir, self.prev_g1_feedrate) {
-            let cur_dir = unit([to[0] - from[0], to[1] - from[1], to[2] - from[2]]);
-            let angle_deg = angle_between_deg(prev_dir, cur_dir);
-            let jd = JunctionDeviation {
-                position: from,
-                angle_deg,
-                feedrate_mm_s: prev_f.min(feedrate_mm_s),
-                source,
-            };
-            self.queue.push_back(Item::Segment(Segment::Junction(jd)));
-        }
-        let xyz = nurbs_from_linear(cps);
-        let seg = FittedSegment {
-            xyz,
-            e: None,
-            feedrate_mm_s,
-            degree: 1,
-            max_residual_mm: 0.0,
-            source,
-        };
-        self.queue.push_back(Item::Segment(Segment::Fitted(seg)));
-        self.prev_g1_end = Some(to);
-        self.prev_g1_feedrate = Some(feedrate_mm_s);
-        self.prev_g1_dir = Some(unit([to[0] - from[0], to[1] - from[1], to[2] - from[2]]));
-    }
 }
 
 /// Classify a cubic xyz NURBS plus its scalar `e_delta` into an `EMode` plus
@@ -474,26 +404,6 @@ pub fn degree_elevate_2_to_3(quadratic: &nurbs::VectorNurbs<f64, 3>) -> nurbs::V
     .expect("degree-elevation always valid")
 }
 
-#[cfg(feature = "legacy-reference")]
-fn nurbs_from_linear(cps: [[f64; 3]; 2]) -> nurbs::VectorNurbs<f64, 3> {
-    nurbs::VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], cps.to_vec(), None)
-        .expect("degree-1 NURBS with 2 CPs is always valid")
-}
-
-#[cfg(feature = "legacy-reference")]
-fn nurbs_from_rational_quadratic(
-    cps: [[f64; 3]; 3],
-    weights: [f64; 3],
-) -> nurbs::VectorNurbs<f64, 3> {
-    nurbs::VectorNurbs::<f64, 3>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        cps.to_vec(),
-        Some(weights.to_vec()),
-    )
-    .expect("rational quadratic from reduce is always valid")
-}
-
 fn nurbs_from_quadratic(cps: [[f64; 3]; 3]) -> nurbs::VectorNurbs<f64, 3> {
     nurbs::VectorNurbs::<f64, 3>::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], cps.to_vec(), None)
         .expect("non-rational quadratic Bézier with 3 CPs and clamped knots is always valid")
@@ -509,32 +419,10 @@ fn nurbs_from_cubic(cps: [[f64; 3]; 4]) -> nurbs::VectorNurbs<f64, 3> {
     .expect("non-rational cubic Bézier with 4 CPs and clamped knots is always valid")
 }
 
-#[cfg(feature = "legacy-reference")]
-fn unit(v: [f64; 3]) -> [f64; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n < 1e-12 {
-        [0.0, 0.0, 0.0]
-    } else {
-        [v[0] / n, v[1] / n, v[2] / n]
-    }
-}
-
-#[cfg(feature = "legacy-reference")]
-fn angle_between_deg(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0);
-    dot.acos().to_degrees()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Item, Recovery, Segment, TelemetryEvent};
-
-    #[cfg(feature = "legacy-reference")]
-    use crate::JunctionDeviation;
-
-    #[cfg(feature = "legacy-reference")]
-    use crate::FittedSegment;
 
     fn collect(text: &str) -> Vec<Item> {
         let mut p = GeometryPipeline::new(FitterParams::default());
@@ -556,104 +444,6 @@ mod tests {
         let mut sink = |_e: crate::TelemetryEvent| {};
         let items: Vec<_> = p.process("\n\n   \n", &mut sink).collect();
         assert!(items.is_empty());
-    }
-
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn two_g1s_emit_fitted_junction_fitted() {
-        let items = collect("G1 X10 F1500\nG1 X10 Y10\n");
-        // First G1: Fitted only (no prev).
-        // Second G1: Junction (between prev_g1_end and current from), then Fitted.
-        assert_eq!(items.len(), 3, "expected 3 items, got {items:#?}");
-        match &items[0] {
-            Item::Segment(Segment::Fitted(_)) => {}
-            other => panic!("[0] expected Fitted, got {other:?}"),
-        }
-        match &items[1] {
-            Item::Segment(Segment::Junction(JunctionDeviation {
-                position,
-                angle_deg,
-                feedrate_mm_s,
-                ..
-            })) => {
-                #[allow(clippy::float_cmp)]
-                {
-                    assert_eq!(*position, [10.0, 0.0, 0.0]);
-                }
-                // First leg goes (0,0)→(10,0), second leg (10,0)→(10,10): 90° turn.
-                assert!(
-                    (angle_deg - 90.0).abs() < 1e-6,
-                    "expected ~90°, got {angle_deg}"
-                );
-                assert!((feedrate_mm_s - 25.0).abs() < 1e-9);
-            }
-            other => panic!("[1] expected Junction, got {other:?}"),
-        }
-        match &items[2] {
-            Item::Segment(Segment::Fitted(_)) => {}
-            other => panic!("[2] expected Fitted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn single_g1_emits_degree_1_fitted() {
-        let items = collect("G1 X10 Y0 F1500\n");
-        // First G1 from origin to (10,0): 1 FittedSegment (no preceding G1, so no junction).
-        assert_eq!(items.len(), 1, "expected 1 item, got {items:#?}");
-        match &items[0] {
-            Item::Segment(Segment::Fitted(FittedSegment {
-                xyz,
-                degree,
-                feedrate_mm_s,
-                ..
-            })) => {
-                assert_eq!(*degree, 1);
-                assert!((*feedrate_mm_s - 25.0).abs() < 1e-9);
-                assert_eq!(xyz.degree(), 1);
-                assert_eq!(xyz.control_points().len(), 2);
-                // Control points are exact integral values set by us — bitwise equality is correct.
-                #[allow(clippy::float_cmp)]
-                {
-                    assert_eq!(xyz.control_points()[0], [0.0_f64, 0.0, 0.0]);
-                    assert_eq!(xyz.control_points()[1], [10.0_f64, 0.0, 0.0]);
-                }
-            }
-            other => panic!("expected Fitted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn g2_emits_arc_segment_with_3d_control_points() {
-        // Quarter-circle from (1, 0, 0) to (0, 1, 0), center (0, 0, 0), CW (G2).
-        let items = collect("G1 X1 F1500\nG2 X0 Y1 I-1 J0\n");
-        // Expect: Fitted (G1) + ArcSegment.
-        assert!(items.len() >= 2);
-        let arc_seg = items.iter().find_map(|it| match it {
-            Item::Segment(Segment::Arc(a)) => Some(a),
-            _ => None,
-        });
-        let arc = arc_seg.expect("expected an ArcSegment");
-        assert_eq!(arc.xyz.degree(), 2);
-        // Rational quadratic uses 3 control points; weighted middle CP.
-        assert_eq!(arc.xyz.control_points().len(), 3);
-        assert!(
-            arc.xyz.weights().is_some(),
-            "rational arc must have weights"
-        );
-        // For a 90° arc, the corner control point is at the corner of the
-        // tangent extension — for arc center (0,0) start (1,0) end (0,1)
-        // tangents extend to (1,1).
-        let cps = arc.xyz.control_points();
-        let approx_eq = |a: f64, b: f64| (a - b).abs() < 1e-9;
-        assert!(approx_eq(cps[0][0], 1.0) && approx_eq(cps[0][1], 0.0));
-        assert!(approx_eq(cps[1][0], 1.0) && approx_eq(cps[1][1], 1.0));
-        assert!(approx_eq(cps[2][0], 0.0) && approx_eq(cps[2][1], 1.0));
-        // Z constant.
-        for cp in cps {
-            assert!(approx_eq(cp[2], 0.0));
-        }
     }
 
     #[test]
@@ -687,78 +477,6 @@ mod tests {
                 tool: 1,
                 line_no: 1
             }]
-        ));
-    }
-
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn retraction_fires_telemetry() {
-        let mut events = vec![];
-        let mut p = GeometryPipeline::new(FitterParams::default());
-        let _items: Vec<_> = {
-            let mut sink = |e: TelemetryEvent| events.push(e);
-            p.process("G1 E-1.5 F3000\n", &mut sink).collect()
-        };
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            TelemetryEvent::Retraction {
-                e_delta_mm,
-                line_no: 1,
-            } => {
-                assert!((e_delta_mm - (-1.5)).abs() < 1e-12);
-            }
-            other => panic!("expected Retraction, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn parse_error_yields_recovered() {
-        let mut events = vec![];
-        let mut p = GeometryPipeline::new(FitterParams::default());
-        let items: Vec<_> = {
-            let mut sink = |e: TelemetryEvent| events.push(e);
-            p.process("G1 X1.2.3\n", &mut sink).collect()
-        };
-        assert_eq!(items.len(), 1);
-        match &items[0] {
-            Item::Recovered(_, Recovery::MalformedParams { line_no: 1, .. }) => {}
-            other => panic!("expected Recovered, got {other:?}"),
-        }
-        // Sink should also see Recovery (dual-emit).
-        assert!(matches!(
-            events.as_slice(),
-            [TelemetryEvent::Recovery(Recovery::MalformedParams {
-                line_no: 1,
-                ..
-            })]
-        ));
-    }
-
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn g5_missing_tangent_yields_recovered() {
-        // G1 followed directly by G5 with no I,J — chain has no prev G5.
-        let mut events = vec![];
-        let mut p = GeometryPipeline::new(FitterParams::default());
-        let items: Vec<_> = {
-            let mut sink = |e: TelemetryEvent| events.push(e);
-            p.process("G1 X1 Y0 F1500\nG5 X10 Y0 P-1 Q-1\n", &mut sink)
-                .collect()
-        };
-        let recovered = items.iter().find_map(|it| match it {
-            Item::Recovered(_, Recovery::G5MissingTangent { line_no: 2 }) => Some(()),
-            _ => None,
-        });
-        assert!(
-            recovered.is_some(),
-            "expected G5MissingTangent recovery, got {items:#?}"
-        );
-        assert!(matches!(
-            events.last(),
-            Some(TelemetryEvent::Recovery(Recovery::G5MissingTangent {
-                line_no: 2
-            }))
         ));
     }
 
@@ -856,22 +574,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    #[cfg(feature = "legacy-reference")]
-    fn g2_helical_yields_z_linear_control_points() {
-        let items = collect("G1 X1 Z0 F1500\nG2 X0 Y1 Z0.5 I-1 J0\n");
-        let arc = items
-            .iter()
-            .find_map(|it| match it {
-                Item::Segment(Segment::Arc(a)) => Some(a),
-                _ => None,
-            })
-            .expect("ArcSegment expected");
-        let cps = arc.xyz.control_points();
-        // Z linear across CPs: 0.0, 0.25, 0.5
-        let approx_eq = |a: f64, b: f64| (a - b).abs() < 1e-9;
-        assert!(approx_eq(cps[0][2], 0.0));
-        assert!(approx_eq(cps[1][2], 0.25));
-        assert!(approx_eq(cps[2][2], 0.5));
-    }
 }

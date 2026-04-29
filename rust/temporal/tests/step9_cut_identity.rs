@@ -40,7 +40,6 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::items_after_statements)]
-#![cfg(feature = "legacy-reference")]
 
 use nurbs::VectorNurbs;
 use temporal::topp::path::sample_arclength_grid;
@@ -226,13 +225,13 @@ fn boundary_end_cut_coeffs(
 /// Build the same G5 cubic NURBS as fixture 4
 /// (`single_g5_emits_one_cubic_fitted_segment` from rust/geometry/tests/g5_reduction.rs).
 ///
-/// G-code: `G1 X0 Y0 F1500` → `G5 X10 Y0 I3 J3 P-3 Q3`
+/// G-code: `G5 X10 Y0 I3 J3 P-3 Q3 F1500`
 /// Produces degree-3 non-rational NURBS with control points
 /// P0=(0,0,0), P1=(3,3,0), P2=(7,3,0), P3=(10,0,0).
 fn build_g5_via_geometry() -> VectorNurbs<f64, 3> {
     use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 
-    let src = "G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n";
+    let src = "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n";
     let mut pipeline = GeometryPipeline::new(FitterParams::default());
     let mut events: Vec<TelemetryEvent> = vec![];
     let items: Vec<_> = {

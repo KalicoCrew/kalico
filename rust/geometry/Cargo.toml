@@ -7,13 +7,6 @@ publish = false
 description = "Layer 1 geometry pipeline for the kalico motion planner. Token stream → typed segments. See docs/superpowers/specs/2026-04-26-layer-1-rust-architecture-design.md."
 license.workspace = true
 
-[features]
-default = []
-# Gates legacy G0/G1/G2/G3 reduction code + ArcSegment/FittedSegment types.
-# Enabled by tests that exercise the pre-compat-layer reduction paths and
-# eventually by the Step-13 compat-layer crate.
-legacy-reference = []
-
 [dependencies]
 nurbs = { path = "../nurbs" }
 gcode = { path = "../gcode" }
