@@ -129,10 +129,84 @@ kalico-sim FFI surface is a debugging build only.
 - `sim.config` — Saved Klipper `.config` for the sim build (USART2,
   CONFIG_KALICO_SIM=y, no USB).
 
-## Next steps if continuing this work
+## Step-6 Gate A + B — sim and hardware walkthrough
+
+**Step 6 ships two acceptance gates (spec §3.3):**
+
+- **Gate A** — basic comm-protocol round-trip on sim. Drives `kalico_query_status`,
+  `kalico_load_curve` (or `kalico_load_fixture_curve` when sim FPU is broken),
+  `kalico_push_segment`, segment retirement.
+- **Gate B** — stream-lifecycle, status-frame, fault paths. Re-validates that the
+  Phase-7/8/9 features (curve-pool generation handles, stream open/arm/terminal,
+  underrun/trace-overflow fault taxonomy) work end-to-end.
+
+### Sim Gate A (this is what's already passing in CI-equivalent mode)
+
+```bash
+bash tools/sim/build_sim_firmware.sh
+bash tools/sim/run_sim.sh &
+sleep 8
+python3 tools/test_sim_gate_a.py            # → PASS
+python3 tools/test_sim_stream_lifecycle.py  # → PASS
+```
+
+### Sim Gate B
+
+```bash
+bash tools/sim/build_sim_firmware.sh
+# --all manages sim lifecycle internally (relaunches Renode between each
+# item because flush does not clear latched fault state by design):
+python3 tools/test_sim_gate_b.py --all
+# Expected: "PASS-with-WARN: Gate B (1/3 pass, 2 sim-warn …)" or better.
+# Items 5 and 7 may legitimately WARN under Renode pacing (status-frame
+# task and trace-ring overflow are timing-sensitive); Surface C
+# re-validates them on the H723 at full clock rate.
+```
+
+Or run a single item against an externally-launched fresh sim:
+
+```bash
+bash tools/sim/run_sim.sh &
+sleep 8
+python3 tools/test_sim_gate_b.py --only item_6   # underrun fault
+# Then kill renode, relaunch for the next item.
+```
+
+### Hardware Gate A + B (H723; user runs)
+
+After flashing the H723 with the production runtime build (NOT the sim build —
+do not flash CONFIG_KALICO_SIM=y to silicon, the watchdog is disabled there):
+
+```bash
+# Step-5 first-light + cycle-count + trace-dump + soak.
+make -f Makefile.kalico test-h723-step5 SERIAL_PORT=/dev/ttyACM0
+
+# Step-6 Phase 13 Gate B chain. Each sub-target requires a clean MCU state
+# (power-cycle or reflash between sub-targets), because `kalico_stream_flush`
+# does NOT clear latched fault state — items 6 and 7 deliberately latch
+# faults and preserve them for host inspection.
+make -f Makefile.kalico test-h723-gate-b-item-5 SERIAL_PORT=/dev/ttyACM0
+# (power-cycle H723)
+make -f Makefile.kalico test-h723-gate-b-item-6 SERIAL_PORT=/dev/ttyACM0
+# (power-cycle H723)
+make -f Makefile.kalico test-h723-gate-b-item-7 SERIAL_PORT=/dev/ttyACM0
+
+# Or chained (you'll be prompted to reset between sub-targets):
+make -f Makefile.kalico test-h723 SERIAL_PORT=/dev/ttyACM0
+```
+
+The Gate B test driver (`tools/test_sim_gate_b.py`) is sim-agnostic at the
+wire-protocol level — it talks msgproto over pyserial and works equally
+against `socket://localhost:3334` (sim USART2 bridge) and `/dev/ttyACM0`
+(real H723 USB-CDC).
+
+Expected hardware results: all three items PASS. Items that produced sim-WARN
+under Renode pacing (status-frame + trace-overflow) should pass cleanly on
+the H723 because the periodic 10 Hz task and the 40 kHz tick both run at full
+clock rate.
+
+## Other future improvements
 
 - Replace the H743 .repl with a derived H723 variant if Renode upstreams one.
-- Wire Gate B (Step-6 spec §3.3) once §7/§8/§9 of Step 6 land — exercises
-  status-frame, underrun fault, trace-overflow fault.
 - A `make sim` target in `src/Makefile` would be a nice convenience now
   that the path works end-to-end.

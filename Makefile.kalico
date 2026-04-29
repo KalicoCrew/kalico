@@ -1,11 +1,25 @@
 # Makefile.kalico — Surface C bring-up convenience target.
 #
-# Per Step-5 plan Task 29. Drives the H723 first-light + cycle-count + trace-
-# dump + soak sequence with SHA-tagged log artifacts under build-logs/. Each
-# script is independently re-runnable; this target chains them.
+# Per Step-5 plan Task 29 + Step-6 Phase 14. Drives the H723 first-light +
+# cycle-count + trace-dump + soak sequence (Step 5), then chains the Step-6
+# Gate B items (status frame, underrun fault, trace-overflow fault) on the
+# same flashed hardware. Each script is independently re-runnable; this
+# target chains them with SHA-tagged log artifacts under build-logs/.
+#
+# Step-5 sub-targets:  test-h723-first-light, test-h723-cycle-count,
+#                       test-h723-trace-dump, test-h723-soak
+# Step-6 sub-targets:  test-h723-gate-b-item-5, test-h723-gate-b-item-6,
+#                       test-h723-gate-b-item-7  (chained as test-h723-gate-b)
 #
 # Usage:
 #   make -f Makefile.kalico test-h723 SERIAL_PORT=/dev/ttyACM0
+#
+# To run Step-5 only (matches pre-Step-6 behavior):
+#   make -f Makefile.kalico test-h723-step5 SERIAL_PORT=/dev/ttyACM0
+#
+# To run Step-6 Gate B only (after Step-5 first-light has passed at least
+# once on this firmware build):
+#   make -f Makefile.kalico test-h723-gate-b SERIAL_PORT=/dev/ttyACM0
 #
 # Optional knobs:
 #   FLASH_DEVICE   — passed through to your flash helper (not invoked here);
@@ -25,12 +39,32 @@ TS       := $(shell date -u +%Y%m%dT%H%M%SZ)
 
 PYTHON   ?= python3
 
-.PHONY: test-h723 test-h723-first-light test-h723-cycle-count \
-        test-h723-trace-dump test-h723-soak
+.PHONY: test-h723 test-h723-step5 test-h723-gate-b \
+        test-h723-first-light test-h723-cycle-count \
+        test-h723-trace-dump test-h723-soak \
+        test-h723-gate-b-item-5 test-h723-gate-b-item-6 \
+        test-h723-gate-b-item-7
 
-test-h723: test-h723-first-light test-h723-cycle-count \
-           test-h723-trace-dump test-h723-soak
-	@echo "test-h723: ALL PASS (sha=$(GIT_SHA))"
+# Full Step-5 + Step-6 chain. Step-6 Gate B runs AFTER Step-5 first-light /
+# cycle-count / trace-dump / soak so the flashed firmware is already known
+# good before exercising the new comm-protocol surface.
+test-h723: test-h723-step5 test-h723-gate-b
+	@echo "test-h723: ALL PASS (Step-5 + Step-6 Gate B; sha=$(GIT_SHA))"
+
+test-h723-step5: test-h723-first-light test-h723-cycle-count \
+                 test-h723-trace-dump test-h723-soak
+	@echo "test-h723-step5: ALL PASS (sha=$(GIT_SHA))"
+
+# Step-6 Phase 13 Gate B chain. Each item runs as its own MCU-reset cycle:
+# `kalico_stream_flush` does NOT clear latched fault state (by design — fault
+# history is preserved for the host to inspect, per runtime/src/stream.rs::
+# flush step 7), so items 6 and 7 leave the engine in Fault until power-cycled
+# or reflashed. The user must reflash / power-cycle the H723 between each
+# Gate B sub-target. (On sim, --all in tools/test_sim_gate_b.py manages this
+# by relaunching Renode; on hardware the user owns the reset.)
+test-h723-gate-b: test-h723-gate-b-item-5 test-h723-gate-b-item-6 \
+                  test-h723-gate-b-item-7
+	@echo "test-h723-gate-b: ALL PASS (sha=$(GIT_SHA))"
 
 test-h723-first-light:
 	@mkdir -p $(LOG_DIR)
@@ -57,3 +91,32 @@ test-h723-soak:
 	    --port $(SERIAL_PORT) --baud $(BAUD) \
 	    --minutes $(SOAK_MINUTES) \
 	    2>&1 | tee $(LOG_DIR)/soak-$(GIT_SHA)-$(TS).log
+
+# --- Step-6 Gate B sub-targets ---
+#
+# Each item runs `tools/test_sim_gate_b.py --only <case> --port socket://...`
+# but pointed at the H723 hardware serial port. The script is sim-agnostic
+# at the wire-protocol level — it talks msgproto over pyserial. The user
+# must power-cycle / reflash the H723 between items 6 and 7 (faults latch
+# and are preserved across `kalico_stream_flush` by design).
+
+test-h723-gate-b-item-5:
+	@mkdir -p $(LOG_DIR)
+	@echo ">> Power-cycle / reflash H723 before this run for clean state."
+	$(PYTHON) tools/test_sim_gate_b.py --only item_5 \
+	    --port $(SERIAL_PORT) \
+	    2>&1 | tee $(LOG_DIR)/gate-b-item-5-$(GIT_SHA)-$(TS).log
+
+test-h723-gate-b-item-6:
+	@mkdir -p $(LOG_DIR)
+	@echo ">> Power-cycle / reflash H723 before this run for clean state."
+	$(PYTHON) tools/test_sim_gate_b.py --only item_6 \
+	    --port $(SERIAL_PORT) \
+	    2>&1 | tee $(LOG_DIR)/gate-b-item-6-$(GIT_SHA)-$(TS).log
+
+test-h723-gate-b-item-7:
+	@mkdir -p $(LOG_DIR)
+	@echo ">> Power-cycle / reflash H723 before this run for clean state."
+	$(PYTHON) tools/test_sim_gate_b.py --only item_7 \
+	    --port $(SERIAL_PORT) \
+	    2>&1 | tee $(LOG_DIR)/gate-b-item-7-$(GIT_SHA)-$(TS).log
