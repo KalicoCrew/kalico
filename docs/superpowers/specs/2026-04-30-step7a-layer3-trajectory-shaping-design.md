@@ -192,19 +192,30 @@ pub enum ShapeError {
 
 ## Pipeline
 
-Six stages per β iteration, plus the outer convergence loop.
+Seven stages (0–6) per β iteration, plus the outer convergence loop.
 
-### Stage 0 — Batch partitioning
+### Stage 0 — Batch partitioning and E pre-scheduling
 
-Split the input segments into **runs**: contiguous groups of XY-motion
-segments (`CoupledToXy` or `Travel`), separated by independent E
-segments. Each run is a self-contained batch for `plan_batch`. Independent
-E segments are scheduled separately in Stage 6.
+**0a. Partition** the input segments into **runs**: contiguous groups of
+XY-motion segments (`CoupledToXy` or `Travel`), separated by independent
+E segments. Each run is a self-contained batch for `plan_batch`.
 
-Timeline construction: each run gets a global time offset. Between runs,
-the independent E segment's duration (from Stage 6 trapezoidal
-scheduling) is inserted. Junction velocities at run boundaries are
-forced to zero (the machine is at rest during retraction/prime).
+**0b. Pre-schedule independent E segments** using the trapezoidal
+velocity profile from `feedrate_mm_s` and `e_limits` (same logic as
+Stage 6, but only computing duration — the full E NURBS is finalized
+in Stage 6). This resolves the ordering dependency: Stage 0 needs E
+durations for timeline construction, Stage 6 finalizes the E output.
+
+**0c. Materialize constant-XYZ halo pieces** for each independent E
+segment: a constant-position piece (position = XYZ at the retraction
+point, zero velocity) with the pre-scheduled E duration. These halo
+pieces participate in Stage 3's neighbor padding, ensuring the shaper
+convolution sees correct dwell-time data across retraction boundaries.
+
+**0d. Construct the global timeline.** Each run gets a global time
+offset. Between runs, the independent E segment's pre-scheduled
+duration is inserted. Junction velocities at run boundaries are forced
+to zero (the machine is at rest during retraction/prime).
 
 ### Stage 1 — TOPP-RA solve (per run)
 
@@ -240,8 +251,11 @@ a_k     = (sample[k+1].b - sample[k].b) / (2 * Δs_k)
 t_k     = T_global + cumulative sum of Δt within this segment
 ```
 
-where `T_global` is the batch-global time offset for this segment,
-computed by summing the `total_time` of all preceding segments. All
+where `T_global` is the batch-global time offset for this segment
+(from Stage 0d). `T_global` is derived from the cumulative durations
+of emitted Stage 2 pieces (not from `TopProfile.total_time`) to avoid
+drift between the near-zero special-case duration and temporal's
+internal time integration. All
 `BezierPiece` domains use batch-global time so that Stage 3's neighbor
 padding can concatenate pieces from adjacent segments directly.
 
@@ -330,7 +344,8 @@ For each segment i, collect neighbor fitted pieces:
 
 - **Left padding:** scan segments i-1, i-2, ... backward, accumulating
   time duration. Stop when accumulated duration ≥ T_sm/2 (kernel
-  half-support of the widest active kernel across X/Y). Include all
+  half-support of the widest active kernel across all shaped axes —
+  X, Y, and Z if Z is not passthrough). Include all
   fitted pieces from the accumulated segments.
 - **Right padding:** scan segments i+1, i+2, ... forward, same logic.
 - **Boundary extension:** at the first segment in the batch, extend
@@ -387,7 +402,9 @@ For each segment, for each axis (except `Passthrough`):
 2. Find the maximum of `|x''(t)|` on each piece: find roots of the
    first derivative of x'' (degree 6 polynomial), evaluate x'' at
    roots and piece endpoints, take the maximum absolute value.
-3. Compare against `a_max[axis]` for this segment.
+3. Return the per-axis peak acceleration for this segment. Stage 5
+   compares peaks against immutable `machine_a_max` (not mutable
+   planning limits) to decide derating.
 
 Root-finding on a degree-6 polynomial: companion-matrix eigenvalue
 decomposition, filtering for real roots within the piece domain. Standard
@@ -479,6 +496,21 @@ boundaries (value and first derivative vanish), ensuring the extended
 kernel (zero outside support) is C¹.
 
 ```rust
+impl RequiredShaper {
+    pub fn to_kernel(&self) -> PiecewisePolynomialKernel<f64> {
+        match self {
+            Self::SmoothZv { frequency_hz } => {
+                let t_sm = 0.8025 / frequency_hz;
+                build_smooth_zv_kernel(t_sm)
+            }
+            Self::SmoothMzv { frequency_hz } => {
+                let t_sm = 0.95625 / frequency_hz;
+                build_smooth_mzv_kernel(t_sm)
+            }
+        }
+    }
+}
+
 impl AxisShaper {
     pub fn to_kernel(&self) -> Option<PiecewisePolynomialKernel<f64>> {
         match self {
