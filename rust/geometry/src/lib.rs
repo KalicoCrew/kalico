@@ -10,11 +10,11 @@ pub(crate) mod reduce;
 pub mod segment;
 pub mod telemetry;
 
-pub use error::{Fatal, InternalDetails, InternalKind, Recovery, SlotDegeneracy};
+pub use error::{Fatal, GeometryError, InternalDetails, InternalKind, Recovery, SlotDegeneracy};
 pub use params::FitterParams;
 pub use pipeline::{GeometryPipeline, Item, Segments};
 pub use segment::{
-    ArcSegment, BlendFamily, CornerBlendSlot, EMode, FittedSegment, JunctionDeviation, Segment,
-    SourceRange, SplitInfo,
+    ArcSegment, BlendFamily, CornerBlendSlot, CubicSegment, EMode, FittedSegment, JunctionDeviation,
+    Segment, SourceRange, SplitInfo,
 };
 pub use telemetry::TelemetryEvent;

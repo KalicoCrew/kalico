@@ -50,6 +50,111 @@ pub struct JunctionDeviation {
     pub source: SourceRange,
 }
 
+/// Live-pipeline cubic-Bézier segment. Single-piece cubic Bézier in `xyz` (degree 3,
+/// 4 control points, no weights, clamped knot vector). E classification per `EMode`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CubicSegment {
+    /// XYZ trajectory in u-domain. **Invariant** (enforced by `try_new`): single-piece
+    /// cubic Bézier — degree 3, 4 control points, no weights, clamped knot vector.
+    pub xyz: VectorNurbs<f64, 3>,
+    pub e_mode: EMode,
+    /// Valid when `e_mode == CoupledToXy`. Signed: negative for retract-during-XY-motion
+    /// / wipe / coast. Zero when `e_mode == Travel`. Unused when `e_mode == Independent`
+    /// (use `e_independent` instead).
+    pub extrusion_per_xy_mm: f64,
+    /// `Some(curve)` iff `e_mode == Independent`; carries the E trajectory for
+    /// retraction / prime / filament-change segments.
+    pub e_independent: Option<ScalarNurbs<f64>>,
+    pub feedrate_mm_s: f64,
+    pub source: SourceRange,
+    /// `None` on un-split segments; `Some` on splitter output.
+    pub split_info: Option<SplitInfo>,
+}
+
+impl CubicSegment {
+    /// Construct a `CubicSegment`, validating invariants. Returns `Err` on:
+    /// - `NotSinglePieceCubic`: xyz is not single-piece cubic (degree != 3,
+    ///   != 4 CPs, has weights, or knots are not clamped `[0,0,0,0,1,1,1,1]`).
+    /// - `EModeInvariantViolation`: `e_mode` and the corresponding fields disagree.
+    pub fn try_new(
+        xyz: VectorNurbs<f64, 3>,
+        e_mode: EMode,
+        extrusion_per_xy_mm: f64,
+        e_independent: Option<ScalarNurbs<f64>>,
+        feedrate_mm_s: f64,
+        source: SourceRange,
+        split_info: Option<SplitInfo>,
+    ) -> Result<Self, crate::GeometryError> {
+        // xyz must be single-piece cubic Bézier.
+        if xyz.degree() != 3 {
+            return Err(crate::GeometryError::NotSinglePieceCubic {
+                reason: "degree != 3",
+            });
+        }
+        if xyz.control_points().len() != 4 {
+            return Err(crate::GeometryError::NotSinglePieceCubic {
+                reason: "control_points.len() != 4",
+            });
+        }
+        if xyz.weights().is_some() {
+            return Err(crate::GeometryError::NotSinglePieceCubic {
+                reason: "weights present (must be polynomial)",
+            });
+        }
+        let expected_knots: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        if xyz.knots() != expected_knots.as_slice() {
+            return Err(crate::GeometryError::NotSinglePieceCubic {
+                reason: "knot vector not clamped [0,0,0,0,1,1,1,1]",
+            });
+        }
+
+        // EMode invariants.
+        match e_mode {
+            EMode::CoupledToXy => {
+                if e_independent.is_some() {
+                    return Err(crate::GeometryError::EModeInvariantViolation {
+                        reason: "CoupledToXy must have e_independent: None",
+                    });
+                }
+            }
+            EMode::Travel => {
+                if extrusion_per_xy_mm != 0.0 {
+                    return Err(crate::GeometryError::EModeInvariantViolation {
+                        reason: "Travel must have extrusion_per_xy_mm == 0.0",
+                    });
+                }
+                if e_independent.is_some() {
+                    return Err(crate::GeometryError::EModeInvariantViolation {
+                        reason: "Travel must have e_independent: None",
+                    });
+                }
+            }
+            EMode::Independent => {
+                if e_independent.is_none() {
+                    return Err(crate::GeometryError::EModeInvariantViolation {
+                        reason: "Independent must have e_independent: Some(_)",
+                    });
+                }
+                if extrusion_per_xy_mm != 0.0 {
+                    return Err(crate::GeometryError::EModeInvariantViolation {
+                        reason: "Independent must have extrusion_per_xy_mm == 0.0",
+                    });
+                }
+            }
+        }
+
+        Ok(Self {
+            xyz,
+            e_mode,
+            extrusion_per_xy_mm,
+            e_independent,
+            feedrate_mm_s,
+            source,
+            split_info,
+        })
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendFamily {

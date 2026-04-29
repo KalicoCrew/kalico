@@ -45,6 +45,17 @@ pub enum Recovery {
         line_no: u32,
         active_plane_g_code: u32,
     },
+    /// G5/G5.1 with simultaneous XY + Z + E motion ("helical extrusion") —
+    /// not yet supported in live pipeline.
+    HelicalExtrusionUnsupported {
+        line_no: u32,
+    },
+    /// Live pipeline received G0/G1/G2/G3 — must be normalized via Step-13
+    /// compat layer first.
+    UnsupportedGcode {
+        line_no: u32,
+        gcode_kind: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +85,32 @@ pub enum InternalKind {
     KnotInsertionFailed,
     BasisMatrixSingular,
     DegreeOutOfBounds,
+    /// `CubicSegment::try_new` invariant violation — single-piece cubic or
+    /// E-mode-fields contract broken. Pipeline didn't validate before
+    /// constructing.
+    CubicSegmentInvariantViolation {
+        reason: &'static str,
+    },
+}
+
+/// Errors returned by `CubicSegment::try_new` invariant checks. The pipeline
+/// translates these to either `Recovery` items (for user-facing surfacing —
+/// `HelicalExtrusionUnsupported`, `UnsupportedGcode`) or `Fatal::Internal`
+/// (for genuine invariant violations — `NotSinglePieceCubic`, `EModeInvariantViolation`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GeometryError {
+    /// Live pipeline received G0/G1/G2/G3; map to `Recovery::UnsupportedGcode`.
+    UnsupportedGcode { gcode_kind: &'static str },
+    /// Helical extrusion (XY+Z+E in same segment); map to
+    /// `Recovery::HelicalExtrusionUnsupported`.
+    HelicalExtrusionUnsupported,
+    /// `xyz` not single-piece cubic; map to `Fatal::Internal(InternalKind::CubicSegmentInvariantViolation { ... })`.
+    NotSinglePieceCubic { reason: &'static str },
+    /// E-mode/E-fields invariant violated; map to `Fatal::Internal`.
+    EModeInvariantViolation { reason: &'static str },
+    /// Zero-motion segment (all deltas below thresholds). Caller should drop
+    /// without emitting (no Recovery / Fatal — silent skip).
+    ZeroMotion,
 }
 
 #[cfg(test)]
