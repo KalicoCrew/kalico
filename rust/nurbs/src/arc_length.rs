@@ -424,8 +424,6 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
     tolerance: T,
     max_samples: usize,
 ) -> Result<ArcLengthTable<T>, ArcLengthError<T>> {
-    let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
-
     let mut count = 8;
     loop {
         // Build a table at this sample count by integrating between adjacent u's.
@@ -440,11 +438,6 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
 
         s_samples.push(T::ZERO);
         for i in 1..count {
-            // Check for degeneracy at integration sample points.
-            let u_mid = (u_samples[i - 1] + u_samples[i]) * T::from_f64(0.5);
-            if integrand(u_mid) < floor {
-                return Err(ArcLengthError::DegenerateCurve);
-            }
             let segment_length = integrate_arc_length(integrand, u_samples[i - 1], u_samples[i], 5);
             let prev = s_samples[i - 1];
             s_samples.push(prev + segment_length);
@@ -466,6 +459,16 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
 
         let residual = (s_samples[count - 1] - s_refined).abs();
         if residual <= tolerance {
+            // Whole-curve degeneracy: a curve whose integrated arc length is below
+            // floating-point noise has no meaningful parameterization. (The
+            // pre-existing per-midpoint floor was overly aggressive — it rejected
+            // geometrically valid cubics with isolated speed minima where central-
+            // difference integration noise dropped below 1e-9 even though the
+            // analytic min |dr/du| was orders of magnitude higher.)
+            let s_total = *s_samples.last().expect("s_samples is non-empty");
+            if s_total <= T::from_f64(MIN_PARAMETRIC_SPEED) {
+                return Err(ArcLengthError::DegenerateCurve);
+            }
             return Ok(ArcLengthTable::new(s_samples, u_samples));
         }
         if count * 2 > max_samples {

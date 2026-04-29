@@ -95,7 +95,7 @@ impl<T: Float> fmt::Display for ArcLengthError<T> {
             ),
             Self::DegenerateCurve => write!(
                 f,
-                "arc-length integration encountered |dP/du| < MIN_PARAMETRIC_SPEED"
+                "arc-length integration produced a curve with total length below MIN_PARAMETRIC_SPEED"
             ),
         }
     }
