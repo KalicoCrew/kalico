@@ -413,3 +413,30 @@ fn g19_then_g5_emits_plane_mismatch_recovery() {
         "G19 + G5 should produce Recovery::G5PlaneMismatch {{ 19 }}, got {items:#?}"
     );
 }
+
+#[test]
+fn nan_g5_produces_malformed_params_recovery_not_silent_drop() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+
+    // Pre-Fix-H: silent ZeroMotion drop. Rust's f64::FromStr accepts "NaN",
+    // so the lexer surfaced the move with NaN-poisoned XY params. The
+    // pipeline's ZeroMotion classifier then dropped the move (NaN > 1e-6
+    // is false), and modal state.position became NaN-poisoned for every
+    // subsequent G5 — silent geometric corruption with zero telemetry.
+    //
+    // Post-Fix-H: lexer rejects NaN as MalformedNumber, the geometry
+    // pipeline maps the parse error to Recovery::MalformedParams via the
+    // existing handle_event::ParseError path.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_e: TelemetryEvent| {};
+    let src = "G5 XNaN Y0 I0 J3 P0 Q-3 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::MalformedParams { .. })
+        )),
+        "expected Item::Recovered(_, MalformedParams), got {items:#?}"
+    );
+}

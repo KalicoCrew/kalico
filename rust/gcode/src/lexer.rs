@@ -92,6 +92,20 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
             line_no,
             text: tok.to_string().into_boxed_str(),
         })?;
+        // Reject non-finite literals (NaN, +/-inf, infinity). Rust's
+        // f64::FromStr accepts all of these. Without this guard they
+        // silently propagate through reduce → pipeline into planner-visible
+        // segments; worse, NaN-poisoned XY classifies as ZeroMotion (because
+        // `NaN > 1e-6` is false) so the entire move is silently dropped with
+        // no telemetry, and modal state.position becomes NaN-poisoned for
+        // every subsequent G5. (Round-5 review fix: contain at the lexer
+        // boundary — single point, applies uniformly to all parameter letters.)
+        if !value.is_finite() {
+            return Err(ParseError::MalformedNumber {
+                line_no,
+                text: tok.to_string().into_boxed_str(),
+            });
+        }
         let idx = (letter - b'A') as usize;
         if seen[idx] {
             return Err(ParseError::DuplicateParam {
