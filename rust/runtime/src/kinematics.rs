@@ -42,7 +42,7 @@ mod tests {
 
             // Round-trip via inverse.
             let xyz_e_back = [
-                (motors[0] + motors[1]) / 2.0,
+                f32::midpoint(motors[0], motors[1]),
                 (motors[0] - motors[1]) / 2.0,
                 motors[2],
             ];

@@ -63,7 +63,7 @@ fn flush_timeout_yields_liveness_stalled() {
     HOST_NOW_US.store(0, Ordering::Relaxed);
 
     let mut out_epoch: u32 = 0;
-    let r = unsafe { stream::flush(rt, &mut out_epoch) };
+    let r = unsafe { stream::flush(rt, &raw mut out_epoch) };
 
     assert_eq!(r, KALICO_ERR_LIVENESS_STALLED);
     assert_eq!(

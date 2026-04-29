@@ -48,14 +48,13 @@ impl CreditCounter {
             if cur <= 0 {
                 return None;
             }
-            match self.available.compare_exchange(
+            if self.available.compare_exchange(
                 cur,
                 cur - 1,
                 Ordering::AcqRel,
                 Ordering::Acquire,
-            ) {
-                Ok(_) => return Some(()),
-                Err(_) => {}
+            ).is_ok() {
+                return Some(());
             }
         }
     }
@@ -69,14 +68,13 @@ impl CreditCounter {
             if next == cur {
                 return;
             }
-            match self.available.compare_exchange(
+            if self.available.compare_exchange(
                 cur,
                 next,
                 Ordering::AcqRel,
                 Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(_) => {}
+            ).is_ok() {
+                return;
             }
         }
     }

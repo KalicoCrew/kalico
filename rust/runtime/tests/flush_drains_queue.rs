@@ -78,7 +78,7 @@ fn flush_drains_pending_segments() {
     // Pre-ack so flush proceeds.
     shared.acked_force_idle.store(true, Ordering::Release);
     let mut out_epoch: u32 = 0;
-    let r = unsafe { stream::flush(rt, &mut out_epoch) };
+    let r = unsafe { stream::flush(rt, &raw mut out_epoch) };
     assert_eq!(r, KALICO_OK);
 
     // Verify queue is empty post-flush.

@@ -65,7 +65,7 @@ fn make_runtime_context() -> *mut RuntimeContext {
 #[test]
 fn flush_null_handle_returns_null_ptr() {
     let mut credit_epoch: u32 = 0;
-    let r = unsafe { stream::flush(core::ptr::null_mut(), &mut credit_epoch) };
+    let r = unsafe { stream::flush(core::ptr::null_mut(), &raw mut credit_epoch) };
     assert_eq!(r, KALICO_ERR_NULL_PTR);
 }
 
@@ -82,7 +82,7 @@ fn flush_pre_acked_returns_ok_and_bumps_epoch() {
     let epoch_before = shared.credit_epoch.load(Ordering::Acquire);
 
     let mut out_epoch: u32 = 0;
-    let r = unsafe { stream::flush(rt, &mut out_epoch) };
+    let r = unsafe { stream::flush(rt, &raw mut out_epoch) };
     assert_eq!(r, KALICO_OK);
 
     let epoch_after = shared.credit_epoch.load(Ordering::Acquire);
@@ -114,7 +114,7 @@ fn flush_clears_terminal_segment_state() {
 
     shared.acked_force_idle.store(true, Ordering::Release);
     let mut out_epoch: u32 = 0;
-    let r = unsafe { stream::flush(rt, &mut out_epoch) };
+    let r = unsafe { stream::flush(rt, &raw mut out_epoch) };
     assert_eq!(r, KALICO_OK);
 
     assert!(!shared.terminal_segment_id_set.load(Ordering::Acquire));
@@ -149,7 +149,7 @@ fn flush_resets_pool_slots_to_current() {
 
     shared.acked_force_idle.store(true, Ordering::Release);
     let mut out_epoch: u32 = 0;
-    let r = unsafe { stream::flush(rt, &mut out_epoch) };
+    let r = unsafe { stream::flush(rt, &raw mut out_epoch) };
     assert_eq!(r, KALICO_OK);
 
     // Post-flush: every slot's last_retired_gen == current_gen.
