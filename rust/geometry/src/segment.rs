@@ -56,6 +56,44 @@ pub enum BlendFamily {
     CubicBezier,
 }
 
+/// E-axis classification per CLAUDE.md feature scope. `CubicSegment::try_new`
+/// applies the §6.1 classification rules to derive this from raw `(ΔX, ΔY, ΔZ, ΔE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EMode {
+    /// Extrusion proportional to actual XY shaped motion: `e_actual(t) = ratio × ∫|v_xy| dt`.
+    /// `extrusion_per_xy_mm` is nonzero and signed (positive for normal extrusion;
+    /// negative for retract-during-XY-motion / wipe / coast). Used for moves with
+    /// `ΔXY > ε_xyz`, `ΔZ ≤ ε_z`, and `abs(ΔE) > ε_e`.
+    CoupledToXy,
+    /// Travel move: XY motion with no extrusion. Equivalent to `CoupledToXy` with
+    /// `extrusion_per_xy_mm = 0`. Modeled distinctly for clarity in logs/telemetry
+    /// and to allow a future plan layer to skip per-sample E integration when the
+    /// ratio is definitionally zero.
+    Travel,
+    /// E motion not coupled to XY: own E NURBS carries the trajectory in time.
+    /// In 7-pre's live pipeline, `Independent` always implies null `xyz` motion
+    /// (cp_polygon_length and midpoint parametric speed both below thresholds).
+    /// Helical extrusion (XYZ + E) is rejected upstream; never produces `Independent`
+    /// in the live pipeline.
+    Independent,
+}
+
+/// Sub-segment provenance, populated by `split_segment_to_cap` (geometry::splitter).
+/// `None` when the segment was not split.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplitInfo {
+    /// 0-indexed position of this child within the parent's sub-segment sequence.
+    pub sub_index: u32,
+    /// Total sub-segments produced from the parent. May be < the originally-planned
+    /// `k` if epsilon-filtering at splitter step 6 dropped near-boundary breakpoints.
+    pub sub_count: u32,
+    /// Arc-length range this sub-segment occupies in the parent's arc-length domain.
+    /// Computed at split time by querying the parent's arc-length table at the child's
+    /// `xyz.u_start` and `xyz.u_end`.
+    pub s_lo_mm: f64,
+    pub s_hi_mm: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRange {
     pub start_line: u32,
