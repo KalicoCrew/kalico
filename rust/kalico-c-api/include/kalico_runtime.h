@@ -148,10 +148,20 @@ void kalico_runtime_tick(struct KalicoRuntime *rt, uint32_t raw_cyccnt);
  * carrying `TRACE_FLAG_SEGMENT_END`, so curve-pool slots get reclaimed
  * in lockstep with the trace ship-out (one drain pass = one
  * foreground-side wire emit + one reclaim cursor advance).
+ *
+ * `out_saw_segment_end` (optional, may be NULL): set to `1` on return
+ * when the drain consumed at least one `TRACE_FLAG_SEGMENT_END`
+ * sample, else `0`. Closure-review fix: `kalico_credit_freed` emission
+ * in `runtime_drain` previously gated only on the second
+ * (drain-and-reclaim) leg's bit, but the first leg routinely consumes
+ * every `SEGMENT_END` under steady-state push, suppressing the credit
+ * event and deadlocking host flow control. The C handler now ORs this
+ * bit with the reclaim leg's bit.
  */
 uint32_t kalico_runtime_drain_trace(struct KalicoRuntime *rt,
                                     struct TraceSample *out_buf,
-                                    uint32_t out_cap);
+                                    uint32_t out_cap,
+                                    uint8_t *out_saw_segment_end);
 
 uint8_t kalico_runtime_status(struct KalicoRuntime *rt);
 

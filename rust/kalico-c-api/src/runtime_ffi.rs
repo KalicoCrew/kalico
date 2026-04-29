@@ -502,12 +502,29 @@ pub mod exports {
     /// carrying `TRACE_FLAG_SEGMENT_END`, so curve-pool slots get reclaimed
     /// in lockstep with the trace ship-out (one drain pass = one
     /// foreground-side wire emit + one reclaim cursor advance).
+    ///
+    /// `out_saw_segment_end` (optional, may be NULL): set to `1` on return
+    /// when the drain consumed at least one `TRACE_FLAG_SEGMENT_END`
+    /// sample, else `0`. Closure-review fix: `kalico_credit_freed` emission
+    /// in `runtime_drain` previously gated only on the second
+    /// (drain-and-reclaim) leg's bit, but the first leg routinely consumes
+    /// every `SEGMENT_END` under steady-state push, suppressing the credit
+    /// event and deadlocking host flow control. The C handler now ORs this
+    /// bit with the reclaim leg's bit.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_drain_trace(
         rt: *mut KalicoRuntime,
         out_buf: *mut TraceSample,
         out_cap: u32,
+        out_saw_segment_end: *mut u8,
     ) -> u32 {
+        if !out_saw_segment_end.is_null() {
+            // SAFETY: caller-provided pointer; documented to be a valid
+            // u8 location for writes when non-null.
+            unsafe {
+                *out_saw_segment_end = 0;
+            }
+        }
         if rt.is_null() || out_buf.is_null() {
             return 0;
         }
@@ -524,17 +541,22 @@ pub mod exports {
             let fg: &mut FgState = &mut *fg_ptr;
             let out_slice = core::slice::from_raw_parts_mut(out_buf, out_cap as usize);
             let mut count = 0usize;
+            let mut saw_segment_end = false;
             while count < out_slice.len() {
                 let Some(sample) = fg.trace_consumer.dequeue() else {
                     break;
                 };
                 if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
                     pool.confirm_retired(sample.curve_handle);
+                    saw_segment_end = true;
                 }
                 if let Some(slot) = out_slice.get_mut(count) {
                     *slot = sample;
                 }
                 count += 1;
+            }
+            if !out_saw_segment_end.is_null() && saw_segment_end {
+                *out_saw_segment_end = 1;
             }
             #[allow(clippy::cast_possible_truncation)]
             let result = count as u32;

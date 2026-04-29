@@ -209,9 +209,25 @@ runtime_drain(void)
     // bookkeeping. Both are safe back-to-back because each stops on the
     // first dequeue == None.
     static uint8_t batch_buf[KALICO_TRACE_BATCH * 32];  // 32 bytes per sample
+    uint8_t trace_saw_segment_end = 0;
     uint32_t n = kalico_runtime_drain_trace(
-        kalico_rt_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH);
+        kalico_rt_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH,
+        &trace_saw_segment_end);
     if (n > 0) {
+        // FORMAT-VERSION EXEMPTION (Phase 3.1 / closure-review):
+        // Phase 3.1 added a 1-byte FORMAT_VERSION_V1 = 0x01 prefix on
+        // host→MCU blob payloads (load_curve cps/knots/weights). The
+        // MCU→host trace blob is intentionally NOT versioned: it is a
+        // one-shot variable-length stream of `TraceSample` records whose
+        // schema is sanity-checked at compile time via the static_assert
+        // on `sizeof(TraceSample) == 32` plus the cbindgen-no-drift CI
+        // check. Adding a per-batch version byte would burn 1.5% of every
+        // 64-sample drain (32 vs 33-byte alignment loss) for no decoder
+        // benefit — the host knows the schema from the data dictionary,
+        // and a wire-protocol version bump would change the data dict
+        // (different msgid for `kalico_trace`) anyway.
+        // See plan-changes-log.md "Step-6 closure-review follow-up fixes"
+        // entry for the full reasoning.
         sendf("kalico_trace count=%u data=%*s", n, n * 32, batch_buf);
     }
 
@@ -219,9 +235,17 @@ runtime_drain(void)
     // SEGMENT_END events for curve-pool reclaim + trace-overflow check.
     // Returns a packed status word — see kalico_runtime_drain_and_reclaim
     // doc-comment for the bit layout.
+    //
+    // Closure-review fix: `kalico_credit_freed` MUST OR the trace leg's
+    // saw_segment_end bit with the reclaim leg's. The trace leg already
+    // calls pool.confirm_retired and consumes SEGMENT_END samples, so under
+    // steady-state push the reclaim leg sees nothing — gating credit
+    // emission on the reclaim leg alone deadlocks host flow control once
+    // the host's credit counter drains.
     uint32_t reclaim_status = kalico_runtime_drain_and_reclaim(
         kalico_rt_handle, KALICO_TRACE_BATCH);
-    uint8_t saw_segment_end = (reclaim_status >> 17) & 1;
+    uint8_t saw_segment_end = trace_saw_segment_end |
+                              (uint8_t)((reclaim_status >> 17) & 1);
     uint8_t fresh_overflow_fault = (reclaim_status >> 16) & 1;
 
     // §10.4: emit one `kalico_credit_freed` async event per drain cycle that
