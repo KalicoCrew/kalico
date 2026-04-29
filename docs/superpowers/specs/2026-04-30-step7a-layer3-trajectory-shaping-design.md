@@ -15,8 +15,10 @@ and Layer 4 (MCU runtime evaluation).
   `temporal::plan_batch`.
 - Per-axis smooth-ZV / smooth-MZV shaper convolution via
   `nurbs::algebra::convolve`.
-- Math-exact time-reparameterization (composition of geometry with
-  degree-2 s(t) per TOPP-RA grid piece).
+- Time-reparameterization: adaptive polynomial fit of x(s) via
+  `fit_x_to_arc_length_piece`, then exact composition with degree-2
+  s(t) per TOPP-RA grid piece. The composition step is exact; the
+  x(s) fit carries bounded error (≤ fit tolerance).
 - C¹-constrained adaptive polynomial refit (degree 4, ≤5 µm L∞
   position error) to reduce piece count before convolution.
 - β-medium outer iteration: TOPP-RA → shape → peak-check → derate →
@@ -66,14 +68,16 @@ rust/trajectory/
 pub fn shape_batch(
     input: &ShapeBatchInput<'_>,
 ) -> Result<ShapeBatchOutput, ShapeError>
+// Note: BetaNotConverged is a warning, not a hard error — the output
+// is included in the Ok variant with a warning flag. See ShapeBatchOutput.
 ```
 
 ### Input types
 
 ```rust
 pub struct ShapeBatchInput<'a> {
-    /// Segments with per-segment limits. Re-uses temporal's type.
-    pub segments: &'a [temporal::multi::SegmentInput<'a>],
+    /// Segments with temporal + geometry metadata.
+    pub segments: &'a [ShapeSegmentInput<'a>],
     pub grid_strategy: temporal::multi::GridStrategy,
     pub worker_threads: usize,
     pub shaper: ShaperConfig,
@@ -84,6 +88,27 @@ pub struct ShapeBatchInput<'a> {
     /// β convergence threshold: stop when all derate ratios are within
     /// this fraction of 1.0. Default 0.01 (1%).
     pub beta_convergence_ratio: f64,
+    /// E-axis limits for independent E segments (retraction/prime).
+    pub e_limits: ELimits,
+}
+
+/// Per-segment input combining temporal scheduling data with Layer 1
+/// geometry metadata. Constructed from a CubicSegment + Limits pair.
+pub struct ShapeSegmentInput<'a> {
+    /// Temporal scheduling input (curve, limits, junction tolerance).
+    pub temporal: temporal::multi::SegmentInput<'a>,
+    /// E-mode classification from Layer 1.
+    pub e_mode: geometry::segment::EMode,
+    /// Extrusion ratio for COUPLED_TO_XY segments.
+    pub extrusion_per_xy_mm: f64,
+    /// Independent E NURBS for retraction/prime segments.
+    pub e_independent: Option<&'a nurbs::ScalarNurbs<f64>>,
+}
+
+/// E-axis kinematic limits for independent E scheduling (Stage 6).
+pub struct ELimits {
+    pub v_max: f64,
+    pub a_max: f64,
 }
 
 pub struct ShaperConfig {
@@ -108,6 +133,15 @@ pub struct ShapeBatchOutput {
     pub beta_iters: u8,
     /// Joining status from the final temporal::plan_batch call.
     pub temporal_status: temporal::multi::JoiningStatus,
+    /// Non-empty when β-medium loop hit max iterations without full
+    /// convergence. The output is still usable — segments may slightly
+    /// exceed a_machine. Caller decides whether to accept or reject.
+    pub beta_warning: Option<BetaWarning>,
+}
+
+pub struct BetaWarning {
+    pub worst_ratio: f64,
+    pub segments_exceeding: Vec<usize>,
 }
 
 pub struct ShapedSegment {
@@ -139,11 +173,8 @@ pub enum ShapeError {
     /// Fitting failed on a segment (tolerance not reached after
     /// adaptive subdivision).
     FitFailure { index: usize, detail: nurbs::algebra::FitError },
-    /// β-medium loop hit max iterations with segments still exceeding
-    /// a_machine. Contains the worst-case ratio (peak/a_machine).
-    /// This is a warning-level condition: the trajectory is still
-    /// usable but may slightly exceed machine limits.
-    BetaNotConverged { iters: u8, worst_ratio: f64 },
+    /// An algebra primitive (compose, convolve, restrict) failed.
+    Algebra { index: usize, detail: nurbs::algebra::AlgebraError },
     /// Empty segment buffer.
     EmptySegments,
 }
@@ -164,8 +195,10 @@ Gate on `BatchOutput.joining_status`:
 - `StalledOnInfeasibleSegment` → return `ShapeError::TemporalJoining`.
 - `CappedAtMaxSweeps` → return `ShapeError::TemporalJoining`.
 
-Per-profile status check: profiles with `Infeasible` or `MaxIter` status
-return `ShapeError::SegmentUnsolvable` with the segment index.
+Per-profile status check: only `Solved`, `SolvedInexact`, and `SolvedSlp`
+are success statuses. Profiles with any other status (`Infeasible`,
+`MaxIter`, `DivergedSlp`, `MaxIterSlp`) return
+`ShapeError::SegmentUnsolvable` with the segment index.
 
 ### Stage 2 — Time-reparameterization + fit (parallel)
 
@@ -182,8 +215,13 @@ v_k     = sample[k].v          // = sqrt(b_k)
 a_k     = (sample[k+1].b - sample[k].b) / (2 * Δs_k)
 Δs_k    = sample[k+1].s - sample[k].s
 Δt_k    = 2 * Δs_k / (v_k + v_{k+1})
-t_k     = cumulative sum of Δt
+t_k     = T_global + cumulative sum of Δt within this segment
 ```
+
+where `T_global` is the batch-global time offset for this segment,
+computed by summing the `total_time` of all preceding segments. All
+`BezierPiece` domains use batch-global time so that Stage 3's neighbor
+padding can concatenate pieces from adjacent segments directly.
 
 Each grid piece is a `BezierPiece<f64>` in Pascal-shifted monomial basis:
 
@@ -193,23 +231,37 @@ coeffs = [s_k, v_k, a_k/2]
 domain = [t_k, t_{k+1}]
 ```
 
-**Near-zero velocity special case:** when `v_k < ε_v` (e.g., 0.01 mm/s)
-and `a_k ≈ 0`, the grid piece represents near-stationary motion.
-Duration is computed as `Δt = Δs / max(v_k, ε_v)` to avoid division by
-zero.
+**Near-zero velocity special case:** when both `v_k < ε_v` (e.g.,
+0.01 mm/s) and `v_{k+1} < ε_v`, the grid piece represents
+near-stationary motion. Emit a **constant-position piece** instead:
+`coeffs = [s_k, 0, 0]` with `Δt = Δs_k / ε_v`. This avoids the
+composition endpoint mismatch that would occur if v_k were clamped but
+polynomial coefficients left unclamped. The position error is bounded
+by Δs_k (sub-micron for typical 0.5mm grid spacing at near-zero
+velocity). The compose step is skipped for constant-position pieces —
+the output is constant x(t) = x(s_k) per axis.
 
 #### 2b. Compose x(s(t))
 
-For each TOPP-RA grid piece, extract the geometry's per-axis polynomial
-on `[s_k, s_{k+1}]` from the arc-length-parameterized representation.
-Call `nurbs::algebra::compose_vector_piece::<3>` with the 3-axis outer
-and the degree-2 s(t) inner.
+For each TOPP-RA grid piece, fit the geometry x(u) reparameterized by
+arc length on `[s_k, s_{k+1}]` using
+`nurbs::algebra::fit_x_to_arc_length_piece::<3>`. This produces a
+polynomial x(s) per axis (adaptive degree, target degree 3, max degree
+5, tolerance = `fit_tolerance_mm`). The fit uses the segment's
+arc-length table for the u(s) lookup.
 
-Output: N grid pieces of degree 6, per axis. Domain of each piece is
-`[t_k, t_{k+1}]`.
+Then compose x(s) with s(t) via
+`nurbs::algebra::compose_vector_piece::<3>`. The composition step is
+exact (polynomial-of-polynomial). The overall x(t) carries the bounded
+fit error from x(s).
+
+Output: N grid pieces of degree `d_fit_xs × 2` (typically 6 for
+degree-3 x(s) fits), per axis. Domain of each piece is `[t_k, t_{k+1}]`
+in batch-global time.
 
 Precondition check: `s(t_k) = s_k` and `s(t_{k+1}) = s_{k+1}` within
-1e-9 (compose_vector_piece's runtime guard).
+1e-9 (compose_vector_piece's runtime guard). Near-zero-velocity
+constant-position pieces (from Stage 2a) skip composition.
 
 #### 2c. C¹-constrained adaptive refit
 
@@ -257,6 +309,10 @@ For each segment i, collect neighbor fitted pieces:
   with constant position (zero velocity) for T_sm/2. Same at the last
   segment. This is correct because the shaper kernel is normalized
   (integral = 1, DC gain = 1), so convolving a constant preserves it.
+  **Assumption:** batch edges coincide with zero-velocity boundaries
+  (print start/end, or pause points). If `shape_batch` is later called
+  on streaming lookahead windows, the API will need halo segments or
+  boundary-context metadata to avoid baking false stops at batch edges.
 
 Concatenate: left-pad pieces + segment i's pieces + right-pad pieces →
 single padded `ScalarNurbs<f64>` per axis.
@@ -334,7 +390,7 @@ for iter in 0..beta_max_iters:
     if worst_ratio > 1.0 - beta_convergence_ratio:
         return Ok(output)  // close enough (worst derate < 1%)
 
-return Err(ShapeError::BetaNotConverged { ... })
+return Ok(output with beta_warning = Some(BetaWarning { ... }))
 ```
 
 **Monotone derate guard:** limits never increase across β iterations.
@@ -342,9 +398,12 @@ This prevents oscillation where iteration N derates axis X, causing
 iteration N+1's velocity profile to load axis Y harder, derating Y,
 which then shifts load back to X.
 
-**`BetaNotConverged` is a soft error:** the trajectory from the last
-iteration is valid and usable — it just may slightly exceed `a_machine`
-on some segments. The caller can choose to use it or reject it.
+**β-medium non-convergence is a warning, not an error.** The trajectory
+from the last iteration is always returned in the `Ok` variant. If the
+loop hit `beta_max_iters` without full convergence,
+`ShapeBatchOutput.beta_warning` is set with the worst-case ratio and
+the list of segments that still exceed `a_machine`. The caller decides
+whether to accept the trajectory or reject it.
 
 ### Stage 6 — Independent E segments
 
@@ -482,7 +541,8 @@ cores 0–1).
 |-------|--------|---------------------------|
 | Input (Layer 1) | 3 (cubic Bézier) | 1 |
 | After TOPP-RA grid | — | N (10–25 grid pieces) |
-| After composition x(s(t)) | 6 (= 3 × 2) | N |
+| After x(s) fit | 3 (target; up to 5) | N |
+| After composition x(s(t)) | 6 (= d_xs × 2; up to 10) | N |
 | After C¹ refit | 4 | K (4–30, typically 5–15) |
 | After convolution | 9 (= 4 + 4 + 1) | ~2K+1 (9–61, reduced by knot removal) |
 
@@ -544,6 +604,7 @@ actually tracks.
 ## Prerequisites
 
 - `nurbs::algebra::compose_vector_piece` — exists (landed in 7-pre).
+- `nurbs::algebra::fit_x_to_arc_length_piece` — exists (landed in 7-pre).
 - `nurbs::algebra::convolve` — exists (landed in Layer 0).
 - `geometry::splitter::split_segment_to_cap` — exists (landed in 7-pre).
 - `temporal::plan_batch` — exists (landed in Step 4.5).
