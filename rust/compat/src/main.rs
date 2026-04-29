@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use compat::emit::write_preamble;
 
 /// Offline G-code compatibility layer: convert legacy G0/G1/G2/G3/G5.1 to G5-only output.
 #[derive(Debug, Parser)]
@@ -32,7 +31,7 @@ fn main() -> ExitCode {
 
     // Read input.
     let input_name = cli.input.clone();
-    let _source = match read_input(&cli.input) {
+    let input_text = match read_input(&cli.input) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("kalico-compat: error reading {}: {e}", cli.input);
@@ -49,14 +48,16 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(e) = write_preamble(&mut *out, &input_name, cli.tolerance) {
-        eprintln!("kalico-compat: write error: {e}");
-        return ExitCode::FAILURE;
+    match compat::converter::convert(&input_text, &input_name, cli.tolerance) {
+        Ok(output_text) => {
+            out.write_all(output_text.as_bytes()).expect("write failed");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kalico-compat: {e}");
+            ExitCode::from(2)
+        }
     }
-
-    // TODO (Task 2+): run the converter pipeline and emit G5 lines.
-
-    ExitCode::SUCCESS
 }
 
 /// Read the entire input into a `String`.

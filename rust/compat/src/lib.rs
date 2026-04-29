@@ -8,6 +8,7 @@
 
 pub mod arc;
 pub mod collinear;
+pub mod converter;
 pub mod corner;
 pub mod degree_elev;
 pub mod emit;
