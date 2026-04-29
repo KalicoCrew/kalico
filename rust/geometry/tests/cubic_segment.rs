@@ -212,3 +212,24 @@ fn live_reduce_rejects_g2() {
         "G2 input should produce Item::Recovered(_, Recovery::UnsupportedGcode {{ gcode_kind: \"G2/G3\" }}); got {items:#?}"
     );
 }
+
+#[test]
+fn live_reduce_rejects_z_plus_e_as_helical() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+
+    // G5 Z move with E delta (pure-Z+E, no XY motion). Must be rejected as
+    // helical extrusion — pre-fix this leaked through as EMode::Independent
+    // and the splitter would have cloned the full E curve into every child.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_e: TelemetryEvent| {};
+    let src = "G5 Z10 E5 I0 J0 P0 Q0 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::HelicalExtrusionUnsupported { .. })
+        )),
+        "pure-Z+E G5 should produce Recovery::HelicalExtrusionUnsupported, got {items:#?}"
+    );
+}

@@ -406,14 +406,18 @@ fn classify_e_mode(
     let e_motion = abs_de > EPS_E;
 
     match (xyz_motion, z_motion, e_motion) {
-        // Helical extrusion: rejected.
-        (true, true, true) => Err(GeometryError::HelicalExtrusionUnsupported),
+        // Helical extrusion (XY+Z+E) and pure-Z+E: both rejected. Extrusion is
+        // meant to couple to XY motion only (CLAUDE.md feature scope), and the
+        // splitter cannot safely subdivide an Independent segment with
+        // non-trivial xyz motion (it would clone the full E curve into every
+        // child). The (false, true, true) arm closes that pre-Fix-A.1 leak.
+        (true | false, true, true) => Err(GeometryError::HelicalExtrusionUnsupported),
         // Coupled: real XY motion, no Z motion, real E motion. Signed ratio.
         (true, false, true) => Ok((EMode::CoupledToXy, de / xy_len, None)),
         // Travel: XY motion no E (Z optional), or pure-Z no E.
         (true, _, false) | (false, true, false) => Ok((EMode::Travel, 0.0, None)),
-        // Pure E motion (and possibly Z): Independent with linear E curve.
-        (false, _, true) => {
+        // Pure E motion (no XY, no Z): Independent retraction/prime/filament-change.
+        (false, false, true) => {
             let e_curve = build_linear_e_curve(de);
             Ok((EMode::Independent, 0.0, Some(e_curve)))
         }

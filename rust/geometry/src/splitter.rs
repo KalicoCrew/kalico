@@ -48,6 +48,21 @@ pub fn split_segment_to_cap(
         return Ok(vec![segment.clone()]);
     }
 
+    // Defense-in-depth (spec §6.1 closing remark): an Independent segment
+    // reaching here would indicate misclassification upstream. Pre-Fix-A.1
+    // pure-Z+E moves slipped past `classify_e_mode` as `Independent` and the
+    // multi-piece path then cloned the full E curve into every child,
+    // producing N× over-extrusion. classify_e_mode now rejects pure-Z+E as
+    // HelicalExtrusionUnsupported; assert here so any future regression
+    // (e.g. the Step-13 compat layer adding a new admit path) trips.
+    debug_assert!(
+        segment.e_mode != crate::EMode::Independent,
+        "Independent segment reached splitter past zero-motion fast-path \
+         (cp_polygon_length: {}, mid_speed: {})",
+        cp_polygon_length(&segment.xyz),
+        midpoint_parametric_speed(&segment.xyz)
+    );
+
     let table = build_arc_length_table_vector(&segment.xyz, 1e-9, 64).map_err(|_| {
         SplitError::ArcLengthTableBuildFailed {
             reason: "build_arc_length_table_vector failed",
@@ -148,17 +163,20 @@ pub fn split_segment_to_cap(
 }
 
 fn is_zero_motion(xyz: &VectorNurbs<f64, 3>) -> bool {
+    cp_polygon_length(xyz) < EPS_CP_POLYGON
+        && midpoint_parametric_speed(xyz) < MIN_PARAMETRIC_SPEED_FOR_SPLITTER
+}
+
+fn cp_polygon_length(xyz: &VectorNurbs<f64, 3>) -> f64 {
     let cps = xyz.control_points();
-    let cp_polygon_length: f64 = (1..cps.len())
+    (1..cps.len())
         .map(|i| {
             let dx = cps[i][0] - cps[i - 1][0];
             let dy = cps[i][1] - cps[i - 1][1];
             let dz = cps[i][2] - cps[i - 1][2];
             (dx * dx + dy * dy + dz * dz).sqrt()
         })
-        .sum();
-    let mid_speed = midpoint_parametric_speed(xyz);
-    cp_polygon_length < EPS_CP_POLYGON && mid_speed < MIN_PARAMETRIC_SPEED_FOR_SPLITTER
+        .sum()
 }
 
 fn midpoint_parametric_speed(xyz: &VectorNurbs<f64, 3>) -> f64 {
