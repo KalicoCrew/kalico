@@ -139,3 +139,36 @@ fn pure_e_only_independent_passthrough() {
     assert_eq!(out.len(), 1);
     assert!(out[0].split_info.is_none());
 }
+
+#[test]
+fn closed_loop_chord_zero_splits_by_arc_length() {
+    // Cubic Bézier returning to its start point but with real arc length.
+    let xyz = VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![
+            [0.0, 0.0, 0.0],
+            [50.0, 50.0, 0.0],
+            [-50.0, 50.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        None,
+    )
+    .unwrap();
+    let seg = CubicSegment::try_new(
+        xyz,
+        EMode::Travel,
+        0.0,
+        None,
+        100.0,
+        SourceRange {
+            start_line: 1,
+            end_line: 1,
+        },
+        None,
+    )
+    .unwrap();
+
+    let out = split_segment_to_cap(&seg, 12.5).unwrap();
+    assert!(out.len() > 1, "closed loop should split, not passthrough");
+}
