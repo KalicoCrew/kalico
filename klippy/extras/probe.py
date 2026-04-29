@@ -862,6 +862,19 @@ class ProbePointsHelper:
             "use_probe_xy_offsets", use_offsets
         )
 
+        # Optionally alternate the physical probing order between full probing
+        # passes/retries. This avoids repeatedly traversing the same loop around
+        # the bed, which can help prevent Bowden tubes, umbilicals, and cable
+        # bundles from accumulating twist on large-format machines.
+        #
+        # The alternating order implementation is inspired by Lazar at Modix3D
+        # and the way he has solved this behavior in RepRapFirmware.
+        self.alternate_probe_direction = config.getboolean(
+            "alternate_probe_direction", False
+        )
+        self.start_reverse = config.getboolean("start_reverse", False)
+        self.report_probe_order = config.getboolean("report_probe_order", False)
+
         self.enforce_lift_speed = config.getboolean("enforce_lift_speed", False)
 
         # Probe retry configuration
@@ -870,6 +883,7 @@ class ProbePointsHelper:
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
         self.results = []
+        self._probe_pass_index = 0
 
     def get_probe_points(self):
         return self.probe_points
@@ -892,6 +906,44 @@ class ProbePointsHelper:
             return gcmd.get_float("LIFT_SPEED", self.lift_speed, above=0.0)
         return self.lift_speed
 
+    def _is_reverse_probe_pass(self):
+        if not self.alternate_probe_direction:
+            return False
+
+        use_reverse = bool(self._probe_pass_index % 2)
+        if self.start_reverse:
+            use_reverse = not use_reverse
+
+        return use_reverse
+
+    def _probe_point_index(self):
+        result_count = len(self.results)
+        if self._is_reverse_probe_pass():
+            return len(self.probe_points) - result_count - 1
+        return result_count
+
+    def _store_probe_result(self, position):
+        if self._is_reverse_probe_pass():
+            self.results.insert(0, position)
+        else:
+            self.results.append(position)
+
+    def _report_probe_order(self):
+        if not self.alternate_probe_direction or not self.report_probe_order:
+            return
+
+        probe_count = len(self.probe_points)
+        if self._is_reverse_probe_pass():
+            order = range(probe_count - 1, -1, -1)
+        else:
+            order = range(probe_count)
+
+        order_text = " -> ".join([str(index) for index in order])
+        self.gcode.respond_info(
+            "Probe pass %d point order: %s"
+            % (self._probe_pass_index + 1, order_text)
+        )
+
     def _lift_toolhead(self):
         toolhead = self.printer.lookup_object("toolhead")
         # Lift toolhead
@@ -906,7 +958,7 @@ class ProbePointsHelper:
         toolhead.manual_move([None, None, z_pos], speed)
 
     def _next_pos(self):
-        nextpos = list(self.probe_points[len(self.results)])
+        nextpos = list(self.probe_points[self._probe_point_index()])
         if self.use_offsets:
             nextpos[0] -= self.probe_offsets[0]
             nextpos[1] -= self.probe_offsets[1]
@@ -936,6 +988,9 @@ class ProbePointsHelper:
         self._lift_toolhead()
         if finalize:
             self.results = []
+            if not done:
+                self._probe_pass_index += 1
+                self._report_probe_order()
         if done:
             return True
         # Move to next XY probe point
@@ -956,6 +1011,8 @@ class ProbePointsHelper:
             method = "automatic"
 
         self.results = []
+        self._probe_pass_index = 0
+        self._report_probe_order()
 
         def_move_z = self.default_horizontal_move_z
         self.horizontal_move_z = gcmd.get_float("HORIZONTAL_MOVE_Z", def_move_z)
@@ -990,7 +1047,7 @@ class ProbePointsHelper:
                 break
             pos = probe.run_probe(gcmd, self.retry_session)
             logging.info(f"Probe pos:{pos}")
-            self.results.append(pos)
+            self._store_probe_result(pos)
         probe.multi_probe_end()
         self.retry_session.end()
 
@@ -1005,7 +1062,7 @@ class ProbePointsHelper:
     def _manual_probe_finalize(self, kin_pos):
         if kin_pos is None:
             return
-        self.results.append(kin_pos)
+        self._store_probe_result(kin_pos)
         self._manual_probe_start()
 
 
