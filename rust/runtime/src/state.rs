@@ -123,6 +123,14 @@ pub struct SharedState {
     pub credit_epoch: AtomicU32,
     pub accepted_segment_id: AtomicU32,
     pub retired_through_segment_id: AtomicU32,
+    /// §9.2 + §5.3 — last latched fault's encoded `fault_detail` payload.
+    /// Set in lockstep with `last_error` whenever a fault latches; read by
+    /// the periodic 10 Hz `kalico_status_v6` frame and the async
+    /// `kalico_fault` event so the host can decode the fault context
+    /// (slot index, observed/expected generation, etc.) per spec §9.2.
+    /// `0` when no fault has latched OR when the fault carries no
+    /// per-event detail.
+    pub fault_detail: AtomicU32,
     // Step-6: terminal-segment communication foreground → ISR (§8.3).
     // Foreground sets `terminal_segment_id_set` true + `terminal_segment_id_value`
     // to the segment id from `kalico_stream_terminal`; the ISR retire path
@@ -152,6 +160,7 @@ impl SharedState {
             credit_epoch: AtomicU32::new(0),
             accepted_segment_id: AtomicU32::new(0),
             retired_through_segment_id: AtomicU32::new(0),
+            fault_detail: AtomicU32::new(0),
             terminal_segment_id_set: AtomicBool::new(false),
             terminal_segment_id_value: AtomicU32::new(0),
             accepted_segment_id_seen: AtomicBool::new(false),

@@ -83,6 +83,14 @@ void* kalico_rt_handle = 0;            // exposed (non-static) for kalico_h7_tim
 static struct task_wake runtime_drain_wake;
 static struct timer runtime_drain_timer;
 
+// Phase 11 §5.3 periodic status frame state. Emit cadence is ~10 Hz against
+// `timer_read_time()` (Klipper's u32 cycle clock). One-shot tracking of the
+// last engine_status lets us emit a `kalico_fault` async event ONCE on
+// the FAULT-state transition, not every 10 Hz tick — host gets one
+// notification per fault, not a spam stream.
+static uint32_t last_status_emit_time = 0;
+static uint8_t prev_engine_status = 0;
+
 // Liveness monitor state.
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
@@ -160,6 +168,14 @@ runtime_init(void)
     runtime_drain_timer.func = runtime_drain_event;
     runtime_drain_timer.waketime = timer_read_time() + timer_from_us(1000);
     sched_add_timer(&runtime_drain_timer);
+
+    // Phase 11 §5.3: anchor the periodic-status emit timer so the first
+    // status frame fires within one period of boot. The static `0` default
+    // works fine in production where `timer_read_time()` quickly exceeds
+    // the period; under CONFIG_KALICO_SIM with the software CYCCNT it can
+    // take a noticeable fraction of a real-time second to advance one
+    // period, but the gate self-corrects on the second iteration.
+    last_status_emit_time = timer_read_time();
 }
 DECL_INIT(runtime_init);
 
@@ -182,12 +198,65 @@ runtime_drain(void)
     kalico_sim_drain_calls++;
 #endif
 
-    // Drain a batch.
+    // Phase 11 Task 11.2 §10.4 reclaim drain pipeline. Drains a batch of
+    // trace samples for transport to the host, then asks the Rust side to
+    // also drain-and-reclaim its own internal cursor for SEGMENT_END events
+    // (so curve-pool slots get returned promptly) and check the §13.1
+    // trace-overflow latch. The two drain paths share the same SPSC ring
+    // (same FgState consumer); the order matters — `kalico_runtime_drain_trace`
+    // moves samples to the wire FIRST so the host sees the trace data, THEN
+    // `kalico_runtime_drain_and_reclaim` consumes any remaining samples for
+    // bookkeeping. Both are safe back-to-back because each stops on the
+    // first dequeue == None.
     static uint8_t batch_buf[KALICO_TRACE_BATCH * 32];  // 32 bytes per sample
     uint32_t n = kalico_runtime_drain_trace(
         kalico_rt_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH);
     if (n > 0) {
         sendf("kalico_trace count=%u data=%*s", n, n * 32, batch_buf);
+    }
+
+    // Reclaim leg: drain whatever the wire-batch left behind and observe
+    // SEGMENT_END events for curve-pool reclaim + trace-overflow check.
+    // Returns a packed status word — see kalico_runtime_drain_and_reclaim
+    // doc-comment for the bit layout.
+    uint32_t reclaim_status = kalico_runtime_drain_and_reclaim(
+        kalico_rt_handle, KALICO_TRACE_BATCH);
+    uint8_t saw_segment_end = (reclaim_status >> 17) & 1;
+    uint8_t fresh_overflow_fault = (reclaim_status >> 16) & 1;
+
+    // §10.4: emit one `kalico_credit_freed` async event per drain cycle that
+    // observed at least one SEGMENT_END. The host uses this to bump its
+    // credit counter; it doesn't need one event per retired segment, just
+    // a wake-up to re-read the cursors. `retired_through_segment_id` carries
+    // the cumulative cursor; `free_slots = Q_N - queue_depth` (with Q_N - 1
+    // being the structural cap; saturate at u8 in the Rust accessor).
+    if (saw_segment_end) {
+        uint32_t retired = kalico_runtime_retired_through_segment_id(kalico_rt_handle);
+        uint8_t depth = kalico_runtime_queue_depth(kalico_rt_handle);
+        uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
+        // `output()` rather than `sendf()` so the format registers via
+        // `_DECL_OUTPUT` (matching the explicit `DECL_CTR("_DECL_OUTPUT ...")`
+        // at the bottom of this file). Mixing `sendf` (`_DECL_ENCODER`) and
+        // explicit `_DECL_OUTPUT` for the same format crashes silently:
+        // buildcommands.py de-dups by msgid + uses the FIRST registration's
+        // category, so the second category's lookup returns NULL and the
+        // emit `command_sendf(NULL, …)` no-ops.
+        output("kalico_credit_freed retired_through_segment_id=%u free_slots=%c",
+               retired, free_slots);
+    }
+
+    // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`
+    // async event. The fault state itself is now in shared.last_error +
+    // shared.runtime_status (latched by check_trace_overflow_and_fault on
+    // the Rust side); the periodic `kalico_status_v6` frame echoes it on
+    // the next 10 Hz tick. We send the async event here so the host gets
+    // the fault notification immediately, not up to ~100 ms later.
+    if (fresh_overflow_fault) {
+        int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
+        uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
+        uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
+        sendf("kalico_fault fault_code=%hu fault_detail=%u segment_id=%u",
+              (uint16_t)fault_code, fault_detail, cur_seg);
     }
 
     // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
@@ -212,10 +281,22 @@ runtime_drain(void)
         last_seen_tick_counter = cur_counter;
     }
 
-    // FAULT → also block kicks.
+    // FAULT → also block kicks. Emit one-shot kalico_fault event if the
+    // engine just transitioned INTO Fault since the last drain (so the host
+    // gets a single notification, not a 1 kHz spam stream).
     if (cur_status == 3 /* FAULT */) {
         kalico_liveness_ok = 0;
+        if (prev_engine_status != 3 /* FAULT */) {
+            int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
+            uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
+            uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
+            // `output()` per the same registration-category rule as
+            // `kalico_credit_freed` above.
+            output("kalico_fault fault_code=%hu fault_detail=%u segment_id=%u",
+                   (uint16_t)fault_code, fault_detail, cur_seg);
+        }
     }
+    prev_engine_status = cur_status;
 
     // Track last status (used by future LED hook on a non-SWD pin).
     if (cur_status != last_seen_status) {
@@ -223,6 +304,49 @@ runtime_drain(void)
     }
 }
 DECL_TASK(runtime_drain);
+
+// Phase 11 Task 11.1 §5.3 periodic 10 Hz `kalico_status_v6` frame.
+// Background task that polls the wake flag and emits a status frame at the
+// 10 Hz cadence. Distinct from runtime_drain — this task does not depend on
+// trace-ring state, so it keeps publishing status even when the engine is
+// Idle/Drained and runtime_drain has nothing to do.
+void
+runtime_status_drain(void)
+{
+    if (!kalico_rt_handle) return;
+    uint32_t now = timer_read_time();
+    // Spec §5.3: 10 Hz cadence. The cast through int32_t handles u32 wrap
+    // (~8.3 s at 520 MHz, ~83 s in sim) — at 100 ms cadence the difference
+    // fits well inside a signed window.
+    const uint32_t status_period_ticks = CONFIG_CLOCK_FREQ / 10;
+    if ((int32_t)(now - last_status_emit_time) < (int32_t)status_period_ticks)
+        return;
+    last_status_emit_time = now;
+
+    uint8_t status = kalico_runtime_status(kalico_rt_handle);
+    int32_t last_err = kalico_runtime_last_error(kalico_rt_handle);
+    uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
+    uint8_t depth = kalico_runtime_queue_depth(kalico_rt_handle);
+    uint64_t mcu_clk = kalico_runtime_widened_now(kalico_rt_handle);
+    uint32_t epoch = kalico_runtime_credit_epoch(kalico_rt_handle);
+    uint32_t accepted = kalico_runtime_accepted_segment_id(kalico_rt_handle);
+    uint32_t retired = kalico_runtime_retired_through_segment_id(kalico_rt_handle);
+    uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
+
+    // `output()` per the same registration-category rule — `_DECL_OUTPUT`
+    // is the right channel for an async periodic frame.
+    output("kalico_status_v6 engine_status=%c queue_depth=%c "
+           "current_segment_id=%u "
+           "last_fault=%hu fault_detail=%u "
+           "mcu_clock_now_lo=%u mcu_clock_now_hi=%u "
+           "credit_epoch=%u accepted_segment_id=%u "
+           "retired_through_segment_id=%u",
+           status, depth, cur_seg,
+           (uint16_t)last_err, fault_detail,
+           (uint32_t)mcu_clk, (uint32_t)(mcu_clk >> 32),
+           epoch, accepted, retired);
+}
+DECL_TASK(runtime_status_drain);
 
 // DECL_COMMAND surface — test harness loads curves and pushes segments.
 //

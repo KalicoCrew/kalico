@@ -496,6 +496,12 @@ pub mod exports {
     }
 
     /// Foreground drain. Returns count of samples written.
+    ///
+    /// Phase 11 §10.4 expansion: alongside writing the sample to the wire
+    /// buffer, this also calls `pool.confirm_retired` for any sample
+    /// carrying `TRACE_FLAG_SEGMENT_END`, so curve-pool slots get reclaimed
+    /// in lockstep with the trace ship-out (one drain pass = one
+    /// foreground-side wire emit + one reclaim cursor advance).
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_drain_trace(
         rt: *mut KalicoRuntime,
@@ -509,11 +515,12 @@ pub mod exports {
             return 0;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: project to the foreground trace consumer only — no &mut
-        // on IsrState forms here. Caller-provided out_buf must be valid for
-        // out_cap writes of TraceSample.
+        // SAFETY: project to the foreground trace consumer + curve pool —
+        // no `&mut` on IsrState forms here. Caller-provided out_buf must be
+        // valid for out_cap writes of TraceSample.
         unsafe {
             let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
+            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
             let fg: &mut FgState = &mut *fg_ptr;
             let out_slice = core::slice::from_raw_parts_mut(out_buf, out_cap as usize);
             let mut count = 0usize;
@@ -521,6 +528,9 @@ pub mod exports {
                 let Some(sample) = fg.trace_consumer.dequeue() else {
                     break;
                 };
+                if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
+                    pool.confirm_retired(sample.curve_handle);
+                }
                 if let Some(slot) = out_slice.get_mut(count) {
                     *slot = sample;
                 }
@@ -584,6 +594,221 @@ pub mod exports {
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.tick_counter()
+        }
+    }
+
+    // ---- Phase 11 §5.3 status-frame accessors -----------------------------
+    //
+    // Each helper projects to `&SharedState` (atomics-only) and reads one
+    // field. Released as a separate FFI per Klipper's "one C-side `sendf`
+    // call passes scalar args" pattern: the status-frame DECL_TASK assembles
+    // the values via these accessors, the `kalico_runtime_widened_now` helper
+    // reads the §11.4 seqlock-protected widened clock, and the periodic
+    // `kalico_status_v6` frame goes out at ~10 Hz.
+
+    /// Read the widened MCU clock (§11.4 seqlock). Returns the most recently
+    /// published u64 cycle count from the ISR. Safe to call from foreground
+    /// at any time — the seqlock retries if it sees a torn read.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_widened_now(rt: *mut KalicoRuntime) -> u64 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access; no `&mut` forms.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            runtime::clock::read_widened_now(&*shared_ptr)
+        }
+    }
+
+    /// Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
+    /// `kalico_stream_flush` so the host can detect mid-stream resets.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_credit_epoch(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).credit_epoch.load(Ordering::Acquire)
+        }
+    }
+
+    /// Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
+    /// Mirrors the value placed into the `kalico_push_response` schema.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_accepted_segment_id(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).accepted_segment_id.load(Ordering::Acquire)
+        }
+    }
+
+    /// Read the retired-through segment id cursor (§5.3 + §4.1.5). Advances
+    /// monotonically as the engine retires segments — host uses this to
+    /// gate flow control and to know when a stream-terminal hand-off is
+    /// safe to call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_retired_through_segment_id(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr)
+                .retired_through_segment_id
+                .load(Ordering::Acquire)
+        }
+    }
+
+    /// Read the currently-active segment id (`0` if engine is Idle/Drained
+    /// or pre-stream).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_current_segment_id(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).current_segment_id.load(Ordering::Acquire)
+        }
+    }
+
+    /// Approximate queue depth — number of segments the foreground has
+    /// pushed minus the number the ISR has retired through. Useful as a
+    /// status-frame breadcrumb but NOT a synchronization primitive (both
+    /// cursors lag the actual SPSC state by an unbounded number of ticks
+    /// in the worst case). Returns saturating-subtraction in u8 range
+    /// (`Q_N - 1` is the structural cap; saturate at 255 just in case).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_queue_depth(rt: *mut KalicoRuntime) -> u8 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let accepted = (*shared_ptr).accepted_segment_id.load(Ordering::Acquire);
+            let retired = (*shared_ptr)
+                .retired_through_segment_id
+                .load(Ordering::Acquire);
+            let depth = accepted.saturating_sub(retired);
+            #[allow(clippy::cast_possible_truncation)]
+            let r = depth.min(u32::from(u8::MAX)) as u8;
+            r
+        }
+    }
+
+    /// Read the latched `fault_detail` payload (§9.2). Mirrors the value
+    /// the foreground emits with the async `kalico_fault` event. `0` when
+    /// no fault has latched OR the latched fault carries no detail.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_fault_detail(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).fault_detail.load(Ordering::Acquire)
+        }
+    }
+
+    /// Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
+    /// `limit` trace samples from the ring, calls `pool.confirm_retired`
+    /// for each `SEGMENT_END` observed, and returns a 32-bit packed
+    /// status:
+    ///
+    /// - Bits 0..=15 — count of samples drained this call.
+    /// - Bit 16     — set if a fresh trace-overflow fault latched (§13.1).
+    /// - Bit 17     — set if at least one `SEGMENT_END` was observed
+    ///                (caller emits one or more `kalico_credit_freed`
+    ///                events keyed off the updated cursors).
+    ///
+    /// The C handler (`runtime_drain` `DECL_TASK` in `src/runtime_tick.c`)
+    /// uses this single-call form so the trace-drain + reclaim + fault-
+    /// latch pipeline is one round-trip per drain wake-up.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_drain_and_reclaim(
+        rt: *mut KalicoRuntime,
+        limit: u32,
+    ) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only projection — touches FgState (sole writer)
+        // for the trace consumer, &CurvePool for confirm_retired, and
+        // &SharedState for the trace-overflow latch.
+        unsafe {
+            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
+            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            let fg: &mut FgState = &mut *fg_ptr;
+            let mut saw_segment_end = false;
+            let drained = runtime::reclaim::drain_and_reclaim(
+                pool,
+                || {
+                    let s = fg.trace_consumer.dequeue();
+                    if let Some(sample) = s {
+                        if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
+                            saw_segment_end = true;
+                        }
+                    }
+                    s
+                },
+                limit as usize,
+            );
+            let overflow_latched =
+                runtime::reclaim::check_trace_overflow_and_fault(shared);
+            let mut packed: u32 = (drained as u32) & 0xFFFF;
+            if overflow_latched {
+                packed |= 1 << 16;
+            }
+            if saw_segment_end {
+                packed |= 1 << 17;
+            }
+            packed
         }
     }
 

@@ -72,6 +72,74 @@ int32_t kalico_runtime_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
                                         uint16_t *out_last_retired_gen);
 
 /**
+ * Read the widened MCU clock (§11.4 seqlock). Returns the most recently
+ * published u64 cycle count from the ISR. Safe to call from foreground
+ * at any time — the seqlock retries if it sees a torn read.
+ */
+uint64_t kalico_runtime_widened_now(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
+ * `kalico_stream_flush` so the host can detect mid-stream resets.
+ */
+uint32_t kalico_runtime_credit_epoch(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
+ * Mirrors the value placed into the `kalico_push_response` schema.
+ */
+uint32_t kalico_runtime_accepted_segment_id(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Read the retired-through segment id cursor (§5.3 + §4.1.5). Advances
+ * monotonically as the engine retires segments — host uses this to
+ * gate flow control and to know when a stream-terminal hand-off is
+ * safe to call.
+ */
+uint32_t kalico_runtime_retired_through_segment_id(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Read the currently-active segment id (`0` if engine is Idle/Drained
+ * or pre-stream).
+ */
+uint32_t kalico_runtime_current_segment_id(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Approximate queue depth — number of segments the foreground has
+ * pushed minus the number the ISR has retired through. Useful as a
+ * status-frame breadcrumb but NOT a synchronization primitive (both
+ * cursors lag the actual SPSC state by an unbounded number of ticks
+ * in the worst case). Returns saturating-subtraction in u8 range
+ * (`Q_N - 1` is the structural cap; saturate at 255 just in case).
+ */
+uint8_t kalico_runtime_queue_depth(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Read the latched `fault_detail` payload (§9.2). Mirrors the value
+ * the foreground emits with the async `kalico_fault` event. `0` when
+ * no fault has latched OR the latched fault carries no detail.
+ */
+uint32_t kalico_runtime_fault_detail(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
+ * `limit` trace samples from the ring, calls `pool.confirm_retired`
+ * for each `SEGMENT_END` observed, and returns a 32-bit packed
+ * status:
+ *
+ * - Bits 0..=15 — count of samples drained this call.
+ * - Bit 16     — set if a fresh trace-overflow fault latched (§13.1).
+ * - Bit 17     — set if at least one `SEGMENT_END` was observed
+ *                (caller emits one or more `kalico_credit_freed`
+ *                events keyed off the updated cursors).
+ *
+ * The C handler (`runtime_drain` `DECL_TASK` in `src/runtime_tick.c`)
+ * uses this single-call form so the trace-drain + reclaim + fault-
+ * latch pipeline is one round-trip per drain wake-up.
+ */
+uint32_t kalico_runtime_drain_and_reclaim(kalico_nurbs_KalicoRuntime *rt, uint32_t limit);
+
+/**
  * `kalico_stream_open` — assert host-MCU stream identity (§8.3).
  * Phase-6 stub.
  */
