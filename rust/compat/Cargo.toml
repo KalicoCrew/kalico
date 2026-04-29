@@ -1,0 +1,19 @@
+[package]
+name = "compat"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Offline G-code compatibility layer: legacy G0/G1/G2/G3/G5.1 → G5-only output."
+license.workspace = true
+
+[[bin]]
+name = "kalico-compat"
+path = "src/main.rs"
+
+[dependencies]
+gcode = { path = "../gcode" }
+clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true
