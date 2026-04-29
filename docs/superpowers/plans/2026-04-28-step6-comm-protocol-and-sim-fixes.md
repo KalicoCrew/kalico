@@ -390,7 +390,8 @@ pub unsafe extern "C" fn kalico_runtime_load_fixture(
     // half-split rename). Step-5 CurvePool::load takes flat slices +
     // CurveHandle, returns Result<(), CurvePoolError>.
     let ctx = unsafe { &mut *(rt as *mut RuntimeContext) };
-    let handle = CurveHandle::from_raw(slot_idx);  // Step-5 CurveHandle is u16
+    // Step-5 CurveHandle is `pub struct CurveHandle(pub u16);` (tuple struct, no constructor).
+    let handle = CurveHandle(slot_idx);
     match ctx.pool.load(handle,
         &cps[..n_cp * 3], &knots[..n_knots], &weights[..n_weights], degree)
     {
@@ -412,13 +413,16 @@ void
 command_kalico_load_fixture_curve(uint32_t *args)
 {
     if (!kalico_rt_handle) {
-        sendf("kalico_load_fixture_response result=%i", -7);
+        sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u", -7, 0);
         return;
     }
     uint16_t slot = args[0];
     uint16_t fixture_id = args[1];
     int32_t r = kalico_runtime_load_fixture(kalico_rt_handle, slot, fixture_id);
-    sendf("kalico_load_fixture_response result=%i", r);
+    // Round-5 fix Codex #4: return the generated (slot, gen) packed u32 handle
+    // so host can reference it in subsequent kalico_push_segment calls.
+    sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
+          r, curve_handle_packed);
 }
 DECL_COMMAND(command_kalico_load_fixture_curve,
     "kalico_load_fixture_curve slot=%hu fixture_id=%hu");
@@ -650,7 +654,10 @@ This phase refactors the Step-5 single `RuntimeContext` into the half-split (`Fg
 
 - [ ] **Step 1: Sketch the new structs in `rust/runtime/src/state.rs`**
 
-Replace the Step-5 `RuntimeContext` definition (currently at the top of `state.rs`) with:
+**Round-5 fix:** Step-5's `RuntimeContext` is actually defined in `rust/kalico-c-api/src/runtime_ffi.rs`, not in `runtime/src/state.rs`. Step-5's `state.rs` contains `TickState` (used by `engine.rs` and `slot.rs`). Phase 1 Task 1.1 must:
+- Preserve / move `TickState` (it's still needed by Engine and slot — leave it in place).
+- Define the NEW Step-6 `RuntimeContext` in `runtime/src/state.rs` (the half-split version).
+- Remove the OLD Step-5 `RuntimeContext` from `kalico-c-api/src/runtime_ffi.rs` after Phase 1 Task 1.2 lands the new FFI surface.
 
 ```rust
 //! Half-split runtime state per Step-6 spec §11.
@@ -2219,6 +2226,22 @@ kalico_clock_sync_request. FFI stubs project to FgState; bodies
 land in Phase 6.
 
 Per spec §8.3 + §12.1."
+```
+
+**Round-5 fix Codex #4 — load_curve / load_fixture responses must return the generated handle.** Step-6 `try_alloc_and_load(slot, curve)` returns a fresh `(slot, gen)` handle; the wire response previously returned only `result`, leaving the host with no way to reference the just-loaded curve. Extend both response schemas:
+
+- `kalico_load_curve_response result=%i curve_handle_packed=%u`
+- `kalico_load_fixture_response result=%i curve_handle_packed=%u` *(sim-only)*
+
+The FFI returns the handle as a u32 out-param. C-side dispatch packs into `(generation << 16) | slot_idx` and emits via `sendf`. Add an out-param to `kalico_runtime_load_curve` / `kalico_runtime_load_fixture`:
+
+```rust
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kalico_runtime_load_curve(
+    rt: *mut KalicoRuntime, slot_idx: u16,
+    payload_ptr: *const u8, payload_len: u32,
+    out_handle_packed: *mut u32,
+) -> i32 { /* on success: *out_handle_packed = (gen as u32) << 16 | slot_idx as u32 */ }
 ```
 
 ### Task 3.3: Extended responses (`kalico_credit_freed`, `kalico_status`, `kalico_fault`, `kalico_push_response`)
