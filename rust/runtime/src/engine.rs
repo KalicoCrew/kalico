@@ -162,7 +162,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
     ) -> Result<(), RuntimeError> {
-        // Phase 7 §8.5 force_idle short-circuit will be added at the top here.
+        // §8.5 step 2: force_idle short-circuit. BEFORE anything else —
+        // BEFORE widen_state mutation, BEFORE queue dequeue, BEFORE
+        // evaluation. Aborts current evaluation, sets acked_force_idle,
+        // returns. Bounded ~25 µs at 40 kHz (single atomic load + branch).
+        // The hold-segment short-circuit (Phase 9) lands AFTER this block.
+        if shared.force_idle.load(Ordering::Acquire) {
+            self.clear_current();
+            shared.acked_force_idle.store(true, Ordering::Release);
+            return Ok(());
+        }
 
         let now = widen_state.widen(raw_cyccnt);
         // §11.4: republish the widened u64 to SharedState so foreground readers
@@ -185,6 +194,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let Some(current) = self.current.take() else {
             // Re-check queue with Acquire — race against producer's enqueue.
             if !queue.ready() {
+                // §8.2: queue empty + stream_open=true → KALICO_FAULT_UNDERRUN.
+                // queue empty + stream_open=false → keep current status
+                // (Idle pre-stream / Drained post-stream).
+                if shared.stream_open.load(Ordering::Acquire) {
+                    self.last_error
+                        .store(crate::error::KALICO_ERR_UNDERRUN, Ordering::Release);
+                    self.status
+                        .store(RuntimeStatus::Fault as u8, Ordering::Release);
+                    return Err(RuntimeError::Underrun);
+                }
                 return Ok(());
             }
             self.current = queue.dequeue();
@@ -240,10 +259,25 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             shared
                 .retired_through_segment_id
                 .store(current.id, Ordering::Release);
+            // §8.3 terminal-segment hook: if foreground published a terminal
+            // segment id and we're retiring it now, clear `stream_open` so
+            // the next empty-queue observation goes to Drained, not Underrun.
+            crate::stream::check_terminal_on_retire(shared, current.id);
             // Drop current; advance to next.
             let Some(next) = queue.dequeue() else {
-                // No next segment — drained. Set status; return.
+                // No next segment — drained. §8.2: queue empty + stream_open=true
+                // → KALICO_FAULT_UNDERRUN; queue empty + stream_open=false
+                // → Drained (normal end-of-stream). The terminal hook above
+                // may have just cleared stream_open if this was the terminal
+                // segment, in which case we route to Drained.
                 self.current = None;
+                if shared.stream_open.load(Ordering::Acquire) {
+                    self.last_error
+                        .store(crate::error::KALICO_ERR_UNDERRUN, Ordering::Release);
+                    self.status
+                        .store(RuntimeStatus::Fault as u8, Ordering::Release);
+                    return Err(RuntimeError::Underrun);
+                }
                 self.status
                     .store(RuntimeStatus::Drained as u8, Ordering::Release);
                 return Ok(());
@@ -341,6 +375,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             shared
                 .retired_through_segment_id
                 .store(current.id, Ordering::Release);
+            // §8.3 terminal hook — see boundary-loop equivalent above.
+            crate::stream::check_terminal_on_retire(shared, current.id);
         }
         self.last_motors = state.motors;
         self.current = Some(current);

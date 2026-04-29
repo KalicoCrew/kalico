@@ -231,6 +231,33 @@ pub mod exports {
         if fg.queue_producer.enqueue(seg).is_err() {
             return KALICO_ERR_QUEUE_FULL;
         }
+        // Round-2 B6: on the FIRST push of a fresh stream (Opening or
+        // StreamOpenPriming with no recorded first segment yet), capture
+        // the priming segment's t_start in FgState so the §6.3 arm()
+        // predicate can validate it without peeking the ISR-owned queue.
+        // Also auto-transition StreamOpening → StreamOpenPriming on first
+        // push so the state machine reflects priming-buffer accumulation.
+        match fg.stream_state_machine {
+            runtime::stream::FgStreamState::StreamOpening => {
+                fg.stream_state_machine =
+                    runtime::stream::FgStreamState::StreamOpenPriming;
+                if fg.first_priming_segment_t_start.is_none() {
+                    fg.first_priming_segment_t_start = Some(t_start);
+                }
+            }
+            runtime::stream::FgStreamState::StreamOpenPriming => {
+                if fg.first_priming_segment_t_start.is_none() {
+                    fg.first_priming_segment_t_start = Some(t_start);
+                }
+            }
+            runtime::stream::FgStreamState::Armed => {
+                // Round-3 B-R3-9 implicit transition: once a push lands
+                // after arm(), the stream is in steady-state motion.
+                // Foreground state machine reflects that.
+                fg.stream_state_machine = runtime::stream::FgStreamState::Running;
+            }
+            _ => {}
+        }
         // Round-2 B14: foreground publishes the cumulative-accepted cursor
         // for both the periodic kalico_status frame and Gate-B observers.
         // Release pairs with foreground/host readers' Acquire on the same
@@ -659,7 +686,12 @@ pub mod exports {
         unsafe { project_fg(rt, |fg, shared| runtime::stream::terminal(fg, shared, segment_id)) }
     }
 
-    /// `kalico_stream_flush` — `force_idle` handshake (§8.5). Phase-6 stub.
+    /// `kalico_stream_flush` — `force_idle` handshake (§8.5).
+    ///
+    /// flush() projects to both halves under disabled-IRQ, so we hand it
+    /// the raw `*mut RuntimeContext` directly rather than going through
+    /// the foreground-only `project_fg` helper. SAFETY: caller is the
+    /// single-threaded foreground command dispatch.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_stream_flush(
         rt: *mut KalicoRuntime,
@@ -671,16 +703,10 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // SAFETY: half-split projection per the discipline contract.
-        unsafe {
-            project_fg(rt, |fg, shared| {
-                let r = runtime::stream::flush(fg, shared);
-                if r == KALICO_OK && !out_credit_epoch.is_null() {
-                    *out_credit_epoch = shared.credit_epoch.load(Ordering::Acquire);
-                }
-                r
-            })
-        }
+        // SAFETY: rt is the published RuntimeContext pointer (verified
+        // non-null + INIT_DONE above). flush() does its own half-split
+        // projections internally per the §8.5 ordering contract.
+        unsafe { runtime::stream::flush(rt.cast::<RuntimeContext>(), out_credit_epoch) }
     }
 
     /// `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).

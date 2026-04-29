@@ -17,6 +17,9 @@ pub enum RuntimeError {
     FaultLatched,
     BoundaryLoopExhausted,
     NaNOrInfFromEval,
+    /// §8.2: queue empty while `stream_open == true` — host failed to keep
+    /// the runtime fed. Hard fault.
+    Underrun,
     Internal,
 }
 
@@ -165,6 +168,7 @@ impl From<RuntimeError> for i32 {
             RuntimeError::InvalidDuration => KALICO_ERR_INVALID_DURATION,
             RuntimeError::InvalidKinematics => KALICO_ERR_INVALID_KINEMATICS,
             RuntimeError::FaultLatched => KALICO_ERR_FAULT_LATCHED,
+            RuntimeError::Underrun => KALICO_ERR_UNDERRUN,
             RuntimeError::BoundaryLoopExhausted
             | RuntimeError::NaNOrInfFromEval
             | RuntimeError::Internal => KALICO_ERR_INTERNAL,
@@ -215,6 +219,7 @@ mod tests {
                 KALICO_ERR_INVALID_KINEMATICS,
             ),
             (RuntimeError::FaultLatched, KALICO_ERR_FAULT_LATCHED),
+            (RuntimeError::Underrun, KALICO_ERR_UNDERRUN),
             (RuntimeError::BoundaryLoopExhausted, KALICO_ERR_INTERNAL),
             (RuntimeError::NaNOrInfFromEval, KALICO_ERR_INTERNAL),
             (RuntimeError::Internal, KALICO_ERR_INTERNAL),

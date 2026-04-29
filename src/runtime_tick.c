@@ -26,6 +26,30 @@ const uint32_t kalico_clock_freq __attribute__((used, externally_visible))
 
 extern volatile uint8_t kalico_liveness_ok;  // defined in src/stm32/watchdog.c
 
+// Foreground host-clock helper for §8.5 flush ack-wait timeout. Returns
+// wall-clock µs since boot, derived from Klipper's `timer_read_time()`
+// (DWT->CYCCNT widened by Klipper's foreground task) divided by the clock
+// frequency in MHz. NEVER call from ISR — `timer_read_time` is
+// foreground-only by Klipper convention. Used only by the runtime's
+// flush() ack-wait spin loop, which is foreground command dispatch.
+//
+// Wrap behaviour: `timer_read_time()` is u32, wraps every ~8.3 s at 520 MHz.
+// The flush window is bounded to ≤1 ms by design, so a single wrap during
+// the spin loop is the worst case — the saturating_add at the Rust caller
+// site prevents UB from u64 overflow if we hit the boundary.
+//
+// Spec §8.5 + plan Phase 7 Task 7.2.
+__attribute__((used, externally_visible))
+uint64_t
+kalico_host_now_us(void)
+{
+    uint32_t cycles = timer_read_time();
+    // CONFIG_CLOCK_FREQ is in Hz; divide by 1e6 to get cycles-per-µs.
+    // Integer division here is fine — CONFIG_CLOCK_FREQ is always a
+    // multiple of 1 MHz on supported STM32 targets.
+    return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
+}
+
 void* kalico_rt_handle = 0;            // exposed (non-static) for kalico_h7_timer.c
 static struct task_wake runtime_drain_wake;
 static struct timer runtime_drain_timer;

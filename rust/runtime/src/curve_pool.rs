@@ -250,6 +250,21 @@ impl CurvePool {
         Ok(unsafe { &*slot.curve.get() })
     }
 
+    /// §8.5 flush helper. Resets every slot's `last_retired_gen` to its
+    /// `current_gen` so post-flush allocations succeed immediately (the
+    /// alloc predicate is `current_gen == last_retired_gen`). This is
+    /// safe under the flush contract: by the time foreground reaches
+    /// step 5, the queue has been drained, the engine's in-flight segment
+    /// is cleared, and no Segment in flight references any slot — so we
+    /// can declare every slot reclaimed without waiting for SEGMENT_END
+    /// trace events that will never come.
+    pub fn reset_all_retired_to_current(&self) {
+        for slot in &self.slots {
+            let cur = slot.current_gen.load(Ordering::Acquire);
+            slot.last_retired_gen.store(cur, Ordering::Release);
+        }
+    }
+
     /// Foreground reclaim. Called from the trace-drain pipeline on observing
     /// `SEGMENT_END(handle)`. FIFO ordering of trace events guarantees all
     /// prior generations for this slot have already retired.
