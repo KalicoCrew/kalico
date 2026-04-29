@@ -7,6 +7,9 @@
 use geometry::{
     FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent, split_segment_to_cap,
 };
+use nurbs::eval::vector_eval;
+
+const BOUNDARY_TOL: f64 = 1e-12;
 
 #[test]
 fn synthetic_long_g5_reduces_splits_and_plans() {
@@ -35,8 +38,6 @@ fn synthetic_long_g5_reduces_splits_and_plans() {
     );
 
     // Boundary continuity (round-1-review HIGH 2 tolerance).
-    const BOUNDARY_TOL: f64 = 1e-12;
-    use nurbs::eval::vector_eval;
     for w in split.windows(2) {
         let lend = vector_eval(&w[0].xyz, 1.0);
         let rstart = vector_eval(&w[1].xyz, 0.0);
