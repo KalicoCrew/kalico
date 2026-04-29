@@ -4,6 +4,17 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use heapless::spsc::Queue;
 
+/// `TraceRing` capacity used by the `Engine` ISR. Spec §13.1.
+///
+/// Sized for HOST_STALL + 10 ms safety margin × 40 kHz tick + 1 (heapless
+/// cap-N-1 rule). Step-6 widens the Step-5 value (128) to absorb worst-case
+/// host drain latency without dropping samples.
+///
+/// Promoted from a private `engine.rs` const to a `pub` const in `trace.rs`
+/// per Step-6 plan Phase 1 Task 1.1 step 3a — `RuntimeContext.trace_storage`
+/// uses it as a const generic.
+pub const TRACE_RING_N: usize = 1201;
+
 pub const TRACE_FLAG_OVERFLOW: u8 = 1 << 0;
 pub const TRACE_FLAG_SEGMENT_END: u8 = 1 << 1;
 pub const TRACE_FLAG_FAULT_MARKER: u8 = 1 << 2;

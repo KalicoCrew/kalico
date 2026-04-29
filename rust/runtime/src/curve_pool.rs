@@ -39,6 +39,18 @@ pub struct CurvePool {
     slots: [Option<LoadedCurve>; CURVE_POOL_N],
 }
 
+// SAFETY: Phase 1 of Step-6 — currently `CurvePool` is auto-`Sync` because
+// `LoadedCurve` is `Copy + Sync` and the slot array contains no interior
+// mutability. This explicit impl is a placeholder for Phase 2 (`§10.2`
+// rewrite) where each slot becomes `PoolSlot { curve: UnsafeCell<…>,
+// current_gen: AtomicU16, … }` — at that point auto-`Sync` no longer holds
+// and we need this `unsafe impl` to ride the foreground-writer / ISR-reader
+// discipline through atomics. Adding the impl here means the FFI shim's
+// `RuntimeContext` (which embeds the pool) compiles with the same shape
+// across the two phases. Spec §10.5.
+#[allow(unsafe_code)]
+unsafe impl Sync for CurvePool {}
+
 impl Default for CurvePool {
     fn default() -> Self {
         Self::new()

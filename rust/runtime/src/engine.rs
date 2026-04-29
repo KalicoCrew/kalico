@@ -2,28 +2,24 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
-use crate::clock::{TickCounter, WidenState, one_tick_cycles};
+use heapless::spsc::{Consumer, Producer};
+
+use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
 use crate::curve_pool::{CurvePool, CurveView};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
-use crate::queue::SegmentQueue;
+use crate::queue::Q_N;
 use crate::segment::{KinematicTag, Segment};
 use crate::slot::{IsSlot, PaSlot};
-use crate::state::TickState;
-use crate::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TraceRing, TraceSample};
+use crate::state::{SharedState, TickState};
+use crate::trace::{
+    TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample,
+};
 
 /// Bounded sub-tick boundary-loop iteration count.
 /// Matches `Q_N` (queue capacity = 8) so a single tick can at most carry
 /// across one full queue's worth of zero-duration segments before faulting.
 const MAX_BOUNDARY_ITERS: u32 = 8;
-
-/// `TraceRing` capacity used by the `Engine` ISR. Spec §3.1.
-///
-/// Sized for 1 ms host drain latency at 40 kHz tick: 40 samples/ms × 32 B
-/// = 1280 B steady-state. 128 slots = 4 KB gives ~3 ms of headroom before
-/// overflow. Reduced from 1024 (32 KB) which blew the H723 DTCM budget at
-/// first-light bring-up; revisit once the linker uses AXI SRAM.
-const TRACE_RING_N: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -48,12 +44,11 @@ impl RuntimeStatus {
 
 #[allow(missing_debug_implementations)] // P, I are open trait bounds; ISR-internal struct.
 pub struct Engine<P: PaSlot, I: IsSlot> {
-    current: Option<Segment>,
+    pub(crate) current: Option<Segment>,
     last_motors: [f32; 3], // last-known-good motor positions (used in FAULT marker)
     pa_slot: P,
     is_slot: I,
     one_tick_cycles_value: u64,
-    pub(crate) widen_state: WidenState,
     pub(crate) status: AtomicU8,
     pub(crate) last_error: AtomicI32,
     pub(crate) tick_counter: TickCounter,
@@ -67,11 +62,18 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             pa_slot: P::default(),
             is_slot: I::default(),
             one_tick_cycles_value: u64::from(one_tick_cycles(clock_freq)),
-            widen_state: WidenState::default(),
             status: AtomicU8::new(RuntimeStatus::Idle as u8),
             last_error: AtomicI32::new(0),
             tick_counter: TickCounter::new(),
         }
+    }
+
+    /// Production-context constructor. Mirrors `::new(clock_freq)` but keeps
+    /// the call site noise low (Step-6 spec §14): the C-side
+    /// `kalico_clock_freq` static is read once at FFI init time and the value
+    /// is threaded through here.
+    pub fn new_production(clock_freq: u32) -> Self {
+        Self::new(clock_freq)
     }
 }
 
@@ -99,40 +101,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.tick_counter.snapshot()
     }
 
-    /// Foreground-callable: read the most recent widened `now: u64` so the
-    /// producer-protocol can preserve epoch across a TIM5 disable→enable cycle.
-    /// SAFETY: ISR is the sole writer of `WidenState`; foreground reads it only
-    /// while ISR is disabled (between `kalico_h7_disable_tim5` and re-enable).
-    pub fn last_widened_now(&self) -> u64 {
-        // Reconstruct from the ISR-private static. In the real implementation,
-        // this returns `widen_state.high | (widen_state.last_low as u64)` —
-        // accessed under the spec §4.7 SAFETY invariant that ISR is paused.
-        self.widen_state.high | u64::from(self.widen_state.last_low)
-    }
-
-    /// Widen a raw 32-bit CYCCNT sample to a u64 cycle count.
-    ///
-    /// Encapsulates `WidenState::widen` so the ISR FFI shim doesn't need
-    /// crate-private access to `widen_state`. SAFETY: this is the ISR-only
-    /// path; foreground must not call it concurrently with the ISR. Spec §4.7.
-    #[inline]
-    pub fn widen(&mut self, raw: u32) -> u64 {
-        self.widen_state.widen(raw)
-    }
-
-    /// Re-initialize CYCCNT widening from the foreground producer protocol.
-    ///
-    /// Encapsulates `WidenState::reinit` so the FFI surface in `kalico-c-api`
-    /// can drive the spec §4.4 disable→reinit→enable sequence without exposing
-    /// the `widen_state` field. Reads the pre-disable widened high-water mark
-    /// internally via [`Engine::last_widened_now`] and forwards `raw` along.
-    ///
-    /// SAFETY (caller must guarantee): TIM5 is disabled and the ISR has not
-    /// fired since the disable, so `widen_state` access is single-threaded.
-    /// Spec §4.4 / §4.7.
-    pub fn reinit_widen(&mut self, raw: u32) {
-        let last_widened = self.last_widened_now();
-        self.widen_state.reinit(raw, last_widened);
+    /// Round-2 fix B4: clear the current segment from outside the engine
+    /// module. Used by Phase 7 §8.5 flush as defense-in-depth so foreground
+    /// can drop the in-flight segment under disabled-IRQ before clearing
+    /// `stream_open`. Phase 1 lands the accessor; the call site arrives in
+    /// Phase 7.
+    #[allow(dead_code)] // Wired in Phase 7.
+    pub(crate) fn clear_current(&mut self) {
+        self.current = None;
     }
 
     /// Latch FAULT and emit one fault marker sample (last-known-good motors,
@@ -147,12 +123,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         code: RuntimeError,
         segment_id: u32,
         now: u64,
-        trace: &mut TraceRing<TRACE_RING_N>,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
     ) {
         self.last_error.store(i32::from(code), Ordering::Release);
         self.status
             .store(RuntimeStatus::Fault as u8, Ordering::Release);
-        let _ = trace.try_emit(TraceSample {
+        let _ = trace.enqueue(TraceSample {
             tick: now,
             motor_a: self.last_motors[0],
             motor_b: self.last_motors[1],
@@ -165,37 +141,56 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     /// Single 40 kHz tick. Spec §4.2 step ordering — must remain stable.
     ///
-    /// `now` is the widened u64 cycle count — caller (FFI shim or test)
-    /// is responsible for widening via `WidenState`.
+    /// Step-6 canonical signature (Phase 1 Task 1.2 + Round-4 verifier #5):
+    /// the engine receives the raw CYCCNT u32, the `widen_state` (now lives
+    /// in `IsrState`, not the engine), and the disjoint half-split borrows
+    /// (queue consumer, trace producer, `SharedState`). Widening + the §11.4
+    /// seqlock publish happen here so the foreground reader always sees a
+    /// coherent widened `now`.
+    ///
+    /// Returns `Result<(), RuntimeError>` mainly for tests; the FFI shim
+    /// drops the result because the fault is latched into `SharedState`
+    /// regardless.
     pub fn tick(
         &mut self,
-        now: u64,
-        queue: &mut SegmentQueue,
+        raw_cyccnt: u32,
+        widen_state: &mut WidenState,
         pool: &CurvePool,
-        trace: &mut TraceRing<TRACE_RING_N>,
+        queue: &mut Consumer<'_, Segment, Q_N>,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+        shared: &SharedState,
     ) -> Result<(), RuntimeError> {
+        // Phase 7 §8.5 force_idle short-circuit will be added at the top here.
+
+        let now = widen_state.widen(raw_cyccnt);
+        // §11.4: republish the widened u64 to SharedState so foreground readers
+        // (clock-sync responder, status frame) can fetch it without forming a
+        // &mut on the IsrState.
+        publish_widened_now(shared, now);
+
         if self.status() == RuntimeStatus::Fault {
             return Err(RuntimeError::FaultLatched);
         }
 
         // Step 1 + 2: queue + idle check, segment activation. See spec §4.2.
         // Idle/Drained path with §4.4 ISR-disable protocol.
-        // (Producer protocol at runtime_ffi.rs:172-186 re-enables TIM5 on
-        // either Idle or Drained, so we keep the two distinct: Idle is the
-        // initial post-init state set in Engine::new; Drained is set by the
-        // boundary loop below when the queue is exhausted. We must NOT clobber
-        // Drained back to Idle on subsequent empty-queue ticks — that would
-        // mask the completed-segment state from the host's status query.)
+        // (Producer protocol at runtime_ffi.rs re-enables TIM5 on either Idle
+        // or Drained, so we keep the two distinct: Idle is the initial
+        // post-init state set in Engine::new; Drained is set by the boundary
+        // loop below when the queue is exhausted. We must NOT clobber Drained
+        // back to Idle on subsequent empty-queue ticks — that would mask the
+        // completed-segment state from the host's status query.)
         let Some(current) = self.current.take() else {
             // Re-check queue with Acquire — race against producer's enqueue.
-            if !queue.is_empty() {
-                self.current = queue.try_pop();
-                if let Some(seg) = self.current {
-                    self.status
-                        .store(RuntimeStatus::Running as u8, Ordering::Release);
-                    // Fall through with the freshly dequeued segment.
-                    return self.tick_with_current(seg, now, queue, pool, trace);
-                }
+            if !queue.ready() {
+                return Ok(());
+            }
+            self.current = queue.dequeue();
+            if let Some(seg) = self.current {
+                self.status
+                    .store(RuntimeStatus::Running as u8, Ordering::Release);
+                // Fall through with the freshly dequeued segment.
+                return self.tick_with_current(seg, now, queue, pool, trace);
             }
             return Ok(());
         };
@@ -207,9 +202,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         &mut self,
         mut current: Segment,
         now: u64,
-        queue: &mut SegmentQueue,
+        queue: &mut Consumer<'_, Segment, Q_N>,
         pool: &CurvePool,
-        trace: &mut TraceRing<TRACE_RING_N>,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
     ) -> Result<(), RuntimeError> {
         // Step 3: sub-tick boundary loop. Spec §4.2 step 3 — bounded by queue depth.
         let mut iters = 0u32;
@@ -224,7 +219,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
             let delta_t = t_segment - current.duration();
             // Drop current; advance to next.
-            let Some(next) = queue.try_pop() else {
+            let Some(next) = queue.dequeue() else {
                 // No next segment — drained. Set status; return.
                 self.current = None;
                 self.status
@@ -273,7 +268,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             0
         };
-        let _ = trace.try_emit(TraceSample {
+        let _ = trace.enqueue(TraceSample {
             tick: now,
             motor_a: state.motors[0],
             motor_b: state.motors[1],

@@ -7,13 +7,18 @@
     clippy::items_after_statements
 )]
 
-use runtime::clock::one_tick_cycles;
+use heapless::spsc::Queue;
+
+use runtime::clock::{WidenState, one_tick_cycles};
 use runtime::curve_pool::CurvePool;
 use runtime::engine::{Engine, RuntimeStatus};
-use runtime::queue::SegmentQueue;
+use runtime::queue::Q_N;
 use runtime::segment::{CurveHandle, KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
-use runtime::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TraceRing, TraceSample};
+use runtime::state::SharedState;
+use runtime::trace::{
+    TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample,
+};
 
 // Default H723 Klipper Kconfig clock is 520 MHz (src/stm32/Kconfig). Keeping
 // tests parametric here so a future bump to 550 MHz (or different alternate
@@ -21,6 +26,76 @@ use runtime::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TraceRing,
 const CLOCK_FREQ: u32 = 520_000_000;
 
 mod fixtures; // see Task 17a — shared step5_segments.json parser
+
+/// Test scaffolding mirroring `RuntimeContext`'s SPSC split. Owns the
+/// queue/trace backing storage so the `'static`-bound producer/consumer
+/// halves stay alive across `engine.tick()` calls.
+///
+/// Step-6 Phase 1 Task 1.1 changed `Engine::tick`'s signature to take the
+/// half-split `Consumer<Segment, Q_N>` + `Producer<TraceSample,
+/// TRACE_RING_N>` directly. Tests own the backing `Queue`s on the heap and
+/// leak them so the resulting halves are `'static` for the duration of the
+/// test. Heap leaks are fine in unit tests; production paths use the
+/// static-storage path inside `RuntimeContext::init`.
+struct Harness {
+    engine: Engine<NoopPa, NoopIs>,
+    widen: WidenState,
+    pool: CurvePool,
+    shared: SharedState,
+    q_producer: heapless::spsc::Producer<'static, Segment, Q_N>,
+    q_consumer: heapless::spsc::Consumer<'static, Segment, Q_N>,
+    t_producer: heapless::spsc::Producer<'static, TraceSample, TRACE_RING_N>,
+    t_consumer: heapless::spsc::Consumer<'static, TraceSample, TRACE_RING_N>,
+}
+
+impl Harness {
+    fn new() -> Self {
+        // Box::leak the queues so the producer/consumer halves get a
+        // `'static` lifetime. Each test-process leaks ~80 KB; cargo test
+        // tears down the process per binary, so this never accumulates in
+        // production.
+        let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+        let (q_producer, q_consumer) = queue.split();
+        let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
+            Box::leak(Box::new(Queue::new()));
+        let (t_producer, t_consumer) = trace.split();
+        Self {
+            engine: Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ),
+            widen: WidenState::default(),
+            pool: CurvePool::new(),
+            shared: SharedState::new(),
+            q_producer,
+            q_consumer,
+            t_producer,
+            t_consumer,
+        }
+    }
+
+    fn tick(&mut self, raw_cyccnt: u32) -> Result<(), runtime::error::RuntimeError> {
+        self.engine.tick(
+            raw_cyccnt,
+            &mut self.widen,
+            &self.pool,
+            &mut self.q_consumer,
+            &mut self.t_producer,
+            &self.shared,
+        )
+    }
+
+    fn drain_trace(&mut self, out: &mut [TraceSample]) -> usize {
+        let mut count = 0;
+        while count < out.len() {
+            let Some(sample) = self.t_consumer.dequeue() else {
+                break;
+            };
+            if let Some(slot) = out.get_mut(count) {
+                *slot = sample;
+            }
+            count += 1;
+        }
+        count
+    }
+}
 
 /// Load fixture-by-name into the curve pool slot. Single source of truth for
 /// "which curves the Step-5 tests use" — mirrored by Surface C's host script.
@@ -46,32 +121,30 @@ fn load_fixture(pool: &mut CurvePool, handle: u16, name: &str) {
     .unwrap();
 }
 
+// Helper: t_segment in u32 (engine widens internally). Since we start at
+// raw_cyccnt = 0, no wrap concerns within these tests' tick budgets.
+#[allow(clippy::cast_possible_truncation)]
+fn raw_cyccnt(now: u64) -> u32 {
+    now as u32
+}
+
 #[test]
 fn tick_on_empty_queue_returns_idle() {
-    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
-    let r = engine.tick(
-        0,
-        &mut SegmentQueue::new(),
-        &CurvePool::new(),
-        &mut TraceRing::<128>::new(),
-    );
+    let mut h = Harness::new();
+    let r = h.tick(0);
     assert!(r.is_ok());
-    assert_eq!(engine.status(), RuntimeStatus::Idle);
+    assert_eq!(h.engine.status(), RuntimeStatus::Idle);
 }
 
 #[test]
 fn tick_processes_one_segment_to_completion() {
-    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
-    let mut queue = SegmentQueue::new();
-    let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<128>::new();
-
-    load_fixture(&mut pool, 0, "straight_line_x");
+    let mut h = Harness::new();
+    load_fixture(&mut h.pool, 0, "straight_line_x");
 
     let tick_cycles = u64::from(one_tick_cycles(CLOCK_FREQ));
     let n_ticks = 4u64;
-    queue
-        .try_push(Segment {
+    h.q_producer
+        .enqueue(Segment {
             id: 1,
             curve: CurveHandle(0),
             t_start: 0,
@@ -83,14 +156,13 @@ fn tick_processes_one_segment_to_completion() {
     // Tick repeatedly through the segment.
     for tick_idx in 0..=n_ticks {
         let now = tick_idx * tick_cycles;
-        engine
-            .tick(now, &mut queue, &pool, &mut trace)
+        h.tick(raw_cyccnt(now))
             .expect("tick should succeed in healthy run");
     }
 
     // Drain trace and verify samples emitted along the line.
     let mut out = [TraceSample::default(); 16];
-    let n = trace.drain_into(&mut out);
+    let n = h.drain_trace(&mut out);
     assert!(
         n >= 4,
         "expected at least 4 samples along the line, got {n}"
@@ -103,18 +175,15 @@ fn tick_processes_one_segment_to_completion() {
 
 #[test]
 fn sub_tick_boundary_carries_partial_into_next_segment() {
-    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
-    let mut queue = SegmentQueue::new();
-    let mut pool = CurvePool::new();
-    let mut trace = TraceRing::<128>::new();
+    let mut h = Harness::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
     // Two distinct fixtures back-to-back — exercise sub-tick boundary carry.
     // straight_line_x ends at (10,0,0); rational_quadratic_arc starts at
     // (10,0,0) so the boundary is geometrically continuous and motor_a
     // increases monotonically across the seam.
-    load_fixture(&mut pool, 0, "straight_line_x");
-    load_fixture(&mut pool, 1, "rational_quadratic_arc");
+    load_fixture(&mut h.pool, 0, "straight_line_x");
+    load_fixture(&mut h.pool, 1, "rational_quadratic_arc");
 
     // Sized so that tick 1 lands near u≈1 of seg1 and tick 2 (post-boundary)
     // lands near u≈0 of seg2 — the only configuration that satisfies the
@@ -122,8 +191,8 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     // → tick 1 at u = tc/(tc+1) ≈ 1; D2 = 1000·tc → tick 2 at u ≈ 0.001.)
     let d1 = tc + 1;
     let d2 = 1000 * tc;
-    queue
-        .try_push(Segment {
+    h.q_producer
+        .enqueue(Segment {
             id: 1,
             curve: CurveHandle(0),
             t_start: 0,
@@ -131,8 +200,8 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
             kinematics: KinematicTag::CoreXyAndE,
         })
         .unwrap();
-    queue
-        .try_push(Segment {
+    h.q_producer
+        .enqueue(Segment {
             id: 2,
             curve: CurveHandle(1),
             t_start: d1,
@@ -143,13 +212,12 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
 
     // Tick at t = 0, tc, 2tc, 3tc — third tick straddles the seg1→seg2 boundary.
     for tick_idx in 0..=3u64 {
-        engine
-            .tick(tick_idx * tc, &mut queue, &pool, &mut trace)
+        h.tick(raw_cyccnt(tick_idx * tc))
             .expect("tick should succeed in healthy run");
     }
 
     let mut out = [TraceSample::default(); 16];
-    let n = trace.drain_into(&mut out);
+    let n = h.drain_trace(&mut out);
 
     // Boundary correctness check: the LAST sample of segment 1 and the FIRST
     // sample of segment 2 must agree on (motor_a, motor_b, motor_e) to within
@@ -197,14 +265,11 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
 fn invalid_curve_handle_latches_fault() {
     // Spec §5.5. Engine resolves an unloaded handle → InvalidHandle fault,
     // status latches to Fault, last_error code is set, fault marker emitted.
-    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
-    let mut queue = SegmentQueue::new();
-    let pool = CurvePool::new(); // empty — handle 0 is unloaded
-    let mut trace = TraceRing::<128>::new();
+    let mut h = Harness::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
-    queue
-        .try_push(Segment {
+    h.q_producer
+        .enqueue(Segment {
             id: 1,
             curve: CurveHandle(0),
             t_start: 0,
@@ -213,17 +278,17 @@ fn invalid_curve_handle_latches_fault() {
         })
         .unwrap();
 
-    let r = engine.tick(0, &mut queue, &pool, &mut trace);
+    let r = h.tick(0);
     assert!(r.is_err());
-    assert_eq!(engine.status(), RuntimeStatus::Fault);
+    assert_eq!(h.engine.status(), RuntimeStatus::Fault);
     assert_eq!(
-        engine.last_error(),
+        h.engine.last_error(),
         runtime::error::KALICO_ERR_INVALID_HANDLE
     );
 
     // Trace has a fault-marker sample (last-known-good motors, segment_id=1).
     let mut out = [TraceSample::default(); 8];
-    let n = trace.drain_into(&mut out);
+    let n = h.drain_trace(&mut out);
     assert_eq!(n, 1, "exactly one fault-marker sample expected");
     assert_ne!(
         out[0].flags & TRACE_FLAG_FAULT_MARKER,

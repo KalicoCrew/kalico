@@ -26,6 +26,7 @@ pub mod segment;
 pub mod sim_fixtures;
 pub mod slot;
 pub mod state;
+pub mod stream;
 pub mod trace;
 
 #[cfg(test)]
