@@ -52,7 +52,12 @@ jobs:
       - name: cargo build (workspace; covers kalico-host-rt + runtime + temporal)
         run: cargo build --workspace
       - name: cargo test (workspace; covers kalico-host-rt + runtime + temporal)
-        run: cargo test --workspace
+        # `--features test-injection` activates the runtime crate's
+        # `Engine::inject_iter_count` predicate path that gates
+        # `tests/max_boundary_iters.rs` (Phase 12.2). Without it the
+        # integration test compiles to an empty binary via `#![cfg(...)]`
+        # and the §6.6 ABI-cap regression would silently never run in CI.
+        run: cargo test --workspace --features runtime/test-injection
       - name: cargo clippy (-D warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo fmt (check)

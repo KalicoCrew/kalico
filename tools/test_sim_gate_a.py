@@ -201,6 +201,22 @@ def run_gate_a(use_real_loads):
                 pass
         print(f"  pushed {N_SEGMENTS} segments")
 
+        # Settle window: under sim, the MCU's 96-byte TX buffer can stay
+        # near-full for a beat after a 10-push burst (status_v6 is queued
+        # behind the last few push_responses). Let the wire drain before we
+        # start polling diag — without this, the first diag-response gets
+        # silently dropped by `console_sendf`'s "not enough space" branch
+        # (src/generic/serial_irq.c:104) and we time out.
+        time.sleep(0.5)
+        # Drain any stale `#output` frames the periodic emitter queued
+        # during the push burst so we don't read them as our progress
+        # signal.
+        try:
+            while True:
+                io._ensure_queue("kalico_status_v6").get_nowait()
+        except Exception:
+            pass
+
         # Verify engine progresses: poll diag until we see tick_counter
         # advance. Substitute for the trace-stream check (see module
         # docstring). Renode pacing under sim is fast enough that the engine

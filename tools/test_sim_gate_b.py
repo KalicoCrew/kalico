@@ -76,10 +76,14 @@ UNDERRUN_FAULT_CODE = (-130) & 0xFFFF
 TRACE_OVERFLOW_FAULT_CODE = (-133) & 0xFFFF
 
 # t_start values must comfortably exceed widened_now at arm time. Under
-# sim pacing, widened_now accumulates at the TIM5 ISR rate; using ~1G
-# cycles (≈ 1.9 s of MCU time) keeps the segments far enough ahead of
-# mcu_now even with Renode's slow virtual-time → wall-clock conversion.
-LARGE_T_START_BASE = 1_000_000_000
+# sim pacing the original 1G-cycle (≈ 1.9 s MCU) base translated to
+# ~30s wall-clock for the engine to *reach* t_start under Renode's
+# 0.05-0.5x virtual-time pacing — overshooting items 5/6's 20-25s
+# budgets and producing deterministic timing-budget FAILs. 100 ms × 520
+# MHz = 5.2 × 10^7 cycles is still comfortably ahead of widened_now at
+# arm time (which is ~0 right after sim boot, < 1e6 cycles in practice)
+# while letting the first retire fire within ~1 s wall-clock.
+LARGE_T_START_BASE = 52_000_000
 
 # Per-test wall-clock budgets. Sum ≤ 60s per spec.
 ITEM_5_BUDGET_S = 25.0
@@ -184,14 +188,18 @@ def test_item_5_status_frame_correctness(io):
         if rc != 0:
             return ("FAIL", f"push id={seg_id} returned rc={rc}")
 
-    # Send terminal so engine ends Drained, not Underrun-Fault.
-    rc = stream_terminal(io, segment_id=5)
-    if rc != 0:
-        return ("FAIL", f"terminal returned rc={rc}")
-
+    # Stream FSM (`runtime/src/stream.rs`): `arm()` requires
+    # StreamOpenPriming; `terminal()` transitions to Draining and rejects
+    # any subsequent arm. Order must therefore be: arm-then-terminal.
+    # Sending terminal here marks the trailing segment_id so the engine
+    # quiesces to Drained (not Underrun-Fault) when the queue empties.
     rc = stream_arm(io, LARGE_T_START_BASE, 2 * ONE_TICK_CYCLES)
     if rc != 0:
         return ("FAIL", f"arm returned rc={rc}")
+
+    rc = stream_terminal(io, segment_id=5)
+    if rc != 0:
+        return ("FAIL", f"terminal returned rc={rc}")
 
     # Poll for retirement. Use both status_v6 (preferred) and sim_diag
     # (fallback) — sim_diag exposes retire-cursor side-channels that

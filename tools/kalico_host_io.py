@@ -210,11 +210,16 @@ class KalicoHostIO:
                     mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
                     with self._lock:
                         self._seq = mcu_next
+                # NAK/bare-ack frames are MESSAGE_MIN-length with no payload;
+                # skip parse to avoid spurious "index out of range" /
+                # "Extra data" exceptions.
+                if len(pkt) <= msgproto.MESSAGE_MIN:
+                    continue
                 try:
                     params = self._parser.parse(pkt)
                 except Exception:
-                    # NAK packets have no msgid → parse fails. We've
-                    # already extracted the seq above; drop the packet.
+                    # Defensive: malformed packet during identify. Already
+                    # synced seq above; drop the packet.
                     continue
                 if params.get("#name") == name:
                     return params
@@ -310,7 +315,13 @@ class KalicoHostIO:
             try:
                 self._ser.timeout = 0.1
                 chunk = self._ser.read(512)
-            except (OSError, serial.SerialException, TypeError) as exc:  # type: ignore[union-attr]
+            except (OSError, serial.SerialException, TypeError,
+                    AttributeError) as exc:  # type: ignore[union-attr]
+                # `AttributeError` covers pyserial's socket:// URL handler:
+                # on `Serial.close()` it sets `_socket = None`, and an
+                # in-flight `read()` then explodes with
+                # `'NoneType' object has no attribute 'recv'` (instead of
+                # raising SerialException). Treat the same as a clean shutdown.
                 if self._stop.is_set():
                     return
                 logging.warning("kalico-host-io: serial read error: %s", exc)
@@ -323,18 +334,46 @@ class KalicoHostIO:
                 logging.warning("kalico-host-io: framing error: %s", exc)
                 continue
             for pkt in packets:
-                # Handler-side seq sync: every received packet's seq byte is
-                # MCU's current next_sequence. Keeping our counter aligned
-                # protects subsequent sends from NAK loops.
-                if len(pkt) >= 2:
-                    with self._lock:
-                        self._seq = pkt[1] & msgproto.MESSAGE_SEQ_MASK
+                # NAK / bare-ack frames are MESSAGE_MIN-length (5 bytes:
+                # 2-byte header + 2-byte CRC + 1-byte sync, zero payload).
+                # Their `MESSAGE_HEADER_SIZE..len-TRAILER` window is empty;
+                # `_parser.parse` would mis-decode the CRC bytes as a varint
+                # msgid and either run off the end ("index out of range") or
+                # leave bytes unconsumed ("Extra data at end of message").
+                # We only consult the seq byte for resync purposes here.
+                #
+                # IMPORTANT — only NAKs (and only NAKs) advance our send-seq
+                # counter. Every MCU→host message (response, output frame,
+                # NAK) carries `MCU.next_sequence` in its seq byte, but only
+                # NAKs warrant a forced realignment: data/output frames see
+                # the seq AFTER the MCU acked previous host writes, so by
+                # the time their seq arrives our `_seq` has already been
+                # advanced past it via `_next_seq()`. Blindly clobbering
+                # `_seq` to the received value (the original 25.5 logic)
+                # creates a race where an output frame arriving between our
+                # `_next_seq()` read and the MCU's processing rewinds our
+                # counter behind what we already sent → MCU NAKs forever
+                # because every retransmit goes out at a stale seq. Skip the
+                # update on non-NAK packets entirely.
+                if len(pkt) <= msgproto.MESSAGE_MIN:
+                    if len(pkt) >= 2:
+                        with self._lock:
+                            mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
+                            # Only forward jumps. If MCU is asking us to
+                            # rewind below where we are, there's an
+                            # in-flight retransmit window we can't recover
+                            # from without a real serialqueue — flag it but
+                            # don't bind ourselves to a stale value.
+                            mask = msgproto.MESSAGE_SEQ_MASK
+                            delta = (mcu_next - self._seq) & mask
+                            if delta != 0:
+                                self._seq = mcu_next
+                    continue
                 try:
                     params = self._parser.parse(pkt)
                 except Exception as exc:
-                    # Some MCU responses (NAKs, malformed) blow up the
-                    # parser. Log + skip — never let a bad packet kill
-                    # the whole RX thread.
+                    # Real parse failure on a non-NAK packet — this is a
+                    # genuine schema/wire bug worth surfacing. Log + skip.
                     logging.warning(
                         "kalico-host-io: parse error on pkt %s: %s",
                         pkt.hex() if hasattr(pkt, "hex") else pkt,
@@ -343,6 +382,40 @@ class KalicoHostIO:
                     continue
                 name = params.get("#name", "<noname>")
                 self._ensure_queue(name).put(params)
+                # Output-frame fan-out: `OutputFormat.parse` collapses every
+                # `output()` emit to `#name="#output"` with the rendered
+                # text in `#msg`. Tests want to wait on the *specific*
+                # frame name (e.g. `kalico_status_v6`, `kalico_credit_freed`,
+                # `kalico_fault`) — extract the leading whitespace-separated
+                # token from `#msg` and re-publish into a per-name queue,
+                # additionally promoting any `key=value` tokens to top-level
+                # dict entries so consumers can `params["retired_through..."]`
+                # the same way they would for a DECL_COMMAND response. The
+                # legacy `#output` channel stays populated for callers that
+                # want every output frame opaquely.
+                if name == "#output":
+                    msg = params.get("#msg", "")
+                    tokens = msg.split() if msg else []
+                    if tokens:
+                        head, kvs = tokens[0], tokens[1:]
+                        out_params = dict(params)
+                        out_params["#name"] = head
+                        for tok in kvs:
+                            if "=" not in tok:
+                                continue
+                            k, v = tok.split("=", 1)
+                            # Best-effort numeric coercion; fall back to str.
+                            try:
+                                if v.startswith("0x") or v.startswith("0X"):
+                                    out_params[k] = int(v, 16)
+                                else:
+                                    out_params[k] = int(v)
+                            except ValueError:
+                                try:
+                                    out_params[k] = float(v)
+                                except ValueError:
+                                    out_params[k] = v
+                        self._ensure_queue(head).put(out_params)
 
     # --- shutdown ---------------------------------------------------------
 
