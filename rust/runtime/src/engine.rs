@@ -313,16 +313,25 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             0
         };
-        let _ = trace.enqueue(TraceSample {
-            tick: now,
-            motor_a: state.motors[0],
-            motor_b: state.motors[1],
-            motor_e: state.motors[2],
-            segment_id: current.id,
-            curve_handle: current.curve_handle,
-            flags: segment_end_flag,
-            _pad: [0; 3],
-        });
+        // §13.1: trace-ring overflow → set `sample_drop_pending` so foreground
+        // can latch `KALICO_FAULT_TRACE_OVERFLOW`. Unlike the Step-5 carry-bit
+        // approach, the dropped sample is gone — foreground hard-faults
+        // instead of trying to resynchronize a partial trace stream.
+        if trace
+            .enqueue(TraceSample {
+                tick: now,
+                motor_a: state.motors[0],
+                motor_b: state.motors[1],
+                motor_e: state.motors[2],
+                segment_id: current.id,
+                curve_handle: current.curve_handle,
+                flags: segment_end_flag,
+                _pad: [0; 3],
+            })
+            .is_err()
+        {
+            shared.sample_drop_pending.store(true, Ordering::Release);
+        }
         // Round-2 B14: when the segment is about to retire (last sample in
         // its window emits SEGMENT_END), advance retired_through_segment_id
         // monotonically. The next-tick activation re-fires this update via

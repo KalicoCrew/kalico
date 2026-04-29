@@ -9,7 +9,12 @@
 //! Producer is expected to drain pending trace samples before failing alloc
 //! due to "no reclaimable slot."
 
+use core::sync::atomic::Ordering;
+
 use crate::curve_pool::CurvePool;
+use crate::engine::RuntimeStatus;
+use crate::error::FaultCode;
+use crate::state::SharedState;
 use crate::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
 
 /// Drain up to `limit` trace samples from `drain_one`; for each
@@ -29,4 +34,34 @@ where
         drained += 1;
     }
     drained
+}
+
+/// §13.1 trace-overflow latch. Foreground polls this each drain cycle.
+///
+/// If the ISR has set `sample_drop_pending` (because a `trace.enqueue` failed
+/// after the trace ring filled), latch `KALICO_FAULT_TRACE_OVERFLOW`. The
+/// `runtime_status` transition is gated on a previously-clean `last_error`
+/// so this never overrides an earlier latched fault. Returns true on a
+/// fresh latch transition (so callers can emit a `kalico_fault` frame),
+/// false otherwise.
+pub fn check_trace_overflow_and_fault(shared: &SharedState) -> bool {
+    if !shared.sample_drop_pending.load(Ordering::Acquire) {
+        return false;
+    }
+    // Compare-exchange the i32 last_error against the "clean" value so we
+    // don't clobber an earlier-latched fault.
+    let prev = shared.last_error.compare_exchange(
+        0,
+        FaultCode::TraceOverflow.as_i32(),
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+    if prev.is_ok() {
+        shared
+            .runtime_status
+            .store(RuntimeStatus::Fault as u8, Ordering::Release);
+        true
+    } else {
+        false
+    }
 }
