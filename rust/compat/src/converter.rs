@@ -88,7 +88,7 @@ pub fn convert(input: &str, input_name: &str, tolerance_um: f64) -> Result<Strin
     for (idx, token) in tokens.iter().enumerate() {
         match token {
             Err(e) => {
-                eprintln!("kalico-compat: warning: parse error: {e}");
+                eprintln!("kalico-compat: warning: {e}");
             }
             Ok(tok) => dispatch_token(&mut ctx, tok, &tokens, idx)?,
         }
@@ -146,8 +146,10 @@ fn dispatch_command(
             flush_run(ctx, None);
             if major == 82 && minor.is_none() {
                 ctx.state.absolute_e = true;
+                return Ok(());
             } else if major == 83 && minor.is_none() {
                 ctx.state.absolute_e = false;
+                return Ok(());
             }
             writeln_out(&mut ctx.out, &reconstruct_command(b'M', major, minor, params));
             Ok(())
@@ -261,16 +263,29 @@ fn handle_g0_g1(
     let resolved_e = ctx.state.resolve_input_e(params.e());
 
     if ctx.state.has_xy_motion(&end_pos) {
-        // Check for run breaks (feedrate change).
-        let should_flush = ctx
-            .run_buffer
-            .as_ref()
-            .is_some_and(|run| (run.feedrate_mm_min - feedrate).abs() > 1e-6);
+        let e_input = resolved_e.unwrap_or(ctx.state.input_e);
+        let e_delta = e_input - ctx.state.input_e;
+        let dx = end_pos[0] - ctx.state.position[0];
+        let dy = end_pos[1] - ctx.state.position[1];
+        let xy_len = (dx * dx + dy * dy).sqrt();
+        let this_e_ratio = if xy_len > 1e-12 { e_delta / xy_len } else { 0.0 };
+
+        // Check for run breaks: feedrate change or E-ratio change.
+        let should_flush = ctx.run_buffer.as_ref().is_some_and(|run| {
+            if (run.feedrate_mm_min - feedrate).abs() > 1e-6 {
+                return true;
+            }
+            if let Some(run_ratio) = run.e_ratio {
+                let ratio_diff = (run_ratio - this_e_ratio).abs();
+                let ratio_scale = run_ratio.abs().max(this_e_ratio.abs()).max(1e-9);
+                ratio_diff / ratio_scale > 0.05
+            } else {
+                false
+            }
+        });
         if should_flush {
             flush_run(ctx, None);
         }
-
-        let e_input = resolved_e.unwrap_or(ctx.state.input_e);
 
         if ctx.run_buffer.is_none() {
             let mut run = Run::new(
@@ -281,6 +296,7 @@ fn handle_g0_g1(
                 },
                 feedrate,
             );
+            run.e_ratio = Some(this_e_ratio);
             run.start_tangent = ctx.state.prev_tangent;
             ctx.run_buffer = Some(run);
         }
@@ -419,6 +435,11 @@ fn handle_g5(
     if let Some(f) = params.f() {
         ctx.state.feedrate_mm_min = Some(f);
     }
+    if ctx.state.feedrate_mm_min.is_none() {
+        return Err(ConvertError::Fatal(format!(
+            "line {line_no}: G5 with no feedrate established"
+        )));
+    }
 
     let end_pos = ctx.state.resolve_position(params.x(), params.y(), params.z());
     let resolved_e = ctx.state.resolve_input_e(params.e());
@@ -476,6 +497,11 @@ fn handle_g51(
 
     if let Some(f) = params.f() {
         ctx.state.feedrate_mm_min = Some(f);
+    }
+    if ctx.state.feedrate_mm_min.is_none() {
+        return Err(ConvertError::Fatal(format!(
+            "line {line_no}: G5.1 with no feedrate established"
+        )));
     }
 
     let end_pos = ctx.state.resolve_position(params.x(), params.y(), params.z());

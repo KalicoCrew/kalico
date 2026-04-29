@@ -34,7 +34,7 @@ impl fmt::Display for G5Line {
             self.x, self.y, self.z, self.i, self.j, self.p, self.q, self.e
         )?;
         if let Some(feed) = self.f {
-            write!(f, " F{feed:.0}")?;
+            write!(f, " F{feed}")?;
         }
         Ok(())
     }

@@ -23,6 +23,9 @@ pub struct Run {
     pub waypoints: Vec<Waypoint>,
     /// Feedrate in mm/min for all moves in this run.
     pub feedrate_mm_min: f64,
+    /// E-ratio (`E_delta` / `XY_path_length`) for segments in this run, if
+    /// established. Used to detect run breaks when the ratio changes.
+    pub e_ratio: Option<f64>,
     /// Tangent direction arriving at the start of the run from a previous
     /// segment, if known. Used to set C¹ continuity at the run boundary.
     pub start_tangent: Option<[f64; 2]>,
@@ -37,6 +40,7 @@ impl Run {
         Self {
             waypoints: vec![start],
             feedrate_mm_min,
+            e_ratio: None,
             start_tangent: None,
             end_tangent: None,
         }
