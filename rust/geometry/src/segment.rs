@@ -177,13 +177,13 @@ pub enum EMode {
     Travel,
     /// E motion not coupled to XY: own E NURBS carries the trajectory in time.
     /// In 7-pre's live pipeline, `Independent` always implies null `xyz` motion
-    /// (cp_polygon_length and midpoint parametric speed both below thresholds).
+    /// (`cp_polygon_length` and midpoint parametric speed both below thresholds).
     /// Helical extrusion (XYZ + E) is rejected upstream; never produces `Independent`
     /// in the live pipeline.
     Independent,
 }
 
-/// Sub-segment provenance, populated by `split_segment_to_cap` (geometry::splitter).
+/// Sub-segment provenance, populated by `split_segment_to_cap` (`geometry::splitter`).
 /// `None` when the segment was not split.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitInfo {
