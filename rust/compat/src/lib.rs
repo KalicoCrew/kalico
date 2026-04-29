@@ -9,4 +9,5 @@
 pub mod collinear;
 pub mod degree_elev;
 pub mod emit;
+pub mod g5_canon;
 pub mod modal;
