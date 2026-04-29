@@ -1127,6 +1127,18 @@ After Round 2 fixes (commit 74682f69), both reviewers re-ran in parallel.
 
 Net round 3: spec converged. Architectural shape unchanged across all three rounds; Rounds 2 and 3 were tightening of executable details (DTCM numbers, flush sequence, sample-source semantics, retry-bound argument). All blocking issues across both reviewers' parallel findings now closed.
 
+### Round 4 of autonomous loop: convergence sign-off
+
+Round 4 reviewers (Codex + kalico-verifier, parallel) both returned **VERIFIED — ready for implementation**:
+- Codex: "READY FOR IMPLEMENTATION" with no blocking issues across all four targeted checks (force_idle handshake composition, SharedState additions, FIFO ordering, dedicated-sync rule).
+- kalico-verifier: "VERIFIED — ready for implementation" with two non-blocking nice-to-haves carried forward as plan-level decisions (not spec defects):
+
+**Plan-level decision A (§8.5 store ordering):** Foreground in step 1 sets `force_idle=true` first, waits for ack, *then* sets `stream_open=false`. Avoids a spurious-Underrun race when flushing an empty open stream where the ISR is mid-tick at the boundary-drain branch. The plan implements step 1 as two sub-steps in this order.
+
+**Plan-level decision B (§12.3 dedicated-sync at arm-time):** §12.3 narrative is normative — host issues `kalico_clock_sync_request` as an explicit step in §6.4 ARMING; §12.4 quality-gate adds an "RTT-aware sample present and ≤ MAX_RTT_AGE_MS old" check. The plan implements ARMING as: dedicated sync request → wait for response → quality-gate check (including new RTT-aware-sample requirement) → if pass, emit `kalico_stream_arm`.
+
+Net round 4: spec frozen for Step 6 implementation. Architecture, ISR-foreground discipline, curve-pool generation handling, DTCM sizing, buffer-budget framework, wire schema, fault taxonomy — all internally consistent and implementable. Plan-writing proceeds.
+
 ---
 
 ## 17. Summary of decisions
