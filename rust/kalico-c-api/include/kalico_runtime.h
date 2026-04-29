@@ -41,7 +41,10 @@ extern uint32_t kalico_h7_read_cyccnt(void);
 
 /**
  * Init-once. Spec §3.2.
- * Returns valid handle on first successful call; null otherwise.
+ *
+ * Returns a valid handle on the first successful call; null on any
+ * subsequent call. The handle is the address of the static
+ * `RuntimeContext` storage; its lifetime is `'static`.
  */
 struct KalicoRuntime *kalico_runtime_init(void);
 

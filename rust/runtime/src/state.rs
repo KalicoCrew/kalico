@@ -71,9 +71,9 @@ pub struct FgState {
     pub current_stream_id: Option<u32>,
     /// Arm-time idempotency (§8.5: arm with same `t_start_t0` returns OK).
     pub armed_t_start_t0: Option<u64>,
-    /// Round-2 fix B6: foreground tracks the FIRST priming segment's t_start
-    /// at push-acceptance time. `arm()` reads from here (not from the
-    /// ISR-owned queue) per §6.3 + §11.1 SPSC ownership discipline.
+    /// Round-2 fix B6: foreground tracks the FIRST priming segment's
+    /// `t_start` at push-acceptance time. `arm()` reads from here (not from
+    /// the ISR-owned queue) per §6.3 + §11.1 SPSC ownership discipline.
     pub first_priming_segment_t_start: Option<u64>,
     /// Set by §8.3 `kalico_stream_terminal` handler; consumed by the ISR
     /// retire path (cross-half via `SharedState` atomics).
@@ -179,12 +179,24 @@ impl Default for SharedState {
 ///   alive at `'static`.
 #[allow(missing_debug_implementations)] // Inner half-states wrap non-Debug types.
 pub struct RuntimeContext {
-    pub(crate) fg: UnsafeCell<FgState>,
-    pub(crate) isr: UnsafeCell<IsrState>,
-    pub(crate) shared: SharedState,
-    pub(crate) curve_pool: CurvePool,
-    pub(crate) queue_storage: UnsafeCell<Queue<Segment, Q_N>>,
-    pub(crate) trace_storage: UnsafeCell<Queue<TraceSample, TRACE_RING_N>>,
+    /// Foreground-only half. Reach via `addr_of!((*ctx).fg)` →
+    /// `UnsafeCell::raw_get` → `&mut FgState`. Spec §11.2.
+    pub fg: UnsafeCell<FgState>,
+    /// ISR-only half. Same projection pattern as `fg`. Spec §11.2.
+    pub isr: UnsafeCell<IsrState>,
+    /// Cross-half atomics. Read/written through `&SharedState` (atomics
+    /// supply the synchronization). Spec §11.3.
+    pub shared: SharedState,
+    /// Top-level curve slab. Foreground writer / ISR reader; per-slot
+    /// generation atomics arrive in Phase 2. Spec §10.5.
+    pub curve_pool: CurvePool,
+    /// Backing storage for the segment SPSC. Split into `Producer` /
+    /// `Consumer` halves at `init` time and stored on `FgState` /
+    /// `IsrState` respectively.
+    pub queue_storage: UnsafeCell<Queue<Segment, Q_N>>,
+    /// Backing storage for the trace SPSC. Same split pattern as
+    /// `queue_storage`.
+    pub trace_storage: UnsafeCell<Queue<TraceSample, TRACE_RING_N>>,
 }
 
 // SAFETY: see discipline contract above. `CurvePool` carries its own
@@ -197,7 +209,7 @@ pub struct RuntimeContext {
 unsafe impl Sync for RuntimeContext {}
 
 unsafe extern "C" {
-    /// C-side static, set at runtime_init time in `src/runtime_tick.c`.
+    /// C-side static, set at `runtime_init` time in `src/runtime_tick.c`.
     static kalico_clock_freq: u32;
 }
 

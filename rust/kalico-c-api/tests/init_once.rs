@@ -32,9 +32,12 @@ pub extern "C" fn kalico_h7_read_cyccnt() -> u32 {
 
 #[test]
 fn second_init_returns_null() {
-    let h1 = unsafe { kalico_c_api::kalico_runtime_init() };
+    // Step-6 Phase 1: kalico_runtime_init is now `extern "C"` (not `unsafe`)
+    // — the init guard short-circuits on the second call by returning null,
+    // so there's no precondition the caller has to uphold.
+    let h1 = kalico_c_api::kalico_runtime_init();
     assert!(!h1.is_null());
-    let h2 = unsafe { kalico_c_api::kalico_runtime_init() };
+    let h2 = kalico_c_api::kalico_runtime_init();
     assert!(h2.is_null(), "second init must return null");
 }
 

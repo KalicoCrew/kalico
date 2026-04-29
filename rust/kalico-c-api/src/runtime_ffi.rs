@@ -1,18 +1,20 @@
-//! Kalico runtime C-FFI surface. Spec §3.2 / §4.4 / §5.2 / §5.6.
+//! Kalico runtime C-FFI surface. Spec §3.2 / §4.4 / §5.2 / §5.6 / §11.2.
 //!
 //! cfg-gated by `header-runtime`. Exposes the opaque `*mut KalicoRuntime`
 //! handle plus the eight `kalico_runtime_*` entrypoints used by the Klipper
 //! C ISR shim and the foreground producer task.
 //!
-//! ## Latent UB acknowledged at Step 5
+//! ## Half-split + raw-pointer projection (Step 6 Phase 1)
 //!
-//! Each entrypoint converts `*mut KalicoRuntime` to `&mut RuntimeContext`,
-//! which produces overlapping `&mut`s under Rust's strict aliasing model when
-//! the ISR preempts foreground. Spec §6.8 / plan Task 13 explicitly accept
-//! this as deferred to Step 6 hardening (proper SPSC half-split or
-//! interrupt-free sections). The shared-state subfields (`SegmentQueue`,
-//! `TraceRing`) use `heapless::spsc::Queue` which is atomic-correct on
-//! ARMv7-M; atomic fields on `Engine` use interior mutability via `&self`.
+//! Step 5's entrypoints converted `*mut KalicoRuntime` to `&mut
+//! RuntimeContext`. Concurrent ISR/foreground entry through that pattern
+//! creates overlapping `&mut`s under Rust's strict aliasing model — latent
+//! UB acknowledged in spec §6.8 / Step-5 plan Task 13 and slated for Step 6
+//! hardening. This module now uses `core::ptr::addr_of!` +
+//! `UnsafeCell::raw_get` to project to either `&mut FgState` or `&mut
+//! IsrState` (disjoint memory regions) at most once per FFI entry — no
+//! `&mut RuntimeContext` is ever materialised. Sound under stacked-borrows
+//! / tree-borrows.
 
 #![allow(unsafe_code)]
 
@@ -20,28 +22,18 @@
 pub mod exports {
     use core::cell::UnsafeCell;
     use core::mem::MaybeUninit;
-    use core::sync::atomic::{AtomicU8, Ordering};
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     use runtime::curve_pool::{CurvePool, MAX_DIM};
-    use runtime::engine::{Engine, RuntimeStatus};
+    use runtime::engine::RuntimeStatus;
     use runtime::error::{
         KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION,
         KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT,
         KALICO_ERR_NULL_PTR, KALICO_ERR_QUEUE_FULL, KALICO_OK,
     };
-    use runtime::queue::SegmentQueue;
     use runtime::segment::{CurveHandle, KinematicTag, Segment};
-    use runtime::slot::{NoopIs, NoopPa};
-    use runtime::trace::{TraceRing, TraceSample};
-
-    // Compile-time choice of slot impls. Spec §3.1.
-    //
-    // Step 5 hardcodes the Noop ZSTs. Step 8 (`input-shaper`) and Step 9
-    // (`pa-tanh`) will introduce real impls and add cfg-feature arms here
-    // that swap these aliases — until those features are declared in
-    // `kalico-c-api/Cargo.toml`, the alias is unconditional.
-    type Pa = NoopPa;
-    type Is = NoopIs;
+    use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
+    use runtime::trace::TraceSample;
 
     /// The opaque type C sees — never dereferenced on the C side.
     /// Matches spec §3.2 / §5.6 handle discipline.
@@ -52,30 +44,33 @@ pub mod exports {
     }
 
     /// Concrete singleton storage. Spec §3.2 init-once protocol.
+    ///
+    /// Wrapped in `MaybeUninit` because `RuntimeContext::init` writes
+    /// through raw-pointer projections (no constructor returns a
+    /// fully-formed `RuntimeContext`). Wrapped in `UnsafeCell` so we can
+    /// take a raw pointer to the storage from a shared `&` static without
+    /// undefined behaviour.
     pub(super) struct RuntimeCell(UnsafeCell<MaybeUninit<RuntimeContext>>);
-    // SAFETY: synchronization is done externally via `INIT_STATE` (only one
-    // thread of control transitions UNINIT → INITING → READY) and at runtime
-    // by the §4.7 foreground/ISR protocol. The latent-UB acknowledgement at
-    // module-doc top covers concurrent &mut aliasing.
+    // SAFETY: synchronization is done externally via `INIT_DONE` (only one
+    // thread of control can take the `false → true` transition) and at
+    // runtime by the §11.1 foreground/ISR ownership discipline. The
+    // half-split (`FgState` / `IsrState`) projection through raw-pointer
+    // helpers in each FFI entry preserves strict aliasing.
     unsafe impl Sync for RuntimeCell {}
-
-    pub(super) struct RuntimeContext {
-        pub(super) engine: Engine<Pa, Is>,
-        pub(super) queue: SegmentQueue,
-        pub(super) pool: CurvePool,
-        pub(super) trace: TraceRing<128>,
-    }
 
     pub(super) static RT_CELL: RuntimeCell = RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 
-    pub(super) const INIT_UNINIT: u8 = 0;
-    pub(super) const INIT_INITING: u8 = 1;
-    pub(super) const INIT_READY: u8 = 2;
-
-    pub(super) static INIT_STATE: AtomicU8 = AtomicU8::new(INIT_UNINIT);
+    /// Single-shot init guard. `compare_exchange(false → true)` succeeds
+    /// exactly once; subsequent calls observe `Err(true)` and return null.
+    pub(super) static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
     // C-side `kalico_clock_freq` constant — defined in src/runtime_tick.c
     // (or, on host builds, by the integration-test harness).
+    //
+    // NOTE: `RuntimeContext::init` re-imports this same symbol on the
+    // runtime-crate side; the import here is kept so the existing
+    // producer-protocol re-enable path can read the freq for
+    // `min_segment_cycles` arithmetic.
     unsafe extern "C" {
         pub(super) static kalico_clock_freq: u32;
     }
@@ -90,32 +85,28 @@ pub mod exports {
     }
 
     /// Init-once. Spec §3.2.
-    /// Returns valid handle on first successful call; null otherwise.
+    ///
+    /// Returns a valid handle on the first successful call; null on any
+    /// subsequent call. The handle is the address of the static
+    /// `RuntimeContext` storage; its lifetime is `'static`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_init() -> *mut KalicoRuntime {
-        match INIT_STATE.compare_exchange(
-            INIT_UNINIT,
-            INIT_INITING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {
-                // SAFETY: C-side immutable constant set at static-init time in src/runtime_tick.c.
-                let clock_freq = unsafe { kalico_clock_freq };
-                // SAFETY: we hold the INIT_INITING token; no other context
-                // has access to RT_CELL until we publish READY.
-                unsafe {
-                    (*RT_CELL.0.get()).write(RuntimeContext {
-                        engine: Engine::<Pa, Is>::new(clock_freq),
-                        queue: SegmentQueue::new(),
-                        pool: CurvePool::new(),
-                        trace: TraceRing::<128>::new(),
-                    });
-                }
-                INIT_STATE.store(INIT_READY, Ordering::Release);
-                RT_CELL.0.get().cast::<KalicoRuntime>()
-            }
-            Err(_) => core::ptr::null_mut(), // Already INITING or READY
+    pub extern "C" fn kalico_runtime_init() -> *mut KalicoRuntime {
+        // Atomic compare-exchange — exactly one caller takes the
+        // false → true transition; everyone else observes Err and bails.
+        if INIT_DONE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return core::ptr::null_mut();
+        }
+        // SAFETY: we hold the INIT_DONE token; no other context has access
+        // to RT_CELL until we publish a non-null handle. RuntimeContext::init
+        // writes through raw-pointer projections and never forms
+        // `&mut RuntimeContext`, matching the §11.2 aliasing discipline.
+        unsafe {
+            let rt_ptr: *mut RuntimeContext = (*RT_CELL.0.get()).as_mut_ptr();
+            RuntimeContext::init(rt_ptr);
+            rt_ptr.cast::<KalicoRuntime>()
         }
     }
 
@@ -132,22 +123,69 @@ pub mod exports {
         if rt.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
-        if ctx.engine.status() == RuntimeStatus::Fault {
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` is the published RT_CELL pointer (verified non-null
+        // and INIT_DONE==true above). We project to the foreground half-state
+        // and the SharedState atomics via raw pointers; no `&mut
+        // RuntimeContext` ever exists on this path. The §11.1 ownership
+        // discipline (foreground sole writer of FgState) is enforced by
+        // code review — no other FFI entry forms `&mut FgState`.
+        unsafe {
+            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let isr_ptr_const: *const IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr)).cast_const();
+            let fg: &mut FgState = &mut *fg_ptr;
+            let shared: &SharedState = &*shared_ptr;
+            push_segment_impl(
+                fg,
+                shared,
+                isr_ptr_const,
+                id,
+                curve_handle,
+                t_start,
+                t_end,
+                kinematics,
+            )
+        }
+    }
+
+    /// Foreground push body. Operates on the half-split borrows projected by
+    /// the FFI shim above. The Step-5 producer protocol at re-enable still
+    /// reads back from the ISR half (`widen_state`); per spec §4.7 the ISR
+    /// is paused at this point so the foreground can mutate `widen_state`
+    /// without contention.
+    ///
+    /// SAFETY (caller): `isr_ptr_const` must point at the same `RuntimeContext`'s
+    /// `IsrState`, and the ISR must be disabled while the producer-protocol
+    /// re-enable branch runs (Klipper's `kalico_h7_disable_tim5()` does
+    /// this; callers via the C shim hold to that contract).
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn push_segment_impl(
+        fg: &mut FgState,
+        shared: &SharedState,
+        isr_ptr_const: *const IsrState,
+        id: u32,
+        curve_handle: u16,
+        t_start: u64,
+        t_end: u64,
+        kinematics: u8,
+    ) -> i32 {
+        // Fault-latched short-circuit (preserves Step-5 behaviour).
+        if shared.last_error.load(Ordering::Acquire) != 0
+            && shared.runtime_status.load(Ordering::Acquire) == RuntimeStatus::Fault as u8
+        {
             return KALICO_ERR_FAULT_LATCHED;
         }
         if t_end <= t_start {
             return KALICO_ERR_INVALID_DURATION;
         }
-        // MIN_SEGMENT_CYCLES check.
-        // SAFETY: C-side immutable constant set at static-init time in src/runtime_tick.c.
+        // SAFETY: C-side immutable constant set at static-init time.
         let min_seg_cycles = u64::from(runtime::clock::min_segment_cycles(unsafe {
-            kalico_clock_freq
+            super::exports::kalico_clock_freq
         }));
         if t_end - t_start < min_seg_cycles {
             return KALICO_ERR_INVALID_DURATION;
@@ -164,26 +202,35 @@ pub mod exports {
             t_end,
             kinematics: kin,
         };
-        if ctx.queue.try_push(seg).is_err() {
+        if fg.queue_producer.enqueue(seg).is_err() {
             return KALICO_ERR_QUEUE_FULL;
         }
         // §4.4 producer-protocol: re-enable TIM5 if observed status was IDLE/DRAINED.
-        match ctx.engine.status() {
-            RuntimeStatus::Idle | RuntimeStatus::Drained => {
-                // Reinit CYCCNT widening before re-enabling TIM5. ISR was
-                // disabled in `kalico_h7_disable_tim5()` and is still off
-                // here — single-thread access to widen_state is safe per
-                // spec §4.7.
-                // SAFETY: foreground-context access; spec §4.7 invariant — TIM5 was
-                // disabled by C-side caller before push, so widen_state has no
-                // concurrent ISR writer.
-                let raw = unsafe { kalico_h7_read_cyccnt() };
-                ctx.engine.reinit_widen(raw);
-                unsafe {
-                    kalico_h7_enable_tim5();
-                }
+        let cur_status = shared.runtime_status.load(Ordering::Acquire);
+        if cur_status == RuntimeStatus::Idle as u8 || cur_status == RuntimeStatus::Drained as u8 {
+            // SAFETY: foreground-context access; spec §4.7 invariant — TIM5
+            // was disabled by C-side caller before push, so `widen_state`
+            // has no concurrent ISR writer. We materialize a `&mut
+            // WidenState` here under that contract.
+            //
+            // Per Round-3 fix B-R3-4, `widen_state` lives on `IsrState`,
+            // not Engine. The shim borrows it by projecting through the
+            // ISR-state UnsafeCell *only* under the ISR-disabled
+            // discipline.
+            unsafe {
+                let raw = super::exports::kalico_h7_read_cyccnt();
+                let isr_ptr_mut = isr_ptr_const.cast_mut();
+                let widen_state = &mut (*isr_ptr_mut).widen_state;
+                // Reconstruct last-widened high-water mark from the ISR's
+                // pre-disable state. `WidenState` exposes its fields
+                // crate-private but not pub, so we approximate by reading
+                // the seqlock-published widened-now from SharedState
+                // (§11.4) — that's the most recent widened sample the ISR
+                // produced before being disabled.
+                let last_widened = runtime::clock::read_widened_now(shared);
+                widen_state.reinit(raw, last_widened);
+                super::exports::kalico_h7_enable_tim5();
             }
-            _ => {}
         }
         KALICO_OK
     }
@@ -204,32 +251,39 @@ pub mod exports {
         if rt.is_null() || control_points_flat.is_null() || knots.is_null() || weights.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
-        // SAFETY: caller must ensure each pointer is valid for `n_*` reads of f32
-        // and that the buffers do not alias the curve pool. n_cp * MAX_DIM bounds
-        // the cps buffer per the producer protocol.
-        let cps_slice =
-            unsafe { core::slice::from_raw_parts(control_points_flat, n_cp as usize * MAX_DIM) };
-        let knots_slice = unsafe { core::slice::from_raw_parts(knots, n_knots as usize) };
-        let weights_slice = unsafe { core::slice::from_raw_parts(weights, n_weights as usize) };
-        match ctx.pool.load(
-            CurveHandle(slot_idx),
-            cps_slice,
-            knots_slice,
-            weights_slice,
-            degree,
-        ) {
-            Ok(()) => KALICO_OK,
-            Err(
-                runtime::curve_pool::CurvePoolError::OutOfBounds
-                | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
-            ) => KALICO_ERR_INVALID_HANDLE,
-            Err(_) => KALICO_ERR_INVALID_CURVE,
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null and INIT_DONE=true above. CurvePool is at the
+        // top level of RuntimeContext; foreground is the sole writer per
+        // §10.5 (Phase 2 hardens the ISR-side concurrency further). We
+        // form `&mut CurvePool` through `addr_of_mut!` without ever
+        // forming `&mut RuntimeContext`.
+        unsafe {
+            let pool_ptr: *mut CurvePool = core::ptr::addr_of_mut!((*ctx).curve_pool);
+            // SAFETY: caller must ensure each pointer is valid for `n_*`
+            // reads of f32 and that the buffers do not alias the curve pool.
+            let cps_slice = core::slice::from_raw_parts(
+                control_points_flat,
+                n_cp as usize * MAX_DIM,
+            );
+            let knots_slice = core::slice::from_raw_parts(knots, n_knots as usize);
+            let weights_slice = core::slice::from_raw_parts(weights, n_weights as usize);
+            match (*pool_ptr).load(
+                CurveHandle(slot_idx),
+                cps_slice,
+                knots_slice,
+                weights_slice,
+                degree,
+            ) {
+                Ok(()) => KALICO_OK,
+                Err(
+                    runtime::curve_pool::CurvePoolError::OutOfBounds
+                    | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
+                ) => KALICO_ERR_INVALID_HANDLE,
+                Err(_) => KALICO_ERR_INVALID_CURVE,
+            }
         }
     }
 
@@ -238,17 +292,55 @@ pub mod exports {
     /// Skips null-check (caller is the C ISR shim with stable handle).
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_tick(rt: *mut KalicoRuntime, raw_cyccnt: u32) {
-        // Defensive Acquire-load — guards against early-fire during INITING.
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        // Defensive Acquire-load — guards against early-fire during init.
+        if !INIT_DONE.load(Ordering::Acquire) {
             return;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
-        let now = ctx.engine.widen(raw_cyccnt);
-        let _ = ctx
-            .engine
-            .tick(now, &mut ctx.queue, &ctx.pool, &mut ctx.trace);
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null per the C ISR shim's stable-handle contract;
+        // INIT_DONE=true above. We project to the IsrState UnsafeCell, the
+        // top-level CurvePool, and SharedState via raw pointers. The §11.1
+        // discipline guarantees the TIM5 ISR is the SOLE writer of IsrState,
+        // and the half-split structure means we never form
+        // `&mut RuntimeContext`.
+        //
+        // Field-disjoint borrow: `let IsrState { engine, widen_state, … }
+        // = &mut *isr` splits the single `&mut IsrState` into multiple
+        // disjoint `&mut`s the borrow checker accepts because each field
+        // projection is non-overlapping.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let isr: &mut IsrState = &mut *isr_ptr;
+            let pool: &CurvePool = &*pool_ptr;
+            let shared: &SharedState = &*shared_ptr;
+            let IsrState {
+                engine,
+                widen_state,
+                queue_consumer,
+                trace_producer,
+                ..
+            } = isr;
+            let _ = engine.tick(
+                raw_cyccnt,
+                widen_state,
+                pool,
+                queue_consumer,
+                trace_producer,
+                shared,
+            );
+            // Mirror the engine's status into SharedState so the
+            // foreground-only entrypoints (push_segment, status,
+            // last_error) can read it through atomics rather than
+            // reaching into IsrState.
+            shared
+                .runtime_status
+                .store(engine.status() as u8, Ordering::Release);
+            shared
+                .last_error
+                .store(engine.last_error(), Ordering::Release);
+        }
     }
 
     /// Foreground drain. Returns count of samples written.
@@ -261,16 +353,31 @@ pub mod exports {
         if rt.is_null() || out_buf.is_null() {
             return 0;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return 0;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
-        // SAFETY: caller must ensure out_buf is valid for out_cap writes of TraceSample,
-        // properly aligned, and not aliased.
-        let out_slice = unsafe { core::slice::from_raw_parts_mut(out_buf, out_cap as usize) };
-        ctx.trace.drain_into(out_slice) as u32
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: project to the foreground trace consumer only — no &mut
+        // on IsrState forms here. Caller-provided out_buf must be valid for
+        // out_cap writes of TraceSample.
+        unsafe {
+            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
+            let fg: &mut FgState = &mut *fg_ptr;
+            let out_slice = core::slice::from_raw_parts_mut(out_buf, out_cap as usize);
+            let mut count = 0usize;
+            while count < out_slice.len() {
+                let Some(sample) = fg.trace_consumer.dequeue() else {
+                    break;
+                };
+                if let Some(slot) = out_slice.get_mut(count) {
+                    *slot = sample;
+                }
+                count += 1;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let result = count as u32;
+            result
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -278,13 +385,17 @@ pub mod exports {
         if rt.is_null() {
             return RuntimeStatus::Fault as u8;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return RuntimeStatus::Fault as u8;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // shared `&` ref form; ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
-        ctx.engine.status() as u8
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState is read-only here; project to the atomics-
+        // bearing field via `addr_of!` and form `&SharedState`. No `&mut`
+        // forms on this path.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).runtime_status.load(Ordering::Acquire)
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -292,13 +403,15 @@ pub mod exports {
         if rt.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // shared `&` ref form; ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
-        ctx.engine.last_error()
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: read-only access to SharedState atomics.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).last_error.load(Ordering::Acquire)
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -306,13 +419,20 @@ pub mod exports {
         if rt.is_null() {
             return 0;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return 0;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null and INIT_STATE==READY above);
-        // shared `&` ref form; ISR/foreground latent-mut-aliasing acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
-        ctx.engine.tick_counter()
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: read-only access to the ISR-half's tick counter (an
+        // AtomicU32 on Engine). The §11.1 invariant says the ISR is the sole
+        // *writer* of IsrState; foreground may form `&IsrState` (shared
+        // borrow) for read-only access of atomics — the atomic itself
+        // provides the synchronization. We do that by forming `&IsrState`
+        // through the UnsafeCell and reading through its embedded atomic.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.tick_counter()
+        }
     }
 
     /// Sim escape hatch: load a pre-baked NURBS fixture into a curve-pool slot.
@@ -337,42 +457,45 @@ pub mod exports {
         slot_idx: u16,
         fixture_id: u16,
     ) -> i32 {
-        use runtime::sim_fixtures::{
-            FIXTURE_CPS_MAX, FIXTURE_KNOTS_MAX, FIXTURE_WEIGHTS_MAX,
-        };
+        use runtime::sim_fixtures::{FIXTURE_CPS_MAX, FIXTURE_KNOTS_MAX, FIXTURE_WEIGHTS_MAX};
         if rt.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
-        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+        if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // SAFETY: rt is the published RT_CELL pointer (verified non-null
-        // and INIT_STATE==READY above); ISR/foreground latent-mut-aliasing
-        // acknowledged in module doc per spec §3.2.
-        let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
-
-        let mut cps = [0.0_f32; FIXTURE_CPS_MAX];
-        let mut knots = [0.0_f32; FIXTURE_KNOTS_MAX];
-        let mut weights = [0.0_f32; FIXTURE_WEIGHTS_MAX];
-        let Some((degree, n_cp, n_knots, n_weights)) = runtime::sim_fixtures::lookup(
-            fixture_id, &mut cps, &mut knots, &mut weights,
-        ) else {
-            return KALICO_ERR_INVALID_CURVE;
-        };
-
-        match ctx.pool.load_unchecked(
-            CurveHandle(slot_idx),
-            &cps[..n_cp * MAX_DIM],
-            &knots[..n_knots],
-            &weights[..n_weights],
-            degree,
-        ) {
-            Ok(()) => KALICO_OK,
-            Err(
-                runtime::curve_pool::CurvePoolError::OutOfBounds
-                | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
-            ) => KALICO_ERR_INVALID_HANDLE,
-            Err(_) => KALICO_ERR_INVALID_CURVE,
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: project to the top-level CurvePool only — no `&mut
+        // RuntimeContext` forms on this path. The fixture path uses the
+        // FPU-free `load_unchecked` to avoid Renode's CPACR-disabled
+        // UsageFault on the regular load() path.
+        unsafe {
+            let pool_ptr: *mut CurvePool = core::ptr::addr_of_mut!((*ctx).curve_pool);
+            let mut cps = [0.0_f32; FIXTURE_CPS_MAX];
+            let mut knots = [0.0_f32; FIXTURE_KNOTS_MAX];
+            let mut weights = [0.0_f32; FIXTURE_WEIGHTS_MAX];
+            let Some((degree, n_cp, n_knots, n_weights)) = runtime::sim_fixtures::lookup(
+                fixture_id,
+                &mut cps,
+                &mut knots,
+                &mut weights,
+            ) else {
+                return KALICO_ERR_INVALID_CURVE;
+            };
+            match (*pool_ptr).load_unchecked(
+                CurveHandle(slot_idx),
+                &cps[..n_cp * MAX_DIM],
+                &knots[..n_knots],
+                &weights[..n_weights],
+                degree,
+            ) {
+                Ok(()) => KALICO_OK,
+                Err(
+                    runtime::curve_pool::CurvePoolError::OutOfBounds
+                    | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
+                ) => KALICO_ERR_INVALID_HANDLE,
+                Err(_) => KALICO_ERR_INVALID_CURVE,
+            }
         }
     }
 }

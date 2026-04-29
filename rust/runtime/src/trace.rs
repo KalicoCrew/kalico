@@ -6,7 +6,7 @@ use heapless::spsc::Queue;
 
 /// `TraceRing` capacity used by the `Engine` ISR. Spec §13.1.
 ///
-/// Sized for HOST_STALL + 10 ms safety margin × 40 kHz tick + 1 (heapless
+/// Sized for `HOST_STALL` + 10 ms safety margin × 40 kHz tick + 1 (heapless
 /// cap-N-1 rule). Step-6 widens the Step-5 value (128) to absorb worst-case
 /// host drain latency without dropping samples.
 ///
