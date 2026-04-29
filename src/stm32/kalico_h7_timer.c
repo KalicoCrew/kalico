@@ -29,11 +29,23 @@ kalico_h7_disable_tim5(void)
 }
 
 // Helper for Rust's CYCCNT widen-reinit on producer-driven re-enable path.
+//
+// Per Step-6 spec §3.1: under CONFIG_KALICO_SIM, Renode's H7 .repl tags
+// DWT->CYCCNT as opaque memory (reads return 0), which freezes the engine's
+// widening loop in sim. Fork to a software counter (kalico_sim_cyccnt) bumped
+// from the TIM5 ISR. Production firmware (CONFIG_KALICO_SIM=n) reads the
+// hardware DWT register directly. NEVER flash a CONFIG_KALICO_SIM=y image to
+// silicon — IWDG-disable + software CYCCNT is a debugging build only.
 __attribute__((used, externally_visible))
 uint32_t
 kalico_h7_read_cyccnt(void)
 {
+#if CONFIG_KALICO_SIM
+    extern volatile uint32_t kalico_sim_cyccnt;
+    return kalico_sim_cyccnt;
+#else
     return DWT->CYCCNT;
+#endif
 }
 
 __attribute__((used, externally_visible))
@@ -98,11 +110,27 @@ void
 TIM5_IRQHandler(void)
 {
     TIM5->SR = ~TIM_SR_UIF;            // entry-time ack (spec §2.4)
-    uint32_t before = DWT->CYCCNT;
+
+#if CONFIG_KALICO_SIM
+    // Step-6 spec §3.1: Renode's H7 model returns 0 for DWT->CYCCNT, so the
+    // engine widening loop has no forward progress source unless we drive a
+    // software counter from this ISR. Delta = cycles-per-tick so the widened
+    // u64 advances at the same rate the engine would observe on silicon.
+    extern volatile uint32_t kalico_sim_cyccnt;
+    kalico_sim_cyccnt += (kalico_clock_freq / 40000U);
+#endif
+
+    // Use the abstraction so cycle-count snapshots stay consistent under the
+    // sim fork. On production builds this collapses to a direct DWT->CYCCNT
+    // read; under CONFIG_KALICO_SIM both `before` and `after` snapshot the
+    // software counter (cycle-bench numbers are explicitly out of scope for
+    // sim per spec §3, so the bench buffer becomes meaningless under sim and
+    // that is acceptable).
+    uint32_t before = kalico_h7_read_cyccnt();
     if (kalico_rt_handle) {
         kalico_runtime_tick(kalico_rt_handle, before);
     }
-    uint32_t after = DWT->CYCCNT;
+    uint32_t after = kalico_h7_read_cyccnt();
 
     // Bench capture (Task 27). Wraps subtract correctly modulo 2^32.
     if (kalico_bench_count < kalico_bench_target) {
