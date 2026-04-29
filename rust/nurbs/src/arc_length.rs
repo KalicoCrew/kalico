@@ -172,7 +172,7 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
     let mut lo = 0usize;
     let mut hi = last;
     while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
+        let mid = usize::midpoint(lo, hi);
         if s_arr[mid] <= s_clamped {
             lo = mid;
         } else {
@@ -212,7 +212,7 @@ pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -
     let mut lo = 0usize;
     let mut hi = last;
     while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
+        let mid = usize::midpoint(lo, hi);
         if u_arr[mid] <= u_clamped {
             lo = mid;
         } else {

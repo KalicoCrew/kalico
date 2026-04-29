@@ -75,14 +75,14 @@ pub fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize 
     }
     let mut low = p;
     let mut high = n;
-    let mut mid = (low + high) / 2;
+    let mut mid = usize::midpoint(low, high);
     while u < knots[mid] || u >= knots[mid + 1] {
         if u < knots[mid] {
             high = mid;
         } else {
             low = mid;
         }
-        mid = (low + high) / 2;
+        mid = usize::midpoint(low, high);
     }
     mid
 }

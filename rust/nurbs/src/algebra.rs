@@ -513,7 +513,7 @@ fn union_breakpoints<T: Float>(
 ) -> Vec<T> {
     let mut breaks: Vec<T> = Vec::new();
     let push_unique = |u: T, breaks: &mut Vec<T>| {
-        if !breaks.iter().any(|x| *x == u) {
+        if !breaks.contains(&u) {
             breaks.push(u);
         }
     };
@@ -601,7 +601,7 @@ pub fn convolve<T: Float>(
     for xb in &x_breaks {
         for wb in &w_breaks {
             let s = *xb + *wb;
-            if !out_breaks.iter().any(|x| *x == s) {
+            if !out_breaks.contains(&s) {
                 out_breaks.push(s);
             }
         }
