@@ -16,6 +16,7 @@ class EddyCalibration:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.drift_comp = DummyDriftCompensation()
         # Current calibration data
         self.cal_freqs = []
         self.cal_zpos = []
@@ -48,8 +49,10 @@ class EddyCalibration:
         self.cal_zpos = [c[1] for c in cal]
 
     def apply_calibration(self, samples):
+        cur_temp = self.drift_comp.get_temperature()
         for i, (samp_time, freq, dummy_z) in enumerate(samples):
-            pos = bisect.bisect(self.cal_freqs, freq)
+            adj_freq = self.drift_comp.adjust_freq(freq, cur_temp)
+            pos = bisect.bisect(self.cal_freqs, adj_freq)
             if pos >= len(self.cal_zpos):
                 zpos = -99.9
             elif pos == 0:
@@ -62,7 +65,7 @@ class EddyCalibration:
                 prev_zpos = self.cal_zpos[pos - 1]
                 gain = (this_zpos - prev_zpos) / (this_freq - prev_freq)
                 offset = prev_zpos - prev_freq * gain
-                zpos = freq * gain + offset
+                zpos = adj_freq * gain + offset
             samples[i] = (samp_time, freq, round(zpos, 6))
 
     def height_to_freq(self, height):
@@ -80,7 +83,7 @@ class EddyCalibration:
         prev_zpos = rev_zpos[pos - 1]
         gain = (this_freq - prev_freq) / (this_zpos - prev_zpos)
         offset = prev_freq - prev_zpos * gain
-        return height * gain + offset
+        return self.drift_comp.unadjust_freq(height * gain + offset)
 
     def do_calibration_moves(self, move_speed):
         toolhead = self.printer.lookup_object("toolhead")
@@ -98,6 +101,7 @@ class EddyCalibration:
 
         self.printer.lookup_object(self.name).add_client(handle_batch)
         toolhead.dwell(1.0)
+        self.drift_comp.note_z_calibration_start()
         # Move to each 40um position
         max_z = 4.0
         samp_dist = 0.040
@@ -126,6 +130,7 @@ class EddyCalibration:
             times.append((start_query_time, end_query_time, kin_pos[2]))
         toolhead.dwell(1.0)
         toolhead.wait_moves()
+        self.drift_comp.note_z_calibration_finish()
         # Finish data collection
         is_finished = True
         # Correlate query responses
@@ -210,6 +215,9 @@ class EddyCalibration:
         manual_probe.ManualProbeHelper(
             self.printer, gcmd, self.post_manual_probe
         )
+
+    def register_drift_compensation(self, comp):
+        self.drift_comp = comp
 
 
 # Helper for implementing PROBE style commands
@@ -387,6 +395,26 @@ class PrinterEddyProbe:
 
     def add_client(self, cb):
         self.sensor_helper.add_client(cb)
+
+    def register_drift_compensation(self, comp):
+        self.calibration.register_drift_compensation(comp)
+
+
+class DummyDriftCompensation:
+    def get_temperature(self):
+        return 0.0
+
+    def note_z_calibration_start(self):
+        pass
+
+    def note_z_calibration_finish(self):
+        pass
+
+    def adjust_freq(self, freq, temp=None):
+        return freq
+
+    def unadjust_freq(self, freq, temp=None):
+        return freq
 
 
 def load_config_prefix(config):

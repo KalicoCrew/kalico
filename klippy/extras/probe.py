@@ -297,6 +297,9 @@ class PrinterProbe:
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.mcu_probe = mcu_probe
+        self._allow_zero_sample_retract = self.name.startswith(
+            "probe_eddy_current "
+        )
         self.speed = config.getfloat("speed", 5.0, above=0.0)
         self.retry_speed: float = config.getfloat(
             "retry_speed", self.speed, above=0.0
@@ -326,9 +329,14 @@ class PrinterProbe:
             )
         # Multi-sample support (for improved accuracy)
         self.sample_count = config.getint("samples", 1, minval=1)
-        self.sample_retract_dist = config.getfloat(
-            "sample_retract_dist", 2.0, above=0.0
-        )
+        if self._allow_zero_sample_retract:
+            self.sample_retract_dist = config.getfloat(
+                "sample_retract_dist", 2.0, minval=0.0
+            )
+        else:
+            self.sample_retract_dist = config.getfloat(
+                "sample_retract_dist", 2.0, above=0.0
+            )
         atypes = ["median", "average"]
         self.samples_result = config.getchoice(
             "samples_result", atypes, "average"
@@ -511,9 +519,14 @@ class PrinterProbe:
 
     # Raise the toolhead at the current x/y location
     def _retract(self, gcmd: GCodeCommand):
-        sample_retract_dist = gcmd.get_float(
-            "SAMPLE_RETRACT_DIST", self.sample_retract_dist, above=0.0
-        )
+        if self._allow_zero_sample_retract:
+            sample_retract_dist = gcmd.get_float(
+                "SAMPLE_RETRACT_DIST", self.sample_retract_dist, minval=0.0
+            )
+        else:
+            sample_retract_dist = gcmd.get_float(
+                "SAMPLE_RETRACT_DIST", self.sample_retract_dist, above=0.0
+            )
         lift_speed = self.get_lift_speed(gcmd)
         toolhead: ToolHead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
@@ -627,9 +640,14 @@ class PrinterProbe:
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         lift_speed = self.get_lift_speed(gcmd)
         sample_count = gcmd.get_int("SAMPLES", 10, minval=1)
-        sample_retract_dist = gcmd.get_float(
-            "SAMPLE_RETRACT_DIST", self.sample_retract_dist, above=0.0
-        )
+        if self._allow_zero_sample_retract:
+            sample_retract_dist = gcmd.get_float(
+                "SAMPLE_RETRACT_DIST", self.sample_retract_dist, minval=0.0
+            )
+        else:
+            sample_retract_dist = gcmd.get_float(
+                "SAMPLE_RETRACT_DIST", self.sample_retract_dist, above=0.0
+            )
         toolhead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
         gcmd.respond_info(
