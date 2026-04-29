@@ -376,21 +376,17 @@ pub unsafe extern "C" fn kalico_runtime_load_fixture(
     let Some(curve) = sim_fixtures::lookup(fixture_id) else {
         return KALICO_ERR_VALIDATION;
     };
-    // Phase 0 ordering note: at this point Phase 1's half-split refactor
-    // has NOT landed; the Step-5 RuntimeContext is monolithic. Use the
-    // Step-5 access pattern here. Phase 1 Task 1.2 updates this FFI alongside
-    // the rest to use the raw-pointer projection pattern; the change is
-    // mechanical (same body, different access path).
+    // Phase 0 ordering note (Round-3 fix B-R3-7): at this point Phase 1's
+    // half-split refactor has NOT landed AND Phase 2's try_alloc_and_load
+    // has NOT been introduced. Use the existing Step-5 CurvePool::load API.
+    // Phase 1 Task 1.2 refactors the FFI projection pattern; Phase 2 Task 2.2
+    // mechanically updates this call to try_alloc_and_load.
     let ctx = unsafe { &mut *(rt as *mut RuntimeContext) };
-    if ctx.curve_pool.try_alloc_and_load(slot_idx as usize, curve).is_some() {
-        0
-    } else {
-        -2  // KALICO_ERR_VALIDATION (slot busy or out-of-range)
-    }
+    ctx.curve_pool.load(slot_idx as usize, curve)
 }
 ```
 
-This task ships a sim-only path; the lifecycle is tightly bounded (sim-only, fixture-only, never reaches production). Phase 1 Task 1.2 refactors it alongside the rest of the FFI surface.
+This task ships a sim-only path against the EXISTING (Step-5) CurvePool API. Phase 2 Task 2.2 updates this single call to `try_alloc_and_load(...)` as part of the alloc-API rewrite — mechanical 1-line change.
 
 - [ ] **Step 9: Add `command_kalico_load_fixture_curve` in `src/runtime_tick.c`**
 
@@ -2457,16 +2453,25 @@ In `push_segment_impl`, after the queue enqueue succeeds:
 shared.accepted_segment_id.store(seg.id, Ordering::Release);
 ```
 
-- [ ] **Step 4: Round-2 B11-real fix — segment-id monotonicity check on push**
+- [ ] **Step 4: Round-2 B11-real / Round-3 B-R3-8 — segment-id monotonicity check on push**
 
-Per spec §9.1: `KALICO_FAULT_SEGMENT_ID_NON_MONOTONIC`. Push validates `seg.id > shared.accepted_segment_id.load()` (or starts at 0 if no segment yet pushed):
+Per spec §9.1: `KALICO_FAULT_SEGMENT_ID_NON_MONOTONIC`. Use a separate `accepted_seen: AtomicBool` flag to distinguish the initial-state-no-prior-push case from "id wraps to 0":
 
 ```rust
+// SharedState: accepted_segment_id_seen: AtomicBool initialized false.
+let prev_seen = shared.accepted_segment_id_seen.load(Ordering::Acquire);
 let prev_accepted = shared.accepted_segment_id.load(Ordering::Acquire);
-if seg.id != 0 && seg.id <= prev_accepted {
+if prev_seen && seg.id <= prev_accepted {
     return FaultCode::SegmentIdNonMonotonic as i32;
 }
+// On accepted push:
+shared.accepted_segment_id.store(seg.id, Ordering::Release);
+shared.accepted_segment_id_seen.store(true, Ordering::Release);
 ```
+
+Round-3 fix B-R3-8: previous draft's `if seg.id != 0 && seg.id <= prev_accepted` allowed any second push with id=0 to pass after a prior id>0 push had set `prev_accepted`. The `accepted_segment_id_seen` flag (also reset by flush as part of credit_epoch bump) enforces strict monotonicity.
+
+Add `accepted_segment_id_seen: AtomicBool` to `SharedState` (Phase 1 Task 1.1) and reset it in `flush()` (Phase 7 Task 7.2 step 6).
 
 - [ ] **Step 5: Add unit test**
 
@@ -3002,17 +3007,19 @@ Implements spec §8.5 flush sequence per Plan-decision A: foreground sets `force
 
 - [ ] **Step 1: Add force_idle check at the top of `tick`**
 
+The canonical `Engine::tick` signature is the one set in Phase 1 Task 1.3:
+
 ```rust
 pub fn tick(
     &mut self,
     raw_cyccnt: u32,
-    widen_state: &mut crate::clock::ClockWidenState,
+    widen_state: &mut crate::clock::WidenState,
+    pool: &crate::curve_pool::CurvePool,
     shared: &crate::state::SharedState,
-    isr: &mut crate::state::IsrState,  // adjust signature as needed
 ) {
     // §8.5 step 2: force_idle short-circuit. BEFORE anything else.
     if shared.force_idle.load(Ordering::Acquire) {
-        self.current = None;
+        self.clear_current();
         // Ack to foreground.
         shared.acked_force_idle.store(true, Ordering::Release);
         return;
@@ -3021,8 +3028,30 @@ pub fn tick(
     let now = widen_state.widen(raw_cyccnt);
     crate::clock::publish_widened_now(shared, now);
 
-    // ... rest of tick body
+    // ... rest of tick body (uses `pool` for CurvePool lookups)
 }
+```
+
+NOTE: this Phase-7 task only adds the `force_idle` block to the existing tick body; the function signature is unchanged from Phase 1 Task 1.3.
+
+**Round-3 fix B-R3-4 — Engine.widen_state ownership move:** The Step-5 `Engine` owns `widen_state: WidenState` as a `pub(crate)` field with three accessors (`last_widened_now`, `widen`, `reinit_widen`) at engine.rs:106/119/133. Phase 1 Task 1.1 puts `widen_state: WidenState` in `IsrState` instead. To avoid duplicate ownership, Phase 1 Task 1.1's implementation MUST also:
+1. Remove the `widen_state: WidenState` field from `Engine`.
+2. Remove the three accessors `last_widened_now`, `widen`, `reinit_widen` from `Engine`.
+3. Update existing FFI callsites at `runtime_ffi.rs:181` and `:248` (which call `ctx.engine.widen(...)` and `ctx.engine.reinit_widen(...)`) to use `isr.widen_state.widen(...)` directly via the half-split projection.
+4. The new tick signature takes `widen_state: &mut WidenState` so the FFI shim can pass `&mut isr.widen_state`.
+
+This ownership move is part of the Phase 1 refactor; explicit step-list under Task 1.1 to make this discoverable.
+
+**Round-3 fix B-R3-3 — WidenState::new constructor:** `WidenState` derives `Default` (clock.rs:11). Use `WidenState::default()` in `RuntimeContext::init` instead of `WidenState::new(freq)`. The existing `Engine::new(freq)` constructor remains; `Engine::new_production(freq)` is just a wrapper that delegates to `Engine::new(freq)`. Update the init code:
+
+```rust
+// In RuntimeContext::init (correcting Step 4 of Task 1.1):
+(*isr_ptr).get().write(IsrState {
+    queue_consumer: q_consumer,
+    trace_producer: t_producer,
+    engine: EngineImpl::new_production(freq),
+    widen_state: WidenState::default(),  // not WidenState::new(freq)
+});
 ```
 
 - [ ] **Step 2: Add unit test**
@@ -3530,10 +3559,18 @@ fn quality_gate_requires_recent_dedicated_sample_per_plan_decision_b() {
     assert!(!est.is_quality_gate_passed(freq),
         "must fail without RTT-aware sample (Plan-decision B)");
 
-    // Add a dedicated sample on the same line, ~350 ms after the last piggyback.
+    // Add a dedicated sample on the same line. The estimator back-calculates
+    // mcu_at_send = mcu_at_response - one_way * freq. So construct
+    // mcu_at_response such that the back-calculated mcu_at_send falls
+    // exactly on the regression line at host_send_time:
+    //   want: mcu_at_send = epoch_offset_mcu + host_send_secs * freq
+    //   thus: mcu_at_response = mcu_at_send + one_way_secs * freq
     let host_send = t0 + Duration::from_millis(360);
     let host_recv = host_send + Duration::from_micros(500);
-    let mcu_at_response = epoch_offset_mcu + (0.36 * freq) as u64;
+    let one_way_secs = 0.000_250;  // 500 µs RTT / 2
+    let host_send_secs = 0.360;
+    let mcu_at_send_target = epoch_offset_mcu + (host_send_secs * freq) as u64;
+    let mcu_at_response = mcu_at_send_target + (one_way_secs * freq) as u64;
     est.add_dedicated_sample(host_send, host_recv, mcu_at_response);
 
     assert!(est.is_quality_gate_passed(freq),
@@ -3568,7 +3605,7 @@ git commit -m "kalico-host-rt/clock_sync: §12.2 estimator + §12.4/Plan-decisio
 
 use std::time::{Duration, Instant};
 use crate::clock_sync::ClockSyncEstimator;
-use crate::host_io::KalicoHostIo;
+use crate::transport::{Transport, TransportError};
 
 /// ARMING flow per spec §6.3 + §6.4 + Plan-decision B.
 ///
@@ -3767,9 +3804,11 @@ Per spec §6.5."
 
 ## Phase 10 — Host-side modules (`kalico-host-rt`, scope-reduced)
 
-**Round-2 review scope reduction (Plan-decision C):** the Rust port of `tools/kalico_host_io.py` (msgproto framing, identify handshake, NAK retransmit, async event dispatch) is **deferred to Step 7 MVP**. Round 2 verifier B12 found this port is multi-day work, not the 30–90 min subagent unit the plan claimed. Step 6 Phase 10 instead ships only the new Step-6-specific Rust modules — clock_sync, credit, producer, wire, fault — and these run **alongside** the existing Python `kalico_host_io.py` wire transport via a thin FFI bridge or test-harness wrapper. The production host-rt binary is a Step 7 deliverable; Step 6 Phase 10 lays the substrate (estimator, credit counter, etc.) that Step 7 wires into a real Rust binary.
+**Plan-decision C (Round-3-corrected):** Round 3 verifier B-R3-6 found that the previous draft's deferral of host_io.rs entirely to Step 7 misread spec §1.2 — spec §2.1 explicitly lists `host_io/` as a Step 6 deliverable. The corrected scope reduction: **Step 6 ships a minimal `host_io.rs` shim** (connect/identify/send/recv-with-timeout) consuming the same `Transport` trait as the rest of the host-rt modules. **Deferred to Step 7 MVP**: NAK retransmit hardening, async event dispatch loop, identify-during-reconnect race recovery, USB-CDC tty enumeration race handling. Spec §2.1's host_io substrate ships now; the production-grade hardening waits for Step 7.
 
-This decision is consistent with spec §1.2 which already defers "host/klippy IPC boundary" to Step 7 MVP. Phase 10 ships testable Rust modules; production wire I/O stays Python until Step 7.
+Why this matters: msgproto guarantees in-order error-free delivery via msgproto's CRC + sequence + NAK + retransmit (per spec §4.1) — but that's the *MCU-side* implementation. The host side normally relies on klippy/serialhdl.py to manage retransmit. tools/kalico_host_io.py works around msgproto's quirks by open-coding the framing (~390 LOC). Step 6 ships a Rust port of the *minimum* needed for `Transport` to function: open serial port, run identify handshake, send a framed command, wait on a parsed response. NAK-driven retransmit is added in Step 7.
+
+The Step-6 host_io.rs is ~150 LOC (vs the ~250 LOC the previous Round-2 draft hand-waved): no NAK retransmit, no async event dispatch thread, send + receive are synchronous. End-to-end testing rides on this shim. Production prints (post-Step-7) replace it with a hardened version.
 
 ### Task 10.1: Crate scaffold
 
@@ -3801,20 +3840,19 @@ loom = "0.7"
 ```rust
 //! Kalico host runtime — Step-6 substrate. Spec §2.1 component layout.
 //!
-//! Plan-decision C: Step 6 ships clock_sync, credit, producer, fault,
-//! wire — all consume an injected `Transport` trait so they can run on
-//! top of the Python `kalico_host_io.py` (test harness via PyO3 or
-//! subprocess) OR the future Rust host_io (Step 7 MVP).
+//! Plan-decision C (Round-3-corrected): Step 6 ships a minimal host_io.rs
+//! shim (connect/identify/send/recv-with-timeout) implementing Transport.
+//! Production-grade hardening (NAK retransmit, async event dispatch
+//! thread, reconnect race recovery) is Step 7 MVP work.
 
-pub mod transport;      // Transport trait — abstracts USB-CDC owner
+pub mod transport;      // Transport trait
+pub mod host_io;        // Minimal Rust host_io.rs implementing Transport (Step 6 minimum)
 pub mod clock_sync;     // Per-MCU sliding-window regression
 pub mod credit;         // Per-MCU credit counter
 pub mod producer;       // Segment producer (Layer-1/2/3 → wire)
 pub mod fault;          // Fault aggregator
-pub mod stream;         // Host-side stream lifecycle
+pub mod stream;         // Host-side stream lifecycle (ARMING flow)
 pub mod wire;           // Wire encoder/decoder for kalico-versioned blobs
-// host_io: deferred to Step 7 MVP (Plan-decision C). Production wire I/O
-// remains in tools/kalico_host_io.py for Step 6.
 ```
 
 - [ ] **Step 3: Add to workspace**
@@ -4010,6 +4048,180 @@ bridge) for Step-6 end-to-end tests.
 Production Rust host_io is Step 7 work."
 ```
 
+### Task 10.2.5: Minimal `host_io.rs` shim implementing `Transport`
+
+**Files:**
+- Create: `rust/kalico-host-rt/src/host_io.rs`
+
+**Why:** Round-3 fix B-R3-6: spec §2.1 mandates host_io as Step-6 deliverable. Plan-decision C downgrade — minimum viable shim, no NAK retransmit, no async event thread (deferred to Step 7 MVP).
+
+- [ ] **Step 1: Add `serialport` dependency**
+
+In `rust/kalico-host-rt/Cargo.toml`:
+
+```toml
+[dependencies]
+serialport = "4"
+crc = "3"
+log = "0.4"
+
+# Round-3 fix: pyo3 declared as optional + python-bridge feature.
+[dependencies.pyo3]
+version = "0.22"
+optional = true
+
+[features]
+default = []
+python-bridge = ["dep:pyo3"]
+```
+
+- [ ] **Step 2: Implement minimal host_io.rs**
+
+```rust
+//! Minimal Step-6 host_io.rs implementing Transport. Spec §2.1 substrate.
+//!
+//! Step-6 minimum: open serial port, run identify handshake, send framed
+//! commands, wait on parsed responses with timeout. Production hardening
+//! (NAK retransmit, async event dispatch) is Step 7 MVP.
+
+use std::time::{Duration, Instant};
+use std::collections::VecDeque;
+use serialport::SerialPort;
+
+use crate::transport::{MessageParams, MessageValue, Transport, TransportError};
+
+pub struct KalicoHostIo {
+    port: Box<dyn SerialPort>,
+    seq: u8,                              // 4-bit sequence
+    rx_buf: Vec<u8>,
+    pending: VecDeque<(String, MessageParams)>,
+    parser: MsgProtoParser,
+}
+
+impl KalicoHostIo {
+    pub fn open(path: &str, baud: u32) -> Result<Self, TransportError> {
+        let port = serialport::new(path, baud)
+            .timeout(Duration::from_millis(100))
+            .open()?;
+        let mut io = Self {
+            port,
+            seq: 0,
+            rx_buf: Vec::with_capacity(1024),
+            pending: VecDeque::new(),
+            parser: MsgProtoParser::new(),
+        };
+        io.identify_handshake()?;
+        Ok(io)
+    }
+
+    fn identify_handshake(&mut self) -> Result<(), TransportError> {
+        // ~50 LOC: send `identify offset=N count=40` until offset reaches
+        // total length, accumulate response bytes into a JSON-ish data
+        // dictionary, parse via msgproto. Mirror tools/kalico_host_io.py
+        // _do_identify lines 137-183 verbatim in Rust. Step-6 minimum:
+        // synchronous, no NAK retransmit (rely on USB-CDC reliability for
+        // test bench), 15-second timeout.
+        // TODO[step6]: implement; ~50 LOC straight port from Python.
+        Ok(())
+    }
+}
+
+impl Transport for KalicoHostIo {
+    fn send(&mut self, cmd: &str) -> Result<(), TransportError> {
+        // ~30 LOC: encode via parser, frame with [len, seq+dest, payload, crc16, sync],
+        // write to port. No NAK retransmit (Step 7).
+        let _ = cmd;  // TODO[step6]: implement
+        Ok(())
+    }
+    fn wait_for_response(&mut self, name: &str, timeout: Duration)
+        -> Result<MessageParams, TransportError>
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(idx) = self.pending.iter().position(|(n, _)| n == name) {
+                return Ok(self.pending.remove(idx).unwrap().1);
+            }
+            let remaining = deadline.checked_duration_since(Instant::now())
+                .ok_or(TransportError::Timeout)?;
+            self.port.set_timeout(remaining.min(Duration::from_millis(100)))?;
+            let mut chunk = [0u8; 256];
+            match self.port.read(&mut chunk) {
+                Ok(n) if n > 0 => {
+                    self.rx_buf.extend_from_slice(&chunk[..n]);
+                    while let Some(packet) = self.parser.try_extract(&mut self.rx_buf) {
+                        if let Some((nm, p)) = self.parser.parse(&packet) {
+                            self.pending.push_back((nm, p));
+                        }
+                    }
+                }
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                Err(e) => return Err(TransportError::Io(e)),
+            }
+        }
+    }
+    fn poll_events(&mut self, name: &str) -> Vec<MessageParams> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.pending.len() {
+            if self.pending[i].0 == name {
+                out.push(self.pending.remove(i).unwrap().1);
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+}
+
+/// Minimal msgproto parser. ~80 LOC.
+/// Step-6 deliverable: parse framed packets via SYNC byte + length + CRC16.
+/// Step-7 hardening: NAK detection, retransmit window, identify-response
+/// reassembly, etc. Refer to tools/kalico_host_io.py for the canonical
+/// behavior.
+struct MsgProtoParser {
+    // dictionary loaded at identify time
+    commands: std::collections::HashMap<u32, CommandSpec>,
+}
+
+struct CommandSpec {
+    name: String,
+    fields: Vec<(String, FieldType)>,
+}
+
+enum FieldType { U32, U64, I32, U8, U16, Bytes }
+
+impl MsgProtoParser {
+    fn new() -> Self { Self { commands: Default::default() } }
+    fn try_extract(&self, buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+        // Find SYNC=0x7E, validate length+CRC, extract packet bytes, drain buf.
+        // ~30 LOC.
+        None  // TODO[step6]: implement
+    }
+    fn parse(&self, packet: &[u8]) -> Option<(String, MessageParams)> {
+        // Decode message-id, look up command spec, decode fields.
+        // ~30 LOC.
+        None  // TODO[step6]: implement
+    }
+}
+```
+
+- [ ] **Step 3: Tests + commit**
+
+```bash
+cd rust && cargo test -p kalico-host-rt host_io 2>&1 | tail -10
+git add rust/kalico-host-rt/Cargo.toml rust/kalico-host-rt/src/host_io.rs
+git commit -m "kalico-host-rt/host_io: §2.1 minimal Transport shim (Plan-decision C)
+
+Round-3 review B-R3-6: spec §2.1 mandates host_io as Step-6 deliverable.
+Plan-decision C downgrade: minimum viable shim only — open port, identify
+handshake (sync), send framed cmd, wait for response (sync). No NAK
+retransmit, no async event dispatch thread; deferred to Step 7 MVP.
+
+~150 LOC port of tools/kalico_host_io.py minimum surface. Full
+production-grade host_io ships with Step 7."
+```
+
 ### Task 10.3: `clock_sync.rs` (already implemented in Phase 8 Task 8.1)
 
 Phase 8 Task 8.1 lives at `rust/kalico-host-rt/src/clock_sync.rs` and implements the full estimator. Phase 10 Task 10.3 is a no-op cross-reference: confirm the file is in place and the unit tests pass.
@@ -4125,21 +4337,21 @@ pub fn encode_load_curve_v1(
 }
 ```
 
-- [ ] **Step 2: Implement `producer.rs`**
+- [ ] **Step 2: Implement `producer.rs` against the Transport trait (Round-3 fix B-R3-5)**
 
 ```rust
 // rust/kalico-host-rt/src/producer.rs
 
-use crate::host_io::KalicoHostIo;
 use crate::credit::CreditCounter;
+use crate::transport::{Transport, TransportError};
 
 pub struct PushedSegmentInfo {
     pub accepted_segment_id: u32,
     pub credit_epoch: u32,
 }
 
-pub fn push_segment(
-    io: &mut KalicoHostIo,
+pub fn push_segment<T: Transport>(
+    io: &mut T,
     credit: &CreditCounter,
     id: u32,
     curve_handle_packed: u32,
@@ -4158,7 +4370,7 @@ pub fn push_segment(
     );
     if let Err(e) = io.send(&cmd) {
         credit.release();
-        return Err(ProducerError::Io(e));
+        return Err(ProducerError::Transport(e));
     }
     let resp = io.wait_for_response("kalico_push_response", std::time::Duration::from_millis(100))?;
     let result = resp.get_i32("result");
@@ -4175,12 +4387,12 @@ pub fn push_segment(
 #[derive(Debug)]
 pub enum ProducerError {
     NoCredit,
-    Io(std::io::Error),
+    Transport(TransportError),
     McuRejected(i32),
 }
 
-impl From<std::io::Error> for ProducerError {
-    fn from(e: std::io::Error) -> Self { ProducerError::Io(e) }
+impl From<TransportError> for ProducerError {
+    fn from(e: TransportError) -> Self { ProducerError::Transport(e) }
 }
 ```
 
@@ -4193,10 +4405,12 @@ impl From<std::io::Error> for ProducerError {
 
 **Why:** Aggregator: receives `kalico_fault` async events, propagates to user as `Result<_, FaultEvent>`.
 
-- [ ] **Step 1: Implement**
+- [ ] **Step 1: Implement (Round-3 fix B-R3-5: imports from transport, not host_io)**
 
 ```rust
 // rust/kalico-host-rt/src/fault.rs
+
+use crate::transport::MessageParams;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FaultEvent {
@@ -4205,7 +4419,7 @@ pub struct FaultEvent {
     pub segment_id: u32,
 }
 
-pub fn parse_fault_event(params: &crate::host_io::MessageParams) -> Option<FaultEvent> {
+pub fn parse_fault_event(params: &MessageParams) -> Option<FaultEvent> {
     Some(FaultEvent {
         fault_code: params.get_u32("fault_code") as u16,
         fault_detail: params.get_u32("fault_detail"),
@@ -4214,7 +4428,7 @@ pub fn parse_fault_event(params: &crate::host_io::MessageParams) -> Option<Fault
 }
 ```
 
-(The host_io message-pump dispatches `kalico_fault` to a registered consumer. Wire-up happens in the host_io's RX loop.)
+(The Transport's `poll_events("kalico_fault")` returns `Vec<MessageParams>` which `parse_fault_event` digests. The minimal Step-6 host_io.rs implements `poll_events` as a no-op or a synchronous wait_for_response with short timeout; production async event dispatch is Step-7 work.)
 
 - [ ] **Step 2: Tests + commit**
 
