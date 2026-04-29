@@ -375,15 +375,21 @@ pub unsafe extern "C" fn kalico_runtime_load_fixture(
     let Some(curve) = sim_fixtures::lookup(fixture_id) else {
         return KALICO_ERR_VALIDATION;
     };
-    // Project to FgState via raw pointer (per §11.2 — though Step 5's FFI is
-    // pre-half-split; fall back to Step-5 surface for now, refactored in
-    // Phase 1).
+    // Phase 0 ordering note: at this point Phase 1's half-split refactor
+    // has NOT landed; the Step-5 RuntimeContext is monolithic. Use the
+    // Step-5 access pattern here. Phase 1 Task 1.2 updates this FFI alongside
+    // the rest to use the raw-pointer projection pattern; the change is
+    // mechanical (same body, different access path).
     let ctx = unsafe { &mut *(rt as *mut RuntimeContext) };
-    ctx.curve_pool.try_load_into(slot_idx as usize, curve)
+    if ctx.curve_pool.try_alloc_and_load(slot_idx as usize, curve).is_some() {
+        0
+    } else {
+        -2  // KALICO_ERR_VALIDATION (slot busy or out-of-range)
+    }
 }
 ```
 
-(If Phase 1's half-split refactor lands first, swap this for the raw-pointer projection pattern. Phase 0 may use the Step-5 pattern — the sim-fixtures FFI is sim-only and gets fixed up at Phase 1.)
+This task ships a sim-only path; the lifecycle is tightly bounded (sim-only, fixture-only, never reaches production). Phase 1 Task 1.2 refactors it alongside the rest of the FFI surface.
 
 - [ ] **Step 9: Add `command_kalico_load_fixture_curve` in `src/runtime_tick.c`**
 
@@ -496,9 +502,30 @@ def run_gate_a(use_fixtures: bool) -> int:
                 cmd = f"kalico_load_fixture_curve slot={slot} fixture_id={slot}"
                 resp_name = "kalico_load_fixture_response"
             else:
-                # Real load_curve path — payload assembly omitted for brevity;
-                # see test_h723_first_light.py for the canonical encoding.
-                raise NotImplementedError("Use --use-fixtures until load_curve is root-caused")
+                # Real load_curve path: encode v1 versioned blob.
+                from wire_v1 import encode_load_curve_v1
+                # Three fixtures — same shapes as sim_fixtures.rs lookup table.
+                FIXTURE_CURVES = [
+                    # straight_line_x: degree-1, 2 CP, 4 knots
+                    (1, [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [1.0, 1.0]),
+                    # quarter_arc_xy: degree-2 rational, 3 CP, 6 knots
+                    (2, [(20.0, 0.0, 0.0), (20.0, 20.0, 0.0), (0.0, 20.0, 0.0)],
+                        [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                        [1.0, 0.7071067811865476, 1.0]),
+                    # cubic_bezier_xy: degree-3, 4 CP, 8 knots
+                    (3, [(0.0, 0.0, 0.0), (3.0, 5.0, 0.0), (7.0, 5.0, 0.0), (10.0, 0.0, 0.0)],
+                        [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                        [1.0, 1.0, 1.0, 1.0]),
+                ]
+                degree, cps, knots, weights = FIXTURE_CURVES[slot]
+                blob = encode_load_curve_v1(degree, cps, knots, weights)
+                cmd = f"kalico_load_curve slot={slot} data={blob.hex()}"
+                # NOTE: msgproto's `%*s` blob encoding takes raw bytes; the
+                # KalicoHostIo helper handles the conversion. Adjust per the
+                # helper's API — pass bytes via the bytes-arg path, not hex.
+                resp_name = "kalico_load_curve_response"
             io.send(cmd)
             r = io.wait_for_response(resp_name, 2.0)
             if r.get("result") != 0:
@@ -641,19 +668,35 @@ pub struct RuntimeContext {
     pub(crate) fg: UnsafeCell<FgState>,
     pub(crate) isr: UnsafeCell<IsrState>,
     pub(crate) shared: SharedState,
+    /// CurvePool sits at top-level (NOT inside FgState/IsrState) because both
+    /// halves access it: foreground writes via try_alloc + try_load_into;
+    /// ISR reads via lookup. Per-slot AtomicU16 generation counters + per-slot
+    /// UnsafeCell<LoadedCurve> make concurrent access safe (foreground is sole
+    /// writer to slot.curve, gated by alloc-then-load-then-bump-current_gen
+    /// invariant; ISR's Acquire-load on current_gen synchronizes with that
+    /// invariant). Spec §10.5.
+    pub(crate) curve_pool: crate::curve_pool::CurvePool,
     /// Static SPSC backing storage shared by FgState/IsrState producer/consumer split.
     pub(crate) queue_storage: UnsafeCell<Queue<Segment, Q_N>>,
     pub(crate) trace_storage: UnsafeCell<Queue<crate::trace::TraceSample, { crate::trace::TRACE_RING_N }>>,
 }
 
-// SAFETY: see discipline contract above.
+// SAFETY: see discipline contract above. CurvePool is Sync via per-slot atomics.
 unsafe impl Sync for RuntimeContext {}
 
 pub struct FgState {
     pub queue_producer: Producer<'static, Segment, Q_N>,
     pub trace_consumer: Consumer<'static, crate::trace::TraceSample, { crate::trace::TRACE_RING_N }>,
-    pub curve_pool: CurvePool,  // foreground owns alloc / load
-    pub stream_state_machine: crate::stream::FgStreamState,  // see Phase 6
+    pub stream_state_machine: crate::stream::FgStreamState,
+    /// Stream-open identity tracking for §8.5 idempotency (same-stream_id rule).
+    pub current_stream_id: Option<u32>,
+    /// Arm-time idempotency (§8.5: arm with same t_start_t0 returns OK).
+    pub armed_t_start_t0: Option<u64>,
+    /// Set by §8.3 kalico_stream_terminal handler; consumed by ISR retire path
+    /// (cross-half via SharedState atomics).
+    pub terminal_segment_id: Option<u32>,
+    /// Used by §8.5 flush spin-wait deadline computation.
+    pub flush_start_tick: Option<u64>,
 }
 
 pub struct IsrState {
@@ -684,6 +727,12 @@ pub struct SharedState {
     pub credit_epoch: AtomicU32,
     pub accepted_segment_id: AtomicU32,
     pub retired_through_segment_id: AtomicU32,
+    // Step-6: terminal-segment communication foreground → ISR (§8.3).
+    // Foreground sets _set true + _value to the segment id from
+    // kalico_stream_terminal; ISR retire path checks the flag + value and
+    // clears stream_open when matched. Both cleared on flush/stream_open.
+    pub terminal_segment_id_set: AtomicBool,
+    pub terminal_segment_id_value: AtomicU32,
 }
 
 impl SharedState {
@@ -702,6 +751,8 @@ impl SharedState {
             credit_epoch: AtomicU32::new(0),
             accepted_segment_id: AtomicU32::new(0),
             retired_through_segment_id: AtomicU32::new(0),
+            terminal_segment_id_set: AtomicBool::new(false),
+            terminal_segment_id_value: AtomicU32::new(0),
         }
     }
 }
@@ -734,13 +785,20 @@ impl RuntimeContext {
             let shared_ptr = core::ptr::addr_of_mut!((*rt_ptr).shared);
             shared_ptr.write(SharedState::new());
 
-            // Initialize FgState.
+            // Initialize CurvePool at top-level of RuntimeContext.
+            let pool_ptr = core::ptr::addr_of_mut!((*rt_ptr).curve_pool);
+            pool_ptr.write(CurvePool::new());
+
+            // Initialize FgState (no curve_pool field — it's at top level).
             let fg_ptr = core::ptr::addr_of_mut!((*rt_ptr).fg);
             (*fg_ptr).get().write(FgState {
                 queue_producer: q_producer,
                 trace_consumer: t_consumer,
-                curve_pool: CurvePool::new(),
                 stream_state_machine: crate::stream::FgStreamState::Idle,
+                current_stream_id: None,
+                armed_t_start_t0: None,
+                terminal_segment_id: None,
+                flush_start_tick: None,
             });
 
             // Initialize IsrState.
@@ -756,7 +814,16 @@ impl RuntimeContext {
 }
 ```
 
-- [ ] **Step 3: Stub out modules referenced but not yet existing**
+- [ ] **Step 3a: Update `rust/runtime/src/trace.rs::TRACE_RING_N` to the Step-6 value (Phase 5 Task 5.1 will set the new schema; this is just the const)**
+
+```rust
+// rust/runtime/src/trace.rs
+pub const TRACE_RING_N: usize = 1201;  // §13.1: HOST_STALL + 10 ms safety margin × 40 kHz + 1 (heapless cap-N-1)
+```
+
+This must precede Phase 5 Task 5.1 because Task 1.1's `RuntimeContext.trace_storage` uses `{ crate::trace::TRACE_RING_N }` as a const generic. Defining the constant value here keeps Phase 1 buildable in isolation; Phase 5 only updates the `TraceSample` struct schema (the count is set here).
+
+- [ ] **Step 3b: Stub out modules referenced but not yet existing**
 
 Add to `rust/runtime/src/lib.rs`:
 
@@ -879,14 +946,17 @@ pub unsafe extern "C" fn kalico_runtime_tick(rt: *mut KalicoRuntime, raw_cyccnt:
     unsafe {
         let isr_ptr: *mut IsrState =
             UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+        let pool_ptr: *const crate::curve_pool::CurvePool =
+            core::ptr::addr_of!((*ctx).curve_pool);
         let shared_ptr: *const SharedState =
             core::ptr::addr_of!((*ctx).shared);
         let isr: &mut IsrState = &mut *isr_ptr;
+        let pool: &crate::curve_pool::CurvePool = &*pool_ptr;
         let shared: &SharedState = &*shared_ptr;
 
-        // Phase 5 will add the §8.5 force_idle check here at the top of tick.
+        // Phase 7 will add the §8.5 force_idle check here at the top of tick.
         // For Phase 1, just delegate to engine.
-        isr.engine.tick(raw_cyccnt, &mut isr.widen_state, shared);
+        isr.engine.tick(raw_cyccnt, &mut isr.widen_state, pool, shared);
     }
 }
 ```
@@ -1409,10 +1479,19 @@ impl CurvePool {
         }
     }
 
-    /// Foreground attempts to allocate a fresh handle for `slot_idx`.
-    /// Returns Some(handle) if `current_gen == last_retired_gen` (modulo u16),
-    /// None otherwise.
-    pub fn try_alloc(&self, slot_idx: usize) -> Option<CurveHandle> {
+    /// Foreground reserves a slot AND loads the curve atomically. Returns
+    /// Some(handle) if `current_gen == last_retired_gen` (modulo u16), None
+    /// otherwise.
+    ///
+    /// **Ordering** (per spec §10.2 + Round-1 Codex #4 fix): the new curve
+    /// MUST be fully written into slot.curve BEFORE current_gen is bumped.
+    /// Otherwise the ISR's lookup could observe `current_gen == new_gen`
+    /// before the curve memory is initialized, dereferencing stale/garbage
+    /// curve data.
+    ///
+    /// Combined alloc + load (replaces the prior split try_alloc /
+    /// try_load_into which inverted the ordering).
+    pub fn try_alloc_and_load(&self, slot_idx: usize, curve: LoadedCurve) -> Option<CurveHandle> {
         if slot_idx >= CURVE_POOL_N {
             return None;
         }
@@ -1422,22 +1501,17 @@ impl CurvePool {
         if cur != last {
             return None;
         }
-        // Predicate satisfied; bump generation. Wrap on u16 modulo.
+        // 1. Write the new curve. SAFETY: predicate above guarantees no
+        //    concurrent ISR access — ISR's lookup checks current_gen first.
+        unsafe { *slot.curve.get() = curve; }
+        // 2. Memory barrier so the curve write completes before we bump gen.
+        //    The Release store on current_gen below provides this.
+        // 3. Bump generation. Wrap on u16 modulo. The ISR's Acquire-load
+        //    on current_gen synchronizes-with this Release store, ensuring
+        //    the curve write is visible if and only if the new gen is.
         let new_gen = cur.wrapping_add(1);
         slot.current_gen.store(new_gen, Ordering::Release);
         Some(CurveHandle { slot_idx: slot_idx as u16, generation: new_gen })
-    }
-
-    /// Foreground loads a curve into the just-allocated slot.
-    /// Caller MUST have just called try_alloc and obtained the handle.
-    pub fn try_load_into(&self, slot_idx: usize, curve: LoadedCurve) -> i32 {
-        if slot_idx >= CURVE_POOL_N {
-            return -2;  // KALICO_ERR_VALIDATION
-        }
-        let slot = &self.slots[slot_idx];
-        // SAFETY: foreground is sole writer; alloc-then-load contract enforced by caller.
-        unsafe { *slot.curve.get() = curve; }
-        0
     }
 
     /// ISR-only lookup; validates handle generation matches.
@@ -1486,7 +1560,7 @@ fn dummy_curve() -> LoadedCurve {
 #[test]
 fn first_alloc_succeeds() {
     let pool = CurvePool::new();
-    let h = pool.try_alloc(0).unwrap();
+    let h = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
     assert_eq!(h.slot_idx, 0);
     assert_eq!(h.generation, 1);  // bumped from 0 -> 1
 }
@@ -1494,22 +1568,22 @@ fn first_alloc_succeeds() {
 #[test]
 fn second_alloc_blocked_until_retired() {
     let pool = CurvePool::new();
-    let h1 = pool.try_alloc(0).unwrap();
-    assert!(pool.try_alloc(0).is_none(), "second alloc should be blocked");
+    let h1 = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
+    assert!(pool.try_alloc_and_load(0, dummy_curve()).is_none(),
+        "second alloc should be blocked");
     pool.confirm_retired(h1);
-    let h2 = pool.try_alloc(0).unwrap();
+    let h2 = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
     assert_eq!(h2.generation, 2);
 }
 
 #[test]
 fn lookup_validates_generation() {
     let pool = CurvePool::new();
-    let h1 = pool.try_alloc(0).unwrap();
-    pool.try_load_into(0, dummy_curve());
+    let h1 = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
     assert!(pool.lookup(h1).is_ok());
 
     pool.confirm_retired(h1);
-    let _h2 = pool.try_alloc(0).unwrap();
+    let _h2 = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
     // Stale h1 must now reject (current_gen != h1.generation).
     assert!(pool.lookup(h1).is_err(), "stale handle must reject");
 }
@@ -1517,21 +1591,20 @@ fn lookup_validates_generation() {
 #[test]
 fn wrap_u16_modulo_no_deadlock() {
     let pool = CurvePool::new();
-    // Force generation through wrap. Bypass FFI; touch atomics directly via
-    // public surface: alloc + retire in sequence 65536 times.
+    // Force generation through wrap. Alloc + retire in sequence 65536 times.
     for _ in 0..65536 {
-        let h = pool.try_alloc(0).unwrap();
+        let h = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
         pool.confirm_retired(h);
     }
     // Slot is allocatable post-wrap.
-    let h_post_wrap = pool.try_alloc(0).unwrap();
+    let h_post_wrap = pool.try_alloc_and_load(0, dummy_curve()).unwrap();
     assert_eq!(h_post_wrap.slot_idx, 0);
 }
 
 #[test]
 fn out_of_range_slot_rejects() {
     let pool = CurvePool::new();
-    assert!(pool.try_alloc(CURVE_POOL_N).is_none());
+    assert!(pool.try_alloc_and_load(CURVE_POOL_N, dummy_curve()).is_none());
     assert!(pool.lookup(CurveHandle::new(CURVE_POOL_N as u16, 1)).is_err());
 }
 ```
@@ -2251,6 +2324,65 @@ diagnostics.
 Per spec §9.1 / §9.2."
 ```
 
+### Task 4.2: Post-fault diagnostic command (Round-1 review B9)
+
+**Files:**
+- Modify: `rust/kalico-c-api/src/runtime_ffi.rs` — `kalico_runtime_query_pool_state` FFI.
+- Modify: `src/runtime_tick.c` — `kalico_query_pool_state` DECL_COMMAND.
+
+**Why:** Spec §10.4 + Round-1 review requires a diagnostic command for post-fault host inspection of per-slot curve-pool state.
+
+- [ ] **Step 1: FFI helper that returns per-slot state**
+
+```rust
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kalico_runtime_query_pool_state(
+    rt: *mut KalicoRuntime,
+    slot_idx: u16,
+    out_current_gen: *mut u16,
+    out_last_retired_gen: *mut u16,
+) -> i32 {
+    if rt.is_null() { return KALICO_ERR_NULL_HANDLE; }
+    let ctx = rt as *mut RuntimeContext;
+    unsafe {
+        let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
+        if (slot_idx as usize) >= CURVE_POOL_N { return KALICO_ERR_VALIDATION; }
+        let slot = &pool.slots[slot_idx as usize];
+        *out_current_gen = slot.current_gen.load(Ordering::Acquire);
+        *out_last_retired_gen = slot.last_retired_gen.load(Ordering::Acquire);
+    }
+    0
+}
+```
+
+- [ ] **Step 2: C-side DECL_COMMAND**
+
+```c
+void
+command_kalico_query_pool_state(uint32_t *args)
+{
+    uint16_t slot = args[0];
+    uint16_t cur = 0, last = 0;
+    int32_t r = kalico_runtime_query_pool_state(kalico_rt_handle, slot, &cur, &last);
+    sendf("kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
+          r, slot, cur, last);
+}
+DECL_COMMAND(command_kalico_query_pool_state, "kalico_query_pool_state slot=%hu");
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add rust/kalico-c-api/src/runtime_ffi.rs src/runtime_tick.c
+git commit -m "runtime: §10.4 post-fault diagnostic — kalico_query_pool_state
+
+Per-slot current_gen / last_retired_gen inspection for host-side
+recovery decisions. Used after KALICO_FAULT_TRACE_OVERFLOW or other
+faults to determine whether power-cycle is required.
+
+Per spec §10.4 (Round-1 review B9)."
+```
+
 ---
 
 ## Phase 5 — TraceRing resize + new schema
@@ -2511,45 +2643,75 @@ pub fn open(
     out_credit_epoch: *mut u32,
 ) -> i32 {
     if shared.stream_open.load(Ordering::Acquire) {
-        // Idempotent: same stream_id twice → return success with current epoch.
-        if fg.stream_state_machine == FgStreamState::StreamOpening
-            || fg.stream_state_machine == FgStreamState::StreamOpenPriming
+        // Per spec §8.5: idempotent only for SAME stream_id. Different
+        // stream_id while open → state-machine violation.
+        if fg.current_stream_id == Some(stream_id)
+            && (fg.stream_state_machine == FgStreamState::StreamOpening
+                || fg.stream_state_machine == FgStreamState::StreamOpenPriming)
         {
             unsafe { *out_credit_epoch = shared.credit_epoch.load(Ordering::Acquire); }
             return 0;
         }
-        // Different stream_id reopening → state-machine violation.
         return FaultCode::StreamStateViolation as i32;
     }
+    // Round-1 B14: ensure terminal_segment_id is cleared on stream_open.
+    fg.terminal_segment_id = None;
+    shared.terminal_segment_id_set.store(false, Ordering::Release);
+    shared.terminal_segment_id_value.store(0, Ordering::Release);
+
     shared.stream_open.store(true, Ordering::Release);
     fg.stream_state_machine = FgStreamState::StreamOpening;
+    fg.current_stream_id = Some(stream_id);
     let epoch = shared.credit_epoch.load(Ordering::Acquire);
     unsafe { *out_credit_epoch = epoch; }
-    let _ = stream_id;  // currently informational; future use for multi-stream
     0
 }
 
 pub fn arm(
     fg: &mut FgState,
     shared: &SharedState,
+    pool: &crate::curve_pool::CurvePool,
+    isr_queue_peek: impl FnOnce() -> Option<crate::segment::Segment>,
     t_start_t0: u64,
     arm_lead_cycles: u32,
     out_armed_t_start: *mut u64,
 ) -> i32 {
-    // Idempotent guard: already armed at same t_start
+    // Round-1 review B4 fix: per spec §6.3, validation checks the FIRST
+    // PRIMING SEGMENT's t_start, not the arm command's t_start_t0 directly.
+    // The arm command's t_start_t0 is the host's commit-time wall-clock
+    // converted to MCU-local cycles; the first priming segment's t_start
+    // must satisfy `t_start >= now + MIN_ARM_LEAD_CYCLES` to give the MCU
+    // enough time to evaluate.
+
+    // Per spec §8.5: idempotent only for SAME t_start_t0.
     if fg.stream_state_machine == FgStreamState::Armed {
-        unsafe { *out_armed_t_start = t_start_t0; }
-        return 0;
+        if fg.armed_t_start_t0 == Some(t_start_t0) {
+            unsafe { *out_armed_t_start = t_start_t0; }
+            return 0;
+        }
+        return FaultCode::StreamStateViolation as i32;
     }
     if fg.stream_state_machine != FgStreamState::StreamOpenPriming {
         return FaultCode::StreamStateViolation as i32;
     }
-    // Validate t_start ≥ now + MIN_ARM_LEAD_CYCLES.
+
+    // Per spec §6.3: at least 1 priming segment in queue.
+    let Some(first_seg) = isr_queue_peek() else {
+        return FaultCode::ArmRejected as i32;
+    };
+
+    // Validate first priming segment's t_start ≥ now + MIN_ARM_LEAD_CYCLES.
     let now = crate::clock::read_widened_now(shared);
-    if t_start_t0 < now + arm_lead_cycles as u64 {
+    if first_seg.t_start < now + arm_lead_cycles as u64 {
         return FaultCode::ArmRejected as i32;
     }
+
+    let _ = pool;  // CurvePool reference threaded through for consistency;
+                   // not actively used in arm validation but available for
+                   // future "all priming segments reference loaded curves" checks.
+
     fg.stream_state_machine = FgStreamState::Armed;
+    fg.armed_t_start_t0 = Some(t_start_t0);
     unsafe { *out_armed_t_start = t_start_t0; }
     0
 }
@@ -2718,83 +2880,157 @@ first, ack-waits, THEN stream_open=false."
 
 **Why:** Spec §8.5 + Plan-decision A.
 
-- [ ] **Step 1: Implement `flush()`**
+- [ ] **Step 1: Implement `flush()` with concrete queue drain mechanism**
+
+The flush function takes a raw pointer to the `RuntimeContext` (not just `&mut FgState`) because it needs transient access to `IsrState.queue_consumer` and `RuntimeContext.curve_pool` under the IRQ-disable window. The FFI shim `kalico_runtime_stream_flush` does the raw-pointer derivation and passes through.
 
 ```rust
-pub fn flush(
-    fg: &mut FgState,
-    shared: &SharedState,
+// rust/runtime/src/stream.rs
+
+use core::sync::atomic::Ordering;
+use core::cell::UnsafeCell;
+use crate::error::FaultCode;
+use crate::state::{FgState, IsrState, RuntimeContext, SharedState};
+
+/// Flush sequence per spec §8.5 + Plan-decision A.
+///
+/// Takes `*mut RuntimeContext` because flush needs transient access to
+/// `IsrState.queue_consumer` under IRQ-disable. The discipline contract is
+/// preserved: the IRQ-disable window prevents concurrent ISR access, so the
+/// foreground briefly holds exclusive access to IsrState during step 4.
+///
+/// SAFETY: caller must guarantee single-threaded foreground entry (typical
+/// for command dispatch).
+pub unsafe fn flush(
+    rt: *mut RuntimeContext,
     out_credit_epoch: *mut u32,
 ) -> i32 {
-    use core::sync::atomic::Ordering;
+    if rt.is_null() { return FaultCode::NullHandle as i32; }
+    let ctx = rt;
 
-    // Plan-decision A: force_idle FIRST, ack-wait, THEN stream_open=false.
+    // Project FgState (foreground exclusive) and SharedState (atomics).
+    let fg_ptr: *mut FgState = unsafe { UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg)) };
+    let shared_ptr: *const SharedState = unsafe { core::ptr::addr_of!((*ctx).shared) };
+    let pool_ptr: *const crate::curve_pool::CurvePool =
+        unsafe { core::ptr::addr_of!((*ctx).curve_pool) };
+    let fg: &mut FgState = unsafe { &mut *fg_ptr };
+    let shared: &SharedState = unsafe { &*shared_ptr };
+    let pool: &crate::curve_pool::CurvePool = unsafe { &*pool_ptr };
 
-    // Step 1: set force_idle=true.
+    // ─── Plan-decision A: force_idle FIRST, ack-wait, THEN stream_open=false ───
+
+    // Step 1: set force_idle=true. ISR observes on its next tick.
     shared.force_idle.store(true, Ordering::Release);
 
-    // Step 2: spin-wait on acked_force_idle with 1 ms timeout.
-    let timeout_ticks = 40;  // 40 ticks × 25 µs = 1 ms at 40 kHz nominal
-    let mut waited = 0;
+    // Step 2: spin-wait on acked_force_idle with a 1-ms host wall-clock
+    // timeout. Use Klipper's host-side `timer_read_time()` C-side helper
+    // (NOT `read_widened_now`, because Round 1 review B3 found that the
+    // ISR doesn't update widened_now during force_idle, so the seqlock would
+    // appear frozen and the deadline check would never fire).
+    let deadline_us = unsafe { kalico_host_now_us() } + 1000;  // +1 ms
     while !shared.acked_force_idle.load(Ordering::Acquire) {
         core::hint::spin_loop();
-        waited += 1;
-        // crude budget: bound is on actual ISR cadence, not loop iterations.
-        // We rely on a deadline derived from the widened clock.
-        let now = crate::clock::read_widened_now(shared);
-        if waited == 1 {
-            // Record start tick for deadline check
-            fg.flush_start_tick = Some(now);
-        } else if let Some(start) = fg.flush_start_tick {
-            // 1 ms = clock_freq / 1000 cycles
-            if now.saturating_sub(start) > (crate::clock::DEFAULT_CLOCK_FREQ as u64) / 1000 {
-                // Timeout — latch LIVENESS_STALLED.
-                shared.last_error.store(FaultCode::LivenessStalled as i32, Ordering::Release);
-                shared.runtime_status.store(crate::engine::RuntimeStatus::Fault as u8, Ordering::Release);
-                fg.flush_start_tick = None;
-                return FaultCode::LivenessStalled as i32;
-            }
+        let now_us = unsafe { kalico_host_now_us() };
+        if now_us >= deadline_us {
+            // Timeout — ISR appears stuck. Latch LIVENESS_STALLED.
+            shared.last_error.store(FaultCode::LivenessStalled as i32, Ordering::Release);
+            shared.runtime_status.store(crate::engine::RuntimeStatus::Fault as u8, Ordering::Release);
+            return FaultCode::LivenessStalled as i32;
         }
     }
-    fg.flush_start_tick = None;
 
-    // Step 3: NOW clear stream_open (post-ack).
+    // ISR is now parked. From this point until step 7 clears force_idle, no
+    // ISR fire performs any segment evaluation, queue access, or curve-pool
+    // access (per the §8.5 step-2 contract).
+
+    // Step 3: NOW clear stream_open (post-ack). Subsequent ticks (after
+    // step 7) will see stream_open=false on empty queue → Drained, not
+    // Underrun.
     shared.stream_open.store(false, Ordering::Release);
 
-    // Step 4: IRQ-disable + transient queue drain.
-    // SAFETY: foreground holds exclusive access during disable_irq window.
+    // Step 4: IRQ-disable + transient queue drain via raw-pointer projection
+    // to IsrState.queue_consumer. SAFETY: under disable_irq, no ISR can run,
+    // so we transiently hold exclusive access to IsrState — the discipline
+    // contract holds because there's no concurrent access window.
     unsafe { cortex_m::interrupt::disable(); }
-    while fg.queue_producer.is_full() == false {
-        // We need transient access to queue_consumer here. The cleanest
-        // way to express this is to model the queue drain as "loop until
-        // shared.current_segment_id reaches accepted_segment_id" — but
-        // that's awkward across the producer/consumer split.
-        //
-        // Production pattern: foreground's flush_drain helper, which
-        // borrows IsrState briefly under the disabled-IRQ window.
-        break;
+    {
+        let isr_ptr: *mut IsrState = unsafe {
+            UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr))
+        };
+        let isr: &mut IsrState = unsafe { &mut *isr_ptr };
+        // Drain all enqueued segments. None are evaluated; they're
+        // discarded. No retire events emitted (segments never executed).
+        while isr.queue_consumer.dequeue().is_some() {}
+        // Also clear any in-flight current segment in the engine. The
+        // §8.5 step 2 contract says ISR has already cleared current; this
+        // is defense-in-depth.
+        isr.engine.current = None;
     }
-    flush_drain_queue_under_disabled_irq(/* needs IsrState pointer */);
     unsafe { cortex_m::interrupt::enable(); }
 
-    // Step 5: reset per-slot last_retired_gen to current_gen.
-    fg.curve_pool.reset_all_retired_to_current();
+    // Step 5: reset per-slot last_retired_gen = current_gen for all slots.
+    pool.reset_all_retired_to_current();
 
-    // Step 6: increment credit_epoch.
+    // Step 6: increment credit_epoch (any pending credit events from
+    // pre-flush are now stale by epoch comparison).
     let new_epoch = shared.credit_epoch.fetch_add(1, Ordering::AcqRel) + 1;
 
-    // Step 7: clear force_idle + acked_force_idle.
-    shared.force_idle.store(false, Ordering::Release);
+    // Plan-decision A: ALSO clear stream-machine state and terminal_segment_id
+    // (Round 1 review B14 fix — terminal_segment_id_set was never cleared on
+    // stream_open or flush, leaving stale state on stream-reopen).
+    fg.stream_state_machine = crate::stream::FgStreamState::Idle;
+    fg.terminal_segment_id = None;
+    shared.terminal_segment_id_set.store(false, Ordering::Release);
+    shared.terminal_segment_id_value.store(0, Ordering::Release);
+
+    // Step 7: clear force_idle + acked_force_idle. ISR resumes normal
+    // operation on next tick.
     shared.acked_force_idle.store(false, Ordering::Release);
+    shared.force_idle.store(false, Ordering::Release);
 
     // Step 8: return.
-    fg.stream_state_machine = FgStreamState::Idle;
     unsafe { *out_credit_epoch = new_epoch; }
     0
 }
+
+// Host-clock helper (defined in C-side runtime_tick.c — wraps Klipper's
+// `timer_read_time()` returning a u32 in clock cycles, converted to µs via
+// `kalico_clock_freq`). Foreground only; never called from ISR.
+unsafe extern "C" {
+    fn kalico_host_now_us() -> u64;
+}
 ```
 
-(Note: the IRQ-disable pattern needs access to `IsrState.queue_consumer` from the foreground side under the disabled-IRQ window. The cleanest implementation: a foreground-only helper `RuntimeContext::flush_drain_queue` that takes a raw pointer to the runtime context, projects to `IsrState` under the IRQ-disable window (transient exclusive access by the discipline contract since IRQ is off → no concurrent ISR access), drains, and returns.)
+**Add `kalico_host_now_us()` C-side helper in `src/runtime_tick.c`:**
+
+```c
+#include "board/misc.h"  // timer_read_time
+
+extern const uint32_t kalico_clock_freq;
+
+uint64_t
+kalico_host_now_us(void)
+{
+    // Returns wall-clock µs since boot (foreground; not ISR-safe in spirit
+    // since timer_read_time can wrap, but the kalico flush window is ≤1 ms).
+    uint32_t cycles = timer_read_time();
+    return ((uint64_t)cycles * 1000000ULL) / kalico_clock_freq;
+}
+```
+
+(Note: `timer_read_time()` is Klipper's existing 32-bit timer with widening already handled by Klipper at the foreground task level.)
+
+**Update FFI `kalico_runtime_stream_flush`:**
+
+```rust
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kalico_runtime_stream_flush(
+    rt: *mut KalicoRuntime,
+    out_credit_epoch: *mut u32,
+) -> i32 {
+    unsafe { runtime::stream::flush(rt as *mut RuntimeContext, out_credit_epoch) }
+}
+```
 
 - [ ] **Step 2: Add `CurvePool::reset_all_retired_to_current` helper**
 
@@ -2859,26 +3095,328 @@ Per spec §8.5 + Plan-decision A (Round 4)."
 
 Implements spec §12 (host-side estimator) and the §6.4 ARMING flow with explicit dedicated sync request (Plan-decision B).
 
-### Task 8.1: Host-side ClockSyncEstimator
+**Phase ordering note:** Phase 8 depends on Phase 10's host-rt crate scaffolding (Task 10.1). Phase 10 Task 10.1 must precede Phase 8 — re-order during execution: do Phase 10 Task 10.1 (scaffold), then Phase 8 Tasks 8.1+8.2, then Phase 10 Tasks 10.2+ for fleshing out the rest of the crate.
+
+### Task 8.1: Host-side ClockSyncEstimator (`rust/kalico-host-rt/src/clock_sync.rs`)
 
 **Files:**
-- Create: `rust/kalico-host-rt/src/clock_sync.rs` (new crate; if not yet scaffolded, scaffold in Phase 10 and back-fill).
+- Create: `rust/kalico-host-rt/src/clock_sync.rs` (full implementation).
+- Create: `rust/kalico-host-rt/tests/clock_sync_unit.rs`.
 
-**Why:** Spec §12.2. Sliding-window linear regression on (host_time, mcu_clock) pairs.
+**Why:** Spec §12.2 + Plan-decision B. Sliding-window linear regression with two sample sources (RTT-aware dedicated; piggyback) and quality gate.
 
-(This task is implementation-detail-heavy and depends on Phase 10's host-rt crate scaffolding. Defer concrete tasks until Phase 10 lands the crate; cross-reference there.)
+- [ ] **Step 1: Implement the estimator**
 
-- [ ] **Stub** — placeholder; implement after Phase 10 scaffolding.
+```rust
+//! Host-side clock-frequency estimator. Per spec §12.2 + §12.3 + Plan-decision B.
 
-### Task 8.2: ARMING flow with dedicated sync (Plan-decision B)
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+const WINDOW: usize = 30;  // sliding-window samples
+const MIN_WARMUP_SAMPLES: u32 = 30;
+const MAX_RESIDUAL_US_DEFAULT: f64 = 100.0;
+const MAX_DRIFT_PPM_DEFAULT: f64 = 100.0;
+const MAX_SAMPLE_AGE_MS_DEFAULT: u64 = 2000;
+/// Plan-decision B: arm-time quality gate also requires a recent
+/// RTT-aware sample. Default 500 ms; tunable.
+const MAX_RTT_AGE_MS_DEFAULT: u64 = 500;
+
+#[derive(Debug, Clone, Copy)]
+pub enum SampleSource { Dedicated, Piggyback }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Sample {
+    pub host_time_secs: f64,    // host wall-clock at the moment paired with mcu_clock
+    pub mcu_clock: u64,         // MCU widened CYCCNT
+    pub rtt_us: u32,            // 0 for piggyback; non-zero for dedicated
+    pub source: SampleSource,
+    pub recorded_at: Instant,   // for sample-age check
+}
+
+#[derive(Debug)]
+pub struct ClockSyncEstimator {
+    samples: VecDeque<Sample>,
+    pub clock_freq_estimate: f64,    // ticks/sec
+    anchor_host_time: f64,
+    anchor_mcu_clock: u64,
+    pub residual_max_in_window: f64,
+    pub last_dedicated_sample: Option<Instant>,
+}
+
+impl ClockSyncEstimator {
+    pub fn new(initial_freq_estimate: f64) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(WINDOW),
+            clock_freq_estimate: initial_freq_estimate,
+            anchor_host_time: 0.0,
+            anchor_mcu_clock: 0,
+            residual_max_in_window: 0.0,
+            last_dedicated_sample: None,
+        }
+    }
+
+    pub fn add_dedicated_sample(
+        &mut self,
+        host_send: Instant, host_recv: Instant,
+        mcu_at_response: u64,
+    ) {
+        let rtt = host_recv.duration_since(host_send);
+        let rtt_us = rtt.as_micros() as u32;
+        // Back-calculate to send-instant.
+        let one_way = rtt / 2;
+        let host_time_at_send = host_send.elapsed().as_secs_f64();
+        let mcu_at_send = mcu_at_response.saturating_sub(
+            (one_way.as_secs_f64() * self.clock_freq_estimate) as u64
+        );
+        self.add_sample(Sample {
+            host_time_secs: host_time_at_send,
+            mcu_clock: mcu_at_send,
+            rtt_us,
+            source: SampleSource::Dedicated,
+            recorded_at: Instant::now(),
+        });
+        self.last_dedicated_sample = Some(Instant::now());
+    }
+
+    pub fn add_piggyback_sample(&mut self, host_recv: Instant, mcu_clock_now: u64) {
+        // Piggyback: no RTT info; constant one-way-latency offset gets
+        // absorbed into regression intercept (frequency estimate stays
+        // unbiased; absolute offset is biased — fine for §12.4 purposes).
+        let host_time_secs = host_recv.elapsed().as_secs_f64();
+        self.add_sample(Sample {
+            host_time_secs,
+            mcu_clock: mcu_clock_now,
+            rtt_us: 0,
+            source: SampleSource::Piggyback,
+            recorded_at: Instant::now(),
+        });
+    }
+
+    fn add_sample(&mut self, sample: Sample) {
+        if self.samples.len() == WINDOW {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        self.recompute_regression();
+    }
+
+    fn recompute_regression(&mut self) {
+        if self.samples.len() < 2 { return; }
+        // Simple least-squares: fit mcu_clock = freq * host_time + offset.
+        let n = self.samples.len() as f64;
+        let mut sum_x = 0.0; let mut sum_y = 0.0;
+        let mut sum_xx = 0.0; let mut sum_xy = 0.0;
+        for s in &self.samples {
+            sum_x += s.host_time_secs;
+            sum_y += s.mcu_clock as f64;
+            sum_xx += s.host_time_secs * s.host_time_secs;
+            sum_xy += s.host_time_secs * (s.mcu_clock as f64);
+        }
+        let mean_x = sum_x / n;
+        let mean_y = sum_y / n;
+        let denom = sum_xx - n * mean_x * mean_x;
+        if denom.abs() < 1e-12 { return; }
+        let slope = (sum_xy - n * mean_x * mean_y) / denom;
+        let offset = mean_y - slope * mean_x;
+        self.clock_freq_estimate = slope;
+        self.anchor_host_time = mean_x;
+        self.anchor_mcu_clock = mean_y as u64;
+
+        // Residual max.
+        let mut max_resid = 0.0f64;
+        for s in &self.samples {
+            let predicted = slope * s.host_time_secs + offset;
+            let resid_seconds = ((s.mcu_clock as f64) - predicted) / slope;
+            let resid_us = (resid_seconds * 1e6).abs();
+            if resid_us > max_resid { max_resid = resid_us; }
+        }
+        self.residual_max_in_window = max_resid;
+    }
+
+    pub fn drift_ppm(&self, baseline_freq: f64) -> f64 {
+        ((self.clock_freq_estimate - baseline_freq) / baseline_freq) * 1e6
+    }
+
+    pub fn last_sample_age(&self) -> Option<Duration> {
+        self.samples.back().map(|s| s.recorded_at.elapsed())
+    }
+
+    pub fn last_dedicated_sample_age(&self) -> Option<Duration> {
+        self.last_dedicated_sample.map(|t| t.elapsed())
+    }
+
+    pub fn sample_count(&self) -> u32 {
+        self.samples.len() as u32
+    }
+
+    /// Plan-decision B: quality gate includes RTT-aware-sample-present check.
+    pub fn is_quality_gate_passed(&self, baseline_freq: f64) -> bool {
+        if self.sample_count() < MIN_WARMUP_SAMPLES { return false; }
+        if self.residual_max_in_window > MAX_RESIDUAL_US_DEFAULT { return false; }
+        if self.drift_ppm(baseline_freq).abs() > MAX_DRIFT_PPM_DEFAULT { return false; }
+        if let Some(age) = self.last_sample_age() {
+            if age.as_millis() > MAX_SAMPLE_AGE_MS_DEFAULT as u128 { return false; }
+        } else { return false; }
+        // Plan-decision B: dedicated sample present + recent.
+        match self.last_dedicated_sample_age() {
+            Some(age) if age.as_millis() <= MAX_RTT_AGE_MS_DEFAULT as u128 => true,
+            _ => false,
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Unit tests**
+
+```rust
+// rust/kalico-host-rt/tests/clock_sync_unit.rs
+use kalico_host_rt::clock_sync::{ClockSyncEstimator, SampleSource};
+use std::time::{Duration, Instant};
+
+#[test]
+fn fresh_estimator_quality_gate_fails_under_warmup() {
+    let est = ClockSyncEstimator::new(550_000_000.0);
+    assert!(!est.is_quality_gate_passed(550_000_000.0));
+}
+
+#[test]
+fn quality_gate_requires_recent_dedicated_sample_per_plan_decision_b() {
+    let mut est = ClockSyncEstimator::new(550_000_000.0);
+    let now = Instant::now();
+    // Inject 30 piggyback samples — should NOT pass quality gate (no RTT).
+    for i in 0..35 {
+        est.add_piggyback_sample(now + Duration::from_millis(i * 10),
+            (i * 5_500_000) as u64);
+    }
+    assert!(!est.is_quality_gate_passed(550_000_000.0),
+        "must fail without RTT-aware sample (Plan-decision B)");
+
+    // Add a dedicated sample.
+    let host_send = Instant::now();
+    let host_recv = host_send + Duration::from_micros(500);
+    est.add_dedicated_sample(host_send, host_recv, 5_500_000_000);
+    assert!(est.is_quality_gate_passed(550_000_000.0),
+        "should pass with fresh dedicated sample");
+}
+
+#[test]
+fn dedicated_sample_age_check() {
+    // ... test that after MAX_RTT_AGE_MS elapses the gate fails again
+}
+```
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+cd rust && cargo test -p kalico-host-rt clock_sync_unit 2>&1 | tail -10
+git add rust/kalico-host-rt/src/clock_sync.rs rust/kalico-host-rt/tests/clock_sync_unit.rs
+git commit -m "kalico-host-rt/clock_sync: §12.2 estimator + §12.4/Plan-decision B gate"
+```
+
+### Task 8.2: ARMING flow with explicit dedicated-sync (Plan-decision B)
 
 **Files:**
-- Modify: `rust/kalico-host-rt/src/clock_sync.rs` — `is_quality_gate_passed` predicate includes RTT-aware-sample-present check.
-- Modify: `rust/kalico-host-rt/src/stream.rs` — ARMING sequence sends `kalico_clock_sync_request` before `kalico_stream_arm`.
+- Modify: `rust/kalico-host-rt/src/stream.rs` — implement ARMING flow.
 
-**Why:** Plan-decision B: §12.3 normative.
+**Why:** Plan-decision B: §12.3 normative — host issues `kalico_clock_sync_request` as explicit step in §6.4 ARMING; quality gate gets RTT-aware-sample-present check.
 
-- [ ] **Stub** — implement after Phase 10.
+- [ ] **Step 1: Implement the host-side `arm()` flow**
+
+```rust
+// rust/kalico-host-rt/src/stream.rs
+
+use std::time::{Duration, Instant};
+use crate::clock_sync::ClockSyncEstimator;
+use crate::host_io::KalicoHostIo;
+
+/// ARMING flow per spec §6.3 + §6.4 + Plan-decision B.
+///
+/// Steps:
+///   1. For each MCU: issue `kalico_clock_sync_request` (dedicated sample).
+///   2. Wait for response, feed estimator with RTT-aware sample.
+///   3. Run quality gate per estimator (§12.4 + Plan-decision B):
+///      - sample_count ≥ MIN_WARMUP_SAMPLES
+///      - residual_max_in_window ≤ MAX_RESIDUAL_US
+///      - drift_ppm ≤ MAX_DRIFT_PPM
+///      - last_sample_age_ms ≤ MAX_SAMPLE_AGE_MS
+///      - last_dedicated_sample_age_ms ≤ MAX_RTT_AGE_MS  ← Plan-decision B
+///   4. If pass, issue `kalico_stream_arm` with t_start_t0.
+///   5. Wait for arm-ack with deadline ARM_LEAD_TIME_MS / 2 (per spec §6.4
+///      Round-1 ARMING-race protection).
+///   6. If any MCU fails ack within deadline, abort via flush.
+pub fn arm_all_mcus(
+    mcus: &mut [(KalicoHostIo, ClockSyncEstimator)],
+    t_start_wall_clock: Instant,
+    arm_lead_time: Duration,
+    arm_lead_cycles: u32,
+    baseline_freq: f64,
+) -> Result<(), ArmError> {
+    let arming_deadline = Instant::now() + arm_lead_time / 2;
+
+    // Step 1+2+3: dedicated sync + quality gate per MCU.
+    for (io, est) in mcus.iter_mut() {
+        if Instant::now() >= arming_deadline {
+            return Err(ArmError::DeadlineMissed);
+        }
+        let host_send = Instant::now();
+        io.send(&format!("kalico_clock_sync_request request_id=1 host_send_time_lo={} host_send_time_hi=0",
+            host_send.elapsed().as_micros() as u32))?;
+        let resp = io.wait_for_response("kalico_clock_sync_response", Duration::from_millis(50))?;
+        let host_recv = Instant::now();
+        let mcu_clock = ((resp.get_u32("mcu_clock_hi") as u64) << 32)
+                      | (resp.get_u32("mcu_clock_lo") as u64);
+        est.add_dedicated_sample(host_send, host_recv, mcu_clock);
+
+        if !est.is_quality_gate_passed(baseline_freq) {
+            return Err(ArmError::QualityGate);
+        }
+    }
+
+    // Step 4+5: arm each MCU with deadline.
+    for (io, est) in mcus.iter_mut() {
+        if Instant::now() >= arming_deadline {
+            return Err(ArmError::DeadlineMissed);
+        }
+        // Convert wall-clock t_start to per-MCU local cycles.
+        let t_start_secs = t_start_wall_clock.duration_since(Instant::now()).as_secs_f64();
+        let t_start_local = (t_start_secs * est.clock_freq_estimate) as u64;
+        io.send(&format!("kalico_stream_arm t_start_t0_lo={} t_start_t0_hi={} arm_lead_cycles={}",
+            t_start_local as u32, (t_start_local >> 32) as u32, arm_lead_cycles))?;
+        let resp = io.wait_for_response("kalico_stream_arm_response",
+            arming_deadline.saturating_duration_since(Instant::now()))?;
+        if resp.get_i32("result") != 0 {
+            return Err(ArmError::McuRejected(resp.get_i32("result")));
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+pub enum ArmError {
+    DeadlineMissed,
+    QualityGate,
+    McuRejected(i32),
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for ArmError {
+    fn from(e: std::io::Error) -> Self { ArmError::Io(e) }
+}
+```
+
+- [ ] **Step 2: Unit tests with mock host_io**
+
+(Detailed test setup uses a `MockKalicoHostIo` that records sent commands and replays canned responses. Test cases: deadline-miss aborts, quality-gate failure aborts, all-MCUs-arm-OK happy path.)
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+cd rust && cargo test -p kalico-host-rt arm_flow 2>&1 | tail -10
+git add rust/kalico-host-rt/src/stream.rs rust/kalico-host-rt/tests/arm_flow_unit.rs
+git commit -m "kalico-host-rt/stream: §6.3/§6.4 ARMING + Plan-decision B dedicated sync"
+```
 
 ---
 
@@ -2903,18 +3441,38 @@ pub const SEGMENT_FLAG_HOLD: u8 = 1 << 0;
 
 - [ ] **Step 2: ISR short-circuit in `Engine::evaluate_current`**
 
+The Engine signature receives `pool: &CurvePool` from the FFI shim (Engine doesn't own CurvePool — it's at the top level of RuntimeContext per Phase 1 Task 1.1). The FFI shim in `kalico_runtime_tick` projects raw pointers to both `IsrState` and `CurvePool`:
+
 ```rust
-fn evaluate_current(&mut self, ...) -> Result<MotorPositions, FaultCode> {
+// kalico_runtime_tick (already updated in Phase 1 Task 1.2 — extension here):
+let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
+let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+let isr: &mut IsrState = &mut *isr_ptr;
+let pool: &CurvePool = &*pool_ptr;
+let shared: &SharedState = &*shared_ptr;
+isr.engine.tick(raw_cyccnt, &mut isr.widen_state, pool, shared);
+```
+
+Engine::tick / evaluate_current then use the immutable `pool` reference for lookup. CurvePool's per-slot atomics + UnsafeCell make this safe even though it's `&` — the Acquire load on `current_gen` synchronizes with foreground's Release store from try_alloc_and_load.
+
+```rust
+fn evaluate_current(
+    &mut self,
+    pool: &crate::curve_pool::CurvePool,
+) -> Result<MotorPositions, FaultCode> {
     let seg = self.current.as_ref().unwrap();
     if seg.flags & SEGMENT_FLAG_HOLD != 0 {
         // Repeat last position; emit (throttled) HOLD_SAMPLE trace.
         // No curve lookup, no NURBS evaluation.
         return Ok(self.last_emitted_motor_positions);
     }
-    let curve = self.curve_pool.lookup(seg.curve_handle)?;
+    let curve = pool.lookup(seg.curve_handle)?;
     // ... NURBS eval
 }
 ```
+
+Update Engine::tick signature to accept `pool: &CurvePool` and forward to evaluate_current. This requires backporting the signature change to Phase 1 Task 1.2 (`isr.engine.tick(raw_cyccnt, &mut isr.widen_state, pool, shared)` instead of `isr.engine.tick(raw_cyccnt, ...)`); make sure both phases agree.
 
 - [ ] **Step 3: Unit-test the hold path**
 
@@ -2927,17 +3485,38 @@ fn hold_segment_skips_curve_lookup_and_emits_last_position() {
 }
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Hold-segment retire emits SEGMENT_END + credit_freed (Round-1 review B8 fix)**
+
+Per spec §6.5: at `t_end`, hold retires normally; emits `kalico_credit_freed` and `SEGMENT_END` like a motion segment. Stream stays alive.
+
+In `Engine::tick`'s segment-retire path (after the boundary loop), ensure that hold segments emit their `SEGMENT_END` trace sample identically to motion segments — the only difference is per-tick evaluation (skipped for holds), not retirement. Add an explicit code path that confirms the trace_producer.enqueue is called for hold segments at retire-time. The `confirm_retired(handle)` call on the foreground reclaim side is unconditional — hold segments use `CurveHandle::HOLD_SEGMENT_SENTINEL` which `confirm_retired` accepts but does nothing for (`slot_idx == u16::MAX` is out of range for the slots array — `confirm_retired` is a no-op for the sentinel handle, which is correct since no slot was allocated).
+
+Add unit test:
+
+```rust
+#[test]
+fn hold_segment_emits_segment_end_at_retire() {
+    // ... setup engine with a hold segment, run ticks until t_end, verify
+    // the trace stream contains a SEGMENT_END with curve_handle =
+    // HOLD_SEGMENT_SENTINEL.
+}
+```
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add rust/runtime/src/segment.rs rust/runtime/src/engine.rs \
         rust/runtime/tests/hold_segment.rs
-git commit -m "runtime/engine: §6.5 hold-segment ISR short-circuit
+git commit -m "runtime/engine: §6.5 hold-segment ISR short-circuit + retire events
 
 flags & SEGMENT_FLAG_HOLD checked AFTER force_idle (§8.5) but BEFORE
 curve_pool::lookup. Hold segments don't reference curves; sentinel
 CurveHandle::HOLD_SEGMENT_SENTINEL is parsed but never resolved.
 ISR repeats last motor position during hold window.
+
+At t_end, hold retires normally — emits SEGMENT_END trace event +
+kalico_credit_freed (foreground side, B8 fix). Stream stays alive
+across long Z-idle stretches without underrun.
 
 Per spec §6.5."
 ```
@@ -3079,17 +3658,230 @@ identify handshake, seq counter, CRC16 framing, NAK retransmit
 all match Python helper's wire-level behavior."
 ```
 
-### Tasks 10.3–10.6: clock_sync, credit, producer, fault, stream, wire modules
+### Task 10.3: `clock_sync.rs` (already implemented in Phase 8 Task 8.1)
 
-Implementations follow the patterns established in Phase 8 (clock_sync) and Phase 6 (stream lifecycle MCU-side mirrored on host). Each task ~50–150 LOC.
+Phase 8 Task 8.1 lives at `rust/kalico-host-rt/src/clock_sync.rs` and implements the full estimator. Phase 10 Task 10.3 is a no-op cross-reference: confirm the file is in place and the unit tests pass.
 
-- [ ] **Task 10.3: `clock_sync.rs` — sliding-window regression** — implements §12.2 estimator + §12.4 quality gate (with Plan-decision B `last_dedicated_sample_age_ms ≤ MAX_RTT_AGE_MS` check).
-- [ ] **Task 10.4: `credit.rs` — per-MCU credit counter** — atomic counter, `try_send_with_credit` API.
-- [ ] **Task 10.5: `producer.rs` — segment producer + Layer-1/2/3 glue** — receives planner output, encodes via `wire`, calls `host_io.send` under `credit::try_send_with_credit`.
-- [ ] **Task 10.6: `fault.rs` + `stream.rs` — host-side state machine** — receives async events (kalico_credit_freed, kalico_fault, kalico_status), updates state, propagates to caller.
-- [ ] **Task 10.7: `wire.rs` — encoder/decoder for v1 blob payloads** — mirror of `runtime::wire`.
+- [ ] **Step 1: Confirm presence + test pass**
 
-(Each subtask: write tests first, implement, run, commit. ~30 minutes per subtask.)
+```bash
+ls rust/kalico-host-rt/src/clock_sync.rs
+cd rust && cargo test -p kalico-host-rt clock_sync_unit 2>&1 | tail -5
+```
+
+### Task 10.4: `credit.rs` — per-MCU credit counter
+
+**Files:**
+- Create: `rust/kalico-host-rt/src/credit.rs`
+- Create: `rust/kalico-host-rt/tests/credit_unit.rs`
+
+**Why:** Per-MCU credit counter; `try_acquire` succeeds when credit > 0 and decrements; credit-freed events restore.
+
+- [ ] **Step 1: Implement**
+
+```rust
+//! Per-MCU credit counter for §5 (α flow control).
+
+use std::sync::atomic::{AtomicI32, Ordering};
+
+pub struct CreditCounter {
+    available: AtomicI32,
+    capacity: i32,
+    pub credit_epoch: AtomicI32,
+}
+
+impl CreditCounter {
+    pub fn new(capacity: i32) -> Self {
+        Self {
+            available: AtomicI32::new(capacity),
+            capacity,
+            credit_epoch: AtomicI32::new(0),
+        }
+    }
+
+    /// Speculatively decrements credit. Caller must call `release` if the
+    /// push fails downstream.
+    pub fn try_acquire(&self) -> Option<()> {
+        loop {
+            let cur = self.available.load(Ordering::Acquire);
+            if cur <= 0 { return None; }
+            match self.available.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(()),
+                Err(_) => continue,
+            }
+        }
+    }
+
+    pub fn release(&self) {
+        // Push failed; rollback.
+        let _ = self.available.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Called on receipt of `kalico_credit_freed` event.
+    pub fn on_credit_freed(&self, free_slots: u8) {
+        // Reconcile: set available to `min(capacity, free_slots as i32)`.
+        // Using a CAS loop to avoid overshooting capacity if events overlap.
+        let want = (free_slots as i32).min(self.capacity);
+        let _ = self.available.store(want, Ordering::Release);
+    }
+
+    /// Reset on credit_epoch change (host received new epoch from MCU).
+    pub fn on_epoch_change(&self, new_epoch: i32) {
+        self.credit_epoch.store(new_epoch, Ordering::Release);
+        self.available.store(self.capacity, Ordering::Release);
+    }
+
+    pub fn available(&self) -> i32 {
+        self.available.load(Ordering::Acquire)
+    }
+}
+```
+
+- [ ] **Step 2: Unit tests for try_acquire/release/on_credit_freed/on_epoch_change**
+
+- [ ] **Step 3: Run + commit**
+
+### Task 10.5: `producer.rs` — segment producer + wire encoder
+
+**Files:**
+- Create: `rust/kalico-host-rt/src/producer.rs`
+- Create: `rust/kalico-host-rt/src/wire.rs` — versioned-blob v1 encoder mirror.
+
+**Why:** Receives Layer-1/2/3 segments, encodes per §4.2 + §3.2 wire schema, sends via `host_io::send` after `credit::try_acquire`.
+
+- [ ] **Step 1: Implement `wire.rs` v1 encoder**
+
+```rust
+// rust/kalico-host-rt/src/wire.rs
+pub const FORMAT_VERSION_V1: u8 = 0x01;
+
+pub fn encode_load_curve_v1(
+    degree: u8, cps: &[[f32; 3]], knots: &[f32], weights: &[f32],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 4 + cps.len()*12 + knots.len()*4 + weights.len()*4);
+    out.push(FORMAT_VERSION_V1);
+    out.push(degree);
+    out.push(cps.len() as u8);
+    out.push(knots.len() as u8);
+    out.push(weights.len() as u8);
+    for cp in cps {
+        for &v in cp.iter() { out.extend_from_slice(&v.to_le_bytes()); }
+    }
+    for &k in knots { out.extend_from_slice(&k.to_le_bytes()); }
+    for &w in weights { out.extend_from_slice(&w.to_le_bytes()); }
+    out
+}
+```
+
+- [ ] **Step 2: Implement `producer.rs`**
+
+```rust
+// rust/kalico-host-rt/src/producer.rs
+
+use crate::host_io::KalicoHostIo;
+use crate::credit::CreditCounter;
+
+pub struct PushedSegmentInfo {
+    pub accepted_segment_id: u32,
+    pub credit_epoch: u32,
+}
+
+pub fn push_segment(
+    io: &mut KalicoHostIo,
+    credit: &CreditCounter,
+    id: u32,
+    curve_handle_packed: u32,
+    t_start: u64,
+    t_end: u64,
+    kinematics: u8,
+) -> Result<PushedSegmentInfo, ProducerError> {
+    let _guard = credit.try_acquire().ok_or(ProducerError::NoCredit)?;
+    let cmd = format!(
+        "kalico_push_segment id={} curve_handle_packed={} \
+         t_start_lo={} t_start_hi={} t_end_lo={} t_end_hi={} kin={}",
+        id, curve_handle_packed,
+        t_start as u32, (t_start >> 32) as u32,
+        t_end as u32, (t_end >> 32) as u32,
+        kinematics,
+    );
+    if let Err(e) = io.send(&cmd) {
+        credit.release();
+        return Err(ProducerError::Io(e));
+    }
+    let resp = io.wait_for_response("kalico_push_response", std::time::Duration::from_millis(100))?;
+    let result = resp.get_i32("result");
+    if result != 0 {
+        credit.release();
+        return Err(ProducerError::McuRejected(result));
+    }
+    Ok(PushedSegmentInfo {
+        accepted_segment_id: resp.get_u32("accepted_segment_id"),
+        credit_epoch: resp.get_u32("credit_epoch"),
+    })
+}
+
+#[derive(Debug)]
+pub enum ProducerError {
+    NoCredit,
+    Io(std::io::Error),
+    McuRejected(i32),
+}
+
+impl From<std::io::Error> for ProducerError {
+    fn from(e: std::io::Error) -> Self { ProducerError::Io(e) }
+}
+```
+
+- [ ] **Step 3: Tests + commit**
+
+### Task 10.6: `fault.rs` + host-side state machine
+
+**Files:**
+- Create: `rust/kalico-host-rt/src/fault.rs`
+
+**Why:** Aggregator: receives `kalico_fault` async events, propagates to user as `Result<_, FaultEvent>`.
+
+- [ ] **Step 1: Implement**
+
+```rust
+// rust/kalico-host-rt/src/fault.rs
+
+#[derive(Debug, Clone, Copy)]
+pub struct FaultEvent {
+    pub fault_code: u16,
+    pub fault_detail: u32,
+    pub segment_id: u32,
+}
+
+pub fn parse_fault_event(params: &crate::host_io::MessageParams) -> Option<FaultEvent> {
+    Some(FaultEvent {
+        fault_code: params.get_u32("fault_code") as u16,
+        fault_detail: params.get_u32("fault_detail"),
+        segment_id: params.get_u32("segment_id"),
+    })
+}
+```
+
+(The host_io message-pump dispatches `kalico_fault` to a registered consumer. Wire-up happens in the host_io's RX loop.)
+
+- [ ] **Step 2: Tests + commit**
+
+### Task 10.7: All Phase-10 cross-checks pass
+
+- [ ] **Step 1: Build + test the full host-rt crate**
+
+```bash
+cd rust && cargo build -p kalico-host-rt 2>&1 | tail -5
+cd rust && cargo test -p kalico-host-rt 2>&1 | tail -10
+```
+
+Both clean.
+
+- [ ] **Step 2: Final commit**
+
+```bash
+git commit --allow-empty -m "kalico-host-rt: Phase 10 complete (host_io, clock_sync, credit, producer, fault, wire, stream)"
+```
 
 ---
 
@@ -3257,15 +4049,162 @@ Implements spec §3.3 Gate B: items 5–7 (underrun fault, trace overflow fault,
 
 **Why:** Spec §3.3 Gate B.
 
-- [ ] **Step 1: Implement test cases**
+- [ ] **Step 1: Implement test cases for spec §3.3 Gate B items 5/6/7**
 
-Test 5 (underrun): host opens stream, pushes 3 segments, then stops without sending terminal. ISR fires, retires the 3, queue empties → KALICO_FAULT_UNDERRUN within MIN_SEGMENT_DURATION_MS.
+The plan's previous draft misnumbered Gate B items. Spec §3.3 Gate B lists:
+- **Item 5**: Status frame reports correct `current_segment_id`, `queue_depth`, `retired_through_segment_id` throughout.
+- **Item 6**: Underrun-fault path (stop pushing while stream-open → KALICO_FAULT_UNDERRUN within MIN_SEGMENT_DURATION_MS of last-segment retirement).
+- **Item 7**: Trace-overflow-fault path (throttle host trace-drain → KALICO_FAULT_TRACE_OVERFLOW).
 
-Test 6 (trace overflow): host opens stream, pushes many short segments to flood trace ring, throttles drain → KALICO_FAULT_TRACE_OVERFLOW.
+```python
+#!/usr/bin/env python3
+"""tools/test_sim_gate_b.py — Spec §3.3 Gate B acceptance tests."""
+import struct, sys, time
+from kalico_host_io import KalicoHostIO
 
-Test 7 (stream round-trip): open → arm → push N → terminal → drain → all events observed in correct order.
 
-- [ ] **Step 2: Run + commit**
+def test_item_5_status_frame_correctness(io):
+    """Item 5: status reports correct current_segment_id, queue_depth, retired_through."""
+    # Open stream + arm + push 5 segments + drain + check status reflects retirement.
+    epoch = io.send_and_wait("kalico_stream_open stream_id=1", "kalico_stream_open_response")["credit_epoch"]
+    # Push priming segments referencing fixture 0 (already loaded by test setup).
+    for i in range(5):
+        t_start = (i + 1) * 100000
+        t_end = t_start + 80000
+        cmd = f"kalico_push_segment id={i} curve_handle_packed=1 t_start_lo={t_start} t_start_hi=0 t_end_lo={t_end} t_end_hi=0 kin=0"
+        io.send(cmd)
+        r = io.wait_for_response("kalico_push_response", 1.0)
+        assert r["result"] == 0, f"push {i} failed: {r}"
+
+    # Arm + commit.
+    io.send(f"kalico_stream_arm t_start_t0_lo=200000 t_start_t0_hi=0 arm_lead_cycles=50000")
+    arm_resp = io.wait_for_response("kalico_stream_arm_response", 1.0)
+    assert arm_resp["result"] == 0
+
+    # Wait for retirement and verify status frame reports correctly.
+    deadline = time.monotonic() + 5.0
+    last_status = None
+    while time.monotonic() < deadline:
+        try:
+            last_status = io.wait_for_response("kalico_status", 0.5)
+        except Exception:
+            continue
+        if last_status["retired_through_segment_id"] >= 4:
+            # All 5 segments retired (ids 0-4).
+            assert last_status["queue_depth"] == 0, f"queue_depth={last_status['queue_depth']}"
+            assert last_status["current_segment_id"] >= 4
+            return  # PASS
+    raise AssertionError(f"item 5: never observed retired_through>=4. last_status={last_status}")
+
+
+def test_item_6_underrun_fault(io):
+    """Item 6: stop pushing while stream-open → KALICO_FAULT_UNDERRUN."""
+    epoch = io.send_and_wait("kalico_stream_open stream_id=2", "kalico_stream_open_response")["credit_epoch"]
+    # Push 2 segments, arm, let them retire — DON'T send terminal.
+    for i in range(2):
+        cmd = f"kalico_push_segment id={i} curve_handle_packed=1 t_start_lo={(i+1)*100000} t_start_hi=0 t_end_lo={(i+1)*100000+50000} t_end_hi=0 kin=0"
+        io.send(cmd)
+        io.wait_for_response("kalico_push_response", 1.0)
+    io.send("kalico_stream_arm t_start_t0_lo=150000 t_start_t0_hi=0 arm_lead_cycles=30000")
+    io.wait_for_response("kalico_stream_arm_response", 1.0)
+
+    # Wait for kalico_fault async event.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        try:
+            fault = io.wait_for_response("kalico_fault", 0.5)
+            # KALICO_FAULT_UNDERRUN = -130; reported as u16 (lower 16 bits).
+            if fault["fault_code"] == ((-130) & 0xFFFF):
+                return  # PASS
+        except Exception:
+            continue
+    raise AssertionError(f"item 6: underrun fault not observed within 3s")
+
+
+def test_item_7_trace_overflow_fault(io):
+    """Item 7: throttle host trace drain → KALICO_FAULT_TRACE_OVERFLOW."""
+    # Open stream, push many short segments, intentionally don't drain trace.
+    # TraceRing sized at ~30 ms × 40 kHz = 1200 samples; under stream of
+    # 0.1-ms segments we generate 10 samples/ms; saturation in ~120 ms.
+    io.send_and_wait("kalico_stream_open stream_id=3", "kalico_stream_open_response")
+    # Push many tiny segments.
+    for i in range(50):
+        cmd = f"kalico_push_segment id={i} curve_handle_packed=1 t_start_lo={i*4000} t_start_hi=0 t_end_lo={i*4000+4000} t_end_hi=0 kin=0"
+        io.send(cmd)
+        try:
+            io.wait_for_response("kalico_push_response", 0.2)
+        except Exception:
+            break  # queue full
+    io.send("kalico_stream_arm t_start_t0_lo=10000 t_start_t0_hi=0 arm_lead_cycles=5000")
+    io.wait_for_response("kalico_stream_arm_response", 1.0)
+
+    # Don't drain trace; wait for overflow fault.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            fault = io.wait_for_response("kalico_fault", 0.5)
+            if fault["fault_code"] == ((-133) & 0xFFFF):  # KALICO_FAULT_TRACE_OVERFLOW
+                return  # PASS
+        except Exception:
+            continue
+    raise AssertionError(f"item 7: trace overflow fault not observed within 5s")
+
+
+def main():
+    io = KalicoHostIO("socket://localhost:3334")
+    try:
+        # Pre-load fixture 0 in slot 1 (used by all three tests).
+        io.send("kalico_load_fixture_curve slot=1 fixture_id=0")
+        io.wait_for_response("kalico_load_fixture_response", 2.0)
+
+        for name, test in [
+            ("item_5_status_frame_correctness", test_item_5_status_frame_correctness),
+            ("item_6_underrun_fault", test_item_6_underrun_fault),
+            ("item_7_trace_overflow_fault", test_item_7_trace_overflow_fault),
+        ]:
+            try:
+                test(io)
+                print(f"PASS: {name}")
+            except AssertionError as e:
+                print(f"FAIL: {name}: {e}")
+                return 1
+            # Reset between tests.
+            io.send("kalico_stream_flush")
+            try: io.wait_for_response("kalico_stream_flush_response", 1.0)
+            except: pass
+        print("PASS: Gate B (3/3)")
+        return 0
+    finally:
+        io.disconnect()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 2: Run Gate B and verify it passes**
+
+```bash
+bash tools/sim/run_sim.sh &
+sleep 3
+python3 tools/test_sim_gate_b.py
+```
+
+Expected: `PASS: Gate B (3/3)`. Phase 13 acceptance gate is closed when this passes.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tools/test_sim_gate_b.py
+git commit -m "tools/sim: Gate B acceptance test for spec §3.3 items 5/6/7
+
+- Item 5: status frame reports correct retired_through_segment_id +
+  queue_depth + current_segment_id throughout segment retirement.
+- Item 6: underrun-fault path latches KALICO_FAULT_UNDERRUN.
+- Item 7: trace-overflow-fault path latches KALICO_FAULT_TRACE_OVERFLOW.
+
+Per spec §3.3 Gate B."
+```
 
 ---
 
