@@ -122,6 +122,40 @@ impl MessageParams {
         }
     }
 
+    // --- Fallible accessors ------------------------------------------------
+    //
+    // I1 fix: load-bearing fields (`result`, etc.) cannot fall back to
+    // `0` on a malformed response — `result == 0` means "success", so a
+    // missing field would be silently treated as a successful push. The
+    // `try_get_*` family returns `None` if the field is absent or
+    // carries a wrong scalar type, letting the caller surface a
+    // `Parse` transport error instead.
+    pub fn try_get_i32(&self, k: &str) -> Option<i32> {
+        match self.fields.get(k)? {
+            MessageValue::I32(v) => Some(*v),
+            #[allow(clippy::cast_possible_wrap)]
+            MessageValue::U32(v) => Some(*v as i32),
+            _ => None,
+        }
+    }
+
+    pub fn try_get_u32(&self, k: &str) -> Option<u32> {
+        match self.fields.get(k)? {
+            MessageValue::U32(v) => Some(*v),
+            #[allow(clippy::cast_sign_loss)]
+            MessageValue::I32(v) => Some(*v as u32),
+            _ => None,
+        }
+    }
+
+    pub fn try_get_u64(&self, k: &str) -> Option<u64> {
+        match self.fields.get(k)? {
+            MessageValue::U64(v) => Some(*v),
+            MessageValue::U32(v) => Some(u64::from(*v)),
+            _ => None,
+        }
+    }
+
     pub fn get_bytes(&self, k: &str) -> Option<&[u8]> {
         match self.fields.get(k) {
             Some(MessageValue::Bytes(b)) => Some(b.as_slice()),

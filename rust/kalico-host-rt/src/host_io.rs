@@ -1,8 +1,24 @@
 //! Minimal Step-6 `host_io` implementing [`Transport`]. Spec §2.1 substrate.
 //!
-//! Step-6 minimum: open serial port, run identify handshake, send framed
-//! commands, wait on parsed responses with timeout. Plan-decision C
-//! (Round-3-corrected) downgrades the production-grade scope:
+//! # Step-6 scope: identify-only
+//!
+//! [`KalicoHostIo`] runs the Klipper identify handshake at construction
+//! time and learns the MCU's wire seq, but it **does not parse the
+//! identify JSON dictionary**. Consequence:
+//!
+//! * [`KalicoHostIo::send`] **always returns `Err(TransportError::Parse)`**
+//!   after identify, because it has no encoder for any named command.
+//! * The shim is therefore **not** a working command channel for any
+//!   higher-layer call site (ARMING, push-segment, status, ...).
+//! * All such call sites must drive the [`Transport`] trait via the
+//!   `MockTransport` test fixture (see `tests/mock_transport.rs`) until
+//!   Step-7 MVP wires the full msgproto parser.
+//!
+//! Production wire I/O is Step-7 MVP work; this shim exists to validate
+//! the framing/CRC/seq plumbing against a real port and to anchor the
+//! [`Transport`] surface that the Phase-10 modules consume.
+//!
+//! Plan-decision C (Round-3-corrected) also defers (Step-7 MVP):
 //!
 //! * NO NAK-driven retransmit (relies on USB-CDC reliability for the test
 //!   bench; Step-7 MVP adds the retransmit window).
@@ -348,7 +364,12 @@ impl Transport for KalicoHostIo {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(idx) = self.pending.iter().position(|(n, _)| n == name) {
-                return Ok(self.pending.remove(idx).unwrap().1);
+                return Ok(
+                    self.pending
+                        .remove(idx)
+                        .expect("position guarantees Some")
+                        .1,
+                );
             }
             let now = Instant::now();
             if now >= deadline {
@@ -382,19 +403,28 @@ impl Transport for KalicoHostIo {
 fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     while !buf.is_empty() {
         let msglen = buf[0] as usize;
-        if buf.len() < MESSAGE_MIN {
-            return None;
-        }
-        if !(MESSAGE_MIN..=MESSAGE_MAX).contains(&msglen) || buf.len() < msglen {
-            // Wait for more bytes if length plausible-but-incomplete.
-            if (MESSAGE_MIN..=MESSAGE_MAX).contains(&msglen) {
-                return None;
-            }
-            // Otherwise drop the leading byte and resync.
+        // Bug-fix C1: the msglen-range check MUST run before the
+        // buf-length check. Otherwise a single garbage leading byte
+        // (where `buf[0]` is out-of-range AND `buf.len() < MESSAGE_MIN`)
+        // would wedge the rx loop returning `None` forever instead of
+        // resyncing past the bad byte.
+        if !(MESSAGE_MIN..=MESSAGE_MAX).contains(&msglen) {
+            // Out-of-range length byte → garbage leading byte, drop
+            // it and resync regardless of how much else is buffered.
             buf.remove(0);
             continue;
         }
+        if buf.len() < msglen {
+            // Plausible length but incomplete frame — wait for more
+            // bytes.
+            return None;
+        }
         let seq_byte = buf[1];
+        // Spec: the high nibble of `seq_byte` must equal MESSAGE_DEST
+        // (0x10) and the low nibble carries the 4-bit sequence — so
+        // `seq_byte & !MESSAGE_SEQ_MASK` isolates the dest-nibble and
+        // must compare equal to MESSAGE_DEST. Anything else is a
+        // resync indicator.
         if (seq_byte & !MESSAGE_SEQ_MASK) != MESSAGE_DEST
             || buf[msglen - 1] != MESSAGE_SYNC
         {
@@ -452,6 +482,16 @@ fn encode_vlq(out: &mut Vec<u8>, value: i64) {
     // Klipper wire VLQ: signed, big-endian-ish 7-bit, MSB=continuation.
     // The encoding is identical to msgproto.encode_vlqi for the i32
     // range we care about (offsets, counts, fixture-ids).
+    //
+    // I2 (latent): callers go through `i64::from(u32)` and friends, so
+    // we never hit the out-of-range cases in practice — but the
+    // sign-fold below silently truncates anything outside `[i32::MIN,
+    // u32::MAX]` to garbage. Assert in debug builds; Step-7 MVP
+    // re-audits the encoder for full i64 range if/when it's needed.
+    debug_assert!(
+        value >= i64::from(i32::MIN) && value <= i64::from(u32::MAX),
+        "encode_vlq: value {value} outside [i32::MIN, u32::MAX] — caller must clamp"
+    );
     let mut v = value;
     if value < 0 {
         v += 1 << 32;
@@ -487,7 +527,12 @@ fn encode_vlq(out: &mut Vec<u8>, value: i64) {
 fn decode_vlq(buf: &[u8]) -> Option<(i64, usize)> {
     let mut value: i64 = 0;
     let mut consumed = 0;
-    for &b in buf {
+    // Bug-fix C2: cap iteration at 5 bytes regardless of buf length so a
+    // peer sending continuation bits past the legal 5-byte limit cannot
+    // walk us off the end of the integer range. The encoder side caps
+    // VLQ output at 5 bytes; any additional continuation byte is wire
+    // corruption.
+    for &b in buf.iter().take(5) {
         consumed += 1;
         value = (value << 7) | i64::from(b & 0x7F);
         if (b & 0x80) == 0 {
@@ -498,10 +543,9 @@ fn decode_vlq(buf: &[u8]) -> Option<(i64, usize)> {
             }
             return Some((value, consumed));
         }
-        if consumed >= 5 {
-            return None;
-        }
     }
+    // Either ran out of buf or read 5 continuation bytes without
+    // terminating — both are malformed input.
     None
 }
 
@@ -674,5 +718,51 @@ mod test_internals {
         let extracted = extract_packet(&mut buf).expect("must extract NAK");
         assert_eq!(extracted, frame);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn extract_packet_resyncs_past_garbage_byte_smaller_than_message_min() {
+        // Bug-fix C1 regression test. A single garbage byte where
+        // `buf[0] < MESSAGE_MIN` would wedge the loop returning None
+        // forever. After the fix, it must drop the leading byte and
+        // resync past it.
+        let mut buf: Vec<u8> = vec![0x02]; // < MESSAGE_MIN = 5
+        let result = extract_packet(&mut buf);
+        assert!(
+            result.is_none(),
+            "still no complete frame, but buf must have been drained"
+        );
+        assert!(
+            buf.is_empty(),
+            "garbage leading byte should have been dropped, got {buf:?}"
+        );
+    }
+
+    #[test]
+    fn extract_packet_resyncs_past_oversized_msglen_byte() {
+        // Same fix from the other end: msglen > MESSAGE_MAX is also
+        // garbage and must be dropped, not waited on.
+        let mut buf: Vec<u8> = vec![0xFF];
+        let result = extract_packet(&mut buf);
+        assert!(result.is_none());
+        assert!(
+            buf.is_empty(),
+            "oversized msglen byte should have been dropped, got {buf:?}"
+        );
+    }
+
+    #[test]
+    fn decode_vlq_caps_continuation_at_5_bytes() {
+        // Bug-fix C2 regression test: malformed VLQ with continuation
+        // bits past byte 5 must NOT walk into byte 6+. Pre-fix, a peer
+        // with 6 continuation bytes would shift `value` 42 bits and
+        // potentially overflow the i64 range. Post-fix, we cap at 5
+        // bytes and return None.
+        let malformed = vec![0xFFu8; 8]; // all continuation, no terminator
+        let result = decode_vlq(&malformed);
+        assert!(
+            result.is_none(),
+            "malformed VLQ must return None, not roll past 5 bytes"
+        );
     }
 }

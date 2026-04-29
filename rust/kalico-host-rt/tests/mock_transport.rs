@@ -183,7 +183,10 @@ fn wait_for_response_times_out_when_queue_empty() {
     let err = io
         .wait_for_response("anything", Duration::from_millis(1))
         .unwrap_err();
-    matches!(err, TransportError::Timeout);
+    assert!(
+        matches!(err, TransportError::Timeout),
+        "expected Timeout, got {err:?}"
+    );
 }
 
 #[test]

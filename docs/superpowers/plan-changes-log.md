@@ -142,3 +142,60 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 - `test_h723_trace_dump.py` plot output — TODO; bring-up gate is the position-error check, not the plot.
 
 **Evidence:** Plan + ~30 commits on this branch. Spec at `docs/superpowers/specs/2026-04-28-layer-4-mcu-framework-stub-design.md`. Surface-C cycle-budget result template at `docs/research/step5-h723-cycle-budget.md` (TBD by user). Surface C bring-up scripts at `tools/test_h723_first_light.py`, `tools/test_h723_cycle_count.py`, `tools/test_h723_trace_dump.py`, `tools/test_h723_soak.py`; chained via `Makefile.kalico:test-h723`.
+
+---
+
+**Build-order Step 6 (Communication protocol and clock sync) completed.** Implementation per `docs/superpowers/plans/2026-04-28-step6-comm-protocol-and-sim-fixes.md`. Layer 5 — host↔MCU comms over Klipper's existing msgproto + 1-byte versioned blob payloads, credit-based flow control with periodic 10 Hz `kalico_status_v6` backstop, multi-MCU sync via per-MCU `ClockSyncEstimator` + arm/commit handshake, half-split SPSC FFI projection (closes Step-5 latent UB acknowledged in spec §6.8), generation-counter curve handles (u32 = u16 slot + u16 generation; ABA window 65280 allocations at Q_N_MAX=256), force_idle flush handshake (Plan-decision A: force_idle first / ack-wait / stream_open=false last), explicit dedicated clock-sync at arm-time (Plan-decision B: §12.3 normative, §12.4 quality gate including `last_dedicated_sample_age ≤ MAX_RTT_AGE_MS`), and §13.1 trace-overflow → `KALICO_FAULT_TRACE_OVERFLOW` latch.
+
+**Deviations from plan listing:**
+
+- **Phase 0 — load_curve hang**: GDB-attach diagnosis pinpointed the root cause to Renode's `cpuType: cortex-m7` model silently dropping writes to `SCB->CPACR` (CP10/CP11 enable bits), so any FPU instruction in the firmware UsageFaulted into `DefaultHandler`'s infinite loop. Primary fix is one line in `tools/sim/h723_sim.resc` (`cpu FpuEnabled true` after `LoadPlatformDescription`); the planned fixture-loader escape hatch (`kalico_load_fixture_curve` under the `kalico-sim` Cargo feature) shipped as a backup but is not strictly required after the FPU fix. Both are gated on `CONFIG_KALICO_SIM=y` — never to silicon.
+
+- **Phase 0 — sim drain wake**: the foreground drain timer never fires under sim because Klipper's SysTick-driven dispatch cannot tick (DWT->CYCCNT freeze). Forked `timer_read_time()` in `src/generic/armcm_timer.c` to read `kalico_sim_cyccnt` under `CONFIG_KALICO_SIM`, and added a sim-only `kalico_sim_isr_wake_drain()` invoked from the TIM5 ISR every 40 fires (~1 ms cadence) to provide a deterministic drain wake.
+
+- **Phase 0 — Gate A trace-stream substitute**: spec §3.3 wanted a trace-stream forward-progress check, but the Step-5 latent UB had `trace.dequeue` reading 0 even when the engine demonstrably advanced. Substituted a `kalico_sim_diag` foreground command exposing `tick_counter` / `drain_calls` / `cyccnt` / `status`; Gate A asserts `tick_counter` advances + engine reaches DRAINED. The proper trace-stream test moved to Gate B post-Phase-1 half-split.
+
+- **Phase 1 — Engine widen_state ownership**: per Round-3 fix B-R3-4, `widen_state` moved off `Engine` and onto `IsrState`. Engine::tick canonical 6-arg signature is the single source of truth across all later phases (raw_cyccnt, &mut WidenState, &CurvePool, &mut Consumer, &mut Producer, &SharedState). The seqlock publish happens at the top of tick so all later phases observe a consistent half-state.
+
+- **Phase 1 — TRACE_RING_N reshape + RAM**: TRACE_RING_N promoted to a public const in `trace.rs` and resized to 1201 (HOST_STALL + 10 ms × 40 kHz + 1). RAM `.bss` grew from ~15 KB to ~50 KB; sim firmware links cleanly.
+
+- **Phase 1 — Unsafe Sync impl on CurvePool**: explicit placeholder added because Phase 2's `UnsafeCell`-bearing PoolSlots break auto-Sync; landed in Phase 1 to preempt churn.
+
+- **Phase 7 — irq_save / irq_restore LTO survival**: Klipper's `-flto=auto -fwhole-program` DCE'd standalone `irq_save` / `irq_restore` symbols because their bodies are inlined at every Klipper callsite. Worked around with thin C wrappers `kalico_irq_save` / `kalico_irq_restore` in `src/runtime_tick.c` marked `__attribute__((used, externally_visible))`, forwarding to the originals; state.rs and stream.rs swap imports to the wrapper names.
+
+- **Phase 7 — flush() *mut RuntimeContext signature**: takes `*mut RuntimeContext` (not just `&mut FgState`) so it can project to `IsrState.queue_consumer` under disabled-IRQ for the transient queue drain. Documented as the one FFI entry that crosses the half-split boundary by design.
+
+- **Phase 8 — clock_sync regression x-axis**: Round-2 fix B04 — the regression's x-axis is `host_time_secs` since the estimator's epoch (saturating_duration_since), NOT `Instant::elapsed()` at recording time (which would put every sample at ~0 on the x-axis). `mcu_time_at_host` uses the regression anchor (mean_x, mean_y) per Round-2 B11-real so the absolute MCU clock projection lands on the regression line, not on a freq×delta naive line through the origin.
+
+- **Phase 8 — arm_all_mcus deadline budget**: Round-1 ARMING-race fix — the wait-for-ack deadline is `arm_lead_time / 2`, not the full lead. Half stays available for in-flight wire latency.
+
+- **Phase 10.4 — credit on_epoch_change reset**: per spec §4.4, `kalico_stream_flush` bumps `credit_epoch` and the host has to discard in-flight rollback assumptions. CreditCounter explicitly snaps `available` back to `capacity` on epoch change.
+
+- **Phase 10.5 — push_segment_with_timeout customization**: the standard producer signature loses callers that want a custom transport timeout per push. Added `push_segment_with_timeout` as the customization point; `push_segment` is a wrapper.
+
+- **Phase 11 — Klipper msgproto category trap**: `sendf()` registers via `_DECL_ENCODER`, `output()` registers via `_DECL_OUTPUT`. `buildcommands.py` de-dupes by msgid and uses the FIRST registration's category — so mixing a `DECL_CTR("_DECL_OUTPUT kalico_status_v6 …")` predeclaration with `sendf("kalico_status_v6 …")` puts the format only in `ctr_lookup_output` → `ctr_lookup_encoder` returns NULL → `command_sendf(NULL, …)` silently no-ops. Rewrote the three async emits (status_v6, credit_freed, fault) to use `output()` so categories match the predeclared CTRs.
+
+- **Phase 11 — Renode pacing on status_v6**: Renode virtualizes time at 0.05–0.5× wall-clock; the 10 Hz `runtime_status_drain` task fires unreliably under that pacing. Gate A's status_v6 wire check is WARN-only; binary inspection of `run_tasks` proves the encoder is non-NULL and the wiring is correct. Surface C re-validates at full clock rate. Same disposition for Gate B item 5 (status-frame correctness) per the Phase 13 implementer note.
+
+- **Phase 12.2 — MAX_BOUNDARY_ITERS alignment**: aligned to `Q_N - 1 = 7` matching the heapless SPSC effective capacity. The Step-5 plan-changes-log noted the fault path was dead defense-in-depth from the public API; gated the `Engine::inject_iter_count` test helper behind `cfg(any(test, feature = "test-injection"))` so production builds neither carry the field nor expose the setter.
+
+- **Phase 13 — Gate B item 5/7 sim-WARN handling**: per the Phase 13 plan + Phase 11/12 implementer notes, items 5 (status frame) and 7 (trace overflow) under Renode pacing land as sim-WARN, not FAIL. Hardware Surface C re-validates. Gate B `--all` mode manages sim lifecycle internally because `kalico_stream_flush` does NOT clear latched fault state by design (preserves fault history for host inspection per `runtime/src/stream.rs::flush` step 7), so each item runs against a fresh sim invocation.
+
+- **Phase 14 — hardware bring-up dispatch**: per CLAUDE.md `feedback_printer_is_test_bench`, the printer is a test bench and the user runs hardware tests manually. The Phase 14 deliverable is the Makefile.kalico chain (split into `test-h723-step5` + `test-h723-gate-b` + the union `test-h723`) and the documentation in `tools/sim/README.md`. Gate B sub-targets reuse `tools/test_sim_gate_b.py --only <case>` against `/dev/ttyACM0`; the driver is sim-agnostic at the msgproto wire layer. User power-cycles between Gate-B items because the latched-fault invariant is the same on hardware as on sim.
+
+- **Phase 15 — measurement scaffolds vs run**: per the Codex Round 4 fix the subagent ships scaffold (`tools/measure_m1_host_stall.py`, `tools/measure_m3_clock_sync.py`, the `--m2-rounds`/`--m2-stir-protocol` extension to `tools/test_h723_cycle_count.py`, and `docs/research/step6-buffer-budget-measurements.md` with TODO_USER_RUN placeholders) and proceeds to Phase 16; the actual 8h Pi 5 + 1M-tick MCU + 24h dual-MCU soaks are user-run (multi-day runtimes outside autonomous-execution scope).
+
+- **Phase 16 — CI matrix expansion**: the existing `.github/workflows/ci-rust-runtime.yaml` already covers the host-rt build/test (workspace rolls in via `cargo build --workspace` + `cargo test --workspace` since `kalico-host-rt` is a workspace member), the panic-symbol grep on the release MCU build, and the cbindgen-no-drift check. Added a new `rust-loom` job that runs the four loom tests (`loom_seqlock`, `loom_spsc_split`, `loom_force_idle`, `loom_curve_pool_alloc`) under `RUSTFLAGS="--cfg loom" cargo test --release`.
+
+- **Phase 16 — Plan-decision C scope**: Step 6's `kalico-host-rt::host_io` is the deliberately minimal ~150 LOC port of `tools/kalico_host_io.py`'s minimum surface (open serial port, identify_handshake, framed send, sync wait_for_response with timeout). NO NAK retransmit, NO async event-dispatch thread, NO identify-during-reconnect race recovery. Production-grade hardening is Step-7 MVP work; the optional `python-bridge` PyO3 feature is reserved for a future shim. The MsgProtoParser is also a stub: no JSON dictionary parse yet, scaffolded so the Step-7 swap-in keeps call sites stable.
+
+**Open follow-ups (non-blocking; tracked here so they don't get lost):**
+
+- F4x integration (parallel workstream; Step-6 ships H723-only sim verification + scaffold for dual-MCU M3 soak).
+- Host/klippy IPC boundary deferred to Step 7 MVP. Production-grade `host_io.rs` (NAK retransmit, async event dispatch, reconnect recovery) is Step 7 work per Plan-decision C.
+- M1 / M2 / M3 measurement actuals — user-run, pending. `docs/research/step6-buffer-budget-measurements.md` carries TODO_USER_RUN placeholders for all three; user updates the doc and any divergent default constants in `rust/kalico-host-rt/src/clock_sync.rs` / `rust/runtime/src/spsc.rs` after each soak.
+- H723 hardware Gate B sub-targets pending user execution: `make -f Makefile.kalico test-h723-gate-b SERIAL_PORT=/dev/ttyACM0` (with reset between item-6 and item-7 because faults latch).
+- MsgProtoParser JSON dictionary parse (stub today; Step-7 MVP swap-in).
+- Surface C cycle-budget actuals (Step-5 carryover) — tracked in `docs/research/step5-h723-cycle-budget.md`.
+
+**Evidence:** Plan + 27 commits on this branch (range `c0ef315e..HEAD`). Spec at `docs/superpowers/specs/2026-04-28-step6-comm-protocol-and-sim-fixes-design.md` (5 review rounds; Round-5 final fixes + convergence sign-off). Sim Gate A passes (`tools/test_sim_gate_a.py`); sim stream-lifecycle test passes (`tools/test_sim_stream_lifecycle.py`); sim Gate B test ships at `tools/test_sim_gate_b.py` with documented sim-WARN dispositions for items 5 + 7; H723 hardware Gate A + B chain via `Makefile.kalico::test-h723` pending user execution. CI: `.github/workflows/ci-rust-runtime.yaml` updated with the new `rust-loom` job; existing host / mcu-h7 / mcu-f4 / cbindgen-drift / c-smoke / deny / miri / panic-grep / watchdog-canary jobs preserved.

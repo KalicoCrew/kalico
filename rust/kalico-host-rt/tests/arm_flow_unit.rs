@@ -14,7 +14,9 @@ mod mock_transport;
 use std::time::{Duration, Instant};
 
 use kalico_host_rt::clock_sync::{ClockSyncEstimator, MIN_WARMUP_SAMPLES};
-use kalico_host_rt::stream::{arm_all_mcus, ArmError};
+use kalico_host_rt::stream::{
+    arm_all_mcus, check_cross_mcu_desync, ArmError, MAX_CROSS_MCU_FREQ_RATIO_OFFSET,
+};
 use kalico_host_rt::transport::MessageValue;
 
 use mock_transport::{mp_with, MockTransport};
@@ -149,7 +151,7 @@ fn quality_gate_failure_aborts() {
         ]),
     );
     let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> = vec![(io, est)];
-    let err = arm_all_mcus(
+    let failure = arm_all_mcus(
         &mut mcus,
         Instant::now() + Duration::from_secs(1),
         Duration::from_millis(200),
@@ -157,7 +159,15 @@ fn quality_gate_failure_aborts() {
         FREQ,
     )
     .unwrap_err();
-    matches!(err, ArmError::QualityGate);
+    assert!(
+        matches!(failure.error, ArmError::QualityGate),
+        "expected QualityGate, got {:?}",
+        failure.error
+    );
+    assert!(
+        failure.armed_indices.is_empty(),
+        "no MCU should be armed when quality gate fails"
+    );
     assert!(
         !mcus[0].0.sent.iter().any(|c| c.starts_with("kalico_stream_arm ")),
         "must NOT issue stream_arm if quality gate fails"
@@ -168,7 +178,7 @@ fn quality_gate_failure_aborts() {
 fn mcu_rejected_aborts_with_result_code() {
     let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> =
         vec![make_warm_mcu(-7)];
-    let err = arm_all_mcus(
+    let failure = arm_all_mcus(
         &mut mcus,
         Instant::now() + Duration::from_secs(1),
         Duration::from_millis(200),
@@ -176,10 +186,14 @@ fn mcu_rejected_aborts_with_result_code() {
         FREQ,
     )
     .unwrap_err();
-    match err {
+    match failure.error {
         ArmError::McuRejected(r) => assert_eq!(r, -7),
         other => panic!("expected McuRejected, got {other:?}"),
     }
+    assert!(
+        failure.armed_indices.is_empty(),
+        "single-MCU rejection means nothing is armed"
+    );
 }
 
 #[test]
@@ -188,7 +202,7 @@ fn deadline_missed_when_arm_lead_time_too_short() {
     let io = MockTransport::new();
     let est = ClockSyncEstimator::new(FREQ);
     let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> = vec![(io, est)];
-    let err = arm_all_mcus(
+    let failure = arm_all_mcus(
         &mut mcus,
         Instant::now() + Duration::from_secs(1),
         Duration::ZERO,
@@ -196,7 +210,11 @@ fn deadline_missed_when_arm_lead_time_too_short() {
         FREQ,
     )
     .unwrap_err();
-    matches!(err, ArmError::DeadlineMissed);
+    assert!(
+        matches!(failure.error, ArmError::DeadlineMissed),
+        "expected DeadlineMissed, got {:?}",
+        failure.error
+    );
 }
 
 #[test]
@@ -206,7 +224,7 @@ fn transport_timeout_propagates() {
     io.force_timeout_after = Some(0);
     let est = ClockSyncEstimator::new(FREQ);
     let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> = vec![(io, est)];
-    let err = arm_all_mcus(
+    let failure = arm_all_mcus(
         &mut mcus,
         Instant::now() + Duration::from_secs(1),
         Duration::from_millis(200),
@@ -214,5 +232,108 @@ fn transport_timeout_propagates() {
         FREQ,
     )
     .unwrap_err();
-    matches!(err, ArmError::Transport(_));
+    assert!(
+        matches!(failure.error, ArmError::Transport(_)),
+        "expected Transport(_), got {:?}",
+        failure.error
+    );
+}
+
+/// Spec §6.3 + §12.4 cross-MCU drift check (GAP-1 fix).
+///
+/// We test the pure-data form (`check_cross_mcu_desync`) directly: an
+/// `arm_all_mcus`-level integration test for this code path is
+/// effectively unreachable under spec defaults because the per-MCU
+/// drift gate (`MAX_DRIFT_PPM_DEFAULT = 100 ppm`) is tighter than the
+/// cross-MCU ratio gate (`MAX_CROSS_MCU_FREQ_RATIO_OFFSET = 1e-3 =
+/// 1000 ppm`). Any pair of estimators whose freq divergence exceeds
+/// the cross-MCU gate would fail the per-MCU gate first against any
+/// sane single baseline. The cross-MCU check is therefore
+/// defense-in-depth — we exercise it as a pure function and trust the
+/// integration wiring through code review of `arm_all_mcus`.
+#[test]
+fn cross_mcu_desync_rejects_pair_above_threshold() {
+    let freqs = [550_000_000.0, 550_000_000.0 * 1.005];
+    let (i, j, offset) = check_cross_mcu_desync(&freqs)
+        .expect("0.5% divergence must trip the 1e-3 gate");
+    assert_eq!(i, 0);
+    assert_eq!(j, 1);
+    assert!(
+        offset > MAX_CROSS_MCU_FREQ_RATIO_OFFSET,
+        "{offset} must exceed {MAX_CROSS_MCU_FREQ_RATIO_OFFSET}"
+    );
+}
+
+#[test]
+fn cross_mcu_desync_passes_within_threshold() {
+    // 0.05% divergence (5e-4) sits below the 1e-3 gate.
+    let freqs = [550_000_000.0, 550_000_000.0 * 1.0005];
+    assert!(
+        check_cross_mcu_desync(&freqs).is_none(),
+        "tight pair must not trip cross-MCU gate"
+    );
+}
+
+#[test]
+fn cross_mcu_desync_handles_three_or_more_mcus() {
+    // First two are tight, third diverges from both.
+    let freqs = [
+        550_000_000.0,
+        550_000_000.0 * 1.0001,
+        550_000_000.0 * 1.005,
+    ];
+    let (i, j, _offset) = check_cross_mcu_desync(&freqs)
+        .expect("third MCU diverges → at least one pair trips the gate");
+    // First failing pair lexicographically — could be (0, 2) or (1, 2),
+    // depending on iteration order. Our impl iterates `i < j`, so the
+    // first failing pair is (0, 2).
+    assert_eq!(i, 0);
+    assert_eq!(j, 2);
+}
+
+#[test]
+fn cross_mcu_desync_single_mcu_passes() {
+    let freqs = [550_000_000.0];
+    assert!(check_cross_mcu_desync(&freqs).is_none());
+}
+
+#[test]
+fn cross_mcu_desync_arm_error_displays() {
+    // Smoke-test the Display impl so a real fault produces a useful
+    // log line.
+    let err = ArmError::CrossMcuDesync {
+        mcu_a: 0,
+        mcu_b: 1,
+        ratio_offset: 5e-3,
+    };
+    let s = format!("{err}");
+    assert!(s.contains("MCU 0"));
+    assert!(s.contains("MCU 1"));
+    assert!(s.contains("0.005000"));
+}
+
+#[test]
+fn partial_arm_failure_reports_armed_indices() {
+    // MCU 0 arms successfully, MCU 1 rejects the arm. The failure
+    // surface must record `armed_indices = [0]` so the caller can
+    // flush MCU 0 back to IDLE.
+    let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> =
+        vec![make_warm_mcu(0), make_warm_mcu(-42)];
+    let failure = arm_all_mcus(
+        &mut mcus,
+        Instant::now() + Duration::from_millis(500),
+        Duration::from_millis(200),
+        50_000,
+        FREQ,
+    )
+    .unwrap_err();
+    match failure.error {
+        ArmError::McuRejected(r) => assert_eq!(r, -42),
+        other => panic!("expected McuRejected, got {other:?}"),
+    }
+    assert_eq!(
+        failure.armed_indices,
+        vec![0],
+        "MCU 0 was armed before MCU 1 failed; caller must flush it"
+    );
 }

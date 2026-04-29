@@ -1,4 +1,4 @@
-name: Rust runtime (Step 5)
+name: Rust runtime (Step 5 + Step 6)
 
 on:
   workflow_dispatch:
@@ -49,14 +49,43 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: cargo build (workspace)
+      - name: cargo build (workspace; covers kalico-host-rt + runtime + temporal)
         run: cargo build --workspace
-      - name: cargo test (workspace)
+      - name: cargo test (workspace; covers kalico-host-rt + runtime + temporal)
         run: cargo test --workspace
       - name: cargo clippy (-D warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo fmt (check)
         run: cargo fmt --all -- --check
+
+  # Step-6 §11.4 / §11.3 loom tests for half-split SPSC, widened-clock
+  # seqlock, force_idle handshake, and curve-pool alloc race. Loom
+  # exhaustively explores the model-checked thread interleavings; it
+  # only runs when --cfg loom is set (see runtime/Cargo.toml).
+  rust-loom:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUSTFLAGS: "--cfg loom"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: loom
+      - name: cargo test (loom — runtime, --release)
+        run: >
+          cargo test -p runtime --release
+          --test loom_seqlock
+          --test loom_spsc_split
+          --test loom_force_idle
+          --test loom_curve_pool_alloc
 
   rust-mcu-h7:
     needs: changes

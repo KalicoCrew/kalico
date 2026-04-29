@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use kalico_host_rt::credit::CreditCounter;
 use kalico_host_rt::producer::{push_segment, ProducerError};
-use kalico_host_rt::transport::MessageValue;
+use kalico_host_rt::transport::{MessageValue, TransportError};
 
 use mock_transport::{mp_with, MockTransport};
 
@@ -43,7 +43,10 @@ fn no_credit_returns_nocredit_without_sending() {
     let credit = CreditCounter::new(1);
     credit.try_acquire().unwrap(); // exhaust
     let err = push_segment(&mut io, &credit, 0, 1, 0, 100, 0).unwrap_err();
-    matches!(err, ProducerError::NoCredit);
+    assert!(
+        matches!(err, ProducerError::NoCredit),
+        "expected NoCredit, got {err:?}"
+    );
     assert!(io.sent.is_empty(), "must not send when out of credit");
 }
 
@@ -73,7 +76,10 @@ fn transport_timeout_releases_credit() {
     let credit = CreditCounter::new(1);
     // No response queued → transport returns Timeout.
     let err = push_segment(&mut io, &credit, 0, 0, 0, 0, 0).unwrap_err();
-    matches!(err, ProducerError::Transport(_));
+    assert!(
+        matches!(err, ProducerError::Transport(_)),
+        "expected Transport(_), got {err:?}"
+    );
     assert_eq!(credit.available(), 1, "credit must be restored on timeout");
 }
 
@@ -108,6 +114,38 @@ fn high_64bit_t_start_t_end_split_lo_hi() {
     assert!(
         last.contains("t_end_lo=6") && last.contains("t_end_hi=1"),
         "unexpected wire encoding: {last}"
+    );
+}
+
+#[test]
+fn missing_result_field_surfaces_parse_error_and_releases_credit() {
+    // I1 fix: a malformed `kalico_push_response` with no `result`
+    // field must NOT silently succeed (treating absent as 0). Instead
+    // surface a Transport(Parse(...)) and roll back the credit.
+    let mut io = MockTransport::new();
+    let credit = CreditCounter::new(2);
+    io.enqueue_response(
+        "kalico_push_response",
+        mp_with(&[
+            // No "result" key → try_get_i32 returns None.
+            ("accepted_segment_id", MessageValue::U32(1)),
+            ("credit_epoch", MessageValue::U32(1)),
+        ]),
+    );
+    let err = push_segment(&mut io, &credit, 0, 0, 0, 0, 0).unwrap_err();
+    match err {
+        ProducerError::Transport(TransportError::Parse(msg)) => {
+            assert!(
+                msg.contains("missing 'result' field"),
+                "expected diagnostic to mention missing 'result', got {msg}"
+            );
+        }
+        other => panic!("expected Transport(Parse(_)), got {other:?}"),
+    }
+    assert_eq!(
+        credit.available(),
+        2,
+        "credit must be restored when malformed response trips parse error"
     );
 }
 

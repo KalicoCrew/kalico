@@ -121,7 +121,16 @@ pub fn push_segment_with_timeout<T: Transport>(
         }
     };
 
-    let result = resp.get_i32("result");
+    // I1 fix: `result` is load-bearing — `result == 0` means success, so
+    // a missing field on a malformed reply would be silently treated as
+    // success. Use the fallible accessor and surface a Parse error if
+    // the MCU response is missing the field.
+    let Some(result) = resp.try_get_i32("result") else {
+        credit.release();
+        return Err(ProducerError::Transport(TransportError::Parse(
+            "kalico_push_response missing 'result' field".to_string(),
+        )));
+    };
     if result != 0 {
         credit.release();
         return Err(ProducerError::McuRejected(result));

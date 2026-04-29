@@ -13,14 +13,48 @@
 //!    deadline (Round-1 ARMING-race protection: total budget is
 //!    `arm_lead_time / 2`).
 //!
-//! On any failure we abort the in-progress arm and surface the error;
-//! the caller is responsible for calling `kalico_stream_flush` to wind
-//! the MCU back to IDLE.
+//! On any failure we abort the in-progress arm and surface an
+//! [`ArmFailure`] carrying both the originating [`ArmError`] and the
+//! list of MCU indices that DID complete the arm step before the
+//! failure (i.e. received a successful `kalico_stream_arm_response`).
+//! The caller iterates `armed_indices` and issues `kalico_stream_flush`
+//! to wind those MCUs back to IDLE — leaving the others alone, since
+//! they never armed.
 
 use std::time::{Duration, Instant};
 
 use crate::clock_sync::ClockSyncEstimator;
 use crate::transport::{Transport, TransportError};
+
+/// Spec §6.3 + §12.4: cross-MCU clock-frequency drift sanity check at
+/// arm time. The wire-rate scheduler relies on every MCU's local clock
+/// running at the same rate to within ~1e-3 (1000 ppm); anything wider
+/// is a `KALICO_FAULT_CROSS_MCU_DESYNC` and we refuse to arm.
+pub const MAX_CROSS_MCU_FREQ_RATIO_OFFSET: f64 = 1e-3;
+
+/// Pure-data form of the cross-MCU drift check (spec §6.3 + §12.4).
+/// Returns `Some((i, j, ratio_offset))` for the first pair (lexicographic
+/// `i < j`) where `|fA / fB - 1|` exceeds
+/// `MAX_CROSS_MCU_FREQ_RATIO_OFFSET`. Returns `None` if every pair is
+/// within tolerance, or if there are fewer than two MCUs. Non-positive
+/// freqs are skipped (an upstream quality gate is responsible for
+/// rejecting them).
+pub fn check_cross_mcu_desync(freqs: &[f64]) -> Option<(usize, usize, f64)> {
+    for i in 0..freqs.len() {
+        for j in (i + 1)..freqs.len() {
+            let fa = freqs[i];
+            let fb = freqs[j];
+            if fa <= 0.0 || fb <= 0.0 {
+                continue;
+            }
+            let ratio_offset = (fa / fb - 1.0).abs();
+            if ratio_offset > MAX_CROSS_MCU_FREQ_RATIO_OFFSET {
+                return Some((i, j, ratio_offset));
+            }
+        }
+    }
+    None
+}
 
 /// Default timeout for the dedicated `kalico_clock_sync_request`
 /// round-trip during ARMING. Sized loosely vs the expected µs RTT so a
@@ -52,13 +86,22 @@ pub fn arm_all_mcus<T: Transport>(
     arm_lead_time: Duration,
     arm_lead_cycles: u32,
     baseline_freq: f64,
-) -> Result<(), ArmError> {
+) -> Result<(), ArmFailure> {
     let arming_deadline = Instant::now() + arm_lead_time / 2;
 
+    // Track which MCUs successfully completed the arm-issuance step so
+    // a partial-failure caller can flush exactly those MCUs (I5 fix).
+    // Pre-arm-ack failures leave `armed_indices` empty.
+    let mut armed_indices: Vec<usize> = Vec::with_capacity(mcus.len());
+    let fail = |error: ArmError, armed: &[usize]| ArmFailure {
+        error,
+        armed_indices: armed.to_vec(),
+    };
+
     // Step 1+2+3: dedicated sync + quality gate per MCU.
-    for (io, est) in mcus.iter_mut() {
+    for (idx, (io, est)) in mcus.iter_mut().enumerate() {
         if Instant::now() >= arming_deadline {
-            return Err(ArmError::DeadlineMissed);
+            return Err(fail(ArmError::DeadlineMissed, &armed_indices));
         }
         let host_send = Instant::now();
         // Round-2 B04 carry-over: the `host_send_time_*` args are
@@ -67,19 +110,42 @@ pub fn arm_all_mcus<T: Transport>(
         // `host_send` and `host_recv` instants.
         io.send(
             "kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0",
-        )?;
-        let resp = io.wait_for_response(
-            "kalico_clock_sync_response",
-            CLOCK_SYNC_REQUEST_TIMEOUT,
-        )?;
+        )
+        .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
+        let resp = io
+            .wait_for_response(
+                "kalico_clock_sync_response",
+                CLOCK_SYNC_REQUEST_TIMEOUT,
+            )
+            .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let host_recv = Instant::now();
         let mcu_clock = (u64::from(resp.get_u32("mcu_clock_hi")) << 32)
             | u64::from(resp.get_u32("mcu_clock_lo"));
         est.add_dedicated_sample(host_send, host_recv, mcu_clock);
 
         if !est.is_quality_gate_passed(baseline_freq) {
-            return Err(ArmError::QualityGate);
+            return Err(fail(ArmError::QualityGate, &armed_indices));
         }
+        let _ = idx; // index is the natural enumerate counter; unused
+                     // pre-arm because nothing is armed yet.
+    }
+
+    // Spec §6.3 + §12.4 (GAP-1 fix): cross-MCU drift sanity check
+    // BEFORE issuing any arm. Refuse to arm if any pair of MCUs has
+    // |fA / fB - 1| > 1e-3 — this is `KALICO_FAULT_CROSS_MCU_DESYNC`.
+    // Done after every estimator has a fresh dedicated sample so the
+    // freq estimates are current.
+    let freqs: Vec<f64> =
+        mcus.iter().map(|(_, est)| est.clock_freq_estimate).collect();
+    if let Some((i, j, ratio_offset)) = check_cross_mcu_desync(&freqs) {
+        return Err(fail(
+            ArmError::CrossMcuDesync {
+                mcu_a: i,
+                mcu_b: j,
+                ratio_offset,
+            },
+            &armed_indices,
+        ));
     }
 
     // Step 4+5: arm each MCU with deadline.
@@ -89,9 +155,9 @@ pub fn arm_all_mcus<T: Transport>(
     // NOT just `delta_secs * freq`. We compute via the estimator's
     // anchor: t_start_local =
     // mcu_time_at_host(host_time_secs(t_start_wall_clock)).
-    for (io, est) in mcus.iter_mut() {
+    for (idx, (io, est)) in mcus.iter_mut().enumerate() {
         if Instant::now() >= arming_deadline {
-            return Err(ArmError::DeadlineMissed);
+            return Err(fail(ArmError::DeadlineMissed, &armed_indices));
         }
         let t_start_host_secs = est.host_time_at(t_start_wall_clock);
         let t_start_local = est.mcu_time_at_host(t_start_host_secs);
@@ -101,16 +167,34 @@ pub fn arm_all_mcus<T: Transport>(
             hi = (t_start_local >> 32) as u32,
             alc = arm_lead_cycles,
         );
-        io.send(&cmd)?;
+        io.send(&cmd)
+            .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let now = Instant::now();
         if now >= arming_deadline {
-            return Err(ArmError::DeadlineMissed);
+            return Err(fail(ArmError::DeadlineMissed, &armed_indices));
         }
         let remaining = arming_deadline - now;
-        let resp = io.wait_for_response("kalico_stream_arm_response", remaining)?;
-        if resp.get_i32("result") != 0 {
-            return Err(ArmError::McuRejected(resp.get_i32("result")));
+        let resp = io
+            .wait_for_response("kalico_stream_arm_response", remaining)
+            .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
+        // I1 fix: `result` is load-bearing (0 = success); a missing
+        // field must surface as a Parse error rather than silently
+        // succeed.
+        let Some(result) = resp.try_get_i32("result") else {
+            return Err(fail(
+                ArmError::Transport(TransportError::Parse(
+                    "kalico_stream_arm_response missing 'result' field"
+                        .to_string(),
+                )),
+                &armed_indices,
+            ));
+        };
+        if result != 0 {
+            return Err(fail(ArmError::McuRejected(result), &armed_indices));
         }
+        // This MCU acknowledged the arm; record so the caller can flush
+        // it on a later-MCU partial failure.
+        armed_indices.push(idx);
     }
 
     Ok(())
@@ -123,6 +207,15 @@ pub enum ArmError {
     /// At least one MCU's [`ClockSyncEstimator`] failed
     /// `is_quality_gate_passed` after the dedicated sync.
     QualityGate,
+    /// Spec §6.3 + §12.4: cross-MCU clock-frequency drift exceeds
+    /// `MAX_CROSS_MCU_FREQ_RATIO_OFFSET`. Carries the indices of the
+    /// offending pair plus the actual `|fA / fB - 1|` value so the
+    /// caller can log a useful diagnostic.
+    CrossMcuDesync {
+        mcu_a: usize,
+        mcu_b: usize,
+        ratio_offset: f64,
+    },
     /// `kalico_stream_arm_response.result != 0`.
     McuRejected(i32),
     /// Transport-layer failure during ARMING.
@@ -143,6 +236,19 @@ impl std::fmt::Display for ArmError {
                 f,
                 "ARMING aborted: clock-sync quality gate failed (Plan-decision B)"
             ),
+            ArmError::CrossMcuDesync {
+                mcu_a,
+                mcu_b,
+                ratio_offset,
+            } => {
+                let max = MAX_CROSS_MCU_FREQ_RATIO_OFFSET;
+                write!(
+                    f,
+                    "ARMING aborted: cross-MCU clock desync between MCU {mcu_a} \
+                     and MCU {mcu_b} (|fA/fB - 1| = {ratio_offset:.6}, max = \
+                     {max:.6})"
+                )
+            }
             ArmError::McuRejected(r) => {
                 write!(f, "ARMING aborted: MCU rejected stream_arm (result={r})")
             }
@@ -152,3 +258,39 @@ impl std::fmt::Display for ArmError {
 }
 
 impl std::error::Error for ArmError {}
+
+/// I5 fix: partial-arm failure surface. When `arm_all_mcus` fails
+/// mid-stream, MCUs that already received a successful
+/// `kalico_stream_arm_response` are armed and need to be flushed back
+/// to IDLE (`kalico_stream_flush`); MCUs not in `armed_indices` were
+/// never armed and require no rollback.
+#[derive(Debug)]
+pub struct ArmFailure {
+    pub error: ArmError,
+    pub armed_indices: Vec<usize>,
+}
+
+impl std::fmt::Display for ArmFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (armed MCUs requiring flush: {:?})",
+            self.error, self.armed_indices
+        )
+    }
+}
+
+impl std::error::Error for ArmFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl From<TransportError> for ArmFailure {
+    fn from(e: TransportError) -> Self {
+        ArmFailure {
+            error: ArmError::Transport(e),
+            armed_indices: Vec::new(),
+        }
+    }
+}
