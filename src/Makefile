@@ -37,13 +37,23 @@ src-$(CONFIG_NEED_LOAD_CELL_PROBE) += load_cell_probe.c
 # cargo is invoked every build — cargo itself handles up-to-date checks
 # (incremental compilation), so this is cheap on no-op builds.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
+# Cargo feature set. Production: mcu-h7,header-nurbs,header-runtime.
+# Sim build (CONFIG_KALICO_SIM=y) appends `kalico-sim` to compile in the
+# sim-only fixture path (sim_fixtures.rs + kalico_runtime_load_fixture FFI),
+# per Step-6 plan Phase 0 Task 0.2. Never include in production firmware —
+# the fixture path skips curve validation; it's safe only under sim.
+KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
+ifeq ($(CONFIG_KALICO_SIM),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
+endif
+
 # rustup-installed cargo lives in ~/.cargo/bin which isn't on
 # non-interactive shell $PATH; prepend it so `make` works without
 # requiring the user to source ~/.cargo/env.
 rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
 	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" cargo build -p kalico-c-api \
 		--no-default-features \
-		--features mcu-h7,header-nurbs,header-runtime \
+		--features $(KALICO_RUST_FEATURES) \
 		--target thumbv7em-none-eabi --release
 .PHONY: FORCE
 endif

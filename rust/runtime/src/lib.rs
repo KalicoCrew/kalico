@@ -22,6 +22,8 @@ pub mod error;
 pub mod kinematics;
 pub mod queue;
 pub mod segment;
+#[cfg(feature = "kalico-sim")]
+pub mod sim_fixtures;
 pub mod slot;
 pub mod state;
 pub mod trace;

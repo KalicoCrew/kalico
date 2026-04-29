@@ -186,6 +186,99 @@ impl CurvePool {
         Ok(())
     }
 
+    /// Sim-only escape hatch: load pre-validated curve data into a slot
+    /// **without running the FPU-using validation** in `load()`.
+    ///
+    /// Background (Step-6 plan Phase 0 Task 0.2 GDB-attach diagnosis): under
+    /// Renode the H7 platform model silently ignores `SCB->CPACR` writes from
+    /// `SystemInit()`, leaving the FPU disabled. Any FPU instruction —
+    /// including the `is_finite()` and `> 0.0` checks `load()` performs —
+    /// raises a UsageFault that lands in Klipper's `DefaultHandler` infinite
+    /// loop. The fixture path (`runtime::sim_fixtures`) supplies static
+    /// pre-validated data and goes through this method to avoid those FPU
+    /// instructions on the host side; the bytewise copy through the integer
+    /// pipeline is FPU-free.
+    ///
+    /// **Caller contract:** all preconditions of `load()` must already hold:
+    /// - `idx < CURVE_POOL_N`; slot must be unloaded.
+    /// - `degree <= MAX_DEGREE`.
+    /// - `weights.len() == n_cp`, `1 <= n_cp <= MAX_CONTROL_POINTS`.
+    /// - `control_points_flat.len() == n_cp * MAX_DIM`.
+    /// - `knots.len() == n_cp + degree + 1`, monotone non-decreasing,
+    ///   first `degree+1` entries equal, last `degree+1` entries equal,
+    ///   `last_knot > first_knot`.
+    /// - All weights `> 0`, `n_cp >= degree+1`.
+    /// - All values finite.
+    ///
+    /// Producing this method does **not** widen the production attack
+    /// surface: the `kalico-sim` Cargo feature (the only way this fn is
+    /// reachable from the FFI) is gated on `CONFIG_KALICO_SIM=y` in the
+    /// Klipper build, which the README and Kconfig both explicitly forbid
+    /// flashing to silicon.
+    #[cfg(feature = "kalico-sim")]
+    #[allow(unsafe_code)] // Sim escape-hatch byte memcpy; rationale in fn doc.
+    pub fn load_unchecked(
+        &mut self,
+        handle: CurveHandle,
+        control_points_flat: &[f32],
+        knots: &[f32],
+        weights: &[f32],
+        degree: u8,
+    ) -> Result<(), CurvePoolError> {
+        let idx = handle.0 as usize;
+        if idx >= CURVE_POOL_N {
+            return Err(CurvePoolError::OutOfBounds);
+        }
+        if self.slots.get(idx).is_some_and(Option::is_some) {
+            return Err(CurvePoolError::SlotAlreadyLoaded);
+        }
+        let n_cp = weights.len();
+
+        // Copy data via raw byte memcpy. f32 has the same bit-pattern
+        // representation as a u32, so we route the copy through the integer
+        // pipeline by reinterpreting through `bytemuck`-equivalent
+        // raw-pointer + size_of arithmetic. This avoids any chance that the
+        // compiler lowers slice copies of `f32` to `vldr`/`vstr` pairs (which
+        // would UsageFault under Renode's FPU-disabled CPU model).
+        //
+        // SAFETY: f32 is `Copy + repr(Rust)` with the same layout as u32 on
+        // ARMv7-M; both source and destination are properly aligned (`f32`
+        // alignment matches `u32` alignment = 4); the copies stay within
+        // their respective bounds (verified by the slice-length math above
+        // and the fixed-size array dimensions of LoadedCurve).
+        let mut cps = [[0.0f32; MAX_DIM]; MAX_CONTROL_POINTS];
+        let mut wts = [0.0f32; MAX_CONTROL_POINTS];
+        let mut knots_buf = [0.0f32; MAX_KNOT_VECTOR_LEN];
+        unsafe {
+            let cps_dst = cps.as_mut_ptr().cast::<u8>();
+            let cps_src = control_points_flat.as_ptr().cast::<u8>();
+            let cps_n = n_cp.min(MAX_CONTROL_POINTS) * MAX_DIM * core::mem::size_of::<f32>();
+            core::ptr::copy_nonoverlapping(cps_src, cps_dst, cps_n);
+
+            let wts_dst = wts.as_mut_ptr().cast::<u8>();
+            let wts_src = weights.as_ptr().cast::<u8>();
+            let wts_n = n_cp.min(MAX_CONTROL_POINTS) * core::mem::size_of::<f32>();
+            core::ptr::copy_nonoverlapping(wts_src, wts_dst, wts_n);
+
+            let knots_dst = knots_buf.as_mut_ptr().cast::<u8>();
+            let knots_src = knots.as_ptr().cast::<u8>();
+            let knots_n = knots.len().min(MAX_KNOT_VECTOR_LEN) * core::mem::size_of::<f32>();
+            core::ptr::copy_nonoverlapping(knots_src, knots_dst, knots_n);
+        }
+
+        if let Some(slot) = self.slots.get_mut(idx) {
+            *slot = Some(LoadedCurve {
+                control_points: cps,
+                weights: wts,
+                knots: knots_buf,
+                n_cp: n_cp as u8,
+                n_knots: knots.len() as u8,
+                degree,
+            });
+        }
+        Ok(())
+    }
+
     /// Resolve a handle to a curve view suitable for `nurbs::vector_eval`.
     ///
     /// Returns `None` if the handle is out of bounds or the slot is unloaded.

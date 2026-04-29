@@ -247,6 +247,32 @@ command_kalico_query_status(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
 
+#if CONFIG_KALICO_SIM
+// Sim-only escape hatch (Step-6 plan Phase 0 Task 0.2). Diagnoses the
+// load_curve hang in Renode (the H7 .repl ignores SCB->CPACR writes from
+// SystemInit, so any FPU instruction in CurvePool::load — including
+// is_finite() and > 0.0 checks — UsageFaults). The fixture path uses static
+// pre-validated curve data and CurvePool::load_unchecked (integer-only
+// memcpy), bypassing the FPU entirely. NEVER include in production.
+extern int32_t kalico_runtime_load_fixture(
+    void *rt, uint16_t slot, uint16_t fixture_id);
+
+void
+command_kalico_load_fixture_curve(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf("kalico_load_fixture_response result=%i", -7);
+        return;
+    }
+    uint16_t slot = args[0];
+    uint16_t fixture_id = args[1];
+    int32_t r = kalico_runtime_load_fixture(kalico_rt_handle, slot, fixture_id);
+    sendf("kalico_load_fixture_response result=%i", r);
+}
+DECL_COMMAND(command_kalico_load_fixture_curve,
+    "kalico_load_fixture_curve slot=%hu fixture_id=%hu");
+#endif // CONFIG_KALICO_SIM
+
 // ---- Cycle-count bench (Task 27 / spec §6.4) ---------------------------
 //
 // Surface-C only. Captures DWT->CYCCNT around `kalico_runtime_tick` over N

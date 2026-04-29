@@ -29,6 +29,16 @@ mach create "h723"
 # read from that address — chosen so Klipper's "spin until ready" loops exit.
 machine LoadPlatformDescription @/opt/homebrew/Cellar/renode/1.16.1/libexec/platforms/cpus/stm32h743.repl
 
+# Enable the Cortex-M7 FPU. The H743 .repl uses cpuType: "cortex-m7" without
+# a `+fpu` flag; without this monitor command, Renode silently drops writes
+# to SCB->CPACR (CP10/CP11 enable bits), so the FPU stays disabled. Any FPU
+# instruction in the firmware (curve validation, segment evaluation, function
+# prologues with `vpush`) then raises a UsageFault → DefaultHandler infinite
+# loop. Per Step-6 plan Phase 0 Task 0.2 GDB-attach diagnosis. Only Renode
+# 1.16+ exposes `FpuEnabled`; if you're on an older release upgrade or use
+# the kalico_load_fixture_curve escape hatch as a workaround.
+cpu FpuEnabled true
+
 # H7 PWR controller (D3 domain). Klipper's stm32h7.c polls D3CR.VOSRDY at boot
 # during voltage-scaling configuration; without this, the firmware spins.
 # PWR_CR1 = 0x100 (DBP set). PWR_CSR1 = 0x2000 (VOSRDY set). PWR_CR2 = 0x1 (BREN).
@@ -65,6 +75,12 @@ connector Connect sysbus.usart2 uart_term
 # read RDR between bytes that no overrun occurs in practice for our 250 kbaud
 # protocol; tradeoff is ~5x slower wall-clock simulation, still fast enough.
 emulation SetGlobalQuantum "0.000001"
+
+# Expose Renode's GDB server (port 3333) for the kalico-sim load_curve hang
+# investigation (Step-6 plan Phase 0 Task 0.2). Attach with:
+#   arm-none-eabi-gdb out/klipper.elf -ex "target remote :3333"
+# The `true` arg means the CPU starts halted; type `continue` in gdb to run.
+machine StartGdbServer 3333 true
 
 # Load the firmware. Klipper's bootloader-aware build uses a vector table at
 # 0x08020000 (CONFIG_STM32_FLASH_START_20000). Renode's CPU reads the initial

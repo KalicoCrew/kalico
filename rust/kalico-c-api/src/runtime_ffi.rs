@@ -314,4 +314,65 @@ pub mod exports {
         let ctx = unsafe { &*rt.cast::<RuntimeContext>() };
         ctx.engine.tick_counter()
     }
+
+    /// Sim escape hatch: load a pre-baked NURBS fixture into a curve-pool slot.
+    ///
+    /// Per Step-6 plan Phase 0 Task 0.2 GDB-attach diagnosis: under Renode,
+    /// the H7 platform model silently ignores `SCB->CPACR` writes from
+    /// `SystemInit()`, leaving the FPU disabled. The regular
+    /// `kalico_runtime_load_curve` path runs `is_finite()` / `> 0.0` checks
+    /// on caller-supplied data; those FPU instructions raise a UsageFault
+    /// that lands in Klipper's `DefaultHandler` infinite loop. This entrypoint
+    /// uses static pre-validated fixtures and the
+    /// `CurvePool::load_unchecked` integer-only-copy variant so Step-6
+    /// protocol iteration can land segments in sim without touching the FPU.
+    ///
+    /// Compiled only with the `kalico-sim` Cargo feature, gated on
+    /// `CONFIG_KALICO_SIM=y` in the Klipper Makefile. NEVER include in
+    /// production firmware.
+    #[cfg(feature = "kalico-sim")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_load_fixture(
+        rt: *mut KalicoRuntime,
+        slot_idx: u16,
+        fixture_id: u16,
+    ) -> i32 {
+        use runtime::sim_fixtures::{
+            FIXTURE_CPS_MAX, FIXTURE_KNOTS_MAX, FIXTURE_WEIGHTS_MAX,
+        };
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if INIT_STATE.load(Ordering::Acquire) != INIT_READY {
+            return KALICO_ERR_NOT_INIT;
+        }
+        // SAFETY: rt is the published RT_CELL pointer (verified non-null
+        // and INIT_STATE==READY above); ISR/foreground latent-mut-aliasing
+        // acknowledged in module doc per spec §3.2.
+        let ctx = unsafe { &mut *rt.cast::<RuntimeContext>() };
+
+        let mut cps = [0.0_f32; FIXTURE_CPS_MAX];
+        let mut knots = [0.0_f32; FIXTURE_KNOTS_MAX];
+        let mut weights = [0.0_f32; FIXTURE_WEIGHTS_MAX];
+        let Some((degree, n_cp, n_knots, n_weights)) = runtime::sim_fixtures::lookup(
+            fixture_id, &mut cps, &mut knots, &mut weights,
+        ) else {
+            return KALICO_ERR_INVALID_CURVE;
+        };
+
+        match ctx.pool.load_unchecked(
+            CurveHandle(slot_idx),
+            &cps[..n_cp * MAX_DIM],
+            &knots[..n_knots],
+            &weights[..n_weights],
+            degree,
+        ) {
+            Ok(()) => KALICO_OK,
+            Err(
+                runtime::curve_pool::CurvePoolError::OutOfBounds
+                | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
+            ) => KALICO_ERR_INVALID_HANDLE,
+            Err(_) => KALICO_ERR_INVALID_CURVE,
+        }
+    }
 }

@@ -23,6 +23,7 @@ exclude = [
     "kalico_runtime_init",
     "kalico_runtime_push_segment",
     "kalico_runtime_load_curve",
+    "kalico_runtime_load_fixture",
     "kalico_runtime_tick",
     "kalico_runtime_drain_trace",
     "kalico_runtime_status",

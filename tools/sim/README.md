@@ -5,15 +5,11 @@ host and talk to it over a TCP socket — no DFU cycles, no risk to real
 hardware. Useful for state-machine bring-up, FFI symbol checks, and quick
 iteration on small commands.
 
-**Status: v0, partial fidelity.** Works for `identify`,
-`kalico_query_status`, and a single `kalico_push_segment` (which does
-return success). After the first push, TIM5 is enabled and the ISR
-starts firing, which appears to wedge the simulated firmware — every
-subsequent command times out. `kalico_load_curve` independently hangs
-the firmware regardless of TIM5 state. Useful for FFI-symbol checks,
-identify-handshake regressions, and the runtime-init path; **not yet
-usable for full integration testing**. See
-[Known limitations](#known-limitations) before relying on it.
+**Status: v0.1, Phase-0 Gate A passing.** `identify`,
+`kalico_query_status`, `kalico_load_curve`, and `kalico_push_segment` all
+work end-to-end. Engine state advances, segments retire, trace samples flow.
+The two Step-5 known-broken paths (load_curve hang; CYCCNT freeze) closed in
+Step-6 Phase 0 — see [Phase-0 fixes](#phase-0-fixes-step-6).
 
 ## Prerequisites
 
@@ -68,43 +64,58 @@ python3 tools/test_h723_first_light.py --port socket://localhost:3334
 - You need to validate Surface-C bench numbers, real-time deadline
   guarantees, or anything that depends on actual cycle pacing.
 
+## Phase-0 fixes (Step 6)
+
+Two Step-5-leftover sim issues closed in Phase 0 of the
+[Step-6 plan](../../docs/superpowers/plans/2026-04-28-step6-comm-protocol-and-sim-fixes.md).
+Both are documented here so future debugging knows what to NOT chase again.
+
+1. **FPU silently disabled in Renode's H7 model** (was: "load_curve hangs").
+   Renode's stm32h743.repl uses `cpuType: "cortex-m7"` without an FPU flag,
+   and the model silently drops writes to `SCB->CPACR` (CP10/CP11 enable
+   bits). Klipper's `SystemInit()` writes those bits but they don't stick,
+   so any FPU instruction in the firmware (`vpush`/`vldr`/`vcmp.f32`)
+   raises a UsageFault that lands in `DefaultHandler`'s infinite loop.
+   GDB-attach diagnosed `CFSR.UFSR.NOCP=1` with stacked PC inside
+   `runtime::engine::tick_with_current` (the FPU-register-saving function
+   prologue). **Fix:** the .resc now runs `cpu FpuEnabled true` after
+   `LoadPlatformDescription` to put Renode's model into an FPU-enabled
+   state. Requires Renode 1.16+ (`FpuEnabled` is exposed there;
+   focaltech_ft9001_zephyr.resc uses it).
+
+2. **DWT->CYCCNT freeze** (was: "engine widening loop never advances").
+   Renode tags `DWT->CYCCNT` as opaque memory; reads return 0. C-side fork
+   in `src/stm32/kalico_h7_timer.c::kalico_h7_read_cyccnt()` returns a
+   software counter (`kalico_sim_cyccnt` in `src/stm32/kalico_sim_clock.c`)
+   bumped from the TIM5 ISR by `kalico_clock_freq / 40000` cycles per fire.
+   Production builds (CONFIG_KALICO_SIM=n) read `DWT->CYCCNT` directly.
+
+A third Phase-0 deliverable, the `kalico_load_fixture_curve` escape hatch
+(spec §3.2), is wired through but not strictly required: with the FPU fix
+above, the regular `kalico_load_curve` path works in sim. The escape hatch
+remains as a backup if Renode regresses — gated on the `kalico-sim` Cargo
+feature, which is gated on `CONFIG_KALICO_SIM=y`. NEVER flash a
+`CONFIG_KALICO_SIM=y` image to silicon — IWDG-disable + sim CYCCNT +
+kalico-sim FFI surface is a debugging build only.
+
 ## Known limitations
 
-1. **`kalico_load_curve` hangs the firmware in sim.** Sending the
-   `straight_line_x` fixture (msgblock 59 bytes, well under MESSAGE_MAX=64)
-   causes the foreground command-dispatch path to never return. After the
-   hang, all subsequent commands time out. Watchdog has been disabled, so
-   the sim doesn't reset — it just sits there. Hypothesis: the %*s buffer
-   handling reads memory the H743 .repl doesn't fully model, hitting a
-   hard-fault that the DefaultHandler swallows in an infinite loop. Needs
-   GDB-attached investigation (Renode supports it via `machine
-   StartGdbServer`).
-
-   **Update during bring-up:** even with TIM5 disabled, the load_curve
-   handler stops responding after sending. Issue is independent of the
-   ISR path.
-
-2. **DWT/CYCCNT reads return 0.** Engine state-machine transitions that
-   depend on widened cycle time won't progress; segment-end Drained transitions
-   don't fire. `kalico_push_segment` returns success, but enabling TIM5 in
-   the producer-protocol post-push path appears to wedge the firmware
-   (subsequent commands time out). Likely related: the TIM5 ISR calls
-   `kalico_h7_read_cyccnt()` which always returns 0, so the engine widening
-   loop ingests garbage time and may hit an unexpected code path. Renode-side
-   fix would be a small DWT model peripheral that returns
-   `cpu.ExecutedInstructions` mod 2^32; firmware-side fix would be a
-   software CYCCNT incremented from the TIM5 handler under CONFIG_KALICO_SIM.
-
-3. **Renode's IWDG model misbehaves.** We work around by skipping
+1. **Renode's IWDG model misbehaves.** We work around by skipping
    `watchdog_init` / kicks via CONFIG_KALICO_SIM=y. Never flash an image
    built this way to real silicon — IWDG is the only thing that catches a
    hung MCU mid-print, and disabling it is unsafe.
 
-4. **H723 platform model is approximated by H743.** Same Cortex-M7 core,
+2. **H723 platform model is approximated by H743.** Same Cortex-M7 core,
    same TIM5/USART/NVIC layout, but H723 has fewer peripherals and tighter
    timing. Renode hasn't shipped an H723-specific .repl as of v1.16.1.
 
-5. **Renode runs slower than wall-clock** (typically 0.05x–0.5x of real
+3. **Cycle-count benchmarks are meaningless.** Both the software CYCCNT
+   path under CONFIG_KALICO_SIM and Renode's virtual-time CPU model produce
+   numbers that don't map to silicon timing. Run cycle benches against real
+   hardware. The `kalico_bench_*` commands are out of scope for sim
+   validation per spec §3.
+
+4. **Renode runs slower than wall-clock** (typically 0.05x–0.5x of real
    time depending on activity). Expect tests that have `time.sleep(N)`
    on the host side to need longer timeouts when pointed at the sim.
 
@@ -120,15 +131,8 @@ python3 tools/test_h723_first_light.py --port socket://localhost:3334
 
 ## Next steps if continuing this work
 
-- Track down the load_curve hang. Connect Renode's GDB server (already
-  exposed at port 3333 if you uncomment `machine StartGdbServer` in the
-  .resc), break in, see whether the CPU is in DefaultHandler. If it's a
-  hard-fault from a Renode-unmodeled peripheral access, the analyzer will
-  show which address triggered it.
 - Replace the H743 .repl with a derived H723 variant if Renode upstreams one.
-- Consider a Renode peripheral model for DWT->CYCCNT that increments based
-  on `cpu.ExecutedInstructions`, so the engine widening loop sees forward
-  progress.
-- A `make sim` target in `src/Makefile` would be a nice convenience but is
-  blocked on the load_curve issue — no point streamlining a path that
-  doesn't fully work.
+- Wire Gate B (Step-6 spec §3.3) once §7/§8/§9 of Step 6 land — exercises
+  status-frame, underrun fault, trace-overflow fault.
+- A `make sim` target in `src/Makefile` would be a nice convenience now
+  that the path works end-to-end.

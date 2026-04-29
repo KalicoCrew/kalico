@@ -22,6 +22,15 @@ default = ["host"]
 host = ["nurbs/host"]
 mcu-h7 = ["nurbs/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4"]
+# Sim-only escape hatch (Step-6 plan Phase 0 Task 0.2). Enables the
+# `sim_fixtures` module of pre-baked NURBS curves used by the
+# `kalico_runtime_load_fixture` FFI. Gated on CONFIG_KALICO_SIM=y in the
+# Klipper build via src/Makefile threading. NEVER include in production
+# firmware — Renode's H7 .repl ignores the SCB->CPACR write in SystemInit,
+# so any FPU instruction (including the curve-validation float compares
+# in CurvePool::load) raises a UsageFault that lands in DefaultHandler;
+# the fixture path bypasses validation by using pre-validated static data.
+kalico-sim = []
 loom = []  # gates loom-tests under cfg(loom)
 
 [lints]

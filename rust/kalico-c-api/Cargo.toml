@@ -22,6 +22,9 @@ mcu-f4 = ["nurbs/mcu-f4", "runtime/mcu-f4"]
 host = ["nurbs/host", "runtime/host", "dep:cbindgen"]
 header-nurbs = []
 header-runtime = []
+# Pass-through to runtime/kalico-sim. See runtime/Cargo.toml for the
+# rationale and the production-firmware safety boundary.
+kalico-sim = ["runtime/kalico-sim"]
 
 [dependencies]
 nurbs = { path = "../nurbs", default-features = false }

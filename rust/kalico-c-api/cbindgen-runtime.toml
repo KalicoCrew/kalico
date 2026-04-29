@@ -23,6 +23,11 @@ exclude = [
     "kalico_nurbs_eval_f32",
     "kalico_nurbs_vector_eval_3_f32",
     "kalico_nurbs_param_from_arc_length_f32",
+    # Sim-only escape hatch (Step-6 plan Phase 0 Task 0.2). Compiled only
+    # under the `kalico-sim` Cargo feature; never exported in the public
+    # header. `src/runtime_tick.c` declares it via local `extern` instead,
+    # gated on `CONFIG_KALICO_SIM=y`.
+    "kalico_runtime_load_fixture",
 ]
 
 [parse]
