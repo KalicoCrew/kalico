@@ -14,7 +14,10 @@ pub use error::{Fatal, GeometryError, InternalDetails, InternalKind, Recovery, S
 pub use params::FitterParams;
 pub use pipeline::{GeometryPipeline, Item, Segments};
 pub use segment::{
-    ArcSegment, BlendFamily, CornerBlendSlot, CubicSegment, EMode, FittedSegment, JunctionDeviation,
-    Segment, SourceRange, SplitInfo,
+    BlendFamily, CornerBlendSlot, CubicSegment, EMode, JunctionDeviation, Segment, SourceRange,
+    SplitInfo,
 };
+
+#[cfg(feature = "legacy-reference")]
+pub use segment::{ArcSegment, FittedSegment};
 pub use telemetry::TelemetryEvent;

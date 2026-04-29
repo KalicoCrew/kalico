@@ -5,12 +5,24 @@ use nurbs::{ScalarNurbs, VectorNurbs};
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment {
-    Fitted(FittedSegment),
-    Arc(ArcSegment),
+    /// Live-pipeline cubic Bézier segment with E-mode classification. Produced by
+    /// `reduce.rs` from G5/G5.1 input.
+    Cubic(CubicSegment),
     CornerBlend(CornerBlendSlot),
     Junction(JunctionDeviation),
+
+    /// **Legacy.** Multi-degree polynomial NURBS segment from the pre-G5-only reduce
+    /// stage. Step-13 compat-layer territory; not produced in the live pipeline.
+    #[cfg(feature = "legacy-reference")]
+    Fitted(FittedSegment),
+
+    /// **Legacy.** Rational quadratic NURBS segment from G2/G3 reduction. Step-13
+    /// compat-layer territory; not produced in the live pipeline.
+    #[cfg(feature = "legacy-reference")]
+    Arc(ArcSegment),
 }
 
+#[cfg(feature = "legacy-reference")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FittedSegment {
     pub xyz: VectorNurbs<f64, 3>,
@@ -21,6 +33,7 @@ pub struct FittedSegment {
     pub source: SourceRange,
 }
 
+#[cfg(feature = "legacy-reference")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArcSegment {
     pub xyz: VectorNurbs<f64, 3>,
@@ -211,6 +224,7 @@ mod tests {
     use nurbs::VectorNurbs;
 
     #[test]
+    #[cfg(feature = "legacy-reference")]
     fn segment_variants_construct() {
         let xyz = VectorNurbs::<f64, 3>::try_new(
             1,
@@ -273,5 +287,28 @@ mod tests {
         };
         let seg_jd: Segment = Segment::Junction(jd);
         assert!(matches!(seg_jd, Segment::Junction(_)));
+    }
+
+    #[test]
+    fn cubic_variant_constructs() {
+        let xyz = VectorNurbs::<f64, 3>::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            None,
+        )
+        .expect("valid cubic");
+        let cs = CubicSegment::try_new(
+            xyz,
+            EMode::Travel,
+            0.0,
+            None,
+            100.0,
+            SourceRange { start_line: 1, end_line: 1 },
+            None,
+        )
+        .expect("valid travel");
+        let seg: Segment = Segment::Cubic(cs);
+        assert!(matches!(seg, Segment::Cubic(_)));
     }
 }
