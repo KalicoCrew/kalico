@@ -113,7 +113,7 @@ class QuadGantryLevel:
     def _set_probe_order_for_pass(self, pass_index):
         self._active_probe_order = self._select_probe_order_for_pass(pass_index)
         self.probe_helper.probe_points = [
-            self._logical_probe_points[index] 
+            self._logical_probe_points[index]
             for index in self._active_probe_order
         ]
 
