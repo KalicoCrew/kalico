@@ -19,10 +19,24 @@ const MIN_PARAMETRIC_SPEED_FOR_SPLITTER: f64 = 1e-9;
 /// `1e-9 · |estimate|`; this tolerance must be at or above that order.
 const EPS_RATIO: f64 = 1e-8;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SplitError {
     NotSinglePieceCubic,
     ArcLengthTableBuildFailed { reason: &'static str },
+    /// `max_arc_length_mm` was not a positive finite number. Caller passed
+    /// `0.0`, a negative value, NaN, or infinity. The splitter cannot
+    /// compute `k_planned` from such a value — `total_length / 0.0 = ∞`
+    /// then `as usize` saturates to a huge usize and `Vec::with_capacity`
+    /// would panic / OOM.
+    InvalidCap { max_arc_length_mm: f64 },
+    /// An `EMode::Independent` segment with non-trivial xyz motion reached
+    /// the splitter past the zero-motion fast-path. Subdividing such a
+    /// segment would clone the parent's full E curve into every child,
+    /// producing N× over-extrusion. The live pipeline's `classify_e_mode`
+    /// rejects pure-Z+E as `HelicalExtrusionUnsupported` upstream; this
+    /// guard catches the same misuse from any other source (direct API
+    /// caller, future compat-layer admit path) at runtime.
+    CannotSplitIndependent,
 }
 
 /// Split a cubic-Bézier segment along arc length so that each child segment's
@@ -39,29 +53,28 @@ pub fn split_segment_to_cap(
     segment: &CubicSegment,
     max_arc_length_mm: f64,
 ) -> Result<Vec<CubicSegment>, SplitError> {
-    debug_assert!(
-        max_arc_length_mm > 0.0,
-        "max_arc_length_mm must be positive"
-    );
+    if !max_arc_length_mm.is_finite() || max_arc_length_mm <= 0.0 {
+        return Err(SplitError::InvalidCap { max_arc_length_mm });
+    }
 
     if is_zero_motion(&segment.xyz) {
         return Ok(vec![segment.clone()]);
     }
 
     // Defense-in-depth (spec §6.1 closing remark): an Independent segment
-    // reaching here would indicate misclassification upstream. Pre-Fix-A.1
-    // pure-Z+E moves slipped past `classify_e_mode` as `Independent` and the
-    // multi-piece path then cloned the full E curve into every child,
-    // producing N× over-extrusion. classify_e_mode now rejects pure-Z+E as
-    // HelicalExtrusionUnsupported; assert here so any future regression
-    // (e.g. the Step-13 compat layer adding a new admit path) trips.
-    debug_assert!(
-        segment.e_mode != crate::EMode::Independent,
-        "Independent segment reached splitter past zero-motion fast-path \
-         (cp_polygon_length: {}, mid_speed: {})",
-        cp_polygon_length(&segment.xyz),
-        midpoint_parametric_speed(&segment.xyz)
-    );
+    // reaching here past the zero-motion fast-path means the parent has
+    // non-trivial xyz motion. The splitter cannot safely subdivide such a
+    // segment because the splitter would clone the parent's full E curve
+    // into every child, producing N× over-extrusion.
+    //
+    // Round-1 fix (`classify_e_mode` now rejects pure-Z+E as helical) closes
+    // the live-pipeline path. This guard catches the same misuse from any
+    // other source (direct API caller, future compat-layer admit path) at
+    // runtime — `debug_assert!` is no-op in release and would silently
+    // duplicate extrusion.
+    if segment.e_mode == crate::EMode::Independent {
+        return Err(SplitError::CannotSplitIndependent);
+    }
 
     let table = build_arc_length_table_vector(&segment.xyz, 1e-9, 64).map_err(|_| {
         SplitError::ArcLengthTableBuildFailed {
