@@ -37,6 +37,30 @@ class QuadGantryLevel:
             raise config.error(
                 "Need exactly 4 probe points for quad_gantry_level"
             )
+
+        # Keep a copy of the configured logical point order. The QGL math below
+        # expects positions[0], positions[1], positions[2], and positions[3] to
+        # represent the same physical gantry corners on every pass, regardless
+        # of the order in which those points were physically probed.
+        self._logical_probe_points = list(self.probe_helper.probe_points)
+        self._normal_probe_order = [0, 1, 2, 3]
+        self._reverse_probe_order = [3, 2, 1, 0]
+        self._active_probe_order = list(self._normal_probe_order)
+        self._qgl_pass_index = 0
+
+        # Optionally alternate the physical probing order between full QGL
+        # passes/retries. This avoids repeatedly traversing the same loop around
+        # the bed, which can help prevent Bowden tubes, umbilicals, and cable
+        # bundles from accumulating twist on large-format machines.
+        #
+        # The alternating order implementation is inspired by Lazar at Modix3D
+        # and the way he has solved this behavior in RepRapFirmware.
+        self.alternate_probe_direction = config.getboolean(
+            "alternate_probe_direction", False
+        )
+        self.start_reverse = config.getboolean("start_reverse", False)
+        self.report_probe_order = config.getboolean("report_probe_order", False)
+
         self.z_status = z_tilt.ZAdjustStatus(self.printer)
         self.z_helper = z_tilt.ZAdjustHelper(config, 4)
         self.gantry_corners = config.getlists(
@@ -46,6 +70,12 @@ class QuadGantryLevel:
             raise config.error(
                 "quad_gantry_level requires at least two gantry_corners"
             )
+
+        # Restore the configured point order if a command aborts mid-run.
+        self.printer.register_event_handler(
+            "gcode:command_error", self._handle_command_error
+        )
+
         # Register QUAD_GANTRY_LEVEL command
         self.gcode = self.printer.lookup_object("gcode")
         self.gcode.register_command(
@@ -58,12 +88,93 @@ class QuadGantryLevel:
         "Conform a moving, twistable gantry to the shape of a stationary bed"
     )
 
+    def _handle_command_error(self):
+        self._restore_logical_probe_order()
+
     def cmd_QUAD_GANTRY_LEVEL(self, gcmd):
         self.z_status.reset()
         self.retry_helper.start(gcmd)
+        self._qgl_pass_index = 0
+        self._set_probe_order_for_pass(self._qgl_pass_index)
         self.probe_helper.start_probe(gcmd)
 
+    def _select_probe_order_for_pass(self, pass_index):
+        if not self.alternate_probe_direction:
+            return list(self._normal_probe_order)
+
+        use_reverse = bool(pass_index % 2)
+        if self.start_reverse:
+            use_reverse = not use_reverse
+
+        if use_reverse:
+            return list(self._reverse_probe_order)
+        return list(self._normal_probe_order)
+
+    def _set_probe_order_for_pass(self, pass_index):
+        self._active_probe_order = self._select_probe_order_for_pass(pass_index)
+        self.probe_helper.probe_points = [
+            self._logical_probe_points[index] for index in self._active_probe_order
+        ]
+
+        if self.alternate_probe_direction and self.report_probe_order:
+            order_text = " -> ".join(
+                [str(index) for index in self._active_probe_order]
+            )
+            self.gcode.respond_info(
+                "QGL pass %d probe order: %s" % (pass_index + 1, order_text)
+            )
+
+    def _restore_logical_probe_order(self):
+        self._active_probe_order = list(self._normal_probe_order)
+        self.probe_helper.probe_points = list(self._logical_probe_points)
+
+    def _map_positions_to_logical_order(self, positions):
+        # ProbePointsHelper returns positions in the order they were physically
+        # probed. Convert them back to the logical order expected by the QGL
+        # calculations below.
+        if len(positions) != 4 or len(self._active_probe_order) != 4:
+            return positions
+
+        logical_positions = [None, None, None, None]
+        for measured_position, logical_index in zip(
+            positions, self._active_probe_order
+        ):
+            logical_positions[logical_index] = measured_position
+
+        if any(position is None for position in logical_positions):
+            raise self.gcode.error(
+                "quad_gantry_level internal error: failed to map probe results"
+            )
+        return logical_positions
+
+    def _is_retry_done(self, retry_result):
+        return (
+            (isinstance(retry_result, str) and retry_result == "done")
+            or (isinstance(retry_result, float) and retry_result == 0.0)
+            or retry_result == 0
+        )
+
     def probe_finalize(self, offsets, positions):
+        positions = self._map_positions_to_logical_order(positions)
+
+        try:
+            result = self._probe_finalize(offsets, positions)
+        except Exception:
+            self._restore_logical_probe_order()
+            raise
+
+        if self._is_retry_done(result):
+            self._restore_logical_probe_order()
+        else:
+            # ProbePointsHelper will perform another full pass when RetryHelper
+            # requests another retry. Prepare the next pass order before giving
+            # control back to the helper.
+            self._qgl_pass_index += 1
+            self._set_probe_order_for_pass(self._qgl_pass_index)
+
+        return result
+
+    def _probe_finalize(self, offsets, positions):
         # Mirror our perspective so the adjustments make sense
         # from the perspective of the gantry
         z_positions = [self.horizontal_move_z - p[2] for p in positions]
