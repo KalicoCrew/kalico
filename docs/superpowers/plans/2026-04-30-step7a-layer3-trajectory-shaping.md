@@ -544,9 +544,9 @@ fn smooth_zv_kernel_vanishes_at_boundary() {
 
 - [ ] **Step 2: Port init_smoother kernel coefficients**
 
-Research the bleeding-edge-v2 `init_smoother` Python code for `smooth_zv` and `smooth_mzv` polynomial coefficients. The kernels are degree-4 polynomials on `[-T_sm/2, T_sm/2]`, constructed as the convolution of rectangular pulses with polynomial windowing. Extract the closed-form absolute-monomial coefficients as a function of T_sm.
+Port the kernel coefficients from bleeding-edge-v2's `init_smoother` Python. The source is in the kalico fork's `klippy/extras/shaper_defs.py` — search for `init_smoother` and the `smooth_zv` / `smooth_mzv` definitions. The kernels are degree-4 polynomials constructed as convolutions of rectangular pulses. Extract the closed-form absolute-monomial coefficients as functions of T_sm.
 
-Implement `build_smooth_zv_kernel(t_sm: f64)` and `build_smooth_mzv_kernel(t_sm: f64)` using `PiecewisePolynomialKernel::single_poly_from_absolute()`.
+Implement `build_smooth_zv_kernel(t_sm: f64)` and `build_smooth_mzv_kernel(t_sm: f64)` using `PiecewisePolynomialKernel::single_poly_from_absolute()`. Add tests for BOTH kernel families (smooth_zv AND smooth_mzv) covering normalization, boundary zeros, and cross-check against Python reference values at specific frequencies.
 
 Implement `RequiredShaper::to_kernel()` and `AxisShaper::to_kernel()` per the spec.
 
@@ -585,10 +585,8 @@ A straight line at constant velocity 500 mm/s has `b = 250000` at all grid point
 - [ ] **Step 2: Implement reparam module**
 
 `rust/trajectory/src/reparam.rs` contains:
-- `build_s_of_t_pieces(profile: &TopProfile, t_global_offset: f64) -> Vec<BezierPiece<f64>>` — Stage 2a
-- `compose_segment(curve: &VectorNurbs<f64, 3>, s_pieces: &[BezierPiece<f64>], fit_tol: f64) -> Result<Vec<[BezierPiece<f64>; 3]>, ShapeError>` — Stage 2b (fit x(s) then compose with s(t))
-
-Near-zero velocity special case: emit constant-position piece when both `v_k < 0.01` and `v_{k+1} < 0.01`.
+- `build_s_of_t_pieces(profile: &TopProfile, t_global_offset: f64) -> Vec<BezierPiece<f64>>` — Stage 2a. Derives T_global from cumulative emitted piece durations (NOT from `TopProfile.total_time`). Near-zero velocity special case: when both `v_k < 0.01` and `v_{k+1} < 0.01`, emit a constant-position piece `coeffs = [s_k, 0, 0]` with `Δt = Δs_k / 0.01`.
+- `compose_segment(curve: &VectorNurbs<f64, 3>, s_pieces: &[BezierPiece<f64>], fit_tol: f64) -> Result<Vec<[BezierPiece<f64>; 3]>, ShapeError>` — Stage 2b. Builds arc-length table with `tolerance = 1e-6`, `max_intervals = 1024` (matching temporal's internal parameters). Clamps `s_hi` per grid piece to `min(s_{k+1}, table.total_length())`. Calls `fit_x_to_arc_length_piece::<3>` with `target_degree = 3`, `max_degree = 5`. On `FitError::ToleranceNotReached`, returns `ShapeError::FitFailure`. Skips composition for constant-position pieces (output = constant x(t) = x(s_k)).
 
 - [ ] **Step 3: Run tests**
 
@@ -640,6 +638,10 @@ git commit -m "trajectory/fit: Stage 2c-d C1 refit and per-axis split"
 
 ## Task 9: Stage 3 — Padding, convolution, and trim
 
+**Depends on:** Task 11 (partition + halo pieces must exist before padding can consume them). Implement Task 11 first if working in dependency order. Alternatively, implement padding with a simplified interface first (no E-gap halos) and extend after Task 11.
+
+**Note:** Task ordering in this plan is logical, not strict sequential. Tasks 9-11 form a dependency cluster that should be implemented as: Task 11 → Task 9 → Task 10.
+
 **Files:**
 - Create: `rust/trajectory/src/pad.rs`
 - Create: `rust/trajectory/src/shaper.rs`
@@ -661,7 +663,15 @@ Scans neighbors backward/forward to accumulate T_sm/2 of time. At batch edges, a
 
 Calls `nurbs::algebra::convolve`, then `restrict_to_domain` to trim.
 
-- [ ] **Step 4: Run tests, verify pad-and-trim matches global convolve**
+- [ ] **Step 4: Add short-segment multi-neighbor padding test**
+
+Create a batch with segments shorter than T_sm/2 (e.g., 5 segments each lasting 1ms with T_sm/2 = 3ms). Verify padding reaches 3+ neighbors. Verify convolution output matches global-convolve reference.
+
+- [ ] **Step 5: Add batch-edge boundary extension test**
+
+Create a 2-segment batch. Verify the first segment is padded with constant-position extension (not garbage) on its left edge, and the output at t=0 matches the expected shaped start position.
+
+- [ ] **Step 6: Run all shaper tests**
 
 - [ ] **Step 5: Commit**
 
@@ -755,6 +765,12 @@ git commit -m "trajectory: Stage 0 partitioning and Stage 6 independent E schedu
 
 Orchestrates: Stage 1 (plan_batch per run) → Stage 2 (reparam + fit, parallel) → Stage 3 (pad + convolve + trim, parallel) → Stage 4 (peak check, parallel) → Stage 5 (derate + convergence check). Maintains immutable `machine_a_max` separate from mutable `planning_a_max`.
 
+**Stage 1 status gating (critical):** After each `plan_batch` call, check `BatchOutput.joining_status` — return `ShapeError::TemporalJoining` for `StalledOnInfeasibleSegment` or `CappedAtMaxSweeps`. For each profile, only `Solved`, `SolvedInexact`, and `SolvedSlp` are success statuses; return `ShapeError::SegmentUnsolvable` for `Infeasible`, `MaxIter`, `DivergedSlp`, or `MaxIterSlp`.
+
+**β non-convergence path:** When `beta_max_iters` is exhausted or the derate is within `beta_convergence_ratio`, run one final stages 1-4 pass with the current planning limits. Return `Ok(output)` with `beta_warning = Some(BetaWarning { worst_ratio, segments_exceeding })` populated from the final peak-check results. The `segments_exceeding` vector contains indices of segments where any axis's peak still exceeds `machine_a_max`.
+
+**Derate comparison:** Always compare Stage 4 peaks against `machine_a_max` (immutable), never against `planning_a_max` (mutable). Apply derate as `planning_a_max[seg][axis] = min(current, current * machine_a_max / peak)`.
+
 - [ ] **Step 3: Write convergence test**
 
 Create a synthetic segment where the shaper amplifies acceleration beyond a_machine. Verify that β iteration converges in ≤3 iterations, and the output peaks are ≤ machine limits.
@@ -796,6 +812,14 @@ Construct: [CoupledToXy, Independent (retraction), CoupledToXy]. Run `shape_batc
 - [ ] **Step 3: β-derate end-to-end test**
 
 Construct a segment with tight curvature where the shaper amplifies acceleration. Verify β iteration converges and output trajectory respects machine limits.
+
+- [ ] **Step 4: β non-convergence warning test**
+
+Set `beta_max_iters = 1` with a segment that needs 3+ iterations. Verify `shape_batch` returns `Ok` with `beta_warning` populated (not `Err`). Verify `worst_ratio` and `segments_exceeding` are correct.
+
+- [ ] **Step 5: Trajectory time regression test**
+
+Construct a multi-segment batch where shaper limits are NOT binding (straight lines at moderate speed). Verify total shaped trajectory time is within 2% of unshaped TOPP-RA total time.
 
 - [ ] **Step 4: Commit**
 
