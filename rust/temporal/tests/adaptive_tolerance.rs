@@ -1,7 +1,5 @@
 //! Adaptive-tolerance regression tests. Spec §2.1 + Pi 5 investigation Finding 2.
 
-#![cfg(feature = "legacy-reference")]
-
 use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 use nurbs::VectorNurbs;
 use temporal::{
@@ -15,11 +13,11 @@ fn textbook_limits() -> Limits {
 
 /// Reconstruct the G5 cubic from `prototype.rs` `fixture_4` via the geometry pipeline.
 ///
-/// G-code: `G1 X0 Y0 F1500` → `G5 X10 Y0 I3 J3 P-3 Q3`
+/// G-code: `G5 X10 Y0 I3 J3 P-3 Q3 F1500`
 /// Degree-3 non-rational NURBS: P0=(0,0,0), P1=(3,3,0), P2=(7,3,0), P3=(10,0,0).
 /// κ is non-zero at both endpoints (symmetric control polygon).
 fn build_g5_fixture_4_curve() -> VectorNurbs<f64, 3> {
-    let src = "G1 X0 Y0 F1500\nG5 X10 Y0 I3 J3 P-3 Q3\n";
+    let src = "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n";
     let mut pipeline = GeometryPipeline::new(FitterParams::default());
     let mut events: Vec<TelemetryEvent> = vec![];
     let items: Vec<_> = {
@@ -29,10 +27,10 @@ fn build_g5_fixture_4_curve() -> VectorNurbs<f64, 3> {
     items
         .into_iter()
         .find_map(|it| match it {
-            Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f.xyz),
+            Item::Segment(Segment::Cubic(c)) => Some(c.xyz),
             _ => None,
         })
-        .expect("G5 reduction must emit exactly one degree-3 FittedSegment")
+        .expect("G5 reduction must emit exactly one Segment::Cubic")
 }
 
 /// Return the MVC-derived endpoint velocities at 50% of the centripetal cap.
