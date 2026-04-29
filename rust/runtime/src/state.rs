@@ -170,9 +170,10 @@ impl Default for SharedState {
 ///   latent UB by ensuring at most ONE `&mut FgState` OR `&mut IsrState`
 ///   (disjoint memory) exists at a time.
 /// - `shared` is plain (no `UnsafeCell`); all writes go through atomics.
-/// - `curve_pool` is at the top level: foreground writes via `try_alloc` +
-///   `try_load_into`; the ISR reads via `lookup`. Per-slot atomics guard
-///   concurrent access (Phase 2 lands the rewrite). Spec §10.5.
+/// - `curve_pool` is at the top level: foreground writes via
+///   `try_alloc_and_load`; the ISR reads via `lookup`. Per-slot atomics
+///   guard concurrent access (Phase 2 §10.2 + Round-1 Codex #4 — see
+///   `curve_pool::PoolSlot`). Spec §10.5.
 /// - `queue_storage` / `trace_storage` are wrapped in `UnsafeCell` so that
 ///   `init` can split them into `Producer`/`Consumer` halves and store the
 ///   halves into `FgState`/`IsrState` while keeping the backing storage

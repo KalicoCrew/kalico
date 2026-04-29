@@ -7,7 +7,7 @@ use runtime::clock::{WidenState, one_tick_cycles};
 use runtime::curve_pool::CurvePool;
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::Q_N;
-use runtime::segment::{CurveHandle, KinematicTag, Segment};
+use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
 use runtime::trace::{TRACE_RING_N, TraceSample};
@@ -43,7 +43,7 @@ fn boundary_loop_works_near_u64_max() {
         Box::leak(Box::new(Queue::new()));
     let (mut t_producer, _t_consumer) = trace.split();
 
-    let mut pool = CurvePool::new();
+    let pool = CurvePool::new();
     let shared = SharedState::new();
 
     // Pre-seed widen_state to a high-water mark close to u64::MAX so the
@@ -57,15 +57,19 @@ fn boundary_loop_works_near_u64_max() {
     let cps = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0];
     let knots = [0.0f32, 0.0, 1.0, 1.0];
     let weights = [1.0f32, 1.0];
-    pool.load(CurveHandle(0), &cps, &knots, &weights, 1)
+    let handle = pool
+        .validate_and_load(0, &cps, &knots, &weights, 1)
         .unwrap();
+    let _ = handle; // kept alive in pool; segment carries a copy of the value
     q_producer
         .enqueue(Segment {
             id: 1,
-            curve: CurveHandle(0),
+            curve_handle: handle,
             t_start: near_max,
             t_end: near_max + tc * 4,
             kinematics: KinematicTag::CoreXyAndE,
+            flags: 0,
+            _pad: [0; 2],
         })
         .unwrap();
 

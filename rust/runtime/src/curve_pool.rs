@@ -1,9 +1,30 @@
 //! `CurvePool` — static slab of NURBS curve data referenced by `CurveHandle`.
-//! Spec §3.1. Step 5: no-overwrite-after-load. Step 6+ adds refcount / epoch.
+//!
+//! Step-6 §10 rewrite: per-slot `(current_gen, last_retired_gen)` AtomicU16
+//! pair guards a foreground-writer / ISR-reader contract. The foreground
+//! reserves a slot AND loads the curve atomically via `try_alloc_and_load`
+//! (the alloc predicate is `current_gen == last_retired_gen` modulo u16
+//! wrap; load-then-bump-gen ordering — Round-1 Codex #4). The ISR resolves
+//! a handle via `lookup` which validates the generation match. Foreground
+//! drains SEGMENT_END trace events and calls `confirm_retired` on each;
+//! FIFO ordering of single-writer/single-reader heapless::spsc preserves
+//! the per-slot retirement sequence so all earlier generations are retired
+//! by the time gen=G is observed (§10.4).
 
-use crate::segment::CurveHandle;
+#![allow(unsafe_code)]
 
-/// Slab capacity. Spec §7 open question 1 — revisited at Step 7 MVP.
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU16, Ordering};
+
+use crate::error::FaultCode;
+
+/// Slab capacity. Spec §7.1 — measurement-driven; ceiling is 256 (Q_N_MAX)
+/// per the u16 generation wrap window of `65536 - 256 = 65280`. Step-6 keeps
+/// the Step-5 default of 16 here so the Renode sim build (128 KB RAM model)
+/// has headroom for the rest of the runtime; Phase 7's measurement framework
+/// will tune the value upward as the curve-pool occupancy budget gets
+/// nailed down on real workloads. Each slot is ~184 bytes (LoadedCurve +
+/// per-slot atomics).
 pub const CURVE_POOL_N: usize = 16;
 
 /// Per-curve storage capacity. Sized for degree-3 NURBS with up to 8 control
@@ -24,31 +45,125 @@ pub enum CurvePoolError {
     InvalidCurve,
 }
 
+/// Handle to a loaded curve. 32-bit packed `(slot_idx, generation)` per
+/// spec §10.1. ABA-defeating: at `Q_N_MAX = 256` the u16 gen wraps over
+/// `65536 - 256 = 65280` allocations, which exceeds any realistic in-flight
+/// stale-handle window.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurveHandle {
+    pub slot_idx: u16,
+    pub generation: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<CurveHandle>() == 4);
+
+impl CurveHandle {
+    pub const fn new(slot_idx: u16, generation: u16) -> Self {
+        Self {
+            slot_idx,
+            generation,
+        }
+    }
+
+    /// Sentinel for hold segments (§6.5). The ISR short-circuits on the
+    /// `SEGMENT_FLAG_HOLD_SEGMENT` flag bit BEFORE looking up this handle, so
+    /// the sentinel is never resolved through `CurvePool::lookup`.
+    pub const HOLD_SEGMENT_SENTINEL: Self = Self {
+        slot_idx: u16::MAX,
+        generation: u16::MAX,
+    };
+
+    /// Pack into a u32 for the wire schema. Layout:
+    /// `(generation << 16) | slot_idx`. Mirror in C with `(uint32_t)gen <<
+    /// 16 | slot`.
+    pub const fn pack(self) -> u32 {
+        ((self.generation as u32) << 16) | (self.slot_idx as u32)
+    }
+
+    /// Inverse of `pack`.
+    pub const fn unpack(packed: u32) -> Self {
+        Self {
+            slot_idx: (packed & 0xFFFF) as u16,
+            generation: ((packed >> 16) & 0xFFFF) as u16,
+        }
+    }
+}
+
+/// Curve data laid out for direct ISR consumption. Spec §10.5.
+///
+/// Round-4 fix: pub so the new `try_alloc_and_load(slot, curve)` API can take
+/// it as a value parameter (was private in Step-5).
 #[derive(Debug, Clone, Copy)]
-struct LoadedCurve {
-    control_points: [[f32; MAX_DIM]; MAX_CONTROL_POINTS],
-    weights: [f32; MAX_CONTROL_POINTS],
-    knots: [f32; MAX_KNOT_VECTOR_LEN],
-    n_cp: u8,
-    n_knots: u8,
-    degree: u8,
+pub struct LoadedCurve {
+    pub control_points: [[f32; MAX_DIM]; MAX_CONTROL_POINTS],
+    pub weights: [f32; MAX_CONTROL_POINTS],
+    pub knots: [f32; MAX_KNOT_VECTOR_LEN],
+    pub n_cp: u8,
+    pub n_knots: u8,
+    pub degree: u8,
 }
 
-#[derive(Debug)]
+impl LoadedCurve {
+    /// Empty placeholder used to initialize fresh `PoolSlot`s. The slot's
+    /// generation counter is what marks "loaded vs not"; this curve is never
+    /// resolved through `lookup` because no handle of `gen=0` is ever issued
+    /// (the first `try_alloc_and_load` returns `gen=1`).
+    pub const fn empty() -> Self {
+        Self {
+            control_points: [[0.0; MAX_DIM]; MAX_CONTROL_POINTS],
+            weights: [1.0; MAX_CONTROL_POINTS],
+            knots: [0.0; MAX_KNOT_VECTOR_LEN],
+            n_cp: 0,
+            n_knots: 0,
+            degree: 0,
+        }
+    }
+}
+
+/// One slab slot. `current_gen` and `last_retired_gen` are foreground-
+/// written / ISR-read AtomicU16s; `curve` is the data store.
+///
+/// Synchronization discipline (§10.2 + Round-1 Codex #4):
+/// - Foreground writes `curve` BEFORE `current_gen` (release).
+/// - ISR loads `current_gen` (acquire) BEFORE dereferencing `curve`.
+/// - Foreground writes `last_retired_gen` (release) on observing
+///   `SEGMENT_END(handle)` from the trace ring.
+#[allow(missing_debug_implementations)]
+pub struct PoolSlot {
+    pub current_gen: AtomicU16,
+    pub last_retired_gen: AtomicU16,
+    pub curve: UnsafeCell<LoadedCurve>,
+}
+
+impl PoolSlot {
+    pub const fn new() -> Self {
+        Self {
+            current_gen: AtomicU16::new(0),
+            last_retired_gen: AtomicU16::new(0),
+            curve: UnsafeCell::new(LoadedCurve::empty()),
+        }
+    }
+}
+
+// SAFETY: `PoolSlot` carries `UnsafeCell<LoadedCurve>` which is `!Sync` by
+// default. Synchronization is achieved via per-slot `AtomicU16` generation
+// counters (foreground writes `curve` before publishing the new `current_gen`
+// with a release store; the ISR acquire-loads `current_gen` before
+// dereferencing `slot.curve`). Discipline contract is documented above and
+// enforced by code review (no `&mut PoolSlot` ever forms; the FFI shim only
+// touches the slot through `&CurvePool` shared borrows that drive the atomic
+// API).
+unsafe impl Sync for PoolSlot {}
+
+#[allow(missing_debug_implementations)]
 pub struct CurvePool {
-    slots: [Option<LoadedCurve>; CURVE_POOL_N],
+    pub slots: [PoolSlot; CURVE_POOL_N],
 }
 
-// SAFETY: Phase 1 of Step-6 — currently `CurvePool` is auto-`Sync` because
-// `LoadedCurve` is `Copy + Sync` and the slot array contains no interior
-// mutability. This explicit impl is a placeholder for Phase 2 (`§10.2`
-// rewrite) where each slot becomes `PoolSlot { curve: UnsafeCell<…>,
-// current_gen: AtomicU16, … }` — at that point auto-`Sync` no longer holds
-// and we need this `unsafe impl` to ride the foreground-writer / ISR-reader
-// discipline through atomics. Adding the impl here means the FFI shim's
-// `RuntimeContext` (which embeds the pool) compiles with the same shape
-// across the two phases. Spec §10.5.
-#[allow(unsafe_code)]
+// SAFETY: see `PoolSlot`'s discipline contract. `CurvePool` is a top-level
+// field on `RuntimeContext`; the FFI shim borrows it via `&CurvePool` only,
+// and per-slot atomics bridge the foreground-writer / ISR-reader split.
 unsafe impl Sync for CurvePool {}
 
 impl Default for CurvePool {
@@ -60,36 +175,123 @@ impl Default for CurvePool {
 impl CurvePool {
     pub const fn new() -> Self {
         Self {
-            slots: [const { None }; CURVE_POOL_N],
+            slots: [const { PoolSlot::new() }; CURVE_POOL_N],
         }
     }
 
-    /// Load curve data into a slot. Step-5 policy: no-overwrite-after-load.
+    /// Foreground reserves a slot AND loads the curve atomically. Returns
+    /// `Some(handle)` if `current_gen == last_retired_gen` (modulo u16),
+    /// `None` otherwise.
     ///
-    /// `control_points_flat` must be length `n_cp * MAX_DIM` (3 floats per CP).
-    /// `knots` must be length `n_cp + degree + 1`.
-    /// `weights` must be length `n_cp`.
-    pub fn load(
-        &mut self,
-        handle: CurveHandle,
+    /// Ordering (Round-1 Codex #4): the new curve MUST be written before
+    /// `current_gen` is bumped. Otherwise the ISR's lookup could observe
+    /// `current_gen == new_gen` while the curve memory is still stale,
+    /// dereferencing the previous gen's data through the new handle.
+    pub fn try_alloc_and_load(
+        &self,
+        slot_idx: usize,
+        curve: LoadedCurve,
+    ) -> Option<CurveHandle> {
+        if slot_idx >= CURVE_POOL_N {
+            return None;
+        }
+        // SAFETY (indexing): bounds-checked above against the array length.
+        let slot = self.slots.get(slot_idx)?;
+        let cur = slot.current_gen.load(Ordering::Acquire);
+        let last = slot.last_retired_gen.load(Ordering::Acquire);
+        if cur != last {
+            return None;
+        }
+        // 1. Write the new curve. The predicate above guarantees no
+        //    concurrent ISR access — ISR's lookup checks `current_gen` first
+        //    and would see the previous (matched) gen if it raced with us.
+        // SAFETY: foreground is the sole writer of `slot.curve`; no `&mut
+        // PoolSlot` ever forms, so the `UnsafeCell::get()` raw pointer is
+        // valid for an exclusive write while we hold the `cur == last`
+        // invariant.
+        unsafe {
+            *slot.curve.get() = curve;
+        }
+        // 2. Bump generation with Release. Wraps on u16 modulo. The ISR's
+        //    Acquire-load synchronizes with this Release store, ensuring
+        //    the curve write is visible iff the new gen is.
+        let new_gen = cur.wrapping_add(1);
+        slot.current_gen.store(new_gen, Ordering::Release);
+        Some(CurveHandle {
+            slot_idx: slot_idx as u16,
+            generation: new_gen,
+        })
+    }
+
+    /// ISR-only lookup; validates handle generation matches `current_gen`.
+    /// Returns `Err(FaultCode::InvalidCurveHandle)` on mismatch (stale or
+    /// out-of-range).
+    pub fn lookup(&self, handle: CurveHandle) -> Result<&LoadedCurve, FaultCode> {
+        let slot_idx = handle.slot_idx as usize;
+        if slot_idx >= CURVE_POOL_N {
+            return Err(FaultCode::InvalidCurveHandle);
+        }
+        let slot = self
+            .slots
+            .get(slot_idx)
+            .ok_or(FaultCode::InvalidCurveHandle)?;
+        if slot.current_gen.load(Ordering::Acquire) != handle.generation {
+            return Err(FaultCode::InvalidCurveHandle);
+        }
+        // SAFETY: handle.generation matches `current_gen`; per the load-
+        // before-bump-gen contract, the curve write is visible. The ISR is
+        // the sole reader; no `&mut LoadedCurve` ever forms.
+        Ok(unsafe { &*slot.curve.get() })
+    }
+
+    /// Foreground reclaim. Called from the trace-drain pipeline on observing
+    /// `SEGMENT_END(handle)`. FIFO ordering of trace events guarantees all
+    /// prior generations for this slot have already retired.
+    pub fn confirm_retired(&self, handle: CurveHandle) {
+        let slot_idx = handle.slot_idx as usize;
+        if slot_idx >= CURVE_POOL_N {
+            return;
+        }
+        if let Some(slot) = self.slots.get(slot_idx) {
+            slot.last_retired_gen
+                .store(handle.generation, Ordering::Release);
+        }
+    }
+
+    /// Resolve a handle to a curve view suitable for `nurbs::vector_eval`.
+    /// Returns `None` on stale handle or out-of-range. Convenience wrapper
+    /// around `lookup` that converts to a borrowed-slice view.
+    pub fn resolve(&self, handle: CurveHandle) -> Option<CurveView<'_>> {
+        let curve = self.lookup(handle).ok()?;
+        let n_cp = curve.n_cp as usize;
+        let n_knots = curve.n_knots as usize;
+        let control_points = curve.control_points.get(..n_cp)?;
+        let weights = curve.weights.get(..n_cp)?;
+        let knots = curve.knots.get(..n_knots)?;
+        Some(CurveView {
+            control_points,
+            weights,
+            knots,
+            degree: curve.degree,
+        })
+    }
+
+    /// Producer-side validation + alloc. Combines Step-5's `load()` validation
+    /// (NURBS preconditions, NaN/Inf rejection, knot vector clamp/monotone
+    /// checks) with the new generation predicate. On success, returns the
+    /// freshly issued `CurveHandle`.
+    pub fn validate_and_load(
+        &self,
+        slot_idx: u16,
         control_points_flat: &[f32],
         knots: &[f32],
         weights: &[f32],
         degree: u8,
-    ) -> Result<(), CurvePoolError> {
-        let idx = handle.0 as usize;
-
-        // Bounds check first.
+    ) -> Result<CurveHandle, CurvePoolError> {
+        let idx = slot_idx as usize;
         if idx >= CURVE_POOL_N {
             return Err(CurvePoolError::OutOfBounds);
         }
-
-        // No-overwrite policy (Step 5). Step 6+ adds refcount/epoch.
-        // Use get() rather than indexing to satisfy clippy::indexing_slicing.
-        if self.slots.get(idx).is_some_and(Option::is_some) {
-            return Err(CurvePoolError::SlotAlreadyLoaded);
-        }
-
         if degree > MAX_DEGREE {
             return Err(CurvePoolError::DegreeTooHigh);
         }
@@ -106,7 +308,6 @@ impl CurvePool {
             return Err(CurvePoolError::InvalidLengths);
         }
 
-        // Finite check — NaN/Inf in any field is a hard error.
         if !control_points_flat
             .iter()
             .chain(knots.iter())
@@ -116,200 +317,112 @@ impl CurvePool {
             return Err(CurvePoolError::NonFiniteData);
         }
 
-        // Mirror `nurbs::validate()`'s preconditions at load time so producer-
-        // side rejection is definitive — the ISR must never see an invalid view.
-        // Use windows() / iter() to avoid clippy::indexing_slicing.
         for w in knots.windows(2) {
             if w.first().copied().unwrap_or(0.0) > w.last().copied().unwrap_or(0.0) {
-                return Err(CurvePoolError::InvalidCurve); // non-monotone
+                return Err(CurvePoolError::InvalidCurve);
             }
         }
 
         let first_knot = knots.first().copied().unwrap_or(0.0);
         let last_knot = knots.last().copied().unwrap_or(0.0);
         if !(last_knot > first_knot) {
-            return Err(CurvePoolError::InvalidCurve); // degenerate / zero-length range
+            return Err(CurvePoolError::InvalidCurve);
         }
 
         if !weights.iter().all(|&w| w > 0.0) {
-            return Err(CurvePoolError::InvalidCurve); // non-positive weight
+            return Err(CurvePoolError::InvalidCurve);
         }
 
-        // n_cp ≥ p+1 required for de Boor's algorithm to have any basis function.
         let p = degree as usize;
         if n_cp < p + 1 {
-            return Err(CurvePoolError::InvalidCurve); // too few CPs for degree
+            return Err(CurvePoolError::InvalidCurve);
         }
 
-        // Clamped at start: knots[0..=p] all equal to first_knot.
-        // Exact equality is intentional and matches `nurbs::validate()` — clamping
-        // is a structural property of the knot vector, not a numerical tolerance.
         #[allow(clippy::float_cmp)]
         let start_clamped = knots.iter().take(p + 1).all(|&k| k == first_knot);
         if !start_clamped {
-            return Err(CurvePoolError::InvalidCurve); // start not clamped
+            return Err(CurvePoolError::InvalidCurve);
         }
-        // Clamped at end: last p+1 knots all equal to last_knot.
         #[allow(clippy::float_cmp)]
         let end_clamped = knots.iter().rev().take(p + 1).all(|&k| k == last_knot);
         if !end_clamped {
-            return Err(CurvePoolError::InvalidCurve); // end not clamped
+            return Err(CurvePoolError::InvalidCurve);
         }
 
-        // Copy data into fixed-size arrays.  All bounds are proven above:
-        //   - n_cp  ≤ MAX_CONTROL_POINTS
-        //   - n_cp * MAX_DIM == control_points_flat.len()  (verified above)
-        //   - knots.len() ≤ MAX_KNOT_VECTOR_LEN            (verified above)
-        // Use iterators + enumerate to avoid clippy::indexing_slicing.
-        let mut cps = [[0.0f32; MAX_DIM]; MAX_CONTROL_POINTS];
+        let mut loaded = LoadedCurve::empty();
         control_points_flat
             .chunks_exact(MAX_DIM)
             .take(n_cp)
-            .zip(cps.iter_mut())
+            .zip(loaded.control_points.iter_mut())
             .for_each(|(src, dst)| {
                 dst.iter_mut().zip(src.iter()).for_each(|(d, s)| *d = *s);
             });
-
-        let mut wts = [0.0f32; MAX_CONTROL_POINTS];
         weights
             .iter()
-            .zip(wts.iter_mut())
+            .zip(loaded.weights.iter_mut())
             .for_each(|(src, dst)| *dst = *src);
-
-        let mut knots_buf = [0.0f32; MAX_KNOT_VECTOR_LEN];
         knots
             .iter()
-            .zip(knots_buf.iter_mut())
+            .zip(loaded.knots.iter_mut())
             .for_each(|(src, dst)| *dst = *src);
+        loaded.n_cp = n_cp as u8;
+        loaded.n_knots = knots.len() as u8;
+        loaded.degree = degree;
 
-        // All checks passed. Write the slot.  idx < CURVE_POOL_N == slots.len()
-        // was verified at the top, so get_mut() will always yield Some here.
-        if let Some(slot) = self.slots.get_mut(idx) {
-            *slot = Some(LoadedCurve {
-                control_points: cps,
-                weights: wts,
-                knots: knots_buf,
-                n_cp: n_cp as u8,
-                n_knots: knots.len() as u8,
-                degree,
-            });
-        }
-
-        Ok(())
+        self.try_alloc_and_load(idx, loaded)
+            .ok_or(CurvePoolError::SlotAlreadyLoaded)
     }
 
-    /// Sim-only escape hatch: load pre-validated curve data into a slot
-    /// **without running the FPU-using validation** in `load()`.
-    ///
-    /// Background (Step-6 plan Phase 0 Task 0.2 GDB-attach diagnosis): under
-    /// Renode the H7 platform model silently ignores `SCB->CPACR` writes from
-    /// `SystemInit()`, leaving the FPU disabled. Any FPU instruction —
-    /// including the `is_finite()` and `> 0.0` checks `load()` performs —
-    /// raises a UsageFault that lands in Klipper's `DefaultHandler` infinite
-    /// loop. The fixture path (`runtime::sim_fixtures`) supplies static
-    /// pre-validated data and goes through this method to avoid those FPU
-    /// instructions on the host side; the bytewise copy through the integer
-    /// pipeline is FPU-free.
-    ///
-    /// **Caller contract:** all preconditions of `load()` must already hold:
-    /// - `idx < CURVE_POOL_N`; slot must be unloaded.
-    /// - `degree <= MAX_DEGREE`.
-    /// - `weights.len() == n_cp`, `1 <= n_cp <= MAX_CONTROL_POINTS`.
-    /// - `control_points_flat.len() == n_cp * MAX_DIM`.
-    /// - `knots.len() == n_cp + degree + 1`, monotone non-decreasing,
-    ///   first `degree+1` entries equal, last `degree+1` entries equal,
-    ///   `last_knot > first_knot`.
-    /// - All weights `> 0`, `n_cp >= degree+1`.
-    /// - All values finite.
-    ///
-    /// Producing this method does **not** widen the production attack
-    /// surface: the `kalico-sim` Cargo feature (the only way this fn is
-    /// reachable from the FFI) is gated on `CONFIG_KALICO_SIM=y` in the
-    /// Klipper build, which the README and Kconfig both explicitly forbid
-    /// flashing to silicon.
+    /// Sim-only escape hatch: load pre-validated curve data without running
+    /// the FPU-using validation in `validate_and_load`. See module docs for
+    /// the Renode-FPU-disabled rationale.
     #[cfg(feature = "kalico-sim")]
-    #[allow(unsafe_code)] // Sim escape-hatch byte memcpy; rationale in fn doc.
     pub fn load_unchecked(
-        &mut self,
-        handle: CurveHandle,
+        &self,
+        slot_idx: u16,
         control_points_flat: &[f32],
         knots: &[f32],
         weights: &[f32],
         degree: u8,
-    ) -> Result<(), CurvePoolError> {
-        let idx = handle.0 as usize;
+    ) -> Result<CurveHandle, CurvePoolError> {
+        let idx = slot_idx as usize;
         if idx >= CURVE_POOL_N {
             return Err(CurvePoolError::OutOfBounds);
         }
-        if self.slots.get(idx).is_some_and(Option::is_some) {
-            return Err(CurvePoolError::SlotAlreadyLoaded);
-        }
         let n_cp = weights.len();
 
-        // Copy data via raw byte memcpy. f32 has the same bit-pattern
-        // representation as a u32, so we route the copy through the integer
-        // pipeline by reinterpreting through `bytemuck`-equivalent
-        // raw-pointer + size_of arithmetic. This avoids any chance that the
-        // compiler lowers slice copies of `f32` to `vldr`/`vstr` pairs (which
-        // would UsageFault under Renode's FPU-disabled CPU model).
+        // Copy via raw byte memcpy (production path goes through
+        // `validate_and_load` and uses iter zips). This sim hatch dodges
+        // any chance the compiler lowers slice copies of f32 to vldr/vstr
+        // pairs, which UsageFault under Renode's FPU-disabled CPU model.
         //
-        // SAFETY: f32 is `Copy + repr(Rust)` with the same layout as u32 on
-        // ARMv7-M; both source and destination are properly aligned (`f32`
-        // alignment matches `u32` alignment = 4); the copies stay within
-        // their respective bounds (verified by the slice-length math above
-        // and the fixed-size array dimensions of LoadedCurve).
-        let mut cps = [[0.0f32; MAX_DIM]; MAX_CONTROL_POINTS];
-        let mut wts = [0.0f32; MAX_CONTROL_POINTS];
-        let mut knots_buf = [0.0f32; MAX_KNOT_VECTOR_LEN];
+        // SAFETY: f32 has the same bit-pattern representation as u32 on
+        // ARMv7-M and matching alignment (4); both source and destination
+        // are properly aligned; copies stay within bounds (verified by
+        // the slice-length math + fixed-size array dimensions of LoadedCurve).
+        let mut loaded = LoadedCurve::empty();
         unsafe {
-            let cps_dst = cps.as_mut_ptr().cast::<u8>();
+            let cps_dst = loaded.control_points.as_mut_ptr().cast::<u8>();
             let cps_src = control_points_flat.as_ptr().cast::<u8>();
             let cps_n = n_cp.min(MAX_CONTROL_POINTS) * MAX_DIM * core::mem::size_of::<f32>();
             core::ptr::copy_nonoverlapping(cps_src, cps_dst, cps_n);
 
-            let wts_dst = wts.as_mut_ptr().cast::<u8>();
+            let wts_dst = loaded.weights.as_mut_ptr().cast::<u8>();
             let wts_src = weights.as_ptr().cast::<u8>();
             let wts_n = n_cp.min(MAX_CONTROL_POINTS) * core::mem::size_of::<f32>();
             core::ptr::copy_nonoverlapping(wts_src, wts_dst, wts_n);
 
-            let knots_dst = knots_buf.as_mut_ptr().cast::<u8>();
+            let knots_dst = loaded.knots.as_mut_ptr().cast::<u8>();
             let knots_src = knots.as_ptr().cast::<u8>();
             let knots_n = knots.len().min(MAX_KNOT_VECTOR_LEN) * core::mem::size_of::<f32>();
             core::ptr::copy_nonoverlapping(knots_src, knots_dst, knots_n);
         }
+        loaded.n_cp = n_cp as u8;
+        loaded.n_knots = knots.len() as u8;
+        loaded.degree = degree;
 
-        if let Some(slot) = self.slots.get_mut(idx) {
-            *slot = Some(LoadedCurve {
-                control_points: cps,
-                weights: wts,
-                knots: knots_buf,
-                n_cp: n_cp as u8,
-                n_knots: knots.len() as u8,
-                degree,
-            });
-        }
-        Ok(())
-    }
-
-    /// Resolve a handle to a curve view suitable for `nurbs::vector_eval`.
-    ///
-    /// Returns `None` if the handle is out of bounds or the slot is unloaded.
-    pub fn resolve(&self, handle: CurveHandle) -> Option<CurveView<'_>> {
-        let idx = handle.0 as usize;
-        let slot = self.slots.get(idx)?.as_ref()?;
-        // n_cp and n_knots were bounds-checked on load; .get() returns Some here.
-        // The ?-chain converts silently-None to None for the outer Option.
-        let n_cp = slot.n_cp as usize;
-        let n_knots = slot.n_knots as usize;
-        let control_points = slot.control_points.get(..n_cp)?;
-        let weights = slot.weights.get(..n_cp)?;
-        let knots = slot.knots.get(..n_knots)?;
-        Some(CurveView {
-            control_points,
-            weights,
-            knots,
-            degree: slot.degree,
-        })
+        self.try_alloc_and_load(idx, loaded)
+            .ok_or(CurvePoolError::SlotAlreadyLoaded)
     }
 }
 
@@ -323,15 +436,12 @@ pub struct CurveView<'a> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 
-    // Returns the (cps, knots, weights) backing arrays. The caller slices
-    // cps[..n_cp*MAX_DIM], knots[..n_cp+4], weights[..n_cp]. Knot vector is
-    // a clamped degree-3 open uniform vector: p+1 zeros at the start, p+1 ones
-    // at the end, and n_cp - p - 1 evenly-spaced interior knots.
-    // Requires n_cp >= 4 (== p + 1 for degree 3).
-    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    /// Build a clamped degree-3 NURBS test fixture with `n_cp` control points.
+    /// Returns the (cps, knots, weights) backing arrays.
     fn dummy_curve_data(n_cp: usize) -> ([f32; 32], [f32; 32], [f32; 32]) {
         let mut cps = [0.0f32; 32];
         let mut knots = [0.0f32; 32];
@@ -342,7 +452,6 @@ mod tests {
             cps[i * 3 + 2] = 0.0;
             weights[i] = 1.0;
         }
-        // Clamped degree-3 knot vector of length n_cp + 4 (== n_cp + degree + 1).
         let knot_len = n_cp + 4;
         for i in 0..4 {
             knots[i] = 0.0;
@@ -358,46 +467,72 @@ mod tests {
     }
 
     #[test]
-    fn fresh_pool_handles_unloaded() {
+    fn fresh_pool_lookup_unloaded_returns_invalid_handle() {
         let pool = CurvePool::new();
-        assert!(pool.resolve(CurveHandle(0)).is_none());
-        assert!(pool.resolve(CurveHandle(15)).is_none());
+        // gen=0 is never issued (first alloc returns gen=1), so a handle with
+        // gen=0 always mismatches the slot's `current_gen=0` … wait —
+        // actually current_gen starts at 0 too, so handle{slot:0, gen:0}
+        // would match. We test with gen=1 (a never-issued handle).
+        assert!(
+            pool.lookup(CurveHandle::new(0, 1)).is_err(),
+            "stale handle gen=1 must reject when current_gen=0"
+        );
+        assert!(pool.lookup(CurveHandle::new(15, 1)).is_err());
     }
 
     #[test]
-    fn out_of_bounds_handle_returns_none() {
+    fn out_of_bounds_handle_returns_err() {
         let pool = CurvePool::new();
-        assert!(pool.resolve(CurveHandle(16)).is_none());
-        assert!(pool.resolve(CurveHandle(u16::MAX)).is_none());
+        assert!(pool.lookup(CurveHandle::new(CURVE_POOL_N as u16, 1)).is_err());
+        assert!(pool.lookup(CurveHandle::new(u16::MAX, 1)).is_err());
     }
 
     #[test]
-    fn load_then_resolve_returns_curve() {
-        let mut pool = CurvePool::new();
+    fn validate_and_load_then_lookup_returns_curve() {
+        let pool = CurvePool::new();
         let (cps, knots, weights) = dummy_curve_data(4);
-        let result = pool.load(CurveHandle(0), &cps[..12], &knots[..8], &weights[..4], 3);
-        assert!(result.is_ok());
-        assert!(pool.resolve(CurveHandle(0)).is_some());
+        let handle = pool
+            .validate_and_load(0, &cps[..12], &knots[..8], &weights[..4], 3)
+            .expect("load");
+        assert_eq!(handle.slot_idx, 0);
+        assert_eq!(handle.generation, 1);
+        assert!(pool.lookup(handle).is_ok());
+        assert!(pool.resolve(handle).is_some());
     }
 
     #[test]
-    fn load_twice_into_same_slot_is_rejected() {
-        let mut pool = CurvePool::new();
+    fn validate_and_load_twice_into_same_slot_blocks_until_retired() {
+        let pool = CurvePool::new();
         let (cps, knots, weights) = dummy_curve_data(4);
-        let first = pool.load(CurveHandle(0), &cps[..12], &knots[..8], &weights[..4], 3);
-        assert!(first.is_ok());
-        let second = pool.load(CurveHandle(0), &cps[..12], &knots[..8], &weights[..4], 3);
+        let h1 = pool
+            .validate_and_load(0, &cps[..12], &knots[..8], &weights[..4], 3)
+            .expect("first");
+        let second = pool.validate_and_load(0, &cps[..12], &knots[..8], &weights[..4], 3);
         assert_eq!(second, Err(CurvePoolError::SlotAlreadyLoaded));
+        pool.confirm_retired(h1);
+        let h2 = pool
+            .validate_and_load(0, &cps[..12], &knots[..8], &weights[..4], 3)
+            .expect("second");
+        assert_eq!(h2.generation, 2);
     }
 
     #[test]
     fn invalid_curve_data_rejected() {
-        let mut pool = CurvePool::new();
+        let pool = CurvePool::new();
         let mut cps = [0.0f32; 12];
         cps[5] = f32::NAN;
         let knots = [0.0f32; 8];
         let weights = [1.0f32; 4];
-        let result = pool.load(CurveHandle(0), &cps, &knots, &weights, 3);
+        let result = pool.validate_and_load(0, &cps, &knots, &weights, 3);
         assert_eq!(result, Err(CurvePoolError::NonFiniteData));
+    }
+
+    #[test]
+    fn pack_unpack_round_trips() {
+        let h = CurveHandle::new(7, 0xCAFE);
+        let packed = h.pack();
+        assert_eq!(packed, (0xCAFE_u32 << 16) | 7);
+        let h2 = CurveHandle::unpack(packed);
+        assert_eq!(h, h2);
     }
 }

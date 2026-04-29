@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use heapless::spsc::{Consumer, Producer};
 
 use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
-use crate::curve_pool::{CurvePool, CurveView};
+use crate::curve_pool::{CurveHandle, CurvePool, CurveView};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
 use crate::queue::Q_N;
@@ -122,6 +122,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         &mut self,
         code: RuntimeError,
         segment_id: u32,
+        curve_handle: CurveHandle,
         now: u64,
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
     ) {
@@ -134,8 +135,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             motor_b: self.last_motors[1],
             motor_e: self.last_motors[2],
             segment_id,
+            curve_handle,
             flags: TRACE_FLAG_FAULT_MARKER,
-            _pad: [0; 7],
+            _pad: [0; 3],
         });
     }
 
@@ -189,13 +191,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             if let Some(seg) = self.current {
                 self.status
                     .store(RuntimeStatus::Running as u8, Ordering::Release);
+                // Round-2 B14: ISR publishes the freshly activated segment id
+                // so foreground status / Gate-B observers see it. Release so
+                // the runtime_status update above is paired.
+                shared
+                    .current_segment_id
+                    .store(seg.id, Ordering::Release);
                 // Fall through with the freshly dequeued segment.
-                return self.tick_with_current(seg, now, queue, pool, trace);
+                return self.tick_with_current(seg, now, queue, pool, trace, shared);
             }
             return Ok(());
         };
 
-        self.tick_with_current(current, now, queue, pool, trace)
+        self.tick_with_current(current, now, queue, pool, trace, shared)
     }
 
     fn tick_with_current(
@@ -205,6 +213,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         queue: &mut Consumer<'_, Segment, Q_N>,
         pool: &CurvePool,
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+        shared: &SharedState,
     ) -> Result<(), RuntimeError> {
         // Step 3: sub-tick boundary loop. Spec §4.2 step 3 — bounded by queue depth.
         let mut iters = 0u32;
@@ -213,11 +222,23 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             iters += 1;
             if iters > MAX_BOUNDARY_ITERS {
                 let seg_id = current.id;
+                let curve_handle = current.curve_handle;
                 self.current = Some(current);
-                self.latch_fault(RuntimeError::BoundaryLoopExhausted, seg_id, now, trace);
+                self.latch_fault(
+                    RuntimeError::BoundaryLoopExhausted,
+                    seg_id,
+                    curve_handle,
+                    now,
+                    trace,
+                );
                 return Err(RuntimeError::BoundaryLoopExhausted);
             }
             let delta_t = t_segment - current.duration();
+            // Round-2 B14: a segment is finishing now. Publish its id as the
+            // newest retired-through cursor before we advance.
+            shared
+                .retired_through_segment_id
+                .store(current.id, Ordering::Release);
             // Drop current; advance to next.
             let Some(next) = queue.dequeue() else {
                 // No next segment — drained. Set status; return.
@@ -229,23 +250,46 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             current = next;
             current.t_start = now.saturating_sub(delta_t);
             t_segment = delta_t;
+            // Round-2 B14: new segment activated mid-boundary loop — publish
+            // the current id so foreground sees the transition.
+            shared
+                .current_segment_id
+                .store(current.id, Ordering::Release);
         }
         // Step 4: curve evaluation. Spec invariant: segments are time-parameterized.
-        let Some(curve_view) = pool.resolve(current.curve) else {
-            self.latch_fault(RuntimeError::InvalidHandle, current.id, now, trace);
+        let Some(curve_view) = pool.resolve(current.curve_handle) else {
+            self.latch_fault(
+                RuntimeError::InvalidHandle,
+                current.id,
+                current.curve_handle,
+                now,
+                trace,
+            );
             return Err(RuntimeError::InvalidHandle);
         };
         let duration = current.duration().max(1) as f32; // saturating_sub avoids 0
         let u = (t_segment as f32 / duration).clamp(0.0, 1.0);
         let Ok(xyz_e) = nurbs_eval_3d(&curve_view, u) else {
-            self.latch_fault(RuntimeError::InvalidCurve, current.id, now, trace);
+            self.latch_fault(
+                RuntimeError::InvalidCurve,
+                current.id,
+                current.curve_handle,
+                now,
+                trace,
+            );
             return Err(RuntimeError::InvalidCurve);
         };
 
         // Step 5: NaN/Inf check. Spec §5.4 — necessary even with producer-side
         // validation (NaN can arise from finite inputs).
         if !xyz_e.iter().all(|x: &f32| x.is_finite()) {
-            self.latch_fault(RuntimeError::NaNOrInfFromEval, current.id, now, trace);
+            self.latch_fault(
+                RuntimeError::NaNOrInfFromEval,
+                current.id,
+                current.curve_handle,
+                now,
+                trace,
+            );
             return Err(RuntimeError::NaNOrInfFromEval);
         }
 
@@ -274,9 +318,20 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             motor_b: state.motors[1],
             motor_e: state.motors[2],
             segment_id: current.id,
+            curve_handle: current.curve_handle,
             flags: segment_end_flag,
-            _pad: [0; 7],
+            _pad: [0; 3],
         });
+        // Round-2 B14: when the segment is about to retire (last sample in
+        // its window emits SEGMENT_END), advance retired_through_segment_id
+        // monotonically. The next-tick activation re-fires this update via
+        // the boundary loop above — the duplicate write is a no-op against
+        // the same id.
+        if segment_end_flag != 0 {
+            shared
+                .retired_through_segment_id
+                .store(current.id, Ordering::Release);
+        }
         self.last_motors = state.motors;
         self.current = Some(current);
 

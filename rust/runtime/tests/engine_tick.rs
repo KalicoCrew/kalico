@@ -10,10 +10,10 @@
 use heapless::spsc::Queue;
 
 use runtime::clock::{WidenState, one_tick_cycles};
-use runtime::curve_pool::CurvePool;
+use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::Q_N;
-use runtime::segment::{CurveHandle, KinematicTag, Segment};
+use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
 use runtime::trace::{
@@ -97,9 +97,11 @@ impl Harness {
     }
 }
 
-/// Load fixture-by-name into the curve pool slot. Single source of truth for
-/// "which curves the Step-5 tests use" — mirrored by Surface C's host script.
-fn load_fixture(pool: &mut CurvePool, handle: u16, name: &str) {
+/// Load fixture-by-name into the curve pool slot. Returns the freshly-issued
+/// `CurveHandle` so the caller can use it to construct a `Segment`. Single
+/// source of truth for "which curves the Step-5 tests use" — mirrored by
+/// Surface C's host script.
+fn load_fixture(pool: &CurvePool, slot_idx: u16, name: &str) -> CurveHandle {
     let set = fixtures::load();
     let f = set
         .fixtures
@@ -111,14 +113,8 @@ fn load_fixture(pool: &mut CurvePool, handle: u16, name: &str) {
         .iter()
         .flat_map(|p| p.iter().copied())
         .collect();
-    pool.load(
-        CurveHandle(handle),
-        &cps_flat,
-        &f.knots,
-        &f.weights,
-        f.degree,
-    )
-    .unwrap();
+    pool.validate_and_load(slot_idx, &cps_flat, &f.knots, &f.weights, f.degree)
+        .unwrap()
 }
 
 // Helper: t_segment in u32 (engine widens internally). Since we start at
@@ -139,17 +135,19 @@ fn tick_on_empty_queue_returns_idle() {
 #[test]
 fn tick_processes_one_segment_to_completion() {
     let mut h = Harness::new();
-    load_fixture(&mut h.pool, 0, "straight_line_x");
+    let handle = load_fixture(&h.pool, 0, "straight_line_x");
 
     let tick_cycles = u64::from(one_tick_cycles(CLOCK_FREQ));
     let n_ticks = 4u64;
     h.q_producer
         .enqueue(Segment {
             id: 1,
-            curve: CurveHandle(0),
+            curve_handle: handle,
             t_start: 0,
             t_end: n_ticks * tick_cycles,
             kinematics: KinematicTag::CoreXyAndE,
+            flags: 0,
+            _pad: [0; 2],
         })
         .unwrap();
 
@@ -182,8 +180,8 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     // straight_line_x ends at (10,0,0); rational_quadratic_arc starts at
     // (10,0,0) so the boundary is geometrically continuous and motor_a
     // increases monotonically across the seam.
-    load_fixture(&mut h.pool, 0, "straight_line_x");
-    load_fixture(&mut h.pool, 1, "rational_quadratic_arc");
+    let h0 = load_fixture(&h.pool, 0, "straight_line_x");
+    let h1 = load_fixture(&h.pool, 1, "rational_quadratic_arc");
 
     // Sized so that tick 1 lands near u≈1 of seg1 and tick 2 (post-boundary)
     // lands near u≈0 of seg2 — the only configuration that satisfies the
@@ -194,19 +192,23 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     h.q_producer
         .enqueue(Segment {
             id: 1,
-            curve: CurveHandle(0),
+            curve_handle: h0,
             t_start: 0,
             t_end: d1,
             kinematics: KinematicTag::CoreXyAndE,
+            flags: 0,
+            _pad: [0; 2],
         })
         .unwrap();
     h.q_producer
         .enqueue(Segment {
             id: 2,
-            curve: CurveHandle(1),
+            curve_handle: h1,
             t_start: d1,
             t_end: d1 + d2,
             kinematics: KinematicTag::CoreXyAndE,
+            flags: 0,
+            _pad: [0; 2],
         })
         .unwrap();
 
@@ -268,13 +270,17 @@ fn invalid_curve_handle_latches_fault() {
     let mut h = Harness::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
+    // Use a never-issued handle (gen=1) — the slot is empty (gen=0), so
+    // lookup mismatches and the engine latches InvalidHandle.
     h.q_producer
         .enqueue(Segment {
             id: 1,
-            curve: CurveHandle(0),
+            curve_handle: CurveHandle::new(0, 1),
             t_start: 0,
             t_end: tc * 2,
             kinematics: KinematicTag::CoreXyAndE,
+            flags: 0,
+            _pad: [0; 2],
         })
         .unwrap();
 

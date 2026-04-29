@@ -152,22 +152,21 @@ mod tests {
     }
 
     #[test]
-    fn loads_into_curve_pool_via_load() {
+    fn loads_into_curve_pool_via_validate_and_load() {
         // End-to-end: fixture 0 must validate as a NURBS through the regular
-        // (production) `CurvePool::load` path. This proves the fixture data
+        // (production) `validate_and_load` path. This proves the fixture data
         // is well-formed; the FFI uses `load_unchecked` to skip the
         // FPU-using validation under Renode (Step-6 plan Phase 0 Task 0.2),
-        // but on host this regular load_unchecked-equivalent path must work.
+        // but on host this regular path must work.
         use crate::curve_pool::CurvePool;
-        use crate::segment::CurveHandle;
         let mut cps = [0.0f32; FIXTURE_CPS_MAX];
         let mut knots = [0.0f32; FIXTURE_KNOTS_MAX];
         let mut weights = [0.0f32; FIXTURE_WEIGHTS_MAX];
         let (degree, n_cp, n_knots, n_weights) =
             lookup(0, &mut cps, &mut knots, &mut weights).expect("fixture 0");
-        let mut pool = CurvePool::new();
-        let r = pool.load(
-            CurveHandle(0),
+        let pool = CurvePool::new();
+        let r = pool.validate_and_load(
+            0,
             &cps[..n_cp * 3],
             &knots[..n_knots],
             &weights[..n_weights],
@@ -181,39 +180,41 @@ mod tests {
         // The FFI path: `load_unchecked` should accept fixture data and
         // produce a resolvable view.
         use crate::curve_pool::CurvePool;
-        use crate::segment::CurveHandle;
-        let mut pool = CurvePool::new();
+        let pool = CurvePool::new();
         for fid in [0u16, 1u16, 2u16] {
             let mut cps = [0.0f32; FIXTURE_CPS_MAX];
             let mut knots = [0.0f32; FIXTURE_KNOTS_MAX];
             let mut weights = [0.0f32; FIXTURE_WEIGHTS_MAX];
             let (degree, n_cp, n_knots, n_weights) =
                 lookup(fid, &mut cps, &mut knots, &mut weights).expect("fixture");
-            let r = pool.load_unchecked(
-                CurveHandle(fid),
-                &cps[..n_cp * 3],
-                &knots[..n_knots],
-                &weights[..n_weights],
-                degree,
-            );
-            assert!(r.is_ok(), "fixture {fid} must load_unchecked: {r:?}");
-            assert!(pool.resolve(CurveHandle(fid)).is_some());
+            let handle = pool
+                .load_unchecked(
+                    fid,
+                    &cps[..n_cp * 3],
+                    &knots[..n_knots],
+                    &weights[..n_weights],
+                    degree,
+                )
+                .unwrap_or_else(|e| panic!("fixture {fid} must load_unchecked: {e:?}"));
+            assert!(pool.lookup(handle).is_ok());
+            // After confirm_retired we can re-load the same slot — exercises
+            // the SEGMENT_END reclaim path indirectly.
+            pool.confirm_retired(handle);
         }
     }
 
     #[test]
     fn loads_quarter_arc_and_cubic() {
         use crate::curve_pool::CurvePool;
-        use crate::segment::CurveHandle;
-        let mut pool = CurvePool::new();
+        let pool = CurvePool::new();
         for fid in [1u16, 2u16] {
             let mut cps = [0.0f32; FIXTURE_CPS_MAX];
             let mut knots = [0.0f32; FIXTURE_KNOTS_MAX];
             let mut weights = [0.0f32; FIXTURE_WEIGHTS_MAX];
             let (degree, n_cp, n_knots, n_weights) =
                 lookup(fid, &mut cps, &mut knots, &mut weights).expect("fixture");
-            let r = pool.load(
-                CurveHandle(fid),
+            let r = pool.validate_and_load(
+                fid,
                 &cps[..n_cp * 3],
                 &knots[..n_knots],
                 &weights[..n_weights],

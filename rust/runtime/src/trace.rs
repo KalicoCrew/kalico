@@ -1,35 +1,46 @@
 //! `TraceRing` — SPSC ring of `TraceSample` for host-side trace pulling.
-//! Spec §3.1 / §4.3 / §6.3.
+//! Spec §3.1 / §4.3 / §6.3 / §13.1.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use heapless::spsc::Queue;
+
+use crate::curve_pool::CurveHandle;
 
 /// `TraceRing` capacity used by the `Engine` ISR. Spec §13.1.
 ///
 /// Sized for `HOST_STALL` + 10 ms safety margin × 40 kHz tick + 1 (heapless
 /// cap-N-1 rule). Step-6 widens the Step-5 value (128) to absorb worst-case
 /// host drain latency without dropping samples.
-///
-/// Promoted from a private `engine.rs` const to a `pub` const in `trace.rs`
-/// per Step-6 plan Phase 1 Task 1.1 step 3a — `RuntimeContext.trace_storage`
-/// uses it as a const generic.
 pub const TRACE_RING_N: usize = 1201;
 
+// Step-5 carryover bit (retired in Step-6 — replaced by §13.1
+// `sample_drop_pending: AtomicBool` mechanism in Phase 5 Task 5.2). Constant
+// preserved for source-level binary compatibility with older host-side
+// decoders; no Step-6 code path sets or checks it.
 pub const TRACE_FLAG_OVERFLOW: u8 = 1 << 0;
 pub const TRACE_FLAG_SEGMENT_END: u8 = 1 << 1;
 pub const TRACE_FLAG_FAULT_MARKER: u8 = 1 << 2;
 
+// Step-6 additions (§10.4 reclaim + §6.5 hold-segments + §13.3 markers).
+pub const TRACE_FLAG_SEGMENT_START: u8 = 1 << 3;
+pub const TRACE_FLAG_HOLD_SAMPLE: u8 = 1 << 4;
+
+/// Trace sample (§13.2). repr(C) aligned (NOT packed) to avoid unaligned u64
+/// access on Cortex-M7. Carries `curve_handle` so foreground reclaim
+/// (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route SEGMENT_END
+/// events back to the right pool slot per §10.4.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TraceSample {
-    pub tick: u64,       // offset 0, 8 bytes (struct alignment 8)
-    pub motor_a: f32,    // offset 8
-    pub motor_b: f32,    // offset 12
-    pub motor_e: f32,    // offset 16
-    pub segment_id: u32, // offset 20
-    pub flags: u8,       // offset 24
+    pub tick: u64,                  // offset 0, 8 bytes (struct alignment 8)
+    pub motor_a: f32,               // offset 8
+    pub motor_b: f32,               // offset 12
+    pub motor_e: f32,               // offset 16
+    pub segment_id: u32,            // offset 20
+    pub curve_handle: CurveHandle,  // offset 24, 4 bytes (slot+gen)
+    pub flags: u8,                  // offset 28
     #[allow(clippy::pub_underscore_fields)]
-    pub _pad: [u8; 7], // offsets 25..31 — explicit padding to 32-byte total
+    pub _pad: [u8; 3], // offsets 29..31 — explicit padding to 32-byte total
 }
 
 impl Default for TraceSample {
@@ -40,8 +51,9 @@ impl Default for TraceSample {
             motor_b: 0.0,
             motor_e: 0.0,
             segment_id: 0,
+            curve_handle: CurveHandle::new(0, 0),
             flags: 0,
-            _pad: [0; 7],
+            _pad: [0; 3],
         }
     }
 }
@@ -119,7 +131,7 @@ mod tests {
 
     #[test]
     fn trace_sample_layout() {
-        // Spec §3.1 / §6.3 — these offsets are mirrored in the C smoke build's
+        // Spec §13.2 — these offsets are mirrored in the C smoke build's
         // _Static_assert. Any drift here breaks the C consumer.
         assert_eq!(size_of::<TraceSample>(), 32);
         assert_eq!(align_of::<TraceSample>(), 8);
@@ -128,7 +140,8 @@ mod tests {
         assert_eq!(offset_of!(TraceSample, motor_b), 12);
         assert_eq!(offset_of!(TraceSample, motor_e), 16);
         assert_eq!(offset_of!(TraceSample, segment_id), 20);
-        assert_eq!(offset_of!(TraceSample, flags), 24);
+        assert_eq!(offset_of!(TraceSample, curve_handle), 24);
+        assert_eq!(offset_of!(TraceSample, flags), 28);
     }
 
     fn sample(tick: u64, segment_id: u32) -> TraceSample {
@@ -138,8 +151,9 @@ mod tests {
             motor_b: 0.0,
             motor_e: 0.0,
             segment_id,
+            curve_handle: CurveHandle::new(0, 0),
             flags: 0,
-            _pad: [0; 7],
+            _pad: [0; 3],
         }
     }
 
