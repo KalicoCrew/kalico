@@ -103,6 +103,8 @@ pub struct ShapeSegmentInput<'a> {
     pub extrusion_per_xy_mm: f64,
     /// Independent E NURBS for retraction/prime segments.
     pub e_independent: Option<&'a nurbs::ScalarNurbs<f64>>,
+    /// Feedrate from G-code (mm/s). Used for independent E scheduling.
+    pub feedrate_mm_s: f64,
 }
 
 /// E-axis kinematic limits for independent E scheduling (Stage 6).
@@ -112,9 +114,17 @@ pub struct ELimits {
 }
 
 pub struct ShaperConfig {
-    pub x: AxisShaper,
-    pub y: AxisShaper,
+    /// X-axis shaper. Required (Passthrough rejected at validation).
+    pub x: RequiredShaper,
+    /// Y-axis shaper. Required (Passthrough rejected at validation).
+    pub y: RequiredShaper,
+    /// Z-axis shaper. Passthrough by default.
     pub z: AxisShaper,
+}
+
+pub enum RequiredShaper {
+    SmoothZv { frequency_hz: f64 },
+    SmoothMzv { frequency_hz: f64 },
 }
 
 pub enum AxisShaper {
@@ -184,10 +194,22 @@ pub enum ShapeError {
 
 Six stages per β iteration, plus the outer convergence loop.
 
-### Stage 1 — TOPP-RA solve
+### Stage 0 — Batch partitioning
 
-Construct `temporal::multi::BatchInput` from the current segment list and
-(potentially derated) limits. Call `temporal::plan_batch()`.
+Split the input segments into **runs**: contiguous groups of XY-motion
+segments (`CoupledToXy` or `Travel`), separated by independent E
+segments. Each run is a self-contained batch for `plan_batch`. Independent
+E segments are scheduled separately in Stage 6.
+
+Timeline construction: each run gets a global time offset. Between runs,
+the independent E segment's duration (from Stage 6 trapezoidal
+scheduling) is inserted. Junction velocities at run boundaries are
+forced to zero (the machine is at rest during retraction/prime).
+
+### Stage 1 — TOPP-RA solve (per run)
+
+Construct `temporal::multi::BatchInput` from the current run's segments
+and (potentially derated) limits. Call `temporal::plan_batch()`.
 
 Gate on `BatchOutput.joining_status`:
 
@@ -249,6 +271,12 @@ arc length on `[s_k, s_{k+1}]` using
 polynomial x(s) per axis (adaptive degree, target degree 3, max degree
 5, tolerance = `fit_tolerance_mm`). The fit uses the segment's
 arc-length table for the u(s) lookup.
+
+The arc-length table for the u(s) lookup is built per segment using the
+same parameters as temporal's internal table (`tolerance = 1e-6`,
+`max_intervals = 1024`). The final `s_hi` per grid piece is clamped to
+`min(s_{k+1}, table.total_length())` to absorb any sub-1e-9 endpoint
+drift between independently-built tables.
 
 Then compose x(s) with s(t) via
 `nurbs::algebra::compose_vector_piece::<3>`. The composition step is
@@ -370,26 +398,34 @@ numerical approach; LAPACK not needed at this size (6×6 matrix).
 Outer loop logic in `beta.rs`:
 
 ```
+// machine_a_max[seg][axis] = original immutable machine limits
+// planning_a_max[seg][axis] = mutable limits fed to TOPP-RA
+
 for iter in 0..beta_max_iters:
-    run stages 1-4
+    run stages 1-4 with planning_a_max
     
     any_derated = false
     for each segment × axis:
-        if peak > a_max[axis]:
-            ratio = a_max[axis] / peak
-            new_limit = current_limit * ratio
-            // Monotone derate: limits only decrease
-            segment_limits[seg].a_max[axis] =
-                min(segment_limits[seg].a_max[axis], new_limit)
+        // Compare against MACHINE limits, not planning limits
+        if peak > machine_a_max[seg][axis]:
+            ratio = machine_a_max[seg][axis] / peak
+            new_limit = planning_a_max[seg][axis] * ratio
+            // Monotone derate: planning limits only decrease
+            planning_a_max[seg][axis] =
+                min(planning_a_max[seg][axis], new_limit)
             any_derated = true
     
     if not any_derated:
-        return Ok(output)  // converged
+        return Ok(output)  // converged: all peaks ≤ machine limits
     
     worst_ratio = min(ratio across all derated segment×axis pairs)
     if worst_ratio > 1.0 - beta_convergence_ratio:
-        return Ok(output)  // close enough (worst derate < 1%)
+        // Derate is tiny — one final solve to bake the derate in
+        run stages 1-4 with planning_a_max
+        return Ok(output with beta_warning = Some(BetaWarning { ... }))
 
+// Exhausted iterations — final solve with current planning limits
+run stages 1-4 with planning_a_max
 return Ok(output with beta_warning = Some(BetaWarning { ... }))
 ```
 
