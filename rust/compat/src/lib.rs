@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), forbid(unsafe_code))]
 
+pub mod arc;
 pub mod collinear;
 pub mod degree_elev;
 pub mod emit;
