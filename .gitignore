@@ -29,3 +29,7 @@ scripts/fitter_prototype/corpus_results/
 
 # git worktrees
 .worktrees/
+
+# claude-code session-local runtime state (lock file holds session pid +
+# acquired-at; the rest of .claude/ — plugins, skills, settings — IS tracked)
+.claude/scheduled_tasks.lock
