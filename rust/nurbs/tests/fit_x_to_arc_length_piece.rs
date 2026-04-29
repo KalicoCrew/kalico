@@ -213,3 +213,28 @@ fn degenerate_input_returns_err() {
     );
     assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
 }
+
+#[test]
+fn rejects_s_lo_below_zero() {
+    let xyz = cubic_straight_line();
+    let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
+    let table_ref = table.as_view();
+    let result = fit_x_to_arc_length_piece::<3>(
+        &xyz, &table_ref, /*s_lo=*/ -1.0, /*s_hi=*/ 4.0,
+        /*target_degree=*/ 4, /*max_degree=*/ 10, /*tolerance_mm=*/ 1e-3,
+    );
+    assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
+}
+
+#[test]
+fn rejects_s_hi_above_s_max() {
+    let xyz = cubic_straight_line();
+    let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
+    let table_ref = table.as_view();
+    let s_max = table.s_max();
+    let result = fit_x_to_arc_length_piece::<3>(
+        &xyz, &table_ref, /*s_lo=*/ 1.0, /*s_hi=*/ s_max + 1.0,
+        /*target_degree=*/ 4, /*max_degree=*/ 10, /*tolerance_mm=*/ 1e-3,
+    );
+    assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
+}

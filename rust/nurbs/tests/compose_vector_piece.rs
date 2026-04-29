@@ -5,6 +5,7 @@
 
 use nurbs::algebra::compose_vector_piece;
 use nurbs::bezier::BezierPiece;
+use nurbs::AlgebraError;
 
 /// Identity composition: outer ∘ identity = outer.
 #[test]
@@ -115,4 +116,22 @@ fn cubic_outer_quadratic_inner_yields_degree_6() {
             "mismatch at t={t}: got {composed_val} expected {expected}"
         );
     }
+}
+
+#[test]
+fn rejects_mismatched_inner_outer_endpoints() {
+    // Outer on s ∈ [0, 1]; inner maps t ∈ [0, 1] → s ∈ [0, 0.5] (deliberate mismatch).
+    let outer = BezierPiece::<f64> {
+        u_start: 0.0,
+        u_end: 1.0,  // <-- mismatch: outer expects s ∈ [0, 1]
+        coeffs: vec![0.0, 1.0, 0.0, 1.0],
+    };
+    let inner = BezierPiece::<f64> {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0, 0.5],  // inner(t) = 0.5·t maps to [0, 0.5], NOT [0, 1]
+    };
+
+    let result = compose_vector_piece::<1>(&[&outer], &inner);
+    assert!(matches!(result, Err(AlgebraError::SupportMismatch)));
 }

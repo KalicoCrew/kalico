@@ -95,6 +95,11 @@ pub fn fit_x_to_arc_length_piece<const D: usize>(
 where
     [(); D]:,
 {
+    // Tiny ULP tolerance for endpoint queries the caller may construct via
+    // arc_length_from_param round-trips. Larger violations indicate a stale
+    // arc-length table or off-by-one grid range — fail closed.
+    const RANGE_EPS: f64 = 1e-9;
+
     // Up-front guards.
     if !s_lo.is_finite() || !s_hi.is_finite() {
         return Err(FitError::DegenerateInput {
@@ -109,6 +114,13 @@ where
     if target_degree > max_degree {
         return Err(FitError::DegenerateInput {
             reason: "target_degree > max_degree",
+        });
+    }
+
+    let s_max = table.s_max();
+    if s_lo < -RANGE_EPS || s_hi > s_max + RANGE_EPS {
+        return Err(FitError::DegenerateInput {
+            reason: "s_lo/s_hi out of arc-length table range",
         });
     }
 
@@ -652,34 +664,26 @@ pub fn convolve<T: Float>(
 /// 2. Build powers `shifted_inner^0 … shifted_inner^d_outer` via `poly_multiply`.
 /// 3. Accumulate `result[k] = Σ_i outer_a.coeffs[i] × powers[i][k]`.
 ///
-/// **Precondition (debug-asserted):** `outer[a].u_start == inner.evaluate(inner.u_start)`
+/// **Precondition (runtime-checked):** `outer[a].u_start == inner.evaluate(inner.u_start)`
 /// and `outer[a].u_end == inner.evaluate(inner.u_end)` for every axis (within `1e-9`).
 /// In other words, the inner's image must align with the outer's s-domain.
+/// Violation returns `Err(AlgebraError::SupportMismatch)` in both debug and release builds.
 ///
-/// Returns `Result` for forward-compatibility with future error paths
-/// (e.g. weighted/rational support, degree-cap checks). The current
-/// implementation never errors; if `D == 0` the returned array has length 0
-/// and the function returns `Ok` with no work done.
+/// Returns `Ok` with no work done if `D == 0`.
 #[cfg(feature = "host")]
 pub fn compose_vector_piece<const D: usize>(
     outer: &[&crate::bezier::BezierPiece<f64>; D],
     inner: &crate::bezier::BezierPiece<f64>,
 ) -> Result<[crate::bezier::BezierPiece<f64>; D], AlgebraError> {
+    const ENDPOINT_TOL: f64 = 1e-9;
     let inner_at_start = inner.evaluate(inner.u_start);
     let inner_at_end = inner.evaluate(inner.u_end);
     for outer_axis in outer {
-        debug_assert!(
-            (outer_axis.u_start - inner_at_start).abs() < 1e-9,
-            "compose_vector_piece: outer.u_start {} does not match inner(inner.u_start) {}",
-            outer_axis.u_start,
-            inner_at_start,
-        );
-        debug_assert!(
-            (outer_axis.u_end - inner_at_end).abs() < 1e-9,
-            "compose_vector_piece: outer.u_end {} does not match inner(inner.u_end) {}",
-            outer_axis.u_end,
-            inner_at_end,
-        );
+        if (outer_axis.u_start - inner_at_start).abs() > ENDPOINT_TOL
+            || (outer_axis.u_end - inner_at_end).abs() > ENDPOINT_TOL
+        {
+            return Err(AlgebraError::SupportMismatch);
+        }
     }
 
     let pieces: Vec<crate::bezier::BezierPiece<f64>> = outer
