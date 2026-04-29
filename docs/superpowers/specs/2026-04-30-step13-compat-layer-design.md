@@ -25,7 +25,7 @@ kalico-compat [OPTIONS] <input.gcode> -o <output.gcode>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--tolerance <µm>` | `5.0` | Spline fitter max deviation from original polyline (µm) |
+| `--tolerance <µm>` | `5.0` | Max deviation from original geometry, applies to both spline fitting and arc conversion (µm) |
 | `-o <path>` | stdout | Output file path |
 | `<input>` | required (`-` for stdin) | Input G-code file |
 
@@ -72,7 +72,13 @@ The converter tracks:
 | `prev_tangent` | Arc endpoint / fitted-run endpoint | Boundary tangent handoff |
 
 **Output normalization**: the output file begins with `G90` and `M82`.
-All output coordinates and E values are in absolute mode.
+All output X/Y/Z/E values are in absolute mode. G5 I/J/P/Q are explicit
+relative control-point offsets per the LinuxCNC G5 convention (not absolute
+coordinates).
+
+**Initial feedrate**: if the first motion command in the input has no F-word
+and no prior F has been seen, the preprocessor emits a fatal error (exit 2).
+A valid input file must establish a feedrate before the first motion.
 
 ## Conversion rules
 
@@ -106,8 +112,9 @@ Closed-form circular-arc-to-cubic-Bézier approximation.
 - **Adaptive piece count**: `n = ceil(|θ| / θ_max(r, tol))` where `θ_max` is
   derived from the Goldapp per-piece error bound for the configured tolerance.
   Not a fixed quarter-arc split.
-- **Full circles** (start == end, angular travel = 2π): split into `n` pieces
-  by the same adaptive formula.
+- **Full circles** (start == end): `θ = -2π` for G2 (clockwise), `θ = +2π`
+  for G3 (counter-clockwise). Split into `n` pieces by the same adaptive
+  formula.
 - **Helical arcs**: the non-planar axis (Z for G17) linearly interpolates
   across the output G5 segments. Matches Klipper's `gcode_arcs.py` behavior.
 - **Radius validation**: verify `|r_start - r_end| / r_avg < 0.001` (0.1%
@@ -139,12 +146,15 @@ in the output.
 | G90/G91 | Update modal state. NOT emitted (output forced G90). |
 | M82/M83 | Update modal state. NOT emitted (output forced M82). |
 | G92 | Update modal state AND pass through. |
-| G17/G18/G19 | Update modal state. Pass through. |
+| G17 | Update modal state. Pass through. |
+| G18/G19 | Update modal state. Pass through only if no subsequent motion uses G5 in that plane (the live pipeline rejects non-XY G5). If G18/G19 is followed by G2/G3 arcs, those arcs produce a fatal error. A `G17` is emitted before the first G5 after any G18/G19 to ensure the live pipeline sees XY plane. |
 | M-codes | Pass through verbatim. |
 | T-codes | Pass through verbatim. |
 | Full-line comments | Pass through verbatim. |
 | Marker comments | Pass through verbatim. |
 | Inline comments | Dropped (lexer strips them during tokenization). |
+| G54-G59, G10, G53 | Not tracked. Passed through verbatim if present. FDM slicers do not emit work-coordinate commands. If a file uses them, the preprocessor's position tracking will be incorrect — this is documented as unsupported. |
+| Other G-codes | Passed through verbatim. Unknown G-codes do not affect modal state. |
 
 ## Run segmentation
 
@@ -205,22 +215,28 @@ minimum at all joints.
 ### E handling
 
 Runs split at E-ratio changes, so within a fitted run the extrusion ratio
-(E per mm of path) is constant. Each output G5 segment gets:
+(E per mm of path) is constant. Each output G5 segment gets E proportional
+to its arc length as a fraction of the total fitted arc length:
 
 ```
-E_segment = ratio × arc_length_segment
+E_segment = total_ΔE_input × (arc_length_segment / total_arc_length_fitted)
 ```
 
-If the fitted path is shorter or longer than the input polyline, total E
-scales accordingly. This preserves constant extrusion per mm of actual
-toolhead travel.
+This preserves constant extrusion per mm of actual toolhead travel. If the
+fitted path is shorter or longer than the input polyline, the extrusion rate
+per mm adjusts but total ΔE for the run is preserved exactly — output modal
+E position stays consistent with input, preventing drift in subsequent
+absolute E commands.
 
 ### Z handling
 
-The fitter operates in 3D. Z is part of the fitted curve and subject to the
-same tolerance. Each output G5 piece carries endpoint Z; interior control-point
-Z is linear at 1/3/2/3 (G5 format constraint). Tolerance enforcement produces
-shorter pieces where Z varies significantly (vase mode, layer transitions).
+The fitter operates in 3D (XYZ). The XY components are fitted as a cubic
+B-spline. Z is constrained by the output format: each G5 piece has endpoint Z
+with interior control-point Z at linear 1/3/2/3 interpolation. The fitter
+verifies the 3D deviation (including Z error from the linear constraint)
+against the configured tolerance. Where Z varies significantly (vase mode,
+layer transitions), tolerance enforcement naturally produces shorter pieces so
+the per-piece linear Z approximation stays within tolerance.
 
 ### Tangent handoff (Approach C)
 
@@ -231,6 +247,8 @@ Boundary tangent sources:
 | Arc → G1 run | Arc endpoint tangent (from Goldapp) | Peek at next token |
 | G1 run → Arc | Stored prev_tangent | Arc start tangent (from Goldapp) |
 | Fitted run → Fitted run | Previous run's final tangent | Next run's first G1 direction |
+| G5/G5.1 → G1 run | G5/G5.1 endpoint tangent (from control points) | Peek at next token |
+| G1 run → G5/G5.1 | Stored prev_tangent | G5/G5.1 start tangent (from control points via peek) |
 | No neighbor | First G1 direction (natural-ish) | Last G1 direction (natural-ish) |
 
 The peekable iterator provides one-token lookahead for the end-of-run boundary.
@@ -281,11 +299,11 @@ index for byte-identical passthrough.
 
 | Error | Behavior |
 |-------|----------|
-| Malformed G-code (lexer error) | Warn to stderr with line number, skip line, continue |
+| Malformed G-code (lexer error) | Warn to stderr with line number, skip line, continue. If the malformed line is a motion command (G0/G1/G2/G3/G5/G5.1), fatal error (exit 2) to uphold the output guarantee. |
 | G2/G3 in G18/G19 plane | Fatal error (exit 2). Live pipeline rejects non-XY G5 |
 | G2/G3 with inconsistent radius | Warn, snap endpoint (Klipper-compatible), continue |
-| G2/G3 with zero radius (I=J=0) | Warn, emit collinear G5 (degenerate arc = line) |
-| R-format arc (G2/G3 R...) | Error on that line, skip (Klipper doesn't support R) |
+| G2/G3 with zero radius (I=J=0) | Fatal error (exit 2). Matches Klipper behavior ("G2/G3 requires IJ parameters"). |
+| R-format arc (G2/G3 R...) | Fatal error (exit 2). Klipper rejects R-format. |
 
 ### Fitter errors
 
@@ -322,14 +340,24 @@ one output G5 command.
 - E redistribution — total E = ratio × fitted arc length
 - 3D fitting with Z variation — Z within tolerance
 
+### Modal state tests
+
+- G90/G91 mode switching with G1 moves — verify absolute position computed correctly
+- M82/M83 mode switching — verify E normalization to absolute
+- G92 E reset — verify subsequent E values are correct
+- Missing initial feedrate — verify fatal error
+- G18 followed by G1 then G17 — verify G17 emitted before G5 output
+
 ### Integration tests on real G-code
 
 - Round-trip `voron_cube_arc_fitted.gcode` (~161K lines, G1 + G2/G3)
 - Round-trip `voron_cube_straight_line.gcode` (~216K lines, G1 only)
 - Verify output parses through `gcode::lex` → `geometry::reduce` without errors
 - Verify output contains only G5/G92/M/T/comment tokens
-- Verify total E within expected bounds
+- Verify total E within expected bounds (ΔE preserved per run)
+- Verify absolute E position at end of file matches expected
 - Spot-check geometric deviation on sampled segments
+- Source G5 with implicit I/J chain through converted segments — verify canonicalization
 
 ### Performance
 
