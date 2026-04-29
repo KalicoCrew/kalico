@@ -6,8 +6,8 @@ We are working on a complete rewrite of the motion planner and more:
 
 # High level feature scope
 - Rust end-to-end for new code; single source compiled f64 host / f32 MCU. Rust links as staticlib into Klipper's existing C MCU build, which stays C for now.
-- NURBS-native, internal primitive through the planner.
-- Support for G2, G3, G5, G5.1. spline-fitting for older slicers that emit g1-dense gcode.
+- NURBS-native internal primitive through the planner. **Uniform cubic Bézier (degree-3 polynomial) representation** across Layer 1 / 2 / 3 / 4 — no rational NURBS anywhere live, no mixed-degree dispatch, no source-gcode-type special-cases.
+- **Live pipeline accepts G5 / G5.1 only.** G5 → cubic Bézier direct; G5.1 → cubic via exact degree-elevation. Legacy G0 / G1 / G2 / G3 input is normalized offline to G5-only by the compatibility layer (build-order Step 13 — see below): G1 lifts to a single-piece cubic with collinear control points (exact, no fit error); G2 / G3 refits to multi-piece cubic Bézier via Goldapp 1991 closed-form circular-arc-to-Bézier (~2 pieces per quarter-arc at 0.1 µm L∞); G1-sequence spline-fitting (Tajima-Sencer 2016, Beudaert 2012) for smoother corners where the user wants it. Kalico-aware slicers emit G5 directly and never invoke the compat layer; legacy slicers' G-code passes through it once before printing.
 - Phase stepping with open loop steppers with BTT Octopus pro and similar (H723 chip)
 - EtherCAT support as a future backend, with the planner architecturally designed to accommodate it
 - Regular stepping for non-phase-capable drivers (e.g. 2209 on Z)
@@ -62,15 +62,14 @@ Pure libraries with no firmware coupling. Unit-testable in isolation against syn
 
 ## Layer 1 — Geometry pipeline
 
-Depends on Layer 0. Produces NURBS segments from g-code input.
+Depends on Layer 0. Produces uniform cubic Bézier NURBS segments from g-code input.
 
-- **G-code parser** with G0/G1/G2/G3/G5 support and standard CNC features (work coordinates, override characters).
-- **Geometric reduction:** G0/G1 → degree-1 NURBS, G2/G3 → exact rational quadratic NURBS, G5 → direct.
-- **G1-sequence spline fitter.** Windowed B-spline fitting with configurable tolerance. **This is the highest-risk item in the spec by a meaningful margin** — offline fitting literature exists (Tajima/Sencer, Beudaert) but the streaming/windowed/real-time-tolerance case in a hobby-firmware context is genuinely novel research, not just porting. Build a prototype early.
-- **Junction-deviation fallback** for G1 sequences the fitter can't smooth (very short, deliberate sharp corners, explicit non-smoothable). The machine drives through the geometric corner with velocity reduction; geometry stays exact.
-- **Parameterized corner-blend slots** as a third path for deliberately sharp corners that need smoothing but aren't fittable as continuous curves. Layer 1 emits the slot — in/out tangents, tolerance budget, segment-length context — but defers curve-family choice and control-point placement to Layer 3 where dynamic limits are known. Cubic Bezier is the default family (degenerate cubic NURBS, integrates cleanly); per Tajima & Sencer 2016, optimal-time-through-corner shape genuinely varies with accel/jerk ratio, so this is not a fixed-geometry path.
+- **G-code parser (live pipeline)** accepts G5 / G5.1 (and the standard non-motion CNC machinery — work coordinates, override characters, comments, M-codes routed to telemetry). Legacy G0 / G1 / G2 / G3 are not handled by the live parser; the compatibility layer (Step 13) normalizes those offline to G5-only before the file enters the live pipeline.
+- **Geometric reduction:** G5 → cubic Bézier polynomial NURBS direct; G5.1 → cubic via exact degree-elevation (degree 2 → 3, +1 control point, no fit error).
+- **Junction-deviation fallback** for sharp corners between consecutive G5 segments where the slicer marked the junction as non-smoothable. The machine drives through the geometric corner with velocity reduction; geometry stays exact. Subsumes the historical G1↔G1 case (post-compat-layer, all corners are G5-collinear↔G5-collinear, treated identically).
+- **Parameterized corner-blend slots** for deliberately sharp corners marked with a tolerance budget. Layer 1 emits the slot — in/out tangents, tolerance budget, segment-length context — and Layer 3 (Step 8) selects curve family + control-point placement under full dynamic-limit context, per Tajima & Sencer 2016. Default family is cubic Bézier (matches the live pipeline's uniform-cubic invariant; degenerate forms integrate cleanly).
 
-The three corner paths form a fallback chain: **fitter handles what it can → cubic Bezier blends explicitly-marked sharp corners → junction-deviation handles the rest.** Output: a stream of NURBS segments with metadata about source g-code.
+Output: a stream of cubic Bézier polynomial NURBS segments with metadata (source-g-code line range, feedrate, e-mode, extrusion ratio).
 
 ## Layer 2 — Temporal scheduling
 
@@ -170,12 +169,13 @@ These don't fit cleanly into a single layer because they touch multiple layers t
              ▼                          ▼
   ┌─────────────────────────┐  ┌─────────────────────────┐
   │ Layer 2: Temporal       │  │ Layer 1: Geometry       │
-  │ - TOPP-RA               │◄─│ - G-code parser         │
-  │ - Lookahead joining     │  │ - Geometric reduction   │
-  │ - Invalidation logic    │  │ - Spline fitter         │
-  │                         │  │ - Junction-deviation    │
-  │                         │  │   fallback              │
+  │ - TOPP-RA               │◄─│ - G5/G5.1 parser (live) │
+  │ - Lookahead joining     │  │ - Cubic Bézier reduce   │
+  │ - Invalidation logic    │  │ - Junction-deviation    │
   │                         │  │ - Corner-blend slots    │
+  │                         │  │ - (Step 13 compat layer │
+  │                         │  │   normalizes G0/G1/G2/  │
+  │                         │  │   G3 offline → G5)      │
   └──────────┬──────────────┘  └────────────┬────────────┘
              │                              │
              └──────────────┬───────────────┘
@@ -193,7 +193,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 ## Critical-path observations
 
 - **Layer 0 NURBS evaluation on the MCU is the most performance-critical code in the entire stack.** Every cycle saved on de Boor pays back at 40 kHz × axes × impulses. Optimize this last but design the API early — the rest of Layer 4 has to assume it exists and call it heavily.
-- **The spline fitter (Layer 1) has been demoted to an optional / offline G1-compatibility addon (build-order Step 13).** Original framing — streaming/windowed/real-time-tolerance fitting as the highest-risk item in the spec — was driven by the assumption that all input would be G1-dense forever. With kalico-aware slicer emission of G5 directly (parallel workstream by user, see below), the fitter becomes a one-shot offline file pre-processor only used to support legacy slicers, where the standard CNC literature (Tajima/Sencer 2016, Beudaert 2012) applies directly and the streaming/online-tolerance properties are not needed. Risk: low. Critical-path: no longer.
+- **The live pipeline accepts G5 / G5.1 only; legacy G0 / G1 / G2 / G3 normalize to G5 via the offline compatibility layer (build-order Step 13).** This collapses the live pipeline to a uniform cubic Bézier representation with no rational NURBS, no mixed-degree dispatch, no source-gcode-type special-cases. The compat layer subsumes what was originally framed as the "streaming/windowed/real-time-tolerance G1-sequence spline fitter — highest-risk item in the spec" — that streaming framing is no longer needed. As an offline pre-processor, the standard CNC literature (Tajima/Sencer 2016, Beudaert 2012, Goldapp 1991) applies directly. Kalico-aware slicers emit G5 directly and never invoke the compat layer. Risk: low. Critical-path: no longer.
 - **Shaper-aware TOPP-RA (Layer 3 → Layer 2 feedback) is wired in MVP via β-medium outer iteration**, not deferred. The original "build planner first, add shaper-aware as refinement" framing was written against an impulse-ZV-runtime MVP; the move to smooth-shaper pre-bake makes closed-form post-shape peak `|ẍ_shaped|` available analytically (polynomial extremum on the shaped NURBS's derivative), so shaper-aware feedback collapses to "solve TOPP-RA → check post-shape peak → derate accel and re-solve" — typically 2–3 outer iterations per segment, embarrassingly parallel across the existing temporal::multi 3-thread batch executor. Math-optimal trajectory at convergence (modulo TOPP-RA grid discretization). Step 8 keeps corner-blend finalization but loses shaper-aware TOPP-RA from its scope.
 - **Phase stepping (Layer 4) requires Layer 0 MCU NURBS eval but is otherwise independent of higher math layers.** Build a "dumb" version that takes pre-computed step times and does phase modulation, validate the phase-stepping firmware on its own, then integrate with the trajectory evaluator. De-risks two complex things developing in parallel.
 - **EtherCAT is genuinely additive, not coupled.** Layers 1–3 don't change for EtherCAT; only Layer 4 swaps. The architectural commitment ("planner output is curve + v(s), backend evaluates") is what makes this true. Don't build EtherCAT until phase stepping works end-to-end.
@@ -208,19 +208,20 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 4.5. [x] **Layer 2 multi-segment integration on synthetic input** — completes Layer 2. Junction velocity from curvature continuity (subsumes Sonny-Jeon JD as the G1↔G1 degenerate case), lookahead-window joining (two-pass forward/reverse smoothing across the segment buffer), and limit-change invalidation logic. Operates on a synthetic multi-segment NURBS buffer; wiring to live Layer 1 output is implicit in step 7. Must precede step 7 (MVP needs JD-quality cornering for G1↔G1, which is now a degenerate path through this same machinery).
 5. [x] **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
 6. [x] **Communication protocol and clock sync** — Layer 5
-7. [ ] **First-print MVP: end-to-end with junction-deviation on G1, G2/G3 native, smooth-ZV/smooth-MZV pre-bake, β-medium shaper-aware TOPP-RA, math-exact time-reparameterization (T-A), per-axis-scalar MCU storage, E-follows-shaped-XY foundation. No PA, no fitting, no other smooth-shaper families, no corner-blend finalization.** Decomposes into sub-projects:
+7. [ ] **First-print MVP: end-to-end on G5-only live pipeline (uniform cubic Bézier), with junction-deviation between sharp corners, smooth-ZV/smooth-MZV pre-bake, β-medium shaper-aware TOPP-RA, math-exact time-reparameterization (T-A), per-axis-scalar MCU storage, E-follows-shaped-XY foundation. No PA, no other smooth-shaper families, no corner-blend finalization, no live G0/G1/G2/G3 (handled by Step-13 offline compat layer).** Decomposes into sub-projects:
+   - **7-pre — Layer 0 / Layer 1 prep (small):** composition primitive (`x(s(t))` polynomial-of-polynomial in `nurbs::algebra`), gcode-side N≤25-grid-piece cap splitter (Layer 1 reduce stage). G2/G3 / G1 reduction code paths in `geometry::reduce` retired from the live pipeline; their substance moves to Step-13 / compat-layer scope.
    - **7-A — Layer 3 minimum (host):** time-reparam (math-exact per TOPP-RA grid piece, gcode-side N≤25 cap), per-axis smooth-ZV/smooth-MZV convolution via Layer 0 algebra, β-medium outer iteration on TOPP-RA accel limits, E-follows-XY metadata emission (`e_mode`, `extrusion_per_xy_mm`).
    - **7-B — Layer 4 (MCU):** per-axis-scalar curve-pool refactor (bumped MAX_DEGREE / MAX_CONTROL_POINTS / MAX_KNOT_VECTOR_LEN to fit post-shape NURBS), per-sample evaluator with `v_xy` integration for COUPLED_TO_XY E mode, INDEPENDENT-mode E NURBS path for retraction, real step-output replacing trace-only stub, homing/endstops, hybrid stepping for MVP (phase stepping in Step 10).
    - **7-C — klippy bridge + production host I/O:** Python ↔ Rust integration so existing Klipper configs route motion through kalico's planner; production `MsgProtoParser` (data-dictionary JSON parse) and `host_io.rs` (NAK retransmit, async event dispatch, reconnect recovery) — closing Step-6 Plan-decision-C deferrals; `arm_all_mcus` request_id correlation; `ArmError::QualityGate` detail.
    - **7-D — Hardware bring-up + first print:** Surface-C cycle-budget actuals, F4x integration for Z, M1/M2/M3 soaks, calibration, physical first print.
 
-   Prints from existing slicers — corner velocities will be conservative on G1-dense input (lots of velocity reductions at slicer-emitted G1 vertices). If the parallel kalico-aware-slicer workstream (see below) is ready by MVP time, the same MVP also prints kalico-slicer output with G5-rich corners that look better; the wording above is the floor MVP guarantees, not the ceiling.
+   **Test G-code source:** either the parallel kalico-aware-slicer workstream (which emits G5 directly) or legacy slicer G-code passed through Step-13 compat layer. The OrcaSlicer test corpus in `scripts/fitter_prototype/corpus/` (240-layer Voron cubes, G1-dense and arc-fitted) requires Step-13 normalization before the live pipeline can consume it.
 8. [ ] **Corner-blend shape finalization + smooth-shaper-family expansion** — `smooth_ei`, `smooth_2hump_ei`, `smooth_zvd_ei`, `smooth_si` added to the per-axis kernel inventory; corner-blend NURBS shape selection (curve family + control-point placement) per Tajima & Sencer 2016 under full dynamic-limit context. Completes Layer 3.
 9. [ ] **Tanh nonlinear PA + asymmetric PA on MCU** — refines Layer 4. Per-segment params (advance_accel, advance_decel, transition shape) layered onto the COUPLED_TO_XY E integration: `e_actual(t) = ratio × ∫|v_xy| dτ + advance(sign(v̇_xy)) × ratio × |v_xy(t)|`. INDEPENDENT-mode E (retraction) gets its own PA path operating on its independent NURBS. No "base E NURBS" emitted for COUPLED segments — the PA velocity term shares the same shaped-XY-velocity source the MVP integration uses.
 10. [ ] **Phase stepping current synthesis** — completes Layer 4
 11. [ ] **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
 12. [ ] **Mechanical-frequency tracking** — Layer 6
-13. [ ] **Spline fitter — optional, offline G1-compatibility addon.** Pre-processes G1-dense input from legacy (non-kalico-aware) slicers into G5-rich form as a one-shot file pass. Standard CNC literature applies (Tajima/Sencer 2016, Beudaert 2012) — none of the streaming/windowed/online-tolerance properties of the original framing are required. Output flows through the normal Layer 1+ pipeline. Optional: users on a kalico-aware slicer never invoke this.
+13. [ ] **Compatibility layer — offline legacy-G-code → G5-only normalizer.** One-shot file pre-processor that takes legacy slicer output (G0 / G1 / G2 / G3 / G5 / G5.1 mixed) and emits G5-only G-code consumable by the live pipeline. Three reduction paths: **G1 → G5** as a single-piece cubic Bézier with collinear control points at 1/3 / 2/3 lerp (degree-elevation, exact); **G2 / G3 → G5** as multi-piece cubic Bézier via Goldapp 1991 closed-form circular-arc-to-Bézier (~2 pieces per quarter-arc at 0.1 µm L∞ — published per-degree constants, no LSQ); **G5.1 → G5** by exact degree-elevation. Optional **G1-sequence spline-fitter** for users who want smoother corners than collinear-cubic G1-by-G1 produces (Tajima/Sencer 2016, Beudaert 2012; standard offline-CNC literature applies — none of the streaming/windowed/online-tolerance properties of the originally-framed live fitter are required). Output flows through the live Layer 1+ pipeline. Optional: kalico-aware slicers emit G5 directly and never invoke this.
 14. [ ] **EtherCAT backend** — Layer 6, after everything else
 
 **Parallel workstream (user, not on the kalico build-order critical path):** kalico-aware slicer fork emitting G5 directly for smooth toolpath segments and G1+tolerance hints for sharp corners (Layer 3 picks blend NURBS shape under dynamic limits per the existing CLAUDE.md feature-scope bullet). Independent of the kalico-side numbering above; affects MVP's corner quality (better with kalico-aware slicer output) but does not gate any kalico-side build-order item.
