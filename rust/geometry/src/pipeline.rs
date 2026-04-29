@@ -284,11 +284,7 @@ impl Segments<'_> {
             }
         };
 
-        // Step 2: capture start position before xyz is moved into try_new
-        // (in case we need it for a synthetic JunctionDeviation on rejection).
-        let start_position = xyz.control_points()[0];
-
-        // Step 3: classify E-mode and construct the segment.
+        // Step 2: classify E-mode and construct the segment.
         match classify_e_mode(&xyz, e_delta) {
             Ok((e_mode, extrusion_per_xy_mm, e_independent)) => {
                 match CubicSegment::try_new(
@@ -324,18 +320,16 @@ impl Segments<'_> {
                 // Drop zero-motion segments silently — no Recovery, no Fatal.
             }
             Err(GeometryError::HelicalExtrusionUnsupported) => {
-                // Synthesize a 0° JunctionDeviation at the segment's xyz start
-                // so the Item::Recovered shape matches the ParseError convention.
-                let synthetic_jd = JunctionDeviation {
-                    position: start_position,
-                    angle_deg: 0.0,
-                    feedrate_mm_s,
-                    source,
-                };
-                let recovery = Recovery::HelicalExtrusionUnsupported { line_no };
-                (self.sink)(TelemetryEvent::Recovery(recovery.clone()));
+                // Per design (CLAUDE.md feature scope), extrusion couples to XY
+                // motion only — XY+Z+E and Z+E in one G5 segment are
+                // design-rejected. Fail-closed because reduce-stage already
+                // committed modal-state side effects (position, E, prev_g5_pq)
+                // before classification reached this arm; continuation would
+                // silently start subsequent G5s from the rejected endpoint.
                 self.queue
-                    .push_back(Item::Recovered(Segment::Junction(synthetic_jd), recovery));
+                    .push_back(Item::Fatal(Fatal::HelicalExtrusionUnsupported {
+                        line_no,
+                    }));
             }
             Err(_) => unreachable!("classify_e_mode return shape is exhaustive"),
         }

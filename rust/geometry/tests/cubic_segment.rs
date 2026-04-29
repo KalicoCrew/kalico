@@ -249,11 +249,15 @@ fn live_g0_then_g5_aborts_before_emitting_stale_cubic() {
 
 #[test]
 fn live_reduce_rejects_z_plus_e_as_helical() {
-    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+    use geometry::{Fatal, FitterParams, GeometryPipeline, Item, TelemetryEvent};
 
     // G5 Z move with E delta (pure-Z+E, no XY motion). Must be rejected as
     // helical extrusion — pre-fix this leaked through as EMode::Independent
     // and the splitter would have cloned the full E curve into every child.
+    // Round-5 review fix: helical rejection now produces `Item::Fatal` (not
+    // `Recovered`) because reduce-stage already committed modal state before
+    // the pipeline classified, so a recoverable rejection let subsequent G5s
+    // start from the rejected endpoint.
     let mut p = GeometryPipeline::new(FitterParams::default());
     let mut sink = |_e: TelemetryEvent| {};
     let src = "G5 Z10 E5 I0 J0 P0 Q0 F1500\n";
@@ -262,9 +266,47 @@ fn live_reduce_rejects_z_plus_e_as_helical() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Recovered(_, Recovery::HelicalExtrusionUnsupported { .. })
+            Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. })
         )),
-        "pure-Z+E G5 should produce Recovery::HelicalExtrusionUnsupported, got {items:#?}"
+        "pure-Z+E G5 should produce Item::Fatal(Fatal::HelicalExtrusionUnsupported); got {items:#?}"
+    );
+}
+
+#[test]
+fn helical_rejection_aborts_before_subsequent_g5_can_inherit_stale_state() {
+    use geometry::{Fatal, FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
+
+    // Pre-fix bug (round-5 Claim G): the first G5's helical rejection did
+    // NOT terminate the pipeline; reduce-stage had already committed
+    // state.position = [10, 0, 5] and state.e = 2 before pipeline
+    // classified the move as helical. The follow-up valid G5 then started
+    // its cubic from [10, 0, 5] instead of [0, 0, 0].
+    //
+    // Post-fix: helical rejection produces Item::Fatal, the iterator goes
+    // terminal, the second G5 never reaches handle_event.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_e: TelemetryEvent| {};
+    let src = "G5 X10 Y0 Z5 I0 J3 P0 Q-3 E2 F1500\nG5 X20 Y0 I3 J3 P-3 Q3 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    // Must contain Item::Fatal for the first (helical) G5.
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. })
+        )),
+        "expected Item::Fatal(HelicalExtrusionUnsupported), got {items:#?}"
+    );
+
+    // Must NOT contain a Segment::Cubic from the second G5 — the iterator
+    // should have gone terminal on the Fatal.
+    let cubic_count = items
+        .iter()
+        .filter(|item| matches!(item, Item::Segment(Segment::Cubic(_))))
+        .count();
+    assert_eq!(
+        cubic_count, 0,
+        "post-Fatal cubic emission means the iterator continued past the rejection; got {cubic_count} cubics in {items:#?}"
     );
 }
 

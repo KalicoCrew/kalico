@@ -171,14 +171,18 @@ fn g5_1_outside_g17_plane_emits_recovery() {
 
 #[test]
 fn g5_with_z_motion_rejected_as_helical_extrusion_when_e_present() {
-    // G5 with both Z and E → helical extrusion (rejected by classifier).
+    // G5 with both Z and E → helical extrusion (design-rejected by classifier).
+    // Round-5 review fix: surfaces as Item::Fatal (not Recovered) because
+    // reduce-stage commits modal state before classification — recoverable
+    // rejection would let subsequent G5s start from the rejected endpoint.
+    use geometry::Fatal;
     let (items, _events) = process("G1 X0 Y0 Z0 F1500\nG5 X10 Y0 Z0.3 E0.5 I3 J3 P-3 Q3\n");
     let helical = items
         .iter()
-        .find(|it| matches!(it, Item::Recovered(_, Recovery::HelicalExtrusionUnsupported { .. })));
+        .find(|it| matches!(it, Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. })));
     assert!(
         helical.is_some(),
-        "expected HelicalExtrusionUnsupported recovery, got {items:#?}"
+        "expected Item::Fatal(HelicalExtrusionUnsupported), got {items:#?}"
     );
 }
 
