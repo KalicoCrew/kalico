@@ -147,7 +147,7 @@ in the output.
 | M82/M83 | Update modal state. NOT emitted (output forced M82). |
 | G92 | Update modal state AND pass through. |
 | G17 | Update modal state. Pass through. |
-| G18/G19 | Update modal state. Pass through only if no subsequent motion uses G5 in that plane (the live pipeline rejects non-XY G5). If G18/G19 is followed by G2/G3 arcs, those arcs produce a fatal error. A `G17` is emitted before the first G5 after any G18/G19 to ensure the live pipeline sees XY plane. |
+| G18/G19 | Update modal state. **Stripped from output** — all output is XY-plane G5, so G18/G19 are semantically meaningless and would cause the live pipeline to reject subsequent G5 with `G5PlaneMismatch`. If G18/G19 is followed by G2/G3 arcs, those arcs produce a fatal error. |
 | M-codes | Pass through verbatim. |
 | T-codes | Pass through verbatim. |
 | Full-line comments | Pass through verbatim. |
@@ -225,17 +225,24 @@ E_segment = total_ΔE_input × (arc_length_segment / total_arc_length_fitted)
 This preserves constant extrusion per mm of actual toolhead travel. If the
 fitted path is shorter or longer than the input polyline, the extrusion rate
 per mm adjusts but total ΔE for the run is preserved exactly — output modal
-E position stays consistent with input, preventing drift in subsequent
-absolute E commands.
+E position stays consistent with input.
+
+**Implementation note**: the converter maintains two E trackers: (1) *input E*
+(absolute cumulative from the source file, used to compute the slicer's
+intended extrusion ratio per run), and (2) *output E* (absolute cumulative
+emitted to the output file). These track independently because the complete
+file transform recomputes all output E values.
 
 ### Z handling
 
 The fitter operates in 3D (XYZ). The XY components are fitted as a cubic
 B-spline. Z is constrained by the output format: each G5 piece has endpoint Z
-with interior control-point Z at linear 1/3/2/3 interpolation. The fitter
-verifies the 3D deviation (including Z error from the linear constraint)
-against the configured tolerance. Where Z varies significantly (vase mode,
-layer transitions), tolerance enforcement naturally produces shorter pieces so
+with interior control-point Z at linear 1/3/2/3 interpolation. After
+decomposing the B-spline into Bézier pieces and forcing linear Z on each
+piece, the fitter performs a **post-linear-Z-forcing tolerance recheck** in
+3D. If any piece's Z deviation (from the linear constraint) pushes 3D error
+above tolerance, that piece is split further. Where Z varies significantly
+(vase mode, layer transitions), this naturally produces shorter pieces so
 the per-piece linear Z approximation stays within tolerance.
 
 ### Tangent handoff (Approach C)
@@ -264,6 +271,7 @@ endpoint tangent is stored during Goldapp conversion.
 ; Tolerance: <tolerance_µm> µm
 G90
 M82
+G17
 ```
 
 ### G5 line format
