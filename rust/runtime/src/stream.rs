@@ -9,7 +9,7 @@
 //! FgState` because under the disabled-IRQ window it transiently projects to
 //! the ISR-owned queue consumer and clears the engine's in-flight segment as
 //! defense-in-depth. The discipline contract is preserved: at most one of
-//! foreground (FgState) or ISR (IsrState) projection is live at any moment.
+//! foreground (`FgState`) or ISR (`IsrState`) projection is live at any moment.
 
 #![allow(unsafe_code)]
 
@@ -171,7 +171,7 @@ pub fn terminal(fg: &mut FgState, shared: &SharedState, segment_id: u32) -> i32 
 /// Subsequent boundary-loop on empty queue → Drained, not Underrun.
 ///
 /// Does NOT clear `terminal_segment_id_set`/`terminal_segment_id_value`;
-/// foreground (next stream_open / flush) owns clearing per Round-2 B14.
+/// foreground (next `stream_open` / flush) owns clearing per Round-2 B14.
 pub fn check_terminal_on_retire(shared: &SharedState, retired_seg_id: u32) {
     if !shared.terminal_segment_id_set.load(Ordering::Acquire) {
         return;
@@ -187,7 +187,7 @@ pub fn check_terminal_on_retire(shared: &SharedState, retired_seg_id: u32) {
 /// `kalico_clock_sync_request` handler. §12.1.
 ///
 /// Phase-6 returns the §11.4 widened-now snapshot. Phase 8's clock-sync
-/// machinery uses the request_id / host_send_time to form a complete
+/// machinery uses the `request_id` / `host_send_time` to form a complete
 /// round-trip estimate; here we just sample MCU clock and let the host do
 /// the math.
 pub fn clock_sync_respond(
@@ -206,15 +206,15 @@ pub fn clock_sync_respond(
 /// §8.5 flush sequence per Plan-decision A.
 ///
 /// Plan-decision A ordering:
-///   1. force_idle = true
-///   2. spin-wait for acked_force_idle with 1 ms wall-clock timeout
-///   3. THEN stream_open = false (only after ISR ack — avoids spurious
+///   1. `force_idle` = true
+///   2. spin-wait for `acked_force_idle` with 1 ms wall-clock timeout
+///   3. THEN `stream_open` = false (only after ISR ack — avoids spurious
 ///      Underrun race against an in-flight ISR mid-tick)
 ///   4. IRQ-disable + drain queue + clear in-flight segment
-///   5. reset every slot's last_retired_gen to current_gen
-///   6. bump credit_epoch
-///   7. clear flags + reset stream-machine + clear terminal_segment_id
-///   8. clear acked_force_idle + force_idle (ISR resumes on next tick)
+///   5. reset every slot's `last_retired_gen` to `current_gen`
+///   6. bump `credit_epoch`
+///   7. clear flags + reset stream-machine + clear `terminal_segment_id`
+///   8. clear `acked_force_idle` + `force_idle` (ISR resumes on next tick)
 ///
 /// Takes `*mut RuntimeContext` because step 4 transiently projects to
 /// `IsrState.queue_consumer` under disabled IRQ. The half-split discipline

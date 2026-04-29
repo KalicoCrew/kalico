@@ -688,7 +688,7 @@ pub mod exports {
 
     /// `kalico_stream_flush` — `force_idle` handshake (§8.5).
     ///
-    /// flush() projects to both halves under disabled-IRQ, so we hand it
+    /// `flush()` projects to both halves under disabled-IRQ, so we hand it
     /// the raw `*mut RuntimeContext` directly rather than going through
     /// the foreground-only `project_fg` helper. SAFETY: caller is the
     /// single-threaded foreground command dispatch.

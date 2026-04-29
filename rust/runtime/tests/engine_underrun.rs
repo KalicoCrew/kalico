@@ -1,7 +1,12 @@
 //! Step-6 §8.2 boundary-drain branch tests:
 //!   queue empty + stream_open=false → Drained (or Idle initially).
 //!   queue empty + stream_open=true  → KALICO_FAULT_UNDERRUN.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::doc_markdown
+)]
 
 use core::sync::atomic::Ordering;
 

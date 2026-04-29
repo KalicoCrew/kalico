@@ -255,8 +255,8 @@ impl CurvePool {
     /// alloc predicate is `current_gen == last_retired_gen`). This is
     /// safe under the flush contract: by the time foreground reaches
     /// step 5, the queue has been drained, the engine's in-flight segment
-    /// is cleared, and no Segment in flight references any slot — so we
-    /// can declare every slot reclaimed without waiting for SEGMENT_END
+    /// is cleared, and no `Segment` in flight references any slot — so we
+    /// can declare every slot reclaimed without waiting for `SEGMENT_END`
     /// trace events that will never come.
     pub fn reset_all_retired_to_current(&self) {
         for slot in &self.slots {
