@@ -17,6 +17,13 @@ static_assertions = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Loom is gated on `cfg(loom)` so it never enters the regular dev/test
+# graph. Run loom tests with:
+#   RUSTFLAGS="--cfg loom" cargo test -p runtime --release \
+#     --test loom_seqlock --test loom_spsc_split
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
+
 [features]
 default = ["host"]
 host = ["nurbs/host"]
