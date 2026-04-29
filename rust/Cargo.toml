@@ -1,5 +1,13 @@
 [workspace]
-members = ["nurbs", "kalico-c-api", "gcode", "geometry", "temporal", "runtime"]
+members = [
+    "nurbs",
+    "kalico-c-api",
+    "gcode",
+    "geometry",
+    "temporal",
+    "runtime",
+    "kalico-host-rt",
+]
 exclude = ["gcode/fuzz"]
 resolver = "2"
 

@@ -1,0 +1,35 @@
+[package]
+name = "kalico-host-rt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Standalone Rust host runtime for kalico — owns USB-CDC fd, drives MCU comms protocol, runs clock-freq estimator and credit-based flow control."
+license.workspace = true
+
+# Plan-decision C (Round-3-corrected): Step 6 ships a minimal `host_io.rs` shim
+# (connect/identify/send/recv-with-timeout) implementing the `Transport` trait.
+# Production-grade hardening (NAK retransmit, async event dispatch thread,
+# reconnect race recovery) is Step 7 MVP work. The optional `python-bridge`
+# feature is reserved for a future PyO3 shim against `tools/kalico_host_io.py`;
+# Step 6 only declares the dependency.
+
+[dependencies]
+serialport = "4"
+# `crc` was on the original plan ingredients list but we hand-roll
+# Klipper's bespoke crc16-ccitt-variant in host_io.rs to match the
+# Python helper byte-for-byte (see `crc16_ccitt`); the canned crate
+# polynomials don't match. Step-7 MVP can revisit if the hand-rolled
+# loop becomes a hotspot.
+log = "0.4"
+
+[dependencies.pyo3]
+version = "0.22"
+optional = true
+
+[features]
+default = []
+python-bridge = ["dep:pyo3"]
+
+[lints]
+workspace = true
