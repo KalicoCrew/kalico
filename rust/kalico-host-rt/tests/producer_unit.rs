@@ -30,11 +30,33 @@ fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
     assert_eq!(info.credit_epoch, 7);
     assert_eq!(credit.available(), 3, "credit decremented exactly once");
     let last = io.last_sent().unwrap();
+    // Closure-review fix: assertions MUST mirror the firmware's
+    // DECL_COMMAND format string verbatim — `curve_handle=` (not
+    // `_packed`), `kinematics=` (not `kin`), and `t_start_hi` ahead of
+    // `t_start_lo`.
     assert!(last.contains("id=42"));
-    assert!(last.contains("curve_handle_packed=3405691582"));
+    assert!(last.contains("curve_handle=3405691582"));
+    assert!(!last.contains("curve_handle_packed="),
+        "must not use the legacy `_packed` suffix; firmware DECL_COMMAND \
+         is `curve_handle=%u`");
     assert!(last.contains("t_start_lo=1000"));
     assert!(last.contains("t_end_lo=2000"));
-    assert!(last.contains("kin=0"));
+    assert!(last.contains("kinematics=0"));
+    assert!(!last.contains("kin=0"),
+        "must not use legacy `kin=`; firmware is `kinematics=%c`");
+    // Field ordering — `t_start_hi` must come before `t_start_lo`.
+    let hi_pos = last.find("t_start_hi=").expect("t_start_hi missing");
+    let lo_pos = last.find("t_start_lo=").expect("t_start_lo missing");
+    assert!(
+        hi_pos < lo_pos,
+        "t_start_hi must precede t_start_lo to match firmware DECL_COMMAND"
+    );
+    let end_hi_pos = last.find("t_end_hi=").expect("t_end_hi missing");
+    let end_lo_pos = last.find("t_end_lo=").expect("t_end_lo missing");
+    assert!(
+        end_hi_pos < end_lo_pos,
+        "t_end_hi must precede t_end_lo to match firmware DECL_COMMAND"
+    );
 }
 
 #[test]

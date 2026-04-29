@@ -98,10 +98,20 @@ pub fn push_segment_with_timeout<T: Transport>(
 ) -> Result<PushedSegmentInfo, ProducerError> {
     credit.try_acquire().ok_or(ProducerError::NoCredit)?;
 
+    // Field names + ordering MUST match the firmware's DECL_COMMAND format
+    // string in `src/runtime_tick.c`:
+    //   "kalico_push_segment id=%u curve_handle=%u t_start_hi=%u t_start_lo=%u "
+    //   "t_end_hi=%u t_end_lo=%u kinematics=%c"
+    // Closure-review fix: prior code emitted `curve_handle_packed=`,
+    // `t_start_lo` BEFORE `t_start_hi`, and `kin=` — three concrete
+    // mismatches that would silently fail msgproto encoding the moment a
+    // real Klipper data dictionary is loaded. The unit-test harness
+    // passes through MockTransport's permissive parser, which is why the
+    // bug shipped.
     let cmd = format!(
-        "kalico_push_segment id={id} curve_handle_packed={curve_handle_packed} \
-         t_start_lo={t_start_lo} t_start_hi={t_start_hi} \
-         t_end_lo={t_end_lo} t_end_hi={t_end_hi} kin={kinematics}",
+        "kalico_push_segment id={id} curve_handle={curve_handle_packed} \
+         t_start_hi={t_start_hi} t_start_lo={t_start_lo} \
+         t_end_hi={t_end_hi} t_end_lo={t_end_lo} kinematics={kinematics}",
         t_start_lo = t_start as u32,
         t_start_hi = (t_start >> 32) as u32,
         t_end_lo = t_end as u32,
