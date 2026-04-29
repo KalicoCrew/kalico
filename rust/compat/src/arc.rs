@@ -131,6 +131,9 @@ pub fn arc_start_tangent(params: &ArcParams) -> [f64; 2] {
     let sx = params.start[0] - params.center[0];
     let sy = params.start[1] - params.center[1];
     let r = sx.hypot(sy);
+    if r < 1e-12 {
+        return [1.0, 0.0];
+    }
     if params.clockwise {
         [sy / r, -sx / r]
     } else {
@@ -146,6 +149,9 @@ pub fn arc_endpoint_tangent(params: &ArcParams) -> [f64; 2] {
     let ex = params.end[0] - params.center[0];
     let ey = params.end[1] - params.center[1];
     let r = ex.hypot(ey);
+    if r < 1e-12 {
+        return [1.0, 0.0];
+    }
     if params.clockwise {
         [ey / r, -ex / r]
     } else {

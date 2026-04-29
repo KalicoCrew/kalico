@@ -30,7 +30,7 @@ impl fmt::Display for G5Line {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "G5 X{:.3} Y{:.3} Z{:.3} I{:.3} J{:.3} P{:.3} Q{:.3} E{:.5}",
+            "G5 X{:.4} Y{:.4} Z{:.4} I{:.4} J{:.4} P{:.4} Q{:.4} E{:.5}",
             self.x, self.y, self.z, self.i, self.j, self.p, self.q, self.e
         )?;
         if let Some(feed) = self.f {

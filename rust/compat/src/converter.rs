@@ -184,8 +184,26 @@ fn dispatch_g_code(
             let (tokens, idx) = tokens_and_idx;
             handle_g2_g3(ctx, major, params, line_no, tokens, idx)
         }
-        (5, None) => handle_g5(ctx, params, line_no),
-        (5, Some(1)) => handle_g51(ctx, params, line_no),
+        (5, None) => {
+            if ctx.state.active_plane != Plane::XY {
+                return Err(ConvertError::Fatal(format!(
+                    "line {line_no}: G5 under non-XY plane is unsupported"
+                )));
+            }
+            handle_g5(ctx, params, line_no)
+        }
+        (5, Some(1)) => {
+            if ctx.state.active_plane != Plane::XY {
+                return Err(ConvertError::Fatal(format!(
+                    "line {line_no}: G5.1 under non-XY plane is unsupported"
+                )));
+            }
+            handle_g51(ctx, params, line_no)
+        }
+        (20, None) => Err(ConvertError::Fatal(format!(
+            "line {line_no}: G20 (inch mode) is not supported; input must be in mm (G21)"
+        ))),
+        (21, None) => Ok(()),
         (90, None) => {
             ctx.state.absolute_xyz = true;
             Ok(())
@@ -306,13 +324,14 @@ fn handle_g0_g1(
             line_no,
         });
     } else {
-        // E-only or Z-only move: flush run, emit collinear.
+        // E-only or Z-only move: flush run, emit collinear, clear tangent.
         flush_run(ctx, None);
         let e_abs = resolved_e.unwrap_or(ctx.state.output_e);
         let f_emit = f_if_changed(feedrate, &mut ctx.last_emitted_f);
         let line = to_collinear_g5(ctx.state.position, end_pos, e_abs, f_emit);
         writeln_out(&mut ctx.out, &line.to_string());
         ctx.state.output_e = e_abs;
+        ctx.state.prev_tangent = None;
     }
 
     ctx.state.position = end_pos;
