@@ -9,17 +9,29 @@ use crate::curve_pool::{CurveHandle, CurvePool, CurveView};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
 use crate::queue::Q_N;
-use crate::segment::{KinematicTag, Segment};
+use crate::segment::{KinematicTag, SEGMENT_FLAG_HOLD_SEGMENT, Segment};
 use crate::slot::{IsSlot, PaSlot};
 use crate::state::{SharedState, TickState};
 use crate::trace::{
-    TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample,
+    TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_HOLD_SAMPLE, TRACE_FLAG_SEGMENT_END, TRACE_RING_N,
+    TraceSample,
 };
 
 /// Bounded sub-tick boundary-loop iteration count.
-/// Matches `Q_N` (queue capacity = 8) so a single tick can at most carry
-/// across one full queue's worth of zero-duration segments before faulting.
-const MAX_BOUNDARY_ITERS: u32 = 8;
+///
+/// Step-6 Phase 12.2: aligned to the queue's effective capacity (`Q_N - 1 = 7`)
+/// so the bound matches what the public producer API can actually cram into
+/// a single tick. With `Q_N = 8` the heapless SPSC effective cap is 7, plus
+/// the engine's in-flight `current` makes 8 retire-able segments per tick;
+/// `MAX_BOUNDARY_ITERS = 7` lets the boundary loop iterate 7 times (one per
+/// retire) and fault on the 8th — which is reachable only via the
+/// `#[cfg(test)] inject_iter_count` injection (the producer can never legally
+/// stuff more than 7 zero-duration segments into the queue at once).
+const MAX_BOUNDARY_ITERS: u32 = (Q_N - 1) as u32;
+
+/// Throttle for the optional `TRACE_FLAG_HOLD_SAMPLE` trace event (§6.5).
+/// At 40 kHz tick rate, ~10 ms = 400 ticks between hold-sample emissions.
+const HOLD_SAMPLE_TICK_PERIOD: u32 = 400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -52,6 +64,20 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     pub(crate) status: AtomicU8,
     pub(crate) last_error: AtomicI32,
     pub(crate) tick_counter: TickCounter,
+    /// §6.5 throttle: ticks since last `TRACE_FLAG_HOLD_SAMPLE` emission.
+    /// Reset on segment activation; incremented per hold tick. At ~10 ms
+    /// (`HOLD_SAMPLE_TICK_PERIOD = 400`) we drop one breadcrumb sample.
+    hold_sample_ticks: u32,
+    /// Phase 12.2 test-only injection — when non-zero, the boundary loop
+    /// pretends it has already iterated this many times before the first
+    /// carry, so the `n+1`-th carry trips the `MAX_BOUNDARY_ITERS` guard.
+    /// Allows `cfg(any(test, feature = "test-injection"))` callers to reach
+    /// the otherwise-defense-in-depth fault path without trying to overstuff
+    /// the queue (which the public producer API rejects via
+    /// `KALICO_ERR_QUEUE_FULL`). Gated so production builds don't carry the
+    /// field at all.
+    #[cfg(any(test, feature = "test-injection"))]
+    pub(crate) injected_iter_start: u32,
 }
 
 impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
@@ -65,6 +91,9 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             status: AtomicU8::new(RuntimeStatus::Idle as u8),
             last_error: AtomicI32::new(0),
             tick_counter: TickCounter::new(),
+            hold_sample_ticks: 0,
+            #[cfg(any(test, feature = "test-injection"))]
+            injected_iter_start: 0,
         }
     }
 
@@ -109,6 +138,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     #[allow(dead_code)] // Wired in Phase 7.
     pub(crate) fn clear_current(&mut self) {
         self.current = None;
+    }
+
+    /// Phase 12.2 test-only helper: prime the boundary-loop iteration
+    /// counter so the next tick that carries across one segment boundary
+    /// trips the `MAX_BOUNDARY_ITERS` fault. The public producer API caps
+    /// the queue at `Q_N - 1 = 7`, which combined with the in-flight segment
+    /// puts the natural reachable max at 7 carries — exactly the bound.
+    /// Without this injection the fault path is dead defense-in-depth.
+    /// Gated on `cfg(any(test, feature = "test-injection"))` so production
+    /// builds neither carry the field nor expose the setter.
+    #[cfg(any(test, feature = "test-injection"))]
+    pub fn inject_iter_count(&mut self, n: u32) {
+        self.injected_iter_start = n;
     }
 
     /// Latch FAULT and emit one fault marker sample (last-known-good motors,
@@ -236,7 +278,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         shared: &SharedState,
     ) -> Result<(), RuntimeError> {
         // Step 3: sub-tick boundary loop. Spec §4.2 step 3 — bounded by queue depth.
-        let mut iters = 0u32;
+        // Phase 12.2 test injection: prime `iters` so the test can reach the
+        // `MAX_BOUNDARY_ITERS` fault path without overstuffing the queue.
+        #[cfg(any(test, feature = "test-injection"))]
+        let mut iters: u32 = self.injected_iter_start;
+        #[cfg(not(any(test, feature = "test-injection")))]
+        let mut iters: u32 = 0;
         let mut t_segment = now.saturating_sub(current.t_start);
         while t_segment >= current.duration() {
             iters += 1;
@@ -263,6 +310,24 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // segment id and we're retiring it now, clear `stream_open` so
             // the next empty-queue observation goes to Drained, not Underrun.
             crate::stream::check_terminal_on_retire(shared, current.id);
+            // §6.5: hold segments retire identically to motion segments —
+            // emit SEGMENT_END so foreground reclaim sees the retirement,
+            // even though the boundary-loop branch never evaluates the
+            // curve. The sentinel handle's slot_idx is u16::MAX which
+            // `confirm_retired` no-ops on (out of slots range), preserving
+            // the "hold segments don't allocate slots" invariant.
+            if current.flags & SEGMENT_FLAG_HOLD_SEGMENT != 0 {
+                let _ = trace.enqueue(TraceSample {
+                    tick: now,
+                    motor_a: self.last_motors[0],
+                    motor_b: self.last_motors[1],
+                    motor_e: self.last_motors[2],
+                    segment_id: current.id,
+                    curve_handle: current.curve_handle,
+                    flags: TRACE_FLAG_SEGMENT_END,
+                    _pad: [0; 3],
+                });
+            }
             // Drop current; advance to next.
             let Some(next) = queue.dequeue() else {
                 // No next segment — drained. §8.2: queue empty + stream_open=true
@@ -285,12 +350,68 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             current = next;
             current.t_start = now.saturating_sub(delta_t);
             t_segment = delta_t;
+            // Reset hold-sample throttle on segment activation so a fresh
+            // hold window emits its first breadcrumb early.
+            self.hold_sample_ticks = 0;
             // Round-2 B14: new segment activated mid-boundary loop — publish
             // the current id so foreground sees the transition.
             shared
                 .current_segment_id
                 .store(current.id, Ordering::Release);
         }
+
+        // §6.5 hold-segment short-circuit: AFTER force_idle (handled in
+        // tick(), at the very top), AFTER the boundary loop (so retiring
+        // a hold still emits SEGMENT_END), but BEFORE pool.resolve — hold
+        // segments carry `CurveHandle::HOLD_SEGMENT_SENTINEL` (slot=u16::MAX,
+        // gen=u16::MAX) which would fail lookup. ISR repeats the last
+        // emitted motor positions; foreground sees the stream stay alive
+        // across long Z-idle stretches without underrun.
+        if current.flags & SEGMENT_FLAG_HOLD_SEGMENT != 0 {
+            // Optional throttled HOLD_SAMPLE breadcrumb (§6.5). Emits at
+            // most once per ~10 ms while the hold window is active.
+            self.hold_sample_ticks = self.hold_sample_ticks.saturating_add(1);
+            if self.hold_sample_ticks >= HOLD_SAMPLE_TICK_PERIOD {
+                self.hold_sample_ticks = 0;
+                let _ = trace.enqueue(TraceSample {
+                    tick: now,
+                    motor_a: self.last_motors[0],
+                    motor_b: self.last_motors[1],
+                    motor_e: self.last_motors[2],
+                    segment_id: current.id,
+                    curve_handle: current.curve_handle,
+                    flags: TRACE_FLAG_HOLD_SAMPLE,
+                    _pad: [0; 3],
+                });
+            }
+            // SEGMENT_END at retire — same path as motion segments. The
+            // boundary loop above already handled the case where now has
+            // already crossed t_end; here we check whether the next tick
+            // would do so, and pre-emit the SEGMENT_END flag now.
+            let next_t_segment = t_segment.saturating_add(self.one_tick_cycles_value);
+            if next_t_segment >= current.duration() {
+                let _ = trace.enqueue(TraceSample {
+                    tick: now,
+                    motor_a: self.last_motors[0],
+                    motor_b: self.last_motors[1],
+                    motor_e: self.last_motors[2],
+                    segment_id: current.id,
+                    curve_handle: current.curve_handle,
+                    flags: TRACE_FLAG_SEGMENT_END,
+                    _pad: [0; 3],
+                });
+                shared
+                    .retired_through_segment_id
+                    .store(current.id, Ordering::Release);
+                crate::stream::check_terminal_on_retire(shared, current.id);
+            }
+            self.current = Some(current);
+            self.tick_counter.increment();
+            self.status
+                .store(RuntimeStatus::Running as u8, Ordering::Release);
+            return Ok(());
+        }
+
         // Step 4: curve evaluation. Spec invariant: segments are time-parameterized.
         let Some(curve_view) = pool.resolve(current.curve_handle) else {
             self.latch_fault(

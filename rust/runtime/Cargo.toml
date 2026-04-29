@@ -29,6 +29,12 @@ default = ["host"]
 host = ["nurbs/host"]
 mcu-h7 = ["nurbs/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4"]
+# Phase 12.2: gates the `Engine::inject_iter_count` test-only injection
+# so integration tests can reach the otherwise-defense-in-depth
+# `MAX_BOUNDARY_ITERS` fault path. NOT in default. Consumers (kalico-c-api,
+# host-rt) take `default-features = false`, so production firmware never
+# carries the field. Tests opt in via `--features test-injection` (or the
+# `[features]` test-default below in this Cargo.toml — keep them aligned).
 # Sim-only escape hatch (Step-6 plan Phase 0 Task 0.2). Enables the
 # `sim_fixtures` module of pre-baked NURBS curves used by the
 # `kalico_runtime_load_fixture` FFI. Gated on CONFIG_KALICO_SIM=y in the
@@ -39,6 +45,14 @@ mcu-f4 = ["nurbs/mcu-f4"]
 # the fixture path bypasses validation by using pre-validated static data.
 kalico-sim = []
 loom = []  # gates loom-tests under cfg(loom)
+# Phase 12.2: test-only injection point for `MAX_BOUNDARY_ITERS` so the
+# integration test can reach the otherwise-defense-in-depth fault path
+# without overstuffing the queue (which the public producer API rejects).
+# Enabled by `cargo test` automatically via `[features]` default... no:
+# we enable it from individual integration tests via `--features
+# test-injection` rather than wiring it into the default set, because we
+# don't want production builds to carry the injection field.
+test-injection = []
 
 [lints]
 workspace = true
