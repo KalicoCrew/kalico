@@ -11,10 +11,11 @@ We are working on a complete rewrite of the motion planner and more:
 - Phase stepping with open loop steppers with BTT Octopus pro and similar (H723 chip)
 - EtherCAT support as a future backend, with the planner architecturally designed to accommodate it
 - Regular stepping for non-phase-capable drivers (e.g. 2209 on Z)
-- Only smooth shaper support, pre-baked into NURBS. Possibly impulse shapers in the future as composition.
-- Extruder is synchronized to the motion after IS is applied.
-- Non-linear PA from bleeding-edge kalico, applied IS-then-PA
-- Axis limits are calculated against shaped dynamics (shaper aware TOPP-RA, not fixed de-rating)
+- Only smooth shaper support, pre-baked into NURBS. MVP scope is `smooth_zv` and `smooth_mzv` (bleeding-edge-v2 `init_smoother` polynomial kernels); other smooth families (`smooth_ei`, `smooth_2hump_ei`, `smooth_zvd_ei`, `smooth_si`) are post-MVP. Possibly impulse shapers in the future as composition.
+- Per-axis kernels: X and Y configurable and required; Z configurable and default-off (passthrough); E is **not** a separately-shaped axis — see next bullet.
+- **Extruder is a follower of the shaped toolhead motion, not an independent axis.** During extruding moves, E_actual(t) = `extrusion_per_xy_mm` × ∫₀ᵗ √(Ẋ_shaped(τ)² + Ẏ_shaped(τ)²) dτ — derived per-sample on the MCU from the same shaped XY trajectory the steppers are tracking. This is the "no desync, by construction" foundation: per-axis IS dispersion gets absorbed because E follows actual toolhead arc-length-traveled. No separate "extruder smoother" family; bleeding-edge-v2's `extruder_smoother.py` synchronization-hack does not apply. Retraction / prime / filament-change segments (E motion with no XY) carry their own un-shaped E NURBS.
+- Non-linear PA from bleeding-edge kalico (Step 9) layers cleanly onto the E-follows-XY architecture: PA adds `+ advance × ratio_per_xy_mm × |v_xy(t)|` to the integrated extrusion. Asymmetric PA (separate K_accel vs K_decel) dispatches on `sign(v̇_xy)`. No second IS-PA synchronization step — IS and PA share the same shaped-velocity source.
+- Axis limits are calculated against shaped dynamics (shaper-aware TOPP-RA via β-medium outer iteration: solve TOPP-RA, pre-bake smooth shaper, evaluate closed-form post-shape peak |ẍ_shaped| from x(t)'s analytic derivatives, derate accel and re-solve until peak ≤ a_machine — no fixed de-rating constant)
 - Third order motion as primary profile
 - User configurable corner rounding. Optimal blend shape (curve family + control parameters) is genuinely dynamic-limit-dependent — the curve that minimizes time through a corner at a given tolerance differs across accel/jerk regimes — so shape selection happens in Layer 3 with full dynamic-limit context, not at geometric receive time.
 - Real time communication with MCUs, no queue-based offload.
@@ -22,7 +23,6 @@ We are working on a complete rewrite of the motion planner and more:
 - Telemetry as a first-class subsystem
 - Explicit position/step decoupling. For future closed loop support.
 - Real-time per-axis offset applied outside the planner, for bed mesh, thermal expansion compensation, and probing.
-- Asymmetric PA (separate K for accel vs decel)
 
 
 # Target hardware
@@ -81,7 +81,7 @@ Depends on Layer 1 NURBS output. Produces v(s) per segment.
 - **Lookahead-window joining.** Two-pass forward/reverse smoothing across the segment buffer to reconcile end-of-N velocities with start-of-N+1 velocities. Standard planner work.
 - **Limit-change invalidation logic.** Mark unprocessed segments dirty on M-code limit changes, recompute v(s) only for them.
 
-Build Layer 2 with the unshaped dynamics constraint first — that gets you a working planner. Shaper-awareness is a Layer 3 add-on that feeds back into Layer 2's constraint set.
+Layer 2 was built first against unshaped dynamics (Steps 4 + 4.5 — that's a working planner). Shaper-awareness is a Layer 3 add-on that feeds back into Layer 2's constraint set; in MVP it lands as the β-medium outer iteration over Step-4.5's `plan_batch` (see Layer 3 / Step 7).
 
 ## Layer 3 — Trajectory transformations (pre-bake)
 
@@ -89,23 +89,22 @@ Depends on Layers 1 and 2. This is where the algebraic-closure principle plays o
 
 ### Pre-bakes on the host
 
-- **Corner-blend shape finalization.** Take Layer 1's parameterized blend slots (tolerance budget + tangent + segment-length context) and select curve family + control-point placement to minimize time through the corner under current dynamic limits and ringing budget. Output replaces the slot with a finalized NURBS in the segment stream. Per Tajima & Sencer 2016. Runs before TOPP-RA — geometry must be finalized before v(s) is computed against it.
-- **Impulse-shaper application:** produce per-axis impulse table that travels with the segment.
-- **Reparameterize geometry to time.** After TOPP-RA produces v(s), compose the geometric NURBS in s with the time-mapping s(t) (inverse of t(s) = ∫ds/v) to get a time-parameterized piecewise NURBS x(t). This is a NURBS-of-piecewise-polynomial composition; result has more pieces per segment (~3–7) but stays piecewise-polynomial. Required because the shaper math is time-domain.
-- **Smooth-shaper application:** convolve the time-reparameterized NURBS x(t) with the polynomial kernel w(t) analytically, produce shaped (higher-degree) NURBS in t. Kernel support is a few ms; output piece count grows by O(input pieces × kernel pieces).
-- **Shaper-aware acceleration constraint:** because x(t) is known in closed form post-shaping, peak shaped acceleration is derivable from its derivatives directly. Feed this back to TOPP-RA as a constraint. The "shaper-overshoot factor" is a derived quantity, not a magic number. This is the Layer 2 ↔ Layer 3 feedback. Implement Layer 2 first without it; add as refinement.
+- **Corner-blend shape finalization** *(Step 8, not MVP).* Take Layer 1's parameterized blend slots (tolerance budget + tangent + segment-length context) and select curve family + control-point placement to minimize time through the corner under current dynamic limits and ringing budget. Output replaces the slot with a finalized NURBS in the segment stream. Per Tajima & Sencer 2016. Runs before TOPP-RA — geometry must be finalized before v(s) is computed against it.
+- **Reparameterize geometry to time — math-exact (T-A).** After TOPP-RA produces b(s)=v²(s) at N grid points, on each piece b is piecewise-linear in s, so the per-piece time map `s(t) = √b_k·(t−t_k) + (b₁/4)·(t−t_k)²` is *exactly* degree-2 in t (closed-form, not approximated). Composition with polynomial geometry x(s) (degree 1/2/3 for G1/G2-G3/G5) gives `x(t)` as N pieces of degree `2·d_x_geom` ≤ 6 per segment, C¹ at TOPP-RA grid joints (a/jerk/snap discontinuous there). Per-axis scalar storage on the MCU; per-segment N is capped via gcode-side splitting (default cap N≤25 grid pieces ≈ 12.5 mm path-length per "MCU segment") to bound curve-pool slot size. Position-error budget vs. the math-exact reference: 0 by construction.
+- **Smooth-shaper application:** convolve the time-reparameterized NURBS x(t) with the polynomial kernel w(t) analytically (per-axis, `smooth_zv` / `smooth_mzv` from bleeding-edge-v2 `init_smoother` — single-piece degree-4 polynomial of compact support `[-T_sm/2, T_sm/2]`, T_sm = 0.8025/f or 0.95625/f). Output is a piecewise-polynomial NURBS in t per axis with breakpoints at the Minkowski sum of input and kernel breakpoints, degree raised by `kernel_degree + 1` (= 5). See `docs/research/bspline-polynomial-convolution.md` for the knot-vector / degree / support bookkeeping.
+- **Shaper-aware acceleration constraint (β-medium outer iteration, MVP).** Because shaped x(t) is closed-form piecewise-polynomial, peak `|ẍ_shaped(t)|` per axis is computable in closed form via polynomial extremum / root-finding on the analytic derivative — no L¹-norm bound, no scalar derating constant. Outer loop: solve TOPP-RA → pre-bake smooth shaper → check post-shape peak per axis → if `peak > a_machine`, scale accel limit by `a_machine/peak` and re-solve → iterate to convergence (typically 2–3 outer iterations). Math-optimal trajectory at convergence, modulo TOPP-RA grid discretization. This is the Layer 2 ↔ Layer 3 feedback; in MVP it is wired in, not deferred.
+- **E-follows-XY metadata.** For each segment, emit `e_mode ∈ {COUPLED_TO_XY, INDEPENDENT}` plus a scalar `extrusion_per_xy_mm = (ΔE) / √(ΔX² + ΔY²)` for COUPLED segments. INDEPENDENT segments (retraction, prime, filament-change) carry their own un-shaped E NURBS through the normal Layer 3 → Layer 4 pipeline. No per-axis E shaper kernel — by design.
 
 ### Defers to Layer 4 (does not pre-bake)
 
-- **Tanh/Kalico nonlinear PA** — send base E + PA params, MCU evaluates at runtime.
-- **Same-shaper-on-extruder for tanh PA** — runtime evaluation since the underlying PA is runtime.
+- **Tanh/Kalico nonlinear PA (Step 9, not MVP).** Per-segment params (advance_accel, advance_decel, transition shape) + the shaped XY trajectory. MCU computes `e_actual(t) = ratio_per_xy_mm × ∫|v_xy_actual(τ)| dτ + advance(sign(v̇_xy)) × ratio × |v_xy_actual(t)|` at sample rate. PA shares the same shaped-XY-velocity source the COUPLED_TO_XY E integration uses; no second synchronization layer.
 
 ## Layer 4 — MCU runtime
 
 Depends on Layer 0 (NURBS eval, MCU side) and Layer 3 (knows what arrives over the wire). Receives trajectory descriptions, evaluates at modulation rate (~40 kHz).
 
-- **Real-time MCU framework.** Sample-rate clock at 40 kHz, segment buffer holding 2–3 adjacent segments for shaper-boundary handling.
-- **Per-axis evaluator.** Composes (in order): base or pre-shaped NURBS evaluation, kinematic transform (CoreXY/Cartesian), runtime PA tanh evaluation if applicable, runtime shaper application if applicable (only for E with nonlinear PA; XY and linear-PA E are already pre-baked).
+- **Real-time MCU framework.** Sample-rate clock at 40 kHz, segment buffer holding 2–3 adjacent segments for shaper-boundary handling (kernel support widens segment-edge data dependencies — host-side pre-bake produces a shaped NURBS that is locally exact within `[t_start, t_end]` provided neighboring unshaped segments were available at convolution time).
+- **Per-axis evaluator (per sample).** Evaluate pre-shaped per-axis NURBS for X(t), Y(t), Z(t) — each axis is its own scalar NURBS in the curve-pool (per-axis-scalar storage; X uses `smooth_zv` / `smooth_mzv` kernel, Y uses its own kernel, Z is passthrough by default). Apply the kinematic transform (CoreXY / Cartesian) to (X, Y) → (A, B) stepper space. **E in `COUPLED_TO_XY` mode** (extruding moves): `v_xy = √(Ẋ_shaped² + Ẏ_shaped²)`; `e_acc += ratio_per_xy_mm × v_xy × dt`; `e_t = e_acc`. **E in `INDEPENDENT` mode** (retraction / prime): evaluate E's own NURBS directly. Step 9 PA layers in here as `e_t += advance_for(sign(v̇_xy)) × ratio × v_xy` — same shaped-velocity source, no separate runtime shaper.
 - **Phase-stepping current synthesis.** Electrical-angle map from mechanical position, sin/cos current setpoints, driver SPI/UART output. Tightly coupled with the per-axis evaluator.
 - **Hybrid stepping for non-phase-capable axes.** Trajectory evaluation produces position; digitize to step events for TMC2209-class drivers.
 - **Skip detection acquisition.** MSCNT or encoder reading at ~100 Hz, threshold check, event emission.
@@ -160,11 +159,12 @@ These don't fit cleanly into a single layer because they touch multiple layers t
              ▼
   ┌─────────────────────────────────────────────────────────┐
   │ Layer 3: Trajectory transformations (pre-bake)          │
-  │ - Corner-blend shape finalization (host)                │
-  │ - Impulse-shaper application (host)                     │
+  │ - Time-reparam (math-exact per TOPP grid; T-A)          │
   │ - Smooth-shaper convolution into NURBS (host)           │
-  │ - Shaper-aware accel constraint ──┐ feedback to Layer 2 │
-  │ - Tanh PA params (passes through to Layer 4)            │
+  │ - β-medium shaper-aware accel ──┐ outer-iter to Layer 2 │
+  │ - E-follows-XY metadata (passes through to Layer 4)     │
+  │ - Corner-blend finalization (Step 8, post-MVP)          │
+  │ - Tanh PA params (Step 9, passes through to Layer 4)    │
   └──────────┬──────────────────────────┴────────────────────┘
              │                          │
              ▼                          ▼
@@ -194,7 +194,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 
 - **Layer 0 NURBS evaluation on the MCU is the most performance-critical code in the entire stack.** Every cycle saved on de Boor pays back at 40 kHz × axes × impulses. Optimize this last but design the API early — the rest of Layer 4 has to assume it exists and call it heavily.
 - **The spline fitter (Layer 1) has been demoted to an optional / offline G1-compatibility addon (build-order Step 13).** Original framing — streaming/windowed/real-time-tolerance fitting as the highest-risk item in the spec — was driven by the assumption that all input would be G1-dense forever. With kalico-aware slicer emission of G5 directly (parallel workstream by user, see below), the fitter becomes a one-shot offline file pre-processor only used to support legacy slicers, where the standard CNC literature (Tajima/Sencer 2016, Beudaert 2012) applies directly and the streaming/online-tolerance properties are not needed. Risk: low. Critical-path: no longer.
-- **Shaper-aware TOPP-RA (Layer 3 → Layer 2 feedback) is the highest-leverage throughput optimization in the spec, but it's a refinement, not an independent feature.** Build the planner first without it; add the shaper-aware constraint once you have something running. Don't try to implement them simultaneously.
+- **Shaper-aware TOPP-RA (Layer 3 → Layer 2 feedback) is wired in MVP via β-medium outer iteration**, not deferred. The original "build planner first, add shaper-aware as refinement" framing was written against an impulse-ZV-runtime MVP; the move to smooth-shaper pre-bake makes closed-form post-shape peak `|ẍ_shaped|` available analytically (polynomial extremum on the shaped NURBS's derivative), so shaper-aware feedback collapses to "solve TOPP-RA → check post-shape peak → derate accel and re-solve" — typically 2–3 outer iterations per segment, embarrassingly parallel across the existing temporal::multi 3-thread batch executor. Math-optimal trajectory at convergence (modulo TOPP-RA grid discretization). Step 8 keeps corner-blend finalization but loses shaper-aware TOPP-RA from its scope.
 - **Phase stepping (Layer 4) requires Layer 0 MCU NURBS eval but is otherwise independent of higher math layers.** Build a "dumb" version that takes pre-computed step times and does phase modulation, validate the phase-stepping firmware on its own, then integrate with the trajectory evaluator. De-risks two complex things developing in parallel.
 - **EtherCAT is genuinely additive, not coupled.** Layers 1–3 don't change for EtherCAT; only Layer 4 swaps. The architectural commitment ("planner output is curve + v(s), backend evaluates") is what makes this true. Don't build EtherCAT until phase stepping works end-to-end.
 
@@ -208,9 +208,15 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 4.5. [x] **Layer 2 multi-segment integration on synthetic input** — completes Layer 2. Junction velocity from curvature continuity (subsumes Sonny-Jeon JD as the G1↔G1 degenerate case), lookahead-window joining (two-pass forward/reverse smoothing across the segment buffer), and limit-change invalidation logic. Operates on a synthetic multi-segment NURBS buffer; wiring to live Layer 1 output is implicit in step 7. Must precede step 7 (MVP needs JD-quality cornering for G1↔G1, which is now a degenerate path through this same machinery).
 5. [x] **MCU framework with stub NURBS evaluator and basic kinematics** — partial Layer 4, with the runtime-evaluation slots designed in even if unused
 6. [x] **Communication protocol and clock sync** — Layer 5
-7. [ ] **First-print MVP: end-to-end with junction-deviation on G1, plus G2/G3 native, plus ZV shaper. No PA, no fitting, no smooth shapers.** Prints from existing slicers — corner velocities will be conservative on G1-dense input (lots of velocity reductions at slicer-emitted G1 vertices). If the parallel kalico-aware-slicer workstream (see below) is ready by MVP time, the same MVP also prints kalico-slicer output with G5-rich corners that look better; the wording above is the floor MVP guarantees, not the ceiling.
-8. [ ] **Smooth shapers, shaper-aware TOPP-RA, and corner-blend shape finalization** — completes Layer 3 and refines Layer 2.
-9. [ ] **Tanh PA on MCU** (runtime evaluation against base E NURBS) — refines Layer 4
+7. [ ] **First-print MVP: end-to-end with junction-deviation on G1, G2/G3 native, smooth-ZV/smooth-MZV pre-bake, β-medium shaper-aware TOPP-RA, math-exact time-reparameterization (T-A), per-axis-scalar MCU storage, E-follows-shaped-XY foundation. No PA, no fitting, no other smooth-shaper families, no corner-blend finalization.** Decomposes into sub-projects:
+   - **7-A — Layer 3 minimum (host):** time-reparam (math-exact per TOPP-RA grid piece, gcode-side N≤25 cap), per-axis smooth-ZV/smooth-MZV convolution via Layer 0 algebra, β-medium outer iteration on TOPP-RA accel limits, E-follows-XY metadata emission (`e_mode`, `extrusion_per_xy_mm`).
+   - **7-B — Layer 4 (MCU):** per-axis-scalar curve-pool refactor (bumped MAX_DEGREE / MAX_CONTROL_POINTS / MAX_KNOT_VECTOR_LEN to fit post-shape NURBS), per-sample evaluator with `v_xy` integration for COUPLED_TO_XY E mode, INDEPENDENT-mode E NURBS path for retraction, real step-output replacing trace-only stub, homing/endstops, hybrid stepping for MVP (phase stepping in Step 10).
+   - **7-C — klippy bridge + production host I/O:** Python ↔ Rust integration so existing Klipper configs route motion through kalico's planner; production `MsgProtoParser` (data-dictionary JSON parse) and `host_io.rs` (NAK retransmit, async event dispatch, reconnect recovery) — closing Step-6 Plan-decision-C deferrals; `arm_all_mcus` request_id correlation; `ArmError::QualityGate` detail.
+   - **7-D — Hardware bring-up + first print:** Surface-C cycle-budget actuals, F4x integration for Z, M1/M2/M3 soaks, calibration, physical first print.
+
+   Prints from existing slicers — corner velocities will be conservative on G1-dense input (lots of velocity reductions at slicer-emitted G1 vertices). If the parallel kalico-aware-slicer workstream (see below) is ready by MVP time, the same MVP also prints kalico-slicer output with G5-rich corners that look better; the wording above is the floor MVP guarantees, not the ceiling.
+8. [ ] **Corner-blend shape finalization + smooth-shaper-family expansion** — `smooth_ei`, `smooth_2hump_ei`, `smooth_zvd_ei`, `smooth_si` added to the per-axis kernel inventory; corner-blend NURBS shape selection (curve family + control-point placement) per Tajima & Sencer 2016 under full dynamic-limit context. Completes Layer 3.
+9. [ ] **Tanh nonlinear PA + asymmetric PA on MCU** — refines Layer 4. Per-segment params (advance_accel, advance_decel, transition shape) layered onto the COUPLED_TO_XY E integration: `e_actual(t) = ratio × ∫|v_xy| dτ + advance(sign(v̇_xy)) × ratio × |v_xy(t)|`. INDEPENDENT-mode E (retraction) gets its own PA path operating on its independent NURBS. No "base E NURBS" emitted for COUPLED segments — the PA velocity term shares the same shaped-XY-velocity source the MVP integration uses.
 10. [ ] **Phase stepping current synthesis** — completes Layer 4
 11. [ ] **Skip detection and telemetry** — Layer 4 acquisition + Layer 5 transport + cross-cutting events
 12. [ ] **Mechanical-frequency tracking** — Layer 6
@@ -219,7 +225,7 @@ These don't fit cleanly into a single layer because they touch multiple layers t
 
 **Parallel workstream (user, not on the kalico build-order critical path):** kalico-aware slicer fork emitting G5 directly for smooth toolpath segments and G1+tolerance hints for sharp corners (Layer 3 picks blend NURBS shape under dynamic limits per the existing CLAUDE.md feature-scope bullet). Independent of the kalico-side numbering above; affects MVP's corner quality (better with kalico-aware slicer output) but does not gate any kalico-side build-order item.
 
-Step 7 is the minimum viable proof of concept — a printer that prints, with most things in their final architectural shape but limited features. **Note that PA is deliberately absent from MVP.** The user committed to tanh PA (nonlinear, runtime-evaluated), so introducing a linear-PA path that gets thrown away would be dead code. First-print validation can be done without PA; it just shows blob/zit at corners until step 9 lands.
+Step 7 is the minimum viable proof of concept — a printer that prints, with most things in their final architectural shape and several features that *would* normally be deferred (smooth-shaper pre-bake, shaper-aware TOPP-RA, math-exact time-reparameterization, E-follows-shaped-XY) wired in MVP because they belong to the foundation, not the polish layer. **Note that PA is deliberately absent from MVP.** The user committed to tanh PA (nonlinear, runtime-evaluated, Step 9), so introducing a linear-PA path that gets thrown away would be dead code. First-print validation can be done without PA; it just shows blob/zit at corners until step 9 lands. The E-follows-shaped-XY foundation means Step 9 PA layers in cleanly without an "extruder smoother" synchronization hack.
 
 Steps 8–10 are where it becomes high-performance. Steps 11–14 are polish and future-proofing. **The transition from step 7 to step 8 is psychologically the hardest** — you have something that works, and you're tearing into it to add features that may break it. Plan for that.
 
