@@ -52,4 +52,62 @@ void kalico_nurbs_vector_eval_3_f32(const struct kalico_nurbs_VectorNurbsRef_f32
 float kalico_nurbs_param_from_arc_length_f32(const struct kalico_nurbs_ArcLengthTableRef_f32 *table,
                                              float s);
 
+/**
+ * Validate a versioned blob payload's leading version byte (§4.2).
+ * Foreground entrypoint for the C handler that reads payload bytes off
+ * the wire and routes the post-version-byte slice into the Step-5
+ * flat-pointer load path. Returns `KALICO_OK` on a recognised version
+ * or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
+ */
+int32_t kalico_runtime_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
+
+/**
+ * Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
+ * Used after a fault for host-side recovery decisions. Writes the
+ * per-slot `current_gen` and `last_retired_gen` into the out-params.
+ */
+int32_t kalico_runtime_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
+                                        uint16_t slot_idx,
+                                        uint16_t *out_current_gen,
+                                        uint16_t *out_last_retired_gen);
+
+/**
+ * `kalico_stream_open` — assert host-MCU stream identity (§8.3).
+ * Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_open(kalico_nurbs_KalicoRuntime *rt,
+                                   uint32_t stream_id,
+                                   uint32_t *out_credit_epoch);
+
+/**
+ * `kalico_stream_arm` — commit the priming buffer (§6.4 / §8.3).
+ * Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_arm(kalico_nurbs_KalicoRuntime *rt,
+                                  uint64_t t_start_t0,
+                                  uint32_t arm_lead_cycles,
+                                  uint64_t *out_armed_t_start);
+
+/**
+ * `kalico_stream_terminal` — mark the last segment id of the stream
+ * (§8.3). Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_terminal(kalico_nurbs_KalicoRuntime *rt, uint32_t segment_id);
+
+/**
+ * `kalico_stream_flush` — force_idle handshake (§8.5). Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_flush(kalico_nurbs_KalicoRuntime *rt, uint32_t *out_credit_epoch);
+
+/**
+ * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
+ * Phase-6 stub. Out-param receives the MCU local-clock value sampled
+ * inside the FFI on success.
+ */
+int32_t kalico_runtime_clock_sync_request(kalico_nurbs_KalicoRuntime *rt,
+                                          uint32_t request_id,
+                                          uint32_t host_send_time_lo,
+                                          uint32_t host_send_time_hi,
+                                          uint64_t *out_mcu_clock);
+
 #endif  /* KALICO_NURBS_H */

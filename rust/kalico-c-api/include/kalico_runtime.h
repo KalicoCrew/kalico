@@ -23,14 +23,38 @@ typedef struct KalicoRuntime {
   uint8_t _private[0];
 } KalicoRuntime;
 
+/**
+ * Handle to a loaded curve. 32-bit packed `(slot_idx, generation)` per
+ * spec §10.1. ABA-defeating: at `Q_N_MAX = 256` the u16 gen wraps over
+ * `65536 - 256 = 65280` allocations, which exceeds any realistic in-flight
+ * stale-handle window.
+ */
+typedef struct CurveHandle {
+  uint16_t slot_idx;
+  uint16_t generation;
+} CurveHandle;
+/**
+ * Sentinel for hold segments (§6.5). The ISR short-circuits on the
+ * `SEGMENT_FLAG_HOLD_SEGMENT` flag bit BEFORE looking up this handle, so
+ * the sentinel is never resolved through `CurvePool::lookup`.
+ */
+#define CurveHandle_HOLD_SEGMENT_SENTINEL (CurveHandle){ .slot_idx = UINT16_MAX, .generation = UINT16_MAX }
+
+/**
+ * Trace sample (§13.2). repr(C) aligned (NOT packed) to avoid unaligned u64
+ * access on Cortex-M7. Carries `curve_handle` so foreground reclaim
+ * (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route SEGMENT_END
+ * events back to the right pool slot per §10.4.
+ */
 typedef struct TraceSample {
   uint64_t tick;
   float motor_a;
   float motor_b;
   float motor_e;
   uint32_t segment_id;
+  struct CurveHandle curve_handle;
   uint8_t flags;
-  uint8_t _pad[7];
+  uint8_t _pad[3];
 } TraceSample;
 
 extern void kalico_h7_enable_tim5(void);
@@ -49,17 +73,35 @@ extern uint32_t kalico_h7_read_cyccnt(void);
 struct KalicoRuntime *kalico_runtime_init(void);
 
 /**
- * Push a segment. Producer protocol per spec §4.4.
+ * Push a segment. Producer protocol per spec §4.4 + §10.1.
+ *
+ * `curve_handle_packed` is the wire-encoded handle: `(generation << 16) |
+ * slot_idx`. Step-6 §10.1 widening over Step-5's bare `u16`.
+ * `out_accepted_segment_id` and `out_credit_epoch` may be NULL (host
+ * callers that don't need them); when present they receive the values
+ * published into `SharedState` on success — host caller sees the same
+ * values via the `kalico_push_response` schema (§5.3).
  */
 int32_t kalico_runtime_push_segment(struct KalicoRuntime *rt,
                                     uint32_t id,
-                                    uint16_t curve_handle,
+                                    uint32_t curve_handle_packed,
                                     uint64_t t_start,
                                     uint64_t t_end,
-                                    uint8_t kinematics);
+                                    uint8_t kinematics,
+                                    uint32_t *out_accepted_segment_id,
+                                    uint32_t *out_credit_epoch);
 
 /**
- * Load a curve into a slab slot. Producer-side validation rejects bad data.
+ * Load a curve into a slab slot. Producer-side validation rejects bad
+ * data. Returns the freshly issued `(slot, gen)` packed handle via
+ * `out_handle_packed` on success (Round-5 Codex #4 — host can't reference
+ * a curve it just loaded otherwise).
+ *
+ * `control_points_flat` / `knots` / `weights` are the legacy Step-5
+ * flat-pointer triple. The wire-format change to a single 1-byte-
+ * versioned blob (§4.2) lands in `kalico_runtime_load_curve_v1` at the
+ * C-side handler in `runtime_tick.c`; this FFI is the existing surface
+ * that the C handler unpacks into for the call across the FFI boundary.
  */
 int32_t kalico_runtime_load_curve(struct KalicoRuntime *rt,
                                   uint16_t slot_idx,
@@ -69,7 +111,27 @@ int32_t kalico_runtime_load_curve(struct KalicoRuntime *rt,
                                   uint16_t n_knots,
                                   const float *weights,
                                   uint16_t n_weights,
-                                  uint8_t degree);
+                                  uint8_t degree,
+                                  uint32_t *out_handle_packed);
+
+/**
+ * Validate a versioned blob payload's leading version byte (§4.2).
+ * Foreground entrypoint for the C handler that reads payload bytes off
+ * the wire and routes the post-version-byte slice into the Step-5
+ * flat-pointer load path. Returns `KALICO_OK` on a recognised version
+ * or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
+ */
+int32_t kalico_runtime_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
+
+/**
+ * Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
+ * Used after a fault for host-side recovery decisions. Writes the
+ * per-slot `current_gen` and `last_retired_gen` into the out-params.
+ */
+int32_t kalico_runtime_query_pool_state(struct KalicoRuntime *rt,
+                                        uint16_t slot_idx,
+                                        uint16_t *out_current_gen,
+                                        uint16_t *out_last_retired_gen);
 
 /**
  * ISR entrypoint. Spec §3.2 / §4.2.
@@ -90,5 +152,44 @@ uint8_t kalico_runtime_status(struct KalicoRuntime *rt);
 int32_t kalico_runtime_last_error(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_tick_counter(struct KalicoRuntime *rt);
+
+/**
+ * `kalico_stream_open` — assert host-MCU stream identity (§8.3).
+ * Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_open(struct KalicoRuntime *rt,
+                                   uint32_t stream_id,
+                                   uint32_t *out_credit_epoch);
+
+/**
+ * `kalico_stream_arm` — commit the priming buffer (§6.4 / §8.3).
+ * Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_arm(struct KalicoRuntime *rt,
+                                  uint64_t t_start_t0,
+                                  uint32_t arm_lead_cycles,
+                                  uint64_t *out_armed_t_start);
+
+/**
+ * `kalico_stream_terminal` — mark the last segment id of the stream
+ * (§8.3). Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_terminal(struct KalicoRuntime *rt, uint32_t segment_id);
+
+/**
+ * `kalico_stream_flush` — force_idle handshake (§8.5). Phase-6 stub.
+ */
+int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_credit_epoch);
+
+/**
+ * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
+ * Phase-6 stub. Out-param receives the MCU local-clock value sampled
+ * inside the FFI on success.
+ */
+int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
+                                          uint32_t request_id,
+                                          uint32_t host_send_time_lo,
+                                          uint32_t host_send_time_hi,
+                                          uint64_t *out_mcu_clock);
 
 #endif  /* KALICO_RUNTIME_H */

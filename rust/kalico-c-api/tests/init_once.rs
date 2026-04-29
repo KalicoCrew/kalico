@@ -43,7 +43,20 @@ fn second_init_returns_null() {
 
 #[test]
 fn null_handle_returns_null_ptr_error() {
-    let r =
-        unsafe { kalico_c_api::kalico_runtime_push_segment(std::ptr::null_mut(), 0, 0, 0, 100, 0) };
+    // Phase 3.3: push_segment now takes (curve_handle_packed: u32, t_start, t_end,
+    // kinematics, *mut accepted_segment_id, *mut credit_epoch). Pass nulls for the
+    // out-params (they're optional).
+    let r = unsafe {
+        kalico_c_api::kalico_runtime_push_segment(
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            100,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
     assert_eq!(r, kalico_c_api::KALICO_ERR_NULL_PTR);
 }

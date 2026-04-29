@@ -200,36 +200,44 @@ void
 command_kalico_load_curve(uint32_t *args)
 {
     if (!kalico_rt_handle) {
-        sendf("kalico_load_curve_response result=%i", -7);
+        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -7, 0);
         return;
     }
-    uint16_t slot         = args[0];
-    uint8_t  degree       = args[1];
-    uint16_t cps_len      = args[2];
-    const uint8_t *cps_b  = command_decode_ptr(args[3]);
-    uint16_t knots_len    = args[4];
-    const uint8_t *knots_b = command_decode_ptr(args[5]);
-    uint16_t weights_len  = args[6];
-    const uint8_t *weights_b = command_decode_ptr(args[7]);
+    // Step-6 §4.2: 1-byte format-version field travels as the first command
+    // arg `version=%c`. Validate before decoding the rest of the payload.
+    // KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED = -103 per §9.1.
+    uint8_t  version      = args[0];
+    if (version != 0x01) {
+        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -103, 0);
+        return;
+    }
+    uint16_t slot         = args[1];
+    uint8_t  degree       = args[2];
+    uint16_t cps_len      = args[3];
+    const uint8_t *cps_b  = command_decode_ptr(args[4]);
+    uint16_t knots_len    = args[5];
+    const uint8_t *knots_b = command_decode_ptr(args[6]);
+    uint16_t weights_len  = args[7];
+    const uint8_t *weights_b = command_decode_ptr(args[8]);
 
     // Producer-side validation: cps must be a multiple of 12 (xyz × f32);
     // knots and weights must be a multiple of 4 (f32); weights count must
     // equal cp count. Mismatch → KALICO_ERR_INVALID_CURVE (-2).
     if ((cps_len % 12) || (knots_len % 4) || (weights_len % 4)) {
-        sendf("kalico_load_curve_response result=%i", -2);
+        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
         return;
     }
     uint16_t n_cp      = cps_len / 12;
     uint16_t n_knots   = knots_len / 4;
     uint16_t n_weights = weights_len / 4;
     if (n_weights != n_cp) {
-        sendf("kalico_load_curve_response result=%i", -2);
+        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
         return;
     }
     if (cps_len > sizeof(kalico_aligned_cps) ||
         knots_len > sizeof(kalico_aligned_knots) ||
         weights_len > sizeof(kalico_aligned_weights)) {
-        sendf("kalico_load_curve_response result=%i", -2);
+        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
         return;
     }
 
@@ -240,33 +248,48 @@ command_kalico_load_curve(uint32_t *args)
     memcpy(kalico_aligned_knots, knots_b, knots_len);
     memcpy(kalico_aligned_weights, weights_b, weights_len);
 
+    uint32_t handle_packed = 0;
     int32_t r = kalico_runtime_load_curve(
         kalico_rt_handle, slot,
         kalico_aligned_cps, n_cp,
         kalico_aligned_knots, n_knots,
         kalico_aligned_weights, n_weights,
-        degree);
-    sendf("kalico_load_curve_response result=%i", r);
+        degree,
+        &handle_packed);
+    sendf("kalico_load_curve_response result=%i curve_handle_packed=%u",
+          r, handle_packed);
 }
 DECL_COMMAND(command_kalico_load_curve,
-    "kalico_load_curve slot=%hu degree=%c "
+    "kalico_load_curve version=%c slot=%hu degree=%c "
     "cps=%*s knots=%*s weights=%*s");
 
 void
 command_kalico_push_segment(uint32_t *args)
 {
-    if (!kalico_rt_handle) { sendf("kalico_push_response result=%i", -7); return; }
+    if (!kalico_rt_handle) {
+        sendf(
+            "kalico_push_response result=%i accepted_segment_id=%u credit_epoch=%u",
+            -7, 0, 0);
+        return;
+    }
     uint32_t id = args[0];
-    uint16_t curve = args[1];
+    // Step-6 §10.1: curve_handle widened from u16 to packed u32
+    // ((generation << 16) | slot_idx). The Klipper VLQ %u encoder handles u32.
+    uint32_t curve_handle_packed = args[1];
     uint64_t t_start = ((uint64_t)args[2] << 32) | args[3];
     uint64_t t_end   = ((uint64_t)args[4] << 32) | args[5];
     uint8_t kin = args[6];
+    uint32_t accepted_id = 0;
+    uint32_t credit_epoch = 0;
     int32_t r = kalico_runtime_push_segment(
-        kalico_rt_handle, id, curve, t_start, t_end, kin);
-    sendf("kalico_push_response result=%i", r);
+        kalico_rt_handle, id, curve_handle_packed, t_start, t_end, kin,
+        &accepted_id, &credit_epoch);
+    sendf(
+        "kalico_push_response result=%i accepted_segment_id=%u credit_epoch=%u",
+        r, accepted_id, credit_epoch);
 }
 DECL_COMMAND(command_kalico_push_segment,
-    "kalico_push_segment id=%u curve=%hu t_start_hi=%u t_start_lo=%u "
+    "kalico_push_segment id=%u curve_handle=%u t_start_hi=%u t_start_lo=%u "
     "t_end_hi=%u t_end_lo=%u kinematics=%c");
 
 void
@@ -281,6 +304,146 @@ command_kalico_query_status(uint32_t *args)
     sendf("kalico_status status=%c last_err=%i", status, last_err);
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
+
+// ---- Step-6 §8.3 stream lifecycle commands ----------------------------
+// Phase 3.2 declares the wire surface; Phase 6 wires the actual state-
+// machine transitions in `runtime::stream`. The FFIs return -140
+// (KALICO_ERR_STREAM_STATE_VIOLATION) until Phase 6 lands.
+
+void
+command_kalico_stream_open(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf("kalico_stream_open_response result=%i credit_epoch=%u", -7, 0);
+        return;
+    }
+    uint32_t stream_id = args[0];
+    uint32_t credit_epoch = 0;
+    int32_t r = kalico_runtime_stream_open(
+        kalico_rt_handle, stream_id, &credit_epoch);
+    sendf("kalico_stream_open_response result=%i credit_epoch=%u",
+          r, credit_epoch);
+}
+DECL_COMMAND(command_kalico_stream_open, "kalico_stream_open stream_id=%u");
+
+void
+command_kalico_stream_arm(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf(
+            "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
+            -7, 0, 0);
+        return;
+    }
+    uint64_t t_start_t0 = ((uint64_t)args[1] << 32) | args[0];
+    uint32_t arm_lead_cycles = args[2];
+    uint64_t armed_t_start = 0;
+    int32_t r = kalico_runtime_stream_arm(
+        kalico_rt_handle, t_start_t0, arm_lead_cycles, &armed_t_start);
+    sendf(
+        "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
+        r, (uint32_t)armed_t_start, (uint32_t)(armed_t_start >> 32));
+}
+DECL_COMMAND(command_kalico_stream_arm,
+    "kalico_stream_arm t_start_t0_lo=%u t_start_t0_hi=%u arm_lead_cycles=%u");
+
+void
+command_kalico_stream_terminal(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf("kalico_stream_terminal_response result=%i", -7);
+        return;
+    }
+    uint32_t segment_id = args[0];
+    int32_t r = kalico_runtime_stream_terminal(kalico_rt_handle, segment_id);
+    sendf("kalico_stream_terminal_response result=%i", r);
+}
+DECL_COMMAND(command_kalico_stream_terminal,
+    "kalico_stream_terminal segment_id=%u");
+
+void
+command_kalico_stream_flush(uint32_t *args)
+{
+    (void)args;
+    if (!kalico_rt_handle) {
+        sendf("kalico_stream_flush_response result=%i credit_epoch=%u", -7, 0);
+        return;
+    }
+    uint32_t credit_epoch = 0;
+    int32_t r = kalico_runtime_stream_flush(kalico_rt_handle, &credit_epoch);
+    sendf("kalico_stream_flush_response result=%i credit_epoch=%u",
+          r, credit_epoch);
+}
+DECL_COMMAND(command_kalico_stream_flush, "kalico_stream_flush");
+
+// ---- Step-6 §12.1 clock-sync request ----------------------------------
+void
+command_kalico_clock_sync_request(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf(
+            "kalico_clock_sync_response request_id=%u mcu_clock_lo=%u mcu_clock_hi=%u",
+            0, 0, 0);
+        return;
+    }
+    uint32_t request_id = args[0];
+    uint32_t host_send_time_lo = args[1];
+    uint32_t host_send_time_hi = args[2];
+    uint64_t mcu_clock = 0;
+    kalico_runtime_clock_sync_request(
+        kalico_rt_handle, request_id,
+        host_send_time_lo, host_send_time_hi,
+        &mcu_clock);
+    sendf(
+        "kalico_clock_sync_response request_id=%u mcu_clock_lo=%u mcu_clock_hi=%u",
+        request_id, (uint32_t)mcu_clock, (uint32_t)(mcu_clock >> 32));
+}
+DECL_COMMAND(command_kalico_clock_sync_request,
+    "kalico_clock_sync_request request_id=%u "
+    "host_send_time_lo=%u host_send_time_hi=%u");
+
+// ---- Step-6 §10.4 / Round-1 B9 diagnostic --------------------------------
+// Per-slot curve-pool generation snapshot. Used by the host after a fault to
+// decide whether the pool can be reused or a power-cycle is required.
+void
+command_kalico_query_pool_state(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf(
+            "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
+            -7, (uint16_t)0, (uint16_t)0, (uint16_t)0);
+        return;
+    }
+    uint16_t slot = args[0];
+    uint16_t current_gen = 0;
+    uint16_t last_retired_gen = 0;
+    int32_t r = kalico_runtime_query_pool_state(
+        kalico_rt_handle, slot, &current_gen, &last_retired_gen);
+    sendf(
+        "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
+        r, slot, current_gen, last_retired_gen);
+}
+DECL_COMMAND(command_kalico_query_pool_state,
+    "kalico_query_pool_state slot=%hu");
+
+// ---- Step-6 §5/§9 async event channel declarations ---------------------
+// `kalico_credit_freed` and `kalico_fault` are MCU-emitted async events
+// (no DECL_COMMAND on the host-to-MCU side). The Klipper `output(FMT, ...)`
+// macro at call sites already registers each format string into the data
+// dictionary via `_DECL_OUTPUT` / `DECL_CTR`, so a static `DECL_CTR` here
+// is the equivalent of pre-registering the schema before the first emit.
+// The actual emits live in the foreground drain pipeline (Phase 11) and the
+// fault-publish path (Phase 4 / Phase 11).
+DECL_CTR("_DECL_OUTPUT "
+         "kalico_credit_freed retired_through_segment_id=%u free_slots=%c");
+DECL_CTR("_DECL_OUTPUT "
+         "kalico_fault fault_code=%hu fault_detail=%u segment_id=%u");
+// `kalico_status_v6` periodic frame (Phase 11 wires the emit).
+DECL_CTR("_DECL_OUTPUT "
+    "kalico_status_v6 engine_status=%c queue_depth=%c current_segment_id=%u "
+    "last_fault=%hu fault_detail=%u "
+    "mcu_clock_now_lo=%u mcu_clock_now_hi=%u "
+    "credit_epoch=%u accepted_segment_id=%u retired_through_segment_id=%u");
 
 #if CONFIG_KALICO_SIM
 extern volatile uint32_t kalico_sim_drain_calls;
@@ -310,19 +473,23 @@ DECL_COMMAND(command_kalico_sim_diag, "kalico_sim_diag");
 // pre-validated curve data and CurvePool::load_unchecked (integer-only
 // memcpy), bypassing the FPU entirely. NEVER include in production.
 extern int32_t kalico_runtime_load_fixture(
-    void *rt, uint16_t slot, uint16_t fixture_id);
+    void *rt, uint16_t slot, uint16_t fixture_id, uint32_t *out_handle_packed);
 
 void
 command_kalico_load_fixture_curve(uint32_t *args)
 {
     if (!kalico_rt_handle) {
-        sendf("kalico_load_fixture_response result=%i", -7);
+        sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
+              -7, 0);
         return;
     }
     uint16_t slot = args[0];
     uint16_t fixture_id = args[1];
-    int32_t r = kalico_runtime_load_fixture(kalico_rt_handle, slot, fixture_id);
-    sendf("kalico_load_fixture_response result=%i", r);
+    uint32_t handle_packed = 0;
+    int32_t r = kalico_runtime_load_fixture(
+        kalico_rt_handle, slot, fixture_id, &handle_packed);
+    sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
+          r, handle_packed);
 }
 DECL_COMMAND(command_kalico_load_fixture_curve,
     "kalico_load_fixture_curve slot=%hu fixture_id=%hu");
