@@ -1,9 +1,9 @@
-//! SharedState segment-id atomic writers — Round-2 review B14.
+//! `SharedState` segment-id atomic writers — Round-2 review B14.
 //!
-//! Engine::tick must publish current_segment_id on activation and
-//! retired_through_segment_id on retirement. The push-side
-//! accepted_segment_id atomic is exercised by the kalico-c-api FFI tests
-//! (it lives in `push_segment_impl`, not Engine).
+//! `Engine::tick` must publish `current_segment_id` on activation and
+//! `retired_through_segment_id` on retirement. The push-side
+//! `accepted_segment_id` atomic is exercised by the kalico-c-api FFI tests
+//! (it lives in `push_segment_impl`, not `Engine`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 

@@ -206,6 +206,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.tick_with_current(current, now, queue, pool, trace, shared)
     }
 
+    #[allow(clippy::too_many_lines)] // Spec §4.2 step 1-10 explicit pipeline — flatten on purpose.
     fn tick_with_current(
         &mut self,
         mut current: Segment,

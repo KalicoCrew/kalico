@@ -25,10 +25,10 @@ pub const TRACE_FLAG_FAULT_MARKER: u8 = 1 << 2;
 pub const TRACE_FLAG_SEGMENT_START: u8 = 1 << 3;
 pub const TRACE_FLAG_HOLD_SAMPLE: u8 = 1 << 4;
 
-/// Trace sample (§13.2). repr(C) aligned (NOT packed) to avoid unaligned u64
-/// access on Cortex-M7. Carries `curve_handle` so foreground reclaim
-/// (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route SEGMENT_END
-/// events back to the right pool slot per §10.4.
+/// Trace sample (§13.2). `repr(C)` aligned (NOT packed) to avoid unaligned
+/// `u64` access on Cortex-M7. Carries `curve_handle` so foreground reclaim
+/// (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route
+/// `SEGMENT_END` events back to the right pool slot per §10.4.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TraceSample {

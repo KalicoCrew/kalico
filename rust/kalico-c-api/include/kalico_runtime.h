@@ -41,10 +41,10 @@ typedef struct CurveHandle {
 #define CurveHandle_HOLD_SEGMENT_SENTINEL (CurveHandle){ .slot_idx = UINT16_MAX, .generation = UINT16_MAX }
 
 /**
- * Trace sample (§13.2). repr(C) aligned (NOT packed) to avoid unaligned u64
- * access on Cortex-M7. Carries `curve_handle` so foreground reclaim
- * (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route SEGMENT_END
- * events back to the right pool slot per §10.4.
+ * Trace sample (§13.2). `repr(C)` aligned (NOT packed) to avoid unaligned
+ * `u64` access on Cortex-M7. Carries `curve_handle` so foreground reclaim
+ * (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route
+ * `SEGMENT_END` events back to the right pool slot per §10.4.
  */
 typedef struct TraceSample {
   uint64_t tick;
@@ -177,7 +177,7 @@ int32_t kalico_runtime_stream_arm(struct KalicoRuntime *rt,
 int32_t kalico_runtime_stream_terminal(struct KalicoRuntime *rt, uint32_t segment_id);
 
 /**
- * `kalico_stream_flush` — force_idle handshake (§8.5). Phase-6 stub.
+ * `kalico_stream_flush` — `force_idle` handshake (§8.5). Phase-6 stub.
  */
 int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_credit_epoch);
 

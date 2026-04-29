@@ -40,8 +40,8 @@ mod tests {
     fn version_check_unknown_rejects() {
         let payload = [0xFF_u8, 0x02, 0x03];
         assert_eq!(
-            check_version(&payload).unwrap_err(),
-            FaultCode::ProtocolVersionUnsupported
+            check_version(&payload),
+            Err(FaultCode::ProtocolVersionUnsupported)
         );
     }
 
@@ -49,8 +49,8 @@ mod tests {
     fn version_check_empty_rejects() {
         let payload: [u8; 0] = [];
         assert_eq!(
-            check_version(&payload).unwrap_err(),
-            FaultCode::ProtocolVersionUnsupported
+            check_version(&payload),
+            Err(FaultCode::ProtocolVersionUnsupported)
         );
     }
 

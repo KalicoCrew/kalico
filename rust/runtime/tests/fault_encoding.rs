@@ -10,7 +10,7 @@ use runtime::error::{
 fn invalid_curve_handle_encoding() {
     let d = encode_invalid_curve_handle(5, 100, 200);
     assert_eq!(d >> 16, 5);
-    assert_eq!(d & 0xFFFF, (100_u16 ^ 200_u16) as u32);
+    assert_eq!(d & 0xFFFF, u32::from(100_u16 ^ 200_u16));
 }
 
 #[test]

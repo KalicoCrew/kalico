@@ -17,9 +17,9 @@ pub enum KinematicTag {
     CartesianXyzAndE = 1,
 }
 
-/// HOLD_SEGMENT marker bit (§6.5). The ISR short-circuits on this bit before
-/// looking up the curve handle, so a hold segment never resolves through
-/// `CurvePool::lookup`.
+/// `HOLD_SEGMENT` marker bit (§6.5). The ISR short-circuits on this bit
+/// before looking up the curve handle, so a hold segment never resolves
+/// through `CurvePool::lookup`.
 pub const SEGMENT_FLAG_HOLD_SEGMENT: u8 = 1 << 0;
 
 #[derive(Debug, Clone, Copy)]
@@ -36,9 +36,9 @@ pub struct Segment {
     pub t_end: u64,
     pub kinematics: KinematicTag,
     /// §6.5 — bit 0 (`SEGMENT_FLAG_HOLD_SEGMENT`) is set on the in-band hold
-    /// marker that primes the pipeline ahead of the armed t_start. Other bits
-    /// reserved for future Step-6+ flags. Step-5 producer-side path always
-    /// sets this to zero.
+    /// marker that primes the pipeline ahead of the armed `t_start`. Other
+    /// bits reserved for future Step-6+ flags. Step-5 producer-side path
+    /// always sets this to zero.
     pub flags: u8,
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 2],

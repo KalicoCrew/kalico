@@ -95,7 +95,7 @@ int32_t kalico_runtime_stream_arm(kalico_nurbs_KalicoRuntime *rt,
 int32_t kalico_runtime_stream_terminal(kalico_nurbs_KalicoRuntime *rt, uint32_t segment_id);
 
 /**
- * `kalico_stream_flush` — force_idle handshake (§8.5). Phase-6 stub.
+ * `kalico_stream_flush` — `force_idle` handshake (§8.5). Phase-6 stub.
  */
 int32_t kalico_runtime_stream_flush(kalico_nurbs_KalicoRuntime *rt, uint32_t *out_credit_epoch);
 

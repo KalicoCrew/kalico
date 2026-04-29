@@ -148,6 +148,7 @@ impl FaultCode {
     /// (spec §5.4 / §9.1). Wraps the negative i32 through i16 then u16 so the
     /// host can sign-extend back to i32 if it wants.
     #[inline]
+    #[allow(clippy::cast_sign_loss)] // intentional: negative i16 → u16 wire encoding
     pub const fn as_u16(self) -> u16 {
         (self as i32 as i16) as u16
     }
@@ -266,8 +267,11 @@ mod tests {
     #[test]
     fn fault_code_as_u16_round_trips_negative_codes() {
         // -160 (InvalidCurveHandle) → as_i16 = -160 → as u16 = 0xFF60.
-        // Host sign-extends 0xFF60 back through i16 → -160.
+        // Host sign-extends 0xFF60 back through i16 → -160. clippy::cast_sign_loss
+        // is the whole point — the wire format is u16 and the host reverses it.
         let code = FaultCode::InvalidCurveHandle.as_u16();
-        assert_eq!(code, (-160_i16) as u16);
+        #[allow(clippy::cast_sign_loss)]
+        let expected = (-160_i16) as u16;
+        assert_eq!(code, expected);
     }
 }

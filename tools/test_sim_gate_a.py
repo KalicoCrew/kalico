@@ -88,28 +88,35 @@ def floats_to_blob(values):
 
 
 def load_via_real_path(io, slot, fx, timeout=5.0):
+    """Returns (result_code, curve_handle_packed). On non-zero result,
+    curve_handle_packed is 0."""
     cps = []
     for cp in fx["control_points"]:
         cps.extend(cp)
+    # Step-6 §4.2 leading version byte travels as an explicit `version=%c`.
     cmd = (
-        f"kalico_load_curve slot={slot} degree={fx['degree']} "
+        f"kalico_load_curve version=1 slot={slot} degree={fx['degree']} "
         f"cps={floats_to_blob(cps)} knots={floats_to_blob(fx['knots'])} "
         f"weights={floats_to_blob(fx['weights'])}"
     )
     io.send(cmd)
     r = io.wait_for_response("kalico_load_curve_response", timeout)
-    return int(r["result"])
+    return int(r["result"]), int(r.get("curve_handle_packed", 0))
 
 
 def load_via_fixture(io, slot, fixture_id, timeout=5.0):
+    """Returns (result_code, curve_handle_packed). On non-zero result,
+    curve_handle_packed is 0."""
     io.send(f"kalico_load_fixture_curve slot={slot} fixture_id={fixture_id}")
     r = io.wait_for_response("kalico_load_fixture_response", timeout)
-    return int(r["result"])
+    return int(r["result"]), int(r.get("curve_handle_packed", 0))
 
 
-def push_segment(io, seg_id, slot, t_start_ticks, t_end_ticks, timeout=5.0):
+def push_segment(
+    io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks, timeout=5.0
+):
     cmd = (
-        f"kalico_push_segment id={seg_id} curve={slot} "
+        f"kalico_push_segment id={seg_id} curve_handle={curve_handle_packed} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
         f"t_start_lo={t_start_ticks & 0xFFFFFFFF} "
         f"t_end_hi={(t_end_ticks >> 32) & 0xFFFFFFFF} "
@@ -128,7 +135,11 @@ def query_diag(io, timeout=10.0):
 
 def run_gate_a(use_real_loads):
     t0 = time.monotonic()
-    io = KalicoHostIO("socket://localhost:3334")
+    # Step-6 added several DECL_COMMANDs and DECL_OUTPUTs — the data
+    # dictionary grew past the default 15s identify budget under sim
+    # latency (40-byte chunks × ~0.15s/round-trip ≈ 15s for ~4 KB). Bump
+    # to 60s to leave headroom for further Phase 5+ growth.
+    io = KalicoHostIO("socket://localhost:3334", identify_timeout=60.0)
     try:
         # Initial sanity check: status must be IDLE, tick_counter at 0.
         diag = query_diag(io, timeout=5.0)
@@ -144,33 +155,45 @@ def run_gate_a(use_real_loads):
             print(f"FAIL: initial tick_counter not 0: {diag}")
             return 1
 
-        # Load three curves into slots 0/1/2.
+        # Load three curves into slots 0/1/2 and remember the packed handles
+        # the firmware issues for each (Step-6 §10.1 — host references
+        # curves by `(generation, slot_idx)`, not bare slot index).
+        slot_handles = []
         for slot, fx in enumerate(FIXTURES):
             if use_real_loads:
-                rc = load_via_real_path(io, slot, fx)
+                rc, handle_packed = load_via_real_path(io, slot, fx)
                 src = "real load_curve"
             else:
-                rc = load_via_fixture(io, slot, slot)
+                rc, handle_packed = load_via_fixture(io, slot, slot)
                 src = "fixture"
             print(
-                f"  loaded slot={slot} ({fx['name']}) via {src} -> result={rc}"
+                f"  loaded slot={slot} ({fx['name']}) via {src} -> "
+                f"result={rc} handle_packed=0x{handle_packed:08x}"
             )
             if rc != 0:
                 print(f"FAIL: load slot={slot} returned {rc}")
                 return 1
+            slot_handles.append(handle_packed)
 
-        # Push N_SEGMENTS segments, cycling through the three slots.
-        # Each segment occupies SEG_CYCLES cycles of MCU time.
+        # Push N_SEGMENTS segments, cycling through the three slots. Use
+        # ascending segment ids starting at 1 — id=0 + monotonicity gate
+        # (Phase 4.1.5) is fine, but starting at 1 keeps id semantics
+        # consistent with the §5.3 producer-side cursor.
         first_push_tick_counter = None
         for i in range(N_SEGMENTS):
             slot = i % 3
+            seg_id = i + 1
             t_start = i * SEG_CYCLES
             t_end = t_start + SEG_CYCLES
             rc = push_segment(
-                io, seg_id=i, slot=slot, t_start_ticks=t_start, t_end_ticks=t_end
+                io,
+                seg_id=seg_id,
+                curve_handle_packed=slot_handles[slot],
+                t_start_ticks=t_start,
+                t_end_ticks=t_end,
             )
             if rc != 0:
-                print(f"FAIL: push id={i} returned {rc}")
+                print(f"FAIL: push id={seg_id} returned {rc}")
                 return 1
             if i == 0:
                 # After the first push, TIM5 enables and the engine should be

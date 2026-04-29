@@ -1,15 +1,15 @@
 //! `CurvePool` — static slab of NURBS curve data referenced by `CurveHandle`.
 //!
-//! Step-6 §10 rewrite: per-slot `(current_gen, last_retired_gen)` AtomicU16
+//! Step-6 §10 rewrite: per-slot `(current_gen, last_retired_gen)` `AtomicU16`
 //! pair guards a foreground-writer / ISR-reader contract. The foreground
 //! reserves a slot AND loads the curve atomically via `try_alloc_and_load`
-//! (the alloc predicate is `current_gen == last_retired_gen` modulo u16
+//! (the alloc predicate is `current_gen == last_retired_gen` modulo `u16`
 //! wrap; load-then-bump-gen ordering — Round-1 Codex #4). The ISR resolves
 //! a handle via `lookup` which validates the generation match. Foreground
-//! drains SEGMENT_END trace events and calls `confirm_retired` on each;
-//! FIFO ordering of single-writer/single-reader heapless::spsc preserves
+//! drains `SEGMENT_END` trace events and calls `confirm_retired` on each;
+//! FIFO ordering of single-writer/single-reader `heapless::spsc` preserves
 //! the per-slot retirement sequence so all earlier generations are retired
-//! by the time gen=G is observed (§10.4).
+//! by the time `gen=G` is observed (§10.4).
 
 #![allow(unsafe_code)]
 
@@ -18,13 +18,13 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::error::FaultCode;
 
-/// Slab capacity. Spec §7.1 — measurement-driven; ceiling is 256 (Q_N_MAX)
-/// per the u16 generation wrap window of `65536 - 256 = 65280`. Step-6 keeps
-/// the Step-5 default of 16 here so the Renode sim build (128 KB RAM model)
-/// has headroom for the rest of the runtime; Phase 7's measurement framework
-/// will tune the value upward as the curve-pool occupancy budget gets
-/// nailed down on real workloads. Each slot is ~184 bytes (LoadedCurve +
-/// per-slot atomics).
+/// Slab capacity. Spec §7.1 — measurement-driven; ceiling is 256
+/// (`Q_N_MAX`) per the `u16` generation wrap window of `65536 - 256 = 65280`.
+/// Step-6 keeps the Step-5 default of 16 here so the Renode sim build (128
+/// KB RAM model) has headroom for the rest of the runtime; Phase 7's
+/// measurement framework will tune the value upward as the curve-pool
+/// occupancy budget gets nailed down on real workloads. Each slot is ~184
+/// bytes (`LoadedCurve` + per-slot atomics).
 pub const CURVE_POOL_N: usize = 16;
 
 /// Per-curve storage capacity. Sized for degree-3 NURBS with up to 8 control
@@ -122,7 +122,7 @@ impl LoadedCurve {
 }
 
 /// One slab slot. `current_gen` and `last_retired_gen` are foreground-
-/// written / ISR-read AtomicU16s; `curve` is the data store.
+/// written / ISR-read `AtomicU16`s; `curve` is the data store.
 ///
 /// Synchronization discipline (§10.2 + Round-1 Codex #4):
 /// - Foreground writes `curve` BEFORE `current_gen` (release).
@@ -134,6 +134,12 @@ pub struct PoolSlot {
     pub current_gen: AtomicU16,
     pub last_retired_gen: AtomicU16,
     pub curve: UnsafeCell<LoadedCurve>,
+}
+
+impl Default for PoolSlot {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PoolSlot {

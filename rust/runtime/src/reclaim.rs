@@ -2,9 +2,9 @@
 //!
 //! On observing `SEGMENT_END(slot=N, gen=G)` in the trace stream, foreground
 //! sets `slot[N].last_retired_gen = G`. FIFO ordering of single-ISR-writer
-//! single-foreground-reader heapless::spsc preserves the per-slot retirement
-//! sequence; no separate "any queued segment references this slot" inspection
-//! is needed.
+//! single-foreground-reader `heapless::spsc` preserves the per-slot
+//! retirement sequence; no separate "any queued segment references this
+//! slot" inspection is needed.
 //!
 //! Producer is expected to drain pending trace samples before failing alloc
 //! due to "no reclaimable slot."

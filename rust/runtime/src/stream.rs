@@ -3,7 +3,7 @@
 //! Phase 1 introduced the `FgStreamState` enum so `FgState::stream_state_machine`
 //! has a type to point at; Phase 3.2 stubs the FFI handlers
 //! (`open` / `arm` / `terminal` / `flush` / `clock_sync_respond`); Phase 6
-//! fleshes out the transition rules and the §8.5 force_idle handshake.
+//! fleshes out the transition rules and the §8.5 `force_idle` handshake.
 //!
 //! All Phase-3.2 stubs return `KALICO_ERR_STREAM_STATE_VIOLATION` (-140) so
 //! the host sees a recognisable "not-yet-implemented" code rather than
@@ -60,7 +60,7 @@ pub fn terminal(_fg: &mut FgState, _shared: &SharedState, _segment_id: u32) -> i
 
 /// `kalico_stream_flush` handler stub (Phase 6).
 ///
-/// Phase 6 implements the §8.5 force_idle handshake (Decision A — set
+/// Phase 6 implements the §8.5 `force_idle` handshake (Decision A — set
 /// `force_idle=true` first, ack-wait, then clear `stream_open`); the stub
 /// returns `STREAM_STATE_VIOLATION` so callers see a recognisable
 /// not-yet-implemented code.
@@ -71,7 +71,7 @@ pub fn flush(_fg: &mut FgState, _shared: &SharedState) -> i32 {
 /// `kalico_clock_sync_request` handler stub (Phase 6).
 ///
 /// Returns `(result_code, mcu_clock)`. Phase 6 reads the §11.4 widened-now
-/// from `SharedState` and packs it into a kalico_clock_sync_response with
+/// from `SharedState` and packs it into a `kalico_clock_sync_response` with
 /// `request_id` echoed back; the stub returns the widened-now snapshot for
 /// FFI shape validation but `STREAM_STATE_VIOLATION` for the result.
 pub fn clock_sync_respond(
@@ -83,6 +83,6 @@ pub fn clock_sync_respond(
 ) -> (i32, u64) {
     let lo = shared.widened_now_lo.load(Ordering::Acquire);
     let hi = shared.widened_now_hi.load(Ordering::Acquire);
-    let mcu_clock = ((hi as u64) << 32) | (lo as u64);
+    let mcu_clock = (u64::from(hi) << 32) | u64::from(lo);
     (KALICO_ERR_STREAM_STATE_VIOLATION, mcu_clock)
 }

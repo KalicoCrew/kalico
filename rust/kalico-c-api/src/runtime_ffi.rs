@@ -570,7 +570,7 @@ pub mod exports {
 
     /// Project to `&mut FgState` + `&SharedState`. Used by the stream-
     /// lifecycle FFI shims below. Caller must guarantee `rt` non-null and
-    /// INIT_DONE=true.
+    /// `INIT_DONE=true`.
     ///
     /// SAFETY: same contract as `kalico_runtime_push_segment`'s projection.
     /// Only one `&mut FgState` may be live at a time across the FFI surface;
@@ -659,7 +659,7 @@ pub mod exports {
         unsafe { project_fg(rt, |fg, shared| runtime::stream::terminal(fg, shared, segment_id)) }
     }
 
-    /// `kalico_stream_flush` — force_idle handshake (§8.5). Phase-6 stub.
+    /// `kalico_stream_flush` — `force_idle` handshake (§8.5). Phase-6 stub.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_stream_flush(
         rt: *mut KalicoRuntime,

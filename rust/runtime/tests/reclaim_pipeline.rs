@@ -1,4 +1,4 @@
-//! Foreground SEGMENT_END trace-drain → curve-pool reclaim. Spec §10.4.
+//! Foreground `SEGMENT_END` trace-drain → curve-pool reclaim. Spec §10.4.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
