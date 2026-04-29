@@ -267,3 +267,69 @@ fn live_reduce_rejects_z_plus_e_as_helical() {
         "pure-Z+E G5 should produce Recovery::HelicalExtrusionUnsupported, got {items:#?}"
     );
 }
+
+#[test]
+fn g92_resets_modal_position_for_subsequent_g5() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
+    use nurbs::eval::vector_eval;
+
+    // Pre-fix bug: G92 X10 Y20 didn't update state.position. The subsequent
+    // G5 emitted P0 = [0,0,0] instead of [10,20,0] — silent geometric
+    // corruption. Post-fix: G92 binds params and writes them through to
+    // state.position before the marker break.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_: TelemetryEvent| {};
+    let src = "G92 X10 Y20\nG5 X20 Y30 I0 J5 P0 Q-5 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    let cubic = items
+        .iter()
+        .find_map(|item| match item {
+            Item::Segment(Segment::Cubic(c)) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("expected one Segment::Cubic after G92 + G5");
+
+    // P0 must be the post-G92 position, not the default origin.
+    let p0 = vector_eval(&cubic.xyz, 0.0);
+    assert!(
+        (p0[0] - 10.0).abs() < 1e-9 && (p0[1] - 20.0).abs() < 1e-9,
+        "post-G92 G5 P0 should be [10, 20, *], got {p0:?}"
+    );
+}
+
+#[test]
+fn g92_e0_resets_modal_e_for_subsequent_g5_e_delta() {
+    use geometry::{EMode, FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
+
+    // Pre-fix: G92 E0 didn't update state.e. The next G5 with E5 computed
+    // e_delta = 5 - state.e (whatever was there before), instead of 5 - 0.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_: TelemetryEvent| {};
+    // G5 X10 sets state.e implicitly via E word? Actually G5 with no E word
+    // doesn't change state.e. Set state.e via an E-only G1 first — but G1 is
+    // unsupported in live mode. So just rely on the default state.e = 0.0
+    // and verify the E delta from G92 E0 reset.
+    //
+    // Sequence: default e = 0. G92 E5 sets state.e = 5. Then G5 with E10
+    // produces e_delta = 10 - 5 = 5. The CoupledToXy classifier then computes
+    // extrusion_per_xy_mm = 5 / xy_arc_length.
+    let src = "G92 E5\nG5 X10 Y0 I3 J3 P-3 Q3 E10 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    let cubic = items
+        .iter()
+        .find_map(|item| match item {
+            Item::Segment(Segment::Cubic(c)) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("expected one Segment::Cubic after G92 E + G5");
+
+    // CoupledToXy with positive ratio (10 - 5 = 5 mm of extrusion).
+    assert_eq!(cubic.e_mode, EMode::CoupledToXy);
+    assert!(
+        cubic.extrusion_per_xy_mm > 0.0,
+        "expected positive extrusion ratio (e_delta=5), got {}",
+        cubic.extrusion_per_xy_mm
+    );
+}

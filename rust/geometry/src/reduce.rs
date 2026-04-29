@@ -413,14 +413,29 @@ where
             Token::Command {
                 letter: b'G',
                 major: 92,
+                params,
                 line_no,
                 ..
             } => {
-                // G92: position reset. Treated as marker break. G92
-                // redefines the coordinate frame, so any pending
+                // G92: position reset (RS274NGC §3.5.1 / RepRap). Sets the
+                // current modal position/E to the specified words without
+                // producing motion. Omitted axes are unchanged. Marker break:
+                // the coordinate-frame redefinition makes any pending
                 // `prev_g5_pq` deltas (expressed in the prior frame)
-                // become semantically stale — clear the chain per
-                // spec §3.5 clearing-discipline table.
+                // semantically stale — chain-clear per spec §3.5 clearing
+                // discipline.
+                if let Some(x) = params.x() {
+                    state.position[0] = x;
+                }
+                if let Some(y) = params.y() {
+                    state.position[1] = y;
+                }
+                if let Some(z) = params.z() {
+                    state.position[2] = z;
+                }
+                if let Some(e) = params.e() {
+                    state.e = e;
+                }
                 state.prev_g5_pq = None;
                 return Some(ReduceEvent::Marker {
                     kind: MotionMarkerKind::G92,
