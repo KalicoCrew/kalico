@@ -18,9 +18,25 @@ use core::sync::atomic::Ordering;
 
 use crate::error::{
     FaultCode, KALICO_ERR_ARM_REJECTED, KALICO_ERR_LIVENESS_STALLED, KALICO_ERR_NULL_PTR,
-    KALICO_ERR_STREAM_STATE_VIOLATION, KALICO_OK,
+    KALICO_ERR_STREAM_STATE_VIOLATION, KALICO_OK, encode_stream_state_violation,
 };
 use crate::state::{FgState, IsrState, RuntimeContext, SharedState};
+
+/// Closure-review fix: publish a §9.2 stream-state-violation `fault_detail`
+/// payload so the host's `kalico_runtime_fault_detail` accessor (and the
+/// periodic `kalico_status_v6` frame's `fault_detail` column) can carry
+/// diagnostic context for the rejection. Stream-state violations are
+/// *soft* rejections (no `RuntimeStatus::Fault` transition), so we only
+/// touch `fault_detail` here — `last_error` and `runtime_status` are
+/// left to engine-side latching.
+fn publish_stream_state_violation_detail(
+    shared: &SharedState,
+    observed: FgStreamState,
+    expected: FgStreamState,
+) {
+    let detail = encode_stream_state_violation(observed as u8, expected as u8);
+    shared.fault_detail.store(detail, Ordering::Release);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -68,6 +84,11 @@ pub fn open(fg: &mut FgState, shared: &SharedState, stream_id: u32) -> i32 {
         {
             return KALICO_OK;
         }
+        publish_stream_state_violation_detail(
+            shared,
+            fg.stream_state_machine,
+            FgStreamState::Idle,
+        );
         return KALICO_ERR_STREAM_STATE_VIOLATION;
     }
     // Round-1 B14: ensure terminal_segment_id is cleared on stream_open.
@@ -111,9 +132,19 @@ pub fn arm(
         if fg.armed_t_start_t0 == Some(t_start_t0) {
             return (KALICO_OK, t_start_t0);
         }
+        publish_stream_state_violation_detail(
+            shared,
+            fg.stream_state_machine,
+            FgStreamState::StreamOpenPriming,
+        );
         return (KALICO_ERR_STREAM_STATE_VIOLATION, 0);
     }
     if fg.stream_state_machine != FgStreamState::StreamOpenPriming {
+        publish_stream_state_violation_detail(
+            shared,
+            fg.stream_state_machine,
+            FgStreamState::StreamOpenPriming,
+        );
         return (KALICO_ERR_STREAM_STATE_VIOLATION, 0);
     }
     // Per spec §6.3: at least 1 priming segment.
@@ -147,12 +178,14 @@ pub fn terminal(fg: &mut FgState, shared: &SharedState, segment_id: u32) -> i32 
         if st == FgStreamState::Draining && fg.terminal_segment_id == Some(segment_id) {
             return KALICO_OK;
         }
+        publish_stream_state_violation_detail(shared, st, FgStreamState::Running);
         return KALICO_ERR_STREAM_STATE_VIOLATION;
     }
     if let Some(existing) = fg.terminal_segment_id {
         if existing == segment_id {
             return KALICO_OK;
         }
+        publish_stream_state_violation_detail(shared, st, FgStreamState::Running);
         return KALICO_ERR_STREAM_STATE_VIOLATION;
     }
     fg.terminal_segment_id = Some(segment_id);

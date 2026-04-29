@@ -160,6 +160,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// `self.current`). Pass `0` only if no segment was active — producer-side
     /// segment ids start at 1, so `segment_id == 0` ⇒ fault before any segment
     /// was active.
+    ///
+    /// `detail` is the §9.2 `fault_detail` payload. Closure-review fix:
+    /// `SharedState.fault_detail` was previously declared and exposed via
+    /// FFI but never written, so the host always saw `0`. Call sites pass
+    /// `Some(encode_*(...))` for fault types that carry per-event context
+    /// (invalid handle, clock-sync quality, stream-state violation), and
+    /// `None` for fault types that don't (`0` is the sentinel for "no
+    /// detail").
+    #[allow(clippy::too_many_arguments)] // Spec §9.2 fault-detail threading; refactor to a struct adds noise without clarity.
     fn latch_fault(
         &mut self,
         code: RuntimeError,
@@ -167,10 +176,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         curve_handle: CurveHandle,
         now: u64,
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+        shared: &SharedState,
+        detail: Option<u32>,
     ) {
         self.last_error.store(i32::from(code), Ordering::Release);
         self.status
             .store(RuntimeStatus::Fault as u8, Ordering::Release);
+        // Publish detail BEFORE the trace marker so any foreground reader
+        // racing with the trace ring already sees the populated detail.
+        // `None` → `0`, matching the doc-comment on `SharedState.fault_detail`
+        // ("`0` when no fault has latched OR when the fault carries no detail").
+        shared
+            .fault_detail
+            .store(detail.unwrap_or(0), Ordering::Release);
         let _ = trace.enqueue(TraceSample {
             tick: now,
             motor_a: self.last_motors[0],
@@ -297,6 +315,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     curve_handle,
                     now,
                     trace,
+                    shared,
+                    None,
                 );
                 return Err(RuntimeError::BoundaryLoopExhausted);
             }
@@ -414,12 +434,27 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         // Step 4: curve evaluation. Spec invariant: segments are time-parameterized.
         let Some(curve_view) = pool.resolve(current.curve_handle) else {
+            // §9.2 fault_detail: `(slot_idx << 16) | (observed_gen XOR
+            // expected_gen)`. We don't have the per-slot `current_gen` at
+            // hand cheaply (resolve already failed), so encode using the
+            // requested handle's slot/gen with `observed=0` — the XOR
+            // collapses to the expected gen, which is the most useful
+            // number for host-side post-mortem analysis. (Improving this
+            // requires plumbing the failed `lookup` error variant out of
+            // `pool.resolve`; deferred to a future Step 6.x cleanup.)
+            let detail = crate::error::encode_invalid_curve_handle(
+                current.curve_handle.slot_idx,
+                0,
+                current.curve_handle.generation,
+            );
             self.latch_fault(
                 RuntimeError::InvalidHandle,
                 current.id,
                 current.curve_handle,
                 now,
                 trace,
+                shared,
+                Some(detail),
             );
             return Err(RuntimeError::InvalidHandle);
         };
@@ -432,6 +467,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 current.curve_handle,
                 now,
                 trace,
+                shared,
+                None,
             );
             return Err(RuntimeError::InvalidCurve);
         };
@@ -445,6 +482,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 current.curve_handle,
                 now,
                 trace,
+                shared,
+                None,
             );
             return Err(RuntimeError::NaNOrInfFromEval);
         }

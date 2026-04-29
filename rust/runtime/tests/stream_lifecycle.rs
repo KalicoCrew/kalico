@@ -91,8 +91,26 @@ fn open_with_different_stream_id_violates_state() {
     let mut fg = fg_state_for_test();
     let shared = SharedState::new();
     assert_eq!(stream::open(&mut fg, &shared, 1), KALICO_OK);
+    // Closure-review fix #3: prior to the fix `fault_detail` was always 0
+    // because no code path wrote it. The §9.2 stream-state-violation
+    // encoding is `(observed << 8) | expected`, so on a violation the
+    // stored value MUST be non-zero.
+    assert_eq!(
+        shared.fault_detail.load(Ordering::Acquire),
+        0,
+        "fault_detail starts at 0"
+    );
     let r = stream::open(&mut fg, &shared, 2);
     assert_eq!(r, KALICO_ERR_STREAM_STATE_VIOLATION);
+    let detail = shared.fault_detail.load(Ordering::Acquire);
+    assert_ne!(
+        detail, 0,
+        "fault_detail must be populated on stream-state-violation \
+         (closure-review fix)"
+    );
+    // observed = StreamOpening (1); expected = Idle (0). Encoded as
+    // (1 << 8) | 0 = 0x100.
+    assert_eq!(detail, (FgStreamState::StreamOpening as u32) << 8);
 }
 
 #[test]

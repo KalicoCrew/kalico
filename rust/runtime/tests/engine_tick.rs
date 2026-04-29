@@ -292,6 +292,20 @@ fn invalid_curve_handle_latches_fault() {
         runtime::error::KALICO_ERR_INVALID_HANDLE
     );
 
+    // Closure-review fix #3: `SharedState.fault_detail` MUST carry the
+    // §9.2-encoded payload `(slot << 16) | (observed XOR expected)`. Prior
+    // to the fix, latch_fault never wrote the atomic and host always saw 0.
+    use core::sync::atomic::Ordering as AtomicOrdering;
+    let detail = h.shared.fault_detail.load(AtomicOrdering::Acquire);
+    assert_ne!(
+        detail, 0,
+        "fault_detail must be non-zero after an InvalidHandle latch"
+    );
+    // Slot index 0, expected gen 1, observed gen 0 (slot is empty) ⇒
+    // (0 << 16) | (0 XOR 1) = 1 with the encoder's current shape; what we
+    // really want is `detail >> 16 == slot_idx`.
+    assert_eq!(detail >> 16, 0, "slot index encoded in high 16 bits");
+
     // Trace has a fault-marker sample (last-known-good motors, segment_id=1).
     let mut out = [TraceSample::default(); 8];
     let n = h.drain_trace(&mut out);
