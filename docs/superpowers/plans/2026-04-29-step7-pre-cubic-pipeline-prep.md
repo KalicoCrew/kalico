@@ -123,60 +123,75 @@ git commit -m "geometry/segment: add EMode and SplitInfo types"
 
 **Files:**
 - Modify: `rust/geometry/src/segment.rs`
-- Create: `rust/geometry/src/error.rs`
+- Modify: `rust/geometry/src/error.rs` *(extend, do NOT replace — `Recovery` / `Fatal` / `InternalDetails` / `InternalKind` already live here)*
 - Modify: `rust/geometry/src/lib.rs`
 
-- [ ] **Step 1: Create `rust/geometry/src/error.rs`** with the geometry-error enum:
+**Round-1-review fix (CRITICAL 1):** `error.rs` already exists with `Recovery`, `Fatal`, `InternalDetails`, `InternalKind`. v1 of this plan said "Create `error.rs`" which would have clobbered the existing public error model. Corrected: extend in place — add `GeometryError` for `CubicSegment::try_new` invariant returns + add new `Recovery` variants for live-reduce rejection cases.
+
+- [ ] **Step 1: Extend `rust/geometry/src/error.rs`** — add the `GeometryError` enum (used by `CubicSegment::try_new`; not directly user-facing) and the new `Recovery` variants:
+
+Add at the end of the existing file (after `InternalKind` and before `#[cfg(test)] mod tests`):
 
 ```rust
-//! Geometry-layer errors. Layer-1 reduce + segment-construction surface these
-//! to the pipeline, which converts them to telemetry events / fatal-segment
-//! markers per the existing `Fatal` / `Recovery` machinery.
-
-use thiserror::Error;
-
-#[derive(Debug, Clone, Copy, PartialEq, Error)]
+/// Errors returned by `CubicSegment::try_new` invariant checks. The pipeline
+/// translates these to either `Recovery` items (for user-facing surfacing —
+/// `HelicalExtrusionUnsupported`, `UnsupportedGcode`) or `Fatal::Internal`
+/// (for genuine invariant violations — `NotSinglePieceCubic`, `EModeInvariantViolation`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GeometryError {
-    /// Live pipeline received G0/G1/G2/G3; user must run input through the
-    /// Step-13 compat layer first to normalize to G5/G5.1.
-    #[error(
-        "live pipeline accepts G5/G5.1 only; received G{0:?}. \
-         Run input through Step-13 compat layer or use a kalico-aware slicer."
-    )]
-    UnsupportedGcode(u8),
-
-    /// Helical extrusion (XY motion + Z motion + E motion in same segment)
-    /// is not yet supported in the live pipeline; pre-process via the Step-13
-    /// compat layer or disable helical extrusion in the slicer.
-    #[error(
-        "helical extrusion (XY motion + Z motion + E motion in same segment) \
-         not yet supported in live pipeline; pre-process via Step-13 compat \
-         layer or disable helical extrusion in slicer"
-    )]
+    /// Live pipeline received G0/G1/G2/G3; map to `Recovery::UnsupportedGcode`.
+    UnsupportedGcode { gcode_kind: &'static str },
+    /// Helical extrusion (XY+Z+E in same segment); map to
+    /// `Recovery::HelicalExtrusionUnsupported`.
     HelicalExtrusionUnsupported,
-
-    /// `xyz` did not satisfy the single-piece-cubic-Bézier invariant
-    /// (degree != 3, != 4 control points, has weights, or knot vector not clamped).
-    #[error("xyz NURBS is not a single-piece cubic Bézier: {reason}")]
+    /// `xyz` not single-piece cubic; map to `Fatal::Internal(InternalKind::CubicSegmentInvariantViolation { ... })`.
     NotSinglePieceCubic { reason: &'static str },
-
-    /// E-mode/E-fields invariant violated.
-    #[error("EMode invariant violated: {reason}")]
+    /// E-mode/E-fields invariant violated; map to `Fatal::Internal`.
     EModeInvariantViolation { reason: &'static str },
-
-    /// Zero-motion segment (all of ΔXY, ΔZ, ΔE below thresholds). Caller should
-    /// drop this segment without emitting it.
-    #[error("zero-motion segment rejected")]
+    /// Zero-motion segment (all deltas below thresholds). Caller should drop
+    /// without emitting (no Recovery / Fatal — silent skip).
     ZeroMotion,
 }
 ```
 
-- [ ] **Step 2: Wire into `lib.rs`** (`rust/geometry/src/lib.rs`):
+Add new variants to the existing `Recovery` enum (the `#[non_exhaustive]` attribute makes this safe for downstream consumers):
 
 ```rust
-pub mod error;
-pub use error::GeometryError;
+// Inside the `Recovery` enum, add:
+    /// Live pipeline received G0/G1/G2/G3 — must be normalized via Step-13
+    /// compat layer first.
+    UnsupportedGcode {
+        line_no: u32,
+        gcode_kind: &'static str,
+    },
+    /// G5/G5.1 with simultaneous XY + Z + E motion ("helical extrusion") —
+    /// not yet supported in live pipeline.
+    HelicalExtrusionUnsupported {
+        line_no: u32,
+    },
 ```
+
+Add a new variant to the existing `InternalKind` enum:
+
+```rust
+// Inside the `InternalKind` enum, add:
+    /// `CubicSegment::try_new` invariant violation — single-piece cubic or
+    /// E-mode-fields contract broken. Pipeline didn't validate before
+    /// constructing.
+    CubicSegmentInvariantViolation {
+        reason: &'static str,
+    },
+```
+
+(`reason: &'static str` is a `Copy` type, so `InternalKind`'s existing `Copy` derive remains valid.)
+
+- [ ] **Step 2: Extend `lib.rs` re-exports**:
+
+```rust
+pub use error::{Fatal, GeometryError, InternalDetails, InternalKind, Recovery, SlotDegeneracy};
+```
+
+(Adjust to whatever the existing `pub use error::{...};` line currently exports.)
 
 - [ ] **Step 3: Add `CubicSegment` to `segment.rs`** (after `JunctionDeviation`):
 
@@ -289,12 +304,7 @@ impl CubicSegment {
 }
 ```
 
-- [ ] **Step 4: Add `thiserror` to geometry's Cargo.toml** (if not already present):
-
-Check `rust/geometry/Cargo.toml`. If `thiserror` is not in `[dependencies]`, add:
-```toml
-thiserror = { workspace = true }
-```
+- [ ] **Step 4: (No Cargo.toml change needed.)** The round-1 review showed the existing `Fatal`/`Recovery` machinery uses plain enum variants (no `thiserror` derive). Match that style; the previous plan's `#[derive(Error)]` line was a remnant of v1's "create new file" approach.
 
 - [ ] **Step 5: Update `lib.rs` re-exports**:
 
@@ -607,6 +617,7 @@ git commit -m "geometry/segment: gate FittedSegment/ArcSegment behind legacy-ref
 
 **Files:**
 - Modify: `rust/geometry/src/reduce.rs`
+- Modify: `rust/geometry/src/pipeline.rs` *(round-3-review fix: maps the new `ParseErrorKind::UnsupportedGcode` to `Recovery::UnsupportedGcode` in the `ReduceEvent::ParseError` arm)*
 
 - [ ] **Step 1: Read the existing reduce.rs to find the dispatch surface**
 
@@ -657,7 +668,29 @@ match token {
 
 The exact wording depends on the existing `ParseErrorKind` enum. Add a new variant `UnsupportedGcode { kind: &'static str }` if needed.
 
-- [ ] **Step 4: Verify both configurations compile**
+- [ ] **Step 4: Add the `pipeline.rs` ParseError → Recovery mapping** (round-3 + round-4 review fix).
+
+The new `ParseErrorKind::UnsupportedGcode { kind: &'static str }` variant added in Step 3 must be translated into `Recovery::UnsupportedGcode { line_no, gcode_kind: kind }` by `pipeline.rs`. Without this, the match is non-exhaustive (compile fail) — and the live-rejection tests in Step 6 won't fire.
+
+Find the existing `ReduceEvent::ParseError` arm in `pipeline.rs` (likely in `Iterator::next` or `handle_event`). The existing pattern there builds a `Recovery` value inside the `match kind` arm and emits the synthetic `JunctionDeviation` + `Item::Recovered` *once after the match*. Match the existing pattern: add a new arm that **returns a `Recovery::UnsupportedGcode { line_no, gcode_kind: kind }` value**, and let the existing post-match emission code construct the `JunctionDeviation` and push `Item::Recovered` as it does for other recovery variants.
+
+The added arm shape (inside the existing `match kind` block):
+
+```rust
+match kind {
+    // ... existing arms (MalformedNumber → Recovery::MalformedParams, etc.) — unchanged ...
+
+    ParseErrorKind::UnsupportedGcode { kind } => {
+        Recovery::UnsupportedGcode { line_no, gcode_kind: kind }
+    }
+}
+// The post-match block (already in pipeline.rs) handles synthetic JunctionDeviation
+// construction and Item::Recovered emission — do NOT duplicate it here.
+```
+
+Round-4-review fix (HIGH): the round-3 v1 of this step pushed `Item::Recovered` directly inside the match arm, which would either bypass or duplicate the existing post-match emission flow. Returning the `Recovery` value preserves the existing pattern — the implementer's actual edit is one new match arm of ~3 lines.
+
+- [ ] **Step 5: Verify both configurations compile**
 
 ```bash
 cargo check -p geometry
@@ -666,14 +699,14 @@ cargo check -p geometry --features legacy-reference
 
 Both should be clean. Existing legacy tests (in `tests/`) will fail without `--features legacy-reference` — that's fixed in Task 4.1.
 
-- [ ] **Step 5: Add a test for the live-pipeline rejection**
+- [ ] **Step 6: Add a test for the live-pipeline rejection**
 
 Add to `rust/geometry/tests/cubic_segment.rs`:
 
 ```rust
 #[test]
 fn live_reduce_rejects_g1() {
-    use geometry::{GeometryPipeline, FitterParams, Item};
+    use geometry::{GeometryPipeline, FitterParams, Item, Recovery};
 
     let mut pipeline = GeometryPipeline::new(FitterParams::default());
     let mut events = vec![];
@@ -682,16 +715,21 @@ fn live_reduce_rejects_g1() {
     let g1_input = "G1 X10 Y10 F1000\n";
     let result: Vec<_> = pipeline.process(g1_input, &mut sink).collect();
 
-    // Expect at least one Item::Fatal or Item::Recovered with UnsupportedGcode error.
+    // Round-2-review fix (MEDIUM 1): live pipeline emits Recovery::UnsupportedGcode
+    // (NOT Fatal). UnsupportedGcode is non-fatal — the user can pre-process via
+    // Step-13 compat layer; the pipeline shouldn't crash, just skip-and-recover.
     assert!(
-        result.iter().any(|item| matches!(item, Item::Fatal(_))),
-        "G1 input should produce a Fatal item in live pipeline"
+        result.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::UnsupportedGcode { gcode_kind: "G0/G1", .. })
+        )),
+        "G1 input should produce Item::Recovered(_, Recovery::UnsupportedGcode {{ G0/G1 }})"
     );
 }
 
 #[test]
 fn live_reduce_rejects_g2() {
-    use geometry::{GeometryPipeline, FitterParams, Item};
+    use geometry::{GeometryPipeline, FitterParams, Item, Recovery};
 
     let mut pipeline = GeometryPipeline::new(FitterParams::default());
     let mut events = vec![];
@@ -699,13 +737,16 @@ fn live_reduce_rejects_g2() {
 
     let g2_input = "G2 X10 Y10 I5 J5 F1000\n";
     let result: Vec<_> = pipeline.process(g2_input, &mut sink).collect();
-    assert!(result.iter().any(|item| matches!(item, Item::Fatal(_))));
+    assert!(result.iter().any(|item| matches!(
+        item,
+        Item::Recovered(_, Recovery::UnsupportedGcode { gcode_kind: "G2/G3", .. })
+    )));
 }
 ```
 
 (`FitterParams::default()` may not exist — add `#[derive(Default)]` to it if missing, or construct explicitly.)
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 7: Run tests**
 
 ```bash
 cargo test -p geometry --test cubic_segment
@@ -713,11 +754,11 @@ cargo test -p geometry --test cubic_segment
 
 Expected: all pass, including the two new rejection tests.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add rust/geometry/src/reduce.rs rust/geometry/tests/cubic_segment.rs
-git commit -m "geometry/reduce: gate G0/G1/G2/G3 paths behind legacy-reference; reject in live"
+git add rust/geometry/src/reduce.rs rust/geometry/src/pipeline.rs rust/geometry/tests/cubic_segment.rs
+git commit -m "geometry/reduce+pipeline: gate G0/G1/G2/G3 paths behind legacy-reference; reject in live with Recovery::UnsupportedGcode"
 ```
 
 ### Task 1.6: Update `pipeline.rs` to emit `Segment::Cubic` for G5/G5.1
@@ -725,35 +766,141 @@ git commit -m "geometry/reduce: gate G0/G1/G2/G3 paths behind legacy-reference; 
 **Files:**
 - Modify: `rust/geometry/src/pipeline.rs`
 
-- [ ] **Step 1: Identify the existing G5 handler**
+**Round-1-review fix (CRITICAL 2):** The actual `CurveGeom::Cubic` variant is `Cubic { cps: [[f64; 3]; 4] }` (defined `pub(crate)` at `rust/geometry/src/reduce.rs:62`); it does *not* carry `xyz`, `e_delta`, `feedrate_mm_s`, or `source`. Those fields live on the outer `ReduceEvent::Curve { geom, e_delta, feedrate_mm_s, line_no }` (at `rust/geometry/src/reduce.rs:79`). v1 of this plan inlined a wrong-API match arm; pipeline.rs:125 currently discards `e_delta`. The fix routes `e_delta` through `handle_event` to `handle_curve` and constructs the `VectorNurbs` from `cps` inside the handler.
+
+**Round-1-review fix (HIGH 1):** v1's classifier used endpoint chord `cps[3] − cps[0]` for XY motion detection, which misclassifies closed/looping cubic motion (chord ≈ 0 but real arc length). Use `xy_arc_length` instead — same primitive that downstream needs anyway for the ratio computation.
+
+- [ ] **Step 1: Identify the existing reduce-event handler**
 
 ```bash
-grep -n "Cubic\|FittedSegment\|handle_curve\|G5" rust/geometry/src/pipeline.rs | head -20
+grep -n "Cubic\|FittedSegment\|handle_curve\|handle_event\|Curve {" rust/geometry/src/pipeline.rs | head -30
 ```
 
-Find the function (likely `handle_curve` or similar) that produces `FittedSegment` from a `CurveGeom::Cubic`.
+Find the function (likely `handle_event` / `handle_curve` or inside the `Iterator::next` body) that consumes `ReduceEvent::Curve` and produces a `Segment`.
 
-- [ ] **Step 2: Replace `FittedSegment` emission with `CubicSegment`**
+- [ ] **Step 2: Refactor handler to route `e_delta` and construct `xyz` from `cps`**
 
-The existing handler probably looks like:
+The fundamental shape of the new handler:
+
 ```rust
-fn handle_curve(&mut self, geom: CurveGeom, ...) {
-    match geom {
-        CurveGeom::Cubic { xyz, e_delta, .. } => {
-            self.queue.push_back(Item::Segment(Segment::Fitted(FittedSegment {
-                xyz, e: None, feedrate_mm_s: ..., degree: 3,
-                max_residual_mm: 0.0, source: ...,
-            })));
+use crate::{CubicSegment, EMode, GeometryError, Recovery, Fatal, Item, Segment, SourceRange};
+use crate::reduce::{CurveGeom, ReduceEvent};
+use nurbs::{ScalarNurbs, VectorNurbs};
+
+fn handle_curve_event(
+    queue: &mut std::collections::VecDeque<Item>,
+    geom: CurveGeom,
+    e_delta: Option<f64>,
+    feedrate_mm_s: f64,
+    line_no: u32,
+) {
+    let source = SourceRange { start_line: line_no, end_line: line_no };
+
+    let xyz: VectorNurbs<f64, 3> = match geom {
+        CurveGeom::Cubic { cps } => {
+            // G5: cubic Bézier directly from the 4 control points.
+            VectorNurbs::<f64, 3>::try_new(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                cps.to_vec(),
+                None,
+            ).expect("G5 cubic always valid")
         }
-        // ... other variants ...
+        CurveGeom::Quadratic { cps } => {
+            // G5.1: degree-elevate to cubic per §6.5.
+            let q_xyz = VectorNurbs::<f64, 3>::try_new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                cps.to_vec(),
+                None,
+            ).expect("G5.1 quadratic always valid");
+            degree_elevate_2_to_3(&q_xyz)
+        }
+        // Round-2-review fix (HIGH 1): legacy variants exist when `legacy-reference`
+        // is enabled and CAN reach the pipeline (legacy reduce paths produce them
+        // without going through the live G0/G1/G2/G3 rejection in Task 1.5).
+        // Treat as Recovery::UnsupportedGcode so feature-enabled compile + run still
+        // surfaces the error correctly. The `unreachable!()` v1 was wrong — it would
+        // panic instead of emitting a recovery item.
+        #[cfg(feature = "legacy-reference")]
+        CurveGeom::Linear { cps } => {
+            let synthetic_jd = JunctionDeviation {
+                position: cps[0],
+                angle_deg: 0.0,
+                feedrate_mm_s,
+                source,
+            };
+            queue.push_back(Item::Recovered(
+                Segment::Junction(synthetic_jd),
+                Recovery::UnsupportedGcode { line_no, gcode_kind: "G0/G1" },
+            ));
+            return;
+        }
+        #[cfg(feature = "legacy-reference")]
+        CurveGeom::RationalQuadratic { cps, .. } => {
+            let synthetic_jd = JunctionDeviation {
+                position: cps[0],
+                angle_deg: 0.0,
+                feedrate_mm_s,
+                source,
+            };
+            queue.push_back(Item::Recovered(
+                Segment::Junction(synthetic_jd),
+                Recovery::UnsupportedGcode { line_no, gcode_kind: "G2/G3" },
+            ));
+            return;
+        }
+    };
+
+    // Classify per spec §6.1 with helical-rejection.
+    let classification = classify_e_mode(&xyz, e_delta);
+    match classification {
+        Ok((e_mode, extrusion_per_xy_mm, e_independent)) => {
+            match CubicSegment::try_new(
+                xyz, e_mode, extrusion_per_xy_mm, e_independent,
+                feedrate_mm_s, source, None,
+            ) {
+                Ok(seg) => queue.push_back(Item::Segment(Segment::Cubic(seg))),
+                Err(GeometryError::NotSinglePieceCubic { reason })
+                | Err(GeometryError::EModeInvariantViolation { reason }) => {
+                    queue.push_back(Item::Fatal(Fatal::Internal(Box::new(
+                        crate::error::InternalDetails {
+                            kind: crate::error::InternalKind::CubicSegmentInvariantViolation { reason },
+                            context: format!("line_no={line_no}"),
+                            backtrace: std::backtrace::Backtrace::capture(),
+                        },
+                    ))));
+                }
+                Err(_) => unreachable!("classify_e_mode wouldn't have returned Ok if try_new could fail this way"),
+            }
+        }
+        Err(GeometryError::ZeroMotion) => {
+            // Drop zero-motion segments silently.
+        }
+        Err(GeometryError::HelicalExtrusionUnsupported) => {
+            // Round-2-review fix (HIGH 2): mirror the existing parse-error recovery
+            // pattern in pipeline.rs (which constructs a synthetic JunctionDeviation
+            // at the offending line for Item::Recovered). For helical extrusion, no
+            // actual Segment exists — synthesize a 0° JunctionDeviation at the
+            // segment's xyz start position so the Item::Recovered shape matches.
+            let cps = xyz.control_points();
+            let synthetic_jd = JunctionDeviation {
+                position: cps[0],
+                angle_deg: 0.0,
+                feedrate_mm_s,
+                source,
+            };
+            queue.push_back(Item::Recovered(
+                Segment::Junction(synthetic_jd),
+                Recovery::HelicalExtrusionUnsupported { line_no },
+            ));
+        }
+        Err(GeometryError::UnsupportedGcode { .. }) => {
+            unreachable!("classify_e_mode doesn't return UnsupportedGcode; that's reduce.rs's job")
+        }
+        Err(_) => unreachable!("classify_e_mode return shape is exhaustive"),
     }
 }
-```
-
-Replace with classification logic. Pseudocode:
-
-```rust
-use crate::{CubicSegment, EMode, GeometryError};
 
 fn classify_e_mode(
     xyz: &VectorNurbs<f64, 3>,
@@ -763,44 +910,43 @@ fn classify_e_mode(
     const EPS_Z: f64 = 1e-6;
     const EPS_E: f64 = 1e-6;
 
+    // ROUND-1-REVIEW FIX (HIGH 1): use xy_arc_length, not endpoint chord.
+    // Endpoint chord misclassifies closed/looping cubics (chord ≈ 0 but real motion).
+    let xy_len = nurbs::arc_length::xy_arc_length(xyz);
+
+    // Z motion: endpoint delta is fine here — Z is per the spec's §6.1
+    // threshold-semantics note, an endpoint-delta magnitude.
     let cps = xyz.control_points();
-    let dx = (cps[3][0] - cps[0][0]).abs();
-    let dy = (cps[3][1] - cps[0][1]).abs();
     let dz = (cps[3][2] - cps[0][2]).abs();
-    let dxy_sq = dx * dx + dy * dy;
-    let dxy = dxy_sq.sqrt();
+
     let de = e_delta.unwrap_or(0.0);
     let abs_de = de.abs();
 
-    let xyz_motion = dxy > EPS_XYZ;
+    let xyz_motion = xy_len > EPS_XYZ;
     let z_motion = dz > EPS_Z;
     let e_motion = abs_de > EPS_E;
 
     match (xyz_motion, z_motion, e_motion) {
-        (true, false, true) => {
-            // CoupledToXy: signed ratio.
-            let ratio = de / xy_arc_length_of_cubic(xyz);
-            Ok((EMode::CoupledToXy, ratio, None))
-        }
+        // CoupledToXy: real XY motion, no Z motion, real E motion. Signed ratio.
+        (true, false, true) => Ok((EMode::CoupledToXy, de / xy_len, None)),
+        // Helical: XY + Z + E. Rejected.
         (true, true, true) => Err(GeometryError::HelicalExtrusionUnsupported),
+        // Travel: XY motion, no E motion. Z may or may not be present.
         (true, _, false) => Ok((EMode::Travel, 0.0, None)),
+        // Pure E motion (and possibly Z): Independent with linear E curve.
         (false, _, true) => {
             let e_curve = build_linear_e_curve(de);
             Ok((EMode::Independent, 0.0, Some(e_curve)))
         }
-        (false, false, false) => Err(GeometryError::ZeroMotion),
+        // Pure Z (no XY, no E): Travel.
         (false, true, false) => Ok((EMode::Travel, 0.0, None)),
+        // No motion at all: ZeroMotion.
+        (false, false, false) => Err(GeometryError::ZeroMotion),
     }
 }
 
-fn xy_arc_length_of_cubic(xyz: &VectorNurbs<f64, 3>) -> f64 {
-    nurbs::arc_length::xy_arc_length(xyz)
-    // (Layer-0 helper added in Task 2.1.)
-}
-
 fn build_linear_e_curve(e_delta: f64) -> ScalarNurbs<f64> {
-    // Linear NURBS [0 → e_delta] over u ∈ [0, 1].
-    ScalarNurbs::try_new(
+    ScalarNurbs::<f64>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![0.0, e_delta],
@@ -810,45 +956,11 @@ fn build_linear_e_curve(e_delta: f64) -> ScalarNurbs<f64> {
 }
 ```
 
-(Note: `xy_arc_length` is added in Task 2.1; the function compiles after that task lands. Phase 2 may need to land before this part of Phase 1 in execution order — see Phase 1's note about parallel-able primitive work.)
+The exact wiring of `Item::Recovered` and `Fatal::Internal` depends on the existing pipeline structure — preserve the existing `Recovery` / `Fatal` emission patterns. The plan above is the *shape* of the new handler; the implementer should adapt to whatever the existing `handle_event` / `handle_curve` skeleton looks like.
 
-- [ ] **Step 3: Wire the classification into the G5 handler**:
+**Note on `xy_arc_length`:** this primitive is added in Task 2.1 (Phase 2). For Phase 1 to compile standalone, either: (a) land Phase 2 first, or (b) inline a placeholder `xy_arc_length` implementation in `pipeline.rs` and refactor when Task 2.1 lands. Option (a) is cleaner; the spec's §8 phasing allows it because Phase 2 primitives have no dependencies on Phase 1.
 
-```rust
-match geom {
-    CurveGeom::Cubic { xyz, e_delta, source, feedrate_mm_s } => {
-        let classification = classify_e_mode(&xyz, e_delta);
-        match classification {
-            Ok((e_mode, extrusion_per_xy_mm, e_independent)) => {
-                let cubic_seg = CubicSegment::try_new(
-                    xyz, e_mode, extrusion_per_xy_mm, e_independent,
-                    feedrate_mm_s, source, None,
-                );
-                match cubic_seg {
-                    Ok(seg) => self.queue.push_back(Item::Segment(Segment::Cubic(seg))),
-                    Err(err) => self.queue.push_back(Item::Fatal(Fatal::from(err))),
-                }
-            }
-            Err(GeometryError::ZeroMotion) => {
-                // Drop zero-motion segments silently.
-            }
-            Err(err) => {
-                self.queue.push_back(Item::Fatal(Fatal::from(err)));
-            }
-        }
-    }
-    CurveGeom::Quadratic { xyz, e_delta, source, feedrate_mm_s } => {
-        // Degree-elevate G5.1 quadratic to cubic per spec §6.5.
-        let cubic_xyz = degree_elevate_2_to_3(&xyz);
-        // Then same classification + emission as Cubic.
-        // (Refactor: extract a helper "emit_cubic_segment" for the shared logic.)
-        emit_cubic_segment(self, cubic_xyz, e_delta, source, feedrate_mm_s);
-    }
-    // ... legacy variants remain gated ...
-}
-```
-
-- [ ] **Step 4: Implement `degree_elevate_2_to_3`**:
+- [ ] **Step 3: Implement `degree_elevate_2_to_3`** (referenced by Step 2's handler):
 
 ```rust
 /// Bernstein degree-elevation from a degree-2 polynomial NURBS to degree-3,
@@ -883,28 +995,17 @@ fn degree_elevate_2_to_3(quadratic: &VectorNurbs<f64, 3>) -> VectorNurbs<f64, 3>
 }
 ```
 
-- [ ] **Step 5: Add the `Fatal::from(GeometryError)` impl**:
-
-In `rust/geometry/src/error.rs` (or wherever `Fatal` is defined):
-
-```rust
-impl From<GeometryError> for Fatal {
-    fn from(err: GeometryError) -> Fatal {
-        Fatal::Geometry(err.to_string())
-        // (or whatever shape Fatal has; adapt to the existing enum)
-    }
-}
-```
-
-- [ ] **Step 6: Verify compile (after Task 2.1 lands)**
+- [ ] **Step 4: Verify compile (after Task 2.1 lands)**
 
 ```bash
 cargo check -p geometry
 ```
 
+Round-2-review note: the round-1 plan included a separate "`Fatal::from(GeometryError)` impl" step that proposed `Fatal::Geometry(err.to_string())` — that variant doesn't exist on the actual `Fatal` enum (which is `Internal(Box<InternalDetails>)` only). Step 2's match arm above maps invariant errors directly to `Fatal::Internal(Box::new(InternalDetails { kind: InternalKind::CubicSegmentInvariantViolation { reason }, ... }))` instead. No separate `From` impl needed.
+
 If `xy_arc_length` is not yet available from `nurbs`, this step waits on Task 2.1. To unblock Phase 1, you can use a placeholder `xy_arc_length_of_cubic` that integrates inline (5-point Gauss-Legendre on the cubic's `√(x'² + y'²)`). That is exactly the implementation Task 2.1 will land in `nurbs::arc_length`; landing it inline first and refactoring later is a valid sequencing.
 
-- [ ] **Step 7: Add a degree-elevation test**
+- [ ] **Step 5: Add a degree-elevation test**
 
 Add to `rust/geometry/tests/cubic_segment.rs`:
 
@@ -1556,6 +1657,114 @@ fn quarter_arc_fits_at_low_degree() {
     );
     assert!(result.is_ok(), "quarter arc fit failed: {:?}", result);
 }
+
+/// Round-1-review fix (MEDIUM 1): residual verification at points NOT used
+/// during the fit (so we exercise the L∞ — not just verify it's non-empty).
+/// Pick a tight 1mm-radius arc — the verifier said this is the regime where
+/// linear u(s) gives ~7 µm error; adaptive fit should converge at 1µm tolerance.
+#[test]
+fn tight_arc_r1mm_residual_within_tolerance() {
+    use nurbs::arc_length::param_from_arc_length;
+    use nurbs::eval::vector_eval;
+
+    // R = 1 mm quarter arc.
+    let r = 1.0;
+    let k = 4.0 / 3.0 * (std::f64::consts::PI / 8.0).tan();
+    let xyz = VectorNurbs::<f64, 3>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![
+            [r, 0.0, 0.0],
+            [r, r * k, 0.0],
+            [r * k, r, 0.0],
+            [0.0, r, 0.0],
+        ],
+        None,
+    ).unwrap();
+
+    let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
+    let table_ref = table.as_view();
+    let s_max = table.s_max();
+
+    let s_lo = s_max * 0.3;
+    let s_hi = s_max * 0.3 + 0.5;
+    let tolerance_mm = 1e-3;
+
+    let pieces = fit_x_to_arc_length_piece::<3>(
+        &xyz, &table_ref, s_lo, s_hi,
+        /*target_degree=*/4, /*max_degree=*/10, tolerance_mm,
+    ).expect("R=1mm fit must converge with adaptive degree");
+
+    // Verify residual at 100 points in [s_lo, s_hi] (not just the 4·(d+1)
+    // points the primitive itself uses).
+    for i in 0..=100 {
+        let t = i as f64 / 100.0;
+        let s = s_lo + (s_hi - s_lo) * t;
+        let u = param_from_arc_length(&table_ref, s);
+        let truth = vector_eval(&xyz, u);
+        for axis in 0..3 {
+            let p_val = pieces[axis].evaluate(s);
+            let err = (truth[axis] - p_val).abs();
+            assert!(err <= tolerance_mm * 1.5,
+                "axis {axis} residual at s={s} was {err}, tolerance {tolerance_mm}");
+        }
+    }
+}
+
+/// Round-1-review fix (MEDIUM 1): endpoint integrity. Chebyshev-of-2nd-kind
+/// nodes include endpoints, so the fit must pass through truth at s_lo / s_hi.
+#[test]
+fn endpoint_integrity() {
+    use nurbs::arc_length::param_from_arc_length;
+    use nurbs::eval::vector_eval;
+
+    let xyz = cubic_straight_line();
+    let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
+    let table_ref = table.as_view();
+
+    let s_lo = 1.0;
+    let s_hi = 4.0;
+    let pieces = fit_x_to_arc_length_piece::<3>(
+        &xyz, &table_ref, s_lo, s_hi,
+        /*target_degree=*/4, /*max_degree=*/10, /*tolerance_mm=*/1e-9,
+    ).unwrap();
+
+    let u_lo = param_from_arc_length(&table_ref, s_lo);
+    let u_hi = param_from_arc_length(&table_ref, s_hi);
+    let truth_lo = vector_eval(&xyz, u_lo);
+    let truth_hi = vector_eval(&xyz, u_hi);
+
+    for axis in 0..3 {
+        let p_lo = pieces[axis].evaluate(s_lo);
+        let p_hi = pieces[axis].evaluate(s_hi);
+        assert!((p_lo - truth_lo[axis]).abs() < 1e-9,
+            "endpoint s_lo axis {axis} mismatch: p={p_lo} truth={}", truth_lo[axis]);
+        assert!((p_hi - truth_hi[axis]).abs() < 1e-9,
+            "endpoint s_hi axis {axis} mismatch: p={p_hi} truth={}", truth_hi[axis]);
+    }
+}
+
+/// Round-1-review fix (MEDIUM 1): degenerate-input rejection.
+#[test]
+fn degenerate_input_returns_err() {
+    let xyz = cubic_straight_line();
+    let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
+    let table_ref = table.as_view();
+
+    // s_hi <= s_lo: degenerate range.
+    let result = fit_x_to_arc_length_piece::<3>(
+        &xyz, &table_ref, 5.0, 4.0,
+        /*target_degree=*/4, /*max_degree=*/10, /*tolerance_mm=*/1e-3,
+    );
+    assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
+
+    // NaN s_lo.
+    let result = fit_x_to_arc_length_piece::<3>(
+        &xyz, &table_ref, f64::NAN, 4.0,
+        /*target_degree=*/4, /*max_degree=*/10, /*tolerance_mm=*/1e-3,
+    );
+    assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
+}
 ```
 
 - [ ] **Step 3: Verify test fails to compile**
@@ -1746,13 +1955,13 @@ fn horner_pascal_shifted(coeffs: &[f64], s: f64, s_origin: f64) -> f64 {
 }
 ```
 
-- [ ] **Step 5: Run the test**
+- [ ] **Step 5: Run the tests**
 
 ```bash
 cargo test -p nurbs --test fit_x_to_arc_length_piece
 ```
 
-Expected: both tests pass.
+Expected: all 5 tests pass (`straight_line_fits_at_low_degree`, `quarter_arc_fits_at_low_degree`, `tight_arc_r1mm_residual_within_tolerance`, `endpoint_integrity`, `degenerate_input_returns_err`).
 
 - [ ] **Step 6: Commit**
 
@@ -1859,7 +2068,12 @@ fn metadata_propagates() {
 }
 
 #[test]
-fn boundary_continuity_bit_exact() {
+fn boundary_continuity_within_round_off() {
+    // Round-1-review fix (HIGH 2): split_piece_at re-shifts coefficients via binomial
+    // operations, and to_bernstein/from_bernstein adds another floating-point pass on
+    // the way through vector_nurbs_from_pieces. Two adjacent boundary values can differ
+    // by f64 round-off — typically ~1e-14. Use a tolerance bound, not assert_eq!.
+    const BOUNDARY_TOL: f64 = 1e-12;
     use nurbs::eval::vector_eval;
     let seg = straight_cubic(50.0);
     let out = split_segment_to_cap(&seg, 12.5).unwrap();
@@ -1867,9 +2081,10 @@ fn boundary_continuity_bit_exact() {
         let left_end = vector_eval(&window[0].xyz, 1.0);
         let right_start = vector_eval(&window[1].xyz, 0.0);
         for axis in 0..3 {
-            assert_eq!(
-                left_end[axis], right_start[axis],
-                "boundary mismatch axis {axis}: {left_end:?} vs {right_start:?}"
+            let diff = (left_end[axis] - right_start[axis]).abs();
+            assert!(
+                diff < BOUNDARY_TOL,
+                "boundary mismatch axis {axis}: {left_end:?} vs {right_start:?}, diff={diff}"
             );
         }
     }
@@ -1915,12 +2130,14 @@ Expected: `split_segment_to_cap` not found.
 //! piece count for downstream Layer 3 (T-A) by capping arc length at `max_arc_length_mm`
 //! (default 12.5 mm). See `docs/superpowers/specs/2026-04-29-step7-pre-cubic-pipeline-prep-design.md` §5.
 
-use crate::{CubicSegment, EMode, SourceRange, SplitInfo};
+use crate::{CubicSegment, SplitInfo};
+// Round-1-review fix (LOW 1): only import what the splitter actually uses
+// (workspace-wide -D warnings would otherwise fail CI on unused imports).
 use nurbs::{
-    arc_length::{build_arc_length_table_vector, param_from_arc_length},
+    arc_length::{arc_length_from_param, build_arc_length_table_vector, param_from_arc_length},
     bezier::{BezierPiece, extract_bezier_pieces, split_piece_at},
-    eval::vector_derivative,
-    VectorNurbs,
+    eval::{vector_derivative, vector_eval},
+    ScalarNurbs, VectorNurbs,
 };
 
 const EPS_CP_POLYGON: f64 = 3e-6;
@@ -1974,7 +2191,8 @@ pub fn split_segment_to_cap(
     }
 
     // Step 5: convert each target to a parameter via param_from_arc_length.
-    let mut u_breaks: Vec<f64> = targets.iter()
+    // Round-1-review fix (LOW 1): not `mut` — vector is built once, then iterated.
+    let u_breaks: Vec<f64> = targets.iter()
         .map(|&s| param_from_arc_length(&table_ref, s))
         .collect();
 
@@ -2023,8 +2241,8 @@ pub fn split_segment_to_cap(
             &emitted_axes[1][i],
             &emitted_axes[2][i],
         ]);
-        let s_lo = nurbs::arc_length::arc_length_from_param(&table_ref, emitted_axes[0][i].u_start);
-        let s_hi = nurbs::arc_length::arc_length_from_param(&table_ref, emitted_axes[0][i].u_end);
+        let s_lo = arc_length_from_param(&table_ref, emitted_axes[0][i].u_start);
+        let s_hi = arc_length_from_param(&table_ref, emitted_axes[0][i].u_end);
         let split_info = SplitInfo {
             sub_index: i as u32,
             sub_count: n_emitted as u32,
@@ -2269,13 +2487,15 @@ fn synthetic_long_g5_reduces_splits_and_plans() {
     let split = split_segment_to_cap(&cubic, 12.5).expect("split ok");
     assert!(split.len() >= 4, "50mm split into ≥4 sub-segments at 12.5mm cap");
 
-    // Verify boundary continuity.
+    // Verify boundary continuity within f64 round-off (per round-1-review HIGH 2).
+    const BOUNDARY_TOL: f64 = 1e-12;
     use nurbs::eval::vector_eval;
     for w in split.windows(2) {
         let lend = vector_eval(&w[0].xyz, 1.0);
         let rstart = vector_eval(&w[1].xyz, 0.0);
         for axis in 0..3 {
-            assert_eq!(lend[axis], rstart[axis], "boundary continuity on axis {axis}");
+            let diff = (lend[axis] - rstart[axis]).abs();
+            assert!(diff < BOUNDARY_TOL, "boundary continuity axis {axis}: diff={diff}");
         }
     }
 }
