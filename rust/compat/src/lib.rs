@@ -12,5 +12,6 @@ pub mod corner;
 pub mod degree_elev;
 pub mod emit;
 pub mod g5_canon;
+pub mod hausdorff;
 pub mod modal;
 pub mod run;
