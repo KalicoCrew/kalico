@@ -118,6 +118,11 @@ TIM5_IRQHandler(void)
     // u64 advances at the same rate the engine would observe on silicon.
     extern volatile uint32_t kalico_sim_cyccnt;
     kalico_sim_cyccnt += (kalico_clock_freq / 40000U);
+    // Sim-only wake of the drain task; the foreground timer system is
+    // unreliable under Renode (DWT-based dispatch) so we drive the drain
+    // cadence deterministically off TIM5 fires. Throttled in runtime_tick.c.
+    extern void kalico_sim_isr_wake_drain(void);
+    kalico_sim_isr_wake_drain();
 #endif
 
     // Use the abstraction so cycle-count snapshots stay consistent under the

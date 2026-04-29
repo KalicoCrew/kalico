@@ -58,6 +58,33 @@ runtime_drain_event(struct timer *t)
     return SF_RESCHEDULE;
 }
 
+#if CONFIG_KALICO_SIM
+// Sim-only direct wake from the TIM5 ISR. Under Renode, the DWT-based
+// timer system is best-effort even with the kalico_sim_cyccnt fork
+// (timer_set_diff -> SysTick->LOAD interactions are subtle with a
+// stepping software counter), so the runtime_drain_timer's 1 kHz cadence
+// can be unreliable. Step-6 plan Phase 0 Gate A trace-stream verification
+// requires drain to be invoked deterministically while segments are
+// retiring; this provides a guaranteed wake path keyed off TIM5 fires.
+//
+// Throttle: wake every KALICO_SIM_DRAIN_PERIOD_TICKS = 40 fires (= once
+// per 1 ms at 40 kHz tick rate). sched_wake_task is ISR-safe (sets a
+// volatile flag + atomic write).
+extern void sched_wake_task(struct task_wake *w);
+volatile uint32_t kalico_sim_drain_counter = 0;
+#define KALICO_SIM_DRAIN_PERIOD_TICKS 40
+
+__attribute__((used, externally_visible))
+void
+kalico_sim_isr_wake_drain(void)
+{
+    if (++kalico_sim_drain_counter >= KALICO_SIM_DRAIN_PERIOD_TICKS) {
+        kalico_sim_drain_counter = 0;
+        sched_wake_task(&runtime_drain_wake);
+    }
+}
+#endif
+
 void
 runtime_init(void)
 {
@@ -88,11 +115,19 @@ DECL_INIT(runtime_init);
 #define KALICO_LIVENESS_THRESHOLD_TICKS  \
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
+#if CONFIG_KALICO_SIM
+volatile uint32_t kalico_sim_drain_calls = 0;
+#endif
+
 void
 runtime_drain(void)
 {
     if (!kalico_rt_handle) return;
     if (!sched_check_wake(&runtime_drain_wake)) return;
+
+#if CONFIG_KALICO_SIM
+    kalico_sim_drain_calls++;
+#endif
 
     // Drain a batch.
     static uint8_t batch_buf[KALICO_TRACE_BATCH * 32];  // 32 bytes per sample
@@ -246,6 +281,26 @@ command_kalico_query_status(uint32_t *args)
     sendf("kalico_status status=%c last_err=%i", status, last_err);
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
+
+#if CONFIG_KALICO_SIM
+extern volatile uint32_t kalico_sim_drain_calls;
+extern volatile uint32_t kalico_sim_cyccnt;
+extern volatile uint32_t kalico_sim_drain_counter;
+
+void
+command_kalico_sim_diag(uint32_t *args)
+{
+    uint8_t status = kalico_rt_handle ? kalico_runtime_status(kalico_rt_handle) : 255;
+    int32_t last_err = kalico_rt_handle ? kalico_runtime_last_error(kalico_rt_handle) : 0;
+    uint32_t tick_counter = kalico_rt_handle ? kalico_runtime_tick_counter(kalico_rt_handle) : 0;
+    sendf(
+        "kalico_sim_diag_response drain_calls=%u cyccnt=%u drain_counter=%u "
+        "status=%c last_err=%i tick_counter=%u",
+        kalico_sim_drain_calls, kalico_sim_cyccnt, kalico_sim_drain_counter,
+        status, last_err, tick_counter);
+}
+DECL_COMMAND(command_kalico_sim_diag, "kalico_sim_diag");
+#endif
 
 #if CONFIG_KALICO_SIM
 // Sim-only escape hatch (Step-6 plan Phase 0 Task 0.2). Diagnoses the
