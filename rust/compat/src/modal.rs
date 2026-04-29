@@ -64,6 +64,36 @@ impl ModalState {
             prev_tangent: None,
         }
     }
+
+    /// Resolve X/Y/Z parameters to absolute position, handling G90/G91 mode.
+    /// Absent parameters inherit from current position (modal).
+    pub fn resolve_position(&self, x: Option<f64>, y: Option<f64>, z: Option<f64>) -> [f64; 3] {
+        if self.absolute_xyz {
+            [
+                x.unwrap_or(self.position[0]),
+                y.unwrap_or(self.position[1]),
+                z.unwrap_or(self.position[2]),
+            ]
+        } else {
+            [
+                self.position[0] + x.unwrap_or(0.0),
+                self.position[1] + y.unwrap_or(0.0),
+                self.position[2] + z.unwrap_or(0.0),
+            ]
+        }
+    }
+
+    /// Resolve an E parameter to absolute cumulative value, handling M82/M83.
+    pub fn resolve_input_e(&self, e_param: Option<f64>) -> Option<f64> {
+        e_param.map(|e| if self.absolute_e { e } else { self.input_e + e })
+    }
+
+    /// Returns true if the given endpoint differs from current position in XY.
+    pub fn has_xy_motion(&self, end: &[f64; 3]) -> bool {
+        let dx = end[0] - self.position[0];
+        let dy = end[1] - self.position[1];
+        dx * dx + dy * dy > 1e-12
+    }
 }
 
 impl Default for ModalState {
