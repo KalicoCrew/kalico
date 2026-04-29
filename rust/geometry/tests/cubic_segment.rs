@@ -333,3 +333,41 @@ fn g92_e0_resets_modal_e_for_subsequent_g5_e_delta() {
         cubic.extrusion_per_xy_mm
     );
 }
+
+#[test]
+fn g18_then_g5_emits_plane_mismatch_recovery() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+
+    // Pre-fix: G5 ignored active_plane and emitted a CurveGeom::Cubic as if
+    // XY. Post-fix: mirrors G5.1's plane check; emits Recovery::G5PlaneMismatch.
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_: TelemetryEvent| {};
+    let src = "G18\nG5 X10 Y0 I3 J3 P-3 Q3 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::G5PlaneMismatch { active_plane_g_code: 18, .. })
+        )),
+        "G18 + G5 should produce Recovery::G5PlaneMismatch {{ 18 }}, got {items:#?}"
+    );
+}
+
+#[test]
+fn g19_then_g5_emits_plane_mismatch_recovery() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+
+    let mut p = GeometryPipeline::new(FitterParams::default());
+    let mut sink = |_: TelemetryEvent| {};
+    let src = "G19\nG5 X10 Y0 I3 J3 P-3 Q3 F1500\n";
+    let items: Vec<_> = p.process(src, &mut sink).collect();
+
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::G5PlaneMismatch { active_plane_g_code: 19, .. })
+        )),
+        "G19 + G5 should produce Recovery::G5PlaneMismatch {{ 19 }}, got {items:#?}"
+    );
+}

@@ -481,6 +481,24 @@ where
                 line_no,
                 ..
             } => {
+                // Plane check (Phase 1: XY only). Defense-in-depth — modern
+                // FDM slicers don't emit G18/G19, but a stray plane-select
+                // followed by G5 would otherwise produce a curve interpreted
+                // as XY when the user meant XZ/YZ. Mirror G5.1's behavior.
+                if state.active_plane != Plane::XY {
+                    let plane_g_code = match state.active_plane {
+                        Plane::XY => 17,
+                        Plane::XZ => 18,
+                        Plane::YZ => 19,
+                    };
+                    state.prev_g5_pq = None;
+                    return Some(ReduceEvent::ParseError {
+                        line_no,
+                        kind: ParseErrorKind::G5PlaneMismatch,
+                        text: plane_g_code.to_string(),
+                    });
+                }
+
                 let p0 = state.position;
 
                 // Resolve I,J: explicit if present, modal-chain rule if both
