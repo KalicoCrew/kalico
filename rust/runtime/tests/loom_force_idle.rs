@@ -1,4 +1,4 @@
-//! Loom model of the §8.5 force_idle handshake (Phase 7 + Phase 12).
+//! Loom model of the §8.5 `force_idle` handshake (Phase 7 + Phase 12).
 //!
 //! Models the cross-half handshake:
 //!   1. Foreground sets `force_idle = true` (Release).
