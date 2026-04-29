@@ -40,6 +40,7 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::items_after_statements)]
+#![cfg(feature = "legacy-reference")]
 
 use nurbs::VectorNurbs;
 use temporal::topp::path::sample_arclength_grid;

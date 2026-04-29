@@ -1,5 +1,7 @@
 //! Adaptive-tolerance regression tests. Spec §2.1 + Pi 5 investigation Finding 2.
 
+#![cfg(feature = "legacy-reference")]
+
 use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
 use nurbs::VectorNurbs;
 use temporal::{
