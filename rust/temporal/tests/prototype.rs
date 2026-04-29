@@ -318,14 +318,16 @@ mod fixture_4_g5_cubic {
             pipeline.process(src, &mut sink).collect()
         };
 
-        // Find the degree-3 Fitted segment emitted by G5 reduction.
+        // Find the cubic segment emitted by G5 reduction. G5/G5.1 emit
+        // `Segment::Cubic` in both feature configs (the cubic-Bézier uniform
+        // invariant is the new internal representation post-Task 1.6).
         items
             .into_iter()
             .find_map(|it| match it {
-                Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f.xyz),
+                Item::Segment(Segment::Cubic(c)) => Some(c.xyz),
                 _ => None,
             })
-            .expect("G5 reduction must emit exactly one degree-3 FittedSegment")
+            .expect("G5 reduction must emit exactly one Segment::Cubic")
     }
 
     /// Compute the centripetal MVC upper bound b_max_cent = a_centripetal_max / κ

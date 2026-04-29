@@ -55,7 +55,7 @@ impl CreditCounter {
                 Ordering::Acquire,
             ) {
                 Ok(_) => return Some(()),
-                Err(_) => continue,
+                Err(_) => {}
             }
         }
     }
@@ -76,7 +76,7 @@ impl CreditCounter {
                 Ordering::Acquire,
             ) {
                 Ok(_) => return,
-                Err(_) => continue,
+                Err(_) => {}
             }
         }
     }

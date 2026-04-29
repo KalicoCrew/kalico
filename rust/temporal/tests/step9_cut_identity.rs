@@ -242,10 +242,10 @@ fn build_g5_via_geometry() -> VectorNurbs<f64, 3> {
     items
         .into_iter()
         .find_map(|it| match it {
-            Item::Segment(Segment::Fitted(f)) if f.degree == 3 => Some(f.xyz),
+            Item::Segment(Segment::Cubic(c)) => Some(c.xyz),
             _ => None,
         })
-        .expect("G5 reduction must emit exactly one degree-3 FittedSegment")
+        .expect("G5 reduction must emit exactly one Segment::Cubic")
 }
 
 /// Compute `b_max_cent` at the endpoints by sampling κ. Mirrors the helper in

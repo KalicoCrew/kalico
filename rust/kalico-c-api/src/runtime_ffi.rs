@@ -781,8 +781,8 @@ pub mod exports {
     /// - Bits 0..=15 — count of samples drained this call.
     /// - Bit 16     — set if a fresh trace-overflow fault latched (§13.1).
     /// - Bit 17     — set if at least one `SEGMENT_END` was observed
-    ///                (caller emits one or more `kalico_credit_freed`
-    ///                events keyed off the updated cursors).
+    ///   (caller emits one or more `kalico_credit_freed`
+    ///   events keyed off the updated cursors).
     ///
     /// The C handler (`runtime_drain` `DECL_TASK` in `src/runtime_tick.c`)
     /// uses this single-call form so the trace-drain + reclaim + fault-

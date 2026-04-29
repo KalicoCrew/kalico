@@ -45,10 +45,7 @@ use crate::transport::{MessageParams, MessageValue, Transport, TransportError};
 /// serialport crate carries an `std::io::ErrorKind` internally; we map
 /// it through `std::io::Error::new` so consumers see a uniform shape.
 fn sp_err(e: &serialport::Error) -> TransportError {
-    TransportError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("serialport: {e}"),
-    ))
+    TransportError::Io(std::io::Error::other(format!("serialport: {e}")))
 }
 
 // --- Klipper msgproto wire-level constants ---------------------------------
@@ -142,8 +139,7 @@ impl KalicoHostIo {
         let port = serialport::new(path, baud)
             .timeout(Duration::from_millis(100))
             .open()
-            .map_err(|e| TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            .map_err(|e| TransportError::Io(std::io::Error::other(
                 format!("serialport::open({path}@{baud}): {e}"),
             )))?;
         let _ = path;
@@ -175,7 +171,7 @@ impl KalicoHostIo {
                 .map_err(|e| sp_err(&e))?;
             match self.port.read(&mut scratch) {
                 Ok(0) => break,
-                Ok(_n) => continue,
+                Ok(_n) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
                 Err(e) => return Err(TransportError::Io(e)),
             }
@@ -286,8 +282,8 @@ impl KalicoHostIo {
                         // packets silently. Step-6 minimum.
                     }
                 }
-                Ok(_) => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(e) => return Err(TransportError::Io(e)),
             }
         }
