@@ -138,3 +138,49 @@ fn try_new_rejects_independent_without_e_curve() {
         Err(GeometryError::EModeInvariantViolation { .. })
     ));
 }
+
+#[cfg(not(feature = "legacy-reference"))]
+#[test]
+fn live_reduce_rejects_g1() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+
+    let mut events: Vec<TelemetryEvent> = vec![];
+    let items: Vec<Item> = {
+        let mut pipeline = GeometryPipeline::new(FitterParams::default());
+        let mut sink = |evt: TelemetryEvent| events.push(evt);
+        pipeline
+            .process("G1 X10 Y10 F1000\n", &mut sink)
+            .collect()
+    };
+
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::UnsupportedGcode { gcode_kind: "G0/G1", .. })
+        )),
+        "G1 input should produce Item::Recovered(_, Recovery::UnsupportedGcode {{ gcode_kind: \"G0/G1\" }}); got {items:#?}"
+    );
+}
+
+#[cfg(not(feature = "legacy-reference"))]
+#[test]
+fn live_reduce_rejects_g2() {
+    use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
+
+    let mut events: Vec<TelemetryEvent> = vec![];
+    let items: Vec<Item> = {
+        let mut pipeline = GeometryPipeline::new(FitterParams::default());
+        let mut sink = |evt: TelemetryEvent| events.push(evt);
+        pipeline
+            .process("G2 X10 Y10 I5 J5 F1000\n", &mut sink)
+            .collect()
+    };
+
+    assert!(
+        items.iter().any(|item| matches!(
+            item,
+            Item::Recovered(_, Recovery::UnsupportedGcode { gcode_kind: "G2/G3", .. })
+        )),
+        "G2 input should produce Item::Recovered(_, Recovery::UnsupportedGcode {{ gcode_kind: \"G2/G3\" }}); got {items:#?}"
+    );
+}

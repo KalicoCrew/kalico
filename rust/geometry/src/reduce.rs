@@ -60,17 +60,23 @@ impl ModalState {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum CurveGeom {
-    /// Degree-1 line segment. G0 (when promoted) and G1 land here.
-    Linear { cps: [[f64; 3]; 2] },
     /// Degree-2 non-rational Bézier. G5.1 lands here.
     Quadratic { cps: [[f64; 3]; 3] },
+    /// Degree-3 non-rational Bézier. G5 lands here.
+    Cubic { cps: [[f64; 3]; 4] },
+    /// Degree-1 line segment. G0 (when promoted) and G1 land here.
+    /// Live pipeline never emits this — only the Step-13 compat layer
+    /// (`legacy-reference` feature) uses it as an intermediate form.
+    #[cfg(feature = "legacy-reference")]
+    Linear { cps: [[f64; 3]; 2] },
     /// Degree-2 rational Bézier (NURBS with weights). G2/G3 land here.
+    /// Live pipeline never emits this — only the Step-13 compat layer
+    /// (`legacy-reference` feature) uses it as an intermediate form.
+    #[cfg(feature = "legacy-reference")]
     RationalQuadratic {
         cps: [[f64; 3]; 3],
         weights: [f64; 3],
     },
-    /// Degree-3 non-rational Bézier. G5 lands here.
-    Cubic { cps: [[f64; 3]; 4] },
 }
 
 /// Internal reduce-output events. `pipeline` consumes these.
@@ -125,6 +131,7 @@ pub(crate) enum MotionMarkerKind {
 
 /// Classification of the parse error that caused a `ReduceEvent::ParseError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // `UnsupportedGcode` is unused under feature = "legacy-reference"
 pub(crate) enum ParseErrorKind {
     MalformedNumber,
     UnrecognizedHead,
@@ -140,6 +147,11 @@ pub(crate) enum ParseErrorKind {
     /// G5.1, etc.). Surfaced as `MalformedParams` equivalent but with G5
     /// context; pipeline maps to `Recovery::MalformedParams`.
     G5MalformedTangent,
+    /// Live pipeline received G0/G1/G2/G3 — these are not part of the
+    /// G5-only live pipeline. Caller (Step-13 compat layer) is expected
+    /// to normalize them to G5 offline before feeding the live pipeline.
+    /// `kind` is `"G0/G1"` or `"G2/G3"`.
+    UnsupportedGcode { kind: &'static str },
 }
 
 /// Active machining plane per RS274NGC §3.5.1. Tracked across the gcode
@@ -221,6 +233,7 @@ where
 }
 
 #[allow(dead_code)]
+#[cfg(feature = "legacy-reference")]
 fn update_position_in(state: &mut ModalState, params: &gcode::Params) {
     if let Some(x) = params.x() {
         state.position[0] = x;
@@ -283,6 +296,23 @@ where
             }
         };
         match tok {
+            #[cfg(not(feature = "legacy-reference"))]
+            Token::Command {
+                letter: b'G',
+                major: 0,
+                line_no,
+                ..
+            } => {
+                // Live pipeline rejects G0; Step-13 compat layer must
+                // normalize legacy g-code to G5 before it arrives here.
+                state.prev_g5_pq = None;
+                return Some(ReduceEvent::ParseError {
+                    line_no,
+                    kind: ParseErrorKind::UnsupportedGcode { kind: "G0/G1" },
+                    text: String::new(),
+                });
+            }
+            #[cfg(feature = "legacy-reference")]
             Token::Command {
                 letter: b'G',
                 major: 0,
@@ -303,6 +333,23 @@ where
                     e_delta_mm: None,
                 });
             }
+            #[cfg(not(feature = "legacy-reference"))]
+            Token::Command {
+                letter: b'G',
+                major: 1,
+                line_no,
+                ..
+            } => {
+                // Live pipeline rejects G1 (Z-only / E-only / no-op /
+                // real-XY-move all collapse to the same rejection here).
+                state.prev_g5_pq = None;
+                return Some(ReduceEvent::ParseError {
+                    line_no,
+                    kind: ParseErrorKind::UnsupportedGcode { kind: "G0/G1" },
+                    text: String::new(),
+                });
+            }
+            #[cfg(feature = "legacy-reference")]
             Token::Command {
                 letter: b'G',
                 major: 1,
@@ -586,6 +633,21 @@ where
                     line_no,
                 });
             }
+            #[cfg(not(feature = "legacy-reference"))]
+            Token::Command {
+                letter: b'G',
+                major: g,
+                line_no,
+                ..
+            } if g == 2 || g == 3 => {
+                state.prev_g5_pq = None;
+                return Some(ReduceEvent::ParseError {
+                    line_no,
+                    kind: ParseErrorKind::UnsupportedGcode { kind: "G2/G3" },
+                    text: String::new(),
+                });
+            }
+            #[cfg(feature = "legacy-reference")]
             Token::Command {
                 letter: b'G',
                 major: g,
@@ -660,6 +722,7 @@ where
 /// |sweep| < π required; sweeps ≥ π are clamped to (π − ε) so `cos(half_sweep)`
 /// stays positive. Multi-piece exact representation for full circles is a
 /// Phase 2 item.
+#[cfg(feature = "legacy-reference")]
 fn build_arc_curve(start: [f64; 3], end: [f64; 3], center: [f64; 3], clockwise: bool) -> CurveGeom {
     const MAX_SWEEP: f64 = std::f64::consts::PI * (1.0 - 1e-9);
 
@@ -753,6 +816,7 @@ mod tests {
         assert_eq!(st.tool, 0);
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::no_effect_underscore_binding)]
     fn reduce_event_variants_construct() {
@@ -781,6 +845,7 @@ mod tests {
         };
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::float_cmp)]
     fn g1_xy_emits_curve_linear() {
@@ -807,6 +872,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     fn g1_z_only_emits_zonly_marker() {
         let toks = vec![cmd(b'G', 1, 1, p(&[(b'Z', 0.2), (b'F', 1500.0)]))];
@@ -822,6 +888,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     fn g1_e_only_emits_eonly_marker() {
         let toks = vec![cmd(b'G', 1, 1, p(&[(b'E', -1.5), (b'F', 3000.0)]))];
@@ -839,6 +906,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     fn g0_emits_g0_marker() {
         let toks = vec![cmd(b'G', 0, 1, p(&[(b'X', 5.0), (b'Y', 5.0)]))];
@@ -867,6 +935,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::float_cmp)]
     fn g2_emits_curve_rational_quadratic_clockwise() {
@@ -906,6 +975,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     fn g3_emits_curve_rational_quadratic_counter_clockwise() {
         // CCW 90° from (0, 1) to (1, 0) around (0, 0). I = -0, J = -1 makes the
@@ -936,6 +1006,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::float_cmp)]
     fn g2_with_z_delta_yields_z_linear_control_points() {
@@ -971,6 +1042,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::float_cmp)]
     fn modal_position_persists_across_g1s() {
@@ -1054,6 +1126,7 @@ mod tests {
         assert!(events.is_empty(), "expected no events, got {events:?}");
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::no_effect_underscore_binding)]
     fn curve_geom_variants_construct() {
@@ -1072,6 +1145,7 @@ mod tests {
         };
     }
 
+    #[cfg(feature = "legacy-reference")]
     #[test]
     #[allow(clippy::no_effect_underscore_binding)]
     fn reduce_event_curve_variant_constructs() {

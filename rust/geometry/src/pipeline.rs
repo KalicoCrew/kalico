@@ -192,6 +192,10 @@ impl Segments<'_> {
                             active_plane_g_code,
                         }
                     }
+                    ParseErrorKind::UnsupportedGcode { kind } => Recovery::UnsupportedGcode {
+                        line_no,
+                        gcode_kind: kind,
+                    },
                 };
                 // Dual-emit: sink fires first per §5.1 ordering contract.
                 (self.sink)(TelemetryEvent::Recovery(recovery.clone()));
