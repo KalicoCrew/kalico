@@ -48,9 +48,10 @@ unsafe extern "C" {
     fn kalico_host_now_us() -> u64;
 }
 
-// `irq_save` / `irq_restore` are declared in `state.rs` (unified with the
-// rest of the foreign-symbol surface) and re-imported here.
-use crate::state::{irq_restore, irq_save};
+// `kalico_irq_save` / `kalico_irq_restore` are declared in `state.rs` —
+// thin C wrappers around Klipper's `irq_save` / `irq_restore` that survive
+// the MCU build's `-flto=auto -fwhole-program` DCE (see state.rs comment).
+use crate::state::{kalico_irq_restore, kalico_irq_save};
 
 // ────────────────────────────── open ─────────────────────────────────────
 
@@ -288,10 +289,10 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
     // to IsrState.queue_consumer. SAFETY: under irq_save, no ISR can run, so
     // we transiently hold exclusive access to IsrState — the discipline
     // contract holds because there's no concurrent access window.
-    let irq_flags = unsafe { irq_save() };
+    let irq_flags = unsafe { kalico_irq_save() };
     {
-        // SAFETY: irq_save() above pins the ISR off; we transiently form
-        // `&mut IsrState` via the UnsafeCell projection. No concurrent
+        // SAFETY: kalico_irq_save() above pins the ISR off; we transiently
+        // form `&mut IsrState` via the UnsafeCell projection. No concurrent
         // ISR can race the queue/engine writes below.
         let isr: &mut IsrState = unsafe {
             let isr_ptr: *mut IsrState =
@@ -306,7 +307,7 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
         // its short-circuit, but redundancy here costs nothing.
         isr.engine.clear_current();
     }
-    unsafe { irq_restore(irq_flags) };
+    unsafe { kalico_irq_restore(irq_flags) };
 
     // Step 5: reset per-slot last_retired_gen = current_gen for all slots.
     pool.reset_all_retired_to_current();

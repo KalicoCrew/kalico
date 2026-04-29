@@ -5,6 +5,7 @@
 #include <string.h>         // memcpy
 #include "autoconf.h"
 #include "board/internal.h" // NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
+#include "board/irq.h"      // irq_save, irq_restore (Step-6 §8.5 flush)
 #include "board/misc.h"     // timer_read_time
 #include "command.h"        // DECL_COMMAND
 #include "sched.h"          // DECL_INIT, DECL_TASK
@@ -48,6 +49,34 @@ kalico_host_now_us(void)
     // Integer division here is fine — CONFIG_CLOCK_FREQ is always a
     // multiple of 1 MHz on supported STM32 targets.
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
+}
+
+// kalico's stream::flush() FFI calls into Klipper's `irq_save` and
+// `irq_restore` (board/irq.h) under the §8.5 disabled-IRQ window. The
+// build uses `-flto=auto -fwhole-program`, which lets GCC consider
+// non-`extern` definitions internal-only and inline/DCE them out — that
+// drops the standalone `irq_save` / `irq_restore` symbols even though
+// other Klipper TUs (sched.c, basecmd.c, …) call them, because LTO can
+// inline the body at every callsite. The kalico_c_api.a archive then
+// fails to resolve the symbols during the final link.
+//
+// Solution: provide thin wrappers `kalico_irq_save` / `kalico_irq_restore`
+// that the staticlib calls instead of `irq_save` / `irq_restore` directly.
+// The wrappers are marked `used, externally_visible` so LTO keeps them.
+// They forward to the real functions, which LTO can still inline if it
+// wants — but the staticlib only sees the wrapper symbols.
+__attribute__((used, externally_visible))
+uint32_t
+kalico_irq_save(void)
+{
+    return (uint32_t)irq_save();
+}
+
+__attribute__((used, externally_visible))
+void
+kalico_irq_restore(uint32_t flags)
+{
+    irq_restore((irqstatus_t)flags);
 }
 
 void* kalico_rt_handle = 0;            // exposed (non-static) for kalico_h7_timer.c

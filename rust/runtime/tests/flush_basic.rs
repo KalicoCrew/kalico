@@ -39,12 +39,12 @@ pub extern "C" fn kalico_host_now_us() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn irq_save() -> u32 {
+pub extern "C" fn kalico_irq_save() -> u32 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn irq_restore(_flags: u32) {}
+pub extern "C" fn kalico_irq_restore(_flags: u32) {}
 
 /// Build a fully initialized `RuntimeContext` on the heap and return a raw
 /// pointer the test can pass to `stream::flush`. The Box leaks for the test

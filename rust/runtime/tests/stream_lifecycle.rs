@@ -36,12 +36,12 @@ pub extern "C" fn kalico_host_now_us() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn irq_save() -> u32 {
+pub extern "C" fn kalico_irq_save() -> u32 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn irq_restore(_flags: u32) {}
+pub extern "C" fn kalico_irq_restore(_flags: u32) {}
 
 /// Minimal `FgState` constructor for tests. Owns a `Queue<Segment, Q_N>`
 /// and a `Queue<TraceSample, TRACE_RING_N>` on the leaked-Box pattern so

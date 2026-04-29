@@ -48,15 +48,19 @@ pub struct TickState {
 /// rather than spelling out the slot types at every call site.
 pub type EngineImpl = Engine<NoopPa, NoopIs>;
 
-// Phase 1 introduces `irq_save` / `irq_restore` foreign symbols (consumed by
-// the Phase 7 §8.5 force_idle handshake — `irq_save` returns the prior PRIMASK
-// and `irq_restore` restores it). Declared here so all later phases pick up
-// the same import; the C-side definitions live in Klipper's
-// `src/generic/irq.h`.
+// Phase 7 §8.5 force_idle handshake calls Klipper's `irq_save`/`irq_restore`
+// to gate the queue-drain step. We import via thin C wrappers
+// `kalico_irq_save` / `kalico_irq_restore` defined in `src/runtime_tick.c`,
+// not the bare functions directly: Klipper's MCU build uses
+// `-flto=auto -fwhole-program`, which empirically lets the LTO/whole-program
+// inliner DCE the standalone `irq_save` / `irq_restore` symbols (their
+// bodies get inlined at every Klipper callsite) — leaving the kalico
+// staticlib's references unresolvable at the final link. The wrappers are
+// marked `used + externally_visible` on the C side so LTO keeps them.
 #[allow(dead_code)]
 unsafe extern "C" {
-    pub fn irq_save() -> u32;
-    pub fn irq_restore(flags: u32);
+    pub fn kalico_irq_save() -> u32;
+    pub fn kalico_irq_restore(flags: u32);
 }
 
 /// Foreground-only state. Touched exclusively by the command-dispatch task

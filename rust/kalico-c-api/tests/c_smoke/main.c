@@ -45,8 +45,8 @@ uint32_t kalico_h7_read_cyccnt(void) { return 0u; }
 
 /* Step-6 Phase 7 §8.5 force_idle handshake symbols. */
 uint64_t kalico_host_now_us(void) { return 0ULL; }
-uint32_t irq_save(void) { return 0u; }
-void irq_restore(uint32_t flags) { (void)flags; }
+uint32_t kalico_irq_save(void) { return 0u; }
+void kalico_irq_restore(uint32_t flags) { (void)flags; }
 
 int main(void) {
     /* Trivial smoke — link symbol resolution check. We don't assert on the
