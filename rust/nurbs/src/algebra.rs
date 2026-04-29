@@ -48,6 +48,250 @@ pub fn add<T: Float>(
         .map_err(|_| AlgebraError::KnotMismatch)
 }
 
+/// Error from `fit_x_to_arc_length_piece`. Distinct from `AlgebraError` —
+/// fit failure is a recoverable signal to the caller (split + recurse), not
+/// a planner-level invariant violation.
+#[cfg(feature = "host")]
+#[derive(Debug, Clone, PartialEq)]
+pub enum FitError {
+    /// Reached `max_degree` without satisfying tolerance — caller should split
+    /// the piece (recurse with two halves) or return a hard planner error if at
+    /// `max_recursion_depth`.
+    ToleranceNotReached { achieved_mm: f64, at_degree: u8 },
+    /// Pathological input — table inversion or geometry evaluation failed.
+    DegenerateInput { reason: &'static str },
+}
+
+/// Adaptive polynomial fit of a vector NURBS path `geometry` reparameterized
+/// by arc length `s ∈ [s_lo, s_hi]`. Per axis, returns a single Bézier piece
+/// (Pascal-shifted-monomial basis at `u_start = s_lo`) of degree `d`, where
+/// `d` is the smallest integer in `[target_degree, max_degree]` for which the
+/// L∞ residual at `4·(d+1)` uniform sample points is `≤ tolerance_mm`.
+///
+/// **Algorithm (per spec §4.5):**
+/// 1. Generate `d+1` Chebyshev-of-the-second-kind nodes in `[s_lo, s_hi]`
+///    (these include the endpoints by construction).
+/// 2. Query `u(s)` from the arc-length table and evaluate `geometry(u)` at
+///    each node.
+/// 3. Solve Lagrange interpolation per axis on the Pascal-shifted-monomial
+///    Vandermonde matrix `A[i][j] = (s_nodes[i] − s_lo)^j` via Gauss
+///    elimination with partial pivoting.
+/// 4. Verify L∞ residual at `4·(d+1)` uniform samples; on failure bump `d`
+///    and retry until `d == max_degree`.
+///
+/// Returns `FitError::ToleranceNotReached` if convergence fails by `max_degree`
+/// (caller's responsibility to split + recurse), or `FitError::DegenerateInput`
+/// for `s_hi ≤ s_lo`, non-finite endpoints, or `target_degree > max_degree`.
+#[cfg(feature = "host")]
+pub fn fit_x_to_arc_length_piece<const D: usize>(
+    geometry: &crate::VectorNurbs<f64, D>,
+    table: &crate::ArcLengthTableRef<'_, f64>,
+    s_lo: f64,
+    s_hi: f64,
+    target_degree: u8,
+    max_degree: u8,
+    tolerance_mm: f64,
+) -> Result<[crate::bezier::BezierPiece<f64>; D], FitError>
+where
+    [(); D]:,
+{
+    // Up-front guards.
+    if !s_lo.is_finite() || !s_hi.is_finite() {
+        return Err(FitError::DegenerateInput {
+            reason: "s_lo or s_hi is non-finite",
+        });
+    }
+    if s_hi <= s_lo {
+        return Err(FitError::DegenerateInput {
+            reason: "s_hi <= s_lo",
+        });
+    }
+    if target_degree > max_degree {
+        return Err(FitError::DegenerateInput {
+            reason: "target_degree > max_degree",
+        });
+    }
+
+    let mut d = target_degree;
+    loop {
+        let d_usize = d as usize;
+        let n_nodes = d_usize + 1;
+
+        // Step 1: Chebyshev-of-the-second-kind nodes in [s_lo, s_hi].
+        // s_i = (s_lo + s_hi)/2 + (s_hi - s_lo)/2 * cos(i * π / d) for i = 0..=d.
+        // For d == 0 we have a single node at the midpoint (the cos is undefined
+        // when d=0 since i*π/0 is indeterminate). Practically a degree-0 fit is a
+        // constant; we fix it at the midpoint.
+        let mid = 0.5 * (s_lo + s_hi);
+        let half = 0.5 * (s_hi - s_lo);
+        let mut s_nodes: Vec<f64> = Vec::with_capacity(n_nodes);
+        if d == 0 {
+            s_nodes.push(mid);
+        } else {
+            for i in 0..=d_usize {
+                let angle = (i as f64) * std::f64::consts::PI / f64::from(d);
+                // i=0 → cos(0)=1 → s_lo+halflen-actually ordering: i=0 yields s_hi side.
+                // Per spec: s_i = mid + half * cos(i π / d). i=0 gives mid + half = s_hi;
+                // i=d gives mid - half = s_lo. Order is s_hi → s_lo descending.
+                s_nodes.push(mid + half * angle.cos());
+            }
+        }
+
+        // Step 2: query u(s) and evaluate geometry(u) at each node.
+        let mut samples: Vec<[f64; D]> = Vec::with_capacity(n_nodes);
+        for &s in &s_nodes {
+            // Clamp s into the table's valid range; at s_lo / s_hi the Chebyshev
+            // formula can produce values that round to ±1ULP outside [s_lo, s_hi]
+            // due to cos(π) ≠ −1 exactly, so the table-lookup clamp is load-bearing.
+            let s_clamped = s.clamp(0.0, table.s_max());
+            let u = crate::arc_length::param_from_arc_length(table, s_clamped);
+            let x = crate::eval::vector_eval(geometry, u);
+            samples.push(x);
+        }
+
+        // Step 3: Lagrange interpolation, Pascal-shifted basis at s_lo.
+        let coeffs_per_axis = lagrange_interpolation_pascal_shifted::<D>(&s_nodes, &samples, s_lo);
+
+        // Step 4: verify L∞ residual at 4·(d+1) uniform samples.
+        let n_check = 4 * n_nodes;
+        let mut max_err = 0.0_f64;
+        for i in 0..=n_check {
+            let t = (i as f64) / (n_check as f64);
+            let s = s_lo + (s_hi - s_lo) * t;
+            let s_clamped = s.clamp(0.0, table.s_max());
+            let u = crate::arc_length::param_from_arc_length(table, s_clamped);
+            let truth = crate::eval::vector_eval(geometry, u);
+            for axis in 0..D {
+                let p_val = horner_pascal_shifted(&coeffs_per_axis[axis], s, s_lo);
+                let err = (truth[axis] - p_val).abs();
+                if err > max_err {
+                    max_err = err;
+                }
+            }
+        }
+
+        if max_err <= tolerance_mm {
+            // Pack each axis's coefficients into a BezierPiece.
+            let pieces_vec: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
+                .map(|axis| crate::bezier::BezierPiece {
+                    u_start: s_lo,
+                    u_end: s_hi,
+                    coeffs: coeffs_per_axis[axis].clone(),
+                })
+                .collect();
+            return pieces_vec.try_into().map_err(|_: Vec<_>| {
+                // Unreachable: built exactly D pieces.
+                FitError::DegenerateInput {
+                    reason: "fit_x_to_arc_length_piece: array length mismatch (unreachable)",
+                }
+            });
+        }
+
+        if d >= max_degree {
+            return Err(FitError::ToleranceNotReached {
+                achieved_mm: max_err,
+                at_degree: d,
+            });
+        }
+        d += 1;
+    }
+}
+
+/// Solve Lagrange interpolation per axis on the Pascal-shifted-monomial-basis
+/// Vandermonde system `A[i][j] = (s_nodes[i] − s_origin)^j`, RHS = sample
+/// per axis. Tiny matrix (max ~10×10); Gauss elimination with partial pivoting.
+///
+/// Returns `Vec<Vec<f64>>` of length `D`, each axis's coefficient vector
+/// length = `s_nodes.len()`.
+#[cfg(feature = "host")]
+fn lagrange_interpolation_pascal_shifted<const D: usize>(
+    s_nodes: &[f64],
+    samples: &[[f64; D]],
+    s_origin: f64,
+) -> Vec<Vec<f64>> {
+    let n = s_nodes.len();
+    debug_assert_eq!(samples.len(), n);
+
+    // Build Vandermonde augmented with D right-hand-side columns.
+    // Layout: aug[i] = [A[i][0..n] | rhs[i][0..D]].
+    let mut aug: Vec<Vec<f64>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut row = Vec::with_capacity(n + D);
+        let dx = s_nodes[i] - s_origin;
+        let mut pow = 1.0;
+        for _ in 0..n {
+            row.push(pow);
+            pow *= dx;
+        }
+        for axis in 0..D {
+            row.push(samples[i][axis]);
+        }
+        aug.push(row);
+    }
+
+    // Gauss elimination with partial pivoting.
+    for k in 0..n {
+        // Find pivot row.
+        let mut pivot = k;
+        let mut pivot_abs = aug[k][k].abs();
+        for i in (k + 1)..n {
+            let v = aug[i][k].abs();
+            if v > pivot_abs {
+                pivot = i;
+                pivot_abs = v;
+            }
+        }
+        if pivot != k {
+            aug.swap(k, pivot);
+        }
+        // If pivot is effectively zero we proceed anyway — degenerate node
+        // pattern, will surface as a bad residual on verification.
+        let pivot_val = aug[k][k];
+        if pivot_val.abs() < 1e-300 {
+            continue;
+        }
+        for i in (k + 1)..n {
+            let factor = aug[i][k] / pivot_val;
+            if factor == 0.0 {
+                continue;
+            }
+            for j in k..(n + D) {
+                aug[i][j] -= factor * aug[k][j];
+            }
+        }
+    }
+
+    // Back-substitution per RHS column.
+    let mut out: Vec<Vec<f64>> = (0..D).map(|_| vec![0.0; n]).collect();
+    for axis in 0..D {
+        let rhs_col = n + axis;
+        for k in (0..n).rev() {
+            let mut sum = aug[k][rhs_col];
+            for j in (k + 1)..n {
+                sum -= aug[k][j] * out[axis][j];
+            }
+            let pivot_val = aug[k][k];
+            if pivot_val.abs() < 1e-300 {
+                out[axis][k] = 0.0;
+            } else {
+                out[axis][k] = sum / pivot_val;
+            }
+        }
+    }
+    out
+}
+
+/// Evaluate `Σ coeffs[k] * (s − s_origin)^k` via Horner's method.
+#[cfg(feature = "host")]
+fn horner_pascal_shifted(coeffs: &[f64], s: f64, s_origin: f64) -> f64 {
+    let dx = s - s_origin;
+    let mut acc = 0.0;
+    for c in coeffs.iter().rev() {
+        acc = acc * dx + *c;
+    }
+    acc
+}
+
 /// Polynomial kernel for convolution. Pieces are contiguous and ordered.
 /// Each piece is a polynomial in the Pascal-shifted monomial basis.
 #[cfg(feature = "host")]
