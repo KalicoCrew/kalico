@@ -141,6 +141,7 @@ fn quality_gate_failure_aborts() {
     mock.install_responder("kalico_clock_sync_response", |_call_time| {
         let (lo, hi) = make_clock_sync_response(1.0, 200);
         mp_with(&[
+            ("request_id", MessageValue::U32(1)),
             ("mcu_clock_lo", MessageValue::U32(lo)),
             ("mcu_clock_hi", MessageValue::U32(hi)),
         ])

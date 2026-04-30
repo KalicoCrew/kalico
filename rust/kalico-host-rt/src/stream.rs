@@ -107,18 +107,35 @@ pub fn arm_all_mcus<T: Transport>(
             return Err(fail(ArmError::DeadlineMissed, &armed_indices));
         }
         let host_send = Instant::now();
-        // Round-2 B04 carry-over: the `host_send_time_*` args are
-        // back-trace request_id values; the MCU echoes them. We send
-        // zero here because the estimator independently records
-        // `host_send` and `host_recv` instants.
+        // Per spec §5.9: monotonic request_id per MCU so stale or
+        // reordered responses are detected. `host_send_time_*` are sent
+        // as zero because the estimator independently records `host_send`
+        // and `host_recv` wall-clock instants.
+        let request_id = request_id_counters[idx].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let resp = io
             .call(
-                "kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0",
+                &format!("kalico_clock_sync_request request_id={request_id} host_send_time_lo=0 host_send_time_hi=0"),
                 "kalico_clock_sync_response",
                 CLOCK_SYNC_REQUEST_TIMEOUT,
             )
             .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let host_recv = Instant::now();
+
+        let echoed = resp.try_get_u32("request_id").ok_or_else(|| fail(
+            ArmError::Transport(TransportError::Parse(
+                "kalico_clock_sync_response missing request_id field".into(),
+            )),
+            &armed_indices,
+        ))?;
+        if echoed != request_id {
+            return Err(fail(
+                ArmError::Transport(TransportError::Parse(
+                    format!("clock_sync request_id mismatch: sent {request_id}, got {echoed}"),
+                )),
+                &armed_indices,
+            ));
+        }
+
         let mcu_clock = (u64::from(resp.get_u32("mcu_clock_hi")) << 32)
             | u64::from(resp.get_u32("mcu_clock_lo"));
         est.add_dedicated_sample(host_send, host_recv, mcu_clock);
