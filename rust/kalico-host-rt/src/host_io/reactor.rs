@@ -389,7 +389,11 @@ impl Reactor {
                 }
             }
             ReactorCommand::SubmitTyped { call_id, payload, expected_response_name, completion, deadline } => {
-                let _ = self.dispatch_submission(call_id, payload, expected_response_name, completion, deadline);
+                if let Err(e) = self.dispatch_submission(
+                    call_id, payload, expected_response_name, completion.clone(), deadline,
+                ) {
+                    let _ = completion.send(Err(e));
+                }
             }
             ReactorCommand::Abandon(call_id) => {
                 self.awaiting_response.mark_abandoned(call_id);
