@@ -86,6 +86,9 @@ pub const KALICO_ERR_NOT_HOMED: i32 = -20;
 pub const KALICO_ERR_STEP_BURST_EXCEEDED: i32 = -21;
 pub const KALICO_ERR_ZERO_DURATION_SEGMENT: i32 = -22;
 
+// Step 7-C-io host-originated faults (§6.11).
+pub const KALICO_ERR_HOST_DISCONNECT: i32 = -200;
+
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
 ///
@@ -152,6 +155,9 @@ pub enum FaultCode {
     NotHomed = -20,
     StepBurstExceeded = -21,
     ZeroDurationSegment = -22,
+
+    // Step 7-C-io host-originated faults (§6.11).
+    HostDisconnect = -200,
 }
 
 impl FaultCode {
@@ -280,6 +286,12 @@ mod tests {
             KALICO_ERR_INVALID_CURVE_HANDLE
         );
         assert_eq!(FaultCode::NanInfOutput.as_i32(), KALICO_ERR_NAN_INF_OUTPUT);
+    }
+
+    #[test]
+    fn host_disconnect_round_trips() {
+        assert_eq!(FaultCode::HostDisconnect.as_i32(), KALICO_ERR_HOST_DISCONNECT);
+        assert_eq!(KALICO_ERR_HOST_DISCONNECT, -200);
     }
 
     #[test]
