@@ -33,6 +33,8 @@
 //! the Python helper is the canonical reference and any divergence is a
 //! bug.
 
+pub mod parser;
+
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
