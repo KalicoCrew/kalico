@@ -156,7 +156,7 @@ fn quality_gate_failure_aborts() {
     )
     .unwrap_err();
     assert!(
-        matches!(failure.error, ArmError::QualityGate),
+        matches!(failure.error, ArmError::QualityGate { .. }),
         "expected QualityGate, got {:?}",
         failure.error
     );

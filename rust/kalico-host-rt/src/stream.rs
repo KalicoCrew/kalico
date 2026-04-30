@@ -120,11 +120,8 @@ pub fn arm_all_mcus<T: Transport>(
             | u64::from(resp.get_u32("mcu_clock_lo"));
         est.add_dedicated_sample(host_send, host_recv, mcu_clock);
 
-        if est.is_quality_gate_passed(baseline_freq).is_err() {
-            return Err(fail(ArmError::QualityGate, &armed_indices));
-        }
-        let _ = idx; // index is the natural enumerate counter; unused
-        // pre-arm because nothing is armed yet.
+        est.is_quality_gate_passed(baseline_freq)
+            .map_err(|subgate| fail(ArmError::QualityGate { mcu_index: idx, subgate }, &armed_indices))?;
     }
 
     // Spec §6.3 + §12.4 (GAP-1 fix): cross-MCU drift sanity check
@@ -201,8 +198,12 @@ pub enum ArmError {
     /// `arm_lead_time / 2` elapsed before all MCUs were armed.
     DeadlineMissed,
     /// At least one MCU's [`ClockSyncEstimator`] failed
-    /// `is_quality_gate_passed` after the dedicated sync.
-    QualityGate,
+    /// `is_quality_gate_passed` after the dedicated sync. Carries the
+    /// index of the failing MCU and the specific subgate that tripped.
+    QualityGate {
+        mcu_index: usize,
+        subgate:   crate::clock_sync::QualityGateFailure,
+    },
     /// Spec §6.3 + §12.4: cross-MCU clock-frequency drift exceeds
     /// `MAX_CROSS_MCU_FREQ_RATIO_OFFSET`. Carries the indices of the
     /// offending pair plus the actual `|fA / fB - 1|` value so the
@@ -228,9 +229,9 @@ impl std::fmt::Display for ArmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ArmError::DeadlineMissed => write!(f, "ARMING deadline missed"),
-            ArmError::QualityGate => write!(
+            ArmError::QualityGate { mcu_index, subgate } => write!(
                 f,
-                "ARMING aborted: clock-sync quality gate failed (Plan-decision B)"
+                "ARMING aborted: clock-sync quality gate failed on MCU {mcu_index}: {subgate}"
             ),
             ArmError::CrossMcuDesync {
                 mcu_a,
