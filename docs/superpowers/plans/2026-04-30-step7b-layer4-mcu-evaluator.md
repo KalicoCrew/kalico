@@ -603,7 +603,10 @@ pub fn linear_scalar(start: f32, end: f32) -> (u8, Vec<f32>, Vec<f32>) {
 }
 
 /// Load a scalar NURBS into the curve pool, returning the handle.
+/// Wraps the pool's slot-indexed `try_alloc_and_load` — finds a free slot first.
 pub fn load_scalar(pool: &CurvePool, degree: u8, knots: &[f32], cps: &[f32]) -> CurveHandle {
+    // Match the actual pool API — find a free slot via try_alloc_and_load's
+    // existing slot-scanning behavior (or iterate slots manually if needed).
     pool.try_alloc_and_load(degree, knots, cps).expect("load failed")
 }
 ```
@@ -806,21 +809,19 @@ Accept 4 packed handles (`x_handle`, `y_handle`, `z_handle`, `e_handle`), `e_mod
 
 Validate `t_end > t_start` — return `KALICO_ERR_ZERO_DURATION_SEGMENT` on failure.
 
-- [ ] **Step 3: Add `kalico_set_homed` command**
+- [ ] **Step 3: Add `kalico_set_homed` and `kalico_configure_axes` FFI exports**
 
-```rust
-pub unsafe extern "C" fn kalico_set_homed(ctx: *mut RuntimeContext) {
-    let shared = &(*ctx).shared;
-    shared.homed.store(true, Ordering::Release);
-}
-```
+Follow the existing FFI pattern in `runtime_ffi.rs` (use `#[unsafe(no_mangle)] pub unsafe extern "C" fn`, null-check the context pointer, access via `addr_of!` + `UnsafeCell::raw_get` per §11.2).
+
+`kalico_set_homed`: sets `shared.homed.store(true, Ordering::Release)`.
+
+`kalico_configure_axes`: accepts a blob (`*const u8, len: u32`), deserializes `McuAxisConfig` (kinematics tag byte + per-motor entries), calls `McuAxisConfig::validate()`, stores via `Engine::configure()`. Returns error code on invalid config (e.g., CoreXY with only one of A/B).
 
 - [ ] **Step 4: Update C-side `runtime_tick.c`**
 
 Update `kalico_load_curve` DECL_COMMAND:
-- Remove the `cps_len % 12` check and 3D scratch buffers.
-- Pass raw `cps`, `knots` blob pointers and lengths to the Rust FFI.
-- Remove the `weights` parameter (or accept and ignore for backward compat during transition).
+- Remove the `cps_len % 12` check, 3D scratch buffers, and `weights` parameter.
+- The command receives a single `data=%*s` blob (scalar NURBS wire format: 8-byte header + knots + CPs). Pass the raw blob pointer and length to the Rust FFI, which calls `ScalarNurbsRef::try_from_wire` internally. This matches the existing blob-based Klipper wire schema.
 
 Update `kalico_push_segment` DECL_COMMAND:
 - Add `x_handle`, `y_handle`, `z_handle`, `e_handle`, `e_mode`, `extrusion_ratio` parameters.
