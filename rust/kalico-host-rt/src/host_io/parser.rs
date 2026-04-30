@@ -159,6 +159,37 @@ pub fn apply_enumeration_wrapping(
         .collect()
 }
 
+pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
+    if !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&value) {
+        return Err(ParseError::OutOfRange {
+            value,
+            range: "[i32::MIN, u32::MAX]",
+        });
+    }
+    let mut v = value;
+    if value < 0 {
+        v += 1 << 32;
+    }
+    let mut bytes: [u8; 5] = [0; 5];
+    let mut idx = 5usize;
+    loop {
+        idx -= 1;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        {
+            bytes[idx] = (v as u8) & 0x7F;
+        }
+        v >>= 7;
+        if v == 0 || v == -1 { break; }
+        if idx == 0 { break; }
+    }
+    let last = bytes.len() - 1;
+    for b in &mut bytes[idx..last] {
+        *b |= 0x80;
+    }
+    out.extend_from_slice(&bytes[idx..]);
+    Ok(())
+}
+
 #[cfg(test)]
 mod data_dictionary_tests {
     use super::*;
