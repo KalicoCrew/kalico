@@ -16,7 +16,7 @@ use kalico_host_rt::clock_sync::{ClockSyncEstimator, MAX_RTT_AGE_MS_DEFAULT, MIN
 #[test]
 fn fresh_estimator_quality_gate_fails_under_warmup() {
     let est = ClockSyncEstimator::new(550_000_000.0);
-    assert!(!est.is_quality_gate_passed(550_000_000.0));
+    assert!(est.is_quality_gate_passed(550_000_000.0).is_err());
     assert_eq!(est.sample_count(), 0);
 }
 
@@ -37,7 +37,7 @@ fn quality_gate_requires_recent_dedicated_sample_per_plan_decision_b() {
         est.add_piggyback_sample(host_t, mcu);
     }
     assert!(
-        !est.is_quality_gate_passed(freq),
+        est.is_quality_gate_passed(freq).is_err(),
         "must fail without RTT-aware sample (Plan-decision B)"
     );
 
@@ -54,7 +54,7 @@ fn quality_gate_requires_recent_dedicated_sample_per_plan_decision_b() {
     est.add_dedicated_sample(host_send, host_recv, mcu_at_response);
 
     assert!(
-        est.is_quality_gate_passed(freq),
+        est.is_quality_gate_passed(freq).is_ok(),
         "should pass with fresh dedicated sample on regression line; \
          residual_max={} drift_ppm={} samples={}",
         est.residual_max_in_window,
@@ -143,7 +143,7 @@ fn dedicated_sample_age_check_fails_when_stale() {
         est.add_piggyback_sample(host_t, mcu);
     }
     assert!(est.last_dedicated_sample_age().is_none());
-    assert!(!est.is_quality_gate_passed(freq));
+    assert!(est.is_quality_gate_passed(freq).is_err());
     // Sanity-check the constant: the gate's threshold is 500 ms.
     assert_eq!(MAX_RTT_AGE_MS_DEFAULT, 500);
 }
