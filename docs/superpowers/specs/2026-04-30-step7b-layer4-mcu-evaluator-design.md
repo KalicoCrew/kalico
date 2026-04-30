@@ -73,6 +73,12 @@ The MCU firmware handles both modes; the host picks based on config.
 This maps cleanly to the EtherCAT future: servos own XY, stepper MCU
 gets pre-baked E(t).
 
+Note: Layer 3 (`trajectory::shape_batch`) currently produces
+`e_independent` only for `EMode::Independent` segments. The host-side
+conversion of `CoupledToXy` segments to pre-baked E(t) NURBS for a
+separate E MCU is a **7-C** responsibility (host routing logic). 7-B
+provides the MCU-side `Independent` eval path that 7-C will target.
+
 ### CoreXY constraint
 
 X and Y must be on the same MCU. The kinematic transform
@@ -197,10 +203,16 @@ per segment retirement.
      segment completion, sync `e_accumulator` to the E NURBS endpoint
      so the next CoupledToXy segment resumes from the correct position.
    - `Travel`: E position unchanged; `e_accumulator` persists.
-   - **Stream start**: `e_accumulator` initialized to 0.0; the host
-     ensures the first segment's expected E start position matches.
-   - **After force-idle / flush**: `e_accumulator` reset to 0.0; the
-     host re-seeds on the next stream arm.
+   - **Stream start**: `e_accumulator` initialized to 0.0. On the
+     first tick of a stream (or after flush/force-idle), `prev_x` and
+     `prev_y` are seeded by evaluating the first segment's X(t) and
+     Y(t) NURBS at u=0, so the first finite-difference delta is zero
+     and no spurious E extrusion occurs. The engine tracks a
+     `needs_xy_seed: bool` flag, set on stream arm and cleared after
+     the first eval.
+   - **After force-idle / flush**: `e_accumulator` reset to 0.0,
+     `needs_xy_seed` set to true. The host re-seeds on the next
+     stream arm.
 8. **NaN/Inf check** — all axis positions.
 9. **Kinematic transform** — dispatch on `kinematics` tag:
    - `CoreXyAndE`: `(x, y, e) -> (a, b, e)` where `a = x+y`, `b = x-y`.
@@ -337,6 +349,7 @@ Klipper wire protocol doesn't natively carry floats).
 ## Trace struct
 
 ```rust
+#[repr(C)]
 pub struct TraceSample {
     pub tick: u64,
     pub motor_a: f32,
@@ -346,12 +359,15 @@ pub struct TraceSample {
     pub segment_id: u32,
     pub curve_handle: CurveHandle,  // primary handle (X) for diagnostics
     pub flags: u8,
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 7],             // align to 8 bytes (u64 alignment)
 }
+// Size: 40 bytes (up from 32). repr(C) with u64 field requires 8-byte
+// alignment, so the struct rounds to 40 not 36.
 ```
 
-Adds `motor_z: f32`. Total sample size grows by 4 bytes; at 40 kHz with
-ring size 1201, ring buffer grows by ~4.8 KB. Acceptable.
+Total sample grows by 8 bytes; at 40 kHz with ring size 1201, ring
+buffer grows by ~9.6 KB. C-side drain buffer and wire send length in
+`runtime_tick.c` must be updated to match.
 
 ## Testing strategy
 
