@@ -34,6 +34,7 @@
 //! bug.
 
 pub mod parser;
+pub mod runtime_events;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
