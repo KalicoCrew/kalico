@@ -130,17 +130,24 @@ fn host_push_segment_field_names_and_ordering_match_firmware() {
         .expect("kalico_push_segment in DECL_COMMAND set");
 
     // Capture the host's emission via MockTransport.
-    let mut io = MockTransport::new();
+    use std::sync::Arc;
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(1);
-    io.enqueue_response(
-        "kalico_push_response",
-        mp_with(&[
-            ("result", MessageValue::I32(0)),
-            ("accepted_segment_id", MessageValue::U32(1)),
-            ("credit_epoch", MessageValue::U32(1)),
-        ]),
-    );
-    push_segment(&mut io, &credit, &SegmentPushParams {
+
+    let mock_clone = mock.clone();
+    let _completer = std::thread::spawn(move || {
+        let _ = mock_clone.wait_for_call("kalico_push_response");
+        mock_clone.complete_call(
+            "kalico_push_response",
+            mp_with(&[
+                ("result", MessageValue::I32(0)),
+                ("accepted_segment_id", MessageValue::U32(1)),
+                ("credit_epoch", MessageValue::U32(1)),
+            ]),
+        );
+    });
+
+    push_segment(&*mock, &credit, &SegmentPushParams {
         id: 1,
         x_handle_packed: 0x0001_0000,
         y_handle_packed: 0,
@@ -152,7 +159,7 @@ fn host_push_segment_field_names_and_ordering_match_firmware() {
         e_mode: 0,
         extrusion_ratio: 0.0,
     }).expect("happy push for schema cross-check");
-    let line = io.last_sent().expect("MockTransport recorded send");
+    let line = mock.last_sent().expect("MockTransport recorded send");
 
     // Strip leading command name and split on whitespace; confirm field
     // *names* and *ordering* match the firmware DECL_COMMAND verbatim.

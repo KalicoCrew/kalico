@@ -1,142 +1,219 @@
-//! Step-6 unit-test transport. Records every `send`, replays canned
-//! responses on `wait_for_response`. The integration tests for
-//! `producer`, `stream::arm_all_mcus`, etc. all build on top of this.
+//! Phase-B MockTransport: `&self` + internal synchronization.
 //!
-//! Plan-decision C: Step-6 phase-10 modules consume `&mut dyn Transport`
-//! / `T: Transport` so they're testable here without the real
-//! USB-CDC port. The implementation deliberately mirrors the
-//! `KalicoHostIo` shape — same `send`, same `wait_for_response`, same
-//! `poll_events` — so the tests exercise the exact code paths
-//! production runs.
+//! Two response modes:
+//!
+//! 1. **Static** (`enqueue_static`): pre-load a response that `call()`
+//!    returns immediately — zero latency, suitable for quality-gate tests
+//!    that need the `ClockSyncEstimator` residual < 100 µs.
+//!
+//! 2. **Async** (`wait_for_call` + `complete_call`): a test thread blocks
+//!    on `wait_for_call`, then drives the response from outside `call()`.
+//!    Suitable for tests that need to inspect call ordering but don't have
+//!    tight timing constraints.
+//!
+//! The `call_time` in the pending-call entry is the `Instant` captured
+//! inside `call()` just before it blocks; static responses use it too.
 
-use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::SyncSender;
+use std::time::{Duration, Instant};
 
+use kalico_host_rt::host_io::parser::FieldValue;
 use kalico_host_rt::transport::{MessageParams, MessageValue, Transport, TransportError};
 
-/// A test-only callback the mock invokes at `wait_for_response` time
-/// (rather than at queueing time) so a response whose contents depend
-/// on call-time wall clock — e.g. `kalico_clock_sync_response` whose
-/// `mcu_clock` must lie on the regression line at the actual
-/// `host_send` instant — can be encoded fresh every time the
-/// estimator picks it up. Used by `arm_flow_unit.rs` to stabilise the
-/// dedicated-sync test against wall-clock jitter between fixture
-/// setup and the call into `arm_all_mcus`.
-#[allow(clippy::type_complexity)]
-pub type DynamicResponder = Box<dyn FnMut() -> MessageParams + Send>;
+type Responder = Box<dyn Fn(Instant) -> MessageParams + Send + Sync>;
 
-#[derive(Default)]
-pub struct MockTransport {
-    pub sent: Vec<String>,
-    /// Queued responses for `wait_for_response` to consume in order.
-    pub responses: VecDeque<(String, MessageParams)>,
-    /// Per-message-name dynamic responders. If a name has both an
-    /// entry here AND a queued response, the dynamic one wins. Each
-    /// invocation calls the closure once.
-    pub dynamic_responders: HashMap<String, DynamicResponder>,
-    /// Queued events for `poll_events` to drain.
-    pub events: VecDeque<(String, MessageParams)>,
-    /// If set, `wait_for_response` returns `Err(Timeout)` after popping
-    /// this many responses (used to model deadline-miss scenarios).
-    pub force_timeout_after: Option<usize>,
+struct MockPendingCall {
+    expected_response_name: String,
+    cmd:                    String,
+    call_time:              Instant,
+    completion:             Option<SyncSender<Result<MessageParams, TransportError>>>,
 }
 
-impl std::fmt::Debug for MockTransport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MockTransport")
-            .field("sent", &self.sent)
-            .field("responses", &self.responses)
-            .field(
-                "dynamic_responders",
-                &self.dynamic_responders.keys().collect::<Vec<_>>(),
-            )
-            .field("events", &self.events)
-            .field("force_timeout_after", &self.force_timeout_after)
-            .finish()
-    }
+struct MockState {
+    pending_calls: HashMap<u64, MockPendingCall>,
+    next_call_id:  u64,
+    sent_cmds:     Vec<String>,
+    /// Per-response-name responder: called synchronously inside call() with
+    /// the call_time Instant, returns the MessageParams to complete the call.
+    static_responders: HashMap<String, Responder>,
+}
+
+pub struct MockTransport {
+    state:        Mutex<MockState>,
+    call_arrived: Condvar,
 }
 
 impl MockTransport {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            state: Mutex::new(MockState {
+                pending_calls: HashMap::new(),
+                next_call_id: 1,
+                sent_cmds: Vec::new(),
+                static_responders: HashMap::new(),
+            }),
+            call_arrived: Condvar::new(),
+        }
     }
 
-    pub fn enqueue_response(&mut self, name: &str, params: MessageParams) {
-        self.responses.push_back((name.into(), params));
+    /// Register a synchronous responder for `expected_response_name`.
+    /// It is called inside `call()` with the `call_time` Instant, and its
+    /// return value is used as the response — no inter-thread scheduling.
+    pub fn install_responder<F>(&self, expected_response_name: &str, f: F)
+    where
+        F: Fn(Instant) -> MessageParams + Send + Sync + 'static,
+    {
+        self.state.lock().unwrap()
+            .static_responders
+            .insert(expected_response_name.to_string(), Box::new(f));
     }
 
-    /// Register a closure invoked at `wait_for_response(name)` time;
-    /// the returned `MessageParams` becomes the reply. The closure
-    /// remains installed across calls (so multiple matches reuse the
-    /// same responder).
-    #[allow(dead_code)]
-    pub fn install_dynamic_responder(&mut self, name: &str, responder: DynamicResponder) {
-        self.dynamic_responders.insert(name.into(), responder);
+    pub fn pending_count(&self) -> usize {
+        self.state.lock().unwrap().pending_calls.len()
     }
 
-    #[allow(dead_code)]
-    pub fn enqueue_event(&mut self, name: &str, params: MessageParams) {
-        self.events.push_back((name.into(), params));
+    pub fn sent_count(&self) -> usize {
+        self.state.lock().unwrap().sent_cmds.len()
     }
 
-    pub fn last_sent(&self) -> Option<&str> {
-        self.sent.last().map(String::as_str)
+    pub fn any_sent_starting_with(&self, prefix: &str) -> bool {
+        self.state.lock().unwrap().sent_cmds.iter().any(|s| s.starts_with(prefix))
+    }
+
+    pub fn last_sent(&self) -> Option<String> {
+        self.state.lock().unwrap().sent_cmds.last().cloned()
+    }
+
+    /// Block until a call with `expected_response_name` is pending.
+    /// Returns `(cmd, call_time)`.
+    pub fn wait_for_call(&self, expected_response_name: &str) -> (String, Instant) {
+        let mut guard = self.state.lock().unwrap();
+        loop {
+            let found = guard.pending_calls.iter()
+                .find(|(_, c)| c.expected_response_name == expected_response_name)
+                .map(|(_, c)| (c.cmd.clone(), c.call_time));
+            if let Some(info) = found {
+                return info;
+            }
+            guard = self.call_arrived.wait(guard).unwrap();
+        }
+    }
+
+    pub fn complete_call(&self, name: &str, params: MessageParams) {
+        let mut state = self.state.lock().unwrap();
+        let id = state.pending_calls.iter()
+            .find(|(_, c)| c.expected_response_name == name)
+            .map(|(id, _)| *id);
+        if let Some(id) = id {
+            if let Some(call) = state.pending_calls.remove(&id) {
+                drop(state);
+                if let Some(tx) = call.completion {
+                    let _ = tx.send(Ok(params));
+                }
+            }
+        }
+    }
+
+    pub fn drop_pending(&self, name: &str) {
+        let mut state = self.state.lock().unwrap();
+        let id = state.pending_calls.iter()
+            .find(|(_, c)| c.expected_response_name == name)
+            .map(|(id, _)| *id);
+        if let Some(id) = id {
+            state.pending_calls.remove(&id);
+        }
     }
 }
 
 impl Transport for MockTransport {
-    fn send(&mut self, cmd: &str) -> Result<(), TransportError> {
-        self.sent.push(cmd.into());
-        Ok(())
-    }
-
-    fn wait_for_response(
-        &mut self,
-        name: &str,
-        _timeout: Duration,
+    fn call(
+        &self,
+        cmd: &str,
+        expected_response_name: &str,
+        timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
-        if let Some(remaining) = self.force_timeout_after.as_mut() {
-            if *remaining == 0 {
-                return Err(TransportError::Timeout);
+        let call_time = Instant::now();
+        let rx = {
+            let mut state = self.state.lock().unwrap();
+            state.sent_cmds.push(cmd.to_string());
+
+            // Static responder: call synchronously, return immediately.
+            if let Some(responder) = state.static_responders.get(expected_response_name) {
+                let params = responder(call_time);
+                return Ok(params);
             }
-            *remaining -= 1;
+
+            let id = state.next_call_id;
+            state.next_call_id += 1;
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            state.pending_calls.insert(id, MockPendingCall {
+                expected_response_name: expected_response_name.to_string(),
+                cmd: cmd.to_string(),
+                call_time,
+                completion: Some(tx),
+            });
+            rx
+        };
+        self.call_arrived.notify_all();
+        match rx.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
-        // Dynamic responder wins if installed for this name (call-time
-        // resolution; lets a test pin the response to the actual
-        // `Instant::now()` inside the SUT).
-        if let Some(responder) = self.dynamic_responders.get_mut(name) {
-            return Ok(responder());
-        }
-        // Walk the queue: first matching response wins, drop earlier
-        // unmatched-but-still-queued entries (mirrors how a real port
-        // delivers in-order frames).
-        while let Some((n, p)) = self.responses.pop_front() {
-            if n == name {
-                return Ok(p);
-            }
-            // Different message arrived first — stash it as an event
-            // so a later `poll_events` call can pick it up.
-            self.events.push_back((n, p));
-        }
-        Err(TransportError::Timeout)
     }
 
-    fn poll_events(&mut self, name: &str) -> Vec<MessageParams> {
-        let mut out = Vec::new();
-        let mut keep = VecDeque::with_capacity(self.events.len());
-        while let Some((n, p)) = self.events.pop_front() {
-            if n == name {
-                out.push(p);
-            } else {
-                keep.push_back((n, p));
-            }
-        }
-        self.events = keep;
-        out
+    fn call_typed(
+        &self,
+        name: &str,
+        _args: &[(&str, FieldValue<'_>)],
+        expected_response_name: &str,
+        timeout: Duration,
+    ) -> Result<MessageParams, TransportError> {
+        self.call(name, expected_response_name, timeout)
     }
 }
 
-// --- shared helpers used by other test files -------------------------------
+/// Newtype wrapper around `Arc<MockTransport>` that implements `Transport`.
+/// Needed because the orphan rule prevents `impl Transport for Arc<MockTransport>`.
+#[derive(Clone)]
+pub struct SharedMock(pub Arc<MockTransport>);
+
+impl SharedMock {
+    pub fn new() -> Self {
+        Self(Arc::new(MockTransport::new()))
+    }
+}
+
+impl std::ops::Deref for SharedMock {
+    type Target = MockTransport;
+    fn deref(&self) -> &MockTransport { &self.0 }
+}
+
+impl Transport for SharedMock {
+    fn call(
+        &self,
+        cmd: &str,
+        expected_response_name: &str,
+        timeout: Duration,
+    ) -> Result<MessageParams, TransportError> {
+        self.0.call(cmd, expected_response_name, timeout)
+    }
+
+    fn call_typed(
+        &self,
+        name: &str,
+        args: &[(&str, FieldValue<'_>)],
+        expected_response_name: &str,
+        timeout: Duration,
+    ) -> Result<MessageParams, TransportError> {
+        self.0.call_typed(name, args, expected_response_name, timeout)
+    }
+}
+
+// --- shared helpers used by other test files ---------------------------------
 
 #[allow(dead_code)]
 pub fn mp_with(values: &[(&str, MessageValue)]) -> MessageParams {
@@ -147,52 +224,32 @@ pub fn mp_with(values: &[(&str, MessageValue)]) -> MessageParams {
     p
 }
 
-// --- in-file sanity tests --------------------------------------------------
+// --- in-file tests -----------------------------------------------------------
 
 #[test]
-fn send_records_command() {
-    let mut io = MockTransport::new();
-    io.send("hello").unwrap();
-    assert_eq!(io.last_sent(), Some("hello"));
-    assert_eq!(io.sent.len(), 1);
+fn complete_call_returns_to_caller() {
+    let mock = Arc::new(MockTransport::new());
+    let clone = mock.clone();
+    let t = std::thread::spawn(move || {
+        clone.call("ping", "pong", Duration::from_secs(1))
+    });
+    let mock_b = mock.clone();
+    let _waiter = std::thread::spawn(move || {
+        let _ = mock_b.wait_for_call("pong");
+        let mut params = MessageParams::new();
+        params.insert("result", MessageValue::I32(0));
+        mock_b.complete_call("pong", params);
+    });
+    assert!(t.join().unwrap().is_ok());
+    assert_eq!(mock.pending_count(), 0);
 }
 
 #[test]
-fn wait_for_response_returns_first_match() {
-    let mut io = MockTransport::new();
-    io.enqueue_response(
-        "kalico_push_response",
-        mp_with(&[("result", MessageValue::I32(0))]),
-    );
-    let resp = io
-        .wait_for_response("kalico_push_response", Duration::from_secs(1))
-        .unwrap();
-    assert_eq!(resp.get_i32("result"), 0);
-}
-
-#[test]
-fn wait_for_response_times_out_when_queue_empty() {
-    let mut io = MockTransport::new();
-    let err = io
-        .wait_for_response("anything", Duration::from_millis(1))
-        .unwrap_err();
-    assert!(
-        matches!(err, TransportError::Timeout),
-        "expected Timeout, got {err:?}"
-    );
-}
-
-#[test]
-fn unmatched_responses_become_events() {
-    let mut io = MockTransport::new();
-    io.enqueue_response(
-        "kalico_credit_freed",
-        mp_with(&[("free_slots", MessageValue::U32(3))]),
-    );
-    // wait_for_response on a different name must not consume the
-    // queued frame; instead the mock park it as an event.
-    let _ = io.wait_for_response("never_arrives", Duration::ZERO);
-    let drained = io.poll_events("kalico_credit_freed");
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].get_u32("free_slots"), 3);
+fn timeout_leaves_pending_until_dropped() {
+    let mock = MockTransport::new();
+    let result = mock.call("ping", "pong", Duration::from_millis(20));
+    assert!(matches!(result, Err(TransportError::Timeout)));
+    assert_eq!(mock.pending_count(), 1);
+    mock.drop_pending("pong");
+    assert_eq!(mock.pending_count(), 0);
 }

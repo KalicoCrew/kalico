@@ -3,6 +3,7 @@
 
 mod mock_transport;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use kalico_host_rt::credit::CreditCounter;
@@ -26,11 +27,21 @@ fn default_params() -> SegmentPushParams {
     }
 }
 
+/// Spawn a thread that waits for a call with `name`, then completes it.
+fn spawn_completer(mock: Arc<MockTransport>, name: &'static str, params: kalico_host_rt::transport::MessageParams) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let _ = mock.wait_for_call(name);
+        mock.complete_call(name, params);
+    })
+}
+
 #[test]
 fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
-    let mut io = MockTransport::new();
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(4);
-    io.enqueue_response(
+
+    let _completer = spawn_completer(
+        mock.clone(),
         "kalico_push_response",
         mp_with(&[
             ("result", MessageValue::I32(0)),
@@ -46,11 +57,11 @@ fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
         t_end: 2000,
         ..default_params()
     };
-    let info = push_segment(&mut io, &credit, &params).expect("happy push");
+    let info = push_segment(&*mock, &credit, &params).expect("happy push");
     assert_eq!(info.accepted_segment_id, 42);
     assert_eq!(info.credit_epoch, 7);
     assert_eq!(credit.available(), 3, "credit decremented exactly once");
-    let last = io.last_sent().unwrap();
+    let last = mock.last_sent().unwrap();
     assert!(last.contains("id=42"));
     assert!(last.contains("x_handle=3405691582"));
     assert!(last.contains("t_start_lo=1000"));
@@ -75,10 +86,10 @@ fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
 
 #[test]
 fn no_credit_returns_nocredit_without_sending() {
-    let mut io = MockTransport::new();
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(1);
     credit.try_acquire().unwrap(); // exhaust
-    let err = push_segment(&mut io, &credit, &SegmentPushParams {
+    let err = push_segment(&*mock, &credit, &SegmentPushParams {
         t_end: 100,
         ..default_params()
     }).unwrap_err();
@@ -86,14 +97,16 @@ fn no_credit_returns_nocredit_without_sending() {
         matches!(err, ProducerError::NoCredit),
         "expected NoCredit, got {err:?}"
     );
-    assert!(io.sent.is_empty(), "must not send when out of credit");
+    assert_eq!(mock.sent_count(), 0, "must not send when out of credit");
 }
 
 #[test]
 fn mcu_rejection_releases_credit() {
-    let mut io = MockTransport::new();
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(2);
-    io.enqueue_response(
+
+    let _completer = spawn_completer(
+        mock.clone(),
         "kalico_push_response",
         mp_with(&[
             ("result", MessageValue::I32(-103)),
@@ -101,7 +114,8 @@ fn mcu_rejection_releases_credit() {
             ("credit_epoch", MessageValue::U32(0)),
         ]),
     );
-    let err = push_segment(&mut io, &credit, &default_params()).unwrap_err();
+
+    let err = push_segment(&*mock, &credit, &default_params()).unwrap_err();
     match err {
         ProducerError::McuRejected(r) => assert_eq!(r, -103),
         other => panic!("expected McuRejected, got {other:?}"),
@@ -111,22 +125,31 @@ fn mcu_rejection_releases_credit() {
 
 #[test]
 fn transport_timeout_releases_credit() {
-    let mut io = MockTransport::new();
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(1);
-    // No response queued → transport returns Timeout.
-    let err = push_segment(&mut io, &credit, &default_params()).unwrap_err();
+    // No response queued and short timeout → transport returns Timeout.
+    let err = kalico_host_rt::producer::push_segment_with_timeout(
+        &*mock,
+        &credit,
+        &default_params(),
+        Duration::from_millis(20),
+    ).unwrap_err();
     assert!(
         matches!(err, ProducerError::Transport(_)),
         "expected Transport(_), got {err:?}"
     );
     assert_eq!(credit.available(), 1, "credit must be restored on timeout");
+    // Clean up the leftover pending call so mock can be dropped cleanly.
+    mock.drop_pending("kalico_push_response");
 }
 
 #[test]
 fn high_64bit_t_start_t_end_split_lo_hi() {
-    let mut io = MockTransport::new();
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(1);
-    io.enqueue_response(
+
+    let _completer = spawn_completer(
+        mock.clone(),
         "kalico_push_response",
         mp_with(&[
             ("result", MessageValue::I32(0)),
@@ -134,13 +157,14 @@ fn high_64bit_t_start_t_end_split_lo_hi() {
             ("credit_epoch", MessageValue::U32(0)),
         ]),
     );
+
     let params = SegmentPushParams {
         t_start: 0x1_0000_0005,
         t_end: 0x1_0000_0006,
         ..default_params()
     };
-    let _ = push_segment(&mut io, &credit, &params).unwrap();
-    let last = io.last_sent().unwrap();
+    let _ = push_segment(&*mock, &credit, &params).unwrap();
+    let last = mock.last_sent().unwrap();
     assert!(
         last.contains("t_start_lo=5") && last.contains("t_start_hi=1"),
         "unexpected wire encoding: {last}"
@@ -153,16 +177,19 @@ fn high_64bit_t_start_t_end_split_lo_hi() {
 
 #[test]
 fn missing_result_field_surfaces_parse_error_and_releases_credit() {
-    let mut io = MockTransport::new();
+    let mock = Arc::new(MockTransport::new());
     let credit = CreditCounter::new(2);
-    io.enqueue_response(
+
+    let _completer = spawn_completer(
+        mock.clone(),
         "kalico_push_response",
         mp_with(&[
             ("accepted_segment_id", MessageValue::U32(1)),
             ("credit_epoch", MessageValue::U32(1)),
         ]),
     );
-    let err = push_segment(&mut io, &credit, &default_params()).unwrap_err();
+
+    let err = push_segment(&*mock, &credit, &default_params()).unwrap_err();
     match err {
         ProducerError::Transport(TransportError::Parse(msg)) => {
             assert!(
