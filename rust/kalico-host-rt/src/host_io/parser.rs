@@ -159,6 +159,23 @@ pub fn apply_enumeration_wrapping(
         .collect()
 }
 
+pub fn decode_vlq(buf: &[u8]) -> Result<(i64, usize), ParseError> {
+    let mut value: i64 = 0;
+    let mut consumed = 0;
+    for &b in buf.iter().take(5) {
+        consumed += 1;
+        value = (value << 7) | i64::from(b & 0x7F);
+        if (b & 0x80) == 0 {
+            // Sign-extend from 32-bit.
+            if (value & (1 << 31)) != 0 {
+                value -= 1 << 32;
+            }
+            return Ok((value, consumed));
+        }
+    }
+    Err(ParseError::BadVlq)
+}
+
 pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
     if !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&value) {
         return Err(ParseError::OutOfRange {
