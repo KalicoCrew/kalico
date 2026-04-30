@@ -17,7 +17,7 @@ use kalico_host_rt::clock_sync::{ClockSyncEstimator, MIN_WARMUP_SAMPLES};
 use kalico_host_rt::stream::{
     ArmError, MAX_CROSS_MCU_FREQ_RATIO_OFFSET, arm_all_mcus, check_cross_mcu_desync,
 };
-use kalico_host_rt::transport::MessageValue;
+use kalico_host_rt::transport::{MessageValue, TransportError};
 
 use mock_transport::{MockTransport, SharedMock, mp_with};
 
@@ -308,5 +308,50 @@ fn partial_arm_failure_reports_armed_indices() {
         failure.armed_indices,
         vec![0],
         "MCU 0 was armed before MCU 1 failed; caller must flush it"
+    );
+}
+
+#[test]
+fn arm_fails_on_request_id_mismatch() {
+    let mock = SharedMock::new();
+    let est = ClockSyncEstimator::new(FREQ);
+
+    // Return request_id=99; arm_all_mcus sends request_id=1 (first fetch_add).
+    mock.install_responder("kalico_clock_sync_response", |_call_time| {
+        let (lo, hi) = make_clock_sync_response(1.0, 0);
+        mp_with(&[
+            ("request_id", MessageValue::U32(99)),   // wrong: sent 1, echo 99
+            ("mcu_clock_lo", MessageValue::U32(lo)),
+            ("mcu_clock_hi", MessageValue::U32(hi)),
+        ])
+    });
+
+    let mut mcus = vec![(mock.clone(), est)];
+    let failure = arm_all_mcus(
+        &mut mcus,
+        Instant::now() + Duration::from_secs(1),
+        Duration::from_millis(200),
+        50_000,
+        FREQ,
+    )
+    .unwrap_err();
+
+    match failure.error {
+        ArmError::Transport(TransportError::Parse(ref msg)) => {
+            assert!(
+                msg.contains("request_id mismatch"),
+                "expected 'request_id mismatch' in error, got: {}",
+                msg
+            );
+        }
+        ref other => panic!("expected Transport(Parse(request_id mismatch)), got {:?}", other),
+    }
+    assert!(
+        failure.armed_indices.is_empty(),
+        "no MCU should be armed on request_id mismatch"
+    );
+    assert!(
+        !mock.any_sent_starting_with("kalico_stream_arm "),
+        "kalico_stream_arm must not be sent on request_id mismatch"
     );
 }
