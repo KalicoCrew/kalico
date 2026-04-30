@@ -448,6 +448,30 @@ pub fn encode_field_str<'a>(
     }
 }
 
+pub fn encode_wrapped_field_typed<'a>(
+    out: &mut Vec<u8>,
+    wrapped: &WrappedField,
+    value: &FieldValue<'a>,
+    enums: &IndexMap<String, EnumTable>,
+) -> Result<(), ParseError> {
+    match wrapped {
+        WrappedField::Plain(ty) => encode_field_value(out, *ty, value),
+        WrappedField::Enumerated { inner, enum_name } => match value {
+            FieldValue::EnumName(name) => {
+                let table = enums.get(enum_name)
+                    .ok_or_else(|| ParseError::UnknownEnumName(enum_name.clone()))?;
+                let int = table.by_name.get(*name).ok_or_else(|| ParseError::UnknownEnumValue {
+                    enum_name: enum_name.clone(),
+                    value: (*name).to_string(),
+                })?;
+                encode_field_int(out, *inner, i64::from(*int))
+            }
+            FieldValue::EnumIntOverride(i) => encode_field_int(out, *inner, i64::from(*i)),
+            _ => Err(ParseError::MalformedField),
+        },
+    }
+}
+
 fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
     let in_range = match ty {
         FieldType::Byte => (0..=255).contains(&v),
