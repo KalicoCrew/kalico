@@ -100,6 +100,8 @@ pub enum RetransmitTrigger {
 }
 
 const PENDING_SUBMISSION_CEILING: usize = 256;
+const MAX_RETRY_COUNT: u32 = 8;
+const KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED: u16 = (-201_i32) as u16;
 
 impl Reactor {
     pub(crate) fn dispatch_submission(
@@ -221,13 +223,51 @@ impl Reactor {
         Ok(())
     }
 
-    /// Stub retransmit — writes a single SYNC byte so that write-count tests
-    /// can detect that retransmit fired.  C20 replaces this with the full
-    /// two-arm logic (NAK-driven vs timeout-driven).
-    pub(crate) fn write_retransmit(&mut self, _trigger: RetransmitTrigger) -> Result<(), TransportError> {
+    pub(crate) fn write_retransmit(&mut self, trigger: RetransmitTrigger) -> Result<(), TransportError> {
+        // Build retransmit buffer: leading SYNC + all unacked frames.
+        let buf = {
+            let frames: Vec<&[u8]> = self.unacked_window.iter()
+                .map(|e| e.frame_bytes.as_slice())
+                .collect();
+            crate::host_io::wire::build_retransmit_buffer(frames)
+        };
+        self.write_frame(&buf)?;
+
+        // Two-arm ignore_nak_seq (Codex finding #7).
+        match trigger {
+            RetransmitTrigger::NakDriven => {
+                if self.receive_seq < self.retransmit_seq {
+                    self.ignore_nak_seq = self.retransmit_seq;
+                } else {
+                    self.ignore_nak_seq = self.receive_seq;
+                }
+            }
+            RetransmitTrigger::TimeoutDriven => {
+                self.ignore_nak_seq = self.send_seq;
+            }
+        }
         self.retransmit_seq = self.send_seq;
         self.rtt_sample_armed = false;
-        self.write_frame(&[crate::host_io::wire::MESSAGE_SYNC])?;
+
+        // Retry cap: increment all; fault on exhaustion.
+        for entry in self.unacked_window.iter_mut() {
+            entry.retry_count += 1;
+            if entry.retry_count >= MAX_RETRY_COUNT {
+                self.state = ReactorState::Closed;
+                self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
+                    fault_code:   KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
+                    fault_detail: entry.retry_count,
+                    segment_id:   0,
+                    synthesized:  false,
+                });
+                return Err(TransportError::Closed);
+            }
+        }
+
+        // RTO backoff ONLY on TimeoutDriven.
+        if matches!(trigger, RetransmitTrigger::TimeoutDriven) {
+            self.rtt.backoff();
+        }
         Ok(())
     }
 }
@@ -415,5 +455,51 @@ mod tests {
             bytes_before, bytes_after,
             "ignore_nak_seq damps retransmit: write buffer must not grow"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests 5–9 — write_retransmit two-arm logic.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nak_driven_sets_ignore_nak_to_receive_seq() {
+        let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
+        reactor.receive_seq = 5;
+        reactor.retransmit_seq = 0; // receive_seq >= retransmit_seq → arm 1
+        reactor.write_retransmit(RetransmitTrigger::NakDriven).unwrap();
+        assert_eq!(reactor.ignore_nak_seq, 5); // = receive_seq
+    }
+
+    #[test]
+    fn second_nak_uses_retransmit_seq() {
+        let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
+        reactor.receive_seq = 3;
+        reactor.retransmit_seq = 7; // receive_seq < retransmit_seq → arm 2
+        reactor.write_retransmit(RetransmitTrigger::NakDriven).unwrap();
+        assert_eq!(reactor.ignore_nak_seq, 7); // = retransmit_seq
+    }
+
+    #[test]
+    fn timeout_driven_sets_ignore_nak_to_send_seq() {
+        let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
+        reactor.send_seq = 10;
+        reactor.write_retransmit(RetransmitTrigger::TimeoutDriven).unwrap();
+        assert_eq!(reactor.ignore_nak_seq, 10); // = send_seq
+    }
+
+    #[test]
+    fn nak_driven_does_not_back_off_rto() {
+        let (mut reactor, _port) = test_reactor_with_inflight(&[1]);
+        let rto_before = reactor.rtt.current_rto();
+        reactor.write_retransmit(RetransmitTrigger::NakDriven).unwrap();
+        assert_eq!(reactor.rtt.current_rto(), rto_before);
+    }
+
+    #[test]
+    fn timeout_driven_doubles_rto() {
+        let (mut reactor, _port) = test_reactor_with_inflight(&[1]);
+        let rto_before = reactor.rtt.current_rto();
+        reactor.write_retransmit(RetransmitTrigger::TimeoutDriven).unwrap();
+        assert!(reactor.rtt.current_rto() >= rto_before * 2);
     }
 }
