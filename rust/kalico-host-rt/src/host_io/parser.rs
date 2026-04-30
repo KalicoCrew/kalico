@@ -63,6 +63,9 @@ pub enum ParseError {
     UnknownFormatCode(String),
     EmptyFormat,
     MalformedField,
+    OutOfRange { value: i64, range: &'static str },
+    BadVlq,
+    Truncated,
 }
 
 impl FieldType {
