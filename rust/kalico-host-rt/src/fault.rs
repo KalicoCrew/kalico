@@ -8,7 +8,10 @@
 //! (rate-limit, dedupe, propagate to the user as `Result<_, FaultEvent>`)
 //! is Step-7 MVP work.
 
-use crate::transport::MessageParams;
+use std::sync::mpsc::SyncSender;
+
+use crate::host_io::runtime_events::FaultEvent as RuntimeFaultEvent;
+use crate::transport::{MessageParams, SubscribeError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultEvent {
@@ -40,4 +43,22 @@ pub fn parse_fault_event(params: &MessageParams) -> Option<FaultEvent> {
         fault_detail,
         segment_id,
     })
+}
+
+// ─── FaultLatch ──────────────────────────────────────────────────────────────
+
+/// Latches the first (or first real) fault event and fans it out to an
+/// optional synchronous subscriber.
+///
+/// Semantics:
+/// - Only the first event latches (cell stays once set), *except* when the
+///   latched event was synthesized (`synthesized = true`) and the incoming
+///   event is a real MCU edge (`synthesized = false`): the real event
+///   upgrades the latch in-place and is forwarded to the subscriber.
+/// - [`subscribe`] replays the already-latched fault to a late subscriber so
+///   callers never miss an event that arrived before they attached.
+#[derive(Debug, Default)]
+pub struct FaultLatch {
+    pub cell:       Option<RuntimeFaultEvent>,
+    pub subscriber: Option<SyncSender<RuntimeFaultEvent>>,
 }
