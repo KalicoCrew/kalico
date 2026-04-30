@@ -233,3 +233,7 @@ Steps 8–10 are where it becomes high-performance. Steps 11–14 are polish and
 # Plan changes log
 
 The running log of build-order/spec/constraint changes lives at [`docs/superpowers/plan-changes-log.md`](docs/superpowers/plan-changes-log.md). Format per entry: date, what changed, why, evidence link.
+
+# General instructions
+
+When calling subagents, if you decide it needs opus model, just omit the model parameter completely, it will select opus by default
