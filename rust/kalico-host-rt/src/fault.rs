@@ -62,3 +62,38 @@ pub struct FaultLatch {
     pub cell:       Option<RuntimeFaultEvent>,
     pub subscriber: Option<SyncSender<RuntimeFaultEvent>>,
 }
+
+impl FaultLatch {
+    /// Dispatch a fault event. Edge events upgrade a synthesized latch
+    /// in-place; otherwise the first event wins.
+    pub fn dispatch(&mut self, event: RuntimeFaultEvent) {
+        let upgrade = self
+            .cell
+            .as_ref()
+            .map(|c| c.synthesized && !event.synthesized)
+            .unwrap_or(false);
+        if self.cell.is_none() || upgrade {
+            self.cell = Some(event.clone());
+            if let Some(tx) = &self.subscriber {
+                let _ = tx.send(event);
+            }
+        }
+    }
+
+    /// Attach a subscriber. Returns [`SubscribeError::AlreadySubscribed`] if
+    /// one is already registered. Replays the currently-latched fault (if any)
+    /// to the new subscriber before returning.
+    pub fn subscribe(
+        &mut self,
+        tx: SyncSender<RuntimeFaultEvent>,
+    ) -> Result<(), SubscribeError> {
+        if self.subscriber.is_some() {
+            return Err(SubscribeError::AlreadySubscribed { channel: "fault" });
+        }
+        if let Some(latched) = &self.cell {
+            let _ = tx.send(latched.clone());
+        }
+        self.subscriber = Some(tx);
+        Ok(())
+    }
+}
