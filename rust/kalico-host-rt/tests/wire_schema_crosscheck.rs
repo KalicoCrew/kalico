@@ -242,7 +242,7 @@ fn host_clock_sync_request_field_names_and_ordering_match_firmware() {
     let stream_src = std::fs::read_to_string(&stream_path).expect("read stream.rs");
     assert!(
         stream_src.contains(
-            "kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0"
+            "kalico_clock_sync_request request_id={request_id} host_send_time_lo=0 host_send_time_hi=0"
         ),
         "host `kalico_clock_sync_request` emission diverged from firmware \
          DECL_COMMAND. Update src/stream.rs format string."
