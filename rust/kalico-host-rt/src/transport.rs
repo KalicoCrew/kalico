@@ -174,4 +174,7 @@ pub enum MessageValue {
     U32(u32),
     U64(u64),
     Bytes(Vec<u8>),
+    /// Carries %s text fields AND resolved enum names
+    /// (format!("?{i}") for unknown enum ints). Per spec §4.11.
+    String(String),
 }
