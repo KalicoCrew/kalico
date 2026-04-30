@@ -62,10 +62,40 @@ pub enum FieldType {
 pub enum ParseError {
     UnknownFormatCode(String),
     EmptyFormat,
+    EmptyCommand,
+    EmptyBody,
     MalformedField,
+    MalformedArg,
+    UnknownCommand(String),
+    UnknownMsgid(i32),
+    BadMsgid,
+    UnknownEnumName(String),
+    UnknownEnumValue { enum_name: String, value: String },
+    MissingField(String),
     OutOfRange { value: i64, range: &'static str },
-    BadVlq,
+    ShortFrame,
     Truncated,
+    BadVlq,
+    BadHex(String),
+    DuplicateMsgid(i32),
+    DuplicateFormatString(String),
+    DuplicateMessageName(String),
+    Zlib(String),
+    Json(String),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+impl From<ParseError> for crate::transport::TransportError {
+    fn from(e: ParseError) -> Self {
+        crate::transport::TransportError::Parse(e.to_string())
+    }
 }
 
 impl FieldType {
