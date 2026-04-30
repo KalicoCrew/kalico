@@ -724,4 +724,90 @@ mod tests {
         reactor.write_retransmit(RetransmitTrigger::TimeoutDriven).unwrap();
         assert!(reactor.rtt.current_rto() >= rto_before * 2);
     }
+
+    // -----------------------------------------------------------------------
+    // BrokenPipePort: a SerialPort that returns BrokenPipe from read.
+    // -----------------------------------------------------------------------
+
+    struct BrokenPipePort;
+
+    impl std::io::Read for BrokenPipePort {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "mock disconnect"))
+        }
+    }
+
+    impl std::io::Write for BrokenPipePort {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { Ok(buf.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    impl serialport::SerialPort for BrokenPipePort {
+        fn name(&self) -> Option<String> { Some("broken-pipe-mock".into()) }
+        fn baud_rate(&self) -> serialport::Result<u32> { Ok(115_200) }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+        fn timeout(&self) -> std::time::Duration { std::time::Duration::from_millis(1) }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
+        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> { Ok(()) }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
+        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "mock: try_clone unsupported"))
+        }
+        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
+        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: BrokenPipe on poll_serial sets pending_host_fault and closes.
+    // After run(), event_dispatcher.fault_latch.cell is populated.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn broken_pipe_latches_host_disconnect_fault() {
+        let (_, rx) = std::sync::mpsc::channel::<crate::host_io::ReactorCommand>();
+        let status_snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(
+            crate::host_io::runtime_events::StatusEvent::default(),
+        ));
+        let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
+        let mut reactor = Reactor::new(Box::new(BrokenPipePort), parser, rx, status_snapshot, Vec::new());
+
+        reactor.run(); // runs until Closed
+
+        // The fault should be latched in the FaultLatch cell.
+        assert!(
+            reactor.event_dispatcher.fault_latch.cell.is_some(),
+            "FaultLatch should have a cell after BrokenPipe"
+        );
+        let cell = reactor.event_dispatcher.fault_latch.cell.as_ref().unwrap();
+        // KALICO_ERR_HOST_DISCONNECT = (-200_i32) as u16
+        assert_eq!(
+            cell.fault_code,
+            (-200_i32) as u16,
+            "fault_code must be KALICO_ERR_HOST_DISCONNECT"
+        );
+        assert!(!cell.synthesized, "host disconnect fault is not synthesized");
+    }
 }
