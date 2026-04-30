@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 
@@ -92,6 +92,13 @@ impl Reactor {
     }
 }
 
+/// Why a retransmit was triggered. C20 uses this to select the retransmit arm.
+#[derive(Debug, Clone, Copy)]
+pub enum RetransmitTrigger {
+    NakDriven,
+    TimeoutDriven,
+}
+
 const PENDING_SUBMISSION_CEILING: usize = 256;
 
 impl Reactor {
@@ -150,5 +157,263 @@ impl Reactor {
                 p.call_id, p.payload, p.expected_response_name, p.completion, p.deadline,
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Wire-protocol ack/nak handling — spec §3.5 (Codex finding #1 corrected).
+    // -------------------------------------------------------------------------
+
+    /// Reconstruct an absolute 64-bit seq from the 4-bit wire nibble.
+    ///
+    /// The wire nibble is the low 4 bits of the MCU's receive_seq.
+    /// Outstanding window ≤ 12 << 16, so one nibble-mod-16 delta suffices.
+    fn decode_absolute(&self, wire_seq: u8) -> u64 {
+        let delta = (u64::from(wire_seq).wrapping_sub(self.receive_seq)) & 0x0F;
+        self.receive_seq + delta
+    }
+
+    /// Advance `receive_seq` and pop newly-acked entries from the window.
+    ///
+    /// Special case: if the unacked window is empty this is the very first
+    /// response from the MCU (first-connection sentinel) — snap both counters.
+    fn update_receive_seq(&mut self, rseq: u64) -> Result<(), TransportError> {
+        if self.unacked_window.is_empty() {
+            // First-connection sentinel: snap both seqs.
+            self.send_seq = rseq;
+            self.receive_seq = rseq;
+            return Ok(());
+        }
+        let popped = self.unacked_window.pop_acked(rseq);
+        for entry in &popped {
+            if self.rtt_sample_armed && entry.seq >= self.rtt_sample_seq {
+                let rtt = std::time::Instant::now() - entry.sent_at;
+                self.rtt.update(rtt);
+                self.rtt_sample_armed = false;
+                break;
+            }
+        }
+        self.receive_seq = rseq;
+        Ok(())
+    }
+
+    /// Process one ack/nak nibble from the MCU.
+    ///
+    /// Algorithm (Codex finding #1 corrected order):
+    ///   Step 1 — advance receive_seq if rseq is new (forward progress).
+    ///   Step 2 — ack/nak discrimination:
+    ///     • last_ack_seq < rseq  → forward-progress ack; update last_ack_seq.
+    ///     • rseq > ignore_nak_seq AND window non-empty → duplicate-ack NAK.
+    ///     • else → stale, drop.
+    pub(crate) fn handle_ack_nak(&mut self, wire_seq_nibble: u8) -> Result<(), TransportError> {
+        let rseq = self.decode_absolute(wire_seq_nibble);
+
+        // Step 1: advance receive_seq if rseq is new.
+        if rseq > self.receive_seq {
+            self.update_receive_seq(rseq)?;
+        }
+
+        // Step 2: ack/nak discrimination.
+        if self.last_ack_seq < rseq {
+            self.last_ack_seq = rseq;
+        } else if rseq > self.ignore_nak_seq && !self.unacked_window.is_empty() {
+            self.write_retransmit(RetransmitTrigger::NakDriven)?;
+        }
+        Ok(())
+    }
+
+    /// Stub retransmit — writes a single SYNC byte so that write-count tests
+    /// can detect that retransmit fired.  C20 replaces this with the full
+    /// two-arm logic (NAK-driven vs timeout-driven).
+    pub(crate) fn write_retransmit(&mut self, _trigger: RetransmitTrigger) -> Result<(), TransportError> {
+        self.retransmit_seq = self.send_seq;
+        self.rtt_sample_armed = false;
+        self.write_frame(&[crate::host_io::wire::MESSAGE_SYNC])?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    // -----------------------------------------------------------------------
+    // MockPort: a SerialPort that reads TimedOut and captures writes.
+    // -----------------------------------------------------------------------
+
+    struct MockPort {
+        written: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Read for MockPort {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "mock"))
+        }
+    }
+
+    impl std::io::Write for MockPort {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    impl serialport::SerialPort for MockPort {
+        fn name(&self) -> Option<String> { Some("mock".into()) }
+        fn baud_rate(&self) -> serialport::Result<u32> { Ok(115_200) }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+        fn timeout(&self) -> std::time::Duration { std::time::Duration::from_millis(1) }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
+        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> { Ok(()) }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
+        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "mock: try_clone unsupported"))
+        }
+        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
+        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: build a Reactor with the given seqs pre-populated in the window.
+    // -----------------------------------------------------------------------
+
+    fn test_reactor_with_inflight(seqs: &[u64]) -> (Reactor, Arc<Mutex<Vec<u8>>>) {
+        let written = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let port = MockPort { written: Arc::clone(&written) };
+
+        // Build a minimal MsgProtoParser (empty data dict is fine for these tests).
+        let parser = crate::host_io::parser::MsgProtoParser::new_empty();
+
+        let (_, rx) = std::sync::mpsc::channel();
+        let status_snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(
+            crate::host_io::runtime_events::StatusEvent::default(),
+        ));
+
+        let mut reactor = Reactor::new(Box::new(port), parser, rx, status_snapshot, Vec::new());
+
+        // Pre-populate the unacked window.
+        let max_seq = seqs.iter().copied().max().unwrap_or(0);
+        for &seq in seqs {
+            reactor.unacked_window.push(crate::host_io::window::UnackedEntry {
+                seq,
+                frame_bytes: vec![],
+                sent_at: std::time::Instant::now(),
+                retry_count: 0,
+            });
+        }
+        if max_seq > 0 {
+            reactor.send_seq = max_seq + 1;
+        }
+        // receive_seq=1, last_ack_seq=0 are the Reactor::new defaults.
+
+        (reactor, written)
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1 — decode_absolute wraps correctly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn decode_absolute_wraps_correctly() {
+        let (reactor, _) = test_reactor_with_inflight(&[]);
+        // receive_seq = 1 (default). Wire nibble 0x02 → delta = (2 - 1) & 0x0F = 1 → abs = 2.
+        assert_eq!(reactor.decode_absolute(0x02), 2);
+
+        // Simulate receive_seq = 14.
+        let mut r2 = test_reactor_with_inflight(&[]).0;
+        r2.receive_seq = 14;
+        // Wire nibble 0x01 → delta = (1 - 14) & 0x0F = (-13 mod 16) = 3 → abs = 14 + 3 = 17.
+        assert_eq!(r2.decode_absolute(0x01), 17);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2 — forward-progress ack updates last_ack_seq.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn forward_progress_ack_updates_last_ack_seq() {
+        // One in-flight entry with seq=2; receive_seq=1, last_ack_seq=0.
+        let (mut reactor, _written) = test_reactor_with_inflight(&[2]);
+
+        reactor.handle_ack_nak(0x02).expect("handle_ack_nak");
+        assert_eq!(reactor.last_ack_seq, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3 — duplicate ack triggers retransmit.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn duplicate_ack_triggers_retransmit() {
+        // Window: seqs=[1, 2].  receive_seq=1, last_ack_seq=0.
+        let (mut reactor, written) = test_reactor_with_inflight(&[1, 2]);
+
+        // First call: rseq=2 → forward progress, last_ack_seq=2, pops seq=1.
+        reactor.handle_ack_nak(0x02).expect("first handle_ack_nak");
+        assert_eq!(reactor.last_ack_seq, 2);
+
+        let bytes_before = written.lock().unwrap().len();
+
+        // Second call: rseq=2 again → duplicate ack → retransmit should fire.
+        reactor.handle_ack_nak(0x02).expect("second handle_ack_nak");
+
+        let bytes_after = written.lock().unwrap().len();
+        assert!(
+            bytes_after > bytes_before,
+            "duplicate ack must trigger retransmit (write buffer grew: {bytes_before} → {bytes_after})"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4 — stale ack damped by ignore_nak_seq.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stale_ack_damped_by_ignore_nak_seq() {
+        // Window: seqs=[1, 2]; ignore_nak_seq=10 (high sentinel — damps retransmit).
+        let (mut reactor, written) = test_reactor_with_inflight(&[1, 2]);
+        reactor.ignore_nak_seq = 10;
+
+        // First call: rseq=2 → forward progress, last_ack_seq=2.
+        reactor.handle_ack_nak(0x02).expect("first handle_ack_nak");
+
+        let bytes_before = written.lock().unwrap().len();
+
+        // Second call: rseq=2 again.  rseq(2) > ignore_nak_seq(10) is FALSE → no retransmit.
+        reactor.handle_ack_nak(0x02).expect("second handle_ack_nak");
+
+        let bytes_after = written.lock().unwrap().len();
+        assert_eq!(
+            bytes_before, bytes_after,
+            "ignore_nak_seq damps retransmit: write buffer must not grow"
+        );
     }
 }

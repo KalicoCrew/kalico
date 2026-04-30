@@ -228,6 +228,21 @@ pub struct OutboundSpec {
 }
 
 impl MsgProtoParser {
+    /// Construct a parser with an empty data dictionary — useful for tests that
+    /// only exercise the wire-protocol layer and never encode/decode messages.
+    #[cfg(test)]
+    pub fn new_empty() -> Self {
+        use indexmap::IndexMap;
+        Self {
+            by_msgid:       std::collections::HashMap::new(),
+            by_command_name: IndexMap::new(),
+            enumerations:   IndexMap::new(),
+            static_strings: std::collections::HashMap::new(),
+            config:         serde_json::json!({}),
+            version:        "empty".into(),
+        }
+    }
+
     pub fn from_dictionary(dict: DataDictionary) -> Result<Self, ParseError> {
         let mut seen_msgids:   HashSet<i32>    = HashSet::new();
         let mut seen_formats:  HashSet<String> = HashSet::new();
