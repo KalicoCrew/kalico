@@ -9,6 +9,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 
 use crate::host_io::ReactorCommand;
+use crate::host_io::events::EventDispatcher;
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::rtt::RttEstimator;
 use crate::host_io::runtime_events::{FaultEvent, StatusEvent};
@@ -24,6 +25,7 @@ pub struct Reactor {
     pub(crate) rtt:                RttEstimator,
     pub(crate) rx_buf:             Vec<u8>,
     pub(crate) status_snapshot:    Arc<ArcSwap<StatusEvent>>,
+    pub(crate) event_dispatcher:   EventDispatcher,
 
     // 64-bit absolute sequence counters. Per spec §3.1 / serialqueue.c:660-666.
     pub(crate) send_seq:           u64,
@@ -63,6 +65,7 @@ impl Reactor {
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
         rx_buf_initial: Vec<u8>,
     ) -> Self {
+        let event_dispatcher = EventDispatcher::new(Arc::clone(&status_snapshot), 256);
         Self {
             port,
             parser,
@@ -72,6 +75,7 @@ impl Reactor {
             rtt: RttEstimator::default(),
             rx_buf: rx_buf_initial,
             status_snapshot,
+            event_dispatcher,
             send_seq: 1,
             receive_seq: 1,
             last_ack_seq: 0,
@@ -324,8 +328,8 @@ impl Reactor {
         Ok(())
     }
 
-    fn dispatch_runtime_event(&mut self, _event: crate::host_io::runtime_events::RuntimeEvent) {
-        // Phase D wires this to the EventDispatcher; Phase-C stub.
+    fn dispatch_runtime_event(&mut self, event: crate::host_io::runtime_events::RuntimeEvent) {
+        self.event_dispatcher.dispatch(event);
     }
 }
 
@@ -401,19 +405,24 @@ impl Reactor {
             ReactorCommand::Shutdown => {
                 self.state = ReactorState::Closed;
             }
-            // Subscribe* variants: Phase-D stubs — reply Closed so callers don't block.
-            ReactorCommand::AttachCreditCounter(_) => {}
-            ReactorCommand::SubscribeFault { reply, .. } => {
-                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            ReactorCommand::AttachCreditCounter(counter) => {
+                self.event_dispatcher.credit_counter = Some(counter);
             }
-            ReactorCommand::SubscribeTrace { reply, .. } => {
-                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            ReactorCommand::SubscribeFault { sender, reply } => {
+                let result = self.event_dispatcher.fault_latch.subscribe(sender);
+                let _ = reply.send(result);
             }
-            ReactorCommand::SubscribeRuntimeEvents { reply, .. } => {
-                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            ReactorCommand::SubscribeTrace { sender, reply } => {
+                let result = self.event_dispatcher.trace_ring.subscribe(sender);
+                let _ = reply.send(result);
             }
-            ReactorCommand::SubscribeHostEvents { reply, .. } => {
-                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            ReactorCommand::SubscribeRuntimeEvents { sender, reply } => {
+                let result = self.event_dispatcher.runtime_event_dispatcher.subscribe(sender);
+                let _ = reply.send(result);
+            }
+            ReactorCommand::SubscribeHostEvents { sender, reply } => {
+                let result = self.event_dispatcher.host_event_dispatcher.subscribe(sender);
+                let _ = reply.send(result);
             }
         }
     }
