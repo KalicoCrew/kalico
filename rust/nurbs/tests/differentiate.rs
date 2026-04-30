@@ -1,3 +1,4 @@
+#![allow(clippy::float_cmp)]
 use nurbs::bezier::BezierPiece;
 
 #[test]

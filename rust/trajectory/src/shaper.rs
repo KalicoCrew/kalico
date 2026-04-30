@@ -49,12 +49,7 @@ mod tests {
     }
 
     /// Build a `FittedSegment` with linear X motion, constant Y and Z.
-    fn linear_segment(
-        x_start: f64,
-        x_end: f64,
-        t_start: f64,
-        t_end: f64,
-    ) -> FittedSegment {
+    fn linear_segment(x_start: f64, x_end: f64, t_start: f64, t_end: f64) -> FittedSegment {
         let dt = t_end - t_start;
         let slope = (x_end - x_start) / dt;
         let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
@@ -192,7 +187,8 @@ mod tests {
 
             let n_samples = 10;
             for i in 1..n_samples {
-                let t = seg.t_start + (seg.t_end - seg.t_start) * (i as f64 / n_samples as f64);
+                let t =
+                    seg.t_start + (seg.t_end - seg.t_start) * (f64::from(i) / f64::from(n_samples));
                 let val_per_seg = eval_at(&per_seg_pieces, t);
                 let val_global = eval_at(&global_pieces, t);
                 assert!(
@@ -224,10 +220,7 @@ mod tests {
         let pieces = extract_bezier_pieces(&padded);
 
         // Verify the padded curve extends beyond [0, 1].
-        assert!(
-            pieces[0].u_start < 0.0,
-            "padding should extend before t=0"
-        );
+        assert!(pieces[0].u_start < 0.0, "padding should extend before t=0");
         assert!(
             pieces.last().unwrap().u_end > 1.0,
             "padding should extend past t=1"
@@ -257,7 +250,7 @@ mod tests {
         let n_samples = 50;
         let mut prev = f64::NEG_INFINITY;
         for i in 0..=n_samples {
-            let t = i as f64 / n_samples as f64;
+            let t = f64::from(i) / f64::from(n_samples);
             let val = eval_at(&shaped_pieces, t);
             assert!(
                 val >= prev - 1e-10,

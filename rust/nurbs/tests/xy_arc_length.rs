@@ -7,9 +7,15 @@ fn pure_xy_straight_line_collinear_cubic() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let l = xy_arc_length(&xyz);
     assert!((l - 3.0).abs() < 1e-9, "expected ~3.0, got {l}");
@@ -21,9 +27,15 @@ fn pure_z_motion_xy_length_zero() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0], [0.0, 0.0, 3.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 2.0],
+            [0.0, 0.0, 3.0],
+        ],
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let l = xy_arc_length(&xyz);
     assert!(l.abs() < 1e-9, "expected ~0.0, got {l}");
@@ -35,9 +47,15 @@ fn diagonal_xy_straight_line() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 2.0, 0.0], [3.0, 3.0, 0.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [3.0, 3.0, 0.0],
+        ],
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let l = xy_arc_length(&xyz);
     let expected = 3.0 * std::f64::consts::SQRT_2;
@@ -59,7 +77,8 @@ fn pure_xy_curve_matches_3d_length() {
             [0.0, 1.0, 0.0],
         ],
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let xy_l = xy_arc_length(&xyz);
     // Build the 3D arc-length table for cross-check.
@@ -78,9 +97,15 @@ fn xy_loop_chord_zero_arc_length_nonzero() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     let l = xy_arc_length(&xyz);
     assert!(l > 0.5, "loop should have nonzero XY arc length, got {l}");

@@ -36,8 +36,7 @@ fn force_idle_short_circuits_tick() {
     // empty-queue tick post-short-circuit would otherwise trigger Underrun).
     let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
     let (mut q_producer, mut q_consumer) = queue.split();
-    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     let (mut t_producer, mut t_consumer) = trace.split();
 
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
@@ -103,8 +102,7 @@ fn force_idle_with_active_current_clears_it() {
     // and tick again. Verify the engine's current is cleared.
     let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
     let (mut q_producer, mut q_consumer) = queue.split();
-    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     let (mut t_producer, _t_consumer) = trace.split();
 
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);

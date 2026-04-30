@@ -12,8 +12,7 @@ fn straight_line_no_corners() {
     let corners = detect_corners(&points, 0.05);
     assert!(
         corners.is_empty(),
-        "collinear points should not produce any corners, got: {:?}",
-        corners
+        "collinear points should not produce any corners, got: {corners:?}"
     );
 }
 
@@ -58,26 +57,21 @@ fn gentle_curve_no_corners() {
     let corners = detect_corners(&points, 0.05);
     assert!(
         corners.is_empty(),
-        "gentle arc should not produce corners, got indices: {:?}",
-        corners
+        "gentle arc should not produce corners, got indices: {corners:?}"
     );
 }
 
-/// Sanity check: split_at_corners on a straight run with no corners returns
+/// Sanity check: `split_at_corners` on a straight run with no corners returns
 /// the original points as a single sub-run.
 #[test]
 fn split_straight_run() {
-    let pts: Vec<[f64; 3]> = vec![
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [2.0, 0.0, 0.0],
-    ];
+    let pts: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
     let sub_runs = split_at_corners(&pts, &[]);
     assert_eq!(sub_runs.len(), 1);
     assert_eq!(sub_runs[0], pts);
 }
 
-/// An L-shaped path: detect_corners fires, then split_at_corners produces
+/// An L-shaped path: `detect_corners` fires, then `split_at_corners` produces
 /// two sub-runs that share the corner point.
 #[test]
 fn detect_and_split_l_shape() {
@@ -92,8 +86,11 @@ fn detect_and_split_l_shape() {
     let sub_runs = split_at_corners(&pts, &corners);
     assert_eq!(sub_runs.len(), 2);
     // Both sub-runs share the corner point.
-    assert_eq!(sub_runs[0].last().unwrap(), &pts[1]);
-    assert_eq!(sub_runs[1].first().unwrap(), &pts[1]);
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(sub_runs[0].last().unwrap(), &pts[1]);
+        assert_eq!(sub_runs[1].first().unwrap(), &pts[1]);
+    }
     // Each sub-run has 2 points.
     assert_eq!(sub_runs[0].len(), 2);
     assert_eq!(sub_runs[1].len(), 2);

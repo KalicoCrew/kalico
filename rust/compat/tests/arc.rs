@@ -1,4 +1,4 @@
-use compat::arc::{arc_endpoint_tangent, arc_start_tangent, arc_to_g5, ArcParams};
+use compat::arc::{ArcParams, arc_endpoint_tangent, arc_start_tangent, arc_to_g5};
 
 /// Evaluate a cubic Bezier at parameter t in [0, 1].
 fn bezier_eval(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {

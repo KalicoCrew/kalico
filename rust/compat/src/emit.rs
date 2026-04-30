@@ -47,11 +47,7 @@ impl fmt::Display for G5Line {
 /// - `G90` (absolute XYZ coordinates).
 /// - `M82` (absolute E coordinates).
 /// - `G17` (XY active plane).
-pub fn write_preamble(
-    w: &mut dyn Write,
-    input_name: &str,
-    tolerance_um: f64,
-) -> io::Result<()> {
+pub fn write_preamble(w: &mut dyn Write, input_name: &str, tolerance_um: f64) -> io::Result<()> {
     writeln!(w, "; kalico-compat output")?;
     writeln!(w, "; source: {input_name}")?;
     writeln!(w, "; arc-to-bezier tolerance: {tolerance_um:.1} um")?;

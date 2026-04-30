@@ -34,8 +34,7 @@ pub fn encode_load_curve_v1(
     debug_assert!(u8::try_from(cps.len()).is_ok());
     debug_assert!(u8::try_from(knots.len()).is_ok());
     debug_assert!(u8::try_from(weights.len()).is_ok());
-    let mut out =
-        Vec::with_capacity(5 + cps.len() * 12 + knots.len() * 4 + weights.len() * 4);
+    let mut out = Vec::with_capacity(5 + cps.len() * 12 + knots.len() * 4 + weights.len() * 4);
     out.push(FORMAT_VERSION_V1);
     out.push(degree);
     out.push(cps.len() as u8);

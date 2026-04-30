@@ -65,9 +65,7 @@ impl Run {
     /// Returns 0.0 when the run has fewer than two waypoints.
     pub fn total_e_delta(&self) -> f64 {
         match (self.waypoints.first(), self.waypoints.last()) {
-            (Some(first), Some(last)) if self.waypoints.len() > 1 => {
-                last.input_e - first.input_e
-            }
+            (Some(first), Some(last)) if self.waypoints.len() > 1 => last.input_e - first.input_e,
             _ => 0.0,
         }
     }

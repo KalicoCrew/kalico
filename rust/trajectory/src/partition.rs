@@ -77,13 +77,11 @@ pub fn partition_batch(
 
                 // Schedule the E gap.
                 let duration = match seg.e_independent {
-                    Some(e_nurbs) => {
-                        crate::e_independent::schedule_e_duration(
-                            e_nurbs,
-                            seg.feedrate_mm_s,
-                            e_limits,
-                        )
-                    }
+                    Some(e_nurbs) => crate::e_independent::schedule_e_duration(
+                        e_nurbs,
+                        seg.feedrate_mm_s,
+                        e_limits,
+                    ),
                     None => 0.0, // Shouldn't happen per EMode invariants, but be safe.
                 };
 
@@ -161,13 +159,7 @@ mod tests {
 
     /// Build a linear E NURBS for retraction/prime.
     fn make_e_nurbs(e_start: f64, e_end: f64) -> ScalarNurbs<f64> {
-        ScalarNurbs::try_new(
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![e_start, e_end],
-            None,
-        )
-        .unwrap()
+        ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end], None).unwrap()
     }
 
     fn default_limits() -> temporal::Limits {
@@ -186,11 +178,11 @@ mod tests {
         }
     }
 
-    fn make_xy_segment<'a>(
-        curve: &'a VectorNurbs<f64, 3>,
+    fn make_xy_segment(
+        curve: &VectorNurbs<f64, 3>,
         e_mode: EMode,
         extrusion_per_xy_mm: f64,
-    ) -> ShapeSegmentInput<'a> {
+    ) -> ShapeSegmentInput<'_> {
         ShapeSegmentInput {
             temporal: temporal::multi::SegmentInput {
                 curve,
@@ -290,7 +282,10 @@ mod tests {
         assert_eq!(result.e_gaps[0].segment_index, 0);
         assert!(result.e_gaps[0].duration > 0.0);
         // No preceding segment — xyz_position should be [0, 0, 0].
-        assert_eq!(result.e_gaps[0].xyz_position, [0.0, 0.0, 0.0]);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(result.e_gaps[0].xyz_position, [0.0, 0.0, 0.0]);
+        }
     }
 
     #[test]
@@ -376,8 +371,7 @@ mod tests {
         let e_retract = make_e_nurbs(10.0, 5.0);
         let e_limits = default_e_limits();
 
-        let expected_dur =
-            crate::e_independent::schedule_e_duration(&e_retract, 50.0, &e_limits);
+        let expected_dur = crate::e_independent::schedule_e_duration(&e_retract, 50.0, &e_limits);
 
         let segments = vec![
             make_xy_segment(&c1, EMode::CoupledToXy, 0.04),

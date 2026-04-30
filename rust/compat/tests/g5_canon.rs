@@ -1,6 +1,6 @@
 use compat::g5_canon::canonicalize_g5;
 
-/// Explicit I and J override any prev_pq.
+/// Explicit I and J override any `prev_pq`.
 #[test]
 fn explicit_ij_passthrough() {
     let mut params = gcode::Params::default();
@@ -17,7 +17,7 @@ fn explicit_ij_passthrough() {
     assert!((q - 3.0).abs() < 1e-12, "q={q}");
 }
 
-/// When I/J are absent and prev_pq is provided, I = −prev_P and J = −prev_Q.
+/// When I/J are absent and `prev_pq` is provided, I = −`prev_P` and J = −`prev_Q`.
 #[test]
 fn implicit_ij_from_chain() {
     let mut params = gcode::Params::default();

@@ -24,7 +24,7 @@ serialport = "4"
 log = "0.4"
 
 [dependencies.pyo3]
-version = "0.22"
+version = "0.24"
 optional = true
 
 [features]

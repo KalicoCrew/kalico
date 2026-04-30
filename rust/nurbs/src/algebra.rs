@@ -266,10 +266,16 @@ pub fn fit_hermite_c1<const D: usize>(
     }
 
     // Recursive merge-and-bisect, producing output pieces with shared boundaries across axes.
-    let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] =
-        std::array::from_fn(|_| Vec::new());
+    let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] = std::array::from_fn(|_| Vec::new());
 
-    hermite_fit_recursive::<D>(pieces, 0, pieces.len(), tolerance_mm, target_degree, &mut result)?;
+    hermite_fit_recursive::<D>(
+        pieces,
+        0,
+        pieces.len(),
+        tolerance_mm,
+        target_degree,
+        &mut result,
+    )?;
 
     Ok(result)
 }

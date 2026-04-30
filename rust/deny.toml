@@ -26,6 +26,10 @@ allow = [
 crate = "cbindgen"
 allow = ["MPL-2.0"]
 
+[[licenses.exceptions]]
+crate = "serialport"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 deny = []   # extend as crate-specific rejections surface

@@ -84,11 +84,7 @@ pub fn open(fg: &mut FgState, shared: &SharedState, stream_id: u32) -> i32 {
         {
             return KALICO_OK;
         }
-        publish_stream_state_violation_detail(
-            shared,
-            fg.stream_state_machine,
-            FgStreamState::Idle,
-        );
+        publish_stream_state_violation_detail(shared, fg.stream_state_machine, FgStreamState::Idle);
         return KALICO_ERR_STREAM_STATE_VIOLATION;
     }
     // Round-1 B14: ensure terminal_segment_id is cleared on stream_open.
@@ -96,9 +92,7 @@ pub fn open(fg: &mut FgState, shared: &SharedState, stream_id: u32) -> i32 {
     shared
         .terminal_segment_id_set
         .store(false, Ordering::Release);
-    shared
-        .terminal_segment_id_value
-        .store(0, Ordering::Release);
+    shared.terminal_segment_id_value.store(0, Ordering::Release);
     // Round-3 B-R3-8: reset accepted-id-seen so the new stream's first push
     // starts a fresh monotonicity sequence.
     shared
@@ -273,8 +267,7 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
     let (fg, shared, pool) = unsafe {
         let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
         let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-        let pool_ptr: *const crate::curve_pool::CurvePool =
-            core::ptr::addr_of!((*ctx).curve_pool);
+        let pool_ptr: *const crate::curve_pool::CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
         (&mut *fg_ptr, &*shared_ptr, &*pool_ptr)
     };
 
@@ -298,10 +291,9 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
             shared
                 .last_error
                 .store(FaultCode::LivenessStalled as i32, Ordering::Release);
-            shared.runtime_status.store(
-                crate::engine::RuntimeStatus::Fault as u8,
-                Ordering::Release,
-            );
+            shared
+                .runtime_status
+                .store(crate::engine::RuntimeStatus::Fault as u8, Ordering::Release);
             // Clear force_idle so the (presumably stuck) ISR isn't
             // permanently pinned in the short-circuit path; this is
             // best-effort cleanup, not recovery.
@@ -328,8 +320,7 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
         // form `&mut IsrState` via the UnsafeCell projection. No concurrent
         // ISR can race the queue/engine writes below.
         let isr: &mut IsrState = unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             &mut *isr_ptr
         };
         // Drain all enqueued segments. None are evaluated; they're
@@ -347,7 +338,10 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
 
     // Step 6: increment credit_epoch (any pending credit events from
     // pre-flush are now stale by epoch comparison).
-    let new_epoch = shared.credit_epoch.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+    let new_epoch = shared
+        .credit_epoch
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
 
     // Step 7: clear stream-machine + terminal-segment + monotonicity flags.
     fg.stream_state_machine = FgStreamState::Idle;
@@ -359,9 +353,7 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
     shared
         .terminal_segment_id_set
         .store(false, Ordering::Release);
-    shared
-        .terminal_segment_id_value
-        .store(0, Ordering::Release);
+    shared.terminal_segment_id_value.store(0, Ordering::Release);
     shared
         .accepted_segment_id_seen
         .store(false, Ordering::Release);

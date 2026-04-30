@@ -88,6 +88,7 @@ pub fn split_at_corners(points: &[[f64; 3]], corners: &[usize]) -> Vec<Vec<[f64;
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 

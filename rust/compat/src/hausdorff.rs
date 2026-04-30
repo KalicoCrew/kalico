@@ -32,9 +32,7 @@ fn subdivide(
     p2: [f64; 2],
     p3: [f64; 2],
 ) -> ([[f64; 2]; 4], [[f64; 2]; 4]) {
-    let mid = |a: [f64; 2], b: [f64; 2]| -> [f64; 2] {
-        [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
-    };
+    let mid = |a: [f64; 2], b: [f64; 2]| -> [f64; 2] { [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5] };
     // Level 1
     let q0 = mid(p0, p1);
     let q1 = mid(p1, p2);
@@ -224,7 +222,10 @@ mod tests {
         let p3 = [3.0, 0.0];
         let polyline: Vec<[f64; 2]> = vec![[0.0, 0.0]]; // single vertex — no segments
         let d = bezier_to_polyline_hausdorff(p0, p1, p2, p3, &polyline, 1e-6);
-        assert!(d.is_infinite(), "expected infinity for degenerate polyline, got {d}");
+        assert!(
+            d.is_infinite(),
+            "expected infinity for degenerate polyline, got {d}"
+        );
     }
 
     #[test]

@@ -66,8 +66,14 @@ fn wrap_u16_modulo_no_deadlock() {
 #[test]
 fn out_of_range_slot_rejects() {
     let pool = CurvePool::new();
-    assert!(pool.try_alloc_and_load(CURVE_POOL_N, dummy_curve()).is_none());
-    assert!(pool.lookup(CurveHandle::new(CURVE_POOL_N as u16, 1)).is_err());
+    assert!(
+        pool.try_alloc_and_load(CURVE_POOL_N, dummy_curve())
+            .is_none()
+    );
+    assert!(
+        pool.lookup(CurveHandle::new(CURVE_POOL_N as u16, 1))
+            .is_err()
+    );
 }
 
 #[test]

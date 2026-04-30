@@ -16,9 +16,7 @@ use runtime::queue::Q_N;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
-use runtime::trace::{
-    TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample,
-};
+use runtime::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample};
 
 // Default H723 Klipper Kconfig clock is 520 MHz (src/stm32/Kconfig). Keeping
 // tests parametric here so a future bump to 550 MHz (or different alternate

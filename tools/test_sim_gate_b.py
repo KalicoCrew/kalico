@@ -63,7 +63,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from kalico_host_io import KalicoHostIO, HostIoError  # noqa: E402
+from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 # Match tools/test_sim_gate_a.py + tools/test_sim_stream_lifecycle.py.
 CLOCK_FREQ = 520_000_000

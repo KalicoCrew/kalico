@@ -11,8 +11,8 @@
 //!   output assembly.
 
 use crate::ELimits;
-use nurbs::ScalarNurbs;
 use nurbs::eval::eval as nurbs_eval;
+use nurbs::ScalarNurbs;
 
 /// Compute the duration of a trapezoidal velocity profile for an independent E
 /// segment.
@@ -22,11 +22,7 @@ use nurbs::eval::eval as nurbs_eval;
 /// short to reach cruise) profile is applied with the given feedrate and limits.
 ///
 /// Returns the total duration in seconds. Returns 0.0 for zero-length moves.
-pub fn schedule_e_duration(
-    e_nurbs: &ScalarNurbs<f64>,
-    feedrate: f64,
-    limits: &ELimits,
-) -> f64 {
+pub fn schedule_e_duration(e_nurbs: &ScalarNurbs<f64>, feedrate: f64, limits: &ELimits) -> f64 {
     let total_length = e_path_length(e_nurbs);
     if total_length <= 0.0 {
         return 0.0;
@@ -250,7 +246,16 @@ pub fn schedule_e_full(
 
         return ScalarNurbs::try_new(
             2,
-            vec![t0, t0, t0, t_peak_safe, t_peak_safe, t_end_safe, t_end_safe, t_end_safe],
+            vec![
+                t0,
+                t0,
+                t0,
+                t_peak_safe,
+                t_peak_safe,
+                t_end_safe,
+                t_end_safe,
+                t_end_safe,
+            ],
             cps,
             None,
         )
@@ -296,13 +301,13 @@ pub fn schedule_e_full(
     let cp3 = e_at_t1 + sign * v_cruise * t_cruise / 2.0;
 
     let cps = vec![
-        e_start,  // cp0
-        e_start,  // cp1
-        e_at_t1,  // cp2
-        cp3,      // cp3
-        e_at_t2,  // cp4
-        e_end,    // cp5
-        e_end,    // cp6
+        e_start, // cp0
+        e_start, // cp1
+        e_at_t1, // cp2
+        cp3,     // cp3
+        e_at_t2, // cp4
+        e_end,   // cp5
+        e_end,   // cp6
     ];
 
     // Guard: ensure all knot spans are non-degenerate.
@@ -313,10 +318,7 @@ pub fn schedule_e_full(
     ScalarNurbs::try_new(
         2,
         vec![
-            t0, t0, t0,
-            t1_safe, t1_safe,
-            t2_safe, t2_safe,
-            t_end_safe, t_end_safe, t_end_safe,
+            t0, t0, t0, t1_safe, t1_safe, t2_safe, t2_safe, t_end_safe, t_end_safe, t_end_safe,
         ],
         cps,
         None,
@@ -426,13 +428,7 @@ mod tests {
 
     /// Build a simple linear E NURBS from `e_start` to `e_end` in `[0, 1]`.
     fn linear_e_nurbs(e_start: f64, e_end: f64) -> ScalarNurbs<f64> {
-        ScalarNurbs::try_new(
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![e_start, e_end],
-            None,
-        )
-        .unwrap()
+        ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end], None).unwrap()
     }
 
     fn default_limits() -> ELimits {
@@ -565,7 +561,7 @@ mod tests {
         let n = 50;
         let mut prev = nurbs_eval(&result.as_view(), t0);
         for i in 1..=n {
-            let t = t0 + (t_end - t0) * (i as f64) / (n as f64);
+            let t = t0 + (t_end - t0) * f64::from(i) / f64::from(n);
             let val = nurbs_eval(&result.as_view(), t);
             assert!(
                 val <= prev + 1e-12,
@@ -587,7 +583,7 @@ mod tests {
         let n = 50;
         let mut prev = nurbs_eval(&result.as_view(), t0);
         for i in 1..=n {
-            let t = t0 + (t_end - t0) * (i as f64) / (n as f64);
+            let t = t0 + (t_end - t0) * f64::from(i) / f64::from(n);
             let val = nurbs_eval(&result.as_view(), t);
             assert!(
                 val >= prev - 1e-12,

@@ -171,10 +171,7 @@ pub enum ShapeError {
     },
     /// Arc-length table construction failed.
     #[error("arc-length table error on segment {index}: {detail}")]
-    ArcLength {
-        index: usize,
-        detail: String,
-    },
+    ArcLength { index: usize, detail: String },
     /// Input segment buffer was empty.
     #[error("empty segment buffer")]
     EmptySegments,

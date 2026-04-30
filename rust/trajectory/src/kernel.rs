@@ -18,11 +18,11 @@ fn build_bell_kernel(t_sm: f64) -> PiecewisePolynomialKernel<f64> {
     // w(t) = c·(h² − t²)² = c·h⁴ − 2c·h²·t² + c·t⁴
     // Absolute monomial basis: coeffs[k] is the coefficient of t^k.
     let coeffs = vec![
-        c * h.powi(4), // t^0
-        0.0,           // t^1
+        c * h.powi(4),    // t^0
+        0.0,              // t^1
         -2.0 * c * h * h, // t^2
-        0.0,           // t^3
-        c,             // t^4
+        0.0,              // t^3
+        c,                // t^4
     ];
     PiecewisePolynomialKernel::single_poly_from_absolute(coeffs, (-h, h))
 }
@@ -45,12 +45,8 @@ impl crate::RequiredShaper {
     /// Produce the `PiecewisePolynomialKernel` for this shaper configuration.
     pub fn to_kernel(&self) -> PiecewisePolynomialKernel<f64> {
         match self {
-            Self::SmoothZv { frequency_hz } => {
-                build_smooth_zv_kernel(0.8025 / frequency_hz)
-            }
-            Self::SmoothMzv { frequency_hz } => {
-                build_smooth_mzv_kernel(0.95625 / frequency_hz)
-            }
+            Self::SmoothZv { frequency_hz } => build_smooth_zv_kernel(0.8025 / frequency_hz),
+            Self::SmoothMzv { frequency_hz } => build_smooth_mzv_kernel(0.95625 / frequency_hz),
         }
     }
 }
@@ -60,9 +56,7 @@ impl crate::AxisShaper {
     /// or `None` for `Passthrough`.
     pub fn to_kernel(&self) -> Option<PiecewisePolynomialKernel<f64>> {
         match self {
-            Self::SmoothZv { frequency_hz } => {
-                Some(build_smooth_zv_kernel(0.8025 / frequency_hz))
-            }
+            Self::SmoothZv { frequency_hz } => Some(build_smooth_zv_kernel(0.8025 / frequency_hz)),
             Self::SmoothMzv { frequency_hz } => {
                 Some(build_smooth_mzv_kernel(0.95625 / frequency_hz))
             }
@@ -85,10 +79,10 @@ mod tests {
         let (lo, hi) = kernel.support();
         // Simpson's rule integration
         let n = 1000;
-        let step = (hi - lo) / n as f64;
+        let step = (hi - lo) / f64::from(n);
         let mut integral = 0.0;
         for i in 0..=n {
-            let t = lo + i as f64 * step;
+            let t = lo + f64::from(i) * step;
             let w = if i == 0 || i == n {
                 1.0
             } else if i % 2 == 0 {
@@ -99,10 +93,7 @@ mod tests {
             integral += w * kernel.pieces[0].evaluate(t);
         }
         integral *= step / 3.0;
-        assert!(
-            (integral - 1.0).abs() < 1e-6,
-            "integral = {integral}"
-        );
+        assert!((integral - 1.0).abs() < 1e-6, "integral = {integral}");
     }
 
     #[test]
@@ -110,10 +101,10 @@ mod tests {
         let kernel = build_smooth_mzv_kernel(0.95625 / 120.0);
         let (lo, hi) = kernel.support();
         let n = 1000;
-        let step = (hi - lo) / n as f64;
+        let step = (hi - lo) / f64::from(n);
         let mut integral = 0.0;
         for i in 0..=n {
-            let t = lo + i as f64 * step;
+            let t = lo + f64::from(i) * step;
             let w = if i == 0 || i == n {
                 1.0
             } else if i % 2 == 0 {
@@ -124,10 +115,7 @@ mod tests {
             integral += w * kernel.pieces[0].evaluate(t);
         }
         integral *= step / 3.0;
-        assert!(
-            (integral - 1.0).abs() < 1e-6,
-            "integral = {integral}"
-        );
+        assert!((integral - 1.0).abs() < 1e-6, "integral = {integral}");
     }
 
     #[test]
@@ -156,11 +144,8 @@ mod tests {
         let (lo, hi) = kernel.support();
         let n = 100;
         for i in 1..n {
-            let t = lo + (hi - lo) * i as f64 / n as f64;
-            assert!(
-                kernel.pieces[0].evaluate(t) > 0.0,
-                "negative at t={t}"
-            );
+            let t = lo + (hi - lo) * f64::from(i) / f64::from(n);
+            assert!(kernel.pieces[0].evaluate(t) > 0.0, "negative at t={t}");
         }
     }
 

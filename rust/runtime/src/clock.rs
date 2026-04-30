@@ -123,9 +123,7 @@ pub fn publish_widened_now(shared: &SharedState, now: u64) {
         .wrapping_add(1);
     // → odd (write in progress)
     shared.widened_now_seq.store(seq, Ordering::Release);
-    shared
-        .widened_now_lo
-        .store(now as u32, Ordering::Release);
+    shared.widened_now_lo.store(now as u32, Ordering::Release);
     shared
         .widened_now_hi
         .store((now >> 32) as u32, Ordering::Release);

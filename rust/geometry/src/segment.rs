@@ -10,7 +10,6 @@ pub enum Segment {
     Cubic(CubicSegment),
     CornerBlend(CornerBlendSlot),
     Junction(JunctionDeviation),
-
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,7 +240,12 @@ mod tests {
         let xyz = VectorNurbs::<f64, 3>::try_new(
             3,
             vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+            ],
             None,
         )
         .expect("valid cubic");
@@ -251,7 +255,10 @@ mod tests {
             0.0,
             None,
             100.0,
-            SourceRange { start_line: 1, end_line: 1 },
+            SourceRange {
+                start_line: 1,
+                end_line: 1,
+            },
             None,
         )
         .expect("valid travel");

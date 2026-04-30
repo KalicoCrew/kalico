@@ -39,8 +39,11 @@ pub fn fit_and_split(
 
     // Stage 2c: C1 Hermite refit — merge adjacent pieces into fewer degree-4
     // pieces while maintaining C1 continuity and L-inf error <= tolerance.
-    let fitted = fit_hermite_c1::<3>(composed, tolerance, 4)
-        .map_err(|e| crate::ShapeError::FitFailure { index: 0, detail: e })?;
+    let fitted =
+        fit_hermite_c1::<3>(composed, tolerance, 4).map_err(|e| crate::ShapeError::FitFailure {
+            index: 0,
+            detail: e,
+        })?;
 
     // Stage 2d: convert per-axis Vec<BezierPiece> to ScalarNurbs.
     let axes = [
@@ -49,7 +52,11 @@ pub fn fit_and_split(
         bezier_pieces_to_nurbs(&fitted[2]),
     ];
 
-    Ok(FittedSegment { axes, t_start, t_end })
+    Ok(FittedSegment {
+        axes,
+        t_start,
+        t_end,
+    })
 }
 
 /// Convert composed pieces directly to per-axis `ScalarNurbs` WITHOUT the
@@ -83,7 +90,11 @@ pub fn split_without_refit(
         bezier_pieces_to_nurbs(&z_pieces),
     ];
 
-    Ok(FittedSegment { axes, t_start, t_end })
+    Ok(FittedSegment {
+        axes,
+        t_start,
+        t_end,
+    })
 }
 
 #[cfg(test)]
@@ -97,7 +108,7 @@ mod tests {
         // BezierPiece coeffs are Pascal-shifted-monomial: [a0, a1] => a0 + a1*(u - u_start).
         let composed: Vec<[BezierPiece<f64>; 3]> = (0..4)
             .map(|i| {
-                let s = i as f64;
+                let s = f64::from(i);
                 [
                     BezierPiece {
                         u_start: s,
@@ -124,7 +135,7 @@ mod tests {
 
         // Each axis should be a valid ScalarNurbs with at least one control point.
         for axis in &result.axes {
-            assert!(axis.control_points().len() > 0);
+            assert!(!axis.control_points().is_empty());
         }
 
         // X(0) = 0, X(4) = 4
@@ -208,7 +219,7 @@ mod tests {
         // A C1 Hermite fitter should merge these into fewer pieces.
         let composed: Vec<[BezierPiece<f64>; 3]> = (0..8)
             .map(|i| {
-                let s = i as f64;
+                let s = f64::from(i);
                 [
                     BezierPiece {
                         u_start: s,

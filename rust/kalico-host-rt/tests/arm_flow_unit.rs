@@ -15,11 +15,11 @@ use std::time::{Duration, Instant};
 
 use kalico_host_rt::clock_sync::{ClockSyncEstimator, MIN_WARMUP_SAMPLES};
 use kalico_host_rt::stream::{
-    arm_all_mcus, check_cross_mcu_desync, ArmError, MAX_CROSS_MCU_FREQ_RATIO_OFFSET,
+    ArmError, MAX_CROSS_MCU_FREQ_RATIO_OFFSET, arm_all_mcus, check_cross_mcu_desync,
 };
 use kalico_host_rt::transport::MessageValue;
 
-use mock_transport::{mp_with, MockTransport};
+use mock_transport::{MockTransport, mp_with};
 
 const FREQ: f64 = 550_000_000.0;
 const EPOCH_OFFSET: u64 = 1_000_000_000;
@@ -82,8 +82,9 @@ fn make_warm_mcu(arm_result: i32) -> (MockTransport, ClockSyncEstimator) {
     io.install_dynamic_responder(
         "kalico_clock_sync_response",
         Box::new(move || {
-            let now_secs =
-                Instant::now().saturating_duration_since(epoch).as_secs_f64();
+            let now_secs = Instant::now()
+                .saturating_duration_since(epoch)
+                .as_secs_f64();
             let (lo, hi) = make_clock_sync_response(now_secs, 0);
             mp_with(&[
                 ("request_id", MessageValue::U32(1)),
@@ -118,7 +119,11 @@ fn happy_path_single_mcu() {
     .expect("arm should succeed on warm estimator + clean responses");
 
     let io = &mcus[0].0;
-    assert!(io.sent.iter().any(|c| c.starts_with("kalico_clock_sync_request")));
+    assert!(
+        io.sent
+            .iter()
+            .any(|c| c.starts_with("kalico_clock_sync_request"))
+    );
     assert!(io.sent.iter().any(|c| c.starts_with("kalico_stream_arm")));
 }
 
@@ -169,15 +174,18 @@ fn quality_gate_failure_aborts() {
         "no MCU should be armed when quality gate fails"
     );
     assert!(
-        !mcus[0].0.sent.iter().any(|c| c.starts_with("kalico_stream_arm ")),
+        !mcus[0]
+            .0
+            .sent
+            .iter()
+            .any(|c| c.starts_with("kalico_stream_arm ")),
         "must NOT issue stream_arm if quality gate fails"
     );
 }
 
 #[test]
 fn mcu_rejected_aborts_with_result_code() {
-    let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> =
-        vec![make_warm_mcu(-7)];
+    let mut mcus: Vec<(MockTransport, ClockSyncEstimator)> = vec![make_warm_mcu(-7)];
     let failure = arm_all_mcus(
         &mut mcus,
         Instant::now() + Duration::from_secs(1),
@@ -254,8 +262,8 @@ fn transport_timeout_propagates() {
 #[test]
 fn cross_mcu_desync_rejects_pair_above_threshold() {
     let freqs = [550_000_000.0, 550_000_000.0 * 1.005];
-    let (i, j, offset) = check_cross_mcu_desync(&freqs)
-        .expect("0.5% divergence must trip the 1e-3 gate");
+    let (i, j, offset) =
+        check_cross_mcu_desync(&freqs).expect("0.5% divergence must trip the 1e-3 gate");
     assert_eq!(i, 0);
     assert_eq!(j, 1);
     assert!(
@@ -277,11 +285,7 @@ fn cross_mcu_desync_passes_within_threshold() {
 #[test]
 fn cross_mcu_desync_handles_three_or_more_mcus() {
     // First two are tight, third diverges from both.
-    let freqs = [
-        550_000_000.0,
-        550_000_000.0 * 1.0001,
-        550_000_000.0 * 1.005,
-    ];
+    let freqs = [550_000_000.0, 550_000_000.0 * 1.0001, 550_000_000.0 * 1.005];
     let (i, j, _offset) = check_cross_mcu_desync(&freqs)
         .expect("third MCU diverges → at least one pair trips the gate");
     // First failing pair lexicographically — could be (0, 2) or (1, 2),

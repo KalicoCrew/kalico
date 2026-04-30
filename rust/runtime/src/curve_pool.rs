@@ -193,11 +193,7 @@ impl CurvePool {
     /// `current_gen` is bumped. Otherwise the ISR's lookup could observe
     /// `current_gen == new_gen` while the curve memory is still stale,
     /// dereferencing the previous gen's data through the new handle.
-    pub fn try_alloc_and_load(
-        &self,
-        slot_idx: usize,
-        curve: LoadedCurve,
-    ) -> Option<CurveHandle> {
+    pub fn try_alloc_and_load(&self, slot_idx: usize, curve: LoadedCurve) -> Option<CurveHandle> {
         if slot_idx >= CURVE_POOL_N {
             return None;
         }
@@ -504,7 +500,10 @@ mod tests {
     #[test]
     fn out_of_bounds_handle_returns_err() {
         let pool = CurvePool::new();
-        assert!(pool.lookup(CurveHandle::new(CURVE_POOL_N as u16, 1)).is_err());
+        assert!(
+            pool.lookup(CurveHandle::new(CURVE_POOL_N as u16, 1))
+                .is_err()
+        );
         assert!(pool.lookup(CurveHandle::new(u16::MAX, 1)).is_err());
     }
 

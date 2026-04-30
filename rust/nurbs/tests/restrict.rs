@@ -1,5 +1,5 @@
 use nurbs::algebra::restrict_to_domain;
-use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces, BezierPiece};
+use nurbs::bezier::{BezierPiece, bezier_pieces_to_nurbs, extract_bezier_pieces};
 
 #[test]
 fn restrict_single_piece() {

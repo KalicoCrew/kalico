@@ -129,7 +129,11 @@ impl ClockSyncEstimator {
         // arithmetic that follows; we lint-allow them locally rather
         // than introduce checked-cast layering for code on the µs hot
         // path.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            clippy::cast_sign_loss
+        )]
         {
             let delta_cycles = (delta_secs * self.clock_freq_estimate) as i64;
             let base = self.anchor_mcu_clock as i64;
@@ -226,11 +230,7 @@ impl ClockSyncEstimator {
         // construction. Cast saturating-to-u64.
         #[allow(clippy::cast_sign_loss)]
         {
-            self.anchor_mcu_clock = if mean_y < 0.0 {
-                0
-            } else {
-                mean_y as u64
-            };
+            self.anchor_mcu_clock = if mean_y < 0.0 { 0 } else { mean_y as u64 };
         }
 
         // Residual max in seconds → µs. We invert the slope to express
@@ -286,8 +286,7 @@ impl ClockSyncEstimator {
             return false;
         }
         match self.last_sample_age() {
-            Some(age) if age.as_millis() <= u128::from(MAX_SAMPLE_AGE_MS_DEFAULT) => {
-            }
+            Some(age) if age.as_millis() <= u128::from(MAX_SAMPLE_AGE_MS_DEFAULT) => {}
             _ => return false,
         }
         // Plan-decision B: dedicated sample present + recent.

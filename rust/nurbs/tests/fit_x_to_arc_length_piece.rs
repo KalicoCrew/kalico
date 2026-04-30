@@ -28,12 +28,7 @@ fn straight_line_fits_at_low_degree() {
     let table_ref = table.as_view();
     // Fit a 0.5 mm piece in the middle of the line.
     let result = fit_x_to_arc_length_piece::<3>(
-        &xyz,
-        &table_ref,
-        4.0,
-        4.5,
-        /*target_degree=*/ 3,
-        /*max_degree=*/ 10,
+        &xyz, &table_ref, 4.0, 4.5, /*target_degree=*/ 3, /*max_degree=*/ 10,
         /*tolerance_mm=*/ 1e-3,
     );
     assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -151,12 +146,7 @@ fn endpoint_integrity() {
     let s_lo = 1.0;
     let s_hi = 4.0;
     let pieces = fit_x_to_arc_length_piece::<3>(
-        &xyz,
-        &table_ref,
-        s_lo,
-        s_hi,
-        /*target_degree=*/ 4,
-        /*max_degree=*/ 10,
+        &xyz, &table_ref, s_lo, s_hi, /*target_degree=*/ 4, /*max_degree=*/ 10,
         /*tolerance_mm=*/ 1e-9,
     )
     .unwrap();
@@ -191,12 +181,7 @@ fn degenerate_input_returns_err() {
 
     // s_hi <= s_lo: degenerate range.
     let result = fit_x_to_arc_length_piece::<3>(
-        &xyz,
-        &table_ref,
-        5.0,
-        4.0,
-        /*target_degree=*/ 4,
-        /*max_degree=*/ 10,
+        &xyz, &table_ref, 5.0, 4.0, /*target_degree=*/ 4, /*max_degree=*/ 10,
         /*tolerance_mm=*/ 1e-3,
     );
     assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
@@ -220,8 +205,8 @@ fn rejects_s_lo_below_zero() {
     let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
     let table_ref = table.as_view();
     let result = fit_x_to_arc_length_piece::<3>(
-        &xyz, &table_ref, /*s_lo=*/ -1.0, /*s_hi=*/ 4.0,
-        /*target_degree=*/ 4, /*max_degree=*/ 10, /*tolerance_mm=*/ 1e-3,
+        &xyz, &table_ref, /*s_lo=*/ -1.0, /*s_hi=*/ 4.0, /*target_degree=*/ 4,
+        /*max_degree=*/ 10, /*tolerance_mm=*/ 1e-3,
     );
     assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
 }
@@ -233,8 +218,13 @@ fn rejects_s_hi_above_s_max() {
     let table_ref = table.as_view();
     let s_max = table.s_max();
     let result = fit_x_to_arc_length_piece::<3>(
-        &xyz, &table_ref, /*s_lo=*/ 1.0, /*s_hi=*/ s_max + 1.0,
-        /*target_degree=*/ 4, /*max_degree=*/ 10, /*tolerance_mm=*/ 1e-3,
+        &xyz,
+        &table_ref,
+        /*s_lo=*/ 1.0,
+        /*s_hi=*/ s_max + 1.0,
+        /*target_degree=*/ 4,
+        /*max_degree=*/ 10,
+        /*tolerance_mm=*/ 1e-3,
     );
     assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
 }

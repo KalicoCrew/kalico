@@ -243,8 +243,7 @@ impl RuntimeContext {
             // Initialize queue storage and split into producer + consumer.
             let queue_storage_ptr = core::ptr::addr_of_mut!((*rt_ptr).queue_storage);
             queue_storage_ptr.write(UnsafeCell::new(Queue::new()));
-            let queue_ref: &'static mut Queue<Segment, Q_N> =
-                &mut *(*queue_storage_ptr).get();
+            let queue_ref: &'static mut Queue<Segment, Q_N> = &mut *(*queue_storage_ptr).get();
             let (q_producer, q_consumer) = queue_ref.split();
 
             // Initialize trace storage and split.
@@ -300,8 +299,7 @@ mod tests {
     fn shared_state_default_is_idle() {
         let s = SharedState::new();
         assert_eq!(
-            s.runtime_status
-                .load(core::sync::atomic::Ordering::Relaxed),
+            s.runtime_status.load(core::sync::atomic::Ordering::Relaxed),
             crate::engine::RuntimeStatus::Idle as u8
         );
         assert!(!s.stream_open.load(core::sync::atomic::Ordering::Relaxed));
@@ -312,13 +310,11 @@ mod tests {
     fn shared_state_default_widened_now_zero() {
         let s = SharedState::new();
         assert_eq!(
-            s.widened_now_lo
-                .load(core::sync::atomic::Ordering::Relaxed),
+            s.widened_now_lo.load(core::sync::atomic::Ordering::Relaxed),
             0
         );
         assert_eq!(
-            s.widened_now_hi
-                .load(core::sync::atomic::Ordering::Relaxed),
+            s.widened_now_hi.load(core::sync::atomic::Ordering::Relaxed),
             0
         );
         assert_eq!(

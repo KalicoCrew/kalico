@@ -193,9 +193,7 @@ impl Segments<'_> {
                             line_no,
                             head: text,
                         },
-                        ParseErrorKind::G5MissingTangent => {
-                            Recovery::G5MissingTangent { line_no }
-                        }
+                        ParseErrorKind::G5MissingTangent => Recovery::G5MissingTangent { line_no },
                         ParseErrorKind::G5PlaneMismatch => {
                             let active_plane_g_code = text.parse::<u32>().expect(
                                 "G5PlaneMismatch.text must be numeric per reduce-side contract (Task 18 emit format)"
@@ -294,9 +292,7 @@ impl Segments<'_> {
                 // before classification reached this arm; continuation would
                 // silently start subsequent G5s from the rejected endpoint.
                 self.queue
-                    .push_back(Item::Fatal(Fatal::HelicalExtrusionUnsupported {
-                        line_no,
-                    }));
+                    .push_back(Item::Fatal(Fatal::HelicalExtrusionUnsupported { line_no }));
             }
             Err(_) => unreachable!("classify_e_mode return shape is exhaustive"),
         }
@@ -306,7 +302,6 @@ impl Segments<'_> {
         self.prev_g1_feedrate = None;
         self.prev_g1_dir = None;
     }
-
 }
 
 /// Classify a cubic xyz NURBS plus its scalar `e_delta` into an `EMode` plus
@@ -573,5 +568,4 @@ mod tests {
             }))
         ));
     }
-
 }

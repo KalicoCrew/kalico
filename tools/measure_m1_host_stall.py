@@ -67,7 +67,6 @@ segment is 1 ms long; when the queue fills the producer blocks on
 """
 import argparse
 import json
-import os
 import pathlib
 import sys
 import time

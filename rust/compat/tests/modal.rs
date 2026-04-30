@@ -1,3 +1,4 @@
+#![allow(clippy::float_cmp)]
 use compat::modal::{ModalState, Plane};
 
 /// Default construction matches power-on state.
@@ -71,7 +72,7 @@ fn resolve_e_absolute() {
     assert_eq!(result, Some(12.0));
 }
 
-/// M83 (relative E): the parameter is added to the current input_e accumulator.
+/// M83 (relative E): the parameter is added to the current `input_e` accumulator.
 #[test]
 fn resolve_e_relative() {
     let mut s = ModalState::new();
@@ -95,7 +96,7 @@ fn resolve_e_absent() {
     assert_eq!(s.resolve_input_e(None), None);
 }
 
-/// Endpoint displaced in XY from current position → has_xy_motion returns true.
+/// Endpoint displaced in XY from current position → `has_xy_motion` returns true.
 #[test]
 fn has_xy_motion_true() {
     let mut s = ModalState::new();
@@ -105,7 +106,7 @@ fn has_xy_motion_true() {
     assert!(s.has_xy_motion(&[1.0, 2.01, 3.0]));
 }
 
-/// Endpoint only differs in Z (or is identical) → has_xy_motion returns false.
+/// Endpoint only differs in Z (or is identical) → `has_xy_motion` returns false.
 #[test]
 fn has_xy_motion_false() {
     let mut s = ModalState::new();

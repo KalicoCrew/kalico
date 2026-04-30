@@ -6,10 +6,10 @@ mod mock_transport;
 use std::time::Duration;
 
 use kalico_host_rt::credit::CreditCounter;
-use kalico_host_rt::producer::{push_segment, ProducerError};
+use kalico_host_rt::producer::{ProducerError, push_segment};
 use kalico_host_rt::transport::{MessageValue, TransportError};
 
-use mock_transport::{mp_with, MockTransport};
+use mock_transport::{MockTransport, mp_with};
 
 #[test]
 fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
@@ -24,8 +24,7 @@ fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
         ]),
     );
 
-    let info = push_segment(&mut io, &credit, 42, 0xCAFE_BABE, 1000, 2000, 0)
-        .expect("happy push");
+    let info = push_segment(&mut io, &credit, 42, 0xCAFE_BABE, 1000, 2000, 0).expect("happy push");
     assert_eq!(info.accepted_segment_id, 42);
     assert_eq!(info.credit_epoch, 7);
     assert_eq!(credit.available(), 3, "credit decremented exactly once");
@@ -36,14 +35,18 @@ fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
     // `t_start_lo`.
     assert!(last.contains("id=42"));
     assert!(last.contains("curve_handle=3405691582"));
-    assert!(!last.contains("curve_handle_packed="),
+    assert!(
+        !last.contains("curve_handle_packed="),
         "must not use the legacy `_packed` suffix; firmware DECL_COMMAND \
-         is `curve_handle=%u`");
+         is `curve_handle=%u`"
+    );
     assert!(last.contains("t_start_lo=1000"));
     assert!(last.contains("t_end_lo=2000"));
     assert!(last.contains("kinematics=0"));
-    assert!(!last.contains("kin=0"),
-        "must not use legacy `kin=`; firmware is `kinematics=%c`");
+    assert!(
+        !last.contains("kin=0"),
+        "must not use legacy `kin=`; firmware is `kinematics=%c`"
+    );
     // Field ordering — `t_start_hi` must come before `t_start_lo`.
     let hi_pos = last.find("t_start_hi=").expect("t_start_hi missing");
     let lo_pos = last.find("t_start_lo=").expect("t_start_lo missing");
@@ -118,16 +121,7 @@ fn high_64bit_t_start_t_end_split_lo_hi() {
         ]),
     );
     // 2^32 + 5 → lo=5, hi=1
-    let _ = push_segment(
-        &mut io,
-        &credit,
-        0,
-        0,
-        0x1_0000_0005,
-        0x1_0000_0006,
-        0,
-    )
-    .unwrap();
+    let _ = push_segment(&mut io, &credit, 0, 0, 0x1_0000_0005, 0x1_0000_0006, 0).unwrap();
     let last = io.last_sent().unwrap();
     assert!(
         last.contains("t_start_lo=5") && last.contains("t_start_hi=1"),

@@ -177,28 +177,40 @@ fn closed_loop_chord_zero_splits_by_arc_length() {
 fn invalid_cap_rejects_zero() {
     let seg = straight_cubic(50.0);
     let err = split_segment_to_cap(&seg, 0.0).unwrap_err();
-    assert!(matches!(err, geometry::SplitError::InvalidCap { .. }), "got {err:?}");
+    assert!(
+        matches!(err, geometry::SplitError::InvalidCap { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
 fn invalid_cap_rejects_negative() {
     let seg = straight_cubic(50.0);
     let err = split_segment_to_cap(&seg, -1.0).unwrap_err();
-    assert!(matches!(err, geometry::SplitError::InvalidCap { .. }), "got {err:?}");
+    assert!(
+        matches!(err, geometry::SplitError::InvalidCap { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
 fn invalid_cap_rejects_nan() {
     let seg = straight_cubic(50.0);
     let err = split_segment_to_cap(&seg, f64::NAN).unwrap_err();
-    assert!(matches!(err, geometry::SplitError::InvalidCap { .. }), "got {err:?}");
+    assert!(
+        matches!(err, geometry::SplitError::InvalidCap { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
 fn invalid_cap_rejects_infinity() {
     let seg = straight_cubic(50.0);
     let err = split_segment_to_cap(&seg, f64::INFINITY).unwrap_err();
-    assert!(matches!(err, geometry::SplitError::InvalidCap { .. }), "got {err:?}");
+    assert!(
+        matches!(err, geometry::SplitError::InvalidCap { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -211,27 +223,32 @@ fn rejects_independent_with_non_trivial_xyz() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [0.0, 0.0, 10.0], [0.0, 0.0, 20.0], [0.0, 0.0, 30.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [0.0, 0.0, 20.0],
+            [0.0, 0.0, 30.0],
+        ],
         None,
     )
     .unwrap();
-    let e_curve = ScalarNurbs::<f64>::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![0.0, 5.0],
-        None,
-    )
-    .unwrap();
+    let e_curve =
+        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 5.0], None).unwrap();
     let seg = CubicSegment::try_new(
         xyz,
         EMode::Independent,
         0.0,
         Some(e_curve),
         100.0,
-        SourceRange { start_line: 1, end_line: 1 },
+        SourceRange {
+            start_line: 1,
+            end_line: 1,
+        },
         None,
     )
-    .expect("CubicSegment::try_new accepts Independent + xyz (no per-segment invariant prevents it)");
+    .expect(
+        "CubicSegment::try_new accepts Independent + xyz (no per-segment invariant prevents it)",
+    );
 
     let err = split_segment_to_cap(&seg, 12.5).unwrap_err();
     assert!(

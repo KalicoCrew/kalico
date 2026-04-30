@@ -46,10 +46,7 @@ pub struct SOfTPieces {
 /// Grid intervals where both endpoint velocities are below `NEAR_ZERO_V` are
 /// flagged as near-zero; their duration is `Ds / NEAR_ZERO_V` and the piece is
 /// a constant `s_k`.
-pub fn build_s_of_t_pieces(
-    profile: &temporal::TopProfile,
-    t_global_offset: f64,
-) -> SOfTPieces {
+pub fn build_s_of_t_pieces(profile: &temporal::TopProfile, t_global_offset: f64) -> SOfTPieces {
     let n = profile.samples.len();
     assert!(n >= 2, "TopProfile must have at least 2 samples");
 
@@ -201,38 +198,32 @@ pub fn compose_segment(
             // We need to adjust the s(t) piece so its evaluated endpoints match
             // the fit's s-domain exactly (s_lo_safe, s_hi_clamped), since the fit
             // was performed on the clamped range.
-            let s_piece_adjusted = if (s_lo_safe - s_lo).abs() > 1e-15
-                || (s_hi_clamped - s_hi).abs() > 1e-15
-            {
-                // Rebuild with clamped endpoints. The quadratic form is the same
-                // but we adjust the constant and linear terms to match.
-                // s_adj(t) maps [t_start, t_end] to [s_lo_safe, s_hi_clamped].
-                // We keep the same polynomial shape but adjust the constant term.
-                let mut adj = s_piece.clone();
-                adj.coeffs[0] = s_lo_safe;
-                // Recompute the quadratic coefficient so s_adj(t_end) = s_hi_clamped.
-                let dt = adj.u_end - adj.u_start;
-                if dt > 1e-15 && adj.coeffs.len() >= 3 {
-                    // s_adj(t_end) = s_lo_safe + v_k*dt + (a_k/2)*dt^2 should = s_hi_clamped
-                    // So (a_k/2) = (s_hi_clamped - s_lo_safe - v_k*dt) / dt^2
-                    let v_k = adj.coeffs[1];
-                    adj.coeffs[2] = (s_hi_clamped - s_lo_safe - v_k * dt) / (dt * dt);
-                }
-                adj
-            } else {
-                s_piece.clone()
-            };
+            let s_piece_adjusted =
+                if (s_lo_safe - s_lo).abs() > 1e-15 || (s_hi_clamped - s_hi).abs() > 1e-15 {
+                    // Rebuild with clamped endpoints. The quadratic form is the same
+                    // but we adjust the constant and linear terms to match.
+                    // s_adj(t) maps [t_start, t_end] to [s_lo_safe, s_hi_clamped].
+                    // We keep the same polynomial shape but adjust the constant term.
+                    let mut adj = s_piece.clone();
+                    adj.coeffs[0] = s_lo_safe;
+                    // Recompute the quadratic coefficient so s_adj(t_end) = s_hi_clamped.
+                    let dt = adj.u_end - adj.u_start;
+                    if dt > 1e-15 && adj.coeffs.len() >= 3 {
+                        // s_adj(t_end) = s_lo_safe + v_k*dt + (a_k/2)*dt^2 should = s_hi_clamped
+                        // So (a_k/2) = (s_hi_clamped - s_lo_safe - v_k*dt) / dt^2
+                        let v_k = adj.coeffs[1];
+                        adj.coeffs[2] = (s_hi_clamped - s_lo_safe - v_k * dt) / (dt * dt);
+                    }
+                    adj
+                } else {
+                    s_piece.clone()
+                };
 
             let outer_refs: [&BezierPiece<f64>; 3] = [&x_of_s[0], &x_of_s[1], &x_of_s[2]];
 
-            let composed = nurbs::algebra::compose_vector_piece::<3>(
-                &outer_refs,
-                &s_piece_adjusted,
-            )
-            .map_err(|detail| crate::ShapeError::Algebra {
-                index: k,
-                detail,
-            })?;
+            let composed =
+                nurbs::algebra::compose_vector_piece::<3>(&outer_refs, &s_piece_adjusted)
+                    .map_err(|detail| crate::ShapeError::Algebra { index: k, detail })?;
 
             result.push(composed);
         }
@@ -246,7 +237,7 @@ mod tests {
     use super::*;
     use temporal::{BindingConstraint, GridSample, GridScheme, SolveStatus, TopProfile};
 
-    /// Build a synthetic TopProfile with uniform velocity and uniform grid.
+    /// Build a synthetic `TopProfile` with uniform velocity and uniform grid.
     fn uniform_profile(n: usize, total_length: f64, velocity: f64) -> TopProfile {
         let mut samples = Vec::with_capacity(n);
         let b = velocity * velocity;
@@ -405,13 +396,16 @@ mod tests {
         let offset = 5.0;
         let s_pieces = build_s_of_t_pieces(&profile, offset);
 
-        assert_eq!(s_pieces.t_start, offset);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(s_pieces.t_start, offset);
+            assert_eq!(s_pieces.pieces[0].u_start, offset);
+        }
         assert!(
             (s_pieces.t_end - (offset + 10.0 / 100.0)).abs() < 1e-12,
             "t_end = {}",
             s_pieces.t_end
         );
-        assert_eq!(s_pieces.pieces[0].u_start, offset);
     }
 
     #[test]
@@ -467,12 +461,8 @@ mod tests {
 
         // Y and Z should remain ~0 throughout.
         for pieces_k in &composed {
-            let y_mid = pieces_k[1].evaluate(
-                (pieces_k[1].u_start + pieces_k[1].u_end) / 2.0,
-            );
-            let z_mid = pieces_k[2].evaluate(
-                (pieces_k[2].u_start + pieces_k[2].u_end) / 2.0,
-            );
+            let y_mid = pieces_k[1].evaluate((pieces_k[1].u_start + pieces_k[1].u_end) / 2.0);
+            let z_mid = pieces_k[2].evaluate((pieces_k[2].u_start + pieces_k[2].u_end) / 2.0);
             assert!(y_mid.abs() < 1e-6, "y should be ~0, got {y_mid}");
             assert!(z_mid.abs() < 1e-6, "z should be ~0, got {z_mid}");
         }
@@ -517,14 +507,8 @@ mod tests {
         let y_end = last[1].evaluate(last[1].u_end);
         let z_end = last[2].evaluate(last[2].u_end);
 
-        assert!(
-            (x_end - 30.0).abs() < 0.5,
-            "x_end = {x_end}, expected ~30"
-        );
-        assert!(
-            (y_end - 40.0).abs() < 0.5,
-            "y_end = {y_end}, expected ~40"
-        );
+        assert!((x_end - 30.0).abs() < 0.5, "x_end = {x_end}, expected ~30");
+        assert!((y_end - 40.0).abs() < 0.5, "y_end = {y_end}, expected ~40");
         assert!(z_end.abs() < 1e-6, "z_end = {z_end}, expected ~0");
     }
 }

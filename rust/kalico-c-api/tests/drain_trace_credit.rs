@@ -11,7 +11,12 @@
 //! so the host's credit counter drains to zero and flow control
 //! deadlocks.
 
-#![allow(unsafe_code, non_upper_case_globals, clippy::borrow_as_ptr, clippy::ref_as_ptr)]
+#![allow(
+    unsafe_code,
+    non_upper_case_globals,
+    clippy::borrow_as_ptr,
+    clippy::ref_as_ptr
+)]
 
 use runtime::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
 
@@ -68,8 +73,7 @@ fn drain_trace_reports_segment_end_to_caller() {
     };
     unsafe {
         let ctx = rt.cast::<RuntimeContext>();
-        let isr_ptr: *mut IsrState =
-            UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+        let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
         let isr: &mut IsrState = &mut *isr_ptr;
         isr.trace_producer
             .enqueue(sample)
@@ -125,12 +129,7 @@ fn drain_trace_reports_segment_end_to_caller() {
 
     // Null out-param is permitted (caller may not care about the bit).
     let n3 = unsafe {
-        kalico_c_api::kalico_runtime_drain_trace(
-            rt,
-            out_buf.as_mut_ptr(),
-            4,
-            core::ptr::null_mut(),
-        )
+        kalico_c_api::kalico_runtime_drain_trace(rt, out_buf.as_mut_ptr(), 4, core::ptr::null_mut())
     };
     assert_eq!(n3, 0);
 }

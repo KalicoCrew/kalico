@@ -28,10 +28,10 @@ fn make_straight_line(from: [f64; 3], to: [f64; 3]) -> VectorNurbs<f64, 3> {
 /// Default dynamic limits for test segments.
 fn default_limits() -> temporal::Limits {
     temporal::Limits::new(
-        [500.0; 3],       // v_max
-        [5_000.0; 3],     // a_max
-        [100_000.0; 3],   // j_max
-        2_500.0,          // a_centripetal_max
+        [500.0; 3],     // v_max
+        [5_000.0; 3],   // a_max
+        [100_000.0; 3], // j_max
+        2_500.0,        // a_centripetal_max
     )
 }
 
@@ -89,8 +89,16 @@ fn shape_batch_straight_line() {
 
     let seg = &output.segments[0];
     // Positive duration.
-    assert!(seg.t_end > seg.t_start, "t_end={} must be > t_start={}", seg.t_end, seg.t_start);
-    assert_eq!(seg.t_start, 0.0);
+    assert!(
+        seg.t_end > seg.t_start,
+        "t_end={} must be > t_start={}",
+        seg.t_end,
+        seg.t_start
+    );
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(seg.t_start, 0.0);
+    }
     // EMode preserved.
     assert_eq!(seg.e_mode, EMode::CoupledToXy);
     // Extrusion ratio forwarded.
@@ -199,13 +207,8 @@ fn shape_batch_with_retraction() {
     let curve2 = make_straight_line([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
 
     // Retraction E NURBS: 5mm retraction from 10.0 to 5.0.
-    let e_retract = ScalarNurbs::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![10.0, 5.0],
-        None,
-    )
-    .unwrap();
+    let e_retract =
+        ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0], None).unwrap();
 
     let segments = [
         ShapeSegmentInput {
@@ -378,7 +381,6 @@ fn shape_batch_empty_input() {
     let result = trajectory::shape_batch(&input);
     assert!(
         matches!(result, Err(ShapeError::EmptySegments)),
-        "expected ShapeError::EmptySegments, got: {:?}",
-        result
+        "expected ShapeError::EmptySegments, got: {result:?}"
     );
 }

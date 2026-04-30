@@ -239,8 +239,7 @@ pub mod exports {
         // push so the state machine reflects priming-buffer accumulation.
         match fg.stream_state_machine {
             runtime::stream::FgStreamState::StreamOpening => {
-                fg.stream_state_machine =
-                    runtime::stream::FgStreamState::StreamOpenPriming;
+                fg.stream_state_machine = runtime::stream::FgStreamState::StreamOpenPriming;
                 if fg.first_priming_segment_t_start.is_none() {
                     fg.first_priming_segment_t_start = Some(t_start);
                 }
@@ -262,9 +261,7 @@ pub mod exports {
         // for both the periodic kalico_status frame and Gate-B observers.
         // Release pairs with foreground/host readers' Acquire on the same
         // atomics.
-        shared
-            .accepted_segment_id
-            .store(id, Ordering::Release);
+        shared.accepted_segment_id.store(id, Ordering::Release);
         shared
             .accepted_segment_id_seen
             .store(true, Ordering::Release);
@@ -353,10 +350,8 @@ pub mod exports {
             let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
             // SAFETY: caller must ensure each pointer is valid for `n_*`
             // reads of f32 and that the buffers do not alias the curve pool.
-            let cps_slice = core::slice::from_raw_parts(
-                control_points_flat,
-                n_cp as usize * MAX_DIM,
-            );
+            let cps_slice =
+                core::slice::from_raw_parts(control_points_flat, n_cp as usize * MAX_DIM);
             let knots_slice = core::slice::from_raw_parts(knots, n_knots as usize);
             let weights_slice = core::slice::from_raw_parts(weights, n_weights as usize);
             match (*pool_ptr).validate_and_load(
@@ -821,8 +816,7 @@ pub mod exports {
                 },
                 limit as usize,
             );
-            let overflow_latched =
-                runtime::reclaim::check_trace_overflow_and_fault(shared);
+            let overflow_latched = runtime::reclaim::check_trace_overflow_and_fault(shared);
             let mut packed: u32 = (drained as u32) & 0xFFFF;
             if overflow_latched {
                 packed |= 1 << 16;
@@ -906,8 +900,7 @@ pub mod exports {
         // SAFETY: half-split projection per the discipline contract.
         unsafe {
             project_fg(rt, |fg, shared| {
-                let (r, armed_t) =
-                    runtime::stream::arm(fg, shared, t_start_t0, arm_lead_cycles);
+                let (r, armed_t) = runtime::stream::arm(fg, shared, t_start_t0, arm_lead_cycles);
                 if !out_armed_t_start.is_null() {
                     *out_armed_t_start = armed_t;
                 }
@@ -930,7 +923,11 @@ pub mod exports {
             return KALICO_ERR_NOT_INIT;
         }
         // SAFETY: half-split projection per the discipline contract.
-        unsafe { project_fg(rt, |fg, shared| runtime::stream::terminal(fg, shared, segment_id)) }
+        unsafe {
+            project_fg(rt, |fg, shared| {
+                runtime::stream::terminal(fg, shared, segment_id)
+            })
+        }
     }
 
     /// `kalico_stream_flush` — `force_idle` handshake (§8.5).
@@ -1031,12 +1028,9 @@ pub mod exports {
             let mut cps = [0.0_f32; FIXTURE_CPS_MAX];
             let mut knots = [0.0_f32; FIXTURE_KNOTS_MAX];
             let mut weights = [0.0_f32; FIXTURE_WEIGHTS_MAX];
-            let Some((degree, n_cp, n_knots, n_weights)) = runtime::sim_fixtures::lookup(
-                fixture_id,
-                &mut cps,
-                &mut knots,
-                &mut weights,
-            ) else {
+            let Some((degree, n_cp, n_knots, n_weights)) =
+                runtime::sim_fixtures::lookup(fixture_id, &mut cps, &mut knots, &mut weights)
+            else {
                 return KALICO_ERR_INVALID_CURVE;
             };
             match pool.load_unchecked(

@@ -12,9 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use kalico_host_rt::transport::{
-    MessageParams, MessageValue, Transport, TransportError,
-};
+use kalico_host_rt::transport::{MessageParams, MessageValue, Transport, TransportError};
 
 /// A test-only callback the mock invokes at `wait_for_response` time
 /// (rather than at queueing time) so a response whose contents depend
@@ -25,8 +23,7 @@ use kalico_host_rt::transport::{
 /// dedicated-sync test against wall-clock jitter between fixture
 /// setup and the call into `arm_all_mcus`.
 #[allow(clippy::type_complexity)]
-pub type DynamicResponder =
-    Box<dyn FnMut() -> MessageParams + Send>;
+pub type DynamicResponder = Box<dyn FnMut() -> MessageParams + Send>;
 
 #[derive(Default)]
 pub struct MockTransport {
@@ -73,11 +70,7 @@ impl MockTransport {
     /// remains installed across calls (so multiple matches reuse the
     /// same responder).
     #[allow(dead_code)]
-    pub fn install_dynamic_responder(
-        &mut self,
-        name: &str,
-        responder: DynamicResponder,
-    ) {
+    pub fn install_dynamic_responder(&mut self, name: &str, responder: DynamicResponder) {
         self.dynamic_responders.insert(name.into(), responder);
     }
 

@@ -44,8 +44,7 @@ const CLOCK_FREQ: u32 = 520_000_000;
 fn injected_iter_start_trips_boundary_loop_fault() {
     let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
     let (mut q_producer, mut q_consumer) = queue.split();
-    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     let (mut t_producer, mut t_consumer) = trace.split();
 
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
@@ -116,8 +115,7 @@ fn no_injection_default_path_does_not_fault_on_single_carry() {
     // into 1 next segment) is well under MAX_BOUNDARY_ITERS and must not fault.
     let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
     let (mut q_producer, mut q_consumer) = queue.split();
-    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     let (mut t_producer, _t_consumer) = trace.split();
 
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);

@@ -137,7 +137,9 @@ pub(crate) enum ParseErrorKind {
     /// G5-only live pipeline. Caller (Step-13 compat layer) is expected
     /// to normalize them to G5 offline before feeding the live pipeline.
     /// `kind` is `"G0/G1"` or `"G2/G3"`.
-    UnsupportedGcode { kind: &'static str },
+    UnsupportedGcode {
+        kind: &'static str,
+    },
 }
 
 /// Active machining plane per RS274NGC §3.5.1. Tracked across the gcode

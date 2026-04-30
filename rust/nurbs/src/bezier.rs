@@ -144,7 +144,11 @@ impl BezierPiece<f64> {
 
         // Strip trailing near-zero coefficients to find effective degree.
         let coeffs = self.effective_coeffs();
-        let deg = if coeffs.is_empty() { 0 } else { coeffs.len() - 1 };
+        let deg = if coeffs.is_empty() {
+            0
+        } else {
+            coeffs.len() - 1
+        };
 
         if deg == 0 {
             // Constant polynomial — no roots.
@@ -170,7 +174,10 @@ impl BezierPiece<f64> {
                 // Clamp to exact domain boundaries.
                 let u_clamped = u.clamp(self.u_start, self.u_end);
                 // Deduplicate: skip if we already have a root very close.
-                if !result.iter().any(|&existing: &f64| (existing - u_clamped).abs() < DOMAIN_TOL) {
+                if !result
+                    .iter()
+                    .any(|&existing: &f64| (existing - u_clamped).abs() < DOMAIN_TOL)
+                {
                     result.push(u_clamped);
                 }
             }
@@ -181,7 +188,9 @@ impl BezierPiece<f64> {
             let u = boundary_x + self.u_start;
             let val = self.evaluate(u);
             if val.abs() < DOMAIN_TOL * (1.0 + self.coeff_scale())
-                && !result.iter().any(|&existing: &f64| (existing - u).abs() < DOMAIN_TOL)
+                && !result
+                    .iter()
+                    .any(|&existing: &f64| (existing - u).abs() < DOMAIN_TOL)
             {
                 result.push(u);
             }
@@ -231,8 +240,12 @@ impl BezierPiece<f64> {
         let x1 = q / a;
         let x2 = c / q;
         let mut roots = Vec::new();
-        if x1.is_finite() { roots.push(x1); }
-        if x2.is_finite() { roots.push(x2); }
+        if x1.is_finite() {
+            roots.push(x1);
+        }
+        if x2.is_finite() {
+            roots.push(x2);
+        }
         roots
     }
 
@@ -354,7 +367,11 @@ fn wilkinson_shift(mat: &[f64], n: usize, p: usize) -> f64 {
         let e1 = (trace + sqrt_disc) / 2.0;
         let e2 = (trace - sqrt_disc) / 2.0;
         // Return the one closer to d = H[p-1][p-1].
-        if (e1 - d).abs() < (e2 - d).abs() { e1 } else { e2 }
+        if (e1 - d).abs() < (e2 - d).abs() {
+            e1
+        } else {
+            e2
+        }
     } else {
         // Complex eigenvalues — use the real part as shift.
         trace / 2.0

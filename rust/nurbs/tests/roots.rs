@@ -103,20 +103,13 @@ fn degree_6_roots_evaluate_near_zero() {
     };
     let roots = p.real_roots_in_domain();
     // Should find 5 roots, all evaluating near zero
-    assert!(
-        roots.len() >= 5,
-        "found {} roots, expected 5",
-        roots.len()
-    );
+    assert!(roots.len() >= 5, "found {} roots, expected 5", roots.len());
     for r in &roots {
         assert!(
             p.evaluate(*r).abs() < 1e-6,
             "root {r} evaluates to {}",
             p.evaluate(*r)
         );
-        assert!(
-            *r >= -1e-10 && *r <= 1.0 + 1e-10,
-            "root {r} outside domain"
-        );
+        assert!(*r >= -1e-10 && *r <= 1.0 + 1e-10, "root {r} outside domain");
     }
 }

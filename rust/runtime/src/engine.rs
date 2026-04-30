@@ -273,9 +273,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // Round-2 B14: ISR publishes the freshly activated segment id
                 // so foreground status / Gate-B observers see it. Release so
                 // the runtime_status update above is paired.
-                shared
-                    .current_segment_id
-                    .store(seg.id, Ordering::Release);
+                shared.current_segment_id.store(seg.id, Ordering::Release);
                 // Fall through with the freshly dequeued segment.
                 return self.tick_with_current(seg, now, queue, pool, trace, shared);
             }

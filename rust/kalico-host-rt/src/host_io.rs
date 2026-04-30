@@ -139,9 +139,11 @@ impl KalicoHostIo {
         let port = serialport::new(path, baud)
             .timeout(Duration::from_millis(100))
             .open()
-            .map_err(|e| TransportError::Io(std::io::Error::other(
-                format!("serialport::open({path}@{baud}): {e}"),
-            )))?;
+            .map_err(|e| {
+                TransportError::Io(std::io::Error::other(format!(
+                    "serialport::open({path}@{baud}): {e}"
+                )))
+            })?;
         let _ = path;
         let mut io = Self {
             port,
@@ -192,14 +194,12 @@ impl KalicoHostIo {
             // doesn't have a real dictionary yet.
             self.send_identify_request(&cmd)?;
 
-            let attempt_deadline =
-                deadline.min(Instant::now() + Duration::from_millis(150));
+            let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(150));
             let resp = self
                 .wait_for_identify_response(attempt_deadline)?
                 .ok_or_else(|| {
                     TransportError::Parse(
-                        "identify timed out (Step-6 minimal shim, no NAK resync)"
-                            .into(),
+                        "identify timed out (Step-6 minimal shim, no NAK resync)".into(),
                     )
                 })?;
 
@@ -238,13 +238,13 @@ impl KalicoHostIo {
         let mut count: u32 = 0;
         for kv in cmd.split_whitespace().skip(1) {
             if let Some(v) = kv.strip_prefix("offset=") {
-                offset = v.parse().map_err(|_| {
-                    TransportError::Parse(format!("bad identify cmd: {cmd}"))
-                })?;
+                offset = v
+                    .parse()
+                    .map_err(|_| TransportError::Parse(format!("bad identify cmd: {cmd}")))?;
             } else if let Some(v) = kv.strip_prefix("count=") {
-                count = v.parse().map_err(|_| {
-                    TransportError::Parse(format!("bad identify cmd: {cmd}"))
-                })?;
+                count = v
+                    .parse()
+                    .map_err(|_| TransportError::Parse(format!("bad identify cmd: {cmd}")))?;
             }
         }
         encode_vlq(&mut payload, i64::from(offset));
@@ -273,9 +273,7 @@ impl KalicoHostIo {
                         if packet.len() >= 2 {
                             self.seq = packet[1] & MESSAGE_SEQ_MASK;
                         }
-                        if let Some(params) =
-                            decode_identify_response(&packet)
-                        {
+                        if let Some(params) = decode_identify_response(&packet) {
                             return Ok(Some(params));
                         }
                         // Pre-identify: drop any other (NAK / unparseable)
@@ -315,9 +313,7 @@ impl KalicoHostIo {
         frame.push((crc >> 8) as u8);
         frame.push((crc & 0xFF) as u8);
         frame.push(MESSAGE_SYNC);
-        self.port
-            .write_all(&frame)
-            .map_err(TransportError::Io)?;
+        self.port.write_all(&frame).map_err(TransportError::Io)?;
         self.port.flush().map_err(TransportError::Io)?;
         Ok(())
     }
@@ -360,12 +356,11 @@ impl Transport for KalicoHostIo {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(idx) = self.pending.iter().position(|(n, _)| n == name) {
-                return Ok(
-                    self.pending
-                        .remove(idx)
-                        .expect("position guarantees Some")
-                        .1,
-                );
+                return Ok(self
+                    .pending
+                    .remove(idx)
+                    .expect("position guarantees Some")
+                    .1);
             }
             let now = Instant::now();
             if now >= deadline {
@@ -421,9 +416,7 @@ fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
         // `seq_byte & !MESSAGE_SEQ_MASK` isolates the dest-nibble and
         // must compare equal to MESSAGE_DEST. Anything else is a
         // resync indicator.
-        if (seq_byte & !MESSAGE_SEQ_MASK) != MESSAGE_DEST
-            || buf[msglen - 1] != MESSAGE_SYNC
-        {
+        if (seq_byte & !MESSAGE_SEQ_MASK) != MESSAGE_DEST || buf[msglen - 1] != MESSAGE_SYNC {
             buf.remove(0);
             continue;
         }

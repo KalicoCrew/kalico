@@ -32,13 +32,13 @@ pub const TRACE_FLAG_HOLD_SAMPLE: u8 = 1 << 4;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TraceSample {
-    pub tick: u64,                  // offset 0, 8 bytes (struct alignment 8)
-    pub motor_a: f32,               // offset 8
-    pub motor_b: f32,               // offset 12
-    pub motor_e: f32,               // offset 16
-    pub segment_id: u32,            // offset 20
-    pub curve_handle: CurveHandle,  // offset 24, 4 bytes (slot+gen)
-    pub flags: u8,                  // offset 28
+    pub tick: u64,                 // offset 0, 8 bytes (struct alignment 8)
+    pub motor_a: f32,              // offset 8
+    pub motor_b: f32,              // offset 12
+    pub motor_e: f32,              // offset 16
+    pub segment_id: u32,           // offset 20
+    pub curve_handle: CurveHandle, // offset 24, 4 bytes (slot+gen)
+    pub flags: u8,                 // offset 28
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 3], // offsets 29..31 — explicit padding to 32-byte total
 }

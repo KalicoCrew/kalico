@@ -289,15 +289,20 @@ fn hermite_fit_degree6_input_reduces_to_degree4() {
             // Need to shift to basis at u0. Use Taylor expansion approach.
             // f(u) = f(u0) + f'(u0)*(u-u0) + f''(u0)/2!*(u-u0)^2 + ...
             let x = u0;
-            let c0 = x + 0.1 * x.powi(2) + 0.01 * x.powi(3) + 0.001 * x.powi(4)
+            let c0 = x
+                + 0.1 * x.powi(2)
+                + 0.01 * x.powi(3)
+                + 0.001 * x.powi(4)
                 + 0.0001 * x.powi(5)
                 + 0.00001 * x.powi(6);
-            let c1 = 1.0 + 0.2 * x + 0.03 * x.powi(2) + 0.004 * x.powi(3)
+            let c1 = 1.0
+                + 0.2 * x
+                + 0.03 * x.powi(2)
+                + 0.004 * x.powi(3)
                 + 0.0005 * x.powi(4)
                 + 0.00006 * x.powi(5);
-            let c2 = (0.2 + 0.06 * x + 0.012 * x.powi(2) + 0.002 * x.powi(3)
-                + 0.0003 * x.powi(4))
-                / 1.0; // f''(u0)/2!
+            let c2 =
+                (0.2 + 0.06 * x + 0.012 * x.powi(2) + 0.002 * x.powi(3) + 0.0003 * x.powi(4)) / 1.0; // f''(u0)/2!
             let c3 = (0.06 + 0.024 * x + 0.006 * x.powi(2) + 0.0012 * x.powi(3)) / 1.0; // f'''(u0)/3!... wait
             // Actually let's just use the absolute monomial and convert.
             // Absolute: 0 + 1*u + 0.1*u^2 + 0.01*u^3 + 0.001*u^4 + 0.0001*u^5 + 0.00001*u^6
@@ -325,7 +330,11 @@ fn hermite_fit_degree6_input_reduces_to_degree4() {
 
     // Output pieces should be degree 4
     for fitted in &result[0] {
-        assert_eq!(fitted.coeffs.len(), 5, "expected degree-4 output (5 coeffs)");
+        assert_eq!(
+            fitted.coeffs.len(),
+            5,
+            "expected degree-4 output (5 coeffs)"
+        );
     }
 
     // Should merge at least some pieces (the polynomial is gentle)

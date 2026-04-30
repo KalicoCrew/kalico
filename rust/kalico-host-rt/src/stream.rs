@@ -108,15 +108,10 @@ pub fn arm_all_mcus<T: Transport>(
         // back-trace request_id values; the MCU echoes them. We send
         // zero here because the estimator independently records
         // `host_send` and `host_recv` instants.
-        io.send(
-            "kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0",
-        )
-        .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
+        io.send("kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0")
+            .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let resp = io
-            .wait_for_response(
-                "kalico_clock_sync_response",
-                CLOCK_SYNC_REQUEST_TIMEOUT,
-            )
+            .wait_for_response("kalico_clock_sync_response", CLOCK_SYNC_REQUEST_TIMEOUT)
             .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let host_recv = Instant::now();
         let mcu_clock = (u64::from(resp.get_u32("mcu_clock_hi")) << 32)
@@ -127,7 +122,7 @@ pub fn arm_all_mcus<T: Transport>(
             return Err(fail(ArmError::QualityGate, &armed_indices));
         }
         let _ = idx; // index is the natural enumerate counter; unused
-                     // pre-arm because nothing is armed yet.
+        // pre-arm because nothing is armed yet.
     }
 
     // Spec §6.3 + §12.4 (GAP-1 fix): cross-MCU drift sanity check
@@ -135,8 +130,10 @@ pub fn arm_all_mcus<T: Transport>(
     // |fA / fB - 1| > 1e-3 — this is `KALICO_FAULT_CROSS_MCU_DESYNC`.
     // Done after every estimator has a fresh dedicated sample so the
     // freq estimates are current.
-    let freqs: Vec<f64> =
-        mcus.iter().map(|(_, est)| est.clock_freq_estimate).collect();
+    let freqs: Vec<f64> = mcus
+        .iter()
+        .map(|(_, est)| est.clock_freq_estimate)
+        .collect();
     if let Some((i, j, ratio_offset)) = check_cross_mcu_desync(&freqs) {
         return Err(fail(
             ArmError::CrossMcuDesync {
@@ -183,8 +180,7 @@ pub fn arm_all_mcus<T: Transport>(
         let Some(result) = resp.try_get_i32("result") else {
             return Err(fail(
                 ArmError::Transport(TransportError::Parse(
-                    "kalico_stream_arm_response missing 'result' field"
-                        .to_string(),
+                    "kalico_stream_arm_response missing 'result' field".to_string(),
                 )),
                 &armed_indices,
             ));

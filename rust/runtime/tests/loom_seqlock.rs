@@ -70,8 +70,7 @@ fn loom_seqlock_writer_reader() {
         // mix-and-match (e.g. CAFEBABE × 0) would violate the seqlock
         // invariant and surface the bug.
         if let Some((l, h)) = observation {
-            let coherent =
-                (l, h) == (0, 0) || (l, h) == (0xCAFE_BABE, 0xDEAD_BEEF);
+            let coherent = (l, h) == (0, 0) || (l, h) == (0xCAFE_BABE, 0xDEAD_BEEF);
             assert!(coherent, "torn read: lo={l:#x} hi={h:#x}");
         }
         // observation == None is also fine — it means the reader bailed

@@ -14,7 +14,7 @@ use crate::arc::{self, ArcParams};
 use crate::collinear::to_collinear_g5;
 use crate::corner::{detect_corners, split_at_corners};
 use crate::degree_elev::elevate_g51_to_g5;
-use crate::emit::{write_preamble, G5Line};
+use crate::emit::{G5Line, write_preamble};
 use crate::fitter::fit_subrun;
 use crate::g5_canon::canonicalize_g5;
 use crate::modal::{ModalState, Plane};
@@ -125,7 +125,15 @@ fn dispatch_token(
             minor,
             params,
             line_no,
-        } => dispatch_command(ctx, *letter, *major, *minor, params, *line_no, (tokens, idx))?,
+        } => dispatch_command(
+            ctx,
+            *letter,
+            *major,
+            *minor,
+            params,
+            *line_no,
+            (tokens, idx),
+        )?,
         _ => {} // Token is #[non_exhaustive]
     }
     Ok(())
@@ -151,7 +159,10 @@ fn dispatch_command(
                 ctx.state.absolute_e = false;
                 return Ok(());
             }
-            writeln_out(&mut ctx.out, &reconstruct_command(b'M', major, minor, params));
+            writeln_out(
+                &mut ctx.out,
+                &reconstruct_command(b'M', major, minor, params),
+            );
             Ok(())
         }
         b'T' => {
@@ -241,10 +252,7 @@ fn dispatch_g_code(
                 ctx.state.output_e = e;
             }
             ctx.state.prev_g5_pq = None;
-            writeln_out(
-                &mut ctx.out,
-                &reconstruct_command(b'G', 92, None, params),
-            );
+            writeln_out(&mut ctx.out, &reconstruct_command(b'G', 92, None, params));
             Ok(())
         }
         _ => {
@@ -277,7 +285,9 @@ fn handle_g0_g1(
         ))
     })?;
 
-    let end_pos = ctx.state.resolve_position(params.x(), params.y(), params.z());
+    let end_pos = ctx
+        .state
+        .resolve_position(params.x(), params.y(), params.z());
     let resolved_e = ctx.state.resolve_input_e(params.e());
 
     if ctx.state.has_xy_motion(&end_pos) {
@@ -286,7 +296,11 @@ fn handle_g0_g1(
         let dx = end_pos[0] - ctx.state.position[0];
         let dy = end_pos[1] - ctx.state.position[1];
         let xy_len = (dx * dx + dy * dy).sqrt();
-        let this_e_ratio = if xy_len > 1e-12 { e_delta / xy_len } else { 0.0 };
+        let this_e_ratio = if xy_len > 1e-12 {
+            e_delta / xy_len
+        } else {
+            0.0
+        };
 
         // Check for run breaks: feedrate change or E-ratio change.
         let should_flush = ctx.run_buffer.as_ref().is_some_and(|run| {
@@ -382,20 +396,18 @@ fn handle_g2_g3(
         )));
     }
 
-    let center = [
-        ctx.state.position[0] + i_val,
-        ctx.state.position[1] + j_val,
-    ];
+    let center = [ctx.state.position[0] + i_val, ctx.state.position[1] + j_val];
 
-    let end_pos = ctx.state.resolve_position(params.x(), params.y(), params.z());
+    let end_pos = ctx
+        .state
+        .resolve_position(params.x(), params.y(), params.z());
     let resolved_e = ctx.state.resolve_input_e(params.e());
 
     // Radius consistency check.
     let r_start = ((ctx.state.position[0] - center[0]).powi(2)
         + (ctx.state.position[1] - center[1]).powi(2))
     .sqrt();
-    let r_end =
-        ((end_pos[0] - center[0]).powi(2) + (end_pos[1] - center[1]).powi(2)).sqrt();
+    let r_end = ((end_pos[0] - center[0]).powi(2) + (end_pos[1] - center[1]).powi(2)).sqrt();
     let r_avg = f64::midpoint(r_start, r_end);
     if r_avg > 1e-12 && (r_start - r_end).abs() / r_avg > 0.001 {
         eprintln!(
@@ -441,11 +453,7 @@ fn handle_g2_g3(
     Ok(())
 }
 
-fn handle_g5(
-    ctx: &mut Ctx,
-    params: &gcode::Params,
-    line_no: u32,
-) -> Result<(), ConvertError> {
+fn handle_g5(ctx: &mut Ctx, params: &gcode::Params, line_no: u32) -> Result<(), ConvertError> {
     flush_run(ctx, None);
 
     let (ci, cj, cp, cq) = canonicalize_g5(params, ctx.state.prev_g5_pq)
@@ -460,7 +468,9 @@ fn handle_g5(
         )));
     }
 
-    let end_pos = ctx.state.resolve_position(params.x(), params.y(), params.z());
+    let end_pos = ctx
+        .state
+        .resolve_position(params.x(), params.y(), params.z());
     let resolved_e = ctx.state.resolve_input_e(params.e());
     let e_abs = resolved_e.unwrap_or(ctx.state.output_e);
 
@@ -500,19 +510,15 @@ fn handle_g5(
     Ok(())
 }
 
-fn handle_g51(
-    ctx: &mut Ctx,
-    params: &gcode::Params,
-    line_no: u32,
-) -> Result<(), ConvertError> {
+fn handle_g51(ctx: &mut Ctx, params: &gcode::Params, line_no: u32) -> Result<(), ConvertError> {
     flush_run(ctx, None);
 
-    let gi = params.i().ok_or_else(|| {
-        ConvertError::Fatal(format!("line {line_no}: G5.1 missing I parameter"))
-    })?;
-    let gj = params.j().ok_or_else(|| {
-        ConvertError::Fatal(format!("line {line_no}: G5.1 missing J parameter"))
-    })?;
+    let gi = params
+        .i()
+        .ok_or_else(|| ConvertError::Fatal(format!("line {line_no}: G5.1 missing I parameter")))?;
+    let gj = params
+        .j()
+        .ok_or_else(|| ConvertError::Fatal(format!("line {line_no}: G5.1 missing J parameter")))?;
 
     if let Some(f) = params.f() {
         ctx.state.feedrate_mm_min = Some(f);
@@ -523,16 +529,14 @@ fn handle_g51(
         )));
     }
 
-    let end_pos = ctx.state.resolve_position(params.x(), params.y(), params.z());
+    let end_pos = ctx
+        .state
+        .resolve_position(params.x(), params.y(), params.z());
     let resolved_e = ctx.state.resolve_input_e(params.e());
     let e_abs = resolved_e.unwrap_or(ctx.state.output_e);
 
     let p0 = ctx.state.position;
-    let p1 = [
-        p0[0] + gi,
-        p0[1] + gj,
-        f64::midpoint(p0[2], end_pos[2]),
-    ];
+    let p1 = [p0[0] + gi, p0[1] + gj, f64::midpoint(p0[2], end_pos[2])];
     let p2 = end_pos;
 
     let f_emit = ctx
@@ -701,12 +705,7 @@ fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
 }
 
 /// Distribute E across G5 pieces proportional to chord length.
-fn distribute_e_by_chord(
-    pieces: &mut [G5Line],
-    start_e: f64,
-    e_delta: f64,
-    start_pos: [f64; 3],
-) {
+fn distribute_e_by_chord(pieces: &mut [G5Line], start_e: f64, e_delta: f64, start_pos: [f64; 3]) {
     if pieces.is_empty() {
         return;
     }

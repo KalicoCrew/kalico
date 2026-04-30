@@ -471,13 +471,7 @@ fn find_worst_point(
 }
 
 /// Evaluate the tangent (first derivative) of a cubic Bézier at parameter `t`.
-fn bezier_tangent(
-    p0: [f64; 2],
-    p1: [f64; 2],
-    p2: [f64; 2],
-    p3: [f64; 2],
-    t: f64,
-) -> [f64; 2] {
+fn bezier_tangent(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {
     let s = 1.0 - t;
     let c0 = 3.0 * s * s;
     let c1 = 6.0 * s * t;
@@ -492,13 +486,7 @@ fn bezier_tangent(
 ///
 /// G5 convention: `I = CP1.x - P0.x`, `J = CP1.y - P0.y`,
 /// `P = CP2.x - P3.x`, `Q = CP2.y - P3.y`, `X/Y/Z = P3`.
-fn bezier_to_g5(
-    p0: [f64; 2],
-    cp1: [f64; 2],
-    cp2: [f64; 2],
-    p3: [f64; 2],
-    z_end: f64,
-) -> G5Line {
+fn bezier_to_g5(p0: [f64; 2], cp1: [f64; 2], cp2: [f64; 2], p3: [f64; 2], z_end: f64) -> G5Line {
     G5Line {
         x: p3[0],
         y: p3[1],

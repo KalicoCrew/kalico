@@ -345,11 +345,7 @@ fn trim_piece(piece: &BezierPiece<f64>, t_lo: f64, t_hi: f64) -> BezierPiece<f64
 }
 
 /// Find E-gap halos whose time interval overlaps `[t_lo, t_hi)`.
-fn find_halos_in_range(
-    e_halos: &[EHalo],
-    t_lo: f64,
-    t_hi: f64,
-) -> Vec<&EHalo> {
+fn find_halos_in_range(e_halos: &[EHalo], t_lo: f64, t_hi: f64) -> Vec<&EHalo> {
     e_halos
         .iter()
         .filter(|h| h.t_end > t_lo && h.t_start < t_hi)
@@ -425,7 +421,11 @@ mod tests {
         let pieces = extract_bezier_pieces(&padded);
 
         // Should have padding on both sides.
-        assert!(pieces.len() >= 3, "expected at least 3 pieces, got {}", pieces.len());
+        assert!(
+            pieces.len() >= 3,
+            "expected at least 3 pieces, got {}",
+            pieces.len()
+        );
 
         // First piece should start before t=0.
         assert!(
@@ -449,7 +449,10 @@ mod tests {
         );
 
         // Value at the right pad should be the end value (10.0).
-        let right_val = pieces.last().unwrap().evaluate(pieces.last().unwrap().u_end);
+        let right_val = pieces
+            .last()
+            .unwrap()
+            .evaluate(pieces.last().unwrap().u_end);
         assert!(
             (right_val - 10.0).abs() < 1e-10,
             "right pad should hold 10.0, got {right_val}"

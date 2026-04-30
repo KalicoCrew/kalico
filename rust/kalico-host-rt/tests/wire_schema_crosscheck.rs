@@ -23,7 +23,7 @@ use kalico_host_rt::producer::push_segment;
 use kalico_host_rt::transport::MessageValue;
 
 mod mock_transport;
-use mock_transport::{mp_with, MockTransport};
+use mock_transport::{MockTransport, mp_with};
 
 /// Path to the firmware's `runtime_tick.c` relative to the workspace root.
 /// `CARGO_MANIFEST_DIR` is `rust/kalico-host-rt`; go up two levels.
@@ -98,8 +98,8 @@ fn parse_decl_commands(src: &str) -> HashMap<String, Vec<String>> {
 #[test]
 fn parse_decl_commands_finds_known_handlers() {
     let path = firmware_runtime_tick_path();
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let cmds = parse_decl_commands(&src);
     // Sanity — these are the commands hosts emit.
     for required in [
@@ -153,8 +153,7 @@ fn host_push_segment_field_names_and_ordering_match_firmware() {
         .map(|t| t.split_once('=').unwrap().0.to_string())
         .collect();
     assert_eq!(
-        &host_fields,
-        firmware_fields,
+        &host_fields, firmware_fields,
         "host `kalico_push_segment` field names/ordering must match firmware \
          DECL_COMMAND verbatim. host=`{line}` firmware fields={firmware_fields:?}"
     );

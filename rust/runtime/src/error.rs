@@ -251,10 +251,7 @@ mod tests {
             KALICO_ERR_CLOCK_SYNC_QUALITY
         );
         assert_eq!(FaultCode::Underrun.as_i32(), KALICO_ERR_UNDERRUN);
-        assert_eq!(
-            FaultCode::TraceOverflow.as_i32(),
-            KALICO_ERR_TRACE_OVERFLOW
-        );
+        assert_eq!(FaultCode::TraceOverflow.as_i32(), KALICO_ERR_TRACE_OVERFLOW);
         assert_eq!(
             FaultCode::SegmentIdNonMonotonic.as_i32(),
             KALICO_ERR_SEGMENT_ID_NON_MONOTONIC
@@ -263,10 +260,7 @@ mod tests {
             FaultCode::InvalidCurveHandle.as_i32(),
             KALICO_ERR_INVALID_CURVE_HANDLE
         );
-        assert_eq!(
-            FaultCode::NanInfOutput.as_i32(),
-            KALICO_ERR_NAN_INF_OUTPUT
-        );
+        assert_eq!(FaultCode::NanInfOutput.as_i32(), KALICO_ERR_NAN_INF_OUTPUT);
     }
 
     #[test]

@@ -58,8 +58,7 @@ fn flush_drains_pending_segments() {
     // SAFETY: caller is single-threaded test; we form the FgState borrow,
     // enqueue, drop it before calling flush.
     {
-        let fg: &mut FgState =
-            unsafe { &mut *UnsafeCell::raw_get(core::ptr::addr_of!((*rt).fg)) };
+        let fg: &mut FgState = unsafe { &mut *UnsafeCell::raw_get(core::ptr::addr_of!((*rt).fg)) };
         for i in 1..=4 {
             fg.queue_producer
                 .enqueue(Segment {
@@ -85,8 +84,7 @@ fn flush_drains_pending_segments() {
     // SAFETY: same single-threaded test invariant; flush returned, so we
     // can transiently project to IsrState.
     let drained: bool = unsafe {
-        let isr: &mut IsrState =
-            &mut *UnsafeCell::raw_get(core::ptr::addr_of!((*rt).isr));
+        let isr: &mut IsrState = &mut *UnsafeCell::raw_get(core::ptr::addr_of!((*rt).isr));
         !isr.queue_consumer.ready()
     };
     assert!(drained, "queue should be empty after flush");

@@ -147,15 +147,16 @@ fn live_reduce_rejects_g1() {
     let items: Vec<Item> = {
         let mut pipeline = GeometryPipeline::new(FitterParams::default());
         let mut sink = |evt: TelemetryEvent| events.push(evt);
-        pipeline
-            .process("G1 X10 Y10 F1000\n", &mut sink)
-            .collect()
+        pipeline.process("G1 X10 Y10 F1000\n", &mut sink).collect()
     };
 
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Fatal(Fatal::UnsupportedGcode { gcode_kind: "G0/G1", .. })
+            Item::Fatal(Fatal::UnsupportedGcode {
+                gcode_kind: "G0/G1",
+                ..
+            })
         )),
         "G1 input should produce Item::Fatal(Fatal::UnsupportedGcode {{ gcode_kind: \"G0/G1\" }}); got {items:#?}"
     );
@@ -205,7 +206,10 @@ fn live_reduce_rejects_g2() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Fatal(Fatal::UnsupportedGcode { gcode_kind: "G2/G3", .. })
+            Item::Fatal(Fatal::UnsupportedGcode {
+                gcode_kind: "G2/G3",
+                ..
+            })
         )),
         "G2 input should produce Item::Fatal(Fatal::UnsupportedGcode {{ gcode_kind: \"G2/G3\" }}); got {items:#?}"
     );
@@ -228,7 +232,10 @@ fn live_g0_then_g5_aborts_before_emitting_stale_cubic() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Fatal(Fatal::UnsupportedGcode { gcode_kind: "G0/G1", .. })
+            Item::Fatal(Fatal::UnsupportedGcode {
+                gcode_kind: "G0/G1",
+                ..
+            })
         )),
         "expected Item::Fatal(UnsupportedGcode), got {items:#?}"
     );
@@ -261,10 +268,9 @@ fn live_reduce_rejects_z_plus_e_as_helical() {
     let items: Vec<_> = p.process(src, &mut sink).collect();
 
     assert!(
-        items.iter().any(|item| matches!(
-            item,
-            Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. })
-        )),
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. }))),
         "pure-Z+E G5 should produce Item::Fatal(Fatal::HelicalExtrusionUnsupported); got {items:#?}"
     );
 }
@@ -288,10 +294,9 @@ fn helical_rejection_aborts_before_subsequent_g5_can_inherit_stale_state() {
 
     // Must contain Item::Fatal for the first (helical) G5.
     assert!(
-        items.iter().any(|item| matches!(
-            item,
-            Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. })
-        )),
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Fatal(Fatal::HelicalExtrusionUnsupported { .. }))),
         "expected Item::Fatal(HelicalExtrusionUnsupported), got {items:#?}"
     );
 
@@ -387,7 +392,13 @@ fn g18_then_g5_emits_plane_mismatch_recovery() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Recovered(_, Recovery::G5PlaneMismatch { active_plane_g_code: 18, .. })
+            Item::Recovered(
+                _,
+                Recovery::G5PlaneMismatch {
+                    active_plane_g_code: 18,
+                    ..
+                }
+            )
         )),
         "G18 + G5 should produce Recovery::G5PlaneMismatch {{ 18 }}, got {items:#?}"
     );
@@ -405,7 +416,13 @@ fn g19_then_g5_emits_plane_mismatch_recovery() {
     assert!(
         items.iter().any(|item| matches!(
             item,
-            Item::Recovered(_, Recovery::G5PlaneMismatch { active_plane_g_code: 19, .. })
+            Item::Recovered(
+                _,
+                Recovery::G5PlaneMismatch {
+                    active_plane_g_code: 19,
+                    ..
+                }
+            )
         )),
         "G19 + G5 should produce Recovery::G5PlaneMismatch {{ 19 }}, got {items:#?}"
     );
@@ -430,10 +447,9 @@ fn nan_g5_produces_malformed_params_recovery_not_silent_drop() {
     let items: Vec<_> = p.process(src, &mut sink).collect();
 
     assert!(
-        items.iter().any(|item| matches!(
-            item,
-            Item::Recovered(_, Recovery::MalformedParams { .. })
-        )),
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Recovered(_, Recovery::MalformedParams { .. }))),
         "expected Item::Recovered(_, MalformedParams), got {items:#?}"
     );
 }
@@ -443,7 +459,12 @@ fn try_new_rejects_non_finite_control_point() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        vec![
+            [f64::NAN, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
         None,
     )
     .expect("VectorNurbs accepts NaN at the type level; CubicSegment::try_new must catch it");
@@ -453,10 +474,16 @@ fn try_new_rejects_non_finite_control_point() {
         0.0,
         None,
         100.0,
-        SourceRange { start_line: 1, end_line: 1 },
+        SourceRange {
+            start_line: 1,
+            end_line: 1,
+        },
         None,
     );
-    assert!(matches!(result, Err(GeometryError::NotSinglePieceCubic { .. })));
+    assert!(matches!(
+        result,
+        Err(GeometryError::NotSinglePieceCubic { .. })
+    ));
 }
 
 #[test]
@@ -464,7 +491,12 @@ fn try_new_rejects_non_finite_feedrate() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
         None,
     )
     .unwrap();
@@ -474,10 +506,16 @@ fn try_new_rejects_non_finite_feedrate() {
         0.0,
         None,
         f64::INFINITY,
-        SourceRange { start_line: 1, end_line: 1 },
+        SourceRange {
+            start_line: 1,
+            end_line: 1,
+        },
         None,
     );
-    assert!(matches!(result, Err(GeometryError::EModeInvariantViolation { .. })));
+    assert!(matches!(
+        result,
+        Err(GeometryError::EModeInvariantViolation { .. })
+    ));
 }
 
 #[test]
@@ -485,7 +523,12 @@ fn try_new_rejects_non_finite_extrusion_ratio() {
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
         None,
     )
     .unwrap();
@@ -495,10 +538,16 @@ fn try_new_rejects_non_finite_extrusion_ratio() {
         f64::NAN,
         None,
         100.0,
-        SourceRange { start_line: 1, end_line: 1 },
+        SourceRange {
+            start_line: 1,
+            end_line: 1,
+        },
         None,
     );
-    assert!(matches!(result, Err(GeometryError::EModeInvariantViolation { .. })));
+    assert!(matches!(
+        result,
+        Err(GeometryError::EModeInvariantViolation { .. })
+    ));
 }
 
 #[test]
@@ -510,21 +559,23 @@ fn try_new_rejects_non_finite_e_independent_curve() {
         None,
     )
     .unwrap();
-    let bad_e = ScalarNurbs::<f64>::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![0.0, f64::INFINITY],
-        None,
-    )
-    .unwrap();
+    let bad_e =
+        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, f64::INFINITY], None)
+            .unwrap();
     let result = CubicSegment::try_new(
         xyz,
         EMode::Independent,
         0.0,
         Some(bad_e),
         100.0,
-        SourceRange { start_line: 1, end_line: 1 },
+        SourceRange {
+            start_line: 1,
+            end_line: 1,
+        },
         None,
     );
-    assert!(matches!(result, Err(GeometryError::EModeInvariantViolation { .. })));
+    assert!(matches!(
+        result,
+        Err(GeometryError::EModeInvariantViolation { .. })
+    ));
 }

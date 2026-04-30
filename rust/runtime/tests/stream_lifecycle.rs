@@ -16,9 +16,7 @@ use core::sync::atomic::Ordering;
 
 use heapless::spsc::Queue;
 
-use runtime::error::{
-    KALICO_ERR_ARM_REJECTED, KALICO_ERR_STREAM_STATE_VIOLATION, KALICO_OK,
-};
+use runtime::error::{KALICO_ERR_ARM_REJECTED, KALICO_ERR_STREAM_STATE_VIOLATION, KALICO_OK};
 use runtime::queue::Q_N;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::state::{FgState, SharedState};
@@ -49,8 +47,7 @@ pub extern "C" fn kalico_irq_restore(_flags: u32) {}
 fn fg_state_for_test() -> FgState {
     let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
     let (q_producer, _q_consumer) = queue.split();
-    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     let (_t_producer, t_consumer) = trace.split();
     FgState {
         queue_producer: q_producer,
@@ -218,10 +215,7 @@ fn terminal_in_running_publishes_atomics_and_transitions() {
     assert_eq!(r, KALICO_OK);
     assert_eq!(fg.terminal_segment_id, Some(17));
     assert!(shared.terminal_segment_id_set.load(Ordering::Acquire));
-    assert_eq!(
-        shared.terminal_segment_id_value.load(Ordering::Acquire),
-        17
-    );
+    assert_eq!(shared.terminal_segment_id_value.load(Ordering::Acquire), 17);
     assert_eq!(fg.stream_state_machine, FgStreamState::Draining);
 }
 
@@ -261,9 +255,7 @@ fn check_terminal_on_retire_clears_stream_open_on_match() {
     shared
         .terminal_segment_id_set
         .store(true, Ordering::Release);
-    shared
-        .terminal_segment_id_value
-        .store(7, Ordering::Release);
+    shared.terminal_segment_id_value.store(7, Ordering::Release);
     stream::check_terminal_on_retire(&shared, 7);
     assert!(!shared.stream_open.load(Ordering::Acquire));
     // Per Round-2 B14 the helper does NOT clear the published terminal
@@ -278,9 +270,7 @@ fn check_terminal_on_retire_no_match_keeps_stream_open() {
     shared
         .terminal_segment_id_set
         .store(true, Ordering::Release);
-    shared
-        .terminal_segment_id_value
-        .store(7, Ordering::Release);
+    shared.terminal_segment_id_value.store(7, Ordering::Release);
     stream::check_terminal_on_retire(&shared, 6);
     assert!(shared.stream_open.load(Ordering::Acquire));
 }

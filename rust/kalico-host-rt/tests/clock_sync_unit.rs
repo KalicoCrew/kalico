@@ -7,17 +7,11 @@
 //! We use 35 samples at a 10 ms cadence with a synthetic `mcu_clock`
 //! derived from the cadence and the chosen `freq`.
 
-#![allow(
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::float_cmp
-)]
+#![allow(clippy::cast_sign_loss, clippy::cast_lossless, clippy::float_cmp)]
 
 use std::time::{Duration, Instant};
 
-use kalico_host_rt::clock_sync::{
-    ClockSyncEstimator, MAX_RTT_AGE_MS_DEFAULT, MIN_WARMUP_SAMPLES,
-};
+use kalico_host_rt::clock_sync::{ClockSyncEstimator, MAX_RTT_AGE_MS_DEFAULT, MIN_WARMUP_SAMPLES};
 
 #[test]
 fn fresh_estimator_quality_gate_fails_under_warmup() {

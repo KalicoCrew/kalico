@@ -88,7 +88,11 @@ mod tests {
         let curve = bezier_pieces_to_nurbs(&[piece]);
         // Central finite differences of a linear function should be zero up to
         // floating-point rounding (~1e-4 at dt=25e-6 with values O(1)).
-        assert!(peak_accel(&curve).abs() < 1.0, "expected ~0, got {}", peak_accel(&curve));
+        assert!(
+            peak_accel(&curve).abs() < 1.0,
+            "expected ~0, got {}",
+            peak_accel(&curve)
+        );
     }
 
     #[test]
@@ -102,10 +106,7 @@ mod tests {
         let curve = bezier_pieces_to_nurbs(&[piece]);
         // Central finite differences are exact for degree-2 polynomials.
         let peak = peak_accel(&curve);
-        assert!(
-            (peak - 10.0).abs() < 0.01,
-            "expected ~10.0, got {peak}",
-        );
+        assert!((peak - 10.0).abs() < 0.01, "expected ~10.0, got {peak}",);
     }
 
     #[test]
@@ -120,10 +121,7 @@ mod tests {
         // The peak is near t=2 but sampling stops at u_end-dt, so we may
         // slightly undershoot the true peak (12.0). Allow 1% tolerance.
         let peak = peak_accel(&curve);
-        assert!(
-            (peak - 12.0).abs() < 0.15,
-            "expected ~12.0, got {peak}",
-        );
+        assert!((peak - 12.0).abs() < 0.15, "expected ~12.0, got {peak}",);
     }
 
     #[test]
@@ -143,10 +141,7 @@ mod tests {
         let curve = bezier_pieces_to_nurbs(&[p1, p2]);
         // Central finite differences are exact for degree-2 polynomials.
         let peak = peak_accel(&curve);
-        assert!(
-            (peak - 100.0).abs() < 1.0,
-            "expected ~100.0, got {peak}",
-        );
+        assert!((peak - 100.0).abs() < 1.0, "expected ~100.0, got {peak}",);
     }
 
     #[test]
@@ -160,10 +155,7 @@ mod tests {
         let curve = bezier_pieces_to_nurbs(&[piece]);
         // Sampling near t=1 should recover close to 6. Allow 1% tolerance.
         let peak = peak_accel(&curve);
-        assert!(
-            (peak - 6.0).abs() < 0.1,
-            "expected ~6.0, got {peak}",
-        );
+        assert!((peak - 6.0).abs() < 0.1, "expected ~6.0, got {peak}",);
     }
 
     #[test]
@@ -211,6 +203,9 @@ mod tests {
         // truncation adds transient acceleration. The peak should be bounded —
         // not astronomically large.
         assert!(peak > 100.0, "peak too low: {peak}");
-        assert!(peak < 1_000_000.0, "peak too high (numerical blowup?): {peak}");
+        assert!(
+            peak < 1_000_000.0,
+            "peak too high (numerical blowup?): {peak}"
+        );
     }
 }

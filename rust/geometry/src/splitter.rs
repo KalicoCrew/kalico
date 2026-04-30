@@ -22,13 +22,17 @@ const EPS_RATIO: f64 = 1e-8;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SplitError {
     NotSinglePieceCubic,
-    ArcLengthTableBuildFailed { reason: &'static str },
+    ArcLengthTableBuildFailed {
+        reason: &'static str,
+    },
     /// `max_arc_length_mm` was not a positive finite number. Caller passed
     /// `0.0`, a negative value, NaN, or infinity. The splitter cannot
     /// compute `k_planned` from such a value — `total_length / 0.0 = ∞`
     /// then `as usize` saturates to a huge usize and `Vec::with_capacity`
     /// would panic / OOM.
-    InvalidCap { max_arc_length_mm: f64 },
+    InvalidCap {
+        max_arc_length_mm: f64,
+    },
     /// An `EMode::Independent` segment with non-trivial xyz motion reached
     /// the splitter past the zero-motion fast-path. Subdividing such a
     /// segment would clone the parent's full E curve into every child,
@@ -110,7 +114,9 @@ pub fn split_segment_to_cap(
     // Project xyz onto its three scalar axes and extract the (single) Bézier piece per axis.
     let parent_pieces = extract_bezier_pieces_vector(&segment.xyz);
     debug_assert!(
-        parent_pieces.iter().all(|axis_pieces| axis_pieces.len() == 1),
+        parent_pieces
+            .iter()
+            .all(|axis_pieces| axis_pieces.len() == 1),
         "single-piece-cubic invariant"
     );
 
@@ -119,8 +125,7 @@ pub fn split_segment_to_cap(
         parent_pieces[1][0].clone(),
         parent_pieces[2][0].clone(),
     ];
-    let mut emitted_axes: [Vec<BezierPiece<f64>>; 3] =
-        [Vec::new(), Vec::new(), Vec::new()];
+    let mut emitted_axes: [Vec<BezierPiece<f64>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
 
     for &u in &u_breaks {
         let u_start = current_pieces[0].u_start;
@@ -221,18 +226,12 @@ fn project_axis_to_scalar(xyz: &VectorNurbs<f64, 3>, axis: usize) -> ScalarNurbs
 fn vector_nurbs_from_pieces(pieces: [&BezierPiece<f64>; 3]) -> VectorNurbs<f64, 3> {
     debug_assert!(pieces.iter().all(|p| p.degree() == 3));
     debug_assert!(pieces.iter().all(|p| {
-        (p.u_start - pieces[0].u_start).abs() < 1e-12
-            && (p.u_end - pieces[0].u_end).abs() < 1e-12
+        (p.u_start - pieces[0].u_start).abs() < 1e-12 && (p.u_end - pieces[0].u_end).abs() < 1e-12
     }));
     let bern_x = pieces[0].to_bernstein();
     let bern_y = pieces[1].to_bernstein();
     let bern_z = pieces[2].to_bernstein();
     let cps: Vec<[f64; 3]> = (0..4).map(|i| [bern_x[i], bern_y[i], bern_z[i]]).collect();
-    VectorNurbs::<f64, 3>::try_new(
-        3,
-        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        cps,
-        None,
-    )
-    .expect("valid cubic from pieces")
+    VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps, None)
+        .expect("valid cubic from pieces")
 }

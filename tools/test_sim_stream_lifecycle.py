@@ -153,7 +153,7 @@ def run_test():
                 f"violation), got {rc3}"
             )
             return 1
-        print(f"  stream_open idempotency: same-id OK, diff-id rejected")
+        print("  stream_open idempotency: same-id OK, diff-id rejected")
 
         # 4. Push 1 priming segment (large t_start so the engine doesn't
         #    drain it during this test). Renode pacing makes wall-clock
@@ -190,14 +190,14 @@ def run_test():
         if rc3 != -140:
             print(f"FAIL: arm(different t) expected -140, got {rc3}")
             return 1
-        print(f"  arm idempotency: same-t OK, diff-t rejected")
+        print("  arm idempotency: same-t OK, diff-t rejected")
 
         # 7. terminal — set the terminal segment id while in Armed state.
         rc = stream_terminal(io, 1)
         if rc != 0:
             print(f"FAIL: terminal → rc={rc}")
             return 1
-        print(f"  terminal: rc=0 (id=1)")
+        print("  terminal: rc=0 (id=1)")
 
         # Idempotent terminal.
         rc2 = stream_terminal(io, 1)
@@ -209,7 +209,7 @@ def run_test():
         if rc3 != -140:
             print(f"FAIL: terminal(different id) expected -140, got {rc3}")
             return 1
-        print(f"  terminal idempotency: same-id OK, diff-id rejected")
+        print("  terminal idempotency: same-id OK, diff-id rejected")
 
         # 8. clock_sync_request again — TIM5 has been running since the push,
         #    so widened_now should be > 0 now.
@@ -243,7 +243,7 @@ def run_test():
         if rc != 0:
             print(f"FAIL: post-flush stream_open → rc={rc}")
             return 1
-        print(f"  post-flush stream_open(new id): rc=0")
+        print("  post-flush stream_open(new id): rc=0")
 
         elapsed = time.monotonic() - t0
         print(f"PASS: stream_lifecycle ({elapsed:.1f}s wall-clock)")

@@ -7,9 +7,7 @@
 use crate::fit::FittedSegment;
 use crate::pad::EHalo;
 use crate::partition::BatchPartition;
-use crate::{
-    BetaWarning, ShapeBatchInput, ShapeBatchOutput, ShapeError, ShapedSegment,
-};
+use crate::{BetaWarning, ShapeBatchInput, ShapeBatchOutput, ShapeError, ShapedSegment};
 use geometry::segment::EMode;
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::ScalarNurbs;
@@ -48,10 +46,7 @@ pub fn beta_loop(
         z: kernels.z.as_ref().map_or(0.0, kernel_half_support),
     };
     // The maximum half-support across all axes determines global padding needs.
-    let t_sm_half_max = half_supports
-        .x
-        .max(half_supports.y)
-        .max(half_supports.z);
+    let t_sm_half_max = half_supports.x.max(half_supports.y).max(half_supports.z);
 
     // If there are no XY-motion runs, we only have E-gap segments.
     if partition.runs.is_empty() {
@@ -115,9 +110,9 @@ pub fn beta_loop(
                 let machine = machine_a_max[seg_flat_idx][axis];
                 if peak > machine {
                     let ratio = machine / peak;
-                    planning_a_max[seg_flat_idx][axis] =
-                        (planning_a_max[seg_flat_idx][axis] * ratio)
-                            .min(planning_a_max[seg_flat_idx][axis]);
+                    planning_a_max[seg_flat_idx][axis] = (planning_a_max[seg_flat_idx][axis]
+                        * ratio)
+                        .min(planning_a_max[seg_flat_idx][axis]);
                 }
             }
         }
@@ -250,8 +245,7 @@ fn run_one_iteration(
                 temporal::multi::SegmentInput {
                     curve: orig.curve,
                     limits: derated_limits,
-                    trailing_junction_chord_tolerance_mm: orig
-                        .trailing_junction_chord_tolerance_mm,
+                    trailing_junction_chord_tolerance_mm: orig.trailing_junction_chord_tolerance_mm,
                 }
             })
             .collect();
@@ -338,8 +332,12 @@ fn run_one_iteration(
             // polynomial approximation of x(s) on each TOPP-RA grid piece,
             // which must be tight for accurate second-derivative recovery.
             let arc_fit_tolerance = 1e-4; // mm — tight for derivative accuracy
-            let composed =
-                crate::reparam::compose_segment(curve, &table.as_view(), &s_pieces, arc_fit_tolerance)?;
+            let composed = crate::reparam::compose_segment(
+                curve,
+                &table.as_view(),
+                &s_pieces,
+                arc_fit_tolerance,
+            )?;
 
             // Stage 2c-d: C1 Hermite refit merges adjacent degree-6 composed
             // pieces into fewer degree-4 pieces. The sample-based peak-accel
@@ -370,32 +368,55 @@ fn run_one_iteration(
 
         // Per-axis: pad, convolve, trim (or passthrough for Z).
         let x_padded = crate::pad::pad_segment_axis(
-            seg_idx, 0, &fitted, &e_halos, half_supports.x, batch_t_start, batch_t_end,
+            seg_idx,
+            0,
+            &fitted,
+            &e_halos,
+            half_supports.x,
+            batch_t_start,
+            batch_t_end,
         );
-        let x_shaped = crate::shaper::shape_axis(&x_padded, &kernels.x, t_start, t_end)
-            .map_err(|detail| ShapeError::Algebra {
-                index: seg_idx,
-                detail,
+        let x_shaped =
+            crate::shaper::shape_axis(&x_padded, &kernels.x, t_start, t_end).map_err(|detail| {
+                ShapeError::Algebra {
+                    index: seg_idx,
+                    detail,
+                }
             })?;
 
         let y_padded = crate::pad::pad_segment_axis(
-            seg_idx, 1, &fitted, &e_halos, half_supports.y, batch_t_start, batch_t_end,
+            seg_idx,
+            1,
+            &fitted,
+            &e_halos,
+            half_supports.y,
+            batch_t_start,
+            batch_t_end,
         );
-        let y_shaped = crate::shaper::shape_axis(&y_padded, &kernels.y, t_start, t_end)
-            .map_err(|detail| ShapeError::Algebra {
-                index: seg_idx,
-                detail,
+        let y_shaped =
+            crate::shaper::shape_axis(&y_padded, &kernels.y, t_start, t_end).map_err(|detail| {
+                ShapeError::Algebra {
+                    index: seg_idx,
+                    detail,
+                }
             })?;
 
         let z_shaped = if let Some(ref z_kernel) = kernels.z {
             let z_padded = crate::pad::pad_segment_axis(
-                seg_idx, 2, &fitted, &e_halos, half_supports.z, batch_t_start, batch_t_end,
+                seg_idx,
+                2,
+                &fitted,
+                &e_halos,
+                half_supports.z,
+                batch_t_start,
+                batch_t_end,
             );
-            crate::shaper::shape_axis(&z_padded, z_kernel, t_start, t_end)
-                .map_err(|detail| ShapeError::Algebra {
+            crate::shaper::shape_axis(&z_padded, z_kernel, t_start, t_end).map_err(|detail| {
+                ShapeError::Algebra {
                     index: seg_idx,
                     detail,
-                })?
+                }
+            })?
         } else {
             // Passthrough: use the fitted Z axis directly.
             fitted[seg_idx].axes[2].clone()
@@ -486,7 +507,13 @@ fn build_e_halos(
     for eg in &partition.e_gaps {
         // The E gap's global time start is immediately after the preceding XY
         // segment ends (or at batch start if no preceding XY segment).
-        let t_gap_start = find_gap_start(eg.segment_index, &all_xy_indices, global_offsets, run_profiles, partition);
+        let t_gap_start = find_gap_start(
+            eg.segment_index,
+            &all_xy_indices,
+            global_offsets,
+            run_profiles,
+            partition,
+        );
         let t_gap_end = t_gap_start + eg.duration;
 
         halos.push(EHalo {
@@ -605,14 +632,17 @@ fn assemble_output(
         });
 
         // Build time-parameterized E NURBS.
-        let e_scheduled = seg_input.e_independent.map(|e_nurbs| {
-            crate::e_independent::schedule_e_full(
-                e_nurbs,
-                seg_input.feedrate_mm_s,
-                &input.e_limits,
-                t_gap_start,
-            )
-        }).transpose()?;
+        let e_scheduled = seg_input
+            .e_independent
+            .map(|e_nurbs| {
+                crate::e_independent::schedule_e_full(
+                    e_nurbs,
+                    seg_input.feedrate_mm_s,
+                    &input.e_limits,
+                    t_gap_start,
+                )
+            })
+            .transpose()?;
 
         output_segments[eg.segment_index] = Some(ShapedSegment {
             axes: const_axes,
@@ -658,18 +688,20 @@ fn assemble_e_only_output(
         let t_start = t_cursor;
         let t_end = t_start + eg.duration;
 
-        let const_axes = std::array::from_fn(|axis| {
-            constant_nurbs(eg.xyz_position[axis], t_start, t_end)
-        });
+        let const_axes =
+            std::array::from_fn(|axis| constant_nurbs(eg.xyz_position[axis], t_start, t_end));
 
-        let e_scheduled = seg_input.e_independent.map(|e_nurbs| {
-            crate::e_independent::schedule_e_full(
-                e_nurbs,
-                seg_input.feedrate_mm_s,
-                &input.e_limits,
-                t_start,
-            )
-        }).transpose()?;
+        let e_scheduled = seg_input
+            .e_independent
+            .map(|e_nurbs| {
+                crate::e_independent::schedule_e_full(
+                    e_nurbs,
+                    seg_input.feedrate_mm_s,
+                    &input.e_limits,
+                    t_start,
+                )
+            })
+            .transpose()?;
 
         segments.push(ShapedSegment {
             axes: const_axes,
@@ -757,13 +789,7 @@ mod tests {
 
     /// Build a degree-1 (truly linear) NURBS from `start` to `end`.
     fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
-        VectorNurbs::try_new(
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![start, end],
-            None,
-        )
-        .unwrap()
+        VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end], None).unwrap()
     }
 
     // ------------------------------------------------------------------
@@ -829,13 +855,9 @@ mod tests {
         let curve1 = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
         let curve2 = straight_linear([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
         let e_hold = straight_linear([50.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
-        let e_nurbs = nurbs::ScalarNurbs::try_new(
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![10.0, 5.0],
-            None,
-        )
-        .unwrap();
+        let e_nurbs =
+            nurbs::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0], None)
+                .unwrap();
 
         let segments = [
             ShapeSegmentInput {
@@ -923,13 +945,9 @@ mod tests {
     #[test]
     fn all_e_gaps_output() {
         let e_hold = straight_linear([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
-        let e_nurbs = nurbs::ScalarNurbs::try_new(
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![10.0, 5.0],
-            None,
-        )
-        .unwrap();
+        let e_nurbs =
+            nurbs::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0], None)
+                .unwrap();
 
         let segments = [ShapeSegmentInput {
             temporal: temporal::multi::SegmentInput {

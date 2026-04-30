@@ -39,8 +39,7 @@ fn boundary_loop_works_near_u64_max() {
     // matches the half-split shape used by the real `RuntimeContext`.
     let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
     let (mut q_producer, mut q_consumer) = queue.split();
-    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     let (mut t_producer, _t_consumer) = trace.split();
 
     let pool = CurvePool::new();

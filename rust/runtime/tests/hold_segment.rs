@@ -24,9 +24,7 @@ use runtime::queue::Q_N;
 use runtime::segment::{KinematicTag, SEGMENT_FLAG_HOLD_SEGMENT, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
-use runtime::trace::{
-    TRACE_FLAG_HOLD_SAMPLE, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample,
-};
+use runtime::trace::{TRACE_FLAG_HOLD_SAMPLE, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample};
 
 const CLOCK_FREQ: u32 = 520_000_000;
 
@@ -124,7 +122,8 @@ fn hold_segment_skips_curve_lookup_and_emits_last_position() {
     );
 
     // Tick at t=tc — still in the hold window.
-    h.tick(tc as u32).expect("second hold tick should not fault");
+    h.tick(tc as u32)
+        .expect("second hold tick should not fault");
 }
 
 #[test]
