@@ -166,4 +166,12 @@ mod format_string_tests {
         assert_eq!(fields[0], ("id".to_string(), FieldType::U32));
         assert_eq!(fields[5], ("kinematics".to_string(), FieldType::Byte));
     }
+
+    #[test]
+    fn parses_progmem_buffer_in_identify_response() {
+        let s = "identify_response offset=%u data=%.*s";
+        let (name, fields) = parse_format_string(s).unwrap();
+        assert_eq!(name, "identify_response");
+        assert_eq!(fields[1].1, FieldType::ProgmemBuffer);
+    }
 }
