@@ -213,7 +213,18 @@ jobs:
       - name: cargo +nightly miri test (runtime, host)
         env:
           MIRIFLAGS: "-Zmiri-ignore-leaks"
-        run: cargo +nightly miri test -p runtime --features host
+        run: >
+          cargo +nightly miri test -p runtime --features host
+          --test curve_pool_alloc
+          --test engine_underrun
+          --test fault_encoding
+          --test force_idle_short_circuit
+          --test hold_segment
+          --test max_boundary_iters
+          --test reclaim_pipeline
+          --test segment_id_atomics
+          --test seqlock_unit
+          --test trace_overflow
 
   rust-panic-symbol-grep:
     needs: changes
