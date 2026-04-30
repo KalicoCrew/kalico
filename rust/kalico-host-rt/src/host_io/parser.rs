@@ -67,4 +67,19 @@ mod data_dictionary_tests {
             other => panic!("expected Range {{0, 16}}, got {:?}", other),
         }
     }
+
+    #[test]
+    fn parses_negative_msgids() {
+        let json = r#"{
+            "commands": {"kalico_load_curve x": -7},
+            "responses": {},
+            "output": {},
+            "enumerations": {},
+            "config": {},
+            "version": "test",
+            "app": "kalico"
+        }"#;
+        let dict: DataDictionary = serde_json::from_str(json).unwrap();
+        assert_eq!(*dict.commands.get("kalico_load_curve x").unwrap(), -7);
+    }
 }
