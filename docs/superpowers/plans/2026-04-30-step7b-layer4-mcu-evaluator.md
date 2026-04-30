@@ -631,9 +631,9 @@ Replace the single-handle resolve + 3D eval with:
 1. Resolve X, Y, Z handles (skip sentinels based on `mcu_config`).
 2. Eval each via `scalar_eval`.
 3. E-mode dispatch:
-   - `CoupledToXy`: compute `v_xy` from `(x - prev_x, y - prev_y)`, accumulate `e_accumulator`.
-   - `Independent`: resolve `e_handle`, eval.
-   - `Travel`: E = last value.
+   - `CoupledToXy`: compute `v_xy = sqrt((x - prev_x)^2 + (y - prev_y)^2) / dt`, accumulate `e_accumulator += extrusion_ratio * v_xy * dt`. Then update `prev_x = x; prev_y = y;` for the next tick's finite difference.
+   - `Independent`: resolve `e_handle`, eval E NURBS at `u` to get absolute E position. On SEGMENT_END (last tick of this segment), sync `e_accumulator` to the E NURBS endpoint (`eval at u=1.0`) so the next CoupledToXy segment resumes from the correct E base.
+   - `Travel`: E = last value; `prev_x/prev_y` still updated from XY eval.
 4. If `needs_xy_seed`, evaluate X(u=0) and Y(u=0) FIRST, seed `prev_x/prev_y` from those values, apply kinematic transform to get motor positions, seed all step accumulators, then clear `needs_xy_seed`. This must happen BEFORE the E finite-difference computation to avoid a spurious first-tick delta.
 5. Kinematic transform: `[x, y, z, e]` → `[a, b, z, e]`.
 6. Step generation per owned motor via `step_state[i].update(motors[i])`.
