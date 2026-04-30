@@ -91,3 +91,64 @@ impl Reactor {
         Ok(())
     }
 }
+
+const PENDING_SUBMISSION_CEILING: usize = 256;
+
+impl Reactor {
+    pub(crate) fn dispatch_submission(
+        &mut self,
+        call_id: u64,
+        payload: Vec<u8>,
+        expected_response_name: String,
+        completion: std::sync::mpsc::SyncSender<Result<crate::transport::MessageParams, TransportError>>,
+        deadline: Instant,
+    ) -> Result<(), TransportError> {
+        if self.unacked_window.is_full() {
+            if self.pending_submissions.len() >= PENDING_SUBMISSION_CEILING {
+                let _ = completion.send(Err(TransportError::Parse(
+                    "pending submission queue overflow".into(),
+                )));
+                return Ok(());
+            }
+            self.pending_submissions.push_back(PendingSubmission {
+                call_id, payload, expected_response_name, completion, deadline,
+            });
+            return Ok(());
+        }
+
+        let seq = self.send_seq;
+        self.send_seq += 1;
+        let wire_seq = (seq & 0x0F) as u8;
+        let frame = crate::host_io::wire::build_frame(&payload, wire_seq);
+
+        self.write_frame(&frame)?;
+
+        let now = Instant::now();
+        self.unacked_window.push(crate::host_io::window::UnackedEntry {
+            seq, frame_bytes: frame, sent_at: now, retry_count: 0,
+        });
+        self.awaiting_response.push(crate::host_io::window::AwaitEntry {
+            call_id, seq,
+            expected_response_name,
+            completion,
+            submitted_at: now,
+            deadline,
+            abandoned: false,
+        })?;
+
+        if !self.rtt_sample_armed {
+            self.rtt_sample_seq = seq;
+            self.rtt_sample_armed = true;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn drain_pending_submissions(&mut self) {
+        while !self.unacked_window.is_full() {
+            let Some(p) = self.pending_submissions.pop_front() else { break; };
+            let _ = self.dispatch_submission(
+                p.call_id, p.payload, p.expected_response_name, p.completion, p.deadline,
+            );
+        }
+    }
+}
