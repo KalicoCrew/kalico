@@ -645,3 +645,15 @@ mod vlq_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod encode_field_tests {
+    use super::*;
+
+    #[test]
+    fn encodes_string_length_prefixed() {
+        let mut buf = Vec::new();
+        encode_field_value(&mut buf, FieldType::String, &FieldValue::String("hi")).unwrap();
+        assert_eq!(buf, vec![2, b'h', b'i']);
+    }
+}
