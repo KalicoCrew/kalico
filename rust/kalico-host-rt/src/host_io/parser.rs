@@ -368,3 +368,19 @@ mod enum_matching_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod vlq_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_representative_values() {
+        for v in [0i64, 1, -1, 100, 100_000, i64::from(i32::MIN), i64::from(u32::MAX)] {
+            let mut buf = Vec::new();
+            encode_vlq(&mut buf, v).unwrap();
+            let (decoded, consumed) = decode_vlq(&buf).unwrap();
+            assert_eq!(consumed, buf.len(), "consumed != encoded length for {}", v);
+            assert_eq!(decoded, v as i32 as i64, "round-trip for {} produced {}", v, decoded);
+        }
+    }
+}
