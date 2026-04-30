@@ -13,6 +13,7 @@ pub mod call_handle;
 pub mod events;
 pub mod identify;
 pub mod parser;
+pub mod reactor;
 pub mod rtt;
 pub mod runtime_events;
 pub mod window;
