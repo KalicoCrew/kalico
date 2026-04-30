@@ -106,12 +106,15 @@ fn load_fixture(pool: &CurvePool, slot_idx: u16, name: &str) -> CurveHandle {
         .iter()
         .find(|f| f.name == name)
         .unwrap_or_else(|| panic!("fixture {name} missing from step5_segments.json"));
-    let cps_flat: Vec<f32> = f
+    // Step 7-B: extract first scalar component (X) from 3D fixture CPs.
+    // The engine evaluator (Task 6) will do per-axis scalar eval; for now
+    // we just need a valid scalar curve in the pool.
+    let cps_scalar: Vec<f32> = f
         .control_points
         .iter()
-        .flat_map(|p| p.iter().copied())
+        .map(|p| p[0])
         .collect();
-    pool.validate_and_load(slot_idx, &cps_flat, &f.knots, &f.weights, f.degree)
+    pool.validate_and_load(slot_idx, f.degree, &f.knots, &cps_scalar)
         .unwrap()
 }
 

@@ -151,27 +151,29 @@ mod tests {
         assert_eq!(&knots[4..8], &[1.0, 1.0, 1.0, 1.0]);
     }
 
+    /// Extract scalar (first component) from 3D fixture CPs.
+    fn extract_scalar_cps(cps_3d: &[f32], n_cp: usize) -> [f32; 80] {
+        let mut scalar = [0.0f32; 80];
+        for i in 0..n_cp {
+            scalar[i] = cps_3d[i * 3];
+        }
+        scalar
+    }
+
     #[test]
     fn loads_into_curve_pool_via_validate_and_load() {
         // End-to-end: fixture 0 must validate as a NURBS through the regular
-        // (production) `validate_and_load` path. This proves the fixture data
-        // is well-formed; the FFI uses `load_unchecked` to skip the
-        // FPU-using validation under Renode (Step-6 plan Phase 0 Task 0.2),
-        // but on host this regular path must work.
+        // (production) `validate_and_load` path. Step 7-B: fixtures emit
+        // 3D data; we extract the X component as scalar.
         use crate::curve_pool::CurvePool;
         let mut cps = [0.0f32; FIXTURE_CPS_MAX];
         let mut knots = [0.0f32; FIXTURE_KNOTS_MAX];
         let mut weights = [0.0f32; FIXTURE_WEIGHTS_MAX];
-        let (degree, n_cp, n_knots, n_weights) =
+        let (degree, n_cp, n_knots, _n_weights) =
             lookup(0, &mut cps, &mut knots, &mut weights).expect("fixture 0");
+        let scalar = extract_scalar_cps(&cps, n_cp);
         let pool = CurvePool::new();
-        let r = pool.validate_and_load(
-            0,
-            &cps[..n_cp * 3],
-            &knots[..n_knots],
-            &weights[..n_weights],
-            degree,
-        );
+        let r = pool.validate_and_load(0, degree, &knots[..n_knots], &scalar[..n_cp]);
         assert!(r.is_ok(), "fixture 0 must validate as a NURBS: {r:?}");
     }
 
@@ -185,16 +187,11 @@ mod tests {
             let mut cps = [0.0f32; FIXTURE_CPS_MAX];
             let mut knots = [0.0f32; FIXTURE_KNOTS_MAX];
             let mut weights = [0.0f32; FIXTURE_WEIGHTS_MAX];
-            let (degree, n_cp, n_knots, n_weights) =
+            let (degree, n_cp, n_knots, _n_weights) =
                 lookup(fid, &mut cps, &mut knots, &mut weights).expect("fixture");
+            let scalar = extract_scalar_cps(&cps, n_cp);
             let handle = pool
-                .load_unchecked(
-                    fid,
-                    &cps[..n_cp * 3],
-                    &knots[..n_knots],
-                    &weights[..n_weights],
-                    degree,
-                )
+                .load_unchecked(fid, degree, &knots[..n_knots], &scalar[..n_cp])
                 .unwrap_or_else(|e| panic!("fixture {fid} must load_unchecked: {e:?}"));
             assert!(pool.lookup(handle).is_ok());
             // After confirm_retired we can re-load the same slot — exercises
@@ -211,15 +208,10 @@ mod tests {
             let mut cps = [0.0f32; FIXTURE_CPS_MAX];
             let mut knots = [0.0f32; FIXTURE_KNOTS_MAX];
             let mut weights = [0.0f32; FIXTURE_WEIGHTS_MAX];
-            let (degree, n_cp, n_knots, n_weights) =
+            let (degree, n_cp, n_knots, _n_weights) =
                 lookup(fid, &mut cps, &mut knots, &mut weights).expect("fixture");
-            let r = pool.validate_and_load(
-                fid,
-                &cps[..n_cp * 3],
-                &knots[..n_knots],
-                &weights[..n_weights],
-                degree,
-            );
+            let scalar = extract_scalar_cps(&cps, n_cp);
+            let r = pool.validate_and_load(fid, degree, &knots[..n_knots], &scalar[..n_cp]);
             assert!(r.is_ok(), "fixture {fid} must validate: {r:?}");
         }
     }

@@ -24,7 +24,7 @@ pub mod exports {
     use core::mem::MaybeUninit;
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool, MAX_DIM};
+    use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool};
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
         KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION,
@@ -311,16 +311,13 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Load a curve into a slab slot. Producer-side validation rejects bad
-    /// data. Returns the freshly issued `(slot, gen)` packed handle via
-    /// `out_handle_packed` on success (Round-5 Codex #4 — host can't reference
-    /// a curve it just loaded otherwise).
+    /// Load a scalar curve into a slab slot. Producer-side validation rejects
+    /// bad data. Returns the freshly issued `(slot, gen)` packed handle via
+    /// `out_handle_packed` on success.
     ///
-    /// `control_points_flat` / `knots` / `weights` are the legacy Step-5
-    /// flat-pointer triple. The wire-format change to a single 1-byte-
-    /// versioned blob (§4.2) lands in `kalico_runtime_load_curve_v1` at the
-    /// C-side handler in `runtime_tick.c`; this FFI is the existing surface
-    /// that the C handler unpacks into for the call across the FFI boundary.
+    /// Step 7-B transition: accepts scalar control points (1D, not 3D).
+    /// `weights` pointer is ignored (polynomial-only). The C-side handler
+    /// will be fully updated in Task 8.
     #[unsafe(no_mangle)]
     #[allow(clippy::too_many_arguments)]
     pub unsafe extern "C" fn kalico_runtime_load_curve(
@@ -331,11 +328,12 @@ pub mod exports {
         knots: *const f32,
         n_knots: u16,
         weights: *const f32,
-        n_weights: u16,
+        _n_weights: u16,
         degree: u8,
         out_handle_packed: *mut u32,
     ) -> i32 {
-        if rt.is_null() || control_points_flat.is_null() || knots.is_null() || weights.is_null() {
+        let _ = weights; // unused in scalar architecture; kept for C ABI compat
+        if rt.is_null() || control_points_flat.is_null() || knots.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
         if !INIT_DONE.load(Ordering::Acquire) {
@@ -351,15 +349,13 @@ pub mod exports {
             // SAFETY: caller must ensure each pointer is valid for `n_*`
             // reads of f32 and that the buffers do not alias the curve pool.
             let cps_slice =
-                core::slice::from_raw_parts(control_points_flat, n_cp as usize * MAX_DIM);
+                core::slice::from_raw_parts(control_points_flat, n_cp as usize);
             let knots_slice = core::slice::from_raw_parts(knots, n_knots as usize);
-            let weights_slice = core::slice::from_raw_parts(weights, n_weights as usize);
             match (*pool_ptr).validate_and_load(
                 slot_idx,
-                cps_slice,
-                knots_slice,
-                weights_slice,
                 degree,
+                knots_slice,
+                cps_slice,
             ) {
                 Ok(handle) => {
                     if !out_handle_packed.is_null() {
@@ -1028,17 +1024,24 @@ pub mod exports {
             let mut cps = [0.0_f32; FIXTURE_CPS_MAX];
             let mut knots = [0.0_f32; FIXTURE_KNOTS_MAX];
             let mut weights = [0.0_f32; FIXTURE_WEIGHTS_MAX];
-            let Some((degree, n_cp, n_knots, n_weights)) =
+            let Some((degree, n_cp, n_knots, _n_weights)) =
                 runtime::sim_fixtures::lookup(fixture_id, &mut cps, &mut knots, &mut weights)
             else {
                 return KALICO_ERR_INVALID_CURVE;
             };
+            // Step 7-B: load_unchecked uses scalar API. Fixtures still
+            // emit 3D data (3 floats per CP); extract first component (X).
+            // Task 8 will update fixtures to native scalar.
+            const FIXTURE_DIM: usize = 3; // sim_fixtures' per-CP dimension
+            let mut cps_scalar = [0.0_f32; 80];
+            for i in 0..n_cp {
+                cps_scalar[i] = cps[i * FIXTURE_DIM];
+            }
             match pool.load_unchecked(
                 slot_idx,
-                &cps[..n_cp * MAX_DIM],
-                &knots[..n_knots],
-                &weights[..n_weights],
                 degree,
+                &knots[..n_knots],
+                &cps_scalar[..n_cp],
             ) {
                 Ok(handle) => {
                     if !out_handle_packed.is_null() {

@@ -549,23 +549,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     }
 }
 
-/// Wrapper around `nurbs::eval::vector_eval` for f32 3D rational NURBS.
+/// Temporary scalar-curve stub for the Step 7-B transition. The engine
+/// evaluator is rewritten in Task 6; this stub keeps the code compiling
+/// while the curve pool is scalar. Returns `[scalar_val, 0.0, 0.0]` so
+/// existing kinematics dispatch does not fault on NaN.
 ///
-/// Uses `nurbs::VectorNurbsRef` (the borrowed view type) per the actual
-/// Layer-0 API at `rust/nurbs/src/vector.rs` (verified during plan review).
+/// TODO(Task 6): replace with per-axis scalar evaluation.
 fn nurbs_eval_3d(curve: &CurveView<'_>, u: f32) -> Result<[f32; 3], ()> {
-    use nurbs::VectorNurbsRef;
+    use nurbs::ScalarNurbsRef;
 
-    // Actual API: try_new(degree: u8, knots: &[T], control_points: &[[T; N]],
-    //                     weights: Option<&[T]>) -> Result<Self, ConstructError>.
-    // Returns owning struct over the borrowed slices.
-    let view = VectorNurbsRef::<f32, 3>::try_new(
+    let view = ScalarNurbsRef::<f32>::try_new(
         curve.degree,
         curve.knots,
         curve.control_points,
-        Some(curve.weights),
+        None, // polynomial — no weights
     )
     .map_err(|_| ())?;
-    // vector_eval returns [T; N] directly — no Result wrapper.
-    Ok(nurbs::eval::vector_eval(&view, u))
+    let val = nurbs::eval::eval(&view, u);
+    Ok([val, 0.0, 0.0])
 }

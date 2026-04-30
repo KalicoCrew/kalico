@@ -129,15 +129,14 @@ fn flush_resets_pool_slots_to_current() {
     let shared = unsafe { &*core::ptr::addr_of!((*rt).shared) };
     let pool = unsafe { &*core::ptr::addr_of!((*rt).curve_pool) };
 
-    // Load a couple of curves so current_gen ≠ last_retired_gen.
-    let cps = [0.0_f32, 0.0, 0.0, 10.0, 0.0, 0.0];
+    // Load a couple of curves so current_gen != last_retired_gen.
+    let cps = [0.0_f32, 10.0];
     let knots = [0.0_f32, 0.0, 1.0, 1.0];
-    let weights = [1.0_f32, 1.0];
     let h0 = pool
-        .validate_and_load(0, &cps, &knots, &weights, 1)
+        .validate_and_load(0, 1, &knots, &cps)
         .expect("slot 0");
     let h1 = pool
-        .validate_and_load(1, &cps, &knots, &weights, 1)
+        .validate_and_load(1, 1, &knots, &cps)
         .expect("slot 1");
     assert_eq!(h0.generation, 1);
     assert_eq!(h1.generation, 1);

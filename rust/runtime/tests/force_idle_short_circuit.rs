@@ -112,10 +112,9 @@ fn force_idle_with_active_current_clears_it() {
 
     // Load a real curve so the first tick activates a current segment.
     let knots = [0.0_f32, 0.0, 1.0, 1.0];
-    let cps = [0.0_f32, 0.0, 0.0, 10.0, 0.0, 0.0]; // straight line on X
-    let weights = [1.0_f32, 1.0];
+    let cps = [0.0_f32, 10.0]; // straight line scalar
     let handle = pool
-        .validate_and_load(0, &cps, &knots, &weights, 1)
+        .validate_and_load(0, 1, &knots, &cps)
         .expect("load curve");
 
     q_producer

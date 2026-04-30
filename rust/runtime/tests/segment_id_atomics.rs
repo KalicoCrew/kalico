@@ -65,10 +65,9 @@ impl Harness {
 }
 
 fn straight_line_curve_handle(pool: &CurvePool, slot: u16) -> CurveHandle {
-    let cps = [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let cps = [0.0_f32, 1.0];
     let knots = [0.0_f32, 0.0, 1.0, 1.0];
-    let weights = [1.0_f32, 1.0];
-    pool.validate_and_load(slot, &cps, &knots, &weights, 1)
+    pool.validate_and_load(slot, 1, &knots, &cps)
         .unwrap()
 }
 

@@ -53,11 +53,10 @@ fn boundary_loop_works_near_u64_max() {
     let near_max_low = near_max as u32;
     widen.reinit(near_max_low, near_max);
 
-    let cps = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let cps = [0.0f32, 1.0];
     let knots = [0.0f32, 0.0, 1.0, 1.0];
-    let weights = [1.0f32, 1.0];
     let handle = pool
-        .validate_and_load(0, &cps, &knots, &weights, 1)
+        .validate_and_load(0, 1, &knots, &cps)
         .unwrap();
     let _ = handle; // kept alive in pool; segment carries a copy of the value
     q_producer
