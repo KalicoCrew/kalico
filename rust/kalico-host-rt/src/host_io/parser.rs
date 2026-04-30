@@ -611,6 +611,32 @@ impl MsgProtoParser {
             }
         }
     }
+
+    /// Phase-0 differential helper. Produces ('#output', {'#msg': formatted}).
+    pub fn decode_output_canonical(&self, packet: &[u8]) -> Result<(String, MessageParams), ParseError> {
+        if packet.len() < MESSAGE_MIN { return Err(ParseError::ShortFrame); }
+        let body = &packet[MESSAGE_HEADER_SIZE..packet.len() - MESSAGE_TRAILER_SIZE];
+        let (msgid_signed, n) = decode_vlq(body)?;
+        let msgid = msgid_signed as i32;
+        let dispatch = self.by_msgid.get(&msgid).ok_or(ParseError::UnknownMsgid(msgid))?;
+
+        let DispatchSpec::Output(spec) = dispatch else {
+            return Err(ParseError::MalformedField);
+        };
+
+        let mut cur = &body[n..];
+        let mut values: Vec<MessageValue> = Vec::new();
+        for wrapped in spec.fields.iter() {
+            let (v, consumed) = self.decode_wrapped_field(cur, wrapped)?;
+            values.push(v);
+            cur = &cur[consumed..];
+        }
+
+        let formatted = format_output_message(&spec.format, &values);
+        let mut params = MessageParams::new();
+        params.insert("#msg", MessageValue::String(formatted));
+        Ok(("#output".to_string(), params))
+    }
 }
 
 const MESSAGE_MIN: usize = 5;
