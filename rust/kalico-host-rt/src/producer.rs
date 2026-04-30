@@ -75,7 +75,7 @@ pub struct SegmentPushParams {
 /// 64-bit MCU-clock values produced by [`crate::stream::arm_all_mcus`]
 /// or by a downstream Layer-2/3 scheduler.
 pub fn push_segment<T: Transport>(
-    io: &mut T,
+    io: &T,
     credit: &CreditCounter,
     params: &SegmentPushParams,
 ) -> Result<PushedSegmentInfo, ProducerError> {
@@ -83,7 +83,7 @@ pub fn push_segment<T: Transport>(
 }
 
 pub fn push_segment_with_timeout<T: Transport>(
-    io: &mut T,
+    io: &T,
     credit: &CreditCounter,
     params: &SegmentPushParams,
     timeout: Duration,
@@ -115,12 +115,7 @@ pub fn push_segment_with_timeout<T: Transport>(
         extrusion_ratio = params.extrusion_ratio.to_bits(),
     );
 
-    if let Err(e) = io.send(&cmd) {
-        credit.release();
-        return Err(ProducerError::Transport(e));
-    }
-
-    let resp = match io.wait_for_response("kalico_push_response", timeout) {
+    let resp = match io.call(&cmd, "kalico_push_response", timeout) {
         Ok(r) => r,
         Err(e) => {
             credit.release();

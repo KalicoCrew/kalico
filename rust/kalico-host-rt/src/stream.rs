@@ -108,10 +108,12 @@ pub fn arm_all_mcus<T: Transport>(
         // back-trace request_id values; the MCU echoes them. We send
         // zero here because the estimator independently records
         // `host_send` and `host_recv` instants.
-        io.send("kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0")
-            .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let resp = io
-            .wait_for_response("kalico_clock_sync_response", CLOCK_SYNC_REQUEST_TIMEOUT)
+            .call(
+                "kalico_clock_sync_request request_id=1 host_send_time_lo=0 host_send_time_hi=0",
+                "kalico_clock_sync_response",
+                CLOCK_SYNC_REQUEST_TIMEOUT,
+            )
             .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let host_recv = Instant::now();
         let mcu_clock = (u64::from(resp.get_u32("mcu_clock_hi")) << 32)
@@ -164,15 +166,13 @@ pub fn arm_all_mcus<T: Transport>(
             hi = (t_start_local >> 32) as u32,
             alc = arm_lead_cycles,
         );
-        io.send(&cmd)
-            .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let now = Instant::now();
         if now >= arming_deadline {
             return Err(fail(ArmError::DeadlineMissed, &armed_indices));
         }
         let remaining = arming_deadline - now;
         let resp = io
-            .wait_for_response("kalico_stream_arm_response", remaining)
+            .call(&cmd, "kalico_stream_arm_response", remaining)
             .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         // I1 fix: `result` is load-bearing (0 = success); a missing
         // field must surface as a Parse error rather than silently
