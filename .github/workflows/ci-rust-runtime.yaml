@@ -270,6 +270,43 @@ jobs:
           fi
           echo "No panic symbols detected in release MCU build."
 
+  # Python differential test lane. Spec §4.13.
+  # Builds the Klipper firmware (gcc-arm-none-eabi) to regenerate
+  # out/klipper.dict, then runs `cargo test --features python-diff-test`
+  # which compares Rust encode/decode byte-for-byte against klippy/msgproto.py
+  # for every command in the dict.
+  rust-python-diff:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.klipper-c == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libudev-dev gcc-arm-none-eabi
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: python-diff
+      - name: Build firmware (regenerates out/klipper.dict)
+        # Default working-directory is rust/; make -C .. targets the repo root.
+        run: make -C ..
+      - name: cargo test --features python-diff-test
+        run: >
+          cargo test -p kalico-host-rt
+          --features python-diff-test
+          --test parser_python_diff
+
   watchdog-canary:
     needs: changes
     if: needs.changes.outputs.klipper-c == 'true'
