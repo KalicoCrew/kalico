@@ -656,4 +656,11 @@ mod encode_field_tests {
         encode_field_value(&mut buf, FieldType::String, &FieldValue::String("hi")).unwrap();
         assert_eq!(buf, vec![2, b'h', b'i']);
     }
+
+    #[test]
+    fn encodes_byte_via_vlq() {
+        let mut buf = Vec::new();
+        encode_field_value(&mut buf, FieldType::Byte, &FieldValue::Byte(0xFF)).unwrap();
+        assert_eq!(buf, vec![0x81, 0x7F]);
+    }
 }
