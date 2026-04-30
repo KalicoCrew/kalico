@@ -43,3 +43,18 @@ impl<'de> serde::Deserialize<'de> for EnumValue {
         Err(D::Error::custom("EnumValue: expected int or [start, count]"))
     }
 }
+
+#[cfg(test)]
+mod data_dictionary_tests {
+    use super::*;
+
+    #[test]
+    fn parses_single_int_enum() {
+        let json = r#"{"ADC_TEMPERATURE": 254}"#;
+        let table: IndexMap<String, EnumValue> = serde_json::from_str(json).unwrap();
+        match table.get("ADC_TEMPERATURE") {
+            Some(EnumValue::Single(254)) => {}
+            other => panic!("expected Single(254), got {:?}", other),
+        }
+    }
+}
