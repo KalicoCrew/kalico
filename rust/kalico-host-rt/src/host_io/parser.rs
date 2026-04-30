@@ -541,6 +541,40 @@ impl MsgProtoParser {
         }
         Ok(payload)
     }
+
+    pub fn decode_wrapped_field(&self, body: &[u8], wrapped: &WrappedField)
+        -> Result<(MessageValue, usize), ParseError>
+    {
+        match wrapped {
+            WrappedField::Plain(ty) => decode_field_plain(body, *ty),
+            WrappedField::Enumerated { inner, enum_name } => {
+                let (raw, consumed) = decode_field_plain(body, *inner)?;
+                let int = match raw {
+                    MessageValue::U32(v) => v as i32,
+                    MessageValue::I32(v) => v,
+                    _ => return Err(ParseError::MalformedField),
+                };
+                let table = self.enumerations.get(enum_name)
+                    .ok_or_else(|| ParseError::UnknownEnumName(enum_name.clone()))?;
+                let resolved = table.by_int.get(&int)
+                    .cloned()
+                    .unwrap_or_else(|| format!("?{}", int));
+                Ok((MessageValue::String(resolved), consumed))
+            }
+        }
+    }
+
+    pub fn decode_response(&self, mut body: &[u8], fields: &[(String, WrappedField)])
+        -> Result<MessageParams, ParseError>
+    {
+        let mut params = MessageParams::new();
+        for (field_name, wrapped) in fields {
+            let (value, consumed) = self.decode_wrapped_field(body, wrapped)?;
+            params.insert(field_name, value);
+            body = &body[consumed..];
+        }
+        Ok(params)
+    }
 }
 
 /// Per spec §4.7. The §3.6 receive flow branches on this tag.
