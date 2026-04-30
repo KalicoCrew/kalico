@@ -187,14 +187,21 @@ per segment retirement.
 2. **Clock widen** — unchanged.
 3. **Segment activation / boundary loop** — same structure, new segment
    carries 4 handles.
-4. **Resolve owned axis handles** — iterate `mcu_config.axes`; for each
-   owned axis, `pool.resolve(handle)`. Skip sentinel handles. Any
-   resolution failure latches a fault.
+4. **Resolve source-axis handles** — resolve handles for the source
+   axes this MCU's motors depend on. Dependency rule by kinematics:
+   - `CoreXyAndE`: owning A or B requires both X and Y handles.
+     Invalid to own only one of A/B — reject at `kalico_configure_axes`
+     time. Owning Z requires Z handle. Owning E requires CoupledToXy
+     XY integration (X+Y already resolved) or Independent E handle.
+   - `CartesianXyzAndE`: each motor maps 1:1 to its source axis.
+   Skip sentinel handles. Any resolution failure latches a fault.
 5. **Compute parameter** — `u = (t_segment as f32) / (duration as f32)`,
-   clamped to [0, 1].
+   clamped to [0, 1]. Zero-duration segments are rejected at
+   `kalico_push_segment` time (`t_end <= t_start` → fault).
 6. **Eval per-axis scalar NURBS** — `nurbs::eval::eval(view, u)` via
-   `ScalarNurbsRef` for each owned axis. Three 1D de Boor evaluations
-   (degree 9, ~80 CPs) on M7 at f32.
+   `ScalarNurbsRef` for each required source axis. Typically three 1D
+   de Boor evaluations (degree 9, ~80 CPs) on M7 at f32; four in
+   worst case (Independent E).
 7. **E-mode dispatch:**
    - `CoupledToXy`: `v_xy = sqrt((x - prev_x)^2 + (y - prev_y)^2) / dt`;
      `e_accumulator += extrusion_ratio * v_xy * dt`. Engine stores
@@ -226,22 +233,33 @@ per segment retirement.
 ```rust
 prev_x: f32,
 prev_y: f32,
-e_accumulator: f32,
+e_accumulator: f64,            // f64 to prevent precision loss over long prints (H723 has DP-FPU)
+needs_xy_seed: bool,
 step_state: [StepMotorState; 4],   // per motor (post-kinematic-transform)
 mcu_config: McuAxisConfig,         // set at init, immutable during printing
 ```
 
 ### Cycle budget estimate (M7 @ 520 MHz, 25 us tick)
 
+**Common case** (CoupledToXy, 3 source axes, 3 motors):
+
 | Operation | Estimated cycles | Notes |
 |-----------|-----------------|-------|
 | Clock widen + segment logic | ~100 | Unchanged from Step 6 |
 | 3x scalar de Boor (degree 9) | ~3000 | ~1000 per axis (degree-9 triangle) |
-| E integration (sqrt + mul) | ~50 | VSQRT.F32 ~14 cycles + arithmetic |
+| E integration (sqrt + f64 accum) | ~80 | VSQRT.F32 + f64 add/mul (~23 cycles) |
 | Kinematic transform | ~20 | 2 adds |
-| 3x step generation | ~200 | ~4 steps * 3 axes * ~15 cycles each |
+| 3x step generation | ~200 | ~4 steps × 3 motors × ~15 cycles each |
 | Trace emit | ~50 | Ring buffer enqueue |
-| **Total** | **~3400** | **~6.5 us of 25 us budget (26%)** |
+| **Total** | **~3450** | **~6.6 us of 25 us budget (27%)** |
+
+**Worst case** (Independent E, 4 source axes, 4 motors):
+
+| Operation | Estimated cycles | Notes |
+|-----------|-----------------|-------|
+| 4x scalar de Boor (degree 9) | ~4000 | +1000 for E NURBS |
+| 4x step generation | ~270 | +~70 for E motor |
+| **Total** | **~4520** | **~8.7 us of 25 us budget (35%)** |
 
 Comfortable headroom for Step 10 phase-stepping addition.
 
@@ -266,10 +284,17 @@ Per-tick logic:
 new_position_steps = motor_position_mm * steps_per_mm
 delta = new_position_steps - step_accumulator
 n_steps = delta.trunc() as i32
+if |n_steps| > MAX_STEPS_PER_TICK { latch fault }  // safety cap
 step_accumulator += n_steps as f64
 // Set direction pin based on sign(n_steps)
 // Emit |n_steps| step pulses
 ```
+
+`MAX_STEPS_PER_TICK` is a configured safety cap (default: 16, allowing
+~4× headroom over the 4-step nominal peak). If exceeded, the engine
+latches a fault — this indicates a trajectory discontinuity, stale
+accumulator, or host error. The cap prevents ISR overrun from unbounded
+pulse emission.
 
 At peak speed (1000 mm/s, 160 microsteps/mm, 40 kHz):
 `160000 / 40000 = 4 steps per tick`. Each pulse: set BSRR, ~100 ns
