@@ -79,6 +79,12 @@ impl FieldType {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum WrappedField {
+    Plain(FieldType),
+    Enumerated { inner: FieldType, enum_name: String },
+}
+
 #[cfg(test)]
 mod data_dictionary_tests {
     use super::*;
