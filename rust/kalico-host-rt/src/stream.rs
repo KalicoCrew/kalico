@@ -98,6 +98,9 @@ pub fn arm_all_mcus<T: Transport>(
         armed_indices: armed.to_vec(),
     };
 
+    let request_id_counters: Vec<std::sync::atomic::AtomicU32> =
+        (0..mcus.len()).map(|_| std::sync::atomic::AtomicU32::new(1)).collect();
+
     // Step 1+2+3: dedicated sync + quality gate per MCU.
     for (idx, (io, est)) in mcus.iter_mut().enumerate() {
         if Instant::now() >= arming_deadline {
