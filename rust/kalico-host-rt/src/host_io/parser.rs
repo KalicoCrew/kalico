@@ -278,4 +278,19 @@ mod enum_matching_tests {
             other => panic!("expected Enumerated, got {:?}", other),
         }
     }
+
+    #[test]
+    fn matches_underscore_suffix() {
+        let mut enums = IndexMap::new();
+        let mut pin_table = IndexMap::new();
+        pin_table.insert("PA0".to_string(), EnumValue::Single(0));
+        enums.insert("pin".to_string(), pin_table);
+
+        let fields = vec![("step_pin".to_string(), FieldType::U32)];
+        let wrapped = apply_enumeration_wrapping(fields, &enums);
+        match &wrapped[0].1 {
+            WrappedField::Enumerated { enum_name, .. } => assert_eq!(enum_name, "pin"),
+            other => panic!("expected Enumerated (matched via _pin suffix), got {:?}", other),
+        }
+    }
 }
