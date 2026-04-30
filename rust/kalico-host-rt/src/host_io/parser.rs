@@ -57,4 +57,14 @@ mod data_dictionary_tests {
             other => panic!("expected Single(254), got {:?}", other),
         }
     }
+
+    #[test]
+    fn parses_range_enum() {
+        let json = r#"{"PA0": [0, 16]}"#;
+        let table: IndexMap<String, EnumValue> = serde_json::from_str(json).unwrap();
+        match table.get("PA0") {
+            Some(EnumValue::Range { start: 0, count: 16 }) => {}
+            other => panic!("expected Range {{0, 16}}, got {:?}", other),
+        }
+    }
 }
