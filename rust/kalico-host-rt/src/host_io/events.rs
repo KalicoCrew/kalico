@@ -41,14 +41,16 @@ impl TraceRing {
 
     pub fn dispatch(&mut self, mut event: TraceEvent) {
         if self.sticky_overflow {
-            event.flags |= 0x01; // OVERFLOW flag
-            self.sticky_overflow = false;
+            event.flags |= 0x01; // OVERFLOW flag — mark before try_send (Bug 3 fix)
         }
 
         match self.subscriber.as_ref() {
             Some(tx) => match tx.try_send(event) {
-                Ok(_) => {}
+                Ok(_) => {
+                    self.sticky_overflow = false; // Bug 3 fix: clear only on successful delivery
+                }
                 Err(TrySendError::Full(_)) => {
+                    // sticky_overflow stays true; drop count increments
                     self.sticky_overflow = true;
                     self.drop_count_since_event += 1;
                     if let Some(host_tx) = &self.host_event_tx {
@@ -60,7 +62,8 @@ impl TraceRing {
                 }
                 Err(TrySendError::Disconnected(_)) => {
                     self.subscriber = None;
-                    self.drop_count_since_event = 0;
+                    self.sticky_overflow = false;     // Bug 2 fix: don't carry overflow to new subscriber
+                    self.drop_count_since_event = 1;  // Bug 1 fix: count the event that triggered disconnect
                     if let Some(host_tx) = &self.host_event_tx {
                         let _ = host_tx.try_send(HostEvent::TraceSubscriberDisconnected {
                             at: Instant::now(),
