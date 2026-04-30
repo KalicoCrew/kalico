@@ -21,6 +21,7 @@ use runtime::clock::{WidenState, one_tick_cycles};
 use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::Q_N;
+use runtime::config::EMode;
 use runtime::segment::{KinematicTag, SEGMENT_FLAG_HOLD_SEGMENT, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
@@ -87,14 +88,19 @@ impl Harness {
 fn hold_segment(id: u32, t_start: u64, t_end: u64) -> Segment {
     Segment {
         id,
-        // Sentinel handle that would FAIL pool.resolve if we ever tried —
+        // Sentinel handles that would FAIL pool.resolve if we ever tried —
         // proves the short-circuit happens before lookup.
-        curve_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        x_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        y_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        z_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        e_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
         t_start,
         t_end,
         kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
         flags: SEGMENT_FLAG_HOLD_SEGMENT,
-        _pad: [0; 2],
+        _pad: [0; 1],
     }
 }
 

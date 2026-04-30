@@ -15,6 +15,7 @@ use runtime::clock::{WidenState, one_tick_cycles};
 use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::Engine;
 use runtime::queue::Q_N;
+use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
@@ -79,12 +80,17 @@ fn current_segment_id_set_on_activation() {
     h.q_producer
         .enqueue(Segment {
             id: 42,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: 4 * tc,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 
@@ -112,12 +118,17 @@ fn retired_through_segment_id_advances_on_retire() {
     h.q_producer
         .enqueue(Segment {
             id: 7,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: 2 * tc,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 
@@ -145,12 +156,17 @@ fn retired_through_segment_id_monotonic_across_two_segments() {
     h.q_producer
         .enqueue(Segment {
             id: 3,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: d1,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
     // Stage a second segment that uses the same slot once gen advances —
@@ -159,12 +175,17 @@ fn retired_through_segment_id_monotonic_across_two_segments() {
     h.q_producer
         .enqueue(Segment {
             id: 4,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: d1,
             t_end: d1 + d2,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 

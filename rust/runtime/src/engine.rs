@@ -57,7 +57,7 @@ impl RuntimeStatus {
 #[allow(missing_debug_implementations)] // P, I are open trait bounds; ISR-internal struct.
 pub struct Engine<P: PaSlot, I: IsSlot> {
     pub(crate) current: Option<Segment>,
-    last_motors: [f32; 3], // last-known-good motor positions (used in FAULT marker)
+    last_motors: [f32; 4], // last-known-good motor positions (used in FAULT marker)
     pa_slot: P,
     is_slot: I,
     one_tick_cycles_value: u64,
@@ -84,7 +84,7 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
     pub fn new(clock_freq: u32) -> Self {
         Self {
             current: None,
-            last_motors: [0.0; 3],
+            last_motors: [0.0; 4],
             pa_slot: P::default(),
             is_slot: I::default(),
             one_tick_cycles_value: u64::from(one_tick_cycles(clock_freq)),
@@ -193,11 +193,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             tick: now,
             motor_a: self.last_motors[0],
             motor_b: self.last_motors[1],
-            motor_e: self.last_motors[2],
+            motor_z: self.last_motors[2],
+            motor_e: self.last_motors[3],
             segment_id,
             curve_handle,
             flags: TRACE_FLAG_FAULT_MARKER,
-            _pad: [0; 3],
+            _pad: [0; 7],
         });
     }
 
@@ -305,7 +306,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             iters += 1;
             if iters > MAX_BOUNDARY_ITERS {
                 let seg_id = current.id;
-                let curve_handle = current.curve_handle;
+                let curve_handle = current.x_handle;
                 self.current = Some(current);
                 self.latch_fault(
                     RuntimeError::BoundaryLoopExhausted,
@@ -339,11 +340,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     tick: now,
                     motor_a: self.last_motors[0],
                     motor_b: self.last_motors[1],
-                    motor_e: self.last_motors[2],
+                    motor_z: self.last_motors[2],
+                    motor_e: self.last_motors[3],
                     segment_id: current.id,
-                    curve_handle: current.curve_handle,
+                    curve_handle: current.x_handle,
                     flags: TRACE_FLAG_SEGMENT_END,
-                    _pad: [0; 3],
+                    _pad: [0; 7],
                 });
             }
             // Drop current; advance to next.
@@ -395,11 +397,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     tick: now,
                     motor_a: self.last_motors[0],
                     motor_b: self.last_motors[1],
-                    motor_e: self.last_motors[2],
+                    motor_z: self.last_motors[2],
+                    motor_e: self.last_motors[3],
                     segment_id: current.id,
-                    curve_handle: current.curve_handle,
+                    curve_handle: current.x_handle,
                     flags: TRACE_FLAG_HOLD_SAMPLE,
-                    _pad: [0; 3],
+                    _pad: [0; 7],
                 });
             }
             // SEGMENT_END at retire — same path as motion segments. The
@@ -412,11 +415,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     tick: now,
                     motor_a: self.last_motors[0],
                     motor_b: self.last_motors[1],
-                    motor_e: self.last_motors[2],
+                    motor_z: self.last_motors[2],
+                    motor_e: self.last_motors[3],
                     segment_id: current.id,
-                    curve_handle: current.curve_handle,
+                    curve_handle: current.x_handle,
                     flags: TRACE_FLAG_SEGMENT_END,
-                    _pad: [0; 3],
+                    _pad: [0; 7],
                 });
                 shared
                     .retired_through_segment_id
@@ -431,7 +435,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Step 4: curve evaluation. Spec invariant: segments are time-parameterized.
-        let Some(curve_view) = pool.resolve(current.curve_handle) else {
+        // Step 7-B temporary: use x_handle as the primary handle for the
+        // existing scalar eval path. Task 6 rewrites to per-axis eval.
+        let Some(curve_view) = pool.resolve(current.x_handle) else {
             // §9.2 fault_detail: `(slot_idx << 16) | (observed_gen XOR
             // expected_gen)`. We don't have the per-slot `current_gen` at
             // hand cheaply (resolve already failed), so encode using the
@@ -441,14 +447,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // requires plumbing the failed `lookup` error variant out of
             // `pool.resolve`; deferred to a future Step 6.x cleanup.)
             let detail = crate::error::encode_invalid_curve_handle(
-                current.curve_handle.slot_idx,
+                current.x_handle.slot_idx,
                 0,
-                current.curve_handle.generation,
+                current.x_handle.generation,
             );
             self.latch_fault(
                 RuntimeError::InvalidHandle,
                 current.id,
-                current.curve_handle,
+                current.x_handle,
                 now,
                 trace,
                 shared,
@@ -462,7 +468,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             self.latch_fault(
                 RuntimeError::InvalidCurve,
                 current.id,
-                current.curve_handle,
+                current.x_handle,
                 now,
                 trace,
                 shared,
@@ -477,7 +483,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             self.latch_fault(
                 RuntimeError::NaNOrInfFromEval,
                 current.id,
-                current.curve_handle,
+                current.x_handle,
                 now,
                 trace,
                 shared,
@@ -487,14 +493,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Step 6: kinematic transform. Pipeline order: kinematics BEFORE PA/IS.
-        let motors = match current.kinematics {
+        // Temporary: nurbs_eval_3d returns [scalar_x, 0.0, 0.0]; expand to
+        // 4-element positions [x, y, z, e] and motors [a, b, z, e].
+        let positions = [xyz_e[0], xyz_e[1], xyz_e[2], 0.0];
+        let motors_3 = match current.kinematics {
             KinematicTag::CoreXyAndE => corexy_with_e(xyz_e),
             KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(xyz_e),
         };
+        let motors = [motors_3[0], motors_3[1], 0.0, motors_3[2]];
 
         // Step 7: slot pipeline. Noop ZSTs at Step 5.
         let dt = 1.0 / (crate::clock::TICK_RATE_HZ as f32);
-        let mut state = TickState { dt, xyz_e, motors };
+        let mut state = TickState { dt, positions, motors };
         self.pa_slot.apply(&mut state);
         self.is_slot.apply(&mut state);
 
@@ -514,11 +524,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 tick: now,
                 motor_a: state.motors[0],
                 motor_b: state.motors[1],
-                motor_e: state.motors[2],
+                motor_z: state.motors[2],
+                motor_e: state.motors[3],
                 segment_id: current.id,
-                curve_handle: current.curve_handle,
+                curve_handle: current.x_handle,
                 flags: segment_end_flag,
-                _pad: [0; 3],
+                _pad: [0; 7],
             })
             .is_err()
         {

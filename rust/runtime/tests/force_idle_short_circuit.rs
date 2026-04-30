@@ -23,6 +23,7 @@ use runtime::clock::WidenState;
 use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::Engine;
 use runtime::queue::Q_N;
+use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
@@ -48,12 +49,17 @@ fn force_idle_short_circuits_tick() {
     q_producer
         .enqueue(Segment {
             id: 1,
-            curve_handle: CurveHandle::new(0, 1),
+            x_handle: CurveHandle::new(0, 1),
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: 1_000_000,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 
@@ -120,12 +126,17 @@ fn force_idle_with_active_current_clears_it() {
     q_producer
         .enqueue(Segment {
             id: 1,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: 1_000_000,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 

@@ -4,9 +4,10 @@
 use heapless::spsc::Queue;
 
 use runtime::clock::{WidenState, one_tick_cycles};
-use runtime::curve_pool::CurvePool;
+use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::Q_N;
+use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
@@ -62,12 +63,17 @@ fn boundary_loop_works_near_u64_max() {
     q_producer
         .enqueue(Segment {
             id: 1,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: near_max,
             t_end: near_max + tc * 4,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 

@@ -13,6 +13,7 @@ use runtime::clock::{WidenState, one_tick_cycles};
 use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::queue::Q_N;
+use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
@@ -143,12 +144,17 @@ fn tick_processes_one_segment_to_completion() {
     h.q_producer
         .enqueue(Segment {
             id: 1,
-            curve_handle: handle,
+            x_handle: handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: n_ticks * tick_cycles,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 
@@ -193,23 +199,33 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     h.q_producer
         .enqueue(Segment {
             id: 1,
-            curve_handle: h0,
+            x_handle: h0,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: d1,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
     h.q_producer
         .enqueue(Segment {
             id: 2,
-            curve_handle: h1,
+            x_handle: h1,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: d1,
             t_end: d1 + d2,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 
@@ -276,12 +292,17 @@ fn invalid_curve_handle_latches_fault() {
     h.q_producer
         .enqueue(Segment {
             id: 1,
-            curve_handle: CurveHandle::new(0, 1),
+            x_handle: CurveHandle::new(0, 1),
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start: 0,
             t_end: tc * 2,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         })
         .unwrap();
 

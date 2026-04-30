@@ -19,11 +19,12 @@ fn segment_end_sample(seg_id: u32, handle: runtime::curve_pool::CurveHandle) -> 
         tick: 100,
         motor_a: 0.0,
         motor_b: 0.0,
+        motor_z: 0.0,
         motor_e: 0.0,
         segment_id: seg_id,
         curve_handle: handle,
         flags: TRACE_FLAG_SEGMENT_END,
-        _pad: [0; 3],
+        _pad: [0; 7],
     }
 }
 
@@ -97,11 +98,12 @@ fn non_segment_end_samples_skip_reclaim() {
         tick: 1,
         motor_a: 0.0,
         motor_b: 0.0,
+        motor_z: 0.0,
         motor_e: 0.0,
         segment_id: 1,
         curve_handle: h1,
         flags: 0, // NOT a SEGMENT_END
-        _pad: [0; 3],
+        _pad: [0; 7],
     }];
     drain_and_reclaim(&pool, || samples.pop(), 16);
     // Slot still busy because SEGMENT_END was never observed.

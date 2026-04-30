@@ -47,15 +47,15 @@ mod tests {
         let mut is = NoopIs;
         let mut state = TickState {
             dt: 1.0 / 40_000.0,
-            xyz_e: [10.0, 20.0, 5.0],
-            motors: [30.0, -10.0, 5.0],
+            positions: [10.0, 20.0, 0.0, 5.0],
+            motors: [30.0, -10.0, 0.0, 5.0],
         };
         let original = state;
         pa.apply(&mut state);
         is.apply(&mut state);
         // Noop must not touch any bits — compare as u32 to satisfy clippy::float_cmp.
-        let bits = |a: [f32; 3]| a.map(f32::to_bits);
-        assert_eq!(bits(state.xyz_e), bits(original.xyz_e));
+        let bits = |a: [f32; 4]| a.map(f32::to_bits);
+        assert_eq!(bits(state.positions), bits(original.positions));
         assert_eq!(bits(state.motors), bits(original.motors));
     }
 }

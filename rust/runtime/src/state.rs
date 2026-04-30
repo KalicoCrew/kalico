@@ -37,8 +37,8 @@ use crate::trace::{TRACE_RING_N, TraceSample};
 #[derive(Debug, Clone, Copy)]
 pub struct TickState {
     pub dt: f32,
-    pub xyz_e: [f32; 3],
-    pub motors: [f32; 3],
+    pub positions: [f32; 4], // [x, y, z, e] logical
+    pub motors: [f32; 4],    // [a, b, z, e] or [x, y, z, e] post-kinematic
 }
 
 /// Production `Engine` instantiation: ZST PA/IS slots per Step-5 spec §3.1.
@@ -142,6 +142,8 @@ pub struct SharedState {
     // addition to `accepted_segment_id` which is the cumulative accept
     // cursor) so duplicate-id rejection can short-circuit on the hot path.
     pub accepted_segment_id_seen: AtomicBool,
+    // Step 7-B: homing gate — ISR checks this before accepting motion segments.
+    pub homed: AtomicBool,
 }
 
 impl SharedState {
@@ -164,6 +166,7 @@ impl SharedState {
             terminal_segment_id_set: AtomicBool::new(false),
             terminal_segment_id_value: AtomicU32::new(0),
             accepted_segment_id_seen: AtomicBool::new(false),
+            homed: AtomicBool::new(false),
         }
     }
 }

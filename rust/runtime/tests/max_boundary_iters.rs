@@ -33,6 +33,7 @@ use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::error::RuntimeError;
 use runtime::queue::Q_N;
+use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
@@ -61,21 +62,31 @@ fn injected_iter_start_trips_boundary_loop_fault() {
     // never reached because the boundary loop faults.
     let seg = Segment {
         id: 1,
-        curve_handle: CurveHandle::new(0, 1),
+        x_handle: CurveHandle::new(0, 1),
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
         t_start: 0,
         t_end: tc, // 1 tick duration
         kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::CoupledToXy,
+        extrusion_ratio: 0.0,
         flags: 0,
-        _pad: [0; 2],
+        _pad: [0; 1],
     };
     let seg2 = Segment {
         id: 2,
-        curve_handle: CurveHandle::new(0, 1),
+        x_handle: CurveHandle::new(0, 1),
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
         t_start: tc,
         t_end: tc * 2,
         kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::CoupledToXy,
+        extrusion_ratio: 0.0,
         flags: 0,
-        _pad: [0; 2],
+        _pad: [0; 1],
     };
     q_producer.enqueue(seg).unwrap();
     q_producer.enqueue(seg2).unwrap();
@@ -129,21 +140,31 @@ fn no_injection_default_path_does_not_fault_on_single_carry() {
     use runtime::segment::SEGMENT_FLAG_HOLD_SEGMENT;
     let seg = Segment {
         id: 1,
-        curve_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        x_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        y_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        z_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        e_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
         t_start: 0,
         t_end: tc, // 1 tick
         kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
         flags: SEGMENT_FLAG_HOLD_SEGMENT,
-        _pad: [0; 2],
+        _pad: [0; 1],
     };
     let seg2 = Segment {
         id: 2,
-        curve_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        x_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        y_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        z_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
+        e_handle: CurveHandle::HOLD_SEGMENT_SENTINEL,
         t_start: tc,
         t_end: tc * 2,
         kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
         flags: SEGMENT_FLAG_HOLD_SEGMENT,
-        _pad: [0; 2],
+        _pad: [0; 1],
     };
     q_producer.enqueue(seg).unwrap();
     q_producer.enqueue(seg2).unwrap();

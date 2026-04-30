@@ -35,12 +35,13 @@ pub struct TraceSample {
     pub tick: u64,                 // offset 0, 8 bytes (struct alignment 8)
     pub motor_a: f32,              // offset 8
     pub motor_b: f32,              // offset 12
-    pub motor_e: f32,              // offset 16
-    pub segment_id: u32,           // offset 20
-    pub curve_handle: CurveHandle, // offset 24, 4 bytes (slot+gen)
-    pub flags: u8,                 // offset 28
+    pub motor_z: f32,              // offset 16
+    pub motor_e: f32,              // offset 20
+    pub segment_id: u32,           // offset 24
+    pub curve_handle: CurveHandle, // offset 28, 4 bytes (slot+gen)
+    pub flags: u8,                 // offset 32
     #[allow(clippy::pub_underscore_fields)]
-    pub _pad: [u8; 3], // offsets 29..31 — explicit padding to 32-byte total
+    pub _pad: [u8; 7], // offsets 33..39 — explicit padding to 40-byte total
 }
 
 impl Default for TraceSample {
@@ -49,11 +50,12 @@ impl Default for TraceSample {
             tick: 0,
             motor_a: 0.0,
             motor_b: 0.0,
+            motor_z: 0.0,
             motor_e: 0.0,
             segment_id: 0,
             curve_handle: CurveHandle::new(0, 0),
             flags: 0,
-            _pad: [0; 3],
+            _pad: [0; 7],
         }
     }
 }
@@ -133,15 +135,16 @@ mod tests {
     fn trace_sample_layout() {
         // Spec §13.2 — these offsets are mirrored in the C smoke build's
         // _Static_assert. Any drift here breaks the C consumer.
-        assert_eq!(size_of::<TraceSample>(), 32);
+        assert_eq!(size_of::<TraceSample>(), 40);
         assert_eq!(align_of::<TraceSample>(), 8);
         assert_eq!(offset_of!(TraceSample, tick), 0);
         assert_eq!(offset_of!(TraceSample, motor_a), 8);
         assert_eq!(offset_of!(TraceSample, motor_b), 12);
-        assert_eq!(offset_of!(TraceSample, motor_e), 16);
-        assert_eq!(offset_of!(TraceSample, segment_id), 20);
-        assert_eq!(offset_of!(TraceSample, curve_handle), 24);
-        assert_eq!(offset_of!(TraceSample, flags), 28);
+        assert_eq!(offset_of!(TraceSample, motor_z), 16);
+        assert_eq!(offset_of!(TraceSample, motor_e), 20);
+        assert_eq!(offset_of!(TraceSample, segment_id), 24);
+        assert_eq!(offset_of!(TraceSample, curve_handle), 28);
+        assert_eq!(offset_of!(TraceSample, flags), 32);
     }
 
     fn sample(tick: u64, segment_id: u32) -> TraceSample {
@@ -149,11 +152,12 @@ mod tests {
             tick,
             motor_a: 0.0,
             motor_b: 0.0,
+            motor_z: 0.0,
             motor_e: 0.0,
             segment_id,
             curve_handle: CurveHandle::new(0, 0),
             flags: 0,
-            _pad: [0; 3],
+            _pad: [0; 7],
         }
     }
 

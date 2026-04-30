@@ -63,18 +63,24 @@ impl SegmentQueue {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::config::EMode;
     use crate::curve_pool::CurveHandle;
     use crate::segment::*;
 
     fn seg(id: u32, t_start: u64, t_end: u64) -> Segment {
         Segment {
             id,
-            curve_handle: CurveHandle::new(0, 1),
+            x_handle: CurveHandle::new(0, 1),
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
             t_start,
             t_end,
             kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.0,
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         }
     }
 
