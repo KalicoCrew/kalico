@@ -552,6 +552,7 @@ dependencies = [
  "flate2",
  "indexmap",
  "log",
+ "proptest",
  "pyo3",
  "serde",
  "serde_json",

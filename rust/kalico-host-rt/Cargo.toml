@@ -37,5 +37,8 @@ default = []
 python-diff-test = []
 python-bridge = ["dep:pyo3"]
 
+[dev-dependencies]
+proptest = "1"
+
 [lints]
 workspace = true
