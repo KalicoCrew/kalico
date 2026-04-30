@@ -4,6 +4,16 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 
 <!-- entries below -->
 
+### 2026-04-30 — Step 7-B complete
+- Curve pool refactored to per-axis scalar (degree 10, 80 CPs, 64 slots).
+- Segment struct carries 4 per-axis handles + EMode + extrusion_ratio.
+- Engine evaluator: per-axis scalar de Boor, CoupledToXy E integration, Independent E eval, Travel hold.
+- Step generation: f64 accumulator, multi-step burst with MAX_STEPS_PER_TICK cap.
+- Multi-handle retirement via foreground segment_id → handles table.
+- Safety gate: homed flag in SharedState.
+- FFI + C-side updated for scalar blobs, 4-handle push, 40-byte trace.
+- Host-rt producer updated for 4-handle wire format.
+
 ## 2026-04-27
 
 **Changed:**
