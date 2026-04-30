@@ -174,4 +174,13 @@ mod format_string_tests {
         assert_eq!(name, "identify_response");
         assert_eq!(fields[1].1, FieldType::ProgmemBuffer);
     }
+
+    #[test]
+    fn rejects_unknown_format_code_hc() {
+        let s = "bad_cmd val=%hc";
+        match parse_format_string(s) {
+            Err(ParseError::UnknownFormatCode(c)) if c == "%hc" => {}
+            other => panic!("expected UnknownFormatCode(%hc), got {:?}", other),
+        }
+    }
 }
