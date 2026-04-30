@@ -58,11 +58,14 @@ impl Harness {
         let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
             Box::leak(Box::new(Queue::new()));
         let (t_producer, t_consumer) = trace.split();
+        let shared = SharedState::new();
+        // Step 7-B: all engine_tick tests assume a homed machine.
+        shared.homed.store(true, core::sync::atomic::Ordering::Release);
         Self {
             engine: Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ),
             widen: WidenState::default(),
             pool: CurvePool::new(),
-            shared: SharedState::new(),
+            shared,
             q_producer,
             q_consumer,
             t_producer,
@@ -96,29 +99,6 @@ impl Harness {
     }
 }
 
-/// Load fixture-by-name into the curve pool slot. Returns the freshly-issued
-/// `CurveHandle` so the caller can use it to construct a `Segment`. Single
-/// source of truth for "which curves the Step-5 tests use" — mirrored by
-/// Surface C's host script.
-fn load_fixture(pool: &CurvePool, slot_idx: u16, name: &str) -> CurveHandle {
-    let set = fixtures::load();
-    let f = set
-        .fixtures
-        .iter()
-        .find(|f| f.name == name)
-        .unwrap_or_else(|| panic!("fixture {name} missing from step5_segments.json"));
-    // Step 7-B: extract first scalar component (X) from 3D fixture CPs.
-    // The engine evaluator (Task 6) will do per-axis scalar eval; for now
-    // we just need a valid scalar curve in the pool.
-    let cps_scalar: Vec<f32> = f
-        .control_points
-        .iter()
-        .map(|p| p[0])
-        .collect();
-    pool.validate_and_load(slot_idx, f.degree, &f.knots, &cps_scalar)
-        .unwrap()
-}
-
 // Helper: t_segment in u32 (engine widens internally). Since we start at
 // raw_cyccnt = 0, no wrap concerns within these tests' tick budgets.
 #[allow(clippy::cast_possible_truncation)]
@@ -137,7 +117,9 @@ fn tick_on_empty_queue_returns_idle() {
 #[test]
 fn tick_processes_one_segment_to_completion() {
     let mut h = Harness::new();
-    let handle = load_fixture(&h.pool, 0, "straight_line_x");
+    // Load a linear scalar X curve: 0 → 10 mm.
+    let (deg, knots, cps) = fixtures::linear_scalar(0.0, 10.0);
+    let handle = fixtures::load_scalar(&h.pool, 0, deg, &knots, &cps);
 
     let tick_cycles = u64::from(one_tick_cycles(CLOCK_FREQ));
     let n_ticks = 4u64;
@@ -151,7 +133,7 @@ fn tick_processes_one_segment_to_completion() {
             t_start: 0,
             t_end: n_ticks * tick_cycles,
             kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::CoupledToXy,
+            e_mode: EMode::Travel,
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
@@ -176,6 +158,14 @@ fn tick_processes_one_segment_to_completion() {
     // Last sample at u≈1 → motors at endpoint, segment-end flag set.
     let last = &out[n - 1];
     assert_eq!(last.flags & TRACE_FLAG_SEGMENT_END, TRACE_FLAG_SEGMENT_END);
+
+    // Verify X component is non-zero in the final trace sample. CoreXY:
+    // motor_a = x + y = x (since y=0). Endpoint is 10 mm.
+    assert!(
+        last.motor_a > 0.0,
+        "motor_a should be positive at segment end: {}",
+        last.motor_a,
+    );
 }
 
 #[test]
@@ -183,17 +173,16 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let mut h = Harness::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
-    // Two distinct fixtures back-to-back — exercise sub-tick boundary carry.
-    // straight_line_x ends at (10,0,0); rational_quadratic_arc starts at
-    // (10,0,0) so the boundary is geometrically continuous and motor_a
-    // increases monotonically across the seam.
-    let h0 = load_fixture(&h.pool, 0, "straight_line_x");
-    let h1 = load_fixture(&h.pool, 1, "rational_quadratic_arc");
+
+    // Two scalar X curves back-to-back: seg1 X: 0→10, seg2 X: 10→20.
+    // Geometrically continuous at x=10. Both Y/Z/E unused sentinels, Travel mode.
+    let (deg, knots, cps1) = fixtures::linear_scalar(0.0, 10.0);
+    let h0 = fixtures::load_scalar(&h.pool, 0, deg, &knots, &cps1);
+    let (deg2, knots2, cps2) = fixtures::linear_scalar(10.0, 20.0);
+    let h1 = fixtures::load_scalar(&h.pool, 1, deg2, &knots2, &cps2);
 
     // Sized so that tick 1 lands near u≈1 of seg1 and tick 2 (post-boundary)
-    // lands near u≈0 of seg2 — the only configuration that satisfies the
-    // 0.05 mm seam tolerance with the 4-tick test loop. (D1 = tc + 1 cycle
-    // → tick 1 at u = tc/(tc+1) ≈ 1; D2 = 1000·tc → tick 2 at u ≈ 0.001.)
+    // lands near u≈0 of seg2.
     let d1 = tc + 1;
     let d2 = 1000 * tc;
     h.q_producer
@@ -206,7 +195,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
             t_start: 0,
             t_end: d1,
             kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::CoupledToXy,
+            e_mode: EMode::Travel,
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
@@ -222,7 +211,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
             t_start: d1,
             t_end: d1 + d2,
             kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::CoupledToXy,
+            e_mode: EMode::Travel,
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
@@ -239,12 +228,9 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
     let n = h.drain_trace(&mut out);
 
     // Boundary correctness check: the LAST sample of segment 1 and the FIRST
-    // sample of segment 2 must agree on (motor_a, motor_b, motor_e) to within
-    // the sub-tick boundary tolerance. straight_line_x ends at (10, 0, 0);
-    // rational_quadratic_arc starts at (10, 0, 0) — both yield motor = (10, 10, 0)
-    // at the seam. Per-sample monotonicity over the whole trace is NOT asserted
-    // (the arc's motor_a rises to ~14.14 mid-arc and falls back to 10 at u=1
-    // because motor_a = X+Y and the arc's path through (10,10,0) increases X+Y).
+    // sample of segment 2 must agree on motor_a to within the sub-tick
+    // boundary tolerance. Seg1 ends at x=10, seg2 starts at x=10. CoreXY:
+    // motor_a = x + y = x (y=0).
     let mut last_seg1: Option<&TraceSample> = None;
     let mut first_seg2: Option<&TraceSample> = None;
     for s in out.iter().take(n) {
@@ -284,7 +270,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
 fn invalid_curve_handle_latches_fault() {
     // Spec §5.5. Engine resolves an unloaded handle → InvalidHandle fault,
     // status latches to Fault, last_error code is set, fault marker emitted.
-    let mut h = Harness::new();
+    let mut h = Harness::new(); // homed=true set by Harness::new()
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
     // Use a never-issued handle (gen=1) — the slot is empty (gen=0), so

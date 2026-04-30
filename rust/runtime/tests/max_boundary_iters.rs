@@ -52,6 +52,8 @@ fn injected_iter_start_trips_boundary_loop_fault() {
     let mut widen = WidenState::default();
     let pool = CurvePool::new();
     let shared = SharedState::new();
+    // Step 7-B: homed gate — set homed=true so the test reaches the boundary loop.
+    shared.homed.store(true, core::sync::atomic::Ordering::Release);
 
     // Inject so the first carry increments iters from 7 → 8, exceeding
     // MAX_BOUNDARY_ITERS = 7 and tripping the fault.
@@ -133,6 +135,8 @@ fn no_injection_default_path_does_not_fault_on_single_carry() {
     let mut widen = WidenState::default();
     let pool = CurvePool::new();
     let shared = SharedState::new();
+    // Step 7-B: homed gate — set homed=true so the test reaches the boundary loop.
+    shared.homed.store(true, core::sync::atomic::Ordering::Release);
 
     // No injection.
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));

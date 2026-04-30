@@ -68,6 +68,24 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// Reset on segment activation; incremented per hold tick. At ~10 ms
     /// (`HOLD_SAMPLE_TICK_PERIOD = 400`) we drop one breadcrumb sample.
     hold_sample_ticks: u32,
+    /// Previous X position for E-mode arc-length integration.
+    prev_x: f32,
+    /// Previous Y position for E-mode arc-length integration.
+    prev_y: f32,
+    /// E accumulator for CoupledToXy mode — f64 for sub-step accuracy over
+    /// millions of ticks (H723 has hardware double-precision FPU).
+    e_accumulator: f64,
+    /// Set to `true` on init and after flush/clear so the first segment seeds
+    /// `prev_x`/`prev_y` from X(0)/Y(0) rather than computing a spurious
+    /// delta from (0,0).
+    needs_xy_seed: bool,
+    /// Per-axis step accumulators. Indexed in motor space post-kinematics:
+    /// CoreXY: [A=0, B=1, Z=2, E=3]. Step pulse emission deferred to 7-D;
+    /// update() is called but results are logged/ignored for now.
+    step_state: [crate::step::StepMotorState; 4],
+    /// Per-MCU axis configuration. `None` until `configure()` is called;
+    /// step generation is skipped when unconfigured.
+    mcu_config: Option<crate::config::McuAxisConfig>,
     /// Phase 12.2 test-only injection — when non-zero, the boundary loop
     /// pretends it has already iterated this many times before the first
     /// carry, so the `n+1`-th carry trips the `MAX_BOUNDARY_ITERS` guard.
@@ -92,6 +110,12 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             last_error: AtomicI32::new(0),
             tick_counter: TickCounter::new(),
             hold_sample_ticks: 0,
+            prev_x: 0.0,
+            prev_y: 0.0,
+            e_accumulator: 0.0,
+            needs_xy_seed: true,
+            step_state: [crate::step::StepMotorState::default(); 4],
+            mcu_config: None,
             #[cfg(any(test, feature = "test-injection"))]
             injected_iter_start: 0,
         }
@@ -130,14 +154,32 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.tick_counter.snapshot()
     }
 
+    /// Set the per-MCU axis configuration. Must be called before motion
+    /// segments are pushed so step generation has valid steps-per-mm ratios.
+    pub fn configure(&mut self, config: crate::config::McuAxisConfig) {
+        // Seed step states from the motor config.
+        for (i, motor_opt) in config.motors.iter().enumerate() {
+            if let Some(motor) = motor_opt {
+                if let Some(ss) = self.step_state.get_mut(i) {
+                    *ss = crate::step::StepMotorState::new(motor.steps_per_mm);
+                }
+            }
+        }
+        self.mcu_config = Some(config);
+    }
+
     /// Round-2 fix B4: clear the current segment from outside the engine
     /// module. Used by Phase 7 §8.5 flush as defense-in-depth so foreground
     /// can drop the in-flight segment under disabled-IRQ before clearing
     /// `stream_open`. Phase 1 lands the accessor; the call site arrives in
     /// Phase 7.
+    ///
+    /// Also resets E-mode and XY-seed state so the next stream starts clean.
     #[allow(dead_code)] // Wired in Phase 7.
     pub(crate) fn clear_current(&mut self) {
         self.current = None;
+        self.needs_xy_seed = true;
+        self.e_accumulator = 0.0;
     }
 
     /// Phase 12.2 test-only helper: prime the boundary-loop iteration
@@ -242,6 +284,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         if self.status() == RuntimeStatus::Fault {
             return Err(RuntimeError::FaultLatched);
+        }
+
+        // Step 7-B: homed gate. Before segment activation, reject motion when
+        // the machine is not homed and a stream is open (segments are expected).
+        // When no stream is open (idle / drained), silently return Ok — this
+        // lets non-homed MCU ticks complete without faulting.
+        if !shared.homed.load(Ordering::Acquire) {
+            if shared.stream_open.load(Ordering::Acquire) {
+                self.latch_fault(RuntimeError::NotHomed, 0, CurveHandle::UNUSED_SENTINEL, now, trace, shared, None);
+                return Err(RuntimeError::NotHomed);
+            }
+            return Ok(());
         }
 
         // Step 1 + 2: queue + idle check, segment activation. See spec §4.2.
@@ -434,52 +488,161 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return Ok(());
         }
 
-        // Step 4: curve evaluation. Spec invariant: segments are time-parameterized.
-        // Step 7-B temporary: use x_handle as the primary handle for the
-        // existing scalar eval path. Task 6 rewrites to per-axis eval.
-        let Some(curve_view) = pool.resolve(current.x_handle) else {
-            // §9.2 fault_detail: `(slot_idx << 16) | (observed_gen XOR
-            // expected_gen)`. We don't have the per-slot `current_gen` at
-            // hand cheaply (resolve already failed), so encode using the
-            // requested handle's slot/gen with `observed=0` — the XOR
-            // collapses to the expected gen, which is the most useful
-            // number for host-side post-mortem analysis. (Improving this
-            // requires plumbing the failed `lookup` error variant out of
-            // `pool.resolve`; deferred to a future Step 6.x cleanup.)
-            let detail = crate::error::encode_invalid_curve_handle(
-                current.x_handle.slot_idx,
-                0,
-                current.x_handle.generation,
-            );
-            self.latch_fault(
-                RuntimeError::InvalidHandle,
-                current.id,
-                current.x_handle,
-                now,
-                trace,
-                shared,
-                Some(detail),
-            );
-            return Err(RuntimeError::InvalidHandle);
-        };
-        let duration = current.duration().max(1) as f32; // saturating_sub avoids 0
+        // Step 4: per-axis scalar curve evaluation. Spec invariant: segments
+        // are time-parameterized; each axis has its own scalar NURBS.
+        let duration = current.duration().max(1) as f32;
         let u = (t_segment as f32 / duration).clamp(0.0, 1.0);
-        let Ok(xyz_e) = nurbs_eval_3d(&curve_view, u) else {
-            self.latch_fault(
-                RuntimeError::InvalidCurve,
-                current.id,
-                current.x_handle,
-                now,
-                trace,
-                shared,
-                None,
-            );
-            return Err(RuntimeError::InvalidCurve);
+
+        // -- X axis --
+        let x = if current.x_handle.is_unused_sentinel() {
+            0.0
+        } else {
+            let Some(cv) = pool.resolve(current.x_handle) else {
+                let detail = crate::error::encode_invalid_curve_handle(
+                    current.x_handle.slot_idx, 0, current.x_handle.generation,
+                );
+                self.latch_fault(RuntimeError::InvalidHandle, current.id, current.x_handle, now, trace, shared, Some(detail));
+                return Err(RuntimeError::InvalidHandle);
+            };
+            match scalar_eval(&cv, u) {
+                Ok(v) => v,
+                Err(()) => {
+                    self.latch_fault(RuntimeError::InvalidCurve, current.id, current.x_handle, now, trace, shared, None);
+                    return Err(RuntimeError::InvalidCurve);
+                }
+            }
+        };
+
+        // -- Y axis --
+        let y = if current.y_handle.is_unused_sentinel() {
+            0.0
+        } else {
+            let Some(cv) = pool.resolve(current.y_handle) else {
+                let detail = crate::error::encode_invalid_curve_handle(
+                    current.y_handle.slot_idx, 0, current.y_handle.generation,
+                );
+                self.latch_fault(RuntimeError::InvalidHandle, current.id, current.y_handle, now, trace, shared, Some(detail));
+                return Err(RuntimeError::InvalidHandle);
+            };
+            match scalar_eval(&cv, u) {
+                Ok(v) => v,
+                Err(()) => {
+                    self.latch_fault(RuntimeError::InvalidCurve, current.id, current.y_handle, now, trace, shared, None);
+                    return Err(RuntimeError::InvalidCurve);
+                }
+            }
+        };
+
+        // -- Z axis --
+        let z = if current.z_handle.is_unused_sentinel() {
+            0.0
+        } else {
+            let Some(cv) = pool.resolve(current.z_handle) else {
+                let detail = crate::error::encode_invalid_curve_handle(
+                    current.z_handle.slot_idx, 0, current.z_handle.generation,
+                );
+                self.latch_fault(RuntimeError::InvalidHandle, current.id, current.z_handle, now, trace, shared, Some(detail));
+                return Err(RuntimeError::InvalidHandle);
+            };
+            match scalar_eval(&cv, u) {
+                Ok(v) => v,
+                Err(()) => {
+                    self.latch_fault(RuntimeError::InvalidCurve, current.id, current.z_handle, now, trace, shared, None);
+                    return Err(RuntimeError::InvalidCurve);
+                }
+            }
+        };
+
+        // -- XY seed: first segment seeds prev_x/prev_y from the curve
+        //    start point to avoid a spurious arc-length delta from (0,0). --
+        if self.needs_xy_seed {
+            // Evaluate X(0) and Y(0) for the seed.
+            let seed_x = if current.x_handle.is_unused_sentinel() {
+                0.0
+            } else if let Some(cv) = pool.resolve(current.x_handle) {
+                scalar_eval(&cv, 0.0).unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let seed_y = if current.y_handle.is_unused_sentinel() {
+                0.0
+            } else if let Some(cv) = pool.resolve(current.y_handle) {
+                scalar_eval(&cv, 0.0).unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            self.prev_x = seed_x;
+            self.prev_y = seed_y;
+            // Seed step accumulators from initial motor positions.
+            let seed_positions = [seed_x, seed_y, z, self.e_accumulator as f32];
+            let seed_motors = match current.kinematics {
+                KinematicTag::CoreXyAndE => corexy_with_e(seed_positions),
+                KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(seed_positions),
+            };
+            for i in 0..4 {
+                if let Some(ss) = self.step_state.get_mut(i) {
+                    if let Some(m) = seed_motors.get(i) {
+                        ss.seed(*m);
+                    }
+                }
+            }
+            self.needs_xy_seed = false;
+        }
+
+        // -- E-mode dispatch --
+        let e = match current.e_mode {
+            crate::config::EMode::CoupledToXy => {
+                let dx = x - self.prev_x;
+                let dy = y - self.prev_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                self.e_accumulator += f64::from(current.extrusion_ratio) * f64::from(dist);
+                self.prev_x = x;
+                self.prev_y = y;
+                self.e_accumulator as f32
+            }
+            crate::config::EMode::Independent => {
+                let e_val = if current.e_handle.is_unused_sentinel() {
+                    0.0
+                } else {
+                    let Some(cv) = pool.resolve(current.e_handle) else {
+                        let detail = crate::error::encode_invalid_curve_handle(
+                            current.e_handle.slot_idx, 0, current.e_handle.generation,
+                        );
+                        self.latch_fault(RuntimeError::InvalidHandle, current.id, current.e_handle, now, trace, shared, Some(detail));
+                        return Err(RuntimeError::InvalidHandle);
+                    };
+                    match scalar_eval(&cv, u) {
+                        Ok(v) => v,
+                        Err(()) => {
+                            self.latch_fault(RuntimeError::InvalidCurve, current.id, current.e_handle, now, trace, shared, None);
+                            return Err(RuntimeError::InvalidCurve);
+                        }
+                    }
+                };
+                // On segment end (last tick), sync e_accumulator so the next
+                // CoupledToXy segment resumes correctly.
+                let next_t_segment_check = t_segment.saturating_add(self.one_tick_cycles_value);
+                if next_t_segment_check >= current.duration() {
+                    self.e_accumulator = f64::from(e_val);
+                }
+                // Update prev_x/prev_y even in Independent mode so a
+                // subsequent CoupledToXy segment doesn't see a stale position.
+                self.prev_x = x;
+                self.prev_y = y;
+                e_val
+            }
+            crate::config::EMode::Travel => {
+                // E unchanged — use current accumulator value.
+                self.prev_x = x;
+                self.prev_y = y;
+                self.e_accumulator as f32
+            }
         };
 
         // Step 5: NaN/Inf check. Spec §5.4 — necessary even with producer-side
         // validation (NaN can arise from finite inputs).
-        if !xyz_e.iter().all(|x: &f32| x.is_finite()) {
+        let eval_result = [x, y, z, e];
+        if !eval_result.iter().all(|v: &f32| v.is_finite()) {
             self.latch_fault(
                 RuntimeError::NaNOrInfFromEval,
                 current.id,
@@ -493,9 +656,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Step 6: kinematic transform. Pipeline order: kinematics BEFORE PA/IS.
-        // nurbs_eval_3d returns [scalar_x, 0.0, 0.0]; expand to 4-element
-        // positions [x, y, z, e] with E=0.0 (Task 6 wires E properly).
-        let positions = [xyz_e[0], xyz_e[1], xyz_e[2], 0.0];
+        let positions = [x, y, z, e];
         let motors = match current.kinematics {
             KinematicTag::CoreXyAndE => corexy_with_e(positions),
             KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(positions),
@@ -506,6 +667,27 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let mut state = TickState { dt, positions, motors };
         self.pa_slot.apply(&mut state);
         self.is_slot.apply(&mut state);
+
+        // Step 7b: step generation. Update per-axis accumulators from the
+        // post-PA/IS motor positions. Actual step pulse emission is deferred
+        // to 7-D; we call update() here to maintain accumulator state. If
+        // update returns Err (burst exceeded), latch StepBurstExceeded.
+        for i in 0..4 {
+            if let (Some(ss), Some(&m)) = (self.step_state.get_mut(i), state.motors.get(i)) {
+                if ss.update(m).is_err() {
+                    self.latch_fault(
+                        RuntimeError::StepBurstExceeded,
+                        current.id,
+                        current.x_handle,
+                        now,
+                        trace,
+                        shared,
+                        None,
+                    );
+                    return Err(RuntimeError::StepBurstExceeded);
+                }
+            }
+        }
 
         // Step 8: trace emit.
         let next_t_segment = t_segment.saturating_add(self.one_tick_cycles_value);
@@ -559,13 +741,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     }
 }
 
-/// Temporary scalar-curve stub for the Step 7-B transition. The engine
-/// evaluator is rewritten in Task 6; this stub keeps the code compiling
-/// while the curve pool is scalar. Returns `[scalar_val, 0.0, 0.0]` so
-/// existing kinematics dispatch does not fault on NaN.
-///
-/// TODO(Task 6): replace with per-axis scalar evaluation.
-fn nurbs_eval_3d(curve: &CurveView<'_>, u: f32) -> Result<[f32; 3], ()> {
+/// Evaluate a scalar NURBS curve at parameter `u`. Returns the scalar value
+/// or `Err(())` if the curve data is malformed (degree/knot/CP mismatch).
+fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
     use nurbs::ScalarNurbsRef;
 
     let view = ScalarNurbsRef::<f32>::try_new(
@@ -575,6 +753,5 @@ fn nurbs_eval_3d(curve: &CurveView<'_>, u: f32) -> Result<[f32; 3], ()> {
         None, // polynomial — no weights
     )
     .map_err(|_| ())?;
-    let val = nurbs::eval::eval(&view, u);
-    Ok([val, 0.0, 0.0])
+    Ok(nurbs::eval::eval(&view, u))
 }

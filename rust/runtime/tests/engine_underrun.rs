@@ -44,11 +44,15 @@ impl Harness {
         let trace: &'static mut Queue<TraceSample, TRACE_RING_N> =
             Box::leak(Box::new(Queue::new()));
         let (t_producer, t_consumer) = trace.split();
+        let shared = SharedState::new();
+        // Step 7-B: homed gate — set homed=true so underrun tests reach the
+        // queue-empty-with-stream-open path instead of being blocked by NotHomed.
+        shared.homed.store(true, Ordering::Release);
         Self {
             engine: Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ),
             widen: WidenState::default(),
             pool: CurvePool::new(),
-            shared: SharedState::new(),
+            shared,
             q_producer,
             q_consumer,
             t_producer,
