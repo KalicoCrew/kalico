@@ -198,6 +198,11 @@ per segment retirement.
 5. **Compute parameter** — `u = (t_segment as f32) / (duration as f32)`,
    clamped to [0, 1]. Zero-duration segments are rejected at
    `kalico_push_segment` time (`t_end <= t_start` → fault).
+   Sub-tick segments (duration < one tick period) are valid but
+   handled by the boundary loop advancing past them — the host's
+   N≤25 grid-piece cap ensures minimum ~0.5 mm path length per
+   segment (~20 ticks at 1000 mm/s), so sub-tick segments do not
+   occur in normal operation.
 6. **Eval per-axis scalar NURBS** — `nurbs::eval::eval(view, u)` via
    `ScalarNurbsRef` for each required source axis. Typically three 1D
    de Boor evaluations (degree 9, ~80 CPs) on M7 at f32; four in
@@ -218,8 +223,10 @@ per segment retirement.
      `needs_xy_seed: bool` flag, set on stream arm and cleared after
      the first eval.
    - **After force-idle / flush**: `e_accumulator` reset to 0.0,
-     `needs_xy_seed` set to true. The host re-seeds on the next
-     stream arm.
+     `needs_xy_seed` set to true. Step accumulators for all owned
+     motors are also seeded from the motor-space position at u=0
+     (evaluated via the kinematic transform) so the first step delta
+     is zero. The host re-seeds on the next stream arm.
 8. **NaN/Inf check** — all axis positions.
 9. **Kinematic transform** — dispatch on `kinematics` tag:
    - `CoreXyAndE`: `(x, y, e) -> (a, b, e)` where `a = x+y`, `b = x-y`.
