@@ -1,9 +1,14 @@
 //! EventDispatcher subsystem. Spec §6. (Phase-C stub; Phase D adds the rest.)
 
 use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::Arc;
 use std::time::Instant;
 
-use crate::host_io::runtime_events::{RuntimeEvent, TraceEvent};
+use arc_swap::ArcSwap;
+
+use crate::credit::CreditCounter;
+use crate::fault::FaultLatch;
+use crate::host_io::runtime_events::{RuntimeEvent, StatusEvent, TraceEvent};
 
 #[derive(Debug, Clone)]
 pub enum HostEvent {
@@ -165,5 +170,29 @@ impl HostEventDispatcher {
 
     pub fn sender_handle(&self) -> Option<SyncSender<HostEvent>> {
         self.subscriber.clone()
+    }
+}
+
+// ─── D9: EventDispatcher composition ─────────────────────────────────────────
+
+pub struct EventDispatcher {
+    pub credit_counter:           Option<Arc<CreditCounter>>,
+    pub fault_latch:              FaultLatch,
+    pub trace_ring:               TraceRing,
+    pub status_snapshot:          Arc<ArcSwap<StatusEvent>>,
+    pub runtime_event_dispatcher: RuntimeEventDispatcher,
+    pub host_event_dispatcher:    HostEventDispatcher,
+}
+
+impl EventDispatcher {
+    pub fn new(status_snapshot: Arc<ArcSwap<StatusEvent>>, trace_capacity: usize) -> Self {
+        Self {
+            credit_counter: None,
+            fault_latch: FaultLatch::default(),
+            trace_ring: TraceRing::new(trace_capacity),
+            status_snapshot,
+            runtime_event_dispatcher: RuntimeEventDispatcher::default(),
+            host_event_dispatcher: HostEventDispatcher::default(),
+        }
     }
 }
