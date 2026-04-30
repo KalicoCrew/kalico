@@ -30,7 +30,7 @@ pub mod exports {
         KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION,
         KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT,
         KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
-        KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_OK,
+        KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
     use runtime::segment::{KinematicTag, Segment};
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
@@ -113,8 +113,12 @@ pub mod exports {
 
     /// Push a segment. Producer protocol per spec §4.4 + §10.1.
     ///
-    /// `curve_handle_packed` is the wire-encoded handle: `(generation << 16) |
-    /// slot_idx`. Step-6 §10.1 widening over Step-5's bare `u16`.
+    /// Step 7-B: four per-axis curve handles (x, y, z, e) replace the single
+    /// `curve_handle_packed`. Each is a wire-encoded `(generation << 16) |
+    /// slot_idx`. `e_mode` selects the extruder evaluation strategy (0 =
+    /// CoupledToXy, 1 = Independent, 2 = Travel). `extrusion_ratio_bits` is
+    /// `f32::to_bits()` of the extrusion_per_xy_mm scalar for CoupledToXy mode.
+    ///
     /// `out_accepted_segment_id` and `out_credit_epoch` may be NULL (host
     /// callers that don't need them); when present they receive the values
     /// published into `SharedState` on success — host caller sees the same
@@ -124,10 +128,15 @@ pub mod exports {
     pub unsafe extern "C" fn kalico_runtime_push_segment(
         rt: *mut KalicoRuntime,
         id: u32,
-        curve_handle_packed: u32,
+        x_handle_packed: u32,
+        y_handle_packed: u32,
+        z_handle_packed: u32,
+        e_handle_packed: u32,
         t_start: u64,
         t_end: u64,
         kinematics: u8,
+        e_mode: u8,
+        extrusion_ratio_bits: u32,
         out_accepted_segment_id: *mut u32,
         out_credit_epoch: *mut u32,
     ) -> i32 {
@@ -156,10 +165,15 @@ pub mod exports {
                 shared,
                 isr_ptr_const,
                 id,
-                CurveHandle::unpack(curve_handle_packed),
+                CurveHandle::unpack(x_handle_packed),
+                CurveHandle::unpack(y_handle_packed),
+                CurveHandle::unpack(z_handle_packed),
+                CurveHandle::unpack(e_handle_packed),
                 t_start,
                 t_end,
                 kinematics,
+                e_mode,
+                extrusion_ratio_bits,
                 out_accepted_segment_id,
                 out_credit_epoch,
             )
@@ -172,6 +186,10 @@ pub mod exports {
     /// is paused at this point so the foreground can mutate `widen_state`
     /// without contention.
     ///
+    /// Step 7-B: accepts 4 per-axis curve handles + e_mode + extrusion_ratio.
+    /// Registers all 4 handles in the retirement table at push time so the
+    /// trace-drain pipeline can retire them on `SEGMENT_END`.
+    ///
     /// SAFETY (caller): `isr_ptr_const` must point at the same `RuntimeContext`'s
     /// `IsrState`, and the ISR must be disabled while the producer-protocol
     /// re-enable branch runs (Klipper's `kalico_h7_disable_tim5()` does
@@ -182,20 +200,29 @@ pub mod exports {
         shared: &SharedState,
         isr_ptr_const: *const IsrState,
         id: u32,
-        curve_handle: CurveHandle,
+        x_handle: CurveHandle,
+        y_handle: CurveHandle,
+        z_handle: CurveHandle,
+        e_handle: CurveHandle,
         t_start: u64,
         t_end: u64,
         kinematics: u8,
+        e_mode_raw: u8,
+        extrusion_ratio_bits: u32,
         out_accepted_segment_id: *mut u32,
         out_credit_epoch: *mut u32,
     ) -> i32 {
+        use runtime::config::EMode;
         // Fault-latched short-circuit (preserves Step-5 behaviour).
         if shared.last_error.load(Ordering::Acquire) != 0
             && shared.runtime_status.load(Ordering::Acquire) == RuntimeStatus::Fault as u8
         {
             return KALICO_ERR_FAULT_LATCHED;
         }
-        if t_end <= t_start {
+        if t_end == t_start {
+            return KALICO_ERR_ZERO_DURATION_SEGMENT;
+        }
+        if t_end < t_start {
             return KALICO_ERR_INVALID_DURATION;
         }
         // SAFETY: C-side immutable constant set at static-init time.
@@ -210,6 +237,12 @@ pub mod exports {
             1 => KinematicTag::CartesianXyzAndE,
             _ => return KALICO_ERR_INVALID_KINEMATICS,
         };
+        let e_mode = match e_mode_raw {
+            0 => EMode::CoupledToXy,
+            1 => EMode::Independent,
+            2 => EMode::Travel,
+            _ => return KALICO_ERR_INVALID_KINEMATICS,
+        };
         // Round-2 B11-real / Round-3 B-R3-8 — strict monotonicity gated by
         // the `accepted_segment_id_seen` flag so the initial-state-no-prior-
         // push case does not collide with id=0. The flag is reset on flush /
@@ -221,16 +254,24 @@ pub mod exports {
         }
         let seg = Segment {
             id,
-            curve_handle,
+            x_handle,
+            y_handle,
+            z_handle,
+            e_handle,
             t_start,
             t_end,
             kinematics: kin,
+            e_mode,
+            extrusion_ratio: f32::from_bits(extrusion_ratio_bits),
             flags: 0,
-            _pad: [0; 2],
+            _pad: [0; 1],
         };
         if fg.queue_producer.enqueue(seg).is_err() {
             return KALICO_ERR_QUEUE_FULL;
         }
+        // Register all 4 per-axis handles in the retirement table so the
+        // trace-drain pipeline can retire them on SEGMENT_END.
+        fg.retirement_table.register(id, [x_handle, y_handle, z_handle, e_handle]);
         // Round-2 B6: on the FIRST push of a fresh stream (Opening or
         // StreamOpenPriming with no recorded first segment yet), capture
         // the priming segment's t_start in FgState so the §6.3 arm()
@@ -315,9 +356,7 @@ pub mod exports {
     /// bad data. Returns the freshly issued `(slot, gen)` packed handle via
     /// `out_handle_packed` on success.
     ///
-    /// Step 7-B transition: accepts scalar control points (1D, not 3D).
-    /// `weights` pointer is ignored (polynomial-only). The C-side handler
-    /// will be fully updated in Task 8.
+    /// Step 7-B: accepts scalar control points (1D). No weights (polynomial-only).
     #[unsafe(no_mangle)]
     #[allow(clippy::too_many_arguments)]
     pub unsafe extern "C" fn kalico_runtime_load_curve(
@@ -327,12 +366,9 @@ pub mod exports {
         n_cp: u16,
         knots: *const f32,
         n_knots: u16,
-        weights: *const f32,
-        _n_weights: u16,
         degree: u8,
         out_handle_packed: *mut u32,
     ) -> i32 {
-        let _ = weights; // unused in scalar architecture; kept for C ABI compat
         if rt.is_null() || control_points_flat.is_null() || knots.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
@@ -772,6 +808,55 @@ pub mod exports {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             (*shared_ptr).fault_detail.load(Ordering::Acquire)
         }
+    }
+
+    // ---- Step 7-B: homed gate + axis configuration -------------------------
+
+    /// Set the homed gate. Called by the host after all axes have been
+    /// successfully homed. The ISR checks `shared.homed` before accepting
+    /// motion segments — until this is called, motion commands are rejected
+    /// with `KALICO_ERR_NOT_HOMED`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_set_homed(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access; Release pairs with the
+        // ISR's Acquire load on `shared.homed`.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).homed.store(true, Ordering::Release);
+        }
+        KALICO_OK
+    }
+
+    /// Configure axis mapping and kinematics for this MCU. Minimal stub for
+    /// Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
+    /// CartesianXyzAndE) and validates. Full motor-config blob
+    /// deserialization is deferred to Step 7-C.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_configure_axes(
+        rt: *mut KalicoRuntime,
+        kinematics_tag: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        // Validate the kinematics tag.
+        match kinematics_tag {
+            0 | 1 => {}
+            _ => return KALICO_ERR_INVALID_KINEMATICS,
+        }
+        // Stub: full motor-config blob deserialization deferred to Step 7-C.
+        let _ = rt;
+        KALICO_OK
     }
 
     /// Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to

@@ -65,11 +65,12 @@ fn drain_trace_reports_segment_end_to_caller() {
         tick: 1234,
         motor_a: 0.0,
         motor_b: 0.0,
+        motor_z: 0.0,
         motor_e: 0.0,
         segment_id: 7,
         curve_handle: handle,
         flags: TRACE_FLAG_SEGMENT_END,
-        _pad: [0; 3],
+        _pad: [0; 7],
     };
     unsafe {
         let ctx = rt.cast::<RuntimeContext>();
@@ -87,11 +88,12 @@ fn drain_trace_reports_segment_end_to_caller() {
         tick: 0,
         motor_a: 0.0,
         motor_b: 0.0,
+        motor_z: 0.0,
         motor_e: 0.0,
         segment_id: 0,
         curve_handle: CurveHandle::new(0, 0),
         flags: 0,
-        _pad: [0; 3],
+        _pad: [0; 7],
     }; 4];
     let mut saw_segment_end: u8 = 0;
     let n = unsafe {

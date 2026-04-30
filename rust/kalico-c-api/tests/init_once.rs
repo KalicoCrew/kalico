@@ -43,17 +43,22 @@ fn second_init_returns_null() {
 
 #[test]
 fn null_handle_returns_null_ptr_error() {
-    // Phase 3.3: push_segment now takes (curve_handle_packed: u32, t_start, t_end,
-    // kinematics, *mut accepted_segment_id, *mut credit_epoch). Pass nulls for the
-    // out-params (they're optional).
+    // Step 7-B: push_segment now takes 4 per-axis handles (x, y, z, e),
+    // e_mode, extrusion_ratio_bits, plus t_start, t_end, kinematics.
+    // Pass nulls for the out-params (they're optional).
     let r = unsafe {
         kalico_c_api::kalico_runtime_push_segment(
             std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            100,
-            0,
+            0,    // id
+            0,    // x_handle_packed
+            0,    // y_handle_packed
+            0,    // z_handle_packed
+            0,    // e_handle_packed
+            0,    // t_start
+            100,  // t_end
+            0,    // kinematics
+            0,    // e_mode
+            0,    // extrusion_ratio_bits
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )

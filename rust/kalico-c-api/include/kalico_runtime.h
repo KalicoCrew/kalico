@@ -39,6 +39,11 @@ typedef struct CurveHandle {
  * the sentinel is never resolved through `CurvePool::lookup`.
  */
 #define CurveHandle_HOLD_SEGMENT_SENTINEL (CurveHandle){ .slot_idx = UINT16_MAX, .generation = UINT16_MAX }
+/**
+ * Sentinel for unused curve handle slots in multi-handle segment structs.
+ * Distinct from `HOLD_SEGMENT_SENTINEL` to avoid confusion.
+ */
+#define CurveHandle_UNUSED_SENTINEL (CurveHandle){ .slot_idx = (UINT16_MAX - 1), .generation = (UINT16_MAX - 1) }
 
 /**
  * Trace sample (§13.2). `repr(C)` aligned (NOT packed) to avoid unaligned
@@ -50,11 +55,12 @@ typedef struct TraceSample {
   uint64_t tick;
   float motor_a;
   float motor_b;
+  float motor_z;
   float motor_e;
   uint32_t segment_id;
   struct CurveHandle curve_handle;
   uint8_t flags;
-  uint8_t _pad[3];
+  uint8_t _pad[7];
 } TraceSample;
 
 extern void kalico_h7_enable_tim5(void);
@@ -75,8 +81,12 @@ struct KalicoRuntime *kalico_runtime_init(void);
 /**
  * Push a segment. Producer protocol per spec §4.4 + §10.1.
  *
- * `curve_handle_packed` is the wire-encoded handle: `(generation << 16) |
- * slot_idx`. Step-6 §10.1 widening over Step-5's bare `u16`.
+ * Step 7-B: four per-axis curve handles (x, y, z, e) replace the single
+ * `curve_handle_packed`. Each is a wire-encoded `(generation << 16) |
+ * slot_idx`. `e_mode` selects the extruder evaluation strategy (0 =
+ * CoupledToXy, 1 = Independent, 2 = Travel). `extrusion_ratio_bits` is
+ * `f32::to_bits()` of the extrusion_per_xy_mm scalar for CoupledToXy mode.
+ *
  * `out_accepted_segment_id` and `out_credit_epoch` may be NULL (host
  * callers that don't need them); when present they receive the values
  * published into `SharedState` on success — host caller sees the same
@@ -84,24 +94,24 @@ struct KalicoRuntime *kalico_runtime_init(void);
  */
 int32_t kalico_runtime_push_segment(struct KalicoRuntime *rt,
                                     uint32_t id,
-                                    uint32_t curve_handle_packed,
+                                    uint32_t x_handle_packed,
+                                    uint32_t y_handle_packed,
+                                    uint32_t z_handle_packed,
+                                    uint32_t e_handle_packed,
                                     uint64_t t_start,
                                     uint64_t t_end,
                                     uint8_t kinematics,
+                                    uint8_t e_mode,
+                                    uint32_t extrusion_ratio_bits,
                                     uint32_t *out_accepted_segment_id,
                                     uint32_t *out_credit_epoch);
 
 /**
- * Load a curve into a slab slot. Producer-side validation rejects bad
- * data. Returns the freshly issued `(slot, gen)` packed handle via
- * `out_handle_packed` on success (Round-5 Codex #4 — host can't reference
- * a curve it just loaded otherwise).
+ * Load a scalar curve into a slab slot. Producer-side validation rejects
+ * bad data. Returns the freshly issued `(slot, gen)` packed handle via
+ * `out_handle_packed` on success.
  *
- * `control_points_flat` / `knots` / `weights` are the legacy Step-5
- * flat-pointer triple. The wire-format change to a single 1-byte-
- * versioned blob (§4.2) lands in `kalico_runtime_load_curve_v1` at the
- * C-side handler in `runtime_tick.c`; this FFI is the existing surface
- * that the C handler unpacks into for the call across the FFI boundary.
+ * Step 7-B: accepts scalar control points (1D). No weights (polynomial-only).
  */
 int32_t kalico_runtime_load_curve(struct KalicoRuntime *rt,
                                   uint16_t slot_idx,
@@ -109,8 +119,6 @@ int32_t kalico_runtime_load_curve(struct KalicoRuntime *rt,
                                   uint16_t n_cp,
                                   const float *knots,
                                   uint16_t n_knots,
-                                  const float *weights,
-                                  uint16_t n_weights,
                                   uint8_t degree,
                                   uint32_t *out_handle_packed);
 
@@ -218,6 +226,22 @@ uint8_t kalico_runtime_queue_depth(struct KalicoRuntime *rt);
  * no fault has latched OR the latched fault carries no detail.
  */
 uint32_t kalico_runtime_fault_detail(struct KalicoRuntime *rt);
+
+/**
+ * Set the homed gate. Called by the host after all axes have been
+ * successfully homed. The ISR checks `shared.homed` before accepting
+ * motion segments — until this is called, motion commands are rejected
+ * with `KALICO_ERR_NOT_HOMED`.
+ */
+int32_t kalico_set_homed(struct KalicoRuntime *rt);
+
+/**
+ * Configure axis mapping and kinematics for this MCU. Minimal stub for
+ * Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
+ * CartesianXyzAndE) and validates. Full motor-config blob
+ * deserialization is deferred to Step 7-C.
+ */
+int32_t kalico_configure_axes(struct KalicoRuntime *rt, uint8_t kinematics_tag);
 
 /**
  * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to

@@ -122,6 +122,22 @@ uint8_t kalico_runtime_queue_depth(kalico_nurbs_KalicoRuntime *rt);
 uint32_t kalico_runtime_fault_detail(kalico_nurbs_KalicoRuntime *rt);
 
 /**
+ * Set the homed gate. Called by the host after all axes have been
+ * successfully homed. The ISR checks `shared.homed` before accepting
+ * motion segments — until this is called, motion commands are rejected
+ * with `KALICO_ERR_NOT_HOMED`.
+ */
+int32_t kalico_set_homed(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Configure axis mapping and kinematics for this MCU. Minimal stub for
+ * Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
+ * CartesianXyzAndE) and validates. Full motor-config blob
+ * deserialization is deferred to Step 7-C.
+ */
+int32_t kalico_configure_axes(kalico_nurbs_KalicoRuntime *rt, uint8_t kinematics_tag);
+
+/**
  * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
  * `limit` trace samples from the ring, calls `pool.confirm_retired`
  * for each `SEGMENT_END` observed, and returns a 32-bit packed

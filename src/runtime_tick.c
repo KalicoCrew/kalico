@@ -208,7 +208,7 @@ runtime_drain(void)
     // `kalico_runtime_drain_and_reclaim` consumes any remaining samples for
     // bookkeeping. Both are safe back-to-back because each stops on the
     // first dequeue == None.
-    static uint8_t batch_buf[KALICO_TRACE_BATCH * 32];  // 32 bytes per sample
+    static uint8_t batch_buf[KALICO_TRACE_BATCH * 40];  // 40 bytes per sample
     uint8_t trace_saw_segment_end = 0;
     uint32_t n = kalico_runtime_drain_trace(
         kalico_rt_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH,
@@ -220,7 +220,7 @@ runtime_drain(void)
         // MCU→host trace blob is intentionally NOT versioned: it is a
         // one-shot variable-length stream of `TraceSample` records whose
         // schema is sanity-checked at compile time via the static_assert
-        // on `sizeof(TraceSample) == 32` plus the cbindgen-no-drift CI
+        // on `sizeof(TraceSample) == 40` plus the cbindgen-no-drift CI
         // check. Adding a per-batch version byte would burn 1.5% of every
         // 64-sample drain (32 vs 33-byte alignment loss) for no decoder
         // benefit — the host knows the schema from the data dictionary,
@@ -228,7 +228,7 @@ runtime_drain(void)
         // (different msgid for `kalico_trace`) anyway.
         // See plan-changes-log.md "Step-6 closure-review follow-up fixes"
         // entry for the full reasoning.
-        sendf("kalico_trace count=%u data=%*s", n, n * 32, batch_buf);
+        sendf("kalico_trace count=%u data=%*s", n, n * 40, batch_buf);
     }
 
     // Reclaim leg: drain whatever the wire-batch left behind and observe
@@ -377,10 +377,10 @@ DECL_TASK(runtime_status_drain);
 // Klipper's %*s blob format consumes TWO args slots per blob: a length
 // followed by an encoded pointer that must be reconstituted via
 // `command_decode_ptr` (declared in command.h). See src/i2ccmds.c and
-// src/spicmds.c for canonical usage. Each f32 control point is 3 lanes ×
-// 4 bytes = 12 bytes; each knot/weight is a single f32 (4 bytes). We
-// derive `n_cp`, `n_knots`, `n_weights` from the blob byte-lengths and
-// validate self-consistency before calling into Rust.
+// src/spicmds.c for canonical usage. Each f32 scalar control point is
+// 4 bytes; each knot is a single f32 (4 bytes). We derive `n_cp`,
+// `n_knots` from the blob byte-lengths and validate before calling
+// into Rust.
 // Aligned scratch buffers for the load_curve handler. Klipper's RX buffer
 // places the %*s payload at an arbitrary byte offset (typically not 4-byte
 // aligned), so passing those pointers directly to Rust yields an unaligned
@@ -389,13 +389,11 @@ DECL_TASK(runtime_status_drain);
 // MCU and triggers a USB renumerate. Copy into 4-byte-aligned static
 // buffers first, then pass to Rust.
 //
-// Sizing matches CurvePool's compile-time bounds (8 control points, 12
-// knot vector entries, 8 weights). Static rather than stack: the load
-// handler runs in command-dispatch foreground context and stack is only
-// 512 B; ~144 B of locals would be tight.
-static float kalico_aligned_cps[8 * 3];
-static float kalico_aligned_knots[12];
-static float kalico_aligned_weights[8];
+// Sizing matches CurvePool's compile-time bounds (MAX_CONTROL_POINTS = 80,
+// MAX_KNOT_VECTOR_LEN = 91). Static rather than stack: the load handler
+// runs in command-dispatch foreground context and stack is only 512 B.
+static float kalico_aligned_cps[80];     // MAX_CONTROL_POINTS
+static float kalico_aligned_knots[91];   // MAX_KNOT_VECTOR_LEN
 
 void
 command_kalico_load_curve(uint32_t *args)
@@ -418,26 +416,17 @@ command_kalico_load_curve(uint32_t *args)
     const uint8_t *cps_b  = command_decode_ptr(args[4]);
     uint16_t knots_len    = args[5];
     const uint8_t *knots_b = command_decode_ptr(args[6]);
-    uint16_t weights_len  = args[7];
-    const uint8_t *weights_b = command_decode_ptr(args[8]);
 
-    // Producer-side validation: cps must be a multiple of 12 (xyz × f32);
-    // knots and weights must be a multiple of 4 (f32); weights count must
-    // equal cp count. Mismatch → KALICO_ERR_INVALID_CURVE (-2).
-    if ((cps_len % 12) || (knots_len % 4) || (weights_len % 4)) {
+    // Producer-side validation: cps and knots must be multiples of 4
+    // (scalar f32). Mismatch → KALICO_ERR_INVALID_CURVE (-2).
+    if ((cps_len % 4) || (knots_len % 4)) {
         sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
         return;
     }
-    uint16_t n_cp      = cps_len / 12;
+    uint16_t n_cp      = cps_len / 4;
     uint16_t n_knots   = knots_len / 4;
-    uint16_t n_weights = weights_len / 4;
-    if (n_weights != n_cp) {
-        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
-        return;
-    }
     if (cps_len > sizeof(kalico_aligned_cps) ||
-        knots_len > sizeof(kalico_aligned_knots) ||
-        weights_len > sizeof(kalico_aligned_weights)) {
+        knots_len > sizeof(kalico_aligned_knots)) {
         sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
         return;
     }
@@ -447,14 +436,12 @@ command_kalico_load_curve(uint32_t *args)
     // because we copy bytes, not words.
     memcpy(kalico_aligned_cps, cps_b, cps_len);
     memcpy(kalico_aligned_knots, knots_b, knots_len);
-    memcpy(kalico_aligned_weights, weights_b, weights_len);
 
     uint32_t handle_packed = 0;
     int32_t r = kalico_runtime_load_curve(
         kalico_rt_handle, slot,
         kalico_aligned_cps, n_cp,
         kalico_aligned_knots, n_knots,
-        kalico_aligned_weights, n_weights,
         degree,
         &handle_packed);
     sendf("kalico_load_curve_response result=%i curve_handle_packed=%u",
@@ -462,7 +449,7 @@ command_kalico_load_curve(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_load_curve,
     "kalico_load_curve version=%c slot=%hu degree=%c "
-    "cps=%*s knots=%*s weights=%*s");
+    "cps=%*s knots=%*s");
 
 void
 command_kalico_push_segment(uint32_t *args)
@@ -474,24 +461,32 @@ command_kalico_push_segment(uint32_t *args)
         return;
     }
     uint32_t id = args[0];
-    // Step-6 §10.1: curve_handle widened from u16 to packed u32
-    // ((generation << 16) | slot_idx). The Klipper VLQ %u encoder handles u32.
-    uint32_t curve_handle_packed = args[1];
-    uint64_t t_start = ((uint64_t)args[2] << 32) | args[3];
-    uint64_t t_end   = ((uint64_t)args[4] << 32) | args[5];
-    uint8_t kin = args[6];
+    // Step 7-B: four per-axis curve handles (x, y, z, e), each packed u32
+    // ((generation << 16) | slot_idx).
+    uint32_t x_handle = args[1];
+    uint32_t y_handle = args[2];
+    uint32_t z_handle = args[3];
+    uint32_t e_handle = args[4];
+    uint64_t t_start = ((uint64_t)args[5] << 32) | args[6];
+    uint64_t t_end   = ((uint64_t)args[7] << 32) | args[8];
+    uint8_t kin = args[9];
+    uint8_t e_mode = args[10];
+    uint32_t extrusion_ratio_bits = args[11];
     uint32_t accepted_id = 0;
     uint32_t credit_epoch = 0;
     int32_t r = kalico_runtime_push_segment(
-        kalico_rt_handle, id, curve_handle_packed, t_start, t_end, kin,
+        kalico_rt_handle, id,
+        x_handle, y_handle, z_handle, e_handle,
+        t_start, t_end, kin, e_mode, extrusion_ratio_bits,
         &accepted_id, &credit_epoch);
     sendf(
         "kalico_push_response result=%i accepted_segment_id=%u credit_epoch=%u",
         r, accepted_id, credit_epoch);
 }
 DECL_COMMAND(command_kalico_push_segment,
-    "kalico_push_segment id=%u curve_handle=%u t_start_hi=%u t_start_lo=%u "
-    "t_end_hi=%u t_end_lo=%u kinematics=%c");
+    "kalico_push_segment id=%u x_handle=%u y_handle=%u z_handle=%u e_handle=%u "
+    "t_start_hi=%u t_start_lo=%u t_end_hi=%u t_end_lo=%u "
+    "kinematics=%c e_mode=%c extrusion_ratio=%u");
 
 void
 command_kalico_query_status(uint32_t *args)
@@ -505,6 +500,34 @@ command_kalico_query_status(uint32_t *args)
     sendf("kalico_status status=%c last_err=%i", status, last_err);
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
+
+// ---- Step 7-B: homed gate + axis configuration --------------------------
+
+void
+command_kalico_set_homed(uint32_t *args)
+{
+    (void)args;
+    if (!kalico_rt_handle) {
+        sendf("kalico_set_homed_response result=%i", -7);
+        return;
+    }
+    int32_t r = kalico_set_homed(kalico_rt_handle);
+    sendf("kalico_set_homed_response result=%i", r);
+}
+DECL_COMMAND(command_kalico_set_homed, "kalico_set_homed");
+
+void
+command_kalico_configure_axes(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf("kalico_configure_axes_response result=%i", -7);
+        return;
+    }
+    uint8_t kinematics = args[0];
+    int32_t r = kalico_configure_axes(kalico_rt_handle, kinematics);
+    sendf("kalico_configure_axes_response result=%i", r);
+}
+DECL_COMMAND(command_kalico_configure_axes, "kalico_configure_axes kinematics=%c");
 
 // ---- Step-6 §8.3 stream lifecycle commands ----------------------------
 // Phase 3.2 declares the wire surface; Phase 6 wires the actual state-
