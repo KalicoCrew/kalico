@@ -90,4 +90,19 @@ mod lift_tests {
             other => panic!("expected CreditFreed, got {:?}", other),
         }
     }
+
+    #[test]
+    fn lifts_fault_with_synthesized_false() {
+        let mut p = MessageParams::new();
+        p.insert("fault_code", MessageValue::U32(17));
+        p.insert("fault_detail", MessageValue::U32(0));
+        p.insert("segment_id", MessageValue::U32(42));
+        match RuntimeEvent::lift("kalico_fault", p) {
+            RuntimeEvent::Fault(e) => {
+                assert_eq!(e.fault_code, 17);
+                assert_eq!(e.synthesized, false);
+            }
+            other => panic!("expected Fault, got {:?}", other),
+        }
+    }
 }
