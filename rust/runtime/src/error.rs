@@ -317,6 +317,19 @@ mod tests {
     }
 
     #[test]
+    fn host_codes_distinct_from_mcu() {
+        assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_TRACE_OVERFLOW);
+        assert_ne!(KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED, KALICO_ERR_TRACE_OVERFLOW);
+        assert_ne!(KALICO_ERR_HOST_DISPATCHER_TIMEOUT, KALICO_ERR_TRACE_OVERFLOW);
+        assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED);
+        assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_DISPATCHER_TIMEOUT);
+        assert_ne!(
+            KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
+            KALICO_ERR_HOST_DISPATCHER_TIMEOUT
+        );
+    }
+
+    #[test]
     fn fault_code_as_u16_round_trips_negative_codes() {
         // -160 (InvalidCurveHandle) → as_i16 = -160 → as u16 = 0xFF60.
         // Host sign-extends 0xFF60 back through i16 → -160. clippy::cast_sign_loss
