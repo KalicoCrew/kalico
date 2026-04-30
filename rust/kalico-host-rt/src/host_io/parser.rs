@@ -351,6 +351,19 @@ pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub enum FieldValue<'a> {
+    U32(u32),
+    I32(i32),
+    U16(u16),
+    I16(i16),
+    Byte(u8),
+    String(&'a str),
+    Buffer(&'a [u8]),
+    EnumName(&'a str),
+    EnumIntOverride(i32),
+}
+
 #[cfg(test)]
 mod from_dictionary_tests {
     use super::*;
