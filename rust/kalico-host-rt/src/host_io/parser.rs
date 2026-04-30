@@ -85,6 +85,18 @@ pub enum WrappedField {
     Enumerated { inner: FieldType, enum_name: String },
 }
 
+pub fn parse_format_string(s: &str) -> Result<(String, Vec<(String, FieldType)>), ParseError> {
+    let mut tokens = s.split_whitespace();
+    let name = tokens.next().ok_or(ParseError::EmptyFormat)?.to_string();
+    let mut fields = Vec::new();
+    for token in tokens {
+        let (k, v) = token.split_once('=').ok_or(ParseError::MalformedField)?;
+        let ty = FieldType::from_format_code(v)?;
+        fields.push((k.to_string(), ty));
+    }
+    Ok((name, fields))
+}
+
 #[cfg(test)]
 mod data_dictionary_tests {
     use super::*;
