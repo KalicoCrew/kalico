@@ -861,4 +861,24 @@ mod encode_method_tests {
             other => panic!("expected MissingField, got {:?}", other),
         }
     }
+
+    #[test]
+    fn enum_encode_rejects_unknown_name() {
+        let mut d = DataDictionary {
+            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
+            enumerations: IndexMap::new(), config: serde_json::json!({}),
+            version: "v".into(), app: "kalico".into(),
+            build_versions: None, license: None,
+        };
+        d.commands.insert("config_pin pin=%c".into(), 1);
+        let mut pin_table = IndexMap::new();
+        pin_table.insert("PA0".to_string(), EnumValue::Single(0));
+        d.enumerations.insert("pin".to_string(), pin_table);
+
+        let p = MsgProtoParser::from_dictionary(d).unwrap();
+        match p.encode("config_pin pin=PZZZ") {
+            Err(ParseError::UnknownEnumValue { value, .. }) => assert_eq!(value, "PZZZ"),
+            other => panic!("expected UnknownEnumValue, got {:?}", other),
+        }
+    }
 }
