@@ -189,6 +189,41 @@ pub fn apply_enumeration_wrapping(
         .collect()
 }
 
+#[derive(Debug)]
+pub struct MsgProtoParser {
+    pub(crate) by_msgid:        HashMap<i32, DispatchSpec>,
+    pub(crate) by_command_name: IndexMap<String, OutboundSpec>,
+    pub(crate) enumerations:    IndexMap<String, EnumTable>,
+    pub(crate) static_strings:  HashMap<i32, String>,
+    pub(crate) config:          serde_json::Value,
+    pub(crate) version:         String,
+}
+
+#[derive(Debug)]
+pub enum DispatchSpec {
+    Response(ResponseSpec),
+    Output(OutputSpec),
+}
+
+#[derive(Debug)]
+pub struct ResponseSpec {
+    pub name:   String,
+    pub fields: Vec<(String, WrappedField)>,
+}
+
+#[derive(Debug)]
+pub struct OutputSpec {
+    pub format:      String,
+    pub fields:      Vec<WrappedField>,
+    pub field_names: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct OutboundSpec {
+    pub msgid:  i32,
+    pub fields: Vec<(String, WrappedField)>,
+}
+
 pub fn decode_vlq(buf: &[u8]) -> Result<(i64, usize), ParseError> {
     let mut value: i64 = 0;
     let mut consumed = 0;
