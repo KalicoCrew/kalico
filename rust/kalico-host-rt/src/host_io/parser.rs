@@ -1034,4 +1034,20 @@ mod decode_tests {
             other => panic!("expected Response, got {:?}", other),
         }
     }
+
+    #[test]
+    fn decode_unknown_msgid_returns_error() {
+        let d = DataDictionary {
+            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
+            enumerations: IndexMap::new(), config: serde_json::json!({}),
+            version: "v".into(), app: "kalico".into(),
+            build_versions: None, license: None,
+        };
+        let parser = MsgProtoParser::from_dictionary(d).unwrap();
+        let packet = build_packet(99, &[]);
+        match parser.decode(&packet) {
+            Err(ParseError::UnknownMsgid(99)) => {}
+            other => panic!("expected UnknownMsgid(99), got {:?}", other),
+        }
+    }
 }
