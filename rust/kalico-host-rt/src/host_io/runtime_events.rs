@@ -105,4 +105,17 @@ mod lift_tests {
             other => panic!("expected Fault, got {:?}", other),
         }
     }
+
+    #[test]
+    fn lifts_unknown_to_catch_all() {
+        let mut p = MessageParams::new();
+        p.insert("#msg", MessageValue::String("debug trace".to_string()));
+        match RuntimeEvent::lift("debug_output", p) {
+            RuntimeEvent::UnknownOutput { format, msg } => {
+                assert_eq!(format, "debug_output");
+                assert_eq!(msg, "debug trace");
+            }
+            other => panic!("expected UnknownOutput, got {:?}", other),
+        }
+    }
 }
