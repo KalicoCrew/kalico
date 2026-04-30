@@ -8,7 +8,7 @@ mod kernel;
 mod pad;
 mod parallel;
 mod partition;
-mod peak;
+pub mod peak;
 mod reparam;
 mod shaper;
 
