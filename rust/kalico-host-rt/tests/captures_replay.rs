@@ -4,7 +4,8 @@
 //!   1. replay_all_captures_decode_without_error — every .bin in tests/captures/
 //!      decodes cleanly (passes vacuously when corpus is empty).
 //!   2. corpus_covers_required_decode_surfaces (#[ignore]) — asserts the corpus
-//!      exercises all REQUIRED_SURFACES.  Un-ignore once H723 corpus is collected (F2).
+//!      exercises all REQUIRED_SURFACES.  Requires a populated corpus to pass;
+//!      un-ignore once H723 corpus is collected (F2).
 //!   3. corpus_covers_required_encode_surfaces — encode-side coverage, runs without
 //!      captures.
 
@@ -199,6 +200,10 @@ fn corpus_covers_required_encode_surfaces() {
     let commands = [
         "kalico_clock_sync_request request_id=42 host_send_time_lo=0 host_send_time_hi=0",
         "kalico_stream_arm t_start_t0_lo=0 t_start_t0_hi=0 arm_lead_cycles=10",
+        // Sentinel-zero encodes for the remaining command-side REQUIRED_SURFACES.
+        // Field names match the firmware DECL_COMMAND format strings in klipper.dict.
+        "kalico_push_segment id=0 curve_handle=0 t_start_hi=0 t_start_lo=0 t_end_hi=0 t_end_lo=0 kinematics=0",
+        "kalico_load_curve version=0 slot=0 degree=0 cps= knots= weights=",
     ];
 
     for cmd in &commands {
