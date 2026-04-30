@@ -39,3 +39,35 @@ pub enum RuntimeEvent {
     Trace(TraceEvent),
     UnknownOutput { format: String, msg: String },
 }
+
+impl RuntimeEvent {
+    pub fn lift(name: &str, params: MessageParams) -> Self {
+        match name {
+            "kalico_credit_freed" => Self::CreditFreed(CreditFreedEvent {
+                retired_through_segment_id: params.get_u32("retired_through_segment_id"),
+                free_slots: params.get_u32("free_slots") as u8,
+            }),
+            "kalico_fault" => Self::Fault(FaultEvent {
+                fault_code:   params.get_u32("fault_code") as u16,
+                fault_detail: params.get_u32("fault_detail"),
+                segment_id:   params.get_u32("segment_id"),
+                synthesized:  false,
+            }),
+            "kalico_status_v6" => Self::Status(StatusEvent {
+                engine_status:      params.get_u32("engine_status") as u8,
+                current_segment_id: params.get_u32("current_segment_id"),
+                last_fault:         params.get_u32("last_fault") as u16,
+                fault_detail:       params.get_u32("fault_detail"),
+            }),
+            "kalico_trace" => Self::Trace(TraceEvent {
+                count: params.get_u32("count"),
+                data:  params.get_bytes("data").map(<[u8]>::to_vec).unwrap_or_default(),
+                flags: 0,
+            }),
+            _ => {
+                let msg = params.try_get_str("#msg").unwrap_or("").to_string();
+                Self::UnknownOutput { format: name.to_string(), msg }
+            }
+        }
+    }
+}
