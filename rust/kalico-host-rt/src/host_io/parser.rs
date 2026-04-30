@@ -852,4 +852,13 @@ mod encode_method_tests {
             other => panic!("expected UnknownCommand, got {:?}", other),
         }
     }
+
+    #[test]
+    fn encode_rejects_missing_field() {
+        let p = parser_with_one_command();
+        match p.encode("ping") {
+            Err(ParseError::MissingField(_)) => {}
+            other => panic!("expected MissingField, got {:?}", other),
+        }
+    }
 }
