@@ -1153,4 +1153,28 @@ mod decode_tests {
             other => panic!("expected Output, got {:?}", other),
         }
     }
+
+    #[test]
+    fn decode_output_canonical_produces_msg_form() {
+        let mut d = DataDictionary {
+            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
+            enumerations: IndexMap::new(), config: serde_json::json!({}),
+            version: "v".into(), app: "kalico".into(),
+            build_versions: None, license: None,
+        };
+        d.output.insert("kalico_credit_freed retired_through_segment_id=%u free_slots=%c".into(), 50);
+        let p = MsgProtoParser::from_dictionary(d).unwrap();
+
+        let mut payload = Vec::new();
+        encode_vlq(&mut payload, 42).unwrap();
+        encode_vlq(&mut payload, 11).unwrap();
+        let packet = build_packet(50, &payload);
+
+        let (name, params) = p.decode_output_canonical(&packet).unwrap();
+        assert_eq!(name, "#output");
+        let msg = params.try_get_str("#msg").unwrap();
+        assert!(msg.contains("kalico_credit_freed"));
+        assert!(msg.contains("42"));
+        assert!(msg.contains("11"));
+    }
 }
