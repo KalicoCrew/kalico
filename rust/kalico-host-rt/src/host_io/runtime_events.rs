@@ -71,3 +71,23 @@ impl RuntimeEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod lift_tests {
+    use super::*;
+    use crate::transport::MessageValue;
+
+    #[test]
+    fn lifts_credit_freed() {
+        let mut p = MessageParams::new();
+        p.insert("retired_through_segment_id", MessageValue::U32(42));
+        p.insert("free_slots", MessageValue::U32(11));
+        match RuntimeEvent::lift("kalico_credit_freed", p) {
+            RuntimeEvent::CreditFreed(e) => {
+                assert_eq!(e.retired_through_segment_id, 42);
+                assert_eq!(e.free_slots, 11);
+            }
+            other => panic!("expected CreditFreed, got {:?}", other),
+        }
+    }
+}
