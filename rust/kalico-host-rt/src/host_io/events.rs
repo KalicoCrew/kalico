@@ -127,3 +127,43 @@ impl RuntimeEventDispatcher {
         Ok(())
     }
 }
+
+// ─── D8: HostEventDispatcher ─────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+pub struct HostEventDispatcher {
+    subscriber: Option<SyncSender<HostEvent>>,
+}
+
+impl HostEventDispatcher {
+    pub fn dispatch(&mut self, event: HostEvent) {
+        if let Some(tx) = &self.subscriber {
+            match tx.try_send(event) {
+                Ok(_) => {}
+                Err(TrySendError::Full(_)) => {
+                    log::warn!("host-event subscriber overflow; dropping");
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.subscriber = None;
+                }
+            }
+        }
+    }
+
+    pub fn subscribe(
+        &mut self,
+        tx: SyncSender<HostEvent>,
+    ) -> Result<(), crate::transport::SubscribeError> {
+        if self.subscriber.is_some() {
+            return Err(crate::transport::SubscribeError::AlreadySubscribed {
+                channel: "host_event",
+            });
+        }
+        self.subscriber = Some(tx);
+        Ok(())
+    }
+
+    pub fn sender_handle(&self) -> Option<SyncSender<HostEvent>> {
+        self.subscriber.clone()
+    }
+}
