@@ -198,4 +198,110 @@ impl EventDispatcher {
             host_event_dispatcher: HostEventDispatcher::default(),
         }
     }
+
+    pub fn dispatch(&mut self, event: RuntimeEvent) {
+        match event {
+            RuntimeEvent::CreditFreed(e) => {
+                if let Some(counter) = &self.credit_counter {
+                    counter.on_credit_freed(e.free_slots);
+                }
+            }
+            RuntimeEvent::Fault(e) => {
+                self.fault_latch.dispatch(e);
+            }
+            RuntimeEvent::Trace(e) => {
+                self.trace_ring.dispatch(e);
+            }
+            RuntimeEvent::Status(e) => {
+                self.handle_status_frame(&e);
+            }
+            ev @ RuntimeEvent::UnknownOutput { .. } => {
+                self.runtime_event_dispatcher.dispatch(ev);
+            }
+        }
+    }
+
+    /// Per spec §6.5. Update snapshot AND synthesize FaultEvent if engine_status
+    /// is FAULT and no fault has been latched on the host.
+    fn handle_status_frame(&mut self, frame: &StatusEvent) {
+        self.status_snapshot.store(Arc::new(frame.clone()));
+
+        const ENGINE_STATUS_FAULT: u8 = 3;
+        if frame.engine_status == ENGINE_STATUS_FAULT && self.fault_latch.cell.is_none() {
+            let synthesized = crate::host_io::runtime_events::FaultEvent {
+                fault_code:   frame.last_fault,
+                fault_detail: frame.fault_detail,
+                segment_id:   frame.current_segment_id,
+                synthesized:  true,
+            };
+            self.fault_latch.dispatch(synthesized);
+        }
+    }
+}
+
+// ─── D10a: Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use std::sync::Arc;
+    use arc_swap::ArcSwap;
+    use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent};
+
+    fn make_dispatcher() -> EventDispatcher {
+        let snap = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        EventDispatcher::new(snap, 256)
+    }
+
+    fn fault_status(engine_status: u8, last_fault: u16, segment_id: u32) -> RuntimeEvent {
+        RuntimeEvent::Status(StatusEvent {
+            engine_status,
+            current_segment_id: segment_id,
+            last_fault,
+            fault_detail: 0,
+        })
+    }
+
+    #[test]
+    fn fault_status_synthesizes_when_no_edge_observed() {
+        let mut d = make_dispatcher();
+        d.dispatch(fault_status(3, 17, 42));
+        let cell = d.fault_latch.cell.as_ref().expect("fault should be synthesized");
+        assert_eq!(cell.fault_code, 17);
+        assert_eq!(cell.synthesized, true);
+        assert_eq!(cell.segment_id, 42);
+    }
+
+    #[test]
+    fn synthesis_idempotent_across_repeated_status_frames() {
+        let mut d = make_dispatcher();
+        d.dispatch(fault_status(3, 17, 42));
+        d.dispatch(fault_status(3, 17, 42));
+        // Still latched once (cell still present, still synthesized).
+        let cell = d.fault_latch.cell.as_ref().unwrap();
+        assert_eq!(cell.synthesized, true);
+    }
+
+    #[test]
+    fn edge_event_upgrades_synthesized_in_place() {
+        let mut d = make_dispatcher();
+        d.dispatch(fault_status(3, 17, 42));
+        // Edge event with exact segment_id preferred.
+        d.dispatch(RuntimeEvent::Fault(FaultEvent {
+            fault_code: 17,
+            fault_detail: 0,
+            segment_id: 39,
+            synthesized: false,
+        }));
+        let cell = d.fault_latch.cell.as_ref().unwrap();
+        assert!(!cell.synthesized, "edge upgrade clears synthesized");
+        assert_eq!(cell.segment_id, 39, "edge segment_id preferred");
+    }
+
+    #[test]
+    fn status_without_fault_does_not_synthesize() {
+        let mut d = make_dispatcher();
+        d.dispatch(fault_status(1, 0, 0)); // engine_status != 3
+        assert!(d.fault_latch.cell.is_none());
+    }
 }
