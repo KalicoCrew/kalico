@@ -633,8 +633,8 @@ impl MsgProtoParser {
         }
     }
 
-    /// Phase-0 differential helper. Produces ('#output', {'#msg': formatted}).
-    pub fn decode_output_canonical(&self, packet: &[u8]) -> Result<(String, MessageParams), ParseError> {
+    /// Decodes a packet into the canonical `('#output', {'#msg': formatted})` form, for diagnostic use.
+    pub(crate) fn decode_output_canonical(&self, packet: &[u8]) -> Result<(String, MessageParams), ParseError> {
         if packet.len() < MESSAGE_MIN { return Err(ParseError::ShortFrame); }
         let body = &packet[MESSAGE_HEADER_SIZE..packet.len() - MESSAGE_TRAILER_SIZE];
         let (msgid_signed, n) = decode_vlq(body)?;
