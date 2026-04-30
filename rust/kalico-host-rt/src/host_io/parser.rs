@@ -389,6 +389,19 @@ pub fn encode_field_value<'a>(out: &mut Vec<u8>, ty: FieldType, value: &FieldVal
     }
 }
 
+pub fn parse_hex_buffer(s: &str) -> Result<Vec<u8>, ParseError> {
+    if s.len() % 2 != 0 {
+        return Err(ParseError::BadHex(s.to_string()));
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in s.as_bytes().chunks(2) {
+        let pair_str = std::str::from_utf8(pair).map_err(|_| ParseError::BadHex(s.to_string()))?;
+        let byte = u8::from_str_radix(pair_str, 16).map_err(|_| ParseError::BadHex(s.to_string()))?;
+        out.push(byte);
+    }
+    Ok(out)
+}
+
 fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
     let in_range = match ty {
         FieldType::Byte => (0..=255).contains(&v),
@@ -687,5 +700,13 @@ mod encode_field_tests {
             Err(ParseError::OutOfRange { .. }) => {}
             other => panic!("expected OutOfRange, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_hex_buffer_round_trips() {
+        assert_eq!(parse_hex_buffer("0123abcd").unwrap(), vec![0x01, 0x23, 0xAB, 0xCD]);
+        assert_eq!(parse_hex_buffer("").unwrap(), Vec::<u8>::new());
+        assert!(matches!(parse_hex_buffer("0z"), Err(ParseError::BadHex(_))));
+        assert!(matches!(parse_hex_buffer("1"), Err(ParseError::BadHex(_))));
     }
 }
