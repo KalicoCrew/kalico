@@ -351,6 +351,44 @@ pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
     Ok(())
 }
 
+pub fn encode_field_int(out: &mut Vec<u8>, ty: FieldType, value: i64) -> Result<(), ParseError> {
+    match ty {
+        FieldType::U32 | FieldType::I32 |
+        FieldType::U16 | FieldType::I16 |
+        FieldType::Byte => encode_vlq(out, value),
+        _ => Err(ParseError::MalformedField),
+    }
+}
+
+pub fn encode_field_value<'a>(out: &mut Vec<u8>, ty: FieldType, value: &FieldValue<'a>) -> Result<(), ParseError> {
+    match (ty, value) {
+        (FieldType::U32,   FieldValue::U32(v))  => encode_vlq(out, i64::from(*v)),
+        (FieldType::I32,   FieldValue::I32(v))  => encode_vlq(out, i64::from(*v)),
+        (FieldType::U16,   FieldValue::U16(v))  => encode_vlq(out, i64::from(*v)),
+        (FieldType::I16,   FieldValue::I16(v))  => encode_vlq(out, i64::from(*v)),
+        (FieldType::Byte,  FieldValue::Byte(v)) => encode_vlq(out, i64::from(*v)),
+        (FieldType::String, FieldValue::String(s)) => {
+            let bytes = s.as_bytes();
+            if bytes.len() > u8::MAX as usize {
+                return Err(ParseError::OutOfRange { value: bytes.len() as i64, range: "string len 0..=255" });
+            }
+            out.push(bytes.len() as u8);
+            out.extend_from_slice(bytes);
+            Ok(())
+        }
+        (FieldType::Buffer, FieldValue::Buffer(b)) |
+        (FieldType::ProgmemBuffer, FieldValue::Buffer(b)) => {
+            if b.len() > u8::MAX as usize {
+                return Err(ParseError::OutOfRange { value: b.len() as i64, range: "buffer len 0..=255" });
+            }
+            out.push(b.len() as u8);
+            out.extend_from_slice(b);
+            Ok(())
+        }
+        _ => Err(ParseError::MalformedField),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FieldValue<'a> {
     U32(u32),
