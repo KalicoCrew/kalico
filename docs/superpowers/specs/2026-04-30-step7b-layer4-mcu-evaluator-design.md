@@ -99,7 +99,7 @@ stepping (40 kHz current synthesis for 5160 drivers) arrives in Step 10.
 | `MAX_CONTROL_POINTS` | 8 | 80 | 64 observed at production frequencies + 25% margin |
 | `MAX_KNOT_VECTOR_LEN` | 12 | 91 | `MAX_CONTROL_POINTS + MAX_DEGREE + 1` |
 | `MAX_DIM` | 3 | 1 | Scalar (per-axis), not vector |
-| `CURVE_POOL_N` | 16 | 48 | 8 segments * 3 axes * 2 pipeline headroom |
+| `CURVE_POOL_N` | 16 | 64 | 8 segments * 4 axes (worst case with Independent E) * 2 pipeline headroom |
 
 Observed post-shape sizes (50 mm straight line, smooth_zv @ 180 Hz X,
 smooth_mzv @ 120 Hz Y, N=25 grid, 0.5 mm fit tolerance):
@@ -117,7 +117,7 @@ pub struct LoadedScalarCurve {
     pub n_knots: u8,
     pub degree: u8,
 }
-// Per-slot: ~688 bytes. Total pool: 48 * 688 = ~32 KB.
+// Per-slot: ~688 bytes. Total pool: 64 * 688 = ~43 KB.
 ```
 
 Weights array dropped — all post-shape NURBS are polynomial (no rational
@@ -161,8 +161,17 @@ Handles for axes the MCU does not own carry
 `CurveHandle::UNUSED_SENTINEL` (a new sentinel distinct from
 `HOLD_SEGMENT_SENTINEL`). The evaluator skips these.
 
-The retire path calls `confirm_retired` on each non-sentinel handle per
-SEGMENT_END event — up to 4 retirements per segment.
+### Multi-handle retirement
+
+The trace sample carries only one handle (X, for diagnostics). The
+foreground maintains a `segment_id → [CurveHandle; 4]` lookup table,
+populated when the producer pushes each segment. On SEGMENT_END (keyed
+by `segment_id` from the trace), the foreground iterates all 4 handles
+from the table and calls `confirm_retired` on each non-sentinel handle.
+Table size is bounded by queue depth + pipeline headroom (~16 entries).
+
+This avoids expanding the trace sample or emitting multiple trace events
+per segment retirement.
 
 ## Engine evaluator
 
@@ -177,15 +186,21 @@ SEGMENT_END event — up to 4 retirements per segment.
    resolution failure latches a fault.
 5. **Compute parameter** — `u = (t_segment as f32) / (duration as f32)`,
    clamped to [0, 1].
-6. **Eval per-axis scalar NURBS** — `nurbs::eval::scalar_eval(view, u)`
-   for each owned axis. Three 1D de Boor evaluations (degree 9, ~80 CPs)
-   on M7 at f32.
+6. **Eval per-axis scalar NURBS** — `nurbs::eval::eval(view, u)` via
+   `ScalarNurbsRef` for each owned axis. Three 1D de Boor evaluations
+   (degree 9, ~80 CPs) on M7 at f32.
 7. **E-mode dispatch:**
    - `CoupledToXy`: `v_xy = sqrt((x - prev_x)^2 + (y - prev_y)^2) / dt`;
      `e_accumulator += extrusion_ratio * v_xy * dt`. Engine stores
      `prev_x`, `prev_y` (persist across segment boundaries).
-   - `Independent`: resolve `e_handle`, eval E NURBS at `u`.
-   - `Travel`: E position unchanged.
+   - `Independent`: resolve `e_handle`, eval E NURBS at `u`. On
+     segment completion, sync `e_accumulator` to the E NURBS endpoint
+     so the next CoupledToXy segment resumes from the correct position.
+   - `Travel`: E position unchanged; `e_accumulator` persists.
+   - **Stream start**: `e_accumulator` initialized to 0.0; the host
+     ensures the first segment's expected E start position matches.
+   - **After force-idle / flush**: `e_accumulator` reset to 0.0; the
+     host re-seeds on the next stream arm.
 8. **NaN/Inf check** — all axis positions.
 9. **Kinematic transform** — dispatch on `kinematics` tag:
    - `CoreXyAndE`: `(x, y, e) -> (a, b, e)` where `a = x+y`, `b = x-y`.
@@ -200,7 +215,7 @@ SEGMENT_END event — up to 4 retirements per segment.
 prev_x: f32,
 prev_y: f32,
 e_accumulator: f32,
-step_state: [StepAxisState; 4],    // per logical axis
+step_state: [StepMotorState; 4],   // per motor (post-kinematic-transform)
 mcu_config: McuAxisConfig,         // set at init, immutable during printing
 ```
 
@@ -222,11 +237,11 @@ Comfortable headroom for Step 10 phase-stepping addition.
 
 ### Accumulator-based multi-step burst
 
-Per logical axis, persistent state:
+Per motor, persistent state:
 
 ```rust
-pub struct StepAxisState {
-    step_accumulator: f64,   // f64 to prevent drift over long prints
+pub struct StepMotorState {
+    step_accumulator: f64,   // f64 for drift prevention (H723 has hardware DP-FPU)
     steps_per_mm: f32,
     is_awd: bool,
     // GPIO pin references resolved at init
@@ -249,20 +264,27 @@ At peak speed (1000 mm/s, 160 microsteps/mm, 40 kHz):
 delay (NOPs), clear BSRR. For AWD axes, both step pins toggle via a
 single BSRR write (same GPIO port).
 
-Step pulse timing within the tick does not need to be evenly spaced —
-the TMC5160 internal interpolation smooths sub-tick jitter.
+TMC5160 timing constraints: minimum step pulse high time 100 ns,
+minimum step pulse low time 100 ns, direction setup time 20 ns. At 4
+steps per tick, total pulse time is ~800 ns — well within the 25 µs
+window. For AWD, both step pins must be on the same GPIO port to allow
+single-BSRR-write toggling; if pins span ports, use two sequential
+writes (adds ~10 ns, negligible).
 
 ## MCU axis configuration
 
 ```rust
 pub struct McuAxisConfig {
-    pub axes: [Option<AxisConfig>; 4],  // indices: X=0, Y=1, Z=2, E=3
+    /// Per-motor config, indexed in motor space (post-kinematic-transform):
+    /// CoreXyAndE: [A=0, B=1, Z=2, E=3]; CartesianXyzAndE: [X=0, Y=1, Z=2, E=3].
+    pub motors: [Option<MotorConfig>; 4],
     pub kinematics: KinematicTag,
 }
 
-pub struct AxisConfig {
+pub struct MotorConfig {
     pub steps_per_mm: f32,
     pub is_awd: bool,
+    pub invert_dir: bool,
 }
 ```
 
@@ -270,14 +292,27 @@ Sent from host to MCU once at init via a `kalico_configure_axes`
 command. Immutable during printing. The evaluator loop iterates only over
 `Some` entries — an MCU that owns only Z evaluates one de Boor per tick.
 
+Note: step generation operates on motor-space positions (after the
+kinematic transform), so `steps_per_mm`, GPIO pins, AWD, and direction
+inversion are all per-motor properties. For standard CoreXY with equal
+belts/pulleys, `steps_per_mm` is numerically identical for A and B.
+
 ## Wire protocol changes
 
 ### Curve loading
 
-No schema change. The host calls `kalico_load_curve` once per axis.
-Each call sends a scalar NURBS via the existing blob wire format
-(`ScalarNurbsRef::try_from_wire`). The host sends curves only for axes
-this MCU owns.
+The Klipper wire schema string (`cps=%*s knots=%*s weights=%*s`) is
+blob-based and dimension-agnostic, so the wire format itself does not
+change. However, the C command handler (`kalico_load_curve` in
+`runtime_tick.c`) currently hardcodes 3D control points (`cps_len % 12`,
+scratch buffers `[8 * 3]`) and the Rust FFI (`runtime_ffi.rs`)
+constructs slices with `n_cp * MAX_DIM`. Both must be rewritten to pass
+raw blobs through to `ScalarNurbsRef::try_from_wire` (which already
+handles scalar NURBS with variable degree/CP count). Scratch buffers
+must be resized or eliminated in favor of direct blob parsing.
+
+The host calls `kalico_load_curve` once per axis. It sends curves only
+for axes this MCU owns.
 
 ### Segment push
 
@@ -349,3 +384,15 @@ is extended.
 Bottom-up (Approach 1): curve pool refactor first, then evaluator
 rewrite, then E-mode dispatch, then step generation. Each layer is
 testable in isolation before wiring to the next.
+
+## Migration notes
+
+Existing compile-time size assertions that must be updated:
+- `Segment`: 32-byte assert in `segment.rs` → update to new size (~56 bytes).
+- `TraceSample`: 32-byte assert in `trace.rs` → update to new size (+4 bytes for `motor_z`).
+- `SharedState`: add `homed: AtomicBool` field; update any size asserts.
+- C-side `runtime_tick.c`: scratch buffers, `DECL_COMMAND` signatures,
+  and blob parsing must be rewritten for scalar curves with higher
+  degree/CP limits.
+- Rust FFI `runtime_ffi.rs`: `MAX_DIM`-based slice construction replaced
+  with direct blob passthrough to `ScalarNurbsRef::try_from_wire`.
