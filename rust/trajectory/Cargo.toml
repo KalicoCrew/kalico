@@ -1,0 +1,14 @@
+[package]
+name = "trajectory"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+nurbs = { path = "../nurbs" }
+temporal = { path = "../temporal" }
+geometry = { path = "../geometry" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

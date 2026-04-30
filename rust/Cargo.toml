@@ -5,6 +5,7 @@ members = [
     "gcode",
     "geometry",
     "temporal",
+    "trajectory",
     "runtime",
     "kalico-host-rt",
 ]
