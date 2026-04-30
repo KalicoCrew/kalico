@@ -296,3 +296,18 @@ impl ClockSyncEstimator {
         )
     }
 }
+
+#[derive(Debug)]
+pub enum QualityGateFailure {
+    InsufficientWarmup        { samples: usize, required: usize },
+    ResidualExceeded          { observed_us: f64, max_us: f64 },
+    DriftPpmExceeded          { observed_ppm: f64, max_ppm: f64 },
+    LastSampleStale           { age: std::time::Duration, max_age: std::time::Duration },
+    DedicatedSampleStale      { age: std::time::Duration, max_age: std::time::Duration },
+}
+
+impl std::fmt::Display for QualityGateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
