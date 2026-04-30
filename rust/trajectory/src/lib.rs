@@ -169,6 +169,12 @@ pub enum ShapeError {
         index: usize,
         detail: nurbs::AlgebraError,
     },
+    /// Arc-length table construction failed.
+    #[error("arc-length table error on segment {index}: {detail}")]
+    ArcLength {
+        index: usize,
+        detail: String,
+    },
     /// Input segment buffer was empty.
     #[error("empty segment buffer")]
     EmptySegments,
@@ -181,14 +187,35 @@ pub enum ShapeError {
 /// Shape a batch of segments: time-reparameterize, convolve with per-axis
 /// smooth shaper kernels, and iterate the beta-medium loop to convergence.
 ///
+/// # Pipeline
+///
+/// 1. **Stage 0** — Partition input into XY-motion runs and E gaps.
+/// 2. **Stages 1-5** — Beta-medium outer loop:
+///    - Stage 1: TOPP-RA per run (with derated `planning_a_max`).
+///    - Stage 2: Time-reparameterization + composition + C1 refit.
+///    - Stage 3: Per-axis padding + smooth-shaper convolution + trim.
+///    - Stage 4: Post-shape peak acceleration check.
+///    - Stage 5: Compare peaks to machine limits; derate if needed; iterate.
+/// 3. **Stage 6** — Insert independent-E segments at their correct positions.
+///
 /// # Errors
-/// Returns `ShapeError::EmptySegments` if `input.segments` is empty. Other
-/// error variants will be populated as the implementation is filled in.
+///
+/// Returns `ShapeError::EmptySegments` if `input.segments` is empty.
+/// Returns `ShapeError::TemporalBatch` if TOPP-RA fails on any run.
+/// Returns `ShapeError::TemporalJoining` if joining does not converge.
+/// Returns `ShapeError::SegmentUnsolvable` if any profile has non-success status.
+/// Returns `ShapeError::FitFailure` or `ShapeError::Algebra` on refit/convolution errors.
+/// Returns `ShapeError::ArcLength` if arc-length table construction fails.
 pub fn shape_batch(input: &ShapeBatchInput<'_>) -> Result<ShapeBatchOutput, ShapeError> {
     if input.segments.is_empty() {
         return Err(ShapeError::EmptySegments);
     }
-    todo!("shape_batch implementation")
+
+    // Stage 0: partition into runs + E gaps.
+    let partition = partition::partition_batch(input.segments, &input.e_limits);
+
+    // Stages 1-5: beta-medium outer loop.
+    beta::beta_loop(input, &partition)
 }
 
 #[cfg(test)]

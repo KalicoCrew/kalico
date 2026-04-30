@@ -52,6 +52,40 @@ pub fn fit_and_split(
     Ok(FittedSegment { axes, t_start, t_end })
 }
 
+/// Convert composed pieces directly to per-axis `ScalarNurbs` WITHOUT the
+/// C1 Hermite merge. Preserves exact polynomial accuracy of the composed
+/// pieces (degree ≤ 6 for typical paths).
+///
+/// Use this when the beta-medium loop needs accurate second derivatives for
+/// peak-acceleration checking. The Hermite refit (`fit_and_split`) can be
+/// applied as a post-processing step on the final converged output if
+/// piece-count reduction is desired.
+pub fn split_without_refit(
+    composed: &[[BezierPiece<f64>; 3]],
+) -> Result<FittedSegment, crate::ShapeError> {
+    use nurbs::bezier::bezier_pieces_to_nurbs;
+
+    if composed.is_empty() {
+        return Err(crate::ShapeError::EmptySegments);
+    }
+
+    let t_start = composed[0][0].u_start;
+    let t_end = composed.last().unwrap()[0].u_end;
+
+    // Collect per-axis pieces and convert directly.
+    let x_pieces: Vec<BezierPiece<f64>> = composed.iter().map(|arr| arr[0].clone()).collect();
+    let y_pieces: Vec<BezierPiece<f64>> = composed.iter().map(|arr| arr[1].clone()).collect();
+    let z_pieces: Vec<BezierPiece<f64>> = composed.iter().map(|arr| arr[2].clone()).collect();
+
+    let axes = [
+        bezier_pieces_to_nurbs(&x_pieces),
+        bezier_pieces_to_nurbs(&y_pieces),
+        bezier_pieces_to_nurbs(&z_pieces),
+    ];
+
+    Ok(FittedSegment { axes, t_start, t_end })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
