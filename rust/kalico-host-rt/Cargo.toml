@@ -34,7 +34,6 @@ optional = true
 
 [features]
 default = []
-python-diff-test = []
 python-bridge = ["dep:pyo3"]
 
 [dev-dependencies]
