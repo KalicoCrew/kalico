@@ -473,6 +473,11 @@ impl Reactor {
                 }
             }
 
+            // 4b. Drain staged host fault into the FaultLatch.
+            if let Some(fault) = self.pending_host_fault.take() {
+                self.event_dispatcher.fault_latch.dispatch(fault);
+            }
+
             // 5. AwaitingResponse GC (layer 2 — per-entry deadline).
             let now = Instant::now();
             let evicted = self.awaiting_response.evict_expired(now);
