@@ -843,4 +843,13 @@ mod encode_method_tests {
         let bytes_typed = p.encode_typed("ping", &[("val", FieldValue::U32(100))]).unwrap();
         assert_eq!(bytes_str, bytes_typed);
     }
+
+    #[test]
+    fn encode_rejects_unknown_command() {
+        let p = parser_with_one_command();
+        match p.encode("unknown_cmd") {
+            Err(ParseError::UnknownCommand(_)) => {}
+            other => panic!("expected UnknownCommand, got {:?}", other),
+        }
+    }
 }
