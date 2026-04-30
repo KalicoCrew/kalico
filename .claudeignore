@@ -1,0 +1,36 @@
+# Build artifacts
+rust/target/
+out/
+*.so
+*.pyc
+__pycache__/
+
+# Vendored C libraries (CMSIS, pico-sdk, etc.) — 205 MB of upstream code
+lib/
+
+# Klipper upstream docs (images, prints, resources — not rewrite-relevant)
+docs/img/
+docs/prints/
+docs/resources/
+
+# G-code corpus files (large binary-ish slicer output)
+scripts/fitter_prototype/corpus/
+scripts/fitter_prototype/corpus_results/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Python virtualenvs
+.env/
+.venv/
+env/
+venv/
+mkdocs-env/
+
+# Git worktrees managed by superpowers
+.worktrees/
+
+# Klipper upstream MCU source (C firmware, not part of rewrite)
+src/
