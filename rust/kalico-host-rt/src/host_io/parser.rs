@@ -383,4 +383,17 @@ mod vlq_tests {
             assert_eq!(decoded, v as i32 as i64, "round-trip for {} produced {}", v, decoded);
         }
     }
+
+    #[test]
+    fn encode_vlq_rejects_out_of_range() {
+        let mut buf = Vec::new();
+        match encode_vlq(&mut buf, i64::from(u32::MAX) + 1) {
+            Err(ParseError::OutOfRange { .. }) => {}
+            other => panic!("expected OutOfRange, got {:?}", other),
+        }
+        match encode_vlq(&mut buf, i64::from(i32::MIN) - 1) {
+            Err(ParseError::OutOfRange { .. }) => {}
+            other => panic!("expected OutOfRange, got {:?}", other),
+        }
+    }
 }
