@@ -352,6 +352,59 @@ pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
 }
 
 #[cfg(test)]
+mod from_dictionary_tests {
+    use super::*;
+
+    fn empty_dict() -> DataDictionary {
+        DataDictionary {
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_msgid_across_sections() {
+        let mut d = empty_dict();
+        d.commands.insert("cmd_a arg=%u".into(), 5);
+        d.responses.insert("rsp_b arg=%u".into(), 5);
+        match MsgProtoParser::from_dictionary(d) {
+            Err(ParseError::DuplicateMsgid(5)) => {}
+            other => panic!("expected DuplicateMsgid(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_format_string() {
+        let mut d = empty_dict();
+        d.commands.insert("cmd arg=%u".into(), 5);
+        d.responses.insert("cmd arg=%u".into(), 6);
+        match MsgProtoParser::from_dictionary(d) {
+            Err(ParseError::DuplicateFormatString(_)) => {}
+            other => panic!("expected DuplicateFormatString, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn accepts_disjoint_categories() {
+        let mut d = empty_dict();
+        d.commands.insert("cmd_a arg=%u".into(), 1);
+        d.responses.insert("rsp_a arg=%u".into(), 2);
+        d.output.insert("evt_a arg=%u".into(), 3);
+        let p = MsgProtoParser::from_dictionary(d).unwrap();
+        assert!(matches!(p.by_msgid.get(&1), Some(DispatchSpec::Response(_))));
+        assert!(matches!(p.by_msgid.get(&2), Some(DispatchSpec::Response(_))));
+        assert!(matches!(p.by_msgid.get(&3), Some(DispatchSpec::Output(_))));
+    }
+}
+
+#[cfg(test)]
 mod data_dictionary_tests {
     use super::*;
 
