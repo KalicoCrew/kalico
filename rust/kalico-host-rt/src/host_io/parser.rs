@@ -131,6 +131,31 @@ impl EnumTable {
     }
 }
 
+pub fn apply_enumeration_wrapping(
+    fields: Vec<(String, FieldType)>,
+    enums: &IndexMap<String, IndexMap<String, EnumValue>>,
+) -> Vec<(String, WrappedField)> {
+    fields
+        .into_iter()
+        .map(|(field_name, ty)| {
+            for enum_name in enums.keys() {
+                if field_name == *enum_name
+                    || field_name.ends_with(&format!("_{}", enum_name))
+                {
+                    return (
+                        field_name,
+                        WrappedField::Enumerated {
+                            inner: ty,
+                            enum_name: enum_name.clone(),
+                        },
+                    );
+                }
+            }
+            (field_name, WrappedField::Plain(ty))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod data_dictionary_tests {
     use super::*;
