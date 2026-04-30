@@ -39,7 +39,16 @@ fn main() -> ExitCode {
         }
     };
 
-    // Open output writer.
+    // Convert first, write output only on success — avoids truncating an
+    // existing output file before discovering a fatal input error.
+    let output_text = match compat::converter::convert(&input_text, &input_name, cli.tolerance) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("kalico-compat: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
     let mut out: Box<dyn Write> = match open_output(cli.output.as_deref()) {
         Ok(b) => b,
         Err(e) => {
@@ -47,17 +56,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-
-    match compat::converter::convert(&input_text, &input_name, cli.tolerance) {
-        Ok(output_text) => {
-            out.write_all(output_text.as_bytes()).expect("write failed");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("kalico-compat: {e}");
-            ExitCode::from(2)
-        }
-    }
+    out.write_all(output_text.as_bytes()).expect("write failed");
+    ExitCode::SUCCESS
 }
 
 /// Read the entire input into a `String`.
