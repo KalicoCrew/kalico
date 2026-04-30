@@ -820,3 +820,27 @@ mod encode_field_tests {
         assert!(matches!(parse_hex_buffer("1"), Err(ParseError::BadHex(_))));
     }
 }
+
+#[cfg(test)]
+mod encode_method_tests {
+    use super::*;
+
+    fn parser_with_one_command() -> MsgProtoParser {
+        let mut d = DataDictionary {
+            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
+            enumerations: IndexMap::new(), config: serde_json::json!({}),
+            version: "v".into(), app: "kalico".into(),
+            build_versions: None, license: None,
+        };
+        d.commands.insert("ping val=%u".into(), 42);
+        MsgProtoParser::from_dictionary(d).unwrap()
+    }
+
+    #[test]
+    fn string_and_typed_encode_to_same_bytes() {
+        let p = parser_with_one_command();
+        let bytes_str = p.encode("ping val=100").unwrap();
+        let bytes_typed = p.encode_typed("ping", &[("val", FieldValue::U32(100))]).unwrap();
+        assert_eq!(bytes_str, bytes_typed);
+    }
+}
