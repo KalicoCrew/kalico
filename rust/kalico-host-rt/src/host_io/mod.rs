@@ -10,6 +10,8 @@
 //! MVP use.
 
 pub mod call_handle;
+pub mod events;
+pub mod identify;
 pub mod parser;
 pub mod rtt;
 pub mod runtime_events;
@@ -27,21 +29,54 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use serialport::SerialPort;
 
+use crate::credit::CreditCounter;
+use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
-use crate::host_io::runtime_events::StatusEvent;
-use crate::transport::{MessageParams, MessageValue, Transport, TransportError};
+use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::transport::{MessageParams, SubscribeError, Transport, TransportError};
+use std::sync::mpsc::SyncSender;
 
 fn sp_err(e: &serialport::Error) -> TransportError {
     TransportError::Io(std::io::Error::other(format!("serialport: {e}")))
 }
 
-const IDENTIFY_CHUNK: u32 = 40;
 const DEFAULT_BAUD: u32 = 250_000;
 const DEFAULT_IDENTIFY_TIMEOUT_MS: u64 = 15_000;
 
 #[derive(Debug)]
 pub enum ReactorCommand {
+    Submit {
+        call_id:                u64,
+        cmd:                    String,
+        expected_response_name: String,
+        completion:             SyncSender<Result<MessageParams, TransportError>>,
+        deadline:               std::time::Instant,
+    },
+    SubmitTyped {
+        call_id:                u64,
+        payload:                Vec<u8>,
+        expected_response_name: String,
+        completion:             SyncSender<Result<MessageParams, TransportError>>,
+        deadline:               std::time::Instant,
+    },
     Abandon(u64),
+    AttachCreditCounter(std::sync::Arc<CreditCounter>),
+    SubscribeFault {
+        sender: SyncSender<FaultEvent>,
+        reply:  SyncSender<Result<(), SubscribeError>>,
+    },
+    SubscribeTrace {
+        sender: SyncSender<TraceEvent>,
+        reply:  SyncSender<Result<(), SubscribeError>>,
+    },
+    SubscribeRuntimeEvents {
+        sender: SyncSender<RuntimeEvent>,
+        reply:  SyncSender<Result<(), SubscribeError>>,
+    },
+    SubscribeHostEvents {
+        sender: SyncSender<HostEvent>,
+        reply:  SyncSender<Result<(), SubscribeError>>,
+    },
     Shutdown,
 }
 
@@ -111,7 +146,7 @@ impl KalicoHostIo {
                 )))
             })?;
 
-        let (parser, host_send_seq, rx_buf) = identify_handshake(&mut port, identify_timeout)?;
+        let (parser, host_send_seq, rx_buf) = identify::identify_handshake(&mut port, identify_timeout)?;
         let (submission_tx, _rx) = std::sync::mpsc::channel();
 
         Ok(Self {
@@ -128,195 +163,6 @@ impl KalicoHostIo {
             })),
         })
     }
-}
-
-/// Synchronous identify handshake.
-///
-/// Drains stale RX bytes, then issues `identify offset=N count=40` until
-/// the response data terminates with an empty chunk. Returns `(parser,
-/// seq, rx_buf)` on success.
-pub(crate) fn identify_handshake(
-    port: &mut Box<dyn SerialPort>,
-    timeout: Duration,
-) -> Result<(MsgProtoParser, u8, Vec<u8>), TransportError> {
-    let deadline = Instant::now() + timeout;
-
-    let drain_until = Instant::now() + Duration::from_millis(300);
-    let mut scratch = [0u8; 4096];
-    while Instant::now() < drain_until {
-        port.set_timeout(Duration::from_millis(50)).map_err(|e| sp_err(&e))?;
-        match port.read(&mut scratch) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
-            Err(e) => return Err(TransportError::Io(e)),
-        }
-    }
-
-    let mut rx_buf: Vec<u8> = Vec::new();
-    let mut seq: u8 = 0;
-    let mut identify_data: Vec<u8> = Vec::new();
-
-    loop {
-        // Encode `identify offset=N count=40` by hand (no dict yet).
-        let mut payload = Vec::with_capacity(16);
-        payload.push(0u8); // msgid=0 → identify
-        parser::encode_vlq(&mut payload, identify_data.len() as i64)
-            .expect("identify offset is u32-range");
-        parser::encode_vlq(&mut payload, i64::from(IDENTIFY_CHUNK))
-            .expect("identify count is u32-range");
-
-        let frame = wire::build_frame(&payload, seq);
-        port.write_all(&frame).map_err(TransportError::Io)?;
-        port.flush().map_err(TransportError::Io)?;
-        seq = seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
-
-        let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(150));
-        let resp = wait_for_identify_response(port, &mut rx_buf, attempt_deadline)?
-            .ok_or_else(|| {
-                TransportError::Parse(
-                    "identify timed out (Phase-B shim, no NAK resync)".into(),
-                )
-            })?;
-
-        let offset = resp.get_u32("offset") as usize;
-        if offset != identify_data.len() {
-            continue;
-        }
-        let chunk = resp.get_bytes("data").map(<[u8]>::to_vec).unwrap_or_default();
-        if chunk.is_empty() {
-            break;
-        }
-        identify_data.extend_from_slice(&chunk);
-        if Instant::now() >= deadline {
-            return Err(TransportError::Parse("identify exceeded timeout".into()));
-        }
-    }
-
-    let parser = build_parser_from_identify(&identify_data);
-    Ok((parser, seq, rx_buf))
-}
-
-fn wait_for_identify_response(
-    port: &mut Box<dyn SerialPort>,
-    rx_buf: &mut Vec<u8>,
-    deadline: Instant,
-) -> Result<Option<MessageParams>, TransportError> {
-    let mut scratch = [0u8; 256];
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(None);
-        }
-        let remaining = deadline - now;
-        let read_to = remaining.min(Duration::from_millis(100));
-        port.set_timeout(read_to).map_err(|e| sp_err(&e))?;
-        match port.read(&mut scratch) {
-            Ok(n) if n > 0 => {
-                rx_buf.extend_from_slice(&scratch[..n]);
-                while let Some(packet) = wire::extract_packet(rx_buf) {
-                    if let Some(params) = decode_identify_response(&packet) {
-                        return Ok(Some(params));
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => return Err(TransportError::Io(e)),
-        }
-    }
-}
-
-fn build_parser_from_identify(identify_data: &[u8]) -> MsgProtoParser {
-    use crate::host_io::parser::DataDictionary;
-
-    // Try zlib inflate first (Klipper firmware compresses the dict).
-    let json_bytes = if identify_data.first() == Some(&0x78) {
-        let mut decoder = flate2::read::ZlibDecoder::new(identify_data);
-        let mut out = Vec::new();
-        if std::io::Read::read_to_end(&mut decoder, &mut out).is_ok() {
-            out
-        } else {
-            identify_data.to_vec()
-        }
-    } else {
-        identify_data.to_vec()
-    };
-
-    let Ok(json_str) = std::str::from_utf8(&json_bytes) else {
-        log::warn!("kalico-host-rt: identify blob is not valid UTF-8 after inflate");
-        return empty_parser();
-    };
-
-    let dict: DataDictionary = match serde_json::from_str(json_str) {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("kalico-host-rt: identify JSON parse failed: {e}");
-            return empty_parser();
-        }
-    };
-
-    match MsgProtoParser::from_dictionary(dict) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("kalico-host-rt: MsgProtoParser::from_dictionary failed: {e:?}");
-            empty_parser()
-        }
-    }
-}
-
-fn empty_parser() -> MsgProtoParser {
-    use crate::host_io::parser::DataDictionary;
-    use indexmap::IndexMap;
-    let dict = DataDictionary {
-        commands: IndexMap::new(),
-        responses: IndexMap::new(),
-        output: IndexMap::new(),
-        enumerations: IndexMap::new(),
-        config: serde_json::json!({}),
-        version: String::new(),
-        app: String::new(),
-        build_versions: None,
-        license: None,
-    };
-    MsgProtoParser::from_dictionary(dict).expect("empty dict cannot fail")
-}
-
-fn decode_identify_response(packet: &[u8]) -> Option<MessageParams> {
-    if packet.len() < wire::MESSAGE_MIN + 1 {
-        return None;
-    }
-    let body = &packet[wire::MESSAGE_HEADER_SIZE..packet.len() - wire::MESSAGE_TRAILER_SIZE];
-    if body.is_empty() {
-        return None;
-    }
-    let mut pos = 0usize;
-    let msgid = body[pos];
-    pos += 1;
-    if msgid != 0 {
-        return None;
-    }
-    let (offset, n) = parser::decode_vlq(&body[pos..]).ok()?;
-    pos += n;
-    let (data, _n) = decode_bytes(&body[pos..])?;
-    let mut params = MessageParams::new();
-    #[allow(clippy::cast_sign_loss)]
-    {
-        params.insert("offset", MessageValue::U32(offset as u32));
-    }
-    params.insert("data", MessageValue::Bytes(data));
-    Some(params)
-}
-
-fn decode_bytes(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
-    if buf.is_empty() {
-        return None;
-    }
-    let len = buf[0] as usize;
-    if buf.len() < 1 + len {
-        return None;
-    }
-    Some((buf[1..=len].to_vec(), 1 + len))
 }
 
 fn pump_rx(shim: &mut KalicoHostIoShimInner, timeout: Duration) -> Result<(), TransportError> {
