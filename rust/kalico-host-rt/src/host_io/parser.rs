@@ -650,6 +650,57 @@ pub fn decode_field_plain(body: &[u8], ty: FieldType) -> Result<(MessageValue, u
     }
 }
 
+fn python_repr_bytes(bytes: &[u8]) -> String {
+    let mut out = String::from("b'");
+    for &b in bytes {
+        if b == b'\\' || b == b'\'' {
+            out.push('\\');
+            out.push(b as char);
+        } else if (0x20..=0x7E).contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\x{:02x}", b));
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Format an output message string by substituting decoded values for
+/// printf-style format codes. Mirrors Python's `debugformat % tuple`.
+/// %c renders as decimal int (NOT character); %s/%*s/%.*s as repr(bytes)-equivalent.
+pub fn format_output_message(format: &str, values: &[MessageValue]) -> String {
+    let mut out = String::new();
+    let mut iter = format.chars().peekable();
+    let mut value_idx = 0;
+    while let Some(ch) = iter.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        let mut code = String::from("%");
+        while let Some(&c) = iter.peek() {
+            code.push(c);
+            iter.next();
+            if matches!(c, 'u' | 'i' | 'c' | 's') { break; }
+        }
+        if value_idx >= values.len() {
+            out.push_str(&code);
+            continue;
+        }
+        let v = &values[value_idx];
+        value_idx += 1;
+        match v {
+            MessageValue::U32(n) => out.push_str(&n.to_string()),
+            MessageValue::I32(n) => out.push_str(&n.to_string()),
+            MessageValue::Bytes(b) => out.push_str(&python_repr_bytes(b)),
+            MessageValue::String(s) => out.push_str(&format!("{:?}", s)),
+            _ => out.push_str(&code),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod from_dictionary_tests {
     use super::*;
