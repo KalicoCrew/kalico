@@ -11,6 +11,7 @@
 
 pub mod call_handle;
 pub mod parser;
+pub mod rtt;
 pub mod runtime_events;
 pub mod wire;
 
