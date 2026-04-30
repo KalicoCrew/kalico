@@ -28,6 +28,30 @@ impl<T: Float> BezierPiece<T> {
         acc
     }
 
+    /// Compute the derivative polynomial p'(u).
+    ///
+    /// For `p(u) = Σ_{k=0}^d coeffs[k] * (u - u_start)^k`, the derivative is
+    /// `p'(u) = Σ_{k=1}^d k * coeffs[k] * (u - u_start)^{k-1}`, giving
+    /// `coeffs'[j] = (j+1) * coeffs[j+1]` for `j = 0..d-1`.
+    /// Degree drops by 1. Domain unchanged. A constant returns a zero polynomial.
+    pub fn differentiate(&self) -> Self {
+        if self.coeffs.len() <= 1 {
+            return Self {
+                u_start: self.u_start,
+                u_end: self.u_end,
+                coeffs: vec![T::ZERO],
+            };
+        }
+        let coeffs = (1..self.coeffs.len())
+            .map(|k| self.coeffs[k] * T::from_f64(k as f64))
+            .collect();
+        Self {
+            u_start: self.u_start,
+            u_end: self.u_end,
+            coeffs,
+        }
+    }
+
     /// Zero polynomial of the given degree on `[u_start, u_end]`.
     /// Used as the accumulator inside `convolve`.
     pub fn zero(u_start: T, u_end: T, degree: usize) -> Self {
