@@ -120,7 +120,7 @@ pub fn arm_all_mcus<T: Transport>(
             | u64::from(resp.get_u32("mcu_clock_lo"));
         est.add_dedicated_sample(host_send, host_recv, mcu_clock);
 
-        if !est.is_quality_gate_passed(baseline_freq) {
+        if est.is_quality_gate_passed(baseline_freq).is_err() {
             return Err(fail(ArmError::QualityGate, &armed_indices));
         }
         let _ = idx; // index is the natural enumerate counter; unused

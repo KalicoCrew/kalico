@@ -274,26 +274,51 @@ impl ClockSyncEstimator {
     }
 
     /// Plan-decision B: §12.4 quality gate including the dedicated-
-    /// sample-present check.
-    pub fn is_quality_gate_passed(&self, baseline_freq: f64) -> bool {
+    /// sample-present check.  Per spec §5.10 — returns structured failure
+    /// reason instead of a plain bool so callers can surface diagnostics.
+    pub fn is_quality_gate_passed(&self, baseline_freq: f64) -> Result<(), QualityGateFailure> {
         if self.sample_count() < MIN_WARMUP_SAMPLES {
-            return false;
+            return Err(QualityGateFailure::InsufficientWarmup {
+                samples: self.sample_count() as usize,
+                required: MIN_WARMUP_SAMPLES as usize,
+            });
         }
         if self.residual_max_in_window > MAX_RESIDUAL_US_DEFAULT {
-            return false;
+            return Err(QualityGateFailure::ResidualExceeded {
+                observed_us: self.residual_max_in_window,
+                max_us: MAX_RESIDUAL_US_DEFAULT,
+            });
         }
-        if self.drift_ppm(baseline_freq).abs() > MAX_DRIFT_PPM_DEFAULT {
-            return false;
+        let drift = self.drift_ppm(baseline_freq).abs();
+        if drift > MAX_DRIFT_PPM_DEFAULT {
+            return Err(QualityGateFailure::DriftPpmExceeded {
+                observed_ppm: drift,
+                max_ppm: MAX_DRIFT_PPM_DEFAULT,
+            });
         }
         match self.last_sample_age() {
             Some(age) if age.as_millis() <= u128::from(MAX_SAMPLE_AGE_MS_DEFAULT) => {}
-            _ => return false,
+            Some(age) => return Err(QualityGateFailure::LastSampleStale {
+                age,
+                max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
+            }),
+            None => return Err(QualityGateFailure::LastSampleStale {
+                age: std::time::Duration::MAX,
+                max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
+            }),
         }
-        // Plan-decision B: dedicated sample present + recent.
-        matches!(
-            self.last_dedicated_sample_age(),
-            Some(age) if age.as_millis() <= u128::from(MAX_RTT_AGE_MS_DEFAULT)
-        )
+        match self.last_dedicated_sample_age() {
+            Some(age) if age.as_millis() <= u128::from(MAX_RTT_AGE_MS_DEFAULT) => {}
+            Some(age) => return Err(QualityGateFailure::DedicatedSampleStale {
+                age,
+                max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
+            }),
+            None => return Err(QualityGateFailure::DedicatedSampleStale {
+                age: std::time::Duration::MAX,
+                max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
+            }),
+        }
+        Ok(())
     }
 }
 
