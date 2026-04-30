@@ -22,6 +22,8 @@ pub enum TransportError {
     Closed,
     /// Wire-format / parser error (malformed frame, unknown msg-id, ...).
     Parse(String),
+    /// Dispatcher entry passed its deadline before being serviced.
+    DispatcherTimeout,
 }
 
 impl std::fmt::Display for TransportError {
@@ -31,6 +33,7 @@ impl std::fmt::Display for TransportError {
             TransportError::Timeout => write!(f, "transport timed out"),
             TransportError::Closed => write!(f, "transport closed"),
             TransportError::Parse(s) => write!(f, "transport parse error: {s}"),
+            TransportError::DispatcherTimeout => write!(f, "dispatcher timeout (entry past deadline)"),
         }
     }
 }
@@ -50,29 +53,49 @@ impl From<io::Error> for TransportError {
     }
 }
 
-/// Wire-protocol transport. Send a Klipper-msgproto-style command line,
-/// then block (up to `timeout`) on a named response.
-///
-/// The trait is `Send` so producers can be hand-rolled across threads,
-/// even though Step-6 only uses it from a single foreground thread.
-pub trait Transport: Send {
-    /// Send a command line in Klipper msgproto format
-    /// (e.g. `"kalico_stream_arm t_start_t0_lo=0 ..."`).
-    fn send(&mut self, cmd: &str) -> Result<(), TransportError>;
+#[derive(Debug)]
+pub enum SubscribeError {
+    AlreadySubscribed { channel: &'static str },
+    Closed,
+}
 
-    /// Block until an inbound message named `name` arrives or `timeout`
-    /// elapses. Returns the parsed key=value pairs.
-    fn wait_for_response(
-        &mut self,
-        name: &str,
+impl std::fmt::Display for SubscribeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubscribeError::AlreadySubscribed { channel } =>
+                write!(f, "channel '{channel}' already has a subscriber"),
+            SubscribeError::Closed => write!(f, "transport closed"),
+        }
+    }
+}
+
+impl std::error::Error for SubscribeError {}
+
+/// Wire-protocol transport. Issues a Klipper-msgproto-style command,
+/// waits for the named response, and returns the parsed fields.
+///
+/// The trait is `Send + Sync` so it can be shared across threads (e.g.
+/// an `Arc<T>` used from multiple producer threads). Implementations
+/// use internal synchronization (`Mutex` / channels) to satisfy `&self`.
+pub trait Transport: Send + Sync {
+    /// Send `cmd` (Klipper msgproto format) and block until a message
+    /// named `expected_response_name` arrives or `timeout` elapses.
+    fn call(
+        &self,
+        cmd: &str,
+        expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError>;
 
-    /// Pull any inbound async events of `name` (non-blocking; returns the
-    /// drained vector). The Step-6 shim's implementation is a synchronous
-    /// drain of buffered packets; Step-7 MVP replaces this with an async
-    /// dispatcher.
-    fn poll_events(&mut self, name: &str) -> Vec<MessageParams>;
+    /// Typed variant: encodes `name` + `args` via the loaded data
+    /// dictionary and waits for `expected_response_name`.
+    fn call_typed(
+        &self,
+        name: &str,
+        args: &[(&str, crate::host_io::parser::FieldValue<'_>)],
+        expected_response_name: &str,
+        timeout: Duration,
+    ) -> Result<MessageParams, TransportError>;
 }
 
 /// Parsed key=value pairs from a wire response. Field accessors return a
