@@ -53,69 +53,66 @@ impl std::fmt::Display for ProducerError {
 
 impl std::error::Error for ProducerError {}
 
+/// Per-segment push parameters for the 4-handle wire format.
+#[derive(Debug, Clone, Copy)]
+pub struct SegmentPushParams {
+    pub id: u32,
+    pub x_handle_packed: u32,
+    pub y_handle_packed: u32,
+    pub z_handle_packed: u32,
+    pub e_handle_packed: u32,
+    pub t_start: u64,
+    pub t_end: u64,
+    pub kinematics: u8,
+    pub e_mode: u8,
+    pub extrusion_ratio: f32,
+}
+
 /// Push a single segment to the MCU.
 ///
-/// `curve_handle_packed` is the u32 packed (slot, gen) handle returned
-/// by a prior `kalico_load_curve_response`; `t_start`/`t_end` are
+/// The 4 packed handles are `(generation << 16) | slot_idx` returned
+/// by prior `kalico_load_curve_response` calls; `t_start`/`t_end` are
 /// 64-bit MCU-clock values produced by [`crate::stream::arm_all_mcus`]
 /// or by a downstream Layer-2/3 scheduler.
 pub fn push_segment<T: Transport>(
     io: &mut T,
     credit: &CreditCounter,
-    id: u32,
-    curve_handle_packed: u32,
-    t_start: u64,
-    t_end: u64,
-    kinematics: u8,
+    params: &SegmentPushParams,
 ) -> Result<PushedSegmentInfo, ProducerError> {
-    push_segment_with_timeout(
-        io,
-        credit,
-        id,
-        curve_handle_packed,
-        t_start,
-        t_end,
-        kinematics,
-        DEFAULT_PUSH_RESPONSE_TIMEOUT,
-    )
+    push_segment_with_timeout(io, credit, params, DEFAULT_PUSH_RESPONSE_TIMEOUT)
 }
 
-// Eight args is the full Layer-1/2/3 push surface (id, curve, t_start,
-// t_end, kinematics, timeout, plus io+credit). Splitting into a struct
-// would obscure the call-site readability without removing any
-// arguments — the test suite calls this directly with concrete values
-// per Step-6 plan, so we lint-allow.
-#[allow(clippy::too_many_arguments)]
 pub fn push_segment_with_timeout<T: Transport>(
     io: &mut T,
     credit: &CreditCounter,
-    id: u32,
-    curve_handle_packed: u32,
-    t_start: u64,
-    t_end: u64,
-    kinematics: u8,
+    params: &SegmentPushParams,
     timeout: Duration,
 ) -> Result<PushedSegmentInfo, ProducerError> {
     credit.try_acquire().ok_or(ProducerError::NoCredit)?;
 
     // Field names + ordering MUST match the firmware's DECL_COMMAND format
     // string in `src/runtime_tick.c`:
-    //   "kalico_push_segment id=%u curve_handle=%u t_start_hi=%u t_start_lo=%u "
-    //   "t_end_hi=%u t_end_lo=%u kinematics=%c"
-    // Closure-review fix: prior code emitted `curve_handle_packed=`,
-    // `t_start_lo` BEFORE `t_start_hi`, and `kin=` — three concrete
-    // mismatches that would silently fail msgproto encoding the moment a
-    // real Klipper data dictionary is loaded. The unit-test harness
-    // passes through MockTransport's permissive parser, which is why the
-    // bug shipped.
+    //   "kalico_push_segment id=%u x_handle=%u y_handle=%u z_handle=%u
+    //    e_handle=%u t_start_hi=%u t_start_lo=%u t_end_hi=%u t_end_lo=%u
+    //    kinematics=%c e_mode=%c extrusion_ratio=%u"
     let cmd = format!(
-        "kalico_push_segment id={id} curve_handle={curve_handle_packed} \
+        "kalico_push_segment id={id} x_handle={x_handle} \
+         y_handle={y_handle} z_handle={z_handle} e_handle={e_handle} \
          t_start_hi={t_start_hi} t_start_lo={t_start_lo} \
-         t_end_hi={t_end_hi} t_end_lo={t_end_lo} kinematics={kinematics}",
-        t_start_lo = t_start as u32,
-        t_start_hi = (t_start >> 32) as u32,
-        t_end_lo = t_end as u32,
-        t_end_hi = (t_end >> 32) as u32,
+         t_end_hi={t_end_hi} t_end_lo={t_end_lo} \
+         kinematics={kin} e_mode={e_mode} extrusion_ratio={extrusion_ratio}",
+        id = params.id,
+        x_handle = params.x_handle_packed,
+        y_handle = params.y_handle_packed,
+        z_handle = params.z_handle_packed,
+        e_handle = params.e_handle_packed,
+        t_start_lo = params.t_start as u32,
+        t_start_hi = (params.t_start >> 32) as u32,
+        t_end_lo = params.t_end as u32,
+        t_end_hi = (params.t_end >> 32) as u32,
+        kin = params.kinematics,
+        e_mode = params.e_mode,
+        extrusion_ratio = params.extrusion_ratio.to_bits(),
     );
 
     if let Err(e) = io.send(&cmd) {

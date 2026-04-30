@@ -6,10 +6,25 @@ mod mock_transport;
 use std::time::Duration;
 
 use kalico_host_rt::credit::CreditCounter;
-use kalico_host_rt::producer::{ProducerError, push_segment};
+use kalico_host_rt::producer::{ProducerError, SegmentPushParams, push_segment};
 use kalico_host_rt::transport::{MessageValue, TransportError};
 
 use mock_transport::{MockTransport, mp_with};
+
+fn default_params() -> SegmentPushParams {
+    SegmentPushParams {
+        id: 0,
+        x_handle_packed: 0,
+        y_handle_packed: 0,
+        z_handle_packed: 0,
+        e_handle_packed: 0,
+        t_start: 0,
+        t_end: 0,
+        kinematics: 0,
+        e_mode: 0,
+        extrusion_ratio: 0.0,
+    }
+}
 
 #[test]
 fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
@@ -24,29 +39,25 @@ fn happy_path_pushes_and_returns_accepted_id_and_epoch() {
         ]),
     );
 
-    let info = push_segment(&mut io, &credit, 42, 0xCAFE_BABE, 1000, 2000, 0).expect("happy push");
+    let params = SegmentPushParams {
+        id: 42,
+        x_handle_packed: 0xCAFE_BABE,
+        t_start: 1000,
+        t_end: 2000,
+        ..default_params()
+    };
+    let info = push_segment(&mut io, &credit, &params).expect("happy push");
     assert_eq!(info.accepted_segment_id, 42);
     assert_eq!(info.credit_epoch, 7);
     assert_eq!(credit.available(), 3, "credit decremented exactly once");
     let last = io.last_sent().unwrap();
-    // Closure-review fix: assertions MUST mirror the firmware's
-    // DECL_COMMAND format string verbatim — `curve_handle=` (not
-    // `_packed`), `kinematics=` (not `kin`), and `t_start_hi` ahead of
-    // `t_start_lo`.
     assert!(last.contains("id=42"));
-    assert!(last.contains("curve_handle=3405691582"));
-    assert!(
-        !last.contains("curve_handle_packed="),
-        "must not use the legacy `_packed` suffix; firmware DECL_COMMAND \
-         is `curve_handle=%u`"
-    );
+    assert!(last.contains("x_handle=3405691582"));
     assert!(last.contains("t_start_lo=1000"));
     assert!(last.contains("t_end_lo=2000"));
     assert!(last.contains("kinematics=0"));
-    assert!(
-        !last.contains("kin=0"),
-        "must not use legacy `kin=`; firmware is `kinematics=%c`"
-    );
+    assert!(last.contains("e_mode=0"));
+    assert!(last.contains("extrusion_ratio="));
     // Field ordering — `t_start_hi` must come before `t_start_lo`.
     let hi_pos = last.find("t_start_hi=").expect("t_start_hi missing");
     let lo_pos = last.find("t_start_lo=").expect("t_start_lo missing");
@@ -67,7 +78,10 @@ fn no_credit_returns_nocredit_without_sending() {
     let mut io = MockTransport::new();
     let credit = CreditCounter::new(1);
     credit.try_acquire().unwrap(); // exhaust
-    let err = push_segment(&mut io, &credit, 0, 1, 0, 100, 0).unwrap_err();
+    let err = push_segment(&mut io, &credit, &SegmentPushParams {
+        t_end: 100,
+        ..default_params()
+    }).unwrap_err();
     assert!(
         matches!(err, ProducerError::NoCredit),
         "expected NoCredit, got {err:?}"
@@ -82,12 +96,12 @@ fn mcu_rejection_releases_credit() {
     io.enqueue_response(
         "kalico_push_response",
         mp_with(&[
-            ("result", MessageValue::I32(-103)), // POOL_NOT_LOADED
+            ("result", MessageValue::I32(-103)),
             ("accepted_segment_id", MessageValue::U32(0)),
             ("credit_epoch", MessageValue::U32(0)),
         ]),
     );
-    let err = push_segment(&mut io, &credit, 0, 0, 0, 0, 0).unwrap_err();
+    let err = push_segment(&mut io, &credit, &default_params()).unwrap_err();
     match err {
         ProducerError::McuRejected(r) => assert_eq!(r, -103),
         other => panic!("expected McuRejected, got {other:?}"),
@@ -100,7 +114,7 @@ fn transport_timeout_releases_credit() {
     let mut io = MockTransport::new();
     let credit = CreditCounter::new(1);
     // No response queued → transport returns Timeout.
-    let err = push_segment(&mut io, &credit, 0, 0, 0, 0, 0).unwrap_err();
+    let err = push_segment(&mut io, &credit, &default_params()).unwrap_err();
     assert!(
         matches!(err, ProducerError::Transport(_)),
         "expected Transport(_), got {err:?}"
@@ -120,8 +134,12 @@ fn high_64bit_t_start_t_end_split_lo_hi() {
             ("credit_epoch", MessageValue::U32(0)),
         ]),
     );
-    // 2^32 + 5 → lo=5, hi=1
-    let _ = push_segment(&mut io, &credit, 0, 0, 0x1_0000_0005, 0x1_0000_0006, 0).unwrap();
+    let params = SegmentPushParams {
+        t_start: 0x1_0000_0005,
+        t_end: 0x1_0000_0006,
+        ..default_params()
+    };
+    let _ = push_segment(&mut io, &credit, &params).unwrap();
     let last = io.last_sent().unwrap();
     assert!(
         last.contains("t_start_lo=5") && last.contains("t_start_hi=1"),
@@ -135,20 +153,16 @@ fn high_64bit_t_start_t_end_split_lo_hi() {
 
 #[test]
 fn missing_result_field_surfaces_parse_error_and_releases_credit() {
-    // I1 fix: a malformed `kalico_push_response` with no `result`
-    // field must NOT silently succeed (treating absent as 0). Instead
-    // surface a Transport(Parse(...)) and roll back the credit.
     let mut io = MockTransport::new();
     let credit = CreditCounter::new(2);
     io.enqueue_response(
         "kalico_push_response",
         mp_with(&[
-            // No "result" key → try_get_i32 returns None.
             ("accepted_segment_id", MessageValue::U32(1)),
             ("credit_epoch", MessageValue::U32(1)),
         ]),
     );
-    let err = push_segment(&mut io, &credit, 0, 0, 0, 0, 0).unwrap_err();
+    let err = push_segment(&mut io, &credit, &default_params()).unwrap_err();
     match err {
         ProducerError::Transport(TransportError::Parse(msg)) => {
             assert!(

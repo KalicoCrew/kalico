@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use kalico_host_rt::credit::CreditCounter;
-use kalico_host_rt::producer::push_segment;
+use kalico_host_rt::producer::{SegmentPushParams, push_segment};
 use kalico_host_rt::transport::MessageValue;
 
 mod mock_transport;
@@ -140,8 +140,18 @@ fn host_push_segment_field_names_and_ordering_match_firmware() {
             ("credit_epoch", MessageValue::U32(1)),
         ]),
     );
-    push_segment(&mut io, &credit, 1, 0x0001_0000, 100, 200, 0)
-        .expect("happy push for schema cross-check");
+    push_segment(&mut io, &credit, &SegmentPushParams {
+        id: 1,
+        x_handle_packed: 0x0001_0000,
+        y_handle_packed: 0,
+        z_handle_packed: 0,
+        e_handle_packed: 0,
+        t_start: 100,
+        t_end: 200,
+        kinematics: 0,
+        e_mode: 0,
+        extrusion_ratio: 0.0,
+    }).expect("happy push for schema cross-check");
     let line = io.last_sent().expect("MockTransport recorded send");
 
     // Strip leading command name and split on whitespace; confirm field
