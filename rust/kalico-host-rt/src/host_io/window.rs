@@ -123,7 +123,6 @@ impl AwaitingResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn entry(seq: u64) -> UnackedEntry {
         UnackedEntry {
