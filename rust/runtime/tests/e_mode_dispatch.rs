@@ -20,7 +20,7 @@ use runtime::queue::Q_N;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
-use runtime::trace::{TRACE_RING_N, TraceSample};
+use runtime::trace::{TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample};
 
 mod fixtures;
 
@@ -329,5 +329,165 @@ fn xy_seed_prevents_spurious_extrusion() {
         (last.motor_e - expected_e).abs() < 0.05,
         "final E should be ~{expected_e}, got {}",
         last.motor_e,
+    );
+}
+
+/// Regression: the boundary loop must emit TRACE_FLAG_SEGMENT_END for motion
+/// segments (not just hold segments). Without this, the reclaim pipeline never
+/// calls `confirm_retired` for motion-segment curve pool handles.
+#[test]
+fn boundary_loop_emits_segment_end_for_motion_segments() {
+    let mut h = Harness::new();
+
+    // Create a motion segment whose duration is less than one tick cycle, so
+    // it expires entirely within the boundary loop on the first tick.
+    let (x_deg, x_knots, x_cps) = fixtures::linear_scalar(0.0, 10.0);
+    let x_handle = fixtures::load_scalar(&h.pool, 0, x_deg, &x_knots, &x_cps);
+
+    let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
+    // Duration < 1 tick — the segment is already expired by t_start + tc.
+    let short_duration = tc / 2;
+
+    // Need a second segment to land in after the boundary loop retires seg 1.
+    let (x_deg2, x_knots2, x_cps2) = fixtures::linear_scalar(10.0, 20.0);
+    let x_handle2 = fixtures::load_scalar(&h.pool, 1, x_deg2, &x_knots2, &x_cps2);
+
+    h.q_producer
+        .enqueue(Segment {
+            id: 1,
+            x_handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
+            t_start: 0,
+            t_end: short_duration,
+            kinematics: KinematicTag::CartesianXyzAndE,
+            e_mode: EMode::Travel,
+            extrusion_ratio: 0.0,
+            flags: 0,
+            _pad: [0; 1],
+        })
+        .unwrap();
+
+    h.q_producer
+        .enqueue(Segment {
+            id: 2,
+            x_handle: x_handle2,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
+            t_start: short_duration,
+            t_end: short_duration + 100 * tc,
+            kinematics: KinematicTag::CartesianXyzAndE,
+            e_mode: EMode::Travel,
+            extrusion_ratio: 0.0,
+            flags: 0,
+            _pad: [0; 1],
+        })
+        .unwrap();
+
+    // Tick once at t = tc (past seg 1's t_end). Seg 1 should be retired in the
+    // boundary loop and a SEGMENT_END trace emitted for it.
+    h.tick(raw_cyccnt(tc)).expect("tick should succeed");
+
+    let mut out = [TraceSample::default(); 16];
+    let n = h.drain_trace(&mut out);
+    assert!(n > 0, "expected trace samples");
+
+    // Find SEGMENT_END for segment id=1 (the motion segment retired in the
+    // boundary loop).
+    let seg_end_for_1 = out[..n]
+        .iter()
+        .any(|s| s.segment_id == 1 && (s.flags & TRACE_FLAG_SEGMENT_END) != 0);
+    assert!(
+        seg_end_for_1,
+        "boundary loop must emit SEGMENT_END for motion segments (seg id=1)"
+    );
+}
+
+/// Regression: the boundary loop must sync e_accumulator when retiring an
+/// Independent-E segment, so a subsequent CoupledToXy segment starts E
+/// integration from the Independent segment's endpoint (not stale state).
+#[test]
+fn boundary_loop_syncs_e_accumulator_for_independent_segments() {
+    let mut h = Harness::new();
+
+    let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
+
+    // Segment 1: Independent E with NURBS going from 0 to 7.5 mm.
+    // Duration < 1 tick so it expires entirely in the boundary loop.
+    let (e_deg, e_knots, e_cps) = fixtures::linear_scalar(0.0, 7.5);
+    let e_handle = fixtures::load_scalar(&h.pool, 0, e_deg, &e_knots, &e_cps);
+
+    let short_duration = tc / 2;
+
+    // Segment 2: CoupledToXy — X moves 0 → 10 mm, ratio = 0.04.
+    // E should start from 7.5 (the Independent endpoint) and accumulate
+    // 0.04 * 10 = 0.4, ending at ~7.9.
+    let (x_deg, x_knots, x_cps) = fixtures::linear_scalar(0.0, 10.0);
+    let x_handle = fixtures::load_scalar(&h.pool, 1, x_deg, &x_knots, &x_cps);
+
+    let n2_ticks = 20u64;
+
+    h.q_producer
+        .enqueue(Segment {
+            id: 1,
+            x_handle: CurveHandle::UNUSED_SENTINEL,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle,
+            t_start: 0,
+            t_end: short_duration,
+            kinematics: KinematicTag::CartesianXyzAndE,
+            e_mode: EMode::Independent,
+            extrusion_ratio: 0.0,
+            flags: 0,
+            _pad: [0; 1],
+        })
+        .unwrap();
+
+    h.q_producer
+        .enqueue(Segment {
+            id: 2,
+            x_handle,
+            y_handle: CurveHandle::UNUSED_SENTINEL,
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
+            t_start: short_duration,
+            t_end: short_duration + n2_ticks * tc,
+            kinematics: KinematicTag::CartesianXyzAndE,
+            e_mode: EMode::CoupledToXy,
+            extrusion_ratio: 0.04,
+            flags: 0,
+            _pad: [0; 1],
+        })
+        .unwrap();
+
+    // Tick through the full range.
+    // First tick is at tc (past seg 1's t_end); seg 1 retires in boundary loop.
+    for tick_idx in 1..=(n2_ticks + 1) {
+        h.tick(raw_cyccnt(tick_idx * tc))
+            .expect("tick should succeed");
+    }
+
+    let mut out = [TraceSample::default(); 256];
+    let n = h.drain_trace(&mut out);
+    assert!(n > 0, "expected trace samples");
+
+    // Find the last sample for segment 2.
+    let last_seg2 = out[..n]
+        .iter()
+        .rev()
+        .find(|s| s.segment_id == 2)
+        .expect("expected samples for segment 2");
+
+    // E should be approximately 7.5 + 0.04 * 10 = 7.9.
+    // Without the fix, E would be ~0.04 * 10 = 0.4 (stale e_accumulator = 0).
+    let expected_e = 7.5 + 0.04 * 10.0;
+    let tolerance = 0.15; // generous for discretization
+    assert!(
+        (last_seg2.motor_e - expected_e as f32).abs() < tolerance,
+        "E should be ~{expected_e} (Independent endpoint 7.5 + coupled 0.4), got {}",
+        last_seg2.motor_e,
     );
 }

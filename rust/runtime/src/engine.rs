@@ -383,25 +383,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // segment id and we're retiring it now, clear `stream_open` so
             // the next empty-queue observation goes to Drained, not Underrun.
             crate::stream::check_terminal_on_retire(shared, current.id);
-            // §6.5: hold segments retire identically to motion segments —
-            // emit SEGMENT_END so foreground reclaim sees the retirement,
-            // even though the boundary-loop branch never evaluates the
-            // curve. The sentinel handle's slot_idx is u16::MAX which
-            // `confirm_retired` no-ops on (out of slots range), preserving
-            // the "hold segments don't allocate slots" invariant.
-            if current.flags & SEGMENT_FLAG_HOLD_SEGMENT != 0 {
-                let _ = trace.enqueue(TraceSample {
-                    tick: now,
-                    motor_a: self.last_motors[0],
-                    motor_b: self.last_motors[1],
-                    motor_z: self.last_motors[2],
-                    motor_e: self.last_motors[3],
-                    segment_id: current.id,
-                    curve_handle: current.x_handle,
-                    flags: TRACE_FLAG_SEGMENT_END,
-                    _pad: [0; 7],
-                });
+            // E-mode finalization: when retiring an Independent-E segment in
+            // the boundary loop, sync e_accumulator to the segment's E
+            // endpoint so a subsequent CoupledToXy segment resumes from
+            // the correct E position.
+            if current.e_mode == crate::config::EMode::Independent
+                && !current.e_handle.is_unused_sentinel()
+            {
+                if let Some(e_view) = pool.resolve(current.e_handle) {
+                    if let Ok(e_endpoint) = scalar_eval(&e_view, 1.0) {
+                        self.e_accumulator = f64::from(e_endpoint);
+                    }
+                }
             }
+            // Emit SEGMENT_END unconditionally for all segment types (hold
+            // AND motion) so the reclaim pipeline fires `confirm_retired`
+            // for every segment's curve pool handles.
+            let _ = trace.enqueue(TraceSample {
+                tick: now,
+                motor_a: self.last_motors[0],
+                motor_b: self.last_motors[1],
+                motor_z: self.last_motors[2],
+                motor_e: self.last_motors[3],
+                segment_id: current.id,
+                curve_handle: current.x_handle,
+                flags: TRACE_FLAG_SEGMENT_END,
+                _pad: [0; 7],
+            });
             // Drop current; advance to next.
             let Some(next) = queue.dequeue() else {
                 // No next segment — drained. §8.2: queue empty + stream_open=true
