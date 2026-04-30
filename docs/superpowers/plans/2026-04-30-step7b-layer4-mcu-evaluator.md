@@ -1,6 +1,6 @@
 # Step 7-B: Layer 4 MCU Evaluator Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Refactor the MCU runtime to evaluate per-axis scalar NURBS at 40 kHz, integrate E-follows-XY extrusion, and generate step pulses for hybrid stepping.
 
@@ -60,7 +60,7 @@
 - Modify: `rust/runtime/src/curve_pool.rs`
 - Modify: `rust/runtime/tests/curve_pool_alloc.rs`
 
-- [ ] **Step 1: Update constants and `LoadedScalarCurve` struct**
+- [x] **Step 1: Update constants and `LoadedScalarCurve` struct**
 
 In `rust/runtime/src/curve_pool.rs`, replace the existing constants and `LoadedCurve`:
 
@@ -93,7 +93,7 @@ pub struct LoadedScalarCurve {
 
 No weights array — all live pipeline NURBS are polynomial.
 
-- [ ] **Step 2: Update `CurveView` to return scalar slices**
+- [x] **Step 2: Update `CurveView` to return scalar slices**
 
 Change `CurveView` from returning `&[[f32; 3]]` control points to `&[f32]`:
 
@@ -107,11 +107,11 @@ pub struct CurveView<'a> {
 
 Remove the `weights` field from `CurveView` — no rational NURBS.
 
-- [ ] **Step 3: Update `try_alloc_and_load` to accept scalar data**
+- [x] **Step 3: Update `try_alloc_and_load` to accept scalar data**
 
 Keep the existing slot-indexed `try_alloc_and_load` API shape but change its payload from 3D vector data + weights to scalar data `(degree: u8, knots: &[f32], cps: &[f32])`. Remove the weights parameter. Validate `degree <= MAX_DEGREE`, `n_cp <= MAX_CONTROL_POINTS`, `knots.len() == n_cp + degree as usize + 1`. Update all existing callers (tests, FFI) that construct `LoadedCurve` to use the new scalar signature.
 
-- [ ] **Step 4: Add `CurveHandle::UNUSED_SENTINEL`**
+- [x] **Step 4: Add `CurveHandle::UNUSED_SENTINEL`**
 
 ```rust
 impl CurveHandle {
@@ -123,7 +123,7 @@ impl CurveHandle {
 }
 ```
 
-- [ ] **Step 5: Update tests in `curve_pool_alloc.rs`**
+- [x] **Step 5: Update tests in `curve_pool_alloc.rs`**
 
 Replace all 3D fixtures with scalar data. Add tests:
 - Load a degree-1 linear scalar curve (2 CPs, 4 knots) → success.
@@ -134,12 +134,12 @@ Replace all 3D fixtures with scalar data. Add tests:
 - Resolve a loaded curve → `CurveView` has correct scalar data.
 - `UNUSED_SENTINEL.is_unused_sentinel()` returns true.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run: `cd rust && cargo test -p runtime -- curve_pool`
 Expected: all curve_pool tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```
 git add rust/runtime/src/curve_pool.rs rust/runtime/tests/curve_pool_alloc.rs
@@ -155,7 +155,7 @@ git commit -m "refactor: curve pool to scalar slots (degree 10, 80 CPs, 64 slots
 - Create: `rust/runtime/src/config.rs`
 - Modify: `rust/runtime/src/lib.rs`
 
-- [ ] **Step 1: Create `config.rs` with `EMode`, `McuAxisConfig`, `MotorConfig`**
+- [x] **Step 1: Create `config.rs` with `EMode`, `McuAxisConfig`, `MotorConfig`**
 
 ```rust
 //! MCU axis configuration and E-mode types.
@@ -203,7 +203,7 @@ impl McuAxisConfig {
 }
 ```
 
-- [ ] **Step 2: Update `Segment` struct with 4 handles + E-mode**
+- [x] **Step 2: Update `Segment` struct with 4 handles + E-mode**
 
 In `rust/runtime/src/segment.rs`:
 
@@ -235,18 +235,18 @@ Update `duration()` method — unchanged.
 
 Update all test `Segment` construction sites to use the new fields (use `CurveHandle::UNUSED_SENTINEL` for unused handles, `EMode::CoupledToXy` as default, `extrusion_ratio: 0.0`).
 
-- [ ] **Step 3: Add `mod config;` to `lib.rs` and re-export**
+- [x] **Step 3: Add `mod config;` to `lib.rs` and re-export**
 
 ```rust
 pub mod config;
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cd rust && cargo test -p runtime -- segment`
 Expected: segment tests pass with new struct.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```
 git add rust/runtime/src/segment.rs rust/runtime/src/config.rs rust/runtime/src/lib.rs
@@ -262,7 +262,7 @@ git commit -m "feat: segment struct with 4 per-axis handles, EMode, and McuAxisC
 - Modify: `rust/runtime/src/error.rs`
 - Modify: `rust/runtime/src/state.rs`
 
-- [ ] **Step 1: Add `motor_z` to `TraceSample`, update padding**
+- [x] **Step 1: Add `motor_z` to `TraceSample`, update padding**
 
 In `rust/runtime/src/trace.rs`:
 
@@ -286,7 +286,7 @@ Update `Default` impl to include `motor_z: 0.0` and `_pad: [0; 7]`.
 
 Update the size assert to 40 bytes.
 
-- [ ] **Step 2: Add new fault codes**
+- [x] **Step 2: Add new fault codes**
 
 In `rust/runtime/src/error.rs`, add:
 
@@ -305,7 +305,7 @@ ZeroDurationSegment,
 
 Update `impl From<RuntimeError> for i32` (or the equivalent match in `FaultCode::as_i32()`) with the new variants mapped to the new constants. Update any exhaustiveness tests.
 
-- [ ] **Step 3: Add `homed` to `SharedState`**
+- [x] **Step 3: Add `homed` to `SharedState`**
 
 In `rust/runtime/src/state.rs`, add to `SharedState`:
 
@@ -315,7 +315,7 @@ pub homed: AtomicBool,
 
 Initialize to `false` in `SharedState::new()`.
 
-- [ ] **Step 4: Update `TickState` to 4 motors**
+- [x] **Step 4: Update `TickState` to 4 motors**
 
 ```rust
 pub struct TickState {
@@ -325,24 +325,24 @@ pub struct TickState {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `cd rust && cargo test -p runtime`
 Expected: compilation succeeds. Some tests will need `TraceSample` and `Segment` construction updates — fix all call sites.
 
-- [ ] **Step 6: Fix all compilation errors across test files**
+- [x] **Step 6: Fix all compilation errors across test files**
 
 Every test that constructs a `Segment` or `TraceSample` must use the new field layout. This is a mechanical update: add the missing fields with default/sentinel values. Fix each file:
 - `engine_tick.rs`, `engine_underrun.rs`, `hold_segment.rs`, `flush_basic.rs`, `flush_drains_queue.rs`, `flush_timeout.rs`, `force_idle_short_circuit.rs`, `max_boundary_iters.rs`, `reclaim_pipeline.rs`, `segment_id_atomics.rs`, `stream_lifecycle.rs`, `trace_overflow.rs`, `fixtures/mod.rs`.
 
 Update `TickState` usages in `slot.rs` and `engine.rs` for 4-element arrays. Also widen `Engine::last_motors` from `[f32; 3]` to `[f32; 4]` and update all trace emit sites to write `motor_z: last_motors[2]`, `motor_e: last_motors[3]`.
 
-- [ ] **Step 7: Run full test suite**
+- [x] **Step 7: Run full test suite**
 
 Run: `cd rust && cargo test -p runtime`
 Expected: all tests pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```
 git add rust/runtime/src/trace.rs rust/runtime/src/error.rs rust/runtime/src/state.rs
@@ -358,7 +358,7 @@ git commit -m "feat: 4-motor trace (40 bytes), homed gate, new fault codes"
 - Modify: `rust/runtime/src/kinematics.rs`
 - Modify: `rust/runtime/src/slot.rs`
 
-- [ ] **Step 1: Update kinematics to 4-element arrays**
+- [x] **Step 1: Update kinematics to 4-element arrays**
 
 In `rust/runtime/src/kinematics.rs`:
 
@@ -376,16 +376,16 @@ pub fn cartesian_xyz_with_e(pos: [f32; 4]) -> [f32; 4] {
 }
 ```
 
-- [ ] **Step 2: Update slot traits for 4-element TickState**
+- [x] **Step 2: Update slot traits for 4-element TickState**
 
 In `rust/runtime/src/slot.rs`, update `PaSlot::apply` and `IsSlot::apply` to work with the new `TickState` (4-element `positions` and `motors`). The `NoopPa`/`NoopIs` impls remain no-ops.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cd rust && cargo test -p runtime`
 Expected: pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```
 git add rust/runtime/src/kinematics.rs rust/runtime/src/slot.rs
@@ -401,7 +401,7 @@ git commit -m "refactor: kinematics and slots to 4-element motor arrays"
 - Create: `rust/runtime/tests/step_generation.rs`
 - Modify: `rust/runtime/src/lib.rs`
 
-- [ ] **Step 1: Write failing tests for step accumulator**
+- [x] **Step 1: Write failing tests for step accumulator**
 
 Create `rust/runtime/tests/step_generation.rs`:
 
@@ -482,12 +482,12 @@ fn drift_over_many_ticks() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd rust && cargo test -p runtime -- step_generation`
 Expected: FAIL — `runtime::step` module not found.
 
-- [ ] **Step 3: Implement `step.rs`**
+- [x] **Step 3: Implement `step.rs`**
 
 Create `rust/runtime/src/step.rs`:
 
@@ -545,12 +545,12 @@ Add `pub mod step;` to `lib.rs`.
 
 Note: `StepMotorState::update` returns `StepResult { n_steps }` — the count and direction of steps to emit. Actual GPIO pulse emission (BSRR writes, dir pin, AWD dual-pin, timing delays) is hardware-specific and not testable on the host. The engine's tick method calls `update()` and stores the result; the actual pulse emission is a thin hardware layer wired in 7-D when real GPIO is available. Tests verify step counts, not GPIO toggles.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd rust && cargo test -p runtime -- step_generation`
 Expected: all 8 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```
 git add rust/runtime/src/step.rs rust/runtime/src/lib.rs rust/runtime/tests/step_generation.rs
@@ -574,7 +574,7 @@ This is the largest task. The engine's `tick_with_current` method is rewritten t
 4. Apply kinematic transform.
 5. Generate steps per motor.
 
-- [ ] **Step 1: Update `Engine` struct with new fields**
+- [x] **Step 1: Update `Engine` struct with new fields**
 
 Add to `Engine`:
 
@@ -589,7 +589,7 @@ mcu_config: Option<crate::config::McuAxisConfig>,
 
 Update `Engine::new()` and `Engine::default()` to initialize these fields. `mcu_config` starts as `None`; set via a new `Engine::configure(&mut self, config: McuAxisConfig)` method.
 
-- [ ] **Step 2: Update scalar fixtures**
+- [x] **Step 2: Update scalar fixtures**
 
 In `rust/runtime/tests/fixtures/mod.rs`, replace 3D vector NURBS fixtures with scalar NURBS helpers:
 
@@ -611,7 +611,7 @@ pub fn load_scalar(pool: &CurvePool, degree: u8, knots: &[f32], cps: &[f32]) -> 
 }
 ```
 
-- [ ] **Step 3: Replace `nurbs_eval_3d` with `scalar_eval`**
+- [x] **Step 3: Replace `nurbs_eval_3d` with `scalar_eval`**
 
 In `engine.rs`, replace the `nurbs_eval_3d` function with:
 
@@ -628,7 +628,7 @@ fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
 }
 ```
 
-- [ ] **Step 4: Rewrite `tick_with_current` eval path**
+- [x] **Step 4: Rewrite `tick_with_current` eval path**
 
 Replace the single-handle resolve + 3D eval with:
 1. Resolve X, Y, Z handles (skip sentinels based on `mcu_config`).
@@ -643,7 +643,7 @@ Replace the single-handle resolve + 3D eval with:
 
 The boundary loop and hold-segment paths carry the 4-handle segment through unchanged (boundary loop already uses `current.curve_handle` only for SEGMENT_END trace — now uses `current.x_handle` as the primary diagnostic handle).
 
-- [ ] **Step 5: Add homed gate**
+- [x] **Step 5: Add homed gate**
 
 After `force_idle` check AND after clock widening (so `now` is available for `latch_fault`), but before segment activation:
 
@@ -657,7 +657,7 @@ if !shared.homed.load(Ordering::Acquire) {
 }
 ```
 
-- [ ] **Step 6: Update engine_tick.rs tests**
+- [x] **Step 6: Update engine_tick.rs tests**
 
 Update existing tests to construct 4-handle segments with scalar curve fixtures. Verify:
 - Idle → segment push → tick → trace sample has correct motor positions.
@@ -666,7 +666,7 @@ Update existing tests to construct 4-handle segments with scalar curve fixtures.
 
 Use `McuAxisConfig` with `CoreXyAndE`, motors [A, B, _, E] configured.
 
-- [ ] **Step 7: Write E-mode dispatch tests**
+- [x] **Step 7: Write E-mode dispatch tests**
 
 Create `rust/runtime/tests/e_mode_dispatch.rs`:
 
@@ -676,19 +676,19 @@ Create `rust/runtime/tests/e_mode_dispatch.rs`:
 - `e_seed_after_independent`: CoupledToXy segment, then Independent retraction, then CoupledToXy. Verify E accumulator syncs correctly across transitions.
 - `xy_seed_prevents_spurious_extrusion`: First segment starts at X=100. Verify first-tick E delta is zero (not computed from prev_x=0 to x=100).
 
-- [ ] **Step 8: Write homed gate test**
+- [x] **Step 8: Write homed gate test**
 
 Create `rust/runtime/tests/homed_gate.rs`:
 
 - `engine_refuses_to_run_when_not_homed`: Set `homed = false`, open stream, push segment, tick → fault `NotHomed`.
 - `engine_runs_when_homed`: Set `homed = true` → runs normally.
 
-- [ ] **Step 9: Run all tests**
+- [x] **Step 9: Run all tests**
 
 Run: `cd rust && cargo test -p runtime`
 Expected: all tests pass.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```
 git add rust/runtime/src/engine.rs rust/runtime/tests/
@@ -703,7 +703,7 @@ git commit -m "feat: per-axis scalar evaluator with E-mode dispatch and step gen
 - Modify: `rust/runtime/src/reclaim.rs`
 - Modify: `rust/runtime/tests/reclaim_pipeline.rs`
 
-- [ ] **Step 1: Add segment_id → handles lookup to reclaim**
+- [x] **Step 1: Add segment_id → handles lookup to reclaim**
 
 The foreground maintains a table mapping `segment_id` to its 4 `CurveHandle`s. On SEGMENT_END, retire all non-sentinel handles.
 
@@ -770,7 +770,7 @@ where
 }
 ```
 
-- [ ] **Step 2: Update `reclaim_pipeline.rs` tests**
+- [x] **Step 2: Update `reclaim_pipeline.rs` tests**
 
 - Load 3 scalar curves (X, Y, Z) into pool.
 - Push a segment with all 3 handles + UNUSED for E.
@@ -779,12 +779,12 @@ where
 - Drain and reclaim → all 3 slots freed.
 - Verify new allocs succeed on those slots.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cd rust && cargo test -p runtime -- reclaim`
 Expected: pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```
 git add rust/runtime/src/reclaim.rs rust/runtime/tests/reclaim_pipeline.rs
@@ -799,17 +799,17 @@ git commit -m "feat: multi-handle retirement via segment_id lookup table"
 - Modify: `rust/kalico-c-api/src/runtime_ffi.rs`
 - Modify: `src/runtime_tick.c`
 
-- [ ] **Step 1: Update Rust FFI `kalico_load_curve` to scalar blob passthrough**
+- [x] **Step 1: Update Rust FFI `kalico_load_curve` to scalar blob passthrough**
 
 Replace the `n_cp * MAX_DIM` slice construction with a single aligned blob passthrough. The C handler passes the raw scalar NURBS wire blob (8-byte header + knots + CPs, as defined in `nurbs::wire`); the Rust FFI calls `ScalarNurbsRef::try_from_wire` on the full blob for validation, then copies the parsed degree/knots/CPs into the `LoadedScalarCurve` slot. Do NOT pass separate knots/cps buffers — `try_from_wire` expects a single contiguous wire buffer with header.
 
-- [ ] **Step 2: Update Rust FFI `kalico_push_segment` for 4 handles + E-mode**
+- [x] **Step 2: Update Rust FFI `kalico_push_segment` for 4 handles + E-mode**
 
 Accept 4 packed handles (`x_handle`, `y_handle`, `z_handle`, `e_handle`), `e_mode: u8`, `extrusion_ratio: u32` (f32 bits). Construct the new `Segment` struct. Register handles in the `RetirementTable`.
 
 Validate `t_end > t_start` — return `KALICO_ERR_ZERO_DURATION_SEGMENT` on failure.
 
-- [ ] **Step 3: Add `kalico_set_homed` and `kalico_configure_axes` FFI exports**
+- [x] **Step 3: Add `kalico_set_homed` and `kalico_configure_axes` FFI exports**
 
 Follow the existing FFI pattern in `runtime_ffi.rs` (use `#[unsafe(no_mangle)] pub unsafe extern "C" fn`, null-check the context pointer, access via `addr_of!` + `UnsafeCell::raw_get` per §11.2).
 
@@ -817,7 +817,7 @@ Follow the existing FFI pattern in `runtime_ffi.rs` (use `#[unsafe(no_mangle)] p
 
 `kalico_configure_axes`: accepts a blob (`*const u8, len: u32`), deserializes `McuAxisConfig` (kinematics tag byte + per-motor entries), calls `McuAxisConfig::validate()`, stores via `Engine::configure()`. Returns error code on invalid config (e.g., CoreXY with only one of A/B).
 
-- [ ] **Step 4: Update C-side `runtime_tick.c`**
+- [x] **Step 4: Update C-side `runtime_tick.c`**
 
 Update `kalico_load_curve` DECL_COMMAND:
 - Remove the `cps_len % 12` check, 3D scratch buffers, and `weights` parameter.
@@ -834,12 +834,12 @@ Add `DECL_COMMAND(kalico_configure_axes, ...)` — accepts a blob containing the
 
 Regenerate the cbindgen header (`kalico_runtime.h`) after updating `runtime_ffi.rs` — `src/runtime_tick.c` includes this header and will compile against stale declarations otherwise. Run: `cd rust && cargo run -p kalico-c-api --bin gen_headers`.
 
-- [ ] **Step 5: Run FFI tests**
+- [x] **Step 5: Run FFI tests**
 
 Run: `cd rust && cargo test -p kalico-c-api`
 Expected: pass (or update tests for new signatures).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```
 git add rust/kalico-c-api/src/runtime_ffi.rs src/runtime_tick.c
@@ -853,27 +853,27 @@ git commit -m "feat: FFI layer updated for scalar curves, 4-handle segments, hom
 **Files:**
 - All test files
 
-- [ ] **Step 1: Run the complete runtime test suite**
+- [x] **Step 1: Run the complete runtime test suite**
 
 Run: `cd rust && cargo test -p runtime`
 Expected: all tests pass.
 
-- [ ] **Step 2: Run the complete kalico-c-api test suite**
+- [x] **Step 2: Run the complete kalico-c-api test suite**
 
 Run: `cd rust && cargo test -p kalico-c-api`
 Expected: all tests pass.
 
-- [ ] **Step 3: Run the complete workspace test suite**
+- [x] **Step 3: Run the complete workspace test suite**
 
 Run: `cd rust && cargo test`
 Expected: all tests pass (no regressions in nurbs, gcode, temporal, trajectory crates).
 
-- [ ] **Step 4: Verify Renode sim build compiles**
+- [x] **Step 4: Verify Renode sim build compiles**
 
 Run: `cd rust && cargo build -p runtime --features kalico-sim`
 Expected: builds without errors. The 43 KB curve pool fits in the Renode 128 KB RAM model (with reduced `CURVE_POOL_N` if needed — add a `cfg(feature = "kalico-sim")` override to cap at 16 for sim builds).
 
-- [ ] **Step 5: Final commit if any fixups needed**
+- [x] **Step 5: Final commit if any fixups needed**
 
 ```
 git add -A
@@ -888,11 +888,11 @@ git commit -m "fix: integration test fixups for Step 7-B"
 - Modify: `CLAUDE.md` (build order)
 - Modify: `docs/superpowers/plan-changes-log.md`
 
-- [ ] **Step 1: Update CLAUDE.md build order**
+- [x] **Step 1: Update CLAUDE.md build order**
 
 Add checkmark to Step 7-B. Update the description to reflect completion.
 
-- [ ] **Step 2: Update plan-changes-log**
+- [x] **Step 2: Update plan-changes-log**
 
 Add entry:
 ```
@@ -906,7 +906,7 @@ Add entry:
 - FFI + C-side updated for scalar blobs, 4-handle push, 40-byte trace.
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```
 git add CLAUDE.md docs/superpowers/plan-changes-log.md
