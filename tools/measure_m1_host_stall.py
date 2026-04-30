@@ -74,7 +74,6 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
-
 CLOCK_FREQ = 520_000_000   # H723 default
 TICK_HZ = 40_000
 ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
