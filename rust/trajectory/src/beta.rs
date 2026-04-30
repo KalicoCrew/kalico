@@ -341,14 +341,13 @@ fn run_one_iteration(
             let composed =
                 crate::reparam::compose_segment(curve, &table.as_view(), &s_pieces, arc_fit_tolerance)?;
 
-            // Stage 2c-d: per-axis split without Hermite refit. The raw composed
-            // pieces have exact polynomial accuracy (degree <= 6), which is
-            // critical for reliable peak-acceleration recovery in the beta loop.
-            // The C1 Hermite refit (fit_and_split) introduces position errors
-            // whose second derivatives are numerically amplified, causing the
-            // beta loop to diverge. Post-convergence refit for piece-count
-            // reduction is a future optimization.
-            let mut seg_fitted = crate::fit::split_without_refit(&composed)?;
+            // Stage 2c-d: C1 Hermite refit merges adjacent degree-6 composed
+            // pieces into fewer degree-4 pieces. The sample-based peak-accel
+            // check (central finite differences at 40 kHz) is immune to the
+            // coefficient-magnitude issues that made symbolic differentiation
+            // unstable, so the refit's position errors no longer amplify into
+            // false peak-acceleration readings.
+            let mut seg_fitted = crate::fit::fit_and_split(&composed, input.fit_tolerance_mm)?;
             // Patch t_start/t_end from s_pieces (the canonical source).
             seg_fitted.t_start = s_pieces.t_start;
             seg_fitted.t_end = s_pieces.t_end;
@@ -770,13 +769,6 @@ mod tests {
     // ------------------------------------------------------------------
     // Test 1: Single straight-line segment — pipeline runs end-to-end
     // ------------------------------------------------------------------
-    // Note: The convolution + double-differentiation pipeline has a known
-    // numerical instability issue where the polynomial representation of
-    // convolved pieces produces inaccurate peak-acceleration estimates
-    // (the kernel's normalization constant c = 15/(16*h^5) creates
-    // large polynomial coefficients for narrow kernels). Machine limits
-    // are set very high so that the post-shape peaks never trigger
-    // derating, exercising the convergence-in-1-iteration path.
     #[test]
     fn single_straight_line_converges() {
         let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
