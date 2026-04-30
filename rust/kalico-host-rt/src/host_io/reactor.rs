@@ -17,7 +17,7 @@ use crate::transport::TransportError;
 
 pub struct Reactor {
     pub(crate) port:               Box<dyn serialport::SerialPort>,
-    pub(crate) parser:             MsgProtoParser,
+    pub(crate) parser:             Arc<MsgProtoParser>,
     pub(crate) submission_rx:      Receiver<ReactorCommand>,
     pub(crate) unacked_window:     UnackedWindow,
     pub(crate) awaiting_response:  AwaitingResponse,
@@ -58,7 +58,7 @@ pub enum ReactorState {
 impl Reactor {
     pub fn new(
         port: Box<dyn serialport::SerialPort>,
-        parser: MsgProtoParser,
+        parser: Arc<MsgProtoParser>,
         submission_rx: Receiver<ReactorCommand>,
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
         rx_buf_initial: Vec<u8>,
@@ -558,7 +558,7 @@ mod tests {
         let port = MockPort { written: Arc::clone(&written) };
 
         // Build a minimal MsgProtoParser (empty data dict is fine for these tests).
-        let parser = crate::host_io::parser::MsgProtoParser::new_empty();
+        let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
 
         let (_, rx) = std::sync::mpsc::channel();
         let status_snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(

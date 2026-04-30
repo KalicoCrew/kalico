@@ -1,13 +1,9 @@
 //! `host_io` — production host I/O implementing [`Transport`].
 //!
-//! Phase B: the `KalicoHostIo` struct holds a `Mutex`-wrapped shim that
-//! performs synchronous serial I/O. The `Transport::call` impl locks the
-//! shim, encodes the command, writes it, then polls until the named
-//! response arrives or the timeout fires.
-//!
-//! Phase C will lift the blocking lock to a background reactor thread;
-//! for now the shim-lock approach is sufficient for single-stream
-//! MVP use.
+//! Phase C: `KalicoHostIo` spawns a background reactor thread on `open`.
+//! `Transport::call` / `call_typed` submit commands via an mpsc channel
+//! and block on a rendezvous channel for the response. The Phase-B
+//! mutex shim has been removed.
 
 pub mod call_handle;
 pub mod events;
@@ -19,16 +15,13 @@ pub mod runtime_events;
 pub mod window;
 pub mod wire;
 
-use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use serialport::SerialPort;
 
 use crate::credit::CreditCounter;
 use crate::host_io::events::HostEvent;
@@ -37,12 +30,29 @@ use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, Trac
 use crate::transport::{MessageParams, SubscribeError, Transport, TransportError};
 use std::sync::mpsc::SyncSender;
 
-fn sp_err(e: &serialport::Error) -> TransportError {
+pub(super) fn sp_err(e: &serialport::Error) -> TransportError {
     TransportError::Io(std::io::Error::other(format!("serialport: {e}")))
 }
 
 const DEFAULT_BAUD: u32 = 250_000;
-const DEFAULT_IDENTIFY_TIMEOUT_MS: u64 = 15_000;
+
+pub struct KalicoHostIoConfig {
+    pub trace_capacity:              usize,
+    pub default_call_timeout:        Duration,
+    pub identify_timeout:            Duration,
+    pub default_dispatcher_timeout:  Duration,
+}
+
+impl Default for KalicoHostIoConfig {
+    fn default() -> Self {
+        Self {
+            trace_capacity:             256,
+            default_call_timeout:       Duration::from_millis(100),
+            identify_timeout:           Duration::from_millis(15_000),
+            default_dispatcher_timeout: Duration::from_secs(30),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum ReactorCommand {
@@ -81,36 +91,18 @@ pub enum ReactorCommand {
     Shutdown,
 }
 
-struct KalicoHostIoShimInner {
-    port:          Box<dyn SerialPort>,
-    host_send_seq: u8,
-    rx_buf:        Vec<u8>,
-    pending:       VecDeque<(String, MessageParams)>,
-    parser:        MsgProtoParser,
-}
-
 pub struct KalicoHostIo {
     submission_tx:   Sender<ReactorCommand>,
     next_call_id:    AtomicU64,
     reactor_handle:  Option<JoinHandle<()>>,
     status_snapshot: Arc<ArcSwap<StatusEvent>>,
-    shim:            Arc<Mutex<KalicoHostIoShimInner>>,
+    parser:          Arc<MsgProtoParser>,
 }
 
 impl std::fmt::Debug for KalicoHostIo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let info = match self.shim.try_lock() {
-            Ok(s) => format!(
-                "host_send_seq={} pending={} rx_buf_len={}",
-                s.host_send_seq,
-                s.pending.len(),
-                s.rx_buf.len()
-            ),
-            Err(_) => "(locked)".to_string(),
-        };
         f.debug_struct("KalicoHostIo")
             .field("next_call_id", &self.next_call_id.load(Ordering::Relaxed))
-            .field("shim", &info)
             .finish_non_exhaustive()
     }
 }
@@ -126,69 +118,50 @@ impl Drop for KalicoHostIo {
 
 impl KalicoHostIo {
     pub fn open(path: &str, baud: u32) -> Result<Self, TransportError> {
-        Self::open_with_timeout(path, baud, Duration::from_millis(DEFAULT_IDENTIFY_TIMEOUT_MS))
+        Self::open_with_config(path, baud, KalicoHostIoConfig::default())
     }
 
     pub fn open_default(path: &str) -> Result<Self, TransportError> {
         Self::open(path, DEFAULT_BAUD)
     }
 
-    pub fn open_with_timeout(
+    pub fn open_with_config(
         path: &str,
         baud: u32,
-        identify_timeout: Duration,
+        config: KalicoHostIoConfig,
     ) -> Result<Self, TransportError> {
-        let mut port: Box<dyn SerialPort> = serialport::new(path, baud)
+        let mut port_box: Box<dyn serialport::SerialPort> = serialport::new(path, baud)
             .timeout(Duration::from_millis(100))
             .open()
-            .map_err(|e| {
-                TransportError::Io(std::io::Error::other(format!(
-                    "serialport::open({path}@{baud}): {e}"
-                )))
-            })?;
+            .map_err(|e| TransportError::Io(
+                std::io::Error::other(format!("serialport::open({path}@{baud}): {e}"))
+            ))?;
 
-        let (parser, host_send_seq, rx_buf) = identify::identify_handshake(&mut port, identify_timeout)?;
-        let (submission_tx, _rx) = std::sync::mpsc::channel();
+        let (parser_owned, _seq, rx_buf) = identify::identify_handshake(
+            &mut port_box,
+            config.identify_timeout,
+        )?;
+
+        let parser = Arc::new(parser_owned);
+        let (submission_tx, submission_rx) = std::sync::mpsc::channel();
+        let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+
+        let reactor_parser = Arc::clone(&parser);
+        let reactor_status = Arc::clone(&status_snapshot);
+        let reactor_handle = std::thread::spawn(move || {
+            let mut reactor = crate::host_io::reactor::Reactor::new(
+                port_box, reactor_parser, submission_rx, reactor_status, rx_buf,
+            );
+            reactor.run();
+        });
 
         Ok(Self {
             submission_tx,
             next_call_id: AtomicU64::new(1),
-            reactor_handle: None,
-            status_snapshot: Arc::new(ArcSwap::from_pointee(StatusEvent::default())),
-            shim: Arc::new(Mutex::new(KalicoHostIoShimInner {
-                port,
-                host_send_seq,
-                rx_buf,
-                pending: VecDeque::new(),
-                parser,
-            })),
+            reactor_handle: Some(reactor_handle),
+            status_snapshot,
+            parser,
         })
-    }
-}
-
-fn pump_rx(shim: &mut KalicoHostIoShimInner, timeout: Duration) -> Result<(), TransportError> {
-    let mut scratch = [0u8; 256];
-    let read_to = timeout.min(Duration::from_millis(100));
-    shim.port.set_timeout(read_to).map_err(|e| sp_err(&e))?;
-    match shim.port.read(&mut scratch) {
-        Ok(n) if n > 0 => {
-            shim.rx_buf.extend_from_slice(&scratch[..n]);
-            while let Some(packet) = wire::extract_packet(&mut shim.rx_buf) {
-                match shim.parser.decode(&packet) {
-                    Ok(crate::host_io::parser::DecodedFrame::Response { name, params }) => {
-                        shim.pending.push_back((name, params));
-                    }
-                    Ok(crate::host_io::parser::DecodedFrame::Output { name, params }) => {
-                        shim.pending.push_back((name, params));
-                    }
-                    Err(_) => {}
-                }
-            }
-            Ok(())
-        }
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(()),
-        Err(e) => Err(TransportError::Io(e)),
     }
 }
 
@@ -199,27 +172,30 @@ impl Transport for KalicoHostIo {
         expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
-        let mut shim = self.shim.lock().expect("shim mutex poisoned");
-        let payload = shim.parser.encode(cmd)
-            .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
-        let old_seq = shim.host_send_seq;
-        let frame = wire::build_frame(&payload, old_seq);
-        shim.port.write_all(&frame).map_err(TransportError::Io)?;
-        shim.port.flush().map_err(TransportError::Io)?;
-        shim.host_send_seq = old_seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
-
+        let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(idx) = shim.pending.iter().position(|(n, _)| n == expected_response_name) {
-                let (_, params) = shim.pending.remove(idx).expect("position guarantees Some");
-                return Ok(params);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(TransportError::Timeout);
-            }
-            pump_rx(&mut shim, deadline - now)?;
-        }
+
+        self.submission_tx.send(ReactorCommand::Submit {
+            call_id,
+            cmd: cmd.to_string(),
+            expected_response_name: expected_response_name.to_string(),
+            completion: tx,
+            deadline,
+        }).map_err(|_| TransportError::Closed)?;
+
+        let handle = crate::host_io::call_handle::CallHandle {
+            call_id,
+            submission_tx: self.submission_tx.clone(),
+        };
+
+        let result = match rx.recv_timeout(timeout) {
+            Ok(r) => r,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
+        };
+        handle.defuse();
+        result
     }
 
     fn call_typed(
@@ -229,27 +205,33 @@ impl Transport for KalicoHostIo {
         expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
-        let mut shim = self.shim.lock().expect("shim mutex poisoned");
-        let payload = shim.parser.encode_typed(name, args)
+        let payload = self.parser.encode_typed(name, args)
             .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
-        let old_seq = shim.host_send_seq;
-        let frame = wire::build_frame(&payload, old_seq);
-        shim.port.write_all(&frame).map_err(TransportError::Io)?;
-        shim.port.flush().map_err(TransportError::Io)?;
-        shim.host_send_seq = old_seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
 
+        let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(idx) = shim.pending.iter().position(|(n, _)| n == expected_response_name) {
-                let (_, params) = shim.pending.remove(idx).expect("position guarantees Some");
-                return Ok(params);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(TransportError::Timeout);
-            }
-            pump_rx(&mut shim, deadline - now)?;
-        }
+
+        self.submission_tx.send(ReactorCommand::SubmitTyped {
+            call_id,
+            payload,
+            expected_response_name: expected_response_name.to_string(),
+            completion: tx,
+            deadline,
+        }).map_err(|_| TransportError::Closed)?;
+
+        let handle = crate::host_io::call_handle::CallHandle {
+            call_id,
+            submission_tx: self.submission_tx.clone(),
+        };
+
+        let result = match rx.recv_timeout(timeout) {
+            Ok(r) => r,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
+        };
+        handle.defuse();
+        result
     }
 }
 
