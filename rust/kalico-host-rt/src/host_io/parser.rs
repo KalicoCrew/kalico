@@ -44,6 +44,41 @@ impl<'de> serde::Deserialize<'de> for EnumValue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldType {
+    U32,           // %u
+    I32,           // %i
+    U16,           // %hu
+    I16,           // %hi
+    Byte,          // %c
+    String,        // %s
+    ProgmemBuffer, // %.*s
+    Buffer,        // %*s
+}
+
+#[derive(Debug)]
+pub enum ParseError {
+    UnknownFormatCode(String),
+    EmptyFormat,
+    MalformedField,
+}
+
+impl FieldType {
+    pub fn from_format_code(code: &str) -> Result<Self, ParseError> {
+        match code {
+            "%u"   => Ok(Self::U32),
+            "%i"   => Ok(Self::I32),
+            "%hu"  => Ok(Self::U16),
+            "%hi"  => Ok(Self::I16),
+            "%c"   => Ok(Self::Byte),
+            "%s"   => Ok(Self::String),
+            "%.*s" => Ok(Self::ProgmemBuffer),
+            "%*s"  => Ok(Self::Buffer),
+            other  => Err(ParseError::UnknownFormatCode(other.to_string())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod data_dictionary_tests {
     use super::*;
