@@ -209,6 +209,423 @@ where
     }
 }
 
+/// Merge a sequence of exact polynomial pieces into fewer, lower-degree pieces
+/// with C¹ continuity at boundaries and bounded L∞ position error.
+///
+/// **Use case:** TOPP-RA produces ~25 grid pieces per segment. After composition
+/// with geometry, each piece is degree 6. This function reduces to ~5-15
+/// degree-`target_degree` pieces at ≤ `tolerance_mm` error, preserving velocity
+/// (C¹) continuity at output boundaries. Fewer pieces = lower-degree output after
+/// convolution = cheaper MCU evaluation.
+///
+/// **Algorithm (merge-and-bisect):**
+/// 1. Start by trying to merge ALL input pieces into a single output piece.
+/// 2. For a candidate merge region `[u_lo, u_hi]` covering input pieces `i..j`:
+///    a. Fit a degree-`target_degree` Hermite polynomial matching position and
+///       velocity at both endpoints (4 constraints; free DOFs set to 0 for MVP).
+///    b. Check L∞ residual at `4*(target_degree+1)` uniform sample points.
+///    c. Accept if residual ≤ tolerance; otherwise bisect at the midpoint input
+///       piece boundary and recursively fit each half.
+///
+/// Merge boundaries are axis-independent (shared across all D axes); the WORST
+/// axis residual drives accept/bisect decisions.
+///
+/// Returns per-axis `Vec<BezierPiece<f64>>`, or `FitError` if tolerance cannot be
+/// met (when a single input piece already exceeds tolerance).
+#[cfg(feature = "host")]
+pub fn fit_hermite_c1<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    tolerance_mm: f64,
+    target_degree: u8,
+) -> Result<[Vec<crate::bezier::BezierPiece<f64>>; D], FitError> {
+    if pieces.is_empty() {
+        return Err(FitError::DegenerateInput {
+            reason: "fit_hermite_c1: empty input",
+        });
+    }
+    if !tolerance_mm.is_finite() || tolerance_mm <= 0.0 {
+        return Err(FitError::DegenerateInput {
+            reason: "fit_hermite_c1: tolerance must be finite and positive",
+        });
+    }
+    if target_degree < 3 {
+        return Err(FitError::DegenerateInput {
+            reason: "fit_hermite_c1: target_degree must be >= 3 (need 4 Hermite constraints)",
+        });
+    }
+
+    // Validate contiguity: pieces[i][axis].u_end == pieces[i+1][axis].u_start for all axes.
+    for w in pieces.windows(2) {
+        for axis in 0..D {
+            if (w[0][axis].u_end - w[1][axis].u_start).abs() > 1e-12 {
+                return Err(FitError::DegenerateInput {
+                    reason: "fit_hermite_c1: non-contiguous input pieces",
+                });
+            }
+        }
+    }
+
+    // Recursive merge-and-bisect, producing output pieces with shared boundaries across axes.
+    let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] =
+        std::array::from_fn(|_| Vec::new());
+
+    hermite_fit_recursive::<D>(pieces, 0, pieces.len(), tolerance_mm, target_degree, &mut result)?;
+
+    Ok(result)
+}
+
+/// Recursive helper for `fit_hermite_c1`. Tries to fit `pieces[lo..hi]` into a
+/// single degree-`target_degree` piece per axis. On failure, bisects at the
+/// midpoint input piece boundary and recurses on each half.
+#[cfg(feature = "host")]
+fn hermite_fit_recursive<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    lo: usize,
+    hi: usize,
+    tolerance_mm: f64,
+    target_degree: u8,
+    result: &mut [Vec<crate::bezier::BezierPiece<f64>>; D],
+) -> Result<(), FitError> {
+    debug_assert!(lo < hi);
+
+    let u_lo = pieces[lo][0].u_start;
+    let u_hi = pieces[hi - 1][0].u_end;
+
+    // Try fitting the entire range [lo, hi) into one output piece per axis.
+    let candidate = hermite_fit_one_piece::<D>(pieces, lo, hi, target_degree);
+    let max_residual = hermite_check_residual::<D>(pieces, lo, hi, &candidate, target_degree);
+
+    if max_residual <= tolerance_mm {
+        // Accept: push the candidate pieces for each axis.
+        for axis in 0..D {
+            result[axis].push(candidate[axis].clone());
+        }
+        return Ok(());
+    }
+
+    // If we're down to a single input piece and it still doesn't fit, that's a
+    // failure — can't bisect further.
+    if hi - lo == 1 {
+        return Err(FitError::ToleranceNotReached {
+            achieved_mm: max_residual,
+            at_degree: target_degree,
+        });
+    }
+
+    // Bisect at the midpoint input piece boundary.
+    let mid = lo + (hi - lo) / 2;
+    let _ = (u_lo, u_hi); // suppress unused warnings
+
+    hermite_fit_recursive::<D>(pieces, lo, mid, tolerance_mm, target_degree, result)?;
+    hermite_fit_recursive::<D>(pieces, mid, hi, tolerance_mm, target_degree, result)?;
+
+    Ok(())
+}
+
+/// Fit a single degree-`target_degree` Hermite polynomial to `pieces[lo..hi]` for
+/// each axis, with the free DOF (c₂ for degree 4) optimized to minimize the maximum
+/// residual across all axes.
+///
+/// For degree `d` with 4 Hermite constraints (position + velocity at both endpoints),
+/// there are `d - 3` free DOFs. For the primary use case (d=4), there is exactly 1
+/// free DOF (c₂). The residual at each sample point depends linearly on c₂, so the
+/// optimal c₂ is found by a 1D Chebyshev minimax search.
+///
+/// For degree 3, the system is fully determined (no free DOFs). For degree > 4, only
+/// c₂ is optimized; remaining free DOFs are set to 0.
+#[cfg(feature = "host")]
+fn hermite_fit_one_piece<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    lo: usize,
+    hi: usize,
+    target_degree: u8,
+) -> [crate::bezier::BezierPiece<f64>; D] {
+    let u_lo = pieces[lo][0].u_start;
+    let u_hi = pieces[hi - 1][0].u_end;
+    let h = u_hi - u_lo;
+    let d = target_degree as usize;
+
+    // Collect endpoint constraints per axis.
+    let constraints: Vec<(f64, f64, f64, f64)> = (0..D)
+        .map(|axis| {
+            let f_lo = pieces[lo][axis].evaluate(u_lo);
+            let df_lo = pieces[lo][axis].differentiate().evaluate(u_lo);
+            let f_hi = pieces[hi - 1][axis].evaluate(u_hi);
+            let df_hi = pieces[hi - 1][axis].differentiate().evaluate(u_hi);
+            (f_lo, df_lo, f_hi, df_hi)
+        })
+        .collect();
+
+    // For degree 3 or degenerate h, no free DOF — just solve directly.
+    if d <= 3 || h.abs() < 1e-300 {
+        return std::array::from_fn(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, 0.0)
+        });
+    }
+
+    // For degree >= 4: optimize the free DOF c₂ to minimize the maximum residual.
+    //
+    // The polynomial p(u; c₂) depends linearly on c₂ (see hermite_construct_poly).
+    // So at each sample point: residual = ref(u) - p(u; c₂) = A - B·c₂
+    // where A = ref(u) - p(u; 0) and B = p(u; 1) - p(u; 0).
+    //
+    // We want c₂ that minimizes max_over_all_axes_and_samples |A_i - B_i * c₂|.
+    // This is a 1D Chebyshev minimax problem solvable by interval bisection.
+
+    // Build sample points.
+    let n_check = 4 * (d + 1);
+    let mut sample_u: Vec<f64> = Vec::with_capacity(n_check + 1);
+    let mut sample_piece_idx: Vec<usize> = Vec::with_capacity(n_check + 1);
+    for i in 0..=n_check {
+        let t = i as f64 / n_check as f64;
+        let u = u_lo + (u_hi - u_lo) * t;
+        sample_u.push(u);
+        sample_piece_idx.push(hermite_find_piece_at(pieces, lo, hi, u));
+    }
+
+    // Build the two basis candidates: p(u; c₂=0) and p(u; c₂=1).
+    let cand_0: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
+        .map(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, 0.0)
+        })
+        .collect();
+    let cand_1: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
+        .map(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, 1.0)
+        })
+        .collect();
+
+    // Compute (A_i, B_i) for each (sample, axis) pair.
+    // residual = A_i - B_i * c₂
+    let mut a_vals: Vec<f64> = Vec::new();
+    let mut b_vals: Vec<f64> = Vec::new();
+    for (si, &u) in sample_u.iter().enumerate() {
+        let pidx = sample_piece_idx[si];
+        for axis in 0..D {
+            let ref_val = pieces[pidx][axis].evaluate(u);
+            let p0 = cand_0[axis].evaluate(u);
+            let p1 = cand_1[axis].evaluate(u);
+            a_vals.push(ref_val - p0);
+            b_vals.push(p1 - p0);
+        }
+    }
+
+    // Find optimal c₂ by minimax: minimize max_i |a_i - b_i * c₂|.
+    // This is equivalent to finding c₂ such that the envelope of lines
+    // y_i(c₂) = a_i - b_i * c₂ has minimum max absolute value.
+    //
+    // Approach: iterate over candidate c₂ values where pairs of constraints
+    // cross, i.e., where |a_i - b_i*c₂| = |a_j - b_j*c₂| and they have
+    // opposite sign. For small sample counts, we can use a simple approach:
+    // the optimal c₂ lies at a crossing of the upper and lower envelopes.
+    let optimal_c2 = minimax_1d(&a_vals, &b_vals);
+
+    std::array::from_fn(|axis| {
+        let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+        hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, optimal_c2)
+    })
+}
+
+/// Solve the 1D minimax problem: find `x` that minimizes `max_i |a_i - b_i * x|`.
+///
+/// The function `|a_i - b_i * x|` is V-shaped in `x` (minimum at `x = a_i/b_i`).
+/// The max of V-shapes is piecewise-linear and convex, so the minimum is unique.
+#[cfg(feature = "host")]
+fn minimax_1d(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+
+    // If all b_i are ~0, c₂ doesn't affect the residual; return 0.
+    let max_b = b.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    if max_b < 1e-30 {
+        return 0.0;
+    }
+
+    // Evaluate max|a_i - b_i * x| at a given x.
+    let eval_max_err = |x: f64| -> f64 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(&ai, &bi)| (ai - bi * x).abs())
+            .fold(0.0_f64, f64::max)
+    };
+
+    // Collect all candidate x values where lines cross: x = (a_i - a_j) / (b_i - b_j)
+    // and where individual lines cross zero: x = a_i / b_i.
+    // The optimal x must be at one of these crossings (piecewise-linear convex function).
+    let mut candidates: Vec<f64> = Vec::new();
+    candidates.push(0.0);
+    let n = a.len();
+    for i in 0..n {
+        if b[i].abs() > 1e-30 {
+            candidates.push(a[i] / b[i]);
+        }
+    }
+    // Also check crossings of pairs of upper/lower envelope lines.
+    // For lines: y_i = a_i - b_i*x and y_j = -(a_j - b_j*x) = -a_j + b_j*x
+    // crossing: a_i - b_i*x = -a_j + b_j*x => x = (a_i + a_j) / (b_i + b_j)
+    for i in 0..n {
+        for j in 0..n {
+            let denom = b[i] + b[j];
+            if denom.abs() > 1e-30 {
+                candidates.push((a[i] + a[j]) / denom);
+            }
+            let denom2 = b[i] - b[j];
+            if denom2.abs() > 1e-30 {
+                candidates.push((a[i] - a[j]) / denom2);
+            }
+        }
+    }
+
+    // Find the candidate with minimum max error.
+    let mut best_x = 0.0;
+    let mut best_err = eval_max_err(0.0);
+    for x in candidates {
+        if !x.is_finite() {
+            continue;
+        }
+        let err = eval_max_err(x);
+        if err < best_err {
+            best_err = err;
+            best_x = x;
+        }
+    }
+
+    best_x
+}
+
+/// Construct a single Hermite polynomial in Pascal-shifted basis at `u_lo`.
+///
+/// For degree `d` with constraints: `c₀ = f_lo`, `c₁ = df_lo` (position +
+/// velocity at `u_lo`); `p(u_hi) = f_hi`, `p'(u_hi) = df_hi` (position +
+/// velocity at `u_hi`).
+///
+/// `c2_val` is the value of the free DOF c₂ (used for degree >= 4).
+/// For degree 3 (4 unknowns), the system is fully determined and `c2_val` is ignored.
+#[cfg(feature = "host")]
+#[allow(clippy::too_many_arguments, clippy::cast_possible_wrap)]
+fn hermite_construct_poly(
+    f_lo: f64,
+    df_lo: f64,
+    f_hi: f64,
+    df_hi: f64,
+    u_lo: f64,
+    h: f64,
+    d: usize,
+    c2_val: f64,
+) -> crate::bezier::BezierPiece<f64> {
+    let mut coeffs = vec![0.0f64; d + 1];
+
+    // c₀ = f_lo (position at start)
+    coeffs[0] = f_lo;
+    // c₁ = df_lo (velocity at start)
+    coeffs[1] = df_lo;
+
+    // Set the free DOF c₂ (only used for d >= 4).
+    if d >= 4 {
+        coeffs[2] = c2_val;
+    }
+
+    // Compute the position and derivative residuals after subtracting known terms.
+    let mut pos_residual = f_hi - coeffs[0] - coeffs[1] * h;
+    let mut vel_residual = df_hi - coeffs[1];
+
+    // Subtract contributions from fixed coefficients c₂..c_{d-2}.
+    let mut h_pow = h * h; // h^2
+    let mut h_pow_deriv = h; // h^1 (for derivative: k*c_k*h^{k-1})
+    for k in 2..d.saturating_sub(1) {
+        pos_residual -= coeffs[k] * h_pow;
+        vel_residual -= (k as f64) * coeffs[k] * h_pow_deriv;
+        h_pow *= h;
+        h_pow_deriv *= h;
+    }
+
+    // Solve the 2x2 system for c_{d-1}, c_d:
+    //   c_{d-1} * h^{d-1} + c_d * h^d = pos_residual
+    //   (d-1) * c_{d-1} * h^{d-2} + d * c_d * h^{d-1} = vel_residual
+    //
+    // Determinant = (d - (d-1)) * h^{2d-2} = h^{2d-2}
+    let h_dm2 = h.powi(d as i32 - 2);
+    let h_dm1 = h_dm2 * h;
+    let h_d = h_dm1 * h;
+    let det = h.powi(2 * d as i32 - 2);
+
+    if det.abs() < 1e-300 {
+        return crate::bezier::BezierPiece {
+            u_start: u_lo,
+            u_end: u_lo + h,
+            coeffs,
+        };
+    }
+
+    let d_f = d as f64;
+    let dm1_f = (d - 1) as f64;
+    let c_dm1 = (pos_residual * d_f * h_dm1 - h_d * vel_residual) / det;
+    let c_d = (h_dm1 * vel_residual - dm1_f * h_dm2 * pos_residual) / det;
+
+    coeffs[d - 1] = c_dm1;
+    coeffs[d] = c_d;
+
+    crate::bezier::BezierPiece {
+        u_start: u_lo,
+        u_end: u_lo + h,
+        coeffs,
+    }
+}
+
+/// Check the L∞ residual of a candidate fit against the reference (input pieces).
+/// Returns the maximum residual across all axes.
+#[cfg(feature = "host")]
+fn hermite_check_residual<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    lo: usize,
+    hi: usize,
+    candidate: &[crate::bezier::BezierPiece<f64>; D],
+    target_degree: u8,
+) -> f64 {
+    let n_check = 4 * (target_degree as usize + 1);
+    let u_lo = pieces[lo][0].u_start;
+    let u_hi = pieces[hi - 1][0].u_end;
+    let mut max_err = 0.0_f64;
+
+    for i in 0..=n_check {
+        let t = i as f64 / n_check as f64;
+        let u = u_lo + (u_hi - u_lo) * t;
+        let piece_idx = hermite_find_piece_at(pieces, lo, hi, u);
+
+        for axis in 0..D {
+            let ref_val = pieces[piece_idx][axis].evaluate(u);
+            let fit_val = candidate[axis].evaluate(u);
+            let err = (ref_val - fit_val).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+    }
+
+    max_err
+}
+
+/// Find which input piece index in `[lo, hi)` contains parameter `u`.
+#[cfg(feature = "host")]
+fn hermite_find_piece_at<const D: usize>(
+    pieces: &[[crate::bezier::BezierPiece<f64>; D]],
+    lo: usize,
+    hi: usize,
+    u: f64,
+) -> usize {
+    // Linear search — piece count is small (~25 max).
+    for i in lo..hi {
+        // Use axis 0 for domain queries (all axes share the same domain).
+        if u <= pieces[i][0].u_end + 1e-12 {
+            return i;
+        }
+    }
+    // Clamp to last piece for numerical edge cases.
+    hi - 1
+}
+
 /// Solve Lagrange interpolation per axis on the Pascal-shifted-monomial-basis
 /// Vandermonde system `A[i][j] = (s_nodes[i] − s_origin)^j`, RHS = sample
 /// per axis. Tiny matrix (max ~10×10); Gauss elimination with partial pivoting.
