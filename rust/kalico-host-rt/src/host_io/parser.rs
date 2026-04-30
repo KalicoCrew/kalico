@@ -1,5 +1,7 @@
 //! Production MsgProtoParser. Spec §4.
 
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use serde::Deserialize;
 
@@ -95,6 +97,38 @@ pub fn parse_format_string(s: &str) -> Result<(String, Vec<(String, FieldType)>)
         fields.push((k.to_string(), ty));
     }
     Ok((name, fields))
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumTable {
+    pub by_name: HashMap<String, i32>,
+    pub by_int:  HashMap<i32, String>,
+}
+
+impl EnumTable {
+    pub fn from_dict(d: &IndexMap<String, EnumValue>) -> Self {
+        let mut by_name = HashMap::new();
+        let mut by_int  = HashMap::new();
+        for (name, value) in d {
+            match value {
+                EnumValue::Single(i) => {
+                    by_name.insert(name.clone(), *i);
+                    by_int.insert(*i, name.clone());
+                }
+                EnumValue::Range { start, count } => {
+                    let root: String = name.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+                    let prefix_num: i32 = name[root.len()..].parse().unwrap_or(0);
+                    for i in 0..*count {
+                        let key = format!("{}{}", root, prefix_num + i);
+                        let val = start + i;
+                        by_name.insert(key.clone(), val);
+                        by_int.insert(val, key);
+                    }
+                }
+            }
+        }
+        Self { by_name, by_int }
+    }
 }
 
 #[cfg(test)]
