@@ -8,6 +8,7 @@ members = [
     "trajectory",
     "runtime",
     "kalico-host-rt",
+    "compat",
 ]
 exclude = ["gcode/fuzz"]
 resolver = "2"
