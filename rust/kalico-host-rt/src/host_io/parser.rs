@@ -389,6 +389,21 @@ pub fn encode_field_value<'a>(out: &mut Vec<u8>, ty: FieldType, value: &FieldVal
     }
 }
 
+fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
+    let in_range = match ty {
+        FieldType::Byte => (0..=255).contains(&v),
+        FieldType::U16  => (0..=65535).contains(&v),
+        FieldType::I16  => (-32768..=32767).contains(&v),
+        FieldType::U32  => (0..=i64::from(u32::MAX)).contains(&v),
+        FieldType::I32  => (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&v),
+        _ => return Ok(()),
+    };
+    if !in_range {
+        return Err(ParseError::OutOfRange { value: v, range: "FieldType range" });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub enum FieldValue<'a> {
     U32(u32),
