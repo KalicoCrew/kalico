@@ -992,3 +992,46 @@ mod encode_method_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    fn build_packet(msgid: i32, payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        let mut body = Vec::new();
+        encode_vlq(&mut body, i64::from(msgid)).unwrap();
+        body.extend_from_slice(payload);
+        let msglen = MESSAGE_MIN + body.len();
+        frame.push(msglen as u8);
+        frame.push(0x10);    // dest|seq=0
+        frame.extend_from_slice(&body);
+        frame.extend_from_slice(&[0, 0]);    // dummy CRC
+        frame.push(0x7E);
+        frame
+    }
+
+    #[test]
+    fn decode_response_round_trips() {
+        let mut d = DataDictionary {
+            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
+            enumerations: IndexMap::new(), config: serde_json::json!({}),
+            version: "v".into(), app: "kalico".into(),
+            build_versions: None, license: None,
+        };
+        d.responses.insert("rsp val=%u".into(), 7);
+        let parser = MsgProtoParser::from_dictionary(d).unwrap();
+
+        let mut payload = Vec::new();
+        encode_vlq(&mut payload, 12345).unwrap();
+        let packet = build_packet(7, &payload);
+
+        match parser.decode(&packet).unwrap() {
+            DecodedFrame::Response { name, params } => {
+                assert_eq!(name, "rsp");
+                assert_eq!(params.get_u32("val"), 12345);
+            }
+            other => panic!("expected Response, got {:?}", other),
+        }
+    }
+}
