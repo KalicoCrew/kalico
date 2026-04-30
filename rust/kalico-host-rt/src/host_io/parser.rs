@@ -82,4 +82,20 @@ mod data_dictionary_tests {
         let dict: DataDictionary = serde_json::from_str(json).unwrap();
         assert_eq!(*dict.commands.get("kalico_load_curve x").unwrap(), -7);
     }
+
+    #[test]
+    fn enumerations_preserve_insertion_order() {
+        let json = r#"{
+            "commands": {}, "responses": {}, "output": {},
+            "enumerations": {
+                "pin": {"PA0": 0},
+                "step_pin": {"X_step": 5}
+            },
+            "config": {}, "version": "v", "app": "kalico"
+        }"#;
+        let dict: DataDictionary = serde_json::from_str(json).unwrap();
+        let order: Vec<&String> = dict.enumerations.keys().collect();
+        assert_eq!(order, vec![&"pin".to_string(), &"step_pin".to_string()],
+                   "IndexMap must preserve JSON insertion order");
+    }
 }
