@@ -16,6 +16,7 @@
 )]
 
 pub mod clock;
+pub mod config;
 pub mod curve_pool;
 pub mod engine;
 pub mod error;
