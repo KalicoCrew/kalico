@@ -28,6 +28,7 @@ pub mod segment;
 pub mod sim_fixtures;
 pub mod slot;
 pub mod state;
+pub mod step;
 pub mod stream;
 pub mod trace;
 pub mod wire;

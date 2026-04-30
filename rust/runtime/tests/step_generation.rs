@@ -1,0 +1,81 @@
+use runtime::step::{StepMotorState, StepResult, MAX_STEPS_PER_TICK_DEFAULT};
+
+#[test]
+fn zero_delta_produces_no_steps() {
+    let mut state = StepMotorState::new(160.0); // 160 steps/mm
+    let result = state.update(0.0); // position = 0
+    assert_eq!(result.unwrap().n_steps, 0);
+}
+
+#[test]
+fn one_step_forward() {
+    let mut state = StepMotorState::new(160.0);
+    let result = state.update(1.0 / 160.0).unwrap();
+    assert_eq!(result.n_steps, 1);
+}
+
+#[test]
+fn four_steps_at_peak_speed() {
+    let mut state = StepMotorState::new(160.0);
+    let result = state.update(4.0 / 160.0).unwrap();
+    assert_eq!(result.n_steps, 4);
+}
+
+#[test]
+fn negative_steps_on_reversal() {
+    let mut state = StepMotorState::new(160.0);
+    state.update(10.0 / 160.0).unwrap(); // forward 10 steps
+    let result = state.update(7.0 / 160.0).unwrap(); // back 3 steps
+    assert_eq!(result.n_steps, -3);
+}
+
+#[test]
+fn fractional_accumulation() {
+    let mut state = StepMotorState::new(160.0);
+    let r1 = state.update(0.5 / 160.0).unwrap();
+    assert_eq!(r1.n_steps, 0);
+    let r2 = state.update(1.0 / 160.0).unwrap();
+    assert_eq!(r2.n_steps, 1);
+}
+
+#[test]
+fn burst_cap_faults() {
+    let mut state = StepMotorState::new(160.0);
+    let result = state.update(100.0 / 160.0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn seed_prevents_initial_burst() {
+    let mut state = StepMotorState::new(160.0);
+    state.seed(50.0);
+    let result = state.update(50.0).unwrap();
+    assert_eq!(result.n_steps, 0);
+}
+
+#[test]
+fn drift_over_many_ticks() {
+    let mut state = StepMotorState::new(160.0);
+    let step_mm = 1.0 / 160.0;
+    let mut pos = 0.0_f64;
+    let mut total_steps: i64 = 0;
+    for _ in 0..1_000_000 {
+        pos += step_mm;
+        let r = state.update(pos as f32).unwrap();
+        total_steps += r.n_steps as i64;
+    }
+    assert_eq!(total_steps, 1_000_000);
+}
+
+// Verify the exported constant has the expected value.
+#[test]
+fn default_burst_cap_value() {
+    assert_eq!(MAX_STEPS_PER_TICK_DEFAULT, 16);
+}
+
+// StepResult must be Debug (compile-time check via format).
+#[test]
+fn step_result_is_debug() {
+    let r = StepResult { n_steps: 3 };
+    let _ = format!("{r:?}");
+}
