@@ -44,11 +44,11 @@ pub enum ReactorCommand {
 }
 
 struct KalicoHostIoShimInner {
-    port:    Box<dyn SerialPort>,
-    seq:     u8,
-    rx_buf:  Vec<u8>,
-    pending: VecDeque<(String, MessageParams)>,
-    parser:  MsgProtoParser,
+    port:          Box<dyn SerialPort>,
+    host_send_seq: u8,
+    rx_buf:        Vec<u8>,
+    pending:       VecDeque<(String, MessageParams)>,
+    parser:        MsgProtoParser,
 }
 
 pub struct KalicoHostIo {
@@ -61,12 +61,18 @@ pub struct KalicoHostIo {
 
 impl std::fmt::Debug for KalicoHostIo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let shim = self.shim.lock().unwrap();
+        let info = match self.shim.try_lock() {
+            Ok(s) => format!(
+                "host_send_seq={} pending={} rx_buf_len={}",
+                s.host_send_seq,
+                s.pending.len(),
+                s.rx_buf.len()
+            ),
+            Err(_) => "(locked)".to_string(),
+        };
         f.debug_struct("KalicoHostIo")
             .field("next_call_id", &self.next_call_id.load(Ordering::Relaxed))
-            .field("shim_seq", &shim.seq)
-            .field("shim_rx_buf_len", &shim.rx_buf.len())
-            .field("shim_pending_len", &shim.pending.len())
+            .field("shim", &info)
             .finish_non_exhaustive()
     }
 }
@@ -103,7 +109,7 @@ impl KalicoHostIo {
                 )))
             })?;
 
-        let (parser, seq, rx_buf) = identify_handshake(&mut port, identify_timeout)?;
+        let (parser, host_send_seq, rx_buf) = identify_handshake(&mut port, identify_timeout)?;
         let (submission_tx, _rx) = std::sync::mpsc::channel();
 
         Ok(Self {
@@ -113,7 +119,7 @@ impl KalicoHostIo {
             status_snapshot: Arc::new(ArcSwap::from_pointee(StatusEvent::default())),
             shim: Arc::new(Mutex::new(KalicoHostIoShimInner {
                 port,
-                seq,
+                host_send_seq,
                 rx_buf,
                 pending: VecDeque::new(),
                 parser,
@@ -159,12 +165,12 @@ pub(crate) fn identify_handshake(
             .expect("identify count is u32-range");
 
         let frame = wire::build_frame(&payload, seq);
-        seq = seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
         port.write_all(&frame).map_err(TransportError::Io)?;
         port.flush().map_err(TransportError::Io)?;
+        seq = seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
 
         let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(150));
-        let resp = wait_for_identify_response(port, &mut rx_buf, &mut seq, attempt_deadline)?
+        let resp = wait_for_identify_response(port, &mut rx_buf, attempt_deadline)?
             .ok_or_else(|| {
                 TransportError::Parse(
                     "identify timed out (Phase-B shim, no NAK resync)".into(),
@@ -192,7 +198,6 @@ pub(crate) fn identify_handshake(
 fn wait_for_identify_response(
     port: &mut Box<dyn SerialPort>,
     rx_buf: &mut Vec<u8>,
-    seq: &mut u8,
     deadline: Instant,
 ) -> Result<Option<MessageParams>, TransportError> {
     let mut scratch = [0u8; 256];
@@ -208,9 +213,6 @@ fn wait_for_identify_response(
             Ok(n) if n > 0 => {
                 rx_buf.extend_from_slice(&scratch[..n]);
                 while let Some(packet) = wire::extract_packet(rx_buf) {
-                    if packet.len() >= 2 {
-                        *seq = packet[1] & wire::MESSAGE_SEQ_MASK;
-                    }
                     if let Some(params) = decode_identify_response(&packet) {
                         return Ok(Some(params));
                     }
@@ -323,9 +325,6 @@ fn pump_rx(shim: &mut KalicoHostIoShimInner, timeout: Duration) -> Result<(), Tr
         Ok(n) if n > 0 => {
             shim.rx_buf.extend_from_slice(&scratch[..n]);
             while let Some(packet) = wire::extract_packet(&mut shim.rx_buf) {
-                if packet.len() >= 2 {
-                    shim.seq = packet[1] & wire::MESSAGE_SEQ_MASK;
-                }
                 match shim.parser.decode(&packet) {
                     Ok(crate::host_io::parser::DecodedFrame::Response { name, params }) => {
                         shim.pending.push_back((name, params));
@@ -354,10 +353,11 @@ impl Transport for KalicoHostIo {
         let mut shim = self.shim.lock().expect("shim mutex poisoned");
         let payload = shim.parser.encode(cmd)
             .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
-        let frame = wire::build_frame(&payload, shim.seq);
-        shim.seq = shim.seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
+        let old_seq = shim.host_send_seq;
+        let frame = wire::build_frame(&payload, old_seq);
         shim.port.write_all(&frame).map_err(TransportError::Io)?;
         shim.port.flush().map_err(TransportError::Io)?;
+        shim.host_send_seq = old_seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
 
         let deadline = Instant::now() + timeout;
         loop {
@@ -383,10 +383,11 @@ impl Transport for KalicoHostIo {
         let mut shim = self.shim.lock().expect("shim mutex poisoned");
         let payload = shim.parser.encode_typed(name, args)
             .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
-        let frame = wire::build_frame(&payload, shim.seq);
-        shim.seq = shim.seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
+        let old_seq = shim.host_send_seq;
+        let frame = wire::build_frame(&payload, old_seq);
         shim.port.write_all(&frame).map_err(TransportError::Io)?;
         shim.port.flush().map_err(TransportError::Io)?;
+        shim.host_send_seq = old_seq.wrapping_add(1) & wire::MESSAGE_SEQ_MASK;
 
         let deadline = Instant::now() + timeout;
         loop {
