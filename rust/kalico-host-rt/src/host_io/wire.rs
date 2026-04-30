@@ -58,3 +58,43 @@ pub fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     }
     None
 }
+
+/// Build a retransmit buffer: leading MESSAGE_SYNC byte followed by every
+/// frame in the unacked window concatenated. Per spec §3.8 step 1+2.
+pub fn build_retransmit_buffer<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.push(MESSAGE_SYNC);
+    for frame in frames {
+        buf.extend_from_slice(frame);
+    }
+    buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crc16_matches_klipper_test_vector() {
+        // Python: msgproto.crc16_ccitt(bytearray([5, 0x10])) returns 0x9E81.
+        assert_eq!(crc16_ccitt(&[0x05, 0x10]), 0x9E81);
+    }
+
+    #[test]
+    fn build_frame_roundtrips() {
+        let frame = build_frame(&[0x01, 0x02], 0);
+        assert_eq!(frame[0], 5 + 2);    // len
+        assert_eq!(frame[1] & MESSAGE_SEQ_MASK, 0);
+        assert_eq!(frame[1] & !MESSAGE_SEQ_MASK, MESSAGE_DEST);
+        assert_eq!(*frame.last().unwrap(), MESSAGE_SYNC);
+    }
+
+    #[test]
+    fn retransmit_buffer_starts_with_sync() {
+        let f1 = build_frame(&[1], 0);
+        let f2 = build_frame(&[2], 1);
+        let buf = build_retransmit_buffer([f1.as_slice(), f2.as_slice()]);
+        assert_eq!(buf[0], MESSAGE_SYNC);
+        assert_eq!(buf.len(), 1 + f1.len() + f2.len());
+    }
+}
