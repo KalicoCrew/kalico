@@ -3,7 +3,7 @@
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Instant;
 
-use crate::host_io::runtime_events::TraceEvent;
+use crate::host_io::runtime_events::{RuntimeEvent, TraceEvent};
 
 #[derive(Debug, Clone)]
 pub enum HostEvent {
@@ -89,5 +89,41 @@ impl TraceRing {
 
     pub fn set_host_event_tx(&mut self, tx: SyncSender<HostEvent>) {
         self.host_event_tx = Some(tx);
+    }
+}
+
+// ─── D7: RuntimeEventDispatcher ──────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+pub struct RuntimeEventDispatcher {
+    subscriber: Option<SyncSender<RuntimeEvent>>,
+}
+
+impl RuntimeEventDispatcher {
+    pub fn dispatch(&mut self, event: RuntimeEvent) {
+        if let Some(tx) = &self.subscriber {
+            match tx.try_send(event) {
+                Ok(_) => {}
+                Err(TrySendError::Full(e)) => {
+                    log::warn!("runtime-event subscriber overflow; dropping: {e:?}");
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.subscriber = None;
+                }
+            }
+        }
+    }
+
+    pub fn subscribe(
+        &mut self,
+        tx: SyncSender<RuntimeEvent>,
+    ) -> Result<(), crate::transport::SubscribeError> {
+        if self.subscriber.is_some() {
+            return Err(crate::transport::SubscribeError::AlreadySubscribed {
+                channel: "runtime_event",
+            });
+        }
+        self.subscriber = Some(tx);
+        Ok(())
     }
 }
