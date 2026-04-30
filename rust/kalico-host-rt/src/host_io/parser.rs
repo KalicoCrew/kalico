@@ -589,7 +589,33 @@ impl MsgProtoParser {
         let name = spec.format.split_whitespace().next().unwrap_or("#output").to_string();
         Ok((name, params))
     }
+
+    pub fn decode(&self, packet: &[u8]) -> Result<DecodedFrame, ParseError> {
+        if packet.len() < MESSAGE_MIN { return Err(ParseError::ShortFrame); }
+        let body = &packet[MESSAGE_HEADER_SIZE..packet.len() - MESSAGE_TRAILER_SIZE];
+        if body.is_empty() { return Err(ParseError::EmptyBody); }
+
+        let (msgid_signed, n) = decode_vlq(body)?;
+        let msgid = msgid_signed as i32;
+        let dispatch = self.by_msgid.get(&msgid)
+            .ok_or(ParseError::UnknownMsgid(msgid))?;
+
+        match dispatch {
+            DispatchSpec::Response(spec) => {
+                let params = self.decode_response(&body[n..], &spec.fields)?;
+                Ok(DecodedFrame::Response { name: spec.name.clone(), params })
+            }
+            DispatchSpec::Output(spec) => {
+                let (name, params) = self.decode_output(&body[n..], spec)?;
+                Ok(DecodedFrame::Output { name, params })
+            }
+        }
+    }
 }
+
+const MESSAGE_MIN: usize = 5;
+const MESSAGE_HEADER_SIZE: usize = 2;
+const MESSAGE_TRAILER_SIZE: usize = 3;
 
 /// Per spec §4.7. The §3.6 receive flow branches on this tag.
 #[derive(Debug)]
