@@ -89,6 +89,7 @@ pub const KALICO_ERR_ZERO_DURATION_SEGMENT: i32 = -22;
 // Step 7-C-io host-originated faults (§6.11).
 pub const KALICO_ERR_HOST_DISCONNECT: i32 = -200;
 pub const KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED: i32 = -201;
+pub const KALICO_ERR_HOST_DISPATCHER_TIMEOUT: i32 = -202;
 
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
@@ -160,6 +161,7 @@ pub enum FaultCode {
     // Step 7-C-io host-originated faults (§6.11).
     HostDisconnect = -200,
     HostRetransmitExhausted = -201,
+    HostDispatcherTimeout = -202,
 }
 
 impl FaultCode {
@@ -303,6 +305,15 @@ mod tests {
             KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED
         );
         assert_eq!(KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED, -201);
+    }
+
+    #[test]
+    fn host_dispatcher_timeout_round_trips() {
+        assert_eq!(
+            FaultCode::HostDispatcherTimeout.as_i32(),
+            KALICO_ERR_HOST_DISPATCHER_TIMEOUT
+        );
+        assert_eq!(KALICO_ERR_HOST_DISPATCHER_TIMEOUT, -202);
     }
 
     #[test]
