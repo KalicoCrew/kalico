@@ -228,7 +228,7 @@ runtime_drain(void)
         // (different msgid for `kalico_trace`) anyway.
         // See plan-changes-log.md "Step-6 closure-review follow-up fixes"
         // entry for the full reasoning.
-        sendf("kalico_trace count=%u data=%*s", n, n * 40, batch_buf);
+        output("kalico_trace count=%u data=%*s", n, n * 40, batch_buf);
     }
 
     // Reclaim leg: drain whatever the wire-batch left behind and observe
@@ -279,8 +279,8 @@ runtime_drain(void)
         int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
         uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
         uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
-        sendf("kalico_fault fault_code=%hu fault_detail=%u segment_id=%u",
-              (uint16_t)fault_code, fault_detail, cur_seg);
+        output("kalico_fault fault_code=%hu fault_detail=%u segment_id=%u",
+               (uint16_t)fault_code, fault_detail, cur_seg);
     }
 
     // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
