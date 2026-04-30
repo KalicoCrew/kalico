@@ -53,6 +53,7 @@ Usage (chained, manages sim lifecycle internally):
     bash tools/sim/build_sim_firmware.sh
     python3 tools/test_sim_gate_b.py --all
 """
+
 import argparse
 import os
 import pathlib
@@ -107,8 +108,9 @@ def _drain_queue(io, name):
         pass
 
 
-def push_segment(io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks,
-                 timeout=2.0):
+def push_segment(
+    io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks, timeout=2.0
+):
     cmd = (
         f"kalico_push_segment id={seg_id} curve_handle={curve_handle_packed} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
@@ -208,24 +210,28 @@ def test_item_5_status_frame_correctness(io):
     last_status = None
     while time.monotonic() < deadline:
         try:
-            last_status = io.wait_for_response(
-                "kalico_status_v6", timeout=1.0
-            )
+            last_status = io.wait_for_response("kalico_status_v6", timeout=1.0)
             retired = int(last_status.get("retired_through_segment_id", 0))
             depth = int(last_status.get("queue_depth", 255))
             cur_seg = int(last_status.get("current_segment_id", 0))
             if retired >= 4:
                 if depth != 0:
-                    return ("FAIL",
-                            f"status_v6 retired_through={retired} but "
-                            f"queue_depth={depth}")
+                    return (
+                        "FAIL",
+                        f"status_v6 retired_through={retired} but "
+                        f"queue_depth={depth}",
+                    )
                 if cur_seg < 4:
-                    return ("FAIL",
-                            f"status_v6 retired_through={retired} but "
-                            f"current_segment_id={cur_seg}")
-                return ("PASS",
-                        f"retired_through={retired} queue_depth={depth} "
-                        f"current_segment_id={cur_seg}")
+                    return (
+                        "FAIL",
+                        f"status_v6 retired_through={retired} but "
+                        f"current_segment_id={cur_seg}",
+                    )
+                return (
+                    "PASS",
+                    f"retired_through={retired} queue_depth={depth} "
+                    f"current_segment_id={cur_seg}",
+                )
         except HostIoError:
             pass
         time.sleep(0.05)
@@ -331,8 +337,9 @@ def test_item_7_trace_overflow_fault(io):
         t_start = LARGE_T_START_BASE + i * seg_cycles
         t_end = t_start + seg_cycles
         try:
-            rc = push_segment(io, seg_id, fixture_handle, t_start, t_end,
-                              timeout=0.5)
+            rc = push_segment(
+                io, seg_id, fixture_handle, t_start, t_end, timeout=0.5
+            )
         except HostIoError:
             break
         if rc != 0:
@@ -340,9 +347,10 @@ def test_item_7_trace_overflow_fault(io):
         pushed += 1
 
     if pushed < 5:
-        return ("FAIL",
-                f"could not push enough segments to flood trace "
-                f"(pushed={pushed})")
+        return (
+            "FAIL",
+            f"could not push enough segments to flood trace (pushed={pushed})",
+        )
 
     rc = stream_arm(io, LARGE_T_START_BASE, 2 * ONE_TICK_CYCLES)
     if rc != 0:
@@ -366,11 +374,15 @@ def test_item_7_trace_overflow_fault(io):
             )
         last_other_fault = fault
 
-    msg = (f"trace_overflow fault not observed within {ITEM_7_BUDGET_S}s "
-           f"(pushed={pushed} segments)")
+    msg = (
+        f"trace_overflow fault not observed within {ITEM_7_BUDGET_S}s "
+        f"(pushed={pushed} segments)"
+    )
     if last_other_fault is not None:
-        msg += (f"; last fault was code=0x"
-                f"{int(last_other_fault.get('fault_code', 0)):04x}")
+        msg += (
+            f"; last fault was code=0x"
+            f"{int(last_other_fault.get('fault_code', 0)):04x}"
+        )
     # Under sim USART2 backpressure, the engine may not retire fast
     # enough to overflow the trace ring within the test budget. Report
     # WARN so Surface C still re-validates at full clock rate.
@@ -378,11 +390,12 @@ def test_item_7_trace_overflow_fault(io):
 
 
 CASES = {
-    "item_5": ("item_5_status_frame_correctness",
-               test_item_5_status_frame_correctness),
+    "item_5": (
+        "item_5_status_frame_correctness",
+        test_item_5_status_frame_correctness,
+    ),
     "item_6": ("item_6_underrun_fault", test_item_6_underrun_fault),
-    "item_7": ("item_7_trace_overflow_fault",
-               test_item_7_trace_overflow_fault),
+    "item_7": ("item_7_trace_overflow_fault", test_item_7_trace_overflow_fault),
 }
 
 
@@ -475,13 +488,17 @@ def run_chained_all(port):
     passes = [r for r in results if r[1] == "PASS"]
     warns = [r for r in results if r[1] == "WARN"]
     if failures:
-        print(f"FAIL: Gate B ({len(passes)}/{len(CASES)} pass, "
-              f"{len(warns)} warn, {len(failures)} fail; {elapsed:.1f}s)")
+        print(
+            f"FAIL: Gate B ({len(passes)}/{len(CASES)} pass, "
+            f"{len(warns)} warn, {len(failures)} fail; {elapsed:.1f}s)"
+        )
         return 1
     if warns:
-        print(f"PASS-with-WARN: Gate B ({len(passes)}/{len(CASES)} pass, "
-              f"{len(warns)} sim-warn; {elapsed:.1f}s) — Surface C "
-              f"re-validates warned items")
+        print(
+            f"PASS-with-WARN: Gate B ({len(passes)}/{len(CASES)} pass, "
+            f"{len(warns)} sim-warn; {elapsed:.1f}s) — Surface C "
+            f"re-validates warned items"
+        )
         return 0
     print(f"PASS: Gate B ({len(passes)}/{len(CASES)}; {elapsed:.1f}s)")
     return 0
@@ -519,13 +536,22 @@ def run_single(port, only_key):
 
 def main():
     p = argparse.ArgumentParser(description="Step-6 Phase 13 Gate B")
-    p.add_argument("--port", default="socket://localhost:3334",
-                   help="pyserial URL of the sim USART2 bridge")
-    p.add_argument("--only", choices=list(CASES.keys()),
-                   help="Run a single test case (assumes fresh sim)")
-    p.add_argument("--all", action="store_true",
-                   help="Run all three cases, relaunching the sim between "
-                        "each (manages sim lifecycle internally)")
+    p.add_argument(
+        "--port",
+        default="socket://localhost:3334",
+        help="pyserial URL of the sim USART2 bridge",
+    )
+    p.add_argument(
+        "--only",
+        choices=list(CASES.keys()),
+        help="Run a single test case (assumes fresh sim)",
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all three cases, relaunching the sim between "
+        "each (manages sim lifecycle internally)",
+    )
     args = p.parse_args()
 
     if args.only is None and not args.all:

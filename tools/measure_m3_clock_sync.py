@@ -73,6 +73,7 @@ python3 tools/measure_m3_clock_sync.py \
     --hours 24 --report m3.json
 ```
 """
+
 import argparse
 import collections
 import json
@@ -166,7 +167,9 @@ def issue_clock_sync(io):
     )
     r = io.wait_for_response("kalico_clock_sync_response", timeout=2.0)
     host_recv_t = time.monotonic()
-    mcu_at = (int(r.get("mcu_clock_hi", 0)) << 32) | int(r.get("mcu_clock_lo", 0))
+    mcu_at = (int(r.get("mcu_clock_hi", 0)) << 32) | int(
+        r.get("mcu_clock_lo", 0)
+    )
     return host_send_t, host_recv_t, mcu_at
 
 
@@ -174,13 +177,24 @@ def main():
     p = argparse.ArgumentParser(description="Spec §7.3 M3 clock-sync soak")
     p.add_argument("--port-h723", required=True)
     p.add_argument("--baud-h723", type=int, default=250000)
-    p.add_argument("--baseline-freq-h723", type=float, default=520_000_000.0,
-                   help="H723 nominal MCU clock (Hz)")
-    p.add_argument("--port-f4x", default=None,
-                   help="optional second MCU port; if absent, single-MCU run")
+    p.add_argument(
+        "--baseline-freq-h723",
+        type=float,
+        default=520_000_000.0,
+        help="H723 nominal MCU clock (Hz)",
+    )
+    p.add_argument(
+        "--port-f4x",
+        default=None,
+        help="optional second MCU port; if absent, single-MCU run",
+    )
     p.add_argument("--baud-f4x", type=int, default=250000)
-    p.add_argument("--baseline-freq-f4x", type=float, default=180_000_000.0,
-                   help="F4x nominal MCU clock (Hz)")
+    p.add_argument(
+        "--baseline-freq-f4x",
+        type=float,
+        default=180_000_000.0,
+        help="F4x nominal MCU clock (Hz)",
+    )
     p.add_argument("--hours", type=float, default=24.0)
     p.add_argument("--report", default="m3-clock-sync.json")
     args = p.parse_args()
@@ -200,15 +214,18 @@ def main():
         ios["f4x"] = KalicoHostIO(args.port_f4x, args.baud_f4x)
         estimators["f4x"] = ClockSyncWindow(args.baseline_freq_f4x)
 
-    history = {k: {
-        "max_residual_us": 0.0,
-        "max_abs_drift_ppm": 0.0,
-        "max_sample_age_s": 0.0,
-        "residuals_us": [],
-        "drifts_ppm": [],
-        "sample_ages_s": [],
-        "round_trip_failures": 0,
-    } for k in estimators}
+    history = {
+        k: {
+            "max_residual_us": 0.0,
+            "max_abs_drift_ppm": 0.0,
+            "max_sample_age_s": 0.0,
+            "residuals_us": [],
+            "drifts_ppm": [],
+            "sample_ages_s": [],
+            "round_trip_failures": 0,
+        }
+        for k in estimators
+    }
 
     last_log_t = time.monotonic()
     try:

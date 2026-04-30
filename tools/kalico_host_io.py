@@ -315,8 +315,12 @@ class KalicoHostIO:
             try:
                 self._ser.timeout = 0.1
                 chunk = self._ser.read(512)
-            except (OSError, serial.SerialException, TypeError,
-                    AttributeError) as exc:  # type: ignore[union-attr]
+            except (
+                OSError,
+                serial.SerialException,
+                TypeError,
+                AttributeError,
+            ) as exc:  # type: ignore[union-attr]
                 # `AttributeError` covers pyserial's socket:// URL handler:
                 # on `Serial.close()` it sets `_socket = None`, and an
                 # in-flight `read()` then explodes with

@@ -34,6 +34,7 @@ Usage:
     sleep 3
     python3 tools/test_sim_gate_a.py [--use-real-loads]
 """
+
 import argparse
 import math
 import pathlib
@@ -56,7 +57,11 @@ FIXTURES = [
     {
         "name": "quarter_arc_xy",
         "degree": 2,
-        "control_points": [(20.0, 0.0, 0.0), (20.0, 20.0, 0.0), (0.0, 20.0, 0.0)],
+        "control_points": [
+            (20.0, 0.0, 0.0),
+            (20.0, 20.0, 0.0),
+            (0.0, 20.0, 0.0),
+        ],
         "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         "weights": [1.0, math.cos(math.pi / 4.0), 1.0],
     },
@@ -268,14 +273,10 @@ def run_gate_a(use_real_loads):
             print("FAIL: never got a successful diag response")
             return 1
         if not seen_running_or_progress:
-            print(
-                f"FAIL: engine never made progress; last diag={last_diag}"
-            )
+            print(f"FAIL: engine never made progress; last diag={last_diag}")
             return 1
         if last_tick_counter == 0:
-            print(
-                f"FAIL: tick_counter never advanced; last diag={last_diag}"
-            )
+            print(f"FAIL: tick_counter never advanced; last diag={last_diag}")
             return 1
 
         # Final check: tick_counter should reflect that the engine processed

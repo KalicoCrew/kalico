@@ -25,6 +25,7 @@ Usage:
     sleep 8
     python3 tools/test_sim_stream_lifecycle.py
 """
+
 import pathlib
 import sys
 import time
@@ -42,8 +43,9 @@ STREAM_ID = 42
 ARM_LEAD_CYCLES = 2 * ONE_TICK_CYCLES
 
 
-def push_segment(io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks,
-                 timeout=5.0):
+def push_segment(
+    io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks, timeout=5.0
+):
     cmd = (
         f"kalico_push_segment id={seg_id} curve_handle={curve_handle_packed} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
@@ -73,7 +75,8 @@ def stream_arm(io, t_start_t0, arm_lead_cycles, timeout=5.0):
     io.send(cmd)
     r = io.wait_for_response("kalico_stream_arm_response", timeout)
     armed_t = (int(r.get("armed_t_start_hi", 0)) << 32) | int(
-        r.get("armed_t_start_lo", 0))
+        r.get("armed_t_start_lo", 0)
+    )
     return int(r["result"]), armed_t
 
 
@@ -163,7 +166,9 @@ def run_test():
         #    StreamOpening → StreamOpenPriming and records
         #    fg.first_priming_segment_t_start.
         first_t_start = 1_000_000_000
-        rc = push_segment(io, 1, handle, first_t_start, first_t_start + SEG_CYCLES)
+        rc = push_segment(
+            io, 1, handle, first_t_start, first_t_start + SEG_CYCLES
+        )
         if rc != 0:
             print(f"FAIL: priming push → rc={rc}")
             return 1
@@ -233,9 +238,7 @@ def run_test():
                 f"(before={epoch_initial} after={epoch_after})"
             )
             return 1
-        print(
-            f"  flush: rc=0 credit_epoch {epoch_initial} → {epoch_after}"
-        )
+        print(f"  flush: rc=0 credit_epoch {epoch_initial} → {epoch_after}")
 
         # 10. Post-flush sanity: a fresh stream_open should succeed (the
         #     flush should have reset internal state).

@@ -65,6 +65,7 @@ segment is 1 ms long; when the queue fills the producer blocks on
 `push_response` until the engine retires a slot — the time between
 `io.send` and `wait_for_response` returning IS the host stall.
 """
+
 import argparse
 import json
 import pathlib
@@ -74,7 +75,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
-CLOCK_FREQ = 520_000_000   # H723 default
+CLOCK_FREQ = 520_000_000  # H723 default
 TICK_HZ = 40_000
 ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
 
@@ -91,8 +92,9 @@ def percentile(sorted_us, q):
     return sorted_us[idx]
 
 
-def push_segment(io, seg_id, fixture_handle, t_start_ticks, t_end_ticks,
-                 timeout=5.0):
+def push_segment(
+    io, seg_id, fixture_handle, t_start_ticks, t_end_ticks, timeout=5.0
+):
     cmd = (
         f"kalico_push_segment id={seg_id} curve_handle={fixture_handle} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
@@ -126,13 +128,16 @@ def stream_arm(io, t_start_t0, arm_lead_cycles):
 
 def main():
     p = argparse.ArgumentParser(description="Spec §7.3 M1 host-stall soak")
-    p.add_argument("--port", required=True,
-                   help="serial URL (e.g. /dev/ttyACM0)")
+    p.add_argument(
+        "--port", required=True, help="serial URL (e.g. /dev/ttyACM0)"
+    )
     p.add_argument("--baud", type=int, default=250000)
-    p.add_argument("--hours", type=float, default=8.0,
-                   help="soak duration (default 8h)")
-    p.add_argument("--report", default="m1-host-stall.json",
-                   help="JSON report output path")
+    p.add_argument(
+        "--hours", type=float, default=8.0, help="soak duration (default 8h)"
+    )
+    p.add_argument(
+        "--report", default="m1-host-stall.json", help="JSON report output path"
+    )
     p.add_argument("--fixture-id", type=int, default=0)
     args = p.parse_args()
 
@@ -145,7 +150,9 @@ def main():
     io = KalicoHostIO(args.port, args.baud)
     try:
         # Load fixture and open stream once.
-        io.send(f"kalico_load_fixture_curve slot=1 fixture_id={args.fixture_id}")
+        io.send(
+            f"kalico_load_fixture_curve slot=1 fixture_id={args.fixture_id}"
+        )
         r = io.wait_for_response("kalico_load_fixture_response", 5.0)
         if int(r["result"]) != 0:
             raise SystemExit(
@@ -166,8 +173,9 @@ def main():
             t_start = t_start_base + prefill * seg_cycles
             t_end = t_start + seg_cycles
             try:
-                _dt, rc = push_segment(io, next_seg_id, fixture_handle,
-                                       t_start, t_end, timeout=5.0)
+                _dt, rc = push_segment(
+                    io, next_seg_id, fixture_handle, t_start, t_end, timeout=5.0
+                )
             except HostIoError as exc:
                 raise SystemExit(f"FAIL: prefill push: {exc}")
             if rc != 0:
@@ -183,8 +191,14 @@ def main():
             t_start = t_start_base + (next_seg_id - 1) * seg_cycles
             t_end = t_start + seg_cycles
             try:
-                dt, rc = push_segment(io, next_seg_id, fixture_handle,
-                                      t_start, t_end, timeout=10.0)
+                dt, rc = push_segment(
+                    io,
+                    next_seg_id,
+                    fixture_handle,
+                    t_start,
+                    t_end,
+                    timeout=10.0,
+                )
             except HostIoError as exc:
                 push_failures += 1
                 # Pause and retry — this is exactly the kind of stall
@@ -219,9 +233,9 @@ def main():
                 if samples_us:
                     s = sorted(samples_us)
                     print(
-                        f"[m1] n={len(samples_us)} p50={percentile(s, .5):.1f}us "
-                        f"p99={percentile(s, .99):.1f}us "
-                        f"p999={percentile(s, .999):.2f}us "
+                        f"[m1] n={len(samples_us)} p50={percentile(s, 0.5):.1f}us "
+                        f"p99={percentile(s, 0.99):.1f}us "
+                        f"p999={percentile(s, 0.999):.2f}us "
                         f"max={s[-1]:.1f}us "
                         f"failures={push_failures}",
                         file=sys.stderr,
@@ -259,9 +273,11 @@ def main():
     out_path = pathlib.Path(args.report)
     out_path.write_text(json.dumps(report, indent=2))
     print(f"[m1] wrote report to {out_path.resolve()}")
-    print(f"[m1] p50={report['p50_us']:.1f}us p99={report['p99_us']:.1f}us "
-          f"p9999={report['p9999_us']:.2f}us max={report['max_us']:.1f}us "
-          f"n={report['n_samples']} failures={report['push_failures']}")
+    print(
+        f"[m1] p50={report['p50_us']:.1f}us p99={report['p99_us']:.1f}us "
+        f"p9999={report['p9999_us']:.2f}us max={report['max_us']:.1f}us "
+        f"n={report['n_samples']} failures={report['push_failures']}"
+    )
     return 0
 
 

@@ -211,8 +211,11 @@ def main():
         if args.m2_rounds > 0:
             print(
                 "M2: running %d rounds × %d samples (~%.2fM ticks) ..."
-                % (args.m2_rounds, args.samples,
-                   args.m2_rounds * args.samples / 1e6)
+                % (
+                    args.m2_rounds,
+                    args.samples,
+                    args.m2_rounds * args.samples / 1e6,
+                )
             )
             worst_cycles = 0
             worst_us = 0.0
@@ -247,8 +250,10 @@ def main():
                     print(
                         "  M2 round %d/%d  worst=%.3f µs  total=%dk samples"
                         % (
-                            round_idx + 1, args.m2_rounds,
-                            worst_us, total_samples // 1000,
+                            round_idx + 1,
+                            args.m2_rounds,
+                            worst_us,
+                            total_samples // 1000,
                         )
                     )
             print(
