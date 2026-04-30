@@ -3,7 +3,7 @@
 
 mod beta;
 mod e_independent;
-mod fit;
+pub mod fit;
 mod kernel;
 mod pad;
 mod parallel;
