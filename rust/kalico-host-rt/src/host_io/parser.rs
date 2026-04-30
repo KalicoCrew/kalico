@@ -402,6 +402,52 @@ pub fn parse_hex_buffer(s: &str) -> Result<Vec<u8>, ParseError> {
     Ok(out)
 }
 
+pub fn encode_field_str<'a>(
+    out: &mut Vec<u8>,
+    wrapped: &WrappedField,
+    value_str: &str,
+    enums: &IndexMap<String, EnumTable>,
+) -> Result<(), ParseError> {
+    match wrapped {
+        WrappedField::Plain(ty) => match ty {
+            FieldType::Byte | FieldType::U16 | FieldType::U32 |
+            FieldType::I16 | FieldType::I32 => {
+                let v: i64 = value_str.parse().map_err(|_| ParseError::MalformedField)?;
+                range_check(*ty, v)?;
+                encode_vlq(out, v)
+            }
+            FieldType::String => {
+                let bytes = value_str.as_bytes();
+                if bytes.len() > u8::MAX as usize {
+                    return Err(ParseError::OutOfRange { value: bytes.len() as i64, range: "string len 0..=255" });
+                }
+                out.push(bytes.len() as u8);
+                out.extend_from_slice(bytes);
+                Ok(())
+            }
+            FieldType::Buffer | FieldType::ProgmemBuffer => {
+                let bytes = parse_hex_buffer(value_str)?;
+                if bytes.len() > u8::MAX as usize {
+                    return Err(ParseError::OutOfRange { value: bytes.len() as i64, range: "buffer len 0..=255" });
+                }
+                out.push(bytes.len() as u8);
+                out.extend_from_slice(&bytes);
+                Ok(())
+            }
+        },
+        WrappedField::Enumerated { inner, enum_name } => {
+            let table = enums.get(enum_name)
+                .ok_or_else(|| ParseError::UnknownEnumName(enum_name.clone()))?;
+            let int = table.by_name.get(value_str)
+                .ok_or_else(|| ParseError::UnknownEnumValue {
+                    enum_name: enum_name.clone(),
+                    value:     value_str.to_string(),
+                })?;
+            encode_field_int(out, *inner, i64::from(*int))
+        }
+    }
+}
+
 fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
     let in_range = match ty {
         FieldType::Byte => (0..=255).contains(&v),
