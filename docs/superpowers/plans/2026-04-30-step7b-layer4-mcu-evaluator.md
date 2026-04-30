@@ -75,9 +75,10 @@ pub const MAX_DEGREE: u8 = 3;
 pub const MAX_CONTROL_POINTS: usize = 80;
 pub const MAX_KNOT_VECTOR_LEN: usize = 91; // MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1
 pub const MAX_DEGREE: u8 = 10;
+pub const CURVE_POOL_N: usize = 64;
 ```
 
-Remove `MAX_DIM` entirely. Replace `LoadedCurve` (which had `control_points: [[f32; 3]; 8]`, `weights: [f32; 8]`, `knots: [f32; 12]`) with:
+Keep `MAX_DIM` as a deprecated constant (`pub const MAX_DIM: usize = 1;`) until Task 8 updates the FFI — removing it before Task 8 would break `kalico-c-api` compilation. Replace `LoadedCurve` (which had `control_points: [[f32; 3]; 8]`, `weights: [f32; 8]`, `knots: [f32; 12]`) with:
 
 ```rust
 #[derive(Clone)]
@@ -108,7 +109,7 @@ Remove the `weights` field from `CurveView` — no rational NURBS.
 
 - [ ] **Step 3: Update `try_alloc_and_load` to accept scalar data**
 
-Change the load API to accept `(degree: u8, knots: &[f32], cps: &[f32])` instead of 3D data + weights. Validate `degree <= MAX_DEGREE`, `n_cp <= MAX_CONTROL_POINTS`, `knots.len() == n_cp + degree as usize + 1`.
+Keep the existing slot-indexed `try_alloc_and_load` API shape but change its payload from 3D vector data + weights to scalar data `(degree: u8, knots: &[f32], cps: &[f32])`. Remove the weights parameter. Validate `degree <= MAX_DEGREE`, `n_cp <= MAX_CONTROL_POINTS`, `knots.len() == n_cp + degree as usize + 1`. Update all existing callers (tests, FFI) that construct `LoadedCurve` to use the new scalar signature.
 
 - [ ] **Step 4: Add `CurveHandle::UNUSED_SENTINEL`**
 
@@ -302,6 +303,8 @@ StepBurstExceeded,
 ZeroDurationSegment,
 ```
 
+Update `impl From<RuntimeError> for i32` (or the equivalent match in `FaultCode::as_i32()`) with the new variants mapped to the new constants. Update any exhaustiveness tests.
+
 - [ ] **Step 3: Add `homed` to `SharedState`**
 
 In `rust/runtime/src/state.rs`, add to `SharedState`:
@@ -332,7 +335,7 @@ Expected: compilation succeeds. Some tests will need `TraceSample` and `Segment`
 Every test that constructs a `Segment` or `TraceSample` must use the new field layout. This is a mechanical update: add the missing fields with default/sentinel values. Fix each file:
 - `engine_tick.rs`, `engine_underrun.rs`, `hold_segment.rs`, `flush_basic.rs`, `flush_drains_queue.rs`, `flush_timeout.rs`, `force_idle_short_circuit.rs`, `max_boundary_iters.rs`, `reclaim_pipeline.rs`, `segment_id_atomics.rs`, `stream_lifecycle.rs`, `trace_overflow.rs`, `fixtures/mod.rs`.
 
-Update `TickState` usages in `slot.rs` and `engine.rs` for 4-element arrays.
+Update `TickState` usages in `slot.rs` and `engine.rs` for 4-element arrays. Also widen `Engine::last_motors` from `[f32; 3]` to `[f32; 4]` and update all trace emit sites to write `motor_z: last_motors[2]`, `motor_e: last_motors[3]`.
 
 - [ ] **Step 7: Run full test suite**
 
@@ -499,10 +502,17 @@ pub struct StepResult {
 }
 
 #[derive(Debug)]
+#[derive(Clone, Copy)]
 pub struct StepMotorState {
     step_accumulator: f64,
     steps_per_mm: f32,
     max_steps_per_tick: i32,
+}
+
+impl Default for StepMotorState {
+    fn default() -> Self {
+        Self { step_accumulator: 0.0, steps_per_mm: 0.0, max_steps_per_tick: MAX_STEPS_PER_TICK_DEFAULT }
+    }
 }
 
 impl StepMotorState {
@@ -532,6 +542,8 @@ impl StepMotorState {
 ```
 
 Add `pub mod step;` to `lib.rs`.
+
+Note: `StepMotorState::update` returns `StepResult { n_steps }` — the count and direction of steps to emit. Actual GPIO pulse emission (BSRR writes, dir pin, AWD dual-pin, timing delays) is hardware-specific and not testable on the host. The engine's tick method calls `update()` and stores the result; the actual pulse emission is a thin hardware layer wired in 7-D when real GPIO is available. Tests verify step counts, not GPIO toggles.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -622,7 +634,7 @@ Replace the single-handle resolve + 3D eval with:
    - `CoupledToXy`: compute `v_xy` from `(x - prev_x, y - prev_y)`, accumulate `e_accumulator`.
    - `Independent`: resolve `e_handle`, eval.
    - `Travel`: E = last value.
-4. Seed `prev_x/prev_y` and step accumulators on first tick (`needs_xy_seed`).
+4. If `needs_xy_seed`, evaluate X(u=0) and Y(u=0) FIRST, seed `prev_x/prev_y` from those values, apply kinematic transform to get motor positions, seed all step accumulators, then clear `needs_xy_seed`. This must happen BEFORE the E finite-difference computation to avoid a spurious first-tick delta.
 5. Kinematic transform: `[x, y, z, e]` → `[a, b, z, e]`.
 6. Step generation per owned motor via `step_state[i].update(motors[i])`.
 
@@ -630,12 +642,12 @@ The boundary loop and hold-segment paths carry the 4-handle segment through unch
 
 - [ ] **Step 5: Add homed gate**
 
-At the top of `tick()`, after `force_idle` check, before clock widen:
+After `force_idle` check AND after clock widening (so `now` is available for `latch_fault`), but before segment activation:
 
 ```rust
 if !shared.homed.load(Ordering::Acquire) {
     if shared.stream_open.load(Ordering::Acquire) {
-        self.latch_fault(RuntimeError::NotHomed, ...);
+        self.latch_fault(RuntimeError::NotHomed, 0, CurveHandle::UNUSED_SENTINEL, now, trace, shared, None);
         return Err(RuntimeError::NotHomed);
     }
     return Ok(());
@@ -725,7 +737,7 @@ impl RetirementTable {
 }
 ```
 
-Update `drain_and_reclaim` to accept `&RetirementTable` and retire all handles:
+Add `retirement_table: RetirementTable` to `FgState` in `state.rs`. Initialize it as `RetirementTable::new()` in `RuntimeContext::init`. The producer calls `fg.retirement_table.register(segment_id, handles)` when pushing each segment. Update `drain_and_reclaim` to accept `&RetirementTable` and retire all handles:
 
 ```rust
 pub fn drain_and_reclaim<F>(
@@ -743,7 +755,7 @@ where
         if sample.flags & TRACE_FLAG_SEGMENT_END != 0 {
             if let Some(handles) = table.lookup(sample.segment_id) {
                 for h in &handles {
-                    if !h.is_unused_sentinel() && !h.is_hold_sentinel() {
+                    if !h.is_unused_sentinel() && *h != CurveHandle::HOLD_SEGMENT_SENTINEL {
                         pool.confirm_retired(*h);
                     }
                 }
@@ -786,7 +798,7 @@ git commit -m "feat: multi-handle retirement via segment_id lookup table"
 
 - [ ] **Step 1: Update Rust FFI `kalico_load_curve` to scalar blob passthrough**
 
-Replace the `n_cp * MAX_DIM` slice construction with direct blob storage. The C handler passes the raw blob bytes; the Rust FFI stores them in the scalar curve pool slot. Use `ScalarNurbsRef::try_from_wire` for validation at load time, then copy the parsed data into `LoadedScalarCurve`.
+Replace the `n_cp * MAX_DIM` slice construction with a single aligned blob passthrough. The C handler passes the raw scalar NURBS wire blob (8-byte header + knots + CPs, as defined in `nurbs::wire`); the Rust FFI calls `ScalarNurbsRef::try_from_wire` on the full blob for validation, then copies the parsed degree/knots/CPs into the `LoadedScalarCurve` slot. Do NOT pass separate knots/cps buffers — `try_from_wire` expects a single contiguous wire buffer with header.
 
 - [ ] **Step 2: Update Rust FFI `kalico_push_segment` for 4 handles + E-mode**
 
@@ -816,6 +828,10 @@ Update `kalico_push_segment` DECL_COMMAND:
 Update trace drain buffer sizing from 32 to 40 bytes per sample.
 
 Add `DECL_COMMAND(kalico_set_homed, ...)`.
+
+Add `DECL_COMMAND(kalico_configure_axes, ...)` — accepts a blob containing the serialized `McuAxisConfig` (kinematics tag + per-motor config array). The Rust FFI parses and validates (rejects invalid CoreXY configs that own only one of A/B), stores in `Engine::configure()`.
+
+Regenerate the cbindgen header (`kalico_runtime.h`) after updating `runtime_ffi.rs` — `src/runtime_tick.c` includes this header and will compile against stale declarations otherwise. Run: `cd rust && cargo run -p kalico-c-api --bin gen_headers`.
 
 - [ ] **Step 5: Run FFI tests**
 
