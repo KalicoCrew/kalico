@@ -575,6 +575,20 @@ impl MsgProtoParser {
         }
         Ok(params)
     }
+
+    pub fn decode_output(&self, body: &[u8], spec: &OutputSpec)
+        -> Result<(String, MessageParams), ParseError>
+    {
+        let mut params = MessageParams::new();
+        let mut cur = body;
+        for (field_name, wrapped) in spec.field_names.iter().zip(spec.fields.iter()) {
+            let (value, consumed) = self.decode_wrapped_field(cur, wrapped)?;
+            params.insert(field_name, value);
+            cur = &cur[consumed..];
+        }
+        let name = spec.format.split_whitespace().next().unwrap_or("#output").to_string();
+        Ok((name, params))
+    }
 }
 
 /// Per spec §4.7. The §3.6 receive flow branches on this tag.
