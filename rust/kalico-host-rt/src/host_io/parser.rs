@@ -5,6 +5,9 @@ use std::collections::{HashMap, HashSet};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
+use crate::transport::MessageParams;
+use crate::transport::MessageValue;
+
 #[derive(Debug, Deserialize)]
 pub struct DataDictionary {
     pub commands:     IndexMap<String, i32>,
@@ -538,6 +541,13 @@ impl MsgProtoParser {
         }
         Ok(payload)
     }
+}
+
+/// Per spec §4.7. The §3.6 receive flow branches on this tag.
+#[derive(Debug)]
+pub enum DecodedFrame {
+    Response { name: String, params: MessageParams },
+    Output   { name: String, params: MessageParams },
 }
 
 #[cfg(test)]
