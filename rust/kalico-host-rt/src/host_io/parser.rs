@@ -1,6 +1,6 @@
 //! Production MsgProtoParser. Spec §4.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -222,6 +222,85 @@ pub struct OutputSpec {
 pub struct OutboundSpec {
     pub msgid:  i32,
     pub fields: Vec<(String, WrappedField)>,
+}
+
+impl MsgProtoParser {
+    pub fn from_dictionary(dict: DataDictionary) -> Result<Self, ParseError> {
+        let mut seen_msgids:   HashSet<i32>    = HashSet::new();
+        let mut seen_formats:  HashSet<String> = HashSet::new();
+        let mut seen_msgnames: HashSet<String> = HashSet::new();
+
+        // Cross-section msgid + format-string collision check.
+        for (format, msgid) in dict.commands.iter()
+                                .chain(dict.responses.iter())
+                                .chain(dict.output.iter()) {
+            if !seen_msgids.insert(*msgid) {
+                return Err(ParseError::DuplicateMsgid(*msgid));
+            }
+            if !seen_formats.insert(format.clone()) {
+                return Err(ParseError::DuplicateFormatString(format.clone()));
+            }
+        }
+
+        // Message-name collision check (commands + responses only).
+        for format in dict.commands.keys().chain(dict.responses.keys()) {
+            let name = format.split_whitespace().next().unwrap_or("").to_string();
+            if !seen_msgnames.insert(name.clone()) {
+                return Err(ParseError::DuplicateMessageName(name));
+            }
+        }
+
+        // Build enumerations.
+        let mut enumerations: IndexMap<String, EnumTable> = IndexMap::new();
+        for (enum_name, table) in &dict.enumerations {
+            enumerations.insert(enum_name.clone(), EnumTable::from_dict(table));
+        }
+
+        let mut by_msgid: HashMap<i32, DispatchSpec> = HashMap::new();
+        let mut by_command_name: IndexMap<String, OutboundSpec> = IndexMap::new();
+
+        for (format, msgid) in &dict.commands {
+            let (name, fields) = parse_format_string(format)?;
+            let wrapped = apply_enumeration_wrapping(fields, &dict.enumerations);
+            by_command_name.insert(
+                name.clone(),
+                OutboundSpec { msgid: *msgid, fields: wrapped.clone() },
+            );
+            by_msgid.insert(*msgid, DispatchSpec::Response(ResponseSpec { name, fields: wrapped }));
+        }
+
+        for (format, msgid) in &dict.responses {
+            let (name, fields) = parse_format_string(format)?;
+            let wrapped = apply_enumeration_wrapping(fields, &dict.enumerations);
+            by_msgid.insert(*msgid, DispatchSpec::Response(ResponseSpec { name, fields: wrapped }));
+        }
+
+        for (format, msgid) in &dict.output {
+            let (_name, named_fields) = parse_format_string(format)?;
+            let wrapped = apply_enumeration_wrapping(named_fields, &dict.enumerations);
+            let (field_names, positional_fields): (Vec<String>, Vec<WrappedField>) =
+                wrapped.into_iter().unzip();
+            by_msgid.insert(*msgid, DispatchSpec::Output(OutputSpec {
+                format: format.clone(),
+                fields: positional_fields,
+                field_names,
+            }));
+        }
+
+        let static_strings: HashMap<i32, String> = enumerations
+            .get("static_string_id")
+            .map(|t| t.by_int.clone())
+            .unwrap_or_default();
+
+        Ok(Self {
+            by_msgid,
+            by_command_name,
+            enumerations,
+            static_strings,
+            config: dict.config,
+            version: dict.version,
+        })
+    }
 }
 
 pub fn decode_vlq(buf: &[u8]) -> Result<(i64, usize), ParseError> {
