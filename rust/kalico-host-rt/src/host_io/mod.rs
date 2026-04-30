@@ -249,8 +249,10 @@ impl KalicoHostIo {
                     .map_err(|_| TransportError::Parse(format!("bad identify cmd: {cmd}")))?;
             }
         }
-        encode_vlq(&mut payload, i64::from(offset));
-        encode_vlq(&mut payload, i64::from(count));
+        parser::encode_vlq(&mut payload, i64::from(offset))
+            .expect("identify offset is u32, always in [0, u32::MAX]");
+        parser::encode_vlq(&mut payload, i64::from(count))
+            .expect("identify count is u32, always in [0, u32::MAX]");
         self.frame_and_write(&payload)
     }
 
@@ -453,7 +455,7 @@ fn decode_identify_response(packet: &[u8]) -> Option<MessageParams> {
         // Pre-identify, we only recognise msg-id 0 (identify_response).
         return None;
     }
-    let (offset, n) = decode_vlq(&body[pos..])?;
+    let (offset, n) = parser::decode_vlq(&body[pos..]).ok()?;
     pos += n;
     let (data, n) = decode_bytes(&body[pos..])?;
     pos += n;
@@ -467,77 +469,6 @@ fn decode_identify_response(packet: &[u8]) -> Option<MessageParams> {
     }
     params.insert("data", MessageValue::Bytes(data));
     Some(params)
-}
-
-fn encode_vlq(out: &mut Vec<u8>, value: i64) {
-    // Klipper wire VLQ: signed, big-endian-ish 7-bit, MSB=continuation.
-    // The encoding is identical to msgproto.encode_vlqi for the i32
-    // range we care about (offsets, counts, fixture-ids).
-    //
-    // I2 (latent): callers go through `i64::from(u32)` and friends, so
-    // we never hit the out-of-range cases in practice — but the
-    // sign-fold below silently truncates anything outside `[i32::MIN,
-    // u32::MAX]` to garbage. Assert in debug builds; Step-7 MVP
-    // re-audits the encoder for full i64 range if/when it's needed.
-    debug_assert!(
-        value >= i64::from(i32::MIN) && value <= i64::from(u32::MAX),
-        "encode_vlq: value {value} outside [i32::MIN, u32::MAX] — caller must clamp"
-    );
-    let mut v = value;
-    if value < 0 {
-        v += 1 << 32;
-    }
-    let mut bytes: [u8; 5] = [0; 5];
-    let mut idx = 5usize;
-    loop {
-        idx -= 1;
-        // VLQ digit: low 7 bits of `v`. Truncating cast to u8 is the
-        // canonical way to express that.
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        {
-            bytes[idx] = (v as u8) & 0x7F;
-        }
-        v >>= 7;
-        if v == 0 || v == -1 {
-            break;
-        }
-        if idx == 0 {
-            break;
-        }
-    }
-    // Set continuation bits on all but the last byte. Avoid borrowing
-    // `bytes` mutably while reading its length by stashing the end
-    // index up-front.
-    let last = bytes.len() - 1;
-    for b in &mut bytes[idx..last] {
-        *b |= 0x80;
-    }
-    out.extend_from_slice(&bytes[idx..]);
-}
-
-fn decode_vlq(buf: &[u8]) -> Option<(i64, usize)> {
-    let mut value: i64 = 0;
-    let mut consumed = 0;
-    // Bug-fix C2: cap iteration at 5 bytes regardless of buf length so a
-    // peer sending continuation bits past the legal 5-byte limit cannot
-    // walk us off the end of the integer range. The encoder side caps
-    // VLQ output at 5 bytes; any additional continuation byte is wire
-    // corruption.
-    for &b in buf.iter().take(5) {
-        consumed += 1;
-        value = (value << 7) | i64::from(b & 0x7F);
-        if (b & 0x80) == 0 {
-            // Sign-extend from a 32-bit signed range. Klipper's wire
-            // ints are 32-bit signed.
-            if (value & (1 << 31)) != 0 {
-                value -= 1 << 32;
-            }
-            return Some((value, consumed));
-        }
-    }
-    // Either ran out of buf or read 5 continuation bytes without
-    // terminating — both are malformed input.
-    None
 }
 
 fn decode_bytes(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
@@ -679,8 +610,8 @@ mod test_internals {
     fn vlq_roundtrip_small_positive() {
         for v in [0i64, 1, 100, 1_000, 100_000, 1_000_000_000] {
             let mut buf = Vec::new();
-            encode_vlq(&mut buf, v);
-            let (out, n) = decode_vlq(&buf).unwrap();
+            parser::encode_vlq(&mut buf, v).expect("value in range");
+            let (out, n) = parser::decode_vlq(&buf).unwrap();
             assert_eq!(n, buf.len(), "consumed != encoded for {v}");
             assert_eq!(out, v, "roundtrip failed for {v}");
         }
@@ -748,12 +679,12 @@ mod test_internals {
         // bits past byte 5 must NOT walk into byte 6+. Pre-fix, a peer
         // with 6 continuation bytes would shift `value` 42 bits and
         // potentially overflow the i64 range. Post-fix, we cap at 5
-        // bytes and return None.
+        // bytes and return BadVlq.
         let malformed = vec![0xFFu8; 8]; // all continuation, no terminator
-        let result = decode_vlq(&malformed);
+        let result = parser::decode_vlq(&malformed);
         assert!(
-            result.is_none(),
-            "malformed VLQ must return None, not roll past 5 bytes"
+            matches!(result, Err(parser::ParseError::BadVlq)),
+            "malformed VLQ must return BadVlq, not roll past 5 bytes"
         );
     }
 }
