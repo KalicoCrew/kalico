@@ -27,7 +27,8 @@ pub struct SOfTPieces {
     pub t_start: f64,
     /// Batch-global time at the end of the last piece.
     pub t_end: f64,
-    /// Sum of all piece durations.
+    /// Sum of all piece durations (used by downstream timeline construction).
+    #[allow(dead_code)]
     pub total_duration: f64,
 }
 

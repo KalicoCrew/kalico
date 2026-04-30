@@ -8,6 +8,7 @@
 ///
 /// MVP implementation: sequential. The `_n_threads` parameter is accepted for
 /// API compatibility with future parallel dispatch.
+#[allow(dead_code)]
 pub fn fan_out_indexed<F, R>(count: usize, _n_threads: usize, f: F) -> Vec<(usize, R)>
 where
     F: Fn(usize) -> R + Sync,
