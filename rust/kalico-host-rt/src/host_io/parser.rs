@@ -663,4 +663,14 @@ mod encode_field_tests {
         encode_field_value(&mut buf, FieldType::Byte, &FieldValue::Byte(0xFF)).unwrap();
         assert_eq!(buf, vec![0x81, 0x7F]);
     }
+
+    #[test]
+    fn rejects_string_too_long() {
+        let s = "x".repeat(300);
+        let mut buf = Vec::new();
+        match encode_field_value(&mut buf, FieldType::String, &FieldValue::String(&s)) {
+            Err(ParseError::OutOfRange { .. }) => {}
+            other => panic!("expected OutOfRange, got {:?}", other),
+        }
+    }
 }
