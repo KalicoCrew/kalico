@@ -659,6 +659,8 @@ DECL_COMMAND(command_kalico_query_pool_state,
 // The actual emits live in the foreground drain pipeline (Phase 11) and the
 // fault-publish path (Phase 4 / Phase 11).
 DECL_CTR("_DECL_OUTPUT "
+         "kalico_trace count=%u data=%*s");
+DECL_CTR("_DECL_OUTPUT "
          "kalico_credit_freed retired_through_segment_id=%u free_slots=%c");
 DECL_CTR("_DECL_OUTPUT "
          "kalico_fault fault_code=%hu fault_detail=%u segment_id=%u");
