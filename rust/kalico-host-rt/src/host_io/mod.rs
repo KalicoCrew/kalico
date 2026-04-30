@@ -235,6 +235,52 @@ impl Transport for KalicoHostIo {
     }
 }
 
+impl KalicoHostIo {
+    pub fn attach_credit_counter(&self, counter: std::sync::Arc<crate::credit::CreditCounter>) {
+        let _ = self.submission_tx.send(ReactorCommand::AttachCreditCounter(counter));
+    }
+
+    pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx.send(ReactorCommand::SubscribeFault { sender, reply: reply_tx })
+            .map_err(|_| SubscribeError::Closed)?;
+        reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
+        Ok(receiver)
+    }
+
+    pub fn take_trace_subscription(&self) -> Result<std::sync::mpsc::Receiver<TraceEvent>, SubscribeError> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(256);
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx.send(ReactorCommand::SubscribeTrace { sender, reply: reply_tx })
+            .map_err(|_| SubscribeError::Closed)?;
+        reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
+        Ok(receiver)
+    }
+
+    pub fn take_runtime_event_subscription(&self) -> Result<std::sync::mpsc::Receiver<RuntimeEvent>, SubscribeError> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx.send(ReactorCommand::SubscribeRuntimeEvents { sender, reply: reply_tx })
+            .map_err(|_| SubscribeError::Closed)?;
+        reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
+        Ok(receiver)
+    }
+
+    pub fn take_host_event_subscription(&self) -> Result<std::sync::mpsc::Receiver<HostEvent>, SubscribeError> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx.send(ReactorCommand::SubscribeHostEvents { sender, reply: reply_tx })
+            .map_err(|_| SubscribeError::Closed)?;
+        reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
+        Ok(receiver)
+    }
+
+    pub fn status(&self) -> std::sync::Arc<crate::host_io::runtime_events::StatusEvent> {
+        self.status_snapshot.load_full()
+    }
+}
+
 #[cfg(test)]
 mod test_internals {
     use super::*;
