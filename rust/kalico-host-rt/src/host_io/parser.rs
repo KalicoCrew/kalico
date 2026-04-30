@@ -500,6 +500,46 @@ pub enum FieldValue<'a> {
     EnumIntOverride(i32),
 }
 
+impl MsgProtoParser {
+    pub fn encode(&self, cmd: &str) -> Result<Vec<u8>, ParseError> {
+        let mut tokens = cmd.split_whitespace();
+        let name = tokens.next().ok_or(ParseError::EmptyCommand)?;
+        let spec = self.by_command_name.get(name)
+            .ok_or_else(|| ParseError::UnknownCommand(name.to_string()))?;
+
+        let mut provided: HashMap<&str, &str> = HashMap::new();
+        for token in tokens {
+            let (k, v) = token.split_once('=').ok_or(ParseError::MalformedArg)?;
+            provided.insert(k, v);
+        }
+
+        let mut payload = Vec::new();
+        encode_vlq(&mut payload, i64::from(spec.msgid))?;
+        for (field_name, wrapped) in &spec.fields {
+            let value_str = provided.get(field_name.as_str())
+                .ok_or_else(|| ParseError::MissingField(field_name.clone()))?;
+            encode_field_str(&mut payload, wrapped, value_str, &self.enumerations)?;
+        }
+        Ok(payload)
+    }
+
+    pub fn encode_typed<'a>(&self, name: &str, args: &[(&str, FieldValue<'a>)]) -> Result<Vec<u8>, ParseError> {
+        let spec = self.by_command_name.get(name)
+            .ok_or_else(|| ParseError::UnknownCommand(name.to_string()))?;
+        let provided: HashMap<&str, &FieldValue> =
+            args.iter().map(|(k, v)| (*k, v)).collect();
+
+        let mut payload = Vec::new();
+        encode_vlq(&mut payload, i64::from(spec.msgid))?;
+        for (field_name, wrapped) in &spec.fields {
+            let value = provided.get(field_name.as_str())
+                .ok_or_else(|| ParseError::MissingField(field_name.clone()))?;
+            encode_wrapped_field_typed(&mut payload, wrapped, value, &self.enumerations)?;
+        }
+        Ok(payload)
+    }
+}
+
 #[cfg(test)]
 mod from_dictionary_tests {
     use super::*;
