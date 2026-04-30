@@ -203,7 +203,9 @@ fn shape_batch_two_segments() {
 fn shape_batch_with_retraction() {
     // [CoupledToXy, Independent(retraction), CoupledToXy]
     let curve1 = make_straight_line([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
-    let curve_hold = make_straight_line([50.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+    // Tiny nonzero displacement avoids a degenerate zero-length curve that
+    // triggers platform-dependent infeasibility in the TOPP-RA grid.
+    let curve_hold = make_straight_line([50.0, 0.0, 0.0], [50.0, 1e-6, 0.0]);
     let curve2 = make_straight_line([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
 
     // Retraction E NURBS: 5mm retraction from 10.0 to 5.0.

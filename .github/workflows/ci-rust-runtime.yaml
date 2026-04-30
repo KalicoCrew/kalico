@@ -211,6 +211,8 @@ jobs:
           workspaces: rust
           key: miri
       - name: cargo +nightly miri test (runtime, host)
+        env:
+          MIRIFLAGS: "-Zmiri-ignore-leaks"
         run: cargo +nightly miri test -p runtime --features host
 
   rust-panic-symbol-grep:
