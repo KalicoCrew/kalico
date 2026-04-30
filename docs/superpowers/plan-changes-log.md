@@ -309,3 +309,25 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 **Spec status:** ready for plan-writing transition. The math claims have been adversarially verified; the API surfaces have been pinned against the actual codebase state; the structural refactor scope is concretized; tests are categorized; implementation sequence is phased. 7-pre spec is at `docs/superpowers/specs/2026-04-29-step7-pre-cubic-pipeline-prep-design.md`.
 
 **Evidence:** 7 codex-rescue review transcripts; 1 kalico-verifier `verify-logic` round on the math claim; research artifact at `docs/research/linear-us-approximation-cubic-bezier-error.md`; 36 spec-edit operations distributed across the 7 rounds (commit history reflects).
+
+---
+
+## 2026-04-30
+
+**Build-order Step 7-A (Layer 3 trajectory shaping): completed.** New `rust/trajectory/` crate implements the full Layer 3 host-side pipeline: time-reparameterization (fit x(s) + exact polynomial composition with degree-2 s(t)), C¹-constrained Hermite refit (degree 4, ≤5 µm L∞), per-axis smooth-ZV/smooth-MZV convolution via pad-and-trim, sample-based peak-acceleration check (40 kHz finite differences), β-medium outer iteration on TOPP-RA accel limits, E-follows-XY metadata emission, and independent E trapezoidal scheduling. 62 tests (57 unit + 5 integration).
+
+**Design decisions locked during brainstorm:**
+
+1. **New `trajectory` crate wraps `temporal::plan_batch`** (Option A over extending temporal or trait-based callback). Per Codex second opinion: cleanest dependency graph, no temporal API changes needed, best testability.
+2. **β derating is per-segment per axis** (not global). Math-optimal at convergence; `SegmentInput` already supports per-segment `Limits`.
+3. **Fit-then-convolve** (not exact-then-convolve or convolve-then-refit). 5 µm fitting error is below motor resolution (~2.5 µm). Produces fewer pieces (4-30 vs N=25), lower output degree (9 vs 11), fewer MCU coefficients.
+4. **Pad-and-trim for cross-segment convolution** with variable-width padding (not global convolve or edge-special-case). Verified mathematically exact by kalico-verifier. Variable-width handles short segments (duration < T_sm/2) needing multiple neighbors.
+5. **C¹-constrained Hermite fit** (not unconstrained Lagrange). Preserves velocity continuity at TOPP-RA grid joints; convolution raises C¹ to C² or higher.
+6. **Sample-based peak-accel check** (not symbolic differentiation + root-finding). Resolves the polynomial numerical instability with narrow shaper kernels (120-180 Hz): Horner evaluation is stable even with ~1e12 coefficients; symbolic differentiation amplifies them catastrophically. Checks what the motor actually experiences at MCU sample rate.
+7. **Smooth-shaper kernel = `c·(h²-t²)²`** — degree-4 polynomial on `[-h,h]` with normalization `c=15/(16h⁵)`. Ported from bleeding-edge-v2 `init_smoother` conceptual formula.
+
+**Review cycles:** 3 spec review cycles (Codex + Opus cross-check; 22 findings fixed), 1 plan review cycle (8 findings fixed), 1 post-implementation adversarial review (Codex; 6 CRITICALs reported, 2 confirmed by Opus, 4 rejected), 1 adversarial design review (Codex; beta_warning test contract tightened). Mathematical claims verified by kalico-verifier: s(t) degree-2 exactness, composition degree 3×2=6, convolution degree d_x+d_w+1, pad-and-trim correctness, constant-extension for normalized kernels, phase-2 embarrassingly parallel.
+
+**New nurbs primitives landed:** `BezierPiece::differentiate()`, `BezierPiece::real_roots_in_domain()` (companion-matrix QR), `restrict_to_domain()`, `fit_hermite_c1()` (C¹-constrained adaptive merge fitter).
+
+**Evidence:** Spec at `docs/superpowers/specs/2026-04-30-step7a-layer3-trajectory-shaping-design.md` (3 review rounds). Plan at `docs/superpowers/plans/2026-04-30-step7a-layer3-trajectory-shaping.md` (14 tasks). Implementation: 18 commits on `sota-motion` (range `09d794c86..HEAD`). All 62 trajectory tests + full workspace tests pass; clippy clean.
