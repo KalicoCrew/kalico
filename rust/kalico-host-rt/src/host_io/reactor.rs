@@ -1,6 +1,7 @@
 //! Single-thread poll-reactor. Spec §3.7.
 
 use std::collections::VecDeque;
+use std::io::Read;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
@@ -102,6 +103,10 @@ pub enum RetransmitTrigger {
 const PENDING_SUBMISSION_CEILING: usize = 256;
 const MAX_RETRY_COUNT: u32 = 8;
 const KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED: u16 = (-201_i32) as u16;
+const KALICO_ERR_HOST_DISCONNECT: u16 = (-200_i32) as u16;
+
+const MAX_SUBMITS_PER_ITER: usize = 4;
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Reactor {
     pub(crate) fn dispatch_submission(
@@ -269,6 +274,205 @@ impl Reactor {
             self.rtt.backoff();
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inbound frame routing — spec §3.5 / §3.6.
+// ---------------------------------------------------------------------------
+
+impl Reactor {
+    pub(crate) fn handle_inbound_frame(&mut self, packet: Vec<u8>) -> Result<(), TransportError> {
+        if packet.len() < crate::host_io::wire::MESSAGE_MIN {
+            return Ok(());
+        }
+        let wire_seq_nibble = packet[1] & 0x0F;
+        if packet.len() == crate::host_io::wire::MESSAGE_MIN {
+            // 5-byte ack/nak frame.
+            self.handle_ack_nak(wire_seq_nibble)?;
+            return Ok(());
+        }
+        // Real msg-id frame — advance receive_seq if needed.
+        let rseq = self.decode_absolute(wire_seq_nibble);
+        if rseq != self.receive_seq {
+            self.update_receive_seq(rseq)?;
+        }
+        // Parse + dispatch. Decode errors are warn-logged and the frame is dropped
+        // (not propagated as Closed) — dictionary version skew is recoverable.
+        let decoded = match self.parser.decode(&packet) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("decode error on inbound frame: {e:?}; dropping");
+                return Ok(());
+            }
+        };
+        match decoded {
+            crate::host_io::parser::DecodedFrame::Response { name, params } => {
+                if let Some(idx) = self.awaiting_response.find_match(&name) {
+                    let entry = self.awaiting_response.remove(idx);
+                    let _ = entry.completion.send(Ok(params));
+                } else {
+                    let event = crate::host_io::runtime_events::RuntimeEvent::lift(&name, params);
+                    self.dispatch_runtime_event(event);
+                }
+            }
+            crate::host_io::parser::DecodedFrame::Output { name, params } => {
+                let event = crate::host_io::runtime_events::RuntimeEvent::lift(&name, params);
+                self.dispatch_runtime_event(event);
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_runtime_event(&mut self, _event: crate::host_io::runtime_events::RuntimeEvent) {
+        // Phase D wires this to the EventDispatcher; Phase-C stub.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serial polling — spec §3.7.
+// ---------------------------------------------------------------------------
+
+impl Reactor {
+    fn poll_serial(&mut self) {
+        let mut scratch = [0u8; 256];
+        if self.port.set_timeout(READ_TIMEOUT).is_err() {
+            return;
+        }
+        match self.port.read(&mut scratch) {
+            Ok(n) if n > 0 => {
+                self.rx_buf.extend_from_slice(&scratch[..n]);
+                while let Some(packet) = crate::host_io::wire::extract_packet(&mut self.rx_buf) {
+                    if self.handle_inbound_frame(packet).is_err() {
+                        return; // Closed — run loop will see state and exit.
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => {
+                log::warn!("port read error: {e:?}; transitioning to Closed");
+                self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
+                    fault_code:   KALICO_ERR_HOST_DISCONNECT,
+                    fault_detail: 0,
+                    segment_id:   0,
+                    synthesized:  false,
+                });
+                self.state = ReactorState::Closed;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command dispatch — spec §3.7.
+// ---------------------------------------------------------------------------
+
+impl Reactor {
+    fn handle_command(&mut self, cmd: crate::host_io::ReactorCommand) {
+        use crate::host_io::ReactorCommand;
+        match cmd {
+            ReactorCommand::Submit { call_id, cmd, expected_response_name, completion, deadline } => {
+                match self.parser.encode(&cmd) {
+                    Ok(payload) => {
+                        if let Err(e) = self.dispatch_submission(
+                            call_id, payload, expected_response_name, completion.clone(), deadline,
+                        ) {
+                            let _ = completion.send(Err(e));
+                        }
+                    }
+                    Err(e) => {
+                        let _ = completion.send(Err(TransportError::Parse(format!("{e:?}"))));
+                    }
+                }
+            }
+            ReactorCommand::SubmitTyped { call_id, payload, expected_response_name, completion, deadline } => {
+                let _ = self.dispatch_submission(call_id, payload, expected_response_name, completion, deadline);
+            }
+            ReactorCommand::Abandon(call_id) => {
+                self.awaiting_response.mark_abandoned(call_id);
+            }
+            ReactorCommand::Shutdown => {
+                self.state = ReactorState::Closed;
+            }
+            // Subscribe* variants: Phase-D stubs — reply Closed so callers don't block.
+            ReactorCommand::AttachCreditCounter(_) => {}
+            ReactorCommand::SubscribeFault { reply, .. } => {
+                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            }
+            ReactorCommand::SubscribeTrace { reply, .. } => {
+                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            }
+            ReactorCommand::SubscribeRuntimeEvents { reply, .. } => {
+                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            }
+            ReactorCommand::SubscribeHostEvents { reply, .. } => {
+                let _ = reply.send(Err(crate::transport::SubscribeError::Closed));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Disconnect GC — spec §3.7.
+// ---------------------------------------------------------------------------
+
+impl Reactor {
+    fn flush_all_completions(&mut self) {
+        for entry in self.awaiting_response.drain_all() {
+            let _ = entry.completion.send(Err(TransportError::Closed));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main poll loop — spec §3.7.
+// ---------------------------------------------------------------------------
+
+impl Reactor {
+    pub fn run(&mut self) {
+        loop {
+            // 1. Drain reactor commands (bounded per iteration).
+            for _ in 0..MAX_SUBMITS_PER_ITER {
+                match self.submission_rx.try_recv() {
+                    Ok(cmd) => self.handle_command(cmd),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.state = ReactorState::Closed;
+                        break;
+                    }
+                }
+            }
+
+            // 2. Poll serial port.
+            self.poll_serial();
+
+            // 3. Drain pending submissions (ack in step 2 may have freed window slots).
+            self.drain_pending_submissions();
+
+            // 4. RTO timer step.
+            if let Some(front) = self.unacked_window.front() {
+                let now = Instant::now();
+                if now >= front.sent_at + self.rtt.current_rto() {
+                    let _ = self.write_retransmit(RetransmitTrigger::TimeoutDriven);
+                }
+            }
+
+            // 5. AwaitingResponse GC (layer 2 — per-entry deadline).
+            let now = Instant::now();
+            let evicted = self.awaiting_response.evict_expired(now);
+            for entry in evicted {
+                let _ = entry.completion.send(Err(TransportError::DispatcherTimeout));
+            }
+
+            // 6. Closed-state exit.
+            if self.state == ReactorState::Closed {
+                self.flush_all_completions();
+                break;
+            }
+        }
     }
 }
 
