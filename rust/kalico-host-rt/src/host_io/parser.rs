@@ -550,6 +550,32 @@ pub enum DecodedFrame {
     Output   { name: String, params: MessageParams },
 }
 
+/// Decode a single field from `body` according to `ty`.
+///
+/// Per spec §4.7:
+///   - %u/%hu/%c → U32 via (raw_i64 as u32) (matches Python's & 0xFFFFFFFF mask exactly)
+///   - %i/%hi → I32 (sign-preserved)
+///   - %s/%*s/%.*s → Bytes, length-prefixed (NOT null-terminated)
+pub fn decode_field_plain(body: &[u8], ty: FieldType) -> Result<(MessageValue, usize), ParseError> {
+    match ty {
+        FieldType::U32 | FieldType::U16 | FieldType::Byte => {
+            let (raw_i64, n) = decode_vlq(body)?;
+            // Mask to u32 to match Python PT_uint32.parse's & 0xFFFFFFFF.
+            Ok((MessageValue::U32(raw_i64 as u32), n))
+        }
+        FieldType::I32 | FieldType::I16 => {
+            let (raw_i64, n) = decode_vlq(body)?;
+            Ok((MessageValue::I32(raw_i64 as i32), n))
+        }
+        FieldType::String | FieldType::Buffer | FieldType::ProgmemBuffer => {
+            if body.is_empty() { return Err(ParseError::Truncated); }
+            let len = body[0] as usize;
+            if body.len() < 1 + len { return Err(ParseError::Truncated); }
+            Ok((MessageValue::Bytes(body[1..=len].to_vec()), 1 + len))
+        }
+    }
+}
+
 #[cfg(test)]
 mod from_dictionary_tests {
     use super::*;
