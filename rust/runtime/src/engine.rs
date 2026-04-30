@@ -493,14 +493,13 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Step 6: kinematic transform. Pipeline order: kinematics BEFORE PA/IS.
-        // Temporary: nurbs_eval_3d returns [scalar_x, 0.0, 0.0]; expand to
-        // 4-element positions [x, y, z, e] and motors [a, b, z, e].
+        // nurbs_eval_3d returns [scalar_x, 0.0, 0.0]; expand to 4-element
+        // positions [x, y, z, e] with E=0.0 (Task 6 wires E properly).
         let positions = [xyz_e[0], xyz_e[1], xyz_e[2], 0.0];
-        let motors_3 = match current.kinematics {
-            KinematicTag::CoreXyAndE => corexy_with_e(xyz_e),
-            KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(xyz_e),
+        let motors = match current.kinematics {
+            KinematicTag::CoreXyAndE => corexy_with_e(positions),
+            KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(positions),
         };
-        let motors = [motors_3[0], motors_3[1], 0.0, motors_3[2]];
 
         // Step 7: slot pipeline. Noop ZSTs at Step 5.
         let dt = 1.0 / (crate::clock::TICK_RATE_HZ as f32);
