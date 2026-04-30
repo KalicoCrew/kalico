@@ -8,20 +8,89 @@
 //!
 //! Producer is expected to drain pending trace samples before failing alloc
 //! due to "no reclaimable slot."
+//!
+//! ## Multi-handle retirement (Task 7)
+//!
+//! Each logical segment maps to up to 4 per-axis scalar curve slots (X, Y, Z,
+//! E). The trace sample carries only `x_handle` for diagnostics; the
+//! foreground learns all 4 handles at push time via `RetirementTable::register`
+//! and looks them up on `SEGMENT_END` via `RetirementTable::lookup`.
 
 use core::sync::atomic::Ordering;
 
-use crate::curve_pool::CurvePool;
+use crate::curve_pool::{CurveHandle, CurvePool};
 use crate::engine::RuntimeStatus;
 use crate::error::FaultCode;
 use crate::state::SharedState;
 use crate::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
 
+/// Number of concurrent in-flight segments the retirement table can track.
+/// 16 covers the Q_N maximum of 256 segments with comfortable headroom for
+/// realistic burst depths.
+pub const RETIREMENT_TABLE_N: usize = 16;
+
+/// Foreground-side mapping from `segment_id` → `[CurveHandle; 4]` so the
+/// drain pipeline can retire all per-axis slots on a single `SEGMENT_END`
+/// observation.
+///
+/// The table is a fixed-size circular ring of `(segment_id, handles)` pairs.
+/// `register` writes in FIFO order; `lookup` scans linearly. At steady-state
+/// queue depths (≤ Q_N = 256, realistic burst ≤ 16) a linear scan is O(1)
+/// amortized. Overwrite of the oldest entry is silent — a mis-hit means the
+/// slot stays un-retired until the pool's generation counter catches up on
+/// the next flush (acceptable fault-recovery path, not a correctness hazard
+/// for the steady-state path).
+#[derive(Debug)]
+pub struct RetirementTable {
+    entries: [(u32, [CurveHandle; 4]); RETIREMENT_TABLE_N],
+    head: usize,
+}
+
+impl RetirementTable {
+    /// Construct a zeroed-out retirement table. All entries carry
+    /// `(0, [UNUSED_SENTINEL; 4])` so a fresh lookup on `segment_id=0`
+    /// returns `None` (no valid segment ever carries id=0 in the monotonic
+    /// cursor scheme).
+    pub const fn new() -> Self {
+        Self {
+            entries: [(0, [CurveHandle::UNUSED_SENTINEL; 4]); RETIREMENT_TABLE_N],
+            head: 0,
+        }
+    }
+
+    /// Record the 4 per-axis handles issued for `segment_id`. Must be called
+    /// from the foreground at push time, before the segment enters the SPSC
+    /// queue. Overwrites the oldest entry when the ring is full.
+    pub fn register(&mut self, segment_id: u32, handles: [CurveHandle; 4]) {
+        self.entries[self.head] = (segment_id, handles);
+        self.head = (self.head + 1) % RETIREMENT_TABLE_N;
+    }
+
+    /// Look up the 4 per-axis handles for `segment_id`. Returns `None` if
+    /// the entry has been overwritten or was never registered.
+    pub fn lookup(&self, segment_id: u32) -> Option<[CurveHandle; 4]> {
+        self.entries
+            .iter()
+            .find(|(id, _)| *id == segment_id)
+            .map(|(_, handles)| *handles)
+    }
+}
+
+impl Default for RetirementTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Drain up to `limit` trace samples from `drain_one`; for each
-/// `SEGMENT_END` observed, advance `pool.confirm_retired(handle)` so the
-/// slot's `last_retired_gen` follows the per-slot retirement sequence.
-/// Returns the count drained.
-pub fn drain_and_reclaim<F>(pool: &CurvePool, mut drain_one: F, limit: usize) -> usize
+/// `SEGMENT_END` observed, retire all non-sentinel handles recorded in
+/// `table` for that `segment_id`. Returns the count drained.
+pub fn drain_and_reclaim<F>(
+    pool: &CurvePool,
+    table: &RetirementTable,
+    mut drain_one: F,
+    limit: usize,
+) -> usize
 where
     F: FnMut() -> Option<TraceSample>,
 {
@@ -29,7 +98,13 @@ where
     while drained < limit {
         let Some(sample) = drain_one() else { break };
         if sample.flags & TRACE_FLAG_SEGMENT_END != 0 {
-            pool.confirm_retired(sample.curve_handle);
+            if let Some(handles) = table.lookup(sample.segment_id) {
+                for h in &handles {
+                    if !h.is_unused_sentinel() && *h != CurveHandle::HOLD_SEGMENT_SENTINEL {
+                        pool.confirm_retired(*h);
+                    }
+                }
+            }
         }
         drained += 1;
     }

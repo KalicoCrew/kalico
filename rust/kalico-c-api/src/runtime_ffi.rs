@@ -538,7 +538,17 @@ pub mod exports {
                     break;
                 };
                 if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
-                    pool.confirm_retired(sample.curve_handle);
+                    // Retire all 4 per-axis handles via the retirement table.
+                    if let Some(handles) = fg.retirement_table.lookup(sample.segment_id) {
+                        for h in &handles {
+                            if !h.is_unused_sentinel()
+                                && *h
+                                    != runtime::curve_pool::CurveHandle::HOLD_SEGMENT_SENTINEL
+                            {
+                                pool.confirm_retired(*h);
+                            }
+                        }
+                    }
                     saw_segment_end = true;
                 }
                 if let Some(slot) = out_slice.get_mut(count) {
@@ -801,6 +811,7 @@ pub mod exports {
             let mut saw_segment_end = false;
             let drained = runtime::reclaim::drain_and_reclaim(
                 pool,
+                &fg.retirement_table,
                 || {
                     let s = fg.trace_consumer.dequeue();
                     if let Some(sample) = s {

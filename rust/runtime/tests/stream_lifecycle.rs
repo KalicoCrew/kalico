@@ -58,6 +58,7 @@ fn fg_state_for_test() -> FgState {
         first_priming_segment_t_start: None,
         terminal_segment_id: None,
         flush_start_tick: None,
+        retirement_table: runtime::reclaim::RetirementTable::new(),
     }
 }
 

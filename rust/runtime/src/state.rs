@@ -84,6 +84,10 @@ pub struct FgState {
     pub terminal_segment_id: Option<u32>,
     /// Used by §8.5 flush spin-wait deadline computation.
     pub flush_start_tick: Option<u64>,
+    /// Multi-handle retirement table: maps `segment_id → [CurveHandle; 4]`
+    /// so the trace-drain pipeline can retire all 4 per-axis curve slots on
+    /// a single `SEGMENT_END` observation. Populated at push time.
+    pub retirement_table: crate::reclaim::RetirementTable,
 }
 
 /// ISR-only state. Touched exclusively by the TIM5 ISR.
@@ -280,6 +284,7 @@ impl RuntimeContext {
                 first_priming_segment_t_start: None,
                 terminal_segment_id: None,
                 flush_start_tick: None,
+                retirement_table: crate::reclaim::RetirementTable::new(),
             }));
 
             // Initialize IsrState.
