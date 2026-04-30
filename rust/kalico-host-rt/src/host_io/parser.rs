@@ -307,16 +307,24 @@ impl MsgProtoParser {
 }
 
 pub fn decode_vlq(buf: &[u8]) -> Result<(i64, usize), ParseError> {
-    let mut value: i64 = 0;
-    let mut consumed = 0;
-    for &b in buf.iter().take(5) {
+    // Klipper's signed VLQ encoding (matches klippy/msgproto.py PT_uint32.parse):
+    // The sign is encoded in bits [6:5] of the first byte. If those bits are
+    // both set (0x60 mask == 0x60), the 7-bit value is sign-extended by OR-ing
+    // with -0x20, making the accumulator negative before any continuation bytes
+    // are shifted in.
+    let first = *buf.first().ok_or(ParseError::BadVlq)?;
+    let mut value = i64::from(first & 0x7F);
+    if (first & 0x60) == 0x60 {
+        value |= -0x20_i64; // sign-extend the initial 7-bit chunk
+    }
+    if (first & 0x80) == 0 {
+        return Ok((value, 1));
+    }
+    let mut consumed = 1;
+    for &b in buf[1..].iter().take(4) {
         consumed += 1;
         value = (value << 7) | i64::from(b & 0x7F);
         if (b & 0x80) == 0 {
-            // Sign-extend from 32-bit.
-            if (value & (1 << 31)) != 0 {
-                value -= 1 << 32;
-            }
             return Ok((value, consumed));
         }
     }
@@ -330,27 +338,25 @@ pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
             range: "[i32::MIN, u32::MAX]",
         });
     }
-    let mut v = value;
-    if value < 0 {
-        v += 1 << 32;
-    }
-    let mut bytes: [u8; 5] = [0; 5];
-    let mut idx = 5usize;
-    loop {
-        idx -= 1;
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        {
-            bytes[idx] = (v as u8) & 0x7F;
+    // Mirror klippy/msgproto.py PT_uint32.encode exactly. Each threshold
+    // determines whether an extra 7-bit group is needed. Arithmetic right
+    // shifts on i64 propagate the sign bit, matching Python's behaviour.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        if value >= 0x0C00_0000 || value < -0x0400_0000 {
+            out.push(((value >> 28) as u8 & 0x7F) | 0x80);
         }
-        v >>= 7;
-        if v == 0 || v == -1 { break; }
-        if idx == 0 { break; }
+        if value >= 0x0018_0000 || value < -0x0008_0000 {
+            out.push(((value >> 21) as u8 & 0x7F) | 0x80);
+        }
+        if value >= 0x0000_3000 || value < -0x0000_1000 {
+            out.push(((value >> 14) as u8 & 0x7F) | 0x80);
+        }
+        if value >= 0x60 || value < -0x20 {
+            out.push(((value >> 7) as u8 & 0x7F) | 0x80);
+        }
+        out.push(value as u8 & 0x7F);
     }
-    let last = bytes.len() - 1;
-    for b in &mut bytes[idx..last] {
-        *b |= 0x80;
-    }
-    out.extend_from_slice(&bytes[idx..]);
     Ok(())
 }
 
@@ -948,12 +954,16 @@ mod vlq_tests {
 
     #[test]
     fn round_trips_representative_values() {
+        // Klipper's signed VLQ preserves the original i64 value exactly —
+        // including u32::MAX (4294967295) which is distinct from -1 on the
+        // wire (5 bytes vs 1 byte). The caller truncates to i32 via `as i32`
+        // after decode when the field type requires it (see decode_response).
         for v in [0i64, 1, -1, 100, 100_000, i64::from(i32::MIN), i64::from(u32::MAX)] {
             let mut buf = Vec::new();
             encode_vlq(&mut buf, v).unwrap();
             let (decoded, consumed) = decode_vlq(&buf).unwrap();
             assert_eq!(consumed, buf.len(), "consumed != encoded length for {}", v);
-            assert_eq!(decoded, v as i32 as i64, "round-trip for {} produced {}", v, decoded);
+            assert_eq!(decoded, v, "round-trip for {} produced {}", v, decoded);
         }
     }
 
