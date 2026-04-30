@@ -1050,4 +1050,30 @@ mod decode_tests {
             other => panic!("expected UnknownMsgid(99), got {:?}", other),
         }
     }
+
+    #[test]
+    fn decode_output_recovers_field_names() {
+        let mut d = DataDictionary {
+            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
+            enumerations: IndexMap::new(), config: serde_json::json!({}),
+            version: "v".into(), app: "kalico".into(),
+            build_versions: None, license: None,
+        };
+        d.output.insert("kalico_credit_freed retired_through_segment_id=%u free_slots=%c".into(), 50);
+        let p = MsgProtoParser::from_dictionary(d).unwrap();
+
+        let mut payload = Vec::new();
+        encode_vlq(&mut payload, 42).unwrap();
+        encode_vlq(&mut payload, 11).unwrap();
+        let packet = build_packet(50, &payload);
+
+        match p.decode(&packet).unwrap() {
+            DecodedFrame::Output { name, params } => {
+                assert_eq!(name, "kalico_credit_freed");
+                assert_eq!(params.get_u32("retired_through_segment_id"), 42);
+                assert_eq!(params.get_u32("free_slots"), 11);
+            }
+            other => panic!("expected Output, got {:?}", other),
+        }
+    }
 }
