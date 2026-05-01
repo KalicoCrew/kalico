@@ -1315,6 +1315,29 @@ class MCU:
                         self._serialport or "",
                         int(self._baud or 0),
                     )
+                # Mirror clocksync regression updates into the bridge so
+                # its print-time-to-clock converter doesn't stay on the
+                # t*1e6 fallback.  Captured as a closure so the bridge
+                # wrapper and handle stay alive for the callback.
+                bridge = self._motion_bridge
+                handle = self._bridge_handle
+                if handle is not None:
+
+                    def _bridge_clock_est_cb(
+                        freq, offset, last_clock, b=bridge, h=handle
+                    ):
+                        try:
+                            b.set_clock_est(
+                                h, float(freq), float(offset), int(last_clock)
+                            )
+                        except Exception:
+                            logging.exception(
+                                "motion_bridge: set_clock_est failed"
+                            )
+
+                    self._clocksync.set_clock_est_callback(
+                        _bridge_clock_est_cb
+                    )
             except Exception:
                 logging.exception(
                     "motion_bridge: failed to register MCU '%s'", self._name

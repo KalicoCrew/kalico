@@ -30,6 +30,30 @@ class ClockSync:
         self.clock_avg = self.clock_covariance = 0.0
         self.prediction_variance = 0.0
         self.last_prediction_time = 0.0
+        # Optional callback invoked whenever the regression updates the
+        # (freq, offset, last_clock) estimate.  Used to mirror the clock
+        # estimate into the motion_bridge so it can convert print-time to
+        # MCU clocks without falling back to the t*1e6 stub.
+        self._clock_est_callback = None
+
+    def set_clock_est_callback(self, cb):
+        # cb(freq, offset, last_clock) — invoked from the serial-reader
+        # thread on every regression update.  The callback must be
+        # thread-safe; the motion_bridge wrapper hands the values to a
+        # Mutex-guarded Rust router.
+        self._clock_est_callback = cb
+        # If we already have a regression (post-connect refresh), push
+        # the current value so the consumer doesn't have to wait for the
+        # next clock sample.
+        if cb is not None and self.last_clock:
+            try:
+                cb(
+                    self.clock_est[2],
+                    self.time_avg + TRANSMIT_EXTRA,
+                    self.last_clock,
+                )
+            except Exception:
+                logging.exception("clocksync: initial set_clock_est callback")
 
     def disconnect(self):
         self.reactor.update_timer(self.get_clock_timer, self.reactor.NEVER)
@@ -154,6 +178,16 @@ class ClockSync:
             self.clock_avg,
             new_freq,
         )
+        # Mirror the regression update into the motion_bridge (if any).
+        # We pass the same (freq, offset, last_clock) triple that goes to
+        # the C serial layer so the bridge's print-time-to-clock matches
+        # the MCU's view.
+        cb = self._clock_est_callback
+        if cb is not None:
+            try:
+                cb(new_freq, self.time_avg + TRANSMIT_EXTRA, clock)
+            except Exception:
+                logging.exception("clocksync: set_clock_est callback")
         # logging.debug("regr %.3f: freq=%.3f d=%d(%.3f)",
         #              sent_time, new_freq, clock - exp_clock, pred_stddev)
 
