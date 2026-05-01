@@ -1,6 +1,7 @@
 mod bridge;
 mod classify;
 mod config;
+mod planner;
 mod types;
 
 use pyo3::prelude::*;

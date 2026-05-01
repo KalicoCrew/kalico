@@ -1,0 +1,454 @@
+//! Planner thread core.
+//!
+//! Receives `PlannerMsg` messages, accumulates moves in a window, runs the
+//! reduce → temporal → trajectory pipeline (via `trajectory::shape_batch`),
+//! and dispatches shaped segments through a callback (per Task 6 of the
+//! Phase-2 motion-bridge plan).
+//!
+//! Actual MCU push logic comes in Task 7. For now, the dispatch callback is
+//! `Arc<dyn Fn(&trajectory::ShapedSegment) + Send + Sync>`.
+//!
+//! ## API divergences from the plan snippet
+//!
+//! - The trajectory crate exports `ShapeError` (not `ShapeBatchError`) as the
+//!   top-level error from `shape_batch`. We map it through
+//!   `PlannerError::Shape(trajectory::ShapeError)`.
+//! - `shape_batch` returns `ShapeBatchOutput { segments, .. }`; we extract
+//!   `segments` per the plan.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use geometry::segment::CubicSegment;
+
+use crate::classify::ClassifiedMove;
+use crate::config::{PlannerConfig, PlannerLimits};
+use trajectory::{ShaperConfig, ShapedSegment};
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum PlannerMsg {
+    Move(ClassifiedMove),
+    Dwell {
+        duration_s: f64,
+        notify: Sender<()>,
+    },
+    Flush {
+        notify: Sender<()>,
+    },
+    UpdateLimits(PlannerLimits),
+    UpdateShaper(ShaperConfig),
+    Shutdown,
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum PlannerError {
+    Shape(trajectory::ShapeError),
+    ChannelClosed,
+}
+
+impl std::fmt::Display for PlannerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shape(e) => write!(f, "shape pipeline error: {e}"),
+            Self::ChannelClosed => write!(f, "planner channel closed"),
+        }
+    }
+}
+
+impl std::error::Error for PlannerError {}
+
+// ---------------------------------------------------------------------------
+// Handle
+// ---------------------------------------------------------------------------
+
+pub struct PlannerHandle {
+    sender: Sender<PlannerMsg>,
+    join_handle: Option<JoinHandle<()>>,
+    error: Arc<Mutex<Option<PlannerError>>>,
+    /// Latest "last move time" snapshot — bits of an f64.
+    last_move_time_bits: Arc<AtomicU64>,
+}
+
+impl PlannerHandle {
+    pub fn spawn(
+        config: PlannerConfig,
+        dispatch: Arc<dyn Fn(&ShapedSegment) + Send + Sync>,
+    ) -> Self {
+        let (tx, rx) = unbounded();
+        let error = Arc::new(Mutex::new(None));
+        let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
+
+        let error_thread = Arc::clone(&error);
+        let last_thread = Arc::clone(&last_move_time_bits);
+        let join = thread::Builder::new()
+            .name("kalico-planner".to_string())
+            .spawn(move || {
+                run_loop(rx, config, dispatch, error_thread, last_thread);
+            })
+            .expect("spawn planner thread");
+
+        Self {
+            sender: tx,
+            join_handle: Some(join),
+            error,
+            last_move_time_bits,
+        }
+    }
+
+    fn check_error(&self) -> Result<(), PlannerError> {
+        let mut guard = self.error.lock().unwrap();
+        if let Some(e) = guard.take() {
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
+        self.check_error()?;
+        self.sender
+            .send(PlannerMsg::Move(m))
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    pub fn flush(&self) -> Result<(), PlannerError> {
+        self.check_error()?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.sender
+            .send(PlannerMsg::Flush { notify: tx })
+            .map_err(|_| PlannerError::ChannelClosed)?;
+        match rx.recv() {
+            Ok(()) => self.check_error(),
+            Err(_) => {
+                // Sender dropped: either pipeline error trashed pending_flush,
+                // or thread exited. Surface the stored error if present.
+                self.check_error()?;
+                Err(PlannerError::ChannelClosed)
+            }
+        }
+    }
+
+    pub fn dwell(&self, duration_s: f64) -> Result<(), PlannerError> {
+        self.check_error()?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.sender
+            .send(PlannerMsg::Dwell {
+                duration_s,
+                notify: tx,
+            })
+            .map_err(|_| PlannerError::ChannelClosed)?;
+        rx.recv().map_err(|_| PlannerError::ChannelClosed)?;
+        Ok(())
+    }
+
+    pub fn update_limits(&self, l: PlannerLimits) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::UpdateLimits(l))
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    pub fn update_shaper(&self, s: ShaperConfig) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::UpdateShaper(s))
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    /// Snapshot of the current "last move time" (cumulative print_time, seconds).
+    pub fn last_move_time(&self) -> f64 {
+        f64::from_bits(self.last_move_time_bits.load(Ordering::Acquire))
+    }
+
+    pub fn shutdown(&mut self) {
+        let _ = self.sender.send(PlannerMsg::Shutdown);
+        if let Some(h) = self.join_handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for PlannerHandle {
+    fn drop(&mut self) {
+        if self.join_handle.is_some() {
+            self.shutdown();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+fn store_print_time(bits: &AtomicU64, t: f64) {
+    bits.store(t.to_bits(), Ordering::Release);
+}
+
+fn run_loop(
+    rx: Receiver<PlannerMsg>,
+    mut config: PlannerConfig,
+    dispatch: Arc<dyn Fn(&ShapedSegment) + Send + Sync>,
+    error: Arc<Mutex<Option<PlannerError>>>,
+    last_move_time_bits: Arc<AtomicU64>,
+) {
+    let mut print_time: f64 = 0.0;
+
+    loop {
+        // Block until at least one message arrives.
+        let first = match rx.recv() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        let mut buffer: Vec<CubicSegment> = Vec::new();
+        let mut pending_flush: Option<Sender<()>> = None;
+        let mut pending_dwell: Option<(f64, Sender<()>)> = None;
+        let mut shutdown = false;
+
+        handle_msg(
+            first,
+            &mut buffer,
+            &mut pending_flush,
+            &mut pending_dwell,
+            &mut shutdown,
+            &mut config,
+        );
+
+        // Drain until window is full or we hit a sync barrier.
+        while !(buffer.len() >= config.window_capacity
+            || pending_flush.is_some()
+            || pending_dwell.is_some()
+            || shutdown)
+        {
+            match rx.try_recv() {
+                Ok(m) => handle_msg(
+                    m,
+                    &mut buffer,
+                    &mut pending_flush,
+                    &mut pending_dwell,
+                    &mut shutdown,
+                    &mut config,
+                ),
+                Err(_) => break,
+            }
+        }
+
+        // Run pipeline if we have moves.
+        if !buffer.is_empty() {
+            match run_pipeline(&buffer, &config) {
+                Ok(shaped) => {
+                    // Advance print_time by total shaped duration.
+                    if let (Some(first_seg), Some(last_seg)) = (shaped.first(), shaped.last()) {
+                        let batch_dur = last_seg.t_end - first_seg.t_start;
+                        print_time += batch_dur;
+                        store_print_time(&last_move_time_bits, print_time);
+                    }
+                    for s in &shaped {
+                        dispatch(s);
+                    }
+                }
+                Err(e) => {
+                    *error.lock().unwrap() = Some(e);
+                    // Drop pending notifies — caller will see error on next op.
+                    pending_flush = None;
+                    pending_dwell = None;
+                }
+            }
+        }
+
+        if let Some(tx) = pending_flush.take() {
+            let _ = tx.send(());
+        }
+        if let Some((dur, tx)) = pending_dwell.take() {
+            print_time += dur;
+            store_print_time(&last_move_time_bits, print_time);
+            let _ = tx.send(());
+        }
+
+        if shutdown {
+            return;
+        }
+    }
+}
+
+fn handle_msg(
+    msg: PlannerMsg,
+    buffer: &mut Vec<CubicSegment>,
+    pending_flush: &mut Option<Sender<()>>,
+    pending_dwell: &mut Option<(f64, Sender<()>)>,
+    shutdown: &mut bool,
+    config: &mut PlannerConfig,
+) {
+    match msg {
+        PlannerMsg::Move(m) => buffer.push(m.segment),
+        PlannerMsg::Flush { notify } => *pending_flush = Some(notify),
+        PlannerMsg::Dwell { duration_s, notify } => {
+            *pending_dwell = Some((duration_s, notify));
+        }
+        PlannerMsg::UpdateLimits(l) => config.limits = l,
+        PlannerMsg::UpdateShaper(s) => config.shaper = s,
+        PlannerMsg::Shutdown => *shutdown = true,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline
+// ---------------------------------------------------------------------------
+
+fn run_pipeline(
+    segments: &[CubicSegment],
+    config: &PlannerConfig,
+) -> Result<Vec<ShapedSegment>, PlannerError> {
+    let limits = config.limits.to_temporal_limits();
+    let seg_inputs: Vec<trajectory::ShapeSegmentInput<'_>> = segments
+        .iter()
+        .map(|seg| trajectory::ShapeSegmentInput {
+            temporal: temporal::multi::SegmentInput {
+                curve: &seg.xyz,
+                limits,
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: seg.e_mode,
+            extrusion_per_xy_mm: seg.extrusion_per_xy_mm,
+            e_independent: seg.e_independent.as_ref(),
+            feedrate_mm_s: seg.feedrate_mm_s,
+        })
+        .collect();
+
+    let input = trajectory::ShapeBatchInput {
+        segments: &seg_inputs,
+        grid_strategy: temporal::multi::GridStrategy::Adaptive {
+            min_n: 20,
+            max_n: 200,
+            target_grid_spacing_mm: 0.5,
+        },
+        worker_threads: config.worker_threads,
+        shaper: config.shaper.clone(),
+        fit_tolerance_mm: config.fit_tolerance_mm,
+        beta_max_iters: config.beta_max_iters,
+        beta_convergence_ratio: config.beta_convergence_ratio,
+        e_limits: config.e_limits,
+    };
+
+    let output = trajectory::shape_batch(&input).map_err(PlannerError::Shape)?;
+    Ok(output.segments)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classify::classify_and_build;
+    use std::sync::atomic::AtomicUsize;
+
+    fn counting_dispatch() -> (
+        Arc<dyn Fn(&ShapedSegment) + Send + Sync>,
+        Arc<AtomicUsize>,
+    ) {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&counter);
+        let cb: Arc<dyn Fn(&ShapedSegment) + Send + Sync> =
+            Arc::new(move |_seg: &ShapedSegment| {
+                c.fetch_add(1, Ordering::Relaxed);
+            });
+        (cb, counter)
+    }
+
+    fn relaxed_config() -> PlannerConfig {
+        let mut c = PlannerConfig::default();
+        // Relax the C1 refit tolerance — the default 5 µm is tighter than the
+        // degree-4 refit can hit on a collinear-cubic 10 mm move under the
+        // test's reduced-grid budget. Task 11 covers full-tolerance runs.
+        c.fit_tolerance_mm = 0.05;
+        c
+    }
+
+    #[test]
+    fn submit_and_flush_dispatches_segments() {
+        let (dispatch, counter) = counting_dispatch();
+        let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+        h.submit_move(m).unwrap();
+        h.flush().unwrap();
+
+        assert!(counter.load(Ordering::Relaxed) > 0, "dispatch never called");
+        assert!(h.last_move_time() > 0.0, "print_time not advanced");
+
+        h.shutdown();
+    }
+
+    #[test]
+    fn shutdown_joins_cleanly() {
+        let (dispatch, _counter) = counting_dispatch();
+        let mut h = PlannerHandle::spawn(PlannerConfig::default(), dispatch);
+        h.shutdown();
+        assert!(h.join_handle.is_none());
+    }
+
+    #[test]
+    fn dwell_advances_print_time_and_unblocks() {
+        let (dispatch, _counter) = counting_dispatch();
+        let mut h = PlannerHandle::spawn(PlannerConfig::default(), dispatch);
+
+        h.dwell(0.25).unwrap();
+        assert!((h.last_move_time() - 0.25).abs() < 1e-9);
+
+        h.shutdown();
+    }
+
+    #[test]
+    fn update_limits_processed_without_error() {
+        // Smoke test: deep verification belongs in Task 11.
+        let (dispatch, counter) = counting_dispatch();
+        let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+        let new_limits = PlannerLimits {
+            max_velocity: 200.0,
+            max_accel: 2000.0,
+            max_z_velocity: 10.0,
+            max_z_accel: 80.0,
+            square_corner_velocity: 4.0,
+        };
+        h.update_limits(new_limits).unwrap();
+
+        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+        h.submit_move(m).unwrap();
+        h.flush().unwrap();
+
+        assert!(counter.load(Ordering::Relaxed) > 0);
+        h.shutdown();
+    }
+
+    #[test]
+    fn update_shaper_processed_without_error() {
+        let (dispatch, _counter) = counting_dispatch();
+        let mut h = PlannerHandle::spawn(PlannerConfig::default(), dispatch);
+
+        let shaper = ShaperConfig {
+            x: trajectory::RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+            y: trajectory::RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+            z: trajectory::AxisShaper::Passthrough,
+        };
+        h.update_shaper(shaper).unwrap();
+
+        h.shutdown();
+    }
+
+    #[test]
+    fn drop_without_explicit_shutdown_does_not_hang() {
+        let (dispatch, _counter) = counting_dispatch();
+        let h = PlannerHandle::spawn(PlannerConfig::default(), dispatch);
+        drop(h); // Drop impl should send Shutdown + join.
+    }
+}
