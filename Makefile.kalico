@@ -120,3 +120,34 @@ test-h723-gate-b-item-7:
 	$(PYTHON) tools/test_sim_gate_b.py --only item_7 \
 	    --port $(SERIAL_PORT) \
 	    2>&1 | tee $(LOG_DIR)/gate-b-item-7-$(GIT_SHA)-$(TS).log
+
+# --- Step 7-C-bridge — build the PyO3 motion-bridge module ---
+#
+# Builds the Rust cdylib and copies it to klippy/motion_bridge.so so that
+# klippy can import it as a normal Python extension module.  Python requires
+# the .so extension on all platforms; on macOS the Rust toolchain produces a
+# .dylib which we rename on copy.
+#
+# Usage:
+#   make -f Makefile.kalico motion-bridge
+#   make -f Makefile.kalico clean-motion-bridge
+
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  MOTION_BRIDGE_EXT = dylib
+else
+  MOTION_BRIDGE_EXT = so
+endif
+
+MOTION_BRIDGE_SRC  = rust/target/release/libmotion_bridge.$(MOTION_BRIDGE_EXT)
+MOTION_BRIDGE_DEST = klippy/motion_bridge.so
+
+motion-bridge:
+	cd rust && cargo build -p motion-bridge --release
+	cp $(MOTION_BRIDGE_SRC) $(MOTION_BRIDGE_DEST)
+
+clean-motion-bridge:
+	rm -f $(MOTION_BRIDGE_DEST)
+	cd rust && cargo clean -p motion-bridge
+
+.PHONY: motion-bridge clean-motion-bridge
