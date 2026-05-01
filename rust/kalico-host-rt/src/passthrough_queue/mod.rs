@@ -8,7 +8,7 @@ mod receive_window;
 mod router;
 
 pub use command_queue::CommandQueue;
-pub use entry::{NotifyId, PassthroughEntry};
+pub use entry::{NotifyId, PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
 pub use mcu_state::{CommandQueueId, McuState, PushError};
 pub use notify::{NotifyCallback, NotifyResponse, NotifyTable};
 pub use receive_window::ReceiveWindow;

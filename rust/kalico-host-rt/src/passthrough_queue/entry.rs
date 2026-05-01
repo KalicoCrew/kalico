@@ -1,5 +1,10 @@
 //! Core data types for passthrough queue entries.
 
+/// Sentinel `req_clock` value: entries with this priority are only emitted
+/// when no non-background entries exist across any queue. Mirrors
+/// `BACKGROUND_PRIORITY_CLOCK` in serialqueue.c.
+pub const BACKGROUND_PRIORITY_CLOCK: u64 = u64::MAX;
+
 /// Opaque identifier used to correlate a sent command with its MCU response.
 /// A value of 0 means "no notification requested."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,6 +61,13 @@ impl PassthroughEntry {
 
     pub fn notify_id(&self) -> NotifyId {
         self.notify_id
+    }
+
+    /// Returns `true` when this entry carries the background-priority
+    /// sentinel, meaning it should only be emitted when no non-background
+    /// entries exist.
+    pub fn is_background_priority(&self) -> bool {
+        self.req_clock == BACKGROUND_PRIORITY_CLOCK
     }
 }
 

@@ -1,7 +1,7 @@
 //! Per-command-queue pair of sorted lists: upcoming (gated by `min_clock`)
 //! and ready (ordered by `req_clock`).
 
-use super::entry::PassthroughEntry;
+use super::entry::{PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
 
 #[derive(Debug, Default)]
 pub struct CommandQueue {
@@ -57,6 +57,18 @@ impl CommandQueue {
 
     pub fn is_ready_empty(&self) -> bool {
         self.ready.is_empty()
+    }
+
+    /// Returns `true` if the ready queue has at least one non-background entry.
+    pub fn has_non_background_ready(&self) -> bool {
+        self.ready
+            .first()
+            .map_or(false, |e| e.req_clock() != BACKGROUND_PRIORITY_CLOCK)
+    }
+
+    /// True when there are ready entries but all of them are background.
+    pub fn has_only_background_ready(&self) -> bool {
+        !self.ready.is_empty() && !self.has_non_background_ready()
     }
 }
 
@@ -150,5 +162,32 @@ mod tests {
 
         q.push(entry(0, 10));
         assert_eq!(q.peek_ready_req_clock(), Some(10));
+    }
+
+    #[test]
+    fn background_entries_sort_after_normal() {
+        let mut q = CommandQueue::new();
+        q.push(entry(0, BACKGROUND_PRIORITY_CLOCK));
+        q.push(entry(0, 100));
+        q.push(entry(0, 200));
+
+        // Normal entries come out first, background last.
+        assert_eq!(q.pop_ready().unwrap().req_clock(), 100);
+        assert_eq!(q.pop_ready().unwrap().req_clock(), 200);
+        assert_eq!(q.pop_ready().unwrap().req_clock(), BACKGROUND_PRIORITY_CLOCK);
+    }
+
+    #[test]
+    fn has_non_background_ready_distinguishes() {
+        let mut q = CommandQueue::new();
+        assert!(!q.has_non_background_ready());
+
+        q.push(entry(0, BACKGROUND_PRIORITY_CLOCK));
+        assert!(!q.has_non_background_ready());
+        assert!(q.has_only_background_ready());
+
+        q.push(entry(0, 50));
+        assert!(q.has_non_background_ready());
+        assert!(!q.has_only_background_ready());
     }
 }

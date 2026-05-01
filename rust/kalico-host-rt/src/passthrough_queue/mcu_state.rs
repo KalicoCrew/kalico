@@ -4,7 +4,7 @@
 use indexmap::IndexMap;
 
 use super::command_queue::CommandQueue;
-use super::entry::PassthroughEntry;
+use super::entry::{PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CommandQueueId(u32);
@@ -64,11 +64,24 @@ impl McuState {
     }
 
     /// Pick the queue whose ready-head has the lowest `req_clock` and pop it.
+    ///
+    /// Background-priority entries (`req_clock == BACKGROUND_PRIORITY_CLOCK`)
+    /// are only popped when *no* non-background entries exist across any queue.
     pub fn pop_next(&mut self) -> Option<PassthroughEntry> {
+        // Check whether any queue has a non-background ready entry.
+        let has_non_bg = self.queues.values().any(CommandQueue::has_non_background_ready);
+
         let best_key = self
             .queues
             .iter()
-            .filter_map(|(id, q)| q.peek_ready_req_clock().map(|rc| (*id, rc)))
+            .filter_map(|(id, q)| {
+                let rc = q.peek_ready_req_clock()?;
+                // Skip background entries while non-background exist.
+                if has_non_bg && rc == BACKGROUND_PRIORITY_CLOCK {
+                    return None;
+                }
+                Some((*id, rc))
+            })
             .min_by_key(|&(_, rc)| rc)
             .map(|(id, _)| id);
 
@@ -76,10 +89,15 @@ impl McuState {
     }
 
     /// Peek at the lowest `req_clock` across all queues without popping.
+    ///
+    /// If non-background entries exist, background entries are excluded from
+    /// the minimum. If only background entries remain, returns the sentinel.
     pub fn peek_next_req_clock(&self) -> Option<u64> {
+        let has_non_bg = self.queues.values().any(CommandQueue::has_non_background_ready);
         self.queues
             .values()
             .filter_map(CommandQueue::peek_ready_req_clock)
+            .filter(|&rc| !has_non_bg || rc != BACKGROUND_PRIORITY_CLOCK)
             .min()
     }
 }
@@ -143,5 +161,55 @@ mod tests {
         let mut state = McuState::new();
         let bogus = CommandQueueId(999);
         assert!(state.push(bogus, entry(0, 0)).is_err());
+    }
+
+    #[test]
+    fn background_entries_only_emitted_when_no_non_background_exist() {
+        let mut state = McuState::new();
+        let qa = state.alloc_command_queue();
+        let qb = state.alloc_command_queue();
+
+        // qa has a normal entry, qb has a background entry
+        state.push(qa, entry(0, 200)).unwrap();
+        state.push(qb, entry(0, BACKGROUND_PRIORITY_CLOCK)).unwrap();
+
+        // Normal entry from qa should come first despite qb also having a
+        // ready entry.
+        assert_eq!(state.pop_next().unwrap().req_clock(), 200);
+
+        // Now only the background entry remains — it should be emitted.
+        let bg = state.pop_next().unwrap();
+        assert!(bg.is_background_priority());
+        assert!(state.pop_next().is_none());
+    }
+
+    #[test]
+    fn mixed_queues_normal_preferred_over_background() {
+        let mut state = McuState::new();
+        let qa = state.alloc_command_queue();
+        let qb = state.alloc_command_queue();
+
+        // qa: background, qb: normal
+        state.push(qa, entry(0, BACKGROUND_PRIORITY_CLOCK)).unwrap();
+        state.push(qb, entry(0, 100)).unwrap();
+        state.push(qb, entry(0, 300)).unwrap();
+
+        // Non-background entries first, then background.
+        assert_eq!(state.pop_next().unwrap().req_clock(), 100);
+        assert_eq!(state.pop_next().unwrap().req_clock(), 300);
+        assert_eq!(state.pop_next().unwrap().req_clock(), BACKGROUND_PRIORITY_CLOCK);
+    }
+
+    #[test]
+    fn peek_next_req_clock_ignores_background_while_normal_exist() {
+        let mut state = McuState::new();
+        let qa = state.alloc_command_queue();
+        let qb = state.alloc_command_queue();
+
+        state.push(qa, entry(0, BACKGROUND_PRIORITY_CLOCK)).unwrap();
+        state.push(qb, entry(0, 500)).unwrap();
+
+        // peek should return the non-background value
+        assert_eq!(state.peek_next_req_clock(), Some(500));
     }
 }
