@@ -29,6 +29,7 @@ use crate::credit::CreditCounter;
 use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::passthrough_queue::{CommandQueueId, McuHandle, PassthroughEntry, PassthroughRouter};
 use crate::transport::{MessageParams, SubscribeError, Transport, TransportError};
 use std::sync::mpsc::SyncSender;
 
@@ -99,6 +100,15 @@ pub enum ReactorCommand {
     SubscribeHostEvents {
         sender: SyncSender<HostEvent>,
         reply:  SyncSender<Result<(), SubscribeError>>,
+    },
+    /// Install the passthrough router (bridge startup). Replaces any
+    /// previously installed router.
+    InstallPassthroughRouter(PassthroughRouter),
+    /// Push a raw passthrough entry into the router for a specific MCU.
+    PassthroughSend {
+        mcu:      McuHandle,
+        queue_id: CommandQueueId,
+        entry:    PassthroughEntry,
     },
     Shutdown,
 }

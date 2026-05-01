@@ -98,6 +98,11 @@ impl PassthroughRouter {
         }
     }
 
+    /// Iterate over all claimed MCU handles.
+    pub fn mcu_handles(&self) -> impl Iterator<Item = &McuHandle> {
+        self.mcus.keys()
+    }
+
     /// Register a new MCU and return its handle.
     pub fn claim_mcu(&mut self, label: &str) -> McuHandle {
         let handle = McuHandle(self.next_handle);
