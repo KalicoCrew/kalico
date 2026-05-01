@@ -176,10 +176,8 @@ struct BetaIterResult {
     joining_status: temporal::multi::JoiningStatus,
     /// Total number of beta iterations so far (set by caller).
     _iteration: u8,
-    /// Per-run temporal profiles for global-time construction.
-    run_profiles: Vec<Vec<temporal::TopProfile>>,
-    /// Per-run batch-global time offsets (one per XY-motion segment, flattened).
-    global_offsets: Vec<f64>,
+    /// Per-run batch-global end times (one per XY-motion segment, flattened).
+    global_ends: Vec<f64>,
 }
 
 /// Run Stages 1-4 for one beta iteration.
@@ -202,29 +200,7 @@ fn run_one_iteration(
     let mut run_profiles: Vec<Vec<temporal::TopProfile>> = Vec::new();
     let mut last_joining_status = temporal::multi::JoiningStatus::Converged;
 
-    // Build global time cursor: starts at 0, accounts for E-gap durations
-    // between runs.
-    let mut t_cursor = 0.0_f64;
-    let mut global_offsets: Vec<f64> = Vec::with_capacity(all_xy_indices.len());
-
-    // Pre-sort E gaps by segment_index for efficient lookup.
-    let e_gaps_sorted = &partition.e_gaps;
-
-    for (run_idx, run) in partition.runs.iter().enumerate() {
-        // Account for any E gaps before this run.
-        // E gaps that precede this run: segment_index < run.segment_range.start.
-        // But only those that come AFTER the previous run (or at the start).
-        let prev_run_end = if run_idx > 0 {
-            partition.runs[run_idx - 1].segment_range.end
-        } else {
-            0
-        };
-        for eg in e_gaps_sorted {
-            if eg.segment_index >= prev_run_end && eg.segment_index < run.segment_range.start {
-                t_cursor += eg.duration;
-            }
-        }
-
+    for run in &partition.runs {
         // Build BatchInput for this run with derated limits.
         let run_segments: Vec<temporal::multi::SegmentInput<'_>> = run
             .segment_range
@@ -285,35 +261,33 @@ fn run_one_iteration(
             }
         }
 
-        // Record global time offsets for each segment in this run.
-        for profile in &batch_output.profiles {
-            global_offsets.push(t_cursor);
-            t_cursor += profile.total_time;
-        }
-
         run_profiles.push(batch_output.profiles);
     }
 
-    // Account for trailing E gaps.
-    if let Some(last_run) = partition.runs.last() {
+    // ---- Stage 2: Time-reparameterization + composition + fit ----
+    let mut fitted: Vec<FittedSegment> = Vec::with_capacity(all_xy_indices.len());
+    let mut global_ends: Vec<f64> = Vec::with_capacity(all_xy_indices.len());
+    let mut t_cursor = 0.0_f64;
+    let e_gaps_sorted = &partition.e_gaps;
+
+    for (run_idx, run) in partition.runs.iter().enumerate() {
+        // Account for any E gaps before this run. The XY offsets are advanced
+        // from the same s(t) pieces we emit below, so adjacent XY segments share
+        // exact floating-point endpoints inside one batch.
+        let prev_run_end = if run_idx > 0 {
+            partition.runs[run_idx - 1].segment_range.end
+        } else {
+            0
+        };
         for eg in e_gaps_sorted {
-            if eg.segment_index >= last_run.segment_range.end {
+            if eg.segment_index >= prev_run_end && eg.segment_index < run.segment_range.start {
                 t_cursor += eg.duration;
             }
         }
-    }
 
-    let batch_t_end = t_cursor;
-    let batch_t_start = 0.0;
-
-    // ---- Stage 2: Time-reparameterization + composition + fit ----
-    let mut fitted: Vec<FittedSegment> = Vec::with_capacity(all_xy_indices.len());
-    let mut flat_idx = 0;
-
-    for (run_idx, run) in partition.runs.iter().enumerate() {
         for (local_idx, global_idx) in run.segment_range.clone().enumerate() {
             let profile = &run_profiles[run_idx][local_idx];
-            let t_offset = global_offsets[flat_idx];
+            let t_offset = t_cursor;
 
             let curve = input.segments[global_idx].temporal.curve;
 
@@ -351,12 +325,25 @@ fn run_one_iteration(
             seg_fitted.t_end = s_pieces.t_end;
 
             fitted.push(seg_fitted);
-            flat_idx += 1;
+            t_cursor = s_pieces.t_end;
+            global_ends.push(t_cursor);
         }
     }
 
+    // Account for trailing E gaps.
+    if let Some(last_run) = partition.runs.last() {
+        for eg in e_gaps_sorted {
+            if eg.segment_index >= last_run.segment_range.end {
+                t_cursor += eg.duration;
+            }
+        }
+    }
+
+    let batch_t_end = t_cursor;
+    let batch_t_start = 0.0;
+
     // ---- Build E halos for padding ----
-    let e_halos = build_e_halos(input, partition, &global_offsets, &run_profiles);
+    let e_halos = build_e_halos(partition, &global_ends);
 
     // ---- Stage 3: Padding + convolution per axis ----
     let mut shaped: Vec<[ScalarNurbs<f64>; 3]> = Vec::with_capacity(fitted.len());
@@ -443,8 +430,7 @@ fn run_one_iteration(
         peaks,
         joining_status: last_joining_status,
         _iteration: 0,
-        run_profiles,
-        global_offsets,
+        global_ends,
     })
 }
 
@@ -489,12 +475,7 @@ fn compute_derate(peaks: &[[f64; 3]], machine_a_max: &[[f64; 3]]) -> DerateInfo 
 // E-halo construction
 // ---------------------------------------------------------------------------
 
-fn build_e_halos(
-    _input: &ShapeBatchInput<'_>,
-    partition: &BatchPartition,
-    global_offsets: &[f64],
-    run_profiles: &[Vec<temporal::TopProfile>],
-) -> Vec<EHalo> {
+fn build_e_halos(partition: &BatchPartition, global_ends: &[f64]) -> Vec<EHalo> {
     let mut halos = Vec::new();
 
     // For each E gap, compute its global time range.
@@ -507,13 +488,8 @@ fn build_e_halos(
     for eg in &partition.e_gaps {
         // The E gap's global time start is immediately after the preceding XY
         // segment ends (or at batch start if no preceding XY segment).
-        let t_gap_start = find_gap_start(
-            eg.segment_index,
-            &all_xy_indices,
-            global_offsets,
-            run_profiles,
-            partition,
-        );
+        let t_gap_start =
+            find_gap_start(eg.segment_index, &all_xy_indices, global_ends, partition);
         let t_gap_end = t_gap_start + eg.duration;
 
         halos.push(EHalo {
@@ -530,8 +506,7 @@ fn build_e_halos(
 fn find_gap_start(
     gap_seg_index: usize,
     all_xy_indices: &[usize],
-    global_offsets: &[f64],
-    run_profiles: &[Vec<temporal::TopProfile>],
+    global_ends: &[f64],
     partition: &BatchPartition,
 ) -> f64 {
     // The E gap starts when the preceding XY segment ends.
@@ -542,13 +517,17 @@ fn find_gap_start(
         .filter(|(_, &idx)| idx < gap_seg_index)
         .last();
 
-    if let Some((flat_idx, _)) = preceding_xy {
-        // The preceding XY segment's end time.
-        let offset = global_offsets[flat_idx];
-        // Find this flat_idx's profile to get its duration.
-        let (run_idx, local_idx) = flat_to_run_local(flat_idx, partition);
-        let duration = run_profiles[run_idx][local_idx].total_time;
-        offset + duration
+    if let Some((flat_idx, &preceding_idx)) = preceding_xy {
+        // The preceding XY segment's end time, from the canonical s(t) pieces.
+        // Add any earlier E gaps between that XY segment and this gap so
+        // consecutive E-only segments occupy disjoint time intervals.
+        let mut t = global_ends[flat_idx];
+        for eg in &partition.e_gaps {
+            if eg.segment_index > preceding_idx && eg.segment_index < gap_seg_index {
+                t += eg.duration;
+            }
+        }
+        t
     } else {
         // No preceding XY segment — gap starts at batch start.
         // But there might be preceding E gaps. Sum them.
@@ -562,19 +541,6 @@ fn find_gap_start(
         }
         t
     }
-}
-
-/// Convert a flat index (across all runs) to `(run_index, local_index)`.
-fn flat_to_run_local(flat_idx: usize, partition: &BatchPartition) -> (usize, usize) {
-    let mut remaining = flat_idx;
-    for (run_idx, run) in partition.runs.iter().enumerate() {
-        let run_len = run.segment_range.len();
-        if remaining < run_len {
-            return (run_idx, remaining);
-        }
-        remaining -= run_len;
-    }
-    panic!("flat_idx {flat_idx} out of range");
 }
 
 // ---------------------------------------------------------------------------
@@ -621,8 +587,7 @@ fn assemble_output(
         let t_gap_start = find_gap_start(
             eg.segment_index,
             &all_xy_indices,
-            &result.global_offsets,
-            &result.run_profiles,
+            &result.global_ends,
             partition,
         );
         let t_gap_end = t_gap_start + eg.duration;
