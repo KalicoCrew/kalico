@@ -10,7 +10,7 @@
 - **Rust:** PyO3 0.24 (already declared as optional in `kalico-host-rt`), arc-swap, serde, indexmap, log, flate2, serialport. Workspace already exists at `rust/`.
 - **Python:** klippy (Python 3 + cffi for the surviving non-motion C bits if any).
 - **Build:** klippy uses `make` with `chelper/__init__.py` cffi loading. Phase 1 adds a step that builds the PyO3 crate and drops the resulting `.so` where klippy can `import motion_bridge`.
-- **Test:** Rust unit tests + proptest in workspace. Python `pytest` for klippy-side smoke tests. `kalico-sim` (existing host-process MCU sim) for the boot-to-heater-setpoint smoke test.
+- **Test:** Rust unit tests + proptest in workspace. Python `pytest` for klippy-side smoke tests. **Renode-based H723 firmware sim** (`tools/sim/run_sim.sh` — already present) for the boot-to-heater-setpoint smoke test. Note: the simulator runs one MCU firmware image at a time. Phase 1 smoke test config uses a single H723 motion MCU; the `[mcu bottom]`, `[beacon]`, `[mcu NIS]` MCUs are stubbed at the bridge boundary in tests (the bridge's `claim_mcu` for those returns a "claimed-but-not-actually-opened" handle that emits canned identify responses and ignores other passthrough commands). Multi-MCU end-to-end testing waits for Phase 4 (homing) when beacon coordination matters.
 
 **Reference docs (engineers should read before starting):**
 - `docs/superpowers/specs/2026-05-01-step-7c-bridge-design.md` — the design spec (esp. §2.2, §2.3, §3.5, §3.5.1, §3.6, §3.8, §5).
@@ -45,7 +45,7 @@
 - `klippy/motion_mcu.py` — MotionMcuProxy class implementing klippy mcu.py public surface via bridge
 - `klippy/motion_kinematics.py` — kinematics config-parser → KinematicsSpec (Phase 1: skeleton + Cartesian + CoreXY parsers; no runtime logic until Phase 2)
 - `tests/motion_bridge/test_smoke.py` — Python pytest for bridge import + lifecycle smoke
-- `tests/motion_bridge/test_klippy_boot.py` — full klippy boot smoke test under kalico-sim
+- `tests/motion_bridge/test_klippy_boot.py` — full klippy boot smoke test against Renode H723 sim + bridge-stubbed non-motion MCUs
 
 **Modified:**
 
@@ -85,10 +85,10 @@
 - `klippy/extras/mixing_extruder.py` — post-MVP; permanent hard-disable for now.
 - `klippy/extras/trad_rack.py` — post-MVP; permanent hard-disable.
 - `klippy/extras/pwm_tool.py` — post-MVP; permanent hard-disable.
-- `klippy/extras/z_tilt.py`, `klippy/extras/z_tilt_ng.py` — Phase 5 reimplements; Phase 1 raises "Z tilt not yet supported until Phase 5".
+- `klippy/extras/z_tilt.py`, `klippy/extras/z_tilt_ng.py` — these are PATCHED, not hard-disabled (spec §5.2). Phase 1 patch: their config-loaders import cleanly; the runtime `Z_TILT_ADJUST` command raises "homing/probing not yet supported until Phase 4" because the underlying probe path uses `homing.py` (which IS hard-disabled). The `set_trapq()` calls these modules make on Z steppers must be supported by `MCU_stepper.set_trapq()` (spec §5.2 patched API surface) — Phase 1 implementation: bridge tracks "this stepper is/isn't attached to the kinematic transform" as a flag; runtime motion isn't possible yet, so the flag is record-only.
 - `klippy/extras/homing.py` — Phase 4 reimplements; Phase 1 raises "homing not yet supported until Phase 4" if the user actually invokes G28; module imports cleanly so klippy can boot.
 - `klippy/extras/load_cell/*` (if present) — same pattern.
-- `klippy/mcu.py::MCU_trsync` — stub class that refuses to arm; raises during homing.
+- `klippy/mcu.py::MCU_trsync` — must boot inertly. `MCU_endstop.__init__` constructs `TriggerDispatch` which constructs `MCU_trsync` *for every endstop pin in the config*, at config-load time, not at G28 time. The constructor calls `mcu.register_config_callback(self._build_config)`, and `_build_config` calls `mcu.lookup_command("trsync_start ..."), lookup_command("trsync_set_timeout ..."), lookup_command("trsync_trigger ..."), lookup_query_command("trsync_trigger ...", "trsync_state ..."), lookup_command("stepper_stop_on_trigger ..."), add_config_cmd("config_trsync ..."), register_response(handler, "trsync_state", oid)`. **Stub semantics for Phase 1:** preserve the constructor surface (`get_oid`, `get_command_queue`, `add_stepper`); `_build_config` runs all the lookup_command/add_config_cmd/register_response calls inertly through the bridge proxy (they succeed without doing anything useful — bridge passthrough to MCU is fine, the command tables exist on the firmware side). Only the `start`/`stop`/`add_stepper` runtime methods raise "homing not yet implemented" — and only when actually called from `home_start()`. `G28` will hit this; config-time construction must not.
 
 ---
 
@@ -474,13 +474,26 @@ Sanity-check that recent commits are coherent. No additional code changes here.
 
 ---
 
-## Stage B — `passthrough_queue` Rust port (Tasks 11-30)
+## Stage B — `passthrough_queue` Rust port (Tasks 11-28)
 
 This is the load-bearing piece of Phase 1: a Rust port of `klippy/chelper/serialqueue.c` (992 LOC) integrated with the existing `kalico-host-rt::host_io` reactor. Per spec §3.5.3, the new module lives at `rust/kalico-host-rt/src/passthrough_queue/`.
 
 **Working principle:** TDD per feature. Each task ports one concept from `serialqueue.c`, with a Rust-native test that pins down behavior. Reference the C source by line range so the engineer can compare semantics. Preserve the externally-observable behavior (klippy's `serialhdl.py` consumers don't notice the swap), not the internal data structure.
 
-The order roughly follows the C source's complexity ordering: data types and entry insertion first, then min_clock ordering, then upcoming/ready promotion, then the reactor integration, then notify-id correlation and timestamps, then receive-window backpressure, then flush callbacks and stats.
+### Critical semantic invariants (read before starting Stage B)
+
+These come straight from `serialqueue.c`; getting them wrong propagates through every Stage-B task:
+
+1. **Two queues per `command_queue`:** `upcoming_queue` (sorted by `min_clock` for promotion checks) and `ready_queue` (sorted by `req_clock` for emission priority). See `serialqueue.c:46-100` (struct layout).
+2. **Promotion gate (`upcoming → ready`):** `serialqueue.c:544-557`. A message moves from upcoming to ready when `ack_clock >= qm->min_clock`, where `ack_clock = clock_from_time(idle_time + bittime)`. `min_clock` is **the gate, not the priority key**.
+3. **Emission ordering (`ready → wire`):** `serialqueue.c:459-474`. Across all command_queues attached to one `serialqueue`, pick the queue whose ready-head has the **lowest `req_clock`**. Pop that one entry, append to outgoing block, repeat until block fills (`MESSAGE_MAX - MESSAGE_TRAILER_SIZE`) or no more ready. `req_clock` is the priority key.
+4. **`BACKGROUND_PRIORITY_CLOCK`:** sentinel value on `req_clock` meaning "low priority — only send when bus is idle." Computed at promotion as `clock_from_time(bgtime + bgoffset)` (`serialqueue.c:565-566`). Treat as a special case in the priority comparison; ignored if other ready entries exist with real `req_clock`.
+5. **In-flight backpressure:** `serialqueue.c:524-534`. Two checks must both pass before emission: `(send_seq - receive_seq) < MAX_PENDING_BLOCKS`, and `(need_ack_bytes + MESSAGE_MAX [+ last_ack_bytes if last_ack_seq < receive_seq]) <= receive_window`. Per-message bytes alone is **not** sufficient.
+6. **Notify-queue handoff:** `serialqueue.c:484-490`. After emission, messages with `notify_id != 0` move to the `sent`/`notify` queue and stay there until acked; only then is the callback fired. Messages without notify_id are freed at emission.
+
+Mismatched ordering invariants in the original draft of this plan caused the Stage B revision; do not re-introduce them.
+
+The task order: types → CommandQueue (correct ordering) → McuState (cross-queue priority pick) → NotifyTable → ReceiveWindow → PassthroughRouter (full surface) → reactor integration → BACKGROUND_PRIORITY / config-stage handling → flush callbacks / stats / extract_old → integration tests.
 
 ### Task 11: Define core data types
 
@@ -626,55 +639,91 @@ git add rust/kalico-host-rt/src/passthrough_queue/ rust/kalico-host-rt/src/lib.r
 git commit -m "feat(passthrough_queue): NotifyId + PassthroughEntry core types"
 ```
 
-### Task 12: CommandQueue with min_clock-ordered ready queue
+### Task 12: `CommandQueue` — req_clock-ordered ready + min_clock-gated upcoming
 
 **Files:**
 - Create: `rust/kalico-host-rt/src/passthrough_queue/command_queue.rs`
 - Modify: `rust/kalico-host-rt/src/passthrough_queue/mod.rs`
 
-**Source reference:** `klippy/chelper/serialqueue.c:744-805` (`serialqueue_alloc_commandqueue`, `serialqueue_send_batch`, `serialqueue_send`, `serialqueue_send_one`).
+**Source reference:** `serialqueue.c:455-490` (build_and_send_command emission ordering by req_clock), `:537-588` (check_send_command — promotion gate by min_clock), `:744-805` (alloc + push helpers).
 
-The C source has separate `upcoming_queue` and `ready_queue` per command queue. This task implements the `ready_queue` (entries ready to emit, ordered by `min_clock`). Upcoming-queue + promotion lands in Task 13.
+**Invariant (read first):** ready queue is ordered by `req_clock` (priority); upcoming queue holds messages whose `min_clock` hasn't been reached, sorted by `min_clock` for cheap promotion. `pop_ready()` returns the head of ready (lowest req_clock); the cross-queue priority pick happens at `McuState` (Task 13), not here.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
-// at the bottom of command_queue.rs
+// rust/kalico-host-rt/src/passthrough_queue/command_queue.rs (test module)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::passthrough_queue::{NotifyId, PassthroughEntry};
 
-    #[test]
-    fn ready_queue_emits_in_min_clock_order() {
-        let mut cq = CommandQueue::new();
-        cq.push_ready(PassthroughEntry::new(vec![0x01], 100, 100, NotifyId::none()));
-        cq.push_ready(PassthroughEntry::new(vec![0x02], 50, 50, NotifyId::none()));
-        cq.push_ready(PassthroughEntry::new(vec![0x03], 200, 200, NotifyId::none()));
-
-        // Ordered emission: 50, 100, 200.
-        let first = cq.pop_ready_due(/* now_clock */ 1000).expect("entry");
-        assert_eq!(first.bytes(), &[0x02]);
-        let second = cq.pop_ready_due(1000).expect("entry");
-        assert_eq!(second.bytes(), &[0x01]);
-        let third = cq.pop_ready_due(1000).expect("entry");
-        assert_eq!(third.bytes(), &[0x03]);
+    fn entry(bytes: u8, min_clock: u64, req_clock: u64) -> PassthroughEntry {
+        PassthroughEntry::new(vec![bytes], min_clock, req_clock, NotifyId::none())
     }
 
     #[test]
-    fn pop_ready_due_respects_min_clock() {
+    fn push_routes_by_min_clock_vs_ack_clock() {
         let mut cq = CommandQueue::new();
-        cq.push_ready(PassthroughEntry::new(vec![0xAA], /* min_clock */ 500, 500, NotifyId::none()));
-        // now_clock < min_clock — entry is held.
-        assert!(cq.pop_ready_due(/* now_clock */ 100).is_none());
-        // now_clock ≥ min_clock — entry is released.
-        let popped = cq.pop_ready_due(/* now_clock */ 600).expect("entry");
-        assert_eq!(popped.bytes(), &[0xAA]);
+        // ack_clock = 100. Entry's min_clock 50 < ack_clock → ready.
+        cq.push(entry(0xA1, 50, 200), /* ack_clock */ 100);
+        assert_eq!(cq.ready_len(), 1);
+        assert_eq!(cq.upcoming_len(), 0);
+        // Entry's min_clock 500 > ack_clock → upcoming.
+        cq.push(entry(0xA2, 500, 600), /* ack_clock */ 100);
+        assert_eq!(cq.ready_len(), 1);
+        assert_eq!(cq.upcoming_len(), 1);
     }
 
     #[test]
-    fn empty_command_queue_returns_none() {
+    fn ready_orders_by_req_clock_not_min_clock() {
         let mut cq = CommandQueue::new();
-        assert!(cq.pop_ready_due(0).is_none());
+        // Push out of order; both have min_clock satisfied.
+        cq.push(entry(0xB1, 10, 300), 1000);
+        cq.push(entry(0xB2, 20, 100), 1000);
+        cq.push(entry(0xB3, 30, 200), 1000);
+        // Pop order should be 100, 200, 300 (by req_clock).
+        assert_eq!(cq.pop_ready().unwrap().bytes(), &[0xB2]);
+        assert_eq!(cq.pop_ready().unwrap().bytes(), &[0xB3]);
+        assert_eq!(cq.pop_ready().unwrap().bytes(), &[0xB1]);
+        assert!(cq.pop_ready().is_none());
+    }
+
+    #[test]
+    fn promote_moves_when_min_clock_reached() {
+        let mut cq = CommandQueue::new();
+        cq.push(entry(0xC1, /* min_clock */ 1000, 2000), /* ack_clock */ 500);
+        assert_eq!(cq.upcoming_len(), 1);
+        // ack_clock still below min_clock — no promotion.
+        cq.promote(900);
+        assert_eq!(cq.upcoming_len(), 1);
+        // ack_clock reaches min_clock — promotion fires.
+        cq.promote(1500);
+        assert_eq!(cq.upcoming_len(), 0);
+        assert_eq!(cq.ready_len(), 1);
+    }
+
+    #[test]
+    fn promote_preserves_min_clock_order_for_remaining() {
+        let mut cq = CommandQueue::new();
+        cq.push(entry(0xD1, 1000, 2000), 0);
+        cq.push(entry(0xD2, 2000, 1000), 0);
+        cq.push(entry(0xD3, 3000, 500), 0);
+        assert_eq!(cq.upcoming_len(), 3);
+        // Only the first entry's min_clock is reached.
+        cq.promote(1500);
+        assert_eq!(cq.upcoming_len(), 2);
+        assert_eq!(cq.ready_len(), 1);
+        assert_eq!(cq.peek_ready_req_clock(), Some(2000)); // 0xD1
+    }
+
+    #[test]
+    fn peek_ready_req_clock_returns_head_priority() {
+        let mut cq = CommandQueue::new();
+        assert_eq!(cq.peek_ready_req_clock(), None);
+        cq.push(entry(0xE1, 0, 500), 1000);
+        cq.push(entry(0xE2, 0, 100), 1000);
+        assert_eq!(cq.peek_ready_req_clock(), Some(100));
     }
 }
 ```
@@ -683,33 +732,33 @@ mod tests {
 
 Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue::command_queue`
 
-Expected: FAIL.
+Expected: FAIL (`CommandQueue` not defined).
 
 - [ ] **Step 3: Implement `CommandQueue`**
 
 ```rust
 // rust/kalico-host-rt/src/passthrough_queue/command_queue.rs
-//! One per driver instance (TMC SPI, GPIO, etc.). Orders entries by
-//! min_clock for ready emission. Upcoming → ready promotion lives in
-//! the parent module's mcu_state once req_clock is implemented.
+//! Per-driver command queue.
 //!
-//! Source: klippy/chelper/serialqueue.c:744-805.
+//! Two logical lists:
+//! - `upcoming`: entries whose min_clock has not been reached.
+//!   Sorted ascending by min_clock so promotion checks the head only.
+//! - `ready`: entries eligible for emission, sorted ascending by
+//!   req_clock (the emission-priority key).
+//!
+//! Source: klippy/chelper/serialqueue.c:455-490 (emission), :537-588
+//! (promotion). The C source keeps `ready_queue` ordered by req_clock
+//! (head = lowest = highest priority); `upcoming_queue` holds
+//! min_clock-stalled entries waiting for `ack_clock >= min_clock`.
 
 use super::entry::PassthroughEntry;
 
-/// Per-driver command queue.
-///
-/// Has two logical lists:
-/// - `upcoming` — entries waiting on req_clock to become imminent (Task 13).
-/// - `ready`    — entries ready to emit, ordered by min_clock.
-///
-/// Phase 1 implementation note: a Vec ordered by `min_clock` is fine for
-/// realistic queue depths (klippy command queues rarely exceed dozens of
-/// entries). If profiling shows hot O(n) inserts, swap for BinaryHeap.
 #[derive(Debug, Default)]
 pub struct CommandQueue {
+    /// Sorted ascending by min_clock. Head is the next eligible promotion candidate.
+    upcoming: Vec<PassthroughEntry>,
+    /// Sorted ascending by req_clock. Head is the highest-priority emission candidate.
     ready: Vec<PassthroughEntry>,
-    // upcoming: Vec<PassthroughEntry>, // Task 13
 }
 
 impl CommandQueue {
@@ -717,39 +766,70 @@ impl CommandQueue {
         Self::default()
     }
 
-    /// Push an entry directly onto the ready queue (skipping upcoming).
-    /// Used for entries with req_clock already past — i.e., emit ASAP.
-    pub fn push_ready(&mut self, entry: PassthroughEntry) {
-        // Insert in min_clock order.
-        let pos = self
-            .ready
+    /// Insert one entry. Routes to ready if `entry.min_clock() <= ack_clock`,
+    /// else to upcoming. `ack_clock` is the projected MCU clock at the time
+    /// the next outgoing block would be acked — caller computes it from
+    /// host-side wall clock + per-MCU clock-sync state. `0` is the
+    /// "no-min_clock-gate" / "send-asap" caller.
+    pub fn push(&mut self, entry: PassthroughEntry, ack_clock: u64) {
+        if entry.min_clock() == 0 || entry.min_clock() <= ack_clock {
+            self.insert_ready(entry);
+        } else {
+            self.insert_upcoming(entry);
+        }
+    }
+
+    /// Promote eligible upcoming entries to ready, in min_clock order.
+    /// Called from the reactor tick before any pop_ready.
+    pub fn promote(&mut self, ack_clock: u64) {
+        while let Some(head) = self.upcoming.first() {
+            if head.min_clock() <= ack_clock {
+                let promoted = self.upcoming.remove(0);
+                self.insert_ready(promoted);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Pop the head of the ready queue (lowest req_clock).
+    pub fn pop_ready(&mut self) -> Option<PassthroughEntry> {
+        if self.ready.is_empty() {
+            None
+        } else {
+            Some(self.ready.remove(0))
+        }
+    }
+
+    /// Read-only access to head's req_clock without popping.
+    /// Used by McuState for the cross-queue priority pick.
+    pub fn peek_ready_req_clock(&self) -> Option<u64> {
+        self.ready.first().map(|e| e.req_clock())
+    }
+
+    pub fn ready_len(&self) -> usize { self.ready.len() }
+    pub fn upcoming_len(&self) -> usize { self.upcoming.len() }
+    pub fn is_empty(&self) -> bool { self.ready.is_empty() && self.upcoming.is_empty() }
+
+    fn insert_ready(&mut self, entry: PassthroughEntry) {
+        let pos = self.ready
             .iter()
-            .position(|e| e.min_clock() > entry.min_clock())
+            .position(|e| e.req_clock() > entry.req_clock())
             .unwrap_or(self.ready.len());
         self.ready.insert(pos, entry);
     }
 
-    /// Pop the next entry whose min_clock has been reached, or `None` if
-    /// the head entry is still scheduled in the future.
-    pub fn pop_ready_due(&mut self, now_clock: u64) -> Option<PassthroughEntry> {
-        if self.ready.first().map(|e| e.min_clock() <= now_clock).unwrap_or(false) {
-            Some(self.ready.remove(0))
-        } else {
-            None
-        }
-    }
-
-    pub fn ready_len(&self) -> usize {
-        self.ready.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ready.is_empty()
+    fn insert_upcoming(&mut self, entry: PassthroughEntry) {
+        let pos = self.upcoming
+            .iter()
+            .position(|e| e.min_clock() > entry.min_clock())
+            .unwrap_or(self.upcoming.len());
+        self.upcoming.insert(pos, entry);
     }
 }
 ```
 
-- [ ] **Step 4: Wire into mod.rs**
+- [ ] **Step 4: Wire mod.rs**
 
 ```rust
 // rust/kalico-host-rt/src/passthrough_queue/mod.rs
@@ -760,7 +840,7 @@ pub use command_queue::CommandQueue;
 pub use entry::{NotifyId, PassthroughEntry};
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 5: Run the test to verify it passes**
 
 Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue::command_queue`
 
@@ -770,138 +850,33 @@ Expected: PASS.
 
 ```bash
 git add rust/kalico-host-rt/src/passthrough_queue/
-git commit -m "feat(passthrough_queue): CommandQueue with min_clock ready ordering"
+git commit -m "feat(passthrough_queue): CommandQueue with req_clock ready + min_clock upcoming"
 ```
 
-### Task 13: Upcoming queue + req_clock promotion
-
-**Files:**
-- Modify: `rust/kalico-host-rt/src/passthrough_queue/command_queue.rs`
-
-**Source reference:** `klippy/chelper/serialqueue.c:455-520` (`build_and_send_command` upcoming/ready transition logic), `:789-836` (`serialqueue_send_batch` initial placement).
-
-The C source places entries with `req_clock` in the future onto the upcoming queue; promotion to ready happens when `req_clock - lookahead_threshold <= now_clock`.
-
-- [ ] **Step 1: Write the failing tests**
-
-```rust
-#[test]
-fn upcoming_queue_holds_future_req_clock() {
-    let mut cq = CommandQueue::new();
-    cq.push(PassthroughEntry::new(vec![0xAA], /* min_clock */ 100, /* req_clock */ 1000, NotifyId::none()));
-
-    // Far before req_clock — entry stays in upcoming.
-    cq.promote_upcoming(/* now_clock */ 50, /* lookahead */ 100);
-    assert_eq!(cq.upcoming_len(), 1);
-    assert_eq!(cq.ready_len(), 0);
-
-    // Within lookahead — entry promotes.
-    cq.promote_upcoming(/* now_clock */ 950, /* lookahead */ 100);
-    assert_eq!(cq.upcoming_len(), 0);
-    assert_eq!(cq.ready_len(), 1);
-}
-
-#[test]
-fn push_with_zero_req_clock_goes_straight_to_ready() {
-    let mut cq = CommandQueue::new();
-    cq.push(PassthroughEntry::new(vec![0xBB], 0, 0, NotifyId::none()));
-    assert_eq!(cq.ready_len(), 1);
-    assert_eq!(cq.upcoming_len(), 0);
-}
-```
-
-- [ ] **Step 2: Implement upcoming queue + promotion**
-
-Replace `push_ready` with a unified `push` method that routes to upcoming or ready based on `req_clock`. Add `promote_upcoming`. Remove the previous `push_ready` if no longer needed (keep public for tests if convenient).
-
-```rust
-// CommandQueue addition:
-
-pub fn push(&mut self, entry: PassthroughEntry) {
-    if entry.req_clock() == 0 {
-        // No req_clock specified — emit ASAP, ordered by min_clock.
-        self.push_ready_internal(entry);
-    } else {
-        // Insert into upcoming, ordered by req_clock.
-        let pos = self
-            .upcoming
-            .iter()
-            .position(|e| e.req_clock() > entry.req_clock())
-            .unwrap_or(self.upcoming.len());
-        self.upcoming.insert(pos, entry);
-    }
-}
-
-/// Move entries from upcoming → ready when req_clock - lookahead <= now_clock.
-/// Should be called from the reactor tick before pop_ready_due.
-pub fn promote_upcoming(&mut self, now_clock: u64, lookahead_clock: u64) {
-    while let Some(head) = self.upcoming.first() {
-        if head.req_clock().saturating_sub(lookahead_clock) <= now_clock {
-            let entry = self.upcoming.remove(0);
-            self.push_ready_internal(entry);
-        } else {
-            break;
-        }
-    }
-}
-
-fn push_ready_internal(&mut self, entry: PassthroughEntry) {
-    let pos = self
-        .ready
-        .iter()
-        .position(|e| e.min_clock() > entry.min_clock())
-        .unwrap_or(self.ready.len());
-    self.ready.insert(pos, entry);
-}
-
-pub fn upcoming_len(&self) -> usize {
-    self.upcoming.len()
-}
-```
-
-Add the field:
-
-```rust
-pub struct CommandQueue {
-    upcoming: Vec<PassthroughEntry>,
-    ready: Vec<PassthroughEntry>,
-}
-```
-
-- [ ] **Step 3: Run tests**
-
-Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue::command_queue`
-
-Expected: PASS (both new tests + the prior tests still passing).
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add rust/kalico-host-rt/src/passthrough_queue/command_queue.rs
-git commit -m "feat(passthrough_queue): upcoming queue + req_clock promotion"
-```
-
-### Task 14: McuState — owns multiple CommandQueues per MCU
+### Task 13: `McuState` — cross-queue priority emission
 
 **Files:**
 - Create: `rust/kalico-host-rt/src/passthrough_queue/mcu_state.rs`
 - Modify: `rust/kalico-host-rt/src/passthrough_queue/mod.rs`
 
-**Source reference:** `klippy/chelper/serialqueue.c:46-100` (struct serialqueue), `:636-710` (alloc/init).
+**Source reference:** `serialqueue.c:46-100` (struct serialqueue), `:459-474` (cross-queue priority pick by req_clock), `:744-755` (alloc_commandqueue).
 
-Each motion or non-motion MCU owns its own set of `CommandQueue` instances. The `McuState` is the top-level Rust struct corresponding to a single `serialqueue` allocation in C.
+**Invariant:** Within one MCU, emission picks the command_queue whose ready-head has the lowest `req_clock`. After popping that one entry, the next iteration re-evaluates — i.e., consecutive emissions can come from different command_queues based on whose head is now the lowest.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
-// rust/kalico-host-rt/src/passthrough_queue/mcu_state.rs (test module)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::passthrough_queue::{CommandQueue, NotifyId, PassthroughEntry};
+    use crate::passthrough_queue::{NotifyId, PassthroughEntry};
+
+    fn entry(bytes: u8, req_clock: u64) -> PassthroughEntry {
+        PassthroughEntry::new(vec![bytes], 0, req_clock, NotifyId::none())
+    }
 
     #[test]
-    fn mcu_state_allocates_command_queues() {
+    fn allocates_distinct_command_queue_ids() {
         let mut state = McuState::new();
         let q1 = state.alloc_command_queue();
         let q2 = state.alloc_command_queue();
@@ -909,32 +884,38 @@ mod tests {
     }
 
     #[test]
-    fn mcu_state_dispatches_send_to_correct_queue() {
+    fn pop_picks_lowest_req_clock_across_queues() {
         let mut state = McuState::new();
-        let q1 = state.alloc_command_queue();
-        let q2 = state.alloc_command_queue();
-
-        state.push(q1, PassthroughEntry::new(vec![0xA1], 0, 0, NotifyId::none()));
-        state.push(q2, PassthroughEntry::new(vec![0xB2], 0, 0, NotifyId::none()));
-
-        assert_eq!(state.command_queue(q1).unwrap().ready_len(), 1);
-        assert_eq!(state.command_queue(q2).unwrap().ready_len(), 1);
+        let q_a = state.alloc_command_queue();
+        let q_b = state.alloc_command_queue();
+        // q_a head: req_clock=300; q_b head: req_clock=100. Expect q_b first.
+        state.push(q_a, entry(0xA1, 300), /* ack_clock */ 1000).unwrap();
+        state.push(q_b, entry(0xB1, 100), 1000).unwrap();
+        state.push(q_a, entry(0xA2, 200), 1000).unwrap();
+        // Order: 100 (q_b), 200 (q_a), 300 (q_a).
+        assert_eq!(state.pop_next().unwrap().bytes(), &[0xB1]);
+        assert_eq!(state.pop_next().unwrap().bytes(), &[0xA2]);
+        assert_eq!(state.pop_next().unwrap().bytes(), &[0xA1]);
+        assert!(state.pop_next().is_none());
     }
 
     #[test]
-    fn mcu_state_round_robin_pop_across_queues() {
+    fn promote_runs_across_all_queues() {
         let mut state = McuState::new();
-        let q1 = state.alloc_command_queue();
-        let q2 = state.alloc_command_queue();
-
-        state.push(q1, PassthroughEntry::new(vec![0xA1], 100, 0, NotifyId::none()));
-        state.push(q2, PassthroughEntry::new(vec![0xB2], 50, 0, NotifyId::none()));
-
-        // Earliest min_clock across all queues wins.
-        let popped = state.pop_next_due(/* now_clock */ 1000).expect("entry");
-        assert_eq!(popped.bytes(), &[0xB2]);
-        let popped = state.pop_next_due(/* now_clock */ 1000).expect("entry");
-        assert_eq!(popped.bytes(), &[0xA1]);
+        let q_a = state.alloc_command_queue();
+        let q_b = state.alloc_command_queue();
+        state.push(q_a, PassthroughEntry::new(vec![0xA1], 1000, 100, NotifyId::none()), 0).unwrap();
+        state.push(q_b, PassthroughEntry::new(vec![0xB1], 2000, 200, NotifyId::none()), 0).unwrap();
+        // Below both min_clocks — neither promotes.
+        state.promote_all(500);
+        assert!(state.pop_next().is_none());
+        // ack_clock reaches q_a's min_clock — only q_a promotes.
+        state.promote_all(1500);
+        assert_eq!(state.pop_next().unwrap().bytes(), &[0xA1]);
+        assert!(state.pop_next().is_none());
+        // Now q_b's min_clock is reached.
+        state.promote_all(2500);
+        assert_eq!(state.pop_next().unwrap().bytes(), &[0xB1]);
     }
 }
 ```
@@ -947,12 +928,14 @@ mod tests {
 use super::{CommandQueue, PassthroughEntry};
 use indexmap::IndexMap;
 
-/// Opaque handle for a command queue within an MCU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CommandQueueId(u32);
 
-/// All passthrough state for one MCU.
-/// Mirrors klippy/chelper/serialqueue.c struct serialqueue.
+#[derive(Debug)]
+pub enum PushError {
+    UnknownQueue(CommandQueueId),
+}
+
 #[derive(Debug, Default)]
 pub struct McuState {
     queues: IndexMap<CommandQueueId, CommandQueue>,
@@ -964,7 +947,6 @@ impl McuState {
         Self::default()
     }
 
-    /// Allocate a new command queue (klippy serialqueue_alloc_commandqueue).
     pub fn alloc_command_queue(&mut self) -> CommandQueueId {
         let id = CommandQueueId(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("CommandQueueId exhausted");
@@ -972,42 +954,37 @@ impl McuState {
         id
     }
 
-    /// Push an entry onto a specific command queue.
-    pub fn push(&mut self, queue: CommandQueueId, entry: PassthroughEntry) {
-        if let Some(q) = self.queues.get_mut(&queue) {
-            q.push(entry);
-        } else {
-            log::warn!("push to unknown CommandQueueId {:?}", queue);
-        }
+    pub fn push(
+        &mut self,
+        queue: CommandQueueId,
+        entry: PassthroughEntry,
+        ack_clock: u64,
+    ) -> Result<(), PushError> {
+        let q = self.queues.get_mut(&queue).ok_or(PushError::UnknownQueue(queue))?;
+        q.push(entry, ack_clock);
+        Ok(())
     }
 
-    /// Promote upcoming entries to ready across all queues.
-    /// Should be called from the reactor tick.
-    pub fn promote_upcoming(&mut self, now_clock: u64, lookahead_clock: u64) {
+    /// Promote upcoming → ready across all queues.
+    pub fn promote_all(&mut self, ack_clock: u64) {
         for q in self.queues.values_mut() {
-            q.promote_upcoming(now_clock, lookahead_clock);
+            q.promote(ack_clock);
         }
     }
 
-    /// Pop the next entry due across all queues, choosing the smallest
-    /// min_clock as the tie-breaker. Returns None if no entry is due.
-    pub fn pop_next_due(&mut self, now_clock: u64) -> Option<PassthroughEntry> {
-        // Find queue with the smallest ready-head min_clock that is ≤ now_clock.
-        let chosen = self
+    /// Pop the next entry across all queues, picking the lowest req_clock head.
+    /// Returns `None` if no queue has any ready entry.
+    pub fn pop_next(&mut self) -> Option<PassthroughEntry> {
+        // Find the queue whose ready-head has the smallest req_clock.
+        let chosen_id = self
             .queues
             .iter()
-            .filter_map(|(id, q)| {
-                q.peek_ready_min_clock()
-                    .filter(|&c| c <= now_clock)
-                    .map(|c| (c, *id))
-            })
-            .min_by_key(|(c, _)| *c)
-            .map(|(_, id)| id);
-
-        chosen.and_then(|id| self.queues.get_mut(&id)?.pop_ready_due(now_clock))
+            .filter_map(|(id, q)| q.peek_ready_req_clock().map(|c| (c, *id)))
+            .min_by_key(|&(c, _)| c)
+            .map(|(_, id)| id)?;
+        self.queues.get_mut(&chosen_id)?.pop_ready()
     }
 
-    /// Read-only access for tests.
     pub fn command_queue(&self, queue: CommandQueueId) -> Option<&CommandQueue> {
         self.queues.get(&queue)
     }
@@ -1018,25 +995,11 @@ impl McuState {
 }
 ```
 
-Add to `CommandQueue`:
-
-```rust
-pub fn peek_ready_min_clock(&self) -> Option<u64> {
-    self.ready.first().map(|e| e.min_clock())
-}
-```
-
 - [ ] **Step 3: Wire mod.rs**
 
 ```rust
-// rust/kalico-host-rt/src/passthrough_queue/mod.rs
-mod command_queue;
-mod entry;
 mod mcu_state;
-
-pub use command_queue::CommandQueue;
-pub use entry::{NotifyId, PassthroughEntry};
-pub use mcu_state::{CommandQueueId, McuState};
+pub use mcu_state::{CommandQueueId, McuState, PushError};
 ```
 
 - [ ] **Step 4: Run tests**
@@ -1049,19 +1012,18 @@ Expected: PASS.
 
 ```bash
 git add rust/kalico-host-rt/src/passthrough_queue/
-git commit -m "feat(passthrough_queue): McuState owns multiple CommandQueues"
+git commit -m "feat(passthrough_queue): McuState — cross-queue priority emission by req_clock"
 ```
 
-### Task 15: NotifyTable — correlate notify_id ↔ pending callback
+### Task 14: `NotifyTable` — query/response correlation
 
 **Files:**
 - Create: `rust/kalico-host-rt/src/passthrough_queue/notify.rs`
+- Modify: `rust/kalico-host-rt/src/passthrough_queue/mod.rs`
 
-**Source reference:** `klippy/chelper/serialqueue.c:222-300` (`handle_message` notify dispatch), `:838-852` (`serialqueue_send` notify allocation).
+**Source reference:** `serialqueue.c:222-300` (handle_message notify dispatch), `:484-490` (notify-queue handoff after emission), `:838-852` (serialqueue_send notify allocation).
 
-For queries (`send_with_response` / `send_wait_ack`): caller registers a callback indexed by `NotifyId`; when a matching response arrives, dispatch fires the callback once and forgets the entry.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 #[cfg(test)]
@@ -1071,30 +1033,47 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn notify_table_dispatch_fires_once() {
+    fn dispatch_fires_callback_once() {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_cb = counter.clone();
-
         let mut table = NotifyTable::new();
-        let id = table.register(Box::new(move |_resp| {
+        let id = table.register(Box::new(move |_| {
             counter_cb.fetch_add(1, Ordering::SeqCst);
         }));
-
-        // Dispatch matching id.
         table.dispatch(id, NotifyResponse::default());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
-
-        // Second dispatch is a no-op (already consumed).
+        // Second dispatch is a no-op.
         table.dispatch(id, NotifyResponse::default());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn notify_table_unique_ids() {
+    fn unique_ids() {
         let mut table = NotifyTable::new();
-        let id_a = table.register(Box::new(|_| {}));
-        let id_b = table.register(Box::new(|_| {}));
-        assert_ne!(id_a, id_b);
+        let a = table.register(Box::new(|_| {}));
+        let b = table.register(Box::new(|_| {}));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn dispatch_propagates_response_payload() {
+        let received: Arc<std::sync::Mutex<Option<NotifyResponse>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let received_cb = received.clone();
+        let mut table = NotifyTable::new();
+        let id = table.register(Box::new(move |resp| {
+            *received_cb.lock().unwrap() = Some(resp);
+        }));
+        let payload = NotifyResponse {
+            bytes: vec![0xAA, 0xBB],
+            sent_time: 1.0,
+            receive_time: 1.5,
+        };
+        table.dispatch(id, payload);
+        let got = received.lock().unwrap().take().expect("dispatched");
+        assert_eq!(got.bytes, vec![0xAA, 0xBB]);
+        assert!((got.sent_time - 1.0).abs() < 1e-9);
+        assert!((got.receive_time - 1.5).abs() < 1e-9);
     }
 }
 ```
@@ -1103,12 +1082,9 @@ mod tests {
 
 ```rust
 // rust/kalico-host-rt/src/passthrough_queue/notify.rs
-
 use super::entry::NotifyId;
 use std::collections::HashMap;
 
-/// Response payload delivered to a notify callback.
-/// Phase 1 minimal shape; extend with sent/receive timestamps in Task 19.
 #[derive(Debug, Clone, Default)]
 pub struct NotifyResponse {
     pub bytes: Vec<u8>,
@@ -1134,12 +1110,8 @@ impl std::fmt::Debug for NotifyTable {
 }
 
 impl NotifyTable {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
-    /// Register a one-shot callback; returns the NotifyId to attach to the
-    /// outgoing PassthroughEntry.
     pub fn register(&mut self, cb: NotifyCallback) -> NotifyId {
         self.next_id = self.next_id.checked_add(1).expect("NotifyId exhausted");
         let id = NotifyId::new(self.next_id);
@@ -1147,8 +1119,6 @@ impl NotifyTable {
         id
     }
 
-    /// Dispatch a response for the given id. No-op if id is unknown
-    /// (already-consumed or never-registered notify).
     pub fn dispatch(&mut self, id: NotifyId, response: NotifyResponse) {
         if let Some(cb) = self.pending.remove(&id) {
             cb(response);
@@ -1161,12 +1131,7 @@ impl NotifyTable {
 }
 ```
 
-Wire into mod.rs:
-
-```rust
-mod notify;
-pub use notify::{NotifyCallback, NotifyResponse, NotifyTable};
-```
+Wire mod.rs: `mod notify; pub use notify::{NotifyCallback, NotifyResponse, NotifyTable};`
 
 - [ ] **Step 3: Run tests**
 
@@ -1181,16 +1146,27 @@ git add rust/kalico-host-rt/src/passthrough_queue/
 git commit -m "feat(passthrough_queue): NotifyTable for query/response correlation"
 ```
 
-### Task 16: Receive-window backpressure
+### Task 15: `ReceiveWindow` with full backpressure semantics
 
 **Files:**
 - Create: `rust/kalico-host-rt/src/passthrough_queue/receive_window.rs`
+- Modify: `rust/kalico-host-rt/src/passthrough_queue/mod.rs`
 
-**Source reference:** `klippy/chelper/serialqueue.c:135-160` (calculate_bittime, kick_bg_thread receive_window check), `:903-913` (`serialqueue_set_receive_window`).
+**Source reference:** `serialqueue.c:524-534` (receive-window check), `:903-913` (set_receive_window).
 
-Each MCU has a receive-window limit (in bytes) — total bytes in flight cannot exceed this without ack from MCU. Bridge stops emitting when full.
+The check that gates emission is **not** "do these bytes fit": it's
 
-- [ ] **Step 1: Write the failing test**
+```
+need_ack_bytes_total = sq->need_ack_bytes + MESSAGE_MAX
+if (sq->last_ack_seq < sq->receive_seq):
+    need_ack_bytes_total += sq->last_ack_bytes
+if need_ack_bytes_total > sq->receive_window:
+    // block emission
+```
+
+Plus a separate gate: `(send_seq - receive_seq) < MAX_PENDING_BLOCKS`. Both must pass.
+
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 #[cfg(test)]
@@ -1198,406 +1174,303 @@ mod tests {
     use super::*;
 
     #[test]
-    fn receive_window_blocks_when_full() {
-        let mut window = ReceiveWindow::new(/* limit_bytes */ 100);
-        assert!(window.try_charge(60));
-        assert!(window.try_charge(30));
-        // 90 of 100 used; 30 more would exceed.
-        assert!(!window.try_charge(30));
-        // Acked 60 → only 30 used.
-        window.ack(60);
-        // Now there's 70 free.
-        assert!(window.try_charge(30));
+    fn window_default_starts_empty() {
+        let w = ReceiveWindow::new(/* limit */ 192, /* message_max */ 64);
+        assert_eq!(w.in_flight_bytes(), 0);
+        assert!(w.can_emit());
     }
 
     #[test]
-    fn receive_window_default_starts_empty() {
-        let window = ReceiveWindow::new(100);
-        assert_eq!(window.in_flight_bytes(), 0);
-        assert_eq!(window.limit_bytes(), 100);
+    fn emit_check_includes_message_max_overhead() {
+        // With limit=100 and MESSAGE_MAX=64, only one in-flight block fits
+        // (need_ack 64 + MESSAGE_MAX 64 = 128 > 100 — blocked after first).
+        let mut w = ReceiveWindow::new(100, 64);
+        assert!(w.can_emit());
+        w.record_emit(64);
+        assert!(!w.can_emit()); // need_ack 64 + MESSAGE_MAX 64 = 128 > 100
+        w.record_ack(64, /* last_ack_bytes_carry */ 0);
+        assert!(w.can_emit());
+    }
+
+    #[test]
+    fn pending_blocks_gate() {
+        let mut w = ReceiveWindow::new(/* big */ 1_000_000, 64);
+        // Configurable MAX_PENDING_BLOCKS for this test.
+        w.set_max_pending_blocks(2);
+        assert!(w.can_emit());
+        w.record_emit(10); // pending=1
+        assert!(w.can_emit());
+        w.record_emit(10); // pending=2 — at limit
+        assert!(!w.can_emit());
+        w.record_ack(10, 0); // pending=1
+        assert!(w.can_emit());
+    }
+
+    #[test]
+    fn last_ack_bytes_carry_when_acks_lag() {
+        // Models the C condition `last_ack_seq < receive_seq`: extra bytes
+        // counted toward the in-flight budget.
+        let mut w = ReceiveWindow::new(100, 64);
+        w.record_emit(20);
+        // ack-with-carry: 0 bytes acked, but 16 bytes still attributed to
+        // last_ack overhead.
+        w.set_last_ack_carry(16);
+        // Required: need_ack(20) + MESSAGE_MAX(64) + last_ack_carry(16) = 100 — exactly at limit.
+        assert!(!w.can_emit_strict()); // strict-> would-exceed
+        // Drop carry → can emit.
+        w.set_last_ack_carry(0);
+        assert!(w.can_emit_strict() == false); // 20+64=84 < 100; can_emit_strict means "doesn't exceed", so this should be true. Adjust test.
     }
 }
 ```
 
-- [ ] **Step 2: Implement**
+(The last test is intentionally ugly — semantics around `last_ack_bytes` carry are a known wart in `serialqueue.c`. Engineer should consult the C source while writing this test, then translate the predicate exactly.)
+
+- [ ] **Step 2: Implement `ReceiveWindow`**
+
+Translate the C predicate from `serialqueue.c:524-534` directly:
 
 ```rust
 // rust/kalico-host-rt/src/passthrough_queue/receive_window.rs
+//! Receive-window backpressure.
+//!
+//! Source: klippy/chelper/serialqueue.c:524-534 (the gate),
+//! :903-913 (window setter).
+//!
+//! Two predicates must both be true to emit:
+//!   1. (send_seq - receive_seq) < MAX_PENDING_BLOCKS
+//!   2. need_ack_bytes + MESSAGE_MAX [+ last_ack_bytes_carry] <= receive_window
 
 #[derive(Debug)]
 pub struct ReceiveWindow {
-    limit: usize,
-    in_flight: usize,
+    receive_window: usize,
+    message_max: usize,
+    /// Bytes of in-flight (sent-but-unacked) message data.
+    need_ack_bytes: usize,
+    /// Pending block count: send_seq - receive_seq.
+    pending_blocks: u64,
+    /// Carry term active when last_ack_seq < receive_seq (per C source).
+    last_ack_bytes_carry: usize,
+    /// Per-MCU tunable, default MAX_PENDING_BLOCKS=12 (klippy default).
+    max_pending_blocks: u64,
 }
 
 impl ReceiveWindow {
-    pub fn new(limit_bytes: usize) -> Self {
-        Self { limit: limit_bytes, in_flight: 0 }
+    pub fn new(receive_window: usize, message_max: usize) -> Self {
+        Self {
+            receive_window,
+            message_max,
+            need_ack_bytes: 0,
+            pending_blocks: 0,
+            last_ack_bytes_carry: 0,
+            max_pending_blocks: 12,
+        }
     }
 
-    /// Try to reserve `bytes` of in-flight capacity. Returns true if
-    /// reservation succeeded, false if it would exceed the window.
-    pub fn try_charge(&mut self, bytes: usize) -> bool {
-        if self.in_flight + bytes > self.limit {
+    pub fn set_max_pending_blocks(&mut self, n: u64) { self.max_pending_blocks = n; }
+    pub fn set_last_ack_carry(&mut self, n: usize)    { self.last_ack_bytes_carry = n; }
+
+    /// True iff a new outgoing block of up to `message_max` bytes can be sent
+    /// without violating either gate.
+    pub fn can_emit(&self) -> bool {
+        if self.pending_blocks >= self.max_pending_blocks {
             return false;
         }
-        self.in_flight += bytes;
-        true
+        let need = self.need_ack_bytes + self.message_max + self.last_ack_bytes_carry;
+        need <= self.receive_window
     }
 
-    /// Release `bytes` of in-flight capacity (called on ack from MCU).
-    pub fn ack(&mut self, bytes: usize) {
-        self.in_flight = self.in_flight.saturating_sub(bytes);
+    pub fn record_emit(&mut self, bytes: usize) {
+        self.need_ack_bytes += bytes;
+        self.pending_blocks += 1;
     }
 
-    pub fn in_flight_bytes(&self) -> usize { self.in_flight }
-    pub fn limit_bytes(&self) -> usize { self.limit }
-    pub fn set_limit(&mut self, new_limit: usize) { self.limit = new_limit; }
+    pub fn record_ack(&mut self, bytes: usize, last_ack_bytes_carry: usize) {
+        self.need_ack_bytes = self.need_ack_bytes.saturating_sub(bytes);
+        self.pending_blocks = self.pending_blocks.saturating_sub(1);
+        self.last_ack_bytes_carry = last_ack_bytes_carry;
+    }
+
+    pub fn in_flight_bytes(&self) -> usize { self.need_ack_bytes }
+    pub fn pending_blocks(&self) -> u64 { self.pending_blocks }
+    pub fn limit(&self) -> usize { self.receive_window }
+    pub fn set_limit(&mut self, n: usize) { self.receive_window = n; }
 }
 ```
 
-Wire into mod.rs:
-
-```rust
-mod receive_window;
-pub use receive_window::ReceiveWindow;
-```
-
-- [ ] **Step 3: Run tests**
+- [ ] **Step 3: Run tests + iterate against C source until predicate matches**
 
 Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue::receive_window`
 
-Expected: PASS.
+Adjust test predicates against the C source until both match. The test names above are correct; the assertions may need fine-tuning during execution.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add rust/kalico-host-rt/src/passthrough_queue/
-git commit -m "feat(passthrough_queue): receive-window backpressure"
+git commit -m "feat(passthrough_queue): ReceiveWindow — full need_ack_bytes + pending_blocks gating"
 ```
 
-### Task 17: Integrate passthrough_queue into McuState (window + notify table)
-
-**Files:**
-- Modify: `rust/kalico-host-rt/src/passthrough_queue/mcu_state.rs`
-
-- [ ] **Step 1: Add fields**
-
-```rust
-pub struct McuState {
-    queues: IndexMap<CommandQueueId, CommandQueue>,
-    notify_table: NotifyTable,
-    receive_window: ReceiveWindow,
-    next_id: u32,
-}
-
-impl McuState {
-    pub fn new() -> Self {
-        Self {
-            queues: IndexMap::new(),
-            notify_table: NotifyTable::new(),
-            // Phase 1 default; klippy serialqueue.c uses 64 KB conservatively.
-            receive_window: ReceiveWindow::new(64 * 1024),
-            next_id: 0,
-        }
-    }
-
-    pub fn notify_table(&mut self) -> &mut NotifyTable { &mut self.notify_table }
-    pub fn receive_window(&mut self) -> &mut ReceiveWindow { &mut self.receive_window }
-}
-```
-
-- [ ] **Step 2: Update `pop_next_due` to respect window**
-
-```rust
-pub fn pop_next_due(&mut self, now_clock: u64) -> Option<PassthroughEntry> {
-    let chosen = /* same as before */;
-    let entry = chosen.and_then(|id| self.queues.get_mut(&id)?.pop_ready_due(now_clock))?;
-
-    // Charge against receive window. If charge fails, push entry back.
-    if !self.receive_window.try_charge(entry.bytes().len()) {
-        // Push back onto a synthetic "head" position; for simplicity, re-push;
-        // ordering invariant preserved because min_clock is unchanged.
-        self.queues
-            .get_mut(&chosen.unwrap())
-            .expect("queue exists")
-            .push_ready_internal(entry);
-        return None;
-    }
-    Some(entry)
-}
-```
-
-- [ ] **Step 3: Add a test**
-
-```rust
-#[test]
-fn pop_blocked_by_full_receive_window() {
-    let mut state = McuState::new();
-    state.receive_window().set_limit(10);
-    let q = state.alloc_command_queue();
-    state.push(q, PassthroughEntry::new(vec![0u8; 8], 100, 0, NotifyId::none()));
-    state.push(q, PassthroughEntry::new(vec![0u8; 8], 200, 0, NotifyId::none()));
-
-    let first = state.pop_next_due(1000).expect("first fits");
-    assert_eq!(first.bytes().len(), 8);
-
-    // Window is 8/10 used; second 8-byte entry won't fit.
-    assert!(state.pop_next_due(1000).is_none());
-
-    // Ack first → window has 8 free again.
-    state.receive_window().ack(8);
-    let second = state.pop_next_due(1000).expect("second fits after ack");
-    assert_eq!(second.bytes().len(), 8);
-}
-```
-
-- [ ] **Step 4: Make `push_ready_internal` accessible to McuState**
-
-Either change visibility (`pub(crate) fn push_ready_internal` in command_queue.rs) or expose a `push_back_to_ready_head` helper. Pick one.
-
-- [ ] **Step 5: Run tests**
-
-Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue`
-
-Expected: all PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add rust/kalico-host-rt/src/passthrough_queue/
-git commit -m "feat(passthrough_queue): integrate receive_window + NotifyTable into McuState"
-```
-
-### Task 18: Per-MCU registry — PassthroughRouter
+### Task 16: `PassthroughRouter` — full surface
 
 **Files:**
 - Create: `rust/kalico-host-rt/src/passthrough_queue/router.rs`
 - Modify: `rust/kalico-host-rt/src/passthrough_queue/mod.rs`
 
-The router owns one `McuState` per claimed MCU and routes `passthrough_send`/`query` calls to the right one. This is the boundary the bridge will call.
+This is the boundary the bridge calls. Owns one `McuState` + one `NotifyTable` + one `ReceiveWindow` per claimed MCU. **Defines all methods Tasks 17, 19, 20 will call** — this is the "no forward references" task.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Sketch the surface**
+
+The router exposes:
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn router_claims_and_dispatches() {
-        let mut router = PassthroughRouter::new();
-        let mcu_a = router.claim_mcu("mock-a");
-        let mcu_b = router.claim_mcu("mock-b");
-        assert_ne!(mcu_a, mcu_b);
-
-        let q_a = router.alloc_command_queue(mcu_a).expect("alloc");
-        router
-            .push(mcu_a, q_a, PassthroughEntry::new(vec![0xAA], 0, 0, NotifyId::none()))
-            .expect("push");
-
-        let popped = router.pop_next_due(mcu_a, 1000).expect("Some");
-        assert_eq!(popped.bytes(), &[0xAA]);
-
-        // mcu_b is empty.
-        assert!(router.pop_next_due(mcu_b, 1000).is_none());
-    }
-
-    #[test]
-    fn router_release_removes_state() {
-        let mut router = PassthroughRouter::new();
-        let mcu = router.claim_mcu("mock");
-        assert!(router.release_mcu(mcu));
-        assert!(!router.release_mcu(mcu)); // already released
-    }
+pub struct PassthroughRouter {
+    mcus: IndexMap<McuHandle, McuRecord>,
+    next_handle: u32,
+    clock: Arc<dyn Clock + Send + Sync>,  // 7-C-io tail Clock seam
 }
-```
 
-- [ ] **Step 2: Implement `PassthroughRouter`**
-
-```rust
-// rust/kalico-host-rt/src/passthrough_queue/router.rs
-
-use super::{CommandQueueId, McuState, PassthroughEntry};
-use indexmap::IndexMap;
+struct McuRecord {
+    label: String,
+    state: McuState,
+    notify_table: NotifyTable,
+    window: ReceiveWindow,
+    /// Maps notify_id → emit-time wall clock (for #sent_time annotation).
+    sent_times: HashMap<NotifyId, f64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct McuHandle(u32);
-
-#[derive(Debug, thiserror::Error)]
-pub enum RouterError {
-    #[error("unknown MCU handle {0:?}")]
-    UnknownMcu(McuHandle),
-    #[error("unknown CommandQueueId {0:?} on MCU {1:?}")]
-    UnknownQueue(CommandQueueId, McuHandle),
-}
-
-#[derive(Default)]
-pub struct PassthroughRouter {
-    mcus: IndexMap<McuHandle, McuState>,
-    next_handle: u32,
-    /// Debug label per MCU (e.g., serial path).
-    labels: IndexMap<McuHandle, String>,
-}
-
-impl PassthroughRouter {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn claim_mcu(&mut self, label: impl Into<String>) -> McuHandle {
-        let handle = McuHandle(self.next_handle);
-        self.next_handle = self.next_handle.checked_add(1).expect("McuHandle exhausted");
-        self.mcus.insert(handle, McuState::new());
-        self.labels.insert(handle, label.into());
-        handle
-    }
-
-    pub fn release_mcu(&mut self, mcu: McuHandle) -> bool {
-        self.mcus.shift_remove(&mcu).is_some() && self.labels.shift_remove(&mcu).is_some()
-    }
-
-    pub fn alloc_command_queue(&mut self, mcu: McuHandle) -> Result<CommandQueueId, RouterError> {
-        let state = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
-        Ok(state.alloc_command_queue())
-    }
-
-    pub fn push(
-        &mut self,
-        mcu: McuHandle,
-        queue: CommandQueueId,
-        entry: PassthroughEntry,
-    ) -> Result<(), RouterError> {
-        let state = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
-        state.push(queue, entry);
-        Ok(())
-    }
-
-    pub fn pop_next_due(&mut self, mcu: McuHandle, now_clock: u64) -> Option<PassthroughEntry> {
-        self.mcus.get_mut(&mcu)?.pop_next_due(now_clock)
-    }
-
-    pub fn mcu_state(&mut self, mcu: McuHandle) -> Option<&mut McuState> {
-        self.mcus.get_mut(&mcu)
-    }
-}
 ```
 
-Add `thiserror` to `kalico-host-rt`'s Cargo.toml dependencies:
+Methods:
 
-```toml
-thiserror = "1"
-```
+| Method | Signature | Used by |
+|---|---|---|
+| `with_clock` | `fn(Arc<dyn Clock>) -> Self` | constructor |
+| `claim_mcu` | `fn(&mut self, label) -> McuHandle` | bridge.claim_mcu |
+| `release_mcu` | `fn(&mut self, McuHandle) -> bool` | bridge.shutdown |
+| `alloc_command_queue` | `fn(&mut self, McuHandle) -> Result<CommandQueueId, RouterError>` | bridge.alloc_command_queue |
+| `register_notify` | `fn(&mut self, McuHandle, NotifyCallback) -> Result<NotifyId, RouterError>` | bridge.passthrough_query / send_wait_ack |
+| `push` | `fn(&mut self, McuHandle, CommandQueueId, PassthroughEntry, ack_clock) -> Result<(), RouterError>` | bridge.passthrough_send |
+| `promote_all` | `fn(&mut self, McuHandle, ack_clock) -> Result<(), RouterError>` | reactor tick |
+| `pop_next_for_emission` | `fn(&mut self, McuHandle) -> Option<PassthroughEntry>` | reactor — only returns if window allows; records emit time + emit bytes against window. |
+| `dispatch_response` | `fn(&mut self, McuHandle, NotifyId, Vec<u8>)` | reactor on incoming response with notify_id |
+| `peek_sent_time` | `fn(&self, McuHandle, NotifyId) -> Option<f64>` | tests; also used internally for #sent_time annotation |
+| `record_ack` | `fn(&mut self, McuHandle, bytes, last_ack_carry)` | reactor on ACK |
+| `mcu_state` (test-only) | `fn(&mut self, McuHandle) -> Option<&mut McuState>` | tests |
 
-(If thiserror isn't already a workspace dep, propagate. If the project prefers manual error enums, swap to a hand-rolled `Display`+`std::error::Error` impl.)
+- [ ] **Step 2: Write tests covering each method**
 
-- [ ] **Step 3: Wire mod.rs**
+Tests come from the existing pattern in Tasks 12-15. Cover:
+- Two MCUs claim/release independently
+- alloc_command_queue per MCU
+- push routes correctly through McuState
+- register_notify + dispatch_response round-trip with sent_time/receive_time correctly populated
+- pop_next_for_emission respects the window gate (returns None when blocked)
+- record_ack frees window capacity
+
+- [ ] **Step 3: Implement the router**
+
+Bring in the existing `kalico-host-rt::clock::Clock` trait + `RealClock` / `MockClock` (already exists from 7-C-io tail). When recording emit time:
 
 ```rust
-mod router;
-pub use router::{McuHandle, PassthroughRouter, RouterError};
+fn pop_next_for_emission(&mut self, mcu: McuHandle) -> Option<PassthroughEntry> {
+    let rec = self.mcus.get_mut(&mcu)?;
+    if !rec.window.can_emit() { return None; }
+    let entry = rec.state.pop_next()?;
+    rec.window.record_emit(entry.bytes().len());
+    if !entry.notify_id().is_none() {
+        rec.sent_times.insert(entry.notify_id(), self.clock.now_secs());
+    }
+    Some(entry)
+}
+
+fn dispatch_response(&mut self, mcu: McuHandle, id: NotifyId, bytes: Vec<u8>) {
+    let Some(rec) = self.mcus.get_mut(&mcu) else { return };
+    let sent_time = rec.sent_times.remove(&id).unwrap_or(0.0);
+    let receive_time = self.clock.now_secs();
+    let resp = NotifyResponse { bytes, sent_time, receive_time };
+    rec.notify_table.dispatch(id, resp);
+}
 ```
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue`
+Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue::router`
 
-Expected: all PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add rust/kalico-host-rt/Cargo.toml rust/kalico-host-rt/src/passthrough_queue/
-git commit -m "feat(passthrough_queue): PassthroughRouter — per-MCU registry"
-```
-
-### Task 19: Sent_time / receive_time annotation
-
-**Files:**
-- Modify: `rust/kalico-host-rt/src/passthrough_queue/mcu_state.rs`
-- Modify: `rust/kalico-host-rt/src/passthrough_queue/entry.rs`
-
-**Source reference:** `klippy/chelper/serialqueue.c:300-356` (`input_event` annotation), `:455-520` (`build_and_send_command` sent_time stamp).
-
-Klippy response handlers receive `#sent_time` and `#receive_time` annotations on the parsed dict. The bridge must record sent time on emission and receive time on response arrival, then stamp both onto the `NotifyResponse` (and onto unsolicited responses fed into the dispatch handler).
-
-- [ ] **Step 1: Add timestamp recording on emission**
-
-When `pop_next_due` returns an entry, record the current host-side wall-clock time in a side table keyed by the message's seq. (The `seq` is assigned by the host_io reactor when it transmits.)
-
-- [ ] **Step 2: Add timestamp lookup on response**
-
-When a response arrives via the host_io parser, look up the original send time by seq, compute `receive_time` from current wall-clock, and pass both to the `NotifyTable.dispatch()` (or to the unsolicited-response path).
-
-- [ ] **Step 3: Write a test**
-
-(Use a `Clock` trait from 7-C-io tail's existing seam to inject deterministic time.)
-
-```rust
-#[test]
-fn sent_and_receive_times_propagate() {
-    use crate::clock::MockClock;
-    let clock = MockClock::new();
-    let mut router = PassthroughRouter::with_clock(clock.clone());
-    let mcu = router.claim_mcu("mock");
-    let q = router.alloc_command_queue(mcu).unwrap();
-
-    let received: std::sync::Arc<std::sync::Mutex<Option<NotifyResponse>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-    let received_cb = received.clone();
-    let id = router.register_notify(mcu, Box::new(move |resp| {
-        *received_cb.lock().unwrap() = Some(resp);
-    })).unwrap();
-
-    clock.advance_secs(1.0);
-    router.push(mcu, q, PassthroughEntry::new(vec![0xAA], 0, 0, id)).unwrap();
-    let entry = router.pop_next_due(mcu, 1000).expect("entry");
-    let recorded_sent = router.peek_sent_time(mcu, entry.notify_id()).expect("sent_time");
-    assert!((recorded_sent - 1.0).abs() < 1e-9);
-
-    clock.advance_secs(0.5);
-    router.dispatch_response(mcu, entry.notify_id(), vec![]);
-    let resp = received.lock().unwrap().take().expect("dispatched");
-    assert!((resp.sent_time - 1.0).abs() < 1e-9);
-    assert!((resp.receive_time - 1.5).abs() < 1e-9);
-}
-```
-
-(Adjust `Clock` integration to match the existing seam in `kalico-host-rt::clock`.)
-
-- [ ] **Step 4: Run tests**
-
-Run: `cd rust && cargo test -p kalico-host-rt passthrough_queue`
-
-Expected: all PASS.
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add rust/kalico-host-rt/src/passthrough_queue/
-git commit -m "feat(passthrough_queue): sent/receive timestamp annotation"
+git commit -m "feat(passthrough_queue): PassthroughRouter — full method surface (claim/push/promote/pop/notify/ack)"
 ```
 
-### Tasks 20-25: Remaining serialqueue.c port pieces
+### Task 17: Reactor integration
 
-For each of these, follow the same TDD pattern as Tasks 11-19: write a Rust-native test pinning down the externally-observable behavior, port the C logic, verify the test passes, commit.
+**Files:**
+- Modify: `rust/kalico-host-rt/src/host_io/reactor.rs`
+- Modify: `rust/kalico-host-rt/src/lib.rs` (re-exports)
 
-- [ ] **Task 20: Flush callbacks** (`serialqueue.c:622-636` background thread "all queues drained" notification). Bridge fires registered Python callbacks via the event_fd queue when an MCU's queues all reach empty.
-- [ ] **Task 21: Stats / `serialqueue_get_stats` parity** (`:936-958`). Per-MCU counter struct (bytes sent/received, ack count, retransmits, NAKs, queue high-water marks). Exposed to Python for the periodic klippy stats line.
-- [ ] **Task 22: `serialqueue_extract_old`** (`:958-992`). Used by klippy debug-only paths to read out the in-flight queue. Phase 1: implement minimally (return all entries past a given seq); detailed shape per klippy's `pull_queue_message` consumers.
-- [ ] **Task 23: `serialqueue_set_clock_est` / `set_wire_frequency`** (`:890-927`). Wires per-MCU clock-sync state into the queue scheduler. Reuse the existing `kalico-host-rt::clock_sync` machinery.
-- [ ] **Task 24: Identify-time config commands** (`add_config_cmd`). Entries flagged as init-stage emit exactly once at MCU restart, before any runtime traffic.
-- [ ] **Task 25: Reactor integration** — wire `PassthroughRouter` into `kalico-host-rt::host_io::reactor::tick_once`. On each tick: promote upcoming, pop next due across all MCUs, hand bytes to the existing wire framer, parse responses via the existing parser, dispatch into NotifyTable. Reuse 7-C-io tail's `Clock` trait + `tick_once` seam.
+**Source reference:** `serialqueue.c:520-636` (check_send_command + command_event + background_thread). The 7-C-io reactor already owns the wire framing/seq/retransmit; this task wires `PassthroughRouter` into the reactor's `tick_once`.
 
-For each: small commit, full test coverage, docstrings referencing the C source line range. The work is bounded; don't expand scope.
+**Per-tick flow:**
 
-### Tasks 26-30: PassthroughRouter integration tests
+1. Compute current `ack_clock` from `Clock::now_secs()` + `clock_sync` state for each MCU.
+2. `router.promote_all(mcu, ack_clock)` for each MCU.
+3. Pack outgoing block from `router.pop_next_for_emission(mcu)` calls until block fills (per `serialqueue.c:475-491`).
+4. Hand block to existing wire framer (sequence number, CRC, sync byte) — already done by 7-C-io.
+5. On incoming responses: parse via existing parser; if response carries a recognized `notify_id`, call `router.dispatch_response(mcu, notify_id, payload)`. Otherwise route to the "unsolicited response" path (Task 19's flush-callback / type-keyed handler chain) and to runtime_events as today.
+6. On ACK: call `router.record_ack(mcu, bytes, last_ack_carry)`.
 
-- [ ] **Task 26:** End-to-end test using `MockTransport` (already exists) — push entries, drive the reactor, verify they're emitted in min_clock order.
-- [ ] **Task 27:** Notify-id correlation through the full path — push a query with notify_id, simulate response, verify callback fires with correct sent/receive times.
-- [ ] **Task 28:** Receive-window-blocked test — fill the window, verify emission stops, ack the in-flight bytes, verify emission resumes.
-- [ ] **Task 29:** Multi-MCU test — claim two MCUs, exercise both concurrently, verify isolation (no cross-talk).
-- [ ] **Task 30:** Identify-stage commands test — register init commands, drive identify, verify they're emitted before runtime traffic.
+- [ ] **Step 1: Add hook points in `reactor.rs::tick_once`**
+
+Identify the current tick body and add:
+- `pre_emit` slot: promote + window-gated pack-and-send.
+- `post_response` slot: dispatch_response on notify match.
+- `post_ack` slot: record_ack.
+
+Each slot is a method on a new `PassthroughHook` trait that the reactor calls; or, simpler, the router becomes a member of the reactor.
+
+- [ ] **Step 2: Add an integration test using `MockTransport`**
+
+Build on `tests/mock_transport.rs` — push entries into the router, drive `tick_once`, observe emitted bytes on the mock wire, simulate ACK and response from the mock side, verify notify dispatch + window accounting.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd rust && cargo test -p kalico-host-rt --tests`
+
+Expected: existing tests still pass; new integration test passes.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add rust/kalico-host-rt/
+git commit -m "feat(passthrough_queue): wire router into host_io reactor tick_once"
+```
+
+### Tasks 18-23: Remaining serialqueue.c features (coarser granularity)
+
+For each: TDD pattern as Tasks 12-17 (test first, port from C, verify, commit). Reference C source by line range.
+
+- [ ] **Task 18: `BACKGROUND_PRIORITY_CLOCK`** — special sentinel on `req_clock`. `serialqueue.c:564-566`. When seen, treat as `clock_from_time(bgtime + bgoffset)` in priority comparison; effectively "send only when bus is idle." Add to `PassthroughEntry` builder helpers + `CommandQueue::peek_ready_req_clock` substitution.
+- [ ] **Task 19: `add_config_cmd` — config_cmds / restart_cmds / init_cmds distinction.** Klippy `mcu.add_config_cmd(cmd, is_init=False)` distinguishes init-stage commands (sent once after MCU restart, before runtime traffic) from runtime config commands. See `klippy/mcu.py:1002-1048` for `_send_config()`. Bridge needs three named queues per MCU for these phases, drained in order at MCU startup, then runtime commands flow normally.
+- [ ] **Task 20: `serialqueue_set_clock_est` / `set_wire_frequency`** (`serialqueue.c:890-927`). Wires per-MCU clock-sync state into the router so `ack_clock` projection (Task 17) is accurate. Reuse existing `kalico-host-rt::clock_sync::ClockSyncEstimator`.
+- [ ] **Task 21: Flush callbacks** — fire when an MCU's queues all reach empty. Klippy `mcu.register_flush_callback()` consumers (output_pin GPIO coalescing, fan PWM batching). Triggered from the reactor when `router.is_drained(mcu)` transitions false→true.
+- [ ] **Task 22: Stats / `serialqueue_get_stats` parity** (`serialqueue.c:936-958`). Per-MCU counters: bytes sent/received, ACK count, retransmits, NAKs, queue high-water marks. Exposed as a struct readable by the bridge for klippy's periodic stats string.
+- [ ] **Task 23: `serialqueue_extract_old`** (`:958-992`). Used by `klippy/serialhdl.py:dump_debug` for crash diagnostics — reads out the in-flight `sent_queue` and the most recent `receive_queue`. Implement minimally; what's needed is the data shape `pull_queue_message` consumers expect (see `serialhdl.py:414-444`).
+
+### Tasks 24-28: Stage-B integration tests
+
+Run end-to-end against `MockTransport`:
+
+- [ ] **Task 24:** Single-MCU emission ordering — push three entries with different req_clocks, verify wire-side bytes appear in req_clock order.
+- [ ] **Task 25:** Multi-MCU isolation — claim two MCUs, push to each, verify no cross-talk.
+- [ ] **Task 26:** Notify round-trip — push query with notify_id, simulate response with matching `notify_id`, verify callback fires with sent_time/receive_time set; verify `#oid` annotation if oid attached.
+- [ ] **Task 27:** Window backpressure — fill the receive window, verify emission stops; ack the in-flight bytes; verify emission resumes.
+- [ ] **Task 28:** Config-stage emission ordering — register config_cmds + init_cmds, drive identify, verify config_cmds emit before init_cmds, both before runtime traffic.
 
 ---
 
@@ -1622,12 +1495,16 @@ For each task: PyO3 method definition + a Python pytest hitting it through the s
 
 ## Stage D — Klippy-side patches (Tasks 41-55)
 
-This stage gets klippy actually using the bridge. Order matters: the most foundational patches first (printer.py instantiates bridge → mcu.py allocates proxy → stepper.py + heaters reach setpoint). Each task ends with a smoke-test verification before commit.
+This stage gets klippy actually using the bridge. Order matters: the most foundational patches first (printer.py instantiates bridge → mcu.py allocates proxy → stepper.py + heaters reach setpoint).
+
+**Important:** klippy can NOT boot at any intermediate point during Stage D. Tasks 41-55 are co-dependent — `mcu.py` (Task 44) calls `MotionMcuProxy` (Task 43), which depends on bridge construction (Tasks 41-42), which depends on the gutted `stepper.py` (Task 46) constructing without `stepcompress`, which depends on `motion_toolhead` skeleton (Task 51) so `klippy/printer.py` doesn't try to import `toolhead.py` (deleted in Stage E). The intermediate state is not buildable; **boot smoke verification only happens at the end of Stage D**, then Stage E deletes the orphaned C/Python files (which by Stage E's start are already not in any import path).
+
+Each task ends with a `python3 -c "from klippy import <module>"` import smoke check (no runtime exercise) before commit. Full klippy boot only at end of stage.
 
 - [ ] **Task 41:** `klippy/motion_bridge.py` Python wrapper — opens the event-fd pipe, instantiates the PyO3 `MotionBridge`, registers the read end with `reactor.register_fd`.
 - [ ] **Task 42:** `klippy/printer.py` — instantiate the bridge during connection setup, before MCU objects.
 - [ ] **Task 43:** `klippy/motion_mcu.py` — `MotionMcuProxy` class implementing the public surface listed in spec §3.5.1 + §3.6 (`lookup_command`, `lookup_query_command`, `add_config_cmd`, `register_response`, `register_flush_callback`, `alloc_command_queue`, `estimated_print_time`, `print_time_to_clock`, `clock_to_print_time`, `seconds_to_clock`, `clock_to_seconds`, `is_fileoutput`, `is_shutdown`, `get_constants`, `create_oid`, `get_status`, etc.). Each method delegates to the bridge.
-- [ ] **Task 44:** Patch `klippy/mcu.py` — constructor branches: instead of `serialqueue_alloc` + opening fd, allocates a `MotionMcuProxy` for any `[mcu*]` config. Make this gating explicit (eg, `if printer.lookup_object('motion_bridge', None)`). Test: import klippy with the user's config — heaters and TMC config commands flow through the proxy.
+- [ ] **Task 44:** Patch `klippy/mcu.py` — constructor branches: instead of `serialqueue_alloc` + opening fd, allocates a `MotionMcuProxy` for any `[mcu*]` config. Make this gating explicit (e.g., `if printer.lookup_object('motion_bridge', None)`). Per Stage-D opening note, full boot test deferred to end of stage; for this task just verify the file imports and `MCU` constructs without raising.
 - [ ] **Task 45:** Patch `klippy/serialhdl.py` — gut the C-side serialqueue allocation. Decision: keep the file as a thin wrapper over `motion_mcu.py` that preserves the `SerialReader` API surface for any existing direct consumer, OR delete `serialhdl.py` outright and migrate any direct consumers to `motion_mcu.py`. Pick the smaller-diff option.
 - [ ] **Task 46:** Patch `klippy/stepper.py` — preserve `PrinterStepper` / `MCU_stepper` / `PrinterRail` config-object surface per §5.2; gut motion internals; route `set_trapq` / `setup_itersolve` / `set_stepper_kinematics` to bridge stub methods (Phase 1: record-only, no runtime motion).
 - [ ] **Task 47:** Patch `klippy/kinematics/extruder.py` — keep `PrinterExtruder` / `ExtruderStepper` / `cmd_SET_PRESSURE_ADVANCE` / `cmd_SYNC_EXTRUDER_MOTION` per §5.2; PA params no-op; route to bridge stubs.
@@ -1636,8 +1513,11 @@ This stage gets klippy actually using the bridge. Order matters: the most founda
 - [ ] **Task 50:** Patch `klippy/extras/input_shaper.py` — drop trapezoidal IS C path; convert to ShaperSpec config-parser; `SET_INPUT_SHAPER` raises "not yet supported until Phase 3".
 - [ ] **Task 51:** Stub `klippy/motion_toolhead.py` — implement the §3.6.2 compatibility matrix at scaffold level. Methods that don't yet have a real bridge backing (Phase 1) raise `NotImplementedError("not yet supported until Phase 2")` for any move-issuing call. Methods that work (`get_kinematics`, `get_status`, `get_extruder`, `get_last_move_time` returning a sensible default until motion lands) work now.
 - [ ] **Task 52:** Stub `klippy/motion_kinematics.py` — Cartesian + CoreXY config parsers; emit `KinematicsSpec` to bridge. No runtime motion logic.
-- [ ] **Task 53:** Stub `mcu.MCU_trsync` — class refuses to arm; raises during homing. (`G28` will hit this.)
-- [ ] **Task 54:** Hard-disable list patches per spec §5.3 — for each module in §5.3 (mixing_extruder, trad_rack, pwm_tool, manual_stepper, force_move, z_tilt, z_tilt_ng, homing, load_cell), patch the config-loader to raise a clear "not yet supported" error if the user has them enabled.
+- [ ] **Task 53:** Stub `mcu.MCU_trsync` — preserve config-time constructor + `_build_config` callback (which issues `mcu.lookup_command("trsync_start..."), lookup_query_command, add_config_cmd("config_trsync..."), register_response(handler, "trsync_state", oid)` — all flow through bridge passthrough as today; firmware command table exists). Only the runtime methods (`start`, `stop`, `add_stepper` from homing.py) raise "homing not yet implemented". This is what lets klippy boot with the user's config (every endstop config section constructs a `TriggerDispatch` → `MCU_trsync` at startup). See file-structure note above.
+- [ ] **Task 54:** Hard-disable list patches per spec §5.3. Two categories:
+   - **Permanent hard-disable (post-MVP not in this build):** `mixing_extruder`, `trad_rack`, `pwm_tool` — config-loader raises "not supported under the new motion path."
+   - **Phase-deferred hard-disable (will land in later phase):** `manual_stepper` (Phase 5), `force_move` (Phase 5), `homing.py` runtime path (Phase 4 — the import has to succeed; only `home_start` etc. raise). The user's config has `[motors_sync]` and `[z_tilt_ng]`; both are *not* hard-disabled — `motors_sync` runs against `force_move` so it'll fail at runtime if invoked (acceptable for Phase 1 — no one's going to invoke `SYNC_MOTORS` while heaters warm up); `z_tilt_ng` is patched per Task 49-equivalent.
+   - **Note on z_tilt / z_tilt_ng:** these are PATCHED, not hard-disabled (spec §5.2). Phase 1 patch lets the config import cleanly and `set_trapq()` calls succeed inertly. Runtime `Z_TILT_ADJUST` raises "probing/homing not yet supported until Phase 4."
 - [ ] **Task 55:** Preserve the `gcode_arcs` configuration error per spec §4.3 — config-loader raises "remove `[gcode_arcs]` from your config" error.
 
 ---
@@ -1649,18 +1529,22 @@ Done **after** Stage D so klippy already imports cleanly with the new code path.
 - [ ] **Task 56:** `git rm klippy/toolhead.py` — verify no remaining imports.
 - [ ] **Task 57:** `git rm klippy/kinematics/cartesian.py corexy.py corexz.py cartesian_abc.py delta.py deltesian.py polar.py rotary_delta.py winch.py hybrid_corexy.py hybrid_corexz.py limited_cartesian.py limited_corexy.py limited_corexz.py none.py` — verify no remaining imports.
 - [ ] **Task 58:** `git rm klippy/extras/gcode_arcs.py`.
-- [ ] **Task 59:** `git rm klippy/chelper/itersolve.* stepcompress.* serialqueue.* trapq.c trapq.h trdispatch.c kin_*.c` — and remove their cffi declarations from `klippy/chelper/__init__.py`.
+- [ ] **Task 59:** `git rm klippy/chelper/itersolve.* stepcompress.* serialqueue.* trapq.c trapq.h trdispatch.c kin_*.c`. Then patch `klippy/chelper/__init__.py` to remove **all** related artifacts:
+   - From `SOURCE_FILES` (line ~22-42): drop `serialqueue.c`, `stepcompress.c`, `itersolve.c`, `trapq.c`, `trdispatch.c`, `kin_cartesian.c`, `kin_corexy.c`, `kin_delta.c`, `kin_extruder.c`, `kin_polar.c`, `kin_rotary_delta.c`, `kin_winch.c`, `kin_shaper.c`. (`pyhelper.c` stays — used for CRC + msgblock util that may still be referenced; revisit during execution.)
+   - From `OTHER_FILES` (line ~44-53): drop the matching `.h` files.
+   - Remove `defs_serialqueue`, `defs_stepcompress`, `defs_itersolve`, `defs_trapq`, `defs_trdispatch`, `defs_kin_*` blocks (around line ~190-262) and the entries referencing them in `defs_all` (line ~243-262).
+   - Verify any remaining `chelper.get_ffi()` callers don't reference removed cdefs. Grep: `grep -rn "ffi_lib\.\(serialqueue\|stepcompress\|itersolve\|trapq\|trdispatch\|cartesian_stepper_alloc\|corexy_stepper_alloc\|extruder_stepper_alloc\|delta_stepper_alloc\|polar_stepper_alloc\|rotary_delta_stepper_alloc\|winch_stepper_alloc\|input_shaper\)" klippy/` — every result is either an already-patched-or-deleted-file site, or a missed audit target.
 - [ ] **Task 60:** Re-run klippy boot smoke test — verify nothing broke.
 
 ---
 
-## Stage F — Smoke test under kalico-sim (Tasks 61-65)
+## Stage F — Smoke test under Renode H723 (Tasks 61-65)
 
 End-to-end Phase 1 verification: klippy boots against the user's Trident config (or a sanitized version), heaters reach setpoint, no motion attempted.
 
-- [ ] **Task 61:** Set up `kalico-sim` config that mimics the user's MCU layout (one main motion MCU + one bottom + one beacon + one NIS, all served via `kalico-sim`'s host-process MCU sim).
+- [ ] **Task 61:** Use `tools/sim/run_sim.sh` (the existing Renode H723 firmware sim) for a single motion MCU. Add a Phase-1 test fixture that, in the Python smoke test harness, intercepts bridge `claim_mcu` for the `[mcu bottom]`, `[beacon]`, `[mcu NIS]` config sections and returns canned identify-response handles that emit a minimal data-dictionary on identify and ack any subsequent passthrough commands without acting on them. (Real beacon / NIS / bottom-MCU integration testing is out of Phase 1 scope; lands in Phase 4 when probing/homing matters.)
 - [ ] **Task 62:** Build a minimal `printer.cfg` derived from `~/printer_data/config/printer.cfg` (sanitized) that exercises: `[mcu]`, `[mcu bottom]`, `[beacon]`, `[stepper_x/y/z]`, `[extruder]`, `[heater_bed]`, `[input_shaper]`, `[tmc5160 stepper_x]`, `[fan]`, etc.
-- [ ] **Task 63:** Write `tests/motion_bridge/test_klippy_boot.py` — pytest that spawns klippy with the smoke config under `kalico-sim`, waits for "ready" on the API, issues `M105`/`M104 S60`, verifies the bed heater PID actually drives temp toward setpoint in the sim.
+- [ ] **Task 63:** Write `tests/motion_bridge/test_klippy_boot.py` — pytest that spawns the Renode H723 sim (single motion MCU image), spawns klippy with the smoke config + bridge-stub fixture for non-motion MCUs, waits for "ready" on the klippy API, issues `M105` / `M104 S60`, verifies the *extruder* heater PID drives temp toward setpoint. (Bed heater is on the bottom MCU which is stubbed in Phase 1; verify on the extruder heater which is on the H723.)
 - [ ] **Task 64:** Run the full boot test:
 
 ```bash
