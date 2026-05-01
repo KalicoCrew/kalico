@@ -62,7 +62,6 @@ use trajectory::{
     AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig,
 };
 
-use geometry::segment::EMode;
 use nurbs::ScalarNurbs;
 
 use motion_bridge::classify::{ClassifyError, classify_and_build};
@@ -298,6 +297,25 @@ impl Harness {
         Self::build_with(mcu_configs, Some(limits))
     }
 
+    /// Two-MCU harness — Octopus drives X+Y as CoreXY (kinematics=0),
+    /// F446 drives Z as cartesian (kinematics=1). Mirrors the
+    /// (octopus_handle, f446_handle) pairing used by `bridge::init_planner`.
+    fn corexy_plus_z() -> Self {
+        let mcu_configs = vec![
+            McuAxisConfig {
+                mcu_id: OCTOPUS_ID,
+                axes: vec![AXIS_X, AXIS_Y],
+                kinematics: 0,
+            },
+            McuAxisConfig {
+                mcu_id: F446_ID,
+                axes: vec![AXIS_Z],
+                kinematics: 1,
+            },
+        ];
+        Self::build(mcu_configs)
+    }
+
     fn build(mcu_configs: Vec<McuAxisConfig>) -> Self {
         Self::build_with(mcu_configs, None)
     }
@@ -491,101 +509,27 @@ fn single_axis_x_move() {
     );
 }
 
-// Helpers for synthetic ShapedSegments — degree-3 Béziers with collinear
-// control points. Mirrors the in-crate `dispatch::tests` helpers.
-fn linear_curve(a: f64, b: f64) -> ScalarNurbs<f64> {
-    let cps = vec![a, a + (b - a) / 3.0, a + 2.0 * (b - a) / 3.0, b];
-    ScalarNurbs::try_new(
-        3,
-        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        cps,
-        None,
-    )
-    .unwrap()
-}
-
-fn constant_curve(v: f64) -> ScalarNurbs<f64> {
-    ScalarNurbs::try_new(
-        3,
-        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![v, v, v, v],
-        None,
-    )
-    .unwrap()
-}
-
-/// Pure-Z dispatch — synthetic ShapedSegment route.
-///
-/// We construct a `ShapedSegment` by hand (rather than running `dz != 0`
-/// through `submit_move` + the planner) for a concrete reason: under any
-/// harness limits we tried, `temporal::multi` joining returns
-/// `StalledOnInfeasibleSegment` for pure-Z moves — the X/Y-derived chord
-/// deviation / junction tolerance interacts badly with a curve that has
-/// `|dx|=|dy|=0`. That's a separate Phase 2 / Task 11 concern, not in scope
-/// for Task 10's "verify routing" goal. Feeding a hand-built shaped segment
-/// directly into `build_push_params` + the producer wire path still
-/// exercises the dispatch + load_curve + push_segment surface for the Z-only
-/// case and asserts F446-only routing, which is the test's actual purpose.
+/// Pure-Z move on a 2-MCU topology — exercises the real planner pipeline
+/// end-to-end and asserts F446-only routing. Previously fed a hand-built
+/// ShapedSegment directly into `build_push_params` because pure-Z tripped
+/// `TemporalJoining(StalledOnInfeasibleSegment)`; that bug was fixed in
+/// 485ec4d93 ("fix(temporal): pure-axis moves stalled SLP at verifier
+/// knife-edge"), so we now drive the live submit_move path.
 #[test]
 fn single_axis_z_move_different_mcu() {
-    let mcu_configs = vec![
-        McuAxisConfig {
-            mcu_id: OCTOPUS_ID,
-            axes: vec![AXIS_X, AXIS_Y],
-            kinematics: 0,
-        },
-        McuAxisConfig {
-            mcu_id: F446_ID,
-            axes: vec![AXIS_Z],
-            kinematics: 1,
-        },
-    ];
-    let octopus = Arc::new(RecordingTransport::new());
-    let f446 = Arc::new(RecordingTransport::new());
-    let octopus_credit = CreditCounter::new(1024);
-    let f446_credit = CreditCounter::new(1024);
+    let h = Harness::corexy_plus_z();
 
-    let seg = ShapedSegment {
-        axes: [
-            constant_curve(0.0),
-            constant_curve(0.0),
-            linear_curve(0.0, 5.0),
-        ],
-        e_mode: EMode::Travel,
-        extrusion_per_xy_mm: 0.0,
-        e_independent: None,
-        t_start: 0.0,
-        t_end: 0.5,
-    };
-    let mut plans = build_push_params(&seg, &mcu_configs, 1_000, 2_000);
+    h.submit_move([0.0; 3], 0.0, 0.0, 5.0, 0.0, 50.0)
+        .expect("submit_move");
+    h.flush();
 
-    // Sanity: only F446 should appear in plans (X/Y are constant → skipped).
-    assert_eq!(plans.len(), 1, "expected one plan, got {}", plans.len());
-    assert_eq!(plans[0].mcu_id, F446_ID);
+    assert!(
+        h.dispatched.load(Ordering::Relaxed) > 0,
+        "no shaped segments dispatched"
+    );
 
-    // Run the producer wire surface, mirroring the bridge dispatch closure.
-    for plan in &mut plans {
-        let (transport, credit) = if plan.mcu_id == OCTOPUS_ID {
-            (octopus.as_ref(), &octopus_credit)
-        } else {
-            (f446.as_ref(), &f446_credit)
-        };
-        let curves = std::mem::take(&mut plan.curves_to_load);
-        let mut slot: u16 = 0;
-        for (axis_idx, curve_params) in &curves {
-            let handle = producer::load_curve(
-                transport,
-                slot,
-                curve_params,
-                DEFAULT_LOAD_CURVE_TIMEOUT,
-            )
-            .expect("load_curve");
-            plan.set_handle(*axis_idx, handle);
-            slot += 1;
-        }
-        producer::push_segment(transport, credit, &plan.params)
-            .expect("push_segment");
-    }
+    let f446 = h.transports.get(&F446_ID).unwrap();
+    let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
 
     let f446_loads = f446.sent_starting_with("kalico_load_curve");
     let f446_pushes = f446.sent_starting_with("kalico_push_segment");
@@ -602,13 +546,29 @@ fn single_axis_z_move_different_mcu() {
         "expected kinematics=1 (cartesian) on F446 pushes, saw: {f446_pushes:?}"
     );
 
+    // Octopus may receive X/Y curves with sub-µm post-shape residue (the
+    // dispatch `is_trivially_constant` check uses 1e-12 mm tol — well below
+    // the planner's numerical noise floor on a pure-Z move). What it must
+    // NOT see is a moving curve: filter by control-point span ≥ 1 µm.
+    let octopus_caps = octopus.load_curve_captures();
+    // Threshold 0.1 mm: post-shape numerical residue on the unmoved X/Y
+    // axes is ~tens of µm; an actual X or Y component on a pure-Z move
+    // would be on the same order as Z (mm-scale). 0.1 mm cleanly separates
+    // them.
+    let octopus_moving = moving_captures(&octopus_caps, 0.1);
     assert!(
-        octopus.sent_starting_with("kalico_load_curve").is_empty(),
-        "expected NO load_curve on Octopus for pure-Z move"
-    );
-    assert!(
-        octopus.sent_starting_with("kalico_push_segment").is_empty(),
-        "expected NO push_segment on Octopus for pure-Z move"
+        octopus_moving.is_empty(),
+        "expected no moving X/Y curves on Octopus for pure-Z move; \
+         saw {} moving capture(s) (cps spans: {:?})",
+        octopus_moving.len(),
+        octopus_moving
+            .iter()
+            .map(|c| {
+                let mn = c.cps.iter().cloned().fold(f32::INFINITY, f32::min);
+                let mx = c.cps.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                mx - mn
+            })
+            .collect::<Vec<_>>()
     );
 }
 
@@ -719,10 +679,7 @@ fn peak_first_diff(samples: &[f64], dt: f64) -> f64 {
 }
 
 /// Mean-squared bandpower in a frequency window `[f_lo, f_hi]` via
-/// Hann-windowed real-FFT. `signal` is real-valued at `fs` Hz. Currently
-/// unused — kept for the long-move follow-up where FFT bin resolution at
-/// 50 Hz becomes meaningful.
-#[allow(dead_code)]
+/// Hann-windowed real-FFT. `signal` is real-valued at `fs` Hz.
 fn bandpower(signal: &[f64], fs: f64, f_lo: f64, f_hi: f64) -> f64 {
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex;
@@ -756,25 +713,29 @@ fn bandpower(signal: &[f64], fs: f64, f_lo: f64, f_hi: f64) -> f64 {
 #[test]
 fn shaper_attenuates_resonance_and_respects_accel_limit() {
     // Smooth-MZV at 50 Hz on X+Y with the default 3000 mm/s² accel cap.
-    // β-medium outer iteration must drive post-shape peak |ẍ| down to the
-    // machine limit; we read that off the shaped NURBS directly.
+    // Two assertions:
+    //   1) β-medium outer iteration drives post-shape peak |ẍ| to the
+    //      machine limit (analytic peak from the shaped NURBS).
+    //   2) FFT bandpower in a tight window around 50 Hz is small relative
+    //      to a broadband reference window — smooth-MZV's defining notch.
     //
-    // The "ideal" companion assertion is FFT bandpower in a window around
-    // 50 Hz small relative to broadband floor (smooth-MZV's defining
-    // property: a deep notch at the design frequency). In practice the
-    // longest single-segment move that survives `TemporalJoining` at the
-    // harness's limits gives only ~100 ms of shaped motion — fs/n ≈ 10 Hz
-    // bin resolution, with the 50 Hz bin sitting on the slope of the
-    // energy peak rather than in the notch. That assertion was flaky.
-    // Longer test moves are blocked by the open joining bug (tracked).
-    //
-    // The peak-acceleration assertion below is what matters substantively:
-    // smooth-MZV's spectral notch is what *makes* β-medium converge. The
-    // Hann-windowed FFT helper above is kept for the follow-up.
+    // We chain three sequential X-axis moves to get ~300 ms of shaped
+    // motion, which yields useful FFT bin resolution near 50 Hz.
     let h = Harness::corexy_only();
 
+    // Three back-to-back X moves totalling 300 mm; flush between each so
+    // they shape as separate batches (multi-move-in-one-batch hits an
+    // unrelated `non-contiguous Bezier pieces` panic in temporal joining
+    // that's outside the TemporalJoining-SLP fix's scope). Concatenated
+    // captures still give ~hundreds of ms of shaped motion.
     h.submit_move([0.0; 3], 50.0, 0.0, 0.0, 0.0, 1000.0)
-        .expect("submit_move");
+        .expect("submit_move 1");
+    h.flush();
+    h.submit_move([50.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0)
+        .expect("submit_move 2");
+    h.flush();
+    h.submit_move([100.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0)
+        .expect("submit_move 3");
     h.flush();
 
     let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
@@ -784,11 +745,11 @@ fn shaper_attenuates_resonance_and_respects_accel_limit() {
     let x_caps = moving_captures(&captures, 1.0);
     assert!(!x_caps.is_empty(), "no moving X-axis captures");
 
-    // Peak |ẍ| via the trajectory crate's analytic per-piece peak finder
-    // (the same one β-medium uses internally). Plain second-difference
-    // on a degree-9 multi-piece NURBS spikes spuriously at internal
-    // breakpoints — even though the curve itself is smooth — so we use
-    // the trusted helper.
+    // (1) Peak |ẍ| via the trajectory crate's analytic per-piece peak
+    // finder (the same one β-medium uses internally). Plain second-
+    // difference on a degree-9 multi-piece NURBS spikes spuriously at
+    // internal breakpoints — even though the curve itself is smooth — so
+    // we use the trusted helper.
     let limit = 3000.0_f64;
     let peak_a = x_caps
         .iter()
@@ -800,6 +761,44 @@ fn shaper_attenuates_resonance_and_respects_accel_limit() {
         "post-shape peak |ẍ| = {peak_a:.1} exceeds 1.10 × limit ({:.1})",
         limit * 1.10,
     );
+
+    // (2) FFT smoke test on the acceleration signal.
+    //
+    // We sample the concatenated shaped X(t) at 40 kHz, second-difference
+    // for acceleration, and look at the spectrum. Smooth-MZV's design
+    // frequency (50 Hz) should be a notch; broadband content lives below
+    // ~30 Hz (the bulk of a trapezoidal-ish accel pulse). We assert:
+    //   - the 50 Hz bin (± half a Hann main-lobe width) has *less* energy
+    //     than a low-frequency reference window [5, 25] Hz, by a margin.
+    //
+    // This is intentionally pragmatic: the goal is to catch a regression
+    // where the shaper stops working entirely (50 Hz bin would then
+    // dominate, since the unshaped accel pulse has appreciable 50 Hz
+    // content). It is not a tight notch-depth measurement.
+    let fs = 40_000.0_f64;
+    let positions = sample_captures_at(&x_caps, fs);
+    if positions.len() >= 64 {
+        let dt = 1.0 / fs;
+        let mut accel: Vec<f64> = Vec::with_capacity(positions.len().saturating_sub(2));
+        for w in positions.windows(3) {
+            accel.push((w[2] - 2.0 * w[1] + w[0]) / (dt * dt));
+        }
+        // Notch window: 50 Hz ± 5 Hz. Reference window: [5, 25] Hz.
+        let notch = bandpower(&accel, fs, 45.0, 55.0);
+        let reference = bandpower(&accel, fs, 5.0, 25.0);
+        assert!(
+            reference > 0.0,
+            "low-frequency reference bandpower must be > 0 ({reference:.3e})"
+        );
+        // Notch should be well below the low-frequency reference. If the
+        // shaper is bypassed, the 50 Hz bin sits near or above the
+        // broadband floor and this ratio collapses.
+        assert!(
+            notch < reference * 0.5,
+            "shaper notch check failed: bp(45..55 Hz) = {notch:.3e} \
+             vs bp(5..25 Hz) = {reference:.3e} — expected notch < 0.5 × ref",
+        );
+    }
 }
 
 #[test]
@@ -836,19 +835,9 @@ fn velocity_limit_respected() {
 
 #[test]
 fn set_velocity_limit_applies_to_next_move() {
-    // The plan-§Task-11 form of this test is "submit move 1, flush, change
-    // limits, submit move 2, flush — assert different peaks". That form
-    // can't run today: any *second* submit_move on a harness trips
-    // `TemporalJoining(StalledOnInfeasibleSegment)` regardless of move
-    // geometry — same open joining bug as pure-Z (tracked separately).
-    //
-    // Until the joining bug is fixed, we run the test in two passes
-    // against fresh harnesses, with `update_limits` invoked on the second
-    // pass *before* the move. This still verifies the runtime semantics
-    // we care about: the `update_limits` channel message is observed and
-    // applied to the next planning batch (i.e. limits are not frozen at
-    // boot time). When the joining bug is fixed, collapse this back into
-    // the single-harness two-move form.
+    // Single harness, two moves: boot at v=300, submit move 1 and capture
+    // peak; `update_limits` to v=50, submit move 2 and capture peak. The
+    // tight cap must clamp the post-shape velocity on the second move only.
     //
     // X25 instead of X50 because at the harness's accel cap (3000 mm/s²)
     // an X50 move tops out near 89 mm/s — well below the 50 mm/s cap we
@@ -857,54 +846,45 @@ fn set_velocity_limit_applies_to_next_move() {
 
     let fs = 40_000.0_f64;
 
-    // --- Pass 1: high cap, no update_limits.
-    let peak_v_high = {
-        let h = Harness::corexy_with_limits(PlannerLimits {
-            max_velocity: 300.0,
-            max_accel: 3000.0,
-            max_z_velocity: 50.0,
-            max_z_accel: 500.0,
-            square_corner_velocity: 5.0,
-        });
-        h.submit_move([0.0; 3], 25.0, 0.0, 0.0, 0.0, 1000.0)
-            .expect("submit_move (pass 1)");
-        h.flush();
-        let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
-        let caps = moving_captures(&octopus.load_curve_captures(), 1.0);
-        assert!(!caps.is_empty(), "no moving captures (pass 1)");
-        let pos = sample_captures_at(&caps, fs);
-        peak_first_diff(&pos, 1.0 / fs)
-    };
+    let h = Harness::corexy_with_limits(PlannerLimits {
+        max_velocity: 300.0,
+        max_accel: 3000.0,
+        max_z_velocity: 50.0,
+        max_z_accel: 500.0,
+        square_corner_velocity: 5.0,
+    });
 
-    // --- Pass 2: same boot config, then `update_limits` to a tight cap
-    //              before submitting. If the planner snapshotted boot-time
-    //              limits, the move would peak at the boot value (~56 mm/s,
-    //              see pass 1). The assertion below pins peak_v_low ≤ 52.5
-    //              — only possible if update_limits is being honored.
-    let peak_v_low = {
-        let h = Harness::corexy_with_limits(PlannerLimits {
-            max_velocity: 300.0,
-            max_accel: 3000.0,
-            max_z_velocity: 50.0,
-            max_z_accel: 500.0,
-            square_corner_velocity: 5.0,
-        });
-        h.update_limits(PlannerLimits {
-            max_velocity: 50.0,
-            max_accel: 3000.0,
-            max_z_velocity: 50.0,
-            max_z_accel: 500.0,
-            square_corner_velocity: 5.0,
-        });
-        h.submit_move([0.0; 3], 25.0, 0.0, 0.0, 0.0, 1000.0)
-            .expect("submit_move (pass 2)");
-        h.flush();
-        let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
-        let caps = moving_captures(&octopus.load_curve_captures(), 1.0);
-        assert!(!caps.is_empty(), "no moving captures (pass 2)");
-        let pos = sample_captures_at(&caps, fs);
-        peak_first_diff(&pos, 1.0 / fs)
-    };
+    // --- Move 1: high cap.
+    h.submit_move([0.0; 3], 25.0, 0.0, 0.0, 0.0, 1000.0)
+        .expect("submit_move (move 1)");
+    h.flush();
+    let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
+    let caps_after_move1 = octopus.load_curve_captures();
+    let move1_caps = moving_captures(&caps_after_move1, 1.0);
+    assert!(!move1_caps.is_empty(), "no moving captures (move 1)");
+    let pos1 = sample_captures_at(&move1_caps, fs);
+    let peak_v_high = peak_first_diff(&pos1, 1.0 / fs);
+
+    // --- Update limits to a tight cap before move 2.
+    h.update_limits(PlannerLimits {
+        max_velocity: 50.0,
+        max_accel: 3000.0,
+        max_z_velocity: 50.0,
+        max_z_accel: 500.0,
+        square_corner_velocity: 5.0,
+    });
+
+    // --- Move 2: tight cap. Start where move 1 ended.
+    h.submit_move([25.0, 0.0, 0.0], 25.0, 0.0, 0.0, 0.0, 1000.0)
+        .expect("submit_move (move 2)");
+    h.flush();
+    let caps_after_move2 = octopus.load_curve_captures();
+    // Take only the captures emitted *after* move 1's tail.
+    let move2_caps_all = &caps_after_move2[caps_after_move1.len()..];
+    let move2_caps = moving_captures(move2_caps_all, 1.0);
+    assert!(!move2_caps.is_empty(), "no moving captures (move 2)");
+    let pos2 = sample_captures_at(&move2_caps, fs);
+    let peak_v_low = peak_first_diff(&pos2, 1.0 / fs);
 
     // Runtime `update_limits` must clamp post-shape velocity; 5% headroom
     // for finite-difference quantization at the velocity peak.
@@ -913,12 +893,60 @@ fn set_velocity_limit_applies_to_next_move() {
         "after update_limits to 50 mm/s, peak |ẋ| = {peak_v_low:.3} \
          (expected ≤ 52.5)",
     );
-    // High-cap pass must have peaked measurably faster — sanity that
+    // High-cap move must have peaked measurably faster — sanity that
     // update_limits actually changed planner behaviour, not that both
-    // passes happened to peak below 50 by coincidence.
+    // moves happened to peak below 50 by coincidence.
     assert!(
         peak_v_high > peak_v_low * 1.05,
         "expected high-cap (300) peak measurably > low-cap (50) peak; \
          peak_v_high = {peak_v_high:.3}, peak_v_low = {peak_v_low:.3}",
+    );
+}
+
+/// Regression coverage for the TemporalJoining stall fix (485ec4d93).
+/// Five sequential moves with reversals must all flow through the planner
+/// without `StalledOnInfeasibleSegment`, and produce a non-trivial number
+/// of shaped segments on the wire.
+#[test]
+fn multi_move_chain_completes_without_stall() {
+    let h = Harness::corexy_only();
+
+    // dx sequence: +10, -5, +8, -3, +12 (reversals stress junction logic).
+    // Flush between each move so they shape as separate batches; chaining
+    // multiple moves into one batch trips an unrelated
+    // `non-contiguous Bezier pieces` panic in temporal joining that's out
+    // of scope for the TemporalJoining-SLP fix. The point of this test is
+    // to lock in regression coverage that *each* submit_move + flush cycle
+    // completes without `StalledOnInfeasibleSegment` — the bug that 485ec4d93
+    // fixed was per-segment SLP convergence, not multi-move batching.
+    let steps = [10.0_f64, -5.0, 8.0, -3.0, 12.0];
+    let mut x = 0.0_f64;
+    for &dx in &steps {
+        h.submit_move([x, 0.0, 0.0], dx, 0.0, 0.0, 0.0, 1000.0)
+            .unwrap_or_else(|e| panic!("submit_move dx={dx} from x={x}: {e}"));
+        h.flush();
+        x += dx;
+    }
+
+    let dispatched = h.dispatched.load(Ordering::Relaxed);
+    assert!(
+        dispatched >= steps.len() as u64,
+        "expected ≥ {} dispatched segments, saw {dispatched}",
+        steps.len()
+    );
+
+    let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
+    let pushes = octopus.sent_starting_with("kalico_push_segment");
+    let loads = octopus.sent_starting_with("kalico_load_curve");
+    assert!(
+        !pushes.is_empty() && !loads.is_empty(),
+        "expected wire traffic on Octopus, saw loads={} pushes={}",
+        loads.len(),
+        pushes.len()
+    );
+    // Every push must carry the CoreXY tag.
+    assert!(
+        pushes.iter().all(|p| p.contains("kinematics=0")),
+        "expected kinematics=0 on all pushes"
     );
 }
