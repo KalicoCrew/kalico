@@ -19,6 +19,8 @@ temporal = { path = "../temporal" }
 geometry = { path = "../geometry" }
 gcode = { path = "../gcode" }
 compat = { path = "../compat" }
+nurbs = { path = "../nurbs", features = ["host"] }
+crossbeam-channel = "0.5"
 log = "0.4"
 arc-swap = "1"
 
