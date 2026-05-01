@@ -54,9 +54,64 @@ pub fn encode_load_curve_v1(
     out
 }
 
+/// Encode a `kalico_load_curve` blob for per-axis scalar curves (Step 7-B+).
+///
+/// Wire layout (V1 format, scalar variant):
+///
+/// ```text
+/// [u8 format_version=0x01]
+/// [u8 degree]
+/// [u8 num_cps]
+/// [u8 num_knots]
+/// [u8 num_weights=0]
+/// [num_cps × f32_le]   // scalar control points
+/// [num_knots × f32_le] // knot vector
+/// ```
+pub fn encode_load_curve_scalar(degree: u8, knots: &[f32], cps: &[f32]) -> Vec<u8> {
+    debug_assert!(u8::try_from(cps.len()).is_ok());
+    debug_assert!(u8::try_from(knots.len()).is_ok());
+    let mut out = Vec::with_capacity(5 + cps.len() * 4 + knots.len() * 4);
+    out.push(FORMAT_VERSION_V1);
+    out.push(degree);
+    out.push(cps.len() as u8);
+    out.push(knots.len() as u8);
+    out.push(0); // num_weights — always 0 for polynomial scalar curves
+    for &v in cps {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for &k in knots {
+        out.extend_from_slice(&k.to_le_bytes());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_encoder_header_and_length() {
+        let knots = [0.0_f32, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let cps = [0.0_f32, 3.33, 6.67, 10.0];
+        let blob = encode_load_curve_scalar(3, &knots, &cps);
+        assert_eq!(blob[0], FORMAT_VERSION_V1);
+        assert_eq!(blob[1], 3, "degree");
+        assert_eq!(blob[2], 4, "num_cps");
+        assert_eq!(blob[3], 8, "num_knots");
+        assert_eq!(blob[4], 0, "num_weights (always 0 for scalar)");
+        assert_eq!(blob.len(), 53);
+    }
+
+    #[test]
+    fn scalar_encoder_values_are_le() {
+        let knots = [0.0_f32, 1.0];
+        let cps = [1.5_f32];
+        let blob = encode_load_curve_scalar(0, &knots, &cps);
+        let cp_bytes: [u8; 4] = blob[5..9].try_into().unwrap();
+        assert_eq!(f32::from_le_bytes(cp_bytes), 1.5);
+        let k0_bytes: [u8; 4] = blob[9..13].try_into().unwrap();
+        assert_eq!(f32::from_le_bytes(k0_bytes), 0.0);
+    }
 
     #[test]
     fn header_and_length_are_correct() {
