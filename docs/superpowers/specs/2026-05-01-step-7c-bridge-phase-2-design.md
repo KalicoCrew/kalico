@@ -12,12 +12,12 @@
 motion_toolhead.move(newpos, speed)
   │  compute delta from self.commanded_pos
   ▼
-bridge.submit_move(dx, dy, dz, de, feedrate)       ← PyO3, GIL released
-  │  classify: XY-only → COUPLED(ratio=0), Z-only, etc.
-  │  construct collinear cubic Bézier directly:
-  │    P0 = start,  P1 = start + (end-start)/3,
-  │    P2 = start + 2(end-start)/3,  P3 = end
-  │  build nurbs::VectorNurbs<f64, 3> from [P0, P1, P2, P3]
+bridge.submit_move(dx, dy, dz, feedrate)            ← PyO3, GIL released
+  │  Phase 2 hard-rejects de != 0 ("extrusion not yet supported")
+  │  classify: XY-only → COUPLED(ratio=0), Z-only
+  │  compat::collinear::to_collinear_bezier(start, end)
+  │    → [P0, P1, P2, P3] control points directly (no G5Line text)
+  │  build nurbs::VectorNurbs<f64, 3> with knots [0,0,0,0, 1,1,1,1]
   │  wrap as CubicSegment (no text round-trip, no GeometryPipeline)
   │  enqueue PendingMove to planner channel
   ▼
@@ -25,7 +25,7 @@ Planner thread (background, spawned at bridge init)
   │  accumulate moves in streaming window (capacity W, default 32)
   │  temporal TOPP-RA on window → velocity profiles
   │  trajectory::shape_batch(profiles, shaper_config) → ShapedSegments
-  │      β-medium iteration, smooth-MZV convolution, time-reparam
+  │      β-medium iteration, selected smooth-ZV/MZV convolution, time-reparam
   │  for each shaped segment:
   │      per-MCU dispatch based on which axes are non-trivial
   ▼
@@ -41,11 +41,13 @@ MCU evaluates curves at modulation rate, applies kinematics, generates steps
 
 ### 1.1 Design decisions and their rationale
 
-**No `GeometryPipeline::process` in the live path.** `GeometryPipeline` is a text-based one-shot API (`fn process(&mut self, text: &str, ...) -> Segments`). The live bridge receives structured moves from Python, not G-code text. Serializing to G5 text and re-parsing would be wasteful. The bridge constructs `CubicSegment` directly from control points. `GeometryPipeline` remains in scope for the offline compat normalizer (Step 13).
+**No `GeometryPipeline::process` in the live path.** `GeometryPipeline` is a text-based one-shot API (`fn process(&mut self, text: &str, ...) -> Segments`). The live bridge receives structured moves from Python, not G-code text. Serializing to G5 text and re-parsing would be wasteful. The bridge constructs `CubicSegment` directly from control points. Note: `GeometryPipeline` is a `rust/geometry` planner crate type — Step 13's offline normalizer (which is pure text→text) does not use it either. `GeometryPipeline` is only used by synthetic test harnesses.
 
-**No `compat::collinear::to_collinear_g5` for the bridge path.** That function returns a `G5Line` (I/J/P/Q offset format), not raw control points. The 1/3-2/3 collinear Bézier construction is trivial; the bridge computes it directly. The `compat` crate primitives remain available for the live G2/G3→G5 conversion path (Phase 3) and the file preprocessor.
+**Bridge uses `compat` crate's structured API variant.** CLAUDE.md names `compat::collinear::to_collinear_g5` as a live bridge caller. The existing function returns `G5Line` (I/J/P/Q text format), which the bridge doesn't need. Phase 2 adds a structured variant `compat::collinear::to_collinear_bezier(start: [f64; 3], end: [f64; 3]) -> [[f64; 3]; 4]` that returns the 4 control points directly (same 1/3-2/3 lerp math, no `G5Line` intermediary). This preserves the CLAUDE.md contract — the bridge uses compat — while avoiding a wasteful text round-trip. Phase 3 adds the analogous `compat::arc::arc_to_bezier()` for G2/G3 conversion.
 
-**Full shaper from the start.** Even single-segment terminal test moves go through smooth-MZV convolution and β-medium iteration. This proves the shaper in the simplest context (one segment, zero boundary velocity). Phase 3 exercises cross-boundary shaping with multi-segment windows.
+**Full shaper from the start.** Even single-segment terminal test moves go through the selected smooth-ZV/MZV convolution and β-medium iteration. This proves the shaper in the simplest context (one segment, zero boundary velocity). Phase 3 exercises cross-boundary shaping with multi-segment windows.
+
+**Structured bridge moves bypass `geometry::reduce`.** The reduce boundary (CLAUDE.md: "anything reaching reduce that is not G5/G5.1 is a hard error") applies to text G-code entering through the geometry pipeline. Structured bridge moves never touch reduce — they construct `CubicSegment` (cubic Bézier, equivalent to G5) directly and feed into temporal. No legacy G0/G1/G2/G3 handling is reintroduced into `geometry::reduce`.
 
 ### 1.2 Verified type chain
 
@@ -63,6 +65,8 @@ bridge VectorNurbs<f64, 3>
 ```
 
 `CubicSegment::try_new()` requires a `SourceRange` — bridge passes synthetic `{ start_line: 0, end_line: 0 }` (metadata-only, not used in computation).
+
+**NURBS construction details:** The `VectorNurbs<f64, 3>` for a collinear cubic Bézier uses degree 3, knot vector `[0, 0, 0, 0, 1, 1, 1, 1]` (clamped uniform), and 4 control points `[P0, P1, P2, P3]` in the unit parameter domain `[0, 1]`. This matches the knot convention used by `geometry::reduce` for G5 segments.
 
 ### 1.3 MCU-side constants
 
@@ -89,7 +93,8 @@ Bounded channel (`std::sync::mpsc` or `crossbeam`). Messages:
 ```rust
 enum PlannerMsg {
     Move(PendingMove),      // classified, bridge-constructed segment
-    Flush(Arc<Notify>),     // from wait_moves() — process everything, then wake
+    Dwell(f64, Arc<Notify>),// flush pending, advance print time by duration_s, then wake
+    Flush(Arc<Notify>),     // from wait_moves() — process everything, wait for execution, wake
     UpdateLimits(PlannerLimits),  // from SET_VELOCITY_LIMIT
     UpdateShaper(ShaperConfig),   // from SET_INPUT_SHAPER
     Shutdown,               // join cleanly
@@ -104,11 +109,12 @@ The planner thread loops:
 2. Drain all immediately-available messages into a local buffer.
 3. Flush the batch if any of:
    - Buffer reaches window capacity W (default 32)
-   - A `Flush` signal was drained
+   - A `Flush` or `Dwell` signal was drained
    - A `Shutdown` was drained
 4. Run the pipeline on the batch: temporal TOPP-RA → `shape_batch` → per-MCU push.
-5. After all segments from this batch are ACKed by MCUs, wake any `Flush` waiters.
-6. On `Shutdown`: flush remaining buffer, then exit loop.
+5. Wait for execution: block until the last segment's `t_end` has elapsed in real time (not just pushed+ACKed — see §2.4).
+6. Wake any `Flush` / `Dwell` waiters. For `Dwell`, additionally advance internal print time by the dwell duration before waking.
+7. On `Shutdown`: flush remaining buffer, then exit loop.
 
 For Phase 2 terminal commands: klippy's gcode dispatch calls `wait_moves()` after each interactive G1. This sends a `Flush` signal, so each terminal move processes as a window-of-1. That's correct behavior — the shaper convolves the single segment, β-medium iterates, and the user sees immediate execution.
 
@@ -116,11 +122,15 @@ For Phase 3 file printing: moves arrive faster than the planner drains. The buff
 
 ### 2.4 `wait_moves()` semantics
 
-Python thread (GIL released) sends `Flush(notify)` to the channel, then blocks on the `notify`. The planner thread wakes the notify only after **all segments from the flushed batch have been pushed to wire AND acknowledged by the MCUs**. This means `wait_moves()` guarantees: everything submitted before this call has been shaped, pushed, and ACKed.
+Python thread (GIL released) sends `Flush(notify)` to the channel, then blocks on the `notify`. The planner thread wakes the notify only after **all segments from the flushed batch have been pushed, ACKed, AND the last segment's `t_end` has elapsed in real time**. This means `wait_moves()` guarantees: everything submitted before this call has been shaped, pushed, and **physically executed** (motors have stopped). This matches Klipper's `wait_moves()` / `M400` semantics — macros depend on motion being complete when `M400` returns.
+
+Implementation: after push+ACK, the planner computes `wall_clock_deadline = now + (t_end_print_time - current_print_time)` using the clock-sync estimate, and sleeps until the deadline. For Phase 2 single-segment moves, this is a short sleep (sub-second).
 
 ### 2.5 Error propagation
 
 If the pipeline fails (TOPP-RA infeasible, shaper error, MCU push rejected, MCU fault), the planner thread stores the error in a shared `Mutex<Option<PlannerError>>`. The next Python call into the bridge (`submit_move`, `wait_moves`, etc.) checks this mutex and raises a Python exception if an error is present. The planner thread does not silently swallow errors.
+
+**Position consistency on error:** `submit_move` updates `commanded_pos` optimistically (before the planner thread processes the move). If the planner later fails, `commanded_pos` may be ahead of reality. This is acceptable because planner errors are fatal — klippy triggers a printer shutdown/restart, which resets all state. No position reconciliation logic is needed.
 
 ## 3. Per-MCU dispatch and curve loading
 
@@ -149,13 +159,15 @@ For each `ShapedSegment`, for each MCU that owns at least one non-trivial axis:
 
 ### 3.3 Implementation gaps (new code)
 
-Two gaps identified by verification:
+Curve loading requires two new functions in `kalico-host-rt` plus a conversion utility:
 
-1. **`encode_load_curve_v1` is stale** — encodes 3D `[f32; 3]` control points. The per-axis-scalar architecture (Step 7-B) needs 1D `f32` scalars. **Fix:** Write `encode_load_curve_scalar(degree: u8, knots: &[f32], cp: &[f32]) -> Vec<u8>` in `kalico-host-rt::wire`.
+1. **Scalar wire encoder** — `encode_load_curve_v1` is stale (encodes 3D `[f32; 3]` control points from pre-7-B era). **Fix:** Write `encode_load_curve_scalar(degree: u8, knots: &[f32], cp: &[f32]) -> Vec<u8>` in `kalico-host-rt::wire`. Accepts 1D `f32` scalars matching the per-axis-scalar architecture.
 
-2. **No host-side `load_curve()` transport function** — `push_segment()` exists but there's no paired function that sends `kalico_load_curve` and waits for `kalico_load_curve_response`. **Fix:** Write `load_curve<T: Transport>(io: &T, params: &CurveLoadParams) -> Result<CurveHandle, ProducerError>` in `kalico-host-rt::producer`.
+2. **Host-side `load_curve()` transport function** — `push_segment()` exists but there's no paired function that sends `kalico_load_curve` and waits for `kalico_load_curve_response`. **Fix:** Write `load_curve<T: Transport>(io: &T, params: &CurveLoadParams) -> Result<CurveHandle, ProducerError>` in `kalico-host-rt::producer`. This function calls the scalar encoder, sends the command, and parses the response into a `CurveHandle`.
 
-3. **f64→f32 conversion utility** — `fn scalar_nurbs_to_f32(src: &ScalarNurbs<f64>) -> (Vec<f32>, Vec<f32>)` returning (knots, control_points). Small helper, lives in `motion-bridge` or `kalico-host-rt`.
+Both functions include f64→f32 truncation of `ShapedSegment`'s `ScalarNurbs<f64>` control points and knots as part of the encoding step (no separate utility needed — the truncation is inline in `encode_load_curve_scalar`'s caller).
+
+3. **`compat::collinear::to_collinear_bezier()`** — new structured API variant alongside the existing `to_collinear_g5()`. Returns `[[f64; 3]; 4]` (4 control points) instead of `G5Line` text. Same 1/3-2/3 lerp math. The bridge calls this for G1→cubic conversion, preserving the CLAUDE.md contract that the bridge uses `compat` crate primitives.
 
 ## 4. Config surface
 
@@ -196,13 +208,14 @@ In `[printer]`:
 
 | Method | Phase 2 behavior |
 |--------|-----------------|
-| `move(newpos, speed)` | Compute delta from `commanded_pos`, clamp speed to config limits, call `bridge.submit_move(dx, dy, dz, de, feedrate)`, update `commanded_pos` |
+| `move(newpos, speed)` | Compute delta from `commanded_pos`, hard-reject if `de != 0` ("extrusion not yet supported"), clamp speed to config limits, call `bridge.submit_move(dx, dy, dz, feedrate)`, update `commanded_pos` optimistically |
 | `manual_move(coord, speed)` | Same as `move()` with partial coordinates (None → no change) |
-| `dwell(delay)` | `bridge.submit_dwell(delay)` — flush boundary |
-| `wait_moves()` | `bridge.wait_moves()` — flush + block until all ACKed |
-| `get_last_move_time()` | `bridge.get_last_move_time()` — estimated print time of last queued move |
+| `dwell(delay)` | `bridge.submit_dwell(delay)` — flush boundary + advance print time by delay |
+| `wait_moves()` | `bridge.wait_moves()` — flush + block until physical execution complete (§2.4) |
+| `get_last_move_time()` | `bridge.get_last_move_time()` — estimated print time of last queued move. Before any flush, returns an estimate based on accumulated move distances and configured velocity/accel limits. After flush, returns the precise `t_end` from the planner. |
 | `set_position(newpos, homing_axes)` | `bridge.set_position(newpos)` — resets commanded_pos and bridge internal position state |
 | `cmd_SET_VELOCITY_LIMIT` | Already parses args in Phase 1; now also calls `bridge.update_limits()` |
+| `cmd_SET_INPUT_SHAPER` | Parses `shaper_freq_x/y`, `shaper_type_x/y`; calls `bridge.update_shaper()` |
 
 ### 5.2 Still stubbed (later phases)
 
@@ -216,7 +229,7 @@ In `[printer]`:
 
 ### 6.1 kalico-sim integration tests (fast inner loop)
 
-Rust integration tests in `rust/motion-bridge/tests/`:
+Rust integration tests in `rust/motion-bridge/tests/`. These exercise the bridge API directly (Rust → bridge → sim MCU), not klippy's Python G-code dispatch. Full-stack tests through Python are a Phase 3 / Renode-gate concern.
 
 1. **Single-axis X move:** Boot bridge + sim MCU. Submit `G1 X10 F600`. `wait_moves()`. Assert: correct stepper direction, step count ≈ `10mm × steps_per_mm`, monotonic timing, total duration consistent with velocity/accel limits.
 
@@ -224,13 +237,15 @@ Rust integration tests in `rust/motion-bridge/tests/`:
 
 3. **Single-axis Z move (different MCU):** Boot bridge + 2 sim MCUs (Octopus + F446). Submit `G1 Z5 F300`. Assert: steps only on F446's Z stepper, nothing on Octopus.
 
-4. **Shaper validation:** Submit `G1 X50 F6000` (fast move). Capture per-axis position trajectory from sim at high rate. FFT the acceleration profile. Assert: frequency content at `shaper_freq_x` is attenuated by expected dB for smooth-MZV.
+4. **Shaper validation:** Submit `G1 X50 F6000` (fast move). Capture per-axis position trajectory from sim at high rate. (a) FFT the acceleration profile — assert frequency content at `shaper_freq_x` is attenuated by expected dB for smooth-ZV/MZV. (b) Assert peak shaped acceleration ≤ `max_accel` (the β-medium guarantee).
 
 5. **Velocity limit compliance:** Submit move with speed above `max_velocity`. Assert: actual peak velocity in step events ≤ `max_velocity`.
 
 6. **SET_VELOCITY_LIMIT mid-session:** Submit move, change limits, submit another move. Assert: second move respects new limits.
 
 ### 6.2 Renode gate (run once before Phase 2 done)
+
+Basic wire-protocol smoke test — not the full 7-D soak/capture work. All MCUs are simulated (Renode emulated H723 for Octopus, emulated F446 for bottom).
 
 1. Same test commands through Renode with real H723 firmware binary.
 2. Verify wire-level protocol: curve load commands arrive with correct scalar data.
@@ -251,4 +266,4 @@ User connects Trident hardware and runs test moves manually. Validates real moto
 
 ## 8. Definition of done
 
-`G1 X10 F600` produces correct step events in kalico-sim. `G1 Z5 F300` produces correct step events on the F446 sim MCU. Shaper is verified via FFT on acceleration profile. Renode gate passes with real H723 firmware. All existing Phase 1 tests remain green.
+`G1 X10 F600` produces correct step events in kalico-sim. `G1 Z5 F300` produces correct step events on the simulated F446 MCU. Shaper verified via FFT attenuation + peak-acceleration ≤ `max_accel` assertion. Renode wire-protocol smoke test passes with emulated H723/F446 firmware. All existing Phase 1 tests remain green.
