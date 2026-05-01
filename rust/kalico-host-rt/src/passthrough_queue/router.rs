@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 
+use super::config_stage::{ConfigStage, ConfigStagePhase};
 use super::entry::{NotifyId, PassthroughEntry};
 use super::mcu_state::{CommandQueueId, McuState, PushError};
 use super::notify::{NotifyCallback, NotifyResponse, NotifyTable};
@@ -48,6 +49,7 @@ struct McuRecord {
     notify_table: NotifyTable,
     window: ReceiveWindow,
     sent_times: HashMap<NotifyId, f64>,
+    config_stage: ConfigStage,
 }
 
 impl std::fmt::Debug for McuRecord {
@@ -58,6 +60,7 @@ impl std::fmt::Debug for McuRecord {
             .field("notify_table", &self.notify_table)
             .field("window", &self.window)
             .field("sent_times_count", &self.sent_times.len())
+            .field("config_stage", &self.config_stage)
             .finish()
     }
 }
@@ -115,6 +118,7 @@ impl PassthroughRouter {
                 notify_table: NotifyTable::new(),
                 window: ReceiveWindow::new(),
                 sent_times: HashMap::new(),
+                config_stage: ConfigStage::new(),
             },
         );
         handle
@@ -207,6 +211,42 @@ impl PassthroughRouter {
         let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         rec.window.record_ack(acked_bytes);
         Ok(())
+    }
+
+    // ── Config-stage API ────────────────────────────────────────────────
+
+    pub fn add_config_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        Ok(rec.config_stage.add_config_cmd(bytes))
+    }
+
+    pub fn add_init_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        Ok(rec.config_stage.add_init_cmd(bytes))
+    }
+
+    pub fn add_restart_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        Ok(rec.config_stage.add_restart_cmd(bytes))
+    }
+
+    /// Transition to `SendingConfig` — begin draining config commands.
+    pub fn begin_config_phase(&mut self, mcu: McuHandle) -> Result<(), RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        rec.config_stage.begin_config_send();
+        Ok(())
+    }
+
+    /// Get the next config/init entry, or `None` when all have been sent.
+    pub fn next_config_entry(&mut self, mcu: McuHandle) -> Result<Option<Vec<u8>>, RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        Ok(rec.config_stage.next_config_entry())
+    }
+
+    /// Current config-stage phase for the given MCU.
+    pub fn config_phase(&self, mcu: McuHandle) -> Result<ConfigStagePhase, RouterError> {
+        let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        Ok(rec.config_stage.phase())
     }
 }
 
