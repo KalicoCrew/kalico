@@ -264,3 +264,56 @@ class MotionToolhead:
                 accel = min(p, t)
         if accel is not None:
             self.max_accel = accel
+
+
+# ---------------------------------------------------------------------------
+# Compat shim — symbols previously exported by klippy/toolhead.py
+#
+# trad_rack.py subclasses ToolHead and references LookAheadQueue,
+# BUFFER_TIME_HIGH, and SDS_CHECK_TIME.  Provide them here so trad_rack can
+# import from motion_toolhead instead of the deleted toolhead module.
+# ---------------------------------------------------------------------------
+
+LOOKAHEAD_FLUSH_TIME = 0.250
+BUFFER_TIME_LOW = 1.0
+BUFFER_TIME_HIGH = 2.0
+BUFFER_TIME_START = 0.250
+SDS_CHECK_TIME = 0.001  # step+dir+step filter in stepcompress.c
+
+
+class LookAheadQueue:
+    """Minimal lookahead queue used by TradRackToolHead.
+
+    Mirrors the public interface of the original toolhead.LookAheadQueue so
+    that trad_rack.py can operate without importing the deleted toolhead
+    module.
+    """
+
+    def __init__(self, toolhead):
+        self.toolhead = toolhead
+        self.queue = []
+        self.junction_flush = LOOKAHEAD_FLUSH_TIME
+
+    def reset(self):
+        del self.queue[:]
+        self.junction_flush = LOOKAHEAD_FLUSH_TIME
+
+    def set_flush_time(self, flush_time):
+        self.junction_flush = flush_time
+
+    def get_last(self):
+        if self.queue:
+            return self.queue[-1]
+        return None
+
+    def flush(self, lazy=False):
+        # Phase-1 stub: no itersolve-based flush needed.
+        pass
+
+    def add_move(self, move):
+        self.queue.append(move)
+
+
+# Allow code that does ``toolhead.ToolHead`` after aliasing this module
+# as ``toolhead`` to resolve correctly.
+ToolHead = MotionToolhead

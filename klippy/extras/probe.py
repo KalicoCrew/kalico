@@ -14,8 +14,6 @@ from klippy import Printer, pins
 from klippy.configfile import ConfigWrapper
 from klippy.extras.gcode_macro import Template
 from klippy.gcode import GCodeCommand
-from klippy.toolhead import ToolHead
-
 from . import manual_probe
 
 HINT_TIMEOUT = """

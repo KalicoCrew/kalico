@@ -10,7 +10,7 @@ import os
 import time
 from collections import deque
 
-from .. import chelper, toolhead
+from .. import chelper, motion_toolhead as toolhead
 from ..gcode import CommandError
 from ..kinematics import extruder
 from ..stepper import LookupMultiRail
