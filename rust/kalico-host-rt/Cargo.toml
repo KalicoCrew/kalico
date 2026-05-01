@@ -28,6 +28,7 @@ serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
 arc-swap = "1"
 runtime = { path = "../runtime" }
+nurbs = { path = "../nurbs", features = ["host"] }
 
 [dependencies.pyo3]
 version = "0.24"

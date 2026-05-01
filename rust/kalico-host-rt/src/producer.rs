@@ -143,3 +143,134 @@ pub fn push_segment_with_timeout<T: Transport>(
         credit_epoch: resp.get_u32("credit_epoch"),
     })
 }
+
+/// Default timeout for `kalico_load_curve_response`.
+pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Parameters for loading a single scalar curve into an MCU's curve pool.
+///
+/// Lays out the V1 wire blob format defined in
+/// [`crate::wire::encode_load_curve_scalar`]. The actual `kalico_load_curve`
+/// command sends `degree` and the `knots_f32` / `cps_f32` byte buffers as
+/// separate msgproto fields; [`CurveLoadParams::encode`] returns the
+/// aggregated blob form for offline diagnostics and tests.
+#[derive(Debug, Clone)]
+pub struct CurveLoadParams {
+    pub degree: u8,
+    pub knots_f32: Vec<f32>,
+    pub cps_f32: Vec<f32>,
+}
+
+impl CurveLoadParams {
+    /// Encode this curve as a V1 scalar wire blob.
+    pub fn encode(&self) -> Vec<u8> {
+        crate::wire::encode_load_curve_scalar(self.degree, &self.knots_f32, &self.cps_f32)
+    }
+
+    /// Construct from a `nurbs::ScalarNurbs<f64>`, truncating to f32.
+    pub fn from_scalar_nurbs(curve: &nurbs::ScalarNurbs<f64>) -> Self {
+        Self {
+            degree: nurbs::NurbsView::degree(curve),
+            knots_f32: curve.knots().iter().map(|&k| k as f32).collect(),
+            cps_f32: curve.control_points().iter().map(|&v| v as f32).collect(),
+        }
+    }
+
+    /// Pack `cps_f32` into a little-endian byte buffer suitable for the
+    /// `cps=%*s` wire arg.
+    pub fn cps_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.cps_f32.len() * 4);
+        for &v in &self.cps_f32 {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    /// Pack `knots_f32` into a little-endian byte buffer.
+    pub fn knots_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.knots_f32.len() * 4);
+        for &k in &self.knots_f32 {
+            out.extend_from_slice(&k.to_le_bytes());
+        }
+        out
+    }
+}
+
+/// Load a scalar curve into the MCU's curve pool at the caller-specified slot.
+///
+/// Sends `kalico_load_curve` and waits for `kalico_load_curve_response`.
+/// On success, returns the packed handle `(generation << 16) | slot_idx`
+/// reported by the firmware (`curve_handle_packed`).
+pub fn load_curve<T: Transport>(
+    io: &T,
+    slot: u16,
+    params: &CurveLoadParams,
+    timeout: Duration,
+) -> Result<u32, ProducerError> {
+    use crate::host_io::parser::FieldValue;
+    use crate::wire::FORMAT_VERSION_V1;
+
+    let cps_buf = params.cps_bytes();
+    let knots_buf = params.knots_bytes();
+
+    let resp = io.call_typed(
+        "kalico_load_curve",
+        &[
+            ("version", FieldValue::Byte(FORMAT_VERSION_V1)),
+            ("slot", FieldValue::U16(slot)),
+            ("degree", FieldValue::Byte(params.degree)),
+            ("cps", FieldValue::Buffer(&cps_buf)),
+            ("knots", FieldValue::Buffer(&knots_buf)),
+        ],
+        "kalico_load_curve_response",
+        timeout,
+    )?;
+
+    let Some(result) = resp.try_get_i32("result") else {
+        return Err(ProducerError::Transport(TransportError::Parse(
+            "kalico_load_curve_response missing 'result' field".to_string(),
+        )));
+    };
+    if result != 0 {
+        return Err(ProducerError::McuRejected(result));
+    }
+
+    let Some(handle) = resp.try_get_u32("curve_handle_packed") else {
+        return Err(ProducerError::Transport(TransportError::Parse(
+            "kalico_load_curve_response missing 'curve_handle_packed' field".to_string(),
+        )));
+    };
+    Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curve_load_params_encodes_correctly() {
+        let params = CurveLoadParams {
+            degree: 3,
+            knots_f32: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            cps_f32: vec![0.0, 3.33, 6.67, 10.0],
+        };
+        let blob = params.encode();
+        assert_eq!(blob[0], crate::wire::FORMAT_VERSION_V1);
+        assert_eq!(blob[1], 3);
+        assert_eq!(blob[2], 4); // num_cps
+        assert_eq!(blob[3], 8); // num_knots
+    }
+
+    #[test]
+    fn curve_load_params_byte_buffers_are_le() {
+        let params = CurveLoadParams {
+            degree: 0,
+            knots_f32: vec![1.0, 2.0],
+            cps_f32: vec![1.5],
+        };
+        assert_eq!(params.cps_bytes().len(), 4);
+        assert_eq!(params.knots_bytes().len(), 8);
+        let cp_bytes: [u8; 4] = params.cps_bytes()[..4].try_into().unwrap();
+        assert_eq!(f32::from_le_bytes(cp_bytes), 1.5);
+    }
+}
