@@ -4,7 +4,7 @@
 //! no real serial I/O. The API surface matches what klippy will need so
 //! that the Python-side code can be developed in parallel.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -127,6 +127,12 @@ pub struct PyMotionBridge {
     /// Counter of shaped segments observed by the dispatch callback. Used by
     /// tests / sim to verify the planner pipeline ran end-to-end.
     dispatched_segments: Arc<AtomicU64>,
+    /// Total number of times the dispatch closure took the
+    /// `host_time_to_mcu_clock` fallback path (because the per-MCU clock
+    /// estimate had not yet been installed by `set_clock_est`). Production
+    /// integration tests assert this stays zero — non-zero indicates klippy
+    /// has not wired SET_CLOCK_EST before motion submission.
+    fallback_clock_conversions: Arc<AtomicU64>,
 }
 
 #[pymethods]
@@ -147,6 +153,7 @@ impl PyMotionBridge {
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
             dispatched_segments: Arc::new(AtomicU64::new(0)),
+            fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -578,6 +585,9 @@ impl PyMotionBridge {
         // Errors are propagated as `Err(String)` so the planner thread
         // surfaces them as `PlannerError::Dispatch`.
         let counter = Arc::clone(&self.dispatched_segments);
+        let fallback_counter = Arc::clone(&self.fallback_clock_conversions);
+        let warned_mcus: Arc<Mutex<HashSet<u32>>> =
+            Arc::new(Mutex::new(HashSet::new()));
         let parser_slot = Arc::clone(&self.parser);
         let router_arc = Arc::clone(&self.router);
 
@@ -607,7 +617,28 @@ impl PyMotionBridge {
         let mcu_configs_for_cb = mcu_configs;
         let router_for_cb = Arc::clone(&router_arc);
 
-        // Per-MCU rolling slot index (small wraparound space — 1024 slots).
+        // Per-MCU rolling slot index for `kalico_load_curve`.
+        //
+        // Wire type is `u16` (matches `producer::load_curve`'s `slot:
+        // u16` field). Firmware-side curve pool capacity is
+        // `runtime::curve_pool::CURVE_POOL_N = 64` (see
+        // `rust/runtime/src/curve_pool.rs`), so any slot index `>= 64`
+        // will be rejected by the firmware's bounds check and surface as
+        // a `kalico_load_curve_response { result != 0 }` error.
+        //
+        // Today the counter just `wrapping_add(1)`s — it does NOT modulo
+        // by `CURVE_POOL_N`, and it does NOT consult the reclaim pipeline
+        // to know which slots are free. After 64 segments the bridge
+        // will start returning errors from `load_curve` until the
+        // counter wraps back to 0 (which on a u16 is ~65k segments, i.e.
+        // never within a single print).
+        //
+        // TODO(slot-pool): wire to a real free-slot allocator backed by
+        // the firmware's `kalico_curve_freed` event stream. Until then,
+        // tests / sim runs that exceed 64 segments without restart will
+        // fail. (Integration tests today stay well under this.) The u16
+        // wire width is intentionally preserved so the future allocator
+        // can address a larger pool without a wire-format change.
         let next_slot: Arc<Mutex<HashMap<u32, u16>>> =
             Arc::new(Mutex::new(HashMap::new()));
         // Per-MCU rolling segment id.
@@ -647,6 +678,17 @@ impl PyMotionBridge {
                         // Estimate not yet installed — fall back to
                         // microsecond-grained placeholder so motion still
                         // flows during early bring-up.
+                        fallback_counter.fetch_add(1, Ordering::Relaxed);
+                        let first_for_mcu = {
+                            let mut warned = warned_mcus.lock().unwrap();
+                            warned.insert(plan.mcu_id)
+                        };
+                        if first_for_mcu {
+                            log::warn!(
+                                "motion-bridge: MCU {} clock estimate not installed; using t*1e6 fallback for clock conversion. SET_CLOCK_EST not yet wired by klippy?",
+                                plan.mcu_id
+                            );
+                        }
                         (
                             (seg.t_start * 1e6) as u64,
                             (seg.t_end * 1e6) as u64,
@@ -823,5 +865,13 @@ impl PyMotionBridge {
     /// sim hook — not part of the klippy-facing API.
     fn dispatched_segment_count(&self) -> u64 {
         self.dispatched_segments.load(Ordering::Relaxed)
+    }
+
+    /// Number of times the dispatch closure took the `t * 1e6` fallback
+    /// path because `set_clock_est` had not yet been wired for the target
+    /// MCU. Production integration tests assert this stays zero — non-zero
+    /// indicates SET_CLOCK_EST was not called before motion submission.
+    fn fallback_clock_conversions(&self) -> u64 {
+        self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 }

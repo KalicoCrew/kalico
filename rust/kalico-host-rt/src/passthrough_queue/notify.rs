@@ -7,6 +7,11 @@ use super::entry::NotifyId;
 
 #[derive(Debug, Clone, Default)]
 pub struct NotifyResponse {
+    /// Message **body** bytes: `[msgid VLQ | fields...]`. No frame header
+    /// (length / seq) and no trailer (CRC / sync byte). Suitable for direct
+    /// consumption by `MsgProtoParser::decode_body`. See
+    /// [`crate::passthrough_queue::router::PassthroughRouter::dispatch_response`]
+    /// for the producer-side contract.
     pub bytes: Vec<u8>,
     pub sent_time: f64,
     pub receive_time: f64,

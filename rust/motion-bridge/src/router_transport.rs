@@ -66,6 +66,11 @@ impl RouterTransport {
     /// Common path: register notify + push entry + block on receiver +
     /// decode body bytes against the parser, filtering by
     /// `expected_response_name`.
+    ///
+    /// Relies on the `dispatch_response` contract: the bytes delivered via
+    /// `NotifyResponse::bytes` are `[msgid VLQ | fields...]`, directly
+    /// decodable by `MsgProtoParser::decode_body`. See
+    /// `kalico_host_rt::passthrough_queue::router::PassthroughRouter::dispatch_response`.
     fn submit_and_wait(
         &self,
         wire_bytes: Vec<u8>,

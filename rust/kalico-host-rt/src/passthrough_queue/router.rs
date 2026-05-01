@@ -230,6 +230,16 @@ impl PassthroughRouter {
     }
 
     /// Dispatch a response for a previously-sent notify-bearing entry.
+    ///
+    /// # Wire contract
+    ///
+    /// `response_bytes` MUST be the message **body**: `[msgid VLQ |
+    /// fields...]` — i.e. the same bytes that `MsgProtoParser::decode_body`
+    /// expects. No frame header (length / seq) and no trailer (CRC / sync
+    /// byte). The bytes are passed through verbatim into
+    /// [`NotifyResponse::bytes`] without inspection or transformation;
+    /// callers (e.g. `RouterTransport::submit_and_wait`) decode them
+    /// directly with the parser.
     pub fn dispatch_response(
         &mut self,
         mcu: McuHandle,
