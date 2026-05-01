@@ -519,57 +519,72 @@ impl Reactor {
 // Main poll loop — spec §3.7.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TickOutcome {
+    Continue,
+    Closed,
+}
+
 impl Reactor {
     pub fn run(&mut self) {
         loop {
-            // 1. Drain reactor commands (bounded per iteration).
-            for _ in 0..MAX_SUBMITS_PER_ITER {
-                match self.submission_rx.try_recv() {
-                    Ok(cmd) => self.handle_command(cmd),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.state = ReactorState::Closed;
-                        break;
-                    }
+            if matches!(self.tick_once(), TickOutcome::Closed) { break; }
+        }
+    }
+
+    /// One iteration of the reactor's main loop. Extracted from `run()` so
+    /// tests can drive the reactor deterministically via the test harness
+    /// (spec §2.4). Closed-state cleanup runs inside; on `TickOutcome::Closed`
+    /// the next call must not be made (the loop in `run()` exits).
+    pub(crate) fn tick_once(&mut self) -> TickOutcome {
+        // 1. Drain reactor commands (bounded per iteration).
+        for _ in 0..MAX_SUBMITS_PER_ITER {
+            match self.submission_rx.try_recv() {
+                Ok(cmd) => self.handle_command(cmd),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.state = ReactorState::Closed;
+                    break;
                 }
-            }
-
-            // 2. Poll serial port.
-            self.poll_serial();
-
-            // 3. Drain pending submissions (ack in step 2 may have freed window slots).
-            self.drain_pending_submissions();
-
-            // 4. RTO timer step.
-            if let Some(front) = self.unacked_window.front() {
-                let now = self.clock.now();
-                if now >= front.sent_at + self.rtt.current_rto() {
-                    let _ = self.write_retransmit(RetransmitTrigger::TimeoutDriven);
-                }
-            }
-
-            // 4b. Drain staged host fault into the FaultLatch.
-            if let Some(fault) = self.pending_host_fault.take() {
-                self.event_dispatcher.fault_latch.dispatch(fault);
-            }
-
-            // 4c. Forward any TraceRing host-event diagnostics queued in the
-            //     shared inbox to the host-event subscriber.
-            self.event_dispatcher.host_event_dispatcher.drain_pending();
-
-            // 5. AwaitingResponse GC (layer 2 — per-entry deadline).
-            let now = self.clock.now();
-            let evicted = self.awaiting_response.evict_expired(now);
-            for entry in evicted {
-                let _ = entry.completion.send(Err(TransportError::DispatcherTimeout));
-            }
-
-            // 6. Closed-state exit.
-            if self.state == ReactorState::Closed {
-                self.flush_all_completions();
-                break;
             }
         }
+
+        // 2. Poll serial port.
+        self.poll_serial();
+
+        // 3. Drain pending submissions (ack in step 2 may have freed window slots).
+        self.drain_pending_submissions();
+
+        // 4. RTO timer step.
+        if let Some(front) = self.unacked_window.front() {
+            let now = self.clock.now();
+            if now >= front.sent_at + self.rtt.current_rto() {
+                let _ = self.write_retransmit(RetransmitTrigger::TimeoutDriven);
+            }
+        }
+
+        // 4b. Drain staged host fault into the FaultLatch.
+        if let Some(fault) = self.pending_host_fault.take() {
+            self.event_dispatcher.fault_latch.dispatch(fault);
+        }
+
+        // 4c. Forward any TraceRing host-event diagnostics queued in the
+        //     shared inbox to the host-event subscriber.
+        self.event_dispatcher.host_event_dispatcher.drain_pending();
+
+        // 5. AwaitingResponse GC (layer 2 — per-entry deadline).
+        let now = self.clock.now();
+        let evicted = self.awaiting_response.evict_expired(now);
+        for entry in evicted {
+            let _ = entry.completion.send(Err(TransportError::DispatcherTimeout));
+        }
+
+        // 6. Closed-state exit.
+        if self.state == ReactorState::Closed {
+            self.flush_all_completions();
+            return TickOutcome::Closed;
+        }
+        TickOutcome::Continue
     }
 }
 
