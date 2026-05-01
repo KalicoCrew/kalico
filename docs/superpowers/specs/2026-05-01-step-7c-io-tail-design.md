@@ -41,23 +41,23 @@ A Renode-based sim-soak was considered and dropped — see §8 for the rationale
 rust/kalico-host-rt/
   src/
     clock.rs                                 # NEW — Clock trait + RealClock + MockClock
-    clock_sync.rs                            # CHANGED — every Instant::now() routes through &impl Clock
+    clock_sync.rs                            # CHANGED — thread Clock through new_with_clock + freshness paths
     host_io/
-      reactor.rs                             # CHANGED — extract tick_once(); thread Clock
-      window.rs                              # CHANGED — thread Clock for sent_at/submitted_at
+      reactor.rs                             # CHANGED — extract tick_once(); thread Clock; A1/A2/A4 as #[cfg(test)] mod
       mod.rs                                 # CHANGED — thread Clock for deadline computation in call/call_typed
+      test_harness.rs                        # NEW — gated #[cfg(any(test, feature = "test-harness"))]
   tests/
-    reactor_harness.rs                       # NEW — harness module imported by A1/A2/A4
-    reactor_seq_wrap.rs                      # NEW — A1
-    nak_rto_branches.rs                      # NEW — A2
-    awaiting_response_gc.rs                  # NEW — A3 (uses MockTransport)
-    nak_submit_race.rs                       # NEW — A4
-    partial_frame_assembly.rs                # NEW — A5 (pure parser test, no harness)
-    status_arcswap_monotonic.rs              # NEW — A6
-    clock_sync_drift.rs                      # NEW — A7 (uses MockClock directly, no reactor)
+    awaiting_response_gc.rs                  # NEW — A3 (integration; uses MockTransport)
+    partial_frame_assembly.rs                # NEW — A5 (integration; pure parser proptest)
+    status_arcswap_monotonic.rs              # NEW — A6 (integration; ArcSwap)
+    clock_sync_drift.rs                      # NEW — A7 (integration; uses ClockSyncEstimator pub API + MockClock)
 ```
 
-No new crate dependencies. `Cargo.toml` unchanged. `python-diff-test` feature stays.
+A1, A2, A4 live as `#[cfg(test)] mod` blocks inside `src/host_io/reactor.rs` (or as `#[cfg(test)] mod tests_a1` etc., split if file gets too large). They need `pub(crate)` field access on `Reactor` and `pub(crate)` methods on the harness.
+
+`window.rs` is unchanged — `UnackedEntry.sent_at` is constructed by the reactor with `clock.now()` and passed in.
+
+No new crate dependencies. `Cargo.toml` adds an opt-in `test-harness` feature for the harness module's gating; `python-diff-test` stays.
 
 ### 2.2 The `Clock` trait
 
@@ -82,7 +82,7 @@ Why `Arc<dyn Clock>` and not a generic parameter: the reactor crosses thread bou
 
 ### 2.3 Production-code call sites that must thread `Clock`
 
-These are the exact `Instant::now()` and `Instant`-typed-construction sites in production code that need the `Clock`. (Test-only `Instant::now()` calls in existing test files stay as-is — they test against `RealClock` semantics.)
+**Scope:** in scope = reactor loop + host-call deadlines + clock-sync freshness. Out of scope = `identify.rs`, `stream.rs`, `events.rs` `Instant` calls (their behavior is tested against real time elsewhere; not load-bearing for the deterministic battery).
 
 | File | Line | Context | Treatment |
 |---|---|---|---|
@@ -91,59 +91,90 @@ These are the exact `Instant::now()` and `Instant`-typed-construction sites in p
 | `host_io/reactor.rs` | 390 | `let now = Instant::now()` (close-deadline path) | `clock.now()` |
 | `host_io/reactor.rs` | 524 | `let now = Instant::now()` for RTO check | `clock.now()` |
 | `host_io/reactor.rs` | 540 | `let now = Instant::now()` for AwaitingResponse layer-2 GC | `clock.now()` |
-| `host_io/window.rs` | 136 | `sent_at: Instant::now()` in `UnackedWindow::push` | take `now: Instant` param; reactor passes `clock.now()` |
 | `host_io/mod.rs` | 190 | `let deadline = Instant::now() + timeout` in `call()` | `clock.now() + timeout` |
 | `host_io/mod.rs` | 229 | same in `call_typed()` | `clock.now() + timeout` |
-| `clock_sync.rs` | 102 | `epoch: Instant::now()` in `ClockSyncEstimator::new` | take `clock: Arc<dyn Clock>`; store `clock.now()` |
+| `clock_sync.rs` | 102 | `epoch: Instant::now()` in `ClockSyncEstimator::new` | new path: `epoch = clock.now()` (see §4 Phase 0 for the constructor pattern that keeps existing call sites unchanged) |
 | `clock_sync.rs` | 183 | `let now = Instant::now()` in `add_dedicated_sample` | `self.clock.now()` |
 | `clock_sync.rs` | 206 | `recorded_at: Instant::now()` in `add_piggyback_sample` | `self.clock.now()` |
+| `clock_sync.rs` | 278 | `s.recorded_at.elapsed()` in `last_sample_age` | `self.clock.now() - s.recorded_at` |
+| `clock_sync.rs` | 285 | `t.elapsed()` in `last_dedicated_sample_age` | `self.clock.now() - t` |
 
-`reactor.rs:651` and `reactor.rs:918` are inside test code — left as `Instant::now()` (those tests are not part of this work).
+`window.rs:136` is `#[cfg(test)]` test scaffolding (not production); it stays as-is. `reactor.rs:651` / `reactor.rs:918` are also `#[cfg(test)]` and stay as-is.
+
+`UnackedEntry.sent_at` is constructed inside the reactor at line 153 and threaded into `UnackedWindow::push` — `window.rs` itself doesn't need the clock; the reactor's clock supplies the value.
 
 ### 2.4 `tick_once()` extraction
 
-`Reactor::run()` is currently a loop containing: drain submission queue → poll serial → service unacked window (RTO) → AwaitingResponse layer-2 GC → handle close requests. Extract one iteration's body into `pub(crate) fn tick_once(&mut self)`. `run()` becomes `while !self.closed { self.tick_once() }`. No production behavior changes.
-
-The harness drives the reactor by calling `tick_once()` directly between rx-byte injections and clock advances. No thread spawn; no real serial port.
-
-### 2.5 Reactor harness — `tests/reactor_harness.rs`
+`Reactor::run()` is currently a single loop body (see `host_io/reactor.rs:503`–`551`). The body is: drain commands (≤4) → poll serial → drain pending submissions → RTO step → host-fault drain → host-event drain → AwaitingResponse GC → closed-state exit. Extract this body into:
 
 ```rust
-pub struct ReactorHarness {
-    reactor: Reactor,             // built without spawning a thread
-    clock:   Arc<MockClock>,
-    rx_pipe: Arc<Mutex<VecDeque<u8>>>,  // injected via a fake SerialPort impl
-    tx_log:  Arc<Mutex<Vec<u8>>>,       // captured frames the reactor would have written
-}
+pub(crate) fn tick_once(&mut self) -> TickOutcome { /* ... */ }
 
-impl ReactorHarness {
-    pub fn new() -> Self { /* construct Reactor with fake SerialPort + MockClock */ }
-    pub fn feed_rx(&mut self, bytes: &[u8]);
-    pub fn advance_clock(&mut self, by: Duration);
-    pub fn tick(&mut self);                                      // wraps tick_once
-    pub fn submit(&self, cmd: &str, deadline: Instant) -> CallHandle;
-    pub fn unacked_depth(&self) -> usize;
-    pub fn awaiting_depth(&self) -> usize;
-    pub fn tx_log(&self) -> Vec<u8>;
-    pub fn force_rto(&mut self);   // advance clock past current_rto for all entries
+pub(crate) enum TickOutcome { Continue, Closed }
+```
+
+`run()` becomes:
+
+```rust
+loop {
+    if matches!(self.tick_once(), TickOutcome::Closed) { break; }
 }
 ```
 
-The fake `SerialPort` impl reads from `rx_pipe` (returning 0 bytes when empty, like a non-blocking read with no data), writes to `tx_log`, and supports the trait methods the reactor calls. Lives in `reactor_harness.rs`, not in production code.
+The closed-state cleanup (`flush_all_completions` at `reactor.rs:548`) happens inside `tick_once()` when `self.state == Closed`, before returning `TickOutcome::Closed`. This preserves the existing semantics exactly: a tick that observes `Closed` flushes once, then the loop exits.
 
-`#[cfg(test)]` guards the test-only `Reactor` constructor that takes a fake port and a `MockClock`. The production `Reactor::new` path is unchanged.
+The harness drives the reactor by calling `tick_once()` between rx-byte injections and clock advances. No thread spawn; no real serial port.
+
+### 2.5 Reactor harness — `src/host_io/test_harness.rs`
+
+**Visibility.** The `Reactor` struct is `pub` but every interesting field (`unacked_window`, `awaiting_response`, `send_seq`, `receive_seq`, `last_ack_seq`, `ignore_nak_seq`, …) is `pub(crate)` (see `host_io/reactor.rs:20`–`50`). `CallHandle` is `pub(crate)` too (`host_io/call_handle.rs:9`). An integration test in `tests/reactor_harness.rs` cannot read those fields. The harness must therefore live **inside** the crate, where `pub(crate)` is visible.
+
+Choice: put the harness at `src/host_io/test_harness.rs`, gated `#[cfg(any(test, feature = "test-harness"))]`. A1, A2, and A4 — the tests that need direct field access — also live as `#[cfg(test)] mod` blocks alongside the harness inside `src/host_io/` rather than as integration tests. A3 (uses `MockTransport`), A5 (pure parser proptest), A6 (ArcSwap monotonicity), and A7 (uses `ClockSyncEstimator`'s public API + `MockClock`) stay as integration tests in `tests/` because they only depend on `pub` API.
+
+```rust
+// src/host_io/test_harness.rs (cfg-gated)
+pub(crate) struct ReactorHarness {
+    reactor: Reactor,
+    clock:   Arc<MockClock>,
+    rx_pipe: Arc<Mutex<VecDeque<u8>>>,
+    tx_log:  Arc<Mutex<Vec<u8>>>,
+}
+
+impl ReactorHarness {
+    pub(crate) fn new() -> Self { /* construct Reactor with fake SerialPort + MockClock via Reactor::new_with_clock */ }
+    pub(crate) fn feed_rx(&mut self, bytes: &[u8]);
+    pub(crate) fn advance_clock(&mut self, by: Duration);
+    pub(crate) fn tick(&mut self) -> TickOutcome;
+    pub(crate) fn submit(&self, payload: Vec<u8>, name: &str, deadline: Instant) -> Receiver<Result<MessageParams, TransportError>>;
+    pub(crate) fn unacked_depth(&self) -> usize;
+    pub(crate) fn awaiting_depth(&self) -> usize;
+    pub(crate) fn tx_log(&self) -> Vec<u8>;
+    pub(crate) fn force_rto(&mut self);
+}
+```
+
+`submit()` returns the `Receiver` half of a sync_channel directly rather than a `CallHandle` — keeps the harness independent of `CallHandle`'s `pub(crate)` API surface. Tests check completion by polling the receiver.
+
+**Fake `SerialPort` surface.** The reactor calls `write_all`, `flush`, `set_timeout`, `read` on its `Box<dyn serialport::SerialPort>` (`reactor.rs:105` for write/flush, `reactor.rs:372` for read). The fake must impl the **full** `serialport::SerialPort` trait — Rust trait coherence requires every method — but only the four behaviorally-relevant methods do anything; the rest stub out (e.g., return `Err(io::ErrorKind::Unsupported.into())` for control-line ops). The existing `reactor.rs:586`–`621` test scaffolding is the reference for how to do this.
 
 ## 3. Test specifications
 
 Each test file targets one concern. Pass criteria are concrete; no statistical thresholds.
 
-### 3.1 A1 — `reactor_seq_wrap.rs`
+### 3.1 A1 — `#[cfg(test)] mod` inside `src/host_io/reactor.rs`
 
-Three boundary cases via the harness: low (counter 15→16), mid (near 2³¹), high (near 2⁶³−16). For each:
+`decode_absolute` (`reactor.rs:212`–`215`) computes `(wire_seq - receive_seq) & 0x0F` and adds `delta` to `receive_seq`. The structurally meaningful boundaries are: every mod-16 wire roll, the empty-window snap path (`reactor.rs:222`–`227`), and overflow risk near `u64::MAX`.
 
-- Submit frames until just below the boundary; advance `MockClock` so RTOs don't fire.
-- Inject ack frames whose 4-bit wire seq forces `decode_absolute` across the boundary.
-- Assert: `last_ack_seq` advances monotonically in absolute space; `UnackedWindow::pop_acked` removes only entries with `entry.seq < rseq` (entries with `seq == rseq` stay — see `host_io/window.rs:35`); `ignore_nak_seq` damper's absolute-seq comparison dominates the 4-bit wire equality so it never matches a frame from a previous wrap epoch.
+Three boundary cases via the harness:
+
+1. **Empty-window snap.** First MCU response with `unacked_window` empty: `update_receive_seq` snaps both `send_seq` and `receive_seq` to `rseq`. Submit no frames; inject an ack with non-zero rseq → both counters jump.
+2. **Mid-range mod-16 wrap.** Submit 12 frames (window cap = `MAX_PENDING_BLOCKS`); advance `MockClock` so RTOs don't fire; inject acks whose 4-bit wire seq advances `receive_seq` across multiple mod-16 boundaries (e.g., counter 14 → 18 spans 16). Verify each ack pops the correct entries.
+3. **Near-`u64::MAX` overflow guard.** Force `receive_seq` to `u64::MAX - 15` (test-only setter behind cfg-gate, or repeated submission/ack cycles); inject an ack that would push `receive_seq + delta` to wrap. Assert: no debug-mode panic; the wrapping_sub at `reactor.rs:213` is correct under the boundary.
+
+For each boundary, assert:
+- `last_ack_seq` advances monotonically in absolute space.
+- `UnackedWindow::pop_acked` removes only entries with `entry.seq < rseq` (entries with `seq == rseq` stay — `host_io/window.rs:35`).
+- `ignore_nak_seq` damper's absolute-seq comparison dominates the 4-bit wire equality so it never matches a frame from a previous wrap epoch.
 - No panics; depth returns to expected value after each boundary cross.
 
 ### 3.2 A2 — `nak_rto_branches.rs`
@@ -155,7 +186,7 @@ Six sub-tests, one per branch. All use harness + `MockClock`.
 3. **RTO fires at SRTT + 4·RTTVAR.** Submit frame; let estimator reach a known SRTT/RTTVAR via injected acks; advance `MockClock` to exactly the RTO threshold → retransmit fires on next tick.
 4. **RTO clamped to floor 25 ms.** Drive estimator to near-zero RTTVAR + tiny SRTT; assert `current_rto()` returns ≥ 25 ms; verify retransmit timing matches floor.
 5. **RTO clamped to ceiling 5 s.** Inflate estimator (large RTT samples); assert `current_rto()` returns ≤ 5 s.
-6. **`MAX_RETRY_COUNT = 8` closure.** Force 8 successive RTOs on the same seq → `KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED` emitted; UnackedWindow cleared.
+6. **`MAX_RETRY_COUNT = 8` closure.** Each call to `write_retransmit()` increments `retry_count` for **every** unacked entry (`reactor.rs:293`–`305`). Drive 8 successive `TimeoutDriven` retransmits via clock-advance + `tick()`; on the 8th iteration, `retry_count >= MAX_RETRY_COUNT` triggers state→`Closed`, stages `KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED` in `pending_host_fault`, and returns `Err(TransportError::Closed)` from `write_retransmit`. UnackedWindow itself is **not** cleared inside `write_retransmit`; the closed-state cleanup runs on the next `tick_once()` and flushes pending completions. The test asserts: fault staged with the right code; subsequent `tick_once()` returns `TickOutcome::Closed`; pending submissions complete with `TransportError::Closed`.
 
 ### 3.3 A3 — `awaiting_response_gc.rs`
 
@@ -165,13 +196,17 @@ Three sub-tests using `MockTransport` (Step 1's high-level RPC mock):
 2. **Per-entry dispatcher timeout.** Entry exceeds deadline → `KALICO_ERR_HOST_DISPATCHER_TIMEOUT` to caller → entry removed → depth 0.
 3. **Disconnect-clears-all.** Reactor disconnect path → every pending entry resolves with `TransportError::Closed` (the variant emitted at `host_io/reactor.rs:485`) → depth 0 post-recovery.
 
-### 3.4 A4 — `nak_submit_race.rs`
+### 3.4 A4 — `#[cfg(test)] mod` inside `src/host_io/reactor.rs`
 
-Single ordering test via harness. The harness's `feed_rx` and `submit` queue events; one `tick()` processes them in defined order. The test queues a NAK for frame N−2 alongside a fresh submission of frame N, ticks, and asserts:
+The `Reactor::run()` loop body (`reactor.rs:503`–`550`) processes phases in fixed order: command drain → serial poll → pending drain → RTO → fault drain → event drain → AwaitingResponse GC → closed exit. Within a single `tick_once()`, a queued submission is processed in step 1 before a queued NAK byte is read in step 2. So same-tick interleaving has a deterministic, *known* shape: new frame writes first, retransmit follows.
 
-- Retransmit of N−2 appears in `tx_log` before frame N.
-- Post-tick `send_seq` and UnackedWindow are consistent.
-- No frame dropped or duplicated.
+The test is a consistency check, not a "what order does the wire see" check. Queue submission of frame N alongside a NAK byte for frame N−2 (via `feed_rx`); call `tick()`; assert:
+
+- `tx_log` contains both the new frame N and the retransmit buffer for N−2 — both go on the wire within the single tick.
+- Post-tick `send_seq`, `last_ack_seq`, and UnackedWindow depth are consistent: window contains exactly `{N−2, N−1, N}` if N−2 was the only outstanding entry pre-tick (retransmit doesn't pop it; the in-flight ack does).
+- No frame dropped, no duplicates beyond the intended retransmit.
+
+The order-on-wire (new frame first, retransmit second) is documented as observed behavior, not as the invariant under test. The invariant is consistency of internal state.
 
 ### 3.5 A5 — `partial_frame_assembly.rs`
 
@@ -205,7 +240,7 @@ Assert:
 
 Six phases, each producing a green build with the previous still passing.
 
-1. **Phase 0 — `Clock` trait + production threading.** Add `src/clock.rs`. Thread `Arc<dyn Clock>` through every site in §2.3. Wire `RealClock` everywhere production constructs the affected types. Existing tests pass unchanged. Commit.
+1. **Phase 0 — `Clock` trait + production threading (backward-compatible).** Add `src/clock.rs`. For each affected type (`ClockSyncEstimator`, `Reactor`), keep the existing constructor signature (`new(...)`) and have it default to `Arc::new(RealClock)`; add a sibling `new_with_clock(..., clock: Arc<dyn Clock>)` that the harness uses. Internally store the clock and route all §2.3 call sites through it. Existing call sites in `mod.rs:164`, the `#[cfg(test)]` blocks at `reactor.rs:640`/`:904`/`:946`, and existing `ClockSyncEstimator` tests do not change. Commit.
 2. **Phase 1 — `tick_once()` extraction.** Refactor `Reactor::run()` per §2.4. Existing tests pass unchanged. Commit.
 3. **Phase 2 — Reactor harness.** Add `tests/reactor_harness.rs` and the `#[cfg(test)]` `Reactor` constructor. Smoke test in the harness file: build, submit, tick, assert empty tx_log when no rx fed. Commit.
 4. **Phase 3 — A1, A2, A4 (harness consumers).** All three together — they share scaffolding. Commit per file or batched.
@@ -251,7 +286,7 @@ A Renode-based sim-soak was specified through two prior revisions of this docume
 **Why each fails the cost/benefit gate in sim:**
 
 - *Memory leaks* — one-hour RSS curve cannot reliably distinguish slow leaks from allocator/cache noise. Canonical leak coverage is inherently 7-D's longer hardware soak.
-- *Reactor livelock under backpressure* — catchable, but the reactor harness's `tick()` loop with sustained submission + zero ack drain catches the same starvation deterministically and faster.
+- *Reactor livelock under backpressure* — partially catchable in the harness. The harness can flood the submission channel beyond the per-tick drain budget (`MAX_SUBMITS_PER_ITER = 4` at `reactor.rs:505`) and observe drain-budget consumption deterministically; it can also exercise the AwaitingResponse-GC path. What it does NOT replicate is realistic `Reactor::run()`-loop pacing under sustained real-time scheduling pressure — that's a sim-or-hardware concern. The harness gives us a deterministic "did the loop body progress correctly under contention" signal, not a "would the production loop wedge under load" signal. The latter is 7-D's bench soak.
 - *Disconnect/reconnect race* — sim disconnects are TCP socket drops, not USB-CDC `BrokenPipe`/`EIO`; the host-state-machine logic is exercisable through the reactor harness's `feed_rx(eof_sentinel)` + reconnect path. Real unplug semantics are 7-D.
 - *Subscriber drop policy* — pure logic; deterministic unit tests against `EventDispatcher` are sharper than soak observation.
 - *Multi-MCU `request_id` correlation* — the harness can construct two `Reactor` instances and exercise the same `arm_all_mcus` path that production hits; no Renode needed.
