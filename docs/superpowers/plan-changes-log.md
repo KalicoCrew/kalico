@@ -359,4 +359,14 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 
 **Review cycles:** 3 codex spec-review rounds during brainstorming (28 findings total fixed, 1 must-fix push-back), 1 codex review on Phase 0 (1 push-back, 0 fixes — pre-existing in-flight changes flagged), 1 codex adversarial review on Phases 1–3 (3 findings: 1 push-back on pre-existing reactor behavior, 2 accepted — A1 boundaries strengthened to actually cross mod-16, A4 strengthened to assert exact byte delta).
 
+---
+
+## 2026-05-01 — CLAUDE.md G5-only rule amended for bridge live-conversion
+
+**What changed:** CLAUDE.md and dependency-graph.md G5-only rule clarified: the planner *reduce stage* (geometry reducer + temporal + trajectory) is the rejection boundary, not the lexer. The `rust/gcode` lexer tokenizes legacy G-code (compat depends on it). Bridge converts live G1/G2/G3 via compat primitives before the reduce stage.
+
+**Why:** Step 7-C-bridge needs to support live G1 from gcode-macros/terminal (user's PRINT_START etc. emit G1). Original rule placed rejection at the lexer, which would have broken compat itself.
+
+**Evidence:** docs/superpowers/specs/2026-05-01-step-7c-bridge-design.md §1.4, §9. Codex review passes 1/2/3 surfaced and confirmed the resolution.
+
 **Evidence:** Tail spec at `docs/superpowers/specs/2026-05-01-step-7c-io-tail-design.md`. Plan at `docs/superpowers/plans/2026-05-01-step-7c-io-tail.md`. Implementation: 14 commits on `sota-motion` (`bd943185d..HEAD` modulo cutover). Parent spec §9 Phase F replaced with back-pointer.
