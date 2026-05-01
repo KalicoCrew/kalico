@@ -283,7 +283,7 @@ pub struct OutboundSpec {
 impl MsgProtoParser {
     /// Construct a parser with an empty data dictionary — useful for tests that
     /// only exercise the wire-protocol layer and never encode/decode messages.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-harness"))]
     pub fn new_empty() -> Self {
         use indexmap::IndexMap;
         Self {

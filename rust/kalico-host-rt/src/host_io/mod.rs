@@ -13,7 +13,7 @@ pub mod reactor;
 pub mod rtt;
 pub mod runtime_events;
 #[cfg(any(test, feature = "test-harness"))]
-pub(crate) mod test_harness;
+pub mod test_harness;
 pub mod window;
 pub mod wire;
 

@@ -30,12 +30,12 @@ use crate::transport::{MessageParams, TransportError};
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub(crate) struct FakePortHandles {
+pub struct FakePortHandles {
     pub rx: Arc<Mutex<VecDeque<u8>>>,
     pub tx: Arc<Mutex<Vec<u8>>>,
 }
 
-pub(crate) struct FakeSerialPort {
+pub struct FakeSerialPort {
     handles: FakePortHandles,
 }
 
@@ -120,7 +120,7 @@ impl SerialPort for FakeSerialPort {
 // ReactorHarness
 // ---------------------------------------------------------------------------
 
-pub(crate) struct ReactorHarness {
+pub struct ReactorHarness {
     pub reactor: Reactor,
     pub clock: Arc<MockClock>,
     pub port_handles: FakePortHandles,
@@ -160,6 +160,16 @@ impl ReactorHarness {
 
     pub fn unacked_depth(&self) -> usize { self.reactor.unacked_window.len() }
     pub fn awaiting_depth(&self) -> usize { self.reactor.awaiting_response.len() }
+    pub fn send_seq(&self) -> u64 { self.reactor.send_seq }
+
+    /// Feed an ACK frame that acknowledges all frames up to (but not
+    /// including) the current `send_seq`. This clears the reactor's unacked
+    /// window so tests can verify resumed emission after backpressure.
+    pub fn feed_ack_all(&self) {
+        let seq_nibble = (self.reactor.send_seq & 0x0F) as u8;
+        let frame = crate::host_io::wire::build_frame(&[], seq_nibble);
+        self.feed_rx(&frame);
+    }
 
     /// Submit directly through `Reactor::dispatch_submission`, bypassing the
     /// mpsc channel. Returns the completion `Receiver` so the test can poll.
@@ -175,6 +185,143 @@ impl ReactorHarness {
             call_id, payload, expected_response_name.to_string(), tx, deadline,
         );
         rx
+    }
+
+    // ── Passthrough-router helpers (used by external integration tests) ──
+
+    /// Install a passthrough router for the given MCU handle.
+    pub fn install_passthrough_router(
+        &mut self,
+        router: crate::passthrough_queue::PassthroughRouter,
+        mcu: crate::passthrough_queue::McuHandle,
+    ) {
+        self.reactor.set_passthrough_router(router, mcu);
+    }
+
+    /// Push an entry directly into the passthrough router.
+    pub fn passthrough_push(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+        queue_id: crate::passthrough_queue::CommandQueueId,
+        entry: crate::passthrough_queue::PassthroughEntry,
+    ) -> Result<(), crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .push(mcu, queue_id, entry)
+    }
+
+    /// Dispatch a response through the passthrough router's notify table.
+    pub fn passthrough_dispatch_response(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+        notify_id: crate::passthrough_queue::NotifyId,
+        response_bytes: Vec<u8>,
+    ) -> Result<(), crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .dispatch_response(mcu, notify_id, response_bytes)
+    }
+
+    /// Register a notify callback on the passthrough router.
+    pub fn passthrough_register_notify(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+        cb: crate::passthrough_queue::NotifyCallback,
+    ) -> Result<crate::passthrough_queue::NotifyId, crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .register_notify(mcu, cb)
+    }
+
+    /// Acknowledge bytes through the passthrough router's receive window.
+    pub fn passthrough_record_ack(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+        acked_bytes: u64,
+    ) -> Result<(), crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .record_ack(mcu, acked_bytes)
+    }
+
+    /// Add a config command to the MCU's config stage.
+    pub fn passthrough_add_config_cmd(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+        bytes: Vec<u8>,
+    ) -> Result<bool, crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .add_config_cmd(mcu, bytes)
+    }
+
+    /// Add an init command to the MCU's config stage.
+    pub fn passthrough_add_init_cmd(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+        bytes: Vec<u8>,
+    ) -> Result<bool, crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .add_init_cmd(mcu, bytes)
+    }
+
+    /// Begin the config phase for the MCU.
+    pub fn passthrough_begin_config_phase(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+    ) -> Result<(), crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed")
+            .begin_config_phase(mcu)
+    }
+
+    /// Drain all available config/init entries from the router.
+    pub fn passthrough_drain_config_entries(
+        &mut self,
+        mcu: crate::passthrough_queue::McuHandle,
+    ) -> Result<Vec<Vec<u8>>, crate::passthrough_queue::RouterError> {
+        let router = self.reactor
+            .passthrough_router
+            .as_mut()
+            .expect("no passthrough router installed");
+        let mut entries = Vec::new();
+        while let Some(e) = router.next_config_entry(mcu)? {
+            entries.push(e);
+        }
+        Ok(entries)
+    }
+
+    /// Returns the current config-stage phase for the MCU.
+    pub fn passthrough_config_phase(
+        &self,
+        mcu: crate::passthrough_queue::McuHandle,
+    ) -> Result<crate::passthrough_queue::ConfigStagePhase, crate::passthrough_queue::RouterError> {
+        self.reactor
+            .passthrough_router
+            .as_ref()
+            .expect("no passthrough router installed")
+            .config_phase(mcu)
+    }
+
+    /// Number of entries in the passthrough notify map (notify-bearing entries
+    /// that have been emitted and are awaiting a response).
+    pub fn passthrough_notify_map_len(&self) -> usize {
+        self.reactor.passthrough_notify_map.len()
     }
 }
 

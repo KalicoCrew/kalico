@@ -690,7 +690,7 @@ impl Reactor {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TickOutcome {
+pub enum TickOutcome {
     Continue,
     Closed,
 }
@@ -706,7 +706,7 @@ impl Reactor {
     /// tests can drive the reactor deterministically via the test harness
     /// (spec §2.4). Closed-state cleanup runs inside; on `TickOutcome::Closed`
     /// the next call must not be made (the loop in `run()` exits).
-    pub(crate) fn tick_once(&mut self) -> TickOutcome {
+    pub fn tick_once(&mut self) -> TickOutcome {
         // 1. Drain reactor commands (bounded per iteration).
         for _ in 0..MAX_SUBMITS_PER_ITER {
             match self.submission_rx.try_recv() {

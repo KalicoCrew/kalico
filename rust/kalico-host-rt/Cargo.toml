@@ -41,5 +41,9 @@ test-harness = []
 [dev-dependencies]
 proptest = "1"
 
+[[test]]
+name = "passthrough_integration"
+required-features = ["test-harness"]
+
 [lints]
 workspace = true
