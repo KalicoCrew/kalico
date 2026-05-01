@@ -25,5 +25,8 @@ log = "0.4"
 arc-swap = "1"
 serde_json = "1"
 
+[dev-dependencies]
+rustfft = "6"
+
 [lints]
 workspace = true
