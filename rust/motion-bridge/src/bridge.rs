@@ -26,11 +26,16 @@ use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
 use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::planner::{PlannerError, PlannerHandle};
 use crate::router_transport::RouterTransport;
+use crate::slot_pool::{SlotPool, CURVE_POOL_N};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
-/// Initial credit seed for the per-MCU `CreditCounter`. Generous so the
-/// dispatch closure never stalls on credit during MVP wiring; real
-/// `kalico_credit_freed` accounting comes later.
+/// Initial credit seed for the per-MCU `CreditCounter`. The bridge wires
+/// `kalico_credit_freed` events into [`CreditCounter::on_credit_freed`] via
+/// [`PyMotionBridge::on_credit_freed`] — but the upstream event-routing
+/// path (an inbound serial reactor) is not yet hooked up to the bridge,
+/// so in practice this seed bounds the in-flight credit budget for the
+/// whole print. Sized generously so motion doesn't stall on credit before
+/// the routing lands.
 const CREDIT_SEED_CAPACITY: i32 = 1024;
 
 // ── Internal types ──────────────────────────────────────────────────────
@@ -127,6 +132,13 @@ pub struct PyMotionBridge {
     /// Counter of shaped segments observed by the dispatch callback. Used by
     /// tests / sim to verify the planner pipeline ran end-to-end.
     dispatched_segments: Arc<AtomicU64>,
+    /// Per-MCU curve-slot allocator. Populated by `init_planner` and
+    /// driven by `on_credit_freed` (segment-id retirement → slot release).
+    /// `Arc<Mutex<SlotPool>>` so the dispatch closure (planner thread) and
+    /// the event-routing thread (klippy reactor, eventually) can share it.
+    slot_pools: Arc<Mutex<HashMap<u32, Arc<Mutex<SlotPool>>>>>,
+    /// Per-MCU `CreditCounter`. Same sharing pattern as `slot_pools`.
+    credit_counters: Arc<Mutex<HashMap<u32, Arc<CreditCounter>>>>,
     /// Total number of times the dispatch closure took the
     /// `host_time_to_mcu_clock` fallback path (because the per-MCU clock
     /// estimate had not yet been installed by `set_clock_est`). Production
@@ -153,6 +165,8 @@ impl PyMotionBridge {
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
             dispatched_segments: Arc::new(AtomicU64::new(0)),
+            slot_pools: Arc::new(Mutex::new(HashMap::new())),
+            credit_counters: Arc::new(Mutex::new(HashMap::new())),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -591,9 +605,16 @@ impl PyMotionBridge {
         let parser_slot = Arc::clone(&self.parser);
         let router_arc = Arc::clone(&self.router);
 
-        // Per-MCU dispatch context (transport + credit) keyed by mcu_id.
-        let mut transports: HashMap<u32, (Arc<RouterTransport>, Arc<CreditCounter>)> =
+        // Per-MCU dispatch context (transport + credit + slot pool) keyed by
+        // mcu_id. `transports` is the closure-local lookup map; the credit
+        // and slot-pool tables on `self` are the persistent ones the
+        // event-routing API (`on_credit_freed`) drives.
+        let mut transports: HashMap<u32, (Arc<RouterTransport>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>)> =
             HashMap::new();
+        let mut self_credits = self.credit_counters.lock().unwrap();
+        let mut self_pools = self.slot_pools.lock().unwrap();
+        self_credits.clear();
+        self_pools.clear();
         for cfg_mcu in &mcu_configs {
             let mcu_h = mcu_handle_from_raw(cfg_mcu.mcu_id);
             let cq: CommandQueueId = self
@@ -608,40 +629,24 @@ impl PyMotionBridge {
                 cq,
                 Arc::clone(&parser_slot),
             ));
-            // TODO: replace seeded counter with real `kalico_credit_freed`
-            // event accounting once the bridge listens for those events.
             let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
-            transports.insert(cfg_mcu.mcu_id, (transport, credit));
+            let slot_pool = Arc::new(Mutex::new(SlotPool::new()));
+            self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
+            self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
+            transports.insert(
+                cfg_mcu.mcu_id,
+                (transport, credit, slot_pool),
+            );
         }
+        drop(self_credits);
+        drop(self_pools);
 
         let mcu_configs_for_cb = mcu_configs;
         let router_for_cb = Arc::clone(&router_arc);
 
-        // Per-MCU rolling slot index for `kalico_load_curve`.
-        //
-        // Wire type is `u16` (matches `producer::load_curve`'s `slot:
-        // u16` field). Firmware-side curve pool capacity is
-        // `runtime::curve_pool::CURVE_POOL_N = 64` (see
-        // `rust/runtime/src/curve_pool.rs`), so any slot index `>= 64`
-        // will be rejected by the firmware's bounds check and surface as
-        // a `kalico_load_curve_response { result != 0 }` error.
-        //
-        // Today the counter just `wrapping_add(1)`s — it does NOT modulo
-        // by `CURVE_POOL_N`, and it does NOT consult the reclaim pipeline
-        // to know which slots are free. After 64 segments the bridge
-        // will start returning errors from `load_curve` until the
-        // counter wraps back to 0 (which on a u16 is ~65k segments, i.e.
-        // never within a single print).
-        //
-        // TODO(slot-pool): wire to a real free-slot allocator backed by
-        // the firmware's `kalico_curve_freed` event stream. Until then,
-        // tests / sim runs that exceed 64 segments without restart will
-        // fail. (Integration tests today stay well under this.) The u16
-        // wire width is intentionally preserved so the future allocator
-        // can address a larger pool without a wire-format change.
-        let next_slot: Arc<Mutex<HashMap<u32, u16>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        // Per-MCU rolling segment id.
+        // Per-MCU rolling segment id. Allocated alongside the slot to
+        // bind the `kalico_credit_freed.retired_through_segment_id`
+        // retirement signal to the segment's curve slots.
         let next_seg_id: Arc<Mutex<HashMap<u32, u32>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -658,7 +663,7 @@ impl PyMotionBridge {
             );
 
             for plan in &mut plans {
-                let (transport, credit) = match transports.get(&plan.mcu_id) {
+                let (transport, credit, slot_pool) = match transports.get(&plan.mcu_id) {
                     Some(v) => v,
                     None => continue,
                 };
@@ -712,22 +717,42 @@ impl PyMotionBridge {
                 // Take the curves out so we can mutate `plan.params` in the
                 // body of the loop without an outstanding immutable borrow.
                 let curves = std::mem::take(&mut plan.curves_to_load);
+                let mut allocated_slots: Vec<u16> = Vec::with_capacity(curves.len());
                 for (axis_idx, curve_params) in &curves {
-                    let slot: u16 = {
-                        let mut slots = next_slot.lock().unwrap();
-                        let entry = slots.entry(plan.mcu_id).or_insert(0);
-                        let v = *entry;
-                        *entry = entry.wrapping_add(1);
-                        v
+                    let (slot, _gen) = {
+                        let mut pool = slot_pool.lock().unwrap();
+                        pool.try_alloc().ok_or_else(|| {
+                            format!(
+                                "slot pool exhausted for mcu={} (capacity={CURVE_POOL_N}, in_flight={}); \
+                                 awaiting kalico_credit_freed retirement events",
+                                plan.mcu_id,
+                                pool.in_flight_count(),
+                            )
+                        })?
                     };
+                    allocated_slots.push(slot);
                     let handle = producer::load_curve(
                         transport.as_ref(),
                         slot,
                         curve_params,
                         producer::DEFAULT_LOAD_CURVE_TIMEOUT,
                     )
-                    .map_err(|e| format!("load_curve mcu={}: {e}", plan.mcu_id))?;
+                    .map_err(|e| {
+                        // Failed wire call — return the slot to the pool.
+                        let mut pool = slot_pool.lock().unwrap();
+                        pool.release(slot);
+                        format!("load_curve mcu={}: {e}", plan.mcu_id)
+                    })?;
                     plan.set_handle(*axis_idx, handle);
+                }
+
+                // Bind every freshly-allocated slot to this segment id so
+                // `kalico_credit_freed`-driven retirement can release them.
+                {
+                    let mut pool = slot_pool.lock().unwrap();
+                    for slot in &allocated_slots {
+                        pool.register_segment(*slot, plan.params.id);
+                    }
                 }
 
                 producer::push_segment(transport.as_ref(), credit, &plan.params)
@@ -865,6 +890,62 @@ impl PyMotionBridge {
     /// sim hook — not part of the klippy-facing API.
     fn dispatched_segment_count(&self) -> u64 {
         self.dispatched_segments.load(Ordering::Relaxed)
+    }
+
+    /// Drive the bridge with a `kalico_credit_freed` event.
+    ///
+    /// `retired_through_segment_id` releases every curve slot bound to a
+    /// segment id `<= retired_through_segment_id` in the per-MCU
+    /// [`SlotPool`]. `free_slots` is reconciled into the per-MCU
+    /// [`CreditCounter`] (the MCU is authoritative — see
+    /// [`CreditCounter::on_credit_freed`]).
+    ///
+    /// Returns the number of curve slots released. Unknown MCU is a no-op
+    /// returning 0 (defensive — events for un-claimed MCUs are dropped).
+    ///
+    /// Wire-routing note: as of HEAD `799bdd867` no host-side serial
+    /// reactor inside the bridge calls this. klippy's reactor receives
+    /// `kalico_credit_freed` over its existing serial loop and is
+    /// expected to forward the event into this method once the routing
+    /// hook is wired.
+    fn on_credit_freed(
+        &self,
+        mcu: u32,
+        retired_through_segment_id: u32,
+        free_slots: u8,
+    ) -> PyResult<u32> {
+        let n_released = match self.slot_pools.lock().unwrap().get(&mcu) {
+            Some(pool_arc) => pool_arc
+                .lock()
+                .unwrap()
+                .retire_through_segment(retired_through_segment_id),
+            None => 0,
+        };
+        if let Some(c) = self.credit_counters.lock().unwrap().get(&mcu) {
+            c.on_credit_freed(free_slots);
+        }
+        Ok(n_released as u32)
+    }
+
+    /// Number of curve slots currently in flight on the given MCU. Test /
+    /// diagnostic hook.
+    fn slot_pool_in_flight(&self, mcu: u32) -> u32 {
+        self.slot_pools
+            .lock()
+            .unwrap()
+            .get(&mcu)
+            .map(|p| p.lock().unwrap().in_flight_count() as u32)
+            .unwrap_or(0)
+    }
+
+    /// Available credit for the given MCU. Test / diagnostic hook.
+    fn credit_available(&self, mcu: u32) -> i32 {
+        self.credit_counters
+            .lock()
+            .unwrap()
+            .get(&mcu)
+            .map(|c| c.available())
+            .unwrap_or(0)
     }
 
     /// Number of times the dispatch closure took the `t * 1e6` fallback

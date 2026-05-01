@@ -8,6 +8,8 @@ pub mod dispatch;
 #[doc(hidden)]
 pub mod planner;
 mod router_transport;
+#[doc(hidden)]
+pub mod slot_pool;
 mod types;
 
 use pyo3::prelude::*;

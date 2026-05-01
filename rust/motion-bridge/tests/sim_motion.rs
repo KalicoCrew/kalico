@@ -71,6 +71,7 @@ use motion_bridge::dispatch::{
     AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, build_push_params,
 };
 use motion_bridge::planner::PlannerHandle;
+use motion_bridge::slot_pool::{SlotPool, CURVE_POOL_N};
 
 // ---------------------------------------------------------------------------
 // RecordingTransport — synchronous recording stub for `kalico_load_curve` and
@@ -334,7 +335,12 @@ struct Harness {
     planner: Option<PlannerHandle>,
     transports: HashMap<u32, Arc<RecordingTransport>>,
     dispatched: Arc<AtomicU64>,
+    /// Per-MCU slot pool — same data structure the bridge uses, exposed
+    /// to tests so they can simulate `kalico_credit_freed` retirement
+    /// events.
+    slot_pools: HashMap<u32, Arc<Mutex<SlotPool>>>,
 }
+
 
 impl Harness {
     /// Single-MCU harness — Octopus drives X+Y as CoreXY (kinematics=0).
@@ -387,9 +393,11 @@ impl Harness {
     ) -> Self {
         let mut transports: HashMap<u32, Arc<RecordingTransport>> = HashMap::new();
         let mut credits: HashMap<u32, Arc<CreditCounter>> = HashMap::new();
+        let mut slot_pools: HashMap<u32, Arc<Mutex<SlotPool>>> = HashMap::new();
         for cfg in &mcu_configs {
             transports.insert(cfg.mcu_id, Arc::new(RecordingTransport::new()));
             credits.insert(cfg.mcu_id, Arc::new(CreditCounter::new(1024)));
+            slot_pools.insert(cfg.mcu_id, Arc::new(Mutex::new(SlotPool::new())));
         }
 
         let dispatched = Arc::new(AtomicU64::new(0));
@@ -398,11 +406,9 @@ impl Harness {
         // Capture per-MCU state into the dispatch closure.
         let cb_transports = transports.clone();
         let cb_credits = credits.clone();
+        let cb_slot_pools = slot_pools.clone();
         let cb_mcu_configs = mcu_configs.clone();
 
-        // Per-MCU rolling slot index (matches bridge::init_planner behaviour).
-        let next_slot: Arc<Mutex<HashMap<u32, u16>>> =
-            Arc::new(Mutex::new(HashMap::new()));
         let next_seg_id: Arc<Mutex<HashMap<u32, u32>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -438,15 +444,21 @@ impl Harness {
                     *entry = entry.wrapping_add(1);
                 }
 
+                let pool = cb_slot_pools.get(&plan.mcu_id).unwrap().clone();
                 let curves = std::mem::take(&mut plan.curves_to_load);
+                let mut allocated_slots: Vec<u16> = Vec::with_capacity(curves.len());
                 for (axis_idx, curve_params) in &curves {
-                    let slot: u16 = {
-                        let mut slots = next_slot.lock().unwrap();
-                        let entry = slots.entry(plan.mcu_id).or_insert(0);
-                        let v = *entry;
-                        *entry = entry.wrapping_add(1);
-                        v
-                    };
+                    let (slot, _gen) = pool
+                        .lock()
+                        .unwrap()
+                        .try_alloc()
+                        .ok_or_else(|| {
+                            format!(
+                                "slot pool exhausted for mcu={}",
+                                plan.mcu_id
+                            )
+                        })?;
+                    allocated_slots.push(slot);
                     transport.note_next_load_axis(*axis_idx);
                     let handle = producer::load_curve(
                         transport.as_ref(),
@@ -455,9 +467,16 @@ impl Harness {
                         DEFAULT_LOAD_CURVE_TIMEOUT,
                     )
                     .map_err(|e| {
+                        pool.lock().unwrap().release(slot);
                         format!("load_curve mcu={}: {e}", plan.mcu_id)
                     })?;
                     plan.set_handle(*axis_idx, handle);
+                }
+                {
+                    let mut p = pool.lock().unwrap();
+                    for slot in &allocated_slots {
+                        p.register_segment(*slot, plan.params.id);
+                    }
                 }
 
                 producer::push_segment(transport.as_ref(), &credit, &plan.params)
@@ -496,7 +515,29 @@ impl Harness {
             planner: Some(planner),
             transports,
             dispatched,
+            slot_pools,
         }
+    }
+
+    /// Simulate a `kalico_credit_freed` event for the given MCU. Releases
+    /// curve slots whose owning segment id is `<= retired_through`.
+    /// Mirrors what `PyMotionBridge::on_credit_freed` does at runtime.
+    fn simulate_credit_freed(&self, mcu: u32, retired_through: u32) -> usize {
+        self.slot_pools
+            .get(&mcu)
+            .map(|p| {
+                p.lock()
+                    .unwrap()
+                    .retire_through_segment(retired_through)
+            })
+            .unwrap_or(0)
+    }
+
+    fn slot_pool_in_flight(&self, mcu: u32) -> usize {
+        self.slot_pools
+            .get(&mcu)
+            .map(|p| p.lock().unwrap().in_flight_count())
+            .unwrap_or(0)
     }
 
     fn submit_move(
@@ -1064,6 +1105,99 @@ fn batched_two_move_curves_are_sane() {
         "[1] ncps={} wildly exceeds [0] ncps={} — control-point explosion",
         c1.cps.len(),
         c0.cps.len()
+    );
+}
+
+/// Regression: dispatch must not blow up the firmware curve-pool capacity
+/// (`CURVE_POOL_N = 64`). Pre-fix the dispatch closure rolled a u16 slot
+/// counter so any 65th-and-onward slot would be rejected by firmware
+/// bounds-check. Post-fix, the bridge owns a real `SlotPool` and slot
+/// reuse is gated on `kalico_credit_freed` retirement events.
+///
+/// This test:
+///   1. Submits N moves (alternating direction) and flushes between
+///      submissions so segments enter the dispatch closure faster than
+///      they're retired.
+///   2. After each flush, simulates a `kalico_credit_freed` event with
+///      the latest known segment id, releasing every in-flight slot.
+///   3. Asserts no exhaustion occurred (the dispatch closure would have
+///      surfaced "slot pool exhausted" via PlannerError::Dispatch
+///      otherwise) AND that the in-flight count is bounded.
+#[test]
+fn slot_pool_recycles_via_credit_freed_events() {
+    let h = Harness::corexy_only();
+
+    // 100 short X moves — well past the 64-slot pool capacity. Without
+    // recycling this would either error or wedge the planner.
+    let n = 100usize;
+    let mut x = 0.0_f64;
+    for i in 0..n {
+        let dx = if i % 2 == 0 { 5.0 } else { -5.0 };
+        h.submit_move([x, 0.0, 0.0], dx, 0.0, 0.0, 0.0, 1000.0)
+            .unwrap_or_else(|e| panic!("submit_move {i}: {e}"));
+        x += dx;
+        h.flush();
+
+        // Simulate the firmware retiring everything up through the most
+        // recent dispatched segment. The harness allocates segment ids
+        // monotonically per MCU starting at 1, so passing u32::MAX
+        // retires the lot. (Equivalent to a real `kalico_credit_freed`
+        // arriving with `retired_through_segment_id` advanced past every
+        // in-flight segment.)
+        h.simulate_credit_freed(OCTOPUS_ID, u32::MAX);
+    }
+
+    // After full retirement the pool must have zero slots in flight.
+    assert_eq!(
+        h.slot_pool_in_flight(OCTOPUS_ID),
+        0,
+        "all slots should have been released after retire-all event"
+    );
+    // And we should have dispatched at least n segments.
+    assert!(
+        h.dispatched.load(Ordering::Relaxed) >= n as u64,
+        "expected ≥{n} dispatched, saw {}",
+        h.dispatched.load(Ordering::Relaxed)
+    );
+
+    // The CURVE_POOL_N constant must be the same one the bridge uses.
+    assert_eq!(CURVE_POOL_N, 64);
+}
+
+/// Regression: without retirement events, the slot pool exhausts after
+/// `CURVE_POOL_N` allocations and the dispatch closure surfaces a clean
+/// `PlannerError::Dispatch`. (Pre-fix this manifested as a firmware-side
+/// `kalico_load_curve_response { result != 0 }` once slot >= 64.)
+#[test]
+fn slot_pool_exhaustion_surfaces_as_dispatch_error() {
+    let h = Harness::corexy_only();
+
+    // Each X move yields ≤ 2 curve allocs on the Octopus (X + Y, with Y
+    // possibly elided as trivially-constant). 80 moves is comfortably
+    // past the 64-slot capacity even in the best-case 1-slot-per-move
+    // scenario. Submit and flush WITHOUT retirement events.
+    let mut x = 0.0_f64;
+    let mut first_err: Option<String> = None;
+    for i in 0..80 {
+        let dx = if i % 2 == 0 { 5.0 } else { -5.0 };
+        let r = h.submit_move([x, 0.0, 0.0], dx, 0.0, 0.0, 0.0, 1000.0);
+        if let Err(e) = r {
+            first_err = Some(e.to_string());
+            break;
+        }
+        x += dx;
+        if let Err(e) = h.planner.as_ref().unwrap().flush() {
+            first_err = Some(e.to_string());
+            break;
+        }
+    }
+
+    let msg = first_err.expect(
+        "expected slot-pool exhaustion within 80 moves without retirement events",
+    );
+    assert!(
+        msg.contains("slot pool exhausted") || msg.contains("Dispatch"),
+        "expected slot-pool-exhaustion error, got: {msg}"
     );
 }
 
