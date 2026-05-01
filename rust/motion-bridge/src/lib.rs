@@ -1,8 +1,12 @@
 mod bridge;
-mod classify;
-mod config;
-mod dispatch;
-mod planner;
+#[doc(hidden)]
+pub mod classify;
+#[doc(hidden)]
+pub mod config;
+#[doc(hidden)]
+pub mod dispatch;
+#[doc(hidden)]
+pub mod planner;
 mod router_transport;
 mod types;
 

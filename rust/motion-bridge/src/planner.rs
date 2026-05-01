@@ -74,6 +74,7 @@ impl std::error::Error for PlannerError {}
 // Handle
 // ---------------------------------------------------------------------------
 
+#[allow(missing_debug_implementations)]
 pub struct PlannerHandle {
     sender: Sender<PlannerMsg>,
     join_handle: Option<JoinHandle<()>>,

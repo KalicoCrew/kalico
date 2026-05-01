@@ -9,7 +9,7 @@ license.workspace = true
 
 [lib]
 name = "motion_bridge"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
