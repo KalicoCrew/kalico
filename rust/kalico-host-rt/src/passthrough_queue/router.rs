@@ -50,6 +50,12 @@ struct McuRecord {
     window: ReceiveWindow,
     sent_times: HashMap<NotifyId, f64>,
     config_stage: ConfigStage,
+    /// MCU oscillator frequency in Hz.
+    clock_freq: f64,
+    /// Offset for host_time -> mcu_clock conversion.
+    clock_offset: f64,
+    /// Last known MCU clock value.
+    last_clock: u64,
 }
 
 impl std::fmt::Debug for McuRecord {
@@ -61,6 +67,8 @@ impl std::fmt::Debug for McuRecord {
             .field("window", &self.window)
             .field("sent_times_count", &self.sent_times.len())
             .field("config_stage", &self.config_stage)
+            .field("clock_freq", &self.clock_freq)
+            .field("last_clock", &self.last_clock)
             .finish()
     }
 }
@@ -119,6 +127,9 @@ impl PassthroughRouter {
                 window: ReceiveWindow::new(),
                 sent_times: HashMap::new(),
                 config_stage: ConfigStage::new(),
+                clock_freq: 0.0,
+                clock_offset: 0.0,
+                last_clock: 0,
             },
         );
         handle
@@ -247,6 +258,42 @@ impl PassthroughRouter {
     pub fn config_phase(&self, mcu: McuHandle) -> Result<ConfigStagePhase, RouterError> {
         let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.config_stage.phase())
+    }
+
+    // ── Clock estimation API ────────────────────────────────────────────
+
+    /// Update the clock estimation parameters for an MCU.
+    /// Called by the clock-sync subsystem whenever it refines its estimate.
+    pub fn set_clock_est(
+        &mut self,
+        mcu: McuHandle,
+        freq: f64,
+        offset: f64,
+        last_clock: u64,
+    ) -> Result<(), RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        rec.clock_freq = freq;
+        rec.clock_offset = offset;
+        rec.last_clock = last_clock;
+        Ok(())
+    }
+
+    /// Compute the projected MCU ack-clock from the current host time and
+    /// clock estimation parameters.
+    ///
+    /// `projected_clock = last_clock + (host_now_secs - clock_offset) * clock_freq`
+    ///
+    /// Returns 0 if clock estimation has not been set (freq == 0).
+    pub fn compute_ack_clock(&self, mcu: McuHandle) -> Result<u64, RouterError> {
+        let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        if rec.clock_freq == 0.0 {
+            return Ok(0);
+        }
+        let host_now = instant_to_f64(self.clock.now());
+        let delta = (host_now - rec.clock_offset) * rec.clock_freq;
+        #[allow(clippy::cast_sign_loss)]
+        let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
+        Ok(projected)
     }
 }
 
@@ -386,5 +433,50 @@ mod tests {
         // Should be able to emit more now
         let got = router.pop_next_for_emission(mcu).unwrap();
         assert!(got.is_some());
+    }
+
+    // ── Clock estimation tests ──────────────────────────────────────────
+
+    #[test]
+    fn set_clock_est_stores_values() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+
+        // Before setting, compute_ack_clock returns 0 (freq == 0).
+        assert_eq!(router.compute_ack_clock(mcu).unwrap(), 0);
+
+        router.set_clock_est(mcu, 48_000_000.0, 0.0, 1000).unwrap();
+
+        // After setting, compute_ack_clock returns non-zero.
+        let ack = router.compute_ack_clock(mcu).unwrap();
+        assert!(ack >= 1000, "ack_clock should be at least last_clock");
+    }
+
+    #[test]
+    fn compute_ack_clock_projects_from_host_time() {
+        let (mut router, clock) = make_router();
+        let mcu = router.claim_mcu("mcu");
+
+        // Record the base host time, then set clock_offset = base host time.
+        let base_host = instant_to_f64(clock.now());
+        router
+            .set_clock_est(mcu, 1_000_000.0, base_host, 0)
+            .unwrap();
+
+        // At t=0 from offset, projected clock = 0 + 0 * freq = 0.
+        let ack0 = router.compute_ack_clock(mcu).unwrap();
+        assert_eq!(ack0, 0);
+
+        // Advance 1 second — projected clock = 0 + 1.0 * 1_000_000 = 1_000_000.
+        clock.advance(Duration::from_secs(1));
+        let ack1 = router.compute_ack_clock(mcu).unwrap();
+        assert_eq!(ack1, 1_000_000);
+    }
+
+    #[test]
+    fn compute_ack_clock_unknown_mcu_errors() {
+        let (router, _) = make_router();
+        let bogus = McuHandle(999);
+        assert!(router.compute_ack_clock(bogus).is_err());
     }
 }
