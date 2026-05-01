@@ -5,6 +5,7 @@
 //! that the Python-side code can be developed in parallel.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyRuntimeError;
@@ -15,7 +16,12 @@ use kalico_host_rt::clock::RealClock;
 use kalico_host_rt::passthrough_queue::{
     NotifyId, PassthroughEntry, PassthroughRouter,
 };
+use trajectory::{AxisShaper, ShaperConfig};
 
+use crate::classify;
+use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
+use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
+use crate::planner::{PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
 // ── Internal types ──────────────────────────────────────────────────────
@@ -61,6 +67,24 @@ fn router_err(e: kalico_host_rt::passthrough_queue::RouterError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
+/// Map `PlannerError` to a Python `RuntimeError`.
+fn planner_err(e: PlannerError) -> PyErr {
+    PyRuntimeError::new_err(e.to_string())
+}
+
+fn build_shaper_config(
+    type_x: &str,
+    freq_x: f64,
+    type_y: &str,
+    freq_y: f64,
+) -> Result<ShaperConfig, String> {
+    Ok(ShaperConfig {
+        x: parse_required_shaper(type_x, freq_x)?,
+        y: parse_required_shaper(type_y, freq_y)?,
+        z: AxisShaper::Passthrough,
+    })
+}
+
 // ── PyMotionBridge ──────────────────────────────────────────────────────
 
 #[pyclass(name = "MotionBridge")]
@@ -76,6 +100,19 @@ pub struct PyMotionBridge {
     /// dispatch — actual dispatch requires the reactor thread.
     #[allow(dead_code)]
     handlers: Mutex<HashMap<(u32, String, u32), PyObject>>,
+
+    // ── Phase-2 motion-submission state (Task 8) ────────────────────────
+    /// Spawned planner thread (None until `init_planner` is called).
+    planner: Mutex<Option<PlannerHandle>>,
+    /// Current planner config snapshot, mutated by `update_limits` / `update_shaper`.
+    planner_config: Mutex<PlannerConfig>,
+    /// Last commanded toolhead position (set by `set_position`, advanced by `submit_move`).
+    commanded_pos: Mutex<[f64; 3]>,
+    /// Per-MCU axis assignment, populated by `init_planner`.
+    mcu_axis_configs: Mutex<Vec<McuAxisConfig>>,
+    /// Counter of shaped segments observed by the dispatch callback. Used by
+    /// tests / sim to verify the planner pipeline ran end-to-end.
+    dispatched_segments: Arc<AtomicU64>,
 }
 
 #[pymethods]
@@ -90,8 +127,14 @@ impl PyMotionBridge {
             mcus: Mutex::new(HashMap::new()),
             events: Arc::new(Mutex::new(VecDeque::new())),
             handlers: Mutex::new(HashMap::new()),
+            planner: Mutex::new(None),
+            planner_config: Mutex::new(PlannerConfig::default()),
+            commanded_pos: Mutex::new([0.0; 3]),
+            mcu_axis_configs: Mutex::new(Vec::new()),
+            dispatched_segments: Arc::new(AtomicU64::new(0)),
         }
     }
+
 
     /// Crate version.
     fn version(&self) -> &'static str {
@@ -396,5 +439,250 @@ impl PyMotionBridge {
         d.set_item("sent", sent_list)?;
         d.set_item("received", received_list)?;
         Ok(d.unbind())
+    }
+
+    // ── Task 8: motion-submission methods ───────────────────────────────
+
+    /// Initialize the planner thread with config from `printer.cfg`.
+    ///
+    /// `octopus_handle` and `f446_handle` are the raw `claim_mcu()` handles
+    /// for the two-MCU first-print MVP topology:
+    ///   - Octopus drives X+Y (CoreXyAndE = kinematics 0).
+    ///   - F446 drives Z (CartesianXyzAndE = kinematics 1).
+    #[pyo3(signature = (
+        max_velocity,
+        max_accel,
+        max_z_velocity,
+        max_z_accel,
+        square_corner_velocity,
+        shaper_type_x,
+        shaper_freq_x,
+        shaper_type_y,
+        shaper_freq_y,
+        octopus_handle,
+        f446_handle,
+        window_capacity = 32,
+        beta_max_iters = 10,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn init_planner(
+        &self,
+        max_velocity: f64,
+        max_accel: f64,
+        max_z_velocity: f64,
+        max_z_accel: f64,
+        square_corner_velocity: f64,
+        shaper_type_x: &str,
+        shaper_freq_x: f64,
+        shaper_type_y: &str,
+        shaper_freq_y: f64,
+        octopus_handle: u32,
+        f446_handle: u32,
+        window_capacity: usize,
+        beta_max_iters: u8,
+    ) -> PyResult<()> {
+        let mut planner_slot = self.planner.lock().unwrap();
+        if planner_slot.is_some() {
+            return Err(PyRuntimeError::new_err(
+                "planner already initialized",
+            ));
+        }
+
+        let shaper = build_shaper_config(
+            shaper_type_x,
+            shaper_freq_x,
+            shaper_type_y,
+            shaper_freq_y,
+        )
+        .map_err(PyRuntimeError::new_err)?;
+
+        let limits = PlannerLimits {
+            max_velocity,
+            max_accel,
+            max_z_velocity,
+            max_z_accel,
+            square_corner_velocity,
+        };
+
+        let mut cfg = config::PlannerConfig::default();
+        cfg.limits = limits;
+        cfg.shaper = shaper;
+        cfg.window_capacity = window_capacity;
+        cfg.beta_max_iters = beta_max_iters;
+
+        // Persist for runtime updates.
+        *self.planner_config.lock().unwrap() = cfg.clone();
+
+        // Two-MCU first-print MVP topology.
+        let mcu_configs = vec![
+            McuAxisConfig {
+                mcu_id: octopus_handle,
+                axes: vec![AXIS_X, AXIS_Y],
+                kinematics: 0, // CoreXyAndE
+            },
+            McuAxisConfig {
+                mcu_id: f446_handle,
+                axes: vec![AXIS_Z],
+                kinematics: 1, // CartesianXyzAndE
+            },
+        ];
+        *self.mcu_axis_configs.lock().unwrap() = mcu_configs.clone();
+
+        // Dispatch callback. For the first-print MVP wiring this builds the
+        // per-MCU push plans (proving classify → planner → shape → dispatch
+        // flows end-to-end) and increments a counter that tests can observe.
+        //
+        // TODO(post-Task-8): actually push the load_curve / push_segment
+        // wire commands. That requires a `Transport` impl bridged through
+        // `PassthroughRouter` (the producer-side `load_curve` and
+        // `push_segment` need synchronous request/response, which the
+        // current passthrough router does not expose). Tracked separately
+        // from Task 8's scope.
+        let counter = Arc::clone(&self.dispatched_segments);
+        let mcu_configs_for_cb = mcu_configs;
+        let dispatch: Arc<
+            dyn Fn(&trajectory::ShapedSegment) + Send + Sync,
+        > = Arc::new(move |seg: &trajectory::ShapedSegment| {
+            // TODO: real clock conversion once per-MCU clock state is
+            // reachable from the dispatch closure. Placeholder maps print-
+            // time seconds → microseconds-as-clock-ticks.
+            let t_start_clock = (seg.t_start * 1e6) as u64;
+            let t_end_clock = (seg.t_end * 1e6) as u64;
+            let _plans = build_push_params(
+                seg,
+                &mcu_configs_for_cb,
+                t_start_clock,
+                t_end_clock,
+            );
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+
+        *planner_slot = Some(PlannerHandle::spawn(cfg, dispatch));
+        Ok(())
+    }
+
+    /// Submit a travel move. Phase 2: `de` must be 0.
+    #[pyo3(signature = (dx, dy, dz, de, feedrate))]
+    fn submit_move(
+        &self,
+        dx: f64,
+        dy: f64,
+        dz: f64,
+        de: f64,
+        feedrate: f64,
+    ) -> PyResult<()> {
+        let pos = *self.commanded_pos.lock().unwrap();
+        let classified =
+            classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+        let planner_guard = self.planner.lock().unwrap();
+        let planner = planner_guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "planner not initialized — call init_planner first",
+            )
+        })?;
+        planner.submit_move(classified).map_err(planner_err)?;
+        drop(planner_guard);
+
+        let mut pos = self.commanded_pos.lock().unwrap();
+        pos[0] += dx;
+        pos[1] += dy;
+        pos[2] += dz;
+        Ok(())
+    }
+
+    /// Flush all pending moves and block until the planner has shaped them.
+    fn wait_moves(&self) -> PyResult<()> {
+        let planner_guard = self.planner.lock().unwrap();
+        let planner = planner_guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "planner not initialized — call init_planner first",
+            )
+        })?;
+        planner.flush().map_err(planner_err)
+    }
+
+    /// Submit a dwell: flush + advance print time.
+    fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
+        let planner_guard = self.planner.lock().unwrap();
+        let planner = planner_guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "planner not initialized — call init_planner first",
+            )
+        })?;
+        planner.dwell(duration_s).map_err(planner_err)
+    }
+
+    /// Reset commanded position. The planner does not track absolute
+    /// position (only print_time), so this is a bridge-local update.
+    fn set_position(&self, x: f64, y: f64, z: f64) -> PyResult<()> {
+        let mut pos = self.commanded_pos.lock().unwrap();
+        *pos = [x, y, z];
+        Ok(())
+    }
+
+    /// Update velocity / acceleration limits at runtime
+    /// (klippy `SET_VELOCITY_LIMIT`).
+    fn update_limits(
+        &self,
+        max_velocity: f64,
+        max_accel: f64,
+    ) -> PyResult<()> {
+        let mut cfg = self.planner_config.lock().unwrap();
+        cfg.limits.max_velocity = max_velocity;
+        cfg.limits.max_accel = max_accel;
+        let new_limits = cfg.limits;
+        drop(cfg);
+
+        let planner_guard = self.planner.lock().unwrap();
+        let planner = planner_guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "planner not initialized — call init_planner first",
+            )
+        })?;
+        planner.update_limits(new_limits).map_err(planner_err)
+    }
+
+    /// Update shaper config at runtime (klippy `SET_INPUT_SHAPER`).
+    fn update_shaper(
+        &self,
+        shaper_type_x: &str,
+        freq_x: f64,
+        shaper_type_y: &str,
+        freq_y: f64,
+    ) -> PyResult<()> {
+        let shaper = build_shaper_config(
+            shaper_type_x,
+            freq_x,
+            shaper_type_y,
+            freq_y,
+        )
+        .map_err(PyRuntimeError::new_err)?;
+
+        self.planner_config.lock().unwrap().shaper = shaper.clone();
+
+        let planner_guard = self.planner.lock().unwrap();
+        let planner = planner_guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "planner not initialized — call init_planner first",
+            )
+        })?;
+        planner.update_shaper(shaper).map_err(planner_err)
+    }
+
+    /// Estimated print time of the last queued move, in seconds.
+    fn get_last_move_time(&self) -> f64 {
+        let planner_guard = self.planner.lock().unwrap();
+        match planner_guard.as_ref() {
+            Some(p) => p.last_move_time(),
+            None => 0.0,
+        }
+    }
+
+    /// Number of shaped segments observed by the dispatch callback. Test /
+    /// sim hook — not part of the klippy-facing API.
+    fn dispatched_segment_count(&self) -> u64 {
+        self.dispatched_segments.load(Ordering::Relaxed)
     }
 }
