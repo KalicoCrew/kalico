@@ -554,6 +554,7 @@ dependencies = [
  "log",
  "proptest",
  "pyo3",
+ "runtime",
  "serde",
  "serde_json",
  "serialport",
@@ -663,6 +664,21 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "motion-bridge"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "compat",
+ "gcode",
+ "geometry",
+ "kalico-host-rt",
+ "log",
+ "pyo3",
+ "temporal",
+ "trajectory",
 ]
 
 [[package]]

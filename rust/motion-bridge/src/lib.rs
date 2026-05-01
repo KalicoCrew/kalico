@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 #[pyclass(name = "MotionBridge")]
+#[derive(Debug)]
 pub struct PyMotionBridge {
     _placeholder: (),
 }
