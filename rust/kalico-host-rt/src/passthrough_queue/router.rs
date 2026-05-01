@@ -23,6 +23,14 @@ impl McuHandle {
     pub fn raw(&self) -> u32 {
         self.0
     }
+
+    /// Reconstruct an `McuHandle` from a raw `u32` previously obtained via
+    /// [`raw()`](Self::raw). The caller is responsible for ensuring the
+    /// value refers to a live MCU — the router will return
+    /// `RouterError::UnknownMcu` if it does not.
+    pub fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[derive(Debug)]

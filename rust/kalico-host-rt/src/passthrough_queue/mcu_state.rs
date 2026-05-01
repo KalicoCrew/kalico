@@ -13,6 +13,13 @@ impl CommandQueueId {
     pub fn raw(&self) -> u32 {
         self.0
     }
+
+    /// Reconstruct a `CommandQueueId` from a raw `u32` previously obtained
+    /// via [`raw()`](Self::raw). The caller is responsible for ensuring the
+    /// value refers to an allocated queue.
+    pub fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[derive(Debug)]
