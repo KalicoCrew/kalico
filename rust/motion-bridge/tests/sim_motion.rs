@@ -965,6 +965,119 @@ fn set_velocity_limit_applies_to_next_move() {
     );
 }
 
+/// Regression: batched two-move dispatch — the second segment in a single
+/// planner window must ship a curve in the right rough order of magnitude:
+/// finite duration, finite span, control-point count not blown up by ~10x.
+///
+/// History (bug #17):
+/// - Pre-fix: seg[1] shipped as `span = 8.07e22 mm`, `duration = 5000 s`,
+///   `ncps = 1792` — total numerical corruption.
+/// - Mechanism: a derate cascade in `trajectory::beta`. Pure-X submit gives Y
+///   axis a sub-mm pre-shape span; post-shape Y `peak_accel` is dominated by
+///   shaper-boundary numerical transients (the kernel's `c = 15/(16 h^5)`
+///   constant amplifies short-piece coefficients through double
+///   differentiation). β-medium derates Y `planning_a_max` toward zero based
+///   on this fake peak; the next iteration's seg[1] re-plans with the clamped
+///   Y limit and explodes.
+/// - Two guards stop the cascade (see `beta.rs`):
+///   1. `MIN_AXIS_SPAN_FOR_DERATE = 0.5 mm` — both `compute_derate` and the
+///      apply step skip an axis whose pre-shape position span is below this
+///      threshold.
+///   2. `BETA_ACCEL_MIN_RATIO = 0.02` — `planning_a_max` is clamped to at
+///      least 2 % of `machine_a_max`. Last-line defence against the cascade.
+///   With both guards, post-shape span collapses from 8e22 mm to ~64 mm and
+///   duration to ~1.34 s.
+///
+/// Residual (NOT fixed in this commit, see TODO):
+/// - The shipped `cp[last]` for seg[1] is ~114 mm rather than ~100 mm. Sampling
+///   the post-shape NURBS shows it is correct (≈100 mm) up to 99 % of segment
+///   progress, then jumps to ~114 mm only at the final knot. This is a
+///   numerical artifact in the very last Bézier piece produced by the
+///   `convolve` → `restrict_to_domain` pipeline when the input has many
+///   neighbour pieces (i.e. multi-segment batches). Single-flush dispatch
+///   (one segment per batch) does not exhibit this — `cp[last]` is clean to
+///   sub-µm. So this is a `convolve+restrict` boundary issue surfaced only
+///   by batched dispatch, not a planner / derate issue.
+/// - Fixing it requires changes to `nurbs::algebra::convolve` or
+///   `restrict_to_domain` to clean up degenerate trailing pieces, which is
+///   out of scope for this focused regression-fix pass.
+///
+/// This test therefore asserts the looser invariant: the curve must be in the
+/// right *order of magnitude* (catches the original 8e22 / 5000s corruption),
+/// not exact (would catch the 14 mm `cp[last]` artifact, which is a separate
+/// known bug).
+#[test]
+fn batched_two_move_curves_are_sane() {
+    let h = Harness::corexy_only();
+    // Two X-axis moves into one batch, single trailing flush.
+    h.submit_move([0.0; 3], 50.0, 0.0, 0.0, 0.0, 1000.0)
+        .expect("submit_move 1");
+    h.submit_move([50.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0)
+        .expect("submit_move 2");
+    h.flush();
+
+    let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
+    // Both segments must have dispatched.
+    assert!(
+        h.dispatched.load(Ordering::Relaxed) >= 2,
+        "expected ≥2 dispatched segments"
+    );
+
+    // Collect (curve, duration) pairs for the X axis only, minimum 1 mm span.
+    let pairs = octopus.moving_capture_duration_pairs(Some(AXIS_X), 1.0);
+    assert_eq!(
+        pairs.len(),
+        2,
+        "expected exactly 2 moving X-axis captures (one per segment), got {}",
+        pairs.len()
+    );
+
+    let (c0, dur0) = &pairs[0];
+    let (c1, dur1) = &pairs[1];
+
+    // ---- sanity: segment 0 ----
+    // Seg[0] is the leading segment in the batch and is unaffected by the
+    // batched-tail-piece artifact, so we can pin it tightly.
+    assert!(
+        *dur0 > 0.0 && *dur0 < 10.0,
+        "[0] duration={dur0:.4}s out of range [0, 10]"
+    );
+    let span0 = capture_motion_mm(c0);
+    assert!(
+        (span0 - 50.0).abs() < 1.0,
+        "[0] span={span0:.4}mm, expected ~50mm"
+    );
+
+    // ---- sanity: segment 1 (the previously-corrupt one) ----
+    // Loose bounds catching the original 8e22 / 5000s corruption while
+    // tolerating the residual `cp[last]` artifact (see header).
+    //
+    // Bound for `dur1`: physical move time at 3000 mm/s² with a smooth-MZV
+    // 50 Hz kernel (~ 38 ms total support) is ~0.85 s. The β-medium floor
+    // (2 % of machine_a_max) lets the planner stretch the segment by up to
+    // `1/0.02 = 50x` in the worst case, so a ceiling of 50 s gives the
+    // floor headroom and still flags any genuine cascade explosion.
+    assert!(
+        *dur1 > 0.0 && *dur1 < 50.0,
+        "[1] duration={dur1:.4}s out of range [0, 50] — likely a derate cascade (pre-fix was 5000s)"
+    );
+    // Span bound: real motion is 50 mm. Allow up to ~64 mm worst observed
+    // post-fix (50 mm physical + 14 mm trailing-piece artifact). 100 mm
+    // catches the 8e22 mm pre-fix corruption with margin.
+    let span1 = capture_motion_mm(c1);
+    assert!(
+        span1 < 100.0,
+        "[1] span={span1:.4}mm, expected < 100mm — likely corrupt (pre-fix was 8e22 mm)"
+    );
+    // CP count must be in the same ballpark as segment 0 (not 1792 vs ~136).
+    assert!(
+        c1.cps.len() < c0.cps.len() * 4,
+        "[1] ncps={} wildly exceeds [0] ncps={} — control-point explosion",
+        c1.cps.len(),
+        c0.cps.len()
+    );
+}
+
 /// Regression coverage for the TemporalJoining stall fix (485ec4d93).
 /// Five sequential moves with reversals must all flow through the planner
 /// without `StalledOnInfeasibleSegment`, and produce a non-trivial number
@@ -1009,3 +1122,4 @@ fn multi_move_chain_completes_without_stall() {
     );
 
 }
+

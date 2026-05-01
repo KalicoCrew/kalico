@@ -3,6 +3,24 @@
 // Stage 5 of the trajectory shaping pipeline. Iterates TOPP-RA → time-reparam →
 // fit → pad → convolve → peak-accel → derate until post-shape peaks converge
 // within machine limits (or iteration cap is reached).
+//
+// ## Derate stability
+//
+// Two guards prevent runaway feedback when multiple segments share a junction:
+//
+// 1. **Inactive-axis skip**: an axis whose pre-shape (fitted) position span is
+//    below `MIN_AXIS_SPAN_FOR_DERATE` is not derated. For pure-X moves the Y
+//    axis moves ≪ 1 mm; its post-shape `peak_accel` value is dominated by
+//    shaper-boundary numerical transients (amplified by `1/dt²` at 40 kHz) that
+//    do not correspond to physical acceleration. Derating Y for a pure-X move
+//    would reduce `planning_a_max[Y]`, which then propagates through the temporal
+//    joining loop to drive the junction velocity toward zero, causing a cascade
+//    that produces astronomically large subsequent peaks (up to `6e28 mm/s²`)
+//    and ultimately a 5000-second degenerate segment on the second move.
+//
+// 2. **Floor**: `planning_a_max[seg][axis]` is clamped to at least
+//    `machine_a_max[seg][axis] * BETA_ACCEL_MIN_RATIO`. This is a safety net
+//    against the cascade even if the inactive-axis check is not sufficient.
 
 use crate::fit::FittedSegment;
 use crate::pad::EHalo;
@@ -11,6 +29,21 @@ use crate::{BetaWarning, ShapeBatchInput, ShapeBatchOutput, ShapeError, ShapedSe
 use geometry::segment::EMode;
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::ScalarNurbs;
+
+/// Minimum position span (mm) for an axis to be eligible for beta-derate.
+///
+/// Axes whose pre-shape (fitted) position span is below this threshold are
+/// treated as inactive for derating purposes. Their post-shape `peak_accel`
+/// value is dominated by numerical transients from the shaper boundary
+/// convolution rather than real physical acceleration; derating them would
+/// cascade the junction velocity toward zero.
+const MIN_AXIS_SPAN_FOR_DERATE: f64 = 0.5;
+
+/// Minimum fraction of `machine_a_max` that `planning_a_max` is allowed to
+/// reach. Guards against runaway derate even if `MIN_AXIS_SPAN_FOR_DERATE`
+/// is insufficient (e.g., a genuinely small-span move with large boundary
+/// transients on an active axis).
+const BETA_ACCEL_MIN_RATIO: f64 = 0.02;
 
 /// Per-axis kernel set, pre-built from the `ShaperConfig`.
 struct AxisKernels {
@@ -94,7 +127,7 @@ pub fn beta_loop(
         };
 
         // Stage 5: check post-shape peaks against machine limits.
-        let derate_info = compute_derate(&result.peaks, &machine_a_max);
+        let derate_info = compute_derate(&result.peaks, &machine_a_max, &result.fitted);
 
         if !derate_info.needs_derate {
             // Converged: no axis on any segment exceeds machine limit.
@@ -113,16 +146,28 @@ pub fn beta_loop(
         }
 
         // Apply monotone derate: planning_a_max[seg][axis] *= machine / peak,
-        // but never increase it.
+        // clamped to BETA_ACCEL_MIN_RATIO × machine and skipping axes whose
+        // pre-shape position span is below MIN_AXIS_SPAN_FOR_DERATE.
         for (seg_flat_idx, peak_per_axis) in result.peaks.iter().enumerate() {
             for axis in 0..3 {
                 let peak = peak_per_axis[axis];
                 let machine = machine_a_max[seg_flat_idx][axis];
                 if peak > machine {
+                    // Skip derating an axis that is not actively contributing to
+                    // this segment's motion. A small pre-shape position span means
+                    // the post-shape peak is driven by shaper-boundary numerical
+                    // transients, not real physical acceleration.
+                    let fitted_span = axis_span(&result.fitted[seg_flat_idx].axes[axis]);
+                    if fitted_span < MIN_AXIS_SPAN_FOR_DERATE {
+                        continue;
+                    }
+
                     let ratio = machine / peak;
+                    let floor = machine * BETA_ACCEL_MIN_RATIO;
                     planning_a_max[seg_flat_idx][axis] = (planning_a_max[seg_flat_idx][axis]
                         * ratio)
-                        .min(planning_a_max[seg_flat_idx][axis]);
+                        .min(planning_a_max[seg_flat_idx][axis])
+                        .max(floor);
                 }
             }
         }
@@ -145,7 +190,7 @@ pub fn beta_loop(
                     break;
                 }
             };
-            let final_derate = compute_derate(&final_result.peaks, &machine_a_max);
+            let final_derate = compute_derate(&final_result.peaks, &machine_a_max, &final_result.fitted);
             beta_warning = Some(BetaWarning {
                 worst_ratio: final_derate.worst_ratio,
                 segments_exceeding: final_derate.exceeding_indices.clone(),
@@ -178,7 +223,7 @@ pub fn beta_loop(
 }
 
 fn beta_warning_from_last(result: &BetaIterResult, machine_a_max: &[[f64; 3]]) -> BetaWarning {
-    let derate = compute_derate(&result.peaks, machine_a_max);
+    let derate = compute_derate(&result.peaks, machine_a_max, &result.fitted);
     BetaWarning {
         worst_ratio: derate.worst_ratio,
         segments_exceeding: derate.exceeding_indices,
@@ -469,13 +514,26 @@ struct DerateInfo {
     exceeding_indices: Vec<usize>,
 }
 
-fn compute_derate(peaks: &[[f64; 3]], machine_a_max: &[[f64; 3]]) -> DerateInfo {
+fn compute_derate(
+    peaks: &[[f64; 3]],
+    machine_a_max: &[[f64; 3]],
+    fitted: &[crate::fit::FittedSegment],
+) -> DerateInfo {
     let mut needs_derate = false;
     let mut worst_ratio: f64 = 0.0;
     let mut exceeding_indices = Vec::new();
 
     for (seg_idx, (peak, machine)) in peaks.iter().zip(machine_a_max.iter()).enumerate() {
         for axis in 0..3 {
+            // Skip axes that are not actively contributing to this segment's
+            // motion: their post-shape `peak` is dominated by shaper-boundary
+            // numerical transients, not physical acceleration. Counting them
+            // here would keep the loop spinning ("needs_derate") indefinitely
+            // even though the per-axis apply step correctly skips them.
+            let fitted_span = axis_span(&fitted[seg_idx].axes[axis]);
+            if fitted_span < MIN_AXIS_SPAN_FOR_DERATE {
+                continue;
+            }
             if peak[axis] > machine[axis] {
                 let ratio = peak[axis] / machine[axis];
                 if ratio > worst_ratio {
@@ -494,6 +552,21 @@ fn compute_derate(peaks: &[[f64; 3]], machine_a_max: &[[f64; 3]]) -> DerateInfo 
         worst_ratio,
         exceeding_indices,
     }
+}
+
+/// Compute the peak-to-peak span of a scalar NURBS axis over all control
+/// points. Used to decide whether an axis is "active" for beta-derate
+/// purposes: an axis with span < `MIN_AXIS_SPAN_FOR_DERATE` contributes
+/// negligible physical motion and its post-shape peak acceleration is
+/// dominated by numerical boundary transients.
+fn axis_span(curve: &ScalarNurbs<f64>) -> f64 {
+    let cps = curve.control_points();
+    if cps.is_empty() {
+        return 0.0;
+    }
+    let min = cps.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = cps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    max - min
 }
 
 // ---------------------------------------------------------------------------
@@ -916,13 +989,27 @@ mod tests {
     // ------------------------------------------------------------------
     #[test]
     fn derate_detects_exceeding_peaks() {
+        // Build a one-segment fitted with all axes spanning >> MIN_AXIS_SPAN_FOR_DERATE
+        // so the inactive-axis skip does not apply.
+        let make_axis = |x_start: f64, x_end: f64| {
+            nurbs::bezier::bezier_pieces_to_nurbs(&[nurbs::bezier::BezierPiece {
+                u_start: 0.0,
+                u_end: 1.0,
+                coeffs: vec![x_start, x_end - x_start],
+            }])
+        };
+        let fitted = vec![crate::fit::FittedSegment {
+            axes: [make_axis(0.0, 100.0), make_axis(0.0, 100.0), make_axis(0.0, 100.0)],
+            t_start: 0.0,
+            t_end: 1.0,
+        }];
         let machine = vec![[5000.0, 5000.0, 5000.0]];
         let peaks_within = vec![[4000.0, 3000.0, 2000.0]];
-        let info = compute_derate(&peaks_within, &machine);
+        let info = compute_derate(&peaks_within, &machine, &fitted);
         assert!(!info.needs_derate);
 
         let peaks_exceed = vec![[6000.0, 3000.0, 2000.0]];
-        let info = compute_derate(&peaks_exceed, &machine);
+        let info = compute_derate(&peaks_exceed, &machine, &fitted);
         assert!(info.needs_derate);
         assert!((info.worst_ratio - 1.2).abs() < 1e-10);
         assert_eq!(info.exceeding_indices, vec![0]);

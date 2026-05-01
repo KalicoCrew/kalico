@@ -29,13 +29,16 @@ pub fn peak_accel(curve: &ScalarNurbs<f64>) -> f64 {
     for piece in &pieces {
         let duration = piece.u_end - piece.u_start;
         if duration < 3.0 * dt {
-            // Piece too short for finite differences — fall back to symbolic
-            // differentiation (acceptable for very short pieces where the
-            // coefficient magnitude issue doesn't matter).
-            let d2 = piece.differentiate().differentiate();
-            let a_start = d2.evaluate(piece.u_start).abs();
-            let a_end = d2.evaluate(piece.u_end).abs();
-            peak = peak.max(a_start).max(a_end);
+            // Piece too short for finite differences. Skip — very short pieces
+            // (< 75 µs at 40 kHz) contribute negligibly to physical motion and
+            // their symbolic second derivatives are numerically unreliable for
+            // high-degree convolved NURBS (kernel normalization constant
+            // c = 15/(16h^5) creates large polynomial coefficients that amplify
+            // through double differentiation, causing catastrophic cancellation).
+            // The beta-medium loop's derate accuracy is dominated by longer pieces
+            // where finite differences are used correctly; skipping short-piece
+            // symbolic fallback prevents spurious inflated peak estimates that
+            // drive the derate ratio below physically meaningful limits.
             continue;
         }
 
