@@ -109,6 +109,28 @@ pub(crate) fn map_status(
         (
             SlpOutcome::Diverged {
                 last_max_ratio,
+                outer_iters: _,
+            },
+            _,
+        ) if verify.feasible => {
+            // Symmetric with the `MaxIters` promotion below: when the SLP
+            // outer loop stalls (ratio plateau or trust-region collapse) at a
+            // band-edge iterate that the verifier nonetheless accepts within
+            // `EPS_FEAS`, the iterate IS feasible by our authoritative bar.
+            // Without this branch, knife-edge cases where the SLP residual sits
+            // just above its internal threshold but below the verifier's would
+            // be rejected even though `verify::check` says feasible — same
+            // pathology that motivated the `MaxIters` promotion (see comment
+            // there). Carry the SLP's measured ratio for diagnostic continuity:
+            // `last_max_ratio - 1.0` is the SLP's own residual estimate.
+            let _ = last_max_ratio;
+            SolveStatus::SolvedInexact {
+                residual: verify.worst_violation,
+            }
+        }
+        (
+            SlpOutcome::Diverged {
+                last_max_ratio,
                 outer_iters,
             },
             _,
