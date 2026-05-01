@@ -26,6 +26,7 @@
 //! can run on top of either the Step-6 minimal [`host_io::KalicoHostIo`]
 //! (post-Step-7) or a test harness today.
 
+pub mod clock;
 pub mod clock_sync;
 pub mod credit;
 pub mod fault;
