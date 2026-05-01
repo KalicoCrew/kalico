@@ -476,9 +476,10 @@ impl Harness {
         cfg.limits = override_limits.unwrap_or(PlannerLimits {
             max_velocity: 300.0,
             max_accel: 3000.0,
-            // Generous Z limits — the default 15 mm/s / 100 mm/s² combined
-            // with the X/Y-axis-derived corner-deviation chord tolerance
-            // make even modest pure-Z moves trip TemporalJoining infeasibility.
+            // Generous Z limits — the default 15 mm/s / 100 mm/s² were
+            // originally chosen to avoid a now-fixed TemporalJoining
+            // infeasibility (485ec4d93); kept generous so the harness default
+            // doesn't constrain Z-axis test scenarios.
             max_z_velocity: 50.0,
             max_z_accel: 500.0,
             square_corner_velocity: 5.0,
@@ -673,8 +674,9 @@ fn extrusion_rejected() {
 //   * the velocity profile respects `max_velocity`,
 //   * `update_limits` takes effect on subsequent moves.
 //
-// All X-axis-only — pure-Z is broken by an unrelated joining bug (tracked
-// separately) and does not belong in this set.
+// All X-axis-only — pure-Z joining is now sound (fixed in the same batch as
+// the TemporalJoining-SLP fix), but these tests are intentionally scoped to
+// X-axis kinematics.
 // ---------------------------------------------------------------------------
 
 /// Reconstruct an f64 `ScalarNurbs` from a captured load_curve payload.
@@ -788,17 +790,14 @@ fn shaper_attenuates_resonance_and_respects_accel_limit() {
     // motion, which yields useful FFT bin resolution near 50 Hz.
     let h = Harness::corexy_only();
 
-    // Three back-to-back X moves totalling 300 mm; flush between each so
-    // they shape as separate batches (multi-move-in-one-batch hits an
-    // unrelated `non-contiguous Bezier pieces` panic in temporal joining
-    // that's outside the TemporalJoining-SLP fix's scope). Concatenated
-    // captures still give ~hundreds of ms of shaped motion.
+    // Three back-to-back X moves totalling 300 mm submitted in one batch;
+    // batched multi-segment dispatch is sound now that convolve final-piece
+    // corruption (bug #18, fixed in 4812ac647) and all its cascade follow-ups
+    // (f4dcafaf8, 0b23ecca4, 79c5a5047, e02deb0cf) are resolved.
     h.submit_move([0.0; 3], 50.0, 0.0, 0.0, 0.0, 1000.0)
         .expect("submit_move 1");
-    h.flush();
     h.submit_move([50.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0)
         .expect("submit_move 2");
-    h.flush();
     h.submit_move([100.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0)
         .expect("submit_move 3");
     h.flush();
