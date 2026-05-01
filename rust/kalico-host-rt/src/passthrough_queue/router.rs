@@ -56,6 +56,11 @@ struct McuRecord {
     clock_offset: f64,
     /// Last known MCU clock value.
     last_clock: u64,
+    /// Callbacks fired on the non-empty -> empty transition.
+    flush_callbacks: Vec<Box<dyn Fn() + Send>>,
+    /// Tracks whether the queues were non-empty at some point, so the
+    /// callback only fires on a genuine non-empty -> empty transition.
+    was_non_empty: bool,
 }
 
 impl std::fmt::Debug for McuRecord {
@@ -69,6 +74,8 @@ impl std::fmt::Debug for McuRecord {
             .field("config_stage", &self.config_stage)
             .field("clock_freq", &self.clock_freq)
             .field("last_clock", &self.last_clock)
+            .field("flush_callbacks_count", &self.flush_callbacks.len())
+            .field("was_non_empty", &self.was_non_empty)
             .finish()
     }
 }
@@ -130,6 +137,8 @@ impl PassthroughRouter {
                 clock_freq: 0.0,
                 clock_offset: 0.0,
                 last_clock: 0,
+                flush_callbacks: Vec::new(),
+                was_non_empty: false,
             },
         );
         handle
@@ -172,7 +181,8 @@ impl PassthroughRouter {
 
     /// Pop the next entry for emission if the receive window allows it.
     /// Records the emit in the window and stores the sent timestamp for
-    /// any notify-bearing entry.
+    /// any notify-bearing entry. Also tracks the non-empty state for flush
+    /// callback triggering.
     pub fn pop_next_for_emission(
         &mut self,
         mcu: McuHandle,
@@ -183,6 +193,7 @@ impl PassthroughRouter {
         }
         let entry = rec.state.pop_next();
         if let Some(ref e) = entry {
+            rec.was_non_empty = true;
             let bytes_len = e.bytes().len() as u64;
             rec.window.record_emit(bytes_len);
             if !e.notify_id().is_none() {
@@ -294,6 +305,35 @@ impl PassthroughRouter {
         #[allow(clippy::cast_sign_loss)]
         let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
         Ok(projected)
+    }
+
+    // ── Flush callbacks ─────────────────────────────────────────────────
+
+    /// Register a callback that fires on the non-empty -> empty transition
+    /// for the given MCU's queues.
+    pub fn register_flush_callback(
+        &mut self,
+        mcu: McuHandle,
+        cb: Box<dyn Fn() + Send>,
+    ) -> Result<(), RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        rec.flush_callbacks.push(cb);
+        Ok(())
+    }
+
+    /// Check whether the MCU's queues transitioned from non-empty to empty.
+    /// If so, fire all registered flush callbacks.
+    ///
+    /// Call this after draining emissions for a tick.
+    pub fn check_flush(&mut self, mcu: McuHandle) -> Result<(), RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        if rec.was_non_empty && rec.state.is_all_ready_empty() {
+            rec.was_non_empty = false;
+            for cb in &rec.flush_callbacks {
+                cb();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -478,5 +518,103 @@ mod tests {
         let (router, _) = make_router();
         let bogus = McuHandle(999);
         assert!(router.compute_ack_clock(bogus).is_err());
+    }
+
+    // ── Flush callback tests ────────────────────────────────────────────
+
+    #[test]
+    fn flush_callback_fires_on_non_empty_to_empty_transition() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        let count = Arc::new(Mutex::new(0u32));
+        let count2 = Arc::clone(&count);
+        router
+            .register_flush_callback(mcu, Box::new(move || {
+                *count2.lock().unwrap() += 1;
+            }))
+            .unwrap();
+
+        // Enqueue and emit one entry.
+        router.push(mcu, q, entry(0, 10)).unwrap();
+        let _ = router.pop_next_for_emission(mcu).unwrap();
+
+        // Now queues are empty — check_flush should fire the callback.
+        router.check_flush(mcu).unwrap();
+        assert_eq!(*count.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn flush_callback_does_not_fire_if_never_non_empty() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let _q = router.alloc_command_queue(mcu).unwrap();
+
+        let count = Arc::new(Mutex::new(0u32));
+        let count2 = Arc::clone(&count);
+        router
+            .register_flush_callback(mcu, Box::new(move || {
+                *count2.lock().unwrap() += 1;
+            }))
+            .unwrap();
+
+        // Never pushed anything — check_flush should NOT fire.
+        router.check_flush(mcu).unwrap();
+        assert_eq!(*count.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn flush_multiple_callbacks_all_fire() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        let c1 = Arc::new(Mutex::new(0u32));
+        let c2 = Arc::new(Mutex::new(0u32));
+        let c1b = Arc::clone(&c1);
+        let c2b = Arc::clone(&c2);
+
+        router
+            .register_flush_callback(mcu, Box::new(move || {
+                *c1b.lock().unwrap() += 1;
+            }))
+            .unwrap();
+        router
+            .register_flush_callback(mcu, Box::new(move || {
+                *c2b.lock().unwrap() += 1;
+            }))
+            .unwrap();
+
+        router.push(mcu, q, entry(0, 10)).unwrap();
+        let _ = router.pop_next_for_emission(mcu).unwrap();
+        router.check_flush(mcu).unwrap();
+
+        assert_eq!(*c1.lock().unwrap(), 1);
+        assert_eq!(*c2.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn flush_does_not_fire_twice_without_new_entries() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        let count = Arc::new(Mutex::new(0u32));
+        let count2 = Arc::clone(&count);
+        router
+            .register_flush_callback(mcu, Box::new(move || {
+                *count2.lock().unwrap() += 1;
+            }))
+            .unwrap();
+
+        router.push(mcu, q, entry(0, 10)).unwrap();
+        let _ = router.pop_next_for_emission(mcu).unwrap();
+        router.check_flush(mcu).unwrap();
+        assert_eq!(*count.lock().unwrap(), 1);
+
+        // Second check_flush without new entries — should not fire again.
+        router.check_flush(mcu).unwrap();
+        assert_eq!(*count.lock().unwrap(), 1);
     }
 }

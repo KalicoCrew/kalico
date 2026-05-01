@@ -88,6 +88,11 @@ impl McuState {
         best_key.and_then(|id| self.queues.get_mut(&id).and_then(CommandQueue::pop_ready))
     }
 
+    /// Returns `true` if all ready queues are empty (no entries to emit).
+    pub fn is_all_ready_empty(&self) -> bool {
+        self.queues.values().all(CommandQueue::is_ready_empty)
+    }
+
     /// Peek at the lowest `req_clock` across all queues without popping.
     ///
     /// If non-background entries exist, background entries are excluded from
