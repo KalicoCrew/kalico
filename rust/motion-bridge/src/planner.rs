@@ -74,6 +74,7 @@ impl std::error::Error for PlannerError {}
 pub struct PlannerHandle {
     sender: Sender<PlannerMsg>,
     join_handle: Option<JoinHandle<()>>,
+    /// Single-slot: a second error before the caller observes the first overwrites it.
     error: Arc<Mutex<Option<PlannerError>>>,
     /// Latest "last move time" snapshot — bits of an f64.
     last_move_time_bits: Arc<AtomicU64>,
@@ -146,8 +147,15 @@ impl PlannerHandle {
                 notify: tx,
             })
             .map_err(|_| PlannerError::ChannelClosed)?;
-        rx.recv().map_err(|_| PlannerError::ChannelClosed)?;
-        Ok(())
+        match rx.recv() {
+            Ok(()) => self.check_error(),
+            Err(_) => {
+                // Sender dropped: either pipeline error trashed pending_dwell,
+                // or thread exited. Surface the stored error if present.
+                self.check_error()?;
+                Err(PlannerError::ChannelClosed)
+            }
+        }
     }
 
     pub fn update_limits(&self, l: PlannerLimits) -> Result<(), PlannerError> {
@@ -210,6 +218,7 @@ fn run_loop(
         let mut buffer: Vec<CubicSegment> = Vec::new();
         let mut pending_flush: Option<Sender<()>> = None;
         let mut pending_dwell: Option<(f64, Sender<()>)> = None;
+        let mut pending_config_update: Option<ConfigUpdate> = None;
         let mut shutdown = false;
 
         handle_msg(
@@ -217,6 +226,7 @@ fn run_loop(
             &mut buffer,
             &mut pending_flush,
             &mut pending_dwell,
+            &mut pending_config_update,
             &mut shutdown,
             &mut config,
         );
@@ -225,6 +235,7 @@ fn run_loop(
         while !(buffer.len() >= config.window_capacity
             || pending_flush.is_some()
             || pending_dwell.is_some()
+            || pending_config_update.is_some()
             || shutdown)
         {
             match rx.try_recv() {
@@ -233,6 +244,7 @@ fn run_loop(
                     &mut buffer,
                     &mut pending_flush,
                     &mut pending_dwell,
+                    &mut pending_config_update,
                     &mut shutdown,
                     &mut config,
                 ),
@@ -244,12 +256,13 @@ fn run_loop(
         if !buffer.is_empty() {
             match run_pipeline(&buffer, &config) {
                 Ok(shaped) => {
-                    // Advance print_time by total shaped duration.
-                    if let (Some(first_seg), Some(last_seg)) = (shaped.first(), shaped.last()) {
-                        let batch_dur = last_seg.t_end - first_seg.t_start;
-                        print_time += batch_dur;
-                        store_print_time(&last_move_time_bits, print_time);
-                    }
+                    // shape_batch emits zero-relative t_start/t_end (batch_t_start = 0.0
+                    // in trajectory::beta), so the last segment's t_end is this batch's
+                    // total duration. Sum is robust against future API changes.
+                    let batch_dur: f64 =
+                        shaped.iter().map(|s| s.t_end - s.t_start).sum();
+                    print_time += batch_dur;
+                    store_print_time(&last_move_time_bits, print_time);
                     for s in &shaped {
                         dispatch(s);
                     }
@@ -272,10 +285,25 @@ fn run_loop(
             let _ = tx.send(());
         }
 
+        // Apply the config update *after* the buffered window has been
+        // shaped & dispatched, so subsequent moves see the new config but
+        // already-buffered moves are processed under the old one.
+        if let Some(update) = pending_config_update.take() {
+            match update {
+                ConfigUpdate::Limits(l) => config.limits = l,
+                ConfigUpdate::Shaper(s) => config.shaper = s,
+            }
+        }
+
         if shutdown {
             return;
         }
     }
+}
+
+enum ConfigUpdate {
+    Limits(PlannerLimits),
+    Shaper(ShaperConfig),
 }
 
 fn handle_msg(
@@ -283,6 +311,7 @@ fn handle_msg(
     buffer: &mut Vec<CubicSegment>,
     pending_flush: &mut Option<Sender<()>>,
     pending_dwell: &mut Option<(f64, Sender<()>)>,
+    pending_config_update: &mut Option<ConfigUpdate>,
     shutdown: &mut bool,
     config: &mut PlannerConfig,
 ) {
@@ -292,8 +321,23 @@ fn handle_msg(
         PlannerMsg::Dwell { duration_s, notify } => {
             *pending_dwell = Some((duration_s, notify));
         }
-        PlannerMsg::UpdateLimits(l) => config.limits = l,
-        PlannerMsg::UpdateShaper(s) => config.shaper = s,
+        PlannerMsg::UpdateLimits(l) => {
+            if buffer.is_empty() {
+                // No moves buffered: apply immediately.
+                config.limits = l;
+            } else {
+                // Moves buffered: defer so they shape under the old config,
+                // then apply the update as a barrier before further messages.
+                *pending_config_update = Some(ConfigUpdate::Limits(l));
+            }
+        }
+        PlannerMsg::UpdateShaper(s) => {
+            if buffer.is_empty() {
+                config.shaper = s;
+            } else {
+                *pending_config_update = Some(ConfigUpdate::Shaper(s));
+            }
+        }
         PlannerMsg::Shutdown => *shutdown = true,
     }
 }
@@ -441,6 +485,32 @@ mod tests {
             z: trajectory::AxisShaper::Passthrough,
         };
         h.update_shaper(shaper).unwrap();
+
+        h.shutdown();
+    }
+
+    #[test]
+    fn window_capacity_triggers_batch_flush_without_explicit_flush() {
+        let (dispatch, counter) = counting_dispatch();
+        let mut c = relaxed_config();
+        c.window_capacity = 1;
+        let mut h = PlannerHandle::spawn(c, dispatch);
+
+        // Submit one move; window_capacity=1 forces immediate batch flush
+        // without an explicit Flush message.
+        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+        h.submit_move(m).unwrap();
+
+        // Use Flush only as a synchronization point (waits for the worker
+        // to drain the queue). The capacity-triggered batch must have
+        // dispatched already.
+        h.flush().unwrap();
+
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "window-capacity batch never dispatched"
+        );
+        assert!(h.last_move_time() > 0.0);
 
         h.shutdown();
     }
