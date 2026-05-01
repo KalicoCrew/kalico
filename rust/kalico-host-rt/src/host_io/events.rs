@@ -1,6 +1,6 @@
 //! EventDispatcher subsystem. Spec §6. (Phase-C stub; Phase D adds the rest.)
 
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -137,13 +137,32 @@ impl RuntimeEventDispatcher {
 }
 
 // ─── D8: HostEventDispatcher ─────────────────────────────────────────────────
+//
+// Drains a shared inbox written by `TraceRing` (and any other reactor-internal
+// host-event source) and forwards to the user-attached subscriber. The inbox
+// must exist at construction time so `TraceRing::set_host_event_tx` can be
+// wired at `EventDispatcher::new` — before any subscriber attaches. The
+// reactor calls `drain_pending` once per loop iteration.
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HostEventDispatcher {
+    inbox_rx:   Receiver<HostEvent>,
     subscriber: Option<SyncSender<HostEvent>>,
 }
 
 impl HostEventDispatcher {
+    pub fn new(inbox_rx: Receiver<HostEvent>) -> Self {
+        Self { inbox_rx, subscriber: None }
+    }
+
+    /// Forward any events queued in the inbox to the attached subscriber.
+    /// Drops events on the floor when no subscriber is attached.
+    pub fn drain_pending(&mut self) {
+        while let Ok(event) = self.inbox_rx.try_recv() {
+            self.dispatch(event);
+        }
+    }
+
     pub fn dispatch(&mut self, event: HostEvent) {
         if let Some(tx) = &self.subscriber {
             match tx.try_send(event) {
@@ -174,11 +193,6 @@ impl HostEventDispatcher {
     pub fn sender_handle(&self) -> Option<SyncSender<HostEvent>> {
         self.subscriber.clone()
     }
-
-    /// Drain any internally-queued diagnostics to the subscriber.
-    /// Currently a no-op (push-mode dispatcher has no inbox buffer);
-    /// reserved for a future pull-mode inbox variant.
-    pub fn drain_pending(&mut self) {}
 }
 
 // ─── D9: EventDispatcher composition ─────────────────────────────────────────
@@ -193,14 +207,24 @@ pub struct EventDispatcher {
 }
 
 impl EventDispatcher {
-    pub fn new(status_snapshot: Arc<ArcSwap<StatusEvent>>, trace_capacity: usize) -> Self {
+    pub fn new(
+        status_snapshot:     Arc<ArcSwap<StatusEvent>>,
+        trace_capacity:      usize,
+        host_event_capacity: usize,
+    ) -> Self {
+        // Spec §6.4 / §6.8: TraceRing emits HostEvents (overflow / disconnect /
+        // reattach) into a shared bounded channel; HostEventDispatcher drains
+        // it on each reactor loop iteration and forwards to the user subscriber.
+        let (host_tx, host_rx) = sync_channel::<HostEvent>(host_event_capacity);
+        let mut trace_ring = TraceRing::new(trace_capacity);
+        trace_ring.set_host_event_tx(host_tx);
         Self {
             credit_counter: None,
             fault_latch: FaultLatch::default(),
-            trace_ring: TraceRing::new(trace_capacity),
+            trace_ring,
             status_snapshot,
             runtime_event_dispatcher: RuntimeEventDispatcher::default(),
-            host_event_dispatcher: HostEventDispatcher::default(),
+            host_event_dispatcher: HostEventDispatcher::new(host_rx),
         }
     }
 
@@ -255,7 +279,7 @@ mod dispatch_tests {
 
     fn make_dispatcher() -> EventDispatcher {
         let snap = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
-        EventDispatcher::new(snap, 256)
+        EventDispatcher::new(snap, 256, 64)
     }
 
     fn fault_status(engine_status: u8, last_fault: u16, segment_id: u32) -> RuntimeEvent {

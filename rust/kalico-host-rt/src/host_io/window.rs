@@ -53,7 +53,7 @@ impl UnackedWindow {
         self.entries.iter_mut()
     }
 
-    /// Discard all unacked entries (used on disconnect / flush).
+    /// Drop every in-flight entry. Called from `transition_closed` per spec §3.11.
     pub fn clear(&mut self) {
         self.entries.clear();
     }

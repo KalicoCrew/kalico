@@ -66,7 +66,15 @@ impl RuntimeEvent {
             }),
             _ => {
                 let msg = params.try_get_str("#msg").unwrap_or("").to_string();
-                Self::UnknownOutput { format: name.to_string(), msg }
+                // For canonical-Python free-form formats decode_output stashes
+                // the firmware-side format string in `#format` so we can surface
+                // it (spec §4.8). For structured outputs that fall through to
+                // catch-all (no typed branch matched) we fall back to `name`.
+                let format = params
+                    .try_get_str("#format")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| name.to_string());
+                Self::UnknownOutput { format, msg }
             }
         }
     }
@@ -114,6 +122,24 @@ mod lift_tests {
             RuntimeEvent::UnknownOutput { format, msg } => {
                 assert_eq!(format, "debug_output");
                 assert_eq!(msg, "debug trace");
+            }
+            other => panic!("expected UnknownOutput, got {:?}", other),
+        }
+    }
+
+    /// Spec §4.8: when the upstream decode emits the canonical
+    /// `("#output", {"#msg": ..., "#format": ...})` shape (free-form path),
+    /// lift must surface the firmware-side format string, not the literal
+    /// "#output" routing tag.
+    #[test]
+    fn lifts_unknown_recovers_format_from_pseudo_field() {
+        let mut p = MessageParams::new();
+        p.insert("#msg", MessageValue::String("debug 5 hi".into()));
+        p.insert("#format", MessageValue::String("debug_blob %u %s".into()));
+        match RuntimeEvent::lift("#output", p) {
+            RuntimeEvent::UnknownOutput { format, msg } => {
+                assert_eq!(format, "debug_blob %u %s");
+                assert_eq!(msg, "debug 5 hi");
             }
             other => panic!("expected UnknownOutput, got {:?}", other),
         }

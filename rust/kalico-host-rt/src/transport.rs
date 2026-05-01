@@ -24,7 +24,9 @@ pub enum TransportError {
     Parse(String),
     /// Dispatcher entry passed its deadline before being serviced.
     DispatcherTimeout,
-    /// Submission queue full; command rejected without being sent.
+    /// Reactor's pending-submission queue is full (window stalled and
+    /// caller backlog exceeded `PENDING_SUBMISSION_CEILING`). Distinct from
+    /// `Closed` — the transport is still alive, just over capacity.
     Backpressure,
 }
 
@@ -36,7 +38,7 @@ impl std::fmt::Display for TransportError {
             TransportError::Closed => write!(f, "transport closed"),
             TransportError::Parse(s) => write!(f, "transport parse error: {s}"),
             TransportError::DispatcherTimeout => write!(f, "dispatcher timeout (entry past deadline)"),
-            TransportError::Backpressure => write!(f, "transport backpressure: submission queue full"),
+            TransportError::Backpressure => write!(f, "transport backpressure (pending submission queue full)"),
         }
     }
 }

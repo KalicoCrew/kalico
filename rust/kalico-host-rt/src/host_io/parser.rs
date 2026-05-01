@@ -135,6 +135,55 @@ pub fn parse_format_string(s: &str) -> Result<(String, Vec<(String, FieldType)>)
     Ok((name, fields))
 }
 
+/// Scan a format string for `%`-codes positionally — used for free-form
+/// `output(...)` formats where individual fields are not `name=%type`-tagged
+/// (e.g. `output("debug %u %s", x, y)`). Returns the list of field types in
+/// declaration order. `%%` is treated as a literal percent sign and skipped.
+///
+/// Per spec §4.7, free-form output formats are decoded positionally and the
+/// decoded values are interpolated through the format string for the canonical
+/// `("#output", {"#msg": formatted})` shape. The first whitespace-separated
+/// token is still treated as the message-name leader for routing purposes
+/// (matches the runtime convention used by `decode_output`).
+pub fn extract_free_form_field_types(s: &str) -> Result<Vec<FieldType>, ParseError> {
+    let bytes = s.as_bytes();
+    let mut codes = Vec::new();
+    let mut i = 0;
+    // Order matters: longer prefixes first so `%hu` doesn't match as `%h` + `u`,
+    // and `%.*s` / `%*s` resolve before `%s`.
+    const CANDIDATES: &[&str] = &["%hu", "%hi", "%.*s", "%*s", "%u", "%i", "%c", "%s"];
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+            i += 2; // literal `%%`
+            continue;
+        }
+        let rest = &s[i..];
+        let mut matched = None;
+        for cand in CANDIDATES {
+            if rest.starts_with(cand) {
+                matched = Some(*cand);
+                break;
+            }
+        }
+        match matched {
+            Some(cand) => {
+                codes.push(FieldType::from_format_code(cand)?);
+                i += cand.len();
+            }
+            None => {
+                // Unknown `%X` — surface so we don't silently drop fields.
+                let next = rest.chars().nth(1).map(|c| format!("%{c}")).unwrap_or_else(|| "%".into());
+                return Err(ParseError::UnknownFormatCode(next));
+            }
+        }
+    }
+    Ok(codes)
+}
+
 #[derive(Debug, Clone)]
 pub struct EnumTable {
     pub by_name: HashMap<String, i32>,
@@ -219,6 +268,10 @@ pub struct OutputSpec {
     pub format:      String,
     pub fields:      Vec<WrappedField>,
     pub field_names: Vec<String>,
+    /// True when the format string lacks `name=%type` recovery for at least
+    /// one field (free-form `output(...)` per spec §4.7). Decode falls back to
+    /// `("#output", {"#msg": formatted_string})` instead of structured fields.
+    pub is_free_form: bool,
 }
 
 #[derive(Debug)]
@@ -294,15 +347,37 @@ impl MsgProtoParser {
         }
 
         for (format, msgid) in &dict.output {
-            let (_name, named_fields) = parse_format_string(format)?;
-            let wrapped = apply_enumeration_wrapping(named_fields, &dict.enumerations);
-            let (field_names, positional_fields): (Vec<String>, Vec<WrappedField>) =
-                wrapped.into_iter().unzip();
-            by_msgid.insert(*msgid, DispatchSpec::Output(OutputSpec {
-                format: format.clone(),
-                fields: positional_fields,
-                field_names,
-            }));
+            // Spec §4.7: prefer `name=%type` recovery so subscribers see
+            // structured `MessageParams`. If recovery fails — a free-form
+            // `output(...)` such as `output("debug %u trace")` — fall back to
+            // positional `%`-code extraction; decode emits the canonical
+            // `("#output", {"#msg": formatted})` shape downstream.
+            let spec = match parse_format_string(format) {
+                Ok((_name, named_fields)) => {
+                    let wrapped = apply_enumeration_wrapping(named_fields, &dict.enumerations);
+                    let (field_names, positional_fields): (Vec<String>, Vec<WrappedField>) =
+                        wrapped.into_iter().unzip();
+                    OutputSpec {
+                        format: format.clone(),
+                        fields: positional_fields,
+                        field_names,
+                        is_free_form: false,
+                    }
+                }
+                Err(ParseError::MalformedField) | Err(ParseError::UnknownFormatCode(_)) => {
+                    let codes = extract_free_form_field_types(format)?;
+                    let positional_fields: Vec<WrappedField> =
+                        codes.into_iter().map(WrappedField::Plain).collect();
+                    OutputSpec {
+                        format: format.clone(),
+                        fields: positional_fields,
+                        field_names: Vec::new(),
+                        is_free_form: true,
+                    }
+                }
+                Err(other) => return Err(other),
+            };
+            by_msgid.insert(*msgid, DispatchSpec::Output(spec));
         }
 
         let static_strings: HashMap<i32, String> = enumerations
@@ -600,6 +675,27 @@ impl MsgProtoParser {
     pub fn decode_output(&self, body: &[u8], spec: &OutputSpec)
         -> Result<(String, MessageParams), ParseError>
     {
+        if spec.is_free_form {
+            // Spec §4.7 fallback: positional decode + format-string interpolation,
+            // surfaced as the canonical Python `("#output", {"#msg": formatted})`
+            // shape. RuntimeEvent::lift routes this to `RuntimeEvent::UnknownOutput`.
+            let mut cur = body;
+            let mut values: Vec<MessageValue> = Vec::with_capacity(spec.fields.len());
+            for wrapped in &spec.fields {
+                let (value, consumed) = self.decode_wrapped_field(cur, wrapped)?;
+                values.push(value);
+                cur = &cur[consumed..];
+            }
+            let formatted = format_output_message(&spec.format, &values);
+            let mut params = MessageParams::new();
+            params.insert("#msg", MessageValue::String(formatted));
+            // Carry the original format string so RuntimeEvent::lift can
+            // propagate it into UnknownOutput.format (spec §4.8). lift has no
+            // access to MsgProtoParser, so this is the only path.
+            params.insert("#format", MessageValue::String(spec.format.clone()));
+            return Ok(("#output".to_string(), params));
+        }
+
         let mut params = MessageParams::new();
         let mut cur = body;
         for (field_name, wrapped) in spec.field_names.iter().zip(spec.fields.iter()) {
@@ -798,6 +894,51 @@ mod from_dictionary_tests {
         assert!(matches!(p.by_msgid.get(&1), Some(DispatchSpec::Response(_))));
         assert!(matches!(p.by_msgid.get(&2), Some(DispatchSpec::Response(_))));
         assert!(matches!(p.by_msgid.get(&3), Some(DispatchSpec::Output(_))));
+    }
+
+    /// Spec §4.7: free-form `output(...)` formats whose fields aren't
+    /// `name=%type`-tagged must accept-and-fall-back, not reject the dict.
+    #[test]
+    fn accepts_free_form_output_format() {
+        let mut d = empty_dict();
+        d.output.insert("debug_blob count=%u %s".into(), 7);
+        let p = MsgProtoParser::from_dictionary(d).expect("free-form output must parse");
+        match p.by_msgid.get(&7) {
+            Some(DispatchSpec::Output(spec)) => {
+                assert!(spec.is_free_form, "must mark as free-form");
+                assert_eq!(spec.fields.len(), 2, "two %-codes recovered positionally");
+                assert!(spec.field_names.is_empty());
+            }
+            other => panic!("expected free-form Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn free_form_output_decodes_to_canonical_msg() {
+        let mut d = empty_dict();
+        d.output.insert("debug_blob %u %s".into(), 8);
+        let parser = MsgProtoParser::from_dictionary(d).unwrap();
+        // Body: msgid VLQ + u32 VLQ value 5 + length-prefixed string "hi"
+        let mut body = Vec::new();
+        encode_vlq(&mut body, 8).unwrap();        // msgid
+        encode_vlq(&mut body, 5).unwrap();        // %u value
+        body.push(2);                              // %s length prefix
+        body.extend_from_slice(b"hi");
+
+        let mut packet = vec![0u8, 0u8];           // 2-byte header (len + dest|seq)
+        packet.extend_from_slice(&body);
+        packet.extend_from_slice(&[0, 0, 0]);      // 3-byte trailer (CRC + sync)
+
+        let frame = parser.decode(&packet).expect("decode succeeds");
+        match frame {
+            DecodedFrame::Output { name, params } => {
+                assert_eq!(name, "#output", "free-form must surface as #output");
+                let msg = params.try_get_str("#msg").unwrap_or("");
+                assert!(msg.contains("5"),  "formatted message contains %u value: {msg:?}");
+                assert!(msg.contains("hi"), "formatted message contains %s value: {msg:?}");
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
     }
 }
 

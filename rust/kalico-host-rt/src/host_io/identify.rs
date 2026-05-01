@@ -4,7 +4,6 @@
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
-use indexmap::IndexMap;
 use serialport::SerialPort;
 
 use crate::host_io::parser::{DataDictionary, MsgProtoParser, decode_vlq, encode_vlq};
@@ -79,7 +78,7 @@ pub fn identify_handshake(
         }
     }
 
-    let parser = build_parser_from_identify(&identify_data);
+    let parser = build_parser_from_identify(&identify_data)?;
     Ok((parser, seq, rx_buf))
 }
 
@@ -113,55 +112,29 @@ fn wait_for_identify_response(
     }
 }
 
-fn build_parser_from_identify(identify_data: &[u8]) -> MsgProtoParser {
-    // Try zlib inflate first (Klipper firmware compresses the dict).
+fn build_parser_from_identify(identify_data: &[u8]) -> Result<MsgProtoParser, TransportError> {
+    // Klipper firmware compresses the data dictionary with zlib. Spec §4.1
+    // mandates a hard error on any parse failure — silently degrading to an
+    // empty parser would cascade-fail every subsequent decode with
+    // UnknownMsgid, hiding the root cause.
     let json_bytes = if identify_data.first() == Some(&0x78) {
         let mut decoder = flate2::read::ZlibDecoder::new(identify_data);
         let mut out = Vec::new();
-        if std::io::Read::read_to_end(&mut decoder, &mut out).is_ok() {
-            out
-        } else {
-            identify_data.to_vec()
-        }
+        std::io::Read::read_to_end(&mut decoder, &mut out)
+            .map_err(|e| TransportError::Parse(format!("identify blob zlib inflate failed: {e}")))?;
+        out
     } else {
         identify_data.to_vec()
     };
 
-    let Ok(json_str) = std::str::from_utf8(&json_bytes) else {
-        log::warn!("kalico-host-rt: identify blob is not valid UTF-8 after inflate");
-        return empty_parser();
-    };
+    let json_str = std::str::from_utf8(&json_bytes)
+        .map_err(|e| TransportError::Parse(format!("identify blob is not valid UTF-8: {e}")))?;
 
-    let dict: DataDictionary = match serde_json::from_str(json_str) {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!("kalico-host-rt: identify JSON parse failed: {e}");
-            return empty_parser();
-        }
-    };
+    let dict: DataDictionary = serde_json::from_str(json_str)
+        .map_err(|e| TransportError::Parse(format!("identify JSON parse failed: {e}")))?;
 
-    match MsgProtoParser::from_dictionary(dict) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("kalico-host-rt: MsgProtoParser::from_dictionary failed: {e:?}");
-            empty_parser()
-        }
-    }
-}
-
-fn empty_parser() -> MsgProtoParser {
-    let dict = DataDictionary {
-        commands: IndexMap::new(),
-        responses: IndexMap::new(),
-        output: IndexMap::new(),
-        enumerations: IndexMap::new(),
-        config: serde_json::json!({}),
-        version: String::new(),
-        app: String::new(),
-        build_versions: None,
-        license: None,
-    };
-    MsgProtoParser::from_dictionary(dict).expect("empty dict cannot fail")
+    MsgProtoParser::from_dictionary(dict)
+        .map_err(|e| TransportError::Parse(format!("MsgProtoParser::from_dictionary failed: {e:?}")))
 }
 
 fn decode_identify_response(packet: &[u8]) -> Option<MessageParams> {
