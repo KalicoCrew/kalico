@@ -1000,3 +1000,112 @@ mod tests {
         assert!(!cell.synthesized, "host disconnect fault is not synthesized");
     }
 }
+
+// ---------------------------------------------------------------------------
+// A1 — seq-wrap boundaries. Spec §3.1.
+// Three boundaries: empty-window snap, mid-range mod-16, near u64::MAX.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod a1_seq_wrap {
+    use super::*;
+    use crate::host_io::test_harness::ReactorHarness;
+    use crate::host_io::wire::build_frame;
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+
+    /// Build a 5-byte ack/nak frame with the given wire seq nibble.
+    fn ack_frame(wire_seq_nibble: u8) -> Vec<u8> {
+        build_frame(&[], wire_seq_nibble)
+    }
+
+    /// Submit one frame directly via dispatch_submission. Drops the receiver.
+    fn submit_one(h: &mut ReactorHarness, payload: u8) {
+        let (tx, _rx) = sync_channel(1);
+        let _ = h.reactor.dispatch_submission(
+            payload as u64, vec![payload], "noop".into(),
+            tx, h.clock.now() + Duration::from_secs(60),
+        );
+    }
+
+    #[test]
+    fn empty_window_snap_advances_both_counters() {
+        let mut h = ReactorHarness::new();
+        // Pre: window empty; init send_seq=1, receive_seq=1.
+        assert_eq!(h.reactor.send_seq, 1);
+        assert_eq!(h.reactor.receive_seq, 1);
+        assert!(h.reactor.unacked_window.is_empty());
+
+        // Inject ack frame whose 4-bit wire seq nibble = 5 (rseq decoded = 5).
+        h.feed_rx(&ack_frame(5));
+        h.tick();
+
+        // Snap path (reactor.rs:222-227): both counters jump to rseq.
+        assert_eq!(h.reactor.send_seq, 5);
+        assert_eq!(h.reactor.receive_seq, 5);
+    }
+
+    #[test]
+    fn mid_range_mod16_wrap_pops_correct_entries() {
+        let mut h = ReactorHarness::new();
+        // Submit 12 frames (window cap = MAX_PENDING_BLOCKS = 12).
+        for p in 1u8..=12 {
+            submit_one(&mut h, p);
+        }
+        // Tick to process serial poll (no rx yet).
+        h.tick();
+        assert_eq!(h.unacked_depth(), 12);
+        // After 12 submissions: send_seq advanced from 1 to 13.
+        assert_eq!(h.reactor.send_seq, 13);
+        // receive_seq still 1.
+        assert_eq!(h.reactor.receive_seq, 1);
+
+        // Inject ack with wire nibble = 6: decode_absolute(6) when receive_seq=1
+        // → delta = (6 - 1) & 0xF = 5, rseq = 1 + 5 = 6. Pops seqs 1..=5.
+        h.feed_rx(&ack_frame(6));
+        h.tick();
+        assert_eq!(h.reactor.last_ack_seq, 6);
+        assert_eq!(h.reactor.receive_seq, 6);
+        assert_eq!(h.unacked_depth(), 7); // seqs 6..=12 remain
+
+        // Cross another mod-16 boundary. receive_seq=6 now.
+        // Want rseq=14 (>16 with wrap). Wire nibble = 14 & 0xF = 14.
+        // Wait: 14 - 6 = 8, & 0xF = 8, rseq = 6 + 8 = 14. ✓
+        // But rseq=14 only pops seqs <14, so seqs 6..=12 (all 7 entries) pop.
+        h.feed_rx(&ack_frame(14));
+        h.tick();
+        assert_eq!(h.reactor.last_ack_seq, 14);
+        assert_eq!(h.reactor.receive_seq, 14);
+        assert_eq!(h.unacked_depth(), 0);
+    }
+
+    #[test]
+    fn near_u64_max_decode_does_not_panic() {
+        let mut h = ReactorHarness::new();
+        // Force receive_seq near u64::MAX. dispatch_submission requires
+        // window non-empty for the strict-< pop path.
+        h.reactor.receive_seq = u64::MAX - 15;
+        h.reactor.send_seq    = u64::MAX - 15;
+        h.reactor.last_ack_seq = u64::MAX - 16;
+
+        // Submit one frame so window non-empty.
+        submit_one(&mut h, 0);
+        h.tick();
+        assert_eq!(h.unacked_depth(), 1);
+
+        // After submit: send_seq advanced by 1 (now u64::MAX - 14). The new entry
+        // has seq = u64::MAX - 15. receive_seq stayed at u64::MAX - 15.
+        // Inject ack whose wire nibble = (u64::MAX - 14) & 0xF.
+        // delta = ((target - receive_seq) & 0xF) where target = u64::MAX - 14.
+        // i.e. delta = ((u64::MAX - 14) - (u64::MAX - 15)) & 0xF = 1.
+        // Wire nibble: target & 0xF = (u64::MAX - 14) & 0xF.
+        let target_rseq: u64 = u64::MAX - 14;
+        let nibble = (target_rseq & 0x0F) as u8;
+        h.feed_rx(&ack_frame(nibble));
+
+        // Should not panic: decode_absolute uses wrapping_sub.
+        h.tick();
+        assert_eq!(h.reactor.last_ack_seq, target_rseq);
+        assert_eq!(h.reactor.receive_seq, target_rseq);
+    }
+}
