@@ -61,5 +61,5 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["test"]
+pythonpath = [".", "klippy"]
+testpaths = ["test", "tests"]
