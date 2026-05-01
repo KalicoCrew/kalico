@@ -29,13 +29,6 @@ SOURCE_FILES = [
     "msgblock.c",
     "trdispatch.c",
     "kin_cartesian.c",
-    "kin_corexy.c",
-    "kin_corexz.c",
-    "kin_delta.c",
-    "kin_deltesian.c",
-    "kin_polar.c",
-    "kin_rotary_delta.c",
-    "kin_winch.c",
     "kin_extruder.c",
     "kin_shaper.c",
     "kin_idex.c",
@@ -130,39 +123,6 @@ defs_kin_cartesian = """
     struct stepper_kinematics *cartesian_stepper_alloc(char axis);
 """
 
-defs_kin_corexy = """
-    struct stepper_kinematics *corexy_stepper_alloc(char type);
-"""
-
-defs_kin_corexz = """
-    struct stepper_kinematics *corexz_stepper_alloc(char type);
-"""
-
-defs_kin_delta = """
-    struct stepper_kinematics *delta_stepper_alloc(double arm2
-        , double tower_x, double tower_y);
-"""
-
-defs_kin_deltesian = """
-    struct stepper_kinematics *deltesian_stepper_alloc(double arm2
-        , double arm_x);
-"""
-
-defs_kin_polar = """
-    struct stepper_kinematics *polar_stepper_alloc(char type);
-"""
-
-defs_kin_rotary_delta = """
-    struct stepper_kinematics *rotary_delta_stepper_alloc(
-        double shoulder_radius, double shoulder_height
-        , double angle, double upper_arm, double lower_arm);
-"""
-
-defs_kin_winch = """
-    struct stepper_kinematics *winch_stepper_alloc(double anchor_x
-        , double anchor_y, double anchor_z);
-"""
-
 defs_kin_extruder = """
     struct stepper_kinematics *extruder_stepper_alloc(void);
     void extruder_set_pressure_advance(struct stepper_kinematics *sk
@@ -249,13 +209,6 @@ defs_all = [
     defs_trapq,
     defs_trdispatch,
     defs_kin_cartesian,
-    defs_kin_corexy,
-    defs_kin_corexz,
-    defs_kin_delta,
-    defs_kin_deltesian,
-    defs_kin_polar,
-    defs_kin_rotary_delta,
-    defs_kin_winch,
     defs_kin_extruder,
     defs_kin_shaper,
     defs_kin_idex,
