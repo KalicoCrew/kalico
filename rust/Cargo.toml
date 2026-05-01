@@ -9,6 +9,7 @@ members = [
     "runtime",
     "kalico-host-rt",
     "compat",
+    "motion-bridge",
 ]
 exclude = ["gcode/fuzz"]
 resolver = "2"

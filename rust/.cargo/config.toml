@@ -1,3 +1,13 @@
+# macOS: allow Python extension cdylibs to leave Python symbols unresolved at
+# link time.  Python's dlopen will satisfy them when it loads the .so at
+# runtime.  Without this flag the static linker rejects _Py_* symbols as
+# "undefined".  This flag is a no-op on non-Darwin hosts.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
 # Klipper's H7 build uses soft-float ABI (no -mfloat-abi=hard in CFLAGS),
 # so the kalico staticlib must match or the linker rejects archive merge
 # with "uses VFP register arguments, klipper.elf does not". Use the

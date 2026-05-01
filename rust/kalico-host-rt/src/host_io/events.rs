@@ -174,6 +174,11 @@ impl HostEventDispatcher {
     pub fn sender_handle(&self) -> Option<SyncSender<HostEvent>> {
         self.subscriber.clone()
     }
+
+    /// Drain any internally-queued diagnostics to the subscriber.
+    /// Currently a no-op (push-mode dispatcher has no inbox buffer);
+    /// reserved for a future pull-mode inbox variant.
+    pub fn drain_pending(&mut self) {}
 }
 
 // ─── D9: EventDispatcher composition ─────────────────────────────────────────

@@ -1,0 +1,26 @@
+[package]
+name = "motion-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "PyO3 bridge between klippy (Python) and the Rust motion stack."
+license.workspace = true
+
+[lib]
+name = "motion_bridge"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+kalico-host-rt = { path = "../kalico-host-rt", features = ["python-bridge"] }
+trajectory = { path = "../trajectory" }
+temporal = { path = "../temporal" }
+geometry = { path = "../geometry" }
+gcode = { path = "../gcode" }
+compat = { path = "../compat" }
+log = "0.4"
+arc-swap = "1"
+
+[lints]
+workspace = true

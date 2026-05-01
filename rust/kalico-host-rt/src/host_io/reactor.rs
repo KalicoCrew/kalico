@@ -95,7 +95,6 @@ impl Reactor {
         let event_dispatcher = EventDispatcher::new(
             Arc::clone(&status_snapshot),
             config.trace_capacity,
-            config.host_event_capacity,
         );
         Self {
             port,

@@ -52,6 +52,11 @@ impl UnackedWindow {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut UnackedEntry> {
         self.entries.iter_mut()
     }
+
+    /// Discard all unacked entries (used on disconnect / flush).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
 }
 
 #[derive(Debug)]
