@@ -12,7 +12,10 @@
 //! piggybacks.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use crate::clock::{Clock, RealClock};
 
 /// Sliding-window depth (samples). Spec §12.2.
 pub const WINDOW: usize = 30;
@@ -60,7 +63,6 @@ pub struct Sample {
     pub recorded_at: Instant,
 }
 
-#[derive(Debug)]
 pub struct ClockSyncEstimator {
     /// Round-2 B04: epoch fixed at construction; all sample
     /// `host_time_secs` are measured relative to this anchor.
@@ -92,14 +94,40 @@ pub struct ClockSyncEstimator {
     /// response from a previous arm attempt cannot collide with a
     /// fresh request_id and slip through the echo check.
     clock_sync_request_id: u32,
+    /// Injected clock seam (spec §2.3). Routes `Instant::now()` and
+    /// freshness `.elapsed()` so tests can age samples deterministically.
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for ClockSyncEstimator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClockSyncEstimator")
+            .field("epoch", &self.epoch)
+            .field("samples", &self.samples)
+            .field("clock_freq_estimate", &self.clock_freq_estimate)
+            .field("anchor_host_time", &self.anchor_host_time)
+            .field("anchor_mcu_clock", &self.anchor_mcu_clock)
+            .field("residual_max_in_window", &self.residual_max_in_window)
+            .field("last_dedicated_sample", &self.last_dedicated_sample)
+            .field("clock_sync_request_id", &self.clock_sync_request_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClockSyncEstimator {
     /// Construct with an initial frequency estimate (e.g.
-    /// `CONFIG_CLOCK_FREQ` for the target MCU).
+    /// `CONFIG_CLOCK_FREQ` for the target MCU). Production path; uses
+    /// `RealClock` for all `now()` / freshness computations.
     pub fn new(initial_freq_estimate: f64) -> Self {
+        Self::new_with_clock(initial_freq_estimate, Arc::new(RealClock))
+    }
+
+    /// Construct with an injected clock. Tests pass `MockClock` to age
+    /// freshness deterministically; production callers use `new()`.
+    pub fn new_with_clock(initial_freq_estimate: f64, clock: Arc<dyn Clock>) -> Self {
+        let epoch = clock.now();
         Self {
-            epoch: Instant::now(),
+            epoch,
             samples: VecDeque::with_capacity(WINDOW),
             clock_freq_estimate: initial_freq_estimate,
             anchor_host_time: 0.0,
@@ -107,7 +135,15 @@ impl ClockSyncEstimator {
             residual_max_in_window: 0.0,
             last_dedicated_sample: None,
             clock_sync_request_id: 0,
+            clock,
         }
+    }
+
+    /// Convenience for tests: piggyback at `clock.now()` without forcing
+    /// the caller to thread the clock.
+    pub fn add_piggyback_sample_at_now(&mut self, mcu_clock_now: u64) {
+        let now = self.clock.now();
+        self.add_piggyback_sample(now, mcu_clock_now);
     }
 
     /// Allocate the next monotonic `request_id` for this MCU's
@@ -180,7 +216,7 @@ impl ClockSyncEstimator {
         #[allow(clippy::cast_sign_loss)]
         let one_way_cycles = (one_way_secs * self.clock_freq_estimate) as u64;
         let mcu_at_send = mcu_at_response.saturating_sub(one_way_cycles);
-        let now = Instant::now();
+        let now = self.clock.now();
         self.add_sample(Sample {
             host_time_secs: host_time_at_send,
             mcu_clock: mcu_at_send,
@@ -203,7 +239,7 @@ impl ClockSyncEstimator {
             mcu_clock: mcu_clock_now,
             rtt_us: 0,
             source: SampleSource::Piggyback,
-            recorded_at: Instant::now(),
+            recorded_at: self.clock.now(),
         });
     }
 
@@ -275,14 +311,16 @@ impl ClockSyncEstimator {
 
     /// Age (since recording) of the most-recent sample of any kind.
     pub fn last_sample_age(&self) -> Option<Duration> {
-        self.samples.back().map(|s| s.recorded_at.elapsed())
+        let now = self.clock.now();
+        self.samples.back().map(|s| now.saturating_duration_since(s.recorded_at))
     }
 
     /// Age (since recording) of the most-recent dedicated (RTT-aware)
     /// sample. Plan-decision B: the arm-time gate requires this be
     /// fresh.
     pub fn last_dedicated_sample_age(&self) -> Option<Duration> {
-        self.last_dedicated_sample.map(|t| t.elapsed())
+        let now = self.clock.now();
+        self.last_dedicated_sample.map(|t| now.saturating_duration_since(t))
     }
 
     pub fn sample_count(&self) -> u32 {
@@ -350,5 +388,36 @@ pub enum QualityGateFailure {
 impl std::fmt::Display for QualityGateFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
+    }
+}
+
+#[cfg(test)]
+mod clock_seam_tests {
+    use super::*;
+    use crate::clock::MockClock;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    fn last_sample_age_uses_injected_clock() {
+        let clock = MockClock::new();
+        let mut est = ClockSyncEstimator::new_with_clock(72_000_000.0, clock.clone());
+        est.add_piggyback_sample_at_now(0);
+        clock.advance(Duration::from_secs(5));
+        let age = est.last_sample_age().expect("sample present");
+        assert_eq!(age, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn last_dedicated_sample_age_uses_injected_clock() {
+        let clock = MockClock::new();
+        let mut est = ClockSyncEstimator::new_with_clock(72_000_000.0, clock.clone());
+        let t0 = clock.now();
+        est.add_dedicated_sample(t0, t0 + Duration::from_millis(2), 1_000_000);
+        clock.advance(Duration::from_secs(10));
+        let age = est.last_dedicated_sample_age().expect("dedicated sample present");
+        // Sample recorded at clock.now() at end of add_dedicated_sample,
+        // i.e. before our 10s advance. Age should be ~10s.
+        assert_eq!(age, Duration::from_secs(10));
     }
 }
