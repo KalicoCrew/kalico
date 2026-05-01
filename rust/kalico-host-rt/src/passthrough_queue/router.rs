@@ -12,6 +12,7 @@ use super::entry::{NotifyId, PassthroughEntry};
 use super::mcu_state::{CommandQueueId, McuState, PushError};
 use super::notify::{NotifyCallback, NotifyResponse, NotifyTable};
 use super::receive_window::ReceiveWindow;
+use super::stats::{PassthroughStats, StatsCounters};
 use crate::clock::Clock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,6 +62,8 @@ struct McuRecord {
     /// Tracks whether the queues were non-empty at some point, so the
     /// callback only fires on a genuine non-empty -> empty transition.
     was_non_empty: bool,
+    /// Per-MCU stats counters.
+    stats: StatsCounters,
 }
 
 impl std::fmt::Debug for McuRecord {
@@ -76,6 +79,7 @@ impl std::fmt::Debug for McuRecord {
             .field("last_clock", &self.last_clock)
             .field("flush_callbacks_count", &self.flush_callbacks.len())
             .field("was_non_empty", &self.was_non_empty)
+            .field("stats", &self.stats)
             .finish()
     }
 }
@@ -139,6 +143,7 @@ impl PassthroughRouter {
                 last_clock: 0,
                 flush_callbacks: Vec::new(),
                 was_non_empty: false,
+                stats: StatsCounters::new(),
             },
         );
         handle
@@ -196,6 +201,8 @@ impl PassthroughRouter {
             rec.was_non_empty = true;
             let bytes_len = e.bytes().len() as u64;
             rec.window.record_emit(bytes_len);
+            rec.stats.bytes_write += bytes_len;
+            rec.stats.send_seq += 1;
             if !e.notify_id().is_none() {
                 let now = instant_to_f64(self.clock.now());
                 rec.sent_times.insert(e.notify_id(), now);
@@ -212,6 +219,8 @@ impl PassthroughRouter {
         response_bytes: Vec<u8>,
     ) -> Result<(), RouterError> {
         let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        rec.stats.bytes_read += response_bytes.len() as u64;
+        rec.stats.receive_seq += 1;
         let sent_time = rec.sent_times.remove(&notify_id).unwrap_or(0.0);
         let receive_time = instant_to_f64(self.clock.now());
         rec.notify_table.dispatch(
@@ -305,6 +314,17 @@ impl PassthroughRouter {
         #[allow(clippy::cast_sign_loss)]
         let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
         Ok(projected)
+    }
+
+    // ── Stats ────────────────────────────────────────────────────────────
+
+    /// Snapshot current statistics for the given MCU.
+    pub fn get_stats(&self, mcu: McuHandle) -> Result<PassthroughStats, RouterError> {
+        let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let mut snap = rec.stats.snapshot();
+        snap.ready_bytes = rec.state.total_ready_bytes();
+        snap.upcoming_bytes = rec.state.total_upcoming_bytes();
+        Ok(snap)
     }
 
     // ── Flush callbacks ─────────────────────────────────────────────────
@@ -507,10 +527,12 @@ mod tests {
         let ack0 = router.compute_ack_clock(mcu).unwrap();
         assert_eq!(ack0, 0);
 
-        // Advance 1 second — projected clock = 0 + 1.0 * 1_000_000 = 1_000_000.
+        // Advance 1 second — projected clock ~ 0 + 1.0 * 1_000_000.
+        // Allow +-1 for f64 rounding in instant_to_f64 deltas.
         clock.advance(Duration::from_secs(1));
         let ack1 = router.compute_ack_clock(mcu).unwrap();
-        assert_eq!(ack1, 1_000_000);
+        let diff = (ack1 as i64 - 1_000_000_i64).unsigned_abs();
+        assert!(diff <= 1, "expected ~1_000_000, got {ack1}");
     }
 
     #[test]
@@ -592,6 +614,79 @@ mod tests {
 
         assert_eq!(*c1.lock().unwrap(), 1);
         assert_eq!(*c2.lock().unwrap(), 1);
+    }
+
+    // ── Stats tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn stats_increment_on_emit() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        let s0 = router.get_stats(mcu).unwrap();
+        assert_eq!(s0.bytes_write, 0);
+        assert_eq!(s0.send_seq, 0);
+
+        router.push(mcu, q, entry(0, 10)).unwrap();
+        let _ = router.pop_next_for_emission(mcu).unwrap();
+
+        let s1 = router.get_stats(mcu).unwrap();
+        assert_eq!(s1.bytes_write, 1); // entry() produces 1-byte payload
+        assert_eq!(s1.send_seq, 1);
+    }
+
+    #[test]
+    fn stats_increment_on_response_receive() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        let nid = router.register_notify(mcu, Box::new(|_| {})).unwrap();
+        router.push(mcu, q, entry_with_notify(0, 10, nid)).unwrap();
+        let _ = router.pop_next_for_emission(mcu).unwrap();
+
+        router.dispatch_response(mcu, nid, vec![0xAA, 0xBB]).unwrap();
+
+        let s = router.get_stats(mcu).unwrap();
+        assert_eq!(s.bytes_read, 2);
+        assert_eq!(s.receive_seq, 1);
+    }
+
+    #[test]
+    fn stats_are_per_mcu() {
+        let (mut router, _) = make_router();
+        let mcu_a = router.claim_mcu("a");
+        let mcu_b = router.claim_mcu("b");
+        let qa = router.alloc_command_queue(mcu_a).unwrap();
+        let qb = router.alloc_command_queue(mcu_b).unwrap();
+
+        router.push(mcu_a, qa, entry(0, 10)).unwrap();
+        let _ = router.pop_next_for_emission(mcu_a).unwrap();
+
+        router.push(mcu_b, qb, entry(0, 20)).unwrap();
+        router.push(mcu_b, qb, entry(0, 30)).unwrap();
+        let _ = router.pop_next_for_emission(mcu_b).unwrap();
+        let _ = router.pop_next_for_emission(mcu_b).unwrap();
+
+        let sa = router.get_stats(mcu_a).unwrap();
+        let sb = router.get_stats(mcu_b).unwrap();
+
+        assert_eq!(sa.send_seq, 1);
+        assert_eq!(sb.send_seq, 2);
+    }
+
+    #[test]
+    fn stats_ready_bytes_reflects_live_queue() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        router.push(mcu, q, entry(0, 10)).unwrap();
+        router.push(mcu, q, entry(0, 20)).unwrap();
+
+        let s = router.get_stats(mcu).unwrap();
+        assert_eq!(s.ready_bytes, 2); // 2 entries x 1 byte each
     }
 
     #[test]

@@ -70,6 +70,16 @@ impl CommandQueue {
     pub fn has_only_background_ready(&self) -> bool {
         !self.ready.is_empty() && !self.has_non_background_ready()
     }
+
+    /// Total bytes in the ready queue.
+    pub fn ready_bytes(&self) -> u64 {
+        self.ready.iter().map(|e| e.bytes().len() as u64).sum()
+    }
+
+    /// Total bytes in the upcoming queue.
+    pub fn upcoming_bytes(&self) -> u64 {
+        self.upcoming.iter().map(|e| e.bytes().len() as u64).sum()
+    }
 }
 
 fn sorted_insert_by_req_clock(vec: &mut Vec<PassthroughEntry>, entry: PassthroughEntry) {

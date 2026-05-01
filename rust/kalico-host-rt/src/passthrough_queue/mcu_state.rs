@@ -93,6 +93,16 @@ impl McuState {
         self.queues.values().all(CommandQueue::is_ready_empty)
     }
 
+    /// Total bytes across all ready queues.
+    pub fn total_ready_bytes(&self) -> u64 {
+        self.queues.values().map(CommandQueue::ready_bytes).sum()
+    }
+
+    /// Total bytes across all upcoming queues.
+    pub fn total_upcoming_bytes(&self) -> u64 {
+        self.queues.values().map(CommandQueue::upcoming_bytes).sum()
+    }
+
     /// Peek at the lowest `req_clock` across all queues without popping.
     ///
     /// If non-background entries exist, background entries are excluded from
