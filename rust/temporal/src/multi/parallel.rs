@@ -1,10 +1,9 @@
 //! 3-thread fan-out for re-solving dirty segments. Per spec §2.6.
 
-use crate::GridConfig;
-use crate::SolveStatus;
 use crate::multi::joining::SegmentState;
 use crate::multi::{BatchError, SegmentInput};
-use crate::topp::{ToleranceMode, schedule_segment_with_tolerance};
+use crate::topp::{schedule_segment_with_tolerance, ToleranceMode};
+use crate::{GridConfig, SolveStatus, TopProfile};
 use std::sync::Mutex;
 use std::thread;
 
@@ -61,21 +60,18 @@ pub(crate) fn fan_out_solves(
 
     thread::scope(|s| {
         for _ in 0..n_threads {
-            s.spawn(|| {
-                loop {
-                    let Some(idx) = queue.lock().unwrap().pop() else {
-                        break;
-                    };
-                    let r = schedule_segment_with_tolerance(
-                        inputs[idx].curve,
-                        &inputs[idx].limits,
-                        &grids[idx],
-                        v_starts[idx],
-                        v_ends[idx],
-                        ToleranceMode::Auto,
-                    );
-                    results.lock().unwrap().push((idx, r));
-                }
+            s.spawn(|| loop {
+                let Some(idx) = queue.lock().unwrap().pop() else {
+                    break;
+                };
+                let r = solve_with_boundary_fallback(
+                    inputs[idx].curve,
+                    &inputs[idx].limits,
+                    &grids[idx],
+                    v_starts[idx],
+                    v_ends[idx],
+                );
+                results.lock().unwrap().push((idx, r));
             });
         }
     });
@@ -84,12 +80,7 @@ pub(crate) fn fan_out_solves(
     for (idx, r) in results.into_inner().unwrap() {
         match r {
             Ok(profile) => {
-                let success = matches!(
-                    profile.status,
-                    SolveStatus::Solved
-                        | SolveStatus::SolvedInexact { .. }
-                        | SolveStatus::SolvedSlp { .. }
-                );
+                let success = is_success(profile.status);
                 // Always sync v_start/v_end to the actual profile endpoints.
                 // For infeasible/non-success solves the profile endpoint may be
                 // lower than the requested v_end (e.g., the solver returned a
@@ -116,6 +107,58 @@ pub(crate) fn fan_out_solves(
         }
     }
     Ok(())
+}
+
+fn solve_with_boundary_fallback(
+    curve: &nurbs::VectorNurbs<f64, 3>,
+    limits: &crate::Limits,
+    grid: &GridConfig,
+    v_start: f64,
+    v_end: f64,
+) -> Result<TopProfile, crate::ScheduleError> {
+    let initial =
+        schedule_segment_with_tolerance(curve, limits, grid, v_start, v_end, ToleranceMode::Auto)?;
+    if is_success(initial.status) {
+        return Ok(initial);
+    }
+
+    // The upfront junction cap can exceed what a short segment can reach under
+    // jerk/accel limits. Search the fastest feasible boundary pair along the
+    // current joining ray instead of collapsing immediately to a full stop.
+    let mut lo = 0.0_f64;
+    let mut hi = 1.0_f64;
+    let mut best: Option<TopProfile> = None;
+
+    for _ in 0..24 {
+        let mid = (lo + hi) * 0.5;
+        let candidate = schedule_segment_with_tolerance(
+            curve,
+            limits,
+            grid,
+            v_start * mid,
+            v_end * mid,
+            ToleranceMode::Auto,
+        )?;
+        if is_success(candidate.status) {
+            lo = mid;
+            best = Some(candidate);
+        } else {
+            hi = mid;
+        }
+    }
+
+    if let Some(profile) = best {
+        Ok(profile)
+    } else {
+        schedule_segment_with_tolerance(curve, limits, grid, 0.0, 0.0, ToleranceMode::Auto)
+    }
+}
+
+fn is_success(status: SolveStatus) -> bool {
+    matches!(
+        status,
+        SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. }
+    )
 }
 
 #[cfg(test)]

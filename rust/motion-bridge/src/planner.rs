@@ -528,8 +528,8 @@ mod tests {
     #[test]
     fn two_adjacent_moves_shape_in_one_batch() {
         let c = relaxed_config();
-        let m0 = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
-        let m1 = classify_and_build([10.0, 0.0, 0.0], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+        let m0 = classify_and_build([0.0; 3], 50.0, 0.0, 0.0, 0.0, 1000.0).unwrap();
+        let m1 = classify_and_build([50.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0).unwrap();
         let segments = vec![m0.segment, m1.segment];
 
         let shaped = run_pipeline(&segments, &c).unwrap();

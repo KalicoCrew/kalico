@@ -74,14 +74,24 @@ pub fn beta_loop(
     let mut converged = false;
 
     for iteration in 0..input.beta_max_iters {
-        let result = run_one_iteration(
+        let result = match run_one_iteration(
             input,
             partition,
             &planning_a_max,
             &kernels,
             &half_supports,
             t_sm_half_max,
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(_) if last_result.is_some() => {
+                beta_warning = Some(beta_warning_from_last(
+                    last_result.as_ref().unwrap(),
+                    &machine_a_max,
+                ));
+                break;
+            }
+            Err(e) => return Err(e),
+        };
 
         // Stage 5: check post-shape peaks against machine limits.
         let derate_info = compute_derate(&result.peaks, &machine_a_max);
@@ -120,14 +130,21 @@ pub fn beta_loop(
         // If this is the last iteration, save the result and set warning.
         if iteration == input.beta_max_iters - 1 {
             // Exhausted iterations. Run one final solve with derated limits.
-            let final_result = run_one_iteration(
+            let final_result = match run_one_iteration(
                 input,
                 partition,
                 &planning_a_max,
                 &kernels,
                 &half_supports,
                 t_sm_half_max,
-            )?;
+            ) {
+                Ok(result) => result,
+                Err(_) => {
+                    beta_warning = Some(beta_warning_from_last(&result, &machine_a_max));
+                    last_result = Some(result);
+                    break;
+                }
+            };
             let final_derate = compute_derate(&final_result.peaks, &machine_a_max);
             beta_warning = Some(BetaWarning {
                 worst_ratio: final_derate.worst_ratio,
@@ -158,6 +175,14 @@ pub fn beta_loop(
 
     // Assemble the final output with E-gap segments inserted.
     assemble_output(input, partition, result, converged, beta_warning)
+}
+
+fn beta_warning_from_last(result: &BetaIterResult, machine_a_max: &[[f64; 3]]) -> BetaWarning {
+    let derate = compute_derate(&result.peaks, machine_a_max);
+    BetaWarning {
+        worst_ratio: derate.worst_ratio,
+        segments_exceeding: derate.exceeding_indices,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,8 +513,7 @@ fn build_e_halos(partition: &BatchPartition, global_ends: &[f64]) -> Vec<EHalo> 
     for eg in &partition.e_gaps {
         // The E gap's global time start is immediately after the preceding XY
         // segment ends (or at batch start if no preceding XY segment).
-        let t_gap_start =
-            find_gap_start(eg.segment_index, &all_xy_indices, global_ends, partition);
+        let t_gap_start = find_gap_start(eg.segment_index, &all_xy_indices, global_ends, partition);
         let t_gap_end = t_gap_start + eg.duration;
 
         halos.push(EHalo {

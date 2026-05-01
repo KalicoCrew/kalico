@@ -1,10 +1,10 @@
 //! Lookahead joining via SOCP-per-iteration (option A). Spec §2.3.
 
-use crate::GridConfig;
-use crate::TopProfile;
 use crate::multi::junction::JunctionResult;
 use crate::multi::parallel::fan_out_solves;
 use crate::multi::{BatchError, JoiningStatus, SegmentInput};
+use crate::GridConfig;
+use crate::TopProfile;
 
 /// Hard cap on joining sweeps. Per spec §2.3 + §6.5: typical convergence is
 /// 1–3 sweeps; cap at 10 to detect bugs.
@@ -22,9 +22,8 @@ pub(crate) fn join_until_converged(
     n_threads: usize,
 ) -> Result<(u32, JoiningStatus), BatchError> {
     for sweep in 1..=MAX_SWEEPS {
-        let f_dirty = forward_sweep(states, junctions);
-        let r_dirty = reverse_sweep(states, junctions);
-        if f_dirty == 0 && r_dirty == 0 {
+        let dirty_count = bidirectional_junction_sweep(states, junctions);
+        if dirty_count == 0 {
             // Velocity propagation has stabilized — no segment's joining-decided
             // (v_start, v_end) changed in either sweep direction.
             if states.iter().all(|s| !s.dirty) {
@@ -72,10 +71,45 @@ pub(crate) struct SegmentState {
     pub dirty: bool,
 }
 
+/// Propagate each junction as a simultaneous two-sided cap:
+/// `v_j = min(v_cap, v_left_end, v_right_start)`.
+///
+/// This avoids directional overwrite oscillation. If a solve lowers the right
+/// segment's achievable `v_start`, the same sweep lowers the left segment's
+/// `v_end` instead of first raising the right side from stale left state.
+pub(crate) fn bidirectional_junction_sweep(
+    states: &mut [SegmentState],
+    junctions: &[JunctionResult],
+) -> usize {
+    const EPS_VEL: f64 = 1e-3;
+    let mut dirty_count = 0;
+
+    for k in 0..junctions.len() {
+        let target = junctions[k]
+            .v_junction
+            .min(states[k].v_end)
+            .min(states[k + 1].v_start);
+
+        if (target - states[k].v_end).abs() > EPS_VEL {
+            states[k].v_end = target;
+            states[k].dirty = true;
+            dirty_count += 1;
+        }
+        if (target - states[k + 1].v_start).abs() > EPS_VEL {
+            states[k + 1].v_start = target;
+            states[k + 1].dirty = true;
+            dirty_count += 1;
+        }
+    }
+
+    dirty_count
+}
+
 /// Propagate junction velocities forward, marking dirty any segment whose
 /// `v_start` changed beyond `EPS_VEL` since the last forward sweep.
 ///
 /// Returns the number of segments marked dirty.
+#[cfg(test)]
 pub(crate) fn forward_sweep(states: &mut [SegmentState], junctions: &[JunctionResult]) -> usize {
     const EPS_VEL: f64 = 1e-3;
     let mut dirty_count = 0;
@@ -101,6 +135,7 @@ pub(crate) fn forward_sweep(states: &mut [SegmentState], junctions: &[JunctionRe
 /// `BatchError::EmptySegments`, but this guard makes the helper safe to call
 /// directly. A single-segment buffer has no junctions to propagate, so
 /// early-return is correct. (Per round-4 review, Codex NIT.)
+#[cfg(test)]
 pub(crate) fn reverse_sweep(states: &mut [SegmentState], junctions: &[JunctionResult]) -> usize {
     const EPS_VEL: f64 = 1e-3;
     if states.len() < 2 {
@@ -169,6 +204,20 @@ mod tests {
         // junctions[0] = 150, states[1].v_start = 100; min = 100. New v_end[0] = 100.
         assert_eq!(dirty, 1);
         assert!((states[0].v_end - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bidirectional_sweep_uses_lower_achieved_side() {
+        let mut states = vec![make_state(0.0, 120.0), make_state(80.0, 0.0)];
+        let junctions = vec![make_junction(150.0)];
+
+        let dirty = bidirectional_junction_sweep(&mut states, &junctions);
+
+        assert_eq!(dirty, 1);
+        assert!((states[0].v_end - 80.0).abs() < 1e-6);
+        assert!((states[1].v_start - 80.0).abs() < 1e-6);
+        assert!(states[0].dirty);
+        assert!(!states[1].dirty);
     }
 
     #[test]

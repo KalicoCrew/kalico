@@ -912,21 +912,17 @@ fn multi_move_chain_completes_without_stall() {
     let h = Harness::corexy_only();
 
     // dx sequence: +10, -5, +8, -3, +12 (reversals stress junction logic).
-    // Flush between each move so they shape as separate batches; chaining
-    // multiple moves into one batch trips an unrelated
-    // `non-contiguous Bezier pieces` panic in temporal joining that's out
-    // of scope for the TemporalJoining-SLP fix. The point of this test is
-    // to lock in regression coverage that *each* submit_move + flush cycle
-    // completes without `StalledOnInfeasibleSegment` — the bug that 485ec4d93
-    // fixed was per-segment SLP convergence, not multi-move batching.
+    // Submit the whole chain before flushing so the planner shapes it as a
+    // batched lookahead window. This locks in the multi-segment joining path
+    // instead of relying on the old flush-after-every-submit workaround.
     let steps = [10.0_f64, -5.0, 8.0, -3.0, 12.0];
     let mut x = 0.0_f64;
     for &dx in &steps {
         h.submit_move([x, 0.0, 0.0], dx, 0.0, 0.0, 0.0, 1000.0)
             .unwrap_or_else(|e| panic!("submit_move dx={dx} from x={x}: {e}"));
-        h.flush();
         x += dx;
     }
+    h.flush();
 
     let dispatched = h.dispatched.load(Ordering::Relaxed);
     assert!(
