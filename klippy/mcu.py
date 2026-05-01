@@ -805,6 +805,7 @@ class MCU:
             self._name = self._name[4:]
         # Motion bridge detection — stored for serialhdl and command routing
         self._motion_bridge = printer.lookup_object("motion_bridge", None)
+        self._bridge_handle = None
         # Serial port
         wp = "mcu '%s': " % (self._name)
         self._serial = serialhdl.SerialReader(
@@ -1298,6 +1299,26 @@ class MCU:
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
+        # Phase 2: hand the msgproto data dictionary and serial path to the
+        # motion bridge so RouterTransport can encode/decode passthrough
+        # commands and own the wire.
+        if self._motion_bridge is not None:
+            try:
+                raw_dict = msgparser.get_raw_data_dictionary()
+                if raw_dict:
+                    if isinstance(raw_dict, str):
+                        raw_dict = raw_dict.encode("utf-8")
+                    self._motion_bridge.set_msgproto_dict(raw_dict)
+                if self._bridge_handle is None:
+                    self._bridge_handle = self._motion_bridge.claim_mcu(
+                        self._name,
+                        self._serialport or "",
+                        int(self._baud or 0),
+                    )
+            except Exception:
+                logging.exception(
+                    "motion_bridge: failed to register MCU '%s'", self._name
+                )
         return True
 
     def _ready(self):

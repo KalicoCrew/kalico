@@ -105,3 +105,73 @@ class MotionBridgeWrapper:
 
     def extract_old(self, handle):
         return self._bridge.extract_old(handle)
+
+    # ------------------------------------------------------------------
+    # Phase 2: msgproto handover
+    # ------------------------------------------------------------------
+
+    def set_msgproto_dict(self, dict_json):
+        return self._bridge.set_msgproto_dict(dict_json)
+
+    # ------------------------------------------------------------------
+    # Phase 2: motion submission
+    # ------------------------------------------------------------------
+
+    def init_planner(
+        self,
+        max_velocity,
+        max_accel,
+        max_z_velocity,
+        max_z_accel,
+        square_corner_velocity,
+        shaper_type_x,
+        shaper_freq_x,
+        shaper_type_y,
+        shaper_freq_y,
+        octopus_handle,
+        f446_handle,
+        window_capacity=32,
+        beta_max_iters=10,
+    ):
+        return self._bridge.init_planner(
+            max_velocity,
+            max_accel,
+            max_z_velocity,
+            max_z_accel,
+            square_corner_velocity,
+            shaper_type_x,
+            shaper_freq_x,
+            shaper_type_y,
+            shaper_freq_y,
+            octopus_handle,
+            f446_handle,
+            window_capacity,
+            beta_max_iters,
+        )
+
+    def submit_move(self, dx, dy, dz, de, feedrate):
+        return self._bridge.submit_move(dx, dy, dz, de, feedrate)
+
+    def wait_moves(self):
+        return self._bridge.wait_moves()
+
+    def submit_dwell(self, duration_s):
+        return self._bridge.submit_dwell(duration_s)
+
+    def set_position(self, x, y, z):
+        return self._bridge.set_position(x, y, z)
+
+    def update_limits(self, max_velocity, max_accel):
+        return self._bridge.update_limits(max_velocity, max_accel)
+
+    def update_shaper(self, type_x, freq_x, type_y, freq_y):
+        return self._bridge.update_shaper(type_x, freq_x, type_y, freq_y)
+
+    def get_last_move_time(self):
+        return self._bridge.get_last_move_time()
+
+    def fallback_clock_conversions(self):
+        return self._bridge.fallback_clock_conversions()
+
+    def dispatched_segment_count(self):
+        return self._bridge.dispatched_segment_count()

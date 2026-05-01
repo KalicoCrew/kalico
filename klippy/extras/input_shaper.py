@@ -214,11 +214,19 @@ class InputShaper:
     def cmd_SET_INPUT_SHAPER(self, gcmd):
         bridge = self.printer.lookup_object("motion_bridge", None)
         if bridge is not None:
-            raise gcmd.error(
-                "SET_INPUT_SHAPER is not yet supported under the new "
-                "motion path. Input shaping is pre-baked into NURBS "
-                "by the Rust planner (Phase 3)."
-            )
+            # Phase 2: route shaper updates to the Rust planner. Update
+            # local AxisInputShaper state so subsequent gets/reports stay
+            # consistent with what the planner is actually applying.
+            for shaper in self.shapers:
+                shaper.update(gcmd)
+            type_x = self.shapers[0].shaper_type
+            freq_x = self.shapers[0].shaper_freq
+            type_y = self.shapers[1].shaper_type
+            freq_y = self.shapers[1].shaper_freq
+            bridge.update_shaper(type_x, freq_x, type_y, freq_y)
+            for shaper in self.shapers:
+                shaper.report(gcmd)
+            return
         if gcmd.get_command_parameters():
             for shaper in self.shapers:
                 shaper.update(gcmd)

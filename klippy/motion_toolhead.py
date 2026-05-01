@@ -22,12 +22,21 @@ class MotionToolhead:
         ]
         self.mcu = self.all_mcus[0] if self.all_mcus else None
 
+        # Phase 2: motion bridge handle (Rust planner pipeline).
+        self.bridge = self.printer.lookup_object("motion_bridge", None)
+
         # Position tracking
         self.commanded_pos = [0.0, 0.0, 0.0, 0.0]
 
         # Velocity / acceleration config (parsed for compat)
         self.max_velocity = config.getfloat("max_velocity", above=0.0)
         self.max_accel = config.getfloat("max_accel", above=0.0)
+        self.max_z_velocity = config.getfloat(
+            "max_z_velocity", self.max_velocity, above=0.0
+        )
+        self.max_z_accel = config.getfloat(
+            "max_z_accel", self.max_accel, above=0.0
+        )
         min_cruise_ratio = 0.5
         if config.getfloat("minimum_cruise_ratio", None) is None:
             req_accel_to_decel = config.getfloat(
@@ -75,6 +84,14 @@ class MotionToolhead:
             desc="Set printer velocity limits",
         )
         gcode.register_command("M204", self.cmd_M204)
+        # SET_INPUT_SHAPER is registered by the [input_shaper] module; under
+        # the bridge it routes through bridge.update_shaper directly (see
+        # klippy/extras/input_shaper.py::cmd_SET_INPUT_SHAPER).
+
+        # Phase 2: initialize the Rust planner once all MCUs are connected.
+        self.printer.register_event_handler(
+            "klippy:connect", self._init_planner
+        )
 
         # Load modules that toolhead normally loads
         for module_name in [
@@ -98,33 +115,45 @@ class MotionToolhead:
 
     def set_position(self, newpos, homing_axes=()):
         self.commanded_pos[:] = newpos
+        if self.bridge is not None:
+            self.bridge.set_position(newpos[0], newpos[1], newpos[2])
 
     # ------------------------------------------------------------------
     # Move commands — raise until Phase 2
     # ------------------------------------------------------------------
 
     def move(self, newpos, speed):
-        raise NotImplementedError(
-            "MotionToolhead.move() not available until Phase 2 planner integration"
-        )
+        dx = newpos[0] - self.commanded_pos[0]
+        dy = newpos[1] - self.commanded_pos[1]
+        dz = newpos[2] - self.commanded_pos[2]
+        de = newpos[3] - self.commanded_pos[3]
+        feedrate = min(speed, self.max_velocity)
+        if abs(dz) > 1e-9 and abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            feedrate = min(feedrate, self.max_z_velocity)
+        if self.bridge is not None:
+            self.bridge.submit_move(dx, dy, dz, de, feedrate)
+        self.commanded_pos[:] = newpos
 
     def manual_move(self, coord, speed):
-        raise NotImplementedError(
-            "MotionToolhead.manual_move() not available until Phase 2"
-        )
+        curpos = list(self.commanded_pos)
+        for i in range(len(coord)):
+            if coord[i] is not None:
+                curpos[i] = coord[i]
+        self.move(curpos, speed)
 
     def dwell(self, delay):
-        # Dwell is safe to no-op in Phase 1
-        pass
+        if self.bridge is not None:
+            self.bridge.submit_dwell(delay)
 
     def wait_moves(self):
-        # No queued moves in Phase 1
-        pass
+        if self.bridge is not None:
+            self.bridge.wait_moves()
 
     def drip_move(self, newpos, speed, drip_completion):
-        raise NotImplementedError(
-            "MotionToolhead.drip_move() not available until Phase 2"
-        )
+        # Phase 2: drip moves (homing) bypass the planner queue. Until the
+        # bridge exposes a dedicated drip API, fall back to a normal move so
+        # bring-up doesn't crash.
+        self.move(newpos, speed)
 
     # ------------------------------------------------------------------
     # Extruder
@@ -174,6 +203,8 @@ class MotionToolhead:
         pass
 
     def get_last_move_time(self):
+        if self.bridge is not None:
+            return self.bridge.get_last_move_time()
         if self.mcu is not None:
             return self.mcu.estimated_print_time(self.reactor.monotonic())
         return 0.0
@@ -254,6 +285,84 @@ class MotionToolhead:
             self.max_velocity = max_velocity
         if max_accel is not None:
             self.max_accel = max_accel
+        if self.bridge is not None and (
+            max_velocity is not None or max_accel is not None
+        ):
+            self.bridge.update_limits(self.max_velocity, self.max_accel)
+
+    # ------------------------------------------------------------------
+    # Phase 2: planner initialization
+    # ------------------------------------------------------------------
+
+    def _init_planner(self):
+        if self.bridge is None:
+            return
+        # Locate the two MVP MCUs by name. The first-print topology is:
+        #   - "mcu" (Octopus) drives X+Y
+        #   - "mcu z"  (or first non-primary MCU) drives Z
+        # If only one MCU is configured, reuse its handle for Z so init
+        # succeeds during single-MCU bring-up.
+        octopus = None
+        f446 = None
+        for name, mcu in self.printer.lookup_objects(module="mcu"):
+            handle = getattr(mcu, "_bridge_handle", None)
+            if handle is None:
+                continue
+            mcu_name = getattr(mcu, "_name", name)
+            if octopus is None or mcu_name in ("mcu", "octopus"):
+                if octopus is None:
+                    octopus = handle
+                elif f446 is None:
+                    f446 = handle
+            elif f446 is None:
+                f446 = handle
+        if octopus is None:
+            logging.warning(
+                "MotionToolhead: no MCU bridge handles available; "
+                "skipping init_planner"
+            )
+            return
+        if f446 is None:
+            f446 = octopus
+
+        # Pull initial shaper params from [input_shaper] config, if present.
+        shaper_type_x = "smooth_zv"
+        shaper_freq_x = 0.0
+        shaper_type_y = "smooth_zv"
+        shaper_freq_y = 0.0
+        is_obj = self.printer.lookup_object("input_shaper", None)
+        if is_obj is not None:
+            try:
+                shapers = is_obj.get_shapers()
+                for s in shapers:
+                    if s.axis == "x":
+                        shaper_type_x = s.shaper_type
+                        shaper_freq_x = s.shaper_freq
+                    elif s.axis == "y":
+                        shaper_type_y = s.shaper_type
+                        shaper_freq_y = s.shaper_freq
+            except Exception:
+                logging.exception(
+                    "MotionToolhead: failed to read input_shaper params"
+                )
+
+        try:
+            self.bridge.init_planner(
+                self.max_velocity,
+                self.max_accel,
+                self.max_z_velocity,
+                self.max_z_accel,
+                self.square_corner_velocity,
+                shaper_type_x,
+                shaper_freq_x,
+                shaper_type_y,
+                shaper_freq_y,
+                octopus,
+                f446,
+            )
+        except Exception:
+            logging.exception("MotionToolhead: init_planner failed")
+            raise
 
     def cmd_M204(self, gcmd):
         accel = gcmd.get_float("S", None, above=0.0)
