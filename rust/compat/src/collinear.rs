@@ -40,3 +40,56 @@ pub fn to_collinear_g5(start: [f64; 3], end: [f64; 3], e_absolute: f64, f: Optio
         f,
     }
 }
+
+/// Structured variant of `to_collinear_g5` for bridge callers.
+///
+/// Returns the 4 cubic Bézier control points [P0, P1, P2, P3] directly
+/// as `[[f64; 3]; 4]`. Same 1/3-2/3 lerp math as `to_collinear_g5`,
+/// without the G5Line text intermediary.
+pub fn to_collinear_bezier(start: [f64; 3], end: [f64; 3]) -> [[f64; 3]; 4] {
+    let d = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let p1 = [
+        start[0] + d[0] / 3.0,
+        start[1] + d[1] / 3.0,
+        start[2] + d[2] / 3.0,
+    ];
+    let p2 = [
+        start[0] + 2.0 * d[0] / 3.0,
+        start[1] + 2.0 * d[1] / 3.0,
+        start[2] + 2.0 * d[2] / 3.0,
+    ];
+    [start, p1, p2, end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collinear_bezier_matches_g5line() {
+        let start = [10.0, 20.0, 0.0];
+        let end = [40.0, 50.0, 0.0];
+        let bezier = to_collinear_bezier(start, end);
+
+        assert_eq!(bezier[0], start);
+        assert_eq!(bezier[3], end);
+        let d = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+        assert!((bezier[1][0] - (start[0] + d[0] / 3.0)).abs() < 1e-12);
+        assert!((bezier[1][1] - (start[1] + d[1] / 3.0)).abs() < 1e-12);
+        assert!((bezier[1][2] - (start[2] + d[2] / 3.0)).abs() < 1e-12);
+        assert!((bezier[2][0] - (start[0] + 2.0 * d[0] / 3.0)).abs() < 1e-12);
+        assert!((bezier[2][1] - (start[1] + 2.0 * d[1] / 3.0)).abs() < 1e-12);
+        assert!((bezier[2][2] - (start[2] + 2.0 * d[2] / 3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn collinear_bezier_z_axis_only() {
+        let start = [0.0, 0.0, 5.0];
+        let end = [0.0, 0.0, 10.0];
+        let bezier = to_collinear_bezier(start, end);
+        assert_eq!(bezier[0], start);
+        assert_eq!(bezier[3], end);
+        assert!((bezier[1][2] - (5.0 + 5.0 / 3.0)).abs() < 1e-12);
+        assert!((bezier[2][2] - (5.0 + 10.0 / 3.0)).abs() < 1e-12);
+    }
+}
