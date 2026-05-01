@@ -341,3 +341,22 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 **New nurbs primitives landed:** `BezierPiece::differentiate()`, `BezierPiece::real_roots_in_domain()` (companion-matrix QR), `restrict_to_domain()`, `fit_hermite_c1()` (C¹-constrained adaptive merge fitter).
 
 **Evidence:** Spec at `docs/superpowers/specs/2026-04-30-step7a-layer3-trajectory-shaping-design.md` (3 review rounds). Plan at `docs/superpowers/plans/2026-04-30-step7a-layer3-trajectory-shaping.md` (14 tasks). Implementation: 18 commits on `sota-motion` (range `09d794c86..HEAD`). All 62 trajectory tests + full workspace tests pass; clippy clean.
+
+---
+
+## 2026-05-01
+
+**Build-order Step 7-C-io tail: completed; Phase F restructured.** The original Step 7-C-io spec's §9 Phase F ("Soak + capture corpus") had three iterations of the sim-soak design accumulate structural problems — `socket://` Transport adapter required, capture corpus interim-only (USART2 backend ≠ USB-CDC), wall-clock bounds undefined under Renode's 0.05–0.5x pacing, one-hour leak detection too short to trust, one-way capture cannot satisfy `REQUIRED_SURFACES`. Rather than ship a weakened soak harness, Phase F was split:
+
+- **7-C-io tail** (this work): deterministic test battery + `Clock` trait seam + `tick_once()` reactor entrypoint extraction. A1–A7 covering arithmetic, GC, ordering, and edge-case bugs that hardware testing also cannot reliably catch. `decode_absolute` got a small additive correctness fix (`wrapping_add` so the high-end u64 boundary is test-probeable without debug-mode panics). 16 new tests; full host-rt suite: 113 passing (+ 1 pre-existing parallelism flake in `arm_flow_unit::request_id_is_monotonic_across_arm_attempts`, unaffected by this work).
+- **7-D handoff:** Renode sim-soak (now optional bench scaffolding), canonical H723 capture corpus, `python-diff-test` retirement (gated on canonical captures per parent spec §4.13), 24h wall-clock soak, USB-CDC byte-sequence fidelity, real unplug semantics, IWDG real-world pacing, Surface-C cycle actuals.
+
+**Design decisions made during brainstorming:**
+
+1. **Backward-compat constructors.** `ClockSyncEstimator::new` and `Reactor::new` keep existing signatures (defaulting to `RealClock`); new `new_with_clock` siblings accept `Arc<dyn Clock>`. No production call sites or existing tests changed.
+2. **Harness inside the crate.** `src/host_io/test_harness.rs` cfg-gated `#[cfg(any(test, feature = "test-harness"))]`. A1/A2/A4 live as `#[cfg(test)] mod` blocks inside `reactor.rs` because they need `pub(crate)` field access; A3/A5/A6/A7 are integration tests in `tests/` because they only need the public API. (A3 ended up inside `reactor.rs` too — `MockTransport` doesn't model `AwaitingResponse` GC state.)
+3. **`tick_once()` extraction with `TickOutcome`.** Loop body factored out of `Reactor::run()` into `pub(crate) fn tick_once(&mut self) -> TickOutcome`; literal extraction, no behavior change. `run()` becomes `loop { if matches!(self.tick_once(), TickOutcome::Closed) { break; } }`.
+
+**Review cycles:** 3 codex spec-review rounds during brainstorming (28 findings total fixed, 1 must-fix push-back), 1 codex review on Phase 0 (1 push-back, 0 fixes — pre-existing in-flight changes flagged), 1 codex adversarial review on Phases 1–3 (3 findings: 1 push-back on pre-existing reactor behavior, 2 accepted — A1 boundaries strengthened to actually cross mod-16, A4 strengthened to assert exact byte delta).
+
+**Evidence:** Tail spec at `docs/superpowers/specs/2026-05-01-step-7c-io-tail-design.md`. Plan at `docs/superpowers/plans/2026-05-01-step-7c-io-tail.md`. Implementation: 14 commits on `sota-motion` (`bd943185d..HEAD` modulo cutover). Parent spec §9 Phase F replaced with back-pointer.

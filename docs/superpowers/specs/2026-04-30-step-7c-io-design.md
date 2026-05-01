@@ -290,7 +290,13 @@ loop {
     //    is fully serviced before this step returns.
     poll_serial(Duration::from_millis(100));
 
-    // 3. RTO timer step. If oldest UnackedWindow entry's deadline passed,
+    // 3. Drain pending submissions. Acks processed in step 2 may have freed
+    //    UnackedWindow slots; flush §3.4-step-1's per-port pending queue
+    //    before any further wire writes. Without this step the queue would
+    //    only drain on the next caller-issued Submit.
+    drain_pending_submissions();
+
+    // 4. RTO timer step. If oldest UnackedWindow entry's deadline passed,
     //    inline timeout-driven retransmit.
     if let Some(front) = UnackedWindow.front() {
         if now >= front.sent_at + rtt_estimator.current_rto() {
@@ -298,10 +304,24 @@ loop {
         }
     }
 
-    // 4. AwaitingResponse GC step.
+    // 4b. Latch any reactor-staged host fault. Sites that detect a fatal
+    //     condition mid-handler (port disconnect at §3.11, retransmit
+    //     exhaustion at §3.8) cannot directly call event_dispatcher because
+    //     they don't own the borrow path; they stage a FaultEvent in
+    //     `pending_host_fault`, drained here.
+    if let Some(fault) = pending_host_fault.take() {
+        event_dispatcher.fault_latch.dispatch(fault);
+    }
+
+    // 4c. Forward any TraceRing host-event diagnostics queued in the shared
+    //     inbox (overflow / subscriber-disconnect / reattach — §6.4) to the
+    //     host-event subscriber.
+    event_dispatcher.host_event_dispatcher.drain_pending();
+
+    // 5. AwaitingResponse GC step.
     gc_awaiting_response(now);
 
-    // 5. Closed-state exit.
+    // 6. Closed-state exit.
     if state == Closed { flush_all_completions(); break; }
 }
 ```
@@ -584,7 +604,7 @@ fn decode(&self, packet: &[u8]) -> Result<DecodedFrame, ParseError>:
 
 `WrappedField::Enumerated` post-processes `U32` into `MessageValue::String(resolved_name)`.
 
-`decode_output` walks the OutputSpec format positionally per `klippy/msgproto.py::lookup_output_params`. For canonical-recoverable formats (every `%`-code is preceded by `name=`, kalico's convention for all four async events), it synthesizes named MessageParams via field-name recovery and returns `(format_first_word, named_params)` — e.g. `("kalico_credit_freed", {retired_through_segment_id: U32(N), free_slots: U32(K)})`. For free-form formats (no `name=%type` recovery), it falls back to the canonical Python shape: `("#output", {"#msg": MessageValue::String(formatted)})`. See §4.8 for the canonical Python-equivalent path used by the Phase-0 differential test.
+`decode_output` walks the OutputSpec format positionally per `klippy/msgproto.py::lookup_output_params`. For canonical-recoverable formats (every `%`-code is preceded by `name=`, kalico's convention for all four async events), it synthesizes named MessageParams via field-name recovery and returns `(format_first_word, named_params)` — e.g. `("kalico_credit_freed", {retired_through_segment_id: U32(N), free_slots: U32(K)})`. For free-form formats (no `name=%type` recovery), it falls back to the canonical Python shape: `("#output", {"#msg": MessageValue::String(formatted), "#format": MessageValue::String(<original format string>)})`. The `#format` pseudo-field is required because §4.8's `RuntimeEvent::lift` does not have access to the parser's format-string table (`lift` takes `(name, MessageParams)` only); without `#format` the lifted `UnknownOutput.format` would be the literal `"#output"` routing tag rather than the firmware-side format string the operator needs to interpret the `#msg`. The `#format` propagation also drives free-form dispatch parsing at `MsgProtoParser::from_dictionary` time: format strings whose `parse_format_string` recovery fails (`MalformedField` / `UnknownFormatCode` from a non-`name=%type` token) re-parse via positional `%`-code extraction (`extract_free_form_field_types`) and the resulting `OutputSpec` is marked `is_free_form: true`. The free-form branch never causes `from_dictionary` to fail on otherwise-valid output declarations. See §4.8 for the canonical Python-equivalent path used by the Phase-0 differential test.
 
 ### 4.8 OutputFormat: two-layer architecture
 
@@ -616,7 +636,17 @@ impl RuntimeEvent {
             "kalico_fault"         => Self::Fault { ... },
             "kalico_status_v6"     => Self::Status { ... },
             "kalico_trace"         => Self::Trace { ... },
-            _                      => Self::UnknownOutput { format: format_string_for(name), msg: ... },
+            _ => Self::UnknownOutput {
+                // Free-form decode_output (§4.7) stashes the firmware-side
+                // format string in `#format`; structured outputs that fall
+                // through to catch-all (no typed branch matched) lack it,
+                // so we surface the routing `name` as the format. Either
+                // way the operator gets a non-empty discriminator.
+                format: params.try_get_str("#format")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| name.to_string()),
+                msg: params.try_get_str("#msg").unwrap_or("").to_string(),
+            },
         }
     }
 }
@@ -1298,9 +1328,9 @@ Suggested implementation sequence (each phase produces a green build with the pr
 5. **Phase E — `arm_all_mcus` updates + `ArmError::QualityGate` detail.**
    - Per-MCU monotonic `request_id` with sanity check.
    - `is_quality_gate_passed` → `Result<(), QualityGateFailure>`.
-6. **Phase F — Soak + capture corpus.**
-   - Run on H723 sim + bench; collect trace captures.
-   - Phase-1 cutover: replace Phase-0 differential with corpus replay; retire `python-diff-test` feature.
+6. **Phase F — split into Step 7-C-io tail + Step 7-D handoff.** Phase F was rescoped after the original "soak on Renode + bench" plan accumulated structural problems (USART2-vs-USB-CDC capture mismatch, Renode pacing breaking wall-clock bounds, one-hour leak detection too short). Replaced with two pieces:
+   - **Step 7-C-io tail** (deterministic test battery + `Clock` seam + `tick_once()` extraction). Catches arithmetic, GC, ordering, and edge-case bugs that hardware testing also cannot reliably catch. See `docs/superpowers/specs/2026-05-01-step-7c-io-tail-design.md`. Completed 2026-05-01.
+   - **Step 7-D** (hardware bring-up): canonical H723 capture corpus, 24h wall-clock soak, `python-diff-test` retirement (gated on canonical captures per §4.13), USB-CDC byte-sequence fidelity, real unplug semantics, IWDG real-world pacing, Surface-C cycle actuals, optional Renode sim-soak as bench scaffolding.
 
 ## 10. References
 
