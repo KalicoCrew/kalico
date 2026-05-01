@@ -2,6 +2,7 @@
 
 mod command_queue;
 mod config_stage;
+mod debug_log;
 mod entry;
 mod mcu_state;
 mod notify;
@@ -11,6 +12,7 @@ mod stats;
 
 pub use command_queue::CommandQueue;
 pub use config_stage::{ConfigStage, ConfigStagePhase};
+pub use debug_log::DebugEntry;
 pub use entry::{NotifyId, PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
 pub use mcu_state::{CommandQueueId, McuState, PushError};
 pub use notify::{NotifyCallback, NotifyResponse, NotifyTable};

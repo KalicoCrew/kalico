@@ -8,6 +8,7 @@ use std::time::Instant;
 use indexmap::IndexMap;
 
 use super::config_stage::{ConfigStage, ConfigStagePhase};
+use super::debug_log::{DebugEntry, DebugLog};
 use super::entry::{NotifyId, PassthroughEntry};
 use super::mcu_state::{CommandQueueId, McuState, PushError};
 use super::notify::{NotifyCallback, NotifyResponse, NotifyTable};
@@ -64,6 +65,8 @@ struct McuRecord {
     was_non_empty: bool,
     /// Per-MCU stats counters.
     stats: StatsCounters,
+    /// Rolling debug log for crash diagnostics.
+    debug_log: DebugLog,
 }
 
 impl std::fmt::Debug for McuRecord {
@@ -80,6 +83,7 @@ impl std::fmt::Debug for McuRecord {
             .field("flush_callbacks_count", &self.flush_callbacks.len())
             .field("was_non_empty", &self.was_non_empty)
             .field("stats", &self.stats)
+            .field("debug_log", &self.debug_log)
             .finish()
     }
 }
@@ -144,6 +148,7 @@ impl PassthroughRouter {
                 flush_callbacks: Vec::new(),
                 was_non_empty: false,
                 stats: StatsCounters::new(),
+                debug_log: DebugLog::new(),
             },
         );
         handle
@@ -203,8 +208,13 @@ impl PassthroughRouter {
             rec.window.record_emit(bytes_len);
             rec.stats.bytes_write += bytes_len;
             rec.stats.send_seq += 1;
+            let now = instant_to_f64(self.clock.now());
+            rec.debug_log.record_sent(
+                rec.stats.send_seq,
+                e.bytes().to_vec(),
+                now,
+            );
             if !e.notify_id().is_none() {
-                let now = instant_to_f64(self.clock.now());
                 rec.sent_times.insert(e.notify_id(), now);
             }
         }
@@ -223,6 +233,11 @@ impl PassthroughRouter {
         rec.stats.receive_seq += 1;
         let sent_time = rec.sent_times.remove(&notify_id).unwrap_or(0.0);
         let receive_time = instant_to_f64(self.clock.now());
+        rec.debug_log.record_received(
+            rec.stats.receive_seq,
+            response_bytes.clone(),
+            receive_time,
+        );
         rec.notify_table.dispatch(
             notify_id,
             NotifyResponse {
@@ -325,6 +340,18 @@ impl PassthroughRouter {
         snap.ready_bytes = rec.state.total_ready_bytes();
         snap.upcoming_bytes = rec.state.total_upcoming_bytes();
         Ok(snap)
+    }
+
+    // ── Debug log / extract_old ───────────────────────────────────────────
+
+    /// Drain the rolling debug log for crash diagnostics.
+    /// Returns `(old_sent, old_received)`.
+    pub fn extract_old(
+        &mut self,
+        mcu: McuHandle,
+    ) -> Result<(Vec<DebugEntry>, Vec<DebugEntry>), RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        Ok(rec.debug_log.extract_old())
     }
 
     // ── Flush callbacks ─────────────────────────────────────────────────
@@ -687,6 +714,52 @@ mod tests {
 
         let s = router.get_stats(mcu).unwrap();
         assert_eq!(s.ready_bytes, 2); // 2 entries x 1 byte each
+    }
+
+    // ── Debug log / extract_old tests ──────────────────────────────────
+
+    #[test]
+    fn extract_old_captures_sent_and_received() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        let nid = router.register_notify(mcu, Box::new(|_| {})).unwrap();
+        router
+            .push(mcu, q, entry_with_notify(0, 10, nid))
+            .unwrap();
+        let _ = router.pop_next_for_emission(mcu).unwrap();
+        router
+            .dispatch_response(mcu, nid, vec![0xDE, 0xAD])
+            .unwrap();
+
+        let (sent, received) = router.extract_old(mcu).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].bytes, vec![0xDE, 0xAD]);
+    }
+
+    #[test]
+    fn extract_old_capped_at_100() {
+        let (mut router, _) = make_router();
+        let mcu = router.claim_mcu("mcu");
+        let q = router.alloc_command_queue(mcu).unwrap();
+
+        for i in 0..120 {
+            router.push(mcu, q, entry(0, i)).unwrap();
+        }
+        // Emit all 120 — window might block, but we only need enough
+        // to exceed 100.
+        let mut emitted = 0;
+        while router.pop_next_for_emission(mcu).unwrap().is_some() {
+            emitted += 1;
+            // Free window capacity for next batch.
+            router.record_ack(mcu, 1).unwrap();
+        }
+        assert!(emitted > 100, "need >100 emits, got {emitted}");
+
+        let (sent, _) = router.extract_old(mcu).unwrap();
+        assert_eq!(sent.len(), 100);
     }
 
     #[test]
