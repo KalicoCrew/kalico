@@ -309,6 +309,15 @@ class Printer:
             pconfig.log_config(config)
         # Register subsystem components
         self._register_subsystem_components()
+        # Instantiate the motion bridge BEFORE MCU objects are constructed
+        try:
+            from . import motion_bridge as motion_bridge_mod
+            bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
+            self.add_object('motion_bridge', bridge)
+        except Exception:
+            logging.debug(
+                "motion_bridge not available; using legacy MCU path"
+            )
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)

@@ -190,6 +190,12 @@ class ZTilt:
     cmd_Z_TILT_ADJUST_help = "Adjust the Z tilt"
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            raise gcmd.error(
+                "Z_TILT_ADJUST is not yet supported under the new "
+                "motion path"
+            )
         self.z_status.reset()
         self.retry_helper.start(gcmd)
         self.probe_helper.start_probe(gcmd)

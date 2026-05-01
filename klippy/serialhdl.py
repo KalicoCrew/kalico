@@ -22,14 +22,26 @@ class SerialReader:
         self.reactor = reactor
         self.warn_prefix = warn_prefix
         self.mcu = mcu
+        # Detect motion bridge — if present, skip C serialqueue allocation
+        self._use_bridge = (
+            mcu is not None
+            and hasattr(mcu, "_motion_bridge")
+            and mcu._motion_bridge is not None
+        )
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
-        # C interface
-        self.ffi_main, self.ffi_lib = chelper.get_ffi()
-        self.serialqueue = None
-        self.default_cmd_queue = self.alloc_command_queue()
-        self.stats_buf = self.ffi_main.new("char[4096]")
+        # C interface (skipped when bridge is active)
+        if self._use_bridge:
+            self.ffi_main = self.ffi_lib = None
+            self.serialqueue = None
+            self.default_cmd_queue = None
+            self.stats_buf = None
+        else:
+            self.ffi_main, self.ffi_lib = chelper.get_ffi()
+            self.serialqueue = None
+            self.default_cmd_queue = self.alloc_command_queue()
+            self.stats_buf = self.ffi_main.new("char[4096]")
         # Threading
         self.lock = threading.Lock()
         self.background_thread = None
@@ -322,11 +334,19 @@ class SerialReader:
         )
 
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
+        if self._use_bridge:
+            return  # Bridge manages clock estimation
         self.ffi_lib.serialqueue_set_clock_est(
             self.serialqueue, freq, conv_time, conv_clock, last_clock
         )
 
     def disconnect(self):
+        if self._use_bridge:
+            # Bridge manages its own serial lifecycle
+            for pn in self.pending_notifications.values():
+                pn.complete(None)
+            self.pending_notifications.clear()
+            return
         if self.serialqueue is not None:
             self.ffi_lib.serialqueue_exit(self.serialqueue)
             if self.background_thread is not None:
@@ -340,6 +360,8 @@ class SerialReader:
         self.pending_notifications.clear()
 
     def stats(self, eventtime):
+        if self._use_bridge:
+            return "bridge_mode=1"
         if self.serialqueue is None:
             return ""
         self.ffi_lib.serialqueue_get_stats(
@@ -354,6 +376,8 @@ class SerialReader:
         return self.msgparser
 
     def get_serialqueue(self):
+        if self._use_bridge:
+            return None  # Bridge manages the serial queue in Rust
         return self.serialqueue
 
     def get_default_command_queue(self):
@@ -374,6 +398,8 @@ class SerialReader:
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
+        if self._use_bridge:
+            return  # Bridge handles command dispatch
         if self.serialqueue is None:
             return
         self.ffi_lib.serialqueue_send(
@@ -382,6 +408,8 @@ class SerialReader:
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
+        if self._use_bridge:
+            return {"#sent_time": 0.0, "#receive_time": 0.0}
         if self.serialqueue is None:
             return
         self.last_notify_id += 1
@@ -397,15 +425,21 @@ class SerialReader:
         return params
 
     def send(self, msg, minclock=0, reqclock=0):
+        if self._use_bridge:
+            return  # Bridge handles config/init command dispatch
         cmd = self.msgparser.create_command(msg)
         self.raw_send(cmd, minclock, reqclock, self.default_cmd_queue)
 
     def send_with_response(self, msg, response):
+        if self._use_bridge:
+            return {"#sent_time": 0.0, "#receive_time": 0.0}
         cmd = self.msgparser.create_command(msg)
         src = SerialRetryCommand(self, response)
         return src.get_response([cmd], self.default_cmd_queue)
 
     def alloc_command_queue(self):
+        if self._use_bridge:
+            return None  # Bridge manages its own command queues
         return self.ffi_main.gc(
             self.ffi_lib.serialqueue_alloc_commandqueue(),
             self.ffi_lib.serialqueue_free_commandqueue,
@@ -413,6 +447,8 @@ class SerialReader:
 
     # Dumping debug lists
     def dump_debug(self):
+        if self._use_bridge:
+            return "SerialReader: bridge mode (no C serialqueue)"
         out = []
         out.append(
             "Dumping serial stats: %s" % (self.stats(self.reactor.monotonic()),)

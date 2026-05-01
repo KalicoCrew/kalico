@@ -105,6 +105,13 @@ class HomingMove:
         triggered=True,
         check_triggered=True,
     ):
+        # Motion bridge: homing not yet supported
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            raise self.printer.command_error(
+                "Homing is not yet supported under the new motion path "
+                "until Phase 4"
+            )
         # Notify start of homing/probing move
         self.printer.send_event("homing:homing_move_begin", self)
         # Note start location

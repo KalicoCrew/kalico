@@ -144,6 +144,10 @@ class InputShaper:
 
     def connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        # If motion bridge is active, skip C-side IS setup entirely
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            return
         # Configure initial values
         self._update_input_shaping(error=self.printer.config_error)
 
@@ -208,6 +212,13 @@ class InputShaper:
     cmd_SET_INPUT_SHAPER_help = "Set cartesian parameters for input shaper"
 
     def cmd_SET_INPUT_SHAPER(self, gcmd):
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            raise gcmd.error(
+                "SET_INPUT_SHAPER is not yet supported under the new "
+                "motion path. Input shaping is pre-baked into NURBS "
+                "by the Rust planner (Phase 3)."
+            )
         if gcmd.get_command_parameters():
             for shaper in self.shapers:
                 shaper.update(gcmd)

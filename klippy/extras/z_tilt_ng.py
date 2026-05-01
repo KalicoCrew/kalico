@@ -256,6 +256,12 @@ class ZTilt:
     cmd_Z_TILT_AUTODETECT_help = "Autodetect pivot point of Z motors"
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            raise gcmd.error(
+                "Z_TILT_ADJUST is not yet supported under the new "
+                "motion path"
+            )
         if self.z_positions is None:
             gcmd.respond_info(
                 "No z_positions configured. Run Z_TILT_AUTODETECT first"

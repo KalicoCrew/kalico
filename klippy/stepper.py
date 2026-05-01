@@ -54,16 +54,30 @@ class MCU_stepper:
         self._mcu_position_offset = 0.0
         self._reset_cmd_tag = self._get_position_cmd = None
         self._active_callbacks = []
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self._stepqueue = ffi_main.gc(
-            ffi_lib.stepcompress_alloc(oid), ffi_lib.stepcompress_free
+        # Detect motion bridge — skip C FFI stepcompress allocation
+        self._use_bridge = (
+            hasattr(self._mcu, "_motion_bridge")
+            and self._mcu._motion_bridge is not None
         )
-        ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
-        self._mcu.register_stepqueue(self._stepqueue)
-        self._stepper_kinematics = None
-        self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
-        self._itersolve_check_active = ffi_lib.itersolve_check_active
-        self._trapq = ffi_main.NULL
+        if self._use_bridge:
+            self._stepqueue = None
+            self._stepper_kinematics = None
+            self._itersolve_generate_steps = lambda sk, ft: None
+            self._itersolve_check_active = lambda sk, ft: 0
+            self._trapq = None
+        else:
+            ffi_main, ffi_lib = chelper.get_ffi()
+            self._stepqueue = ffi_main.gc(
+                ffi_lib.stepcompress_alloc(oid), ffi_lib.stepcompress_free
+            )
+            ffi_lib.stepcompress_set_invert_sdir(
+                self._stepqueue, self._invert_dir
+            )
+            self._mcu.register_stepqueue(self._stepqueue)
+            self._stepper_kinematics = None
+            self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
+            self._itersolve_check_active = ffi_lib.itersolve_check_active
+            self._trapq = ffi_main.NULL
         self._mcu.get_printer().register_event_handler(
             "klippy:connect", self._query_mcu_position
         )
@@ -96,6 +110,8 @@ class MCU_stepper:
         self._req_step_both_edge = step_both_edge
 
     def setup_itersolve(self, alloc_func, *params):
+        if self._use_bridge:
+            return  # Bridge: stepper kinematics handled in Rust
         ffi_main, ffi_lib = chelper.get_ffi()
         sk = ffi_main.gc(getattr(ffi_lib, alloc_func)(*params), ffi_lib.free)
         self.set_stepper_kinematics(sk)
@@ -104,6 +120,35 @@ class MCU_stepper:
         if self._step_pulse_duration is None:
             self._step_pulse_duration = 0.000002
         invert_step = self._invert_step
+        if self._use_bridge:
+            # Bridge mode: register config commands but skip C FFI
+            step_pulse_ticks = self._mcu.seconds_to_clock(
+                self._step_pulse_duration
+            )
+            self._mcu.add_config_cmd(
+                "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
+                " step_pulse_ticks=%u"
+                % (
+                    self._oid,
+                    self._step_pin,
+                    self._dir_pin,
+                    invert_step,
+                    step_pulse_ticks,
+                )
+            )
+            self._mcu.add_config_cmd(
+                "reset_step_clock oid=%d clock=0" % (self._oid,),
+                on_restart=True,
+            )
+            self._reset_cmd_tag = self._mcu.lookup_command(
+                "reset_step_clock oid=%c clock=%u"
+            ).get_command_tag()
+            self._get_position_cmd = self._mcu.lookup_query_command(
+                "stepper_get_position oid=%c",
+                "stepper_position oid=%c pos=%i",
+                oid=self._oid,
+            )
+            return
         # Check if can enable "step on both edges"
         constants = self._mcu.get_constants()
         ssbe = int(constants.get("STEPPER_STEP_BOTH_EDGE", "0"))
@@ -111,26 +156,19 @@ class MCU_stepper:
         sou = int(constants.get("STEPPER_OPTIMIZED_UNSTEP", "0"))
         want_both_edges = self._req_step_both_edge
         if self._step_pulse_duration > MIN_BOTH_EDGE_DURATION:
-            # If user has requested a very large step pulse duration
-            # then disable step on both edges (rise and fall times may
-            # not be symetric)
             want_both_edges = False
         elif (
             sbe and self._step_pulse_duration > MIN_OPTIMIZED_BOTH_EDGE_DURATION
         ):
-            # Older MCU and user has requested large pulse duration
             want_both_edges = False
         elif not sbe and not ssbe:
-            # Older MCU that doesn't support step on both edges
             want_both_edges = False
         elif sou:
-            # MCU has optimized step/unstep - better to use that
             want_both_edges = False
         if want_both_edges:
             self._step_both_edge = True
             invert_step = -1
             if sbe:
-                # Older MCU requires setting step_pulse_ticks=0 to enable
                 self._step_pulse_duration = 0.0
         # Configure stepper object
         step_pulse_ticks = self._mcu.seconds_to_clock(self._step_pulse_duration)
@@ -193,17 +231,22 @@ class MCU_stepper:
         if invert_dir == self._invert_dir:
             return
         self._invert_dir = invert_dir
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, invert_dir)
+        if not self._use_bridge:
+            ffi_main, ffi_lib = chelper.get_ffi()
+            ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, invert_dir)
         self._mcu.get_printer().send_event("stepper:set_dir_inverted", self)
 
     def calc_position_from_coord(self, coord):
+        if self._use_bridge:
+            return 0.0  # Bridge: position tracking in Rust
         ffi_main, ffi_lib = chelper.get_ffi()
         return ffi_lib.itersolve_calc_position_from_coord(
             self._stepper_kinematics, coord[0], coord[1], coord[2]
         )
 
     def set_position(self, coord):
+        if self._use_bridge:
+            return  # Bridge: position tracking in Rust
         mcu_pos = self.get_mcu_position()
         sk = self._stepper_kinematics
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -211,6 +254,8 @@ class MCU_stepper:
         self._set_mcu_position(mcu_pos)
 
     def get_commanded_position(self):
+        if self._use_bridge:
+            return 0.0  # Bridge: position tracking in Rust
         ffi_main, ffi_lib = chelper.get_ffi()
         return ffi_lib.itersolve_get_commanded_pos(self._stepper_kinematics)
 
@@ -228,6 +273,8 @@ class MCU_stepper:
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
 
     def get_past_mcu_position(self, print_time):
+        if self._use_bridge:
+            return 0  # Bridge: position tracking in Rust
         clock = self._mcu.print_time_to_clock(print_time)
         ffi_main, ffi_lib = chelper.get_ffi()
         pos = ffi_lib.stepcompress_find_past_position(self._stepqueue, clock)
@@ -237,6 +284,8 @@ class MCU_stepper:
         return mcu_pos * self._step_dist - self._mcu_position_offset
 
     def dump_steps(self, count, start_clock, end_clock):
+        if self._use_bridge:
+            return ([], 0)  # Bridge: no C stepcompress
         ffi_main, ffi_lib = chelper.get_ffi()
         data = ffi_main.new("struct pull_history_steps[]", count)
         count = ffi_lib.stepcompress_extract_old(
@@ -249,6 +298,9 @@ class MCU_stepper:
 
     def set_stepper_kinematics(self, sk):
         old_sk = self._stepper_kinematics
+        if self._use_bridge:
+            self._stepper_kinematics = sk
+            return old_sk
         mcu_pos = 0
         if old_sk is not None:
             mcu_pos = self.get_mcu_position()
@@ -260,6 +312,8 @@ class MCU_stepper:
         return old_sk
 
     def note_homing_end(self):
+        if self._use_bridge:
+            return  # Bridge: homing handled in Rust
         ffi_main, ffi_lib = chelper.get_ffi()
         ret = ffi_lib.stepcompress_reset(self._stepqueue, 0)
         if ret:
@@ -271,6 +325,8 @@ class MCU_stepper:
         self._query_mcu_position()
 
     def _query_mcu_position(self):
+        if self._use_bridge:
+            return  # Bridge: position sync handled in Rust
         if self._mcu.is_fileoutput() or self._mcu.non_critical_disconnected:
             return
         params = self._get_position_cmd.send([self._oid])
@@ -292,6 +348,10 @@ class MCU_stepper:
         return self._trapq
 
     def set_trapq(self, tq):
+        if self._use_bridge:
+            old_tq = self._trapq
+            self._trapq = tq
+            return old_tq
         ffi_main, ffi_lib = chelper.get_ffi()
         if tq is None:
             tq = ffi_main.NULL
@@ -320,6 +380,8 @@ class MCU_stepper:
             raise error("Internal error in stepcompress")
 
     def is_active_axis(self, axis):
+        if self._use_bridge:
+            return False  # Bridge: axis tracking in Rust
         ffi_main, ffi_lib = chelper.get_ffi()
         a = axis.encode()
         return ffi_lib.itersolve_is_active_axis(self._stepper_kinematics, a)

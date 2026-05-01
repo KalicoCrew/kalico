@@ -227,10 +227,20 @@ class PrinterMotionReport:
         self.steppers[mcu_stepper.get_name()] = ds
 
     def _connect(self):
+        # Check for motion bridge — if active, skip C trapq setup
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            # Bridge mode: no C trapq available. Keep dict shape empty.
+            self.last_status["steppers"] = list(sorted(self.steppers.keys()))
+            self.last_status["trapq"] = []
+            return
         # Lookup toolhead trapq
         toolhead = self.printer.lookup_object("toolhead")
         trapq = toolhead.get_trapq()
-        self.trapqs["toolhead"] = DumpTrapQ(self.printer, "toolhead", trapq)
+        if trapq is not None:
+            self.trapqs["toolhead"] = DumpTrapQ(
+                self.printer, "toolhead", trapq
+            )
         # Lookup extruder trapqs
         for i in range(99):
             ename = "extruder%d" % (i,)
@@ -240,7 +250,8 @@ class PrinterMotionReport:
             if extruder is None:
                 break
             etrapq = extruder.get_trapq()
-            self.trapqs[ename] = DumpTrapQ(self.printer, ename, etrapq)
+            if etrapq is not None:
+                self.trapqs[ename] = DumpTrapQ(self.printer, ename, etrapq)
         # Populate 'trapq' and 'steppers' in get_status result
         self.last_status["steppers"] = list(sorted(self.steppers.keys()))
         self.last_status["trapq"] = list(sorted(self.trapqs.keys()))

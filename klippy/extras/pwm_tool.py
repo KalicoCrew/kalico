@@ -229,4 +229,9 @@ class PrinterOutputPin:
 
 
 def load_config_prefix(config):
+    bridge = config.get_printer().lookup_object("motion_bridge", None)
+    if bridge is not None:
+        raise config.error(
+            "[pwm_tool] is not supported under the new motion path"
+        )
     return PrinterOutputPin(config)

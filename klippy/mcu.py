@@ -222,6 +222,13 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
+        # Detect motion bridge — skip C FFI trdispatch allocation
+        _use_bridge = (
+            hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
+        )
+        if _use_bridge:
+            self._trdispatch_mcu = None
+            return
         # Create trdispatch_mcu object
         set_timeout_tag = mcu.lookup_command(
             "trsync_set_timeout oid=%c clock=%u"
@@ -271,6 +278,11 @@ class MCU_trsync:
     def start(
         self, print_time, report_offset, trigger_completion, expire_timeout
     ):
+        if self._trdispatch_mcu is None:
+            raise error(
+                "MCU_trsync.start() not yet supported under the new "
+                "motion path (Phase 4)"
+            )
         self._trigger_completion = trigger_completion
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
@@ -304,6 +316,11 @@ class MCU_trsync:
         self._home_end_clock = self._mcu.print_time_to_clock(home_end_time)
 
     def stop(self):
+        if self._trdispatch_mcu is None:
+            raise error(
+                "MCU_trsync.stop() not yet supported under the new "
+                "motion path (Phase 4)"
+            )
         self._mcu.register_response(None, "trsync_state", self._oid)
         self._trigger_completion = None
         if self._mcu.is_fileoutput():
@@ -320,8 +337,16 @@ class TriggerDispatch:
     def __init__(self, mcu):
         self._mcu = mcu
         self._trigger_completion = None
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
+        self._use_bridge = (
+            hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
+        )
+        if self._use_bridge:
+            self._trdispatch = None
+        else:
+            ffi_main, ffi_lib = chelper.get_ffi()
+            self._trdispatch = ffi_main.gc(
+                ffi_lib.trdispatch_alloc(), ffi_lib.free
+            )
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
 
     def get_oid(self):
@@ -353,6 +378,11 @@ class TriggerDispatch:
         return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
 
     def start(self, print_time):
+        if self._use_bridge:
+            raise error(
+                "TriggerDispatch.start() not yet supported under the new "
+                "motion path (Phase 4)"
+            )
         reactor = self._mcu.get_printer().get_reactor()
         self._trigger_completion = reactor.completion()
         expire_timeout = get_danger_options().multi_mcu_trsync_timeout
@@ -379,6 +409,11 @@ class TriggerDispatch:
         self._trigger_completion.wait()
 
     def stop(self):
+        if self._use_bridge:
+            raise error(
+                "TriggerDispatch.stop() not yet supported under the new "
+                "motion path (Phase 4)"
+            )
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trdispatch_stop(self._trdispatch)
         res = [trsync.stop() for trsync in self._trsyncs]
@@ -768,6 +803,8 @@ class MCU:
         self._name = config.get_name()
         if self._name.startswith("mcu "):
             self._name = self._name[4:]
+        # Motion bridge detection — stored for serialhdl and command routing
+        self._motion_bridge = printer.lookup_object("motion_bridge", None)
         # Serial port
         wp = "mcu '%s': " % (self._name)
         self._serial = serialhdl.SerialReader(
@@ -1146,17 +1183,23 @@ class MCU:
         move_count = config_params["move_count"]
         if move_count < self._reserved_move_slots:
             raise error("Too few moves available on MCU '%s'" % (self._name,))
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self._steppersync = ffi_main.gc(
-            ffi_lib.steppersync_alloc(
-                self._serial.get_serialqueue(),
-                self._stepqueues,
-                len(self._stepqueues),
-                move_count - self._reserved_move_slots,
-            ),
-            ffi_lib.steppersync_free,
-        )
-        ffi_lib.steppersync_set_time(self._steppersync, 0.0, self._mcu_freq)
+        if self._motion_bridge is not None:
+            # Bridge mode: skip C steppersync allocation
+            self._steppersync = None
+        else:
+            ffi_main, ffi_lib = chelper.get_ffi()
+            self._steppersync = ffi_main.gc(
+                ffi_lib.steppersync_alloc(
+                    self._serial.get_serialqueue(),
+                    self._stepqueues,
+                    len(self._stepqueues),
+                    move_count - self._reserved_move_slots,
+                ),
+                ffi_lib.steppersync_free,
+            )
+            ffi_lib.steppersync_set_time(
+                self._steppersync, 0.0, self._mcu_freq
+            )
         # Log config information
         move_msg = "Configured MCU '%s' (%d moves)" % (self._name, move_count)
         logging.info(move_msg)
@@ -1464,6 +1507,8 @@ class MCU:
     def flush_moves(self, print_time, clear_history_time):
         if self._steppersync is None:
             return
+        if self._motion_bridge is not None:
+            return  # Bridge mode: step generation handled in Rust
         clock = self.print_time_to_clock(print_time)
         if clock < 0:
             return
@@ -1483,6 +1528,8 @@ class MCU:
     def check_active(self, print_time, eventtime):
         if self._steppersync is None:
             return
+        if self._motion_bridge is not None:
+            return  # Bridge mode: clock sync handled in Rust
         offset, freq = self._clocksync.calibrate_clock(print_time, eventtime)
         self._ffi_lib.steppersync_set_time(self._steppersync, offset, freq)
         if (
