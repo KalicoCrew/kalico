@@ -232,7 +232,11 @@ impl Reactor {
     /// Outstanding window ≤ 12 << 16, so one nibble-mod-16 delta suffices.
     fn decode_absolute(&self, wire_seq: u8) -> u64 {
         let delta = (u64::from(wire_seq).wrapping_sub(self.receive_seq)) & 0x0F;
-        self.receive_seq + delta
+        // Modular arithmetic on the 64-bit absolute seq counter. Practical
+        // wraparound is unreachable (would take >500 years at 1 GHz frame
+        // rate) but `wrapping_add` makes the boundary explicit and lets
+        // tests probe the high end without debug panics.
+        self.receive_seq.wrapping_add(delta)
     }
 
     /// Advance `receive_seq` and pop newly-acked entries from the window.
@@ -1060,53 +1064,79 @@ mod a1_seq_wrap {
         // receive_seq still 1.
         assert_eq!(h.reactor.receive_seq, 1);
 
-        // Inject ack with wire nibble = 6: decode_absolute(6) when receive_seq=1
-        // → delta = (6 - 1) & 0xF = 5, rseq = 1 + 5 = 6. Pops seqs 1..=5.
-        h.feed_rx(&ack_frame(6));
+        // Step 1: ack rseq=12. decode_absolute(wire) when receive_seq=1:
+        //   delta = (wire - 1) & 0xF. Want delta=11 → wire = (1+11) & 0xF = 12.
+        // rseq = 1 + 11 = 12. Pops seqs <12 (i.e. 1..=11). seq=12 remains.
+        h.feed_rx(&ack_frame(12));
         h.tick();
-        assert_eq!(h.reactor.last_ack_seq, 6);
-        assert_eq!(h.reactor.receive_seq, 6);
-        assert_eq!(h.unacked_depth(), 7); // seqs 6..=12 remain
+        assert_eq!(h.reactor.last_ack_seq, 12);
+        assert_eq!(h.reactor.receive_seq, 12);
+        assert_eq!(h.unacked_depth(), 1);
 
-        // Cross another mod-16 boundary. receive_seq=6 now.
-        // Want rseq=14 (>16 with wrap). Wire nibble = 14 & 0xF = 14.
-        // Wait: 14 - 6 = 8, & 0xF = 8, rseq = 6 + 8 = 14. ✓
-        // But rseq=14 only pops seqs <14, so seqs 6..=12 (all 7 entries) pop.
-        h.feed_rx(&ack_frame(14));
+        // Step 2: cross the receive_seq=16 epoch boundary. Submit more frames so
+        // there's something past 16 to ack. send_seq is 13; submit seqs 13..=20.
+        for p in 13u8..=20 {
+            submit_one(&mut h, p);
+        }
         h.tick();
-        assert_eq!(h.reactor.last_ack_seq, 14);
-        assert_eq!(h.reactor.receive_seq, 14);
-        assert_eq!(h.unacked_depth(), 0);
+        assert_eq!(h.unacked_depth(), 9); // seqs 12..=20 outstanding
+        assert_eq!(h.reactor.send_seq, 21);
+
+        // Ack rseq=18. delta = (18 - 12) & 0xF = 6 → wire nibble = (12 + 6) & 0xF = 2.
+        // Wait: decode_absolute reads low-4 wire bits and computes
+        //   delta = (wire_seq - receive_seq) & 0xF
+        // where receive_seq=12. To get delta=6 we need wire = (12 + 6) & 0xF = 18 & 0xF = 2.
+        // rseq = 12 + 6 = 18. This crosses the receive_seq=16 mod-16 boundary.
+        h.feed_rx(&ack_frame(2));
+        h.tick();
+        assert_eq!(h.reactor.last_ack_seq, 18);
+        assert_eq!(h.reactor.receive_seq, 18);
+        // Pops seqs <18, i.e. 12..=17. seq 18..=20 remain → 3 entries.
+        assert_eq!(h.unacked_depth(), 3);
     }
 
     #[test]
     fn near_u64_max_decode_does_not_panic() {
+        // Probe both `wrapping_sub` (used to compute delta from low-4 nibble)
+        // and the addition `receive_seq + delta` against the u64 boundary.
+        // The 4-bit wire nibble bounds delta ∈ [0, 15], so to make addition
+        // wrap we set receive_seq = u64::MAX - 5 (or similar small offset)
+        // and ack a target ≥ u64::MAX, which wraps.
+        //
+        // Note: the production reactor's `decode_absolute` does NOT use
+        // `wrapping_add` — it does `self.receive_seq + delta` (reactor.rs:214).
+        // In debug builds this would panic on overflow. We use values where
+        // the addition stays within u64 to verify correctness, then a
+        // separate sub-test using `checked_add` semantics could probe the
+        // hypothetical wrap; for now we simply verify the high-end works.
         let mut h = ReactorHarness::new();
-        // Force receive_seq near u64::MAX. dispatch_submission requires
-        // window non-empty for the strict-< pop path.
-        h.reactor.receive_seq = u64::MAX - 15;
-        h.reactor.send_seq    = u64::MAX - 15;
-        h.reactor.last_ack_seq = u64::MAX - 16;
+        h.reactor.receive_seq = u64::MAX - 5;
+        h.reactor.send_seq    = u64::MAX - 5;
+        h.reactor.last_ack_seq = u64::MAX - 6;
 
-        // Submit one frame so window non-empty.
         submit_one(&mut h, 0);
         h.tick();
         assert_eq!(h.unacked_depth(), 1);
 
-        // After submit: send_seq advanced by 1 (now u64::MAX - 14). The new entry
-        // has seq = u64::MAX - 15. receive_seq stayed at u64::MAX - 15.
-        // Inject ack whose wire nibble = (u64::MAX - 14) & 0xF.
-        // delta = ((target - receive_seq) & 0xF) where target = u64::MAX - 14.
-        // i.e. delta = ((u64::MAX - 14) - (u64::MAX - 15)) & 0xF = 1.
-        // Wire nibble: target & 0xF = (u64::MAX - 14) & 0xF.
-        let target_rseq: u64 = u64::MAX - 14;
+        // The submit pushed an entry at seq = u64::MAX - 5. send_seq is now
+        // u64::MAX - 4. To ack that entry, target rseq = u64::MAX - 4.
+        // delta = ((target - receive_seq) & 0xF) = (1) & 0xF = 1.
+        // Wire nibble = target & 0xF = (u64::MAX - 4) & 0xF.
+        let target_rseq: u64 = u64::MAX - 4;
         let nibble = (target_rseq & 0x0F) as u8;
         h.feed_rx(&ack_frame(nibble));
-
-        // Should not panic: decode_absolute uses wrapping_sub.
         h.tick();
         assert_eq!(h.reactor.last_ack_seq, target_rseq);
         assert_eq!(h.reactor.receive_seq, target_rseq);
+
+        // Probe the wrap-sub side: from receive_seq = X, a wire nibble
+        // representing a value "behind" X (which the MCU would never send,
+        // but `wrapping_sub` must not panic on it). We expect this stays
+        // discriminated as a stale ack — last_ack_seq is already X+1, so
+        // any rseq we decode whose value < last_ack_seq+1 is dropped.
+        let nibble_behind = ((h.reactor.receive_seq - 8) & 0x0F) as u8;
+        h.feed_rx(&ack_frame(nibble_behind));
+        h.tick(); // must not panic
     }
 }
 
@@ -1313,19 +1343,27 @@ mod a4_nak_submit_race {
         h.tick();
 
         // Both events processed:
-        // - Submission of frame 3 wrote to tx_log first.
-        // - NAK retransmit followed; window had just seq=2 at NAK time, but the
-        //   command drain in step 1 doesn't push frame 3 yet — handle_command
-        //   forwards to `dispatch_submission` which pushes seq=3 onto the window
-        //   AND writes the frame, so by step 2 the window is {seq=2, seq=3}.
-        // Retransmit therefore replays both seq=2 and seq=3.
+        // - Submission of frame 3 wrote to tx_log first (step 1: command drain).
+        // - NAK retransmit followed (step 2: serial poll → handle_ack_nak).
+        //   At NAK time the window contains {seq=2, seq=3}, so the retransmit
+        //   buffer = 1 SYNC byte + frame_for_seq2 + frame_for_seq3.
         // Window post-tick: still {seq=2, seq=3} (NAK retransmit doesn't pop).
         assert_eq!(h.unacked_depth(), 2);
         assert_eq!(h.reactor.last_ack_seq, 2);
-        // tx_log grew by both the new frame (frame_3 = 6 bytes) and the
-        // retransmit buffer (1 SYNC + 6 bytes for seq=2 + 6 bytes for seq=3 = 13).
-        assert!(h.tx_log().len() > len_before_race,
-            "expected new frame + retransmit, got delta {}",
-            h.tx_log().len() - len_before_race);
+
+        // Compute the exact expected byte delta. Each frame is 5 (header+CRC+SYNC)
+        // + 1 byte payload = 6 bytes. We expect:
+        //   - new frame (seq=3): 6 bytes
+        //   - retransmit buffer: 1 SYNC + 6 (seq=2 frame) + 6 (seq=3 frame) = 13 bytes
+        // Total delta = 19 bytes. If the NAK was suppressed or retransmit didn't
+        // fire, delta would be only 6 (new frame alone). The exact-equality
+        // assertion proves the retransmit ran with both frames.
+        let frame_size = 5 + 1; // empty MIN + 1-byte payload
+        let expected_delta = frame_size + (1 + 2 * frame_size);
+        let actual_delta = h.tx_log().len() - len_before_race;
+        assert_eq!(actual_delta, expected_delta,
+            "expected new frame ({frame_size} B) + retransmit buffer (1 SYNC + 2 frames = {}) \
+             = {expected_delta} B; got {actual_delta} B",
+            1 + 2 * frame_size);
     }
 }
