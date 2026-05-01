@@ -317,3 +317,15 @@ class LookAheadQueue:
 # Allow code that does ``toolhead.ToolHead`` after aliasing this module
 # as ``toolhead`` to resolve correctly.
 ToolHead = MotionToolhead
+
+
+def add_printer_objects(config):
+    """Register the MotionToolhead (and extruder) with the printer.
+
+    Called from printer.py during printer object setup, replacing the
+    equivalent function from the deleted toolhead.py.
+    """
+    from .kinematics import extruder
+
+    config.get_printer().add_object("toolhead", MotionToolhead(config))
+    extruder.add_printer_objects(config)
