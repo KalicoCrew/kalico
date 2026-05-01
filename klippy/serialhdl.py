@@ -399,7 +399,10 @@ class SerialReader:
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
         if self._use_bridge:
-            return  # Bridge handles command dispatch
+            raise RuntimeError(
+                "raw_send called on bridge-mode SerialReader; "
+                "commands must go through MotionMcuProxy"
+            )
         if self.serialqueue is None:
             return
         self.ffi_lib.serialqueue_send(
@@ -409,7 +412,10 @@ class SerialReader:
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
         if self._use_bridge:
-            return {"#sent_time": 0.0, "#receive_time": 0.0}
+            raise RuntimeError(
+                "raw_send_wait_ack called on bridge-mode SerialReader; "
+                "commands must go through MotionMcuProxy"
+            )
         if self.serialqueue is None:
             return
         self.last_notify_id += 1
@@ -426,13 +432,19 @@ class SerialReader:
 
     def send(self, msg, minclock=0, reqclock=0):
         if self._use_bridge:
-            return  # Bridge handles config/init command dispatch
+            raise RuntimeError(
+                "send called on bridge-mode SerialReader; "
+                "commands must go through MotionMcuProxy"
+            )
         cmd = self.msgparser.create_command(msg)
         self.raw_send(cmd, minclock, reqclock, self.default_cmd_queue)
 
     def send_with_response(self, msg, response):
         if self._use_bridge:
-            return {"#sent_time": 0.0, "#receive_time": 0.0}
+            raise RuntimeError(
+                "send_with_response called on bridge-mode SerialReader; "
+                "commands must go through MotionMcuProxy"
+            )
         cmd = self.msgparser.create_command(msg)
         src = SerialRetryCommand(self, response)
         return src.get_response([cmd], self.default_cmd_queue)

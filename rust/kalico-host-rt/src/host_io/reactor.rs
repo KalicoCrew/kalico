@@ -364,16 +364,15 @@ impl Reactor {
         // Inform the passthrough router's receive window about acked bytes.
         if let (Some(router), Some(mcu)) = (self.passthrough_router.as_mut(), self.passthrough_mcu) {
             for entry in &popped {
-                // Acked bytes = payload size (frame minus wire overhead).
                 let payload_len = entry.frame_bytes.len()
                     .saturating_sub(crate::host_io::wire::MESSAGE_MIN);
                 let _ = router.record_ack(mcu, payload_len as u64);
-                // Clean up notify map entries for acked seqs. The notify
-                // callback is dispatched separately on response receipt —
-                // this just prevents unbounded growth if no response
-                // arrives (fire-and-forget commands without notify).
-                self.passthrough_notify_map.remove(&entry.seq);
             }
+            // Notify map entries are NOT removed on ACK — an ACK only proves
+            // the MCU received the command, not that the response has arrived.
+            // Entries are removed when the response is dispatched
+            // (try_dispatch_passthrough_response) or on disconnect
+            // (flush_all_completions).
         }
         self.receive_seq = rseq;
         Ok(())
@@ -682,6 +681,7 @@ impl Reactor {
         for p in self.pending_submissions.drain(..) {
             let _ = p.completion.send(Err(TransportError::Closed));
         }
+        self.passthrough_notify_map.clear();
     }
 }
 

@@ -55,11 +55,11 @@ class MotionBridgeWrapper:
     # Passthrough I/O
     # ------------------------------------------------------------------
 
-    def passthrough_send(self, handle, data, minclock, reqclock, cq):
-        return self._bridge.passthrough_send(handle, data, minclock, reqclock, cq)
+    def passthrough_send(self, handle, cq, data, minclock=0, reqclock=0):
+        return self._bridge.passthrough_send(handle, cq, data, minclock, reqclock)
 
-    def passthrough_query(self, handle, data, minclock, reqclock, cq):
-        return self._bridge.passthrough_query(handle, data, minclock, reqclock, cq)
+    def passthrough_query(self, handle, cq, data, minclock=0, reqclock=0):
+        return self._bridge.passthrough_query(handle, cq, data, minclock, reqclock)
 
     def passthrough_register_handler(self, handle, msg, oid, callback):
         return self._bridge.passthrough_register_handler(handle, msg, oid, callback)
@@ -100,8 +100,8 @@ class MotionBridgeWrapper:
     def get_stats(self, handle):
         return self._bridge.get_stats(handle)
 
-    def set_clock_est(self, handle, freq, conv_time, conv_clock, last_clock):
-        return self._bridge.set_clock_est(handle, freq, conv_time, conv_clock, last_clock)
+    def set_clock_est(self, handle, freq, offset, last_clock):
+        return self._bridge.set_clock_est(handle, freq, offset, last_clock)
 
-    def extract_old(self, handle, is_sent, count):
-        return self._bridge.extract_old(handle, is_sent, count)
+    def extract_old(self, handle):
+        return self._bridge.extract_old(handle)
