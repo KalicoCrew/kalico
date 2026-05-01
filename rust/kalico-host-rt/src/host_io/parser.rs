@@ -660,6 +660,26 @@ impl MsgProtoParser {
         }
     }
 
+    /// Decode a raw passthrough body (msgid VLQ + fields) into
+    /// `(name, MessageParams)`. Used by `RouterTransport` in the bridge
+    /// where only the body bytes from `dispatch_response` are available.
+    pub fn decode_body(&self, body: &[u8]) -> Result<(String, MessageParams), ParseError> {
+        let (msgid_signed, n) = decode_vlq(body)?;
+        let msgid = msgid_signed as i32;
+        let dispatch = self.by_msgid.get(&msgid)
+            .ok_or(ParseError::UnknownMsgid(msgid))?;
+        match dispatch {
+            DispatchSpec::Response(spec) => {
+                let params = self.decode_response(&body[n..], &spec.fields)?;
+                Ok((spec.name.clone(), params))
+            }
+            DispatchSpec::Output(spec) => {
+                let (name, params) = self.decode_output(&body[n..], spec)?;
+                Ok((name, params))
+            }
+        }
+    }
+
     pub fn decode_response(&self, mut body: &[u8], fields: &[(String, WrappedField)])
         -> Result<MessageParams, ParseError>
     {

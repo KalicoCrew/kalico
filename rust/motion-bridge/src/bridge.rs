@@ -13,16 +13,25 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use kalico_host_rt::clock::RealClock;
+use kalico_host_rt::credit::CreditCounter;
+use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
 use kalico_host_rt::passthrough_queue::{
-    NotifyId, PassthroughEntry, PassthroughRouter,
+    CommandQueueId, NotifyId, PassthroughEntry, PassthroughRouter,
 };
+use kalico_host_rt::producer;
 use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
 use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::planner::{PlannerError, PlannerHandle};
+use crate::router_transport::RouterTransport;
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
+
+/// Initial credit seed for the per-MCU `CreditCounter`. Generous so the
+/// dispatch closure never stalls on credit during MVP wiring; real
+/// `kalico_credit_freed` accounting comes later.
+const CREDIT_SEED_CAPACITY: i32 = 1024;
 
 // ── Internal types ──────────────────────────────────────────────────────
 
@@ -90,7 +99,12 @@ fn build_shaper_config(
 #[pyclass(name = "MotionBridge")]
 #[allow(missing_debug_implementations)]
 pub struct PyMotionBridge {
-    router: Mutex<PassthroughRouter>,
+    /// Shared so the dispatch closure can also drive the router via
+    /// `RouterTransport` without cloning state.
+    router: Arc<Mutex<PassthroughRouter>>,
+    /// MsgProto parser populated via `set_msgproto_dict`. The dispatch
+    /// closure's `RouterTransport` reads this on every wire call.
+    parser: Arc<Mutex<Option<Arc<MsgProtoParser>>>>,
     mcus: Mutex<HashMap<u32, McuConnection>>,
     /// Shared event queue — callbacks capture an `Arc` clone so they can
     /// push events from any thread without holding a reference to `self`.
@@ -123,7 +137,8 @@ impl PyMotionBridge {
     fn new() -> Self {
         let clock: Arc<dyn kalico_host_rt::clock::Clock + Send + Sync> = Arc::new(RealClock);
         Self {
-            router: Mutex::new(PassthroughRouter::with_clock(clock)),
+            router: Arc::new(Mutex::new(PassthroughRouter::with_clock(clock))),
+            parser: Arc::new(Mutex::new(None)),
             mcus: Mutex::new(HashMap::new()),
             events: Arc::new(Mutex::new(VecDeque::new())),
             handlers: Mutex::new(HashMap::new()),
@@ -387,6 +402,23 @@ impl PyMotionBridge {
         stats_to_pydict(py, &stats)
     }
 
+    /// Install the MsgProto data dictionary (klippy already retrieves and
+    /// parses this during identify; the bridge needs it to encode/decode
+    /// passthrough commands inside `RouterTransport`).
+    ///
+    /// `dict_json` is the raw `identify_response`-payload JSON bytes.
+    /// Calling this multiple times replaces the parser.
+    fn set_msgproto_dict(&self, dict_json: &[u8]) -> PyResult<()> {
+        let json_str = std::str::from_utf8(dict_json)
+            .map_err(|e| PyRuntimeError::new_err(format!("dict_json utf8: {e}")))?;
+        let dict: DataDictionary = serde_json::from_str(json_str)
+            .map_err(|e| PyRuntimeError::new_err(format!("dict json parse: {e}")))?;
+        let parser = MsgProtoParser::from_dictionary(dict)
+            .map_err(|e| PyRuntimeError::new_err(format!("parser build: {e:?}")))?;
+        *self.parser.lock().unwrap() = Some(Arc::new(parser));
+        Ok(())
+    }
+
     /// Update clock estimation parameters for the given MCU.
     #[pyo3(signature = (mcu, freq, offset, last_clock))]
     fn set_clock_est(
@@ -528,33 +560,140 @@ impl PyMotionBridge {
         ];
         *self.mcu_axis_configs.lock().unwrap() = mcu_configs.clone();
 
-        // Dispatch callback. For the first-print MVP wiring this builds the
-        // per-MCU push plans (proving classify → planner → shape → dispatch
-        // flows end-to-end) and increments a counter that tests can observe.
+        // ── Task 8b: wire the dispatch closure to producer::load_curve /
+        // producer::push_segment via RouterTransport ──────────────────────
         //
-        // TODO(post-Task-8): actually push the load_curve / push_segment
-        // wire commands. That requires a `Transport` impl bridged through
-        // `PassthroughRouter` (the producer-side `load_curve` and
-        // `push_segment` need synchronous request/response, which the
-        // current passthrough router does not expose). Tracked separately
-        // from Task 8's scope.
+        // Per-MCU state captured into the closure:
+        //   * a dedicated CommandQueueId for this MCU's motion traffic,
+        //   * a CreditCounter pre-seeded to CREDIT_SEED_CAPACITY (option A:
+        //     no real `kalico_credit_freed` accounting yet),
+        //   * a RouterTransport binding the shared router + parser slot.
+        //
+        // The closure then, per ShapedSegment:
+        //   1. converts `t_start` / `t_end` (print-time seconds) to MCU
+        //      clock via `PassthroughRouter::host_time_to_mcu_clock`;
+        //   2. builds per-MCU push plans (`build_push_params`);
+        //   3. for each plan: `load_curve` per axis, then `push_segment`.
+        //
+        // Errors are propagated as `Err(String)` so the planner thread
+        // surfaces them as `PlannerError::Dispatch`.
         let counter = Arc::clone(&self.dispatched_segments);
+        let parser_slot = Arc::clone(&self.parser);
+        let router_arc = Arc::clone(&self.router);
+
+        // Per-MCU dispatch context (transport + credit) keyed by mcu_id.
+        let mut transports: HashMap<u32, (Arc<RouterTransport>, Arc<CreditCounter>)> =
+            HashMap::new();
+        for cfg_mcu in &mcu_configs {
+            let mcu_h = mcu_handle_from_raw(cfg_mcu.mcu_id);
+            let cq: CommandQueueId = self
+                .router
+                .lock()
+                .unwrap()
+                .alloc_command_queue(mcu_h)
+                .map_err(router_err)?;
+            let transport = Arc::new(RouterTransport::new(
+                Arc::clone(&router_arc),
+                mcu_h,
+                cq,
+                Arc::clone(&parser_slot),
+            ));
+            // TODO: replace seeded counter with real `kalico_credit_freed`
+            // event accounting once the bridge listens for those events.
+            let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
+            transports.insert(cfg_mcu.mcu_id, (transport, credit));
+        }
+
         let mcu_configs_for_cb = mcu_configs;
+        let router_for_cb = Arc::clone(&router_arc);
+
+        // Per-MCU rolling slot index (small wraparound space — 1024 slots).
+        let next_slot: Arc<Mutex<HashMap<u32, u16>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        // Per-MCU rolling segment id.
+        let next_seg_id: Arc<Mutex<HashMap<u32, u32>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
         let dispatch: Arc<
-            dyn Fn(&trajectory::ShapedSegment) + Send + Sync,
-        > = Arc::new(move |seg: &trajectory::ShapedSegment| {
-            // TODO: real clock conversion once per-MCU clock state is
-            // reachable from the dispatch closure. Placeholder maps print-
-            // time seconds → microseconds-as-clock-ticks.
-            let t_start_clock = (seg.t_start * 1e6) as u64;
-            let t_end_clock = (seg.t_end * 1e6) as u64;
-            let _plans = build_push_params(
+            dyn Fn(&trajectory::ShapedSegment) -> Result<(), String>
+                + Send
+                + Sync,
+        > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), String> {
+            let mut plans = build_push_params(
                 seg,
                 &mcu_configs_for_cb,
-                t_start_clock,
-                t_end_clock,
+                /* t_start_clock placeholder, overwritten below */ 0,
+                0,
             );
+
+            for plan in &mut plans {
+                let (transport, credit) = match transports.get(&plan.mcu_id) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                // Per-MCU clock conversion. Falls back to a microsecond
+                // approximation if `set_clock_est` has not been called yet.
+                let mcu_h = mcu_handle_from_raw(plan.mcu_id);
+                let (t_start_clock, t_end_clock) = {
+                    let r = router_for_cb.lock().unwrap();
+                    let s = r
+                        .host_time_to_mcu_clock(mcu_h, seg.t_start)
+                        .map_err(|e| format!("host_time_to_mcu_clock: {e}"))?;
+                    let e = r
+                        .host_time_to_mcu_clock(mcu_h, seg.t_end)
+                        .map_err(|e| format!("host_time_to_mcu_clock: {e}"))?;
+                    if s == 0 && e == 0 {
+                        // Estimate not yet installed — fall back to
+                        // microsecond-grained placeholder so motion still
+                        // flows during early bring-up.
+                        (
+                            (seg.t_start * 1e6) as u64,
+                            (seg.t_end * 1e6) as u64,
+                        )
+                    } else {
+                        (s, e)
+                    }
+                };
+                plan.params.t_start = t_start_clock;
+                plan.params.t_end = t_end_clock;
+
+                // Allocate this segment's id.
+                {
+                    let mut ids = next_seg_id.lock().unwrap();
+                    let entry = ids.entry(plan.mcu_id).or_insert(1);
+                    plan.params.id = *entry;
+                    *entry = entry.wrapping_add(1);
+                }
+
+                // Load each axis curve, then patch handle into params.
+                // Take the curves out so we can mutate `plan.params` in the
+                // body of the loop without an outstanding immutable borrow.
+                let curves = std::mem::take(&mut plan.curves_to_load);
+                for (axis_idx, curve_params) in &curves {
+                    let slot: u16 = {
+                        let mut slots = next_slot.lock().unwrap();
+                        let entry = slots.entry(plan.mcu_id).or_insert(0);
+                        let v = *entry;
+                        *entry = entry.wrapping_add(1);
+                        v
+                    };
+                    let handle = producer::load_curve(
+                        transport.as_ref(),
+                        slot,
+                        curve_params,
+                        producer::DEFAULT_LOAD_CURVE_TIMEOUT,
+                    )
+                    .map_err(|e| format!("load_curve mcu={}: {e}", plan.mcu_id))?;
+                    plan.set_handle(*axis_idx, handle);
+                }
+
+                producer::push_segment(transport.as_ref(), credit, &plan.params)
+                    .map_err(|e| format!("push_segment mcu={}: {e}", plan.mcu_id))?;
+            }
+
             counter.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         });
 
         *planner_slot = Some(PlannerHandle::spawn(cfg, dispatch));

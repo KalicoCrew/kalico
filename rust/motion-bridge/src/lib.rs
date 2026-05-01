@@ -3,6 +3,7 @@ mod classify;
 mod config;
 mod dispatch;
 mod planner;
+mod router_transport;
 mod types;
 
 use pyo3::prelude::*;

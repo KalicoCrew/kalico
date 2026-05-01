@@ -339,6 +339,24 @@ impl PassthroughRouter {
         Ok(projected)
     }
 
+    /// Convert a host-time-seconds value to the projected MCU clock for
+    /// the given MCU, using the linear estimate set by `set_clock_est`.
+    /// Returns 0 if the estimate has not been initialised (`freq == 0`).
+    pub fn host_time_to_mcu_clock(
+        &self,
+        mcu: McuHandle,
+        host_time_secs: f64,
+    ) -> Result<u64, RouterError> {
+        let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        if rec.clock_freq == 0.0 {
+            return Ok(0);
+        }
+        let delta = (host_time_secs - rec.clock_offset) * rec.clock_freq;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
+        Ok(projected)
+    }
+
     // ── Stats ────────────────────────────────────────────────────────────
 
     /// Snapshot current statistics for the given MCU.

@@ -54,6 +54,8 @@ pub enum PlannerMsg {
 pub enum PlannerError {
     Shape(trajectory::ShapeError),
     ChannelClosed,
+    /// Dispatch callback (e.g. wire push) returned an error.
+    Dispatch(String),
 }
 
 impl std::fmt::Display for PlannerError {
@@ -61,6 +63,7 @@ impl std::fmt::Display for PlannerError {
         match self {
             Self::Shape(e) => write!(f, "shape pipeline error: {e}"),
             Self::ChannelClosed => write!(f, "planner channel closed"),
+            Self::Dispatch(s) => write!(f, "dispatch error: {s}"),
         }
     }
 }
@@ -83,7 +86,7 @@ pub struct PlannerHandle {
 impl PlannerHandle {
     pub fn spawn(
         config: PlannerConfig,
-        dispatch: Arc<dyn Fn(&ShapedSegment) + Send + Sync>,
+        dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
     ) -> Self {
         let (tx, rx) = unbounded();
         let error = Arc::new(Mutex::new(None));
@@ -202,7 +205,7 @@ fn store_print_time(bits: &AtomicU64, t: f64) {
 fn run_loop(
     rx: Receiver<PlannerMsg>,
     mut config: PlannerConfig,
-    dispatch: Arc<dyn Fn(&ShapedSegment) + Send + Sync>,
+    dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
     error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
 ) {
@@ -264,7 +267,12 @@ fn run_loop(
                     print_time += batch_dur;
                     store_print_time(&last_move_time_bits, print_time);
                     for s in &shaped {
-                        dispatch(s);
+                        if let Err(msg) = dispatch(s) {
+                            *error.lock().unwrap() = Some(PlannerError::Dispatch(msg));
+                            pending_flush = None;
+                            pending_dwell = None;
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -396,14 +404,15 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     fn counting_dispatch() -> (
-        Arc<dyn Fn(&ShapedSegment) + Send + Sync>,
+        Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
         Arc<AtomicUsize>,
     ) {
         let counter = Arc::new(AtomicUsize::new(0));
         let c = Arc::clone(&counter);
-        let cb: Arc<dyn Fn(&ShapedSegment) + Send + Sync> =
+        let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync> =
             Arc::new(move |_seg: &ShapedSegment| {
                 c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
             });
         (cb, counter)
     }
