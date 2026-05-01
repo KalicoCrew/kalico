@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 
+use crate::clock::{Clock, RealClock};
 use crate::host_io::ReactorCommand;
 use crate::host_io::events::EventDispatcher;
 use crate::host_io::parser::MsgProtoParser;
@@ -47,6 +48,10 @@ pub struct Reactor {
     /// Per spec §3.11, treat as Closed only if it persists past
     /// `ZERO_BYTE_DEBOUNCE`. Cleared on any non-zero read.
     pub(crate) zero_byte_first_seen: Option<Instant>,
+
+    /// Injected clock seam (spec §2.3). Routes `Instant::now()` so tests
+    /// can deterministically advance time via `MockClock`.
+    pub(crate) clock: Arc<dyn Clock>,
 }
 
 pub(crate) struct PendingSubmission {
@@ -71,6 +76,21 @@ impl Reactor {
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
         rx_buf_initial: Vec<u8>,
         config: crate::host_io::KalicoHostIoConfig,
+    ) -> Self {
+        Self::new_with_clock(
+            port, parser, submission_rx, status_snapshot,
+            rx_buf_initial, config, Arc::new(RealClock),
+        )
+    }
+
+    pub fn new_with_clock(
+        port: Box<dyn serialport::SerialPort>,
+        parser: Arc<MsgProtoParser>,
+        submission_rx: Receiver<ReactorCommand>,
+        status_snapshot: Arc<ArcSwap<StatusEvent>>,
+        rx_buf_initial: Vec<u8>,
+        config: crate::host_io::KalicoHostIoConfig,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         let event_dispatcher = EventDispatcher::new(
             Arc::clone(&status_snapshot),
@@ -98,6 +118,7 @@ impl Reactor {
             pending_host_fault: None,
             pending_submissions: VecDeque::new(),
             zero_byte_first_seen: None,
+            clock,
         }
     }
 
@@ -150,7 +171,7 @@ impl Reactor {
 
         self.write_frame(&frame)?;
 
-        let now = Instant::now();
+        let now = self.clock.now();
         self.unacked_window.push(crate::host_io::window::UnackedEntry {
             seq, frame_bytes: frame, sent_at: now, retry_count: 0,
         });
@@ -228,7 +249,7 @@ impl Reactor {
         let popped = self.unacked_window.pop_acked(rseq);
         for entry in &popped {
             if self.rtt_sample_armed && entry.seq >= self.rtt_sample_seq {
-                let rtt = std::time::Instant::now() - entry.sent_at;
+                let rtt = self.clock.now() - entry.sent_at;
                 self.rtt.update(rtt);
                 self.rtt_sample_armed = false;
                 break;
@@ -387,7 +408,7 @@ impl Reactor {
             Ok(_) => {
                 // Spec §3.11: phantom Ok(0) is rare on USB-CDC; if it persists
                 // past ZERO_BYTE_DEBOUNCE we treat the port as disconnected.
-                let now = Instant::now();
+                let now = self.clock.now();
                 let first = *self.zero_byte_first_seen.get_or_insert(now);
                 if now.duration_since(first) >= ZERO_BYTE_DEBOUNCE {
                     log::warn!("port read returned Ok(0) for >= {ZERO_BYTE_DEBOUNCE:?}; transitioning to Closed");
@@ -521,7 +542,7 @@ impl Reactor {
 
             // 4. RTO timer step.
             if let Some(front) = self.unacked_window.front() {
-                let now = Instant::now();
+                let now = self.clock.now();
                 if now >= front.sent_at + self.rtt.current_rto() {
                     let _ = self.write_retransmit(RetransmitTrigger::TimeoutDriven);
                 }
@@ -537,7 +558,7 @@ impl Reactor {
             self.event_dispatcher.host_event_dispatcher.drain_pending();
 
             // 5. AwaitingResponse GC (layer 2 — per-entry deadline).
-            let now = Instant::now();
+            let now = self.clock.now();
             let evicted = self.awaiting_response.evict_expired(now);
             for entry in evicted {
                 let _ = entry.completion.send(Err(TransportError::DispatcherTimeout));
