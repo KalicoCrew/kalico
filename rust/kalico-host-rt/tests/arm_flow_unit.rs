@@ -64,7 +64,7 @@ fn make_warm_mcu(arm_result: i32) -> (SharedMock, ClockSyncEstimator) {
     let epoch = est.epoch();
 
     // Clock-sync: synchronous responder so RTT ≈ 0.
-    mock.install_responder("kalico_clock_sync_response", move |call_time| {
+    mock.install_responder("kalico_clock_sync_response", move |_cmd, call_time| {
         let send_secs = call_time.saturating_duration_since(epoch).as_secs_f64();
         let (lo, hi) = make_clock_sync_response(send_secs, 0);
         mp_with(&[
@@ -138,7 +138,7 @@ fn quality_gate_failure_aborts() {
 
     // Install a synchronous responder so arm_all_mcus doesn't stall,
     // but the estimator has no warmup → quality gate fails regardless.
-    mock.install_responder("kalico_clock_sync_response", |_call_time| {
+    mock.install_responder("kalico_clock_sync_response", |_cmd, _call_time| {
         let (lo, hi) = make_clock_sync_response(1.0, 200);
         mp_with(&[
             ("request_id", MessageValue::U32(1)),
@@ -312,12 +312,102 @@ fn partial_arm_failure_reports_armed_indices() {
 }
 
 #[test]
+fn request_id_is_monotonic_across_arm_attempts() {
+    // Codex finding: a delayed clock_sync_response from a prior arm
+    // must not collide with a fresh request_id. Counter lives on the
+    // estimator, so a second arm_all_mcus call must send a strictly
+    // larger request_id than the first.
+    let mock = SharedMock::new();
+    let mut est = ClockSyncEstimator::new(FREQ);
+    warm_estimator(&mut est);
+    let epoch = est.epoch();
+
+    // Echo whatever request_id the host sent. Parse it from the cmd
+    // string the responder receives directly — the mock holds its
+    // state mutex while invoking the responder, so calling back into
+    // the mock (e.g. last_sent()) would deadlock.
+    mock.install_responder("kalico_clock_sync_response", move |cmd, call_time| {
+        let request_id: u32 = cmd
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix("request_id="))
+            .expect("request_id= field present")
+            .parse()
+            .expect("request_id parses as u32");
+        let send_secs = call_time.saturating_duration_since(epoch).as_secs_f64();
+        let (lo, hi) = make_clock_sync_response(send_secs, 0);
+        mp_with(&[
+            ("request_id", MessageValue::U32(request_id)),
+            ("mcu_clock_lo", MessageValue::U32(lo)),
+            ("mcu_clock_hi", MessageValue::U32(hi)),
+        ])
+    });
+
+    // Two separate arm responders (one per arm attempt).
+    for _ in 0..2 {
+        let mock_clone = mock.clone();
+        std::thread::spawn(move || {
+            let _ = mock_clone.wait_for_call("kalico_stream_arm_response");
+            mock_clone.complete_call(
+                "kalico_stream_arm_response",
+                mp_with(&[
+                    ("result", MessageValue::I32(0)),
+                    ("armed_t_start_lo", MessageValue::U32(0)),
+                    ("armed_t_start_hi", MessageValue::U32(0)),
+                ]),
+            );
+        });
+    }
+
+    let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> = vec![(mock.clone(), est)];
+
+    arm_all_mcus(
+        &mut mcus,
+        Instant::now() + Duration::from_millis(500),
+        Duration::from_millis(200),
+        50_000,
+        FREQ,
+    )
+    .expect("first arm should succeed");
+    arm_all_mcus(
+        &mut mcus,
+        Instant::now() + Duration::from_millis(500),
+        Duration::from_millis(200),
+        50_000,
+        FREQ,
+    )
+    .expect("second arm should succeed");
+
+    let request_ids: Vec<u32> = mock
+        .sent_starting_with("kalico_clock_sync_request")
+        .iter()
+        .map(|cmd| {
+            cmd.split_whitespace()
+                .find_map(|tok| tok.strip_prefix("request_id="))
+                .expect("request_id= present")
+                .parse::<u32>()
+                .expect("u32")
+        })
+        .collect();
+
+    assert_eq!(request_ids.len(), 2, "two arm attempts → two clock_sync_requests");
+    assert!(
+        request_ids[1] > request_ids[0],
+        "request_id must be monotonic across arm attempts; got {:?}",
+        request_ids
+    );
+    assert_ne!(
+        request_ids[1], 1,
+        "second arm must not restart at 1 (regression for Codex finding)"
+    );
+}
+
+#[test]
 fn arm_fails_on_request_id_mismatch() {
     let mock = SharedMock::new();
     let est = ClockSyncEstimator::new(FREQ);
 
     // Return request_id=99; arm_all_mcus sends request_id=1 (first fetch_add).
-    mock.install_responder("kalico_clock_sync_response", |_call_time| {
+    mock.install_responder("kalico_clock_sync_response", |_cmd, _call_time| {
         let (lo, hi) = make_clock_sync_response(1.0, 0);
         mp_with(&[
             ("request_id", MessageValue::U32(99)),   // wrong: sent 1, echo 99

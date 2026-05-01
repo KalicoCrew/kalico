@@ -98,9 +98,6 @@ pub fn arm_all_mcus<T: Transport>(
         armed_indices: armed.to_vec(),
     };
 
-    let request_id_counters: Vec<std::sync::atomic::AtomicU32> =
-        (0..mcus.len()).map(|_| std::sync::atomic::AtomicU32::new(1)).collect();
-
     // Step 1+2+3: dedicated sync + quality gate per MCU.
     for (idx, (io, est)) in mcus.iter_mut().enumerate() {
         if Instant::now() >= arming_deadline {
@@ -108,10 +105,13 @@ pub fn arm_all_mcus<T: Transport>(
         }
         let host_send = Instant::now();
         // Per spec §5.9: monotonic request_id per MCU so stale or
-        // reordered responses are detected. `host_send_time_*` are sent
-        // as zero because the estimator independently records `host_send`
-        // and `host_recv` wall-clock instants.
-        let request_id = request_id_counters[idx].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // reordered responses are detected. The counter lives on the
+        // estimator so it persists across arm attempts — a delayed
+        // response from a prior arm cannot reuse a fresh request_id.
+        // `host_send_time_*` are sent as zero because the estimator
+        // independently records `host_send` and `host_recv` wall-clock
+        // instants.
+        let request_id = est.next_clock_sync_request_id();
         let resp = io
             .call(
                 &format!("kalico_clock_sync_request request_id={request_id} host_send_time_lo=0 host_send_time_hi=0"),

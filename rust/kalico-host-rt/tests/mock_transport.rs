@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use kalico_host_rt::host_io::parser::FieldValue;
 use kalico_host_rt::transport::{MessageParams, MessageValue, Transport, TransportError};
 
-type Responder = Box<dyn Fn(Instant) -> MessageParams + Send + Sync>;
+type Responder = Box<dyn Fn(&str, Instant) -> MessageParams + Send + Sync>;
 
 struct MockPendingCall {
     expected_response_name: String,
@@ -60,11 +60,13 @@ impl MockTransport {
     }
 
     /// Register a synchronous responder for `expected_response_name`.
-    /// It is called inside `call()` with the `call_time` Instant, and its
-    /// return value is used as the response — no inter-thread scheduling.
+    /// It is called inside `call()` with the just-sent `cmd` and the
+    /// `call_time` Instant. The mock state mutex is held while the
+    /// responder runs, so the closure must NOT call back into
+    /// `MockTransport` (which would deadlock).
     pub fn install_responder<F>(&self, expected_response_name: &str, f: F)
     where
-        F: Fn(Instant) -> MessageParams + Send + Sync + 'static,
+        F: Fn(&str, Instant) -> MessageParams + Send + Sync + 'static,
     {
         self.state.lock().unwrap()
             .static_responders
@@ -85,6 +87,13 @@ impl MockTransport {
 
     pub fn last_sent(&self) -> Option<String> {
         self.state.lock().unwrap().sent_cmds.last().cloned()
+    }
+
+    pub fn sent_starting_with(&self, prefix: &str) -> Vec<String> {
+        self.state.lock().unwrap().sent_cmds.iter()
+            .filter(|s| s.starts_with(prefix))
+            .cloned()
+            .collect()
     }
 
     /// Block until a call with `expected_response_name` is pending.
@@ -142,7 +151,7 @@ impl Transport for MockTransport {
 
             // Static responder: call synchronously, return immediately.
             if let Some(responder) = state.static_responders.get(expected_response_name) {
-                let params = responder(call_time);
+                let params = responder(cmd, call_time);
                 return Ok(params);
             }
 

@@ -86,6 +86,12 @@ pub struct ClockSyncEstimator {
     /// sample. Plan-decision B uses this for the arm-time freshness
     /// check.
     pub last_dedicated_sample: Option<Instant>,
+    /// Per-spec §5.9: monotonic request_id for this MCU's
+    /// `kalico_clock_sync_request`. Lives on the estimator so the
+    /// counter persists across `arm_all_mcus` retries — a delayed
+    /// response from a previous arm attempt cannot collide with a
+    /// fresh request_id and slip through the echo check.
+    clock_sync_request_id: u32,
 }
 
 impl ClockSyncEstimator {
@@ -100,7 +106,17 @@ impl ClockSyncEstimator {
             anchor_mcu_clock: 0,
             residual_max_in_window: 0.0,
             last_dedicated_sample: None,
+            clock_sync_request_id: 0,
         }
+    }
+
+    /// Allocate the next monotonic `request_id` for this MCU's
+    /// `kalico_clock_sync_request`. Counter persists across arm
+    /// attempts so stale responses from a prior round cannot match a
+    /// fresh request_id (spec §5.9).
+    pub fn next_clock_sync_request_id(&mut self) -> u32 {
+        self.clock_sync_request_id = self.clock_sync_request_id.wrapping_add(1);
+        self.clock_sync_request_id
     }
 
     /// Stable-timeline mapping: `Instant → seconds since estimator
