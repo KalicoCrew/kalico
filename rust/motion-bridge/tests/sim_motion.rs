@@ -969,43 +969,34 @@ fn set_velocity_limit_applies_to_next_move() {
 /// planner window must ship a curve in the right rough order of magnitude:
 /// finite duration, finite span, control-point count not blown up by ~10x.
 ///
-/// History (bug #17):
-/// - Pre-fix: seg[1] shipped as `span = 8.07e22 mm`, `duration = 5000 s`,
-///   `ncps = 1792` — total numerical corruption.
-/// - Mechanism: a derate cascade in `trajectory::beta`. Pure-X submit gives Y
+/// History:
+/// - Bug #17 (derate cascade): seg[1] shipped as `span = 8.07e22 mm`,
+///   `duration = 5000 s`, `ncps = 1792` — total numerical corruption.
+///   Mechanism: a derate cascade in `trajectory::beta`. Pure-X submit gives Y
 ///   axis a sub-mm pre-shape span; post-shape Y `peak_accel` is dominated by
 ///   shaper-boundary numerical transients (the kernel's `c = 15/(16 h^5)`
 ///   constant amplifies short-piece coefficients through double
 ///   differentiation). β-medium derates Y `planning_a_max` toward zero based
 ///   on this fake peak; the next iteration's seg[1] re-plans with the clamped
-///   Y limit and explodes.
-/// - Two guards stop the cascade (see `beta.rs`):
-///   1. `MIN_AXIS_SPAN_FOR_DERATE = 0.5 mm` — both `compute_derate` and the
-///      apply step skip an axis whose pre-shape position span is below this
-///      threshold.
-///   2. `BETA_ACCEL_MIN_RATIO = 0.02` — `planning_a_max` is clamped to at
-///      least 2 % of `machine_a_max`. Last-line defence against the cascade.
-///   With both guards, post-shape span collapses from 8e22 mm to ~64 mm and
-///   duration to ~1.34 s.
+///   Y limit and explodes. Fixed by two guards in `beta.rs`:
+///   `MIN_AXIS_SPAN_FOR_DERATE = 0.5 mm` and `BETA_ACCEL_MIN_RATIO = 0.02`.
 ///
-/// Residual (NOT fixed in this commit, see TODO):
-/// - The shipped `cp[last]` for seg[1] is ~114 mm rather than ~100 mm. Sampling
-///   the post-shape NURBS shows it is correct (≈100 mm) up to 99 % of segment
-///   progress, then jumps to ~114 mm only at the final knot. This is a
-///   numerical artifact in the very last Bézier piece produced by the
-///   `convolve` → `restrict_to_domain` pipeline when the input has many
-///   neighbour pieces (i.e. multi-segment batches). Single-flush dispatch
-///   (one segment per batch) does not exhibit this — `cp[last]` is clean to
-///   sub-µm. So this is a `convolve+restrict` boundary issue surfaced only
-///   by batched dispatch, not a planner / derate issue.
-/// - Fixing it requires changes to `nurbs::algebra::convolve` or
-///   `restrict_to_domain` to clean up degenerate trailing pieces, which is
-///   out of scope for this focused regression-fix pass.
+/// - Bug #18 (convolve final-piece corruption): after fixing #17, seg[1]
+///   shipped a curve evaluating correctly at u<99% then jumping ~14 mm at
+///   the final knot — `cp[last] ≈ 114` instead of ~100. Mechanism:
+///   `nurbs::algebra::convolve`'s `integrate_product_piece` did its
+///   monomial arithmetic in absolute-u basis and re-shifted to Pascal-at-α
+///   at the end. With α ≈ 2 (second segment of a batch starts at t ≈ 0.7s
+///   and ends at ≈ 2s) and a degree-9 output (degree-4 input × degree-4
+///   smooth-MZV kernel), the absolute-u coefficients reached u^9 ≈ 512×,
+///   then `absolute_to_pascal_shift` summed alternating-sign binomial
+///   products — catastrophic cancellation killed ~10 digits on the trailing
+///   tiny piece (width = kernel half-support). Fixed by doing all integrand
+///   arithmetic in the (u−α, s−α) frame so every intermediate coefficient is
+///   O(width^k), eliminating the lossy re-shift.
 ///
-/// This test therefore asserts the looser invariant: the curve must be in the
-/// right *order of magnitude* (catches the original 8e22 / 5000s corruption),
-/// not exact (would catch the 14 mm `cp[last]` artifact, which is a separate
-/// known bug).
+/// With both fixes, post-shape span ≈ 50 mm, duration ≈ 0.86 s, and
+/// `cp[last]` matches the physical endpoint within sub-µm.
 #[test]
 fn batched_two_move_curves_are_sane() {
     let h = Harness::corexy_only();
@@ -1049,25 +1040,24 @@ fn batched_two_move_curves_are_sane() {
     );
 
     // ---- sanity: segment 1 (the previously-corrupt one) ----
-    // Loose bounds catching the original 8e22 / 5000s corruption while
-    // tolerating the residual `cp[last]` artifact (see header).
-    //
-    // Bound for `dur1`: physical move time at 3000 mm/s² with a smooth-MZV
-    // 50 Hz kernel (~ 38 ms total support) is ~0.85 s. The β-medium floor
-    // (2 % of machine_a_max) lets the planner stretch the segment by up to
-    // `1/0.02 = 50x` in the worst case, so a ceiling of 50 s gives the
-    // floor headroom and still flags any genuine cascade explosion.
+    // With both #17 (derate cascade) and #18 (convolve final-piece) fixed,
+    // seg[1] should be physically tight: 50 mm of motion, ≤ 1 s under the
+    // 3000 mm/s² limit + smooth-MZV @ 50 Hz, and post-shape peak accel
+    // bounded by the 10 % shaper-aware derate margin.
     assert!(
-        *dur1 > 0.0 && *dur1 < 50.0,
-        "[1] duration={dur1:.4}s out of range [0, 50] — likely a derate cascade (pre-fix was 5000s)"
+        *dur1 > 0.0 && *dur1 < 1.0,
+        "[1] duration={dur1:.4}s out of physical range — likely a derate cascade (pre-fix was 5000s)"
     );
-    // Span bound: real motion is 50 mm. Allow up to ~64 mm worst observed
-    // post-fix (50 mm physical + 14 mm trailing-piece artifact). 100 mm
-    // catches the 8e22 mm pre-fix corruption with margin.
     let span1 = capture_motion_mm(c1);
     assert!(
-        span1 < 100.0,
-        "[1] span={span1:.4}mm, expected < 100mm — likely corrupt (pre-fix was 8e22 mm)"
+        (span1 - 50.0).abs() < 1.0,
+        "[1] span={span1:.4}mm — expected ~50mm (pre-fix bug #18 was ~64mm with corrupted final piece)"
+    );
+    // Peak accel must respect the shaper-aware β-medium target.
+    let peak1 = physical_peak_accel_from_normalized_capture(c1, *dur1);
+    assert!(
+        peak1 < 3300.0,
+        "[1] peak_accel={peak1:.1} mm/s² exceeds shaper-aware ceiling 3300 (machine 3000 + 10%)"
     );
     // CP count must be in the same ballpark as segment 0 (not 1792 vs ~136).
     assert!(

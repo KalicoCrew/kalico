@@ -1199,29 +1199,55 @@ fn integrate_product_piece<T: Float>(
     let lo_branch_curve = u_mid - w.u_end > x.u_start; // true → s_lo(u) = u - w.u_end
     let hi_branch_curve = u_mid - w.u_start < x.u_end; // true → s_hi(u) = u - w.u_start
 
-    // s_lo(u) and s_hi(u) as (constant, linear-in-u-coeff) tuples.
-    let (s_lo_c, s_lo_u): (T, T) = if lo_branch_curve {
+    // -------------------------------------------------------------------
+    // Numerical conditioning: do all arithmetic in a frame shifted by α.
+    //
+    // The naive approach (build polynomials in absolute u and s, then
+    // re-shift to Pascal-at-α at the end) suffers from catastrophic
+    // cancellation when α is large and the output piece is narrow:
+    // intermediate u^k ≈ 2^k coefficients up to k = d_x + d_w + 1 grow to
+    // 1e2..1e3, then `absolute_to_pascal_shift` (which sums binomial
+    // products of `α^(n-k)` against those coefficients) yields alternating
+    // huge magnitudes whose cancellations destroy ~10 digits of accuracy
+    // in the trailing piece. The trailing piece's polynomial value at
+    // u = β then disagrees with the value just below by ~10 mm in the
+    // motion-bridge regression scenario (bug #18).
+    //
+    // Working in v = u − α (so v ∈ [0, β − α]) and r = s − α keeps every
+    // intermediate coefficient O(width^k) instead of O(α^k). The final
+    // result is already in the basis (u − α)^k, which is exactly what the
+    // output `BezierPiece` stores — no re-shift required.
+    // -------------------------------------------------------------------
+
+    // Shifted x: x(s) = Σ x.coeffs[k] (s − x.u_start)^k, want absolute-r basis
+    // where r = s − α, so (s − x.u_start) = r − (x.u_start − α).
+    let x_abs_r = pascal_shift_to_absolute(&x.coeffs, x.u_start - alpha);
+
+    // Shifted w: w(z) where z = u − s = v − r. We want w in absolute-z basis,
+    // and z is unchanged by the α-shift since u and s shift together. So
+    // w_abs_z is the same as the un-shifted version.
+    let w_abs_z = pascal_shift_to_absolute(&w.coeffs, w.u_start);
+    // Expand z^j = (v − r)^j via binomial, giving polynomial in v and r.
+
+    // Shifted integration limits:
+    //   r_lo(v) = s_lo(u) − α
+    //   r_hi(v) = s_hi(u) − α
+    //   if lo_branch_curve: s_lo = u − w.u_end → r_lo = v − w.u_end
+    //   else:               s_lo = x.u_start  → r_lo = (x.u_start − α)
+    //   if hi_branch_curve: s_hi = u − w.u_start → r_hi = v − w.u_start
+    //   else:               s_hi = x.u_end  → r_hi = (x.u_end − α)
+    let (r_lo_c, r_lo_v): (T, T) = if lo_branch_curve {
         (-w.u_end, T::ONE)
     } else {
-        (x.u_start, T::ZERO)
+        (x.u_start - alpha, T::ZERO)
     };
-    let (s_hi_c, s_hi_u): (T, T) = if hi_branch_curve {
+    let (r_hi_c, r_hi_v): (T, T) = if hi_branch_curve {
         (-w.u_start, T::ONE)
     } else {
-        (x.u_end, T::ZERO)
+        (x.u_end - alpha, T::ZERO)
     };
 
-    // The integrand is x(s) * w(u - s).
-    // Step A: Convert x.coeffs to absolute-s monomial basis.
-    let x_abs = pascal_shift_to_absolute(&x.coeffs, x.u_start);
-
-    // Step B: Convert w.coeffs to absolute-(u-s) monomial basis (in z = u-s).
-    let w_abs_z = pascal_shift_to_absolute(&w.coeffs, w.u_start);
-    // Then expand each z^j as (u - s)^j via binomial, giving polynomial in u and s.
-    // w_abs_z[j] * (u - s)^j = w_abs_z[j] * Σ_l C(j, l) * u^(j-l) * (-s)^l
-    //                        = Σ_l w_abs_z[j] * C(j, l) * (-1)^l * u^(j-l) * s^l
-
-    // Build a 2D coefficient table: integrand[m][n] = coefficient of u^m * s^n.
+    // Build 2D coefficient table: integrand[m][n] = coefficient of v^m · r^n.
     let max_m = d_w;
     let max_n = d_x + d_w;
     let mut integrand = vec![vec![T::ZERO; max_n + 1]; max_m + 1];
@@ -1234,36 +1260,36 @@ fn integrate_product_piece<T: Float>(
             let coef = sign * c_jl * w_abs_z[j];
             for i in 0..=d_x {
                 let n = l + i;
-                integrand[m][n] = integrand[m][n] + coef * x_abs[i];
+                integrand[m][n] = integrand[m][n] + coef * x_abs_r[i];
             }
         }
     }
 
-    // Step C: Integrate s^n → s^(n+1) / (n+1), evaluate at s_hi(u) - s_lo(u).
-    let mut y_abs = vec![T::ZERO; out_degree + 1];
+    // Integrate r^n → r^(n+1) / (n+1), evaluate at r_hi(v) − r_lo(v).
+    // Output `y_v[k]` = coefficient of v^k in the result; this is *exactly*
+    // the Pascal-shifted-at-α coefficient that BezierPiece stores.
+    let mut y_v = vec![T::ZERO; out_degree + 1];
     for m in 0..=max_m {
         for n in 0..=max_n {
             if integrand[m][n] == T::ZERO {
                 continue;
             }
             let inv = integrand[m][n] / T::from_f64((n + 1) as f64);
-            let hi_pow = power_of_linear(s_hi_c, s_hi_u, n + 1);
-            let lo_pow = power_of_linear(s_lo_c, s_lo_u, n + 1);
+            let hi_pow = power_of_linear(r_hi_c, r_hi_v, n + 1);
+            let lo_pow = power_of_linear(r_lo_c, r_lo_v, n + 1);
             for k in 0..hi_pow.len() {
                 let target = k + m;
                 if target <= out_degree {
-                    y_abs[target] = y_abs[target] + inv * (hi_pow[k] - lo_pow[k]);
+                    y_v[target] = y_v[target] + inv * (hi_pow[k] - lo_pow[k]);
                 }
             }
         }
     }
 
-    // Convert from absolute-u monomial to Pascal-shifted-at-α basis.
-    let y_shifted = absolute_to_pascal_shift(&y_abs, alpha);
     crate::bezier::BezierPiece {
         u_start: alpha,
         u_end: beta,
-        coeffs: y_shifted,
+        coeffs: y_v,
     }
 }
 
