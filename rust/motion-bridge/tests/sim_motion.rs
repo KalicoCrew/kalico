@@ -48,6 +48,7 @@
 //! adapter into the test harness.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -85,6 +86,7 @@ struct CallRecord {
 
 #[derive(Clone, Debug)]
 struct LoadCurveCapture {
+    axis_idx: Option<usize>,
     degree: u8,
     knots: Vec<f32>,
     cps: Vec<f32>,
@@ -95,6 +97,7 @@ struct TransportState {
     sent: Vec<CallRecord>,
     next_handle_lo: u32,
     next_segment_id: u32,
+    pending_load_axes: VecDeque<usize>,
 }
 
 struct RecordingTransport {
@@ -108,8 +111,17 @@ impl RecordingTransport {
                 sent: Vec::new(),
                 next_handle_lo: 1,
                 next_segment_id: 1,
+                pending_load_axes: VecDeque::new(),
             }),
         }
+    }
+
+    fn note_next_load_axis(&self, axis_idx: usize) {
+        self.state
+            .lock()
+            .unwrap()
+            .pending_load_axes
+            .push_back(axis_idx);
     }
 
     fn sent_starting_with(&self, prefix: &str) -> Vec<String> {
@@ -133,6 +145,53 @@ impl RecordingTransport {
             .filter_map(|c| c.load_curve.clone())
             .collect()
     }
+
+    fn moving_capture_duration_pairs(
+        &self,
+        axis_idx: Option<usize>,
+        min_span_mm: f64,
+    ) -> Vec<(LoadCurveCapture, f64)> {
+        let records = self.state.lock().unwrap();
+        let mut pending_loads: Vec<LoadCurveCapture> = Vec::new();
+        let mut pairs = Vec::new();
+        for record in &records.sent {
+            if let Some(c) = &record.load_curve {
+                pending_loads.push(c.clone());
+                continue;
+            }
+            if record.cmd.starts_with("kalico_push_segment") {
+                if let Some(duration) = parse_push_duration_s(&record.cmd) {
+                    for c in pending_loads.drain(..) {
+                        if axis_idx.is_none_or(|axis| c.axis_idx == Some(axis))
+                            && capture_motion_mm(&c) >= min_span_mm
+                        {
+                            pairs.push((c, duration));
+                        }
+                    }
+                } else {
+                    pending_loads.clear();
+                }
+            }
+        }
+        pairs
+    }
+}
+
+fn parse_cmd_field_u64(cmd: &str, field: &str) -> Option<u64> {
+    let prefix = format!("{field}=");
+    cmd.split_whitespace()
+        .find_map(|token| token.strip_prefix(&prefix))
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+fn parse_push_duration_s(cmd: &str) -> Option<f64> {
+    let t_start_hi = parse_cmd_field_u64(cmd, "t_start_hi")?;
+    let t_start_lo = parse_cmd_field_u64(cmd, "t_start_lo")?;
+    let t_end_hi = parse_cmd_field_u64(cmd, "t_end_hi")?;
+    let t_end_lo = parse_cmd_field_u64(cmd, "t_end_lo")?;
+    let t_start = (t_start_hi << 32) | t_start_lo;
+    let t_end = (t_end_hi << 32) | t_end_lo;
+    Some((t_end.saturating_sub(t_start)) as f64 / 1_000_000.0)
 }
 
 impl Transport for RecordingTransport {
@@ -198,8 +257,10 @@ impl Transport for RecordingTransport {
                     _ => {}
                 }
             }
+            let axis_idx = self.state.lock().unwrap().pending_load_axes.pop_front();
             match (degree, cps_bytes, knots_bytes) {
                 (Some(d), Some(cb), Some(kb)) => Some(LoadCurveCapture {
+                    axis_idx,
                     degree: d,
                     cps: cb
                         .chunks_exact(4)
@@ -386,6 +447,7 @@ impl Harness {
                         *entry = entry.wrapping_add(1);
                         v
                     };
+                    transport.note_next_load_axis(*axis_idx);
                     let handle = producer::load_curve(
                         transport.as_ref(),
                         slot,
@@ -643,30 +705,33 @@ fn sample_position(curve: &ScalarNurbs<f64>, t0: f64, t1: f64, n: usize) -> Vec<
 fn moving_captures(captures: &[LoadCurveCapture], min_span_mm: f64) -> Vec<LoadCurveCapture> {
     captures
         .iter()
-        .filter(|c| {
-            let mn = c.cps.iter().cloned().fold(f32::INFINITY, f32::min);
-            let mx = c.cps.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            (mx - mn) as f64 >= min_span_mm
-        })
+        .filter(|c| capture_motion_mm(c) >= min_span_mm)
         .cloned()
         .collect()
 }
 
-/// Concatenate position samples from a sequence of captures, taking each
-/// curve's own knot range as `[t0, t1]`. Sample rate is `fs` Hz; output is
-/// resampled at uniform `1/fs` spacing within each curve.
-fn sample_captures_at(captures: &[LoadCurveCapture], fs: f64) -> Vec<f64> {
+fn capture_motion_mm(c: &LoadCurveCapture) -> f64 {
+    if c.cps.is_empty() {
+        return 0.0;
+    }
+    (f64::from(*c.cps.last().unwrap()) - f64::from(c.cps[0])).abs()
+}
+
+fn sample_capture_duration_pairs_at(pairs: &[(LoadCurveCapture, f64)], fs: f64) -> Vec<f64> {
     let mut out = Vec::new();
-    for c in captures {
+    for (c, duration) in pairs {
         let curve = capture_to_nurbs(c);
-        let knots = curve.knots();
-        let t0 = knots[0];
-        let t1 = *knots.last().unwrap();
-        let dur = t1 - t0;
-        let n = ((dur * fs).round() as usize).max(2);
-        out.extend(sample_position(&curve, t0, t1, n));
+        let n = ((duration * fs).round() as usize).max(2);
+        out.extend(sample_position(&curve, 0.0, 1.0, n));
     }
     out
+}
+
+/// Peak physical |x''(t)| for a wire curve whose knot domain is normalized
+/// to segment progress u in [0, 1].
+fn physical_peak_accel_from_normalized_capture(c: &LoadCurveCapture, duration_s: f64) -> f64 {
+    assert!(duration_s > 0.0, "segment duration must be positive");
+    trajectory::peak::peak_accel(&capture_to_nurbs(c)) / (duration_s * duration_s)
 }
 
 /// Peak |first-difference| / dt across a sample vector.
@@ -742,8 +807,8 @@ fn shaper_attenuates_resonance_and_respects_accel_limit() {
     let captures = octopus.load_curve_captures();
     assert!(!captures.is_empty(), "no load_curve captures");
 
-    let x_caps = moving_captures(&captures, 1.0);
-    assert!(!x_caps.is_empty(), "no moving X-axis captures");
+    let x_pairs = octopus.moving_capture_duration_pairs(Some(AXIS_X), 1.0);
+    assert!(!x_pairs.is_empty(), "no moving X-axis captures");
 
     // (1) Peak |ẍ| via the trajectory crate's analytic per-piece peak
     // finder (the same one β-medium uses internally). Plain second-
@@ -751,9 +816,9 @@ fn shaper_attenuates_resonance_and_respects_accel_limit() {
     // internal breakpoints — even though the curve itself is smooth — so
     // we use the trusted helper.
     let limit = 3000.0_f64;
-    let peak_a = x_caps
+    let peak_a = x_pairs
         .iter()
-        .map(|c| trajectory::peak::peak_accel(&capture_to_nurbs(c)))
+        .map(|(c, duration)| physical_peak_accel_from_normalized_capture(c, *duration))
         .fold(0.0_f64, f64::max);
     // 10% headroom for β-medium's per-batch tolerance band.
     assert!(
@@ -776,7 +841,7 @@ fn shaper_attenuates_resonance_and_respects_accel_limit() {
     // dominate, since the unshaped accel pulse has appreciable 50 Hz
     // content). It is not a tight notch-depth measurement.
     let fs = 40_000.0_f64;
-    let positions = sample_captures_at(&x_caps, fs);
+    let positions = sample_capture_duration_pairs_at(&x_pairs, fs);
     if positions.len() >= 64 {
         let dt = 1.0 / fs;
         let mut accel: Vec<f64> = Vec::with_capacity(positions.len().saturating_sub(2));
@@ -821,10 +886,10 @@ fn velocity_limit_respected() {
     let captures = octopus.load_curve_captures();
     assert!(!captures.is_empty(), "no load_curve captures");
 
-    let x_caps = moving_captures(&captures, 1.0);
-    assert!(!x_caps.is_empty(), "no moving X-axis captures");
+    let x_pairs = octopus.moving_capture_duration_pairs(Some(AXIS_X), 1.0);
+    assert!(!x_pairs.is_empty(), "no moving X-axis captures");
     let fs = 40_000.0_f64;
-    let positions = sample_captures_at(&x_caps, fs);
+    let positions = sample_capture_duration_pairs_at(&x_pairs, fs);
     let peak_v = peak_first_diff(&positions, 1.0 / fs);
     // 2% headroom for finite-difference quantization at the velocity peak.
     assert!(
@@ -859,10 +924,9 @@ fn set_velocity_limit_applies_to_next_move() {
         .expect("submit_move (move 1)");
     h.flush();
     let octopus = h.transports.get(&OCTOPUS_ID).unwrap();
-    let caps_after_move1 = octopus.load_curve_captures();
-    let move1_caps = moving_captures(&caps_after_move1, 1.0);
-    assert!(!move1_caps.is_empty(), "no moving captures (move 1)");
-    let pos1 = sample_captures_at(&move1_caps, fs);
+    let move1_pairs = octopus.moving_capture_duration_pairs(Some(AXIS_X), 1.0);
+    assert!(!move1_pairs.is_empty(), "no moving captures (move 1)");
+    let pos1 = sample_capture_duration_pairs_at(&move1_pairs, fs);
     let peak_v_high = peak_first_diff(&pos1, 1.0 / fs);
 
     // --- Update limits to a tight cap before move 2.
@@ -878,12 +942,10 @@ fn set_velocity_limit_applies_to_next_move() {
     h.submit_move([25.0, 0.0, 0.0], 25.0, 0.0, 0.0, 0.0, 1000.0)
         .expect("submit_move (move 2)");
     h.flush();
-    let caps_after_move2 = octopus.load_curve_captures();
-    // Take only the captures emitted *after* move 1's tail.
-    let move2_caps_all = &caps_after_move2[caps_after_move1.len()..];
-    let move2_caps = moving_captures(move2_caps_all, 1.0);
-    assert!(!move2_caps.is_empty(), "no moving captures (move 2)");
-    let pos2 = sample_captures_at(&move2_caps, fs);
+    let pairs_after_move2 = octopus.moving_capture_duration_pairs(Some(AXIS_X), 1.0);
+    let move2_pairs = &pairs_after_move2[move1_pairs.len()..];
+    assert!(!move2_pairs.is_empty(), "no moving captures (move 2)");
+    let pos2 = sample_capture_duration_pairs_at(move2_pairs, fs);
     let peak_v_low = peak_first_diff(&pos2, 1.0 / fs);
 
     // Runtime `update_limits` must clamp post-shape velocity; 5% headroom
@@ -945,4 +1007,5 @@ fn multi_move_chain_completes_without_stall() {
         pushes.iter().all(|p| p.contains("kinematics=0")),
         "expected kinematics=0 on all pushes"
     );
+
 }

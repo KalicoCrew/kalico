@@ -176,6 +176,40 @@ impl CurveLoadParams {
         }
     }
 
+    /// Construct from a time-domain `ScalarNurbs<f64>` for the MCU evaluator.
+    ///
+    /// Firmware evaluates loaded curves at normalized segment progress
+    /// `u = elapsed / duration`, not at absolute host time. Keep the control
+    /// points as positions, but map the curve knot domain from
+    /// `[t_start_s, t_end_s]` onto `[0, 1]` before f32 truncation. This also
+    /// avoids f32 conditioning loss from long absolute timelines and close
+    /// neighboring knots.
+    pub fn from_scalar_nurbs_normalized(
+        curve: &nurbs::ScalarNurbs<f64>,
+        t_start_s: f64,
+        t_end_s: f64,
+    ) -> Self {
+        let duration = t_end_s - t_start_s;
+        debug_assert!(duration > 0.0);
+        let knots_f32 = curve
+            .knots()
+            .iter()
+            .map(|&k| {
+                let u = if duration > 0.0 {
+                    (k - t_start_s) / duration
+                } else {
+                    k
+                };
+                u.clamp(0.0, 1.0) as f32
+            })
+            .collect();
+        Self {
+            degree: nurbs::NurbsView::degree(curve),
+            knots_f32,
+            cps_f32: curve.control_points().iter().map(|&v| v as f32).collect(),
+        }
+    }
+
     /// Pack `cps_f32` into a little-endian byte buffer suitable for the
     /// `cps=%*s` wire arg.
     pub fn cps_bytes(&self) -> Vec<u8> {
@@ -272,5 +306,25 @@ mod tests {
         assert_eq!(params.knots_bytes().len(), 8);
         let cp_bytes: [u8; 4] = params.cps_bytes()[..4].try_into().unwrap();
         assert_eq!(f32::from_le_bytes(cp_bytes), 1.5);
+    }
+
+    #[test]
+    fn curve_load_params_normalizes_time_knots_for_mcu_progress_domain() {
+        let curve = nurbs::ScalarNurbs::try_new(
+            3,
+            vec![2.0, 2.0, 2.0, 2.0, 2.5, 3.0, 3.0, 3.0, 3.0],
+            vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            None,
+        )
+        .unwrap();
+
+        let params = CurveLoadParams::from_scalar_nurbs_normalized(&curve, 2.0, 3.0);
+
+        assert_eq!(params.degree, 3);
+        assert_eq!(params.cps_f32, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            params.knots_f32,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]
+        );
     }
 }

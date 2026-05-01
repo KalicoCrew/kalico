@@ -88,7 +88,14 @@ pub fn build_push_params(
             if is_trivially_constant(curve) {
                 continue;
             }
-            curves_to_load.push((axis_idx, CurveLoadParams::from_scalar_nurbs(curve)));
+            curves_to_load.push((
+                axis_idx,
+                CurveLoadParams::from_scalar_nurbs_normalized(
+                    curve,
+                    shaped.t_start,
+                    shaped.t_end,
+                ),
+            ));
         }
 
         if curves_to_load.is_empty() {
