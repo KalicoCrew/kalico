@@ -27,7 +27,13 @@ class BridgeKinematics:
             extra_name = "stepper_" + axis + "1"
             if config.has_section(extra_name):
                 rail.add_extra_stepper(config.getsection(extra_name))
+            # Bridge owns motion; each stepper still needs a stepper_kinematics
+            # handle so set_trapq() / standard klippy plumbing doesn't crash.
+            # Plain cartesian itersolve is fine — bridge bypasses it at runtime.
             for mcu_stepper in rail.get_steppers():
+                mcu_stepper.setup_itersolve(
+                    "cartesian_stepper_alloc", axis.encode()
+                )
                 mcu_stepper.set_trapq(trapq)
             self.rails.append(rail)
 
