@@ -9,29 +9,35 @@ The parent plan's Phase 2b section collapses motion-test into a single block. Th
 
 ---
 
-## 2b-1 — Config parses & klippy boots clean (no motion)
+## 2b-1 — Config parses & klippy boots clean (no motion) — **PASS 2026-05-03**
 
 **Intent:** klippy comes up against the real H723, motion_bridge initializes, no Python exception, no MCU shutdown. No motors moving yet.
 
-- [ ] Find actual USB-CDC path on Pi: `ls /dev/serial/by-id/` (looking for `usb-Klipper_stm32h723xx_490017000851323235363233-if00`)
-- [ ] Edit `config/kalico-trident-production.cfg`:
-  - [ ] Replace `serial:` placeholder with real path
-  - [ ] Verify `dir_pin` polarity for `stepper_x` / `stepper_y` matches Trident wiring (may need leading `!`)
-  - [ ] Verify `run_current` against motor spec
-  - [ ] Verify `sense_resistor` (0.075 Ω is typical for Octopus Pro 5160 socket — check board silk)
-  - [ ] If dual-motor-per-belt: uncomment `stepper_x1` / `stepper_y1` blocks
-- [ ] On Pi: `sudo systemctl stop klipper`
-- [ ] `python3 klippy/klippy.py config/kalico-trident-production.cfg`
-- [ ] Watch `klippy.log`. Pass criteria:
-  - [ ] No Python exception at boot
-  - [ ] `motion_bridge: init_planner` logs success (or equivalent — see `klippy/motion_toolhead.py:355`)
-  - [ ] MCU identify completes; `Stats` lines start flowing
-  - [ ] No `Shutdown due to ...` in log
-- [ ] Likely failure surfaces to be ready for:
-  - trapq allocation in `motion_toolhead.py` (already added pre-2b-1; should be fine)
-  - kinematics load on the bridge-owned toolhead
-  - TMC5160 SPI init reaching H723
-  - msgproto-dict handover into the bridge (`mcu.py:1311`)
+- [x] Find actual USB-CDC path on Pi: `ls /dev/serial/by-id/` — H723 confirmed at `usb-Klipper_stm32h723xx_490017000851323235363233-if00`
+- [x] Edit `config/kalico-trident-production.cfg`: serial path filled in
+- [ ] Hardware-specific knobs still pending verification (defaults assumed for first boot — only verified once we exercise TMC/motion):
+  - [ ] `dir_pin` polarity for `stepper_x` / `stepper_y`
+  - [ ] `run_current` (1.4 A assumed)
+  - [ ] `sense_resistor` (0.075 Ω assumed)
+  - [ ] Dual-motor-per-belt status (currently single)
+- [x] On Pi: `sudo systemctl stop klipper`
+- [x] `~/klippy-env/bin/python klippy/klippy.py config/kalico-trident-production.cfg` (must use the klippy venv — `python3` lacks `cffi`)
+- [x] Pass criteria:
+  - [x] No Python exception at boot
+  - [x] MCU identify completes (`Loaded MCU 'mcu' 158 commands`, `Configured MCU 'mcu' (1024 moves)`)
+  - [x] "Welcome to Kalico" banner reached
+  - [x] `kalico_status_v6` pings stream from MCU → bridge handshake healthy
+  - [x] No `Shutdown due to ...`, no FAULT
+
+### Findings worth carrying forward (2b-1)
+
+8. **The fork has stripped `klippy/kinematics/`** down to `extruder.py` + `idex_modes.py` — no `corexy.py`, no top-level `load_kinematics`. Motion math lives in `runtime/src/kinematics.rs` on the MCU; the host doesn't compute steps anymore. But Klipper still needs *Python-side stepper objects* registered so `[tmc5160 stepper_x]` can lookup its rail and so endstops/homing wire up. Resolution: inline `BridgeKinematics` class in `motion_toolhead.py` — builds `PrinterRail` per axis, assigns `cartesian_stepper_alloc` itersolve handles purely so `set_trapq()` doesn't crash on `None`, no real motion math runs through it.
+
+9. **`config.getsection("foo")` does not raise if `[foo]` is absent** — it returns a section wrapper that just lacks options, so the error bubbles up later as "Option 'X' must be specified". Use `config.has_section(...)` for optional sections like `stepper_x1`.
+
+10. **Klippy must be launched via `~/klippy-env/bin/python`**, not the system `python3` — the system python doesn't have `cffi` installed.
+
+11. **Build artifact location matters.** `klippy/motion_bridge.so` is platform-specific (Mach-O arm64 on Mac, ELF aarch64 on Pi). Already gitignored (`*.so` in `.gitignore`). Pi has to rebuild after every `git pull` that touched `rust/` — `make -f Makefile.kalico motion-bridge` on the Pi (~2 min release build).
 
 ## 2b-2 — TMC5160 init & motor enable
 
