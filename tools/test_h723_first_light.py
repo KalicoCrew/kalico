@@ -28,6 +28,13 @@ STATUS_DRAINED = 2
 STATUS_FAULT = 3
 STATUS_NAMES = {0: "IDLE", 1: "RUNNING", 2: "DRAINED", 3: "FAULT"}
 
+# Current firmware ABI (Step 7-B): curve pool entries are scalar per-axis
+# polynomial curves. `kalico_load_curve` no longer accepts weights, and
+# `kalico_push_segment` references four packed handles instead of one curve.
+FORMAT_VERSION_V1 = 1
+UNUSED_HANDLE = 0xFFFEFFFE
+E_MODE_INDEPENDENT = 1
+
 
 def floats_to_blob(values):
     """Encode a list of f32 as a hex string for `%*s` PT_buffer."""
@@ -53,25 +60,24 @@ def expect_status(io, expected, timeout=2.0, label=""):
     return status, last_err
 
 
-def load_first_fixture(io, fixture, slot=0, timeout=3.0):
-    """Push `kalico_load_curve` for one fixture; return its duration_us."""
-    cps = []
-    for cp in fixture["control_points"]:
-        cps.extend(cp)
-        if len(cp) == 3:
-            pass  # already xyz
+def _axis_cps(fixture, axis):
+    return [
+        float(cp[axis]) if len(cp) > axis else 0.0
+        for cp in fixture["control_points"]
+    ]
+
+
+def load_scalar_curve(io, fixture, axis, slot, timeout=3.0):
+    """Load one scalar axis curve and return firmware's packed handle."""
+    cps = _axis_cps(fixture, axis)
     knots = list(fixture["knots"])
-    weights = list(fixture["weights"])
     degree = int(fixture["degree"])
-    # n_cp / n_knots are derived MCU-side from the %*s blob byte-lengths
-    # (12 bytes per cp, 4 bytes per knot/weight). The format string carries
-    # only `slot`, `degree`, and the three blobs.
-    cmd = "kalico_load_curve slot=%d degree=%d cps=%s knots=%s weights=%s" % (
+    cmd = "kalico_load_curve version=%d slot=%d degree=%d cps=%s knots=%s" % (
+        FORMAT_VERSION_V1,
         slot,
         degree,
         floats_to_blob(cps),
         floats_to_blob(knots),
-        floats_to_blob(weights),
     )
     io.send(cmd)
     resp = io.wait_for_response("kalico_load_curve_response", timeout)
@@ -79,13 +85,36 @@ def load_first_fixture(io, fixture, slot=0, timeout=3.0):
         raise SystemExit(
             "FAIL: kalico_load_curve_response result=%s" % resp["result"]
         )
-    return int(fixture["duration_us"])
+    return int(resp.get("curve_handle_packed", 0))
+
+
+def load_first_fixture(io, fixture, base_slot=0, timeout=3.0):
+    """Load X/Y plus a no-op independent-E curve; return handles and duration."""
+    x_handle = load_scalar_curve(
+        io, fixture, axis=0, slot=base_slot, timeout=timeout
+    )
+    y_handle = load_scalar_curve(
+        io, fixture, axis=1, slot=base_slot + 1, timeout=timeout
+    )
+    # First-light intentionally uses Independent E, so E needs a real no-op
+    # scalar curve handle rather than UNUSED_HANDLE. The fixture's E axis is
+    # absent, so axis=3 materializes as all-zero control points.
+    e_handle = load_scalar_curve(
+        io, fixture, axis=3, slot=base_slot + 2, timeout=timeout
+    )
+    return {
+        "x": x_handle,
+        "y": y_handle,
+        "z": UNUSED_HANDLE,
+        "e": e_handle,
+        "duration_us": int(fixture["duration_us"]),
+    }
 
 
 def push_segment(
     io,
     seg_id,
-    slot,
+    handles,
     duration_us,
     kin=0,
     timeout=3.0,
@@ -97,16 +126,22 @@ def push_segment(
     duration_ticks = int(duration_us * 1e-6 * clock_freq)
     t_end = t_start_ticks + duration_ticks
     cmd = (
-        "kalico_push_segment id=%d curve=%d t_start_hi=%d t_start_lo=%d "
-        "t_end_hi=%d t_end_lo=%d kinematics=%d"
+        "kalico_push_segment id=%d x_handle=%d y_handle=%d z_handle=%d "
+        "e_handle=%d t_start_hi=%d t_start_lo=%d "
+        "t_end_hi=%d t_end_lo=%d kinematics=%d e_mode=%d extrusion_ratio=%d"
         % (
             seg_id,
-            slot,
+            handles["x"],
+            handles["y"],
+            handles["z"],
+            handles["e"],
             (t_start_ticks >> 32) & 0xFFFFFFFF,
             t_start_ticks & 0xFFFFFFFF,
             (t_end >> 32) & 0xFFFFFFFF,
             t_end & 0xFFFFFFFF,
             kin,
+            E_MODE_INDEPENDENT,
+            0,  # f32::to_bits(0.0); ignored for Independent E mode.
         )
     )
     io.send(cmd)
@@ -159,7 +194,8 @@ def main():
         # the runtime state machine — load_curve populates a slot but does
         # not transition status, so it stays at IDLE.
         fx = fixtures[0]
-        duration_us = load_first_fixture(io, fx, slot=0)
+        handles = load_first_fixture(io, fx, base_slot=0)
+        duration_us = handles["duration_us"]
         print("  loaded curve %r (%d us)" % (fx["name"], duration_us))
         status, last_err = query_status(io, timeout=1.0)
         if status != STATUS_IDLE:
@@ -180,7 +216,7 @@ def main():
         push_segment(
             io,
             seg_id=1,
-            slot=0,
+            handles=handles,
             duration_us=duration_us,
             clock_freq=args.clock_freq,
         )

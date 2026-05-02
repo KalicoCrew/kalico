@@ -56,11 +56,11 @@ python3 tools/measure_m1_host_stall.py \
     --report /tmp/m1-host-stall-$(date +%Y%m%d).json
 ```
 
-Fixture
-=======
+Curve
+=====
 
-Pushes back-to-back tiny segments referencing fixture slot 1 (loaded
-once at startup with `kalico_load_fixture_curve fixture_id=0`). Each
+Pushes back-to-back tiny segments referencing a scalar X curve loaded
+once at startup with the production `kalico_load_curve` ABI. Each
 segment is 1 ms long; when the queue fills the producer blocks on
 `push_response` until the engine retires a slot — the time between
 `io.send` and `wait_for_response` returning IS the host stall.
@@ -69,6 +69,7 @@ segment is 1 ms long; when the queue fills the producer blocks on
 import argparse
 import json
 import pathlib
+import struct
 import sys
 import time
 
@@ -82,6 +83,29 @@ ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
 # Long enough that the engine retires segments faster than we can push
 # under healthy conditions, so the host-side push latency dominates.
 SEG_TICKS = 40  # 1 ms per segment
+FORMAT_VERSION_V1 = 1
+UNUSED_HANDLE = 0xFFFEFFFE
+E_MODE_TRAVEL = 2
+
+
+def floats_to_blob(values):
+    return b"".join(struct.pack("<f", float(v)) for v in values).hex()
+
+
+def load_stall_curve(io, slot=1, timeout=5.0):
+    """Load a tiny scalar curve via the current production ABI.
+
+    The old soak used `kalico_load_fixture_curve`; production firmware now
+    exposes only `kalico_load_curve`, so this keeps M1 on the real ABI.
+    """
+    cps = [0.0, 0.33333334, 0.6666667, 1.0]
+    knots = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+    io.send(
+        f"kalico_load_curve version={FORMAT_VERSION_V1} slot={slot} degree=3 "
+        f"cps={floats_to_blob(cps)} knots={floats_to_blob(knots)}"
+    )
+    r = io.wait_for_response("kalico_load_curve_response", timeout)
+    return int(r["result"]), int(r.get("curve_handle_packed", 0))
 
 
 def percentile(sorted_us, q):
@@ -93,15 +117,17 @@ def percentile(sorted_us, q):
 
 
 def push_segment(
-    io, seg_id, fixture_handle, t_start_ticks, t_end_ticks, timeout=5.0
+    io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0
 ):
     cmd = (
-        f"kalico_push_segment id={seg_id} curve_handle={fixture_handle} "
+        f"kalico_push_segment id={seg_id} x_handle={x_handle} "
+        f"y_handle={UNUSED_HANDLE} z_handle={UNUSED_HANDLE} "
+        f"e_handle={UNUSED_HANDLE} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
         f"t_start_lo={t_start_ticks & 0xFFFFFFFF} "
         f"t_end_hi={(t_end_ticks >> 32) & 0xFFFFFFFF} "
         f"t_end_lo={t_end_ticks & 0xFFFFFFFF} "
-        f"kinematics=0"
+        f"kinematics=0 e_mode={E_MODE_TRAVEL} extrusion_ratio=0"
     )
     t0 = time.monotonic()
     io.send(cmd)
@@ -138,7 +164,12 @@ def main():
     p.add_argument(
         "--report", default="m1-host-stall.json", help="JSON report output path"
     )
-    p.add_argument("--fixture-id", type=int, default=0)
+    p.add_argument(
+        "--fixture-id",
+        type=int,
+        default=0,
+        help="deprecated; retained for old command lines, ignored",
+    )
     args = p.parse_args()
 
     end_at = time.monotonic() + args.hours * 3600.0
@@ -149,16 +180,10 @@ def main():
     print(f"[m1] connecting {args.port} @ {args.baud}", file=sys.stderr)
     io = KalicoHostIO(args.port, args.baud)
     try:
-        # Load fixture and open stream once.
-        io.send(
-            f"kalico_load_fixture_curve slot=1 fixture_id={args.fixture_id}"
-        )
-        r = io.wait_for_response("kalico_load_fixture_response", 5.0)
-        if int(r["result"]) != 0:
-            raise SystemExit(
-                f"FAIL: load_fixture rc={r['result']} — abort soak"
-            )
-        fixture_handle = int(r.get("curve_handle_packed", 0))
+        # Load one production scalar X curve and open stream once.
+        rc, fixture_handle = load_stall_curve(io, slot=1)
+        if rc != 0:
+            raise SystemExit(f"FAIL: load_curve rc={rc} — abort soak")
 
         if stream_open(io, stream_id=900) != 0:
             raise SystemExit("FAIL: stream_open")

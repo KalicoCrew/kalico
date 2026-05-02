@@ -26,6 +26,7 @@ import queue as _queue
 import sys
 import threading
 import time
+import zlib
 
 # msgproto.py lives in klippy/.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -97,6 +98,7 @@ class KalicoHostIO:
     """
 
     IDENTIFY_CHUNK = 40
+    IDENTIFY_RESPONSE_DEADLINE = 0.050
 
     def __init__(self, port, baud=250000, identify_timeout=15.0):
         if serial is None:
@@ -156,25 +158,60 @@ class KalicoHostIO:
         self._rxbuf = _RxBuffer(self._parser)  # reset partial-packet state
 
         identify_data = b""
+        identify_decompressor = zlib.decompressobj()
         while True:
+            offset = len(identify_data)
             cmd = "identify offset=%d count=%d" % (
-                len(identify_data),
+                offset,
                 self.IDENTIFY_CHUNK,
             )
             params = None
-            for attempt in range(20):
-                self._send_raw(cmd)
-                attempt_deadline = min(deadline, time.monotonic() + 0.15)
-                params = self._wait_packet_sync(
-                    "identify_response", attempt_deadline, sync_seq=True
+            sent_seq = None
+            retransmitted_same_seq = False
+            resync_attempts = 0
+            while time.monotonic() < deadline:
+                params = self._drain_available_sync(
+                    "identify_response", True, sent_seq
                 )
-                if params is not None and params.get("offset") == len(
-                    identify_data
+                if params is not None and params.get("offset") == offset:
+                    break
+                params = None
+                if sent_seq is None:
+                    sent_seq = self._send_raw(cmd)
+                else:
+                    self._send_raw(cmd, seq=sent_seq)
+                attempt_deadline = min(
+                    deadline,
+                    time.monotonic() + self.IDENTIFY_RESPONSE_DEADLINE,
+                )
+                self._last_wait_saw_nak = False
+                params = self._wait_packet_sync(
+                    "identify_response",
+                    attempt_deadline,
+                    sync_seq=True,
+                    sent_seq=sent_seq,
+                )
+                if params is not None:
+                    if params.get("offset") == offset:
+                        break
+                    params = None  # stale or wrong offset; retry this query
+                    continue
+                if (
+                    offset == 0
+                    and self._last_wait_saw_nak
+                    and resync_attempts < 20
                 ):
-                    break
-                params = None  # stale or wrong offset; retry with synced seq
-                if time.monotonic() >= deadline:
-                    break
+                    # Reconnect to a running MCU may start with an unknown
+                    # sequence. Honor the NAK's advertised next_sequence, but
+                    # only before the live identify walk has made progress.
+                    sent_seq = None
+                    retransmitted_same_seq = False
+                    resync_attempts += 1
+                    continue
+                if not retransmitted_same_seq:
+                    retransmitted_same_seq = True
+                    continue
+                break
             if params is None:
                 raise HostIoError(
                     "Timed out waiting for identify_response from %s"
@@ -184,16 +221,45 @@ class KalicoHostIO:
             if not data:
                 break
             identify_data += data
+            try:
+                identify_decompressor.decompress(data)
+            except zlib.error:
+                # process_identify() will report the malformed dictionary
+                # after the receive loop; don't mask that error here.
+                pass
+            if len(data) < self.IDENTIFY_CHUNK:
+                break
+            if identify_decompressor.eof:
+                break
         self._parser.process_identify(identify_data)
 
-    def _wait_packet_sync(self, name, deadline, sync_seq=False):
+    def _drain_available_sync(self, name=None, sync_seq=False, sent_seq=None):
+        """Drain already-buffered serial bytes before writing another query."""
+        found = None
+        old_timeout = getattr(self._ser, "timeout", None)
+        try:
+            self._ser.timeout = 0
+            while True:
+                chunk = self._ser.read(4096)
+                if not chunk:
+                    break
+                for pkt in self._rxbuf.feed(chunk):
+                    params = self._handle_identify_sync_packet(
+                        pkt, sync_seq, sent_seq, name
+                    )
+                    if params is not None and found is None:
+                        found = params
+        finally:
+            self._ser.timeout = old_timeout
+        return found
+
+    def _wait_packet_sync(self, name, deadline, sync_seq=False, sent_seq=None):
         """Block (in the foreground thread) until a packet of `name` arrives.
 
-        If sync_seq is True, every received packet (including NAKs, which are
-        header-only length-5 packets with no msgid) updates self._seq to the
-        MCU's expected next_sequence. NAKs raise during _parser.parse because
-        they have no msgid; we extract the seq directly from the packet bytes
-        and swallow the parse error.
+        If sync_seq is True, data packets update self._seq to the MCU's
+        expected next_sequence. Header-only length-5 packets are ACK/NAK
+        frames with no msgid; classify them against sent_seq so stale ACKs
+        from the previous identify query do not rewind us at 15->0 wrap.
         """
         while True:
             remaining = deadline - time.monotonic()
@@ -202,28 +268,45 @@ class KalicoHostIO:
             self._ser.timeout = max(0.05, min(remaining, 0.5))
             chunk = self._ser.read(256)
             for pkt in self._rxbuf.feed(chunk):
-                if sync_seq and len(pkt) >= 2:
-                    # MCU's seq byte tells us its current next_sequence.
-                    # On match: this is the response to our last send and
-                    # our seq has already advanced past it. On mismatch
-                    # (NAK or other in-flight): align to MCU.
-                    mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
-                    with self._lock:
-                        self._seq = mcu_next
-                # NAK/bare-ack frames are MESSAGE_MIN-length with no payload;
-                # skip parse to avoid spurious "index out of range" /
-                # "Extra data" exceptions.
-                if len(pkt) <= msgproto.MESSAGE_MIN:
-                    continue
-                try:
-                    params = self._parser.parse(pkt)
-                except Exception:
-                    # Defensive: malformed packet during identify. Already
-                    # synced seq above; drop the packet.
-                    continue
-                if params.get("#name") == name:
+                params = self._handle_identify_sync_packet(
+                    pkt, sync_seq, sent_seq, name
+                )
+                if params is not None:
                     return params
                 # Pre-identify, drop everything else.
+
+    def _handle_identify_sync_packet(self, pkt, sync_seq, sent_seq, name):
+        # NAK/bare-ack frames are MESSAGE_MIN-length with no payload; skip
+        # parse to avoid spurious "index out of range" / "Extra data" errors.
+        if len(pkt) <= msgproto.MESSAGE_MIN:
+            if sync_seq and len(pkt) >= 2:
+                mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
+                if sent_seq is None:
+                    self._set_seq(mcu_next)
+                else:
+                    sent = sent_seq & msgproto.MESSAGE_SEQ_MASK
+                    ack_after_sent = (sent + 1) & msgproto.MESSAGE_SEQ_MASK
+                    if mcu_next == ack_after_sent:
+                        self._set_seq(mcu_next)
+                    elif mcu_next != sent:
+                        # Empty frame with any other seq is a NAK carrying
+                        # the MCU's current expectation.
+                        self._last_wait_saw_nak = True
+                        self._set_seq(mcu_next)
+                    # mcu_next == sent is a stale ACK for the previous command.
+                    # Ignore it; accepting it rewinds seq at the 15->0 wrap.
+            return None
+        try:
+            params = self._parser.parse(pkt)
+        except Exception:
+            # Defensive: malformed packet during identify. Already synced seq
+            # above; drop the packet.
+            return None
+        if sync_seq and len(pkt) >= 2:
+            self._set_seq(pkt[1] & msgproto.MESSAGE_SEQ_MASK)
+        if params.get("#name") == name:
+            return params
+        return None
 
     # --- send / encode -----------------------------------------------------
 
@@ -237,12 +320,21 @@ class KalicoHostIO:
             self._seq = (self._seq + 1) & msgproto.MESSAGE_SEQ_MASK
             return seq
 
-    def _send_raw(self, cmd_str):
+    def _set_seq(self, seq):
+        with self._lock:
+            self._seq = seq & msgproto.MESSAGE_SEQ_MASK
+
+    def _send_raw(self, cmd_str, seq=None):
         """Encode `cmd_str` via MessageParser and write the framed bytes."""
         cmd = self._parser.create_command(cmd_str)
         if not cmd:
-            return
-        seq = self._next_seq()
+            return None
+        if seq is None:
+            seq = self._next_seq()
+        else:
+            seq &= msgproto.MESSAGE_SEQ_MASK
+            with self._lock:
+                self._seq = (seq + 1) & msgproto.MESSAGE_SEQ_MASK
         # Frame the message inline. msgproto.encode_msgblock has a latent
         # bug where it `append`s the CRC as a 2-element list instead of
         # `extend`ing it (Klipper itself avoids this path — production
@@ -256,6 +348,7 @@ class KalicoHostIO:
         payload.append(msgproto.MESSAGE_SYNC)
         self._ser.write(bytes(payload))
         self._ser.flush()
+        return seq
 
     def send(self, cmd_str):
         """Encode + write a command. Does not wait for a response."""

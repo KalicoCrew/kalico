@@ -76,6 +76,12 @@ ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
 UNDERRUN_FAULT_CODE = (-130) & 0xFFFF
 TRACE_OVERFLOW_FAULT_CODE = (-133) & 0xFFFF
 
+# Current production push ABI uses per-axis packed handles. Sim fixtures still
+# return a packed curve handle; these tests bind it to X and mark other axes
+# unused so the stream/fault behavior remains the thing under test.
+UNUSED_HANDLE = 0xFFFEFFFE
+E_MODE_TRAVEL = 2
+
 # t_start values must comfortably exceed widened_now at arm time. Under
 # sim pacing the original 1G-cycle (≈ 1.9 s MCU) base translated to
 # ~30s wall-clock for the engine to *reach* t_start under Renode's
@@ -112,12 +118,14 @@ def push_segment(
     io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks, timeout=2.0
 ):
     cmd = (
-        f"kalico_push_segment id={seg_id} curve_handle={curve_handle_packed} "
+        f"kalico_push_segment id={seg_id} x_handle={curve_handle_packed} "
+        f"y_handle={UNUSED_HANDLE} z_handle={UNUSED_HANDLE} "
+        f"e_handle={UNUSED_HANDLE} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
         f"t_start_lo={t_start_ticks & 0xFFFFFFFF} "
         f"t_end_hi={(t_end_ticks >> 32) & 0xFFFFFFFF} "
         f"t_end_lo={t_end_ticks & 0xFFFFFFFF} "
-        f"kinematics=0"
+        f"kinematics=0 e_mode={E_MODE_TRAVEL} extrusion_ratio=0"
     )
     io.send(cmd)
     r = io.wait_for_response("kalico_push_response", timeout)

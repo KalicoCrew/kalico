@@ -42,17 +42,25 @@ SEG_CYCLES = 100 * ONE_TICK_CYCLES
 STREAM_ID = 42
 ARM_LEAD_CYCLES = 2 * ONE_TICK_CYCLES
 
+# Current production push ABI uses per-axis packed handles. The sim fixture
+# loader is retained for this sim-only lifecycle test, but its returned handle
+# is now bound to X with Y/Z/E explicitly unused.
+UNUSED_HANDLE = 0xFFFEFFFE
+E_MODE_TRAVEL = 2
+
 
 def push_segment(
     io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks, timeout=5.0
 ):
     cmd = (
-        f"kalico_push_segment id={seg_id} curve_handle={curve_handle_packed} "
+        f"kalico_push_segment id={seg_id} x_handle={curve_handle_packed} "
+        f"y_handle={UNUSED_HANDLE} z_handle={UNUSED_HANDLE} "
+        f"e_handle={UNUSED_HANDLE} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
         f"t_start_lo={t_start_ticks & 0xFFFFFFFF} "
         f"t_end_hi={(t_end_ticks >> 32) & 0xFFFFFFFF} "
         f"t_end_lo={t_end_ticks & 0xFFFFFFFF} "
-        f"kinematics=0"
+        f"kinematics=0 e_mode={E_MODE_TRAVEL} extrusion_ratio=0"
     )
     io.send(cmd)
     r = io.wait_for_response("kalico_push_response", timeout)

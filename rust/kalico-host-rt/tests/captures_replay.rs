@@ -201,9 +201,10 @@ fn corpus_covers_required_encode_surfaces() {
         "kalico_clock_sync_request request_id=42 host_send_time_lo=0 host_send_time_hi=0",
         "kalico_stream_arm t_start_t0_lo=0 t_start_t0_hi=0 arm_lead_cycles=10",
         // Sentinel-zero encodes for the remaining command-side REQUIRED_SURFACES.
-        // Field names match the firmware DECL_COMMAND format strings in klipper.dict.
-        "kalico_push_segment id=0 curve_handle=0 t_start_hi=0 t_start_lo=0 t_end_hi=0 t_end_lo=0 kinematics=0",
-        "kalico_load_curve version=0 slot=0 degree=0 cps= knots= weights=",
+        // Field names match the current firmware DECL_COMMAND strings:
+        // scalar per-axis curve loads and four segment handles, no weights.
+        "kalico_push_segment id=0 x_handle=0 y_handle=0 z_handle=0 e_handle=0 t_start_hi=0 t_start_lo=0 t_end_hi=0 t_end_lo=0 kinematics=0 e_mode=2 extrusion_ratio=0",
+        "kalico_load_curve version=1 slot=0 degree=0 cps= knots=",
     ];
 
     for cmd in &commands {
