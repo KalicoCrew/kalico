@@ -5,6 +5,8 @@
 import logging
 
 from .kinematics import extruder
+from . import kinematics as kinematics_mod
+from . import chelper
 
 
 class MotionToolhead:
@@ -61,9 +63,6 @@ class MotionToolhead:
         gcode = self.printer.lookup_object("gcode")
         self.Coord = gcode.Coord
 
-        # Kinematics placeholder
-        self.kin = None
-
         # Step generation stubs
         self.step_generators = []
         self.kin_flush_delay = 0.001
@@ -72,8 +71,14 @@ class MotionToolhead:
         self.print_stall = 0
         self._flush_callbacks = []
 
-        # Trapq stub (no C allocation)
-        self.trapq = None
+        # Allocate a real trapq so kinematics/stepper hardware init doesn't
+        # crash on set_trapq(). The bridge owns trajectory; itersolve is idle.
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
+
+        # Load kinematics for hardware init (creates stepper objects for TMC,
+        # motors_sync, autotune etc.). Bridge overrides actual motion output.
+        self.kin = kinematics_mod.load_kinematics(self, config)
 
         # Register gcode commands that must exist for compat
         gcode.register_command("G4", self.cmd_G4)
