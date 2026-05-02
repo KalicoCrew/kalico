@@ -10,6 +10,7 @@
 #include "command.h"        // DECL_COMMAND
 #include "sched.h"          // DECL_INIT, DECL_TASK
 #include "kalico_runtime.h"
+#include "stm32/kalico_h7_timer.h" // kalico_h7_disable_tim5 / enable / read_cyccnt
 
 #if CONFIG_KALICO_RUNTIME
 
@@ -320,6 +321,21 @@ runtime_drain(void)
                    (uint16_t)fault_code, fault_detail, cur_seg);
         }
     }
+
+    // DRAINED or FAULT → disable TIM5 on the first transition into that
+    // state. The engine has nothing left to evaluate; leaving TIM5 running at
+    // 40 kHz needlessly burns CPU cycles. Under Renode the ISR load also
+    // starves USART2 command dispatch, preventing host tools from talking to
+    // the firmware after a print completes. The §4.4 producer protocol
+    // re-enables TIM5 on the next kalico_runtime_push_segment call when
+    // status is IDLE or DRAINED, so this is safe. Under IDLE the ISR was
+    // never enabled (no-op to call disable), but we gate on the transition
+    // anyway to avoid redundant disable calls.
+    if ((cur_status == 2 /* DRAINED */ || cur_status == 3 /* FAULT */)
+        && prev_engine_status != cur_status) {
+        kalico_h7_disable_tim5();
+    }
+
     prev_engine_status = cur_status;
 
     // Track last status (used by future LED hook on a non-SWD pin).
@@ -736,9 +752,8 @@ DECL_COMMAND(command_kalico_load_fixture_curve,
 // and the kalico TIM5 ISR doesn't preempt SysTick at priority 3 anyway.
 
 // KALICO_BENCH_MAX_SAMPLES is declared in `src/stm32/kalico_h7_timer.h`
-// (Task 23 creates it) so both `runtime_tick.c` and `kalico_h7_timer.c`
-// see the same value.
-#include "stm32/kalico_h7_timer.h"
+// (included at top of this file) so both `runtime_tick.c` and
+// `kalico_h7_timer.c` see the same value.
 extern volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
 extern volatile uint16_t kalico_bench_count;
 extern volatile uint16_t kalico_bench_target;

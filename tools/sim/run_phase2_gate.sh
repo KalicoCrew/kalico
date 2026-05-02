@@ -49,23 +49,23 @@ fi
 pkill -f renode 2>/dev/null || true
 sleep 1
 
-# Launch Renode in its own process group so we can kill the whole tree.
+# Launch Renode in the background.
+# Note: setsid is Linux-only; on macOS we rely on pkill -f renode for cleanup.
 echo "[gate] launching Renode (log=${SIM_LOG}) ..."
 set +e
-setsid bash "${REPO_ROOT}/tools/sim/run_sim.sh" >"${SIM_LOG}" 2>&1 &
+bash "${REPO_ROOT}/tools/sim/run_sim.sh" >"${SIM_LOG}" 2>&1 &
 SIM_PID=$!
 set -e
 
 cleanup() {
   echo "[gate] cleaning up sim (pid=${SIM_PID}) ..."
   if kill -0 "${SIM_PID}" 2>/dev/null; then
-    # SIGTERM the whole process group; SIGKILL after grace if needed.
-    kill -TERM -"${SIM_PID}" 2>/dev/null || true
+    kill -TERM "${SIM_PID}" 2>/dev/null || true
     for _ in 1 2 3 4 5; do
       if ! kill -0 "${SIM_PID}" 2>/dev/null; then break; fi
       sleep 1
     done
-    kill -KILL -"${SIM_PID}" 2>/dev/null || true
+    kill -KILL "${SIM_PID}" 2>/dev/null || true
   fi
   pkill -f renode 2>/dev/null || true
 }

@@ -71,59 +71,66 @@ TICK_HZ = 40_000
 ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
 LARGE_T_START_BASE = 52_000_000  # ≈ 100 ms ahead of widened_now at boot
 
+# Step 7-B wire constants.
+FORMAT_VERSION_V1 = 1
+# CurveHandle::UNUSED_SENTINEL packed u32 — axis not used by this segment.
+UNUSED_HANDLE = 0xFFFEFFFE
+# EMode values (runtime/src/config.rs).
+E_MODE_COUPLED_TO_XY = 0
+E_MODE_INDEPENDENT   = 1
+E_MODE_TRAVEL        = 2
+
 
 def floats_to_blob(values):
     raw = b"".join(struct.pack("<f", float(v)) for v in values)
     return raw.hex()
 
 
-# A representative cubic Bézier in XY (mirror of test_sim_gate_a.py
-# fixture index 2 — degree 3, 4 control points, uniform clamped knots).
-FIXTURE_CUBIC = {
-    "name": "cubic_bezier_xy",
+# Scalar cubic Bézier: linear 0→10 mm along one axis.
+# Step 7-B per-axis-scalar format: cps is a flat list of f32 scalars (not XYZ
+# tuples), knots is unchanged.
+FIXTURE_SCALAR_CUBIC = {
+    "name": "scalar_cubic_bezier_10mm",
     "degree": 3,
-    "control_points": [
-        (0.0, 0.0, 0.0),
-        (3.0, 5.0, 0.0),
-        (7.0, 5.0, 0.0),
-        (10.0, 0.0, 0.0),
-    ],
+    "cps": [0.0, 3.3333333, 6.6666666, 10.0],
     "knots": [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-    "weights": [1.0, 1.0, 1.0, 1.0],
 }
 
 
 def load_curve(io, slot, fixture, timeout=3.0):
-    cps = []
-    for cp in fixture["control_points"]:
-        cps.extend(cp)
+    """Send kalico_load_curve (scalar V1 format) and return (result, handle)."""
     cmd = (
-        "kalico_load_curve slot=%d degree=%d cps=%s knots=%s weights=%s"
+        "kalico_load_curve version=%d slot=%d degree=%d cps=%s knots=%s"
         % (
+            FORMAT_VERSION_V1,
             slot,
             int(fixture["degree"]),
-            floats_to_blob(cps),
+            floats_to_blob(fixture["cps"]),
             floats_to_blob(fixture["knots"]),
-            floats_to_blob(fixture["weights"]),
         )
     )
     io.send(cmd)
     resp = io.wait_for_response("kalico_load_curve_response", timeout)
-    return int(resp["result"])
+    return int(resp["result"]), int(resp.get("curve_handle_packed", 0))
 
 
-def push_segment(io, seg_id, slot, t_start, t_end, kin=0, timeout=3.0):
+def push_segment(io, seg_id, x_handle, y_handle, z_handle, e_handle,
+                 t_start, t_end, kin=0, e_mode=E_MODE_TRAVEL,
+                 extrusion_ratio=0, timeout=3.0):
+    """Send kalico_push_segment (Step 7-B per-axis-handle format)."""
     cmd = (
-        "kalico_push_segment id=%d curve=%d "
-        "t_start_hi=%d t_start_lo=%d t_end_hi=%d t_end_lo=%d kinematics=%d"
+        "kalico_push_segment id=%d x_handle=%d y_handle=%d "
+        "z_handle=%d e_handle=%d "
+        "t_start_hi=%d t_start_lo=%d t_end_hi=%d t_end_lo=%d "
+        "kinematics=%d e_mode=%d extrusion_ratio=%d"
         % (
             seg_id,
-            slot,
+            x_handle, y_handle, z_handle, e_handle,
             (t_start >> 32) & 0xFFFFFFFF,
             t_start & 0xFFFFFFFF,
             (t_end >> 32) & 0xFFFFFFFF,
             t_end & 0xFFFFFFFF,
-            kin,
+            kin, e_mode, extrusion_ratio,
         )
     )
     io.send(cmd)
@@ -220,20 +227,33 @@ def main():
         # via RouterTransport. We send them through `KalicoHostIO`'s own
         # encoder, since both encoders target the identical msgproto
         # dictionary captured in Step 1.
-        rc = load_curve(io, slot=0, fixture=FIXTURE_CUBIC)
-        if rc != 0:
-            raise SystemExit("FAIL: kalico_load_curve result=%d" % (rc,))
-        print("[gate] kalico_load_curve ok (slot=0)")
+        #
+        # Step 7-B: load two scalar curves (X and Y axis), then push one
+        # segment referencing both handles.
+        rc_x, x_handle = load_curve(io, slot=0, fixture=FIXTURE_SCALAR_CUBIC)
+        if rc_x != 0:
+            raise SystemExit("FAIL: kalico_load_curve (X) result=%d" % (rc_x,))
+        print("[gate] kalico_load_curve ok (slot=0, x_handle=0x%08x)" % (x_handle,))
+
+        rc_y, y_handle = load_curve(io, slot=1, fixture=FIXTURE_SCALAR_CUBIC)
+        if rc_y != 0:
+            raise SystemExit("FAIL: kalico_load_curve (Y) result=%d" % (rc_y,))
+        print("[gate] kalico_load_curve ok (slot=1, y_handle=0x%08x)" % (y_handle,))
 
         # 100-tick segment, well ahead of widened_now to avoid underrun.
         seg_cycles = 100 * ONE_TICK_CYCLES
         rc = push_segment(
             io,
             seg_id=1,
-            slot=0,
+            x_handle=x_handle,
+            y_handle=y_handle,
+            z_handle=UNUSED_HANDLE,
+            e_handle=UNUSED_HANDLE,
             t_start=LARGE_T_START_BASE,
             t_end=LARGE_T_START_BASE + seg_cycles,
-            kin=0,  # CoreXyAndE
+            kin=0,           # CoreXyAndE
+            e_mode=E_MODE_TRAVEL,
+            extrusion_ratio=0,
         )
         if rc != 0:
             raise SystemExit("FAIL: kalico_push_segment result=%d" % (rc,))

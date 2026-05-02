@@ -92,21 +92,30 @@ pub mod exports {
     /// `RuntimeContext` storage; its lifetime is `'static`.
     #[unsafe(no_mangle)]
     pub extern "C" fn kalico_runtime_init() -> *mut KalicoRuntime {
-        // Atomic compare-exchange — exactly one caller takes the
-        // false → true transition; everyone else observes Err and bails.
-        if INIT_DONE
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        // Guard against double-init. Klipper calls this exactly once from a
+        // single-threaded DECL_INIT sequence before TIM5 is armed, so a plain
+        // relaxed load is sufficient — there is no concurrent caller.
+        //
+        // We intentionally avoid compare_exchange here: on Cortex-M7 the Rust
+        // compiler lowers it to LDREXB/STREXB (exclusive monitor). Renode's
+        // H7 model (v1.16) silently drops the exclusive store — STREXB
+        // returns r2=0 (success) but does not write to memory — leaving
+        // INIT_DONE=0 even though the code proceeds into init(). Using a
+        // plain non-exclusive STRB (via store) avoids that Renode bug.
+        if INIT_DONE.load(Ordering::Relaxed) {
             return core::ptr::null_mut();
         }
-        // SAFETY: we hold the INIT_DONE token; no other context has access
-        // to RT_CELL until we publish a non-null handle. RuntimeContext::init
-        // writes through raw-pointer projections and never forms
-        // `&mut RuntimeContext`, matching the §11.2 aliasing discipline.
+        // SAFETY: single-threaded init; no other context can observe RT_CELL
+        // until INIT_DONE is published below. RuntimeContext::init writes
+        // through raw-pointer projections and never forms `&mut
+        // RuntimeContext`, matching the §11.2 aliasing discipline.
         unsafe {
             let rt_ptr: *mut RuntimeContext = (*RT_CELL.0.get()).as_mut_ptr();
             RuntimeContext::init(rt_ptr);
+            // Publish after full init — ISR sees either INIT_DONE=false
+            // (before enable) or a fully-initialised context (after).
+            // Release ordering pairs with the Acquire loads in every FFI call.
+            INIT_DONE.store(true, Ordering::Release);
             rt_ptr.cast::<KalicoRuntime>()
         }
     }

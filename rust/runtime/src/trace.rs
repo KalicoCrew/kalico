@@ -11,7 +11,11 @@ use crate::curve_pool::CurveHandle;
 /// Sized for `HOST_STALL` + 10 ms safety margin × 40 kHz tick + 1 (heapless
 /// cap-N-1 rule). Step-6 widens the Step-5 value (128) to absorb worst-case
 /// host drain latency without dropping samples.
-pub const TRACE_RING_N: usize = 1201;
+///
+/// Reduced from 1201 to 1199 to give the `RuntimeContext` BSS cell 80 bytes
+/// of slack after the `Engine` CoupledToXy fields (prev_x/prev_y/e_accumulator/
+/// needs_xy_seed, ~20 bytes) were added and brought it flush against `INIT_DONE`.
+pub const TRACE_RING_N: usize = 1199;
 
 // Step-5 carryover bit (retired in Step-6 — replaced by §13.1
 // `sample_drop_pending: AtomicBool` mechanism in Phase 5 Task 5.2). Constant

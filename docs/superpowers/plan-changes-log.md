@@ -4,6 +4,18 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 
 <!-- entries below -->
 
+### 2026-05-02 — Step 7-C-bridge complete
+
+**Renode Phase-2 gate passed.** Wire-level bridge contract (kalico_load_curve + kalico_push_segment → MCU) verified end-to-end against the simulated H723 firmware. Gate A (`test_sim_gate_a.py`): tick_counter=886, drained=True after 10-segment push sequence. Phase-2 gate (`test_renode_phase2_gate.py`): G1 X10 and G1 Z5 segment dispatch confirmed at wire level via motion_bridge.so.
+
+Two sim-mode firmware fixes shipped with this close:
+1. `test_sim_gate_a.py`: Added `kalico_set_homed` call before the push loop — engine gates on `shared.homed`; without it tick_counter stayed 0 regardless of TIM5 activity.
+2. `src/runtime_tick.c`: Added one-shot `kalico_h7_disable_tim5()` on DRAINED/FAULT transition — TIM5 idle-spinning at 40 kHz after DRAINED was starving USART2 command dispatch in Renode. Also moved `#include "stm32/kalico_h7_timer.h"` to the top of the file.
+
+Next: Step 7-D hardware bring-up (Surface-C cycle actuals, soaks, F4x Z integration, first print).
+
+---
+
 ### 2026-04-30 — Step 7-B complete
 - Curve pool refactored to per-axis scalar (degree 10, 80 CPs, 64 slots).
 - Segment struct carries 4 per-axis handles + EMode + extrusion_ratio.

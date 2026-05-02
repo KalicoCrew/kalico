@@ -4,6 +4,8 @@ use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use heapless::spsc::{Consumer, Producer};
 
+use nurbs::Float as _;
+
 use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
 use crate::curve_pool::{CurveHandle, CurvePool, CurveView};
 use crate::error::RuntimeError;

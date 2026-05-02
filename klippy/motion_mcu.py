@@ -95,6 +95,7 @@ class MotionMcuProxy:
         self._mcu_handle = self._bridge.claim_mcu(
             self._name, serial_path, baud
         )
+        self._bridge_handle = self._mcu_handle  # alias for motion_toolhead._init_planner
         self._command_queue = self._bridge.alloc_command_queue(
             self._mcu_handle
         )

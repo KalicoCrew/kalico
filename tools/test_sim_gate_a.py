@@ -87,6 +87,11 @@ SEG_CYCLES = 1_300_000  # = 100 ticks per segment
 N_SEGMENTS = 10
 ITERATION_BUDGET_S = 30.0
 
+# Step 7-B: sentinel for unused per-axis handles.
+UNUSED_HANDLE = 0xFFFEFFFE
+# EMode values (runtime/src/config.rs).
+E_MODE_TRAVEL = 2
+
 
 def floats_to_blob(values):
     return b"".join(struct.pack("<f", float(v)) for v in values).hex()
@@ -95,14 +100,11 @@ def floats_to_blob(values):
 def load_via_real_path(io, slot, fx, timeout=5.0):
     """Returns (result_code, curve_handle_packed). On non-zero result,
     curve_handle_packed is 0."""
-    cps = []
-    for cp in fx["control_points"]:
-        cps.extend(cp)
-    # Step-6 §4.2 leading version byte travels as an explicit `version=%c`.
+    # Step 7-B: scalar format — extract X component of each 3D CP.
+    cps_scalar = [cp[0] for cp in fx["control_points"]]
     cmd = (
         f"kalico_load_curve version=1 slot={slot} degree={fx['degree']} "
-        f"cps={floats_to_blob(cps)} knots={floats_to_blob(fx['knots'])} "
-        f"weights={floats_to_blob(fx['weights'])}"
+        f"cps={floats_to_blob(cps_scalar)} knots={floats_to_blob(fx['knots'])}"
     )
     io.send(cmd)
     r = io.wait_for_response("kalico_load_curve_response", timeout)
@@ -118,15 +120,19 @@ def load_via_fixture(io, slot, fixture_id, timeout=5.0):
 
 
 def push_segment(
-    io, seg_id, curve_handle_packed, t_start_ticks, t_end_ticks, timeout=5.0
+    io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0
 ):
+    """Step 7-B: 4-handle format. x_handle is the loaded scalar curve;
+    Y/Z/E use UNUSED_HANDLE sentinel. e_mode=Travel (no extruder)."""
     cmd = (
-        f"kalico_push_segment id={seg_id} curve_handle={curve_handle_packed} "
+        f"kalico_push_segment id={seg_id} "
+        f"x_handle={x_handle} y_handle={UNUSED_HANDLE} "
+        f"z_handle={UNUSED_HANDLE} e_handle={UNUSED_HANDLE} "
         f"t_start_hi={(t_start_ticks >> 32) & 0xFFFFFFFF} "
         f"t_start_lo={t_start_ticks & 0xFFFFFFFF} "
         f"t_end_hi={(t_end_ticks >> 32) & 0xFFFFFFFF} "
         f"t_end_lo={t_end_ticks & 0xFFFFFFFF} "
-        f"kinematics=0"
+        f"kinematics=0 e_mode={E_MODE_TRAVEL} extrusion_ratio=0"
     )
     io.send(cmd)
     r = io.wait_for_response("kalico_push_response", timeout)
@@ -180,6 +186,16 @@ def run_gate_a(use_real_loads):
                 return 1
             slot_handles.append(handle_packed)
 
+        # Step 7-B: homed gate. The engine rejects motion until kalico_set_homed
+        # is called. Under sim, all axes are trivially "homed" once the runtime
+        # is initialised; on real hardware this follows an actual homing move.
+        io.send("kalico_set_homed")
+        homed_r = io.wait_for_response("kalico_set_homed_response", timeout=5.0)
+        if int(homed_r.get("result", -1)) != 0:
+            print(f"FAIL: set_homed returned {homed_r}")
+            return 1
+        print(f"  set_homed result={homed_r.get('result')}")
+
         # Push N_SEGMENTS segments, cycling through the three slots. Use
         # ascending segment ids starting at 1 — id=0 + monotonicity gate
         # (Phase 4.1.5) is fine, but starting at 1 keeps id semantics
@@ -193,7 +209,7 @@ def run_gate_a(use_real_loads):
             rc = push_segment(
                 io,
                 seg_id=seg_id,
-                curve_handle_packed=slot_handles[slot],
+                x_handle=slot_handles[slot],
                 t_start_ticks=t_start,
                 t_end_ticks=t_end,
             )
