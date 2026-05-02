@@ -5,8 +5,47 @@
 import logging
 
 from .kinematics import extruder
-from . import kinematics as kinematics_mod
 from . import chelper
+from . import stepper
+
+
+class BridgeKinematics:
+    """Minimal kinematics shim for motion-bridge hardware initialization."""
+
+    def __init__(self, toolhead, config, trapq):
+        kin_name = config.get("kinematics")
+        if kin_name not in ("cartesian", "corexy", "hybrid_corexy"):
+            raise config.error("Unsupported bridge kinematics '%s'" % (kin_name,))
+        self.kinematics = kin_name
+        self.rails = []
+
+        axes = "xy"
+        if kin_name in ("cartesian", "hybrid_corexy"):
+            axes = "xyz"
+        for axis in axes:
+            rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
+            extra_name = "stepper_" + axis + "1"
+            try:
+                extra_config = config.getsection(extra_name)
+            except Exception:
+                extra_config = None
+            if extra_config is not None:
+                rail.add_extra_stepper(extra_config)
+            for mcu_stepper in rail.get_steppers():
+                mcu_stepper.set_trapq(trapq)
+            self.rails.append(rail)
+
+    def get_steppers(self):
+        return [s for rail in self.rails for s in rail.get_steppers()]
+
+    def calc_position(self, stepper_positions):
+        return [0.0, 0.0, 0.0]
+
+    def check_move(self, move):
+        pass
+
+    def get_status(self, eventtime):
+        return {"homed_axes": ""}
 
 
 class MotionToolhead:
@@ -78,7 +117,7 @@ class MotionToolhead:
 
         # Load kinematics for hardware init (creates stepper objects for TMC,
         # motors_sync, autotune etc.). Bridge overrides actual motion output.
-        self.kin = kinematics_mod.load_kinematics(self, config)
+        self.kin = BridgeKinematics(self, config, self.trapq)
 
         # Register gcode commands that must exist for compat
         gcode.register_command("G4", self.cmd_G4)
