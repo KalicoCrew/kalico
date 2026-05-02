@@ -42,7 +42,8 @@ from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 from test_h723_first_light import (  # noqa: E402
     STATUS_DRAINED, STATUS_FAULT, STATUS_IDLE, STATUS_NAMES, STATUS_RUNNING,
     expect_status, load_first_fixture, push_segment, query_pool_state,
-    query_status, read_mcu_clock, stream_arm, stream_open,
+    query_status, read_mcu_clock, stream_arm, stream_flush, stream_open,
+    stream_terminal,
 )
 
 
@@ -389,6 +390,19 @@ def main():
                 "n_samples=%d  rounds=%d"
                 % (worst_cycles, worst_us, total_samples, args.m2_rounds)
             )
+        # Cleanup: flush the long-running prime segment so trace emission
+        # stops before we disconnect. The segment's t_end is 600 s into the
+        # future, so it never retires by clock; without flush, it keeps
+        # emitting kalico_trace samples — and with no host draining them,
+        # the engine's trace ring overflows and the next run finds FAULT
+        # (last_err=-133, KALICO_ERR_TRACE_OVERFLOW). flush works while the
+        # engine is RUNNING because TIM5 is alive and can ack force_idle
+        # within 1 ms (Phase-2a finding #3 only applies post-DRAINED).
+        if not skip_bringup:
+            try:
+                stream_flush(io)
+            except Exception as e:
+                print("  cleanup warn: %s" % (e,))
     finally:
         io.disconnect()
 

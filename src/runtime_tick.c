@@ -848,15 +848,31 @@ command_kalico_bench_run(uint32_t *args)
     }
 
     // Emit one Klipper-framed `kalico_bench_sample value=N` response per
-    // measurement (after warmup). sendf encodes via Klipper's standard
-    // VLQ framing (msgproto.py); host parses with klippy/console.py-style
-    // MessageParser via tools/kalico_host_io.py. Bounded total: at most
-    // KALICO_BENCH_MAX_SAMPLES (1024) responses per bench command.
+    // measurement (after warmup). The USB-CDC transmit_buf is 192 B and
+    // console_sendf silently drops when full (usb_cdc.c:71-74). A tight
+    // sendf loop holds the foreground task and starves usb_bulk_in_task,
+    // so after ~21 framed messages every subsequent send is dropped —
+    // including the trailing kalico_bench_done. Drain by calling the bulk
+    // task directly between sends, kicking IWDG so the watchdog doesn't
+    // trip during a 1024-sample emit (~10–20 ms wall time).
+    extern void usb_bulk_in_task(void);
+    extern void usb_notify_bulk_in(void);
+    extern void udelay(uint32_t usecs);
     for (uint16_t i = WARMUP_SKIP; i < samples; i++) {
         sendf("kalico_bench_sample value=%u", kalico_bench_samples_buf[i]);
+        // Re-arm the wake (sched_check_wake clears it) so usb_bulk_in_task
+        // attempts a drain regardless of prior state. udelay yields enough
+        // wall time for the USB IN IRQ to ACK the previous packet, freeing
+        // the endpoint FIFO so the next usb_send_bulk_in succeeds.
+        usb_notify_bulk_in();
+        usb_bulk_in_task();
+        udelay(80);
+        IWDG->KR = 0xAAAA;
     }
     sendf("kalico_bench_done count=%hu error=%i",
           (uint16_t)(samples - WARMUP_SKIP), KALICO_BENCH_OK);
+    usb_notify_bulk_in();
+    usb_bulk_in_task();
 }
 DECL_COMMAND(command_kalico_bench_run, "kalico_bench_run isolate=%c samples=%hu");
 
