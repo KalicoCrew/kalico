@@ -10,7 +10,13 @@ host-side in `test_h723_cycle_count.py`.
 
 | date | git SHA | clock freq | Pass A min / p50 / p99 | Pass B min / p50 / p99 | budget | result |
 |------|---------|------------|------------------------|------------------------|--------|--------|
-| _TBD by Surface C bring-up_ | | | | | | |
+| _TBD — Step 7-D Phase 2a Gate B_ | | 180 MHz | | | 15.0 µs | |
+
+### M2 extended soak (Step 7-D Phase 2a)
+
+| date | git SHA | rounds × samples | WORST_ISR_CYCLES | WORST_ISR_US | result |
+|------|---------|-----------------|------------------|--------------|--------|
+| _TBD — Step 7-D Phase 2a Gate B (M2)_ | | 977 × 1024 ≈ 1.0M | | | |
 
 Notes:
 - Methodology spec: §6.4 (post-warmup-skip + selective-IRQ-mask).
