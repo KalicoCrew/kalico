@@ -26,6 +26,7 @@
 #
 # Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y.
 import argparse
+import json
 import logging
 import pathlib
 import sys
@@ -33,6 +34,16 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
+
+# Reuse the §8.3 stream lifecycle helpers from first-light. The bench needs
+# the TIM5 ISR firing — and TIM5 is only enabled after the first push_segment
+# (Phase-2a finding #1). A fresh-boot bench without bring-up hits
+# KALICO_BENCH_ERR_ISR_TIMEOUT (-101).
+from test_h723_first_light import (  # noqa: E402
+    STATUS_DRAINED, STATUS_FAULT, STATUS_IDLE, STATUS_NAMES, STATUS_RUNNING,
+    expect_status, load_first_fixture, push_segment, query_pool_state,
+    query_status, read_mcu_clock, stream_arm, stream_open,
+)
 
 
 def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
@@ -126,8 +137,30 @@ def main():
     p.add_argument(
         "--clock-freq",
         type=int,
-        default=180_000_000,
-        help="DWT->CYCCNT runs at the core clock (default 180 MHz)",
+        default=520_000_000,
+        help=(
+            "DWT->CYCCNT runs at the CPU core clock. H723 Klipper Kconfig "
+            "default = 520 MHz (CONFIG_CLOCK_FREQ)."
+        ),
+    )
+    p.add_argument(
+        "--fixtures",
+        default=str(
+            pathlib.Path(__file__).resolve().parent.parent
+            / "rust/runtime/tests/fixtures/step5_segments.json"
+        ),
+        help="Curve fixtures used to prime the engine before bench.",
+    )
+    p.add_argument(
+        "--prime-duration-s",
+        type=float,
+        default=600.0,
+        help=(
+            "Segment t_end - t_start in seconds. Must exceed the total bench "
+            "wall time (Pass A + Pass B + M2 rounds). 600 s covers an M2 of "
+            "977 rounds × ~30 ms with margin. Curve param u clamps at 1.0 "
+            "past the curve's natural duration, so extrapolation is safe."
+        ),
     )
     p.add_argument(
         "--p99-budget-us",
@@ -169,6 +202,94 @@ def main():
     print("Connecting to %s @ %d ..." % (args.port, args.baud))
     io = KalicoHostIO(args.port, args.baud)
     try:
+        # ----- Engine bring-up -----------------------------------------------
+        # The bench command times out (-101) unless TIM5 is firing. TIM5 is
+        # only enabled by the §4.4 producer protocol on the first push_segment.
+        # We push a single long-duration segment (no terminal, no flush) and
+        # leave the engine in RUNNING for the duration of the bench.
+        # Accept IDLE (fresh boot), DRAINED (re-run after a clean drain), or
+        # RUNNING (re-run while a previous prime segment is still active —
+        # then the engine ISR is already ticking and we can skip bring-up).
+        status, last_err = query_status(io)
+        skip_bringup = False
+        if status == STATUS_RUNNING:
+            print("  status=RUNNING already; engine ISR alive; skipping bring-up")
+            skip_bringup = True
+        elif status not in (STATUS_IDLE, STATUS_DRAINED):
+            raise SystemExit(
+                "FAIL (initial): expected IDLE/DRAINED/RUNNING, got %s "
+                "(last_err=%d)" % (STATUS_NAMES.get(status, status), last_err)
+            )
+
+        if not skip_bringup:
+            io.send("kalico_set_homed")
+            resp = io.wait_for_response("kalico_set_homed_response", timeout=2.0)
+            if int(resp["result"]) != 0:
+                raise SystemExit(
+                    "FAIL: kalico_set_homed_response result=%s" % resp["result"]
+                )
+
+            for slot in (0, 1, 2):
+                r, cur_gen, last_ret = query_pool_state(io, slot)
+                if r != 0 or cur_gen != last_ret:
+                    raise SystemExit(
+                        "FAIL: pool slot %d not free (result=%d current_gen=%d "
+                        "last_retired_gen=%d) — power-cycle the H723 between runs"
+                        % (slot, r, cur_gen, last_ret)
+                    )
+
+            fixtures = json.loads(pathlib.Path(args.fixtures).read_text())[
+                "fixtures"
+            ]
+            if not fixtures:
+                raise SystemExit("FAIL: no fixtures in %s" % args.fixtures)
+            fx = fixtures[0]
+            handles = load_first_fixture(io, fx, base_slot=0)
+            long_duration_us = int(args.prime_duration_s * 1_000_000)
+
+            stream_open(io, stream_id=0)
+
+            # Pick t_start ahead of widened_now. Fresh boot: widened_now=0,
+            # use a 10 s absolute offset. Re-run: the engine ticked previously
+            # so widened_now is non-zero; sample it and add a safety margin.
+            mcu_now = read_mcu_clock(io)
+            t_start_offset_s = 5.0
+            t_start = max(
+                mcu_now + int(t_start_offset_s * args.clock_freq),
+                int(10.0 * args.clock_freq),
+            )
+            arm_lead_cycles = int(0.001 * args.clock_freq)
+            push_segment(
+                io,
+                seg_id=1,
+                handles=handles,
+                duration_us=long_duration_us,
+                t_start_ticks=t_start,
+                clock_freq=args.clock_freq,
+            )
+            stream_arm(io, t_start=t_start, arm_lead_cycles=arm_lead_cycles)
+
+            print(
+                "  primed: t_start=%d duration=%.1f s; waiting for RUNNING ..."
+                % (t_start, args.prime_duration_s)
+            )
+            wait_s = max(t_start_offset_s, 10.0) + 2.0
+            deadline = time.monotonic() + wait_s
+            while time.monotonic() < deadline:
+                status, last_err = query_status(io, timeout=1.0)
+                if status == STATUS_FAULT:
+                    raise SystemExit(
+                        "FAIL: FAULT during bring-up (last_err=%d)" % last_err
+                    )
+                if status == STATUS_RUNNING:
+                    break
+                time.sleep(0.005)
+            else:
+                raise SystemExit(
+                    "FAIL: engine never reached RUNNING during bring-up"
+                )
+            print("  RUNNING — engine ISR ticking; proceeding to bench.")
+
         results = {}
         if not args.skip_isolate:
             print("Pass A (isolate=1, USB+USART masked) ...")
@@ -236,10 +357,17 @@ def main():
                     # Fire a few protocol commands between rounds so the
                     # next bench's ISR observes the post-Step-6 handler
                     # additions in their natural state.
+                    # Note: original stir set included kalico_stream_flush,
+                    # but that would force-idle the long-running prime segment
+                    # and disable TIM5 for subsequent rounds. We now stick to
+                    # read-only protocol surfaces (query_status, query_pool_state,
+                    # clock_sync_request) to keep the engine RUNNING.
                     for stir in (
                         "kalico_query_status",
-                        "kalico_stream_open stream_id=999",
-                        "kalico_stream_flush",
+                        "kalico_query_pool_state slot=0",
+                        ("kalico_clock_sync_request request_id=%d "
+                         "host_send_time_lo=0 host_send_time_hi=0"
+                         % (round_idx & 0xFFFFFFFF)),
                     ):
                         try:
                             io.send(stir)
