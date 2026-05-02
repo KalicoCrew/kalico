@@ -80,9 +80,12 @@ CLOCK_FREQ = 520_000_000  # H723 default
 TICK_HZ = 40_000
 ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
 
-# Long enough that the engine retires segments faster than we can push
-# under healthy conditions, so the host-side push latency dominates.
-SEG_TICKS = 40  # 1 ms per segment
+# 100 ms per segment. Queue capacity is 8 (rust/runtime/src/queue.rs:1),
+# so the prefilled 7 + steady-state pushing gives ~700 ms of buffer in
+# flight — large enough that normal Pi-5 jitter (CFS scheduling, page
+# faults, journald writes) doesn't underrun the engine while we measure
+# host-side push latency.
+SEG_TICKS = 4000  # 100 ms per segment
 FORMAT_VERSION_V1 = 1
 UNUSED_HANDLE = 0xFFFEFFFE
 E_MODE_TRAVEL = 2
@@ -135,6 +138,18 @@ def push_segment(
     return time.monotonic() - t0, int(r["result"])
 
 
+def read_mcu_clock(io):
+    """Sample widened MCU clock via §12.1 clock_sync_request."""
+    io.send(
+        "kalico_clock_sync_request request_id=1 host_send_time_lo=0 "
+        "host_send_time_hi=0"
+    )
+    r = io.wait_for_response("kalico_clock_sync_response", 2.0)
+    lo = int(r["mcu_clock_lo"]) & 0xFFFFFFFF
+    hi = int(r["mcu_clock_hi"]) & 0xFFFFFFFF
+    return (hi << 32) | lo
+
+
 def stream_open(io, stream_id):
     io.send(f"kalico_stream_open stream_id={stream_id}")
     r = io.wait_for_response("kalico_stream_open_response", 3.0)
@@ -185,16 +200,34 @@ def main():
         if rc != 0:
             raise SystemExit(f"FAIL: load_curve rc={rc} — abort soak")
 
+        # Required before stream_open: with a stream open the engine ISR
+        # latches FAULT on every tick if !homed, so the first prefill push
+        # would return KALICO_ERR_FAULT_LATCHED (-8).
+        io.send("kalico_set_homed")
+        sh = io.wait_for_response("kalico_set_homed_response", 2.0)
+        if int(sh["result"]) != 0:
+            raise SystemExit(f"FAIL: set_homed rc={sh['result']}")
+
         if stream_open(io, stream_id=900) != 0:
             raise SystemExit("FAIL: stream_open")
 
         seg_cycles = SEG_TICKS * ONE_TICK_CYCLES
         next_seg_id = 1
-        t_start_base = 1_000_000_000
+        # Anchor t_start_base ahead of widened_now. read_mcu_clock returns 0
+        # before the engine ISR has ticked (TIM5 only fires after the first
+        # push, §4.4); on a fresh boot we use a generous absolute offset of
+        # 10 s so the priming segment is in the MCU's future.
+        mcu_now = read_mcu_clock(io)
+        t_start_base = max(
+            mcu_now + 5 * CLOCK_FREQ,  # +5 s ahead of widened_now
+            10 * CLOCK_FREQ,           # at least 10 s of absolute uptime
+        )
 
         # Initial fill so the engine has something to chew on while we
         # measure steady-state push latency.
-        for prefill in range(64):
+        # Engine queue capacity = 8 (heapless::spsc::Queue<Segment, 8>); we
+        # prefill 7 so there's one free slot for the first steady-state push.
+        for prefill in range(7):
             t_start = t_start_base + prefill * seg_cycles
             t_end = t_start + seg_cycles
             try:

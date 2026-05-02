@@ -37,19 +37,40 @@ MCU underruns on the queue.
   - Producer queue depth `Q_N_MAX` = 256 → effective heapless capacity 255
   - Implied buffer-budget: ~255 ms of work in-flight at the floor
 
-**Recorded values:** TODO_USER_RUN (8h Pi 5 soak)
+**Recorded values:** 2026-05-02 — 0.5 h Pi 5 soak, firmware bb668dd40
 
-  - `p50_us`:    TODO_USER_RUN
-  - `p95_us`:    TODO_USER_RUN
-  - `p99_us`:    TODO_USER_RUN
-  - `p999_us`:   TODO_USER_RUN
-  - `p9999_us`:  TODO_USER_RUN
-  - `max_us`:    TODO_USER_RUN
-  - `n_samples`: TODO_USER_RUN
-  - `push_failures`: TODO_USER_RUN
+  - `p50_us`:    6882.4
+  - `p95_us`:    6976.5
+  - `p99_us`:    7010.7
+  - `p999_us`:   7552.0
+  - `p9999_us`:  7690.8
+  - `max_us`:    **7771.7**
+  - `n_samples`: 17860
+  - `push_failures`: 0
 
-**Host workload notes:** TODO_USER_RUN (Pi 5 model, kernel, Mainsail load,
-parallel jobs)
+**Host workload notes:** Pi 5 (Trident bench host), Bookworm, kalico
+service stopped during soak (no Mainsail / Moonraker load — bare-port
+access required because klippy holds the USB-CDC). Soak duration was
+30 min (Step-7-D Phase 2a Gate C target), not the full 8 h Step-6
+spec target. The Step-6 long soak is a follow-up: re-run after klippy
+can share the port (i.e., once the kalico bridge runs production
+workloads alongside Mainsail).
+
+The p50 of 6.88 ms is dominated by USB-CDC + Python-`pyserial`
+round-trip overhead, not engine back-pressure (the queue stays mostly
+full because each segment is 100 ms wall-time and pushes complete in
+~7 ms — host outpaces consumer comfortably). Tail-vs-p50 spread
+(max − p50 = 0.89 ms; p99.99 − p50 = 0.81 ms) is the actual
+host-jitter signal, well within any reasonable buffer-budget headroom.
+
+Test-script changes vs the Step-6 scaffold (committed alongside this
+record): segment duration bumped from 1 ms to 100 ms and prefill
+reduced from 64 to 7 to match the actual `heapless::spsc::Queue<8>`
+runtime queue capacity. Without these the engine underran on the
+first ISR tick (1 ms × 8-slot buffer can't absorb 6 ms push
+round-trips). t_start_base is now anchored on `read_mcu_clock` so
+re-runs without power-cycle work; `kalico_set_homed` is sent before
+`stream_open` so the engine doesn't latch FAULT on its first tick.
 
 **Action items if `max_us` exceeds the buffer-budget headroom:**
 

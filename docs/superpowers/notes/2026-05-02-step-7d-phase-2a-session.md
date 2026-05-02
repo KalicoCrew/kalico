@@ -1,7 +1,7 @@
 ---
 date: 2026-05-02
 context: Step 7-D Phase 2a (first hardware contact, H723 on Trident)
-status: Gate A + Gate B PASS on real H723. Gate B M2 soak DEFERRED (firmware drain-in-bench follow-up). Gate C (M1 host-stall, on Pi) next.
+status: Phase 2a complete — Gate A, Gate B, Gate C PASS on real H723 + Pi 5. Gate B M2 soak DEFERRED on firmware drain-in-bench follow-up. Phase 2b (first XY moves through bridge on physical H723) is next.
 ---
 
 # Where we left off — Step 7-D Phase 2a
