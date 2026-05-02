@@ -111,4 +111,10 @@ INPUT_SHAPERS = [
     InputShaperCfg("ei", get_ei_shaper, min_freq=29.0),
     InputShaperCfg("2hump_ei", get_2hump_ei_shaper, min_freq=39.0),
     InputShaperCfg("3hump_ei", get_3hump_ei_shaper, min_freq=48.0),
+    # Smooth shapers — pre-baked analytically by the motion bridge.
+    # Listed here so [input_shaper] config validation accepts them;
+    # the impulse-equivalent init_func is used only for legacy analysis
+    # paths (e.g. SHAPER_CALIBRATE); bridge overrides actual evaluation.
+    InputShaperCfg("smooth_zv", get_zv_shaper, min_freq=21.0),
+    InputShaperCfg("smooth_mzv", get_mzv_shaper, min_freq=23.0),
 ]
