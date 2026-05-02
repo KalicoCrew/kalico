@@ -25,12 +25,8 @@ class BridgeKinematics:
         for axis in axes:
             rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
             extra_name = "stepper_" + axis + "1"
-            try:
-                extra_config = config.getsection(extra_name)
-            except Exception:
-                extra_config = None
-            if extra_config is not None:
-                rail.add_extra_stepper(extra_config)
+            if config.has_section(extra_name):
+                rail.add_extra_stepper(config.getsection(extra_name))
             for mcu_stepper in rail.get_steppers():
                 mcu_stepper.set_trapq(trapq)
             self.rails.append(rail)
