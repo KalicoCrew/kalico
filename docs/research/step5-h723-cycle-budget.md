@@ -28,7 +28,33 @@ USB-CDC `transmit_buf` after ~21 messages and silently dropped the rest
 
 | date | git SHA | rounds × samples | WORST_ISR_CYCLES | WORST_ISR_US | result |
 |------|---------|-----------------|------------------|--------------|--------|
-| _TBD — Step 7-D Phase 2a Gate B (M2)_ | | 977 × 1024 ≈ 1.0M | | | |
+| 2026-05-02 | 7185e1446 | 1 × 1016 (partial) | 2178 | 4.188 | **DEFERRED** |
+
+The full 977-round soak is gated on a follow-up firmware fix. Each
+bench round busy-waits for ~25 ms (sample-fill) plus ~80 ms
+(sample-emit, with `udelay(80)` between sends to drain USB-CDC). For
+~105 ms total the foreground task can't run, so `runtime_drain`
+can't pull `TraceSample`s off the SPSC ring. The ring is sized 1199
+(`rust/runtime/src/trace.rs:18`) — at the trace producer's
+event-sampling rate this is enough for one round but cumulatively
+overflows after a couple. Overflow → engine FAULT → sticky
+`kalico_liveness_ok=0` → subsequent `kalico_bench_run` invocations
+refuse with `KALICO_BENCH_ERR_LIVENESS (-100)` until power-cycle.
+
+Mitigation options for the M2 follow-up:
+1. Drain trace inside `command_kalico_bench_run` between sendfs (call
+   `kalico_runtime_drain_trace` periodically). Adds inline trace
+   responses to the wire during the bench; host parser already
+   tolerates this since `kalico_trace` and `kalico_bench_sample` have
+   distinct msg IDs.
+2. Pause the trace producer for the duration of the bench (Rust
+   runtime exposes a "trace_paused" flag the bench can flip).
+3. Increase `TRACE_RING_N` to ≥ 4× current to absorb ~120 ms of stall.
+
+Gate B (single-pass cycle budget) is unaffected: p99 4.44 µs (Pass A)
+/ 4.19 µs (Pass B) under 15 µs budget. M1 host-stall soak (Gate C, on
+the Pi) and M3 clock-sync soak (Phase 3, dual-MCU) cover the
+long-horizon tail-latency surface that M2 was secondary on.
 
 Notes:
 - Methodology spec: §6.4 (post-warmup-skip + selective-IRQ-mask).
