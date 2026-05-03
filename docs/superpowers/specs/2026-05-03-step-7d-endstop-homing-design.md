@@ -8,7 +8,9 @@
 
 **Driving principle:** State of the art, simple, elegant, robust. Cut nothing; build on the architectural advantages our single-MCU + analytic-curve runtime gives over Klipper / Prunt / LinuxCNC / Marlin.
 
-**Revision history:** rev 1 → rev 2 (2026-05-03) addresses Codex adversarial review — blockers on wire format, MCU_endstop integration, and CAS race; majors on memory ordering, phase-stepping stop policy, position fidelity scoping, IgnoreUntilMoving latch, wait_moves contract, multi-MCU forward contract, probing matrix, homed gate; minors on debounce naming and polarity readability.
+**Revision history:**
+- rev 1 → rev 2 (2026-05-03): addresses Codex round-1 review (wire format, MCU_endstop integration, CAS race, memory ordering, phase-stepping stop policy, IgnoreUntilMoving latch, wait_moves contract, multi-MCU, probing matrix, homed gate, debounce naming, polarity).
+- rev 2 → rev 3 (2026-05-03): addresses Codex round-2 review — `_DECL_OUTPUT` for async events; 64-bit clocks split lo/hi; stepper binding carried over the wire; `kalico_set_homed` extended (existing no-arg command takes an optional `homed=%c`); `home_wait` bounded timeout with `REASON_PAST_END_TIME`; `submit_homing_move()` replaces the `set_next_segment_homing()` mutable-state footgun; bridge `_build_config` legacy-command suppression; opt-out for sensorless `TripImmediately`; trip event blob version byte; `AlreadyTripped` recategorized as ack status, not an `ArmState`; seqlock data stores upgraded to `Release`.
 
 ---
 
@@ -76,10 +78,14 @@ The bridge wire layer is Klipper's existing msgproto (`DECL_COMMAND` host→MCU,
 
 ```c
 DECL_COMMAND(command_kalico_arm_endstop,
-    "kalico_arm_endstop arm_id=%u source_count=%c arm_clock=%u sources=%*s");
+    "kalico_arm_endstop arm_id=%u arm_clock_lo=%u arm_clock_hi=%u "
+    "source_count=%c sources=%*s "
+    "stepper_count=%c steppers=%*s");
 ```
 
-`sources=%*s` is a length-prefixed binary blob containing `source_count` records, each:
+64-bit `arm_clock` split into `arm_clock_lo / _hi` to match the existing convention in `kalico_push_segment` (`src/runtime_tick.c:503`). The arm goes live at this clock; closes the host-MCU race (mainline Klipper's `HOMING_START_DELAY` exists for this) without piggybacking on segment dispatch.
+
+`sources=%*s` — `source_count` records, each (LE):
 
 ```
 source_kind     u8   = 0 (Physical) | 1 (TmcDiag)
@@ -91,37 +97,75 @@ velocity_axis   u8   = bitmask: 0x01=X, 0x02=Y, 0x04=Z
 v_min_q16       u32       Q16.16 mm/s velocity-latch threshold; 0 = no gate
 ```
 
-Records are little-endian (matching kalico's existing wire convention; `kalico_push_segment` uses LE u32 / u64). Size: 11 bytes per source. Up to 4 sources per arm.
+Size: 11 bytes per source. Up to 4 sources per arm.
 
-`arm_clock` is the MCU clock at which the arm goes live. Closes the host-MCU race (mainline Klipper's `HOMING_START_DELAY` exists for this) without piggybacking on segment dispatch.
+`steppers=%*s` — `stepper_count` records of stepper handle ids the trip event must snapshot. Each record:
 
-### 3.2 `kalico_arm_endstop_ack` (MCU → host, sync response)
-
-```c
-sendf("kalico_arm_endstop_ack arm_id=%u status=%c");
+```
+stepper_handle  u32   handle id from kalico_push_segment's x/y/z/e_handle namespace
 ```
 
-`status` ∈ { 0 = Armed, 1 = AlreadyTripped, 2 = Rejected }.
+Size: 4 bytes per stepper. Up to `MAX_STEPPERS` per arm. The handle namespace is the runtime's existing per-axis stepper-handle registry (see §3.7), the same handles `kalico_push_segment` already uses to bind axes to curves. No new registry is created.
+
+### 3.2 `kalico_arm_endstop_response` (MCU → host, sync response)
+
+Sent via `sendf` from the command handler, matching the existing
+`kalico_push_response` / `kalico_set_homed_response` pattern:
+
+```c
+sendf("kalico_arm_endstop_response arm_id=%u status=%c", arm_id, status);
+```
+
+`status` ∈ { 0 = Armed, 1 = AlreadyTripped, 2 = Rejected }. `AlreadyTripped`
+here is a sync ack status (the source was asserted at arm time under
+`TripImmediately`); it is NOT a runtime `ArmState` (see §4.1).
 
 ### 3.3 `kalico_endstop_tripped` (MCU → host, async)
 
 ```c
-sendf("kalico_endstop_tripped arm_id=%u trip_clock=%u trip_source_idx=%c "
-      "stepper_count=%c stepper_data=%*s");
+DECL_CTR("_DECL_OUTPUT "
+    "kalico_endstop_tripped arm_id=%u "
+    "trip_clock_lo=%u trip_clock_hi=%u "
+    "trip_source_idx=%c "
+    "fmt_version=%c "
+    "stepper_count=%c stepper_data=%*s");
 ```
 
-`trip_clock` is the MCU clock at the modulation tick where the trip CAS won (32-bit, wrapping; host applies the same wrap-extension logic it already uses for `kalico_status_v6`).
+(Async events use `_DECL_OUTPUT` + `output()` from firmware, matching
+`kalico_status_v6` / `kalico_credit_freed` / `kalico_fault` at
+`src/runtime_tick.c:684–688`. Earlier rev-2 spec used `sendf`, which is the
+sync-response convention — fixed in rev 3.)
 
-`stepper_data=%*s` is a length-prefixed blob containing `stepper_count` records, each:
+`trip_clock_{lo,hi}` is the 64-bit MCU clock at the modulation tick where
+the trip CAS won.
+
+`fmt_version` is `1` for the MVP integer-counts-only format. Step-10
+phase-stepping bumps this to `2` and extends each per-stepper record with
+`phase_q16`. Hosts inspect `fmt_version` to dispatch parsers; pure
+size-prefixing alone is not enough (Codex N7).
+
+`stepper_data=%*s`, `fmt_version=1`:
 
 ```
-stepper_id   u8        bridge-side stepper-handle id (matches push_segment refs)
-step_count   i32       signed step counter snapshot, after tick-N pulses commit
+stepper_handle   u32   handle from §3.1 stepper-binding list
+step_count       i32   signed step counter snapshot, after tick-N-1 pulses commit
 ```
 
-Size: 5 bytes per stepper.
+Size: 8 bytes per stepper.
 
-Sent at most once per `arm_id`. After emission, the arm transitions to terminal `TrippedSent` and ignores further input until disarm.
+`stepper_data=%*s`, `fmt_version=2` (Step-10 forward-compat):
+
+```
+stepper_handle   u32
+step_count       i32
+phase_q16        u16
+```
+
+Size: 10 bytes per stepper. Hosts implementing only `fmt_version=1` MUST
+reject events with `fmt_version >= 2`.
+
+Sent at most once per `arm_id`. After emission, the arm transitions to
+terminal `TrippedSent`.
 
 ### 3.4 `kalico_disarm_endstop` (host → MCU)
 
@@ -129,10 +173,10 @@ Sent at most once per `arm_id`. After emission, the arm transitions to terminal 
 DECL_COMMAND(command_kalico_disarm_endstop, "kalico_disarm_endstop arm_id=%u");
 ```
 
-### 3.5 `kalico_disarm_endstop_ack` (MCU → host, sync response)
+### 3.5 `kalico_disarm_endstop_response` (MCU → host, sync response)
 
 ```c
-sendf("kalico_disarm_endstop_ack arm_id=%u status=%c");
+sendf("kalico_disarm_endstop_response arm_id=%u status=%c", arm_id, status);
 ```
 
 `status` ∈ { 0 = Disarmed, 1 = AlreadyTripped (trip already queued/sent), 2 = Unknown (no such arm_id) }.
@@ -170,7 +214,16 @@ sendf("kalico_disarm_endstop_ack arm_id=%u status=%c");
 
 **Invariant:** exactly one terminal event per `arm_id`. Either `kalico_endstop_tripped` (TrippedSent) or `kalico_disarm_endstop_ack { status=Disarmed }` (Disarmed). `disarm` issued after a trip wins the CAS observes `Tripping`/`TrippedReady`/`TrippedSent` and returns `AlreadyTripped` — the trip event must NOT be elided.
 
-### 3.7 Wire-schema crosscheck
+### 3.7 Stepper handle registry
+
+The runtime already maintains a per-axis stepper-handle table consumed by
+`kalico_push_segment` (`x_handle`/`y_handle`/`z_handle`/`e_handle`). The arm
+command's stepper binding (§3.1) reuses these handles. No new registry; no
+new allocation protocol. For a corexy-AB topology, axes A and B map to two
+handles in the same namespace; the trip event's `stepper_handle` field
+echoes whichever was bound by the arm.
+
+### 3.8 Wire-schema crosscheck
 
 The existing `kalico_push_segment` test pattern asserts that the firmware's compiled msgproto dictionary matches the host-side encoder/decoder. Add equivalent crosschecks for the four new commands plus the two response/event outputs.
 
@@ -322,15 +375,18 @@ pub fn tick(
         }
 
         // Snapshot under seqlock; foreground reads with version-check.
-        let v0 = ARM.snapshot.version.load(Ordering::Relaxed);
+        // Data stores between the odd and even versions use Release to
+        // ensure they cannot be observed before the odd marker on
+        // weak-memory targets (Codex round-2 M1 partial-fix correction).
+        let v0 = ARM.snapshot.version.load(Ordering::Acquire);
         ARM.snapshot.version.store(v0 | 1, Ordering::Release); // write-in-progress
-        ARM.snapshot.trip_clock_lo.store(clock as u32, Ordering::Relaxed);
-        ARM.snapshot.trip_clock_hi.store((clock >> 32) as u32, Ordering::Relaxed);
-        ARM.snapshot.trip_source_idx.store(idx as u8, Ordering::Relaxed);
+        ARM.snapshot.trip_clock_lo.store(clock as u32, Ordering::Release);
+        ARM.snapshot.trip_clock_hi.store((clock >> 32) as u32, Ordering::Release);
+        ARM.snapshot.trip_source_idx.store(idx as u8, Ordering::Release);
         for (i, &c) in stepper_counts.iter().enumerate().take(MAX_STEPPERS) {
-            ARM.snapshot.step_counts[i].store(c, Ordering::Relaxed);
+            ARM.snapshot.step_counts[i].store(c, Ordering::Release);
         }
-        ARM.snapshot.step_count_count.store(stepper_counts.len() as u8, Ordering::Relaxed);
+        ARM.snapshot.step_count_count.store(stepper_counts.len() as u8, Ordering::Release);
         ARM.snapshot.version.store((v0 | 1).wrapping_add(1), Ordering::Release); // stable
 
         // Publish state.
@@ -345,10 +401,9 @@ pub fn tick(
 
 **Memory ordering:**
 - `state` transitions: `Armed → Tripping` is `AcqRel` CAS. `Tripping → TrippedReady` is `Release` store. Foreground-side `poll_trip` reads with `Acquire`.
-- Snapshot fields use a seqlock (version counter). Reader retries if version is odd, or if version changed between begin and end of read.
-- `arm_clock` is set once at arm time; treated as immutable while `state == Armed`.
-
-**Why a seqlock and not just `Release`-ordered stores?** A `Release` store on `state` followed by `Acquire` load is sufficient for snapshot publication on a single-CPU MCU with the ISR strictly serial w.r.t. the foreground task. The seqlock adds robustness against future multi-core or DMA-driven snapshot scenarios at near-zero ISR cost, and lets us avoid `AtomicU64` (not lock-free on Cortex-M7 no-std builds). It's belt-and-suspenders for an irreversible event.
+- Snapshot fields are written under a seqlock (version counter). Writer toggles version to odd with `Release`, **all data stores between odd and even versions are `Release`** (corrected from rev 2's `Relaxed`, which permitted reordering past the odd marker on weak-memory targets), then writes the next-even version with `Release`. Reader loads version with `Acquire`, retries if odd or if version changed between begin and end of read.
+- `arm_clock_{lo,hi}` is set once at arm time; treated as immutable while `state == Armed`.
+- **Single-core ISR-vs-foreground assumption:** the ISR runs at higher priority than the foreground; on Cortex-M7 single-core, the ISR is strictly non-preemptable by foreground code. `Release`/`Acquire` semantics are therefore sufficient even without a seqlock; the seqlock is belt-and-suspenders for hypothetical multi-core / DMA-snapshot scenarios. Spec correctness scope: single-core, ISR-non-preemptable. Multi-core requires re-review.
 
 ### 4.3 Foreground side
 
@@ -432,9 +487,10 @@ class BridgeTriggerDispatch:
         return self._bridge.get_command_queue()
 
     def add_stepper(self, mcu_stepper):
-        # Bridge knows stepper-handle ids already. Add to source-side
-        # stepper-snapshot list so the trip event reports this stepper.
-        self._bridge.bind_stepper_to_arm(self._arm_id, mcu_stepper.get_handle_id())
+        # Stepper handles are sent over the wire as part of the arm
+        # command (§3.1). No separate bind op; no host-side bridge state
+        # to track between calls.
+        self._stepper_handles.append(mcu_stepper.get_bridge_handle())
 
     # --- new endstop-source binding (called by MCU_endstop after pin parse) ---
     def add_source(self, kind, gpio, polarity, policy, sample_n, velocity_axis, v_min_q16):
@@ -446,7 +502,8 @@ class BridgeTriggerDispatch:
         arm_clock = self._bridge.print_time_to_clock(print_time)
         self._bridge.register_trip_handler(self._arm_id, self._on_trip)
         self._bridge.register_disarm_handler(self._arm_id, self._on_disarm_ack)
-        self._bridge.arm_endstop(self._arm_id, self._sources, arm_clock)
+        self._bridge.arm_endstop(self._arm_id, self._sources,
+                                 self._stepper_handles, arm_clock)
         return self._completion
 
     def _on_trip(self, evt):
@@ -481,15 +538,23 @@ def home_start(self, print_time, sample_time, sample_count, rest_time, triggered
         td = BridgeTriggerDispatch(self._bridge, self._reactor)
         # Map legacy params → bridge sources.
         # sample_count → sample_n (consecutive-N).
-        # sample_time/rest_time: bridge samples at modulation rate. We
-        # ignore these legacy args (they're polling-rate hints irrelevant
-        # to the bridge), and document this clearly.
+        # sample_time/rest_time: bridge samples at modulation rate.
+        # These legacy args are polling-rate hints from the C-firmware
+        # endstop_home command; they have no analog in the bridge ISR
+        # path. Documented as ignored. If a future caller depends on
+        # explicit sample timing (e.g., load-cell probes), it is
+        # routed through the legacy path (§5.4) and never sees this
+        # branch.
         # triggered=True → TripImmediately; triggered=False → WaitForClear.
         kind, gpio, polarity = self._resolve_pin()  # Physical or TmcDiag
         policy = (ArmPolicy.TripImmediately if triggered
                   else ArmPolicy.WaitForClear)
-        if kind == 'TmcDiag' and triggered:
-            # Sensorless default unless caller explicitly opts out.
+        if kind == 'TmcDiag' and triggered \
+                and not self._sensorless_trip_immediately:
+            # Sensorless default; caller opts out via setting
+            # _sensorless_trip_immediately on the MCU_endstop instance
+            # (configured by extras/tmc.py per [tmc5160 stepper_x] config
+            # option `homing_trip_immediately: True`, off by default).
             policy = ArmPolicy.IgnoreUntilMoving
         td.add_source(kind, gpio, polarity, policy,
                       sample_n=sample_count,
@@ -503,25 +568,47 @@ def home_start(self, print_time, sample_time, sample_count, rest_time, triggered
 
 def home_wait(self, home_end_time):
     if self._use_bridge:
-        # Reactor wait until completion or timeout.
-        end_clock = self._bridge.print_time_to_clock(home_end_time)
-        # Bridge returns when trip or timeout.
-        self._dispatch._completion.wait()
+        # Bounded reactor wait: completion or print_time deadline.
+        eventtime = self._reactor.monotonic()
+        deadline = eventtime + (home_end_time - self._mcu.estimated_print_time(eventtime))
+        completion = self._dispatch._completion
+        # Reactor.completion supports wait(waketime); returns None on timeout.
+        result = completion.wait(waketime=deadline)
+        if result is None:
+            # Timeout — no trip arrived by deadline. Disarm and report.
+            self._bridge.disarm_endstop(self._dispatch._arm_id)
+            self._dispatch._reason = REASON_PAST_END_TIME
+            return 0
         reason = self._dispatch.stop()
         if reason == REASON_ENDSTOP_HIT:
             evt = self._dispatch.get_trip_event()
             # Per-stepper position-at-trigger from snapshot.
-            for stepper_id, count in evt.stepper_data:
-                stepper = self._lookup_stepper(stepper_id)
+            for handle, count in evt.stepper_data:
+                stepper = self._lookup_stepper_by_handle(handle)
                 stepper.note_homing_step_count(count)
             return self._bridge.clock_to_print_time(evt.trip_clock)
-        return 0   # timeout, no trigger
+        return 0   # disarmed-by-host or other non-trip terminal
     # ...legacy path unchanged...
 ```
 
 `note_homing_step_count(count)` is a new lightweight method on `MCU_stepper` that converts the count to a position via the existing per-stepper step distance & sign metadata, equivalent to what `stepcompress_find_past_position` returned in legacy. Existing `homing.py:HomingMove` post-processing (`note_home_end`) consumes the position the same way.
 
-### 5.4 Probing / virtual-pin compatibility matrix
+### 5.4 Bridge-mode `_build_config` skips legacy endstop commands
+
+`klippy/mcu.py:447,460` registers `config_endstop` and `endstop_home` MCU
+commands during `_build_config` for every `MCU_endstop`. In bridge mode
+(`_use_bridge=True`), these legacy commands are not sent: the kalico
+firmware does not implement them, and sending them would either be
+rejected or worse, conflict with the bridge arm/disarm path.
+
+Spec contract: `MCU_endstop._build_config` checks `_use_bridge` and skips
+`mcu.lookup_command(...)` for `config_endstop` / `endstop_home` /
+`endstop_query_state`. `query_endstop` (the standalone-pin polling path,
+used by `QUERY_ENDSTOPS`) is preserved via a bridge-side
+`kalico_query_pin gpio=%u` op (added in §3.x as a follow-up; not blocking
+homing implementation).
+
+### 5.5 Probing / virtual-pin compatibility matrix
 
 | Caller | API used | Bridge supports? | Notes |
 |---|---|---|---|
@@ -541,31 +628,55 @@ Out-of-scope cases continue to work because they never reach `_use_bridge=True` 
 
 ### 6.1 Bridge runtime contract
 
-Current `bridge.wait_moves()` calls `planner.flush()` only. That's not trip-aware. Rev 2 contract:
+Current `bridge.wait_moves()` calls `planner.flush()` only. That's not
+trip-aware. Rev 3 contract:
 
-- Bridge tracks a `homing_segment_active: AtomicBool` and a `homing_segment_state: AtomicU8` (Active / Completed / Tripped).
-- `submit_move` for a homing segment sets `homing_segment_active=true`.
-- The runtime sets `homing_segment_state=Tripped` when the ISR aborts (via `endstop::tick` returning `AbortNow`); sets `Completed` when the segment retires naturally.
-- `wait_moves()` blocks until `homing_segment_state` exits `Active`.
-- Bridge-side `commanded_pos` is **not** updated at submit time for a homing segment. It is reconciled from the trip snapshot (or from the segment's natural endpoint on `Completed`) inside `home_wait`.
-
-This means `submit_move` grows a parameter (or the bridge gains a `set_homing_segment(true)` call before the next `submit_move`) so the runtime knows to apply trip semantics. Not exposed to non-homing callers.
+- Bridge tracks `homing_segment_state: AtomicU8` (Idle / Active /
+  Completed / Tripped).
+- A new dedicated entry point `bridge.submit_homing_move(newpos, speed,
+  arm_id)` (Python) → `submit_homing_move(...)` (Rust pyo3) submits the
+  segment, marks `homing_segment_state=Active`, ties it to `arm_id`, and
+  bypasses the `commanded_pos` advance the regular `submit_move` does.
+  This is a single atomic API — no mutable-bridge-flag-then-submit
+  footgun (Codex round-2 N5).
+- Regular `submit_move` is unchanged. The bridge does NOT inspect the
+  arm state; only `submit_homing_move` engages trip semantics.
+- The runtime sets `homing_segment_state=Tripped` when the ISR aborts
+  (via `endstop::tick` returning `AbortNow`); sets `Completed` when the
+  segment retires naturally.
+- `wait_moves()` blocks until `homing_segment_state` exits `Active`. It
+  is the same call non-homing callers use; the only effect of `Active`
+  is that the wait gets a richer terminal state to inspect.
+- Bridge-side `commanded_pos` is reconciled from the trip snapshot (or
+  from the segment's natural endpoint on `Completed`) inside `home_wait`,
+  not at submit time.
 
 ### 6.2 `motion_toolhead.drip_move`
 
 ```python
 def drip_move(self, newpos, speed, drip_completion):
     # Endstops were armed by homing.py via mcu_endstop.home_start.
-    # The bridge is told the next segment is a homing segment; on trip
-    # the runtime aborts and freezes commanded position. wait_moves()
-    # returns when the segment retires (Completed or Tripped).
-    self.bridge.set_next_segment_homing()
-    self.move(newpos, speed)
+    # The drip_completion's underlying BridgeTriggerDispatch already has
+    # an arm_id. We submit a homing-tagged segment so the bridge runtime
+    # engages trip semantics; on trip the ISR aborts and freezes the
+    # curve evaluator. wait_moves() returns when the segment retires
+    # (Completed or Tripped). commanded_pos reconciliation happens in
+    # home_wait via the trip snapshot, not here.
+    arm_id = drip_completion.get_arm_id()
+    self.bridge.submit_homing_move(newpos, speed, arm_id)
     self.bridge.wait_moves()
-    # commanded_pos reconciliation happens in home_wait via snapshot.
 ```
 
-The earlier rev-1 version was correct in shape but assumed runtime behavior the bridge didn't have. The runtime-side work in §6.1 closes that gap.
+`drip_completion.get_arm_id()` is added to the `multi_complete` wrapper
+and the underlying `BridgeTriggerDispatch.start()` return value: the
+completion exposes a stable `arm_id` accessor for the homing path. For
+multi-source `multi_complete`, all sources share one arm; the wrapper
+returns that arm_id.
+
+**No `set_next_segment_homing()` flag.** The arm_id-bearing
+`submit_homing_move` is the only path that engages homing semantics; you
+cannot accidentally engage it by calling regular `submit_move` and you
+cannot accidentally leave it engaged for a subsequent move.
 
 ---
 
@@ -587,14 +698,43 @@ This replaces trsync's role explicitly: trsync existed to dispatch one trigger a
 
 ## 8. `homed` gate ownership
 
-The runtime already exposes `state::homed: AtomicBool`. Rev 2 specifies its lifecycle:
+The runtime already exposes `state::homed: AtomicBool` and a no-arg
+`kalico_set_homed` command (`src/runtime_tick.c:524–534`) that
+unconditionally sets it to true and emits `kalico_set_homed_response
+result=%i`. Rev 3 extends — not collides with — that command.
 
-- **Set:** by the host after a successful homing of all required axes (typically after `G28`), via a new bridge command `kalico_set_homed homed=%c`. Host issues this from `homing.py::HomingMove.homing_move` post-success.
-- **Cleared:** by the runtime on shutdown, FAULT, or any axis losing position (e.g., disabled stepper, reset). Host can also clear via `kalico_set_homed homed=0` (e.g., on `M84`).
-- **Granularity (MVP):** single bool. The MVP requires all axes homed before motion. Per-axis flags are a Step-10 generalization; out of scope.
-- **Failure behavior:** if homing fails (timeout, never tripped), the host does NOT set `homed=1`. Runtime keeps motion gated until a successful homing.
+**Wire-format extension** (firmware change required as part of this
+work):
 
-A `kalico_set_homed_ack` response confirms the runtime applied the change.
+```c
+// Existing (no-arg, unconditional set-true) becomes:
+DECL_COMMAND(command_kalico_set_homed, "kalico_set_homed homed=%c");
+// Response unchanged:
+sendf("kalico_set_homed_response result=%i", r);
+```
+
+To preserve backward compatibility with any host that omits the
+argument, the parser accepts the no-arg form and treats it as
+`homed=1` (legacy semantics). The runtime side gains a clear path:
+`homed=0` clears the gate.
+
+**Lifecycle:**
+
+- **Set:** host issues `kalico_set_homed homed=1` after a successful
+  homing of all required axes (typically after `G28`), from
+  `homing.py::HomingMove.homing_move` post-success.
+- **Cleared:** runtime auto-clears on shutdown, FAULT, or any axis
+  losing position (e.g., disabled stepper, reset). Host can also clear
+  via `kalico_set_homed homed=0` (e.g., on `M84`).
+- **Granularity (MVP):** single bool. The MVP requires all axes homed
+  before motion. Per-axis flags are a Step-10 generalization; out of
+  scope.
+- **Failure behavior:** if homing fails (timeout, never tripped), the
+  host does NOT issue `homed=1`. Runtime keeps motion gated until a
+  successful homing.
+
+The existing `kalico_set_homed_response` ack confirms the runtime
+applied the change.
 
 ---
 
