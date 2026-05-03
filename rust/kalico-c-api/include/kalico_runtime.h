@@ -15,18 +15,26 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-enum ArmPolicy {
-  TripImmediately = 0,
-  WaitForClear = 1,
-  IgnoreUntilMoving = 2,
-};
-typedef uint8_t ArmPolicy;
+#define KALICO_TRIP_EVENT_V1_HEADER_LEN 15
+
+#define KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN 5
+
+#define KALICO_TRIP_EVENT_V1_FMT_VERSION 1
+
+#define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
 enum SourceKind {
   Physical = 0,
   TmcDiag = 1,
 };
 typedef uint8_t SourceKind;
+
+enum ArmPolicy {
+  TripImmediately = 0,
+  WaitForClear = 1,
+  IgnoreUntilMoving = 2,
+};
+typedef uint8_t ArmPolicy;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -333,5 +341,59 @@ int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t host_send_time_lo,
                                           uint32_t host_send_time_hi,
                                           uint64_t *out_mcu_clock);
+
+/**
+ * Arm an endstop. The blob layouts match spec §3.1:
+ * - `sources`: `source_count` records of 11 bytes each
+ *   (kind u8, gpio u16 LE, polarity u8, arm_policy u8, sample_n u8,
+ *    velocity_axis u8, v_min_q16 u32 LE).
+ * - `steppers`: `stepper_count` records of 1 byte (stepper_oid u8).
+ *
+ * Writes one of the spec §3.2 status values into `*out_status`:
+ * 0 = Armed, 1 = AlreadyTripped, 2 = Rejected.
+ */
+int32_t kalico_endstop_arm(uint32_t arm_id,
+                           uint32_t arm_clock_lo,
+                           uint32_t arm_clock_hi,
+                           uint8_t source_count,
+                           const uint8_t *sources_ptr,
+                           uintptr_t sources_len,
+                           uint8_t stepper_count,
+                           const uint8_t *steppers_ptr,
+                           uintptr_t steppers_len,
+                           uint8_t *out_status);
+
+/**
+ * Disarm an active endstop arm. `out_status` writes spec §3.5 codes:
+ * 0 = Disarmed, 1 = AlreadyTripped, 2 = Unknown.
+ */
+int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
+
+/**
+ * Drain the next pending trip event into a host-side buffer.
+ *
+ * Wire format v1, little-endian, total length =
+ * `KALICO_TRIP_EVENT_V1_HEADER_LEN + stepper_count *
+ * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN`. Header layout:
+ * `arm_id u32 | trip_clock_lo u32 | trip_clock_hi u32 |
+ *  trip_source_idx u8 | fmt_version u8 (=1) | stepper_count u8`.
+ * Each stepper record: `stepper_oid u8 | step_count i32`.
+ *
+ * Returns:
+ * - `1`  + `*out_actual_len` = encoded length: an event was drained.
+ * - `0`  + `*out_actual_len = 0`: no event ready.
+ * - `KALICO_ERR_NULL_PTR` on argument errors (incl. out_buf too small).
+ */
+int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
+                                 uintptr_t out_buf_len,
+                                 uintptr_t *out_actual_len);
+
+/**
+ * Set the homed gate to `homed` (0 = clear, non-zero = set). Required
+ * for §8 host-driven homed-state control. The legacy no-arg
+ * `kalico_set_homed` (always-set-true) at line ~830 above is preserved
+ * for backward compat per spec rev 4.
+ */
+int32_t kalico_set_homed_state(struct KalicoRuntime *rt, uint8_t homed);
 
 #endif  /* KALICO_RUNTIME_H */

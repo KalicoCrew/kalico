@@ -1162,4 +1162,218 @@ pub mod exports {
             }
         }
     }
+
+    // ---- Step 7-D: endstop arm/disarm/poll_trip + homed-state ---------------
+
+    use runtime::endstop::{
+        ArmMsg, ArmPolicy, ArmStatus, DisarmStatus, MAX_SOURCES, MAX_STEPPERS, SourceConfig,
+        SourceKind, VelocityAxis,
+    };
+
+    const SOURCE_RECORD_LEN: usize = 11;
+    const STEPPER_RECORD_LEN: usize = 1;
+
+    // Trip event format v1: arm_id(4) + clock_lo(4) + clock_hi(4)
+    // + source_idx(1) + fmt_version(1) + stepper_count(1)
+    // + stepper_data(stepper_count * 5).
+    pub const KALICO_TRIP_EVENT_V1_HEADER_LEN: usize = 15;
+    pub const KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN: usize = 5;
+    pub const KALICO_TRIP_EVENT_V1_FMT_VERSION: u8 = 1;
+    pub const KALICO_TRIP_EVENT_V1_MAX_LEN: usize =
+        KALICO_TRIP_EVENT_V1_HEADER_LEN + MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN;
+
+    /// Arm an endstop. The blob layouts match spec §3.1:
+    /// - `sources`: `source_count` records of 11 bytes each
+    ///   (kind u8, gpio u16 LE, polarity u8, arm_policy u8, sample_n u8,
+    ///    velocity_axis u8, v_min_q16 u32 LE).
+    /// - `steppers`: `stepper_count` records of 1 byte (stepper_oid u8).
+    ///
+    /// Writes one of the spec §3.2 status values into `*out_status`:
+    /// 0 = Armed, 1 = AlreadyTripped, 2 = Rejected.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_endstop_arm(
+        arm_id: u32,
+        arm_clock_lo: u32,
+        arm_clock_hi: u32,
+        source_count: u8,
+        sources_ptr: *const u8,
+        sources_len: usize,
+        stepper_count: u8,
+        steppers_ptr: *const u8,
+        steppers_len: usize,
+        out_status: *mut u8,
+    ) -> i32 {
+        if out_status.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        unsafe { *out_status = 2 }; // default: Rejected (overwritten on success)
+        if source_count == 0 || source_count as usize > MAX_SOURCES {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if stepper_count == 0 || stepper_count as usize > MAX_STEPPERS {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if sources_len != source_count as usize * SOURCE_RECORD_LEN {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if steppers_len != stepper_count as usize * STEPPER_RECORD_LEN {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if sources_ptr.is_null() || steppers_ptr.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+
+        let sources_blob: &[u8] = unsafe {
+            core::slice::from_raw_parts(sources_ptr, sources_len)
+        };
+        let steppers_blob: &[u8] = unsafe {
+            core::slice::from_raw_parts(steppers_ptr, steppers_len)
+        };
+
+        let mut sources = [SourceConfig::EMPTY; MAX_SOURCES];
+        for i in 0..source_count as usize {
+            let r = &sources_blob[i * SOURCE_RECORD_LEN..(i + 1) * SOURCE_RECORD_LEN];
+            let kind = match r[0] {
+                0 => SourceKind::Physical,
+                1 => SourceKind::TmcDiag,
+                _ => return KALICO_ERR_NULL_PTR,
+            };
+            let gpio = u16::from_le_bytes([r[1], r[2]]);
+            let active_high = r[3] != 0;
+            let policy = match r[4] {
+                0 => ArmPolicy::TripImmediately,
+                1 => ArmPolicy::WaitForClear,
+                2 => ArmPolicy::IgnoreUntilMoving,
+                _ => return KALICO_ERR_NULL_PTR,
+            };
+            let sample_n = r[5];
+            let velocity_axis = VelocityAxis::from_bits_truncate(r[6]);
+            let v_min_q16 = u32::from_le_bytes([r[7], r[8], r[9], r[10]]);
+            sources[i] = SourceConfig {
+                kind,
+                gpio,
+                active_high,
+                policy,
+                sample_n,
+                velocity_axis,
+                v_min_q16,
+            };
+        }
+
+        let mut stepper_oids = [0u8; MAX_STEPPERS];
+        for i in 0..stepper_count as usize {
+            stepper_oids[i] = steppers_blob[i];
+        }
+
+        let arm_clock = (u64::from(arm_clock_hi) << 32) | u64::from(arm_clock_lo);
+        let msg = ArmMsg {
+            arm_id,
+            arm_clock,
+            source_count,
+            sources,
+            stepper_count,
+            stepper_oids,
+        };
+
+        match runtime::endstop::arm(msg) {
+            Ok(ArmStatus::Armed) => {
+                unsafe { *out_status = 0 };
+                KALICO_OK
+            }
+            Ok(ArmStatus::AlreadyTripped) => {
+                unsafe { *out_status = 1 };
+                KALICO_OK
+            }
+            Err(_e) => {
+                unsafe { *out_status = 2 };
+                KALICO_OK
+            }
+        }
+    }
+
+    /// Disarm an active endstop arm. `out_status` writes spec §3.5 codes:
+    /// 0 = Disarmed, 1 = AlreadyTripped, 2 = Unknown.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_endstop_disarm(arm_id: u32, out_status: *mut u8) -> i32 {
+        if out_status.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        let s = match runtime::endstop::disarm(arm_id) {
+            DisarmStatus::Disarmed => 0u8,
+            DisarmStatus::AlreadyTripped => 1u8,
+            DisarmStatus::Unknown => 2u8,
+        };
+        unsafe { *out_status = s };
+        KALICO_OK
+    }
+
+    /// Drain the next pending trip event into a host-side buffer.
+    ///
+    /// Wire format v1, little-endian, total length =
+    /// `KALICO_TRIP_EVENT_V1_HEADER_LEN + stepper_count *
+    /// KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN`. Header layout:
+    /// `arm_id u32 | trip_clock_lo u32 | trip_clock_hi u32 |
+    ///  trip_source_idx u8 | fmt_version u8 (=1) | stepper_count u8`.
+    /// Each stepper record: `stepper_oid u8 | step_count i32`.
+    ///
+    /// Returns:
+    /// - `1`  + `*out_actual_len` = encoded length: an event was drained.
+    /// - `0`  + `*out_actual_len = 0`: no event ready.
+    /// - `KALICO_ERR_NULL_PTR` on argument errors (incl. out_buf too small).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_endstop_poll_trip(
+        out_buf: *mut u8,
+        out_buf_len: usize,
+        out_actual_len: *mut usize,
+    ) -> i32 {
+        if out_buf.is_null() || out_actual_len.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        unsafe { *out_actual_len = 0 };
+
+        let Some(evt) = runtime::endstop::poll_trip() else {
+            return 0;
+        };
+
+        let stepper_count = usize::from(evt.stepper_count);
+        let needed =
+            KALICO_TRIP_EVENT_V1_HEADER_LEN + stepper_count * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN;
+        if out_buf_len < needed {
+            return KALICO_ERR_NULL_PTR;
+        }
+        let buf: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_buf, needed) };
+        buf[0..4].copy_from_slice(&evt.arm_id.to_le_bytes());
+        buf[4..8].copy_from_slice(&(evt.trip_clock as u32).to_le_bytes());
+        buf[8..12].copy_from_slice(&((evt.trip_clock >> 32) as u32).to_le_bytes());
+        buf[12] = evt.trip_source_idx;
+        buf[13] = KALICO_TRIP_EVENT_V1_FMT_VERSION;
+        buf[14] = evt.stepper_count;
+        for i in 0..stepper_count {
+            let off = KALICO_TRIP_EVENT_V1_HEADER_LEN + i * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN;
+            buf[off] = evt.steppers[i].oid;
+            buf[off + 1..off + 5].copy_from_slice(&evt.steppers[i].step_count.to_le_bytes());
+        }
+        unsafe { *out_actual_len = needed };
+        1
+    }
+
+    /// Set the homed gate to `homed` (0 = clear, non-zero = set). Required
+    /// for §8 host-driven homed-state control. The legacy no-arg
+    /// `kalico_set_homed` (always-set-true) at line ~830 above is preserved
+    /// for backward compat per spec rev 4.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_set_homed_state(rt: *mut KalicoRuntime, homed: u8) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).homed.store(homed != 0, Ordering::Release);
+        }
+        KALICO_OK
+    }
 }

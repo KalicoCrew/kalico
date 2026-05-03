@@ -533,6 +533,98 @@ command_kalico_set_homed(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_set_homed, "kalico_set_homed");
 
+// Step 7-D: parameterized homed-state setter. Spec §8 — sibling of the
+// no-arg kalico_set_homed (preserved for backward compat), letting the
+// host explicitly set or clear the gate (homed=0 clears, non-zero sets).
+void
+command_kalico_set_homed_state(uint32_t *args)
+{
+    if (!kalico_rt_handle) {
+        sendf("kalico_set_homed_response result=%i", -7);
+        return;
+    }
+    uint8_t homed = args[0];
+    int32_t r = kalico_set_homed_state(kalico_rt_handle, homed);
+    sendf("kalico_set_homed_response result=%i", r);
+}
+DECL_COMMAND(command_kalico_set_homed_state, "kalico_set_homed_state homed=%c");
+
+// ---- Step 7-D: endstop arm/disarm/tripped wire surface --------------------
+
+void
+command_kalico_arm_endstop(uint32_t *args)
+{
+    uint32_t arm_id = args[0];
+    uint32_t arm_clock_lo = args[1];
+    uint32_t arm_clock_hi = args[2];
+    uint8_t source_count = args[3];
+    uint32_t sources_len = args[4];
+    uint8_t *sources_ptr = (uint8_t *)(uintptr_t)args[5];
+    uint8_t stepper_count = args[6];
+    uint32_t steppers_len = args[7];
+    uint8_t *steppers_ptr = (uint8_t *)(uintptr_t)args[8];
+    uint8_t status = 2; // Rejected
+    (void)kalico_endstop_arm(arm_id, arm_clock_lo, arm_clock_hi,
+                             source_count, sources_ptr, sources_len,
+                             stepper_count, steppers_ptr, steppers_len,
+                             &status);
+    sendf("kalico_arm_endstop_response arm_id=%u status=%c", arm_id, status);
+}
+DECL_COMMAND(command_kalico_arm_endstop,
+    "kalico_arm_endstop arm_id=%u arm_clock_lo=%u arm_clock_hi=%u "
+    "source_count=%c sources=%*s "
+    "stepper_count=%c steppers=%*s");
+
+void
+command_kalico_disarm_endstop(uint32_t *args)
+{
+    uint32_t arm_id = args[0];
+    uint8_t status = 2; // Unknown
+    (void)kalico_endstop_disarm(arm_id, &status);
+    sendf("kalico_disarm_endstop_response arm_id=%u status=%c", arm_id, status);
+}
+DECL_COMMAND(command_kalico_disarm_endstop, "kalico_disarm_endstop arm_id=%u");
+
+DECL_CTR("_DECL_OUTPUT "
+         "kalico_endstop_tripped arm_id=%u "
+         "trip_clock_lo=%u trip_clock_hi=%u "
+         "trip_source_idx=%c fmt_version=%c "
+         "stepper_count=%c stepper_data=%*s");
+
+// Periodic task: drain runtime-side trip events into async msgproto
+// `kalico_endstop_tripped` outputs. Modeled on `runtime_status_drain` —
+// runs at task cadence. Trips are infrequent (one per homing); the
+// in-buffer max length matches kalico-c-api's KALICO_TRIP_EVENT_V1_MAX_LEN
+// (15 header + 8 steppers * 5 = 55 bytes).
+void
+runtime_endstop_drain(void)
+{
+    if (!kalico_rt_handle) return;
+    uint8_t buf[64];
+    size_t actual = 0;
+    int32_t r = kalico_endstop_poll_trip(buf, sizeof(buf), &actual);
+    if (r != 1 || actual < 15) return;
+    uint32_t arm_id     = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8)
+                        | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    uint32_t clock_lo   = (uint32_t)buf[4] | ((uint32_t)buf[5] << 8)
+                        | ((uint32_t)buf[6] << 16) | ((uint32_t)buf[7] << 24);
+    uint32_t clock_hi   = (uint32_t)buf[8] | ((uint32_t)buf[9] << 8)
+                        | ((uint32_t)buf[10] << 16) | ((uint32_t)buf[11] << 24);
+    uint8_t source_idx  = buf[12];
+    uint8_t fmt_version = buf[13];
+    uint8_t stepper_n   = buf[14];
+    uint32_t blob_len   = (uint32_t)stepper_n * 5;
+    if (15 + blob_len > actual) return;
+    output("kalico_endstop_tripped arm_id=%u "
+           "trip_clock_lo=%u trip_clock_hi=%u "
+           "trip_source_idx=%c fmt_version=%c "
+           "stepper_count=%c stepper_data=%*s",
+           arm_id, clock_lo, clock_hi,
+           source_idx, fmt_version,
+           stepper_n, blob_len, &buf[15]);
+}
+DECL_TASK(runtime_endstop_drain);
+
 void
 command_kalico_configure_axes(uint32_t *args)
 {
