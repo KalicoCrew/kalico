@@ -187,6 +187,10 @@ pub struct PyMotionBridge {
     /// integration tests assert this stays zero — non-zero indicates klippy
     /// has not wired SET_CLOCK_EST before motion submission.
     fallback_clock_conversions: Arc<AtomicU64>,
+    /// Last Klippy clocksync frequency per MCU, mirrored from `set_clock_est`.
+    /// The planner emits batch-local seconds; dispatch uses this to place
+    /// those relative times onto the MCU's live clock domain.
+    clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
 }
 
@@ -211,6 +215,7 @@ impl PyMotionBridge {
             slot_pools: Arc::new(Mutex::new(HashMap::new())),
             credit_counters: Arc::new(Mutex::new(HashMap::new())),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
+            clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
         }
     }
@@ -753,7 +758,9 @@ impl PyMotionBridge {
         let mut router = self.router.lock().unwrap();
         router
             .set_clock_est(mcu_handle_from_raw(mcu), freq, offset, last_clock)
-            .map_err(router_err)
+            .map_err(router_err)?;
+        self.clock_freqs.lock().unwrap().insert(mcu, freq);
+        Ok(())
     }
 
     /// Drain the debug log for crash diagnostics. Returns a dict with
@@ -900,6 +907,7 @@ impl PyMotionBridge {
         // surfaces them as `PlannerError::Dispatch`.
         let counter = Arc::clone(&self.dispatched_segments);
         let fallback_counter = Arc::clone(&self.fallback_clock_conversions);
+        let clock_freqs = Arc::clone(&self.clock_freqs);
         let homing = Arc::clone(&self.homing);
         let warned_mcus: Arc<Mutex<HashSet<u32>>> =
             Arc::new(Mutex::new(HashSet::new()));
@@ -962,6 +970,14 @@ impl PyMotionBridge {
         // retirement signal to the segment's curve slots.
         let next_seg_id: Arc<Mutex<HashMap<u32, u32>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        // Per-MCU schedule state:
+        //   (current batch base clock, next available absolute clock).
+        // `trajectory::shape_batch` emits batch-local times, with each new
+        // batch starting at t=0. Dispatch places those relative seconds onto
+        // the MCU's live clock with a small lead so the firmware does not see
+        // zero-duration or already-expired segments.
+        let schedule_state: Arc<Mutex<HashMap<u32, (u64, u64)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), String>
@@ -974,6 +990,7 @@ impl PyMotionBridge {
                 /* t_start_clock placeholder, overwritten below */ 0,
                 0,
             );
+            let mut segment_clock_cache: HashMap<u32, (u64, u64)> = HashMap::new();
 
             for plan in &mut plans {
                 let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
@@ -984,18 +1001,13 @@ impl PyMotionBridge {
                 // Per-MCU clock conversion. Falls back to a microsecond
                 // approximation if `set_clock_est` has not been called yet.
                 let mcu_h = mcu_handle_from_raw(plan.mcu_id);
-                let (t_start_clock, t_end_clock) = {
-                    let r = router_for_cb.lock().unwrap();
-                    let s = r
-                        .host_time_to_mcu_clock(mcu_h, seg.t_start)
-                        .map_err(|e| format!("host_time_to_mcu_clock: {e}"))?;
-                    let e = r
-                        .host_time_to_mcu_clock(mcu_h, seg.t_end)
-                        .map_err(|e| format!("host_time_to_mcu_clock: {e}"))?;
-                    if s == 0 && e == 0 {
-                        // Estimate not yet installed — fall back to
-                        // microsecond-grained placeholder so motion still
-                        // flows during early bring-up.
+                let freq = clock_freqs
+                    .lock()
+                    .unwrap()
+                    .get(&plan.mcu_id)
+                    .copied()
+                    .filter(|f| *f > 0.0)
+                    .unwrap_or_else(|| {
                         fallback_counter.fetch_add(1, Ordering::Relaxed);
                         let first_for_mcu = {
                             let mut warned = warned_mcus.lock().unwrap();
@@ -1003,17 +1015,40 @@ impl PyMotionBridge {
                         };
                         if first_for_mcu {
                             log::warn!(
-                                "motion-bridge: MCU {} clock estimate not installed; using t*1e6 fallback for clock conversion. SET_CLOCK_EST not yet wired by klippy?",
+                                "motion-bridge: MCU {} clock frequency not installed; using 1 MHz fallback for relative segment timing. SET_CLOCK_EST not yet wired by klippy?",
                                 plan.mcu_id
                             );
                         }
-                        (
-                            (seg.t_start * 1e6) as u64,
-                            (seg.t_end * 1e6) as u64,
-                        )
-                    } else {
-                        (s, e)
+                        1_000_000.0
+                    });
+                let (t_start_clock, t_end_clock) = if let Some(clocks) =
+                    segment_clock_cache.get(&plan.mcu_id).copied()
+                {
+                    clocks
+                } else {
+                    let r = router_for_cb.lock().unwrap();
+                    let now_clock = r
+                        .compute_ack_clock(mcu_h)
+                        .map_err(|e| format!("compute_ack_clock: {e}"))?;
+                    let lead_cycles = (freq * 0.100).round().max(1.0) as u64;
+                    drop(r);
+
+                    let mut schedule = schedule_state.lock().unwrap();
+                    let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
+                    if entry.1 == 0 || seg.t_start <= 1.0e-12 {
+                        entry.0 = entry.1.max(now_clock.saturating_add(lead_cycles));
                     }
+                    if entry.0 < now_clock.saturating_add(lead_cycles) {
+                        entry.0 = now_clock.saturating_add(lead_cycles);
+                    }
+                    let rel_start = (seg.t_start * freq).round().max(0.0) as u64;
+                    let rel_end = (seg.t_end * freq).round().max(0.0) as u64;
+                    let s = entry.0.saturating_add(rel_start);
+                    let e = entry.0.saturating_add(rel_end);
+                    entry.1 = entry.1.max(e);
+                    let clocks = (s, e);
+                    segment_clock_cache.insert(plan.mcu_id, clocks);
+                    clocks
                 };
                 plan.params.t_start = t_start_clock;
                 plan.params.t_end = t_end_clock;

@@ -498,10 +498,12 @@ class MotionToolhead:
         # succeeds during single-MCU bring-up.
         octopus = None
         f446 = None
+        bridge_mcus = []
         for name, mcu in self.printer.lookup_objects(module="mcu"):
             handle = getattr(mcu, "_bridge_handle", None)
             if handle is None:
                 continue
+            bridge_mcus.append((name, mcu, handle))
             mcu_name = getattr(mcu, "_name", name)
             if octopus is None or mcu_name in ("mcu", "octopus"):
                 if octopus is None:
@@ -554,6 +556,18 @@ class MotionToolhead:
                 octopus,
                 f446,
             )
+            # The local Linux sim harness commonly sends a bare movement
+            # command (`run_local.sh "G1 X10 F1000"`) without a preceding
+            # SET_KINEMATIC_POSITION/G28. Keep that source-only smoke path
+            # moving by marking only the single-MCU local sim runtime homed.
+            if len(bridge_mcus) == 1:
+                _, mcu_obj, mcu_handle = bridge_mcus[0]
+                if getattr(mcu_obj, "_serialport", None) == "/tmp/klipper_sim_socket":
+                    queue = self.bridge.alloc_command_queue(mcu_handle)
+                    self.bridge.set_homed_state(mcu_handle, queue, True)
+                    logging.info(
+                        "MotionToolhead: marked single-MCU local sim homed"
+                    )
         except Exception:
             logging.exception("MotionToolhead: init_planner failed")
             raise
