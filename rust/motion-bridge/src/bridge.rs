@@ -835,6 +835,121 @@ impl PyMotionBridge {
         Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 
+    // ── Step 7-D: endstop arm/disarm/set_homed_state wire surface ──────────
+    //
+    // These call the kalico-host-rt producer functions over a per-call
+    // `RouterTransport` bound to the caller-supplied (mcu, queue) pair.
+    // Each Python call is one synchronous msgproto round-trip. The Python
+    // side (`klippy/motion_bridge.py::BridgeTriggerDispatch`) wraps these
+    // and handles async `kalico_endstop_tripped` events via the existing
+    // `passthrough_register_handler` plumbing.
+
+    /// Send `kalico_arm_endstop` and wait for the synchronous response.
+    /// Returns the status byte (0=Armed, 1=AlreadyTripped, 2=Rejected) per
+    /// spec §3.2.
+    #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=0.1))]
+    #[allow(clippy::too_many_arguments)]
+    fn endstop_arm(
+        &self,
+        mcu: u32,
+        queue: u32,
+        arm_id: u32,
+        arm_clock: u64,
+        sources: Vec<(u8, u16, bool, u8, u8, u8, u32)>,
+        stepper_oids: Vec<u8>,
+        timeout_s: f64,
+    ) -> PyResult<u8> {
+        use kalico_host_rt::endstop;
+
+        let mut source_specs = Vec::with_capacity(sources.len());
+        for (kind_byte, gpio, active_high, policy_byte, sample_n, velocity_axis, v_min_q16) in
+            sources
+        {
+            let kind = match kind_byte {
+                0 => endstop::SourceKind::Physical,
+                1 => endstop::SourceKind::TmcDiag,
+                _ => return Err(PyRuntimeError::new_err("invalid source kind")),
+            };
+            let policy = match policy_byte {
+                0 => endstop::ArmPolicy::TripImmediately,
+                1 => endstop::ArmPolicy::WaitForClear,
+                2 => endstop::ArmPolicy::IgnoreUntilMoving,
+                _ => return Err(PyRuntimeError::new_err("invalid arm policy")),
+            };
+            source_specs.push(endstop::SourceSpec {
+                kind,
+                gpio,
+                active_high,
+                policy,
+                sample_n,
+                velocity_axis,
+                v_min_q16,
+            });
+        }
+
+        let transport = RouterTransport::new(
+            Arc::clone(&self.router),
+            mcu_handle_from_raw(mcu),
+            cq_id_from_raw(queue),
+            Arc::clone(&self.parser),
+        );
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        let status = endstop::arm_endstop_with_timeout(
+            &transport,
+            arm_id,
+            arm_clock,
+            &source_specs,
+            &stepper_oids,
+            timeout,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("endstop_arm: {e}")))?;
+        Ok(status as u8)
+    }
+
+    /// Send `kalico_disarm_endstop` and wait for the response. Returns the
+    /// status byte (0=Disarmed, 1=AlreadyTripped, 2=Unknown) per spec §3.5.
+    #[pyo3(signature = (mcu, queue, arm_id, timeout_s=0.1))]
+    fn endstop_disarm(
+        &self,
+        mcu: u32,
+        queue: u32,
+        arm_id: u32,
+        timeout_s: f64,
+    ) -> PyResult<u8> {
+        use kalico_host_rt::endstop;
+        let transport = RouterTransport::new(
+            Arc::clone(&self.router),
+            mcu_handle_from_raw(mcu),
+            cq_id_from_raw(queue),
+            Arc::clone(&self.parser),
+        );
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        let status = endstop::disarm_endstop_with_timeout(&transport, arm_id, timeout)
+            .map_err(|e| PyRuntimeError::new_err(format!("endstop_disarm: {e}")))?;
+        Ok(status as u8)
+    }
+
+    /// Send `kalico_set_homed_state homed=%c`. Spec §8.
+    #[pyo3(signature = (mcu, queue, homed, timeout_s=0.1))]
+    fn set_homed_state(
+        &self,
+        mcu: u32,
+        queue: u32,
+        homed: bool,
+        timeout_s: f64,
+    ) -> PyResult<()> {
+        use kalico_host_rt::endstop;
+        let transport = RouterTransport::new(
+            Arc::clone(&self.router),
+            mcu_handle_from_raw(mcu),
+            cq_id_from_raw(queue),
+            Arc::clone(&self.parser),
+        );
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        endstop::set_homed_state_with_timeout(&transport, homed, timeout)
+            .map_err(|e| PyRuntimeError::new_err(format!("set_homed_state: {e}")))
+    }
+
     /// Submit a dwell: flush + advance print time.
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let planner_guard = self.planner.lock().unwrap();

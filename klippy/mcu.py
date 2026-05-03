@@ -431,9 +431,34 @@ class MCU_endstop:
         self._invert = pin_params["invert"]
         self._oid = self._mcu.create_oid()
         self._home_cmd = self._query_cmd = None
-        self._mcu.register_config_callback(self._build_config)
         self._rest_ticks = 0
-        self._dispatch = TriggerDispatch(mcu)
+        # Step 7-D: bridge-mode endstop uses BridgeTriggerDispatch instead of
+        # the legacy trsync-backed TriggerDispatch + endstop_home / config_endstop
+        # commands (spec §5.4). The legacy commands are not registered for
+        # bridge MCUs since the kalico firmware does not implement them.
+        self._use_bridge = (
+            hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
+        )
+        # Sensorless-DIAG opt-out flag, populated by extras/tmc.py via
+        # `homing_trip_immediately: True` config option (default False).
+        self._sensorless_trip_immediately = False
+        # Velocity-axis bitmask used when arm_policy=IgnoreUntilMoving for
+        # sensorless TMC sources. Default to XY for X/Y endstops; extras
+        # (e.g. Z stepper) override before home_start.
+        self._sensorless_velocity_axis = 0x03  # X | Y
+        self._sensorless_v_min_q16 = 0  # 0 = no lower-bound gate
+        if self._use_bridge:
+            from . import motion_bridge as _mb
+
+            bridge_wrapper = mcu._motion_bridge
+            mcu_handle = mcu._bridge_handle
+            queue = mcu.alloc_command_queue()
+            self._dispatch = _mb.BridgeTriggerDispatch(
+                bridge_wrapper, mcu_handle, queue, mcu.get_printer().get_reactor()
+            )
+        else:
+            self._mcu.register_config_callback(self._build_config)
+            self._dispatch = TriggerDispatch(mcu)
 
     def get_mcu(self):
         return self._mcu
@@ -478,6 +503,10 @@ class MCU_endstop:
             self._mcu.print_time_to_clock(print_time + rest_time) - clock
         )
         self._rest_ticks = rest_ticks
+        if self._use_bridge:
+            return self._home_start_bridge(
+                print_time, sample_count, triggered
+            )
         trigger_completion = self._dispatch.start(print_time)
         self._home_cmd.send(
             [
@@ -494,7 +523,55 @@ class MCU_endstop:
         )
         return trigger_completion
 
+    def _home_start_bridge(self, print_time, sample_count, triggered):
+        # Spec §5.3: map legacy params (sample_time / rest_time ignored —
+        # bridge samples at modulation rate; sample_count → sample_n;
+        # triggered=True → TripImmediately for physical, IgnoreUntilMoving
+        # for TmcDiag unless self._sensorless_trip_immediately).
+        from . import motion_bridge as _mb
+
+        # Resolve pin: extract a numeric GPIO index plus polarity. The
+        # bridge MCU's pin namespace numbers are firmware-side; for now
+        # the pin string carries them (e.g. "PA10" or a virtual TMC pin).
+        # We pass through the pin parsing the bridge already performs.
+        # SourceKind detection: if the pin string was registered via
+        # tmc.py's TMCVirtualPinHelper, the registry sets a TmcDiag flag
+        # on the MCU_endstop. For the MVP we infer kind from a flag set
+        # by tmc.py before home_start.
+        kind = 1 if getattr(self, "_is_sensorless_diag", False) else 0
+        # active_high corresponds to legacy `triggered ^ invert` evaluating
+        # to 1: under TripImmediately we want to trip when the asserted
+        # level appears, so active_high = (triggered != invert).
+        active_high = bool((1 if triggered else 0) ^ (1 if self._invert else 0))
+
+        if kind == 1 and triggered and not self._sensorless_trip_immediately:
+            policy = 2  # IgnoreUntilMoving
+        elif triggered:
+            policy = 0  # TripImmediately
+        else:
+            policy = 1  # WaitForClear
+
+        self._dispatch._sources = []
+        self._dispatch._stepper_oids = list(
+            stepper.get_oid() for stepper in self._dispatch._steppers
+        )
+        # GPIO numeric index: the bridge's pin table maps the firmware
+        # name string. For Step 6 MVP, we pass 0 and rely on tmc.py /
+        # caller to have populated _bridge_gpio_index on the endstop;
+        # if absent the firmware-side will reject. Tracked as Step-7
+        # follow-up: full pin-table integration with the bridge MCU.
+        gpio = int(getattr(self, "_bridge_gpio_index", 0))
+        sample_n = max(1, int(sample_count))
+        self._dispatch.add_source(
+            kind, gpio, active_high, policy, sample_n,
+            int(self._sensorless_velocity_axis),
+            int(self._sensorless_v_min_q16),
+        )
+        return self._dispatch.start(print_time, self._mcu)
+
     def home_wait(self, home_end_time):
+        if self._use_bridge:
+            return self._home_wait_bridge(home_end_time)
         self._dispatch.wait_end(home_end_time)
         self._home_cmd.send([self._oid, 0, 0, 0, 0, 0, 0, 0])
         res = self._dispatch.stop()
@@ -508,6 +585,50 @@ class MCU_endstop:
         params = self._query_cmd.send([self._oid])
         next_clock = self._mcu.clock32_to_clock64(params["next_clock"])
         return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
+
+    def _home_wait_bridge(self, home_end_time):
+        # Spec §5.3: bounded wait, then map terminal reason → return
+        # value. On REASON_ENDSTOP_HIT, take_trip_event from the bridge,
+        # apply per-stepper step counts via
+        # MCU_stepper.bridge_set_position_from_step_count, and return
+        # the trip print-time.
+        from . import motion_bridge as _mb
+
+        eventtime = self._mcu.get_printer().get_reactor().monotonic()
+        deadline = eventtime + max(
+            0.0, home_end_time - self._mcu.estimated_print_time(eventtime)
+        )
+        completion = self._dispatch._completion
+        result = completion.wait(waketime=deadline)
+        if result is None:
+            # Timeout — disarm and report past-end.
+            self._dispatch._reason = _mb.REASON_PAST_END_TIME
+            self._dispatch.stop()
+            return 0.0
+        reason = self._dispatch.stop()
+        if reason == _mb.REASON_COMMS_TIMEOUT:
+            cmderr = self._mcu.get_printer().command_error
+            raise cmderr("Communication timeout during homing")
+        if reason != _mb.REASON_ENDSTOP_HIT:
+            return 0.0
+        evt = self._dispatch.get_trip_event() or {}
+        for step in evt.get("steppers", []):
+            stepper_for = self._lookup_stepper_by_oid(int(step["oid"]))
+            if stepper_for is None:
+                continue
+            cnt = int(step["step_count"])
+            if hasattr(stepper_for, "bridge_set_position_from_step_count"):
+                stepper_for.bridge_set_position_from_step_count(cnt)
+        trip_clock = int(evt.get("trip_clock", 0))
+        if trip_clock == 0:
+            return 0.0
+        return self._mcu.clock_to_print_time(trip_clock)
+
+    def _lookup_stepper_by_oid(self, oid):
+        for stepper in self._dispatch._steppers:
+            if stepper.get_oid() == oid:
+                return stepper
+        return None
 
     def query_endstop(self, print_time):
         clock = self._mcu.print_time_to_clock(print_time)

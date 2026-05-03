@@ -175,3 +175,183 @@ class MotionBridgeWrapper:
 
     def dispatched_segment_count(self):
         return self._bridge.dispatched_segment_count()
+
+    # ------------------------------------------------------------------
+    # Step 7-D: endstop wire surface
+    # ------------------------------------------------------------------
+
+    def endstop_arm(self, mcu, queue, arm_id, arm_clock,
+                    sources, stepper_oids, timeout_s=0.1):
+        # `sources` is a list of 7-tuples per BridgeTriggerDispatch contract:
+        # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
+        return self._bridge.endstop_arm(
+            mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s
+        )
+
+    def endstop_disarm(self, mcu, queue, arm_id, timeout_s=0.1):
+        return self._bridge.endstop_disarm(mcu, queue, arm_id, timeout_s)
+
+    def set_homed_state(self, mcu, queue, homed, timeout_s=0.1):
+        return self._bridge.set_homed_state(mcu, queue, homed, timeout_s)
+
+    def submit_homing_move(self, newpos, speed, arm_ids):
+        return self._bridge.submit_homing_move(newpos, speed, arm_ids)
+
+    def take_trip_event(self):
+        return self._bridge.take_trip_event()
+
+
+# ----------------------------------------------------------------------
+# Step 7-D: BridgeTriggerDispatch
+# ----------------------------------------------------------------------
+#
+# Stand-in for klippy's legacy `TriggerDispatch` (klippy/mcu.py:336) when
+# `MCU_endstop._use_bridge=True`. Owns the arm_id, sources, stepper oids
+# associated with one homing operation, and bridges the (future) async
+# trip event back to a reactor completion. Spec §5.2.
+#
+# Reason codes match `MCU_trsync` at klippy/mcu.py:155–158 exactly so
+# downstream `homing.py` consumers don't see a behavior change.
+
+REASON_ENDSTOP_HIT = 1
+REASON_HOST_REQUEST = 2
+REASON_PAST_END_TIME = 3
+REASON_COMMS_TIMEOUT = 4
+
+ARM_STATUS_ARMED = 0
+ARM_STATUS_ALREADY_TRIPPED = 1
+ARM_STATUS_REJECTED = 2
+
+DISARM_STATUS_DISARMED = 0
+DISARM_STATUS_ALREADY_TRIPPED = 1
+DISARM_STATUS_UNKNOWN = 2
+
+
+_ARM_ID_COUNTER = [1]
+
+
+def _alloc_arm_id():
+    arm_id = _ARM_ID_COUNTER[0]
+    _ARM_ID_COUNTER[0] = (arm_id + 1) & 0xFFFFFFFF
+    if _ARM_ID_COUNTER[0] == 0:
+        _ARM_ID_COUNTER[0] = 1
+    return arm_id
+
+
+class BridgeTriggerDispatch:
+    """Bridge-mode replacement for `klippy/mcu.py:TriggerDispatch`.
+
+    Used by `MCU_endstop` when its underlying MCU is the kalico bridge.
+    Public surface mirrors the legacy `TriggerDispatch` so existing
+    `home_start` / `home_wait` callers don't change.
+    """
+
+    def __init__(self, bridge, mcu, queue, reactor):
+        # `bridge` is a MotionBridgeWrapper.
+        # `mcu` and `queue` are the host-side handles (u32) the bridge
+        # uses to address the right MCU command queue.
+        self._bridge = bridge
+        self._mcu = mcu
+        self._queue = queue
+        self._reactor = reactor
+        self._arm_id = _alloc_arm_id()
+        self._completion = reactor.completion()
+        self._sources = []          # list of (kind, gpio, active_high, policy,
+                                    #          sample_n, velocity_axis, v_min_q16)
+        self._stepper_oids = []
+        self._steppers = []         # list of MCU_stepper, retained for IK lookups
+        self._reason = None         # legacy-compatible reason code
+        self._trip_event = None     # decoded async event payload
+        self._handler_registered = False
+
+    # ── legacy TriggerDispatch surface ──────────────────────────────
+
+    def get_oid(self):
+        return self._arm_id
+
+    def get_command_queue(self):
+        return self._queue
+
+    def get_arm_id(self):
+        return self._arm_id
+
+    def add_stepper(self, mcu_stepper):
+        # MCU_stepper.get_oid() returns the per-MCU oid — exactly what
+        # the kalico_arm_endstop wire format expects (spec §3.1).
+        self._stepper_oids.append(mcu_stepper.get_oid())
+        self._steppers.append(mcu_stepper)
+
+    # ── new endstop-source binding ──────────────────────────────────
+
+    def add_source(self, kind, gpio, active_high, policy, sample_n,
+                   velocity_axis, v_min_q16):
+        self._sources.append((kind, gpio, active_high, policy, sample_n,
+                              velocity_axis, v_min_q16))
+
+    # ── start / wait / stop ─────────────────────────────────────────
+
+    def start(self, arm_print_time, mcu_obj):
+        # Convert print_time → MCU clock for arm_clock.
+        arm_clock = int(mcu_obj.print_time_to_clock(arm_print_time))
+
+        # Register an async handler for kalico_endstop_tripped before
+        # arming so we don't race the firmware emitting the event.
+        if not self._handler_registered:
+            mcu_obj.register_response(
+                self._on_trip_message, "kalico_endstop_tripped"
+            )
+            self._handler_registered = True
+
+        status = self._bridge.endstop_arm(
+            self._mcu, self._queue,
+            self._arm_id, arm_clock,
+            self._sources, self._stepper_oids,
+        )
+        if status == ARM_STATUS_ALREADY_TRIPPED:
+            # Pin asserted at arm time under TripImmediately. Treat as
+            # immediate trigger.
+            self._reason = REASON_ENDSTOP_HIT
+            self._completion.complete(self._reason)
+        elif status == ARM_STATUS_REJECTED:
+            raise self._reactor.printer.command_error(
+                "kalico_arm_endstop rejected (status=%d)" % status
+            )
+        return self._completion
+
+    def _on_trip_message(self, params):
+        # params is a dict-like emitted by klippy's reactor for the
+        # registered response. Filter on arm_id (multiple
+        # BridgeTriggerDispatch instances may live concurrently).
+        if int(params.get("arm_id", -1)) != self._arm_id:
+            return
+        if self._reason is not None:
+            # Already terminal (e.g., from arm-time AlreadyTripped).
+            return
+        # Decode the payload. The msgproto layer hands this as raw fields;
+        # we delegate detailed decoding to the bridge-side via
+        # take_trip_event(), which pulls the runtime-Rust TripEvent.
+        self._trip_event = self._bridge.take_trip_event()
+        self._reason = REASON_ENDSTOP_HIT
+        self._completion.complete(self._reason)
+
+    def stop(self):
+        # Called from MCU_endstop.home_wait. Disarm if no trip yet.
+        if self._reason is None:
+            try:
+                status = self._bridge.endstop_disarm(
+                    self._mcu, self._queue, self._arm_id
+                )
+            except Exception:
+                status = DISARM_STATUS_UNKNOWN
+            if status == DISARM_STATUS_DISARMED:
+                self._reason = REASON_HOST_REQUEST
+            else:
+                # AlreadyTripped on race — wait briefly for the async
+                # event to land.
+                self._reason = REASON_ENDSTOP_HIT
+            if not self._completion.test():
+                self._completion.complete(self._reason)
+        return self._reason
+
+    def get_trip_event(self):
+        return self._trip_event
