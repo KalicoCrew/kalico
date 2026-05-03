@@ -263,6 +263,7 @@ class BridgeTriggerDispatch:
         self._reason = None         # legacy-compatible reason code
         self._trip_event = None     # decoded async event payload
         self._handler_registered = False
+        self._toolhead_arms = None  # set at start() for stop() cleanup
 
     # ── legacy TriggerDispatch surface ──────────────────────────────
 
@@ -302,6 +303,15 @@ class BridgeTriggerDispatch:
             )
             self._handler_registered = True
 
+        # Step 7-D §6.2: register arm_id with motion_toolhead so its
+        # drip_move can pass the right arm_ids set to
+        # bridge.submit_homing_move.
+        printer = mcu_obj.get_printer()
+        toolhead = printer.lookup_object("toolhead", None)
+        if toolhead is not None and hasattr(toolhead, "active_homing_arms"):
+            self._toolhead_arms = toolhead.active_homing_arms
+            self._toolhead_arms.add(self._arm_id)
+
         status = self._bridge.endstop_arm(
             self._mcu, self._queue,
             self._arm_id, arm_clock,
@@ -313,7 +323,7 @@ class BridgeTriggerDispatch:
             self._reason = REASON_ENDSTOP_HIT
             self._completion.complete(self._reason)
         elif status == ARM_STATUS_REJECTED:
-            raise self._reactor.printer.command_error(
+            raise printer.command_error(
                 "kalico_arm_endstop rejected (status=%d)" % status
             )
         return self._completion
@@ -351,6 +361,12 @@ class BridgeTriggerDispatch:
                 self._reason = REASON_ENDSTOP_HIT
             if not self._completion.test():
                 self._completion.complete(self._reason)
+        # Unregister from the toolhead's active-arms registry. start()
+        # cached the set reference; this keeps drip_move from passing a
+        # stale arm_id on a subsequent unrelated move.
+        if self._toolhead_arms is not None:
+            self._toolhead_arms.discard(self._arm_id)
+            self._toolhead_arms = None
         return self._reason
 
     def get_trip_event(self):

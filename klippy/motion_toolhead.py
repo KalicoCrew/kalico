@@ -90,6 +90,13 @@ class MotionToolhead:
         # Phase 2: motion bridge handle (Rust planner pipeline).
         self.bridge = self.printer.lookup_object("motion_bridge", None)
 
+        # Step 7-D §6.2: printer-side active homing-arm registry.
+        # BridgeTriggerDispatch.start/stop register/unregister their
+        # arm_id with us; drip_move reads the set when submitting a
+        # homing-tagged segment so the bridge runtime watches the right
+        # arms during ISR ticks.
+        self.active_homing_arms = set()
+
         # Position tracking
         self.commanded_pos = [0.0, 0.0, 0.0, 0.0]
 
@@ -218,10 +225,29 @@ class MotionToolhead:
             self.bridge.wait_moves()
 
     def drip_move(self, newpos, speed, drip_completion):
-        # Phase 2: drip moves (homing) bypass the planner queue. Until the
-        # bridge exposes a dedicated drip API, fall back to a normal move so
-        # bring-up doesn't crash.
-        self.move(newpos, speed)
+        # Step 7-D §6.2: collapse to bridge-aware single-segment homing.
+        # Endstops were armed upstream by homing.py via
+        # mcu_endstop.home_start; each BridgeTriggerDispatch.start
+        # registered its arm_id with self.active_homing_arms. Submit one
+        # homing-tagged segment; on trip the runtime ISR aborts and
+        # freezes the curve evaluator. wait_moves() returns when the
+        # segment retires (Completed or Tripped). commanded_pos
+        # reconciliation happens in MCU_endstop.home_wait via the trip
+        # snapshot, not here.
+        if self.bridge is None:
+            return
+        arm_ids = list(self.active_homing_arms)
+        if not arm_ids:
+            # No bridge endstops armed (e.g. file-output simulation, or
+            # legacy code path). Fall back to a regular move so bring-up
+            # doesn't crash.
+            self.move(newpos, speed)
+            return
+        # Pad / truncate to 3 axes for the bridge submit_homing_move
+        # signature (newpos[:3]); E follows shaped XY per MVP.
+        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
+        self.bridge.submit_homing_move(pos3, speed, arm_ids)
+        self.bridge.wait_moves()
 
     # ------------------------------------------------------------------
     # Extruder
