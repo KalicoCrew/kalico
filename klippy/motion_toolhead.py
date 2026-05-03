@@ -55,7 +55,21 @@ class BridgeKinematics:
         pass
 
     def get_status(self, eventtime):
-        return {"homed_axes": ""}
+        from . import gcode as gcode_mod
+
+        ranges = {}
+        for rail in self.rails:
+            name = rail.get_name(short=True)
+            if name and name[0] in "xyz":
+                ranges[name[0]] = (rail.position_min, rail.position_max)
+        x_min, x_max = ranges.get("x", (0.0, 0.0))
+        y_min, y_max = ranges.get("y", (0.0, 0.0))
+        z_min, z_max = ranges.get("z", (0.0, 0.0))
+        return {
+            "homed_axes": "",
+            "axis_minimum": gcode_mod.Coord(x_min, y_min, z_min, 0.0),
+            "axis_maximum": gcode_mod.Coord(x_max, y_max, z_max, 0.0),
+        }
 
 
 class MotionToolhead:
