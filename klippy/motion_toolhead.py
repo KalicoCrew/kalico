@@ -205,6 +205,7 @@ class MotionToolhead:
             "manual_probe",
             "tuning_tower",
             "garbage_collection",
+            "homing",  # registers G28 — mainline klipper loads this from toolhead.py
         ]:
             self.printer.load_object(config, module_name)
 
