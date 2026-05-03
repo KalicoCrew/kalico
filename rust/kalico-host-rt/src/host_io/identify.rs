@@ -46,8 +46,15 @@ pub fn identify_handshake(
 
     loop {
         // Encode `identify offset=N count=40` by hand (no dict yet).
+        // Hardcoded msgids per klippy/msgproto.py:11-12 and the firmware's
+        // baked-in command table:
+        //   identify offset=%u count=%c           → msgid 1 (host→fw)
+        //   identify_response offset=%u data=%.*s → msgid 0 (fw→host)
+        // (Easy to flip — and a previous version of this code did, leading
+        // to silent identify timeouts because the firmware never sees a
+        // valid command id.)
         let mut payload = Vec::with_capacity(16);
-        payload.push(0u8); // msgid=0 → identify
+        payload.push(1u8); // msgid=1 → identify request
         encode_vlq(&mut payload, identify_data.len() as i64)
             .expect("identify offset is u32-range");
         encode_vlq(&mut payload, i64::from(IDENTIFY_CHUNK))

@@ -566,6 +566,7 @@ dependencies = [
  "arc-swap",
  "flate2",
  "indexmap",
+ "libc",
  "log",
  "nurbs",
  "proptest",

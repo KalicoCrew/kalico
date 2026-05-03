@@ -72,8 +72,16 @@ gpio_out_setup(uint32_t pin, uint8_t val)
     line->offset = GPIO2PIN(pin);
     line->chipid = GPIO2PORT(pin);
     struct gpio_out g = { .line = line };
+#if CONFIG_KALICO_SIM
+    // Sim build: no /dev/gpiochip available (e.g. Docker on macOS).
+    // Skip the kernel ioctls and just track state in memory.
+    line->fd = -1;
+    line->state = !!val;
+    return g;
+#else
     gpio_out_reset(g,val);
     return g;
+#endif
 }
 
 static void
@@ -88,6 +96,10 @@ gpio_release_line(struct gpio_line *line)
 void
 gpio_out_reset(struct gpio_out g, uint8_t val)
 {
+#if CONFIG_KALICO_SIM
+    g.line->state = !!val;
+    return;
+#else
     gpio_release_line(g.line);
     struct gpiohandle_request req;
     memset(&req, 0, sizeof(req));
@@ -105,16 +117,22 @@ gpio_out_reset(struct gpio_out g, uint8_t val)
     set_close_on_exec(req.fd);
     g.line->fd = req.fd;
     g.line->state = !!val;
+#endif
 }
 
 void
 gpio_out_write(struct gpio_out g, uint8_t val)
 {
+#if CONFIG_KALICO_SIM
+    g.line->state = !!val;
+    return;
+#else
     struct gpiohandle_data data;
     memset(&data, 0, sizeof(data));
     data.values[0] = !!val;
     ioctl(g.line->fd, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
     g.line->state = !!val;
+#endif
 }
 
 void
@@ -136,13 +154,23 @@ gpio_in_setup(uint32_t pin, int8_t pull_up)
     line->offset = GPIO2PIN(pin);
     line->chipid = GPIO2PORT(pin);
     struct gpio_in g = { .line = line };
+#if CONFIG_KALICO_SIM
+    line->fd = -1;
+    line->state = pull_up > 0 ? 1 : 0;
+    return g;
+#else
     gpio_in_reset(g, pull_up);
     return g;
+#endif
 }
 
 void
 gpio_in_reset(struct gpio_in g, int8_t pull_up)
 {
+#if CONFIG_KALICO_SIM
+    g.line->state = pull_up > 0 ? 1 : 0;
+    return;
+#else
     gpio_release_line(g.line);
     struct gpiohandle_request req;
     memset(&req, 0, sizeof(req));
@@ -165,13 +193,18 @@ gpio_in_reset(struct gpio_in g, int8_t pull_up)
     }
     set_close_on_exec(req.fd);
     g.line->fd = req.fd;
+#endif
 }
 
 uint8_t
 gpio_in_read(struct gpio_in g)
 {
+#if CONFIG_KALICO_SIM
+    return g.line->state;
+#else
     struct gpiohandle_data data;
     memset(&data, 0, sizeof(data));
     ioctl(g.line->fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data);
     return data.values[0];
+#endif
 }

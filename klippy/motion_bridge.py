@@ -332,11 +332,16 @@ class BridgeTriggerDispatch:
             self._toolhead_arms = toolhead.active_homing_arms
             self._toolhead_arms.add(self._arm_id)
 
+        logging.info(
+            "[bridge-trace] endstop_arm arm_id=%s sources=%s steppers=%s",
+            self._arm_id, self._sources, self._stepper_oids,
+        )
         status = self._bridge.endstop_arm(
             self._mcu, self._queue,
             self._arm_id, arm_clock,
             self._sources, self._stepper_oids,
         )
+        logging.info("[bridge-trace] endstop_arm status=%s", status)
         if status == ARM_STATUS_ALREADY_TRIPPED:
             # Pin asserted at arm time under TripImmediately. Treat as
             # immediate trigger.

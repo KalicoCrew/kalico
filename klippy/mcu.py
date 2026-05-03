@@ -439,6 +439,12 @@ class MCU_endstop:
         self._use_bridge = (
             hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
         )
+        logging.info(
+            "[bridge-trace] MCU_endstop pin=%s _motion_bridge=%s _use_bridge=%s",
+            pin_params.get("pin"),
+            getattr(mcu, "_motion_bridge", "missing"),
+            self._use_bridge,
+        )
         # Sensorless-DIAG opt-out flag, populated by extras/tmc.py via
         # `homing_trip_immediately: True` config option (default False).
         self._sensorless_trip_immediately = False

@@ -33,3 +33,11 @@ scripts/fitter_prototype/corpus_results/
 # claude-code session-local runtime state (lock file holds session pid +
 # acquired-at; the rest of .claude/ — plugins, skills, settings — IS tracked)
 .claude/scheduled_tasks.lock
+
+# Built artifacts (motion-bridge .so, chelper .so) — built per-platform,
+# never checked in. Keep klippy/ clean across macOS/Linux/Pi dev.
+klippy/motion_bridge*.so
+klippy/motion_bridge*.dylib
+klippy/chelper/c_helper.so
+klippy/chelper/c_helper.so.dSYM/
+klippy/chelper/*.dylib
