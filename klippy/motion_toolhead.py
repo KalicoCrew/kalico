@@ -23,19 +23,27 @@ class BridgeKinematics:
         if kin_name in ("cartesian", "hybrid_corexy"):
             axes = "xyz"
         for axis in axes:
-            rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
-            extra_name = "stepper_" + axis + "1"
+            self._register_axis(config, axis, trapq, extras=("1",))
+        # corexy bridge does not drive Z, but a stable Klipper printer.cfg may
+        # still declare [stepper_z]/[stepper_z1..3]. Consume them as passthrough
+        # rails so option validation passes; runtime ignores them.
+        if kin_name == "corexy" and config.has_section("stepper_z"):
+            self._register_axis(
+                config, "z", trapq, extras=("1", "2", "3")
+            )
+
+    def _register_axis(self, config, axis, trapq, extras=()):
+        rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
+        for suffix in extras:
+            extra_name = "stepper_" + axis + suffix
             if config.has_section(extra_name):
                 rail.add_extra_stepper(config.getsection(extra_name))
-            # Bridge owns motion; each stepper still needs a stepper_kinematics
-            # handle so set_trapq() / standard klippy plumbing doesn't crash.
-            # Plain cartesian itersolve is fine — bridge bypasses it at runtime.
-            for mcu_stepper in rail.get_steppers():
-                mcu_stepper.setup_itersolve(
-                    "cartesian_stepper_alloc", axis.encode()
-                )
-                mcu_stepper.set_trapq(trapq)
-            self.rails.append(rail)
+        for mcu_stepper in rail.get_steppers():
+            mcu_stepper.setup_itersolve(
+                "cartesian_stepper_alloc", axis.encode()
+            )
+            mcu_stepper.set_trapq(trapq)
+        self.rails.append(rail)
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
