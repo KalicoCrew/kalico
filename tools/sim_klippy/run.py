@@ -20,9 +20,19 @@ import subprocess
 import sys
 import time
 
-REPO = pathlib.Path.home() / "klipper-sim" / "repo"
-LOGDIR = pathlib.Path.home() / "klipper-sim" / "logs"
-RUNDIR = pathlib.Path.home() / "klipper-sim" / "run"
+# Repo root: env override → script dir's grandparent → ~/klipper-sim/repo
+# Lets the same script work both inside the Docker container (where the
+# repo is mounted at /work) and on a Pi with the original layout.
+_DEFAULT_REPO = (
+    pathlib.Path(os.environ.get("KALICO_REPO"))
+    if os.environ.get("KALICO_REPO")
+    else pathlib.Path(__file__).resolve().parents[2]
+)
+REPO = _DEFAULT_REPO
+LOGDIR = pathlib.Path(
+    os.environ.get("KALICO_SIM_LOGDIR", str(REPO / "tools" / "sim_klippy" / ".local-logs"))
+)
+RUNDIR = LOGDIR / "run"
 KLIPPER_ELF = REPO / "out" / "klipper.elf"
 PRINTER_CFG = REPO / "tools" / "sim_klippy" / "printer.cfg"
 SIM_SOCKET = "/tmp/klipper_sim_socket"
@@ -78,9 +88,11 @@ def spawn_elf():
 def spawn_klippy():
     env = os.environ.copy()
     # Run klippy from the sim repo so it picks up our motion_toolhead etc.
+    # Prefer ~/klippy-env (Pi); fall back to system python3 (Docker etc.).
     klippy_python = pathlib.Path.home() / "klippy-env" / "bin" / "python"
     if not klippy_python.exists():
-        klippy_python = pathlib.Path("python3")
+        import shutil
+        klippy_python = pathlib.Path(shutil.which("python3") or "python3")
     proc = subprocess.Popen(
         [
             str(klippy_python),
