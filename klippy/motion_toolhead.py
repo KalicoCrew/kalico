@@ -54,6 +54,35 @@ class BridgeKinematics:
     def check_move(self, move):
         pass
 
+    def home(self, homing_state):
+        # Map rails by primary axis name (rail name starts with x/y/z).
+        # Rails were registered in axis order in __init__, but corexy
+        # users sometimes have only x/y; locate by name to be robust.
+        axis_rails = {}
+        for rail in self.rails:
+            name = rail.get_name(short=True) or ""
+            if name and name[0] in "xyz":
+                idx = "xyz".index(name[0])
+                axis_rails[idx] = rail
+        for axis in homing_state.get_axes():
+            rail = axis_rails.get(axis)
+            if rail is None:
+                continue
+            position_min, position_max = rail.get_range()
+            hi = rail.get_homing_info()
+            homepos = [None, None, None, None]
+            homepos[axis] = hi.position_endstop
+            forcepos = list(homepos)
+            if hi.positive_dir:
+                forcepos[axis] -= 1.5 * (
+                    hi.position_endstop - position_min
+                )
+            else:
+                forcepos[axis] += 1.5 * (
+                    position_max - hi.position_endstop
+                )
+            homing_state.home_rails([rail], forcepos, homepos)
+
     def get_status(self, eventtime):
         from . import gcode as gcode_mod
 
