@@ -3,6 +3,8 @@
 use nurbs::bezier::BezierPiece;
 use nurbs::ScalarNurbs;
 
+const HERMITE_REFIT_MAX_SUBDIVISIONS: usize = 8;
+
 /// Result of Stage 2: per-axis fitted trajectories in the time domain.
 #[derive(Debug, Clone)]
 pub struct FittedSegment {
@@ -27,7 +29,6 @@ pub fn fit_and_split(
     composed: &[[BezierPiece<f64>; 3]],
     tolerance: f64,
 ) -> Result<FittedSegment, crate::ShapeError> {
-    use nurbs::algebra::fit_hermite_c1;
     use nurbs::bezier::bezier_pieces_to_nurbs;
 
     if composed.is_empty() {
@@ -39,11 +40,12 @@ pub fn fit_and_split(
 
     // Stage 2c: C1 Hermite refit — merge adjacent pieces into fewer degree-4
     // pieces while maintaining C1 continuity and L-inf error <= tolerance.
-    let fitted =
-        fit_hermite_c1::<3>(composed, tolerance, 4).map_err(|e| crate::ShapeError::FitFailure {
+    let fitted = fit_hermite_c1_adaptive(composed, tolerance, 4).map_err(|e| {
+        crate::ShapeError::FitFailure {
             index: 0,
             detail: e,
-        })?;
+        }
+    })?;
 
     // Stage 2d: convert per-axis Vec<BezierPiece> to ScalarNurbs.
     let axes = [
@@ -57,6 +59,66 @@ pub fn fit_and_split(
         t_start,
         t_end,
     })
+}
+
+fn fit_hermite_c1_adaptive(
+    composed: &[[BezierPiece<f64>; 3]],
+    tolerance: f64,
+    target_degree: u8,
+) -> Result<[Vec<BezierPiece<f64>>; 3], nurbs::algebra::FitError> {
+    use nurbs::algebra::{fit_hermite_c1, FitError};
+
+    let mut refined = composed.to_vec();
+
+    for depth in 0..=HERMITE_REFIT_MAX_SUBDIVISIONS {
+        match fit_hermite_c1::<3>(&refined, tolerance, target_degree) {
+            Ok(fitted) => return Ok(fitted),
+            Err(err @ FitError::ToleranceNotReached { .. }) => {
+                if depth == HERMITE_REFIT_MAX_SUBDIVISIONS {
+                    return Err(err);
+                }
+                refined = split_composed_midpoints(&refined)?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("bounded Hermite refit loop always returns before exhausting range")
+}
+
+fn split_composed_midpoints(
+    composed: &[[BezierPiece<f64>; 3]],
+) -> Result<Vec<[BezierPiece<f64>; 3]>, nurbs::algebra::FitError> {
+    use nurbs::algebra::FitError;
+    use nurbs::bezier::split_piece_at;
+
+    let mut refined = Vec::with_capacity(composed.len() * 2);
+
+    for piece_set in composed {
+        let u_start = piece_set[0].u_start;
+        let u_end = piece_set[0].u_end;
+        let u_mid = 0.5 * (u_start + u_end);
+
+        if !u_mid.is_finite() || u_mid <= u_start || u_mid >= u_end {
+            return Err(FitError::DegenerateInput {
+                reason: "fit_and_split: cannot split degenerate Hermite input piece",
+            });
+        }
+
+        let left: [BezierPiece<f64>; 3] = std::array::from_fn(|axis| {
+            let (left, _) = split_piece_at(&piece_set[axis], u_mid);
+            left
+        });
+        let right: [BezierPiece<f64>; 3] = std::array::from_fn(|axis| {
+            let (_, right) = split_piece_at(&piece_set[axis], u_mid);
+            right
+        });
+
+        refined.push(left);
+        refined.push(right);
+    }
+
+    Ok(refined)
 }
 
 /// Convert composed pieces directly to per-axis `ScalarNurbs` WITHOUT the
@@ -194,9 +256,7 @@ mod tests {
                 },
             ],
         ];
-        // Use a tolerance that accommodates the Hermite refit error for
-        // these small quadratic pieces (achieved ~0.016 mm on the quadratic piece).
-        let result = fit_and_split(&composed, 0.02).unwrap();
+        let result = fit_and_split(&composed, 0.005).unwrap();
 
         // X at t=0 should be 0, at t=2 should be 1.5.
         let x_pieces = nurbs::bezier::extract_bezier_pieces(&result.axes[0]);

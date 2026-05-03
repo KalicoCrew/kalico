@@ -114,6 +114,53 @@ fn shape_batch_straight_line() {
     }
 }
 
+#[test]
+fn shape_batch_short_low_velocity_line_refits_at_five_microns() {
+    let curve = make_straight_line([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
+    let limits = temporal::Limits::new(
+        [1000.0 / 60.0, 500.0, 500.0],
+        [5_000.0; 3],
+        [100_000.0; 3],
+        2_500.0,
+    );
+
+    let segments = [ShapeSegmentInput {
+        temporal: SegmentInput {
+            curve: &curve,
+            limits,
+            trailing_junction_chord_tolerance_mm: 0.05,
+        },
+        e_mode: EMode::Travel,
+        extrusion_per_xy_mm: 0.0,
+        e_independent: None,
+        feedrate_mm_s: 1000.0 / 60.0,
+    }];
+
+    let input = ShapeBatchInput {
+        segments: &segments,
+        grid_strategy: GridStrategy::Fixed(25),
+        worker_threads: 1,
+        shaper: ShaperConfig {
+            x: RequiredShaper::SmoothZv { frequency_hz: 50.0 },
+            y: RequiredShaper::SmoothZv { frequency_hz: 50.0 },
+            z: AxisShaper::Passthrough,
+        },
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 3,
+        beta_convergence_ratio: 1.02,
+        e_limits: default_e_limits(),
+    };
+
+    let output = trajectory::shape_batch(&input)
+        .expect("10 mm G1-style move at F1000 should refit within 5 um");
+
+    assert_eq!(output.segments.len(), 1);
+    let seg = &output.segments[0];
+    assert!(seg.t_end > seg.t_start);
+    assert!(seg.t_start.abs() < 1e-12);
+    assert!(seg.t_end.is_finite());
+}
+
 // ---------------------------------------------------------------------------
 // Test 2: Two contiguous segments
 // ---------------------------------------------------------------------------

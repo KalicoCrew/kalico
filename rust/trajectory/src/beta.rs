@@ -190,7 +190,8 @@ pub fn beta_loop(
                     break;
                 }
             };
-            let final_derate = compute_derate(&final_result.peaks, &machine_a_max, &final_result.fitted);
+            let final_derate =
+                compute_derate(&final_result.peaks, &machine_a_max, &final_result.fitted);
             beta_warning = Some(BetaWarning {
                 worst_ratio: final_derate.worst_ratio,
                 segments_exceeding: final_derate.exceeding_indices.clone(),
@@ -999,7 +1000,11 @@ mod tests {
             }])
         };
         let fitted = vec![crate::fit::FittedSegment {
-            axes: [make_axis(0.0, 100.0), make_axis(0.0, 100.0), make_axis(0.0, 100.0)],
+            axes: [
+                make_axis(0.0, 100.0),
+                make_axis(0.0, 100.0),
+                make_axis(0.0, 100.0),
+            ],
             t_start: 0.0,
             t_end: 1.0,
         }];
