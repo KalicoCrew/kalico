@@ -31,6 +31,7 @@ pub trait Float:
     fn abs(self) -> Self;
     fn min(self, other: Self) -> Self;
     fn max(self, other: Self) -> Self;
+    fn total_cmp(self, other: Self) -> core::cmp::Ordering;
 }
 
 impl Float for f32 {
@@ -91,6 +92,11 @@ impl Float for f32 {
     fn max(self, other: Self) -> Self {
         if self > other { self } else { other }
     }
+
+    #[inline]
+    fn total_cmp(self, other: Self) -> core::cmp::Ordering {
+        f32::total_cmp(&self, &other)
+    }
 }
 
 #[cfg(feature = "f64")]
@@ -126,6 +132,11 @@ impl Float for f64 {
     #[inline]
     fn max(self, other: Self) -> Self {
         if self > other { self } else { other }
+    }
+
+    #[inline]
+    fn total_cmp(self, other: Self) -> core::cmp::Ordering {
+        f64::total_cmp(&self, &other)
     }
 }
 

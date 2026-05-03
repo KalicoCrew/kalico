@@ -4,6 +4,7 @@ use nurbs::bezier::BezierPiece;
 use nurbs::ScalarNurbs;
 
 const HERMITE_REFIT_MAX_SUBDIVISIONS: usize = 8;
+const MIN_HERMITE_PIECE_DURATION: f64 = 1e-12;
 
 /// Result of Stage 2: per-axis fitted trajectories in the time domain.
 #[derive(Debug, Clone)]
@@ -38,9 +39,11 @@ pub fn fit_and_split(
     let t_start = composed[0][0].u_start;
     let t_end = composed.last().unwrap()[0].u_end;
 
+    let fit_input = nondegenerate_composed_pieces(composed)?;
+
     // Stage 2c: C1 Hermite refit — merge adjacent pieces into fewer degree-4
     // pieces while maintaining C1 continuity and L-inf error <= tolerance.
-    let fitted = fit_hermite_c1_adaptive(composed, tolerance, 4).map_err(|e| {
+    let fitted = fit_hermite_c1_adaptive(&fit_input, tolerance, 4).map_err(|e| {
         crate::ShapeError::FitFailure {
             index: 0,
             detail: e,
@@ -59,6 +62,30 @@ pub fn fit_and_split(
         t_start,
         t_end,
     })
+}
+
+fn nondegenerate_composed_pieces(
+    composed: &[[BezierPiece<f64>; 3]],
+) -> Result<Vec<[BezierPiece<f64>; 3]>, crate::ShapeError> {
+    let filtered: Vec<[BezierPiece<f64>; 3]> = composed
+        .iter()
+        .filter(|piece_set| {
+            let duration = piece_set[0].u_end - piece_set[0].u_start;
+            duration.is_finite() && duration > MIN_HERMITE_PIECE_DURATION
+        })
+        .cloned()
+        .collect();
+
+    if filtered.is_empty() {
+        return Err(crate::ShapeError::FitFailure {
+            index: 0,
+            detail: nurbs::algebra::FitError::DegenerateInput {
+                reason: "fit_and_split: no non-degenerate Hermite input pieces",
+            },
+        });
+    }
+
+    Ok(filtered)
 }
 
 fn fit_hermite_c1_adaptive(
@@ -97,6 +124,13 @@ fn split_composed_midpoints(
     for piece_set in composed {
         let u_start = piece_set[0].u_start;
         let u_end = piece_set[0].u_end;
+        let duration = u_end - u_start;
+
+        if !duration.is_finite() || duration <= MIN_HERMITE_PIECE_DURATION {
+            refined.push(piece_set.clone());
+            continue;
+        }
+
         let u_mid = 0.5 * (u_start + u_end);
 
         if !u_mid.is_finite() || u_mid <= u_start || u_mid >= u_end {
@@ -212,6 +246,59 @@ mod tests {
     fn fit_and_split_empty_returns_error() {
         let result = fit_and_split(&[], 0.005);
         assert!(matches!(result, Err(crate::ShapeError::EmptySegments)));
+    }
+
+    #[test]
+    fn fit_and_split_drops_zero_duration_input_piece() {
+        let composed: Vec<[BezierPiece<f64>; 3]> = vec![
+            [
+                BezierPiece {
+                    u_start: 0.0,
+                    u_end: 0.0,
+                    coeffs: vec![0.0],
+                },
+                BezierPiece {
+                    u_start: 0.0,
+                    u_end: 0.0,
+                    coeffs: vec![0.0],
+                },
+                BezierPiece {
+                    u_start: 0.0,
+                    u_end: 0.0,
+                    coeffs: vec![0.0],
+                },
+            ],
+            [
+                BezierPiece {
+                    u_start: 0.0,
+                    u_end: 1.0,
+                    coeffs: vec![0.0, 1.0],
+                },
+                BezierPiece {
+                    u_start: 0.0,
+                    u_end: 1.0,
+                    coeffs: vec![0.0],
+                },
+                BezierPiece {
+                    u_start: 0.0,
+                    u_end: 1.0,
+                    coeffs: vec![0.0],
+                },
+            ],
+        ];
+
+        let result = fit_and_split(&composed, 0.005).unwrap();
+        assert_eq!(result.t_start, 0.0);
+        assert_eq!(result.t_end, 1.0);
+
+        for axis in &result.axes {
+            for piece in nurbs::bezier::extract_bezier_pieces(axis) {
+                assert!(piece.u_start.is_finite());
+                assert!(piece.u_end.is_finite());
+                assert!(piece.u_end > piece.u_start);
+                assert!(piece.coeffs.iter().all(|c| c.is_finite()));
+            }
+        }
     }
 
     #[test]

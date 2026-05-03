@@ -960,7 +960,7 @@ fn union_breakpoints<T: Float>(
         push_unique(piece.u_start, &mut breaks);
         push_unique(piece.u_end, &mut breaks);
     }
-    breaks.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    breaks.sort_by(|x, y| T::total_cmp(*x, *y));
     breaks
 }
 
@@ -979,7 +979,7 @@ fn refine_pieces_to_breakpoints<T: Float>(
             .filter(|&&b| b > current.u_start && b < current.u_end)
             .copied()
             .collect();
-        interior.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        interior.sort_by(|x, y| T::total_cmp(*x, *y));
         for u in interior {
             let (left, right) = crate::bezier::split_piece_at(&current, u);
             result.push(left);
@@ -1041,7 +1041,7 @@ pub fn convolve<T: Float>(
             }
         }
     }
-    out_breaks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    out_breaks.sort_by(|a, b| T::total_cmp(*a, *b));
 
     let degree = x_pieces[0].degree() + w_pieces[0].degree() + 1;
 
@@ -1446,6 +1446,13 @@ mod tests {
 
         let val = eval(&y.as_view(), 0.5);
         assert!((val - 0.25).abs() < 1e-10, "y(0.5) = {val}, expected 0.25");
+    }
+
+    #[test]
+    fn breakpoint_sort_handles_nan_without_panicking() {
+        let mut out_breaks = vec![0.0_f64, f64::NAN, 1.0];
+        out_breaks.sort_by(|a, b| <f64 as crate::Float>::total_cmp(*a, *b));
+        assert_eq!(out_breaks.len(), 3);
     }
 
     #[test]
