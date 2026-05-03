@@ -499,13 +499,13 @@ class MotionToolhead:
         if is_obj is not None:
             try:
                 shapers = is_obj.get_shapers()
-                for s in shapers:
+                for s in shapers or ():
                     if s.axis == "x":
-                        shaper_type_x = s.shaper_type
-                        shaper_freq_x = s.shaper_freq
+                        shaper_type_x = s.params.shaper_type
+                        shaper_freq_x = s.params.shaper_freq
                     elif s.axis == "y":
-                        shaper_type_y = s.shaper_type
-                        shaper_freq_y = s.shaper_freq
+                        shaper_type_y = s.params.shaper_type
+                        shaper_freq_y = s.params.shaper_freq
             except Exception:
                 logging.exception(
                     "MotionToolhead: failed to read input_shaper params"
