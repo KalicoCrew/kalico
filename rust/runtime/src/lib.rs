@@ -18,6 +18,7 @@
 pub mod clock;
 pub mod config;
 pub mod curve_pool;
+pub mod endstop;
 pub mod engine;
 pub mod error;
 pub mod kinematics;
