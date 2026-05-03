@@ -1357,23 +1357,17 @@ pub mod exports {
         1
     }
 
-    /// Sim-only scaffold (Step 7-D §10 Renode end-to-end test).
+    /// Push a sampled GPIO level into the runtime's abstract pin table.
     ///
     /// The runtime's endstop module reads pin levels from an internal
     /// `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
-    /// endstop.rs:311). Production firmware will eventually wire real MCU
-    /// GPIO sampling into `endstop::set_pin_level` per modulation tick;
-    /// that wiring is a separate workstream not yet landed (Step-1 commit
-    /// e5026de05 message: "set_pin_level() abstraction stub for the
-    /// Step-2 ISR integration to wire in real GPIO reads").
-    ///
-    /// Until that lands, the Renode e2e test (tools/test_renode_endstop_e2e
-    /// .py) cannot trigger trips by driving real PC13 — it must directly
-    /// poke the runtime-side abstract pin table. This shim exposes
-    /// `endstop::set_pin_level` over the C ABI, gated behind
-    /// `feature = "kalico-sim"` (mirrors `kalico_runtime_load_fixture`).
-    /// NEVER include in production firmware.
-    #[cfg(feature = "kalico-sim")]
+    /// endstop.rs:311). The C ISR shim samples real GPIOs via
+    /// `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
+    /// src/stm32/kalico_h7_timer.c, just before `kalico_runtime_tick`)
+    /// and pushes each result through this FFI before `endstop::tick`
+    /// observes it. Sim builds (Renode e2e at
+    /// tools/test_renode_endstop_e2e.py) call the same FFI directly via
+    /// the `command_kalico_sim_endstop_set_pin` shim, bypassing real GPIO.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_endstop_set_pin_level(gpio: u16, level: u8) -> i32 {
         if runtime::endstop::set_pin_level(gpio, level != 0) {

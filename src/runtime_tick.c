@@ -551,6 +551,69 @@ DECL_COMMAND(command_kalico_set_homed_state, "kalico_set_homed_state homed=%c");
 
 // ---- Step 7-D: endstop arm/disarm/tripped wire surface --------------------
 
+// Step 7.5 — Production GPIO sampler. The runtime endstop module reads pin
+// levels from an internal abstract pin table (rust/runtime/src/endstop.rs's
+// PIN_LEVELS). To trip on real hardware we sample the configured GPIOs from
+// the modulation ISR (TIM5_IRQHandler) once per tick and push the result
+// through `kalico_endstop_set_pin_level` before `kalico_runtime_tick`
+// observes the table. The active set is populated when an arm succeeds and
+// cleared on disarm. Slot count must match runtime::endstop::MAX_SOURCES.
+#define KALICO_ENDSTOP_MAX_SOURCES 4
+#define KALICO_ENDSTOP_SOURCE_RECORD_LEN 11
+struct endstop_pin_slot {
+    uint8_t        active;     // 0 = empty, non-zero = sampled each tick
+    uint16_t       gpio_id;    // mirrored into runtime PIN_LEVELS index
+    struct gpio_in pin;
+};
+static struct endstop_pin_slot endstop_pin_table[KALICO_ENDSTOP_MAX_SOURCES];
+
+extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
+
+// Called from TIM5_IRQHandler immediately before kalico_runtime_tick.
+// Hot path: at most KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
+void
+kalico_endstop_sample_pins(void)
+{
+    for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++) {
+        if (!endstop_pin_table[i].active)
+            continue;
+        uint8_t level = gpio_in_read(endstop_pin_table[i].pin);
+        (void)kalico_endstop_set_pin_level(endstop_pin_table[i].gpio_id, level);
+    }
+}
+
+static void
+endstop_pin_table_clear(void)
+{
+    for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++)
+        endstop_pin_table[i].active = 0;
+}
+
+// Populate the sampler table from the wire-format sources blob. Mirrors
+// rust/kalico-c-api/src/runtime_ffi.rs::kalico_endstop_arm decode (record
+// layout: kind u8, gpio u16 LE, active_high u8, policy u8, sample_n u8,
+// velocity_axis u8, v_min_q16 u32 LE — 11 bytes). Pull configuration is
+// not carried on the wire (DIAG outputs are push-pull; mech limits rely on
+// external pulls per board); pull_up=0 is requested. If a target board
+// requires internal pulls, extend the wire format.
+static void
+endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
+{
+    endstop_pin_table_clear();
+    if (!sources_ptr || source_count == 0)
+        return;
+    uint8_t n = source_count;
+    if (n > KALICO_ENDSTOP_MAX_SOURCES)
+        n = KALICO_ENDSTOP_MAX_SOURCES;
+    for (uint8_t i = 0; i < n; i++) {
+        const uint8_t *r = sources_ptr + (uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN;
+        uint16_t gpio_id = (uint16_t)r[1] | ((uint16_t)r[2] << 8);
+        endstop_pin_table[i].gpio_id = gpio_id;
+        endstop_pin_table[i].pin = gpio_in_setup((uint8_t)gpio_id, 0);
+        endstop_pin_table[i].active = 1;
+    }
+}
+
 void
 command_kalico_arm_endstop(uint32_t *args)
 {
@@ -568,6 +631,11 @@ command_kalico_arm_endstop(uint32_t *args)
                              source_count, sources_ptr, sources_len,
                              stepper_count, steppers_ptr, steppers_len,
                              &status);
+    // Only wire up GPIO sampling when the runtime accepted the arm.
+    // status: 0 = Armed, 1 = AlreadyTripped, 2 = Rejected. AlreadyTripped
+    // means the snapshot is already published — no further sampling needed.
+    if (status == 0)
+        endstop_pin_table_populate(source_count, sources_ptr);
     sendf("kalico_arm_endstop_response arm_id=%u status=%c", arm_id, status);
 }
 DECL_COMMAND(command_kalico_arm_endstop,
@@ -581,6 +649,10 @@ command_kalico_disarm_endstop(uint32_t *args)
     uint32_t arm_id = args[0];
     uint8_t status = 2; // Unknown
     (void)kalico_endstop_disarm(arm_id, &status);
+    // Stop sampling regardless of disarm outcome — Disarmed and
+    // AlreadyTripped both terminate the active arm; Unknown means the
+    // table is already stale.
+    endstop_pin_table_clear();
     sendf("kalico_disarm_endstop_response arm_id=%u status=%c", arm_id, status);
 }
 DECL_COMMAND(command_kalico_disarm_endstop, "kalico_disarm_endstop arm_id=%u");

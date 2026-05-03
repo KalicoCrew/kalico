@@ -131,6 +131,17 @@ TIM5_IRQHandler(void)
     // software counter (cycle-bench numbers are explicitly out of scope for
     // sim per spec §3, so the bench buffer becomes meaningless under sim and
     // that is acceptable).
+    // Step 7.5 — sample any armed endstop GPIOs before the engine tick so
+    // `endstop::tick` observes fresh pin levels in the same modulation
+    // period. No-op when no arm is active (table empty). Skipped under
+    // CONFIG_KALICO_SIM: the Renode e2e test drives pin levels directly
+    // via `command_kalico_sim_endstop_set_pin`, and a real-GPIO sample
+    // here would clobber the test's override every tick.
+#if !CONFIG_KALICO_SIM
+    extern void kalico_endstop_sample_pins(void);
+    kalico_endstop_sample_pins();
+#endif
+
     uint32_t before = kalico_h7_read_cyccnt();
     if (kalico_rt_handle) {
         kalico_runtime_tick(kalico_rt_handle, before);
