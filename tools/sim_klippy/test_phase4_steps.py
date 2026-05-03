@@ -119,12 +119,12 @@ def main():
         # Send the move — do NOT call M400 since the shaper pipeline may
         # raise a tolerance error on flush().  Steps are emitted asynchronously
         # by the MCU; just wait a few seconds for them to accumulate.
-        print("[phase4] sending G1 X10 F1000")
-        resp = send_gcode("G1 X10 F1000")
+        print("[phase4] sending G1 X10 F1000 then M400 (flush)")
+        resp = send_gcode("G1 X10 F1000\nM400")
         print(f"  response: {resp}")
 
-        print("[phase4] waiting 5s for steps to accumulate")
-        time.sleep(5.0)
+        print("[phase4] waiting 2s post-M400 for step counter sync")
+        time.sleep(2.0)
 
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
         # which routes through klippy → bridge → MCU wire command.
