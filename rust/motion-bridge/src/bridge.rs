@@ -18,7 +18,7 @@ use kalico_host_rt::credit::CreditCounter;
 use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::passthrough_queue::{
-    CommandQueueId, NotifyId, PassthroughEntry, PassthroughRouter,
+    NotifyId, PassthroughEntry, PassthroughRouter,
 };
 use kalico_host_rt::producer;
 use trajectory::{AxisShaper, ShaperConfig};
@@ -28,7 +28,6 @@ use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
 use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::homing::HomingState;
 use crate::planner::{PlannerError, PlannerHandle};
-use crate::router_transport::RouterTransport;
 use crate::slot_pool::{SlotPool, CURVE_POOL_N};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
@@ -105,16 +104,53 @@ fn build_shaper_config(
     })
 }
 
+fn format_push_segment_cmd(params: &producer::SegmentPushParams) -> String {
+    format!(
+        "kalico_push_segment id={id} x_handle={x_handle} \
+         y_handle={y_handle} z_handle={z_handle} e_handle={e_handle} \
+         t_start_hi={t_start_hi} t_start_lo={t_start_lo} \
+         t_end_hi={t_end_hi} t_end_lo={t_end_lo} \
+         kinematics={kin} e_mode={e_mode} extrusion_ratio={extrusion_ratio}",
+        id = params.id,
+        x_handle = params.x_handle_packed,
+        y_handle = params.y_handle_packed,
+        z_handle = params.z_handle_packed,
+        e_handle = params.e_handle_packed,
+        t_start_lo = params.t_start as u32,
+        t_start_hi = (params.t_start >> 32) as u32,
+        t_end_lo = params.t_end as u32,
+        t_end_hi = (params.t_end >> 32) as u32,
+        kin = params.kinematics,
+        e_mode = params.e_mode,
+        extrusion_ratio = params.extrusion_ratio.to_bits(),
+    )
+}
+
+fn push_segment_fire_and_forget(
+    io: &KalicoHostIo,
+    credit: &CreditCounter,
+    params: &producer::SegmentPushParams,
+) -> Result<(), producer::ProducerError> {
+    credit
+        .try_acquire()
+        .ok_or(producer::ProducerError::NoCredit)?;
+    let cmd = format_push_segment_cmd(params);
+    if let Err(e) = io.send_fire_and_forget(&cmd) {
+        credit.release();
+        return Err(producer::ProducerError::Transport(e));
+    }
+    Ok(())
+}
+
 // ── PyMotionBridge ──────────────────────────────────────────────────────
 
 #[pyclass(name = "MotionBridge")]
 #[allow(missing_debug_implementations)]
 pub struct PyMotionBridge {
-    /// Shared so the dispatch closure can also drive the router via
-    /// `RouterTransport` without cloning state.
+    /// Shared for passthrough queue state and MCU clock conversion.
     router: Arc<Mutex<PassthroughRouter>>,
-    /// MsgProto parser populated via `set_msgproto_dict`. The dispatch
-    /// closure's `RouterTransport` reads this on every wire call.
+    /// MsgProto parser populated via `set_msgproto_dict` for passthrough
+    /// compatibility surfaces.
     parser: Arc<Mutex<Option<Arc<MsgProtoParser>>>>,
     mcus: Mutex<HashMap<u32, McuConnection>>,
     /// Shared event queue — callbacks capture an `Arc` clone so they can
@@ -563,7 +599,6 @@ impl PyMotionBridge {
         timeout_s: f64,
     ) -> PyResult<Py<PyDict>> {
         use std::time::Duration;
-        use kalico_host_rt::transport::Transport;
 
         // Get the submission_tx from KalicoHostIo — we need to submit
         // without holding the mutex across a blocking call. KalicoHostIo::call
@@ -848,13 +883,12 @@ impl PyMotionBridge {
         *self.mcu_axis_configs.lock().unwrap() = mcu_configs.clone();
 
         // ── Task 8b: wire the dispatch closure to producer::load_curve /
-        // producer::push_segment via RouterTransport ──────────────────────
+        // producer::push_segment via KalicoHostIo ─────────────────────────
         //
         // Per-MCU state captured into the closure:
-        //   * a dedicated CommandQueueId for this MCU's motion traffic,
         //   * a CreditCounter pre-seeded to CREDIT_SEED_CAPACITY (option A:
         //     no real `kalico_credit_freed` accounting yet),
-        //   * a RouterTransport binding the shared router + parser slot.
+        //   * the KalicoHostIo reactor handle that owns this MCU's wire.
         //
         // The closure then, per ShapedSegment:
         //   1. converts `t_start` / `t_end` (print-time seconds) to MCU
@@ -869,40 +903,52 @@ impl PyMotionBridge {
         let homing = Arc::clone(&self.homing);
         let warned_mcus: Arc<Mutex<HashSet<u32>>> =
             Arc::new(Mutex::new(HashSet::new()));
-        let parser_slot = Arc::clone(&self.parser);
         let router_arc = Arc::clone(&self.router);
 
-        // Per-MCU dispatch context (transport + credit + slot pool) keyed by
-        // mcu_id. `transports` is the closure-local lookup map; the credit
+        let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
+            let mcus = self.mcus.lock().unwrap();
+            let mut out = HashMap::new();
+            for cfg_mcu in &mcu_configs {
+                let conn = mcus.get(&cfg_mcu.mcu_id).ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "init_planner: unknown mcu_handle {}",
+                        cfg_mcu.mcu_id
+                    ))
+                })?;
+                let io = conn.host_io.as_ref().ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "init_planner: attach_serial has not been called for MCU {}",
+                        cfg_mcu.mcu_id
+                    ))
+                })?;
+                out.insert(cfg_mcu.mcu_id, Arc::clone(io));
+            }
+            out
+        };
+
+        // Per-MCU dispatch context (host I/O + credit + slot pool) keyed by
+        // mcu_id. `dispatch_ios` is the closure-local lookup map; the credit
         // and slot-pool tables on `self` are the persistent ones the
         // event-routing API (`on_credit_freed`) drives.
-        let mut transports: HashMap<u32, (Arc<RouterTransport>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>)> =
+        let mut dispatch_ios: HashMap<u32, (Arc<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>)> =
             HashMap::new();
         let mut self_credits = self.credit_counters.lock().unwrap();
         let mut self_pools = self.slot_pools.lock().unwrap();
         self_credits.clear();
         self_pools.clear();
         for cfg_mcu in &mcu_configs {
-            let mcu_h = mcu_handle_from_raw(cfg_mcu.mcu_id);
-            let cq: CommandQueueId = self
-                .router
-                .lock()
-                .unwrap()
-                .alloc_command_queue(mcu_h)
-                .map_err(router_err)?;
-            let transport = Arc::new(RouterTransport::new(
-                Arc::clone(&router_arc),
-                mcu_h,
-                cq,
-                Arc::clone(&parser_slot),
-            ));
+            let io = host_ios
+                .get(&cfg_mcu.mcu_id)
+                .expect("host_io map built from mcu_configs")
+                .clone();
             let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
+            io.attach_credit_counter(Arc::clone(&credit));
             let slot_pool = Arc::new(Mutex::new(SlotPool::new()));
             self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
             self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
-            transports.insert(
+            dispatch_ios.insert(
                 cfg_mcu.mcu_id,
-                (transport, credit, slot_pool),
+                (io, credit, slot_pool),
             );
         }
         drop(self_credits);
@@ -930,7 +976,7 @@ impl PyMotionBridge {
             );
 
             for plan in &mut plans {
-                let (transport, credit, slot_pool) = match transports.get(&plan.mcu_id) {
+                let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                     Some(v) => v,
                     None => continue,
                 };
@@ -1000,7 +1046,7 @@ impl PyMotionBridge {
                     };
                     allocated_slots.push(slot);
                     let handle = producer::load_curve(
-                        transport.as_ref(),
+                        io.as_ref(),
                         slot,
                         curve_params,
                         producer::DEFAULT_LOAD_CURVE_TIMEOUT,
@@ -1023,7 +1069,7 @@ impl PyMotionBridge {
                     }
                 }
 
-                producer::push_segment(transport.as_ref(), credit, &plan.params)
+                push_segment_fire_and_forget(io.as_ref(), credit, &plan.params)
                     .map_err(|e| format!("push_segment mcu={}: {e}", plan.mcu_id))?;
             }
 
@@ -1100,8 +1146,8 @@ impl PyMotionBridge {
 
     // ── Step 7-D: endstop arm/disarm/set_homed_state wire surface ──────────
     //
-    // These call the kalico-host-rt producer functions over a per-call
-    // `RouterTransport` bound to the caller-supplied (mcu, queue) pair.
+    // These call the kalico-host-rt producer functions over the same
+    // KalicoHostIo reactor queue used by bridge_call / bridge_send.
     // Each Python call is one synchronous msgproto round-trip. The Python
     // side (`klippy/motion_bridge.py::BridgeTriggerDispatch`) wraps these
     // and handles async `kalico_endstop_tripped` events via the existing
@@ -1123,6 +1169,7 @@ impl PyMotionBridge {
         timeout_s: f64,
     ) -> PyResult<u8> {
         use kalico_host_rt::endstop;
+        let _ = queue;
 
         let mut source_specs = Vec::with_capacity(sources.len());
         for (kind_byte, gpio, active_high, policy_byte, sample_n, velocity_axis, v_min_q16) in
@@ -1150,15 +1197,10 @@ impl PyMotionBridge {
             });
         }
 
-        let transport = RouterTransport::new(
-            Arc::clone(&self.router),
-            mcu_handle_from_raw(mcu),
-            cq_id_from_raw(queue),
-            Arc::clone(&self.parser),
-        );
+        let io = self.host_io_for_mcu("endstop_arm", mcu)?;
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
         let status = endstop::arm_endstop_with_timeout(
-            &transport,
+            io.as_ref(),
             arm_id,
             arm_clock,
             &source_specs,
@@ -1180,14 +1222,10 @@ impl PyMotionBridge {
         timeout_s: f64,
     ) -> PyResult<u8> {
         use kalico_host_rt::endstop;
-        let transport = RouterTransport::new(
-            Arc::clone(&self.router),
-            mcu_handle_from_raw(mcu),
-            cq_id_from_raw(queue),
-            Arc::clone(&self.parser),
-        );
+        let _ = queue;
+        let io = self.host_io_for_mcu("endstop_disarm", mcu)?;
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let status = endstop::disarm_endstop_with_timeout(&transport, arm_id, timeout)
+        let status = endstop::disarm_endstop_with_timeout(io.as_ref(), arm_id, timeout)
             .map_err(|e| PyRuntimeError::new_err(format!("endstop_disarm: {e}")))?;
         Ok(status as u8)
     }
@@ -1202,14 +1240,10 @@ impl PyMotionBridge {
         timeout_s: f64,
     ) -> PyResult<()> {
         use kalico_host_rt::endstop;
-        let transport = RouterTransport::new(
-            Arc::clone(&self.router),
-            mcu_handle_from_raw(mcu),
-            cq_id_from_raw(queue),
-            Arc::clone(&self.parser),
-        );
+        let _ = queue;
+        let io = self.host_io_for_mcu("set_homed_state", mcu)?;
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        endstop::set_homed_state_with_timeout(&transport, homed, timeout)
+        endstop::set_homed_state_with_timeout(io.as_ref(), homed, timeout)
             .map_err(|e| PyRuntimeError::new_err(format!("set_homed_state: {e}")))
     }
 
@@ -1363,6 +1397,18 @@ impl PyMotionBridge {
 }
 
 impl PyMotionBridge {
+    fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
+        let mcus = self.mcus.lock().unwrap();
+        let conn = mcus.get(&mcu).ok_or_else(|| {
+            PyRuntimeError::new_err(format!("{caller}: unknown mcu_handle {mcu}"))
+        })?;
+        conn.host_io.as_ref().cloned().ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "{caller}: attach_serial has not been called for this MCU"
+            ))
+        })
+    }
+
     fn submit_homing_move_inner(
         &self,
         newpos: &[f64],
