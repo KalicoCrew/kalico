@@ -243,6 +243,11 @@ impl EventDispatcher {
             }
             RuntimeEvent::Status(e) => {
                 self.handle_status_frame(&e);
+                // Also forward to the general runtime-event channel so callers of
+                // `take_runtime_event_subscription` (e.g. the Python bridge poller)
+                // can observe status heartbeats.  The snapshot and fault-synthesis
+                // paths above are orthogonal and still fire first.
+                self.runtime_event_dispatcher.dispatch(RuntimeEvent::Status(e));
             }
             ev @ RuntimeEvent::UnknownOutput { .. } => {
                 self.runtime_event_dispatcher.dispatch(ev);

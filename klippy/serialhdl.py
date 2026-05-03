@@ -99,6 +99,18 @@ class SerialReader:
             # Map event type to a msgproto-style name so existing handlers work.
             if ev_type == "status":
                 name = "kalico_status_v6"
+                # Count and log first few frames so Phase-3 verification can
+                # grep the log without enabling DEBUG-level logging globally.
+                if not hasattr(self, "_status_frame_count"):
+                    self._status_frame_count = 0
+                self._status_frame_count += 1
+                if self._status_frame_count <= 5 or self._status_frame_count % 50 == 0:
+                    logging.info(
+                        "%s[bridge-async] kalico_status_v6 frame #%d engine_status=%s",
+                        self.warn_prefix,
+                        self._status_frame_count,
+                        ev.get("engine_status", "?"),
+                    )
             elif ev_type == "credit_freed":
                 name = "kalico_credit_freed"
             elif ev_type == "fault":

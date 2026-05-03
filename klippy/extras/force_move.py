@@ -192,11 +192,6 @@ class ForceMove:
     cmd_SET_KINEMATIC_POSITION_help = "Force a low-level kinematic position"
 
     def cmd_SET_KINEMATIC_POSITION(self, gcmd):
-        if self._use_bridge:
-            raise gcmd.error(
-                "SET_KINEMATIC_POSITION is not yet supported under the "
-                "new motion path until Phase 5"
-            )
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.get_last_move_time()
         curpos = toolhead.get_position()
@@ -214,7 +209,34 @@ class ForceMove:
             ",".join((axes[i] for i in clear_axes)),
         )
         toolhead.set_position([x, y, z, curpos[3]], homing_axes=(0, 1, 2))
-        toolhead.get_kinematics().clear_homing_state(clear_axes)
+        # In bridge mode, BridgeKinematics doesn't have clear_homing_state;
+        # the position set above is sufficient to allow moves to proceed.
+        kin = toolhead.get_kinematics()
+        if hasattr(kin, "clear_homing_state"):
+            kin.clear_homing_state(clear_axes)
+        # In bridge mode, also notify the MCU runtime that we are homed so
+        # that kalico_runtime_push_segment is accepted (homed gate §7-B).
+        bridge = self.printer.lookup_object("motion_bridge", None)
+        if bridge is not None:
+            for mcu_name, mcu_obj in self.printer.lookup_objects(module="mcu"):
+                if not hasattr(mcu_obj, "_motion_bridge") or mcu_obj._motion_bridge is None:
+                    continue
+                mcu_handle = getattr(mcu_obj, "_bridge_handle", None)
+                if mcu_handle is None:
+                    continue
+                try:
+                    # alloc_command_queue returns None in bridge mode;
+                    # allocate via bridge directly instead.
+                    queue = bridge.alloc_command_queue(mcu_handle)
+                    bridge.set_homed_state(mcu_handle, queue, True)
+                    logging.info(
+                        "SET_KINEMATIC_POSITION: set bridge homed on %s", mcu_name
+                    )
+                except Exception as e:
+                    logging.warning(
+                        "SET_KINEMATIC_POSITION: bridge set_homed_state failed on %s: %s",
+                        mcu_name, e
+                    )
 
 
 def load_config(config):

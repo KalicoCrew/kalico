@@ -819,6 +819,28 @@ pub mod exports {
         }
     }
 
+    /// Read the cumulative signed step count for stepper `oid` (0-indexed).
+    /// Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
+    /// Used by the sim diagnostic command `kalico_sim_stepper_count_query`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_stepper_count(
+        rt: *mut KalicoRuntime,
+        oid: u8,
+    ) -> i32 {
+        use runtime::state::MAX_STEPPER_OIDS;
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        if oid as usize >= MAX_STEPPER_OIDS {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).stepper_counts[oid as usize].load(Ordering::Acquire)
+        }
+    }
+
     // ---- Step 7-B: homed gate + axis configuration -------------------------
 
     /// Set the homed gate. Called by the host after all axes have been

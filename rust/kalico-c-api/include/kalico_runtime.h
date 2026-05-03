@@ -265,6 +265,13 @@ uint8_t kalico_runtime_queue_depth(struct KalicoRuntime *rt);
 uint32_t kalico_runtime_fault_detail(struct KalicoRuntime *rt);
 
 /**
+ * Read the cumulative signed step count for stepper `oid` (0-indexed).
+ * Returns 0 for an invalid `rt`, uninitialised runtime, or out-of-range oid.
+ * Used by the sim diagnostic command `kalico_sim_stepper_count_query`.
+ */
+int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
+
+/**
  * Set the homed gate. Called by the host after all axes have been
  * successfully homed. The ISR checks `shared.homed` before accepting
  * motion segments — until this is called, motion commands are rejected

@@ -191,6 +191,13 @@ class MotionToolhead:
         # SET_INPUT_SHAPER is registered by the [input_shaper] module; under
         # the bridge it routes through bridge.update_shaper directly (see
         # klippy/extras/input_shaper.py::cmd_SET_INPUT_SHAPER).
+        # Sim-only diagnostic: read stepper step count from MCU runtime.
+        if self.bridge is not None:
+            gcode.register_command(
+                "KALICO_SIM_STEP_COUNT",
+                self.cmd_KALICO_SIM_STEP_COUNT,
+                desc="[sim] Query cumulative step count for a stepper OID",
+            )
 
         # Phase 2: initialize the Rust planner once all MCUs are connected.
         self.printer.register_event_handler(
@@ -454,6 +461,28 @@ class MotionToolhead:
             max_velocity is not None or max_accel is not None
         ):
             self.bridge.update_limits(self.max_velocity, self.max_accel)
+
+    def cmd_KALICO_SIM_STEP_COUNT(self, gcmd):
+        """[sim] Query cumulative step count for stepper OID from the MCU runtime."""
+        oid = gcmd.get_int("OID", 0, minval=0)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "kalico_sim_stepper_count_query oid=%d" % oid,
+                "kalico_sim_stepper_count_response",
+                timeout_s=5.0,
+            )
+            count = resp.get("count", 0)
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_STEP_COUNT oid=%d count=%d" % (oid, count)
+            )
+        except Exception as e:
+            raise gcmd.error("step count query failed: %s" % e)
 
     # ------------------------------------------------------------------
     # Phase 2: planner initialization

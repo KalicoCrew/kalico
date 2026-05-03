@@ -901,6 +901,21 @@ command_kalico_sim_gpio_sample(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_sim_gpio_sample,
     "kalico_sim_gpio_sample sample_id=%u pin=%c pull_up=%c");
+
+// Phase 4 step-count diagnostic: returns the cumulative step count for the
+// given stepper oid (0-indexed). Used by the sim test harness to verify that
+// G1 moves produce real step pulses without needing GPIO state readback.
+void
+command_kalico_sim_stepper_count_query(uint32_t *args)
+{
+    uint8_t oid = (uint8_t)args[0];
+    int32_t count = kalico_rt_handle
+        ? kalico_runtime_get_stepper_count(kalico_rt_handle, oid)
+        : 0;
+    sendf("kalico_sim_stepper_count_response oid=%c count=%i", oid, count);
+}
+DECL_COMMAND(command_kalico_sim_stepper_count_query,
+    "kalico_sim_stepper_count_query oid=%c");
 #endif
 
 #if CONFIG_KALICO_SIM

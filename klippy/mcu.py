@@ -654,6 +654,10 @@ class MCU_endstop:
         clock = self._mcu.print_time_to_clock(print_time)
         if self._mcu.is_fileoutput():
             return 0
+        # Bridge-mode: _query_cmd is None (no legacy endstop_query_state command).
+        # Return unpressed (0) as a safe stub — real query is Phase 5.
+        if self._use_bridge:
+            return 0
         params = self._query_cmd.send([self._oid], minclock=clock)
         return params["pin_value"] ^ self._invert
 
