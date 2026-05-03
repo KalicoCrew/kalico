@@ -4,6 +4,7 @@
 
 #include <string.h>         // memcpy
 #include "autoconf.h"
+#include "board/gpio.h"     // gpio_in_setup / gpio_in_read
 #include "board/internal.h" // NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
 #include "board/irq.h"      // irq_save, irq_restore (Step-6 §8.5 flush)
 #include "board/misc.h"     // timer_read_time
@@ -686,6 +687,10 @@ DECL_CTR("_DECL_OUTPUT "
     "last_fault=%hu fault_detail=%u "
     "mcu_clock_now_lo=%u mcu_clock_now_hi=%u "
     "credit_epoch=%u accepted_segment_id=%u retired_through_segment_id=%u");
+#if CONFIG_KALICO_SIM
+DECL_CTR("_DECL_OUTPUT "
+         "kalico_sim_gpio_sample sample_id=%u pin=%c value=%c");
+#endif
 
 #if CONFIG_KALICO_SIM
 extern volatile uint32_t kalico_sim_drain_calls;
@@ -705,6 +710,23 @@ command_kalico_sim_diag(uint32_t *args)
         status, last_err, tick_counter);
 }
 DECL_COMMAND(command_kalico_sim_diag, "kalico_sim_diag");
+
+void
+command_kalico_sim_gpio_sample(uint32_t *args)
+{
+    uint32_t sample_id = args[0];
+    uint8_t pin = args[1];
+    uint8_t pull_up = args[2];
+    struct gpio_in g = gpio_in_setup(pin, pull_up);
+    uint8_t value = gpio_in_read(g);
+
+    sendf("kalico_sim_gpio_sample_response sample_id=%u pin=%c value=%c",
+          sample_id, pin, value);
+    output("kalico_sim_gpio_sample sample_id=%u pin=%c value=%c",
+           sample_id, pin, value);
+}
+DECL_COMMAND(command_kalico_sim_gpio_sample,
+    "kalico_sim_gpio_sample sample_id=%u pin=%c pull_up=%c");
 #endif
 
 #if CONFIG_KALICO_SIM
@@ -855,11 +877,14 @@ command_kalico_bench_run(uint32_t *args)
     // including the trailing kalico_bench_done. Drain by calling the bulk
     // task directly between sends, kicking IWDG so the watchdog doesn't
     // trip during a 1024-sample emit (~10–20 ms wall time).
+#if CONFIG_USBSERIAL
+    extern void udelay(uint32_t usecs);
     extern void usb_bulk_in_task(void);
     extern void usb_notify_bulk_in(void);
-    extern void udelay(uint32_t usecs);
+#endif
     for (uint16_t i = WARMUP_SKIP; i < samples; i++) {
         sendf("kalico_bench_sample value=%u", kalico_bench_samples_buf[i]);
+#if CONFIG_USBSERIAL
         // Re-arm the wake (sched_check_wake clears it) so usb_bulk_in_task
         // attempts a drain regardless of prior state. udelay yields enough
         // wall time for the USB IN IRQ to ACK the previous packet, freeing
@@ -867,12 +892,15 @@ command_kalico_bench_run(uint32_t *args)
         usb_notify_bulk_in();
         usb_bulk_in_task();
         udelay(80);
+#endif
         IWDG->KR = 0xAAAA;
     }
     sendf("kalico_bench_done count=%hu error=%i",
           (uint16_t)(samples - WARMUP_SKIP), KALICO_BENCH_OK);
+#if CONFIG_USBSERIAL
     usb_notify_bulk_in();
     usb_bulk_in_task();
+#endif
 }
 DECL_COMMAND(command_kalico_bench_run, "kalico_bench_run isolate=%c samples=%hu");
 
