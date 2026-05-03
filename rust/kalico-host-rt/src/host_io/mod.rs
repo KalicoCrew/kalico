@@ -110,6 +110,12 @@ pub enum ReactorCommand {
         queue_id: CommandQueueId,
         entry:    PassthroughEntry,
     },
+    /// Send a command with no expected response (fire-and-forget).
+    /// The frame is still tracked in the unacked window for wire-level
+    /// retransmit on NAK, but no application-level response is awaited.
+    FireAndForget {
+        cmd: String,
+    },
     Shutdown,
 }
 
@@ -375,6 +381,15 @@ impl KalicoHostIo {
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
         self.call(cmd, response, timeout)
+    }
+
+    /// Send a command to the MCU without waiting for any response.
+    /// The frame is wire-level ACKed by the MCU's next outbound frame but no
+    /// application-level reply is expected.
+    pub fn send_fire_and_forget(&self, cmd: &str) -> Result<(), TransportError> {
+        self.submission_tx
+            .send(ReactorCommand::FireAndForget { cmd: cmd.to_owned() })
+            .map_err(|_| TransportError::Closed)
     }
 }
 

@@ -681,6 +681,31 @@ impl PyMotionBridge {
         Ok(Some(d.unbind()))
     }
 
+    /// Send a fire-and-forget command to the MCU (no response expected).
+    ///
+    /// Used for config-phase commands like `allocate_oids`, `config_stepper`,
+    /// `finalize_config` where the MCU processes the command but sends no reply.
+    /// The frame is still wire-level ACKed; only the application-level response
+    /// is absent.
+    #[pyo3(signature = (mcu_handle, msg))]
+    fn bridge_send(&self, mcu_handle: u32, msg: &str) -> PyResult<()> {
+        let io = {
+            let mcus = self.mcus.lock().unwrap();
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "bridge_send: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "bridge_send: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+        io.send_fire_and_forget(msg)
+            .map_err(|e| PyRuntimeError::new_err(format!("bridge_send: {e}")))
+    }
+
     /// Update clock estimation parameters for the given MCU.
     #[pyo3(signature = (mcu, freq, offset, last_clock))]
     fn set_clock_est(

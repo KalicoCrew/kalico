@@ -122,6 +122,10 @@ class MotionBridgeWrapper:
         """Send a msgproto command and wait for the named response dict."""
         return self._bridge.bridge_call(mcu_handle, msg, response, timeout_s)
 
+    def bridge_send(self, mcu_handle, msg):
+        """Send a fire-and-forget command (no response expected)."""
+        return self._bridge.bridge_send(mcu_handle, msg)
+
     def take_runtime_event(self, mcu_handle):
         """Drain one runtime event dict, or None if nothing pending."""
         return self._bridge.take_runtime_event(mcu_handle)

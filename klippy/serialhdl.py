@@ -104,11 +104,14 @@ class SerialReader:
             elif ev_type == "fault":
                 name = "kalico_fault"
             elif ev_type == "output":
-                # #output events go to the #output handler
+                # #output events go to the #output handler.
+                # Populate #msg from the bridge event's 'msg' field so that
+                # handle_output (which reads params["#msg"]) works correctly.
                 name = "#output"
                 ev["#name"] = "#output"
                 ev["#sent_time"] = now
                 ev["#receive_time"] = now
+                ev["#msg"] = ev.get("msg", "")
                 with self.lock:
                     hdl = self.handlers.get(("#output", None), self.handle_default)
                 try:
@@ -520,7 +523,11 @@ class SerialReader:
 
     def send(self, msg, minclock=0, reqclock=0):
         if self._use_bridge:
-            # Bridge mode: commands go through the Rust reactor, not here.
+            # Bridge mode: send fire-and-forget via the Rust reactor.
+            bridge = self.mcu._motion_bridge
+            handle = self.mcu._bridge_handle
+            if bridge is not None and handle is not None:
+                bridge.bridge_send(handle, msg)
             return
         cmd = self.msgparser.create_command(msg)
         self.raw_send(cmd, minclock, reqclock, self.default_cmd_queue)

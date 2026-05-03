@@ -220,6 +220,30 @@ impl Reactor {
         Ok(())
     }
 
+    /// Send a command with no expected application-level response.
+    /// The frame is still tracked in the unacked window for wire-level
+    /// retransmit on NAK.
+    pub(crate) fn dispatch_fire_and_forget(
+        &mut self,
+        payload: Vec<u8>,
+    ) -> Result<(), TransportError> {
+        if self.unacked_window.is_full() {
+            // Drop silently if the window is full; caller (config phase) retries via get_config.
+            log::warn!("dispatch_fire_and_forget: unacked window full, dropping frame");
+            return Ok(());
+        }
+        let seq = self.send_seq;
+        self.send_seq += 1;
+        let wire_seq = (seq & 0x0F) as u8;
+        let frame = crate::host_io::wire::build_frame(&payload, wire_seq);
+        self.write_frame(&frame)?;
+        let now = self.clock.now();
+        self.unacked_window.push(crate::host_io::window::UnackedEntry {
+            seq, frame_bytes: frame, sent_at: now, retry_count: 0,
+        });
+        Ok(())
+    }
+
     pub(crate) fn drain_pending_submissions(&mut self) {
         while !self.unacked_window.is_full() {
             let Some(p) = self.pending_submissions.pop_front() else { break; };
@@ -659,6 +683,18 @@ impl Reactor {
             ReactorCommand::PassthroughSend { mcu, queue_id, entry } => {
                 if let Some(ref mut router) = self.passthrough_router {
                     let _ = router.push(mcu, queue_id, entry);
+                }
+            }
+            ReactorCommand::FireAndForget { cmd } => {
+                match self.parser.encode(&cmd) {
+                    Ok(payload) => {
+                        if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                            log::warn!("FireAndForget: send error: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("FireAndForget: encode error for {:?}: {e:?}", cmd);
+                    }
                 }
             }
         }

@@ -106,7 +106,21 @@ class CommandQueryWrapper:
         except serialhdl.error as e:
             raise self._error(str(e))
 
+    def _bridge_send(self, data):
+        """Bridge-mode send: encode as human-readable string and use bridge_call."""
+        # Build the command string from the format name + positional args.
+        parts = [self._cmd.name]
+        for i, (name, _) in enumerate(self._cmd.param_names):
+            parts.append("%s=%s" % (name, data[i]))
+        msg = " ".join(parts)
+        try:
+            return self._serial.send_with_response(msg, self._response)
+        except serialhdl.error as e:
+            raise self._error(str(e))
+
     def send(self, data=(), minclock=0, reqclock=0, retry=True):
+        if self._serial._use_bridge:
+            return self._bridge_send(data)
         return self._do_send(
             [self._cmd.encode(data)], minclock, reqclock, retry
         )
