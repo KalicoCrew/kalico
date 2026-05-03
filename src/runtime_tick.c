@@ -11,7 +11,15 @@
 #include "command.h"        // DECL_COMMAND
 #include "sched.h"          // DECL_INIT, DECL_TASK
 #include "kalico_runtime.h"
+#if CONFIG_MACH_STM32H7
 #include "stm32/kalico_h7_timer.h" // kalico_h7_disable_tim5 / enable / read_cyccnt
+#elif CONFIG_MACH_LINUX
+// Host build: pthread-driven tick replaces the TIM5 ISR. The Rust runtime
+// still calls kalico_h7_enable_tim5/disable_tim5/read_cyccnt across the
+// producer-protocol boundary; we provide host-side stubs in
+// src/linux/kalico_host_tick.c.
+#include "linux/kalico_host_tick.h"
+#endif
 
 #if CONFIG_KALICO_RUNTIME
 
@@ -161,8 +169,10 @@ runtime_init(void)
     last_progress_time = timer_read_time();
     last_seen_status = kalico_runtime_status(kalico_rt_handle);
 
-    // Initialize H7 timer hardware (TIM5) — DOES NOT enable yet; first segment
-    // push triggers enable via the producer protocol (§4.4).
+    // Initialize the modulation tick driver. On STM32H7 this configures
+    // TIM5 (DOES NOT enable; the first segment push triggers enable via
+    // the producer protocol §4.4). On Linux it spawns the host pthread
+    // that calls kalico_runtime_tick at 40 kHz.
     extern void kalico_h7_timer_init(void);
     kalico_h7_timer_init();
 

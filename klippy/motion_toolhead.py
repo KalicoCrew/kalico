@@ -326,11 +326,26 @@ class MotionToolhead:
         pass
 
     def get_last_move_time(self):
-        if self.bridge is not None:
-            return self.bridge.get_last_move_time()
+        # Mainline klippy clamps to mcu.estimated_print_time so that
+        # legacy MCU commands scheduled at "next available print_time"
+        # don't land in the past (which the legacy serialqueue rejects
+        # as "Timer too close"). The bridge's own queue starts at 0.0
+        # and only advances when moves are submitted, so without this
+        # clamp any TMC/SPI/digital_out command issued before the first
+        # move shutdowns the MCU.
+        # Mainline klipper keeps print_time ahead of the MCU's clock by a
+        # buffer (~BUFFER_TIME_START = 0.250s) so commands queued at
+        # "the next available print_time" always land in the MCU's future.
+        # The bridge has its own queue and doesn't drive this; we floor at
+        # estimated_print_time + lead to keep legacy MCU commands valid.
+        BUFFER_LEAD = 0.250
+        est = 0.0
         if self.mcu is not None:
-            return self.mcu.estimated_print_time(self.reactor.monotonic())
-        return 0.0
+            est = self.mcu.estimated_print_time(self.reactor.monotonic())
+        floor = est + BUFFER_LEAD
+        if self.bridge is not None:
+            return max(self.bridge.get_last_move_time(), floor)
+        return floor
 
     # ------------------------------------------------------------------
     # Velocity limits
@@ -386,6 +401,32 @@ class MotionToolhead:
 
     def motor_off(self):
         pass
+
+    # Homing helpers expected by klippy/extras/homing.py.
+    def get_active_rails_for_axis(self, axis_name):
+        # Only XYZ — extruder rails are not part of homing-current logic.
+        if not axis_name or axis_name[0] not in "xyz":
+            return []
+        prefix = axis_name[0]
+        return [
+            rail
+            for rail in self.kin.rails
+            if (rail.get_name(short=True) or "").startswith(prefix)
+        ]
+
+    def set_accel(self, accel):
+        if accel is not None and accel > 0.0:
+            self.max_accel = accel
+            if self.bridge is not None:
+                self.bridge.update_limits(self.max_velocity, self.max_accel)
+
+    def reset_accel(self):
+        # Restore from configured value. Read once at __init__ time would be
+        # cleaner; this approximation re-uses the current value (homing.py
+        # only calls reset after a matching set, and we don't override across
+        # nested homes).
+        if self.bridge is not None:
+            self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     def register_move_handler(self, handler):
         pass

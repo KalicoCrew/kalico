@@ -384,11 +384,13 @@ config HAVE_SOFTWARE_DIVIDE_REQUIRED
 
 config KALICO_RUNTIME
     bool "Enable kalico Rust runtime (Layer 4 motion planner)"
-    depends on MACH_STM32H7
+    depends on MACH_STM32H7 || MACH_LINUX
     default n
     help
       Links libkalico_c_api.a (Rust staticlib) and enables the
-      40 kHz trajectory-evaluation ISR. Step 5 — see CLAUDE.md.
+      40 kHz trajectory-evaluation tick. Production target is
+      STM32H7 (TIM5 ISR); MACH_LINUX builds a host-process
+      simulator (pthread tick) for klippy-in-loop testing.
 
 config KALICO_SIM
     bool "Build for Renode simulator (disables IWDG)"
