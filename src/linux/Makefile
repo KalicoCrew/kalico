@@ -13,10 +13,18 @@ src-y += linux/sensor_ds18b20.c
 src-$(CONFIG_KALICO_RUNTIME) += linux/kalico_host_tick.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 
-# Link libkalico_c_api.a (host-target staticlib).
+# Generated FFI header (cbindgen) shared with the H7 build.
+ifeq ($(CONFIG_KALICO_RUNTIME),y)
+CFLAGS += -Irust/kalico-c-api/include
+endif
+
+# Link libkalico_c_api.a. The Linux build has a mutual-callback edge:
+# host_tick.o calls into libkalico (kalico_runtime_tick) and libkalico
+# calls back out (kalico_h7_enable_tim5 / read_cyccnt). Wrap with
+# --start-group/--end-group so ld iterates until both sides resolve.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
 KALICO_LIB := rust/target/release/libkalico_c_api.a
-CFLAGS_klipper.elf := $(KALICO_LIB) $(CFLAGS_klipper.elf)
+CFLAGS_klipper.elf := -Wl,--start-group $(KALICO_LIB) -Wl,--end-group $(CFLAGS_klipper.elf)
 $(OUT)klipper.elf: $(KALICO_LIB)
 endif
 

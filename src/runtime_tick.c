@@ -1004,6 +1004,7 @@ extern volatile uint8_t kalico_bench_isolate;
 #define KALICO_BENCH_ERR_LIVENESS  -100
 #define KALICO_BENCH_ERR_ISR_TIMEOUT -101
 
+#if CONFIG_MACH_STM32H7
 void
 command_kalico_bench_run(uint32_t *args)
 {
@@ -1117,5 +1118,6 @@ command_kalico_bench_run(uint32_t *args)
 #endif
 }
 DECL_COMMAND(command_kalico_bench_run, "kalico_bench_run isolate=%c samples=%hu");
+#endif // CONFIG_MACH_STM32H7
 
 #endif // CONFIG_KALICO_RUNTIME

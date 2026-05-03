@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "autoconf.h" // CONFIG_CLOCK_FREQ
 #include "kalico_runtime.h"
 #include "sched.h" // shutdown handling — currently unused but matches H7
 
@@ -25,6 +26,11 @@ volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
 volatile uint16_t kalico_bench_count = 0;
 volatile uint16_t kalico_bench_target = 0;
 volatile uint8_t  kalico_bench_isolate = 0;
+
+// Watchdog liveness flag (defined on H7 in src/stm32/watchdog.c). The
+// Linux build has no IWDG; default to ok=1 so the runtime drain doesn't
+// short-circuit. Mutated by the runtime liveness gate.
+volatile uint8_t kalico_liveness_ok = 1;
 
 #define HOST_TICK_HZ 40000UL
 #define HOST_TICK_NS (1000000000UL / HOST_TICK_HZ)
@@ -44,7 +50,7 @@ host_monotonic_ns(void)
     return s * 1000000000ULL + (uint64_t)(ns + (ns < 0 ? 1000000000 : 0));
 }
 
-uint32_t
+__attribute__((used)) uint32_t
 kalico_h7_read_cyccnt(void)
 {
     // Map host monotonic ns onto a 32-bit cycle counter at CONFIG_CLOCK_FREQ
@@ -91,7 +97,7 @@ host_tick_main(void *arg)
     return NULL;
 }
 
-void
+__attribute__((used)) void
 kalico_h7_timer_init(void)
 {
     if (atomic_exchange(&host_tick_thread_started, 1))
@@ -110,13 +116,13 @@ kalico_h7_timer_init(void)
     }
 }
 
-void
+__attribute__((used)) void
 kalico_h7_enable_tim5(void)
 {
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 
-void
+__attribute__((used)) void
 kalico_h7_disable_tim5(void)
 {
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
