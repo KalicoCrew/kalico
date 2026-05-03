@@ -8,7 +8,9 @@ description = "PyO3 bridge between klippy (Python) and the Rust motion stack."
 license.workspace = true
 
 [lib]
-name = "motion_bridge"
+# Must match the #[pymodule] fn name in src/lib.rs. We use _native to
+# avoid shadowing klippy/motion_bridge.py — see the comment there.
+name = "motion_bridge_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

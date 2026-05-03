@@ -32,6 +32,11 @@ volatile uint8_t  kalico_bench_isolate = 0;
 // short-circuit. Mutated by the runtime liveness gate.
 volatile uint8_t kalico_liveness_ok = 1;
 
+// Sim-only cycle counter (defined on H7 under CONFIG_KALICO_SIM in
+// stm32/kalico_sim_clock.c). The Linux build maps it onto the host
+// monotonic-derived counter that kalico_h7_read_cyccnt returns.
+volatile uint32_t kalico_sim_cyccnt = 0;
+
 #define HOST_TICK_HZ 40000UL
 #define HOST_TICK_NS (1000000000UL / HOST_TICK_HZ)
 
@@ -88,8 +93,13 @@ host_tick_main(void *arg)
 
         // Sample any armed endstop GPIOs before the engine tick — same
         // ordering as TIM5_IRQHandler so endstop::tick observes fresh
-        // levels in the same modulation period.
+        // levels in the same modulation period. Skipped under
+        // CONFIG_KALICO_SIM (the Linux build is itself a sim) so the
+        // FFI-driven kalico_sim_endstop_set_pin path isn't clobbered
+        // every tick by an unhelpful gpio_in_read of an unconnected pin.
+#if !CONFIG_KALICO_SIM
         kalico_endstop_sample_pins();
+#endif
 
         uint32_t cyc = kalico_h7_read_cyccnt();
         kalico_runtime_tick(kalico_rt_handle, cyc);

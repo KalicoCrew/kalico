@@ -139,8 +139,8 @@ else
   MOTION_BRIDGE_EXT = so
 endif
 
-MOTION_BRIDGE_SRC  = rust/target/release/libmotion_bridge.$(MOTION_BRIDGE_EXT)
-MOTION_BRIDGE_DEST = klippy/motion_bridge.so
+MOTION_BRIDGE_SRC  = rust/target/release/libmotion_bridge_native.$(MOTION_BRIDGE_EXT)
+MOTION_BRIDGE_DEST = klippy/motion_bridge_native.so
 
 motion-bridge:
 	cd rust && cargo build -p motion-bridge --release

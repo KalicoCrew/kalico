@@ -6,11 +6,11 @@
 import logging
 
 try:
-    import motion_bridge as _native
+    from . import motion_bridge_native as _native
 except ImportError:
     _native = None
     logging.warning(
-        "motion_bridge native module not found; "
+        "motion_bridge_native module not found; "
         "build with 'make -f Makefile.kalico motion-bridge'"
     )
 
