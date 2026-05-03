@@ -1357,6 +1357,32 @@ pub mod exports {
         1
     }
 
+    /// Sim-only scaffold (Step 7-D §10 Renode end-to-end test).
+    ///
+    /// The runtime's endstop module reads pin levels from an internal
+    /// `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
+    /// endstop.rs:311). Production firmware will eventually wire real MCU
+    /// GPIO sampling into `endstop::set_pin_level` per modulation tick;
+    /// that wiring is a separate workstream not yet landed (Step-1 commit
+    /// e5026de05 message: "set_pin_level() abstraction stub for the
+    /// Step-2 ISR integration to wire in real GPIO reads").
+    ///
+    /// Until that lands, the Renode e2e test (tools/test_renode_endstop_e2e
+    /// .py) cannot trigger trips by driving real PC13 — it must directly
+    /// poke the runtime-side abstract pin table. This shim exposes
+    /// `endstop::set_pin_level` over the C ABI, gated behind
+    /// `feature = "kalico-sim"` (mirrors `kalico_runtime_load_fixture`).
+    /// NEVER include in production firmware.
+    #[cfg(feature = "kalico-sim")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_endstop_set_pin_level(gpio: u16, level: u8) -> i32 {
+        if runtime::endstop::set_pin_level(gpio, level != 0) {
+            KALICO_OK
+        } else {
+            KALICO_ERR_NULL_PTR
+        }
+    }
+
     /// Set the homed gate to `homed` (0 = clear, non-zero = set). Required
     /// for §8 host-driven homed-state control. The legacy no-arg
     /// `kalico_set_homed` (always-set-true) at line ~830 above is preserved

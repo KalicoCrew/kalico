@@ -849,6 +849,46 @@ command_kalico_load_fixture_curve(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_load_fixture_curve,
     "kalico_load_fixture_curve slot=%hu fixture_id=%hu");
+
+// Step 7-D §10 Renode endstop e2e test scaffold. Production firmware does
+// not yet wire real MCU GPIO sampling into `endstop::set_pin_level`
+// (rust/runtime/src/endstop.rs:311) — that abstract-pin-level table is
+// only addressable from the runtime crate and tests. The e2e test pokes
+// it directly through this sim-only shim instead of driving a real GPIO
+// in Renode. NEVER include in production firmware.
+extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
+
+void
+command_kalico_sim_endstop_set_pin(uint32_t *args)
+{
+    uint16_t gpio = args[0];
+    uint8_t level = args[1];
+    int32_t r = kalico_endstop_set_pin_level(gpio, level);
+    sendf("kalico_sim_endstop_set_pin_response gpio=%hu level=%c result=%i",
+          gpio, level, r);
+}
+DECL_COMMAND(command_kalico_sim_endstop_set_pin,
+    "kalico_sim_endstop_set_pin gpio=%hu level=%c");
+
+// Step 7-D §10 Renode endstop e2e: TIM5 (40 kHz modulation timer) is not
+// enabled until the first segment push triggers the producer protocol
+// (`kalico_h7_timer_init` only configures it; `kalico_h7_enable_tim5`
+// starts it). The endstop e2e test never pushes segments — it just
+// arms, asserts a pin, expects a trip. Without TIM5 ticking, the
+// modulation ISR never invokes `endstop::tick` and the trip never
+// fires. This sim-only shim drives `kalico_h7_enable_tim5` directly so
+// the test can run the engine in steady-state without a segment.
+extern void kalico_h7_enable_tim5(void);
+
+void
+command_kalico_sim_engine_tick_start(uint32_t *args)
+{
+    (void)args;
+    kalico_h7_enable_tim5();
+    sendf("kalico_sim_engine_tick_start_response result=%i", 0);
+}
+DECL_COMMAND(command_kalico_sim_engine_tick_start,
+    "kalico_sim_engine_tick_start");
 #endif // CONFIG_KALICO_SIM
 
 // ---- Cycle-count bench (Task 27 / spec §6.4) ---------------------------

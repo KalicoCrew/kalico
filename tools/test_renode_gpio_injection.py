@@ -45,7 +45,15 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 from kalico_host_io import KalicoHostIO  # noqa: E402
 
 
-PROMPT_RE = re.compile(rb"\((?:monitor|h723)\)\s*(?:\x1b\[[0-9;]*m)?\s*$")
+# Renode emits the monitor prompt `(h723)` after a command completes, but
+# Machine state-change log lines (e.g. `[INFO] h723: Machine paused.`) can
+# arrive on the same line *after* the prompt — so a strict end-of-buffer
+# anchor misses real prompts. Accept the prompt followed by an optional
+# trailing log line containing only ASCII / ANSI / colon-separated text.
+PROMPT_RE = re.compile(
+    rb"\((?:monitor|h723)\)\s*(?:\x1b\[[0-9;]*m)?"
+    rb"(?:[^\n]*\n)?(?:[\s\x1b\[0-9;m]*)$"
+)
 DEFAULT_UART_PORT = 3334
 DEFAULT_GDB_PORT = 3333
 DEFAULT_MONITOR_PORT = 0
@@ -311,7 +319,16 @@ def test_gpio_injection_fixture(args):
         io = KalicoHostIO(port_url, identify_timeout=args.identify_timeout)
         parser = io.get_msgparser()
         messages = parser.get_messages()
-        if not any(m.startswith("kalico_sim_gpio_sample ") for m in messages):
+        # `get_messages()` returns `(msgid, msgtype, msgformat)` tuples;
+        # the format string is the third element.
+        def _msg_fmt(m):
+            if isinstance(m, str):
+                return m
+            if isinstance(m, (tuple, list)) and len(m) >= 3:
+                return m[2] if isinstance(m[2], str) else ""
+            return ""
+        if not any(_msg_fmt(m).startswith("kalico_sim_gpio_sample ")
+                   for m in messages):
             raise AssertionError(
                 "kalico_sim_gpio_sample is missing from identify dict; "
                 "rebuild with CONFIG_KALICO_SIM=y"
