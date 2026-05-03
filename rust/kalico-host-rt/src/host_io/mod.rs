@@ -114,13 +114,16 @@ pub enum ReactorCommand {
 }
 
 pub struct KalicoHostIo {
-    submission_tx:   Sender<ReactorCommand>,
-    next_call_id:    AtomicU64,
-    reactor_handle:  Option<JoinHandle<()>>,
-    status_snapshot: Arc<ArcSwap<StatusEvent>>,
-    parser:          Arc<MsgProtoParser>,
-    config:          KalicoHostIoConfig,
-    clock:           Arc<dyn crate::clock::Clock>,
+    submission_tx:       Sender<ReactorCommand>,
+    next_call_id:        AtomicU64,
+    reactor_handle:      Option<JoinHandle<()>>,
+    status_snapshot:     Arc<ArcSwap<StatusEvent>>,
+    parser:              Arc<MsgProtoParser>,
+    config:              KalicoHostIoConfig,
+    clock:               Arc<dyn crate::clock::Clock>,
+    /// Raw identify bytes (zlib-compressed blob as received from firmware).
+    /// Suitable for passing directly to klippy's `process_identify`.
+    raw_identify_bytes:  Vec<u8>,
 }
 
 impl std::fmt::Debug for KalicoHostIo {
@@ -149,19 +152,60 @@ impl KalicoHostIo {
         Self::open(path, DEFAULT_BAUD)
     }
 
+    /// Open a Linux PTY or pipe path using `O_RDWR | O_NOCTTY`, bypassing the
+    /// `serialport` baud-rate configuration that can interfere with pseudo-
+    /// terminals. Use this for paths like `/tmp/klipper_sim_socket` (a symlink
+    /// to `/dev/pts/N`) or `/tmp/klipper_host_*` that klipper's Linux MCU
+    /// creates.
+    #[cfg(target_family = "unix")]
+    pub fn open_pipe(path: &str) -> Result<Self, TransportError> {
+        Self::open_pipe_with_config(path, KalicoHostIoConfig::default())
+    }
+
+    #[cfg(target_family = "unix")]
+    pub fn open_pipe_with_config(
+        path: &str,
+        config: KalicoHostIoConfig,
+    ) -> Result<Self, TransportError> {
+        use std::os::unix::io::FromRawFd;
+
+        // SAFETY: `libc::open` and `TTYPort::from_raw_fd` are both unsafe FFI
+        // boundaries. We check the return value of `open` before using the fd.
+        #[allow(unsafe_code)]
+        let port_box: Box<dyn serialport::SerialPort> = {
+            let cpath = std::ffi::CString::new(path)
+                .map_err(|e| TransportError::Io(std::io::Error::other(e)))?;
+            let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+            if fd < 0 {
+                return Err(TransportError::Io(std::io::Error::last_os_error()));
+            }
+            unsafe { Box::new(serialport::TTYPort::from_raw_fd(fd)) }
+        };
+        Self::open_with_port(port_box, config)
+    }
+
     pub fn open_with_config(
         path: &str,
         baud: u32,
         config: KalicoHostIoConfig,
     ) -> Result<Self, TransportError> {
-        let mut port_box: Box<dyn serialport::SerialPort> = serialport::new(path, baud)
+        let port_box: Box<dyn serialport::SerialPort> = serialport::new(path, baud)
             .timeout(Duration::from_millis(100))
             .open()
             .map_err(|e| TransportError::Io(
                 std::io::Error::other(format!("serialport::open({path}@{baud}): {e}"))
             ))?;
+        Self::open_with_port(port_box, config)
+    }
 
-        let (parser_owned, _seq, rx_buf) = identify::identify_handshake(
+    fn open_with_port(
+        mut port_box: Box<dyn serialport::SerialPort>,
+        config: KalicoHostIoConfig,
+    ) -> Result<Self, TransportError> {
+        // Ensure read timeout is set (pipe_open path skips .timeout() builder).
+        let _ = port_box.set_timeout(Duration::from_millis(100));
+
+        let (parser_owned, raw_identify_bytes, _seq, rx_buf) = identify::identify_handshake(
             &mut port_box,
             config.identify_timeout,
         )?;
@@ -191,6 +235,7 @@ impl KalicoHostIo {
             parser,
             config,
             clock,
+            raw_identify_bytes,
         })
     }
 }
@@ -310,6 +355,26 @@ impl KalicoHostIo {
 
     pub fn status(&self) -> std::sync::Arc<crate::host_io::runtime_events::StatusEvent> {
         self.status_snapshot.load_full()
+    }
+
+    /// Return the raw identify bytes (zlib-compressed blob from firmware).
+    /// Pass directly to klippy's `msgproto.MessageParser.process_identify`.
+    pub fn raw_identify_bytes(&self) -> &[u8] {
+        &self.raw_identify_bytes
+    }
+
+    /// Send a human-readable command string (e.g. `"get_uptime"`) and wait
+    /// for a response with the given name. Returns a `HashMap<String, i64>`
+    /// for integer fields; callers cast as needed.
+    ///
+    /// This is the Rust equivalent of klippy's `serial.send_with_response`.
+    pub fn send_with_response(
+        &self,
+        cmd: &str,
+        response: &str,
+        timeout: Duration,
+    ) -> Result<MessageParams, TransportError> {
+        self.call(cmd, response, timeout)
     }
 }
 

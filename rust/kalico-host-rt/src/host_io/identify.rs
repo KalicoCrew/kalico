@@ -19,11 +19,13 @@ const IDENTIFY_CHUNK: u32 = 40;
 ///
 /// Drains stale RX bytes, then issues `identify offset=N count=40` until
 /// the response data terminates with an empty chunk. Returns `(parser,
-/// seq, rx_buf)` on success.
+/// raw_identify_bytes, seq, rx_buf)` on success. `raw_identify_bytes` is
+/// the raw (zlib-compressed or plain) blob as received from the firmware —
+/// suitable for passing to klippy's `msgproto.MessageParser.process_identify`.
 pub fn identify_handshake(
     port: &mut Box<dyn SerialPort>,
     timeout: Duration,
-) -> Result<(MsgProtoParser, u8, Vec<u8>), TransportError> {
+) -> Result<(MsgProtoParser, Vec<u8>, u8, Vec<u8>), TransportError> {
     let deadline = Instant::now() + timeout;
 
     let drain_until = Instant::now() + Duration::from_millis(300);
@@ -78,8 +80,9 @@ pub fn identify_handshake(
         }
     }
 
+    let raw_identify_bytes = identify_data.clone();
     let parser = build_parser_from_identify(&identify_data)?;
-    Ok((parser, seq, rx_buf))
+    Ok((parser, raw_identify_bytes, seq, rx_buf))
 }
 
 fn wait_for_identify_response(

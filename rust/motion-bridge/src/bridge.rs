@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyRuntimeError;
@@ -15,6 +16,7 @@ use pyo3::types::PyDict;
 use kalico_host_rt::clock::RealClock;
 use kalico_host_rt::credit::CreditCounter;
 use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
+use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::passthrough_queue::{
     CommandQueueId, NotifyId, PassthroughEntry, PassthroughRouter,
 };
@@ -41,16 +43,19 @@ const CREDIT_SEED_CAPACITY: i32 = 1024;
 
 // ── Internal types ──────────────────────────────────────────────────────
 
-/// Metadata stored per claimed MCU. Phase 1 only stores connection params;
-/// actual serial open happens in Phase 2+.
-#[derive(Debug)]
+/// Metadata stored per claimed MCU.
 struct McuConnection {
     #[allow(dead_code)]
     label: String,
-    #[allow(dead_code)]
     serial_path: String,
-    #[allow(dead_code)]
     baud: u32,
+    /// Live I/O handle — populated by `attach_serial`. `None` until attached.
+    /// Wrapped in `Arc` so callers can clone the reference out of the mutex
+    /// and then call blocking methods without holding the lock.
+    host_io: Option<Arc<KalicoHostIo>>,
+    /// Runtime event receiver — populated by `attach_serial`. Drained by
+    /// `take_runtime_event` for klippy-side dispatch.
+    runtime_rx: Option<Receiver<kalico_host_rt::host_io::runtime_events::RuntimeEvent>>,
 }
 
 /// An event queued for Python consumption via `poll_event()`.
@@ -197,6 +202,8 @@ impl PyMotionBridge {
                 label: label.to_owned(),
                 serial_path: serial_path.to_owned(),
                 baud,
+                host_io: None,
+                runtime_rx: None,
             },
         );
         Ok(raw)
@@ -441,6 +448,237 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("parser build: {e:?}")))?;
         *self.parser.lock().unwrap() = Some(Arc::new(parser));
         Ok(())
+    }
+
+    // ── Phase 1: serial attach + identify ──────────────────────────────
+
+    /// Open the serial port for `mcu_handle`, run the identify handshake,
+    /// and spawn the host-rt reactor thread that owns the FD.
+    ///
+    /// Blocks until the port is open and identify completes (or the
+    /// 30-second retry window expires). The raw identify bytes (zlib
+    /// blob from firmware) are stored and can be retrieved via
+    /// `get_identify_data`.
+    ///
+    /// Call once per MCU after `claim_mcu`. Calling again on an already-
+    /// attached MCU replaces the existing `KalicoHostIo`.
+    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0))]
+    fn attach_serial(
+        &self,
+        mcu_handle: u32,
+        serial_path: &str,
+        baud: u32,
+        timeout_s: f64,
+    ) -> PyResult<()> {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
+        let effective_baud = if baud == 0 { 250_000 } else { baud };
+        let config = KalicoHostIoConfig::default();
+
+        // Determine whether this is a PTY/pipe path (baud=0 signals pipe mode)
+        // or a real serial port. Pipe mode uses O_RDWR | O_NOCTTY to open the
+        // PTY without configuring baud rate, which serialport::open() would do
+        // and which interferes with Linux pseudo-terminals.
+        let is_pipe = baud == 0
+            || serial_path.starts_with("/tmp/")
+            || serial_path.starts_with("/dev/pts/")
+            || serial_path.contains("klipper_host")
+            || serial_path.contains("klipper_sim");
+
+        let host_io = loop {
+            let result = if is_pipe {
+                #[cfg(target_family = "unix")]
+                { KalicoHostIo::open_pipe_with_config(serial_path, config.clone()) }
+                #[cfg(not(target_family = "unix"))]
+                { KalicoHostIo::open_with_config(serial_path, effective_baud, config.clone()) }
+            } else {
+                KalicoHostIo::open_with_config(serial_path, effective_baud, config.clone())
+            };
+            match result {
+                Ok(io) => break io,
+                Err(e) => {
+                    if Instant::now() >= deadline {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "attach_serial: could not open {serial_path} within {timeout_s}s: {e}"
+                        )));
+                    }
+                    log::warn!("attach_serial: retrying {serial_path}: {e}");
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        };
+
+        // Subscribe to runtime events before storing so no events are missed.
+        let runtime_rx = host_io
+            .take_runtime_event_subscription()
+            .map_err(|e| PyRuntimeError::new_err(format!("attach_serial: runtime_event subscribe: {e:?}")))?;
+
+        let mut mcus = self.mcus.lock().unwrap();
+        let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "attach_serial: unknown mcu_handle {mcu_handle}"
+            ))
+        })?;
+        conn.host_io = Some(Arc::new(host_io));
+        conn.runtime_rx = Some(runtime_rx);
+        Ok(())
+    }
+
+    /// Return the raw identify bytes (zlib-compressed firmware data-dict)
+    /// for the given MCU. `attach_serial` must have been called first.
+    ///
+    /// Pass the returned bytes to klippy's
+    /// `msgproto.MessageParser.process_identify(data)`.
+    fn get_identify_data(&self, mcu_handle: u32) -> PyResult<Vec<u8>> {
+        let io = {
+            let mcus = self.mcus.lock().unwrap();
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "get_identify_data: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "get_identify_data: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+        Ok(io.raw_identify_bytes().to_vec())
+    }
+
+    /// Send a human-readable msgproto command and wait for a response.
+    ///
+    /// Equivalent to klippy's `serial.send_with_response(msg, response)`.
+    /// Returns a Python dict of the response parameters.
+    ///
+    /// `msg` is a command string like `"get_uptime"` or `"get_clock"`.
+    /// `response` is the expected response name like `"uptime"` or `"clock"`.
+    #[pyo3(signature = (mcu_handle, msg, response, timeout_s = 5.0))]
+    fn bridge_call(
+        &self,
+        py: Python<'_>,
+        mcu_handle: u32,
+        msg: &str,
+        response: &str,
+        timeout_s: f64,
+    ) -> PyResult<Py<PyDict>> {
+        use std::time::Duration;
+        use kalico_host_rt::transport::Transport;
+
+        // Get the submission_tx from KalicoHostIo — we need to submit
+        // without holding the mutex across a blocking call. KalicoHostIo::call
+        // uses mpsc internally and blocks; we must release the mcus lock before
+        // calling it. We do this by cloning the sender out while locked, then
+        // calling after unlock. Unfortunately KalicoHostIo doesn't expose its
+        // sender directly, so we use py.allow_threads with a short-lived lock.
+        //
+        // Safe because py.allow_threads drops the GIL; the mcus mutex guards
+        // McuConnection which is Send (KalicoHostIo is Send).
+        // Clone the Arc out of the mutex so we can call blocking I/O without
+        // holding the lock.
+        let io = {
+            let mcus = self.mcus.lock().unwrap();
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "bridge_call: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "bridge_call: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+
+        let msg_owned = msg.to_owned();
+        let response_owned = response.to_owned();
+        let params = py.allow_threads(|| -> PyResult<_> {
+            use kalico_host_rt::transport::Transport;
+            io.call(&msg_owned, &response_owned, Duration::from_secs_f64(timeout_s))
+                .map_err(|e| PyRuntimeError::new_err(format!("bridge_call: {e}")))
+        })?;
+
+        let d = PyDict::new(py);
+        for (k, v) in &params.fields {
+            use kalico_host_rt::transport::MessageValue;
+            match v {
+                MessageValue::U32(n) => d.set_item(k, n)?,
+                MessageValue::I32(n) => d.set_item(k, n)?,
+                MessageValue::U64(n) => d.set_item(k, n)?,
+                MessageValue::Bytes(b) => d.set_item(k, pyo3::types::PyBytes::new(py, b.as_slice()))?,
+                MessageValue::String(s) => d.set_item(k, s)?,
+            }
+        }
+        Ok(d.unbind())
+    }
+
+    /// Drain one runtime event from the MCU's event queue.
+    ///
+    /// Returns a Python dict describing the event (with a `"type"` key),
+    /// or `None` if no event is pending. Klippy registers a reactor timer
+    /// that polls this and dispatches to registered handlers.
+    ///
+    /// Event types emitted:
+    ///   - `"status"`: kalico_status_v6 heartbeat — keys: `engine_status`,
+    ///     `current_segment_id`, `last_fault`, `fault_detail`
+    ///   - `"credit_freed"`: kalico_credit_freed — keys: `retired_through_segment_id`,
+    ///     `free_slots`
+    ///   - `"fault"`: kalico_fault — keys: `fault_code`, `fault_detail`,
+    ///     `segment_id`, `synthesized`
+    ///   - `"output"`: #output / unknown output — keys: `format`, `msg`
+    fn take_runtime_event(&self, py: Python<'_>, mcu_handle: u32) -> PyResult<Option<Py<PyDict>>> {
+        use kalico_host_rt::host_io::runtime_events::RuntimeEvent;
+        use std::sync::mpsc::TryRecvError;
+
+        let event = {
+            let mut mcus = self.mcus.lock().unwrap();
+            let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "take_runtime_event: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            match conn.runtime_rx.as_mut() {
+                None => return Ok(None),
+                Some(rx) => match rx.try_recv() {
+                    Ok(ev) => ev,
+                    Err(TryRecvError::Empty) => return Ok(None),
+                    Err(TryRecvError::Disconnected) => return Ok(None),
+                },
+            }
+        };
+
+        let d = PyDict::new(py);
+        match event {
+            RuntimeEvent::Status(s) => {
+                d.set_item("type", "status")?;
+                d.set_item("engine_status", s.engine_status)?;
+                d.set_item("current_segment_id", s.current_segment_id)?;
+                d.set_item("last_fault", s.last_fault)?;
+                d.set_item("fault_detail", s.fault_detail)?;
+            }
+            RuntimeEvent::CreditFreed(c) => {
+                d.set_item("type", "credit_freed")?;
+                d.set_item("retired_through_segment_id", c.retired_through_segment_id)?;
+                d.set_item("free_slots", c.free_slots)?;
+            }
+            RuntimeEvent::Fault(f) => {
+                d.set_item("type", "fault")?;
+                d.set_item("fault_code", f.fault_code)?;
+                d.set_item("fault_detail", f.fault_detail)?;
+                d.set_item("segment_id", f.segment_id)?;
+                d.set_item("synthesized", f.synthesized)?;
+            }
+            RuntimeEvent::Trace(_) => {
+                // Trace events are not klippy-visible; skip silently.
+                return Ok(None);
+            }
+            RuntimeEvent::UnknownOutput { format, msg } => {
+                d.set_item("type", "output")?;
+                d.set_item("format", format)?;
+                d.set_item("msg", msg)?;
+            }
+        }
+        Ok(Some(d.unbind()))
     }
 
     /// Update clock estimation parameters for the given MCU.

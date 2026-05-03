@@ -16,6 +16,7 @@ license.workspace = true
 
 [dependencies]
 serialport = "4"
+libc = "0.2"
 # `crc` was on the original plan ingredients list but we hand-roll
 # Klipper's bespoke crc16-ccitt-variant in host_io.rs to match the
 # Python helper byte-for-byte (see `crc16_ccitt`); the canned crate

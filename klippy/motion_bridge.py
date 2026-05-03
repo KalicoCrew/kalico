@@ -107,6 +107,26 @@ class MotionBridgeWrapper:
         return self._bridge.extract_old(handle)
 
     # ------------------------------------------------------------------
+    # Phase 1: serial attach + identify
+    # ------------------------------------------------------------------
+
+    def attach_serial(self, mcu_handle, serial_path, baud, timeout_s=30.0):
+        """Open serial port, run identify handshake, spawn reactor thread."""
+        return self._bridge.attach_serial(mcu_handle, serial_path, baud, timeout_s)
+
+    def get_identify_data(self, mcu_handle):
+        """Return raw zlib identify bytes for process_identify."""
+        return bytes(self._bridge.get_identify_data(mcu_handle))
+
+    def bridge_call(self, mcu_handle, msg, response, timeout_s=5.0):
+        """Send a msgproto command and wait for the named response dict."""
+        return self._bridge.bridge_call(mcu_handle, msg, response, timeout_s)
+
+    def take_runtime_event(self, mcu_handle):
+        """Drain one runtime event dict, or None if nothing pending."""
+        return self._bridge.take_runtime_event(mcu_handle)
+
+    # ------------------------------------------------------------------
     # Phase 2: msgproto handover
     # ------------------------------------------------------------------
 
