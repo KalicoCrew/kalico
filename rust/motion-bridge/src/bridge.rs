@@ -24,6 +24,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 use crate::classify;
 use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
 use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
+use crate::homing::HomingState;
 use crate::planner::{PlannerError, PlannerHandle};
 use crate::router_transport::RouterTransport;
 use crate::slot_pool::{SlotPool, CURVE_POOL_N};
@@ -145,6 +146,7 @@ pub struct PyMotionBridge {
     /// integration tests assert this stays zero — non-zero indicates klippy
     /// has not wired SET_CLOCK_EST before motion submission.
     fallback_clock_conversions: Arc<AtomicU64>,
+    homing: Arc<HomingState>,
 }
 
 #[pymethods]
@@ -168,6 +170,7 @@ impl PyMotionBridge {
             slot_pools: Arc::new(Mutex::new(HashMap::new())),
             credit_counters: Arc::new(Mutex::new(HashMap::new())),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
+            homing: Arc::new(HomingState::new()),
         }
     }
 
@@ -600,6 +603,7 @@ impl PyMotionBridge {
         // surfaces them as `PlannerError::Dispatch`.
         let counter = Arc::clone(&self.dispatched_segments);
         let fallback_counter = Arc::clone(&self.fallback_clock_conversions);
+        let homing = Arc::clone(&self.homing);
         let warned_mcus: Arc<Mutex<HashSet<u32>>> =
             Arc::new(Mutex::new(HashSet::new()));
         let parser_slot = Arc::clone(&self.parser);
@@ -712,6 +716,7 @@ impl PyMotionBridge {
                     plan.params.id = *entry;
                     *entry = entry.wrapping_add(1);
                 }
+                homing.mark_dispatched_segment(plan.params.id);
 
                 // Load each axis curve, then patch handle into params.
                 // Take the curves out so we can mutate `plan.params` in the
@@ -798,6 +803,18 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// Submit one homing-tagged absolute move. MVP watches the first arm id;
+    /// multi-arm logical OR is Step 10.
+    #[pyo3(signature = (newpos, speed, arm_ids))]
+    fn submit_homing_move(
+        &self,
+        newpos: Vec<f64>,
+        speed: f64,
+        arm_ids: Vec<u32>,
+    ) -> PyResult<()> {
+        self.submit_homing_move_inner(&newpos, speed, &arm_ids)
+    }
+
     /// Flush all pending moves and block until the planner has shaped them.
     fn wait_moves(&self) -> PyResult<()> {
         let planner_guard = self.planner.lock().unwrap();
@@ -806,7 +823,16 @@ impl PyMotionBridge {
                 "planner not initialized — call init_planner first",
             )
         })?;
-        planner.flush().map_err(planner_err)
+        planner.flush().map_err(planner_err)?;
+        self.homing.refresh_after_wait();
+        Ok(())
+    }
+
+    fn take_trip_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        let Some(evt) = self.homing.take_trip_event() else {
+            return Ok(None);
+        };
+        Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 
     /// Submit a dwell: flush + advance print time.
@@ -924,6 +950,7 @@ impl PyMotionBridge {
         if let Some(c) = self.credit_counters.lock().unwrap().get(&mcu) {
             c.on_credit_freed(free_slots);
         }
+        self.homing.complete_if_retired(retired_through_segment_id);
         Ok(n_released as u32)
     }
 
@@ -955,4 +982,71 @@ impl PyMotionBridge {
     fn fallback_clock_conversions(&self) -> u64 {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
+}
+
+impl PyMotionBridge {
+    fn submit_homing_move_inner(
+        &self,
+        newpos: &[f64],
+        speed: f64,
+        arm_ids: &[u32],
+    ) -> PyResult<()> {
+        if newpos.len() < 3 {
+            return Err(PyRuntimeError::new_err(
+                "submit_homing_move requires newpos with at least 3 axes",
+            ));
+        }
+        let arm_id = arm_ids.first().copied().ok_or_else(|| {
+            PyRuntimeError::new_err("submit_homing_move requires at least one arm id")
+        })?;
+        // TODO(Step 10): accept all arm_ids as a logical OR set.
+        self.homing.begin(arm_id);
+
+        let pos = *self.commanded_pos.lock().unwrap();
+        let classified = classify::classify_and_build(
+            pos,
+            newpos[0] - pos[0],
+            newpos[1] - pos[1],
+            newpos[2] - pos[2],
+            0.0,
+            speed,
+        )
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+        let planner_guard = self.planner.lock().unwrap();
+        let planner = planner_guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "planner not initialized — call init_planner first",
+            )
+        })?;
+        if let Err(e) = planner.submit_move(classified) {
+            self.homing.reset_to_idle();
+            return Err(planner_err(e));
+        }
+        Ok(())
+    }
+}
+
+fn trip_event_to_pydict(
+    py: Python<'_>,
+    evt: runtime::endstop::TripEvent,
+) -> PyResult<Py<PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("arm_id", evt.arm_id)?;
+    d.set_item("trip_clock", evt.trip_clock)?;
+    d.set_item("trip_source_idx", evt.trip_source_idx)?;
+    d.set_item("stepper_count", evt.stepper_count)?;
+    let steppers: Vec<Py<PyDict>> = evt
+        .steppers
+        .iter()
+        .take(usize::from(evt.stepper_count))
+        .map(|s| {
+            let sd = PyDict::new(py);
+            sd.set_item("oid", s.oid).unwrap();
+            sd.set_item("step_count", s.step_count).unwrap();
+            sd.unbind()
+        })
+        .collect();
+    d.set_item("steppers", steppers)?;
+    Ok(d.unbind())
 }

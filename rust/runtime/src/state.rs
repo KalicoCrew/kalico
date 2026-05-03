@@ -33,6 +33,13 @@ use crate::segment::Segment;
 use crate::slot::{NoopIs, NoopPa};
 use crate::trace::{TRACE_RING_N, TraceSample};
 
+/// Per-MCU stepper oid counter slots for homing snapshots.
+///
+/// The MVP firmware owns at most four motors per MCU today; eight slots keep
+/// room for AWD pairs and match `endstop::MAX_STEPPERS` without growing the
+/// ISR hot-path scan beyond a small fixed array.
+pub const MAX_STEPPER_OIDS: usize = 8;
+
 /// Per-tick state shared with PA/IS slots. Spec §3.1.
 #[derive(Debug, Clone, Copy)]
 pub struct TickState {
@@ -148,6 +155,8 @@ pub struct SharedState {
     pub accepted_segment_id_seen: AtomicBool,
     // Step 7-B: homing gate — ISR checks this before accepting motion segments.
     pub homed: AtomicBool,
+    // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
+    pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
 }
 
 impl SharedState {
@@ -171,6 +180,16 @@ impl SharedState {
             terminal_segment_id_value: AtomicU32::new(0),
             accepted_segment_id_seen: AtomicBool::new(false),
             homed: AtomicBool::new(false),
+            stepper_counts: [
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+            ],
         }
     }
 }

@@ -4,7 +4,7 @@
 //! layered on later. The global single-arm slot is intentionally represented
 //! with atomics only because the runtime crate denies unsafe code.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;
@@ -614,7 +614,10 @@ fn publish_snapshot(clock: u64, source_idx: u8, stepper_counts: &[i32]) {
         .trip_source_idx
         .store(source_idx, Ordering::Release);
 
-    let count = core::cmp::min(stepper_counts.len(), MAX_STEPPERS);
+    let count = core::cmp::min(
+        usize::from(ARM.stepper_count.load(Ordering::Acquire)),
+        MAX_STEPPERS,
+    );
     for (dst_oid, oid) in ARM
         .snapshot
         .stepper_oids
@@ -624,14 +627,16 @@ fn publish_snapshot(clock: u64, source_idx: u8, stepper_counts: &[i32]) {
     {
         dst_oid.store(oid.load(Ordering::Acquire), Ordering::Release);
     }
-    for (dst_count, count_value) in ARM
+    for (dst_count, oid) in ARM
         .snapshot
         .step_counts
         .iter()
-        .zip(stepper_counts.iter())
+        .zip(ARM.stepper_oids.iter())
         .take(count)
     {
-        dst_count.store(*count_value, Ordering::Release);
+        let idx = usize::from(oid.load(Ordering::Acquire));
+        let count_value = stepper_counts.get(idx).copied().unwrap_or(0);
+        dst_count.store(count_value, Ordering::Release);
     }
     ARM.snapshot
         .step_count_count
@@ -673,7 +678,7 @@ mod tests {
             source_count: 1,
             sources,
             stepper_count: 2,
-            stepper_oids: [7, 9, 0, 0, 0, 0, 0, 0],
+            stepper_oids: [0, 1, 0, 0, 0, 0, 0, 0],
         }
     }
 
@@ -803,7 +808,7 @@ mod tests {
             source_count: 2,
             sources,
             stepper_count: 2,
-            stepper_oids: [11, 12, 0, 0, 0, 0, 0, 0],
+            stepper_oids: [0, 1, 0, 0, 0, 0, 0, 0],
         })
         .expect("arm");
         set_pin_level(6, true);
@@ -812,9 +817,9 @@ mod tests {
         assert_eq!(evt.arm_id, 77);
         assert_eq!(evt.trip_source_idx, 1);
         assert_eq!(evt.stepper_count, 2);
-        assert_eq!(evt.steppers[0].oid, 11);
+        assert_eq!(evt.steppers[0].oid, 0);
         assert_eq!(evt.steppers[0].step_count, 100);
-        assert_eq!(evt.steppers[1].oid, 12);
+        assert_eq!(evt.steppers[1].oid, 1);
         assert_eq!(evt.steppers[1].step_count, -200);
     }
 

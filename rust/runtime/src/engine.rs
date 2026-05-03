@@ -5,7 +5,9 @@ use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use heapless::spsc::{Consumer, Producer};
 
 use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
-use crate::curve_pool::{CurveHandle, CurvePool, CurveView, MAX_CONTROL_POINTS, MAX_KNOT_VECTOR_LEN};
+use crate::curve_pool::{
+    CurveHandle, CurvePool, CurveView, MAX_CONTROL_POINTS, MAX_KNOT_VECTOR_LEN,
+};
 use crate::endstop::{self, TripAction};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
@@ -293,7 +295,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // lets non-homed MCU ticks complete without faulting.
         if !shared.homed.load(Ordering::Acquire) {
             if shared.stream_open.load(Ordering::Acquire) {
-                self.latch_fault(RuntimeError::NotHomed, 0, CurveHandle::UNUSED_SENTINEL, now, trace, shared, None);
+                self.latch_fault(
+                    RuntimeError::NotHomed,
+                    0,
+                    CurveHandle::UNUSED_SENTINEL,
+                    now,
+                    trace,
+                    shared,
+                    None,
+                );
                 return Err(RuntimeError::NotHomed);
             }
             return Ok(());
@@ -349,12 +359,23 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
     ) -> bool {
-        // STEP-3-BLOCKER: stepper_counts not yet wired.
-        if endstop::tick(now, v_per_axis_q16, &[]) != TripAction::AbortNow {
+        let mut stepper_counts = [0_i32; crate::state::MAX_STEPPER_OIDS];
+        for (dst, src) in stepper_counts.iter_mut().zip(shared.stepper_counts.iter()) {
+            *dst = src.load(Ordering::Acquire);
+        }
+        if endstop::tick(now, v_per_axis_q16, &stepper_counts) != TripAction::AbortNow {
             return false;
         }
         self.clear_current();
-        self.latch_fault(RuntimeError::HomingTrip, 0, CurveHandle::UNUSED_SENTINEL, now, trace, shared, None);
+        self.latch_fault(
+            RuntimeError::HomingTrip,
+            0,
+            CurveHandle::UNUSED_SENTINEL,
+            now,
+            trace,
+            shared,
+            None,
+        );
         true
     }
 
@@ -530,15 +551,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             let Some(cv) = pool.resolve(current.x_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
-                    current.x_handle.slot_idx, 0, current.x_handle.generation,
+                    current.x_handle.slot_idx,
+                    0,
+                    current.x_handle.generation,
                 );
-                self.latch_fault(RuntimeError::InvalidHandle, current.id, current.x_handle, now, trace, shared, Some(detail));
+                self.latch_fault(
+                    RuntimeError::InvalidHandle,
+                    current.id,
+                    current.x_handle,
+                    now,
+                    trace,
+                    shared,
+                    Some(detail),
+                );
                 return Err(RuntimeError::InvalidHandle);
             };
             match scalar_eval(&cv, u) {
                 Ok(v) => v,
                 Err(()) => {
-                    self.latch_fault(RuntimeError::InvalidCurve, current.id, current.x_handle, now, trace, shared, None);
+                    self.latch_fault(
+                        RuntimeError::InvalidCurve,
+                        current.id,
+                        current.x_handle,
+                        now,
+                        trace,
+                        shared,
+                        None,
+                    );
                     return Err(RuntimeError::InvalidCurve);
                 }
             }
@@ -550,15 +589,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             let Some(cv) = pool.resolve(current.y_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
-                    current.y_handle.slot_idx, 0, current.y_handle.generation,
+                    current.y_handle.slot_idx,
+                    0,
+                    current.y_handle.generation,
                 );
-                self.latch_fault(RuntimeError::InvalidHandle, current.id, current.y_handle, now, trace, shared, Some(detail));
+                self.latch_fault(
+                    RuntimeError::InvalidHandle,
+                    current.id,
+                    current.y_handle,
+                    now,
+                    trace,
+                    shared,
+                    Some(detail),
+                );
                 return Err(RuntimeError::InvalidHandle);
             };
             match scalar_eval(&cv, u) {
                 Ok(v) => v,
                 Err(()) => {
-                    self.latch_fault(RuntimeError::InvalidCurve, current.id, current.y_handle, now, trace, shared, None);
+                    self.latch_fault(
+                        RuntimeError::InvalidCurve,
+                        current.id,
+                        current.y_handle,
+                        now,
+                        trace,
+                        shared,
+                        None,
+                    );
                     return Err(RuntimeError::InvalidCurve);
                 }
             }
@@ -570,15 +627,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             let Some(cv) = pool.resolve(current.z_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
-                    current.z_handle.slot_idx, 0, current.z_handle.generation,
+                    current.z_handle.slot_idx,
+                    0,
+                    current.z_handle.generation,
                 );
-                self.latch_fault(RuntimeError::InvalidHandle, current.id, current.z_handle, now, trace, shared, Some(detail));
+                self.latch_fault(
+                    RuntimeError::InvalidHandle,
+                    current.id,
+                    current.z_handle,
+                    now,
+                    trace,
+                    shared,
+                    Some(detail),
+                );
                 return Err(RuntimeError::InvalidHandle);
             };
             match scalar_eval(&cv, u) {
                 Ok(v) => v,
                 Err(()) => {
-                    self.latch_fault(RuntimeError::InvalidCurve, current.id, current.z_handle, now, trace, shared, None);
+                    self.latch_fault(
+                        RuntimeError::InvalidCurve,
+                        current.id,
+                        current.z_handle,
+                        now,
+                        trace,
+                        shared,
+                        None,
+                    );
                     return Err(RuntimeError::InvalidCurve);
                 }
             }
@@ -637,15 +712,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 } else {
                     let Some(cv) = pool.resolve(current.e_handle) else {
                         let detail = crate::error::encode_invalid_curve_handle(
-                            current.e_handle.slot_idx, 0, current.e_handle.generation,
+                            current.e_handle.slot_idx,
+                            0,
+                            current.e_handle.generation,
                         );
-                        self.latch_fault(RuntimeError::InvalidHandle, current.id, current.e_handle, now, trace, shared, Some(detail));
+                        self.latch_fault(
+                            RuntimeError::InvalidHandle,
+                            current.id,
+                            current.e_handle,
+                            now,
+                            trace,
+                            shared,
+                            Some(detail),
+                        );
                         return Err(RuntimeError::InvalidHandle);
                     };
                     match scalar_eval(&cv, u) {
                         Ok(v) => v,
                         Err(()) => {
-                            self.latch_fault(RuntimeError::InvalidCurve, current.id, current.e_handle, now, trace, shared, None);
+                            self.latch_fault(
+                                RuntimeError::InvalidCurve,
+                                current.id,
+                                current.e_handle,
+                                now,
+                                trace,
+                                shared,
+                                None,
+                            );
                             return Err(RuntimeError::InvalidCurve);
                         }
                     }
@@ -690,9 +783,27 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // intent. No no_std borrowed derivative accessor exists, so this
         // degree-lowers the scalar NURBS on stack and evaluates dx/du here.
         let v_per_axis_q16 = [
-            axis_velocity_q16(pool, current.x_handle, u, duration, self.one_tick_cycles_value),
-            axis_velocity_q16(pool, current.y_handle, u, duration, self.one_tick_cycles_value),
-            axis_velocity_q16(pool, current.z_handle, u, duration, self.one_tick_cycles_value),
+            axis_velocity_q16(
+                pool,
+                current.x_handle,
+                u,
+                duration,
+                self.one_tick_cycles_value,
+            ),
+            axis_velocity_q16(
+                pool,
+                current.y_handle,
+                u,
+                duration,
+                self.one_tick_cycles_value,
+            ),
+            axis_velocity_q16(
+                pool,
+                current.z_handle,
+                u,
+                duration,
+                self.one_tick_cycles_value,
+            ),
         ];
         if self.poll_endstop_trip(now, v_per_axis_q16, trace, shared) {
             return Err(RuntimeError::HomingTrip);
@@ -707,7 +818,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         // Step 7: slot pipeline. Noop ZSTs at Step 5.
         let dt = 1.0 / (crate::clock::TICK_RATE_HZ as f32);
-        let mut state = TickState { dt, positions, motors };
+        let mut state = TickState {
+            dt,
+            positions,
+            motors,
+        };
         self.pa_slot.apply(&mut state);
         self.is_slot.apply(&mut state);
 
@@ -717,17 +832,25 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // update returns Err (burst exceeded), latch StepBurstExceeded.
         for i in 0..4 {
             if let (Some(ss), Some(&m)) = (self.step_state.get_mut(i), state.motors.get(i)) {
-                if ss.update(m).is_err() {
-                    self.latch_fault(
-                        RuntimeError::StepBurstExceeded,
-                        current.id,
-                        current.x_handle,
-                        now,
-                        trace,
-                        shared,
-                        None,
-                    );
-                    return Err(RuntimeError::StepBurstExceeded);
+                let step_result = match ss.update(m) {
+                    Ok(result) => result,
+                    Err(()) => {
+                        self.latch_fault(
+                            RuntimeError::StepBurstExceeded,
+                            current.id,
+                            current.x_handle,
+                            now,
+                            trace,
+                            shared,
+                            None,
+                        );
+                        return Err(RuntimeError::StepBurstExceeded);
+                    }
+                };
+                if step_result.n_steps != 0 {
+                    if let Some(counter) = shared.stepper_counts.get(i) {
+                        counter.fetch_add(step_result.n_steps, Ordering::AcqRel);
+                    }
                 }
             }
         }
@@ -809,8 +932,12 @@ fn axis_velocity_q16(
     if handle.is_unused_sentinel() {
         return 0;
     }
-    let Some(curve) = pool.resolve(handle) else { return 0; };
-    let Ok(dx_du) = scalar_derivative_eval(&curve, u) else { return 0; };
+    let Some(curve) = pool.resolve(handle) else {
+        return 0;
+    };
+    let Ok(dx_du) = scalar_derivative_eval(&curve, u) else {
+        return 0;
+    };
     if duration_cycles <= 0.0 {
         return 0;
     }
@@ -850,16 +977,28 @@ fn scalar_derivative_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
             return Err(());
         };
         let denom = k1 - k0;
-        *dst = if denom > 0.0 { f32::from(curve.degree) * (p1 - p0) / denom } else { 0.0 };
+        *dst = if denom > 0.0 {
+            f32::from(curve.degree) * (p1 - p0) / denom
+        } else {
+            0.0
+        };
     }
 
     let mut knots = [0.0_f32; MAX_KNOT_VECTOR_LEN];
-    for (dst, src) in knots.iter_mut().zip(curve.knots.iter().skip(1)).take(new_knot_len) {
+    for (dst, src) in knots
+        .iter_mut()
+        .zip(curve.knots.iter().skip(1))
+        .take(new_knot_len)
+    {
         *dst = *src;
     }
 
-    let Some(cps_slice) = cps.get(..new_n) else { return Err(()); };
-    let Some(knots_slice) = knots.get(..new_knot_len) else { return Err(()); };
+    let Some(cps_slice) = cps.get(..new_n) else {
+        return Err(());
+    };
+    let Some(knots_slice) = knots.get(..new_knot_len) else {
+        return Err(());
+    };
     let view = ScalarNurbsRef::<f32>::try_new(curve.degree - 1, knots_slice, cps_slice, None)
         .map_err(|_| ())?;
     Ok(nurbs::eval::eval(&view, u))
@@ -872,7 +1011,7 @@ mod tests {
     use heapless::spsc::Queue;
 
     use super::*;
-    use crate::config::EMode;
+    use crate::config::{EMode, McuAxisConfig, MotorConfig};
     use crate::endstop::{ArmMsg, ArmPolicy, SourceConfig, SourceKind, VelocityAxis};
     use crate::queue::Q_N;
     use crate::slot::{NoopIs, NoopPa};
@@ -896,7 +1035,7 @@ mod tests {
             source_count: 1,
             sources,
             stepper_count: 1,
-            stepper_oids: [1, 0, 0, 0, 0, 0, 0, 0],
+            stepper_oids: [0, 0, 0, 0, 0, 0, 0, 0],
         })
         .expect("arm endstop");
 
@@ -915,7 +1054,7 @@ mod tests {
                 e_handle: CurveHandle::UNUSED_SENTINEL,
                 t_start: 0,
                 t_end: 52_000,
-                kinematics: KinematicTag::CoreXyAndE,
+                kinematics: KinematicTag::CartesianXyzAndE,
                 e_mode: EMode::Travel,
                 extrusion_ratio: 0.0,
                 flags: 0,
@@ -926,16 +1065,63 @@ mod tests {
         let (mut trace_producer, _trace_consumer) = trace_queue.split();
         let shared = SharedState::new();
         shared.homed.store(true, Ordering::Release);
-        endstop::set_pin_level(17, true);
-
         let mut engine = Engine::<NoopPa, NoopIs>::new(520_000_000);
+        engine.configure(McuAxisConfig {
+            motors: [
+                Some(MotorConfig {
+                    steps_per_mm: 1.0,
+                    is_awd: false,
+                    invert_dir: false,
+                }),
+                None,
+                None,
+                None,
+            ],
+            kinematics: KinematicTag::CartesianXyzAndE,
+        });
         let mut widen = WidenState::default();
-        let result = engine.tick(0, &mut widen, &pool, &mut consumer, &mut trace_producer, &shared);
+        let result = engine.tick(
+            0,
+            &mut widen,
+            &pool,
+            &mut consumer,
+            &mut trace_producer,
+            &shared,
+        );
+        assert!(result.is_ok());
+        let result = engine.tick(
+            13_000,
+            &mut widen,
+            &pool,
+            &mut consumer,
+            &mut trace_producer,
+            &shared,
+        );
+        assert!(result.is_ok());
+        assert!(
+            shared.stepper_counts[0].load(Ordering::Acquire) > 0,
+            "expected stepper counter to advance before trip"
+        );
+        endstop::set_pin_level(17, true);
+        let result = engine.tick(
+            26_000,
+            &mut widen,
+            &pool,
+            &mut consumer,
+            &mut trace_producer,
+            &shared,
+        );
 
         assert_eq!(result, Err(RuntimeError::HomingTrip));
         assert_eq!(engine.status(), RuntimeStatus::Fault);
         assert_eq!(engine.last_error(), crate::error::KALICO_ERR_HOMING_TRIP);
         assert!(engine.current.is_none());
-        assert!(endstop::poll_trip().is_some());
+        let trip = endstop::poll_trip().expect("trip event");
+        assert_eq!(trip.stepper_count, 1);
+        assert_eq!(trip.steppers[0].oid, 0);
+        assert_eq!(
+            trip.steppers[0].step_count,
+            shared.stepper_counts[0].load(Ordering::Acquire)
+        );
     }
 }

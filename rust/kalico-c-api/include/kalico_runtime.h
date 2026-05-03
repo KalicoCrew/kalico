@@ -15,6 +15,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+enum ArmPolicy {
+  TripImmediately = 0,
+  WaitForClear = 1,
+  IgnoreUntilMoving = 2,
+};
+typedef uint8_t ArmPolicy;
+
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
+
+typedef struct SourceConfig SourceConfig;
+
+typedef struct VelocityAxis VelocityAxis;
+
 /**
  * The opaque type C sees — never dereferenced on the C side.
  * Matches spec §3.2 / §5.6 handle discipline.
@@ -62,6 +79,18 @@ typedef struct TraceSample {
   uint8_t flags;
   uint8_t _pad[7];
 } TraceSample;
+
+
+
+
+
+
+
+
+
+
+
+
 
 extern void kalico_h7_enable_tim5(void);
 

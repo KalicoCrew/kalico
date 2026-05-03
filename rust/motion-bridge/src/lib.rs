@@ -6,6 +6,8 @@ pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
 #[doc(hidden)]
+pub mod homing;
+#[doc(hidden)]
 pub mod planner;
 mod router_transport;
 #[doc(hidden)]

@@ -70,8 +70,10 @@ use motion_bridge::config::{PlannerConfig, PlannerLimits};
 use motion_bridge::dispatch::{
     AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, build_push_params,
 };
+use motion_bridge::homing::{HomingSegmentState, HomingState};
 use motion_bridge::planner::PlannerHandle;
 use motion_bridge::slot_pool::{SlotPool, CURVE_POOL_N};
+use runtime::endstop::{self, ArmMsg, ArmPolicy, SourceConfig, SourceKind, VelocityAxis};
 
 // ---------------------------------------------------------------------------
 // RecordingTransport — synchronous recording stub for `kalico_load_curve` and
@@ -330,6 +332,7 @@ impl Transport for RecordingTransport {
 
 const OCTOPUS_ID: u32 = 1;
 const F446_ID: u32 = 2;
+static ENDSTOP_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 struct Harness {
     planner: Option<PlannerHandle>,
@@ -578,6 +581,73 @@ impl Drop for Harness {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+fn arm_test_endstop(arm_id: u32, gpio: u16) {
+    let mut sources = [SourceConfig::EMPTY; endstop::MAX_SOURCES];
+    sources[0] = SourceConfig {
+        kind: SourceKind::Physical,
+        gpio,
+        active_high: true,
+        policy: ArmPolicy::TripImmediately,
+        sample_n: 1,
+        velocity_axis: VelocityAxis::X,
+        v_min_q16: 0,
+    };
+    let _ = endstop::arm(ArmMsg {
+        arm_id,
+        arm_clock: 0,
+        source_count: 1,
+        sources,
+        stepper_count: 1,
+        stepper_oids: [0, 0, 0, 0, 0, 0, 0, 0],
+    });
+}
+
+#[test]
+fn homing_move_trip_wait_returns_and_exposes_trip() {
+    let _guard = ENDSTOP_TEST_MUTEX.lock().unwrap();
+    let _ = endstop::disarm(9001);
+    let _ = endstop::disarm(9002);
+    let _ = endstop::poll_trip();
+    endstop::set_pin_level(21, false);
+    endstop::set_pin_level(22, false);
+
+    let homing = HomingState::new();
+    arm_test_endstop(9001, 21);
+    homing.begin(9001);
+    homing.mark_dispatched_segment(1);
+    assert_eq!(homing.state(), HomingSegmentState::Active);
+
+    endstop::set_pin_level(21, true);
+    assert_eq!(
+        endstop::tick(42, [0, 0, 0], &[123]),
+        endstop::TripAction::AbortNow
+    );
+    homing.refresh_after_wait();
+    assert_eq!(homing.state(), HomingSegmentState::Tripped);
+    let trip = homing.take_trip_event().expect("trip event");
+    assert_eq!(trip.arm_id, 9001);
+    assert_eq!(trip.steppers[0].step_count, 123);
+}
+
+#[test]
+fn homing_move_without_trip_completes() {
+    let _guard = ENDSTOP_TEST_MUTEX.lock().unwrap();
+    let _ = endstop::disarm(9001);
+    let _ = endstop::disarm(9002);
+    let _ = endstop::poll_trip();
+    endstop::set_pin_level(21, false);
+    endstop::set_pin_level(22, false);
+
+    let homing = HomingState::new();
+    arm_test_endstop(9002, 22);
+    homing.begin(9002);
+    homing.mark_dispatched_segment(1);
+    homing.refresh_after_wait();
+    assert_eq!(homing.state(), HomingSegmentState::Completed);
+    assert!(homing.take_trip_event().is_none());
+    let _ = endstop::disarm(9002);
+}
 
 #[test]
 fn single_axis_x_move() {
@@ -1245,4 +1315,3 @@ fn multi_move_chain_completes_without_stall() {
     );
 
 }
-
