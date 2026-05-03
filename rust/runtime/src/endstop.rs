@@ -310,6 +310,9 @@ static ARM: Arm = Arm::new();
 static TRIP_EVENT_QUEUED: AtomicBool = AtomicBool::new(false);
 static PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS] = [const { AtomicBool::new(false) }; MAX_GPIO_PINS];
 
+#[cfg(test)]
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn set_pin_level(gpio: PinId, pin_high: bool) -> bool {
     let idx = usize::from(gpio);
     if let Some(pin) = PIN_LEVELS.get(idx) {
@@ -317,6 +320,33 @@ pub fn set_pin_level(gpio: PinId, pin_high: bool) -> bool {
         true
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    let guard = match TEST_MUTEX.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    reset_for_test();
+    guard
+}
+
+#[cfg(test)]
+fn reset_for_test() {
+    ARM.state.store(ArmState::Idle as u8, Ordering::Release);
+    ARM.arm_id.store(0, Ordering::Release);
+    ARM.source_count.store(0, Ordering::Release);
+    ARM.stepper_count.store(0, Ordering::Release);
+    ARM.snapshot.version.store(0, Ordering::Release);
+    ARM.snapshot.step_count_count.store(0, Ordering::Release);
+    TRIP_EVENT_QUEUED.store(false, Ordering::Release);
+    for src in &ARM.sources {
+        src.reset_latches();
+    }
+    for pin in &PIN_LEVELS {
+        pin.store(false, Ordering::Release);
     }
 }
 
@@ -647,19 +677,8 @@ mod tests {
         }
     }
 
-    fn reset() {
-        ARM.state.store(ArmState::Idle as u8, Ordering::Release);
-        ARM.arm_id.store(0, Ordering::Release);
-        ARM.source_count.store(0, Ordering::Release);
-        ARM.stepper_count.store(0, Ordering::Release);
-        ARM.snapshot.version.store(0, Ordering::Release);
-        TRIP_EVENT_QUEUED.store(false, Ordering::Release);
-        for src in &ARM.sources {
-            src.reset_latches();
-        }
-        for pin in &PIN_LEVELS {
-            pin.store(false, Ordering::Release);
-        }
+    fn reset() -> std::sync::MutexGuard<'static, ()> {
+        test_guard()
     }
 
     fn drain_trip() -> TripEvent {
@@ -675,7 +694,7 @@ mod tests {
                 ArmPolicy::IgnoreUntilMoving,
             ] {
                 for sample_n in [1, 3] {
-                    reset();
+                    let _guard = reset();
                     let source = cfg(kind, policy, sample_n, 1);
                     arm(msg(source)).expect("arm");
                     set_pin_level(1, true);
@@ -708,7 +727,7 @@ mod tests {
 
     #[test]
     fn ignore_until_moving_latch_requires_velocity_then_clear_once() {
-        reset();
+        let _guard = reset();
         arm(msg(cfg(
             SourceKind::TmcDiag,
             ArmPolicy::IgnoreUntilMoving,
@@ -726,7 +745,7 @@ mod tests {
         assert_eq!(tick(4, [V_MIN, 0, 0], &[1]), TripAction::AbortNow);
         assert_eq!(drain_trip().trip_clock, 4);
 
-        reset();
+        reset_for_test();
         arm(msg(cfg(
             SourceKind::TmcDiag,
             ArmPolicy::IgnoreUntilMoving,
@@ -742,7 +761,7 @@ mod tests {
 
     #[test]
     fn wait_for_clear_ignores_assertion_at_arm() {
-        reset();
+        let _guard = reset();
         arm(msg(cfg(
             SourceKind::Physical,
             ArmPolicy::WaitForClear,
@@ -760,7 +779,7 @@ mod tests {
 
     #[test]
     fn trip_immediately_assertion_at_arm_trips_on_first_sample() {
-        reset();
+        let _guard = reset();
         arm(msg(cfg(
             SourceKind::Physical,
             ArmPolicy::TripImmediately,
@@ -774,7 +793,7 @@ mod tests {
 
     #[test]
     fn multi_source_or_reports_first_asserted_source_index() {
-        reset();
+        let _guard = reset();
         let mut sources = [SourceConfig::EMPTY; MAX_SOURCES];
         sources[0] = cfg(SourceKind::Physical, ArmPolicy::TripImmediately, 1, 5);
         sources[1] = cfg(SourceKind::Physical, ArmPolicy::TripImmediately, 1, 6);
@@ -801,7 +820,7 @@ mod tests {
 
     #[test]
     fn future_arm_clock_ignores_early_assertions() {
-        reset();
+        let _guard = reset();
         let mut m = msg(cfg(SourceKind::Physical, ArmPolicy::TripImmediately, 1, 7));
         m.arm_clock = 50;
         arm(m).expect("arm");
@@ -814,7 +833,7 @@ mod tests {
 
     #[test]
     fn trip_never_fires_while_state_is_not_armed() {
-        reset();
+        let _guard = reset();
         set_pin_level(8, true);
         for state in [
             ArmState::Idle,
@@ -830,7 +849,7 @@ mod tests {
 
     #[test]
     fn exactly_one_terminal_for_trip_vs_disarm_schedules() {
-        reset();
+        let _guard = reset();
         arm(msg(cfg(
             SourceKind::Physical,
             ArmPolicy::TripImmediately,
@@ -845,7 +864,7 @@ mod tests {
         assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
         assert!(poll_trip().is_none());
 
-        reset();
+        reset_for_test();
         arm(msg(cfg(
             SourceKind::Physical,
             ArmPolicy::TripImmediately,
@@ -861,7 +880,7 @@ mod tests {
 
     #[test]
     fn snapshot_seqlock_reader_retries_odd_and_never_returns_torn_read() {
-        reset();
+        let _guard = reset();
         arm(msg(cfg(
             SourceKind::Physical,
             ArmPolicy::TripImmediately,
@@ -882,7 +901,7 @@ mod tests {
 
     #[test]
     fn active_low_polarity_uses_explicit_branch_not_xor() {
-        reset();
+        let _guard = reset();
         let mut source = cfg(SourceKind::Physical, ArmPolicy::TripImmediately, 1, 11);
         source.active_high = false;
         arm(msg(source)).expect("arm");

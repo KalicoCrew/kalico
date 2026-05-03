@@ -4,10 +4,9 @@ use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use heapless::spsc::{Consumer, Producer};
 
-use nurbs::Float as _;
-
 use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
-use crate::curve_pool::{CurveHandle, CurvePool, CurveView};
+use crate::curve_pool::{CurveHandle, CurvePool, CurveView, MAX_CONTROL_POINTS, MAX_KNOT_VECTOR_LEN};
+use crate::endstop::{self, TripAction};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
 use crate::queue::Q_N;
@@ -311,6 +310,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let Some(current) = self.current.take() else {
             // Re-check queue with Acquire — race against producer's enqueue.
             if !queue.ready() {
+                if self.poll_endstop_trip(now, [0; 3], trace, shared) {
+                    return Err(RuntimeError::HomingTrip);
+                }
                 // §8.2: queue empty + stream_open=true → KALICO_FAULT_UNDERRUN.
                 // queue empty + stream_open=false → keep current status
                 // (Idle pre-stream / Drained post-stream).
@@ -338,6 +340,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         };
 
         self.tick_with_current(current, now, queue, pool, trace, shared)
+    }
+
+    fn poll_endstop_trip(
+        &mut self,
+        now: u64,
+        v_per_axis_q16: [u32; 3],
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+        shared: &SharedState,
+    ) -> bool {
+        // STEP-3-BLOCKER: stepper_counts not yet wired.
+        if endstop::tick(now, v_per_axis_q16, &[]) != TripAction::AbortNow {
+            return false;
+        }
+        self.clear_current();
+        self.latch_fault(RuntimeError::HomingTrip, 0, CurveHandle::UNUSED_SENTINEL, now, trace, shared, None);
+        true
     }
 
     #[allow(clippy::too_many_lines)] // Spec §4.2 step 1-10 explicit pipeline — flatten on purpose.
@@ -452,6 +470,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // emitted motor positions; foreground sees the stream stay alive
         // across long Z-idle stretches without underrun.
         if current.flags & SEGMENT_FLAG_HOLD_SEGMENT != 0 {
+            if self.poll_endstop_trip(now, [0; 3], trace, shared) {
+                return Err(RuntimeError::HomingTrip);
+            }
             // Optional throttled HOLD_SAMPLE breadcrumb (§6.5). Emits at
             // most once per ~10 ms while the hold window is active.
             self.hold_sample_ticks = self.hold_sample_ticks.saturating_add(1);
@@ -665,6 +686,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return Err(RuntimeError::NaNOrInfFromEval);
         }
 
+        // Endstop tick is after tick-N evaluation but before tick-N pulse
+        // intent. No no_std borrowed derivative accessor exists, so this
+        // degree-lowers the scalar NURBS on stack and evaluates dx/du here.
+        let v_per_axis_q16 = [
+            axis_velocity_q16(pool, current.x_handle, u, duration, self.one_tick_cycles_value),
+            axis_velocity_q16(pool, current.y_handle, u, duration, self.one_tick_cycles_value),
+            axis_velocity_q16(pool, current.z_handle, u, duration, self.one_tick_cycles_value),
+        ];
+        if self.poll_endstop_trip(now, v_per_axis_q16, trace, shared) {
+            return Err(RuntimeError::HomingTrip);
+        }
+
         // Step 6: kinematic transform. Pipeline order: kinematics BEFORE PA/IS.
         let positions = [x, y, z, e];
         let motors = match current.kinematics {
@@ -764,4 +797,145 @@ fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
     )
     .map_err(|_| ())?;
     Ok(nurbs::eval::eval(&view, u))
+}
+
+fn axis_velocity_q16(
+    pool: &CurvePool,
+    handle: CurveHandle,
+    u: f32,
+    duration_cycles: f32,
+    one_tick_cycles_value: u64,
+) -> u32 {
+    if handle.is_unused_sentinel() {
+        return 0;
+    }
+    let Some(curve) = pool.resolve(handle) else { return 0; };
+    let Ok(dx_du) = scalar_derivative_eval(&curve, u) else { return 0; };
+    if duration_cycles <= 0.0 {
+        return 0;
+    }
+    let cps = one_tick_cycles_value as f32 * crate::clock::TICK_RATE_HZ as f32;
+    let scaled = dx_du.abs() * cps / duration_cycles * 65_536.0;
+    if !scaled.is_finite() || scaled <= 0.0 {
+        0
+    } else if scaled >= u32::MAX as f32 {
+        u32::MAX
+    } else {
+        scaled as u32
+    }
+}
+
+fn scalar_derivative_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
+    use nurbs::ScalarNurbsRef;
+
+    if curve.degree == 0 {
+        return Ok(0.0);
+    }
+    let p = usize::from(curve.degree);
+    let new_n = curve.control_points.len().saturating_sub(1);
+    let new_knot_len = curve.knots.len().saturating_sub(2);
+    if new_n == 0 || new_knot_len == 0 {
+        return Err(());
+    }
+
+    let mut cps = [0.0_f32; MAX_CONTROL_POINTS];
+    for i in 0..new_n {
+        let (Some(&p0), Some(&p1), Some(&k0), Some(&k1), Some(dst)) = (
+            curve.control_points.get(i),
+            curve.control_points.get(i + 1),
+            curve.knots.get(i + 1),
+            curve.knots.get(i + p + 1),
+            cps.get_mut(i),
+        ) else {
+            return Err(());
+        };
+        let denom = k1 - k0;
+        *dst = if denom > 0.0 { f32::from(curve.degree) * (p1 - p0) / denom } else { 0.0 };
+    }
+
+    let mut knots = [0.0_f32; MAX_KNOT_VECTOR_LEN];
+    for (dst, src) in knots.iter_mut().zip(curve.knots.iter().skip(1)).take(new_knot_len) {
+        *dst = *src;
+    }
+
+    let Some(cps_slice) = cps.get(..new_n) else { return Err(()); };
+    let Some(knots_slice) = knots.get(..new_knot_len) else { return Err(()); };
+    let view = ScalarNurbsRef::<f32>::try_new(curve.degree - 1, knots_slice, cps_slice, None)
+        .map_err(|_| ())?;
+    Ok(nurbs::eval::eval(&view, u))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use core::sync::atomic::Ordering;
+    use heapless::spsc::Queue;
+
+    use super::*;
+    use crate::config::EMode;
+    use crate::endstop::{ArmMsg, ArmPolicy, SourceConfig, SourceKind, VelocityAxis};
+    use crate::queue::Q_N;
+    use crate::slot::{NoopIs, NoopPa};
+
+    #[test]
+    fn endstop_abort_clears_current_and_latches_homing_trip() {
+        let _guard = endstop::test_guard();
+        let mut sources = [SourceConfig::EMPTY; endstop::MAX_SOURCES];
+        sources[0] = SourceConfig {
+            kind: SourceKind::Physical,
+            gpio: 17,
+            active_high: true,
+            policy: ArmPolicy::TripImmediately,
+            sample_n: 1,
+            velocity_axis: VelocityAxis::X,
+            v_min_q16: 0,
+        };
+        endstop::arm(ArmMsg {
+            arm_id: 100,
+            arm_clock: 0,
+            source_count: 1,
+            sources,
+            stepper_count: 1,
+            stepper_oids: [1, 0, 0, 0, 0, 0, 0, 0],
+        })
+        .expect("arm endstop");
+
+        let pool = CurvePool::new();
+        let x_handle = pool
+            .validate_and_load(0, 1, &[0.0, 0.0, 1.0, 1.0], &[0.0, 10.0])
+            .expect("load x curve");
+        let mut queue: Queue<Segment, Q_N> = Queue::new();
+        let (mut producer, mut consumer) = queue.split();
+        producer
+            .enqueue(Segment {
+                id: 1,
+                x_handle,
+                y_handle: CurveHandle::UNUSED_SENTINEL,
+                z_handle: CurveHandle::UNUSED_SENTINEL,
+                e_handle: CurveHandle::UNUSED_SENTINEL,
+                t_start: 0,
+                t_end: 52_000,
+                kinematics: KinematicTag::CoreXyAndE,
+                e_mode: EMode::Travel,
+                extrusion_ratio: 0.0,
+                flags: 0,
+                _pad: [0; 1],
+            })
+            .expect("enqueue segment");
+        let mut trace_queue: Queue<TraceSample, TRACE_RING_N> = Queue::new();
+        let (mut trace_producer, _trace_consumer) = trace_queue.split();
+        let shared = SharedState::new();
+        shared.homed.store(true, Ordering::Release);
+        endstop::set_pin_level(17, true);
+
+        let mut engine = Engine::<NoopPa, NoopIs>::new(520_000_000);
+        let mut widen = WidenState::default();
+        let result = engine.tick(0, &mut widen, &pool, &mut consumer, &mut trace_producer, &shared);
+
+        assert_eq!(result, Err(RuntimeError::HomingTrip));
+        assert_eq!(engine.status(), RuntimeStatus::Fault);
+        assert_eq!(engine.last_error(), crate::error::KALICO_ERR_HOMING_TRIP);
+        assert!(engine.current.is_none());
+        assert!(endstop::poll_trip().is_some());
+    }
 }

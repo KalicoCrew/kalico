@@ -23,6 +23,7 @@ pub enum RuntimeError {
     NotHomed,
     StepBurstExceeded,
     ZeroDurationSegment,
+    HomingTrip,
     Internal,
 }
 
@@ -85,6 +86,7 @@ pub const KALICO_ERR_INTERNAL_INVARIANT: i32 = -172;
 pub const KALICO_ERR_NOT_HOMED: i32 = -20;
 pub const KALICO_ERR_STEP_BURST_EXCEEDED: i32 = -21;
 pub const KALICO_ERR_ZERO_DURATION_SEGMENT: i32 = -22;
+pub const KALICO_ERR_HOMING_TRIP: i32 = -23;
 
 // Step 7-C-io host-originated faults (§6.11).
 pub const KALICO_ERR_HOST_DISCONNECT: i32 = -200;
@@ -157,6 +159,7 @@ pub enum FaultCode {
     NotHomed = -20,
     StepBurstExceeded = -21,
     ZeroDurationSegment = -22,
+    HomingTrip = -23,
 
     // Step 7-C-io host-originated faults (§6.11).
     HostDisconnect = -200,
@@ -195,6 +198,7 @@ impl From<RuntimeError> for i32 {
             RuntimeError::NotHomed => KALICO_ERR_NOT_HOMED,
             RuntimeError::StepBurstExceeded => KALICO_ERR_STEP_BURST_EXCEEDED,
             RuntimeError::ZeroDurationSegment => KALICO_ERR_ZERO_DURATION_SEGMENT,
+            RuntimeError::HomingTrip => KALICO_ERR_HOMING_TRIP,
             RuntimeError::BoundaryLoopExhausted
             | RuntimeError::NaNOrInfFromEval
             | RuntimeError::Internal => KALICO_ERR_INTERNAL,
@@ -249,6 +253,7 @@ mod tests {
             (RuntimeError::NotHomed, KALICO_ERR_NOT_HOMED),
             (RuntimeError::StepBurstExceeded, KALICO_ERR_STEP_BURST_EXCEEDED),
             (RuntimeError::ZeroDurationSegment, KALICO_ERR_ZERO_DURATION_SEGMENT),
+            (RuntimeError::HomingTrip, KALICO_ERR_HOMING_TRIP),
             (RuntimeError::BoundaryLoopExhausted, KALICO_ERR_INTERNAL),
             (RuntimeError::NaNOrInfFromEval, KALICO_ERR_INTERNAL),
             (RuntimeError::Internal, KALICO_ERR_INTERNAL),
