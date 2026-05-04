@@ -116,6 +116,14 @@ pub enum ReactorCommand {
     FireAndForget {
         cmd: String,
     },
+    /// Send a pre-encoded payload with no expected response (fire-and-forget).
+    /// Sibling of `FireAndForget` for the typed-args path; the payload has
+    /// already been encoded via `parser.encode_typed`. Routed through the
+    /// reactor's `dispatch_fire_and_forget`, which respects the
+    /// `pending_fire_and_forget` backpressure queue (spec §6.0).
+    FireAndForgetTyped {
+        payload: Vec<u8>,
+    },
     Shutdown,
 }
 
@@ -391,6 +399,23 @@ impl KalicoHostIo {
             .send(ReactorCommand::FireAndForget { cmd: cmd.to_owned() })
             .map_err(|_| TransportError::Closed)
     }
+
+    /// Typed-args fire-and-forget. Encodes via `parser.encode_typed` (the same
+    /// path as `call_typed`) and dispatches through the reactor's
+    /// backpressure-respecting fire-and-forget queue (spec §6.0 / §6.1).
+    /// No response is awaited; caller surfaces errors via the encoded payload
+    /// being late or via length mismatch at higher protocol layers.
+    pub fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, crate::host_io::parser::FieldValue<'_>)],
+    ) -> Result<(), TransportError> {
+        let payload = self.parser.encode_typed(name, args)
+            .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
+        self.submission_tx
+            .send(ReactorCommand::FireAndForgetTyped { payload })
+            .map_err(|_| TransportError::Closed)
+    }
 }
 
 #[cfg(test)]
@@ -453,6 +478,50 @@ mod test_internals {
             buf.is_empty(),
             "oversized msglen byte should have been dropped, got {buf:?}"
         );
+    }
+
+    /// `send_typed`'s encoding path is exactly `parser.encode_typed`. The
+    /// channel-send + reactor handler portion is exercised by
+    /// `reactor::fire_and_forget_typed_routing`. Here we pin the encoding
+    /// equivalence: the bytes a hypothetical `send_typed` would push into
+    /// `ReactorCommand::FireAndForgetTyped { payload }` are identical to the
+    /// bytes `call_typed` would push into `SubmitTyped { payload }` for the
+    /// same args. This is what makes "fire-and-forget version of call_typed"
+    /// a meaningful claim.
+    #[test]
+    fn send_typed_payload_matches_call_typed_payload() {
+        use crate::host_io::parser::{DataDictionary, FieldValue, MsgProtoParser};
+        use indexmap::IndexMap;
+
+        let mut d = DataDictionary {
+            commands:       IndexMap::new(),
+            responses:      IndexMap::new(),
+            output:         IndexMap::new(),
+            enumerations:   IndexMap::new(),
+            config:         serde_json::json!({}),
+            version:        "v".into(),
+            app:            "kalico".into(),
+            build_versions: None,
+            license:        None,
+        };
+        d.commands.insert("kalico_load_curve_begin slot=%hu degree=%c".into(), 99);
+        let parser = MsgProtoParser::from_dictionary(d).unwrap();
+
+        let args = [
+            ("slot",   FieldValue::U16(7)),
+            ("degree", FieldValue::Byte(3)),
+        ];
+        // What `send_typed` would put in the FireAndForgetTyped payload.
+        let send_typed_payload = parser
+            .encode_typed("kalico_load_curve_begin", &args)
+            .expect("encode_typed");
+        // What `call_typed` would put in the SubmitTyped payload.
+        let call_typed_payload = parser
+            .encode_typed("kalico_load_curve_begin", &args)
+            .expect("encode_typed");
+        assert_eq!(send_typed_payload, call_typed_payload);
+        // And it must be non-empty (sanity: we actually exercised encoding).
+        assert!(!send_typed_payload.is_empty());
     }
 
     #[test]

@@ -45,6 +45,12 @@ pub struct Reactor {
 
     pub(crate) pending_submissions: VecDeque<PendingSubmission>,
 
+    /// Backpressure-respecting fire-and-forget queue. When the unacked window
+    /// is full, fire-and-forget payloads are enqueued here instead of dropped,
+    /// then drained alongside `pending_submissions` once the window opens.
+    /// See spec §6.0 in `2026-05-04-incremental-curve-upload-design.md`.
+    pub(crate) pending_fire_and_forget: VecDeque<Vec<u8>>,
+
     /// First-observed instant of a phantom `Ok(0)` from `port.read`.
     /// Per spec §3.11, treat as Closed only if it persists past
     /// `ZERO_BYTE_DEBOUNCE`. Cleared on any non-zero read.
@@ -134,6 +140,7 @@ impl Reactor {
             state: ReactorState::Active,
             pending_host_fault: None,
             pending_submissions: VecDeque::new(),
+            pending_fire_and_forget: VecDeque::new(),
             zero_byte_first_seen: None,
             clock,
             passthrough_router: None,
@@ -167,6 +174,7 @@ pub enum RetransmitTrigger {
 }
 
 const PENDING_SUBMISSION_CEILING: usize = 256;
+pub const PENDING_FIRE_AND_FORGET_CEILING: usize = 256;
 const MAX_RETRY_COUNT: u32 = 8;
 
 const MAX_SUBMITS_PER_ITER: usize = 4;
@@ -228,8 +236,17 @@ impl Reactor {
         payload: Vec<u8>,
     ) -> Result<(), TransportError> {
         if self.unacked_window.is_full() {
-            // Drop silently if the window is full; caller (config phase) retries via get_config.
-            log::warn!("dispatch_fire_and_forget: unacked window full, dropping frame");
+            // Spec §6.0: enqueue instead of dropping. Drained by
+            // `drain_pending_submissions` once the window opens. Overflow of
+            // the queue itself is a host-side bug — surface as Backpressure.
+            if self.pending_fire_and_forget.len() >= PENDING_FIRE_AND_FORGET_CEILING {
+                log::error!(
+                    "dispatch_fire_and_forget: pending_fire_and_forget at ceiling ({}); refusing payload",
+                    PENDING_FIRE_AND_FORGET_CEILING,
+                );
+                return Err(TransportError::Backpressure);
+            }
+            self.pending_fire_and_forget.push_back(payload);
             return Ok(());
         }
         let seq = self.send_seq;
@@ -271,6 +288,32 @@ impl Reactor {
                     self.state = ReactorState::Closed;
                     return;
                 }
+            }
+        }
+
+        // Spec §6.0: drain backpressured fire-and-forget payloads after
+        // submissions (which have callers blocked on results). On I/O failure,
+        // mirror the disconnect-latch behavior used for submissions.
+        while !self.unacked_window.is_full() {
+            let Some(payload) = self.pending_fire_and_forget.pop_front() else { break; };
+            if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                if matches!(e, TransportError::Io(_)) {
+                    if self.pending_host_fault.is_none() {
+                        self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
+                            fault_code:   FaultCode::HostDisconnect.as_u16(),
+                            fault_detail: 0,
+                            segment_id:   0,
+                            synthesized:  false,
+                        });
+                    }
+                    self.state = ReactorState::Closed;
+                    return;
+                }
+                // Non-I/O errors (e.g. window-full / Backpressure on re-enqueue):
+                // drop the payload silently and continue. Backpressure here
+                // means the queue is at the ceiling, which the dispatch path
+                // already logged.
+                log::warn!("drain_pending_submissions: fire-and-forget redispatch error: {e}");
             }
         }
     }
@@ -697,6 +740,11 @@ impl Reactor {
                     }
                 }
             }
+            ReactorCommand::FireAndForgetTyped { payload } => {
+                if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                    log::warn!("FireAndForgetTyped: send error: {e}");
+                }
+            }
         }
     }
 }
@@ -717,6 +765,9 @@ impl Reactor {
         for p in self.pending_submissions.drain(..) {
             let _ = p.completion.send(Err(TransportError::Closed));
         }
+        // Spec §6.0: pending fire-and-forget payloads have no caller to
+        // notify; drop them on disconnect.
+        self.pending_fire_and_forget.clear();
         self.passthrough_notify_map.clear();
     }
 }
@@ -2012,5 +2063,148 @@ mod a5_passthrough_integration {
             h.reactor.passthrough_notify_map.is_empty(),
             "fire-and-forget entries should not populate notify map"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A8 — Backpressure-respecting fire-and-forget. Spec §6.0 of
+// `2026-05-04-incremental-curve-upload-design.md`.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod a8_fire_and_forget_backpressure {
+    use super::*;
+    use crate::host_io::test_harness::ReactorHarness;
+    use crate::host_io::wire::build_frame;
+    use crate::host_io::window::MAX_PENDING_BLOCKS;
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+
+    fn submit_one(h: &mut ReactorHarness, payload: u8) {
+        let (tx, _rx) = sync_channel(1);
+        let _ = h.reactor.dispatch_submission(
+            payload as u64,
+            vec![payload],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(60),
+        );
+    }
+
+    /// Fill the unacked window to capacity (12 frames).
+    fn fill_window(h: &mut ReactorHarness) {
+        for i in 0..MAX_PENDING_BLOCKS {
+            submit_one(h, i as u8);
+        }
+        assert_eq!(h.unacked_depth(), MAX_PENDING_BLOCKS);
+        assert!(h.reactor.unacked_window.is_full());
+    }
+
+    #[test]
+    fn a8_fire_and_forget_enqueues_under_window_full() {
+        let mut h = ReactorHarness::new();
+        fill_window(&mut h);
+
+        let tx_len_before = h.tx_log().len();
+
+        // Dispatch a fire-and-forget payload while the window is full.
+        let payload = vec![0xAB, 0xCD, 0xEF];
+        h.reactor
+            .dispatch_fire_and_forget(payload.clone())
+            .expect("enqueue should not error under ceiling");
+
+        // The payload must NOT have been written to the wire — it should be
+        // sitting in the pending_fire_and_forget queue.
+        assert_eq!(
+            h.tx_log().len(),
+            tx_len_before,
+            "no bytes should hit the wire while window is full"
+        );
+        assert_eq!(h.reactor.pending_fire_and_forget.len(), 1);
+
+        // Free a slot by acking one outstanding frame. With send_seq starting
+        // at 1, the 12 outstanding frames carry seqs 1..=12. Acking rseq=2
+        // (wire nibble = 2) pops everything with seq < 2 → pops seq=1.
+        h.feed_rx(&build_frame(&[], 2));
+        h.tick();
+
+        // After the tick, drain_pending_submissions should have flushed the
+        // fire-and-forget payload to the wire.
+        assert_eq!(
+            h.reactor.pending_fire_and_forget.len(),
+            0,
+            "fire-and-forget queue should be drained after window opens",
+        );
+        assert!(
+            h.tx_log().len() > tx_len_before,
+            "payload should now be on the wire (got tx_log delta = {})",
+            h.tx_log().len() - tx_len_before,
+        );
+    }
+
+    #[test]
+    fn a8_overflow_returns_backpressure_error() {
+        let mut h = ReactorHarness::new();
+        fill_window(&mut h);
+
+        // Fill the pending_fire_and_forget queue to the ceiling.
+        for _ in 0..PENDING_FIRE_AND_FORGET_CEILING {
+            h.reactor
+                .dispatch_fire_and_forget(vec![0x01])
+                .expect("enqueue should succeed up to ceiling");
+        }
+        assert_eq!(
+            h.reactor.pending_fire_and_forget.len(),
+            PENDING_FIRE_AND_FORGET_CEILING,
+        );
+
+        // The next payload must error with Backpressure (not silent-drop).
+        let result = h.reactor.dispatch_fire_and_forget(vec![0x02]);
+        assert!(
+            matches!(result, Err(TransportError::Backpressure)),
+            "overflow must return Backpressure, got {result:?}",
+        );
+        // Queue length is unchanged — the payload was rejected, not enqueued.
+        assert_eq!(
+            h.reactor.pending_fire_and_forget.len(),
+            PENDING_FIRE_AND_FORGET_CEILING,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FireAndForgetTyped routing — Step 2 of incremental-curve-upload spec.
+// Validates ReactorCommand::FireAndForgetTyped is routed through
+// dispatch_fire_and_forget and lands on the wire.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod fire_and_forget_typed_routing {
+    use super::*;
+    use crate::host_io::test_harness::ReactorHarness;
+
+    #[test]
+    fn fire_and_forget_typed_command_writes_payload_to_wire() {
+        let mut h = ReactorHarness::new();
+        let payload = vec![0x2A, 0x07, 0x11];
+
+        h.submission_tx
+            .send(ReactorCommand::FireAndForgetTyped { payload: payload.clone() })
+            .expect("submission_tx open");
+
+        h.tick();
+
+        // The payload must have been wrapped into a frame and written to the
+        // wire. We don't recompute the exact frame bytes here (that's the
+        // wire layer's contract, exercised elsewhere) — just confirm the
+        // payload bytes appear contiguously in the tx log.
+        let tx = h.tx_log();
+        assert!(
+            tx.windows(payload.len()).any(|w| w == payload.as_slice()),
+            "payload {payload:?} should appear in tx log {tx:?}",
+        );
+        // And the unacked window must have grown by exactly one entry (the
+        // typed fire-and-forget frame is wire-tracked for NAK/RTO).
+        assert_eq!(h.unacked_depth(), 1);
     }
 }
