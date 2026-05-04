@@ -153,6 +153,24 @@ int32_t kalico_set_homed(kalico_nurbs_KalicoRuntime *rt);
 int32_t kalico_configure_axes(kalico_nurbs_KalicoRuntime *rt, uint8_t kinematics_tag);
 
 /**
+ * Configure axes from a packed motor blob delivered via the kalico-native
+ * transport. Layout (matches `kalico-protocol` `ConfigureAxes` body):
+ *   kinematics u8 | present_mask u8 | awd_mask u8 | invert_mask u8 |
+ *   steps_per_mm[4] f32 little-endian
+ *
+ * Total: 20 bytes. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
+ * Bits in masks index motors `[A/X, B/Y, Z, E]`.
+ *
+ * Caller invariant: this is one-shot, called from foreground before
+ * TIM5 is armed (i.e. before any tick can fire). The FFI projects
+ * `&mut IsrState` outside the ISR lock, which is sound only under
+ * that single-threaded precondition.
+ */
+int32_t kalico_runtime_configure_axes_blob(kalico_nurbs_KalicoRuntime *rt,
+                                           const uint8_t *blob_ptr,
+                                           uint32_t blob_len);
+
+/**
  * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
  * `limit` trace samples from the ring, calls `pool.confirm_retired`
  * for each `SEGMENT_END` observed, and returns a 32-bit packed

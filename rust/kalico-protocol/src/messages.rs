@@ -22,6 +22,8 @@ pub enum MessageKind {
     LoadCurveResponse = 0x0011,
     PushSegment = 0x0020,
     PushSegmentResponse = 0x0021,
+    ConfigureAxes = 0x0030,
+    ConfigureAxesResponse = 0x0031,
     StatusEvent = 0x0080,
     CreditFreed = 0x0081,
     FaultEvent = 0x0082,
@@ -36,6 +38,8 @@ impl MessageKind {
             0x0011 => Self::LoadCurveResponse,
             0x0020 => Self::PushSegment,
             0x0021 => Self::PushSegmentResponse,
+            0x0030 => Self::ConfigureAxes,
+            0x0031 => Self::ConfigureAxesResponse,
             0x0080 => Self::StatusEvent,
             0x0081 => Self::CreditFreed,
             0x0082 => Self::FaultEvent,
@@ -241,6 +245,63 @@ impl Decode for PushSegmentResponse {
 }
 
 // =============================================================================
+// ConfigureAxes (0x0030)
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConfigureAxes {
+    pub kinematics: u8,
+    pub present_mask: u8,
+    pub awd_mask: u8,
+    pub invert_mask: u8,
+    pub steps_per_mm: [f32; 4],
+}
+
+impl Encode for ConfigureAxes {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u8(out, self.kinematics);
+        put_u8(out, self.present_mask);
+        put_u8(out, self.awd_mask);
+        put_u8(out, self.invert_mask);
+        for v in &self.steps_per_mm {
+            put_f32(out, *v);
+        }
+    }
+}
+
+impl Decode for ConfigureAxes {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        let kinematics = get_u8(c)?;
+        let present_mask = get_u8(c)?;
+        let awd_mask = get_u8(c)?;
+        let invert_mask = get_u8(c)?;
+        let steps_per_mm = [get_f32(c)?, get_f32(c)?, get_f32(c)?, get_f32(c)?];
+        Ok(Self { kinematics, present_mask, awd_mask, invert_mask, steps_per_mm })
+    }
+}
+
+// =============================================================================
+// ConfigureAxesResponse (0x0031)
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigureAxesResponse {
+    pub result: i32,
+}
+
+impl Encode for ConfigureAxesResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for ConfigureAxesResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { result: get_i32(c)? })
+    }
+}
+
+// =============================================================================
 // StatusEvent (0x0080) — spec §7.4
 // =============================================================================
 
@@ -355,6 +416,8 @@ mod tests {
             MessageKind::LoadCurveResponse,
             MessageKind::PushSegment,
             MessageKind::PushSegmentResponse,
+            MessageKind::ConfigureAxes,
+            MessageKind::ConfigureAxesResponse,
             MessageKind::StatusEvent,
             MessageKind::CreditFreed,
             MessageKind::FaultEvent,
@@ -427,6 +490,23 @@ mod tests {
         };
         assert_eq!(roundtrip(&v), v);
         assert_eq!(v.encoded_to_vec().len(), 12);
+    }
+
+    #[test]
+    fn configure_axes_roundtrip() {
+        let v = ConfigureAxes {
+            kinematics: 0,
+            present_mask: 0b1111,
+            awd_mask: 0b0011,
+            invert_mask: 0b0010,
+            steps_per_mm: [80.0, 80.0, 400.0, 415.0],
+        };
+        assert_eq!(roundtrip(&v), v);
+        // 4 (header bytes) + 16 (4×f32) = 20.
+        assert_eq!(v.encoded_to_vec().len(), 20);
+        let r = ConfigureAxesResponse { result: -7 };
+        assert_eq!(roundtrip(&r), r);
+        assert_eq!(r.encoded_to_vec().len(), 4);
     }
 
     #[test]

@@ -80,6 +80,31 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0030,
+        name: "ConfigureAxes",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "kinematics", ty: "u8" },
+            SchemaField { name: "present_mask", ty: "u8" },
+            SchemaField { name: "awd_mask", ty: "u8" },
+            SchemaField { name: "invert_mask", ty: "u8" },
+            SchemaField { name: "steps_per_mm_0", ty: "f32" },
+            SchemaField { name: "steps_per_mm_1", ty: "f32" },
+            SchemaField { name: "steps_per_mm_2", ty: "f32" },
+            SchemaField { name: "steps_per_mm_3", ty: "f32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0031,
+        name: "ConfigureAxesResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0080,
         name: "StatusEvent",
         version: 1,

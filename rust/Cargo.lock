@@ -809,6 +809,7 @@ dependencies = [
  "gcode",
  "geometry",
  "kalico-host-rt",
+ "kalico-protocol",
  "log",
  "nurbs",
  "pyo3",

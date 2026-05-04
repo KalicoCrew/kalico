@@ -126,8 +126,13 @@ def main():
         resp = send_gcode("G1 X10 F1000\nM400")
         print(f"  response: {resp}")
 
-        print("[phase4] waiting 2s post-M400 for step counter sync")
-        time.sleep(2.0)
+        # The bridge schedules segments at MCU_clock_now + 100ms_lead +
+        # seg.t_start; if klippy startup pushed the MCU clock far ahead of
+        # wall-clock zero, the segment can land tens of seconds in the
+        # future. Wait long enough that a 10mm @ F1000 move (≈0.6s) plus
+        # the schedule lead has had time to drain.
+        print("[phase4] waiting 120s post-M400 for step counter sync")
+        time.sleep(120.0)
 
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
         # which routes through klippy → bridge → MCU wire command.

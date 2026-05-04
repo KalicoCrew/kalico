@@ -118,6 +118,27 @@ class MotionBridgeWrapper:
         """Return raw zlib identify bytes for process_identify."""
         return bytes(self._bridge.get_identify_data(mcu_handle))
 
+    def configure_axes(
+        self,
+        mcu_handle,
+        kinematics,
+        present_mask,
+        awd_mask,
+        invert_mask,
+        steps_per_mm,
+        timeout_s=2.0,
+    ):
+        """Send the kalico-native ConfigureAxes message to an attached MCU."""
+        return self._bridge.configure_axes(
+            mcu_handle,
+            kinematics,
+            present_mask,
+            awd_mask,
+            invert_mask,
+            list(steps_per_mm),
+            timeout_s,
+        )
+
     def bridge_call(self, mcu_handle, msg, response, timeout_s=5.0):
         """Send a msgproto command and wait for the named response dict."""
         return self._bridge.bridge_call(mcu_handle, msg, response, timeout_s)

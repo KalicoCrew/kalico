@@ -184,11 +184,6 @@ console_task(void)
     // Klipper bytes into klipper_only_buf and dispatching kalico frames
     // inline. See spec §6 (stream-level demux).
     int new_bytes = ret;
-    if (new_bytes > 0) {
-        fprintf(stderr, "[mcu] read %d bytes (first 0x%02x)\n",
-                new_bytes, receive_buf[receive_pos]);
-        fflush(stderr);
-    }
     for (int i = 0; i < new_bytes; i++) {
         uint8_t b = receive_buf[receive_pos + i];
         kalico_demux_output_t out = kalico_demux_feed_byte(b);
@@ -215,8 +210,6 @@ console_task(void)
             break;
         }
         case KALICO_DEMUX_OUT_ERROR:
-            fprintf(stderr, "[mcu] demux ERROR after %d bytes consumed\n", i);
-            fflush(stderr);
             kalico_demux_consume();
             break;
         }

@@ -132,6 +132,7 @@ class MotionToolhead:
         # Velocity / acceleration config (parsed for compat)
         self.max_velocity = config.getfloat("max_velocity", above=0.0)
         self.max_accel = config.getfloat("max_accel", above=0.0)
+        self.kinematics_name = config.get("kinematics", "")
         self.max_z_velocity = config.getfloat(
             "max_z_velocity", self.max_velocity, above=0.0
         )
@@ -562,6 +563,7 @@ class MotionToolhead:
             # this wiring slots leak forever and Phase-4 multi-piece dispatch
             # would starve after CURVE_POOL_N segments. The handler must run
             # per-MCU because slot pools are per-MCU on the Rust side.
+            self._configure_axes_per_mcu(bridge_mcus)
             self._register_credit_freed_handlers(bridge_mcus)
             # The local Linux sim harness commonly sends a bare movement
             # command (`run_local.sh "G1 X10 F1000"`) without a preceding
@@ -578,6 +580,84 @@ class MotionToolhead:
         except Exception:
             logging.exception("MotionToolhead: init_planner failed")
             raise
+
+    def _configure_axes_per_mcu(self, bridge_mcus):
+        """Send `ConfigureAxes` over the kalico-native transport for each
+        bridge-attached MCU. Maps klippy `MCU_stepper` objects to motor
+        slots per kinematics:
+          corexy:    [A=stepper_x, B=stepper_y, Z=stepper_z, E=extruder]
+          cartesian: [X=stepper_x, Y=stepper_y, Z=stepper_z, E=extruder]
+        Steppers not on a given MCU are omitted from that MCU's blob.
+        """
+        kin = (self.kinematics_name or "").lower()
+        if kin == "corexy":
+            kin_tag = 0
+            slot_names = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
+            awd_default = 0b0011  # both A and B are driven on every move
+        elif kin == "cartesian":
+            kin_tag = 1
+            slot_names = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
+            awd_default = 0b0000
+        else:
+            logging.info(
+                "MotionToolhead: kinematics=%r — skipping configure_axes",
+                kin,
+            )
+            return
+
+        # Collect MCU_stepper objects from `force_move`, which registers
+        # every stepper by its config-section name during printer setup.
+        steppers_by_slot = {}
+        fm = self.printer.lookup_object("force_move", None)
+        if fm is not None:
+            for name, s in fm.steppers.items():
+                if name in slot_names and name not in steppers_by_slot:
+                    steppers_by_slot[name] = s
+
+        for name, mcu_obj, mcu_handle in bridge_mcus:
+            present_mask = 0
+            invert_mask = 0
+            steps_per_mm = [0.0, 0.0, 0.0, 0.0]
+            for i, slot in enumerate(slot_names):
+                s = steppers_by_slot.get(slot)
+                if s is None:
+                    continue
+                # Filter by MCU: only include steppers whose mcu matches this
+                # bridge handle, so multi-MCU configs map cleanly. The single-
+                # MCU sim path falls through this filter trivially.
+                if len(bridge_mcus) > 1:
+                    try:
+                        s_mcu = s.get_mcu()
+                    except AttributeError:
+                        s_mcu = None
+                    if s_mcu is not None and s_mcu is not mcu_obj:
+                        continue
+                step_dist = s.get_step_dist()
+                if step_dist <= 0.0:
+                    continue
+                steps_per_mm[i] = 1.0 / step_dist
+                present_mask |= 1 << i
+            awd_mask = awd_default & present_mask
+            if present_mask == 0:
+                logging.info(
+                    "MotionToolhead: no steppers matched MCU %s; "
+                    "skipping configure_axes",
+                    name,
+                )
+                continue
+            self.bridge.configure_axes(
+                mcu_handle,
+                kin_tag,
+                present_mask,
+                awd_mask,
+                invert_mask,
+                steps_per_mm,
+            )
+            logging.info(
+                "MotionToolhead: configure_axes mcu=%s kin=%d "
+                "present=0x%x awd=0x%x steps_per_mm=%s",
+                name, kin_tag, present_mask, awd_mask, steps_per_mm,
+            )
 
     def _register_credit_freed_handlers(self, bridge_mcus):
         """Register a kalico_credit_freed handler on each bridge-attached MCU.

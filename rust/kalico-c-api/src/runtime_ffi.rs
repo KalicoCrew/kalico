@@ -890,6 +890,78 @@ pub mod exports {
         KALICO_OK
     }
 
+    /// Configure axes from a packed motor blob delivered via the kalico-native
+    /// transport. Layout (matches `kalico-protocol` `ConfigureAxes` body):
+    ///   kinematics u8 | present_mask u8 | awd_mask u8 | invert_mask u8 |
+    ///   steps_per_mm[4] f32 little-endian
+    ///
+    /// Total: 20 bytes. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
+    /// Bits in masks index motors `[A/X, B/Y, Z, E]`.
+    ///
+    /// Caller invariant: this is one-shot, called from foreground before
+    /// TIM5 is armed (i.e. before any tick can fire). The FFI projects
+    /// `&mut IsrState` outside the ISR lock, which is sound only under
+    /// that single-threaded precondition.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_configure_axes_blob(
+        rt: *mut KalicoRuntime,
+        blob_ptr: *const u8,
+        blob_len: u32,
+    ) -> i32 {
+        use runtime::config::{EMode as _Unused, McuAxisConfig, MotorConfig};
+        let _ = _Unused::CoupledToXy;
+        if rt.is_null() || blob_ptr.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        if blob_len != 20 {
+            return KALICO_ERR_INVALID_KINEMATICS;
+        }
+        let blob = unsafe { core::slice::from_raw_parts(blob_ptr, blob_len as usize) };
+        let kinematics_tag = blob[0];
+        let present_mask = blob[1];
+        let awd_mask = blob[2];
+        let invert_mask = blob[3];
+        let mut steps = [0f32; 4];
+        for i in 0..4 {
+            let off = 4 + i * 4;
+            steps[i] = f32::from_le_bytes([
+                blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
+            ]);
+        }
+        let kinematics = match kinematics_tag {
+            0 => KinematicTag::CoreXyAndE,
+            1 => KinematicTag::CartesianXyzAndE,
+            _ => return KALICO_ERR_INVALID_KINEMATICS,
+        };
+        let mut motors: [Option<MotorConfig>; 4] = [None, None, None, None];
+        for i in 0..4 {
+            if present_mask & (1 << i) != 0 {
+                motors[i] = Some(MotorConfig {
+                    steps_per_mm: steps[i],
+                    is_awd: awd_mask & (1 << i) != 0,
+                    invert_dir: invert_mask & (1 << i) != 0,
+                });
+            }
+        }
+        let cfg = McuAxisConfig { motors, kinematics };
+        if cfg.validate().is_err() {
+            return KALICO_ERR_INVALID_KINEMATICS;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: per the doc-comment precondition, no ISR is running yet.
+        // Foreground is the sole writer; we project &mut IsrState to call
+        // engine.configure(). No other &IsrState may be live at this point.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.configure(cfg);
+        }
+        KALICO_OK
+    }
+
     /// Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
     /// `limit` trace samples from the ring, calls `pool.confirm_retired`
     /// for each `SEGMENT_END` observed, and returns a 32-bit packed

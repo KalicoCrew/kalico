@@ -57,6 +57,7 @@ static uint32_t reset_epoch;
 
 static void handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
 // reset_epoch generation
@@ -211,12 +212,6 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     (void)channel;
     if (payload_len < PER_MESSAGE_HEADER_LEN)
         return;
-    uint16_t dbg_kind = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
-#if defined(__linux__) || defined(__APPLE__)
-    fprintf(stderr, "[kalico_dispatch] frame channel=%u payload_len=%u kind=0x%04x\n",
-            channel, payload_len, dbg_kind);
-    fflush(stderr);
-#endif
     uint16_t kind = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
     uint8_t version = payload[2];
     uint32_t correlation_id = (uint32_t)payload[3]
@@ -237,6 +232,9 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_PUSH_SEGMENT:
         handle_push_segment(correlation_id, body, body_len);
         return;
+    case KALICO_MSG_CONFIGURE_AXES:
+        handle_configure_axes(correlation_id, body, body_len);
+        return;
     default:
         return;
     }
@@ -250,11 +248,6 @@ static void
 send_load_curve_response(uint32_t correlation_id, int32_t result,
                          uint32_t curve_handle_packed)
 {
-#if defined(__linux__) || defined(__APPLE__)
-    fprintf(stderr, "[kalico_dispatch] send_load_curve_response cid=%u result=%d handle=%u\n",
-            correlation_id, result, curve_handle_packed);
-    fflush(stderr);
-#endif
     uint8_t payload[PER_MESSAGE_HEADER_LEN + 8];
     encode_message_header(payload, KALICO_MSG_LOAD_CURVE_RESPONSE,
                           MESSAGE_VERSION_DEFAULT, correlation_id);
@@ -299,11 +292,6 @@ static void
 handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
 #if CONFIG_KALICO_RUNTIME
-#if defined(__linux__) || defined(__APPLE__)
-    fprintf(stderr, "[kalico_dispatch] handle_load_curve cid=%u body_len=%u\n",
-            correlation_id, body_len);
-    fflush(stderr);
-#endif
     // §7.3 body: slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps×f32 | knots×f32
     if (body_len < 11) {
         send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
@@ -389,6 +377,45 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
 #else
     (void)body; (void)body_len;
     send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// ConfigureAxes handler
+// ---------------------------------------------------------------------------
+
+static void
+send_configure_axes_response(uint32_t correlation_id, int32_t result)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
+    encode_message_header(payload, KALICO_MSG_CONFIGURE_AXES_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *body = &payload[PER_MESSAGE_HEADER_LEN];
+    body[0] = (uint8_t)(result & 0xFF);
+    body[1] = (uint8_t)((result >> 8) & 0xFF);
+    body[2] = (uint8_t)((result >> 16) & 0xFF);
+    body[3] = (uint8_t)((result >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
+                                payload, sizeof(payload));
+}
+
+static void
+handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
+{
+#if CONFIG_KALICO_RUNTIME
+    if (body_len != 20) {
+        send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
+        return;
+    }
+    if (!kalico_rt_handle) {
+        send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
+        return;
+    }
+    int32_t r = kalico_runtime_configure_axes_blob(kalico_rt_handle, body, body_len);
+    send_configure_axes_response(correlation_id, r);
+#else
+    (void)body; (void)body_len;
+    send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
 #endif
 }
 

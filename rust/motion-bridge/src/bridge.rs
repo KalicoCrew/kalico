@@ -564,6 +564,79 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// Send the kalico-native `ConfigureAxes` message for an attached MCU.
+    /// Must be called once after `attach_serial` and before the first
+    /// segment is pushed. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
+    /// `steps_per_mm`: 4 entries indexed [A/X, B/Y, Z, E]; entries whose
+    /// `present_mask` bit is 0 are ignored. `awd_mask` and `invert_mask`
+    /// are 4-bit per-motor flag masks.
+    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, timeout_s = 2.0))]
+    fn configure_axes(
+        &self,
+        py: Python<'_>,
+        mcu_handle: u32,
+        kinematics: u8,
+        present_mask: u8,
+        awd_mask: u8,
+        invert_mask: u8,
+        steps_per_mm: Vec<f32>,
+        timeout_s: f64,
+    ) -> PyResult<()> {
+        if steps_per_mm.len() != 4 {
+            return Err(PyRuntimeError::new_err(
+                "configure_axes: steps_per_mm must be a list of 4 floats",
+            ));
+        }
+        let io = {
+            let mcus = self.mcus.lock().unwrap();
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "configure_axes: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "configure_axes: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+        let mut body = Vec::with_capacity(20);
+        body.push(kinematics);
+        body.push(present_mask);
+        body.push(awd_mask);
+        body.push(invert_mask);
+        for v in &steps_per_mm {
+            body.extend_from_slice(&v.to_le_bytes());
+        }
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        let result = py.allow_threads(|| {
+            io.kalico_call(
+                kalico_protocol::MessageKind::ConfigureAxes,
+                body,
+                timeout,
+            )
+        });
+        match result {
+            Ok((_, body)) => {
+                if body.len() < 4 {
+                    return Err(PyRuntimeError::new_err(
+                        "configure_axes: short response body",
+                    ));
+                }
+                let r = i32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+                if r != 0 {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "configure_axes: MCU returned error {r}"
+                    )));
+                }
+                Ok(())
+            }
+            Err(e) => Err(PyRuntimeError::new_err(format!(
+                "configure_axes: transport error: {e:?}"
+            ))),
+        }
+    }
+
     /// Return the raw identify bytes (zlib-compressed firmware data-dict)
     /// for the given MCU. `attach_serial` must have been called first.
     ///

@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 kalico-host-rt = { path = "../kalico-host-rt", features = ["python-bridge"] }
+kalico-protocol = { path = "../kalico-protocol" }
 trajectory = { path = "../trajectory" }
 temporal = { path = "../temporal" }
 geometry = { path = "../geometry" }
