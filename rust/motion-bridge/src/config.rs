@@ -76,6 +76,14 @@ impl Default for PlannerConfig {
 
 /// Parse a shaper type string into a `RequiredShaper`.
 pub fn parse_required_shaper(name: &str, freq: f64) -> Result<RequiredShaper, String> {
+    if !freq.is_finite() || freq <= 0.0 {
+        return Err(format!(
+            "shaper frequency must be finite and > 0 Hz, got {freq}; \
+             check shaper_freq_x / shaper_freq_y in printer.cfg \
+             (sim configs commonly set 0 to disable shaping — there is no passthrough \
+             for X/Y today; use a real frequency, e.g. 50)"
+        ));
+    }
     match name {
         "smooth_zv" | "smooth-zv" => Ok(RequiredShaper::SmoothZv { frequency_hz: freq }),
         "smooth_mzv" | "smooth-mzv" => Ok(RequiredShaper::SmoothMzv { frequency_hz: freq }),
@@ -118,5 +126,16 @@ mod tests {
             Ok(RequiredShaper::SmoothMzv { frequency_hz }) if (frequency_hz - 50.0).abs() < 1e-9
         ));
         assert!(parse_required_shaper("ei", 50.0).is_err());
+
+        // freq=0 must be rejected with an error mentioning the field name
+        let err = parse_required_shaper("smooth_zv", 0.0).unwrap_err();
+        assert!(err.contains("shaper_freq"), "error must name the field, got: {err}");
+
+        // negative freq rejected
+        assert!(parse_required_shaper("smooth_mzv", -1.0).is_err());
+
+        // NaN/Inf rejected
+        assert!(parse_required_shaper("smooth_zv", f64::NAN).is_err());
+        assert!(parse_required_shaper("smooth_zv", f64::INFINITY).is_err());
     }
 }
