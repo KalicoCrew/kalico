@@ -1416,9 +1416,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aht10aht20aht21-temperature-sensor" class="md-nav__link">
+  <a href="#aht10aht20aht21aht30-temperature-sensor" class="md-nav__link">
     <span class="md-ellipsis">
-      AHT10/AHT20/AHT21 temperature sensor
+      AHT10/AHT20/AHT21/AHT30 temperature sensor
     </span>
   </a>
   
@@ -4803,9 +4803,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#aht10aht20aht21-temperature-sensor" class="md-nav__link">
+  <a href="#aht10aht20aht21aht30-temperature-sensor" class="md-nav__link">
     <span class="md-ellipsis">
-      AHT10/AHT20/AHT21 temperature sensor
+      AHT10/AHT20/AHT21/AHT30 temperature sensor
     </span>
   </a>
   
@@ -8818,15 +8818,16 @@ temperature.</p>
 #   above parameters.
 </code></pre></div>
 
-<h3 id="aht10aht20aht21-temperature-sensor">AHT10/AHT20/AHT21 temperature sensor<a class="headerlink" href="#aht10aht20aht21-temperature-sensor" title="Permanent link">&para;</a></h3>
-<p>AHT10/AHT20/AHT21 two wire interface (I2C) environmental sensors.
+<h3 id="aht10aht20aht21aht30-temperature-sensor">AHT10/AHT20/AHT21/AHT30 temperature sensor<a class="headerlink" href="#aht10aht20aht21aht30-temperature-sensor" title="Permanent link">&para;</a></h3>
+<p>AHT10/AHT20/AHT21/AHT30 two wire interface (I2C) environmental sensors.
 Note that these sensors are not intended for use with extruders and
 heater beds, but rather for monitoring ambient temperature (C) and
 relative humidity. See
 <a href="https://github.com/KalicoCrew/kalico//blob/main/config/sample-macros.cfg">sample-macros.cfg</a> for a gcode_macro
 that may be used to report humidity in addition to temperature.</p>
 <div class="highlight"><pre><span></span><code>sensor_type: AHT10
-#   Also use AHT10 for AHT20 and AHT21 sensors.
+#   Must be &quot;AHT1X&quot; , &quot;AHT2X&quot;, &quot;AHT3X&quot;
+#   Some AHT20 sensors can use &quot;AHT1X&quot;
 #i2c_address:
 #   Default is 56 (0x38). Some AHT10 sensors give the option to use
 #   57 (0x39) by moving a resistor.
