@@ -25,10 +25,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
-use crate::dispatch::{
-    build_chunked_push_plans, chunk_push_params_skeleton, set_axis_handle,
-    McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z,
-};
+use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::homing::HomingState;
 use crate::planner::{PlannerError, PlannerHandle};
 use crate::slot_pool::{SlotPool, CURVE_POOL_N};
@@ -987,18 +984,26 @@ impl PyMotionBridge {
                 + Send
                 + Sync,
         > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), String> {
-            // ── Phase-4 multi-piece dispatch ─────────────────────────────
+            // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
             //
-            // Pre-chunk every per-axis NURBS to fit the 63-f32 wire-buffer
-            // cap (`docs/superpowers/specs/2026-05-04-multi-piece-dispatch-design.md`).
-            // Each ChunkedMcuPlan carries K McuChunkPlan items; we issue K
-            // load_curve+push_segment bursts per logical move per MCU. The
-            // 100 ms `lead_cycles` safety margin only applies to chunk_0;
-            // subsequent chunks pick up where the previous chunk ended so
-            // the MCU sees a contiguous time domain.
-            let plans = build_chunked_push_plans(seg, &mcu_configs_for_cb);
+            // The B.1 multi-piece chunker has been retired (see spec
+            // `docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md`
+            // §6.3): the wire-fit reason for chunking is gone now that
+            // `producer::load_curve` uses the begin/N×chunk/finalize
+            // incremental upload protocol, and the §5.0 pool bump
+            // accommodates the trajectory layer's worst-case post-shape
+            // piece count in a single logical-move dispatch. So K=1
+            // load_curve + 1 push_segment per axis per logical move per MCU.
+            //
+            // Per-MCU clock derivation runs ONCE per logical segment, not
+            // once per chunk. `homing.mark_dispatched_segment` and
+            // `next_seg_id` allocation also happen once per logical move.
 
-            for plan in plans {
+            // Build per-axis-per-segment plans first; we still need clocks
+            // before we can fill in the timing fields.
+            let mcu_plans = build_push_params(seg, &mcu_configs_for_cb, 0, 0);
+
+            for mut plan in mcu_plans {
                 let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                     Some(v) => v,
                     None => continue,
@@ -1029,8 +1034,6 @@ impl PyMotionBridge {
                     });
 
                 // Compute schedule base ONCE per (mcu, logical-segment).
-                // Subsequent chunks derive their clock from `entry.0` plus
-                // chunk-local offsets — no extra `lead_cycles` per chunk.
                 let mcu_base_clock: u64 = {
                     let r = router_for_cb.lock().unwrap();
                     let now_clock = r
@@ -1050,135 +1053,120 @@ impl PyMotionBridge {
                     entry.0
                 };
 
-                for chunk in &plan.chunks {
-                    // Per-chunk clock derivation. `chunk.t_start_s` /
-                    // `chunk.t_end_s` are absolute seconds in the trajectory
-                    // batch timeline (matching the source NURBS knot domain),
-                    // so they already include any seg-relative offset — no
-                    // `+ seg.t_start` here.
-                    let rel_start =
-                        (chunk.t_start_s * freq).round().max(0.0) as u64;
-                    let rel_end =
-                        (chunk.t_end_s * freq).round().max(0.0) as u64;
-                    let t_start_clock = mcu_base_clock.saturating_add(rel_start);
-                    let t_end_clock = mcu_base_clock.saturating_add(rel_end);
+                // Segment time window in MCU clocks. `seg.t_start` /
+                // `seg.t_end` are absolute seconds in the trajectory batch
+                // timeline; convert to MCU-clock relative to mcu_base_clock.
+                let rel_start = (seg.t_start * freq).round().max(0.0) as u64;
+                let rel_end = (seg.t_end * freq).round().max(0.0) as u64;
+                let t_start_clock = mcu_base_clock.saturating_add(rel_start);
+                let t_end_clock = mcu_base_clock.saturating_add(rel_end);
 
-                    // Update tail of schedule_state.entry so the next logical
-                    // segment sees the correct end-of-batch.
-                    {
-                        let mut schedule = schedule_state.lock().unwrap();
-                        let entry =
-                            schedule.entry(plan.mcu_id).or_insert((0, 0));
-                        entry.1 = entry.1.max(t_end_clock);
-                    }
+                // Update tail of schedule so the next logical segment sees
+                // the correct end-of-batch.
+                {
+                    let mut schedule = schedule_state.lock().unwrap();
+                    let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
+                    entry.1 = entry.1.max(t_end_clock);
+                }
 
-                    let mut params = chunk_push_params_skeleton(&plan);
-                    params.t_start = t_start_clock;
-                    params.t_end = t_end_clock;
+                plan.params.t_start = t_start_clock;
+                plan.params.t_end = t_end_clock;
 
-                    // Allocate a fresh segment id for this chunk. Each chunk
-                    // is its own MCU-side segment for retirement-tracking
-                    // purposes; the host's "logical move" counter
-                    // (`counter`) is incremented once per ShapedSegment, not
-                    // per chunk.
-                    {
-                        let mut ids = next_seg_id.lock().unwrap();
-                        let entry = ids.entry(plan.mcu_id).or_insert(1);
-                        params.id = *entry;
-                        *entry = entry.wrapping_add(1);
-                    }
-                    homing.mark_dispatched_segment(params.id);
+                // Allocate a fresh segment id for this logical move (one per
+                // MCU per ShapedSegment, restoring pre-B.1 semantics).
+                {
+                    let mut ids = next_seg_id.lock().unwrap();
+                    let entry = ids.entry(plan.mcu_id).or_insert(1);
+                    plan.params.id = *entry;
+                    *entry = entry.wrapping_add(1);
+                }
+                homing.mark_dispatched_segment(plan.params.id);
 
-                    // Allocate slots, load curves. On any error, release every
-                    // slot allocated so far for this chunk so the pool doesn't
-                    // leak.
-                    let mut allocated_slots: Vec<u16> =
-                        Vec::with_capacity(chunk.curves_to_load.len());
-                    let mut chunk_err: Option<String> = None;
-                    for (axis_idx, curve_params) in &chunk.curves_to_load {
-                        let alloc_result = {
-                            let mut pool = slot_pool.lock().unwrap();
-                            pool.try_alloc().ok_or_else(|| {
-                                format!(
-                                    "slot pool exhausted for mcu={} (capacity={CURVE_POOL_N}, in_flight={}); \
-                                     awaiting kalico_credit_freed retirement events",
-                                    plan.mcu_id,
-                                    pool.in_flight_count(),
-                                )
-                            })
-                        };
-                        let (slot, _gen) = match alloc_result {
-                            Ok(v) => v,
-                            Err(e) => {
-                                chunk_err = Some(e);
-                                break;
-                            }
-                        };
-                        allocated_slots.push(slot);
-                        match producer::load_curve(
-                            io.as_ref(),
-                            slot,
-                            curve_params,
-                            producer::DEFAULT_LOAD_CURVE_TIMEOUT,
-                        ) {
-                            Ok(handle) => {
-                                set_axis_handle(&mut params, *axis_idx, handle);
-                            }
-                            Err(e) => {
-                                chunk_err = Some(format!(
-                                    "load_curve mcu={}: {e}",
-                                    plan.mcu_id
-                                ));
-                                break;
-                            }
-                        }
-                    }
-
-                    if let Some(err) = chunk_err {
-                        // Mid-chunk failure: release every slot allocated for
-                        // this chunk before propagating. Earlier chunks of
-                        // this logical move stay in flight; `kalico_credit_freed`
-                        // retires them naturally.
+                // Allocate slots, load curves. On any error, release every
+                // slot allocated so far for this segment so the pool doesn't
+                // leak. Each `producer::load_curve` call expands internally
+                // to begin + N×chunk + finalize over the wire.
+                let mut allocated_slots: Vec<u16> =
+                    Vec::with_capacity(plan.curves_to_load.len());
+                let mut seg_err: Option<String> = None;
+                for i in 0..plan.curves_to_load.len() {
+                    let axis_idx = plan.curves_to_load[i].0;
+                    let curve_params = plan.curves_to_load[i].1.clone();
+                    let alloc_result = {
                         let mut pool = slot_pool.lock().unwrap();
-                        for s in &allocated_slots {
-                            pool.release(*s);
+                        pool.try_alloc().ok_or_else(|| {
+                            format!(
+                                "slot pool exhausted for mcu={} (capacity={CURVE_POOL_N}, in_flight={}); \
+                                 awaiting kalico_credit_freed retirement events",
+                                plan.mcu_id,
+                                pool.in_flight_count(),
+                            )
+                        })
+                    };
+                    let (slot, _gen) = match alloc_result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            seg_err = Some(e);
+                            break;
                         }
-                        return Err(err);
-                    }
-
-                    // Bind every freshly-allocated slot to this chunk's
-                    // segment id so `kalico_credit_freed`-driven retirement
-                    // can release them.
-                    {
-                        let mut pool = slot_pool.lock().unwrap();
-                        for slot in &allocated_slots {
-                            pool.register_segment(*slot, params.id);
-                        }
-                    }
-
-                    if let Err(e) = push_segment_fire_and_forget(
+                    };
+                    allocated_slots.push(slot);
+                    match producer::load_curve(
                         io.as_ref(),
-                        credit,
-                        &params,
+                        slot,
+                        &curve_params,
+                        producer::DEFAULT_LOAD_CURVE_TIMEOUT,
                     ) {
-                        // Defensive cleanup — release this chunk's slots so
-                        // the pool doesn't leak (the MCU never accepted
-                        // these). Earlier chunks remain in flight and will
-                        // retire naturally.
-                        let mut pool = slot_pool.lock().unwrap();
-                        for s in &allocated_slots {
-                            pool.release(*s);
+                        Ok(handle) => {
+                            plan.set_handle(axis_idx, handle);
                         }
-                        return Err(format!(
-                            "push_segment mcu={}: {e}",
-                            plan.mcu_id
-                        ));
+                        Err(e) => {
+                            seg_err = Some(format!(
+                                "load_curve mcu={}: {e}",
+                                plan.mcu_id
+                            ));
+                            break;
+                        }
                     }
+                }
+
+                if let Some(err) = seg_err {
+                    // Partial failure: release every slot allocated for this
+                    // segment before propagating.
+                    let mut pool = slot_pool.lock().unwrap();
+                    for s in &allocated_slots {
+                        pool.release(*s);
+                    }
+                    return Err(err);
+                }
+
+                // Bind every freshly-allocated slot to this segment id so
+                // `kalico_credit_freed`-driven retirement can release them.
+                {
+                    let mut pool = slot_pool.lock().unwrap();
+                    for slot in &allocated_slots {
+                        pool.register_segment(*slot, plan.params.id);
+                    }
+                }
+
+                if let Err(e) = push_segment_fire_and_forget(
+                    io.as_ref(),
+                    credit,
+                    &plan.params,
+                ) {
+                    // Defensive cleanup — release this segment's slots so
+                    // the pool doesn't leak (the MCU never accepted them).
+                    let mut pool = slot_pool.lock().unwrap();
+                    for s in &allocated_slots {
+                        pool.release(*s);
+                    }
+                    return Err(format!(
+                        "push_segment mcu={}: {e}",
+                        plan.mcu_id
+                    ));
                 }
             }
 
-            // Counter is logical-move scoped, not per-chunk. Existing tests
-            // (e.g. `single_axis_x_move`) and telemetry depend on this.
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(())
         });

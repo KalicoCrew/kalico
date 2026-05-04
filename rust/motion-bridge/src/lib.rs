@@ -4,8 +4,6 @@ pub mod classify;
 #[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
-pub mod curve_chunker;
-#[doc(hidden)]
 pub mod dispatch;
 #[doc(hidden)]
 pub mod homing;
