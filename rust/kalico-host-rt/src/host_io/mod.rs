@@ -324,6 +324,15 @@ impl Transport for KalicoHostIo {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
     }
+
+    fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, crate::host_io::parser::FieldValue<'_>)],
+    ) -> Result<(), TransportError> {
+        // Forward to the inherent method (same encoding + reactor dispatch).
+        KalicoHostIo::send_typed(self, name, args)
+    }
 }
 
 impl KalicoHostIo {

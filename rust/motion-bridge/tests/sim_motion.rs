@@ -96,12 +96,24 @@ struct LoadCurveCapture {
     cps: Vec<f32>,
 }
 
+/// In-flight curve-upload state, populated by `kalico_load_curve_begin` +
+/// `kalico_load_curve_chunk` fire-and-forget frames and consumed by
+/// `kalico_load_curve_finalize` to assemble a `LoadCurveCapture`.
+#[derive(Default)]
+struct PendingUpload {
+    slot: u16,
+    degree: u8,
+    cps_buf: Vec<u8>,
+    knots_buf: Vec<u8>,
+}
+
 #[derive(Default)]
 struct TransportState {
     sent: Vec<CallRecord>,
     next_handle_lo: u32,
     next_segment_id: u32,
     pending_load_axes: VecDeque<usize>,
+    pending_upload: Option<PendingUpload>,
 }
 
 struct RecordingTransport {
@@ -116,6 +128,7 @@ impl RecordingTransport {
                 next_handle_lo: 1,
                 next_segment_id: 1,
                 pending_load_axes: VecDeque::new(),
+                pending_upload: None,
             }),
         }
     }
@@ -243,68 +256,42 @@ impl Transport for RecordingTransport {
     fn call_typed(
         &self,
         name: &str,
-        args: &[(&str, FieldValue<'_>)],
+        _args: &[(&str, FieldValue<'_>)],
         expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
-        // Snoop typed args for kalico_load_curve so tests can decode the
-        // shaped NURBS that producer sent on the wire.
-        let load_curve = if name == "kalico_load_curve" {
-            let mut degree: Option<u8> = None;
-            let mut cps_bytes: Option<Vec<u8>> = None;
-            let mut knots_bytes: Option<Vec<u8>> = None;
-            for (k, v) in args {
-                match (*k, v) {
-                    ("degree", FieldValue::Byte(b)) => degree = Some(*b),
-                    ("cps", FieldValue::Buffer(b)) => cps_bytes = Some(b.to_vec()),
-                    ("knots", FieldValue::Buffer(b)) => knots_bytes = Some(b.to_vec()),
-                    _ => {}
-                }
-            }
-            let axis_idx = self.state.lock().unwrap().pending_load_axes.pop_front();
-            match (degree, cps_bytes, knots_bytes) {
-                (Some(d), Some(cb), Some(kb)) => Some(LoadCurveCapture {
-                    axis_idx,
-                    degree: d,
-                    cps: cb
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect(),
-                    knots: kb
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect(),
-                }),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        // Inline a simplified version of `call` so we can stash the
-        // captured load_curve payload alongside the cmd string.
-        {
-            let mut s = self.state.lock().unwrap();
-            s.sent.push(CallRecord {
-                cmd: name.to_string(),
-                load_curve,
-            });
-        }
         let mut p = MessageParams::new();
         match expected_response_name {
-            "kalico_load_curve_response" => {
+            // Incremental-upload protocol: the host calls `finalize` to
+            // commit the previously-streamed begin/chunk data. We stash
+            // the assembled `LoadCurveCapture` here, alongside the cmd
+            // record, before returning success.
+            "kalico_load_curve_finalize_response" => {
                 let mut s = self.state.lock().unwrap();
+                let pending = s.pending_upload.take();
+                let axis_idx = s.pending_load_axes.pop_front();
+                let load_curve = pending.map(|u| LoadCurveCapture {
+                    axis_idx,
+                    degree: u.degree,
+                    cps: u.cps_buf
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect(),
+                    knots: u.knots_buf
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect(),
+                });
+                s.sent.push(CallRecord { cmd: name.to_string(), load_curve });
                 let lo = s.next_handle_lo;
                 s.next_handle_lo = s.next_handle_lo.wrapping_add(1);
                 p.insert("result".to_string(), MessageValue::I32(0));
-                p.insert(
-                    "curve_handle_packed".to_string(),
-                    MessageValue::U32(lo),
-                );
+                p.insert("curve_handle_packed".to_string(), MessageValue::U32(lo));
                 Ok(p)
             }
             "kalico_push_response" => {
                 let mut s = self.state.lock().unwrap();
+                s.sent.push(CallRecord { cmd: name.to_string(), load_curve: None });
                 let id = s.next_segment_id;
                 s.next_segment_id = s.next_segment_id.wrapping_add(1);
                 p.insert("result".to_string(), MessageValue::I32(0));
@@ -317,11 +304,72 @@ impl Transport for RecordingTransport {
             }
             other => {
                 let _ = timeout;
+                let mut s = self.state.lock().unwrap();
+                s.sent.push(CallRecord { cmd: name.to_string(), load_curve: None });
                 Err(TransportError::Parse(format!(
                     "RecordingTransport: unexpected expected_response_name '{other}'"
                 )))
             }
         }
+    }
+
+    fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, FieldValue<'_>)],
+    ) -> Result<(), TransportError> {
+        // Stage incremental-upload state from begin/chunk fire-and-forget
+        // frames so finalize can assemble the LoadCurveCapture.
+        let mut s = self.state.lock().unwrap();
+        match name {
+            "kalico_load_curve_begin" => {
+                let mut slot: u16 = 0;
+                let mut degree: u8 = 0;
+                for (k, v) in args {
+                    match (*k, v) {
+                        ("slot",   FieldValue::U16(b)) => slot = *b,
+                        ("degree", FieldValue::Byte(b)) => degree = *b,
+                        _ => {}
+                    }
+                }
+                s.pending_upload = Some(PendingUpload {
+                    slot,
+                    degree,
+                    cps_buf: Vec::new(),
+                    knots_buf: Vec::new(),
+                });
+            }
+            "kalico_load_curve_chunk" => {
+                let mut slot: u16 = 0;
+                let mut kind: u8 = 0;
+                let mut offset: u16 = 0;
+                let mut data: &[u8] = &[];
+                for (k, v) in args {
+                    match (*k, v) {
+                        ("slot",   FieldValue::U16(b))  => slot = *b,
+                        ("kind",   FieldValue::Byte(b)) => kind = *b,
+                        ("offset", FieldValue::U16(b))  => offset = *b,
+                        ("data",   FieldValue::Buffer(b)) => data = *b,
+                        _ => {}
+                    }
+                }
+                if let Some(up) = s.pending_upload.as_mut() {
+                    if up.slot == slot {
+                        let buf = if kind == 0 { &mut up.cps_buf } else { &mut up.knots_buf };
+                        let end = offset as usize + data.len();
+                        if buf.len() < end {
+                            buf.resize(end, 0);
+                        }
+                        buf[offset as usize..end].copy_from_slice(data);
+                    }
+                }
+            }
+            _ => {}
+        }
+        // Record the fire-and-forget frame in the sent log too, with no
+        // load_curve payload (finalize attaches the assembled capture).
+        s.sent.push(CallRecord { cmd: name.to_string(), load_curve: None });
+        Ok(())
     }
 }
 

@@ -144,8 +144,28 @@ pub fn push_segment_with_timeout<T: Transport>(
     })
 }
 
-/// Default timeout for `kalico_load_curve_response`.
+/// Default timeout for `kalico_load_curve_finalize_response`.
+///
+/// After the spec-§4 incremental-upload rewrite, only the synchronous
+/// `finalize` call is bounded by this timeout. `begin` and `chunk` are
+/// fire-and-forget (spec §4.1, §4.2); back-pressure is handled at the
+/// reactor layer (`pending_fire_and_forget`, spec §6.0).
 pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Per-chunk byte budget for `kalico_load_curve_chunk` `data` payloads.
+///
+/// Pinned to **40 bytes** per spec §11 Q3: leaves slack for VLQ growth as
+/// `offset` crosses 128 / 16384 (3- and 4-byte VLQ thresholds) and as
+/// `slot` grows past 128 (if `CURVE_POOL_N` is ever bumped). The unit
+/// test `chunk_frame_size_within_message_max` (and the MCU-side worst-
+/// case decoded size in `runtime_tick.c`) both depend on this constant
+/// staying ≤ 50.
+pub const CHUNK_BYTES: usize = 40;
+
+/// Wire field `kind` value for control-point chunks (spec §4.2).
+const CHUNK_KIND_CPS: u8 = 0;
+/// Wire field `kind` value for knot-vector chunks (spec §4.2).
+const CHUNK_KIND_KNOTS: u8 = 1;
 
 /// Parameters for loading a single scalar curve into an MCU's curve pool.
 ///
@@ -232,9 +252,19 @@ impl CurveLoadParams {
 
 /// Load a scalar curve into the MCU's curve pool at the caller-specified slot.
 ///
-/// Sends `kalico_load_curve` and waits for `kalico_load_curve_response`.
-/// On success, returns the packed handle `(generation << 16) | slot_idx`
-/// reported by the firmware (`curve_handle_packed`).
+/// Drives the incremental-upload protocol (spec §4):
+/// 1. **`kalico_load_curve_begin`** (fire-and-forget) — declares total
+///    cps / knots f32 counts and resets the MCU-side ingest scratch.
+/// 2. **`kalico_load_curve_chunk` × N** (fire-and-forget) — `cps` then
+///    `knots`, each split into [`CHUNK_BYTES`]-byte slices with a
+///    monotonically-increasing byte `offset`.
+/// 3. **`kalico_load_curve_finalize`** (synchronous) — validates totals,
+///    installs the curve, and returns the packed handle. Only this call
+///    is bounded by `timeout`.
+///
+/// On success returns the packed handle `(generation << 16) | slot_idx`
+/// reported by the firmware (`curve_handle_packed`). On `result != 0`
+/// returns [`ProducerError::McuRejected`].
 pub fn load_curve<T: Transport>(
     io: &T,
     slot: u16,
@@ -247,22 +277,49 @@ pub fn load_curve<T: Transport>(
     let cps_buf = params.cps_bytes();
     let knots_buf = params.knots_bytes();
 
-    let resp = io.call_typed(
-        "kalico_load_curve",
+    // 1) begin — fire-and-forget. `total_cps` / `total_knots` are f32
+    //    counts (not byte counts); the MCU multiplies by 4 internally to
+    //    derive `expected_cps_bytes` / `expected_knots_bytes` (see
+    //    `command_kalico_load_curve_begin` in `src/runtime_tick.c`,
+    //    where `cps_bytes = (uint32_t)total_cps * 4u`).
+    io.send_typed(
+        "kalico_load_curve_begin",
         &[
-            ("version", FieldValue::Byte(FORMAT_VERSION_V1)),
-            ("slot", FieldValue::U16(slot)),
-            ("degree", FieldValue::Byte(params.degree)),
-            ("cps", FieldValue::Buffer(&cps_buf)),
-            ("knots", FieldValue::Buffer(&knots_buf)),
+            ("version",     FieldValue::Byte(FORMAT_VERSION_V1)),
+            ("slot",        FieldValue::U16(slot)),
+            ("degree",      FieldValue::Byte(params.degree)),
+            ("total_cps",   FieldValue::U16(params.cps_f32.len() as u16)),
+            ("total_knots", FieldValue::U16(params.knots_f32.len() as u16)),
         ],
-        "kalico_load_curve_response",
+    )?;
+
+    // 2) chunks — fire-and-forget. cps first (kind=0), then knots (kind=1).
+    for (kind, buf) in [(CHUNK_KIND_CPS, &cps_buf), (CHUNK_KIND_KNOTS, &knots_buf)] {
+        for (chunk_idx, chunk) in buf.chunks(CHUNK_BYTES).enumerate() {
+            let offset = (chunk_idx * CHUNK_BYTES) as u16;
+            io.send_typed(
+                "kalico_load_curve_chunk",
+                &[
+                    ("slot",   FieldValue::U16(slot)),
+                    ("kind",   FieldValue::Byte(kind)),
+                    ("offset", FieldValue::U16(offset)),
+                    ("data",   FieldValue::Buffer(chunk)),
+                ],
+            )?;
+        }
+    }
+
+    // 3) finalize — synchronous; the only call bounded by `timeout`.
+    let resp = io.call_typed(
+        "kalico_load_curve_finalize",
+        &[("slot", FieldValue::U16(slot))],
+        "kalico_load_curve_finalize_response",
         timeout,
     )?;
 
     let Some(result) = resp.try_get_i32("result") else {
         return Err(ProducerError::Transport(TransportError::Parse(
-            "kalico_load_curve_response missing 'result' field".to_string(),
+            "kalico_load_curve_finalize_response missing 'result' field".to_string(),
         )));
     };
     if result != 0 {
@@ -271,7 +328,8 @@ pub fn load_curve<T: Transport>(
 
     let Some(handle) = resp.try_get_u32("curve_handle_packed") else {
         return Err(ProducerError::Transport(TransportError::Parse(
-            "kalico_load_curve_response missing 'curve_handle_packed' field".to_string(),
+            "kalico_load_curve_finalize_response missing 'curve_handle_packed' field"
+                .to_string(),
         )));
     };
     Ok(handle)
@@ -306,6 +364,77 @@ mod tests {
         assert_eq!(params.knots_bytes().len(), 8);
         let cp_bytes: [u8; 4] = params.cps_bytes()[..4].try_into().unwrap();
         assert_eq!(f32::from_le_bytes(cp_bytes), 1.5);
+    }
+
+    /// Spec §11 Q3 unit test requirement: every encoded
+    /// `kalico_load_curve_chunk` frame for any realistic
+    /// `(slot ∈ 0..63, kind ∈ {0,1}, offset, data ≤ CHUNK_BYTES)` triple
+    /// must fit within `MESSAGE_MAX − 5 = 59` bytes of payload (the wire
+    /// envelope adds the 5-byte `MESSAGE_MIN`). The ceiling holds even at
+    /// the worst-case `offset` near `u16::MAX` (3-byte VLQ).
+    #[test]
+    fn chunk_frame_size_within_message_max() {
+        use crate::host_io::parser::{DataDictionary, FieldValue, MsgProtoParser};
+        use indexmap::IndexMap;
+
+        // Mirror the firmware DECL_COMMAND format string for the chunk command.
+        let mut d = DataDictionary {
+            commands:       IndexMap::new(),
+            responses:      IndexMap::new(),
+            output:         IndexMap::new(),
+            enumerations:   IndexMap::new(),
+            config:         serde_json::json!({}),
+            version:        "v".into(),
+            app:            "kalico".into(),
+            build_versions: None,
+            license:        None,
+        };
+        d.commands.insert(
+            "kalico_load_curve_chunk slot=%hu kind=%c offset=%hu data=%*s".into(),
+            123,
+        );
+        let parser = MsgProtoParser::from_dictionary(d).unwrap();
+
+        // Payload budget per spec §4.2: `MESSAGE_MAX − MESSAGE_MIN = 64 − 5 = 59`
+        // bytes available for the encoded command body (msgid VLQ + fields).
+        const PAYLOAD_BUDGET: usize = 59;
+
+        let big_data = vec![0xAAu8; CHUNK_BYTES];
+        // Sweep slot ∈ {0, 63, 127} (still 1-byte VLQ), kind ∈ {0, 1}, offset
+        // across both VLQ-growth thresholds (0, 0x7F, 0x80, 0x3FFF, 0xFFFF),
+        // and data lengths 0..=CHUNK_BYTES.
+        let slots: [u16; 3] = [0, 63, 127];
+        let kinds: [u8; 2] = [0, 1];
+        let offsets: [u16; 5] = [0, 0x7F, 0x80, 0x3FFF, 0xFFFF];
+        let data_lens: [usize; 4] = [0, 1, CHUNK_BYTES / 2, CHUNK_BYTES];
+
+        for &slot in &slots {
+            for &kind in &kinds {
+                for &offset in &offsets {
+                    for &dl in &data_lens {
+                        let data = &big_data[..dl];
+                        let bytes = parser
+                            .encode_typed(
+                                "kalico_load_curve_chunk",
+                                &[
+                                    ("slot",   FieldValue::U16(slot)),
+                                    ("kind",   FieldValue::Byte(kind)),
+                                    ("offset", FieldValue::U16(offset)),
+                                    ("data",   FieldValue::Buffer(data)),
+                                ],
+                            )
+                            .expect("encode_typed");
+                        assert!(
+                            bytes.len() <= PAYLOAD_BUDGET,
+                            "encoded chunk size {} exceeds MESSAGE_MAX-5={} \
+                             for slot={slot} kind={kind} offset={offset} data_len={dl}",
+                            bytes.len(),
+                            PAYLOAD_BUDGET,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

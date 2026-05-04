@@ -206,6 +206,190 @@ fn missing_result_field_surfaces_parse_error_and_releases_credit() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// load_curve — incremental upload protocol (spec §4)
+// ---------------------------------------------------------------------------
+
+use kalico_host_rt::producer::{
+    CHUNK_BYTES, CurveLoadParams, DEFAULT_LOAD_CURVE_TIMEOUT, load_curve,
+};
+use mock_transport::OwnedFieldValue;
+
+fn make_curve(degree: u8, n_cps: usize, n_knots: usize) -> CurveLoadParams {
+    CurveLoadParams {
+        degree,
+        cps_f32:   (0..n_cps).map(|i| i as f32 + 0.5).collect(),
+        knots_f32: (0..n_knots).map(|i| i as f32 * 0.1).collect(),
+    }
+}
+
+fn finalize_response(handle: u32, result: i32) -> kalico_host_rt::transport::MessageParams {
+    mp_with(&[
+        ("result", MessageValue::I32(result)),
+        ("curve_handle_packed", MessageValue::U32(handle)),
+    ])
+}
+
+#[test]
+fn load_curve_drives_begin_chunks_finalize_in_order() {
+    let mock = Arc::new(MockTransport::new());
+
+    // 12 cps × 4 = 48 B → ceil(48/40) = 2 chunks (40 B + 8 B).
+    // 14 knots × 4 = 56 B → ceil(56/40) = 2 chunks (40 B + 16 B).
+    let params = make_curve(/*degree=*/ 5, /*n_cps=*/ 12, /*n_knots=*/ 14);
+    let cps_buf = params.cps_bytes();
+    let knots_buf = params.knots_bytes();
+    let expected_chunks =
+        cps_buf.len().div_ceil(CHUNK_BYTES) + knots_buf.len().div_ceil(CHUNK_BYTES);
+
+    let _completer = spawn_completer(
+        mock.clone(),
+        "kalico_load_curve_finalize_response",
+        finalize_response(0xCAFE_0007, 0),
+    );
+
+    let handle = load_curve(&*mock, /*slot=*/ 7, &params, DEFAULT_LOAD_CURVE_TIMEOUT)
+        .expect("load_curve happy path");
+    assert_eq!(handle, 0xCAFE_0007);
+
+    // 1 begin (send_typed) + N chunks (send_typed).
+    let typed = mock.sent_typed();
+    let begins:  Vec<_> = typed.iter().filter(|r| r.name == "kalico_load_curve_begin").collect();
+    let chunks:  Vec<_> = typed.iter().filter(|r| r.name == "kalico_load_curve_chunk").collect();
+    assert_eq!(begins.len(), 1, "exactly one begin frame");
+    assert_eq!(chunks.len(), expected_chunks, "chunk count = ceil(cps/40)+ceil(knots/40)");
+
+    // Begin args: version=1, slot=7, degree=5, total_cps=12, total_knots=14.
+    let begin_args: std::collections::HashMap<&str, &OwnedFieldValue> =
+        begins[0].args.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    assert!(matches!(begin_args.get("version"), Some(OwnedFieldValue::Byte(1))));
+    assert!(matches!(begin_args.get("slot"),    Some(OwnedFieldValue::U16(7))));
+    assert!(matches!(begin_args.get("degree"),  Some(OwnedFieldValue::Byte(5))));
+    assert!(matches!(begin_args.get("total_cps"),   Some(OwnedFieldValue::U16(12))));
+    assert!(matches!(begin_args.get("total_knots"), Some(OwnedFieldValue::U16(14))));
+
+    // Reassemble cps + knots from the chunk frames; verify byte-for-byte
+    // identity with the producer's source buffers, plus correct kind/offset.
+    let mut reconstructed_cps   = vec![0u8; cps_buf.len()];
+    let mut reconstructed_knots = vec![0u8; knots_buf.len()];
+    let mut seen_kinds = (0usize, 0usize); // (cps chunk count, knots chunk count)
+    for chunk in &chunks {
+        let argmap: std::collections::HashMap<&str, &OwnedFieldValue> =
+            chunk.args.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        assert!(matches!(argmap.get("slot"), Some(OwnedFieldValue::U16(7))));
+        let kind = match argmap.get("kind") {
+            Some(OwnedFieldValue::Byte(b)) => *b,
+            other => panic!("missing/wrong kind: {other:?}"),
+        };
+        let offset = match argmap.get("offset") {
+            Some(OwnedFieldValue::U16(o)) => *o as usize,
+            other => panic!("missing/wrong offset: {other:?}"),
+        };
+        let data = match argmap.get("data") {
+            Some(OwnedFieldValue::Buffer(b)) => b.clone(),
+            other => panic!("missing/wrong data: {other:?}"),
+        };
+        assert!(data.len() <= CHUNK_BYTES,
+                "chunk data exceeds CHUNK_BYTES: {}", data.len());
+        // offset must be a multiple of CHUNK_BYTES (sequential chunking).
+        assert_eq!(offset % CHUNK_BYTES, 0, "non-aligned chunk offset {offset}");
+        let dst = if kind == 0 {
+            seen_kinds.0 += 1;
+            &mut reconstructed_cps
+        } else if kind == 1 {
+            seen_kinds.1 += 1;
+            &mut reconstructed_knots
+        } else {
+            panic!("unexpected kind {kind}");
+        };
+        dst[offset..offset + data.len()].copy_from_slice(&data);
+    }
+    assert_eq!(seen_kinds.0, cps_buf.len().div_ceil(CHUNK_BYTES));
+    assert_eq!(seen_kinds.1, knots_buf.len().div_ceil(CHUNK_BYTES));
+    assert_eq!(reconstructed_cps, cps_buf,   "cps reassembly mismatch");
+    assert_eq!(reconstructed_knots, knots_buf, "knots reassembly mismatch");
+
+    // Finalize: exactly one synchronous call_typed → kalico_load_curve_finalize.
+    let finalize_calls = mock.sent_starting_with("kalico_load_curve_finalize");
+    assert_eq!(finalize_calls.len(), 1, "one finalize call");
+}
+
+#[test]
+fn load_curve_returns_mcu_rejected_on_nonzero_finalize_result() {
+    let mock = Arc::new(MockTransport::new());
+    let _completer = spawn_completer(
+        mock.clone(),
+        "kalico_load_curve_finalize_response",
+        finalize_response(0, -2),
+    );
+
+    let params = make_curve(3, 4, 8);
+    let err = load_curve(&*mock, 0, &params, DEFAULT_LOAD_CURVE_TIMEOUT).unwrap_err();
+    match err {
+        ProducerError::McuRejected(r) => assert_eq!(r, -2),
+        other => panic!("expected McuRejected(-2), got {other:?}"),
+    }
+}
+
+#[test]
+fn load_curve_handles_non_aligned_buffer_lengths() {
+    // Construct a curve whose cps_bytes is not a multiple of CHUNK_BYTES.
+    // 12 cps × 4 = 48 B → 40 B + 8 B (one full chunk + one partial).
+    // 11 knots × 4 = 44 B → 40 B + 4 B.
+    let mock = Arc::new(MockTransport::new());
+    let _completer = spawn_completer(
+        mock.clone(),
+        "kalico_load_curve_finalize_response",
+        finalize_response(42, 0),
+    );
+
+    let params = make_curve(3, 12, 11);
+    let cps_buf = params.cps_bytes();
+    let knots_buf = params.knots_bytes();
+    assert_eq!(cps_buf.len(), 48);
+    assert_eq!(knots_buf.len(), 44);
+
+    let h = load_curve(&*mock, 0, &params, DEFAULT_LOAD_CURVE_TIMEOUT).unwrap();
+    assert_eq!(h, 42);
+
+    let chunks = mock.sent_typed_named("kalico_load_curve_chunk");
+    assert_eq!(chunks.len(), 4, "2 cps + 2 knot chunks");
+
+    // First cps chunk: kind=0, offset=0, data.len()=40.
+    let first_cps = &chunks[0];
+    let m: std::collections::HashMap<&str, &OwnedFieldValue> =
+        first_cps.args.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    assert!(matches!(m.get("kind"),   Some(OwnedFieldValue::Byte(0))));
+    assert!(matches!(m.get("offset"), Some(OwnedFieldValue::U16(0))));
+    let d0 = match m.get("data") { Some(OwnedFieldValue::Buffer(b)) => b, _ => panic!() };
+    assert_eq!(d0.len(), CHUNK_BYTES);
+
+    // Second cps chunk: kind=0, offset=40, data.len()=8.
+    let second_cps = &chunks[1];
+    let m: std::collections::HashMap<&str, &OwnedFieldValue> =
+        second_cps.args.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    assert!(matches!(m.get("kind"),   Some(OwnedFieldValue::Byte(0))));
+    assert!(matches!(m.get("offset"), Some(OwnedFieldValue::U16(40))));
+    let d1 = match m.get("data") { Some(OwnedFieldValue::Buffer(b)) => b, _ => panic!() };
+    assert_eq!(d1.len(), 8, "tail chunk = cps_bytes mod CHUNK_BYTES");
+
+    // Third chunk: first knots, kind=1, offset=0, data.len()=40.
+    let first_kn = &chunks[2];
+    let m: std::collections::HashMap<&str, &OwnedFieldValue> =
+        first_kn.args.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    assert!(matches!(m.get("kind"),   Some(OwnedFieldValue::Byte(1))));
+    assert!(matches!(m.get("offset"), Some(OwnedFieldValue::U16(0))));
+
+    // Fourth chunk: knots tail, kind=1, offset=40, data.len()=4.
+    let second_kn = &chunks[3];
+    let m: std::collections::HashMap<&str, &OwnedFieldValue> =
+        second_kn.args.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    assert!(matches!(m.get("kind"),   Some(OwnedFieldValue::Byte(1))));
+    assert!(matches!(m.get("offset"), Some(OwnedFieldValue::U16(40))));
+    let d3 = match m.get("data") { Some(OwnedFieldValue::Buffer(b)) => b, _ => panic!() };
+    assert_eq!(d3.len(), 4);
+}
+
 // Suppress the dead-code warning that fires when this test binary is
 // compiled without referring to every helper from `mock_transport.rs`.
 const _: Duration = Duration::from_millis(0);

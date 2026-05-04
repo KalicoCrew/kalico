@@ -101,6 +101,18 @@ pub trait Transport: Send + Sync {
         expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError>;
+
+    /// Typed-args fire-and-forget. Encodes `name` + `args` against the
+    /// loaded data dictionary and dispatches without awaiting any response.
+    /// The frame is still tracked in the wire-level unacked window for
+    /// NAK retransmit; this is the primitive used by the incremental
+    /// curve-upload protocol's `begin` and `chunk` commands (spec
+    /// §6.0 / §6.1).
+    fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, crate::host_io::parser::FieldValue<'_>)],
+    ) -> Result<(), TransportError>;
 }
 
 /// Parsed key=value pairs from a wire response. Field accessors return a

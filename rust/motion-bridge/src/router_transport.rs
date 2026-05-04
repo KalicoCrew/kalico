@@ -151,6 +151,29 @@ impl Transport for RouterTransport {
             .map_err(|e| TransportError::Parse(format!("encode_typed: {e:?}")))?;
         self.submit_and_wait(bytes, expected_response_name, timeout)
     }
+
+    fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, FieldValue<'_>)],
+    ) -> Result<(), TransportError> {
+        let parser = self.parser_snapshot()?;
+        let wire_bytes = parser
+            .encode_typed(name, args)
+            .map_err(|e| TransportError::Parse(format!("encode_typed: {e:?}")))?;
+        // Fire-and-forget: push the encoded payload through the router with
+        // no notify registration. The router's `PassthroughEntry::new` takes
+        // a `NotifyId`; `NotifyId::default()` is the documented "no notify"
+        // sentinel — see `kalico_host_rt::passthrough_queue::router`.
+        let mut router = self.router.lock().unwrap();
+        let entry = PassthroughEntry::new(
+            wire_bytes, 0, 0, NotifyId::none(),
+        );
+        router
+            .push(self.mcu, self.queue, entry)
+            .map_err(|e| TransportError::Parse(format!("router push: {e}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

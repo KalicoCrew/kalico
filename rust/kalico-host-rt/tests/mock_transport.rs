@@ -32,10 +32,50 @@ struct MockPendingCall {
     completion:             Option<SyncSender<Result<MessageParams, TransportError>>>,
 }
 
+/// One captured `send_typed` invocation.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct SendTypedRecord {
+    pub name: String,
+    pub args: Vec<(String, OwnedFieldValue)>,
+}
+
+/// Owned snapshot of a `FieldValue` so we can record fire-and-forget
+/// invocations without keeping the caller's borrow alive.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum OwnedFieldValue {
+    Byte(u8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    Buffer(Vec<u8>),
+    String(String),
+    Other,
+}
+
+impl OwnedFieldValue {
+    fn from_borrowed(v: &FieldValue<'_>) -> Self {
+        match v {
+            FieldValue::Byte(b) => OwnedFieldValue::Byte(*b),
+            FieldValue::U16(v)  => OwnedFieldValue::U16(*v),
+            FieldValue::I16(v)  => OwnedFieldValue::I16(*v),
+            FieldValue::U32(v)  => OwnedFieldValue::U32(*v),
+            FieldValue::I32(v)  => OwnedFieldValue::I32(*v),
+            FieldValue::Buffer(b) => OwnedFieldValue::Buffer(b.to_vec()),
+            FieldValue::String(s) => OwnedFieldValue::String(s.to_string()),
+            _ => OwnedFieldValue::Other,
+        }
+    }
+}
+
 struct MockState {
     pending_calls: HashMap<u64, MockPendingCall>,
     next_call_id:  u64,
     sent_cmds:     Vec<String>,
+    /// Captured fire-and-forget `send_typed` invocations, in order.
+    sent_typed:    Vec<SendTypedRecord>,
     /// Per-response-name responder: called synchronously inside call() with
     /// the call_time Instant, returns the MessageParams to complete the call.
     static_responders: HashMap<String, Responder>,
@@ -53,6 +93,7 @@ impl MockTransport {
                 pending_calls: HashMap::new(),
                 next_call_id: 1,
                 sent_cmds: Vec::new(),
+                sent_typed: Vec::new(),
                 static_responders: HashMap::new(),
             }),
             call_arrived: Condvar::new(),
@@ -87,6 +128,21 @@ impl MockTransport {
 
     pub fn last_sent(&self) -> Option<String> {
         self.state.lock().unwrap().sent_cmds.last().cloned()
+    }
+
+    /// Snapshot of all `send_typed` invocations.
+    #[allow(dead_code)]
+    pub fn sent_typed(&self) -> Vec<SendTypedRecord> {
+        self.state.lock().unwrap().sent_typed.clone()
+    }
+
+    /// Filter `send_typed` invocations by command name.
+    #[allow(dead_code)]
+    pub fn sent_typed_named(&self, name: &str) -> Vec<SendTypedRecord> {
+        self.state.lock().unwrap().sent_typed.iter()
+            .filter(|r| r.name == name)
+            .cloned()
+            .collect()
     }
 
     pub fn sent_starting_with(&self, prefix: &str) -> Vec<String> {
@@ -183,6 +239,21 @@ impl Transport for MockTransport {
     ) -> Result<MessageParams, TransportError> {
         self.call(name, expected_response_name, timeout)
     }
+
+    fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, FieldValue<'_>)],
+    ) -> Result<(), TransportError> {
+        let record = SendTypedRecord {
+            name: name.to_string(),
+            args: args.iter()
+                .map(|(k, v)| ((*k).to_string(), OwnedFieldValue::from_borrowed(v)))
+                .collect(),
+        };
+        self.state.lock().unwrap().sent_typed.push(record);
+        Ok(())
+    }
 }
 
 /// Newtype wrapper around `Arc<MockTransport>` that implements `Transport`.
@@ -219,6 +290,14 @@ impl Transport for SharedMock {
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
         self.0.call_typed(name, args, expected_response_name, timeout)
+    }
+
+    fn send_typed(
+        &self,
+        name: &str,
+        args: &[(&str, FieldValue<'_>)],
+    ) -> Result<(), TransportError> {
+        self.0.send_typed(name, args)
     }
 }
 
