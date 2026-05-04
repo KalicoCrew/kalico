@@ -261,6 +261,30 @@ mod tests {
         assert_eq!(p.in_flight_count(), 1);
     }
 
+    /// B.1 design memo §5: on `push_segment` failure mid-burst, the dispatch
+    /// loop calls `release(slot)` for every slot in the failed chunk's
+    /// `allocated_slots`. Verify that this defensive cleanup returns the
+    /// pool to its prior state.
+    #[test]
+    fn release_after_failed_push_does_not_leak() {
+        let mut p = SlotPool::new();
+        let mut allocated: Vec<u16> = Vec::new();
+        for i in 0..5 {
+            let (s, _) = p.try_alloc().expect("alloc");
+            p.register_segment(s, 100 + i);
+            allocated.push(s);
+        }
+        assert_eq!(p.in_flight_count(), 5);
+        assert_eq!(p.free_count(), CURVE_POOL_N - 5);
+
+        // Simulate push_segment failure: release every allocated slot.
+        for s in &allocated {
+            p.release(*s);
+        }
+        assert_eq!(p.in_flight_count(), 0);
+        assert_eq!(p.free_count(), CURVE_POOL_N);
+    }
+
     #[test]
     fn many_alloc_release_cycles_dont_leak() {
         // Cycle through more than CURVE_POOL_N allocations to verify the

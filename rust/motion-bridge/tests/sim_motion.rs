@@ -68,7 +68,8 @@ use nurbs::ScalarNurbs;
 use motion_bridge::classify::{ClassifyError, classify_and_build};
 use motion_bridge::config::{PlannerConfig, PlannerLimits};
 use motion_bridge::dispatch::{
-    AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, build_push_params,
+    AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, build_chunked_push_plans,
+    chunk_push_params_skeleton, set_axis_handle,
 };
 use motion_bridge::homing::{HomingSegmentState, HomingState};
 use motion_bridge::planner::PlannerHandle;
@@ -418,72 +419,94 @@ impl Harness {
         let dispatch: Arc<
             dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync,
         > = Arc::new(move |seg: &ShapedSegment| -> Result<(), String> {
-            // No real clock estimate — use the t*1e6 fallback path the bridge
-            // also uses during early bring-up.
-            let t_start_clock = (seg.t_start * 1e6) as u64;
-            let t_end_clock = (seg.t_end * 1e6) as u64;
+            // Mirror the bridge.rs chunked dispatch loop. No real clock
+            // estimate — derive per-chunk clocks from the chunk's absolute
+            // time-domain window using a 1 MHz fallback.
+            let plans = build_chunked_push_plans(seg, &cb_mcu_configs);
 
-            let mut plans = build_push_params(
-                seg,
-                &cb_mcu_configs,
-                t_start_clock,
-                t_end_clock,
-            );
-
-            for plan in &mut plans {
+            for plan in plans {
                 let transport = match cb_transports.get(&plan.mcu_id) {
                     Some(t) => t.clone(),
                     None => continue,
                 };
                 let credit = cb_credits.get(&plan.mcu_id).unwrap().clone();
-
-                plan.params.t_start = t_start_clock;
-                plan.params.t_end = t_end_clock;
-
-                {
-                    let mut ids = next_seg_id.lock().unwrap();
-                    let entry = ids.entry(plan.mcu_id).or_insert(1);
-                    plan.params.id = *entry;
-                    *entry = entry.wrapping_add(1);
-                }
-
                 let pool = cb_slot_pools.get(&plan.mcu_id).unwrap().clone();
-                let curves = std::mem::take(&mut plan.curves_to_load);
-                let mut allocated_slots: Vec<u16> = Vec::with_capacity(curves.len());
-                for (axis_idx, curve_params) in &curves {
-                    let (slot, _gen) = pool
-                        .lock()
-                        .unwrap()
-                        .try_alloc()
-                        .ok_or_else(|| {
-                            format!(
-                                "slot pool exhausted for mcu={}",
-                                plan.mcu_id
-                            )
-                        })?;
-                    allocated_slots.push(slot);
-                    transport.note_next_load_axis(*axis_idx);
-                    let handle = producer::load_curve(
-                        transport.as_ref(),
-                        slot,
-                        curve_params,
-                        DEFAULT_LOAD_CURVE_TIMEOUT,
-                    )
-                    .map_err(|e| {
-                        pool.lock().unwrap().release(slot);
-                        format!("load_curve mcu={}: {e}", plan.mcu_id)
-                    })?;
-                    plan.set_handle(*axis_idx, handle);
-                }
-                {
-                    let mut p = pool.lock().unwrap();
-                    for slot in &allocated_slots {
-                        p.register_segment(*slot, plan.params.id);
+
+                for chunk in &plan.chunks {
+                    let t_start_clock = (chunk.t_start_s * 1e6) as u64;
+                    let t_end_clock = (chunk.t_end_s * 1e6) as u64;
+
+                    let mut params = chunk_push_params_skeleton(&plan);
+                    params.t_start = t_start_clock;
+                    params.t_end = t_end_clock;
+
+                    {
+                        let mut ids = next_seg_id.lock().unwrap();
+                        let entry = ids.entry(plan.mcu_id).or_insert(1);
+                        params.id = *entry;
+                        *entry = entry.wrapping_add(1);
+                    }
+
+                    let mut allocated_slots: Vec<u16> =
+                        Vec::with_capacity(chunk.curves_to_load.len());
+                    let mut chunk_err: Option<String> = None;
+                    for (axis_idx, curve_params) in &chunk.curves_to_load {
+                        let alloc = pool.lock().unwrap().try_alloc();
+                        let (slot, _gen) = match alloc {
+                            Some(v) => v,
+                            None => {
+                                chunk_err = Some(format!(
+                                    "slot pool exhausted for mcu={}",
+                                    plan.mcu_id
+                                ));
+                                break;
+                            }
+                        };
+                        allocated_slots.push(slot);
+                        transport.note_next_load_axis(*axis_idx);
+                        match producer::load_curve(
+                            transport.as_ref(),
+                            slot,
+                            curve_params,
+                            DEFAULT_LOAD_CURVE_TIMEOUT,
+                        ) {
+                            Ok(handle) => set_axis_handle(&mut params, *axis_idx, handle),
+                            Err(e) => {
+                                chunk_err = Some(format!(
+                                    "load_curve mcu={}: {e}",
+                                    plan.mcu_id
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(err) = chunk_err {
+                        let mut p = pool.lock().unwrap();
+                        for s in &allocated_slots {
+                            p.release(*s);
+                        }
+                        return Err(err);
+                    }
+                    {
+                        let mut p = pool.lock().unwrap();
+                        for slot in &allocated_slots {
+                            p.register_segment(*slot, params.id);
+                        }
+                    }
+
+                    if let Err(e) =
+                        producer::push_segment(transport.as_ref(), &credit, &params)
+                    {
+                        let mut p = pool.lock().unwrap();
+                        for s in &allocated_slots {
+                            p.release(*s);
+                        }
+                        return Err(format!(
+                            "push_segment mcu={}: {e}",
+                            plan.mcu_id
+                        ));
                     }
                 }
-
-                producer::push_segment(transport.as_ref(), &credit, &plan.params)
-                    .map_err(|e| format!("push_segment mcu={}: {e}", plan.mcu_id))?;
             }
 
             counter.fetch_add(1, Ordering::Relaxed);
