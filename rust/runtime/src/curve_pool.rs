@@ -19,11 +19,17 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use crate::error::FaultCode;
 
 /// Per-curve storage capacity. Sized for post-convolution degree-9 NURBS
-/// with up to 80 scalar control points — the per-axis scalar architecture
-/// stores one slot per axis (X, Y, Z, E).
-pub const MAX_CONTROL_POINTS: usize = 80;
-pub const MAX_KNOT_VECTOR_LEN: usize = 91; // MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1
+/// with up to 100 scalar control points — the per-axis scalar architecture
+/// stores one slot per axis (X, Y, Z, E). Bumped from 80→100 (cps) and
+/// 91→111 (knots) in the incremental-curve-upload spec
+/// (`docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md` §5.0)
+/// to cover the realistic worst case of ~91 cps + 100 knots per axis at
+/// degree 9 with 10 hermite pieces, plus a 25 % margin.
+pub const MAX_CONTROL_POINTS: usize = 100;
+pub const MAX_KNOT_VECTOR_LEN: usize = 111; // MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1
 pub const MAX_DEGREE: u8 = 10;
+
+const _: () = assert!(MAX_KNOT_VECTOR_LEN == MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1);
 
 /// Slab capacity. 64 slots for the per-axis scalar curve pool. Each slot
 /// holds a 1D scalar NURBS.

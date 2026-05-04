@@ -1160,7 +1160,7 @@ pub mod exports {
             // emit 3D data (3 floats per CP); extract first component (X).
             // Task 8 will update fixtures to native scalar.
             const FIXTURE_DIM: usize = 3; // sim_fixtures' per-CP dimension
-            let mut cps_scalar = [0.0_f32; 80];
+            let mut cps_scalar = [0.0_f32; runtime::curve_pool::MAX_CONTROL_POINTS];
             for i in 0..n_cp {
                 cps_scalar[i] = cps[i * FIXTURE_DIM];
             }

@@ -416,11 +416,14 @@ DECL_TASK(runtime_status_drain);
 // MCU and triggers a USB renumerate. Copy into 4-byte-aligned static
 // buffers first, then pass to Rust.
 //
-// Sizing matches CurvePool's compile-time bounds (MAX_CONTROL_POINTS = 80,
-// MAX_KNOT_VECTOR_LEN = 91). Static rather than stack: the load handler
+// Sizing matches CurvePool's compile-time bounds (MAX_CONTROL_POINTS = 100,
+// MAX_KNOT_VECTOR_LEN = 111). Static rather than stack: the load handler
 // runs in command-dispatch foreground context and stack is only 512 B.
-static float kalico_aligned_cps[80];     // MAX_CONTROL_POINTS
-static float kalico_aligned_knots[91];   // MAX_KNOT_VECTOR_LEN
+// Bumped from 80/91 in the incremental-curve-upload spec
+// (docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md §5.0)
+// to cover the realistic post-shape worst case at degree 9.
+static float kalico_aligned_cps[100];    // MAX_CONTROL_POINTS
+static float kalico_aligned_knots[111];  // MAX_KNOT_VECTOR_LEN
 
 void
 command_kalico_load_curve(uint32_t *args)

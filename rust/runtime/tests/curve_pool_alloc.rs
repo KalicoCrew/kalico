@@ -137,12 +137,12 @@ fn load_degree9_curve_64_cps() {
 #[test]
 fn load_degree10_curve_80_cps_at_limit() {
     let pool = CurvePool::new();
-    let n_cp = MAX_CONTROL_POINTS; // 80
-    let degree: u8 = MAX_DEGREE; // 10
+    let n_cp = MAX_CONTROL_POINTS;
+    let degree: u8 = MAX_DEGREE;
     let cps: Vec<f32> = (0..n_cp).map(|i| i as f32).collect();
-    let n_knots = n_cp + degree as usize + 1; // 91
+    let n_knots = n_cp + degree as usize + 1;
     let mut knots = vec![0.0_f32; n_knots];
-    let p1 = degree as usize + 1; // 11
+    let p1 = degree as usize + 1;
     for k in &mut knots[..p1] {
         *k = 0.0;
     }
@@ -155,9 +155,9 @@ fn load_degree10_curve_80_cps_at_limit() {
     }
     let h = pool.try_alloc_and_load(0, degree, &knots, &cps).unwrap();
     let view = pool.resolve(h).unwrap();
-    assert_eq!(view.control_points.len(), 80);
-    assert_eq!(view.knots.len(), 91);
-    assert_eq!(view.degree, 10);
+    assert_eq!(view.control_points.len(), MAX_CONTROL_POINTS);
+    assert_eq!(view.knots.len(), MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1);
+    assert_eq!(view.degree, MAX_DEGREE);
 }
 
 #[test]
@@ -173,9 +173,10 @@ fn degree11_rejected() {
 #[test]
 fn too_many_cps_rejected() {
     let pool = CurvePool::new();
-    // 81 CPs exceeds MAX_CONTROL_POINTS=80
-    let cps = vec![0.0_f32; 81];
-    let knots = vec![0.0_f32; 81 + 1 + 1]; // degree=0, 83 knots
+    // MAX_CONTROL_POINTS + 1 CPs exceeds the cap.
+    let n_cp = MAX_CONTROL_POINTS + 1;
+    let cps = vec![0.0_f32; n_cp];
+    let knots = vec![0.0_f32; n_cp + 1 + 1]; // degree=0
     let result = pool.validate_and_load(0, 0, &knots, &cps);
     assert_eq!(result, Err(CurvePoolError::InvalidLengths));
 }
