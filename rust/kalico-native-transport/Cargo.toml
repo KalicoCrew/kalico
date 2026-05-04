@@ -1,0 +1,19 @@
+[package]
+name = "kalico-native-transport"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Kalico-native transport (host side): Layer 1 framer, stream-level demuxer, schema dispatch, reset-epoch state machine, and Transport trait. See docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md."
+license.workspace = true
+
+[dependencies]
+log = "0.4"
+thiserror = { workspace = true }
+crossbeam-channel = "0.5"
+kalico-protocol = { path = "../kalico-protocol" }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

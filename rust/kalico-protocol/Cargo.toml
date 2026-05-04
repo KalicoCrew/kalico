@@ -1,0 +1,19 @@
+[package]
+name = "kalico-protocol"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Kalico-native transport schema (Layer 4): MessageKind discriminants, hand-written Encode/Decode, build-time SHA-256 schema_hash, and codegen of the C header consumed by the MCU dispatcher. See docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md."
+license.workspace = true
+
+[dependencies]
+
+[build-dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[lints]
+workspace = true

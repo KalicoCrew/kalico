@@ -10,6 +10,8 @@ members = [
     "kalico-host-rt",
     "compat",
     "motion-bridge",
+    "kalico-native-transport",
+    "kalico-protocol",
 ]
 exclude = ["gcode/fuzz"]
 resolver = "2"
