@@ -1,6 +1,9 @@
 # Main code build rules
 
 src-y += sched.c command.c basecmd.c debugcmds.c
+# Kalico-native transport — stream-level demuxer + Layer 4 dispatcher.
+# Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
+src-$(CONFIG_KALICO_RUNTIME) += kalico_demux.c kalico_dispatch.c
 src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
     trsync.c
 src-$(CONFIG_WANT_ADC) += adccmds.c

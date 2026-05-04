@@ -19,6 +19,8 @@
 #include "board/misc.h" // console_sendf
 #include "command.h" // command_find_block
 #include "internal.h" // console_setup
+#include "kalico_demux.h" // kalico_demux_*
+#include "kalico_dispatch.h" // kalico_dispatch_frame
 #include "sched.h" // sched_wake_task
 
 static struct pollfd main_pfd[1];
@@ -130,10 +132,30 @@ static struct task_wake console_wake;
 static uint8_t receive_buf[4096];
 static int receive_pos;
 
+// Klipper-only byte accumulator. The kalico demuxer extracts bytes belonging
+// to legacy Klipper frames out of the raw read buffer; we re-assemble those
+// here so command_find_and_dispatch sees a contiguous Klipper-only stream
+// (it expects a buffer it can pop_count out of).
+static uint8_t klipper_only_buf[4096];
+static int klipper_only_pos;
+
 void *
 console_receive_buffer(void)
 {
-    return receive_buf;
+    return klipper_only_buf;
+}
+
+// Raw byte writer used by the kalico transport TX path. Bypasses Klipper's
+// msgproto framing — the bytes are already a complete kalico frame.
+int
+kalico_console_write_raw(const uint8_t *buf, uint16_t len)
+{
+    int ret = write(main_pfd[MP_TTY_IDX].fd, buf, len);
+    if (ret < 0) {
+        report_errno("write", ret);
+        return -1;
+    }
+    return ret;
 }
 
 // Process any incoming commands
@@ -158,18 +180,58 @@ console_task(void)
         && memcmp(&receive_buf[receive_pos], "FORCE_SHUTDOWN\n", 15) == 0)
         shutdown("Force shutdown command");
 
-    // Find and dispatch message blocks in the input
-    int len = receive_pos + ret;
-    uint_fast8_t pop_count, msglen = len > MESSAGE_MAX ? MESSAGE_MAX : len;
-    ret = command_find_and_dispatch(receive_buf, msglen, &pop_count);
-    if (ret) {
-        len -= pop_count;
-        if (len) {
-            memmove(receive_buf, &receive_buf[pop_count], len);
-            sched_wake_task(&console_wake);
+    // Drive the kalico-native demuxer over the freshly-read bytes, routing
+    // Klipper bytes into klipper_only_buf and dispatching kalico frames
+    // inline. See spec §6 (stream-level demux).
+    int new_bytes = ret;
+    for (int i = 0; i < new_bytes; i++) {
+        uint8_t b = receive_buf[receive_pos + i];
+        kalico_demux_output_t out = kalico_demux_feed_byte(b);
+        switch (out) {
+        case KALICO_DEMUX_OUT_NONE:
+            break;
+        case KALICO_DEMUX_OUT_KLIPPER: {
+            const uint8_t *kbuf = kalico_demux_klipper_buf();
+            uint8_t klen = kalico_demux_klipper_len();
+            if (klipper_only_pos + klen
+                <= (int)sizeof(klipper_only_buf)) {
+                memcpy(&klipper_only_buf[klipper_only_pos], kbuf, klen);
+                klipper_only_pos += klen;
+            }
+            kalico_demux_consume();
+            break;
+        }
+        case KALICO_DEMUX_OUT_KALICO: {
+            uint8_t channel = kalico_demux_kalico_channel();
+            const uint8_t *payload = kalico_demux_kalico_payload();
+            uint16_t payload_len = kalico_demux_kalico_payload_len();
+            kalico_dispatch_frame(channel, payload, payload_len);
+            kalico_demux_consume();
+            break;
+        }
+        case KALICO_DEMUX_OUT_ERROR:
+            kalico_demux_consume();
+            break;
         }
     }
-    receive_pos = len;
+    // The raw read buffer is fully consumed by the demuxer per byte.
+    receive_pos = 0;
+
+    // Drain Klipper frames from klipper_only_buf via the existing parser.
+    int len = klipper_only_pos;
+    while (len > 0) {
+        uint_fast8_t pop_count;
+        uint_fast8_t msglen = len > MESSAGE_MAX ? MESSAGE_MAX : len;
+        ret = command_find_and_dispatch(klipper_only_buf, msglen, &pop_count);
+        if (!ret)
+            break;
+        len -= pop_count;
+        if (len)
+            memmove(klipper_only_buf, &klipper_only_buf[pop_count], len);
+    }
+    klipper_only_pos = len;
+    if (klipper_only_pos > 0)
+        sched_wake_task(&console_wake);
 }
 DECL_TASK(console_task);
 
