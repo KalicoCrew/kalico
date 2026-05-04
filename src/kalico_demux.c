@@ -3,6 +3,7 @@
 // C-side mirror of rust/kalico-native-transport/src/demux.rs.
 // Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md §6.
 
+#include <stdio.h>
 #include <string.h>
 #include "kalico_demux.h"
 #include "board/misc.h" // crc16_ccitt
@@ -57,8 +58,12 @@ finalize_kalico_frame(void)
     uint16_t crc_expected = (uint16_t)kalico_buf[payload_end]
                           | ((uint16_t)kalico_buf[payload_end + 1] << 8);
     uint16_t crc_actual = crc16_ccitt(&kalico_buf[1], payload_end - 1);
-    if (crc_actual != crc_expected)
+    if (crc_actual != crc_expected) {
+        fprintf(stderr, "[mcu] crc mismatch: expected 0x%04x, got 0x%04x, kalico_pos=%u\n",
+                crc_expected, crc_actual, kalico_pos);
+        fflush(stderr);
         return KALICO_DEMUX_OUT_ERROR;
+    }
     return KALICO_DEMUX_OUT_KALICO;
 }
 

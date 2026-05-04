@@ -1,18 +1,29 @@
-//! Segment producer. Layer-1/2/3 → wire encoder → [`Transport::send`].
+//! Segment producer (kalico-native, Phase C-B).
 //!
-//! Spec §4.2 + §3.2: each push acquires credit from a local
-//! [`CreditCounter`], encodes the wire command, sends via the
-//! transport, then waits on the named `kalico_push_response` reply.
+//! Spec §7.3 / §7.4 / §15: each push acquires credit from a local
+//! [`CreditCounter`], encodes the kalico-native command, sends via
+//! [`KalicoHostIo::kalico_call`], and waits on the matching response.
 //! Failures roll back the credit acquisition.
+//!
+//! The pre-Phase-C `producer::load_curve` (begin/chunk/finalize over
+//! Klipper msgproto) and `producer::push_segment` (Klipper command
+//! `kalico_push_segment`) retire — the MCU no longer accepts those
+//! commands (commit `0b263982d`).
 
 use std::time::Duration;
 
-use crate::credit::CreditCounter;
-use crate::transport::{Transport, TransportError};
+use kalico_protocol::{Encode, LoadCurve, LoadCurveResponse, MessageKind, PushSegment, PushSegmentResponse, Decode};
 
-/// Default timeout for `kalico_push_response`. The MCU should reply
-/// within microseconds; 100 ms is loose by ~3 orders of magnitude and
-/// only triggers on a host-side stall or a wire fault.
+use crate::credit::CreditCounter;
+use crate::host_io::KalicoHostIo;
+use crate::transport::TransportError;
+
+/// Default timeout for `LoadCurveResponse` (spec §7.4). The MCU should
+/// reply within microseconds; 100 ms is loose by ~3 orders of magnitude
+/// and only triggers on a host-side stall or a wire fault.
+pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Default timeout for `PushSegmentResponse`.
 pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy)]
@@ -24,11 +35,11 @@ pub struct PushedSegmentInfo {
 #[derive(Debug)]
 pub enum ProducerError {
     /// `try_acquire` returned `None` — caller should back off until the
-    /// next `kalico_credit_freed` event.
+    /// next CreditFreed event.
     NoCredit,
     /// Transport-layer failure (timeout, I/O, parse).
     Transport(TransportError),
-    /// MCU rejected the push (`result != 0` in `kalico_push_response`).
+    /// MCU rejected the command (`result != 0`).
     /// The negative `i32` is the spec §9 fault-code mapping.
     McuRejected(i32),
 }
@@ -45,7 +56,7 @@ impl std::fmt::Display for ProducerError {
             ProducerError::NoCredit => write!(f, "producer: no credit (MCU queue full)"),
             ProducerError::Transport(e) => write!(f, "producer transport: {e}"),
             ProducerError::McuRejected(r) => {
-                write!(f, "producer: MCU rejected push (result={r})")
+                write!(f, "producer: MCU rejected command (result={r})")
             }
         }
     }
@@ -68,112 +79,75 @@ pub struct SegmentPushParams {
     pub extrusion_ratio: f32,
 }
 
-/// Push a single segment to the MCU.
-///
-/// The 4 packed handles are `(generation << 16) | slot_idx` returned
-/// by prior `kalico_load_curve_response` calls; `t_start`/`t_end` are
-/// 64-bit MCU-clock values produced by [`crate::stream::arm_all_mcus`]
-/// or by a downstream Layer-2/3 scheduler.
-pub fn push_segment<T: Transport>(
-    io: &T,
+/// Push a single segment to the MCU via kalico-native PushSegment.
+pub fn push_segment(
+    io: &KalicoHostIo,
     credit: &CreditCounter,
     params: &SegmentPushParams,
 ) -> Result<PushedSegmentInfo, ProducerError> {
     push_segment_with_timeout(io, credit, params, DEFAULT_PUSH_RESPONSE_TIMEOUT)
 }
 
-pub fn push_segment_with_timeout<T: Transport>(
-    io: &T,
+pub fn push_segment_with_timeout(
+    io: &KalicoHostIo,
     credit: &CreditCounter,
     params: &SegmentPushParams,
     timeout: Duration,
 ) -> Result<PushedSegmentInfo, ProducerError> {
     credit.try_acquire().ok_or(ProducerError::NoCredit)?;
 
-    // Field names + ordering MUST match the firmware's DECL_COMMAND format
-    // string in `src/runtime_tick.c`:
-    //   "kalico_push_segment id=%u x_handle=%u y_handle=%u z_handle=%u
-    //    e_handle=%u t_start_hi=%u t_start_lo=%u t_end_hi=%u t_end_lo=%u
-    //    kinematics=%c e_mode=%c extrusion_ratio=%u"
-    let cmd = format!(
-        "kalico_push_segment id={id} x_handle={x_handle} \
-         y_handle={y_handle} z_handle={z_handle} e_handle={e_handle} \
-         t_start_hi={t_start_hi} t_start_lo={t_start_lo} \
-         t_end_hi={t_end_hi} t_end_lo={t_end_lo} \
-         kinematics={kin} e_mode={e_mode} extrusion_ratio={extrusion_ratio}",
-        id = params.id,
-        x_handle = params.x_handle_packed,
-        y_handle = params.y_handle_packed,
-        z_handle = params.z_handle_packed,
-        e_handle = params.e_handle_packed,
-        t_start_lo = params.t_start as u32,
-        t_start_hi = (params.t_start >> 32) as u32,
-        t_end_lo = params.t_end as u32,
-        t_end_hi = (params.t_end >> 32) as u32,
-        kin = params.kinematics,
-        e_mode = params.e_mode,
-        extrusion_ratio = params.extrusion_ratio.to_bits(),
-    );
+    let body = PushSegment {
+        id: params.id,
+        handle_x: params.x_handle_packed,
+        handle_y: params.y_handle_packed,
+        handle_z: params.z_handle_packed,
+        handle_e: params.e_handle_packed,
+        t_start: params.t_start,
+        t_end: params.t_end,
+        kinematics: params.kinematics,
+        e_mode: params.e_mode,
+        extrusion_ratio: params.extrusion_ratio,
+    }
+    .encoded_to_vec();
 
-    let resp = match io.call(&cmd, "kalico_push_response", timeout) {
+    let (kind, resp_body) = match io.kalico_call(MessageKind::PushSegment, body, timeout) {
         Ok(r) => r,
         Err(e) => {
             credit.release();
             return Err(ProducerError::Transport(e));
         }
     };
-
-    // I1 fix: `result` is load-bearing — `result == 0` means success, so
-    // a missing field on a malformed reply would be silently treated as
-    // success. Use the fallible accessor and surface a Parse error if
-    // the MCU response is missing the field.
-    let Some(result) = resp.try_get_i32("result") else {
+    if kind != MessageKind::PushSegmentResponse {
         credit.release();
-        return Err(ProducerError::Transport(TransportError::Parse(
-            "kalico_push_response missing 'result' field".to_string(),
-        )));
-    };
-    if result != 0 {
-        credit.release();
-        return Err(ProducerError::McuRejected(result));
+        return Err(ProducerError::Transport(TransportError::Parse(format!(
+            "expected PushSegmentResponse, got 0x{:04x}",
+            kind.as_u16()
+        ))));
     }
-
+    let resp = match PushSegmentResponse::decode(&resp_body) {
+        Ok(r) => r,
+        Err(e) => {
+            credit.release();
+            return Err(ProducerError::Transport(TransportError::Parse(format!(
+                "PushSegmentResponse decode failed: {e:?}"
+            ))));
+        }
+    };
+    if resp.result != 0 {
+        credit.release();
+        return Err(ProducerError::McuRejected(resp.result));
+    }
     Ok(PushedSegmentInfo {
-        accepted_segment_id: resp.get_u32("accepted_segment_id"),
-        credit_epoch: resp.get_u32("credit_epoch"),
+        accepted_segment_id: resp.accepted_segment_id,
+        credit_epoch: resp.credit_epoch,
     })
 }
 
-/// Default timeout for `kalico_load_curve_finalize_response`.
-///
-/// After the spec-§4 incremental-upload rewrite, only the synchronous
-/// `finalize` call is bounded by this timeout. `begin` and `chunk` are
-/// fire-and-forget (spec §4.1, §4.2); back-pressure is handled at the
-/// reactor layer (`pending_fire_and_forget`, spec §6.0).
-pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// Per-chunk byte budget for `kalico_load_curve_chunk` `data` payloads.
-///
-/// Pinned to **40 bytes** per spec §11 Q3: leaves slack for VLQ growth as
-/// `offset` crosses 128 / 16384 (3- and 4-byte VLQ thresholds) and as
-/// `slot` grows past 128 (if `CURVE_POOL_N` is ever bumped). The unit
-/// test `chunk_frame_size_within_message_max` (and the MCU-side worst-
-/// case decoded size in `runtime_tick.c`) both depend on this constant
-/// staying ≤ 50.
-pub const CHUNK_BYTES: usize = 40;
-
-/// Wire field `kind` value for control-point chunks (spec §4.2).
-const CHUNK_KIND_CPS: u8 = 0;
-/// Wire field `kind` value for knot-vector chunks (spec §4.2).
-const CHUNK_KIND_KNOTS: u8 = 1;
-
 /// Parameters for loading a single scalar curve into an MCU's curve pool.
 ///
-/// Lays out the V1 wire blob format defined in
-/// [`crate::wire::encode_load_curve_scalar`]. The actual `kalico_load_curve`
-/// command sends `degree` and the `knots_f32` / `cps_f32` byte buffers as
-/// separate msgproto fields; [`CurveLoadParams::encode`] returns the
-/// aggregated blob form for offline diagnostics and tests.
+/// Lays out the post-Phase-C kalico-native LoadCurve body (spec §7.3):
+/// `slot: u16, degree: u8, n_cps: u32, n_knots: u32, cps[..]: f32 LE,
+/// knots[..]: f32 LE`.
 #[derive(Debug, Clone)]
 pub struct CurveLoadParams {
     pub degree: u8,
@@ -182,11 +156,6 @@ pub struct CurveLoadParams {
 }
 
 impl CurveLoadParams {
-    /// Encode this curve as a V1 scalar wire blob.
-    pub fn encode(&self) -> Vec<u8> {
-        crate::wire::encode_load_curve_scalar(self.degree, &self.knots_f32, &self.cps_f32)
-    }
-
     /// Construct from a `nurbs::ScalarNurbs<f64>`, truncating to f32.
     pub fn from_scalar_nurbs(curve: &nurbs::ScalarNurbs<f64>) -> Self {
         Self {
@@ -201,9 +170,7 @@ impl CurveLoadParams {
     /// Firmware evaluates loaded curves at normalized segment progress
     /// `u = elapsed / duration`, not at absolute host time. Keep the control
     /// points as positions, but map the curve knot domain from
-    /// `[t_start_s, t_end_s]` onto `[0, 1]` before f32 truncation. This also
-    /// avoids f32 conditioning loss from long absolute timelines and close
-    /// neighboring knots.
+    /// `[t_start_s, t_end_s]` onto `[0, 1]` before f32 truncation.
     pub fn from_scalar_nurbs_normalized(
         curve: &nurbs::ScalarNurbs<f64>,
         t_start_s: f64,
@@ -229,231 +196,45 @@ impl CurveLoadParams {
             cps_f32: curve.control_points().iter().map(|&v| v as f32).collect(),
         }
     }
-
-    /// Pack `cps_f32` into a little-endian byte buffer suitable for the
-    /// `cps=%*s` wire arg.
-    pub fn cps_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.cps_f32.len() * 4);
-        for &v in &self.cps_f32 {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        out
-    }
-
-    /// Pack `knots_f32` into a little-endian byte buffer.
-    pub fn knots_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.knots_f32.len() * 4);
-        for &k in &self.knots_f32 {
-            out.extend_from_slice(&k.to_le_bytes());
-        }
-        out
-    }
 }
 
 /// Load a scalar curve into the MCU's curve pool at the caller-specified slot.
 ///
-/// Drives the incremental-upload protocol (spec §4):
-/// 1. **`kalico_load_curve_begin`** (fire-and-forget) — declares total
-///    cps / knots f32 counts and resets the MCU-side ingest scratch.
-/// 2. **`kalico_load_curve_chunk` × N** (fire-and-forget) — `cps` then
-///    `knots`, each split into [`CHUNK_BYTES`]-byte slices with a
-///    monotonically-increasing byte `offset`.
-/// 3. **`kalico_load_curve_finalize`** (synchronous) — validates totals,
-///    installs the curve, and returns the packed handle. Only this call
-///    is bounded by `timeout`.
-///
-/// On success returns the packed handle `(generation << 16) | slot_idx`
-/// reported by the firmware (`curve_handle_packed`). On `result != 0`
-/// returns [`ProducerError::McuRejected`].
-pub fn load_curve<T: Transport>(
-    io: &T,
+/// Single kalico-native LoadCurve frame (spec §7.3) — the Phase-A through
+/// Phase-B `kalico-native-transport` plumbing replaces the legacy
+/// `begin/chunk/finalize` Klipper-msgproto sequence. On success returns the
+/// packed handle `(generation << 16) | slot_idx`. On `result != 0` returns
+/// [`ProducerError::McuRejected`].
+pub fn load_curve(
+    io: &KalicoHostIo,
     slot: u16,
     params: &CurveLoadParams,
     timeout: Duration,
 ) -> Result<u32, ProducerError> {
-    use crate::host_io::parser::FieldValue;
-    use crate::wire::FORMAT_VERSION_V1;
-
-    let cps_buf = params.cps_bytes();
-    let knots_buf = params.knots_bytes();
-
-    // 1) begin — fire-and-forget. `total_cps` / `total_knots` are f32
-    //    counts (not byte counts); the MCU multiplies by 4 internally to
-    //    derive `expected_cps_bytes` / `expected_knots_bytes` (see
-    //    `command_kalico_load_curve_begin` in `src/runtime_tick.c`,
-    //    where `cps_bytes = (uint32_t)total_cps * 4u`).
-    io.send_typed(
-        "kalico_load_curve_begin",
-        &[
-            ("version",     FieldValue::Byte(FORMAT_VERSION_V1)),
-            ("slot",        FieldValue::U16(slot)),
-            ("degree",      FieldValue::Byte(params.degree)),
-            ("total_cps",   FieldValue::U16(params.cps_f32.len() as u16)),
-            ("total_knots", FieldValue::U16(params.knots_f32.len() as u16)),
-        ],
-    )?;
-
-    // 2) chunks — fire-and-forget. cps first (kind=0), then knots (kind=1).
-    for (kind, buf) in [(CHUNK_KIND_CPS, &cps_buf), (CHUNK_KIND_KNOTS, &knots_buf)] {
-        for (chunk_idx, chunk) in buf.chunks(CHUNK_BYTES).enumerate() {
-            let offset = (chunk_idx * CHUNK_BYTES) as u16;
-            io.send_typed(
-                "kalico_load_curve_chunk",
-                &[
-                    ("slot",   FieldValue::U16(slot)),
-                    ("kind",   FieldValue::Byte(kind)),
-                    ("offset", FieldValue::U16(offset)),
-                    ("data",   FieldValue::Buffer(chunk)),
-                ],
-            )?;
-        }
+    let body = LoadCurve {
+        slot,
+        degree: params.degree,
+        cps: params.cps_f32.clone(),
+        knots: params.knots_f32.clone(),
     }
+    .encoded_to_vec();
 
-    // 3) finalize — synchronous; the only call bounded by `timeout`.
-    let resp = io.call_typed(
-        "kalico_load_curve_finalize",
-        &[("slot", FieldValue::U16(slot))],
-        "kalico_load_curve_finalize_response",
-        timeout,
-    )?;
-
-    let Some(result) = resp.try_get_i32("result") else {
-        return Err(ProducerError::Transport(TransportError::Parse(
-            "kalico_load_curve_finalize_response missing 'result' field".to_string(),
-        )));
-    };
-    if result != 0 {
-        return Err(ProducerError::McuRejected(result));
+    eprintln!("[host] producer::load_curve calling kalico_call (slot={slot}, body_len={})", body.len());
+    let (kind, resp_body) = io.kalico_call(MessageKind::LoadCurve, body, timeout)?;
+    eprintln!("[host] producer::load_curve got response kind=0x{:04x}", kind.as_u16());
+    if kind != MessageKind::LoadCurveResponse {
+        return Err(ProducerError::Transport(TransportError::Parse(format!(
+            "expected LoadCurveResponse, got 0x{:04x}",
+            kind.as_u16()
+        ))));
     }
-
-    let Some(handle) = resp.try_get_u32("curve_handle_packed") else {
-        return Err(ProducerError::Transport(TransportError::Parse(
-            "kalico_load_curve_finalize_response missing 'curve_handle_packed' field"
-                .to_string(),
-        )));
-    };
-    Ok(handle)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn curve_load_params_encodes_correctly() {
-        let params = CurveLoadParams {
-            degree: 3,
-            knots_f32: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-            cps_f32: vec![0.0, 3.33, 6.67, 10.0],
-        };
-        let blob = params.encode();
-        assert_eq!(blob[0], crate::wire::FORMAT_VERSION_V1);
-        assert_eq!(blob[1], 3);
-        assert_eq!(blob[2], 4); // num_cps
-        assert_eq!(blob[3], 8); // num_knots
+    let resp = LoadCurveResponse::decode(&resp_body).map_err(|e| {
+        ProducerError::Transport(TransportError::Parse(format!(
+            "LoadCurveResponse decode failed: {e:?}"
+        )))
+    })?;
+    if resp.result != 0 {
+        return Err(ProducerError::McuRejected(resp.result));
     }
-
-    #[test]
-    fn curve_load_params_byte_buffers_are_le() {
-        let params = CurveLoadParams {
-            degree: 0,
-            knots_f32: vec![1.0, 2.0],
-            cps_f32: vec![1.5],
-        };
-        assert_eq!(params.cps_bytes().len(), 4);
-        assert_eq!(params.knots_bytes().len(), 8);
-        let cp_bytes: [u8; 4] = params.cps_bytes()[..4].try_into().unwrap();
-        assert_eq!(f32::from_le_bytes(cp_bytes), 1.5);
-    }
-
-    /// Spec §11 Q3 unit test requirement: every encoded
-    /// `kalico_load_curve_chunk` frame for any realistic
-    /// `(slot ∈ 0..63, kind ∈ {0,1}, offset, data ≤ CHUNK_BYTES)` triple
-    /// must fit within `MESSAGE_MAX − 5 = 59` bytes of payload (the wire
-    /// envelope adds the 5-byte `MESSAGE_MIN`). The ceiling holds even at
-    /// the worst-case `offset` near `u16::MAX` (3-byte VLQ).
-    #[test]
-    fn chunk_frame_size_within_message_max() {
-        use crate::host_io::parser::{DataDictionary, FieldValue, MsgProtoParser};
-        use indexmap::IndexMap;
-
-        // Mirror the firmware DECL_COMMAND format string for the chunk command.
-        let mut d = DataDictionary {
-            commands:       IndexMap::new(),
-            responses:      IndexMap::new(),
-            output:         IndexMap::new(),
-            enumerations:   IndexMap::new(),
-            config:         serde_json::json!({}),
-            version:        "v".into(),
-            app:            "kalico".into(),
-            build_versions: None,
-            license:        None,
-        };
-        d.commands.insert(
-            "kalico_load_curve_chunk slot=%hu kind=%c offset=%hu data=%*s".into(),
-            123,
-        );
-        let parser = MsgProtoParser::from_dictionary(d).unwrap();
-
-        // Payload budget per spec §4.2: `MESSAGE_MAX − MESSAGE_MIN = 64 − 5 = 59`
-        // bytes available for the encoded command body (msgid VLQ + fields).
-        const PAYLOAD_BUDGET: usize = 59;
-
-        let big_data = vec![0xAAu8; CHUNK_BYTES];
-        // Sweep slot ∈ {0, 63, 127} (still 1-byte VLQ), kind ∈ {0, 1}, offset
-        // across both VLQ-growth thresholds (0, 0x7F, 0x80, 0x3FFF, 0xFFFF),
-        // and data lengths 0..=CHUNK_BYTES.
-        let slots: [u16; 3] = [0, 63, 127];
-        let kinds: [u8; 2] = [0, 1];
-        let offsets: [u16; 5] = [0, 0x7F, 0x80, 0x3FFF, 0xFFFF];
-        let data_lens: [usize; 4] = [0, 1, CHUNK_BYTES / 2, CHUNK_BYTES];
-
-        for &slot in &slots {
-            for &kind in &kinds {
-                for &offset in &offsets {
-                    for &dl in &data_lens {
-                        let data = &big_data[..dl];
-                        let bytes = parser
-                            .encode_typed(
-                                "kalico_load_curve_chunk",
-                                &[
-                                    ("slot",   FieldValue::U16(slot)),
-                                    ("kind",   FieldValue::Byte(kind)),
-                                    ("offset", FieldValue::U16(offset)),
-                                    ("data",   FieldValue::Buffer(data)),
-                                ],
-                            )
-                            .expect("encode_typed");
-                        assert!(
-                            bytes.len() <= PAYLOAD_BUDGET,
-                            "encoded chunk size {} exceeds MESSAGE_MAX-5={} \
-                             for slot={slot} kind={kind} offset={offset} data_len={dl}",
-                            bytes.len(),
-                            PAYLOAD_BUDGET,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn curve_load_params_normalizes_time_knots_for_mcu_progress_domain() {
-        let curve = nurbs::ScalarNurbs::try_new(
-            3,
-            vec![2.0, 2.0, 2.0, 2.0, 2.5, 3.0, 3.0, 3.0, 3.0],
-            vec![0.0, 1.0, 2.0, 3.0, 4.0],
-            None,
-        )
-        .unwrap();
-
-        let params = CurveLoadParams::from_scalar_nurbs_normalized(&curve, 2.0, 3.0);
-
-        assert_eq!(params.degree, 3);
-        assert_eq!(params.cps_f32, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(
-            params.knots_f32,
-            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]
-        );
-    }
+    Ok(resp.curve_handle_packed)
 }

@@ -53,8 +53,12 @@ prescaler_init(void)
 DECL_INIT(prescaler_init);
 
 // Optimized crc16_ccitt for the avr processor
+//
+// Phase C: signature widened to match generic decl. AVR builds will not
+// compile kalico-native (no big frames), so the wider counter just costs a
+// few extra register-pair ops on the existing tiny lengths.
 uint16_t
-crc16_ccitt(uint8_t *buf, uint_fast8_t len)
+crc16_ccitt(uint8_t *buf, uint32_t len)
 {
     uint16_t crc = 0xFFFF;
     while (len--)

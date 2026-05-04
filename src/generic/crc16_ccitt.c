@@ -7,8 +7,13 @@
 #include "misc.h" // crc16_ccitt
 
 // Implement the standard crc "ccitt" algorithm on the given buffer
+//
+// Phase C kalico-native transport: `len` widened from `uint_fast8_t` (8-bit
+// on glibc x86_64) to a true 32-bit type so kalico frames up to 64 KB can
+// CRC correctly. Klipper-protocol callers pass tiny lengths (≤ MESSAGE_MAX)
+// so they are unaffected.
 uint16_t
-crc16_ccitt(uint8_t *buf, uint_fast8_t len)
+crc16_ccitt(uint8_t *buf, uint32_t len)
 {
     uint16_t crc = 0xffff;
     while (len--) {

@@ -8,6 +8,7 @@
 pub mod call_handle;
 pub mod events;
 pub mod identify;
+pub mod kalico_native;
 pub mod parser;
 pub mod reactor;
 pub mod rtt;
@@ -123,6 +124,23 @@ pub enum ReactorCommand {
     /// `pending_fire_and_forget` backpressure queue (spec §6.0).
     FireAndForgetTyped {
         payload: Vec<u8>,
+    },
+    /// Phase C-B: kalico-native bootstrap-ABI Identify handshake.
+    /// The reactor allocates a correlation_id, builds the bootstrap frame,
+    /// writes it to the wire, and parks `completion` until the
+    /// `IdentifyResponse` arrives (or the deadline fires).
+    KalicoIdentify {
+        completion: SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
+        deadline: std::time::Instant,
+    },
+    /// Phase C-B: kalico-native control-channel call. The reactor allocates
+    /// a correlation_id, builds the frame from `kind` + `body`, writes it,
+    /// and parks `completion` keyed by correlation_id. Spec §7.2.
+    KalicoCall {
+        kind: kalico_protocol::MessageKind,
+        body: Vec<u8>,
+        completion: SyncSender<Result<crate::host_io::kalico_native::KalicoCallOutcome, TransportError>>,
+        deadline: std::time::Instant,
     },
     Shutdown,
 }
@@ -424,6 +442,61 @@ impl KalicoHostIo {
         self.submission_tx
             .send(ReactorCommand::FireAndForgetTyped { payload })
             .map_err(|_| TransportError::Closed)
+    }
+
+    // ── Phase C-B: kalico-native transport surface ─────────────────────
+    //
+    // The reactor owns the wire and runs both protocols' demux state
+    // machines. These methods submit kalico-native commands via the same
+    // submission channel that drives the Klipper-protocol surface; the
+    // reactor allocates correlation_ids, encodes frames, parks the caller
+    // on a `SyncSender<...>`, and unblocks them when the response arrives.
+
+    /// Run the bootstrap-ABI Identify handshake (spec §5). Validates
+    /// `proto_version` and `schema_hash` against the host's compiled
+    /// constants; on mismatch returns an error and motion dispatch must
+    /// refuse to start. Returns the MCU's `reset_epoch` (spec §9).
+    pub fn kalico_identify(
+        &self,
+        timeout: Duration,
+    ) -> Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let deadline = self.clock.now() + timeout;
+        self.submission_tx
+            .send(ReactorCommand::KalicoIdentify { completion: tx, deadline })
+            .map_err(|_| TransportError::Closed)?;
+        match rx.recv_timeout(timeout) {
+            Ok(r) => r,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
+        }
+    }
+
+    /// Issue a kalico-native control-channel call (spec §7.2): one frame
+    /// out (kind + body), one frame in (matching correlation_id). Used by
+    /// `producer::load_curve` / `producer::push_segment` and similar.
+    pub fn kalico_call(
+        &self,
+        kind: kalico_protocol::MessageKind,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let deadline = self.clock.now() + timeout;
+        self.submission_tx
+            .send(ReactorCommand::KalicoCall { kind, body, completion: tx, deadline })
+            .map_err(|_| TransportError::Closed)?;
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(crate::host_io::kalico_native::KalicoCallOutcome::Response { kind, body })) => {
+                Ok((kind, body))
+            }
+            Ok(Ok(crate::host_io::kalico_native::KalicoCallOutcome::Reset)) => {
+                Err(TransportError::Closed)
+            }
+            Ok(Err(e)) => Err(e),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
+        }
     }
 }
 

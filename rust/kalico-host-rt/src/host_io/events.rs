@@ -234,9 +234,25 @@ impl EventDispatcher {
                 if let Some(counter) = &self.credit_counter {
                     counter.on_credit_freed(e.free_slots);
                 }
+                // Phase C-B (kalico-native transport): forward CreditFreed
+                // to the python bridge poller so motion-bridge.on_credit_freed
+                // releases curve-pool slots. Pre-Phase-C the legacy Klipper
+                // `kalico_credit_freed` output handled this via klippy's
+                // SerialReader; the new transport delivers it as a kalico
+                // event lifted into RuntimeEvent::CreditFreed, and the
+                // python `_bridge_event_poller` already maps `credit_freed`
+                // -> `kalico_credit_freed` for the existing handler.
+                self.runtime_event_dispatcher
+                    .dispatch(RuntimeEvent::CreditFreed(e));
             }
             RuntimeEvent::Fault(e) => {
-                self.fault_latch.dispatch(e);
+                self.fault_latch.dispatch(e.clone());
+                // Forward to the python bridge poller too — fault visibility
+                // matters end-to-end. Pre-Phase-C this rode the legacy
+                // `kalico_fault` Klipper output; now kalico-native delivers
+                // FaultEvent into RuntimeEvent::Fault.
+                self.runtime_event_dispatcher
+                    .dispatch(RuntimeEvent::Fault(e));
             }
             RuntimeEvent::Trace(e) => {
                 self.trace_ring.dispatch(e);

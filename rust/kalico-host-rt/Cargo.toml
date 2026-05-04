@@ -30,6 +30,8 @@ indexmap = { version = "2", features = ["serde"] }
 arc-swap = "1"
 runtime = { path = "../runtime" }
 nurbs = { path = "../nurbs", features = ["host"] }
+kalico-protocol = { path = "../kalico-protocol" }
+kalico-native-transport = { path = "../kalico-native-transport" }
 
 [dependencies.pyo3]
 version = "0.24"

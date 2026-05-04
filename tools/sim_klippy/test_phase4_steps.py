@@ -71,7 +71,10 @@ def spawn_klippy():
     )
     for _ in range(150):
         if os.path.exists(KLIPPY_API):
-            time.sleep(1.0)
+            # Wait long enough for klippy's MCU identify + config phase
+            # to complete (Klipper-protocol dictionary download + bridge's
+            # kalico-native identify handshake — ~3s in the sim).
+            time.sleep(5.0)
             return proc
         if proc.poll() is not None:
             raise RuntimeError(f"klippy exited early; check {KLIPPY_LOG}")

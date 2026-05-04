@@ -104,42 +104,23 @@ fn build_shaper_config(
     })
 }
 
-fn format_push_segment_cmd(params: &producer::SegmentPushParams) -> String {
-    format!(
-        "kalico_push_segment id={id} x_handle={x_handle} \
-         y_handle={y_handle} z_handle={z_handle} e_handle={e_handle} \
-         t_start_hi={t_start_hi} t_start_lo={t_start_lo} \
-         t_end_hi={t_end_hi} t_end_lo={t_end_lo} \
-         kinematics={kin} e_mode={e_mode} extrusion_ratio={extrusion_ratio}",
-        id = params.id,
-        x_handle = params.x_handle_packed,
-        y_handle = params.y_handle_packed,
-        z_handle = params.z_handle_packed,
-        e_handle = params.e_handle_packed,
-        t_start_lo = params.t_start as u32,
-        t_start_hi = (params.t_start >> 32) as u32,
-        t_end_lo = params.t_end as u32,
-        t_end_hi = (params.t_end >> 32) as u32,
-        kin = params.kinematics,
-        e_mode = params.e_mode,
-        extrusion_ratio = params.extrusion_ratio.to_bits(),
-    )
-}
-
-fn push_segment_fire_and_forget(
+/// Push a segment via the kalico-native transport (spec §7.4 / Phase C-B).
+/// This was a fire-and-forget Klipper-protocol command pre-Phase-C; the new
+/// transport delivers a synchronous `PushSegmentResponse` so the dispatch
+/// loop confirms acceptance before moving on. Per-segment latency is one
+/// kalico round-trip — measured in microseconds on USB-CDC.
+fn dispatch_push_segment(
     io: &KalicoHostIo,
     credit: &CreditCounter,
     params: &producer::SegmentPushParams,
 ) -> Result<(), producer::ProducerError> {
-    credit
-        .try_acquire()
-        .ok_or(producer::ProducerError::NoCredit)?;
-    let cmd = format_push_segment_cmd(params);
-    if let Err(e) = io.send_fire_and_forget(&cmd) {
-        credit.release();
-        return Err(producer::ProducerError::Transport(e));
-    }
-    Ok(())
+    producer::push_segment_with_timeout(
+        io,
+        credit,
+        params,
+        producer::DEFAULT_PUSH_RESPONSE_TIMEOUT,
+    )
+    .map(|_info| ())
 }
 
 // ── PyMotionBridge ──────────────────────────────────────────────────────
@@ -553,6 +534,24 @@ impl PyMotionBridge {
         let runtime_rx = host_io
             .take_runtime_event_subscription()
             .map_err(|e| PyRuntimeError::new_err(format!("attach_serial: runtime_event subscribe: {e:?}")))?;
+
+        // Phase C-B: kalico-native bootstrap-ABI Identify handshake. The
+        // Klipper-protocol identify above already drained the MCU's data
+        // dictionary so this can run against the live reactor. Validates
+        // schema_hash + reset_epoch; failure refuses to attach.
+        match host_io.kalico_identify(std::time::Duration::from_secs(5)) {
+            Ok(out) => {
+                log::info!(
+                    "attach_serial: kalico identified — reset_epoch=0x{:08x}",
+                    out.reset_epoch
+                );
+            }
+            Err(e) => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "attach_serial: kalico_identify failed for {serial_path}: {e}"
+                )));
+            }
+        }
 
         let mut mcus = self.mcus.lock().unwrap();
         let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1149,7 +1148,7 @@ impl PyMotionBridge {
                     }
                 }
 
-                if let Err(e) = push_segment_fire_and_forget(
+                if let Err(e) = dispatch_push_segment(
                     io.as_ref(),
                     credit,
                     &plan.params,

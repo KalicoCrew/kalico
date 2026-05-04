@@ -661,6 +661,8 @@ dependencies = [
  "arc-swap",
  "flate2",
  "indexmap",
+ "kalico-native-transport",
+ "kalico-protocol",
  "libc",
  "log",
  "nurbs",

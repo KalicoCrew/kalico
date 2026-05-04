@@ -7,6 +7,7 @@
 // can fill in handlers in Phase C without touching the demux/RX path).
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include "kalico_dispatch.h"
 #include "kalico_demux.h"
@@ -129,7 +130,7 @@ kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
     tx_buf[3] = channel;
     if (payload_len > 0)
         memcpy(&tx_buf[4], payload, payload_len);
-    uint16_t crc = crc16_ccitt(&tx_buf[1], (uint_fast8_t)(2 + 1 + payload_len));
+    uint16_t crc = crc16_ccitt(&tx_buf[1], (uint32_t)(2 + 1 + payload_len));
     tx_buf[total - 2] = (uint8_t)(crc & 0xFF);
     tx_buf[total - 1] = (uint8_t)((crc >> 8) & 0xFF);
     kalico_console_write_raw(tx_buf, (uint16_t)total);
@@ -210,6 +211,12 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     (void)channel;
     if (payload_len < PER_MESSAGE_HEADER_LEN)
         return;
+    uint16_t dbg_kind = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+#if defined(__linux__) || defined(__APPLE__)
+    fprintf(stderr, "[kalico_dispatch] frame channel=%u payload_len=%u kind=0x%04x\n",
+            channel, payload_len, dbg_kind);
+    fflush(stderr);
+#endif
     uint16_t kind = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
     uint8_t version = payload[2];
     uint32_t correlation_id = (uint32_t)payload[3]
@@ -243,6 +250,11 @@ static void
 send_load_curve_response(uint32_t correlation_id, int32_t result,
                          uint32_t curve_handle_packed)
 {
+#if defined(__linux__) || defined(__APPLE__)
+    fprintf(stderr, "[kalico_dispatch] send_load_curve_response cid=%u result=%d handle=%u\n",
+            correlation_id, result, curve_handle_packed);
+    fflush(stderr);
+#endif
     uint8_t payload[PER_MESSAGE_HEADER_LEN + 8];
     encode_message_header(payload, KALICO_MSG_LOAD_CURVE_RESPONSE,
                           MESSAGE_VERSION_DEFAULT, correlation_id);
@@ -287,6 +299,11 @@ static void
 handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
 #if CONFIG_KALICO_RUNTIME
+#if defined(__linux__) || defined(__APPLE__)
+    fprintf(stderr, "[kalico_dispatch] handle_load_curve cid=%u body_len=%u\n",
+            correlation_id, body_len);
+    fflush(stderr);
+#endif
     // §7.3 body: slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps×f32 | knots×f32
     if (body_len < 11) {
         send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);

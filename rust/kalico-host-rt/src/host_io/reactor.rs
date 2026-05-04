@@ -11,10 +11,15 @@ use arc_swap::ArcSwap;
 use crate::clock::{Clock, RealClock};
 use crate::host_io::ReactorCommand;
 use crate::host_io::events::EventDispatcher;
+use crate::host_io::kalico_native::{
+    build_kalico_control_frame, build_kalico_identify_frame, dispatch_kalico_frame,
+    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall,
+};
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::rtt::RttEstimator;
 use crate::host_io::runtime_events::{FaultEvent, StatusEvent};
 use crate::host_io::window::{UnackedWindow, AwaitingResponse};
+use kalico_native_transport::demux::{Demuxer, DemuxOutput};
 use crate::passthrough_queue::{McuHandle, NotifyId, PassthroughRouter};
 use crate::transport::TransportError;
 use runtime::error::FaultCode;
@@ -75,6 +80,14 @@ pub struct Reactor {
     /// The MCU handle that this reactor serves. Set when the passthrough
     /// router is installed. Phase 1 has one reactor per MCU.
     pub(crate) passthrough_mcu: Option<McuHandle>,
+
+    // ── Phase C-B: kalico-native transport state ───────────────────────
+    /// Stream-level demuxer (spec §6) — every incoming byte goes through
+    /// this. Klipper-shaped frames flow back into `rx_buf` for
+    /// `extract_packet`; kalico-shaped frames land at `dispatch_kalico_frame`.
+    pub(crate) kalico_demuxer: Demuxer,
+    /// Pending kalico calls / identify state.
+    pub(crate) kalico_state: KalicoNativeState,
 }
 
 pub(crate) struct PendingSubmission {
@@ -146,6 +159,8 @@ impl Reactor {
             passthrough_router: None,
             passthrough_notify_map: std::collections::HashMap::new(),
             passthrough_mcu: None,
+            kalico_demuxer: Demuxer::new(),
+            kalico_state: KalicoNativeState::default(),
         }
     }
 
@@ -605,6 +620,18 @@ impl Reactor {
     fn dispatch_runtime_event(&mut self, event: crate::host_io::runtime_events::RuntimeEvent) {
         self.event_dispatcher.dispatch(event);
     }
+
+    /// Handle a complete kalico-native frame surfaced by the demuxer.
+    /// Routes responses to pending calls, identify-response to the
+    /// identify caller, and events into [`event_dispatcher`].
+    pub(crate) fn handle_kalico_frame(&mut self, channel: u8, payload: &[u8]) {
+        match dispatch_kalico_frame(&mut self.kalico_state, channel, payload) {
+            KalicoDispatchResult::Handled | KalicoDispatchResult::Ignored => {}
+            KalicoDispatchResult::Event(ev) => {
+                self.dispatch_runtime_event(ev);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -620,7 +647,28 @@ impl Reactor {
         match self.port.read(&mut scratch) {
             Ok(n) if n > 0 => {
                 self.zero_byte_first_seen = None;
-                self.rx_buf.extend_from_slice(&scratch[..n]);
+                // Feed every incoming byte through the kalico-native demuxer
+                // (spec §6). Klipper-shaped frames are appended to `rx_buf`
+                // for the existing `extract_packet` path; kalico-shaped
+                // frames are dispatched inline below.
+                let outputs = self.kalico_demuxer.feed_slice(&scratch[..n]);
+                for out in outputs {
+                    match out {
+                        DemuxOutput::KlipperFrame(frame) => {
+                            // The demuxer already consumed `length` bytes
+                            // exactly; the legacy `extract_packet` re-validates
+                            // CRC + sync. We append the whole frame to `rx_buf`
+                            // so existing logic owns parsing/dispatch.
+                            self.rx_buf.extend_from_slice(&frame);
+                        }
+                        DemuxOutput::KalicoFrame { channel, payload } => {
+                            self.handle_kalico_frame(channel, &payload);
+                        }
+                        DemuxOutput::StreamError(e) => {
+                            log::warn!("kalico stream error: {e}");
+                        }
+                    }
+                }
                 while let Some(packet) = crate::host_io::wire::extract_packet(&mut self.rx_buf) {
                     if self.handle_inbound_frame(packet).is_err() {
                         return; // Closed — run loop will see state and exit.
@@ -745,6 +793,42 @@ impl Reactor {
                     log::warn!("FireAndForgetTyped: send error: {e}");
                 }
             }
+            ReactorCommand::KalicoIdentify { completion, deadline: _ } => {
+                // Bootstrap-ABI Identify: hand-encoded frame, no schema.
+                let cid = self.kalico_state.allocate_correlation_id();
+                let frame = build_kalico_identify_frame(cid);
+                // Park the completion before writing to avoid losing a fast
+                // response.
+                if self.kalico_state.identify_pending.is_some() {
+                    let _ = completion.send(Err(TransportError::Backpressure));
+                    return;
+                }
+                self.kalico_state.identify_pending = Some(completion);
+                if let Err(e) = self.write_frame(&frame) {
+                    if let Some(c) = self.kalico_state.identify_pending.take() {
+                        let _ = c.send(Err(e));
+                    }
+                }
+            }
+            ReactorCommand::KalicoCall { kind, body, completion, deadline } => {
+                if !self.kalico_state.identified {
+                    let _ = completion.send(Err(TransportError::Parse(
+                        "kalico transport not yet identified".into(),
+                    )));
+                    return;
+                }
+                let cid = self.kalico_state.allocate_correlation_id();
+                let frame = build_kalico_control_frame(kind, cid, &body);
+                self.kalico_state.pending.insert(
+                    cid,
+                    PendingKalicoCall { completion: completion.clone(), deadline },
+                );
+                if let Err(e) = self.write_frame(&frame) {
+                    if let Some(p) = self.kalico_state.pending.remove(&cid) {
+                        let _ = p.completion.send(Err(e));
+                    }
+                }
+            }
         }
     }
 }
@@ -769,6 +853,35 @@ impl Reactor {
         // notify; drop them on disconnect.
         self.pending_fire_and_forget.clear();
         self.passthrough_notify_map.clear();
+
+        // Phase C-B: drop in-flight kalico calls + identify caller.
+        let drained: Vec<PendingKalicoCall> =
+            self.kalico_state.pending.drain().map(|(_, v)| v).collect();
+        for p in drained {
+            let _ = p.completion.send(Err(TransportError::Closed));
+        }
+        if let Some(c) = self.kalico_state.identify_pending.take() {
+            let _ = c.send(Err(TransportError::Closed));
+        }
+    }
+
+    /// GC kalico calls whose deadline has passed. The caller side already
+    /// imposes its own `recv_timeout`, so this is belt-and-braces — keeps
+    /// the `pending` map from growing if a caller stops waiting before the
+    /// reactor times out.
+    pub(crate) fn gc_kalico_pending(&mut self) {
+        let now = self.clock.now();
+        let expired: Vec<u32> = self
+            .kalico_state
+            .pending
+            .iter()
+            .filter_map(|(cid, p)| if p.deadline <= now { Some(*cid) } else { None })
+            .collect();
+        for cid in expired {
+            if let Some(p) = self.kalico_state.pending.remove(&cid) {
+                let _ = p.completion.send(Err(TransportError::Timeout));
+            }
+        }
     }
 }
 
@@ -838,6 +951,9 @@ impl Reactor {
         for entry in evicted {
             let _ = entry.completion.send(Err(TransportError::DispatcherTimeout));
         }
+
+        // 5b. Phase C-B: GC expired kalico calls.
+        self.gc_kalico_pending();
 
         // 6. Closed-state exit.
         if self.state == ReactorState::Closed {

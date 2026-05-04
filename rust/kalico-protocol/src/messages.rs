@@ -76,19 +76,21 @@ pub struct LoadCurve {
 
 impl Encode for LoadCurve {
     fn encode(&self, out: &mut Vec<u8>) {
+        // Spec §7.3 explicit byte layout:
+        //   slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps[..] | knots[..]
+        // i.e. lengths up front, data after. The MCU dispatcher
+        // (`src/kalico_dispatch.c::handle_load_curve`) decodes precisely
+        // this layout — keep encoder + decoder in lock-step.
         put_u16(out, self.slot);
         put_u8(out, self.degree);
-        // Per spec §7.3 the body lists `n_cps` and `n_knots` as separate
-        // u32 fields *before* the array data. Our `put_f32_array` writes a
-        // u32_le length prefix then the elements — matching the spec when
-        // the two arrays appear in declaration order: cps-len, knots-len
-        // would NOT be packed up front per the §7 rule "structs packed in
-        // declaration order with no padding". Reading §7.3 strictly, the
-        // explicit `n_cps` and `n_knots` fields ARE the length prefixes
-        // that get_f32_array consumes — we keep them adjacent to their
-        // arrays for canonical encoding.
-        put_f32_array(out, &self.cps);
-        put_f32_array(out, &self.knots);
+        put_u32(out, u32::try_from(self.cps.len()).expect("cps len exceeds u32"));
+        put_u32(out, u32::try_from(self.knots.len()).expect("knots len exceeds u32"));
+        for v in &self.cps {
+            put_f32(out, *v);
+        }
+        for v in &self.knots {
+            put_f32(out, *v);
+        }
     }
 }
 
@@ -96,8 +98,42 @@ impl Decode for LoadCurve {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         let slot = get_u16(c)?;
         let degree = get_u8(c)?;
-        let cps = get_f32_array(c)?;
-        let knots = get_f32_array(c)?;
+        let n_cps = get_u32(c)?;
+        let n_knots = get_u32(c)?;
+        // Validate both counts fit remaining bytes before allocating, so a
+        // hostile peer can't induce a multi-GB allocation.
+        let cps_bytes = (n_cps as usize).checked_mul(4).ok_or(
+            DecodeError::ArrayLengthExceedsBuffer {
+                claimed: n_cps,
+                available: c.remaining(),
+            },
+        )?;
+        let knots_bytes = (n_knots as usize).checked_mul(4).ok_or(
+            DecodeError::ArrayLengthExceedsBuffer {
+                claimed: n_knots,
+                available: c.remaining(),
+            },
+        )?;
+        let total = cps_bytes
+            .checked_add(knots_bytes)
+            .ok_or(DecodeError::ArrayLengthExceedsBuffer {
+                claimed: n_cps,
+                available: c.remaining(),
+            })?;
+        if total > c.remaining() {
+            return Err(DecodeError::ArrayLengthExceedsBuffer {
+                claimed: n_cps,
+                available: c.remaining(),
+            });
+        }
+        let mut cps = Vec::with_capacity(n_cps as usize);
+        for _ in 0..n_cps {
+            cps.push(get_f32(c)?);
+        }
+        let mut knots = Vec::with_capacity(n_knots as usize);
+        for _ in 0..n_knots {
+            knots.push(get_f32(c)?);
+        }
         Ok(Self { slot, degree, cps, knots })
     }
 }
@@ -435,11 +471,14 @@ mod tests {
 
     #[test]
     fn decode_rejects_oversized_array_claim() {
-        // slot u16 = 0, degree u8 = 0, n_cps u32 = 0xFFFF_FFFF, no payload.
+        // slot u16 = 0, degree u8 = 0, n_cps u32 = 0xFFFF_FFFF,
+        // n_knots u32 = 0, no payload. Per spec §7.3 layout the host
+        // validates both counts before allocating.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.push(0);
         bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
         match LoadCurve::decode(&bytes) {
             Err(DecodeError::ArrayLengthExceedsBuffer { claimed, .. }) => {
                 assert_eq!(claimed, 0xFFFF_FFFF);
