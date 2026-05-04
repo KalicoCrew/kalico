@@ -11,6 +11,7 @@
 #include "command.h"        // DECL_COMMAND
 #include "sched.h"          // DECL_INIT, DECL_TASK
 #include "kalico_runtime.h"
+#include "kalico_dispatch.h" // kalico_native_emit_*
 #if CONFIG_MACH_STM32H7
 #include "stm32/kalico_h7_timer.h" // kalico_h7_disable_tim5 / enable / read_cyccnt
 #elif CONFIG_MACH_LINUX
@@ -270,15 +271,8 @@ runtime_drain(void)
         uint32_t retired = kalico_runtime_retired_through_segment_id(kalico_rt_handle);
         uint8_t depth = kalico_runtime_queue_depth(kalico_rt_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
-        // `output()` rather than `sendf()` so the format registers via
-        // `_DECL_OUTPUT` (matching the explicit `DECL_CTR("_DECL_OUTPUT ...")`
-        // at the bottom of this file). Mixing `sendf` (`_DECL_ENCODER`) and
-        // explicit `_DECL_OUTPUT` for the same format crashes silently:
-        // buildcommands.py de-dups by msgid + uses the FIRST registration's
-        // category, so the second category's lookup returns NULL and the
-        // emit `command_sendf(NULL, …)` no-ops.
-        output("kalico_credit_freed retired_through_segment_id=%u free_slots=%c",
-               retired, free_slots);
+        // Phase C: emit as kalico-native CreditFreed event (channel 1).
+        kalico_native_emit_credit_freed(retired, free_slots);
     }
 
     // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`
@@ -291,8 +285,7 @@ runtime_drain(void)
         int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
         uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
         uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
-        output("kalico_fault fault_code=%hu fault_detail=%u segment_id=%u",
-               (uint16_t)fault_code, fault_detail, cur_seg);
+        kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
     }
 
     // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
@@ -326,10 +319,7 @@ runtime_drain(void)
             int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
             uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
             uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
-            // `output()` per the same registration-category rule as
-            // `kalico_credit_freed` above.
-            output("kalico_fault fault_code=%hu fault_detail=%u segment_id=%u",
-                   (uint16_t)fault_code, fault_detail, cur_seg);
+            kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
         }
     }
 
@@ -378,24 +368,12 @@ runtime_status_drain(void)
     int32_t last_err = kalico_runtime_last_error(kalico_rt_handle);
     uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
     uint8_t depth = kalico_runtime_queue_depth(kalico_rt_handle);
-    uint64_t mcu_clk = kalico_runtime_widened_now(kalico_rt_handle);
-    uint32_t epoch = kalico_runtime_credit_epoch(kalico_rt_handle);
-    uint32_t accepted = kalico_runtime_accepted_segment_id(kalico_rt_handle);
-    uint32_t retired = kalico_runtime_retired_through_segment_id(kalico_rt_handle);
     uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
 
-    // `output()` per the same registration-category rule — `_DECL_OUTPUT`
-    // is the right channel for an async periodic frame.
-    output("kalico_status_v6 engine_status=%c queue_depth=%c "
-           "current_segment_id=%u "
-           "last_fault=%hu fault_detail=%u "
-           "mcu_clock_now_lo=%u mcu_clock_now_hi=%u "
-           "credit_epoch=%u accepted_segment_id=%u "
-           "retired_through_segment_id=%u",
-           status, depth, cur_seg,
-           (uint16_t)last_err, fault_detail,
-           (uint32_t)mcu_clk, (uint32_t)(mcu_clk >> 32),
-           epoch, accepted, retired);
+    // Phase C: replace the legacy `kalico_status_v6` Klipper-protocol output
+    // with a native StatusEvent on the events channel. The host bridge maps
+    // it back into klippy's RuntimeEvent::Status path.
+    kalico_native_emit_status_event(status, depth, cur_seg, last_err, fault_detail);
 }
 DECL_TASK(runtime_status_drain);
 
@@ -416,41 +394,28 @@ DECL_TASK(runtime_status_drain);
 // MCU and triggers a USB renumerate. Copy into 4-byte-aligned static
 // buffers first, then pass to Rust.
 //
-// Sizing matches CurvePool's compile-time bounds (MAX_CONTROL_POINTS = 100,
-// MAX_KNOT_VECTOR_LEN = 111). Static rather than stack: the load handler
-// runs in command-dispatch foreground context and stack is only 512 B.
-// Bumped from 80/91 in the incremental-curve-upload spec
-// (docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md §5.0)
-// to cover the realistic post-shape worst case at degree 9.
-static float kalico_aligned_cps[100];    // MAX_CONTROL_POINTS
-static float kalico_aligned_knots[111];  // MAX_KNOT_VECTOR_LEN
+// Sizing matches CurvePool's compile-time bounds (MAX_CONTROL_POINTS = 1830,
+// MAX_KNOT_VECTOR_LEN = 1850). Bumped per Phase C of the kalico-native
+// transport spec
+// (docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md §10):
+// H723 X+Y heavy-shaping worst case is degree 9, ~200 pieces over 100 mm,
+// ~1810 cps and ~1820 knots. F446 will get a dedicated build with smaller
+// constants in Phase D — for now the unified Linux-sim / H723 build picks
+// the larger sizing.
+// Non-static so kalico_dispatch.c's LoadCurve handler can reuse the same
+// scratch (the legacy DECL_COMMAND begin/chunk/finalize path is retired).
+float kalico_aligned_cps[1830];    // MAX_CONTROL_POINTS
+float kalico_aligned_knots[1850];  // MAX_KNOT_VECTOR_LEN
 
-// Incremental-curve-upload ingest context (single global per
-// docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md §5.1).
-// The host serialises uploads per-MCU via the bridge dispatch closure, so at
-// most one upload is in flight at any time. 12 B static.
-static struct {
-    uint16_t slot;
-    uint16_t expected_cps_bytes;
-    uint16_t expected_knots_bytes;
-    uint16_t received_cps_bytes;
-    uint16_t received_knots_bytes;
-    uint8_t  degree;
-    uint8_t  in_progress;
-} kalico_curve_ingest;
+// Phase C of the kalico-native transport spec
+// (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md` §15)
+// retires the legacy begin/chunk/finalize command surface and the
+// kalico_push_segment command. Curve uploads and segment pushes now arrive
+// as native kalico frames; see src/kalico_dispatch.c handlers.
 
-// MAX_DEGREE bound from rust/runtime/src/curve_pool.rs (no C-side constant
-// available). Bumped together if curve_pool.rs changes.
-#define KALICO_INGEST_MAX_DEGREE 10
-
-// Chunk-kind encoding (wire field `kind`).
-#define KALICO_CHUNK_KIND_CPS   0
-#define KALICO_CHUNK_KIND_KNOTS 1
-
-// kalico_load_curve_begin — fire-and-forget. Resets the ingest context.
-// Worst-case decoded payload (back-of-envelope, all VLQs at u16 max):
-//   cmd-id(1) + version(1) + slot(3) + degree(1) + total_cps(3)
-//   + total_knots(3) = 12 B + 5 B envelope = 17 B  ≤ MESSAGE_MAX (64).
+// kalico_load_curve_begin — RETIRED Phase C. Substance kept under `#if 0`
+// briefly while the file is reorganized; planned removal in the same commit.
+#if 0
 void
 command_kalico_load_curve_begin(uint32_t *args)
 {
@@ -632,6 +597,7 @@ DECL_COMMAND(command_kalico_push_segment,
     "kalico_push_segment id=%u x_handle=%u y_handle=%u z_handle=%u e_handle=%u "
     "t_start_hi=%u t_start_lo=%u t_end_hi=%u t_end_lo=%u "
     "kinematics=%c e_mode=%c extrusion_ratio=%u");
+#endif // RETIRED Phase C
 
 void
 command_kalico_query_status(uint32_t *args)
@@ -969,16 +935,10 @@ DECL_COMMAND(command_kalico_query_pool_state,
 // fault-publish path (Phase 4 / Phase 11).
 DECL_CTR("_DECL_OUTPUT "
          "kalico_trace count=%u data=%*s");
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_credit_freed retired_through_segment_id=%u free_slots=%c");
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_fault fault_code=%hu fault_detail=%u segment_id=%u");
-// `kalico_status_v6` periodic frame (Phase 11 wires the emit).
-DECL_CTR("_DECL_OUTPUT "
-    "kalico_status_v6 engine_status=%c queue_depth=%c current_segment_id=%u "
-    "last_fault=%hu fault_detail=%u "
-    "mcu_clock_now_lo=%u mcu_clock_now_hi=%u "
-    "credit_epoch=%u accepted_segment_id=%u retired_through_segment_id=%u");
+// kalico_credit_freed / kalico_fault / kalico_status_v6 retired Phase C —
+// they now ride the kalico-native events channel via
+// kalico_native_emit_credit_freed / _fault_event / _status_event in
+// src/kalico_dispatch.c.
 #if CONFIG_KALICO_SIM
 DECL_CTR("_DECL_OUTPUT "
          "kalico_sim_gpio_sample sample_id=%u pin=%c value=%c");

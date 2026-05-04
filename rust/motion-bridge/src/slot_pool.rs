@@ -47,8 +47,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Mirrors `runtime::curve_pool::CURVE_POOL_N` (cannot import directly
-/// because `runtime` is `no_std` for the MCU build).
-pub const CURVE_POOL_N: usize = 64;
+/// because `runtime` is `no_std` for the MCU build). Phase C of the
+/// kalico-native transport spec
+/// (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md` §10)
+/// reduced from 64 → 16 to fit the new larger per-slot scratch.
+pub const CURVE_POOL_N: usize = 16;
 
 /// Per-MCU free-slot allocator.
 #[derive(Debug)]

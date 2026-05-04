@@ -23,4 +23,16 @@ void kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
 void kalico_reset_epoch_init(void);
 uint32_t kalico_reset_epoch_get(void);
 
+// Phase C: emit MCU→host events on the events channel as kalico-native
+// frames. Replaces the old Klipper-protocol `output("kalico_status_v6 …")` /
+// `output("kalico_credit_freed …")` / `output("kalico_fault …")` paths.
+void kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
+                                     uint32_t current_segment_id,
+                                     int32_t last_fault, uint32_t fault_detail);
+void kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
+                                     uint8_t free_slots);
+void kalico_native_emit_fault_event(uint16_t fault_code,
+                                    uint32_t fault_detail,
+                                    uint32_t segment_id);
+
 #endif // kalico_dispatch.h

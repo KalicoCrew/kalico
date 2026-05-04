@@ -13,6 +13,17 @@
 #include "kalico_protocol_schema.h" // KALICO_MSG_*, KALICO_SCHEMA_HASH
 #include "board/misc.h"             // crc16_ccitt
 #include "sched.h"                  // DECL_INIT
+#include "autoconf.h"               // CONFIG_KALICO_RUNTIME
+
+#if CONFIG_KALICO_RUNTIME
+#include "kalico_runtime.h"
+extern void *kalico_rt_handle;
+
+// Phase C: shared aligned scratch with command_kalico_load_curve_finalize
+// path retired in runtime_tick.c. Defined there.
+extern float kalico_aligned_cps[1830];
+extern float kalico_aligned_knots[1850];
+#endif
 
 // Forward decl: platform-specific raw byte output. The Linux sim implements
 // this in linux/console.c; firmware builds will implement it on top of the
@@ -21,6 +32,12 @@ extern int kalico_console_write_raw(const uint8_t *buf, uint16_t len);
 
 #define KALICO_FRAME_SYNC 0x55
 #define KALICO_CHANNEL_CONTROL 0x00
+#define KALICO_CHANNEL_EVENTS  0x01
+#define MESSAGE_VERSION_DEFAULT 0x01
+
+// Phase C error codes (mirror runtime FFI conventions).
+#define KALICO_ERR_INVALID_CURVE -2
+#define KALICO_ERR_NOT_INIT      -7
 
 // Per-message header layout (§7.2): type:u16_le | version:u8 | corr_id:u32_le.
 #define PER_MESSAGE_HEADER_LEN 7
@@ -36,6 +53,9 @@ static uint8_t tx_buf[KALICO_TX_BUF_SIZE];
 
 // Reset epoch, generated once at boot. Nonzero by construction.
 static uint32_t reset_epoch;
+
+static void handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
 // reset_epoch generation
@@ -205,11 +225,224 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
         handle_identify(correlation_id, body, body_len);
         return;
     case KALICO_MSG_LOAD_CURVE:
+        handle_load_curve(correlation_id, body, body_len);
+        return;
     case KALICO_MSG_PUSH_SEGMENT:
-        // Phase C — not implemented. For Phase B we silently drop; once
-        // FaultEvent / response handling lands we'll surface NOT_IMPLEMENTED.
+        handle_push_segment(correlation_id, body, body_len);
         return;
     default:
         return;
     }
+}
+
+// ---------------------------------------------------------------------------
+// LoadCurve / PushSegment handlers (Phase C)
+// ---------------------------------------------------------------------------
+
+static void
+send_load_curve_response(uint32_t correlation_id, int32_t result,
+                         uint32_t curve_handle_packed)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 8];
+    encode_message_header(payload, KALICO_MSG_LOAD_CURVE_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *body = &payload[PER_MESSAGE_HEADER_LEN];
+    body[0] = (uint8_t)(result & 0xFF);
+    body[1] = (uint8_t)((result >> 8) & 0xFF);
+    body[2] = (uint8_t)((result >> 16) & 0xFF);
+    body[3] = (uint8_t)((result >> 24) & 0xFF);
+    body[4] = (uint8_t)(curve_handle_packed & 0xFF);
+    body[5] = (uint8_t)((curve_handle_packed >> 8) & 0xFF);
+    body[6] = (uint8_t)((curve_handle_packed >> 16) & 0xFF);
+    body[7] = (uint8_t)((curve_handle_packed >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
+                                payload, sizeof(payload));
+}
+
+static void
+send_push_segment_response(uint32_t correlation_id, int32_t result,
+                           uint32_t accepted_segment_id, uint32_t credit_epoch)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 12];
+    encode_message_header(payload, KALICO_MSG_PUSH_SEGMENT_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *body = &payload[PER_MESSAGE_HEADER_LEN];
+    body[0] = (uint8_t)(result & 0xFF);
+    body[1] = (uint8_t)((result >> 8) & 0xFF);
+    body[2] = (uint8_t)((result >> 16) & 0xFF);
+    body[3] = (uint8_t)((result >> 24) & 0xFF);
+    body[4] = (uint8_t)(accepted_segment_id & 0xFF);
+    body[5] = (uint8_t)((accepted_segment_id >> 8) & 0xFF);
+    body[6] = (uint8_t)((accepted_segment_id >> 16) & 0xFF);
+    body[7] = (uint8_t)((accepted_segment_id >> 24) & 0xFF);
+    body[8] = (uint8_t)(credit_epoch & 0xFF);
+    body[9] = (uint8_t)((credit_epoch >> 8) & 0xFF);
+    body[10] = (uint8_t)((credit_epoch >> 16) & 0xFF);
+    body[11] = (uint8_t)((credit_epoch >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
+                                payload, sizeof(payload));
+}
+
+static void
+handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
+{
+#if CONFIG_KALICO_RUNTIME
+    // §7.3 body: slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps×f32 | knots×f32
+    if (body_len < 11) {
+        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
+        return;
+    }
+    uint16_t slot = (uint16_t)body[0] | ((uint16_t)body[1] << 8);
+    uint8_t degree = body[2];
+    uint32_t n_cps = (uint32_t)body[3] | ((uint32_t)body[4] << 8)
+                   | ((uint32_t)body[5] << 16) | ((uint32_t)body[6] << 24);
+    uint32_t n_knots = (uint32_t)body[7] | ((uint32_t)body[8] << 8)
+                     | ((uint32_t)body[9] << 16) | ((uint32_t)body[10] << 24);
+    uint32_t cps_bytes = n_cps * 4u;
+    uint32_t knots_bytes = n_knots * 4u;
+    uint32_t expected_len = 11u + cps_bytes + knots_bytes;
+    if (body_len != expected_len) {
+        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
+        return;
+    }
+    if (cps_bytes > sizeof(kalico_aligned_cps)
+        || knots_bytes > sizeof(kalico_aligned_knots)) {
+        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
+        return;
+    }
+    if (!kalico_rt_handle) {
+        send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
+        return;
+    }
+    // Copy into 4-byte-aligned scratch (frame body offset is arbitrary).
+    memcpy(kalico_aligned_cps, &body[11], cps_bytes);
+    memcpy(kalico_aligned_knots, &body[11 + cps_bytes], knots_bytes);
+    uint32_t handle_packed = 0;
+    int32_t r = kalico_runtime_load_curve(
+        kalico_rt_handle, slot,
+        kalico_aligned_cps, (uint16_t)n_cps,
+        kalico_aligned_knots, (uint16_t)n_knots,
+        degree, &handle_packed);
+    send_load_curve_response(correlation_id, r, handle_packed);
+#else
+    (void)body; (void)body_len;
+    send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
+#endif
+}
+
+static void
+handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
+{
+#if CONFIG_KALICO_RUNTIME
+    // §7.4 body: id u32, 4×handle u32, t_start u64, t_end u64, kin u8, e_mode u8, extrusion_ratio f32 — 42 bytes.
+    if (body_len != 42) {
+        send_push_segment_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0, 0);
+        return;
+    }
+    if (!kalico_rt_handle) {
+        send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
+        return;
+    }
+    uint32_t id = (uint32_t)body[0] | ((uint32_t)body[1] << 8)
+                | ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
+    uint32_t x_handle = (uint32_t)body[4] | ((uint32_t)body[5] << 8)
+                      | ((uint32_t)body[6] << 16) | ((uint32_t)body[7] << 24);
+    uint32_t y_handle = (uint32_t)body[8] | ((uint32_t)body[9] << 8)
+                      | ((uint32_t)body[10] << 16) | ((uint32_t)body[11] << 24);
+    uint32_t z_handle = (uint32_t)body[12] | ((uint32_t)body[13] << 8)
+                      | ((uint32_t)body[14] << 16) | ((uint32_t)body[15] << 24);
+    uint32_t e_handle = (uint32_t)body[16] | ((uint32_t)body[17] << 8)
+                      | ((uint32_t)body[18] << 16) | ((uint32_t)body[19] << 24);
+    uint64_t t_start = 0;
+    for (int i = 0; i < 8; i++)
+        t_start |= ((uint64_t)body[20 + i]) << (8 * i);
+    uint64_t t_end = 0;
+    for (int i = 0; i < 8; i++)
+        t_end |= ((uint64_t)body[28 + i]) << (8 * i);
+    uint8_t kinematics = body[36];
+    uint8_t e_mode = body[37];
+    uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
+                                  | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
+    uint32_t accepted_id = 0, credit_epoch = 0;
+    int32_t r = kalico_runtime_push_segment(
+        kalico_rt_handle, id, x_handle, y_handle, z_handle, e_handle,
+        t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
+        &accepted_id, &credit_epoch);
+    send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
+#else
+    (void)body; (void)body_len;
+    send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Event emitters (Phase C — events channel, fire-and-forget, correlation_id=0)
+// ---------------------------------------------------------------------------
+
+void
+kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
+                                uint32_t current_segment_id,
+                                int32_t last_fault, uint32_t fault_detail)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18];
+    encode_message_header(payload, KALICO_MSG_STATUS_EVENT,
+                          MESSAGE_VERSION_DEFAULT, 0);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = engine_status;
+    b[1] = queue_depth;
+    b[2] = (uint8_t)(current_segment_id & 0xFF);
+    b[3] = (uint8_t)((current_segment_id >> 8) & 0xFF);
+    b[4] = (uint8_t)((current_segment_id >> 16) & 0xFF);
+    b[5] = (uint8_t)((current_segment_id >> 24) & 0xFF);
+    b[6] = (uint8_t)(last_fault & 0xFF);
+    b[7] = (uint8_t)((last_fault >> 8) & 0xFF);
+    b[8] = (uint8_t)((last_fault >> 16) & 0xFF);
+    b[9] = (uint8_t)((last_fault >> 24) & 0xFF);
+    b[10] = (uint8_t)(fault_detail & 0xFF);
+    b[11] = (uint8_t)((fault_detail >> 8) & 0xFF);
+    b[12] = (uint8_t)((fault_detail >> 16) & 0xFF);
+    b[13] = (uint8_t)((fault_detail >> 24) & 0xFF);
+    uint32_t epoch = reset_epoch;
+    b[14] = (uint8_t)(epoch & 0xFF);
+    b[15] = (uint8_t)((epoch >> 8) & 0xFF);
+    b[16] = (uint8_t)((epoch >> 16) & 0xFF);
+    b[17] = (uint8_t)((epoch >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
+}
+
+void
+kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
+                                uint8_t free_slots)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 5];
+    encode_message_header(payload, KALICO_MSG_CREDIT_FREED,
+                          MESSAGE_VERSION_DEFAULT, 0);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = (uint8_t)(retired_through_segment_id & 0xFF);
+    b[1] = (uint8_t)((retired_through_segment_id >> 8) & 0xFF);
+    b[2] = (uint8_t)((retired_through_segment_id >> 16) & 0xFF);
+    b[3] = (uint8_t)((retired_through_segment_id >> 24) & 0xFF);
+    b[4] = free_slots;
+    kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
+}
+
+void
+kalico_native_emit_fault_event(uint16_t fault_code, uint32_t fault_detail,
+                               uint32_t segment_id)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 10];
+    encode_message_header(payload, KALICO_MSG_FAULT_EVENT,
+                          MESSAGE_VERSION_DEFAULT, 0);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = (uint8_t)(fault_code & 0xFF);
+    b[1] = (uint8_t)((fault_code >> 8) & 0xFF);
+    b[2] = (uint8_t)(fault_detail & 0xFF);
+    b[3] = (uint8_t)((fault_detail >> 8) & 0xFF);
+    b[4] = (uint8_t)((fault_detail >> 16) & 0xFF);
+    b[5] = (uint8_t)((fault_detail >> 24) & 0xFF);
+    b[6] = (uint8_t)(segment_id & 0xFF);
+    b[7] = (uint8_t)((segment_id >> 8) & 0xFF);
+    b[8] = (uint8_t)((segment_id >> 16) & 0xFF);
+    b[9] = (uint8_t)((segment_id >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }

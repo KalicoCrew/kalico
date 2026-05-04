@@ -18,22 +18,29 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::error::FaultCode;
 
-/// Per-curve storage capacity. Sized for post-convolution degree-9 NURBS
-/// with up to 100 scalar control points — the per-axis scalar architecture
-/// stores one slot per axis (X, Y, Z, E). Bumped from 80→100 (cps) and
-/// 91→111 (knots) in the incremental-curve-upload spec
-/// (`docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md` §5.0)
-/// to cover the realistic worst case of ~91 cps + 100 knots per axis at
-/// degree 9 with 10 hermite pieces, plus a 25 % margin.
-pub const MAX_CONTROL_POINTS: usize = 100;
-pub const MAX_KNOT_VECTOR_LEN: usize = 111; // MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1
+/// Per-curve storage capacity. Per kalico-native-transport spec §10
+/// (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md`):
+/// H723 (X+Y heavy shaping) sizes its slots for a post-shape degree-9
+/// trajectory at production grid resolution — ~1810 cps, ~1820 knots.
+/// We pick H723 sizing for the unified build; F446 will get a separate
+/// build later in Phase D with smaller constants. The sim is single-MCU
+/// and benefits from H723 sizing (loose-fit for any payload).
+///
+/// Phase C bump from 100/111 → 1830/1840: covers worst-case 100 mm move
+/// at adaptive grid spacing 0.5 mm (~200 pieces × degree 9 ≈ 1810 cps,
+/// 1820 knots) plus headroom.
+pub const MAX_CONTROL_POINTS: usize = 1830;
+pub const MAX_KNOT_VECTOR_LEN: usize = 1850; // MAX_CONTROL_POINTS + MAX_DEGREE + 1 + headroom
 pub const MAX_DEGREE: u8 = 10;
 
-const _: () = assert!(MAX_KNOT_VECTOR_LEN == MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1);
+// Looser invariant than before: the precise relationship is
+// MAX_KNOT_VECTOR_LEN >= MAX_CONTROL_POINTS + MAX_DEGREE + 1 (NURBS knot rule).
+const _: () = assert!(MAX_KNOT_VECTOR_LEN >= MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1);
 
-/// Slab capacity. 64 slots for the per-axis scalar curve pool. Each slot
-/// holds a 1D scalar NURBS.
-pub const CURVE_POOL_N: usize = 64;
+/// Slab capacity. Reduced from 64 → 16 per spec §10: with larger slots,
+/// fewer slots fit the SRAM budget; 16 slots × 14.7 KB ≈ 232 KB on H723,
+/// well within budget and sufficient for the planner's look-ahead depth.
+pub const CURVE_POOL_N: usize = 16;
 
 /// Deprecated — kept for `kalico-c-api` compilation until Task 8 updates
 /// the FFI. The scalar architecture uses 1D control points, not 3D vectors.
@@ -114,8 +121,11 @@ impl CurveHandle {
 pub struct LoadedScalarCurve {
     pub control_points: [f32; MAX_CONTROL_POINTS],
     pub knots: [f32; MAX_KNOT_VECTOR_LEN],
-    pub n_cp: u8,
-    pub n_knots: u8,
+    /// Count fields are u16 to fit MAX_CONTROL_POINTS=1830 / MAX_KNOT_VECTOR_LEN=1850
+    /// after the §10 per-MCU pool sizing bump. Pre-bump these were u8 (sized for
+    /// 80/91), which silently truncated counts mod 256 once the constants grew.
+    pub n_cp: u16,
+    pub n_knots: u16,
     pub degree: u8,
 }
 
@@ -244,8 +254,8 @@ impl CurvePool {
         let mut loaded = LoadedScalarCurve::empty();
         loaded.control_points[..n_cp].copy_from_slice(cps);
         loaded.knots[..knots.len()].copy_from_slice(knots);
-        loaded.n_cp = n_cp as u8;
-        loaded.n_knots = knots.len() as u8;
+        loaded.n_cp = n_cp as u16;
+        loaded.n_knots = knots.len() as u16;
         loaded.degree = degree;
 
         // 1. Write the new curve. The predicate above guarantees no
