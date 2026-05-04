@@ -1486,6 +1486,90 @@ impl PyMotionBridge {
     }
 }
 
+#[cfg(test)]
+mod credit_freed_tests {
+    //! Tests for the `on_credit_freed` PyO3 entry point — the klippy-side
+    //! glue that forwards `kalico_credit_freed` MCU events into the
+    //! per-MCU `SlotPool` for slot retirement.
+    //!
+    //! Constructing `PyMotionBridge::new()` doesn't touch Python state
+    //! (the `#[new]` body is a plain `Self {...}` literal), and
+    //! `on_credit_freed` itself only manipulates Rust mutexes — so we
+    //! drive it directly without `Python::with_gil`.
+
+    use super::*;
+
+    /// Inject a slot pool + credit counter for a synthetic MCU handle so
+    /// `on_credit_freed` has something to operate on. `init_planner`
+    /// normally does this; tests bypass the planner thread.
+    fn install_mcu(bridge: &PyMotionBridge, mcu: u32) -> Arc<Mutex<SlotPool>> {
+        let pool = Arc::new(Mutex::new(SlotPool::new()));
+        bridge.slot_pools.lock().unwrap().insert(mcu, Arc::clone(&pool));
+        let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
+        bridge.credit_counters.lock().unwrap().insert(mcu, credit);
+        pool
+    }
+
+    #[test]
+    fn on_credit_freed_releases_eligible_slots() {
+        let bridge = PyMotionBridge::new();
+        let mcu = 1u32;
+        let pool = install_mcu(&bridge, mcu);
+
+        // Allocate three in-flight segments with monotonic ids.
+        {
+            let mut p = pool.lock().unwrap();
+            for seg_id in 1u32..=3 {
+                let (slot, _credit) = p
+                    .try_alloc()
+                    .expect("pool has capacity for three allocs");
+                p.register_segment(slot, seg_id);
+            }
+            assert_eq!(p.in_flight_count(), 3);
+        }
+
+        // MCU reports retirement through segment 2 — slots for ids 1,2 free.
+        let n = bridge
+            .on_credit_freed(mcu, 2, /* free_slots */ 2)
+            .expect("on_credit_freed returns Ok");
+        assert_eq!(n, 2, "two slots should be released");
+        assert_eq!(pool.lock().unwrap().in_flight_count(), 1);
+
+        // Higher-id retirement releases the rest.
+        let n = bridge
+            .on_credit_freed(mcu, 100, 1)
+            .expect("on_credit_freed returns Ok");
+        assert_eq!(n, 1);
+        assert_eq!(pool.lock().unwrap().in_flight_count(), 0);
+    }
+
+    #[test]
+    fn on_credit_freed_unknown_mcu_is_noop() {
+        // A retirement event for an MCU we don't track must not panic and
+        // must report zero released. Defensive — guards against the bridge
+        // being mid-teardown when an event arrives.
+        let bridge = PyMotionBridge::new();
+        let n = bridge
+            .on_credit_freed(/* mcu */ 99, /* retired */ 5, /* free */ 1)
+            .expect("on_credit_freed must not error on unknown MCU");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn on_credit_freed_before_any_alloc_is_noop() {
+        // Startup race: MCU emits a credit_freed before any segment has
+        // been dispatched. retire_through_segment is idempotent on an
+        // empty pool — verify the bridge's PyO3 entry point inherits that.
+        let bridge = PyMotionBridge::new();
+        let mcu = 1u32;
+        install_mcu(&bridge, mcu);
+        let n = bridge
+            .on_credit_freed(mcu, u32::MAX, 0)
+            .expect("on_credit_freed must not error on empty pool");
+        assert_eq!(n, 0);
+    }
+}
+
 fn trip_event_to_pydict(
     py: Python<'_>,
     evt: runtime::endstop::TripEvent,

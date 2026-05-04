@@ -130,6 +130,20 @@ class MotionBridgeWrapper:
         """Drain one runtime event dict, or None if nothing pending."""
         return self._bridge.take_runtime_event(mcu_handle)
 
+    def on_credit_freed(self, mcu_handle, retired_through_segment_id,
+                        free_slots):
+        """Forward an MCU `kalico_credit_freed` event into the slot pool.
+
+        Releases every curve slot whose registered segment_id is
+        `<= retired_through_segment_id` for the given MCU handle, and
+        reconciles `free_slots` into the per-MCU credit counter.
+        Returns the number of slots released (0 if MCU is unknown or
+        no slots match).
+        """
+        return self._bridge.on_credit_freed(
+            mcu_handle, retired_through_segment_id, free_slots
+        )
+
     # ------------------------------------------------------------------
     # Phase 2: msgproto handover
     # ------------------------------------------------------------------

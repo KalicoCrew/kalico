@@ -556,6 +556,13 @@ class MotionToolhead:
                 octopus,
                 f446,
             )
+            # Register the kalico_credit_freed handler on every bridge-MCU's
+            # SerialReader. The Rust slot pool only releases curve slots when
+            # this event is forwarded into bridge.on_credit_freed; without
+            # this wiring slots leak forever and Phase-4 multi-piece dispatch
+            # would starve after CURVE_POOL_N segments. The handler must run
+            # per-MCU because slot pools are per-MCU on the Rust side.
+            self._register_credit_freed_handlers(bridge_mcus)
             # The local Linux sim harness commonly sends a bare movement
             # command (`run_local.sh "G1 X10 F1000"`) without a preceding
             # SET_KINEMATIC_POSITION/G28. Keep that source-only smoke path
@@ -571,6 +578,54 @@ class MotionToolhead:
         except Exception:
             logging.exception("MotionToolhead: init_planner failed")
             raise
+
+    def _register_credit_freed_handlers(self, bridge_mcus):
+        """Register a kalico_credit_freed handler on each bridge-attached MCU.
+
+        The dispatch path is:
+
+            MCU emits `kalico_credit_freed` (src/runtime_tick.c)
+              -> Rust host_io lifts to `RuntimeEvent::CreditFreed`
+              -> bridge.try_recv_event surfaces dict {type=credit_freed,...}
+              -> serialhdl._bridge_event_poller renames to
+                 "kalico_credit_freed" and dispatches via self.handlers
+              -> THIS handler -> bridge.on_credit_freed(mcu_handle, ...)
+              -> Rust SlotPool.retire_through_segment + CreditCounter sync
+
+        The mcu_handle is captured in the closure per MCU so we don't need
+        to thread it through the params dict. Exceptions are caught and
+        logged — a credit-freed quirk should never crash the reactor.
+        """
+        bridge = self.bridge
+        for name, mcu_obj, mcu_handle in bridge_mcus:
+            serial = getattr(mcu_obj, "_serial", None)
+            if serial is None or not hasattr(serial, "register_response"):
+                logging.warning(
+                    "MotionToolhead: bridge MCU '%s' has no SerialReader; "
+                    "kalico_credit_freed handler not registered",
+                    name,
+                )
+                continue
+            handle = mcu_handle
+            mcu_label = name
+
+            def _on_credit_freed(params, _bridge=bridge, _handle=handle,
+                                 _label=mcu_label):
+                try:
+                    retired = int(params.get("retired_through_segment_id", 0))
+                    free_slots = int(params.get("free_slots", 0))
+                    _bridge.on_credit_freed(_handle, retired, free_slots)
+                except Exception:
+                    logging.exception(
+                        "MotionToolhead: bridge.on_credit_freed failed for "
+                        "MCU '%s' (handle=%s)", _label, _handle,
+                    )
+
+            serial.register_response(_on_credit_freed, "kalico_credit_freed")
+            logging.info(
+                "MotionToolhead: registered kalico_credit_freed handler for "
+                "MCU '%s' (handle=%s)", name, mcu_handle,
+            )
 
     def cmd_M204(self, gcmd):
         accel = gcmd.get_float("S", None, above=0.0)
