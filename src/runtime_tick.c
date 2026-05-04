@@ -425,47 +425,161 @@ DECL_TASK(runtime_status_drain);
 static float kalico_aligned_cps[100];    // MAX_CONTROL_POINTS
 static float kalico_aligned_knots[111];  // MAX_KNOT_VECTOR_LEN
 
+// Incremental-curve-upload ingest context (single global per
+// docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md §5.1).
+// The host serialises uploads per-MCU via the bridge dispatch closure, so at
+// most one upload is in flight at any time. 12 B static.
+static struct {
+    uint16_t slot;
+    uint16_t expected_cps_bytes;
+    uint16_t expected_knots_bytes;
+    uint16_t received_cps_bytes;
+    uint16_t received_knots_bytes;
+    uint8_t  degree;
+    uint8_t  in_progress;
+} kalico_curve_ingest;
+
+// MAX_DEGREE bound from rust/runtime/src/curve_pool.rs (no C-side constant
+// available). Bumped together if curve_pool.rs changes.
+#define KALICO_INGEST_MAX_DEGREE 10
+
+// Chunk-kind encoding (wire field `kind`).
+#define KALICO_CHUNK_KIND_CPS   0
+#define KALICO_CHUNK_KIND_KNOTS 1
+
+// kalico_load_curve_begin — fire-and-forget. Resets the ingest context.
+// Worst-case decoded payload (back-of-envelope, all VLQs at u16 max):
+//   cmd-id(1) + version(1) + slot(3) + degree(1) + total_cps(3)
+//   + total_knots(3) = 12 B + 5 B envelope = 17 B  ≤ MESSAGE_MAX (64).
 void
-command_kalico_load_curve(uint32_t *args)
+command_kalico_load_curve_begin(uint32_t *args)
 {
+    uint8_t  version     = args[0];
+    uint16_t slot        = args[1];
+    uint8_t  degree      = args[2];
+    uint16_t total_cps   = args[3];
+    uint16_t total_knots = args[4];
+
+    // Per §5.4 / §4.1: version mismatch is a host bug; begin is fire-and-
+    // forget so we drop silently (no response channel). The host will see a
+    // length-mismatch at finalize.
+    if (version != 0x01)
+        return;
+
+    // Protect the static scratch buffers from oversize uploads. Drop silently
+    // (no response on begin); finalize will surface as length mismatch.
+    uint32_t cps_bytes   = (uint32_t)total_cps * 4u;
+    uint32_t knots_bytes = (uint32_t)total_knots * 4u;
+    if (cps_bytes > sizeof(kalico_aligned_cps))
+        return;
+    if (knots_bytes > sizeof(kalico_aligned_knots))
+        return;
+    if (degree > KALICO_INGEST_MAX_DEGREE)
+        return;
+
+    kalico_curve_ingest.slot                 = slot;
+    kalico_curve_ingest.expected_cps_bytes   = (uint16_t)cps_bytes;
+    kalico_curve_ingest.expected_knots_bytes = (uint16_t)knots_bytes;
+    kalico_curve_ingest.received_cps_bytes   = 0;
+    kalico_curve_ingest.received_knots_bytes = 0;
+    kalico_curve_ingest.degree               = degree;
+    kalico_curve_ingest.in_progress          = 1;
+}
+DECL_COMMAND(command_kalico_load_curve_begin,
+    "kalico_load_curve_begin version=%c slot=%hu degree=%c "
+    "total_cps=%hu total_knots=%hu");
+
+// kalico_load_curve_chunk — fire-and-forget. Stages a contiguous payload run
+// into the appropriate scratch buffer at `offset`.
+// Worst-case decoded payload (back-of-envelope):
+//   cmd-id(1) + slot(3) + kind(1) + offset(3) + buffer-len(1) + data(40)
+//   = 49 B + 5 B envelope = 54 B  ≤ MESSAGE_MAX (64). The host pins
+//   CHUNK_BYTES = 40 (spec §11 Q3) to keep this margin.
+void
+command_kalico_load_curve_chunk(uint32_t *args)
+{
+    uint16_t slot         = args[0];
+    uint8_t  kind         = args[1];
+    uint16_t offset       = args[2];
+    uint16_t data_len     = args[3];
+    const uint8_t *data_b = command_decode_ptr(args[4]);
+
+    if (!kalico_curve_ingest.in_progress)
+        return;
+    if (slot != kalico_curve_ingest.slot)
+        return;
+
+    float    *dest_buf;
+    uint16_t  expected_bytes;
+    uint16_t  dest_capacity;
+    if (kind == KALICO_CHUNK_KIND_CPS) {
+        dest_buf       = kalico_aligned_cps;
+        expected_bytes = kalico_curve_ingest.expected_cps_bytes;
+        dest_capacity  = sizeof(kalico_aligned_cps);
+    } else if (kind == KALICO_CHUNK_KIND_KNOTS) {
+        dest_buf       = kalico_aligned_knots;
+        expected_bytes = kalico_curve_ingest.expected_knots_bytes;
+        dest_capacity  = sizeof(kalico_aligned_knots);
+    } else {
+        return;
+    }
+
+    uint32_t end = (uint32_t)offset + (uint32_t)data_len;
+    if (end > expected_bytes)
+        return;
+    if (end > dest_capacity)
+        return;
+
+    memcpy((uint8_t *)dest_buf + offset, data_b, data_len);
+
+    // Wire is in-order (Klipper serialqueue preserves frame order), so a
+    // cumulative bump matches `received == expected` at finalize when all
+    // chunks have landed. Out-of-order would require a bitset; not needed.
+    if (kind == KALICO_CHUNK_KIND_CPS)
+        kalico_curve_ingest.received_cps_bytes += data_len;
+    else
+        kalico_curve_ingest.received_knots_bytes += data_len;
+}
+DECL_COMMAND(command_kalico_load_curve_chunk,
+    "kalico_load_curve_chunk slot=%hu kind=%c offset=%hu data=%*s");
+
+// kalico_load_curve_finalize — synchronous. Validates totals and installs
+// the curve via kalico_runtime_load_curve.
+// Decoded payload: cmd-id(1) + slot(3) = 4 B + 5 B envelope = 9 B request;
+// response ~7 B payload. Both fit one frame.
+void
+command_kalico_load_curve_finalize(uint32_t *args)
+{
+    uint16_t slot = args[0];
+
     if (!kalico_rt_handle) {
-        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -7, 0);
-        return;
-    }
-    // Step-6 §4.2: 1-byte format-version field travels as the first command
-    // arg `version=%c`. Validate before decoding the rest of the payload.
-    // KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED = -103 per §9.1.
-    uint8_t  version      = args[0];
-    if (version != 0x01) {
-        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -103, 0);
-        return;
-    }
-    uint16_t slot         = args[1];
-    uint8_t  degree       = args[2];
-    uint16_t cps_len      = args[3];
-    const uint8_t *cps_b  = command_decode_ptr(args[4]);
-    uint16_t knots_len    = args[5];
-    const uint8_t *knots_b = command_decode_ptr(args[6]);
-
-    // Producer-side validation: cps and knots must be multiples of 4
-    // (scalar f32). Mismatch → KALICO_ERR_INVALID_CURVE (-2).
-    if ((cps_len % 4) || (knots_len % 4)) {
-        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
-        return;
-    }
-    uint16_t n_cp      = cps_len / 4;
-    uint16_t n_knots   = knots_len / 4;
-    if (cps_len > sizeof(kalico_aligned_cps) ||
-        knots_len > sizeof(kalico_aligned_knots)) {
-        sendf("kalico_load_curve_response result=%i curve_handle_packed=%u", -2, 0);
+        sendf("kalico_load_curve_finalize_response "
+              "result=%i curve_handle_packed=%u", -7, 0);
         return;
     }
 
-    // Byte-copy into the aligned scratch buffers. memcpy on Cortex-M7 with
-    // -O2 lowers to a tight LDR/STR loop; the source unalignment is fine
-    // because we copy bytes, not words.
-    memcpy(kalico_aligned_cps, cps_b, cps_len);
-    memcpy(kalico_aligned_knots, knots_b, knots_len);
+    if (!kalico_curve_ingest.in_progress
+        || slot != kalico_curve_ingest.slot) {
+        // Per §5.3: do not clear in_progress here (the active upload's
+        // finalize is still pending if slot differs).
+        sendf("kalico_load_curve_finalize_response "
+              "result=%i curve_handle_packed=%u", -2, 0);
+        return;
+    }
+
+    if (kalico_curve_ingest.received_cps_bytes
+            != kalico_curve_ingest.expected_cps_bytes
+        || kalico_curve_ingest.received_knots_bytes
+            != kalico_curve_ingest.expected_knots_bytes) {
+        kalico_curve_ingest.in_progress = 0;
+        sendf("kalico_load_curve_finalize_response "
+              "result=%i curve_handle_packed=%u", -2, 0);
+        return;
+    }
+
+    uint16_t n_cp    = kalico_curve_ingest.received_cps_bytes / 4;
+    uint16_t n_knots = kalico_curve_ingest.received_knots_bytes / 4;
+    uint8_t  degree  = kalico_curve_ingest.degree;
 
     uint32_t handle_packed = 0;
     int32_t r = kalico_runtime_load_curve(
@@ -474,12 +588,13 @@ command_kalico_load_curve(uint32_t *args)
         kalico_aligned_knots, n_knots,
         degree,
         &handle_packed);
-    sendf("kalico_load_curve_response result=%i curve_handle_packed=%u",
-          r, handle_packed);
+
+    kalico_curve_ingest.in_progress = 0;
+    sendf("kalico_load_curve_finalize_response "
+          "result=%i curve_handle_packed=%u", r, handle_packed);
 }
-DECL_COMMAND(command_kalico_load_curve,
-    "kalico_load_curve version=%c slot=%hu degree=%c "
-    "cps=%*s knots=%*s");
+DECL_COMMAND(command_kalico_load_curve_finalize,
+    "kalico_load_curve_finalize slot=%hu");
 
 void
 command_kalico_push_segment(uint32_t *args)
