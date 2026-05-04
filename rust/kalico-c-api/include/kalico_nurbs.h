@@ -130,6 +130,13 @@ uint8_t kalico_runtime_queue_depth(kalico_nurbs_KalicoRuntime *rt);
 uint32_t kalico_runtime_fault_detail(kalico_nurbs_KalicoRuntime *rt);
 
 /**
+ * Read the cumulative signed step count for stepper `oid` (0-indexed).
+ * Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
+ * Used by the sim diagnostic command `kalico_sim_stepper_count_query`.
+ */
+int32_t kalico_runtime_get_stepper_count(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
+
+/**
  * Set the homed gate. Called by the host after all axes have been
  * successfully homed. The ISR checks `shared.homed` before accepting
  * motion segments — until this is called, motion commands are rejected
@@ -252,6 +259,21 @@ int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
 int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
                                  uintptr_t out_buf_len,
                                  uintptr_t *out_actual_len);
+
+/**
+ * Push a sampled GPIO level into the runtime's abstract pin table.
+ *
+ * The runtime's endstop module reads pin levels from an internal
+ * `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
+ * endstop.rs:311). The C ISR shim samples real GPIOs via
+ * `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
+ * src/stm32/kalico_h7_timer.c, just before `kalico_runtime_tick`)
+ * and pushes each result through this FFI before `endstop::tick`
+ * observes it. Sim builds (Renode e2e at
+ * tools/test_renode_endstop_e2e.py) call the same FFI directly via
+ * the `command_kalico_sim_endstop_set_pin` shim, bypassing real GPIO.
+ */
+int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
 /**
  * Set the homed gate to `homed` (0 = clear, non-zero = set). Required
