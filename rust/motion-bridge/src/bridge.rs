@@ -1504,8 +1504,11 @@ impl PyMotionBridge {
     /// [`CreditCounter`] (the MCU is authoritative — see
     /// [`CreditCounter::on_credit_freed`]).
     ///
-    /// Returns the number of curve slots released. Unknown MCU is a no-op
-    /// returning 0 (defensive — events for un-claimed MCUs are dropped).
+    /// Returns `(n_released, completed_arm)`. `completed_arm` is
+    /// `Some(arm_id)` when a homing segment retired without a trip in this
+    /// credit-freed cycle; the caller is responsible for firing the matching
+    /// dispatch's `_completion`. Unknown MCU is a no-op returning `(0,
+    /// None)` (defensive — events for un-claimed MCUs are dropped).
     ///
     /// Wire-routing note: as of HEAD `799bdd867` no host-side serial
     /// reactor inside the bridge calls this. klippy's reactor receives
@@ -1517,7 +1520,7 @@ impl PyMotionBridge {
         mcu: u32,
         retired_through_segment_id: u32,
         free_slots: u8,
-    ) -> PyResult<u32> {
+    ) -> PyResult<(u32, Option<u32>)> {
         let n_released = match self.slot_pools.lock().unwrap().get(&mcu) {
             Some(pool_arc) => pool_arc
                 .lock()
@@ -1529,7 +1532,8 @@ impl PyMotionBridge {
             c.on_credit_freed(free_slots);
         }
         self.homing.complete_if_retired(retired_through_segment_id);
-        Ok(n_released as u32)
+        let completed_arm = self.homing.take_completion_event();
+        Ok((n_released as u32, completed_arm))
     }
 
     /// Number of curve slots currently in flight on the given MCU. Test /
@@ -1660,14 +1664,14 @@ mod credit_freed_tests {
         }
 
         // MCU reports retirement through segment 2 — slots for ids 1,2 free.
-        let n = bridge
+        let (n, _arm) = bridge
             .on_credit_freed(mcu, 2, /* free_slots */ 2)
             .expect("on_credit_freed returns Ok");
         assert_eq!(n, 2, "two slots should be released");
         assert_eq!(pool.lock().unwrap().in_flight_count(), 1);
 
         // Higher-id retirement releases the rest.
-        let n = bridge
+        let (n, _arm) = bridge
             .on_credit_freed(mcu, 100, 1)
             .expect("on_credit_freed returns Ok");
         assert_eq!(n, 1);
@@ -1680,10 +1684,11 @@ mod credit_freed_tests {
         // must report zero released. Defensive — guards against the bridge
         // being mid-teardown when an event arrives.
         let bridge = PyMotionBridge::new();
-        let n = bridge
+        let (n, arm) = bridge
             .on_credit_freed(/* mcu */ 99, /* retired */ 5, /* free */ 1)
             .expect("on_credit_freed must not error on unknown MCU");
         assert_eq!(n, 0);
+        assert!(arm.is_none());
     }
 
     #[test]
@@ -1694,10 +1699,11 @@ mod credit_freed_tests {
         let bridge = PyMotionBridge::new();
         let mcu = 1u32;
         install_mcu(&bridge, mcu);
-        let n = bridge
+        let (n, arm) = bridge
             .on_credit_freed(mcu, u32::MAX, 0)
             .expect("on_credit_freed must not error on empty pool");
         assert_eq!(n, 0);
+        assert!(arm.is_none());
     }
 }
 

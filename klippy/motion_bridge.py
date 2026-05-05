@@ -155,14 +155,13 @@ class MotionBridgeWrapper:
                         free_slots):
         """Forward an MCU `kalico_credit_freed` event into the slot pool.
 
-        Releases every curve slot whose registered segment_id is
-        `<= retired_through_segment_id` for the given MCU handle, and
-        reconciles `free_slots` into the per-MCU credit counter.
-        Returns the number of slots released (0 if MCU is unknown or
-        no slots match).
+        Returns ``(n_released, completed_arm_id_or_None)``. The
+        ``completed_arm_id`` is set when a homing segment retired without
+        a trip in this credit-freed cycle; the caller is responsible for
+        firing the matching dispatch's ``_completion``.
         """
         return self._bridge.on_credit_freed(
-            mcu_handle, retired_through_segment_id, free_slots
+            mcu_handle, retired_through_segment_id, free_slots,
         )
 
     # ------------------------------------------------------------------
