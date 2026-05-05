@@ -137,9 +137,12 @@ Create `rust/temporal/src/topp/stencil.rs`, declared as `pub(crate) mod stencil;
 /// Path-third-derivative `s‴` at grid index `i` via width-1 b-FD.
 ///
 /// Caller-provided invariants: `n ≥ 3` (required for boundary stencils);
-/// `h > 0`; `b.len() == n`. Caller is responsible for a `b_i ≥ 0` guard
-/// (typically via `b[i].max(0.0)` before calling) — the helper does not
-/// enforce non-negativity itself.
+/// `h > 0`; `b.len() == n`. The helper applies `.max(0.0)` to `b[i]`
+/// defensively before `sqrt` to keep numerically-borderline iterates
+/// (where Clarabel may produce slightly-negative `b[i]` due to
+/// solver-residual rounding) from producing `NaN`. The b-FD second-
+/// difference itself accepts any `b` values; nothing in the stencil
+/// arithmetic requires non-negativity beyond the `√b` factor.
 ///
 /// # Stencil dispatch
 ///
@@ -309,9 +312,12 @@ Variables: `b_0, b_1, b_2, a_0`. Iterate: `(b̄_0, b̄_1, b̄_2, ā_0)`.
 α_{b,2} = c'·S_0 / (2h²)
 α_{a,0} = 3·c''·S_0
 
-K_fwd   = j_axis(iterate at i=0) − Σ α·iterate
-        = (computed at iterate; pinned by step9_cut_identity)
+K_fwd   = −(1/2)·c'''·S_0³
+        − (3/2)·c''·ā_0·S_0
+        − c'·D₂_fwd·S_0 / (4h²)
 ```
+
+Same closed form as `K_int` (substituting `S_0` for `S_i`, `D₂_fwd` for `D₂_int`). Derivation parallel: expand `α_{b,0}·b̄_0` (using `b̄_0·S_0 = S_0³`, `b̄_0/S_0 = S_0`), combine with `α_{b,1}·b̄_1 = −c'·S_0·b̄_1/h²`, `α_{b,2}·b̄_2 = c'·S_0·b̄_2/(2h²)`, `α_{a,0}·ā_0 = 3·c''·S_0·ā_0`. After substituting `D₂_fwd = b̄_0 − 2·b̄_1 + b̄_2`, the residual `c'·S_0/h²` terms collapse to `−c'·D₂_fwd·S_0/(4h²)`.
 
 ### 5.5 EndBoundary coefficients (i = n-1)
 
@@ -326,8 +332,12 @@ By symmetry with StartBoundary, with the backward stencil `D₂_bwd`:
           + c'·D₂_bwd / (4h² · S_{n-1})
 α_{a,n-1} = 3·c''·S_{n-1}
 
-K_bwd   = j_axis(iterate at i=n-1) − Σ α·iterate
+K_bwd   = −(1/2)·c'''·S_{n-1}³
+        − (3/2)·c''·ā_{n-1}·S_{n-1}
+        − c'·D₂_bwd·S_{n-1} / (4h²)
 ```
+
+Same closed form as `K_int` and `K_fwd` (substituting `S_{n-1}` and `D₂_bwd`). Derivation symmetric to §5.4.
 
 ### 5.6 SLP_B_FLOOR
 
@@ -344,14 +354,18 @@ New test file `rust/temporal/src/topp/stencil.rs` (or `stencil_tests.rs`) with `
 - Quartic: `b(s) = α·s⁴ + ...`. Then `b''''(s) = 24α`; truncation term `√b·h²·24α/24 = √b·h²·α` (non-zero). Pin the magnitude with tolerance `±h²·α·max(√b)`.
 - Boundary stencils tested at i=0 and i=n-1 against the same analytic forms; tolerance widens at boundary because of O(h)·b''' leading error.
 
-Three regime-specific cases per the brainstorm critique:
-- **Near-zero b̄**: i=1 with b[1]=1e-6 (close to SLP_B_FLOOR). Verify the `S_i.max(SLP_B_FLOOR).sqrt()` guard prevents NaN/Inf.
-- **Constant b̄**: b uniform at e.g. 100.0 throughout. b'' = 0 everywhere; `s_dddot_at` must return 0.
+Three regime-specific cases per the brainstorm critique. Note: `s_dddot_at` (verifier helper) and the cut linearization use **different** floors. The verifier helper applies `.max(0.0)` defensively (cheap rounding-error guard); the cut linearization at `solver.rs:461` applies `b_bar.max(SLP_B_FLOOR)` where `SLP_B_FLOOR = 1.0` (avoids `1/√b̄ → ∞` blowup in the linearization coefficients). The two are tested separately:
+
+- **`s_dddot_at` near-zero edge**: i=1 with b[1] = 0.0 exactly. Verify the helper's `.max(0.0)` guard makes `s_dot = 0.0`, so `s_dddot_at` returns `0.0` regardless of the b-FD numerator. No NaN/Inf.
+- **Cut linearization near-floor edge** (in `step9_cut_identity`, §6.2): `b̄_i = 0.5` (just below `SLP_B_FLOOR = 1.0`). The cut helper must use `S = √(max(0.5, 1.0)) = 1.0` for its row coefficients, not `√0.5 ≈ 0.707`. Pin a coefficient that depends linearly on S and verify it equals the floored-value-derived expectation.
+- **Constant b̄**: b uniform at e.g. 100.0 throughout. b'' = 0 everywhere; `s_dddot_at` must return 0 at all interior i. Boundary i=0 and i=n-1 also return 0 (forward/backward second-difference of a constant is 0).
 - **Sharp-corner approximation**: b with a kink (piecewise linear in s). Width-1 picks up the kink at the junction grid point; magnitude pinned but order-of-magnitude check rather than exact (kinks are non-smooth).
 
-### 6.2 Cut identity: `step9_cut_identity` (rewritten)
+### 6.2 Cut identity: `step9_cut_identity` (rewritten from scratch)
 
-`rust/temporal/tests/step9_cut_identity.rs` rewritten to pin the new cut algebra. Test structure:
+`rust/temporal/tests/step9_cut_identity.rs` is **rewritten from scratch**, not patched. The existing test wires the old (a-FD width-2) coefficient helpers (`da_ds_at` over `a` at line 73; `interior_cut_coeffs` / `boundary_start_cut_coeffs` / `boundary_end_cut_coeffs` at lines 108/156/193; row-sum loop at line 320) and the variable touch set `(b_i, a_{i-1}, a_i, a_{i+1})` for interior. Under Option B, every coefficient helper changes, the row-sum loop indexes a different variable set `(b_{i-1}, b_i, b_{i+1}, a_i)` for interior (and analogous for boundaries), and the direct `j_actual` computation moves from a-FD `da_ds_at` to b-FD `s_dddot_at`. The fixture strategy also changes — from the existing test's full-fixture-scan pattern to a smaller synthetic-iterate selected-index sweep (motivated by per-stencil coverage rather than fixture-shape representativeness, since the cut-identity check is a pure algebraic equality and doesn't need fixture diversity).
+
+New test structure:
 
 1. Pick a synthetic `(b̄, ā)` iterate on a small grid (say n=10).
 2. For each grid index i in {0, 1, 5, 8, 9} (covering Start, post-Start interior, mid interior, pre-End interior, End):
@@ -359,7 +373,7 @@ Three regime-specific cases per the brainstorm critique:
    - Compute `Σ α·iterate + K` from the cut linearization.
    - Assert equality within machine epsilon.
 3. Repeat for several `(c', c'', c''')` triples covering: collinear (`c''=c'''=0`), curved (`c''≠0, c'''=0`), pathological (`c'≠0, c''≠0, c'''≠0`).
-4. Repeat at `b̄ = SLP_B_FLOOR` to verify the floor is applied correctly without numerical blow-up.
+4. Repeat with one iterate at `b̄_i = 0.5` (below `SLP_B_FLOOR = 1.0`) to verify the cut helper's `b_bar.max(SLP_B_FLOOR)` floor is applied correctly: row coefficients computed with `S = √1.0 = 1.0`, NOT `S = √0.5 ≈ 0.707`. Identity must still hold at the floored value.
 
 ### 6.3 Architectural correctness gate: `homing_300mm_pure_x`
 
@@ -417,6 +431,15 @@ The change is complete when:
 - **β-medium loop changes**. Untouched. β consumes the trajectory layer's outputs unchanged.
 - **Per-axis Cartesian jerk SOCP relaxation in block (h)** (the maintainer warning's deferred work). Distinct architectural change; out of this spec's scope.
 
+### 9.1 Triage risk from deferred items
+
+Two of the deferred items (Z-jerk bridge config bug; `SLP9_EPS_FEAS` value) are not architecturally entangled with stencil unification, but they sit in the same constraint-binding pipeline. If Option B regresses something — particularly on a fixture where the stencil change shifts which constraint binds — failure-attribution becomes harder because either deferred item could be a confounder:
+
+- **Z-jerk dominance in `J_path`.** `j_path = min(j_max[X], j_max[Y], j_max[Z])` at `constraints.rs:248`. The bridge config still emits `j_max[Z] = 2 × max_z_accel = 200`, so `J_path` for non-Z-bearing moves is artificially clamped. A regression on, say, the curved-arc fixture under Option B might be (a) genuine stencil-induced Stage-2 SLP behavior change, (b) the J_path clamp interacting with the new stencil's tighter ratios, or (c) both. If we suspect (b), we'd want the bridge config fix landed before triaging — but it's not in this spec.
+- **`SLP9_EPS_FEAS = 1e-3` gating per-axis cut activation.** `build_axis_jerk_cuts` skips ratios ≤ 1.0 + SLP9_EPS_FEAS at `solver.rs:1524`. Under Option B, ratios scale-down by ~4× from the current width-2 baseline (per §3.2 vs §3.3); if the new width-1 ratio at the homing fixture's iterate sits below SLP9_EPS_FEAS at iter 0, Stage 2 short-circuits and Stage 1's iterate (already converged at width-1 SOC chain, which IS the new measurement) becomes the final answer. That's the expected happy path. But if some fixture's iter-0 width-1 ratio happens to land in the (1e-3, current-width-2-ratio) window, Option B might newly activate Stage 2 on fixtures that previously short-circuited via verifier rejection. Behavior change is bounded but worth monitoring during the curved-arc-fixture green-gate.
+
+Practical implication: when a regression surfaces during implementation, check both items as confounders before attributing the regression to the stencil unification itself. Long-term, both deferred items should land soon-after to remove these confounders from the system.
+
 ## 10. Future work
 
 If real-world prints surface stencil-related issues on segments with `v_start ≠ 0` AND large `b'''(s)` near the segment boundary, derive 5-point one-sided stencils with O(h²) leading error at i ∈ {0, n-1}. The cut algebra extends naturally (5-variable rows at boundary) but adds notable complexity. Defer until evidence demands it.
@@ -428,6 +451,7 @@ If the curved-arc fixture's worst-violation grid ever lands at strict interior u
 - **kalico-verifier (this session)**: VERIFIED the math claims at the order/sign/scaling level. Three text corrections applied: (a) Claim 5's leading bias is on b'' with coefficient −1/8, not on b'''; the order claim O(1) is correct, the symbol was wrong. (b) Step 9's per-axis cut never had a tangent-below tightness guarantee; phrasing strengthened to acknowledge empirical-only convergence. (c) Curved-arc fixture non-regression is a process commitment. Bonus finding: current code at i=0 has hidden O(1)·b''/4 bias (factor-of-2 error in substitution); Option B fixes this too. Incorporated into §3.5 / §3.6 / §3.7.
 - **Codex review (this session)**: 5 blocking findings, all addressed. (a) `n < 3` precondition explicit; §7. (b) Full cut algebra derivation in spec body; §5. (c) `mod stencil;` declaration + stale doc/comment sweep; §4.5. (d) Homing test docstring update (test logic unchanged); §6.3. (e) Typo `b(s_0)` → `b''(s_0)` (caught upstream of writing this spec, so no longer surfaces).
 - **Self-review (Claude, this session)**: Two additions Codex didn't catch. (f) Boundary jerk-enforcement asymmetry deliberate-not-bug; §7. (g) Three regime-specific cases for cut-identity test rather than one (near-zero b̄, constant b̄, sharp corner); §6.1.
+- **Codex second-pass review (this session)**: Five concerns, all verified and addressed. (h) §4.1 b≥0 guard contradiction (caller-vs-helper) — resolved by accepting the helper-applies-`.max(0.0)` pattern (matches existing `max_axis_ratio` and `verify::check`). (i) §6.1 near-zero test wording wrong (used `S_i.max(...)` instead of `b̄.max(...)`, used `b[1]=1e-6` near a floor that's actually 1.0) — separated into two distinct tests for the verifier helper (`.max(0.0)`) vs cut linearization (`SLP_B_FLOOR=1.0`). (j) §5.4/§5.5 missing closed-form `K_fwd` and `K_bwd` — added; both share the same closed form as `K_int` with stencil-specific `S` and `D₂`, derivation independently re-verified by Codex. (k) §6.2 step9_cut_identity rewrite scope under-specified (implied mechanical update) — sharpened to "rewritten from scratch" with explicit acknowledgment of fixture-strategy change and full coefficient-helper re-derivation. (l) §9 deferred items create triage risk — added §9.1 noting Z-jerk J_path clamp and SLP9_EPS_FEAS as confounders during regression triage.
 
 ## 12. References
 
