@@ -1,24 +1,22 @@
-//! Post-solve feasibility check.
+//! Per-axis Cartesian jerk + per-axis acceleration / velocity / centripetal
+//! verifier for solver outputs. Spec §6.2.
 //!
-//! Spec §6.2. `ε_feas` = 2e-3 (0.2%). Records the binding constraint per grid
-//! point for downstream tagging.
+//! Computes the binding-constraint tag at every grid point and the worst-
+//! case ratio across all binding constraints. Used by the public solver
+//! entry point to convert `SolverStatus::Solved` into the public
+//! `SolveStatus::Solved` only when the post-solve trajectory is feasible
+//! (handles Consolini-Locatelli relaxation gaps where Clarabel reports
+//! success but the relaxation didn't fully bind on a non-convex constraint).
 //!
-//! # Why 2e-3 and not 1e-3
+//! # Stencil
 //!
-//! The verifier estimates `s⃛` via central FD on `a`, which expands to a
-//! width-2 stencil on `b`: `(a[i+1]-a[i-1])/(2h) = (b[i+2]-2b[i]+b[i-2])/(8h²)`.
-//! The path-jerk SOC chain in `topp::constraints` block (h) bounds the
-//! width-1 stencil `(b[i-1]-2b[i]+b[i+1])/h²`. Both discretize `b''`, but they
-//! differ by O(h²)·|b''''| — on a trap velocity profile with effectively
-//! bang-bang `a`, that gap exceeds 1e-3 at adaptive-grid N (e.g. N=20 for a
-//! 5 mm pure-Z move with `target_grid_spacing_mm=0.5`). The path-jerk SLP can
-//! drive its own discretization to feasibility, but cannot force the
-//! verifier's wider stencil to agree to within 0.1 % on knife-edge cases
-//! where `J_path = j_max[binding_axis]` and only one axis is active (any pure
-//! X/Y/Z move whose binding axis matches the slowest-jerk axis). 0.2 % jerk
-//! slack on a single grid point is physically inconsequential — printer
-//! mechanical tolerance and slicer-side jerk derating dwarf it — and absorbs
-//! the stencil mismatch without changing the SOCP relaxation or SLP discipline.
+//! Path-third-derivative `s‴` is computed via the shared
+//! `topp::stencil::s_dddot_at` helper (width-1 b-FD: forward at i=0,
+//! central at i ∈ [1, n-2], backward at i=n-1). Same stencil as the
+//! path-jerk SOC chain in `constraints::block_(h)` and the per-axis SLP
+//! cut linearization in `solver::append_axis_jerk_cut_to_clarabel` —
+//! single source of truth across SOCP/SLP/verifier per
+//! `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`.
 //!
 //! # Algorithm overview
 //!
@@ -31,9 +29,8 @@
 //! d³x/dt³[axis]   = c_triple_prime[i][axis]  · ṡ³  +  3·c_double_prime[i][axis]·ṡ·s̈  +  c_prime[i][axis]·s⃛
 //! ```
 //!
-//! where `ṡ = v_i = √(b_i.max(0))`, `s̈ = a_i`, and
-//! `s⃛ = da/ds · ṡ` (path-jerk in time from the a-profile via chain rule).
-//! `da/ds` is estimated by central finite-difference on `a` vs `s`.
+//! where `ṡ = v_i = √(b_i.max(0))`, `s̈ = a_i`, and `s⃛` is sourced from
+//! `topp::stencil::s_dddot_at(&result.b, i, h)`.
 //!
 //! Each derivative is normalised by the corresponding per-axis limit.  The
 //! maximum normalised ratio across all axes and constraint types gives the
@@ -52,8 +49,9 @@ use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::SolverResult;
 use crate::{Axis, BindingConstraint, Limits};
 
-/// 0.2% feasibility margin per spec §6.2 (raised from 1e-3 — see module
-/// docstring for the stencil-mismatch rationale).
+/// 0.2% feasibility margin per spec §6.2. Uniform width-1 b-FD across
+/// SOCP/SLP/verifier per
+/// `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`.
 pub(crate) const EPS_FEAS: f64 = 2e-3;
 
 /// Threshold below which a normalised ratio is treated as "not binding" at
@@ -82,37 +80,6 @@ pub(crate) struct VerifyReport {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Compute `da/ds` at grid index `i` using finite differences.
-fn da_ds_at(result: &SolverResult, s: &[f64], i: usize) -> f64 {
-    let n = s.len();
-    if n <= 1 {
-        return 0.0;
-    }
-    let a = &result.a;
-    if i == 0 {
-        let ds = s[1] - s[0];
-        if ds.abs() > 1e-15 {
-            (a[1] - a[0]) / ds
-        } else {
-            0.0
-        }
-    } else if i == n - 1 {
-        let ds = s[n - 1] - s[n - 2];
-        if ds.abs() > 1e-15 {
-            (a[n - 1] - a[n - 2]) / ds
-        } else {
-            0.0
-        }
-    } else {
-        let ds = s[i + 1] - s[i - 1];
-        if ds.abs() > 1e-15 {
-            (a[i + 1] - a[i - 1]) / ds
-        } else {
-            0.0
-        }
-    }
-}
 
 /// All quantities needed to evaluate one grid point's constraint ratios.
 struct PointInputs<'a> {
@@ -215,7 +182,12 @@ fn worst_ratio_at(p: &PointInputs<'_>) -> (f64, BindingConstraint) {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub(crate) fn check(grid: &ArclengthGrid, result: &SolverResult, limits: &Limits) -> VerifyReport {
+pub(crate) fn check(
+    grid: &ArclengthGrid,
+    result: &SolverResult,
+    limits: &Limits,
+    h: f64,
+) -> VerifyReport {
     let n = grid.s.len();
     debug_assert_eq!(result.b.len(), n);
     debug_assert_eq!(result.a.len(), n);
@@ -231,7 +203,8 @@ pub(crate) fn check(grid: &ArclengthGrid, result: &SolverResult, limits: &Limits
         // Path-domain quantities.
         let s_dot = b_i.max(0.0).sqrt(); // ṡ; guard tiny-negative b
         let s_ddot = a_i;
-        let s_dddot = da_ds_at(result, &grid.s, i) * s_dot; // chain rule
+        // Width-1 b-FD via shared stencil helper (already includes √b factor).
+        let s_dddot = crate::topp::stencil::s_dddot_at(&result.b, i, h);
 
         let (worst_ratio, tag) = worst_ratio_at(&PointInputs {
             cp: grid.c_prime[i],
@@ -329,7 +302,8 @@ mod tests {
             a: vec![0.0; 5],
             status: SolverStatus::Solved,
         };
-        let report = check(&grid, &result, &limits);
+        let h = grid.s[1] - grid.s[0];
+        let report = check(&grid, &result, &limits, h);
         assert!(report.feasible);
         assert!(report.worst_violation < EPS_FEAS);
         assert!(
@@ -350,7 +324,8 @@ mod tests {
             a: vec![0.0; 5],
             status: SolverStatus::Solved,
         };
-        let report = check(&grid, &result, &limits);
+        let h = grid.s[1] - grid.s[0];
+        let report = check(&grid, &result, &limits, h);
         assert!(!report.feasible);
     }
 
@@ -368,7 +343,8 @@ mod tests {
             a: vec![0.0; 5],
             status: SolverStatus::Solved,
         };
-        let report = check(&grid, &result, &limits);
+        let h = grid.s[1] - grid.s[0];
+        let report = check(&grid, &result, &limits, h);
         // worst_violation should be ~0.0 (right at limit), not positive.
         assert!(
             report.feasible,
@@ -394,7 +370,8 @@ mod tests {
             a: vec![10_000.0; 5], // s̈ = 10_000 mm/s² (2× a_max)
             status: SolverStatus::Solved,
         };
-        let report = check(&grid, &result, &limits);
+        let h = grid.s[1] - grid.s[0];
+        let report = check(&grid, &result, &limits, h);
         assert!(!report.feasible, "over-accel profile should be infeasible");
         // The binding constraint at interior points must be AxisAccel{X} since
         // the tangent is purely in X on a straight grid.
@@ -417,7 +394,8 @@ mod tests {
             a: vec![0.0, 1_000.0, 0.0, -1_000.0, 0.0],
             status: SolverStatus::Solved,
         };
-        let report = check(&grid, &result, &limits);
+        let h = grid.s[1] - grid.s[0];
+        let report = check(&grid, &result, &limits, h);
         assert!(
             matches!(report.binding_per_grid[0], BindingConstraint::Boundary),
             "start should be Boundary, got {:?}",
@@ -465,7 +443,8 @@ mod tests {
             a: vec![0.0; n],
             status: SolverStatus::Solved,
         };
-        let report = check(&grid, &result, &limits);
+        let h = grid.s[1] - grid.s[0];
+        let report = check(&grid, &result, &limits, h);
         assert!(
             !report.feasible,
             "over-centripetal profile should be infeasible"

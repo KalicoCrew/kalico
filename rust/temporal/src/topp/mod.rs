@@ -146,7 +146,7 @@ pub fn schedule_segment_with_tolerance(
     };
 
     // Stage 4: verify.
-    let verify_report = verify::check(&arc_grid, &solver_result, limits);
+    let verify_report = verify::check(&arc_grid, &solver_result, limits, bundle.h);
 
     // Stage 5: assemble.
     Ok(output::assemble(
