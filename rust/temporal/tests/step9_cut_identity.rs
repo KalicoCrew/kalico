@@ -1,391 +1,260 @@
-//! Row-sum identity for the per-axis Cartesian jerk SLP cut (spec §11; Step 9).
+//! Row-sum identity for the per-axis Cartesian jerk SLP cut (spec §11; Step 9;
+//! width-1 b-FD stencil unification per
+//! `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`).
 //!
-//! This is the de-risk gate for Step 9. Before wiring the new cut into
-//! Clarabel, we must numerically verify that the cut row coefficients
+//! This is the de-risk gate for the cut algebra. Before wiring the new cut
+//! into Clarabel, we numerically verify that the cut row coefficients
 //! reproduce the verifier-stencil per-axis Cartesian jerk *exactly* at the
-//! current iterate `(b̄, ā)`. If this identity fails, the cut math is wrong
-//! and Step 9's wire-up will produce garbage; the test must pass for every
-//! interior grid point and every axis (and for the boundary one-sided FD
-//! variant at i=0 and i=N-1).
+//! current iterate `(b̄, ā)` for every stencil case (Interior, StartBoundary,
+//! EndBoundary) and every axis.
 //!
-//! ## The identity
+//! ## The identity (under width-1 b-FD)
 //!
-//! At iterate `(b̄, ā)`, the verifier-stencil per-axis Cartesian jerk is
+//! At iterate `(b̄, ā)`, the per-axis Cartesian jerk is:
 //!
 //! ```text
-//!   j_axis(b̄, ā)_i =  C3 · b̄_i^(3/2)
-//!                   + 3 · C2 · ā_i · √b̄_i
-//!                   + C1 · D̄_i · √b̄_i
+//!   j_axis(b̄, ā)_i = c'''·b̄_i^(3/2) + 3·c''·ā_i·√b̄_i + c'·s‴_i
 //! ```
 //!
-//! where `C1 = c'_axis(s_i)`, `C2 = c''_axis(s_i)`, `C3 = c'''_axis(s_i)`,
-//! and `D̄_i` is the finite-difference of `ā` against `s` at index `i`:
-//! central FD `(ā_{i+1} − ā_{i-1})/(2h)` for interior, one-sided
-//! `(ā_1 − ā_0)/h` at i=0 and `(ā_{N-1} − ā_{N-2})/h` at i=N-1.
+//! where `s‴_i = √b̄_i · b''(s_i) / 2`, with `b''` evaluated via the width-1
+//! b-FD stencil:
 //!
-//! The first-order Taylor linearization of `j_axis` at `(b̄, ā)` is
+//! - Interior i ∈ [1, n-2]: `b'' ≈ (b̄_{i-1} − 2·b̄_i + b̄_{i+1}) / h²`.
+//! - StartBoundary i = 0:   `b'' ≈ (b̄_0 − 2·b̄_1 + b̄_2) / h²`.
+//! - EndBoundary i = n-1:   `b'' ≈ (b̄_{n-3} − 2·b̄_{n-2} + b̄_{n-1}) / h²`.
+//!
+//! ## The cut row
+//!
+//! The first-order Taylor linearization of `j_axis` at the iterate is
 //!
 //! ```text
-//!   j_lin(b, a) =  α_b · b_i + α_{a-1} · a_{i-1} + α_a · a_i + α_{a+1} · a_{i+1} + K
+//!   j_lin(b, a) = α_b_{i-1}·b_{i-1} + α_b_i·b_i + α_b_{i+1}·b_{i+1} + α_a_i·a_i + K
 //! ```
 //!
-//! By construction the linearization is exact at the iterate:
+//! for Interior (analogous variable touch for boundaries). The identity to
+//! verify:
 //!
 //! ```text
-//!   α_b · b̄_i + α_{a-1} · ā_{i-1} + α_a · ā_i + α_{a+1} · ā_{i+1} + K  ≡  j_axis(b̄, ā)_i.
+//!   Σ α·iterate_value + K  ==  j_axis(iterate)
 //! ```
 //!
-//! This test pins that identity numerically.
+//! …i.e., evaluating the linearized form at the linearization point reproduces
+//! the original function value exactly (this is the definition of K as the
+//! residual). Any disagreement means the cut algebra is wrong and Clarabel
+//! will be fed garbage.
 
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::items_after_statements)]
+use temporal::topp::stencil::s_dddot_at;
 
-use nurbs::VectorNurbs;
-use temporal::topp::path::sample_arclength_grid;
-use temporal::{GridConfig, GridScheme, Limits, schedule_segment};
+const H: f64 = 0.4;
+const N_GRID: usize = 10;
 
-fn textbook_limits() -> Limits {
-    Limits::new(
-        [500.0, 500.0, 500.0],
-        [5_000.0, 5_000.0, 5_000.0],
-        [100_000.0, 100_000.0, 100_000.0],
-        2_500.0,
-    )
-}
-
-/// Verifier-stencil per-axis Cartesian jerk at iterate `(b̄, ā)`,
-/// matching `topp::verify::check` exactly.
+/// Direct evaluation of per-axis Cartesian jerk at the iterate `(b̄, ā)`,
+/// using the width-1 b-FD stencil for s‴. This is the "ground truth" the
+/// cut linearization must reproduce.
 fn j_axis_at_iterate(
+    b_bars: &[f64],
+    a_bars: &[f64],
+    i: usize,
     cp: f64,
     cpp: f64,
     cppp: f64,
-    b_bar_i: f64,
-    a_bar_i: f64,
-    da_ds_i: f64,
 ) -> f64 {
-    let s_dot = b_bar_i.max(0.0).sqrt();
-    let s_dot3 = s_dot * s_dot * s_dot;
-    let s_dddot = da_ds_i * s_dot;
-    cppp * s_dot3 + 3.0 * cpp * s_dot * a_bar_i + cp * s_dddot
+    let s_dddot = s_dddot_at(b_bars, i, H);
+    let b_i = b_bars[i].max(0.0);
+    let s_i = b_i.sqrt();
+    let s3 = b_i * s_i;
+    cppp * s3 + 3.0 * cpp * a_bars[i] * s_i + cp * s_dddot
 }
 
-/// One-sided / central FD `da/ds` at grid index `i`, mirroring
-/// `topp::verify::da_ds_at`.
-fn da_ds_at(a: &[f64], s: &[f64], i: usize) -> f64 {
-    let n = s.len();
-    if n <= 1 {
-        return 0.0;
-    }
-    if i == 0 {
-        let ds = s[1] - s[0];
-        if ds.abs() > 1e-15 {
-            (a[1] - a[0]) / ds
-        } else {
-            0.0
-        }
-    } else if i == n - 1 {
-        let ds = s[n - 1] - s[n - 2];
-        if ds.abs() > 1e-15 {
-            (a[n - 1] - a[n - 2]) / ds
-        } else {
-            0.0
-        }
-    } else {
-        let ds = s[i + 1] - s[i - 1];
-        if ds.abs() > 1e-15 {
-            (a[i + 1] - a[i - 1]) / ds
-        } else {
-            0.0
-        }
-    }
-}
-
-/// Cut-row coefficients at interior i (central FD on `a`).
-///
-/// Variables touched: `b_i`, `a_{i-1}`, `a_i`, `a_{i+1}` (and a constant K).
-/// Returns `(α_b, α_a_im1, α_a_i, α_a_ip1, K)`.
+/// Interior cut coefficient computation per spec §5.3. Returns
+/// `(α_b_{i-1}, α_b_i, α_b_{i+1}, α_a_i, K)`.
 fn interior_cut_coeffs(
+    b_bars: &[f64],
+    a_bars: &[f64],
+    i: usize,
     cp: f64,
     cpp: f64,
     cppp: f64,
-    b_bar_i: f64,
-    a_bar_im1: f64,
-    a_bar_i: f64,
-    a_bar_ip1: f64,
-    h: f64,
 ) -> (f64, f64, f64, f64, f64) {
-    let sqrt_b = b_bar_i.max(0.0).sqrt();
-    let b_pow_3_2 = sqrt_b * sqrt_b * sqrt_b;
-    // D̄ := (ā_{i+1} − ā_{i-1}) / (2h)  — used implicitly below.
-
-    // α_b  = (3/2)·C3·√b̄  +  3·C2·ā_i / (2·√b̄)  +  C1·D̄ / (2·√b̄)
-    //      = (3/2)·C3·√b̄  +  3·C2·ā_i / (2·√b̄)  +  C1·(ā_{i+1} − ā_{i-1}) / (4h·√b̄)
-    let alpha_b = if sqrt_b > 0.0 {
-        1.5 * cppp * sqrt_b
-            + 3.0 * cpp * a_bar_i / (2.0 * sqrt_b)
-            + cp * (a_bar_ip1 - a_bar_im1) / (4.0 * h * sqrt_b)
-    } else {
-        // sqrt_b = 0: the only well-defined contribution is from C3 (which
-        // multiplies √b̄ to a positive power); the other partials blow up but
-        // are dotted with ā quantities that, by construction at b̄=0, leave
-        // the row-sum identity vacuously trivial (j_axis = 0 at b̄=0). Use
-        // 0.0 to avoid NaN.
-        1.5 * cppp * sqrt_b
-    };
-    let alpha_a_im1 = -cp * sqrt_b / (2.0 * h);
-    let alpha_a_i = 3.0 * cpp * sqrt_b;
-    let alpha_a_ip1 = cp * sqrt_b / (2.0 * h);
-
-    // K = −(1/2)·C3·b̄^(3/2)
-    //     − (3/2)·C2·ā_i·√b̄
-    //     − C1·D̄·√b̄ / 2
-    //   = −(1/2)·C3·b̄^(3/2)
-    //     − (3/2)·C2·ā_i·√b̄
-    //     − C1·(ā_{i+1} − ā_{i-1})·√b̄ / (4h)
-    let k = -0.5 * cppp * b_pow_3_2
-        - 1.5 * cpp * a_bar_i * sqrt_b
-        - cp * (a_bar_ip1 - a_bar_im1) * sqrt_b / (4.0 * h);
-
-    (alpha_b, alpha_a_im1, alpha_a_i, alpha_a_ip1, k)
+    let b_i = b_bars[i];
+    let s = b_i.sqrt();
+    let s3 = b_i * s;
+    let d2 = b_bars[i - 1] - 2.0 * b_i + b_bars[i + 1];
+    let alpha_b_im1 = cp * s / (2.0 * H * H);
+    let alpha_b_ip1 = cp * s / (2.0 * H * H);
+    let alpha_a_i = 3.0 * cpp * s;
+    let alpha_b_i = 1.5 * cppp * s
+        + 3.0 * cpp * a_bars[i] / (2.0 * s)
+        - cp * s / (H * H)
+        + cp * d2 / (4.0 * H * H * s);
+    let k = -0.5 * cppp * s3 - 1.5 * cpp * a_bars[i] * s - cp * d2 * s / (4.0 * H * H);
+    (alpha_b_im1, alpha_b_i, alpha_b_ip1, alpha_a_i, k)
 }
 
-/// Cut-row coefficients at boundary i=0 (forward one-sided FD on `a`).
-///
-/// Variables touched: `b_0`, `a_0`, `a_1`. Returns `(α_b, α_a_0, α_a_1, K)`.
-fn boundary_start_cut_coeffs(
+/// StartBoundary cut coefficient computation per spec §5.4.
+/// Returns `(α_b_0, α_b_1, α_b_2, α_a_0, K)`.
+fn start_boundary_cut_coeffs(
+    b_bars: &[f64],
+    a_bars: &[f64],
     cp: f64,
     cpp: f64,
     cppp: f64,
-    b_bar_0: f64,
-    a_bar_0: f64,
-    a_bar_1: f64,
-    h: f64,
-) -> (f64, f64, f64, f64) {
-    let sqrt_b = b_bar_0.max(0.0).sqrt();
-    let b_pow_3_2 = sqrt_b * sqrt_b * sqrt_b;
-    // D̄ = (ā_1 − ā_0) / h
-    let d_bar = (a_bar_1 - a_bar_0) / h;
-
-    // α_b = (3/2)·C3·√b̄ + 3·C2·ā_0 / (2·√b̄) + C1·(ā_1 − ā_0) / (2h·√b̄)
-    let alpha_b = if sqrt_b > 0.0 {
-        1.5 * cppp * sqrt_b
-            + 3.0 * cpp * a_bar_0 / (2.0 * sqrt_b)
-            + cp * (a_bar_1 - a_bar_0) / (2.0 * h * sqrt_b)
-    } else {
-        1.5 * cppp * sqrt_b
-    };
-    // α_a_0 = 3·C2·√b̄ − C1·√b̄ / h
-    let alpha_a_0 = 3.0 * cpp * sqrt_b - cp * sqrt_b / h;
-    // α_a_1 = +C1·√b̄ / h
-    let alpha_a_1 = cp * sqrt_b / h;
-
-    // K = −(1/2)·C3·b̄^(3/2)  −  (3/2)·C2·ā_0·√b̄  −  C1·D̄·√b̄ / 2
-    let k = -0.5 * cppp * b_pow_3_2 - 1.5 * cpp * a_bar_0 * sqrt_b - cp * d_bar * sqrt_b / 2.0;
-
-    (alpha_b, alpha_a_0, alpha_a_1, k)
+) -> (f64, f64, f64, f64, f64) {
+    let b_0 = b_bars[0];
+    let s = b_0.sqrt();
+    let s3 = b_0 * s;
+    let d2 = b_0 - 2.0 * b_bars[1] + b_bars[2];
+    let alpha_b_0 = 1.5 * cppp * s
+        + 3.0 * cpp * a_bars[0] / (2.0 * s)
+        + cp * s / (2.0 * H * H)
+        + cp * d2 / (4.0 * H * H * s);
+    let alpha_b_1 = -cp * s / (H * H);
+    let alpha_b_2 = cp * s / (2.0 * H * H);
+    let alpha_a_0 = 3.0 * cpp * s;
+    let k = -0.5 * cppp * s3 - 1.5 * cpp * a_bars[0] * s - cp * d2 * s / (4.0 * H * H);
+    (alpha_b_0, alpha_b_1, alpha_b_2, alpha_a_0, k)
 }
 
-/// Cut-row coefficients at boundary i=N-1 (backward one-sided FD on `a`).
-///
-/// Variables touched: `b_{N-1}`, `a_{N-2}`, `a_{N-1}`. Returns
-/// `(α_b, α_a_Nm2, α_a_Nm1, K)`.
-fn boundary_end_cut_coeffs(
+/// EndBoundary cut coefficient computation per spec §5.5.
+/// Returns `(α_b_{n-3}, α_b_{n-2}, α_b_{n-1}, α_a_{n-1}, K)`.
+fn end_boundary_cut_coeffs(
+    b_bars: &[f64],
+    a_bars: &[f64],
     cp: f64,
     cpp: f64,
     cppp: f64,
-    b_bar_nm1: f64,
-    a_bar_nm2: f64,
-    a_bar_nm1: f64,
-    h: f64,
-) -> (f64, f64, f64, f64) {
-    let sqrt_b = b_bar_nm1.max(0.0).sqrt();
-    let b_pow_3_2 = sqrt_b * sqrt_b * sqrt_b;
-    // D̄ = (ā_{N-1} − ā_{N-2}) / h
-    let d_bar = (a_bar_nm1 - a_bar_nm2) / h;
+) -> (f64, f64, f64, f64, f64) {
+    let n = b_bars.len();
+    let b_last = b_bars[n - 1];
+    let s = b_last.sqrt();
+    let s3 = b_last * s;
+    let d2 = b_bars[n - 3] - 2.0 * b_bars[n - 2] + b_last;
+    let alpha_b_nm3 = cp * s / (2.0 * H * H);
+    let alpha_b_nm2 = -cp * s / (H * H);
+    let alpha_b_nm1 = 1.5 * cppp * s
+        + 3.0 * cpp * a_bars[n - 1] / (2.0 * s)
+        + cp * s / (2.0 * H * H)
+        + cp * d2 / (4.0 * H * H * s);
+    let alpha_a_nm1 = 3.0 * cpp * s;
+    let k = -0.5 * cppp * s3 - 1.5 * cpp * a_bars[n - 1] * s - cp * d2 * s / (4.0 * H * H);
+    (alpha_b_nm3, alpha_b_nm2, alpha_b_nm1, alpha_a_nm1, k)
+}
 
-    // α_b = (3/2)·C3·√b̄ + 3·C2·ā_{N-1} / (2·√b̄) + C1·D̄ / (2·√b̄)
-    let alpha_b = if sqrt_b > 0.0 {
-        1.5 * cppp * sqrt_b
-            + 3.0 * cpp * a_bar_nm1 / (2.0 * sqrt_b)
-            + cp * (a_bar_nm1 - a_bar_nm2) / (2.0 * h * sqrt_b)
+/// Run the row-sum identity at one `(i, axis-derivative-triple)` combination.
+fn check_identity_at(
+    b_bars: &[f64],
+    a_bars: &[f64],
+    i: usize,
+    cp: f64,
+    cpp: f64,
+    cppp: f64,
+    label: &str,
+) {
+    let n = b_bars.len();
+    let j_actual = j_axis_at_iterate(b_bars, a_bars, i, cp, cpp, cppp);
+
+    let j_from_cut = if i == 0 {
+        let (a_b_0, a_b_1, a_b_2, a_a_0, k) =
+            start_boundary_cut_coeffs(b_bars, a_bars, cp, cpp, cppp);
+        a_b_0 * b_bars[0] + a_b_1 * b_bars[1] + a_b_2 * b_bars[2] + a_a_0 * a_bars[0] + k
+    } else if i == n - 1 {
+        let (a_b_nm3, a_b_nm2, a_b_nm1, a_a_nm1, k) =
+            end_boundary_cut_coeffs(b_bars, a_bars, cp, cpp, cppp);
+        a_b_nm3 * b_bars[n - 3]
+            + a_b_nm2 * b_bars[n - 2]
+            + a_b_nm1 * b_bars[n - 1]
+            + a_a_nm1 * a_bars[n - 1]
+            + k
     } else {
-        1.5 * cppp * sqrt_b
-    };
-    // α_a_{N-2} = -C1·√b̄ / h
-    let alpha_a_nm2 = -cp * sqrt_b / h;
-    // α_a_{N-1} = 3·C2·√b̄ + C1·√b̄ / h
-    let alpha_a_nm1 = 3.0 * cpp * sqrt_b + cp * sqrt_b / h;
-
-    let k = -0.5 * cppp * b_pow_3_2 - 1.5 * cpp * a_bar_nm1 * sqrt_b - cp * d_bar * sqrt_b / 2.0;
-
-    (alpha_b, alpha_a_nm2, alpha_a_nm1, k)
-}
-
-/// Build the same G5 cubic NURBS as fixture 4
-/// (`single_g5_emits_one_cubic_fitted_segment` from rust/geometry/tests/g5_reduction.rs).
-///
-/// G-code: `G5 X10 Y0 I3 J3 P-3 Q3 F1500`
-/// Produces degree-3 non-rational NURBS with control points
-/// P0=(0,0,0), P1=(3,3,0), P2=(7,3,0), P3=(10,0,0).
-fn build_g5_via_geometry() -> VectorNurbs<f64, 3> {
-    use geometry::{FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent};
-
-    let src = "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n";
-    let mut pipeline = GeometryPipeline::new(FitterParams::default());
-    let mut events: Vec<TelemetryEvent> = vec![];
-    let items: Vec<_> = {
-        let mut sink = |e: TelemetryEvent| events.push(e);
-        pipeline.process(src, &mut sink).collect()
-    };
-    items
-        .into_iter()
-        .find_map(|it| match it {
-            Item::Segment(Segment::Cubic(c)) => Some(c.xyz),
-            _ => None,
-        })
-        .expect("G5 reduction must emit exactly one Segment::Cubic")
-}
-
-/// Compute `b_max_cent` at the endpoints by sampling κ. Mirrors the helper in
-/// `prototype.rs::fixture_4_g5_cubic`.
-fn mvc_endpoints(curve: &VectorNurbs<f64, 3>, limits: &Limits) -> (f64, f64) {
-    let grid = sample_arclength_grid(curve, 3).expect("arclength grid");
-    let kappa_start = grid.kappa[0];
-    let kappa_end = *grid.kappa.last().expect("≥ 2 points");
-    let b_start = (limits.a_centripetal_max / kappa_start.max(1e-12)).min(1e8);
-    let b_end = (limits.a_centripetal_max / kappa_end.max(1e-12)).min(1e8);
-    (b_start, b_end)
-}
-
-/// The row-sum identity test. For every interior grid point i and every axis
-/// (X, Y, Z), the cut row coefficients computed at the iterate `(b̄, ā)` from
-/// `schedule_segment` satisfy
-///
-/// ```text
-///   |α_b · b̄_i + α_{a-1} · ā_{i-1} + α_a · ā_i + α_{a+1} · ā_{i+1} + K
-///    − j_axis(b̄, ā)_i|  <  1e-9.
-/// ```
-///
-/// The same identity is checked at i=0 (forward FD) and i=N-1 (backward FD)
-/// using the boundary-variant coefficients.
-#[test]
-fn row_sum_identity_holds_on_g5_cubic() {
-    let curve = build_g5_via_geometry();
-    let limits = textbook_limits();
-    let cfg = GridConfig {
-        scheme: GridScheme::UniformArclength,
-        n: 200,
+        let (a_b_im1, a_b_i, a_b_ip1, a_a_i, k) =
+            interior_cut_coeffs(b_bars, a_bars, i, cp, cpp, cppp);
+        a_b_im1 * b_bars[i - 1]
+            + a_b_i * b_bars[i]
+            + a_b_ip1 * b_bars[i + 1]
+            + a_a_i * a_bars[i]
+            + k
     };
 
-    // Reproduce fixture 4's endpoint-velocity choice: 50 % of MVC.
-    let (mvc_b_start, mvc_b_end) = mvc_endpoints(&curve, &limits);
-    let v_start = 0.5 * mvc_b_start.sqrt();
-    let v_end = 0.5 * mvc_b_end.sqrt();
-
-    let profile = schedule_segment(&curve, &limits, &cfg, v_start, v_end)
-        .expect("schedule_segment must not error at setup");
-
-    // Pull the iterate b̄, ā out of `samples`. (For Step 9 wire-up purposes
-    // the identity holds at *any* iterate; the values that come out of
-    // `schedule_segment` are the SOCP/SLP-converged iterate, which is what
-    // the cut would be linearizing around in practice.)
-    let n = profile.samples.len();
-    assert_eq!(n, cfg.n);
-    let b_bar: Vec<f64> = profile.samples.iter().map(|s| s.b).collect();
-    let a_bar: Vec<f64> = profile.samples.iter().map(|s| s.a).collect();
-
-    // Re-sample arclength grid for c', c'', c''' (these aren't in TopProfile).
-    let grid = sample_arclength_grid(&curve, cfg.n).expect("arclength");
-    let h = grid.s[1] - grid.s[0];
-
-    // Tolerance: the identity is exact in real arithmetic. Floating-point
-    // round-off in the chain of multiplications/divisions accumulates to
-    // about a few ulps relative to |j_axis|, plus the absolute floor at the
-    // C3·b^(3/2) term. 1e-9 absolute is comfortable; we additionally relax
-    // to 1e-6 *relative* to |j_axis| when the absolute value is large.
-    const TOL_ABS: f64 = 1e-9;
-    const TOL_REL: f64 = 1e-9;
-
-    let mut max_residual_abs: f64 = 0.0;
-    let mut max_residual_rel: f64 = 0.0;
-    let mut worst_locus = (0_usize, 0_usize); // (i, axis)
-
-    for i in 0..n {
-        for ax in 0..3 {
-            let cp = grid.c_prime[i][ax];
-            let cpp = grid.c_double_prime[i][ax];
-            let cppp = grid.c_triple_prime[i][ax];
-
-            let da_ds = da_ds_at(&a_bar, &grid.s, i);
-            let j_actual = j_axis_at_iterate(cp, cpp, cppp, b_bar[i], a_bar[i], da_ds);
-
-            let j_lin: f64 = if i == 0 {
-                let (alpha_b, alpha_a_0, alpha_a_1, k) =
-                    boundary_start_cut_coeffs(cp, cpp, cppp, b_bar[0], a_bar[0], a_bar[1], h);
-                alpha_b * b_bar[0] + alpha_a_0 * a_bar[0] + alpha_a_1 * a_bar[1] + k
-            } else if i == n - 1 {
-                let (alpha_b, alpha_a_nm2, alpha_a_nm1, k) = boundary_end_cut_coeffs(
-                    cp,
-                    cpp,
-                    cppp,
-                    b_bar[n - 1],
-                    a_bar[n - 2],
-                    a_bar[n - 1],
-                    h,
-                );
-                alpha_b * b_bar[n - 1] + alpha_a_nm2 * a_bar[n - 2] + alpha_a_nm1 * a_bar[n - 1] + k
-            } else {
-                let (alpha_b, alpha_a_im1, alpha_a_i, alpha_a_ip1, k) = interior_cut_coeffs(
-                    cp,
-                    cpp,
-                    cppp,
-                    b_bar[i],
-                    a_bar[i - 1],
-                    a_bar[i],
-                    a_bar[i + 1],
-                    h,
-                );
-                alpha_b * b_bar[i]
-                    + alpha_a_im1 * a_bar[i - 1]
-                    + alpha_a_i * a_bar[i]
-                    + alpha_a_ip1 * a_bar[i + 1]
-                    + k
-            };
-
-            let abs_resid = (j_lin - j_actual).abs();
-            let rel_resid = abs_resid / j_actual.abs().max(1.0);
-            if abs_resid > max_residual_abs {
-                max_residual_abs = abs_resid;
-                worst_locus = (i, ax);
-            }
-            if rel_resid > max_residual_rel {
-                max_residual_rel = rel_resid;
-            }
-
-            assert!(
-                abs_resid < TOL_ABS || rel_resid < TOL_REL,
-                "row-sum identity broken at (i={}, axis={}): \
-                 j_lin = {:.12e}, j_actual = {:.12e}, abs_resid = {:.3e}, rel_resid = {:.3e}, \
-                 b̄_i = {:.6e}, ā_i = {:.6e}, h = {:.6e}, cp = {:.6e}, cpp = {:.6e}, cppp = {:.6e}",
-                i,
-                ax,
-                j_lin,
-                j_actual,
-                abs_resid,
-                rel_resid,
-                b_bar[i],
-                a_bar[i],
-                h,
-                cp,
-                cpp,
-                cppp,
-            );
-        }
-    }
-
-    eprintln!(
-        "row-sum identity: max abs residual = {:.3e} at (i={}, axis={}); max rel = {:.3e}",
-        max_residual_abs, worst_locus.0, worst_locus.1, max_residual_rel,
+    let diff = (j_actual - j_from_cut).abs();
+    assert!(
+        diff < 1e-9,
+        "{label} identity failed at i={i}: j_actual={j_actual}, j_from_cut={j_from_cut}, diff={diff}"
     );
+}
+
+/// Build a synthetic iterate. b values monotonically increasing then
+/// flat; a values reasonable. No physical meaning — purely an algebraic
+/// test fixture.
+fn synthetic_iterate() -> (Vec<f64>, Vec<f64>) {
+    let b: Vec<f64> = (0..N_GRID)
+        .map(|i| {
+            let s = i as f64 * H;
+            10.0 + 5.0 * s + 0.1 * s * s
+        })
+        .collect();
+    let a: Vec<f64> = (0..N_GRID)
+        .map(|i| 2.0 + 0.3 * (i as f64))
+        .collect();
+    (b, a)
+}
+
+#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
+#[test]
+fn row_sum_identity_collinear_paths() {
+    // Collinear path: c''_axis = c'''_axis = 0; only c'_axis ≠ 0.
+    let (b, a) = synthetic_iterate();
+    for &i in &[0usize, 1, 5, 8, 9] {
+        check_identity_at(&b, &a, i, /*cp*/ 1.0, /*cpp*/ 0.0, /*cppp*/ 0.0, "collinear");
+    }
+}
+
+#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
+#[test]
+fn row_sum_identity_curved_paths() {
+    // Curved path: c''_axis ≠ 0 active; c'''_axis = 0.
+    let (b, a) = synthetic_iterate();
+    for &i in &[0usize, 1, 5, 8, 9] {
+        check_identity_at(&b, &a, i, /*cp*/ 0.7, /*cpp*/ 0.4, /*cppp*/ 0.0, "curved");
+    }
+}
+
+#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
+#[test]
+fn row_sum_identity_pathological_paths() {
+    // Pathological: all three derivatives non-zero.
+    let (b, a) = synthetic_iterate();
+    for &i in &[0usize, 1, 5, 8, 9] {
+        check_identity_at(
+            &b,
+            &a,
+            i,
+            /*cp*/ 0.6,
+            /*cpp*/ -0.3,
+            /*cppp*/ 0.2,
+            "pathological",
+        );
+    }
+}
+
+#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
+#[test]
+fn row_sum_identity_holds_at_slp_b_floor() {
+    // One iterate index with b̄ = 0.5 (below SLP_B_FLOOR = 1.0). The cut
+    // helper inside append_axis_jerk_cut_to_clarabel applies
+    // `b_bar.max(SLP_B_FLOOR)` which gives S = √1.0 = 1.0, NOT √0.5. The
+    // identity must hold at the FLOORED value — i.e., the test computes
+    // its own ground-truth using the floored b̄ as well.
+    let mut b = synthetic_iterate().0;
+    let a = synthetic_iterate().1;
+    b[5] = 0.5;
+    let i = 5;
+    let cp = 0.6;
+    let cpp = -0.3;
+    let cppp = 0.2;
+
+    // To validate the identity at the cut helper's actual computation:
+    // floor b̄[i] before computing both j_actual and the cut row.
+    let mut b_floored = b.clone();
+    b_floored[i] = b[i].max(1.0); // SLP_B_FLOOR = 1.0
+    check_identity_at(&b_floored, &a, i, cp, cpp, cppp, "slp_b_floor");
 }

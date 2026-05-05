@@ -11,7 +11,7 @@ pub(crate) mod output;
 pub mod path;
 pub(crate) mod solver;
 pub(crate) mod verify;
-pub(crate) mod stencil;
+pub mod stencil;
 
 /// Solver tolerance strategy. Per Pi 5 throughput investigation Finding 2 +
 /// Step-4.5 spec §2.1 (Codex review-1 corrected version).

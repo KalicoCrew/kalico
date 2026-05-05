@@ -22,7 +22,7 @@
 /// Stencil dispatch tag mirroring `s_dddot_at`'s branches. Used by the SLP
 /// cut linearization to select the correct coefficient formulas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SDddotStencil {
+pub enum SDddotStencil {
     /// i = 0, forward FD.
     StartBoundary,
     /// i ∈ [1, n-2], central FD.
@@ -35,7 +35,7 @@ pub(crate) enum SDddotStencil {
 ///
 /// Caller invariant: `n ≥ 3` (boundary stencils need 3 grid points).
 /// Caller invariant: `i < n`.
-pub(crate) fn stencil_for(n: usize, i: usize) -> SDddotStencil {
+pub fn stencil_for(n: usize, i: usize) -> SDddotStencil {
     debug_assert!(n >= 3);
     debug_assert!(i < n);
     if i == 0 {
@@ -58,7 +58,7 @@ pub(crate) fn stencil_for(n: usize, i: usize) -> SDddotStencil {
 /// arithmetic requires non-negativity beyond the `√b` factor.
 ///
 /// Returns `s‴_i = √b_i · b''(s_i) / 2`.
-pub(crate) fn s_dddot_at(b: &[f64], i: usize, h: f64) -> f64 {
+pub fn s_dddot_at(b: &[f64], i: usize, h: f64) -> f64 {
     debug_assert!(b.len() >= 3, "stencil requires n >= 3");
     debug_assert!(h > 0.0, "h must be positive");
     debug_assert!(i < b.len());
