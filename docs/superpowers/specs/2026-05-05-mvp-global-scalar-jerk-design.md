@@ -7,7 +7,7 @@
 
 ## 1. Summary
 
-Replace the per-axis configuration default `j_max = [max_accel*2, max_accel*2, max_z_accel*2]` in `rust/motion-bridge/src/config.rs::PlannerLimits::to_temporal_limits` with a **single global jerk scalar** `J` populating all three slots: `j_max = [J, J, J]`. Surface `J` as a new optional `max_jerk` field in `PlannerLimits`, defaulted from `max_accel * 2.0`. The `temporal::Limits.j_max: [f64; 3]` API is unchanged; the planner's two-stage SLP machinery (Stage 1 scalar path-jerk Lee 2024 cuts in block (h); Stage 2 per-axis Cartesian-jerk active-set SLP) is unchanged. Only the bridge config layer changes.
+Replace the per-axis configuration default `j_max = [max_accel*2, max_accel*2, max_z_accel*2]` in `rust/motion-bridge/src/config.rs::PlannerLimits::to_temporal_limits` with a **single global jerk scalar** `J` populating all three slots: `j_max = [J, J, J]`. Add `J` as a new `max_jerk: f64` stored field on `PlannerLimits`, defaulted from `max_accel * 2.0` at init time, with `Option<f64>` at the PyO3 boundary so klippy can express "use Rust default." `SET_VELOCITY_LIMIT` gains an optional `JERK=` parameter for runtime override. The `temporal::Limits.j_max: [f64; 3]` API is unchanged; the planner's two-stage SLP machinery (Stage 1 scalar path-jerk Lee 2024 cuts in block (h); Stage 2 per-axis Cartesian-jerk active-set SLP) is unchanged. Only the bridge config layer and the klippy g-code surface change.
 
 This unblocks the Phase 4 homing stall (`StalledOnInfeasibleSegment` on G28 X with `j_max[Z] = 200` dominating `J_path = min(j_max)`) and explicitly defers per-axis Cartesian-jerk *configuration* to a later step, alongside the per-axis Cartesian-jerk *SOC relaxation* work that the maintainer warning at `constraints.rs:236-247` was already deferring.
 
@@ -51,7 +51,7 @@ The MVP question is: **do we need per-axis jerk distinction at all for first-pri
 
 ## 5. Configuration
 
-### 5.1 Rust side — `PlannerLimits`
+### 5.1 Rust side — `PlannerLimits` storage and PyO3 signature
 
 Add `max_jerk: f64` to `PlannerLimits` in `rust/motion-bridge/src/config.rs`. Default in `PlannerConfig::default()`: `max_accel * 2.0` (= 6000 mm/s³ for the current default `max_accel = 3000`). `PlannerLimits::to_temporal_limits` becomes:
 
@@ -66,48 +66,90 @@ Limits::new(
 
 Drop the comment fragment "Jerk is set to 2× accel as a reasonable default" — it no longer matches the code; replace with a one-paragraph note pointing at this spec.
 
+The PyO3 init boundary uses `Option<f64>` so the Python side can express "use Rust default" cleanly. `rust/motion-bridge/src/bridge.rs::init_planner` (around `bridge.rs:885`) extends its signature to accept `max_jerk: Option<f64>` after the existing `max_accel` argument; when `None`, the constructed `PlannerLimits` uses `max_accel * 2.0` (computed from the *passed-in* `max_accel`, not the `PlannerConfig::default()` constant — so the default tracks the actual init-time accel value).
+
 ### 5.2 Klippy side — `printer.cfg` surface
 
 In the `[printer]` section, expose an optional `max_jerk` float key. Behavior:
 - If present, parsed and passed through to the bridge as `PlannerLimits::max_jerk`.
-- If absent, the Rust default (`max_accel * 2.0`) applies.
+- If absent, the Rust default (`init-time max_accel * 2.0`) applies.
 - No per-axis `max_jerk_x` / `max_jerk_y` / `max_jerk_z` keys for MVP — explicitly deferred.
 
-The klippy-side parsing site is `klippy/motion_toolhead.py:133-140` (`config.getfloat("max_velocity", ...)` etc. for `[printer]` keys) — add `self.max_jerk = config.getfloat("max_jerk", default=None, above=0.0)` alongside the existing keys. The bridge wire-up is `klippy/motion_bridge.py:179::MotionBridgeWrapper.init_planner`, which currently passes `max_velocity, max_accel, ...` into the Rust side; extend its signature to take an optional `max_jerk` and forward it to PyO3 `PlannerLimits`. When `max_jerk is None` on the Python side, omit it from the PyO3 call so the Rust default (`max_accel * 2.0`) applies.
+The klippy-side parsing site is `klippy/motion_toolhead.py:133-140` (`config.getfloat("max_velocity", ...)` etc. for `[printer]` keys) — add `self.max_jerk = config.getfloat("max_jerk", default=None, above=0.0)` alongside the existing keys. The bridge wire-up is `klippy/motion_bridge.py:179::MotionBridgeWrapper.init_planner`, which currently passes `max_velocity, max_accel, ...` into the Rust side; extend its signature to take `max_jerk` (Python-side `Optional[float]`) and forward it to PyO3 as `Option<f64>` (Python `None` ⇒ Rust `None` ⇒ Rust-side default).
 
-### 5.3 Effect on Z
+### 5.3 Runtime limit updates — `SET_VELOCITY_LIMIT`
+
+Today, `SET_VELOCITY_LIMIT VELOCITY=... ACCEL=...` in `klippy/motion_toolhead.py:469` forwards through `MotionBridgeWrapper.update_limits` (`klippy/motion_bridge.py:223`) into `rust/motion-bridge/src/bridge.rs::update_limits` (around `bridge.rs:1437`), which mutates `cfg.limits.max_velocity` and `cfg.limits.max_accel` and rebuilds the temporal limits via `to_temporal_limits`. Today, jerk is recomputed implicitly because `to_temporal_limits` derives it from `max_accel` inline.
+
+Under this spec, `max_jerk` becomes a stored field. The runtime-update semantics must be specified explicitly; they are:
+
+**`max_jerk` stays at its init-time value unless explicitly overridden.** Changing `max_accel` at runtime via `SET_VELOCITY_LIMIT ACCEL=...` does *not* recompute `max_jerk`. Reasoning: `max_jerk` is a real configuration knob (with a default derived from init-time accel) rather than a derived-from-current-accel quantity. Recomputing on every accel change would surprise users who set `max_jerk` deliberately; not recomputing is more predictable.
+
+To override at runtime, the `SET_VELOCITY_LIMIT` g-code accepts a new optional `JERK=<float>` parameter. When present, it updates `cfg.limits.max_jerk`; when absent, jerk is preserved. Wire layer (in execution order):
+
+1. `klippy/motion_toolhead.py:469::cmd_SET_VELOCITY_LIMIT` parses `JERK` via `gcmd.get_float("JERK", None, above=0.0)`.
+2. `MotionBridgeWrapper.update_limits` signature extends to `(max_velocity, max_accel, max_jerk: Optional[float])`. Forwards through PyO3.
+3. `rust/motion-bridge/src/bridge.rs::update_limits` accepts `max_jerk: Option<f64>`. When `Some(j)`, mutates `cfg.limits.max_jerk = j` before rebuilding temporal limits; when `None`, leaves `cfg.limits.max_jerk` untouched.
+
+Effect: the existing two-arg `SET_VELOCITY_LIMIT VELOCITY=... ACCEL=...` continues to work unchanged (jerk preserved). Users who want to retune jerk live add `JERK=...`.
+
+### 5.4 Effect on Z
 
 Z's effective jerk goes from `2 × max_z_accel = 200` (today's hidden default) to `2 × max_accel = 6000` (the new global default). Per-axis `a_max[Z] = 100 mm/s²` continues to constrain Z's actual acceleration profile. The transient time to ramp Z accel from 0 to peak under the new jerk is `100/6000 ≈ 17 ms` — comfortably within Z screw-drive mechanical tolerance. Z motion is short and infrequent; no real-world print case is impacted.
 
+### 5.5 Effect on β-medium loop
+
+`rust/trajectory/src/beta.rs` is **not modified** by this change — the β code path is unchanged. However, β's converged trajectory will differ because it consumes `j_max` indirectly through `plan_batch` (`beta.rs:286-300` rebuilds temporal limits with `orig.limits.j_max` per iteration). With `j_max` going from `[6000, 6000, 200]` to `[6000, 6000, 6000]`, every β iteration solves a less-constrained TOPP-RA problem on Z-bearing moves. The β derate algorithm (mutate `planning_a_max` until shaped peak ≤ machine `a_max`) is unaffected; it just operates on a slightly different upstream profile. No β-medium test failures expected, but the converged trajectory's `total_time` may differ slightly (typically lower) on Z-bearing fixtures.
+
 ## 6. Test plan
 
-### 6.1 Homing regression — unblocks Phase 4
+### 6.1 Rust-layer regression — proves Stage 1 SLP convergence at the new default
 
-`tools/sim_klippy/test_home_x.py` must succeed end-to-end after the change:
-1. G28 X submitted, planner runs `shape_batch` without error.
-2. M114 reports `X = 0.0`.
-3. No `StalledOnInfeasibleSegment` in `klippy.log`.
+Add `rust/trajectory/tests/homing_300mm_pure_x.rs`. Drives `trajectory::shape_batch` with the captured homing fixture inputs:
+- segment: 300 mm pure-X collinear cubic (control points `[(-300,0,0), (-200,0,0), (-100,0,0), (0,0,0)]`)
+- `feedrate_mm_s = 50.0`, `e_mode = Travel`
+- `limits.j_max = [6000.0, 6000.0, 6000.0]` (the new MVP default for the sim's `max_accel = 3000`)
+- `limits.v_max = [300, 300, 15]`, `limits.a_max = [3000, 3000, 100]` (unchanged from sim config)
+- shaper: `SmoothMzv { frequency_hz: 50.0 }` on X/Y, `Passthrough` on Z (matches bridge default)
+- `grid_strategy = Adaptive { min_n: 20, max_n: 200, target_grid_spacing_mm: 0.5 }` (matches bridge)
 
-This is the binding test — the change ships only when this test passes.
+Asserts:
+1. `result.is_ok()` (no `ShapeError`).
+2. `output.temporal_status == JoiningStatus::Converged`.
+3. `output.segments[0].profile.status` is one of `Solved | SolvedInexact | SolvedSlp` (no `Diverged*` / `MaxIter*`).
+4. `output.beta_warning.is_none()`.
 
-### 6.2 Curved-fixture invariance
+This test runs in `cargo test -p trajectory` and proves Stage 1 SLP convergence at the new uniform `j_max` *before* the sim integration test exercises the same code path. It is the architectural correctness gate; §6.2 below is the user-facing acceptance gate.
+
+### 6.2 Sim integration test — `test_home_x.py`
+
+`tools/sim_klippy/test_home_x.py` must succeed end-to-end. **Note: the existing test's pass condition (`test_home_x.py:96`) is non-discriminating against the failure mode it claims to test** — `r` is overwritten by the M114 response before the return-code computation, so the test currently exits 0 even when G28 produces `StalledOnInfeasibleSegment`. The implementation must fix this bug as part of the change.
+
+Strengthened assertions:
+1. The G28 response (captured *before* M114) must contain `result` and not `error`.
+2. The M114 response must report `X = 0.0` (parse `pos["X"]` from the M114 result; assert `< 1e-6`).
+3. `tools/sim_klippy/.local-logs/klippy.log` must not contain the substring `StalledOnInfeasibleSegment` after the test run.
+4. The test exits 0 only when all three assertions pass.
+
+### 6.3 Curved-fixture invariance
 
 Existing `cargo test -p temporal -p trajectory` must remain green. Specifically called out:
 
-- `rust/temporal/tests/conditioning.rs::rational_quadratic_arc_n200_solves_with_centripetal_cruise` — the curved-arc fixture that was breaking under the prior session's stencil-unification attempt. Today's fixture uses uniform `j_max = [100_000; 3]`, so it is invariant under this change by construction. We assert this explicitly: read the fixture, confirm uniform jerk, then run.
-- `rust/trajectory/tests/stall_homing_move.rs` — the existing planner-side regression that already converges on `sota-motion`. Unchanged behavior expected.
-- Full `cargo test -p temporal -p trajectory` — green.
+- `rust/temporal/tests/conditioning.rs::rational_quadratic_arc_n200_solves_with_centripetal_cruise` — the curved-arc fixture that was breaking under the prior session's stencil-unification attempt. Verified during spec authoring: the fixture's `textbook_limits()` (lines 30-37) uses uniform `j_max = [100_000.0, 100_000.0, 100_000.0]`, so it is invariant under this change by construction.
+- Full `cargo test -p temporal -p trajectory -p motion-bridge` — green.
 
-### 6.3 Config layer unit tests
+### 6.4 Config layer unit tests
 
 In `rust/motion-bridge/src/config.rs` tests (or a new `tests/config.rs`):
 1. `PlannerLimits::to_temporal_limits` produces `[J, J, J]` for `j_max` given any `max_jerk = J`.
 2. `PlannerConfig::default()` has `max_jerk = max_accel * 2.0`.
 3. Round-trip a `PlannerLimits { max_jerk: 7500.0, .. }` and confirm `to_temporal_limits().j_max == [7500.0; 3]`.
+4. **PyO3 init default**: `init_planner` called with `max_jerk: None` produces `cfg.limits.max_jerk = passed_in_max_accel * 2.0`. Called with `max_jerk: Some(j)` produces `cfg.limits.max_jerk = j`.
+5. **Runtime update preservation**: `update_limits(v, a, max_jerk: None)` after init leaves `cfg.limits.max_jerk` unchanged. `update_limits(v, a, Some(j_new))` updates it to `j_new`.
 
-### 6.4 Sim sanity print *(optional, not a release gate)*
+### 6.5 Sim sanity print *(optional, not a release gate)*
 
-After 6.1 passes, drive a manual sequence through `tools/sim_klippy/run.py`:
+After 6.2 passes, drive a manual sequence through `tools/sim_klippy/run.py`:
 - `G28 X`
 - `G1 X10 F1000`
 - `G1 Z2 F300`
@@ -122,9 +164,9 @@ Confirm no errors and reasonable step output. This is eyeball-level sanity, not 
 
 The existing MAINTAINER WARNING about per-axis Cartesian-jerk SOC rows stays as-is — its concern is the SOCP relaxation layer, not the config layer. Append one paragraph noting that **the bridge config layer also collapses jerk to a single scalar for MVP** (with pointer to this spec), so today's `j_max = [J, J, J]` is uniform-by-construction and `J_path = min(j_max) = J` is the correct number for every move under this config. Future per-axis jerk distinction at the config layer must land alongside the SOCP-side per-axis Cartesian jerk work — the two are coupled.
 
-### 7.2 `CLAUDE.md` plan-changes-log
+### 7.2 Plan-changes-log entry
 
-Add an entry to `docs/superpowers/plan-changes-log.md`:
+Add an entry to `docs/superpowers/plan-changes-log.md` (the running log referenced from `CLAUDE.md`):
 - date: 2026-05-05
 - what: bridge config layer adopts single scalar `max_jerk` for MVP; per-axis jerk *configuration* is deferred alongside the per-axis Cartesian-jerk SOCP work.
 - why: Phase 4 homing unblock; Codex cross-check refuted the per-grid-projected-scalar `J_path[i]` proposal as a strict outer approximation on curved paths.
@@ -146,12 +188,15 @@ The build-order in `CLAUDE.md` already has Step 8 (corner-blend + smooth-shaper 
 ## 9. Acceptance criteria
 
 The change is complete when:
-1. `tools/sim_klippy/test_home_x.py` exits 0 with M114 reporting `X = 0.0`.
-2. `cargo test -p temporal -p trajectory -p motion-bridge` is green.
-3. `rust/motion-bridge/src/config.rs` exposes `max_jerk: f64` with default `max_accel * 2.0` and produces uniform `j_max` from `to_temporal_limits`.
-4. Klippy-side `[printer]` config accepts an optional `max_jerk` key; absence falls back to the Rust default.
-5. `constraints.rs` MAINTAINER WARNING gains the one-paragraph note about config-layer collapse.
-6. `docs/superpowers/plan-changes-log.md` records the change.
+1. New Rust regression `rust/trajectory/tests/homing_300mm_pure_x.rs` exists and passes (Stage 1 SLP convergence at `j_max=[6000;3]` proven).
+2. `tools/sim_klippy/test_home_x.py` exits 0 with M114-reported `X = 0.0` AND no `StalledOnInfeasibleSegment` substring in `klippy.log`. The existing test's pass-condition bug (variable shadowing of `r`) is fixed as part of the change.
+3. `cargo test -p temporal -p trajectory -p motion-bridge` is green.
+4. `rust/motion-bridge/src/config.rs` exposes `max_jerk: f64` with default `max_accel * 2.0` and produces uniform `j_max` from `to_temporal_limits`.
+5. `init_planner` (Rust) accepts `max_jerk: Option<f64>`; PyO3 boundary maps Python `None` to Rust `None` to "use default".
+6. `update_limits` (Rust + Python) accepts an optional `max_jerk`; absence preserves the stored value, presence overwrites.
+7. Klippy-side `[printer]` config accepts an optional `max_jerk` key; absence falls back to the Rust default. `SET_VELOCITY_LIMIT` accepts an optional `JERK=` parameter with the same preserve-on-absence semantics.
+8. `constraints.rs` MAINTAINER WARNING gains the one-paragraph note about config-layer collapse.
+9. `docs/superpowers/plan-changes-log.md` records the change.
 
 ## 10. Future work (referenced, not scoped here)
 
