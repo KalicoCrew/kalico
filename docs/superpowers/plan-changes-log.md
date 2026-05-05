@@ -4,6 +4,22 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 
 <!-- entries below -->
 
+### 2026-05-05 — MCU step-burst cap raised 16 → 64 (deferred-fix workaround)
+
+**What:** `MAX_STEPS_PER_TICK_DEFAULT` in `rust/runtime/src/step.rs` bumped from 16 to 64. This is the per-axis per-tick integer-step burst guard in `StepMotorState::update`; exceeding it latches `KALICO_FAULT_STEP_BURST_EXCEEDED` (-21). The raised cap is still ~100× the legitimate per-tick step load at the configured peak velocity (300 mm/s × 80 spm / 40 kHz ≈ 0.6 step/tick), so it remains a meaningful runaway-curve guard — just a looser one.
+
+**Why:** Smoke-testing G28 X in the klippy-in-loop Linux-MCU sim (`tools/sim_klippy/run_local.sh "G28 X"`) reproducibly faults with StepBurstExceeded on the first segment. The host-side shape pipeline succeeds; the fault originates inside the MCU runtime evaluator. Sampling the post-shape X curve revealed it comes out **degree 9 with ~950 control points** (Hermite-refit-degree-4 input convolved with the smooth-MZV kernel raises the degree by the kernel's polynomial order). Z, which is shaper-passthrough, comes out the expected degree 4. The MCU evaluates curves in `f32`, and `f64` sampling exposed an isolated mid-cruise position spike inconsistent with the smooth `f32` trace at MCU tick resolution — strongly suggesting the cap was tripped by a numerical wobble in De Boor recursion at this degree/CP count, not by a real position discontinuity.
+
+The architecturally-correct fix is at the trajectory layer: the post-shape curve must stay low-degree per `CLAUDE.md`'s "uniform cubic Bézier (degree-3 polynomial) representation across Layer 1/2/3/4" constraint. That requires a second Hermite refit pass *after* the IS convolution, with its own tolerance budget. Out of scope right now — Step 7-D first-print needs a working homing path. Bumping the cap unblocks bring-up and is reversible.
+
+**Risk:** A loosened burst cap weakens detection of genuine runaway curves. At 64 the cap still catches anything > 32,000 mm/s motor velocity (vs. 8,000 mm/s at 16), so the safety property holds for any plausible bug. The risk is hiding *future* trajectory-layer numerical issues that would have been caught at 16.
+
+**Evidence:** Live-bridge fault reproduced on `tools/sim_klippy/run_local.sh "G28 X"` against `0ca62aaac` (`tools/sim_klippy/.local-logs/klippy.log` shows `kalico_fault fault_code=65515 fault_detail=0 segment_id=1`; elf log shows fault state on seg=1 with counts=[-13,-13,0]). Shape pipeline confirmed correct via `homing_300mm_pure_x` regression (passes), and a one-shot probe of the actual shaped output: axis[0] degree=9, n_cps=946; axis[2] (Z passthrough) degree=4, n_cps=209. Unit-test pin updated: `rust/runtime/tests/step_generation.rs::default_burst_cap_value`.
+
+**Follow-up (deferred):** Add a post-IS Hermite refit pass in `rust/trajectory` so the dispatched curve stays at degree ≤ 4 (or pure cubic per the architecture). Once landed, restore `MAX_STEPS_PER_TICK_DEFAULT` to 16.
+
+---
+
 ### 2026-05-05 — Stencil unification (Option B) for path-third-derivative s‴
 
 **What:** Replaced the temporal crate's mixed finite-difference stencils for `s‴` with a uniform width-1 b-FD stencil across verifier, per-axis Cartesian-jerk SLP convergence test, and per-axis SLP cut linearization. New shared module `rust/temporal/src/topp/stencil.rs` with `s_dddot_at(b, i, h)`. `verify::da_ds_at`, `solver::da_ds_along`, and the prior cut algebra removed; `append_axis_jerk_cut_to_clarabel` re-derived per spec §5 with interior cuts touching `(b_{i-1}, b_i, b_{i+1}, a_i)` instead of `(b_i, a_{i-1}, a_i, a_{i+1})`. Path-jerk SOC chain (block (h)) and path-jerk SLP cuts unchanged — they already used width-1 b-FD; this change brings everything else into agreement.
