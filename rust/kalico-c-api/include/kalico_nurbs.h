@@ -130,6 +130,14 @@ uint8_t kalico_runtime_queue_depth(kalico_nurbs_KalicoRuntime *rt);
 uint32_t kalico_runtime_fault_detail(kalico_nurbs_KalicoRuntime *rt);
 
 /**
+ * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
+ * in motor space). Returns 0.0 if `oid` is out of range or runtime
+ * uninitialised. Used by Phase 4 sim test to verify that
+ * `configure_axes_blob` reached the engine.
+ */
+float kalico_runtime_get_axis_steps_per_mm(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
+
+/**
  * Read the cumulative signed step count for stepper `oid` (0-indexed).
  * Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
  * Used by the sim diagnostic command `kalico_sim_stepper_count_query`.

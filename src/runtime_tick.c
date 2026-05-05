@@ -3,6 +3,9 @@
 // Klipper-side portable glue for kalico runtime. Spec §2.4 / §4.5 / §5.7.
 
 #include <string.h>         // memcpy
+#if defined(__linux__) || defined(__APPLE__)
+#include <stdio.h>          // fprintf, stderr
+#endif
 #include "autoconf.h"
 #include "board/gpio.h"     // gpio_in_setup / gpio_in_read
 #include "board/internal.h" // NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
@@ -160,6 +163,9 @@ kalico_sim_isr_wake_drain(void)
 void
 runtime_init(void)
 {
+#if defined(__linux__) || defined(__APPLE__)
+    fprintf(stderr, "[runtime_init] called\n"); fflush(stderr);
+#endif
     kalico_rt_handle = kalico_runtime_init();
     if (!kalico_rt_handle) {
         // Init failed — leave liveness flag at default (1 = OK) but handle unset;
@@ -374,6 +380,21 @@ runtime_status_drain(void)
     // with a native StatusEvent on the events channel. The host bridge maps
     // it back into klippy's RuntimeEvent::Status path.
     kalico_native_emit_status_event(status, depth, cur_seg, last_err, fault_detail);
+
+#if defined(__linux__) || defined(__APPLE__)
+    // Sim-only: dump stepper counters + accumulators so a test that lost
+    // its klippy bridge_call link can still observe motion progress.
+    int32_t c0 = kalico_runtime_get_stepper_count(kalico_rt_handle, 0);
+    int32_t c1 = kalico_runtime_get_stepper_count(kalico_rt_handle, 1);
+    int32_t c2 = kalico_runtime_get_stepper_count(kalico_rt_handle, 2);
+    double a0 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 0);
+    double a1 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 1);
+    double a2 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 2);
+    fprintf(stderr,
+        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d] accum=[%.3f,%.3f,%.3f]\n",
+        status, cur_seg, c0, c1, c2, a0, a1, a2);
+    fflush(stderr);
+#endif
 }
 DECL_TASK(runtime_status_drain);
 
@@ -809,6 +830,37 @@ command_kalico_sim_stepper_count_query(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_sim_stepper_count_query,
     "kalico_sim_stepper_count_query oid=%c");
+
+// Phase 4 diagnostic: returns the configured steps_per_mm for axis `oid`
+// (motor space, 0..=3). Used to verify that ConfigureAxes actually wrote
+// the motor blob into the engine.
+void
+command_kalico_sim_axis_steps_query(uint32_t *args)
+{
+    uint8_t oid = (uint8_t)args[0];
+    float spm = kalico_rt_handle
+        ? kalico_runtime_get_axis_steps_per_mm(kalico_rt_handle, oid)
+        : 0.0f;
+    // Send as i32 micro-steps-per-mm so we don't have to teach the wire
+    // codec about f32 here.
+    int32_t milli = (int32_t)(spm * 1000.0f);
+    sendf("kalico_sim_axis_steps_response oid=%c milli_spm=%i", oid, milli);
+}
+DECL_COMMAND(command_kalico_sim_axis_steps_query,
+    "kalico_sim_axis_steps_query oid=%c");
+
+void
+command_kalico_sim_axis_accum_query(uint32_t *args)
+{
+    uint8_t oid = (uint8_t)args[0];
+    double a = kalico_rt_handle
+        ? kalico_runtime_get_axis_accumulator(kalico_rt_handle, oid)
+        : 0.0;
+    int32_t milli = (int32_t)(a * 1000.0);
+    sendf("kalico_sim_axis_accum_response oid=%c milli=%i", oid, milli);
+}
+DECL_COMMAND(command_kalico_sim_axis_accum_query,
+    "kalico_sim_axis_accum_query oid=%c");
 #endif
 
 #if CONFIG_KALICO_SIM

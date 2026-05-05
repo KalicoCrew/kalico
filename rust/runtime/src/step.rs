@@ -31,6 +31,16 @@ impl Default for StepMotorState {
 }
 
 impl StepMotorState {
+    /// Diagnostic accessor.
+    pub fn debug_steps_per_mm(&self) -> f32 {
+        self.steps_per_mm
+    }
+
+    /// Diagnostic accessor: current step accumulator (sub-step residual + integer).
+    pub fn debug_accumulator(&self) -> f64 {
+        self.step_accumulator
+    }
+
     /// Create a new state for an axis with the given steps-per-mm ratio.
     pub fn new(steps_per_mm: f32) -> Self {
         Self {

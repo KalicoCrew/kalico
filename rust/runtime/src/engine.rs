@@ -160,6 +160,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     /// Set the per-MCU axis configuration. Must be called before motion
     /// segments are pushed so step generation has valid steps-per-mm ratios.
+    /// Diagnostic accessor: returns the configured steps_per_mm for axis `i`
+    /// in motor space (CoreXY: A=0, B=1, Z=2, E=3). Returns 0.0 for
+    /// out-of-range or unconfigured axes.
+    pub fn debug_steps_per_mm(&self, i: usize) -> f32 {
+        self.step_state.get(i).map(|s| s.debug_steps_per_mm()).unwrap_or(0.0)
+    }
+
+    pub fn debug_accumulator(&self, i: usize) -> f64 {
+        self.step_state.get(i).map(|s| s.debug_accumulator()).unwrap_or(0.0)
+    }
+
     pub fn configure(&mut self, config: crate::config::McuAxisConfig) {
         // Seed step states from the motor config.
         for (i, motor_opt) in config.motors.iter().enumerate() {

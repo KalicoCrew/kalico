@@ -119,9 +119,12 @@ def main():
         resp = send_gcode("SET_KINEMATIC_POSITION X=0 Y=0 Z=0")
         print(f"  response: {resp}")
 
-        # Send the move — do NOT call M400 since the shaper pipeline may
-        # raise a tolerance error on flush().  Steps are emitted asynchronously
-        # by the MCU; just wait a few seconds for them to accumulate.
+        # Diagnostic: confirm configure_axes actually wrote steps_per_mm.
+        print("[phase4] reading axis steps_per_mm")
+        for axis in (0, 1, 2):
+            resp = send_gcode("KALICO_SIM_AXIS_STEPS OID=%d" % axis)
+            print(f"  AXIS={axis} response: {resp}")
+
         print("[phase4] sending G1 X10 F1000 then M400 (flush)")
         resp = send_gcode("G1 X10 F1000\nM400")
         print(f"  response: {resp}")
@@ -131,11 +134,29 @@ def main():
         # wall-clock zero, the segment can land tens of seconds in the
         # future. Wait long enough that a 10mm @ F1000 move (≈0.6s) plus
         # the schedule lead has had time to drain.
-        print("[phase4] waiting 120s post-M400 for step counter sync")
-        time.sleep(120.0)
+        # Poll the klippy log for engine_status=2 (Drained) — the engine
+        # publishes status frames via the kalico_status_v6 path. Once the
+        # status hits Drained for the first segment, query step counts.
+        print("[phase4] polling engine_status for Drained (engine_status=2)")
+        deadline = time.time() + 180.0
+        drained = False
+        while time.time() < deadline:
+            time.sleep(2.0)
+            log = KLIPPY_LOG.read_text() if KLIPPY_LOG.exists() else ""
+            if "'engine_status': 2" in log:
+                drained = True
+                print("  engine drained ✓")
+                break
+        if not drained:
+            print("  WARNING: engine never drained; querying anyway")
 
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
         # which routes through klippy → bridge → MCU wire command.
+        print("[phase4] querying axis accumulators (post-move)")
+        for axis in (0, 1, 2):
+            r = send_gcode("KALICO_SIM_AXIS_ACCUM OID=%d" % axis)
+            print(f"  AXIS_ACCUM={axis}: {r}")
+
         print("[phase4] querying step count for OID 0 (X stepper)")
         x_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=0")
         print(f"  OID=0 response: {x_resp}")

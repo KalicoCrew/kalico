@@ -199,6 +199,16 @@ class MotionToolhead:
                 self.cmd_KALICO_SIM_STEP_COUNT,
                 desc="[sim] Query cumulative step count for a stepper OID",
             )
+            gcode.register_command(
+                "KALICO_SIM_AXIS_STEPS",
+                self.cmd_KALICO_SIM_AXIS_STEPS,
+                desc="[sim] Query configured steps_per_mm for an axis OID",
+            )
+            gcode.register_command(
+                "KALICO_SIM_AXIS_ACCUM",
+                self.cmd_KALICO_SIM_AXIS_ACCUM,
+                desc="[sim] Query step accumulator for an axis OID",
+            )
 
         # Phase 2: initialize the Rust planner once all MCUs are connected.
         self.printer.register_event_handler(
@@ -484,6 +494,51 @@ class MotionToolhead:
             )
         except Exception as e:
             raise gcmd.error("step count query failed: %s" % e)
+
+    def cmd_KALICO_SIM_AXIS_STEPS(self, gcmd):
+        """[sim] Query configured steps_per_mm for axis OID."""
+        oid = gcmd.get_int("OID", 0, minval=0, maxval=3)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "kalico_sim_axis_steps_query oid=%d" % oid,
+                "kalico_sim_axis_steps_response",
+                timeout_s=5.0,
+            )
+            milli = resp.get("milli_spm", 0)
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_AXIS_STEPS oid=%d steps_per_mm=%.3f"
+                % (oid, milli / 1000.0)
+            )
+        except Exception as e:
+            raise gcmd.error("axis steps query failed: %s" % e)
+
+    def cmd_KALICO_SIM_AXIS_ACCUM(self, gcmd):
+        oid = gcmd.get_int("OID", 0, minval=0, maxval=3)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "kalico_sim_axis_accum_query oid=%d" % oid,
+                "kalico_sim_axis_accum_response",
+                timeout_s=5.0,
+            )
+            milli = resp.get("milli", 0)
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_AXIS_ACCUM oid=%d accum=%.3f"
+                % (oid, milli / 1000.0)
+            )
+        except Exception as e:
+            raise gcmd.error("axis accum query failed: %s" % e)
 
     # ------------------------------------------------------------------
     # Phase 2: planner initialization

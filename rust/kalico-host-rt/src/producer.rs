@@ -21,10 +21,10 @@ use crate::transport::TransportError;
 /// Default timeout for `LoadCurveResponse` (spec §7.4). The MCU should
 /// reply within microseconds; 100 ms is loose by ~3 orders of magnitude
 /// and only triggers on a host-side stall or a wire fault.
-pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(100);
+pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// Default timeout for `PushSegmentResponse`.
-pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(100);
+pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PushedSegmentInfo {

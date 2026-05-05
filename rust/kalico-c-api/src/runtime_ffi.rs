@@ -819,6 +819,44 @@ pub mod exports {
         }
     }
 
+    /// Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
+    /// in motor space). Returns 0.0 if `oid` is out of range or runtime
+    /// uninitialised. Used by Phase 4 sim test to verify that
+    /// `configure_axes_blob` reached the engine.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_axis_steps_per_mm(
+        rt: *mut KalicoRuntime,
+        oid: u8,
+    ) -> f32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) || oid >= 4 {
+            return 0.0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.debug_steps_per_mm(oid as usize)
+        }
+    }
+
+    /// Diagnostic: read step accumulator (sub-step residual + integer state)
+    /// for axis `oid`.  Returns 0.0 if invalid.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_axis_accumulator(
+        rt: *mut KalicoRuntime,
+        oid: u8,
+    ) -> f64 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) || oid >= 4 {
+            return 0.0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.debug_accumulator(oid as usize)
+        }
+    }
+
     /// Read the cumulative signed step count for stepper `oid` (0-indexed).
     /// Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
     /// Used by the sim diagnostic command `kalico_sim_stepper_count_query`.
