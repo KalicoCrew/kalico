@@ -721,15 +721,6 @@ fn homing_move_without_trip_completes() {
 }
 
 #[test]
-fn on_credit_freed_returns_completion_arm_id() {
-    let h = HomingState::new();
-    h.begin(42);
-    h.mark_dispatched_segment(5);
-    h.complete_if_retired(5);
-    assert_eq!(h.take_completion_event(), Some(42));
-}
-
-#[test]
 fn single_axis_x_move() {
     let h = Harness::corexy_only();
 

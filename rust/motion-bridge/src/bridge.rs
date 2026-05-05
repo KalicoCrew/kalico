@@ -1705,6 +1705,34 @@ mod credit_freed_tests {
         assert_eq!(n, 0);
         assert!(arm.is_none());
     }
+
+    #[test]
+    fn on_credit_freed_returns_arm_id_when_homing_segment_retires() {
+        // Arrange: install an MCU, begin homing with arm_id=99, mark
+        // segment 7 as the dispatched homing segment.
+        let bridge = PyMotionBridge::new();
+        let mcu = 1u32;
+        install_mcu(&bridge, mcu);
+        bridge.homing.begin(99);
+        bridge.homing.mark_dispatched_segment(7);
+
+        // Act: simulate the MCU reporting that segment 7 retired (without
+        // a trip).
+        let (_, arm) = bridge
+            .on_credit_freed(mcu, 7, 0)
+            .expect("on_credit_freed must not error");
+
+        // Assert: the homing terminal surfaces as Some(arm_id).
+        assert_eq!(arm, Some(99));
+
+        // Take-once: a second credit-freed for the same segment should
+        // not re-fire the completion (the take_completion_event swap
+        // gates this).
+        let (_, arm2) = bridge
+            .on_credit_freed(mcu, 7, 0)
+            .expect("on_credit_freed must not error");
+        assert_eq!(arm2, None);
+    }
 }
 
 fn trip_event_to_pydict(
