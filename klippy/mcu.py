@@ -470,11 +470,23 @@ class MCU_endstop:
         if self._use_bridge:
             from . import motion_bridge as _mb
 
+            # NB: at MCU_endstop construction time the bridge has not yet
+            # identified the MCU, so `_bridge_handle` is None and we
+            # cannot allocate a bridge command queue here. Defer both
+            # the handle and the queue to BridgeTriggerDispatch.start().
             bridge_wrapper = mcu._motion_bridge
-            mcu_handle = mcu._bridge_handle
-            queue = mcu.alloc_command_queue()
             self._dispatch = _mb.BridgeTriggerDispatch(
-                bridge_wrapper, mcu_handle, queue, mcu.get_printer().get_reactor()
+                bridge_wrapper, None, None, mcu.get_printer().get_reactor()
+            )
+            # Resolve the numeric GPIO index the firmware-side endstop
+            # sampler will read. The Linux MCU uses GPIO(port,num) =
+            # port*288+num (src/linux/internal.h::GPIO); on STM32 the
+            # pin name (e.g. "PA10") is resolved by the firmware's pin
+            # table and is not yet plumbed through here. For the sim
+            # (gpiochipN/gpioM) we parse directly. tmc.py overrides
+            # _bridge_gpio_index for sensorless DIAG endstops.
+            self._bridge_gpio_index = self._resolve_bridge_gpio_index(
+                pin_params.get("pin", "")
             )
         else:
             self._mcu.register_config_callback(self._build_config)
@@ -482,6 +494,22 @@ class MCU_endstop:
 
     def get_mcu(self):
         return self._mcu
+
+    @staticmethod
+    def _resolve_bridge_gpio_index(pin_str):
+        # Parse Linux-MCU pin strings of the form "gpiochipN/gpioM" into
+        # the numeric pin index the firmware's `gpio_in_setup()` expects
+        # (matches GPIO(port,num) = port*MAX_GPIO_LINES+num in
+        # src/linux/internal.h, MAX_GPIO_LINES=288). Returns 0 (caller's
+        # default) for unparseable strings — sensorless TMC pins flow
+        # through tmc.py which sets _bridge_gpio_index explicitly.
+        import re
+        m = re.match(r"^gpiochip(\d+)/gpio(\d+)$", pin_str.strip())
+        if not m:
+            return 0
+        port = int(m.group(1))
+        num = int(m.group(2))
+        return port * 288 + num
 
     def add_stepper(self, stepper):
         self._dispatch.add_stepper(stepper)

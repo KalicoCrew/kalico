@@ -240,17 +240,17 @@ class MotionBridgeWrapper:
     # ------------------------------------------------------------------
 
     def endstop_arm(self, mcu, queue, arm_id, arm_clock,
-                    sources, stepper_oids, timeout_s=0.1):
+                    sources, stepper_oids, timeout_s=2.0):
         # `sources` is a list of 7-tuples per BridgeTriggerDispatch contract:
         # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
         return self._bridge.endstop_arm(
             mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s
         )
 
-    def endstop_disarm(self, mcu, queue, arm_id, timeout_s=0.1):
+    def endstop_disarm(self, mcu, queue, arm_id, timeout_s=2.0):
         return self._bridge.endstop_disarm(mcu, queue, arm_id, timeout_s)
 
-    def set_homed_state(self, mcu, queue, homed, timeout_s=0.1):
+    def set_homed_state(self, mcu, queue, homed, timeout_s=2.0):
         return self._bridge.set_homed_state(mcu, queue, homed, timeout_s)
 
     def submit_homing_move(self, newpos, speed, arm_ids):
@@ -341,6 +341,9 @@ class BridgeTriggerDispatch:
         self._stepper_oids.append(mcu_stepper.get_oid())
         self._steppers.append(mcu_stepper)
 
+    def get_steppers(self):
+        return list(self._steppers)
+
     # ── new endstop-source binding ──────────────────────────────────
 
     def add_source(self, kind, gpio, active_high, policy, sample_n,
@@ -353,6 +356,20 @@ class BridgeTriggerDispatch:
     def start(self, arm_print_time, mcu_obj):
         # Convert print_time → MCU clock for arm_clock.
         arm_clock = int(mcu_obj.print_time_to_clock(arm_print_time))
+
+        # The MCU_endstop is constructed during config phase, before the
+        # bridge has identified the MCU and assigned `_bridge_handle`.
+        # Refresh the handle (and lazily allocate the bridge command
+        # queue) here so the first homing op sees non-None values.
+        if self._mcu is None:
+            self._mcu = getattr(mcu_obj, "_bridge_handle", None)
+            if self._mcu is None:
+                raise mcu_obj.get_printer().command_error(
+                    "BridgeTriggerDispatch: MCU bridge handle not yet "
+                    "assigned (identify phase incomplete?)"
+                )
+        if self._queue is None:
+            self._queue = self._bridge.alloc_command_queue(self._mcu)
 
         # Register an async handler for kalico_endstop_tripped before
         # arming so we don't race the firmware emitting the event.

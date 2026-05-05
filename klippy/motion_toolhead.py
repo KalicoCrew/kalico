@@ -209,6 +209,11 @@ class MotionToolhead:
                 self.cmd_KALICO_SIM_AXIS_ACCUM,
                 desc="[sim] Query step accumulator for an axis OID",
             )
+            gcode.register_command(
+                "KALICO_SIM_ENDSTOP_SET_PIN",
+                self.cmd_KALICO_SIM_ENDSTOP_SET_PIN,
+                desc="[sim] Drive a Linux-MCU GPIO level (test fixture)",
+            )
 
         # Phase 2: initialize the Rust planner once all MCUs are connected.
         self.printer.register_event_handler(
@@ -539,6 +544,34 @@ class MotionToolhead:
             )
         except Exception as e:
             raise gcmd.error("axis accum query failed: %s" % e)
+
+    def cmd_KALICO_SIM_ENDSTOP_SET_PIN(self, gcmd):
+        """[sim] Drive a Linux-MCU GPIO level via the firmware shim.
+
+        The Linux MCU has no real hardware to assert an endstop with;
+        `command_kalico_sim_endstop_set_pin` injects a level into the
+        firmware's PIN_LEVELS table so test fixtures can simulate trips.
+        """
+        gpio = gcmd.get_int("GPIO", minval=0, maxval=0xFFFF)
+        level = gcmd.get_int("LEVEL", minval=0, maxval=1)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "kalico_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
+                "kalico_sim_endstop_set_pin_response",
+                timeout_s=5.0,
+            )
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d result=%d"
+                % (gpio, level, resp.get("result", -1))
+            )
+        except Exception as e:
+            raise gcmd.error("endstop set_pin failed: %s" % e)
 
     # ------------------------------------------------------------------
     # Phase 2: planner initialization

@@ -548,10 +548,13 @@ command_kalico_arm_endstop(uint32_t *args)
     uint32_t arm_clock_hi = args[2];
     uint8_t source_count = args[3];
     uint32_t sources_len = args[4];
-    uint8_t *sources_ptr = (uint8_t *)(uintptr_t)args[5];
+    // PT_buffer args carry an encoded pointer (offset on 64-bit hosts);
+    // command_decode_ptr resolves it to a real address. A bare cast
+    // works on 32-bit MCUs but segfaults on Linux/64-bit sim.
+    uint8_t *sources_ptr = command_decode_ptr(args[5]);
     uint8_t stepper_count = args[6];
     uint32_t steppers_len = args[7];
-    uint8_t *steppers_ptr = (uint8_t *)(uintptr_t)args[8];
+    uint8_t *steppers_ptr = command_decode_ptr(args[8]);
     uint8_t status = 2; // Rejected
     (void)kalico_endstop_arm(arm_id, arm_clock_lo, arm_clock_hi,
                              source_count, sources_ptr, sources_len,
