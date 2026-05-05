@@ -138,16 +138,26 @@ kalico_h7_timer_init(void)
     }
 }
 
+extern uint32_t stats_send_time_high; // src/basecmd.c
+
 __attribute__((used)) void
 kalico_h7_enable_tim5(void)
 {
-    // Seed widen state with the current widened clock RIGHT BEFORE the
-    // engine starts ticking. We can't do this at init time because the
-    // u32 timer hasn't wrapped yet then; by the time enable_tim5 fires
-    // (on first segment push, possibly minutes after process start),
-    // wraps may have already occurred and the engine needs to know.
+    // Seed widen state to match Klippy's view of widened MCU clock.
+    // Klippy widens via stats_send_time_high (incremented by stats_update
+    // when it observes a u32 wrap). On Linux sim, timer_read_time can
+    // return wrapped values during the first second of process life
+    // (because start_sec = tv_sec + 1), which causes stats_update to
+    // bump stats_send_time_high once spuriously. The engine sees the
+    // same physical u32 timer but widens independently and never sees
+    // that bump — putting it ~86s behind Klippy's view.
+    //
+    // Seed from stats_send_time_high directly so the two widening paths
+    // agree: engine.now == Klippy's last_clock view.
     if (kalico_rt_handle) {
-        kalico_runtime_seed_widen(kalico_rt_handle, timer_read_time_u64());
+        uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
+                          | (uint64_t)timer_read_time();
+        kalico_runtime_seed_widen(kalico_rt_handle, baseline);
     }
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }

@@ -691,24 +691,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
         };
 
-        // -- XY seed: first segment seeds prev_x/prev_y from the curve
-        //    start point to avoid a spurious arc-length delta from (0,0). --
+        // -- XY seed: first segment seeds prev_x/prev_y from the curve.
+        //    Use the CURRENT evaluated x/y, not x(0)/y(0). Two reasons:
+        //    (1) the toolhead is where the curve evaluates right now, not at
+        //    its nominal start; (2) if the segment arrived late and the
+        //    engine enters at u > 0 (e.g. host clock skew), seeding at
+        //    u=0 makes the next tick see a multi-mm delta and trips
+        //    StepBurstExceeded. --
         if self.needs_xy_seed {
-            // Evaluate X(0) and Y(0) for the seed.
-            let seed_x = if current.x_handle.is_unused_sentinel() {
-                0.0
-            } else if let Some(cv) = pool.resolve(current.x_handle) {
-                scalar_eval(&cv, 0.0).unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            let seed_y = if current.y_handle.is_unused_sentinel() {
-                0.0
-            } else if let Some(cv) = pool.resolve(current.y_handle) {
-                scalar_eval(&cv, 0.0).unwrap_or(0.0)
-            } else {
-                0.0
-            };
+            let seed_x = x;
+            let seed_y = y;
             self.prev_x = seed_x;
             self.prev_y = seed_y;
             // Seed step accumulators from initial motor positions.

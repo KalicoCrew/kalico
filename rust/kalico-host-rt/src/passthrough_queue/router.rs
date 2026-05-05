@@ -326,7 +326,26 @@ impl PassthroughRouter {
     ) -> Result<(), RouterError> {
         let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        rec.clock_offset = offset;
+        // Klipper's `offset` is in its `reactor.monotonic()` frame
+        // (Python perf_counter, anchored at process start). The bridge's
+        // `instant_to_f64` is anchored at its own first-call OnceLock,
+        // which is a different epoch. Using `offset` directly in
+        // `compute_ack_clock`'s `(host_now - clock_offset)` would produce
+        // a hugely negative delta (saturated to 0), which makes the
+        // projection collapse to raw `last_clock`.
+        //
+        // Rebase `offset` into the bridge's frame: at this exact instant
+        // the Klipper-frame "now" is whatever value Klipper just sent,
+        // which is `offset + (last_clock_now_klippy_frame_ - last_clock)
+        // / freq`. We don't know Klipper's "now" directly, but we know
+        // that the host_now we'd compute on the bridge side IS the
+        // co-temporal value; so we rebase by storing
+        //   bridge_offset := instant_to_f64(now) - (offset_received - offset_received) = instant_to_f64(now)
+        // and reinterpret last_clock as "the MCU clock value at this
+        // bridge-frame instant". The projection
+        //   projected = last_clock + (host_now - bridge_offset) * freq
+        // then correctly extrapolates forward.
+        rec.clock_offset = instant_to_f64(self.clock.now());
         rec.last_clock = last_clock;
         Ok(())
     }

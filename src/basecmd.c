@@ -288,7 +288,8 @@ command_get_clock(uint32_t *args)
 }
 DECL_COMMAND_FLAGS(command_get_clock, HF_IN_SHUTDOWN, "get_clock");
 
-static uint32_t stats_send_time, stats_send_time_high;
+static uint32_t stats_send_time;
+uint32_t stats_send_time_high;
 
 void
 command_get_uptime(uint32_t *args)

@@ -5,6 +5,7 @@
 #include <string.h>         // memcpy
 #if defined(__linux__) || defined(__APPLE__)
 #include <stdio.h>          // fprintf, stderr
+#include <time.h>           // clock_gettime
 #endif
 #include "autoconf.h"
 #include "board/gpio.h"     // gpio_in_setup / gpio_in_read
@@ -163,9 +164,6 @@ kalico_sim_isr_wake_drain(void)
 void
 runtime_init(void)
 {
-#if defined(__linux__) || defined(__APPLE__)
-    fprintf(stderr, "[runtime_init] called\n"); fflush(stderr);
-#endif
     kalico_rt_handle = kalico_runtime_init();
     if (!kalico_rt_handle) {
         // Init failed — leave liveness flag at default (1 = OK) but handle unset;
@@ -382,26 +380,15 @@ runtime_status_drain(void)
     kalico_native_emit_status_event(status, depth, cur_seg, last_err, fault_detail);
 
 #if defined(__linux__) || defined(__APPLE__)
-    // Sim-only: dump stepper counters + accumulators so a test that lost
-    // its klippy bridge_call link can still observe motion progress.
+    // Sim-only: dump stepper counters so a test that lost its klippy
+    // bridge_call link can still observe motion progress via the elf log.
+    // Phase 4 test polls this to confirm GATE GREEN.
     int32_t c0 = kalico_runtime_get_stepper_count(kalico_rt_handle, 0);
     int32_t c1 = kalico_runtime_get_stepper_count(kalico_rt_handle, 1);
     int32_t c2 = kalico_runtime_get_stepper_count(kalico_rt_handle, 2);
-    double a0 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 0);
-    double a1 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 1);
-    double a2 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 2);
-    float m0 = kalico_runtime_get_axis_motor(kalico_rt_handle, 0);
-    float m1 = kalico_runtime_get_axis_motor(kalico_rt_handle, 1);
-    uint64_t now64=0, ts64=0, dur64=0;
-    kalico_runtime_get_last_timing(kalico_rt_handle, &now64, &ts64, &dur64);
-    extern uint64_t timer_read_time_u64(void);
-    uint64_t real_now = timer_read_time_u64();
     fprintf(stderr,
-        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d] accum=[%.3f,%.3f,%.3f] "
-        "motor=[%.4f,%.4f] now=%llu real_now=%llu t_start=%llu dur=%llu\n",
-        status, cur_seg, c0, c1, c2, a0, a1, a2, m0, m1,
-        (unsigned long long)now64, (unsigned long long)real_now,
-        (unsigned long long)ts64, (unsigned long long)dur64);
+        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]\n",
+        status, cur_seg, c0, c1, c2);
     fflush(stderr);
 #endif
 }
