@@ -265,8 +265,8 @@ impl EventDispatcher {
                 // paths above are orthogonal and still fire first.
                 self.runtime_event_dispatcher.dispatch(RuntimeEvent::Status(e));
             }
-            ev @ RuntimeEvent::UnknownOutput { .. } => {
-                self.runtime_event_dispatcher.dispatch(ev);
+            RuntimeEvent::EndstopTripped(_) | RuntimeEvent::UnknownOutput { .. } => {
+                self.runtime_event_dispatcher.dispatch(event);
             }
         }
     }

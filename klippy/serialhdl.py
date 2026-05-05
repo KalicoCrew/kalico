@@ -115,6 +115,8 @@ class SerialReader:
                 name = "kalico_credit_freed"
             elif ev_type == "fault":
                 name = "kalico_fault"
+            elif ev_type == "endstop_tripped":
+                name = "kalico_endstop_tripped"
             elif ev_type == "output":
                 # #output events go to the #output handler.
                 # Populate #msg from the bridge event's 'msg' field so that

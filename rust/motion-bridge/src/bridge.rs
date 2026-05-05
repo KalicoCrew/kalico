@@ -738,6 +738,8 @@ impl PyMotionBridge {
     ///   - `"fault"`: kalico_fault — keys: `fault_code`, `fault_detail`,
     ///     `segment_id`, `synthesized`
     ///   - `"output"`: #output / unknown output — keys: `format`, `msg`
+    ///   - `"endstop_tripped"`: kalico_endstop_tripped — keys: `arm_id`,
+    ///     `trip_clock`, `trip_source_idx`, `fmt_version`, `stepper_count`
     fn take_runtime_event(&self, py: Python<'_>, mcu_handle: u32) -> PyResult<Option<Py<PyDict>>> {
         use kalico_host_rt::host_io::runtime_events::RuntimeEvent;
         use std::sync::mpsc::TryRecvError;
@@ -783,6 +785,14 @@ impl PyMotionBridge {
             RuntimeEvent::Trace(_) => {
                 // Trace events are not klippy-visible; skip silently.
                 return Ok(None);
+            }
+            RuntimeEvent::EndstopTripped(e) => {
+                d.set_item("type", "endstop_tripped")?;
+                d.set_item("arm_id", e.arm_id)?;
+                d.set_item("trip_clock", e.trip_clock)?;
+                d.set_item("trip_source_idx", e.trip_source_idx)?;
+                d.set_item("fmt_version", e.fmt_version)?;
+                d.set_item("stepper_count", e.stepper_count)?;
             }
             RuntimeEvent::UnknownOutput { format, msg } => {
                 d.set_item("type", "output")?;

@@ -32,11 +32,21 @@ pub struct TraceEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct EndstopTrippedEvent {
+    pub arm_id:           u32,
+    pub trip_clock:       u64,
+    pub trip_source_idx:  u8,
+    pub fmt_version:      u8,
+    pub stepper_count:    u8,
+}
+
+#[derive(Debug, Clone)]
 pub enum RuntimeEvent {
     CreditFreed(CreditFreedEvent),
     Fault(FaultEvent),
     Status(StatusEvent),
     Trace(TraceEvent),
+    EndstopTripped(EndstopTrippedEvent),
     UnknownOutput { format: String, msg: String },
 }
 
@@ -64,6 +74,17 @@ impl RuntimeEvent {
                 data:  params.get_bytes("data").map(<[u8]>::to_vec).unwrap_or_default(),
                 flags: 0,
             }),
+            "kalico_endstop_tripped" => {
+                let lo = u64::from(params.get_u32("trip_clock_lo"));
+                let hi = u64::from(params.get_u32("trip_clock_hi"));
+                Self::EndstopTripped(EndstopTrippedEvent {
+                    arm_id:          params.get_u32("arm_id"),
+                    trip_clock:      (hi << 32) | lo,
+                    trip_source_idx: params.get_u32("trip_source_idx") as u8,
+                    fmt_version:     params.get_u32("fmt_version") as u8,
+                    stepper_count:   params.get_u32("stepper_count") as u8,
+                })
+            }
             _ => {
                 let msg = params.try_get_str("#msg").unwrap_or("").to_string();
                 // For canonical-Python free-form formats decode_output stashes
@@ -124,6 +145,27 @@ mod lift_tests {
                 assert_eq!(msg, "debug trace");
             }
             other => panic!("expected UnknownOutput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lifts_endstop_tripped() {
+        let mut p = MessageParams::new();
+        p.insert("arm_id", MessageValue::U32(42));
+        p.insert("trip_clock_lo", MessageValue::U32(0xDEAD_BEEF));
+        p.insert("trip_clock_hi", MessageValue::U32(0x0000_0001));
+        p.insert("trip_source_idx", MessageValue::U32(2));
+        p.insert("fmt_version", MessageValue::U32(1));
+        p.insert("stepper_count", MessageValue::U32(3));
+        match RuntimeEvent::lift("kalico_endstop_tripped", p) {
+            RuntimeEvent::EndstopTripped(e) => {
+                assert_eq!(e.arm_id, 42);
+                assert_eq!(e.trip_clock, (1u64 << 32) | 0xDEAD_BEEFu64);
+                assert_eq!(e.trip_source_idx, 2);
+                assert_eq!(e.fmt_version, 1);
+                assert_eq!(e.stepper_count, 3);
+            }
+            other => panic!("expected EndstopTripped, got {:?}", other),
         }
     }
 
