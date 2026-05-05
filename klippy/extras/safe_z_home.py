@@ -4,12 +4,21 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+from __future__ import annotations
+
+from typing import Callable
+
+from ..mathutil import Point
+from ..printer_info import PrinterInfo
+from .probe import PrinterProbe
+
 
 class SafeZHoming:
     def __init__(self, config):
         self.printer = config.get_printer()
-        x_pos, y_pos = config.getfloatlist("home_xy_position", count=2)
-        self.home_x_pos, self.home_y_pos = x_pos, y_pos
+        self.home_x_pos, self.home_y_pos = config.getfloatlist(
+            "home_xy_position", count=2, default=(None, None)
+        )
 
         self.z_hop = config.getfloat("z_hop", default=0.0)
         self.z_hop_speed = config.getfloat("z_hop_speed", 15.0, above=0.0)
@@ -32,8 +41,85 @@ class SafeZHoming:
                 + " be used simultaneously"
             )
 
+        # Ensure the home position is set when the printer connects, making it available to other modules
+        self.printer.register_event_handler(
+            "klippy:connect", self._update_home_position
+        )
+
+    def _update_home_position(
+        self,
+        default_error: Callable[[str], Exception] | None = None,
+        use_offsets: bool = False,
+    ) -> tuple[float, float]:
+        printer_info: PrinterInfo | None = self.printer.lookup_object(
+            "printer_info", None
+        )
+
+        error = (
+            self.printer.config_error
+            if default_error is None
+            else default_error
+        )
+
+        if printer_info is None and (
+            self.home_x_pos is None or self.home_y_pos is None
+        ):
+            raise error(
+                "printer properties not defined, therefore home_xy_position must be set"
+            )
+
+        # If the home position is set, use that.
+        if self.home_x_pos is not None and self.home_y_pos is not None:
+            return self.home_x_pos, self.home_y_pos
+
+        # The probe might not be present, in that case, it should be okay to home
+        # with the nozzle in the center of the bed.
+        probe: PrinterProbe | None = self.printer.lookup_object("probe", None)
+        probe_offsets = Point.origin()
+        if probe is not None:
+            offsets = probe.get_offsets()
+            probe_offsets = Point(offsets[0], offsets[1])
+
+        if not printer_info.is_rectangular:
+            raise error(
+                f"automatic home position calculation is not supported for"
+                f" {printer_info.kinematics_name} kinematics, please specify"
+                f" home_xy_position manually"
+            )
+
+        printer_info.require_properties(
+            ["bed_corner_position", "bed_size"], error
+        )
+
+        bed_center = (
+            printer_info.bed_corner_position
+            + Point(*printer_info.bed_size) / 2.0
+        )
+
+        result = printer_info.nearest_point(bed_center - probe_offsets)
+
+        if use_offsets:
+            result += probe_offsets
+
+        # In case the probe is currently not defined, it will not cache the calculated home position,
+        # then on the next call, it will calculate it again with the probe defined:
+        if probe is None:
+            return result
+
+        # Cache the calculated home position for future calls:
+        self.home_x_pos, self.home_y_pos = (
+            self.home_x_pos or result.x,
+            self.home_y_pos or result.y,
+        )
+
+        return self.home_x_pos, self.home_y_pos
+
     def cmd_G28(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
+
+        # First get the home position for z, if it is not set, this will throw an error, which should
+        # happen before the printer starts moving
+        home_position = self._update_home_position()
 
         # Perform Z Hop if necessary
         if self.z_hop != 0.0:
@@ -94,7 +180,7 @@ class SafeZHoming:
 
             # Move to safe XY homing position
             prevpos = toolhead.get_position()
-            toolhead.manual_move([self.home_x_pos, self.home_y_pos], self.speed)
+            toolhead.manual_move([*home_position], self.speed)
 
             # Home Z
             g28_gcmd = self.gcode.create_gcode_command("G28", "G28", {"Z": "0"})
