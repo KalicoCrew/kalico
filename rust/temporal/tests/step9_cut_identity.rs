@@ -198,7 +198,6 @@ fn synthetic_iterate() -> (Vec<f64>, Vec<f64>) {
     (b, a)
 }
 
-#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
 #[test]
 fn row_sum_identity_collinear_paths() {
     // Collinear path: c''_axis = c'''_axis = 0; only c'_axis ≠ 0.
@@ -208,7 +207,6 @@ fn row_sum_identity_collinear_paths() {
     }
 }
 
-#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
 #[test]
 fn row_sum_identity_curved_paths() {
     // Curved path: c''_axis ≠ 0 active; c'''_axis = 0.
@@ -218,7 +216,6 @@ fn row_sum_identity_curved_paths() {
     }
 }
 
-#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
 #[test]
 fn row_sum_identity_pathological_paths() {
     // Pathological: all three derivatives non-zero.
@@ -236,7 +233,6 @@ fn row_sum_identity_pathological_paths() {
     }
 }
 
-#[ignore = "pins the new cut algebra; un-ignored when Task 3 lands"]
 #[test]
 fn row_sum_identity_holds_at_slp_b_floor() {
     // One iterate index with b̄ = 0.5 (below SLP_B_FLOOR = 1.0). The cut

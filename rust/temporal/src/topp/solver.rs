@@ -100,44 +100,46 @@ pub(crate) enum SlpCut {
     AxisJerk(AxisJerkCut),
 }
 
-/// Per-axis Cartesian jerk cut details. See `SlpCut::AxisJerk` doc.
+/// Per-axis Cartesian jerk cut details. Spec §5; Step 9 with width-1 b-FD
+/// stencil unification per
+/// `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AxisJerkCut {
-    /// Grid index at which the cut is anchored (`0 ≤ i ≤ N−1`).
+    /// Grid index at which the cut is anchored (`0 ≤ i ≤ n−1`).
     pub i: usize,
     /// Axis index (0 = X, 1 = Y, 2 = Z). Held for diagnostic / future
     /// telemetry; the row coefficients only depend on `(cp, cpp, cppp)` for
     /// that axis, which the caller pre-extracts.
     #[allow(dead_code)]
     pub axis: usize,
-    /// Stencil kind — controls FD shape and which `a`-variables the row touches.
+    /// Stencil kind — controls FD shape and which `b`-variables the row touches.
     pub stencil: AxisJerkStencil,
-    /// Iterate values, indexed in stencil order.
-    /// Interior: `[ā_{i-1}, ā_i, ā_{i+1}]`.
-    /// StartBoundary: `[ā_0, ā_1, *_]` (third slot unused).
-    /// EndBoundary: `[ā_{N-2}, ā_{N-1}, *_]` (third slot unused).
-    pub a_bars: [f64; 3],
-    /// Iterate value `b̄_i` at the anchor index.
-    pub b_bar: f64,
+    /// Iterate values for the three `b̄` indices the stencil reads.
+    /// Interior at i:    `[b̄_{i-1}, b̄_i, b̄_{i+1}]`.
+    /// StartBoundary:    `[b̄_0,    b̄_1, b̄_2]`.
+    /// EndBoundary:      `[b̄_{n-3}, b̄_{n-2}, b̄_{n-1}]`.
+    pub b_bars: [f64; 3],
+    /// Iterate value `ā_i` at the anchor index. Single index — under
+    /// width-1 b-FD the cut row only touches `a_i`, never neighbours.
+    pub a_bar_i: f64,
     /// Path derivatives at `s_i` along `axis`: `(c', c'', c''')`.
     pub cp: f64,
     pub cpp: f64,
     pub cppp: f64,
-    /// Per-axis jerk bound `j_max[axis]` ·(1+ε), inflated by the SLP feasibility
-    /// margin. Used directly as the cut RHS magnitude.
+    /// Per-axis jerk bound `j_max[axis] · target_ratio`, inflated by the
+    /// SLP target-ratio schedule. Used directly as the cut RHS magnitude.
     pub j_lim_inflated: f64,
 }
 
-/// Discrete shape of the `da/ds` finite-difference stencil used by the cut.
-/// Mirrors `topp::verify::da_ds_at` exactly (Step 9 design constraint:
-/// SOCP cut and verifier check against the same FD stencil).
+/// Discrete shape of the stencil under width-1 b-FD. Mirrors
+/// `topp::stencil::SDddotStencil`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AxisJerkStencil {
-    /// Central FD: row touches `b_i`, `a_{i-1}`, `a_i`, `a_{i+1}`.
+    /// Central FD: row touches `b_{i-1}, b_i, b_{i+1}, a_i`.
     Interior,
-    /// Forward FD at i=0: row touches `b_0`, `a_0`, `a_1`.
+    /// Forward FD at i=0: row touches `b_0, b_1, b_2, a_0`.
     StartBoundary,
-    /// Backward FD at i=N-1: row touches `b_{N-1}`, `a_{N-2}`, `a_{N-1}`.
+    /// Backward FD at i=n-1: row touches `b_{n-3}, b_{n-2}, b_{n-1}, a_{n-1}`.
     EndBoundary,
 }
 
@@ -371,75 +373,72 @@ fn append_path_jerk_cut_to_clarabel(
 }
 
 /// Append one per-axis Cartesian jerk SLP cut as two `Nonneg` rows
-/// (positive- and negative-side ⇒ |j_axis| ≤ j_max·(1+ε)). Spec §11; Step 9.
+/// (positive- and negative-side ⇒ |j_axis| ≤ j_max·(1+ε)). Spec §5; Step 9
+/// with width-1 b-FD stencil unification.
 ///
 /// # Cut algebra
 ///
-/// The verifier-stencil per-axis Cartesian jerk at iterate `(b̄, ā)`:
+/// The per-axis Cartesian jerk at iterate `(b̄, ā)` under width-1 b-FD:
 ///
 /// ```text
-///   j_axis = c'''·b̄^(3/2) + 3·c''·ā_i·√b̄ + c'·s⃛
+///   Interior:       j_axis = c'''·b̄_i^(3/2) + 3·c''·ā_i·√b̄_i
+///                          + c'·(b̄_{i-1} − 2·b̄_i + b̄_{i+1})·√b̄_i / (2h²)
+///   StartBoundary:  same form with D₂ = b̄_0 − 2·b̄_1 + b̄_2
+///   EndBoundary:    same form with D₂ = b̄_{n-3} − 2·b̄_{n-2} + b̄_{n-1}
 /// ```
 ///
-/// where `s⃛ = (da/ds)·√b̄` and `da/ds` uses the central FD interior or
-/// one-sided FD at the boundaries (matching `verify::da_ds_at`).
+/// where the b-FD second-difference replaces the prior central-FD-on-`a`.
+/// First-order Taylor linearization at the iterate gives the row
+/// coefficients. Let `S = √b̄_i` (floored at √SLP_B_FLOOR), `S3 = b̄_i^(3/2)`.
 ///
-/// First-order Taylor expansion (linearization at the iterate) gives the row
-/// coefficients per the Step 9 derivation in `/tmp/pf_diagnosis.json`:
-///
-/// **Interior** (touches `b_i`, `a_{i-1}`, `a_i`, `a_{i+1}`):
+/// **Interior** (touches `b_{i-1}, b_i, b_{i+1}, a_i`):
 /// ```text
-///   α_b      = (3/2)·c'''·√b̄  +  3·c''·ā_i / (2·√b̄)
-///                              +  c'·(ā_{i+1} − ā_{i-1}) / (4h·√b̄)
-///   α_a_im1  = −c'·√b̄ / (2h)
-///   α_a_i    = 3·c''·√b̄
-///   α_a_ip1  = +c'·√b̄ / (2h)
-///   K        = −(1/2)·c'''·b̄^(3/2)
-///              − (3/2)·c''·ā_i·√b̄
-///              − c'·(ā_{i+1} − ā_{i-1})·√b̄ / (4h)
+///   α_b_im1  = c'·S / (2h²)
+///   α_b_ip1  = c'·S / (2h²)
+///   α_b_i    = (3/2)·c'''·S
+///            + 3·c''·ā_i / (2·S)
+///            − c'·S / h²
+///            + c'·D₂_int / (4h² · S)
+///   α_a_i    = 3·c''·S
+///   K        = −(1/2)·c'''·S3
+///            − (3/2)·c''·ā_i·S
+///            − c'·D₂_int·S / (4h²)
 /// ```
 ///
-/// **StartBoundary i=0** (forward FD: touches `b_0`, `a_0`, `a_1`):
+/// **StartBoundary i=0** (touches `b_0, b_1, b_2, a_0`):
 /// ```text
-///   α_b      = (3/2)·c'''·√b̄  +  3·c''·ā_0 / (2·√b̄)
-///                              +  c'·(ā_1 − ā_0) / (2h·√b̄)
-///   α_a_0    = 3·c''·√b̄ − c'·√b̄ / h
-///   α_a_1    = +c'·√b̄ / h
-///   K        = −(1/2)·c'''·b̄^(3/2)
-///              − (3/2)·c''·ā_0·√b̄
-///              − c'·(ā_1 − ā_0)·√b̄ / (2h)
+///   α_b_0    = (3/2)·c'''·S + 3·c''·ā_0 / (2·S)
+///            + c'·S / (2h²) + c'·D₂_fwd / (4h² · S)
+///   α_b_1    = −c'·S / h²
+///   α_b_2    = c'·S / (2h²)
+///   α_a_0    = 3·c''·S
+///   K        = −(1/2)·c'''·S3 − (3/2)·c''·ā_0·S − c'·D₂_fwd·S / (4h²)
 /// ```
 ///
-/// **EndBoundary i=N-1** (backward FD: touches `b_{N-1}`, `a_{N-2}`, `a_{N-1}`):
+/// **EndBoundary i=n-1** (touches `b_{n-3}, b_{n-2}, b_{n-1}, a_{n-1}`):
 /// ```text
-///   α_b        = (3/2)·c'''·√b̄  +  3·c''·ā_{N-1} / (2·√b̄)
-///                                +  c'·(ā_{N-1} − ā_{N-2}) / (2h·√b̄)
-///   α_a_Nm2    = −c'·√b̄ / h
-///   α_a_Nm1    = 3·c''·√b̄ + c'·√b̄ / h
-///   K          = −(1/2)·c'''·b̄^(3/2)
-///                − (3/2)·c''·ā_{N-1}·√b̄
-///                − c'·(ā_{N-1} − ā_{N-2})·√b̄ / (2h)
+///   α_b_nm3  = c'·S / (2h²)
+///   α_b_nm2  = −c'·S / h²
+///   α_b_nm1  = (3/2)·c'''·S + 3·c''·ā_{n-1} / (2·S)
+///            + c'·S / (2h²) + c'·D₂_bwd / (4h² · S)
+///   α_a_nm1  = 3·c''·S
+///   K        = −(1/2)·c'''·S3 − (3/2)·c''·ā_{n-1}·S − c'·D₂_bwd·S / (4h²)
 /// ```
+///
+/// All three cases share the same closed-form `K`: substitute the stencil-
+/// specific S, ā, and D₂.
 ///
 /// The two `Nonneg` rows in `A·x + b_rhs ≥ 0` form:
 ///
 /// ```text
-///   (+):  J − (Σ α·x + K)  ≥ 0   ⇒   row = [-α₁, …, -αₖ],  rhs = J − K
-///   (−):  J + (Σ α·x + K)  ≥ 0   ⇒   row = [+α₁, …, +αₖ],  rhs = J + K
+///   (+):  J_lim_inflated − (Σ α·x + K)  ≥ 0   ⇒   row = [−α₁, …, −αₖ],  rhs = J_lim − K
+///   (−):  J_lim_inflated + (Σ α·x + K)  ≥ 0   ⇒   row = [+α₁, …, +αₖ],  rhs = J_lim + K
 /// ```
 ///
-/// `b̄` MUST be ≥ a positive floor; the caller floors via `SLP_B_FLOOR` to
+/// `b̄` MUST be ≥ a positive floor; the helper floors via `SLP_B_FLOOR` to
 /// avoid `1/√0` blowing up the row-coefficient magnitudes.
 ///
-/// Identity check (numerical pin): see `rust/temporal/tests/step9_cut_identity.rs`.
-/// At the iterate, Σ α·x̄ + K must equal `verify::check`'s `j_axis` to within
-/// floating-point round-off.
-///
-/// **Note on non-adjacent oscillation.** This cut anchors at three or four
-/// neighboring grid points only. If the SLP exhibits non-adjacent oscillation
-/// (cuts at i unmask violators at i±2 on the next iterate), widening the
-/// active set to ±2 neighborhood may help. None observed on the kalico
-/// fixtures so far; keep the implementation simple until evidence demands it.
+/// Identity check (numerical pin): `rust/temporal/tests/step9_cut_identity.rs`.
 #[allow(clippy::too_many_arguments)]
 fn append_axis_jerk_cut_to_clarabel(
     cut: &AxisJerkCut,
@@ -451,108 +450,132 @@ fn append_axis_jerk_cut_to_clarabel(
     n_grid: usize,
 ) {
     let i = cut.i;
-    let b_bar = cut.b_bar;
     let cp = cut.cp;
     let cpp = cut.cpp;
     let cppp = cut.cppp;
     let j = cut.j_lim_inflated;
 
-    // Floor sqrt(b̄) to keep coefficients finite when the iterate's b̄ is tiny.
-    let sqrt_b = b_bar.max(SLP_B_FLOOR).sqrt();
-    let b_pow_3_2 = sqrt_b * sqrt_b * sqrt_b;
-
-    // Variable indices (off_b = 0; off_a = n_grid in the bundle layout).
+    // SOCP variable layout: b at 0..n_grid, a at n_grid..2*n_grid.
+    let off_b = 0usize;
     let off_a = n_grid;
 
-    // Compute (α_b, α_a*, K) per stencil, plus the variable indices the row
-    // touches.
-    let (alpha_b, alpha_a_entries, k_const): (f64, [(usize, f64); 3], f64) = match cut.stencil {
+    // Compute (α at anchor b-var, three other (var_idx, α) entries, K) per stencil.
+    // The `b_anchor` is floored at SLP_B_FLOOR to keep 1/√b̄ bounded.
+    let (alpha_b_anchor, entries_extra, k_const): (f64, [(usize, f64); 3], f64) = match cut
+        .stencil
+    {
         AxisJerkStencil::Interior => {
             debug_assert!(i >= 1 && i + 1 < n_grid, "interior index out of range");
-            let a_im1 = cut.a_bars[0];
-            let a_i = cut.a_bars[1];
-            let a_ip1 = cut.a_bars[2];
-            let alpha_b = 1.5 * cppp * sqrt_b
-                + 3.0 * cpp * a_i / (2.0 * sqrt_b)
-                + cp * (a_ip1 - a_im1) / (4.0 * h * sqrt_b);
-            let alpha_a_im1 = -cp * sqrt_b / (2.0 * h);
-            let alpha_a_i = 3.0 * cpp * sqrt_b;
-            let alpha_a_ip1 = cp * sqrt_b / (2.0 * h);
-            let k = -0.5 * cppp * b_pow_3_2
-                - 1.5 * cpp * a_i * sqrt_b
-                - cp * (a_ip1 - a_im1) * sqrt_b / (4.0 * h);
+            let b_anchor = cut.b_bars[1].max(SLP_B_FLOOR);
+            let s = b_anchor.sqrt();
+            let s3 = b_anchor * s;
+            let b_im1 = cut.b_bars[0];
+            let b_ip1 = cut.b_bars[2];
+            let a_i = cut.a_bar_i;
+            let d2 = b_im1 - 2.0 * b_anchor + b_ip1;
+            let alpha_b_im1 = cp * s / (2.0 * h * h);
+            let alpha_b_ip1 = cp * s / (2.0 * h * h);
+            let alpha_a_i = 3.0 * cpp * s;
+            let alpha_b_i = 1.5 * cppp * s
+                + 3.0 * cpp * a_i / (2.0 * s)
+                - cp * s / (h * h)
+                + cp * d2 / (4.0 * h * h * s);
+            let k = -0.5 * cppp * s3
+                - 1.5 * cpp * a_i * s
+                - cp * d2 * s / (4.0 * h * h);
             (
-                alpha_b,
+                alpha_b_i,
                 [
-                    (off_a + i - 1, alpha_a_im1),
+                    (off_b + i - 1, alpha_b_im1),
+                    (off_b + i + 1, alpha_b_ip1),
                     (off_a + i, alpha_a_i),
-                    (off_a + i + 1, alpha_a_ip1),
                 ],
                 k,
             )
         }
         AxisJerkStencil::StartBoundary => {
             debug_assert_eq!(i, 0, "StartBoundary stencil expects i = 0");
-            debug_assert!(n_grid >= 2);
-            let a_0 = cut.a_bars[0];
-            let a_1 = cut.a_bars[1];
-            let alpha_b = 1.5 * cppp * sqrt_b
-                + 3.0 * cpp * a_0 / (2.0 * sqrt_b)
-                + cp * (a_1 - a_0) / (2.0 * h * sqrt_b);
-            let alpha_a_0 = 3.0 * cpp * sqrt_b - cp * sqrt_b / h;
-            let alpha_a_1 = cp * sqrt_b / h;
-            let k = -0.5 * cppp * b_pow_3_2
-                - 1.5 * cpp * a_0 * sqrt_b
-                - cp * (a_1 - a_0) * sqrt_b / (2.0 * h);
+            debug_assert!(n_grid >= 3);
+            let b_anchor = cut.b_bars[0].max(SLP_B_FLOOR);
+            let s = b_anchor.sqrt();
+            let s3 = b_anchor * s;
+            let b_1 = cut.b_bars[1];
+            let b_2 = cut.b_bars[2];
+            let a_0 = cut.a_bar_i;
+            let d2 = b_anchor - 2.0 * b_1 + b_2;
+            let alpha_b_0 = 1.5 * cppp * s
+                + 3.0 * cpp * a_0 / (2.0 * s)
+                + cp * s / (2.0 * h * h)
+                + cp * d2 / (4.0 * h * h * s);
+            let alpha_b_1 = -cp * s / (h * h);
+            let alpha_b_2 = cp * s / (2.0 * h * h);
+            let alpha_a_0 = 3.0 * cpp * s;
+            let k = -0.5 * cppp * s3
+                - 1.5 * cpp * a_0 * s
+                - cp * d2 * s / (4.0 * h * h);
             (
-                alpha_b,
-                [(off_a, alpha_a_0), (off_a + 1, alpha_a_1), (0, 0.0)],
+                alpha_b_0,
+                [
+                    (off_b + 1, alpha_b_1),
+                    (off_b + 2, alpha_b_2),
+                    (off_a, alpha_a_0),
+                ],
                 k,
             )
         }
         AxisJerkStencil::EndBoundary => {
             debug_assert_eq!(i, n_grid - 1, "EndBoundary stencil expects i = N-1");
-            debug_assert!(n_grid >= 2);
-            let a_nm2 = cut.a_bars[0];
-            let a_nm1 = cut.a_bars[1];
-            let alpha_b = 1.5 * cppp * sqrt_b
-                + 3.0 * cpp * a_nm1 / (2.0 * sqrt_b)
-                + cp * (a_nm1 - a_nm2) / (2.0 * h * sqrt_b);
-            let alpha_a_nm2 = -cp * sqrt_b / h;
-            let alpha_a_nm1 = 3.0 * cpp * sqrt_b + cp * sqrt_b / h;
-            let k = -0.5 * cppp * b_pow_3_2
-                - 1.5 * cpp * a_nm1 * sqrt_b
-                - cp * (a_nm1 - a_nm2) * sqrt_b / (2.0 * h);
+            debug_assert!(n_grid >= 3);
+            let b_anchor = cut.b_bars[2].max(SLP_B_FLOOR);
+            let s = b_anchor.sqrt();
+            let s3 = b_anchor * s;
+            let b_nm3 = cut.b_bars[0];
+            let b_nm2 = cut.b_bars[1];
+            let a_nm1 = cut.a_bar_i;
+            let d2 = b_nm3 - 2.0 * b_nm2 + b_anchor;
+            let alpha_b_nm3 = cp * s / (2.0 * h * h);
+            let alpha_b_nm2 = -cp * s / (h * h);
+            let alpha_b_nm1 = 1.5 * cppp * s
+                + 3.0 * cpp * a_nm1 / (2.0 * s)
+                + cp * s / (2.0 * h * h)
+                + cp * d2 / (4.0 * h * h * s);
+            let alpha_a_nm1 = 3.0 * cpp * s;
+            let k = -0.5 * cppp * s3
+                - 1.5 * cpp * a_nm1 * s
+                - cp * d2 * s / (4.0 * h * h);
             (
-                alpha_b,
+                alpha_b_nm1,
                 [
-                    (off_a + n_grid - 2, alpha_a_nm2),
+                    (off_b + n_grid - 3, alpha_b_nm3),
+                    (off_b + n_grid - 2, alpha_b_nm2),
                     (off_a + n_grid - 1, alpha_a_nm1),
-                    (0, 0.0),
                 ],
                 k,
             )
         }
     };
 
+    // The "anchor" b-variable column is at the absolute grid index `off_b + i`.
+    let anchor_b_col = off_b + i;
+
     // Sign-convention negation: A_clarabel = -A_k.
-    // Positive side: A_k = [-α_b, -α_a*];  rhs = J − K.
+    // Positive side: A_k row = [-α], rhs = J - K. Clarabel pushes +α.
     let pos_row = *n_rows;
-    push_nz(rowval, nzval, i, pos_row, -(-alpha_b)); // = +alpha_b on b_i
-    for &(col, alpha_a) in &alpha_a_entries {
-        if alpha_a != 0.0 {
-            push_nz(rowval, nzval, col, pos_row, -(-alpha_a)); // = +alpha_a
+    push_nz(rowval, nzval, anchor_b_col, pos_row, alpha_b_anchor);
+    for &(col, alpha) in &entries_extra {
+        if alpha != 0.0 {
+            push_nz(rowval, nzval, col, pos_row, alpha);
         }
     }
     b_rhs.push(j - k_const);
     *n_rows += 1;
 
-    // Negative side: A_k = [+α_b, +α_a*]; rhs = J + K.
+    // Negative side: A_k row = [+α], rhs = J + K. Clarabel pushes -α.
     let neg_row = *n_rows;
-    push_nz(rowval, nzval, i, neg_row, -alpha_b); // = -alpha_b
-    for &(col, alpha_a) in &alpha_a_entries {
-        if alpha_a != 0.0 {
-            push_nz(rowval, nzval, col, neg_row, -alpha_a);
+    push_nz(rowval, nzval, anchor_b_col, neg_row, -alpha_b_anchor);
+    for &(col, alpha) in &entries_extra {
+        if alpha != 0.0 {
+            push_nz(rowval, nzval, col, neg_row, -alpha);
         }
     }
     b_rhs.push(j + k_const);
@@ -1338,7 +1361,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
         // Build active-set cuts at violators (and immediate neighbors to
         // avoid one-sided over-tightening; ±0 for now per task brief, the
         // ±1 widening is reserved for the diagnosis non-blocker note).
-        let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio);
+        let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio, bundle.h);
         if cuts.is_empty() {
             // No violators above threshold: converged.
             return Ok((
@@ -1502,15 +1525,15 @@ fn build_axis_jerk_cuts(
     grid: &crate::topp::path::ArclengthGrid,
     limits: &crate::Limits,
     target_ratio: f64,
+    h: f64,
 ) -> Vec<SlpCut> {
     let n = result.b.len();
     let mut cuts: Vec<SlpCut> = Vec::new();
     for i in 0..n {
+        let s_dddot = crate::topp::stencil::s_dddot_at(&result.b, i, h);
         let s_dot = result.b[i].max(0.0).sqrt();
         let s_dot3 = s_dot * s_dot * s_dot;
         let s_ddot = result.a[i];
-        let da_ds = da_ds_along(&result.a, &grid.s, i);
-        let s_dddot = da_ds * s_dot;
         for ax in 0..3 {
             let cp = grid.c_prime[i][ax];
             let cpp = grid.c_double_prime[i][ax];
@@ -1532,17 +1555,19 @@ fn build_axis_jerk_cuts(
             } else {
                 AxisJerkStencil::Interior
             };
-            let a_bars: [f64; 3] = match stencil {
-                AxisJerkStencil::Interior => [result.a[i - 1], result.a[i], result.a[i + 1]],
-                AxisJerkStencil::StartBoundary => [result.a[0], result.a[1], 0.0],
-                AxisJerkStencil::EndBoundary => [result.a[n - 2], result.a[n - 1], 0.0],
+            let b_bars: [f64; 3] = match stencil {
+                AxisJerkStencil::Interior => [result.b[i - 1], result.b[i], result.b[i + 1]],
+                AxisJerkStencil::StartBoundary => [result.b[0], result.b[1], result.b[2]],
+                AxisJerkStencil::EndBoundary => {
+                    [result.b[n - 3], result.b[n - 2], result.b[n - 1]]
+                }
             };
             cuts.push(SlpCut::AxisJerk(AxisJerkCut {
                 i,
                 axis: ax,
                 stencil,
-                a_bars,
-                b_bar: result.b[i],
+                b_bars,
+                a_bar_i: result.a[i],
                 cp,
                 cpp,
                 cppp,
