@@ -173,8 +173,13 @@ command_encodef(uint8_t *buf, const struct command_encoder *ce, va_list args)
         case PT_progmem_buffer:
         case PT_buffer: {
             v = va_arg(args, int);
-            if (v > maxend-p)
-                v = maxend-p;
+            // Reserve one byte for the data_len header itself; without this
+            // a fully saturated v=maxend-p caused total payload to overrun
+            // by one (msglen = MESSAGE_MAX + 1), producing wire frames the
+            // host's demuxer rejects with KLIPPER_LEN_MAX=64.
+            uint_fast8_t budget = (p < maxend) ? (uint_fast8_t)(maxend - p - 1) : 0;
+            if (v > budget)
+                v = budget;
             *p++ = v;
             uint8_t *s = va_arg(args, uint8_t*);
             if (t == PT_progmem_buffer)
