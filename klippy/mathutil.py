@@ -3,10 +3,13 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import dataclasses
+import functools
 import logging
 import math
 import multiprocessing
 import traceback
+from typing import Any, Generator
 
 from . import queuelogger
 
@@ -160,3 +163,82 @@ def matrix_sub(m1, m2):
 
 def matrix_mul(m1, s):
     return [m1[0] * s, m1[1] * s, m1[2] * s]
+
+
+@functools.total_ordering
+@dataclasses.dataclass
+class Point:
+    """A 2D point supporting basic vector arithmetic.
+
+    Attributes:
+        x: The horizontal coordinate.
+        y: The vertical coordinate.
+    """
+
+    x: float
+    y: float
+
+    @staticmethod
+    def origin() -> "Point":
+        """Return the point at the origin (0, 0)."""
+        return Point(0.0, 0.0)
+
+    def __getitem__(self, key) -> float:
+        if not isinstance(key, int):
+            key = int(key)
+
+        return [self.x, self.y][key]
+
+    def __add__(self, other: "Point") -> "Point":
+        """Return the element-wise sum of two points."""
+        if not isinstance(other, Point):
+            return NotImplemented
+
+        return Point(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: "Point") -> "Point":
+        """Return the element-wise difference of two points."""
+        if not isinstance(other, Point):
+            return NotImplemented
+
+        return Point(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, scalar: float) -> "Point":
+        """Return the point scaled by a scalar factor."""
+        return Point(self.x * scalar, self.y * scalar)
+
+    def __truediv__(self, other: float) -> "Point":
+        """Return the point divided by a scalar factor."""
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+
+        return Point(self.x / other, self.y / other)
+
+    def __pow__(self, other: float) -> "Point":
+        """Raise each coordinate to the given power."""
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+
+        return Point(self.x**other, self.y**other)
+
+    def __eq__(self, other: object) -> bool:
+        """Check if two points are equal."""
+        if not isinstance(other, Point):
+            return NotImplemented
+
+        return self.x == other.x and self.y == other.y
+
+    def __lt__(self, other: "Point") -> bool:
+        if not isinstance(other, Point):
+            return NotImplemented
+
+        return (self.x, self.y) < (other.x, other.y)
+
+    def __hash__(self) -> int:
+        """Return a hash value for the point."""
+        return hash((self.x, self.y))
+
+    def __iter__(self) -> Generator[float, Any, None]:
+        """Allow unpacking the point into (x, y)."""
+        yield self.x
+        yield self.y
