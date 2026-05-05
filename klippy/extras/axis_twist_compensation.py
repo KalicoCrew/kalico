@@ -3,9 +3,12 @@
 # Copyright (C) 2022  Jeremy Tan <jeremytkw98@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
 
 import math
 
+from ..mathutil import Point
+from ..printer_info import PrinterInfo
 from . import bed_mesh, manual_probe
 
 DEFAULT_SAMPLE_COUNT = 3
@@ -24,9 +27,11 @@ class AxisTwistCompensation:
             "horizontal_move_z", DEFAULT_HORIZONTAL_MOVE_Z
         )
         self.speed = config.getfloat("speed", DEFAULT_SPEED)
-        self.calibrate_start_x = config.getfloat("calibrate_start_x")
-        self.calibrate_end_x = config.getfloat("calibrate_end_x")
-        self.calibrate_y = config.getfloat("calibrate_y")
+        self.calibrate_start_x = config.getfloat(
+            "calibrate_start_x", default=None
+        )
+        self.calibrate_end_x = config.getfloat("calibrate_end_x", default=None)
+        self.calibrate_y = config.getfloat("calibrate_y", default=None)
         self.z_compensations = config.getlists(
             "z_compensations", default=[], parser=float
         )
@@ -145,6 +150,16 @@ class Calibrater:
         )
         self.speed = compensation.speed
         self.horizontal_move_z = compensation.horizontal_move_z
+        self._update_points_with(compensation)
+        self.results = None
+        self.current_point_index = None
+        self.gcmd = None
+        self.configname = config.get_name()
+
+        # register gcode handlers
+        self._register_gcode_handlers()
+
+    def _update_points_with(self, compensation: AxisTwistCompensation) -> None:
         self.x_start_point = (
             compensation.calibrate_start_x,
             compensation.calibrate_y,
@@ -161,13 +176,6 @@ class Calibrater:
             compensation.calibrate_x,
             compensation.calibrate_end_y,
         )
-        self.results = None
-        self.current_point_index = None
-        self.gcmd = None
-        self.configname = config.get_name()
-
-        # register gcode handlers
-        self._register_gcode_handlers()
 
     def _handle_connect(self):
         self.probe = self.printer.lookup_object("probe", None)
@@ -177,6 +185,90 @@ class Calibrater:
             )
         self.lift_speed = self.probe.get_lift_speed()
         self.probe_x_offset, self.probe_y_offset, _ = self.probe.get_offsets()
+
+        # If all are defined, then no need to update the points:
+        if None not in [
+            *self.x_start_point,
+            *self.x_end_point,
+            *self.y_start_point,
+            *self.y_end_point,
+        ]:
+            return
+
+        printer_info: PrinterInfo = self.printer.lookup_object("printer_info")
+
+        required_fields = [
+            "calibrate_start_x",
+            "calibrate_end_x",
+            "calibrate_y",
+        ]
+        if not printer_info.is_rectangular or None in [
+            printer_info.bed_size,
+            printer_info.bed_corner_position,
+            printer_info.min_position,
+            printer_info.max_position,
+        ]:
+            missing_fields = [
+                field
+                for field in required_fields
+                if getattr(self.compensation, field) is None
+            ]
+            if len(missing_fields) > 0:
+                if not printer_info.is_rectangular:
+                    raise self.printer.config_error(
+                        f"AXIS_TWIST_COMPENSATION automatic field calculation"
+                        f" is not supported for {printer_info.kinematics_name}"
+                        f" kinematics, please specify {missing_fields} manually"
+                    )
+                raise self.printer.config_error(
+                    f"AXIS_TWIST_COMPENSATION requires the fields"
+                    f" {missing_fields} to be set, or printer properties"
+                    f" bed_size, and bed_corner_position to be defined for"
+                    f" automatic field calculation"
+                )
+            # If the required fields are set, and the optional ones can not be calculated, then return
+            return
+
+        mesh_min, mesh_max = printer_info.get_mesh_bounds(
+            mesh_min=None,
+            mesh_max=None,
+            use_offsets=True,
+            error=self.printer.config_error,
+            probe_offset=(self.probe_x_offset, self.probe_y_offset),
+        )
+
+        center = Point(*mesh_min) + (Point(*mesh_max) - Point(*mesh_min)) / 2.0
+
+        # First update the points in self.compensation, ensuring that other tools which access
+        # these points have the updated values instead of None:
+        (
+            (
+                calibrate_start_x,
+                calibrate_start_y,
+            ),
+            (calibrate_x, calibrate_y),
+            (
+                calibrate_end_x,
+                calibrate_end_y,
+            ),
+        ) = [mesh_min, (center[0], center[1]), mesh_max]
+
+        for name, value in {
+            "calibrate_start_x": calibrate_start_x,
+            "calibrate_start_y": calibrate_start_y,
+            "calibrate_x": calibrate_x,
+            "calibrate_y": calibrate_y,
+            "calibrate_end_x": calibrate_end_x,
+            "calibrate_end_y": calibrate_end_y,
+        }.items():
+            if getattr(self.compensation, name) is not None:
+                continue
+
+            setattr(self.compensation, name, value)
+
+        # The same points are stored in a different representation in self,
+        # which have to be updated as well:
+        self._update_points_with(self.compensation)
 
     def _register_gcode_handlers(self):
         # register gcode handlers
@@ -209,18 +301,6 @@ class Calibrater:
         if axis == "X":
             self.compensation.clear_compensations("X")
 
-            if (
-                self.x_start_point[0] is None
-                or self.x_end_point[0] is None
-                or self.x_start_point[1] is None
-            ):
-                raise gcmd.error(
-                    """AXIS_TWIST_COMPENSATION for X axis requires
-                    calibrate_start_x, calibrate_end_x and calibrate_y
-                    to be defined
-                    """
-                )
-
             start_point = self.x_start_point
             end_point = self.x_end_point
 
@@ -234,18 +314,6 @@ class Calibrater:
 
         elif axis == "Y":
             self.compensation.clear_compensations("Y")
-
-            if (
-                self.y_start_point[0] is None
-                or self.y_end_point[0] is None
-                or self.y_start_point[1] is None
-            ):
-                raise gcmd.error(
-                    """AXIS_TWIST_COMPENSATION for Y axis requires
-                    calibrate_start_y, calibrate_end_y and calibrate_x
-                    to be defined
-                    """
-                )
 
             start_point = self.y_start_point
             end_point = self.y_end_point
