@@ -100,10 +100,72 @@ impl HomingState {
         }
         self.pending_trip.lock().unwrap().take()
     }
+
+    /// Take-once accessor for the no-trip terminal. Returns Some(arm_id)
+    /// exactly once after the homing segment retires without a trip, then
+    /// None on every subsequent call until the next `begin()`.
+    ///
+    /// Mirrors `take_trip_event`'s ownership semantics: the caller is
+    /// responsible for delivering the event exactly once. If the state is
+    /// `Tripped`, this returns None — the trip event owns that terminal.
+    pub fn take_completion_event(&self) -> Option<u32> {
+        if self.state() != HomingSegmentState::Completed {
+            return None;
+        }
+        let arm = self.arm_id.swap(0, Ordering::AcqRel);
+        if arm == 0 {
+            return None;
+        }
+        self.state
+            .store(HomingSegmentState::Idle as u8, Ordering::Release);
+        Some(arm as u32)
+    }
 }
 
 impl Default for HomingState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_completion_event_fires_once_after_no_trip_retire() {
+        let h = HomingState::new();
+        h.begin(7);
+        h.mark_dispatched_segment(3);
+        // Retire past the homing segment; no trip occurred.
+        h.complete_if_retired(3);
+        assert_eq!(h.state(), HomingSegmentState::Completed);
+        assert_eq!(h.take_completion_event(), Some(7));
+        // Take-once: a second call returns None.
+        assert_eq!(h.take_completion_event(), None);
+    }
+
+    #[test]
+    fn take_completion_event_does_not_fire_when_idle() {
+        let h = HomingState::new();
+        assert_eq!(h.take_completion_event(), None);
+    }
+
+    #[test]
+    fn take_completion_event_does_not_fire_after_trip() {
+        // If the segment retired *and* a trip was latched, the trip path
+        // owns the terminal — we don't double-fire as past-end-time.
+        let h = HomingState::new();
+        h.begin(8);
+        h.mark_dispatched_segment(2);
+        // Simulate a trip flipping the state to Tripped.
+        h.state.store(
+            HomingSegmentState::Tripped as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        // Even if credit-freed retires the segment afterwards, no completion event.
+        h.complete_if_retired(2);
+        assert_eq!(h.state(), HomingSegmentState::Tripped);
+        assert_eq!(h.take_completion_event(), None);
     }
 }
