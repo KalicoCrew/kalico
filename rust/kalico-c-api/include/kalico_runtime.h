@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
+
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -271,6 +271,20 @@ uint32_t kalico_runtime_fault_detail(struct KalicoRuntime *rt);
  * `configure_axes_blob` reached the engine.
  */
 float kalico_runtime_get_axis_steps_per_mm(struct KalicoRuntime *rt, uint8_t oid);
+
+/**
+ * Diagnostic: read most recent post-PA/IS motor position for axis `oid`.
+ */
+float kalico_runtime_get_axis_motor(struct KalicoRuntime *rt, uint8_t oid);
+
+/**
+ * Diagnostic: read most recent (now, t_start, duration) into the three
+ * out pointers. All u64 cycle counts.
+ */
+void kalico_runtime_get_last_timing(struct KalicoRuntime *rt,
+                                    uint64_t *now_out,
+                                    uint64_t *t_start_out,
+                                    uint64_t *duration_out);
 
 /**
  * Diagnostic: read step accumulator (sub-step residual + integer state)

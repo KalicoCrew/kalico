@@ -83,6 +83,10 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// `prev_x`/`prev_y` from X(0)/Y(0) rather than computing a spurious
     /// delta from (0,0).
     needs_xy_seed: bool,
+    /// Diagnostic — last (now, t_start, duration) observed in tick_with_current.
+    debug_last_now: u64,
+    debug_last_tstart: u64,
+    debug_last_duration: u64,
     /// Per-axis step accumulators. Indexed in motor space post-kinematics:
     /// CoreXY: [A=0, B=1, Z=2, E=3]. Step pulse emission deferred to 7-D;
     /// update() is called but results are logged/ignored for now.
@@ -118,6 +122,9 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             prev_y: 0.0,
             e_accumulator: 0.0,
             needs_xy_seed: true,
+            debug_last_now: 0,
+            debug_last_tstart: 0,
+            debug_last_duration: 0,
             step_state: [crate::step::StepMotorState::default(); 4],
             mcu_config: None,
             #[cfg(any(test, feature = "test-injection"))]
@@ -169,6 +176,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     pub fn debug_accumulator(&self, i: usize) -> f64 {
         self.step_state.get(i).map(|s| s.debug_accumulator()).unwrap_or(0.0)
+    }
+
+    /// Last observed motor position (post-PA/IS) for axis `i`.
+    pub fn debug_last_motor(&self, i: usize) -> f32 {
+        self.last_motors.get(i).copied().unwrap_or(0.0)
+    }
+
+    /// Last (now, t_start, duration) tuple recorded by the most recent tick.
+    pub fn debug_last_timing(&self) -> (u64, u64, u64) {
+        (self.debug_last_now, self.debug_last_tstart, self.debug_last_duration)
     }
 
     pub fn configure(&mut self, config: crate::config::McuAxisConfig) {
@@ -409,6 +426,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         #[cfg(not(any(test, feature = "test-injection")))]
         let mut iters: u32 = 0;
         let mut t_segment = now.saturating_sub(current.t_start);
+        self.debug_last_now = now;
+        self.debug_last_tstart = current.t_start;
+        self.debug_last_duration = current.duration();
         while t_segment >= current.duration() {
             iters += 1;
             if iters > MAX_BOUNDARY_ITERS {

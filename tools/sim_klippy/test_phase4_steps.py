@@ -134,21 +134,27 @@ def main():
         # wall-clock zero, the segment can land tens of seconds in the
         # future. Wait long enough that a 10mm @ F1000 move (≈0.6s) plus
         # the schedule lead has had time to drain.
-        # Poll the klippy log for engine_status=2 (Drained) — the engine
-        # publishes status frames via the kalico_status_v6 path. Once the
-        # status hits Drained for the first segment, query step counts.
-        print("[phase4] polling engine_status for Drained (engine_status=2)")
-        deadline = time.time() + 180.0
-        drained = False
+        # Poll elf log for non-zero stepper counts. Bypasses bridge_call so
+        # we get the answer even if klippy shut down on the M400 timeout.
+        print("[phase4] polling elf log for non-zero step counts")
+        elf_log = REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
+        deadline = time.time() + 60.0
+        seen_nonzero = False
         while time.time() < deadline:
             time.sleep(2.0)
-            log = KLIPPY_LOG.read_text() if KLIPPY_LOG.exists() else ""
-            if "'engine_status': 2" in log:
-                drained = True
-                print("  engine drained ✓")
+            if not elf_log.exists():
+                continue
+            text = elf_log.read_text(errors="replace")
+            for line in text.splitlines()[-200:]:
+                if "[sim-progress]" in line and "counts=[" in line:
+                    inner = line.split("counts=[", 1)[1].split("]", 1)[0]
+                    parts = [int(x) for x in inner.split(",")]
+                    if any(abs(p) > 0 for p in parts):
+                        print("  step pulses observed: %s" % parts)
+                        seen_nonzero = True
+                        break
+            if seen_nonzero:
                 break
-        if not drained:
-            print("  WARNING: engine never drained; querying anyway")
 
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
         # which routes through klippy → bridge → MCU wire command.

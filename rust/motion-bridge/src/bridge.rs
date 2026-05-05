@@ -828,6 +828,10 @@ impl PyMotionBridge {
         last_clock: u64,
     ) -> PyResult<()> {
         let mut router = self.router.lock().unwrap();
+        eprintln!(
+            "[set_clock_est] mcu={} freq={:.3} offset={:.6} last_clock={}",
+            mcu, freq, offset, last_clock
+        );
         router
             .set_clock_est(mcu_handle_from_raw(mcu), freq, offset, last_clock)
             .map_err(router_err)?;
@@ -1112,6 +1116,11 @@ impl PyMotionBridge {
                         .compute_ack_clock(mcu_h)
                         .map_err(|e| format!("compute_ack_clock: {e}"))?;
                     let lead_cycles = (freq * 0.100).round().max(1.0) as u64;
+                    eprintln!(
+                        "[schedule] mcu={} freq={} now_clock={} lead={} seg_t_start={} seg_t_end={}",
+                        plan.mcu_id, freq, now_clock, lead_cycles,
+                        seg.t_start, seg.t_end,
+                    );
                     drop(r);
 
                     let mut schedule = schedule_state.lock().unwrap();

@@ -114,6 +114,18 @@ timer_read_time(void)
     return t;
 }
 
+// Sim-only: return the current time as u64, no wrap. Used by the kalico
+// runtime's widen-state seeding so the engine's `now` agrees with Klipper's
+// widened MCU clock from the very first tick.
+uint64_t
+timer_read_time_u64(void)
+{
+    struct timespec ts = timespec_read();
+    uint64_t s = (uint64_t)(ts.tv_sec - TimerInfo.start_sec);
+    return s * (uint64_t)CONFIG_CLOCK_FREQ
+         + (uint64_t)(ts.tv_nsec / NSECS_PER_TICK);
+}
+
 // Activate timer dispatch as soon as possible
 void
 timer_kick(void)

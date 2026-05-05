@@ -390,9 +390,18 @@ runtime_status_drain(void)
     double a0 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 0);
     double a1 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 1);
     double a2 = kalico_runtime_get_axis_accumulator(kalico_rt_handle, 2);
+    float m0 = kalico_runtime_get_axis_motor(kalico_rt_handle, 0);
+    float m1 = kalico_runtime_get_axis_motor(kalico_rt_handle, 1);
+    uint64_t now64=0, ts64=0, dur64=0;
+    kalico_runtime_get_last_timing(kalico_rt_handle, &now64, &ts64, &dur64);
+    extern uint64_t timer_read_time_u64(void);
+    uint64_t real_now = timer_read_time_u64();
     fprintf(stderr,
-        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d] accum=[%.3f,%.3f,%.3f]\n",
-        status, cur_seg, c0, c1, c2, a0, a1, a2);
+        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d] accum=[%.3f,%.3f,%.3f] "
+        "motor=[%.4f,%.4f] now=%llu real_now=%llu t_start=%llu dur=%llu\n",
+        status, cur_seg, c0, c1, c2, a0, a1, a2, m0, m1,
+        (unsigned long long)now64, (unsigned long long)real_now,
+        (unsigned long long)ts64, (unsigned long long)dur64);
     fflush(stderr);
 #endif
 }

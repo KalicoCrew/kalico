@@ -55,17 +55,26 @@ host_monotonic_ns(void)
     return s * 1000000000ULL + (uint64_t)(ns + (ns < 0 ? 1000000000 : 0));
 }
 
+extern uint32_t timer_read_time(void); // src/linux/timer.c
+extern uint64_t timer_read_time_u64(void); // src/linux/timer.c
+extern void kalico_runtime_seed_widen(void *rt, uint64_t baseline);
+
 __attribute__((used)) uint32_t
 kalico_h7_read_cyccnt(void)
 {
-    // Map host monotonic ns onto a 32-bit cycle counter at CONFIG_CLOCK_FREQ
-    // ticks-per-second so the runtime's clock-widening behaves identically
-    // to the H7 DWT->CYCCNT path. Wraps mod 2^32 — matches DWT semantics.
-    uint64_t ns = host_monotonic_ns();
-    // CONFIG_CLOCK_FREQ for MACH_LINUX is 50000000 — 50 MHz nominal cycles.
-    // cycles = ns * freq / 1e9
-    uint64_t cycles = (ns * (uint64_t)CONFIG_CLOCK_FREQ) / 1000000000ULL;
-    return (uint32_t)cycles;
+    // Use Klipper's own clock (timer_read_time) so the engine's `now` lives
+    // in the same reference frame as the values klippy's clocksync sends to
+    // the host bridge via set_clock_est. If we use a different t0 here, the
+    // host schedules t_start in Klipper's frame while the engine reads `now`
+    // from this thread.
+    return timer_read_time();
+}
+
+// Wrapper exposed for kalico_h7_timer_init's widen-seeding call.
+__attribute__((used)) uint64_t
+kalico_host_widened_clock_now(void)
+{
+    return timer_read_time_u64();
 }
 
 static void *
@@ -107,12 +116,15 @@ host_tick_main(void *arg)
     return NULL;
 }
 
+extern void *kalico_rt_handle;
+
 __attribute__((used)) void
 kalico_h7_timer_init(void)
 {
     if (atomic_exchange(&host_tick_thread_started, 1))
         return;
     clock_gettime(CLOCK_MONOTONIC, &host_tick_t0);
+
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -129,6 +141,14 @@ kalico_h7_timer_init(void)
 __attribute__((used)) void
 kalico_h7_enable_tim5(void)
 {
+    // Seed widen state with the current widened clock RIGHT BEFORE the
+    // engine starts ticking. We can't do this at init time because the
+    // u32 timer hasn't wrapped yet then; by the time enable_tim5 fires
+    // (on first segment push, possibly minutes after process start),
+    // wraps may have already occurred and the engine needs to know.
+    if (kalico_rt_handle) {
+        kalico_runtime_seed_widen(kalico_rt_handle, timer_read_time_u64());
+    }
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 

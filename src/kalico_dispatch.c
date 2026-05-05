@@ -328,6 +328,19 @@ handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_le
         kalico_aligned_cps, (uint16_t)n_cps,
         kalico_aligned_knots, (uint16_t)n_knots,
         degree, &handle_packed);
+#if defined(__linux__) || defined(__APPLE__)
+    // Diagnostic: log first/last CP and first/last knot per slot so we can
+    // see whether the trajectory layer is producing the expected mm range.
+    if (n_cps >= 1 && n_knots >= 1) {
+        fprintf(stderr,
+            "[load_curve] slot=%u deg=%u n_cps=%u n_knots=%u "
+            "cp[0]=%.4f cp[last]=%.4f knot[0]=%.4f knot[last]=%.4f\n",
+            slot, degree, (unsigned)n_cps, (unsigned)n_knots,
+            kalico_aligned_cps[0], kalico_aligned_cps[n_cps - 1],
+            kalico_aligned_knots[0], kalico_aligned_knots[n_knots - 1]);
+        fflush(stderr);
+    }
+#endif
     send_load_curve_response(correlation_id, r, handle_packed);
 #else
     (void)body; (void)body_len;

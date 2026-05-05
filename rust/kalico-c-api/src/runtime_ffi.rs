@@ -839,6 +839,69 @@ pub mod exports {
         }
     }
 
+    /// Seed the engine's widen state with a u64 baseline so the engine's
+    /// `now` agrees with Klipper's widened MCU clock. Called by the Linux
+    /// sim host once at runtime_init, BEFORE the engine pthread starts
+    /// ticking. `baseline_widened_clock` is whatever value timer_read_time()
+    /// would map to in the widened (no-wrap) frame at this instant; the
+    /// caller computes it from clock_gettime so wrap counts already passed
+    /// in u32 timer_read_time space are folded in.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_seed_widen(
+        rt: *mut KalicoRuntime,
+        baseline_widened_clock: u64,
+    ) {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).widen_state.seed_high(baseline_widened_clock);
+        }
+    }
+
+    /// Diagnostic: read most recent post-PA/IS motor position for axis `oid`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_axis_motor(
+        rt: *mut KalicoRuntime,
+        oid: u8,
+    ) -> f32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) || oid >= 4 {
+            return 0.0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.debug_last_motor(oid as usize)
+        }
+    }
+
+    /// Diagnostic: read most recent (now, t_start, duration) into the three
+    /// out pointers. All u64 cycle counts.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_last_timing(
+        rt: *mut KalicoRuntime,
+        now_out: *mut u64,
+        t_start_out: *mut u64,
+        duration_out: *mut u64,
+    ) {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let (n, ts, dur) = (*isr_ptr).engine.debug_last_timing();
+            if !now_out.is_null() { *now_out = n; }
+            if !t_start_out.is_null() { *t_start_out = ts; }
+            if !duration_out.is_null() { *duration_out = dur; }
+        }
+    }
+
     /// Diagnostic: read step accumulator (sub-step residual + integer state)
     /// for axis `oid`.  Returns 0.0 if invalid.
     #[unsafe(no_mangle)]

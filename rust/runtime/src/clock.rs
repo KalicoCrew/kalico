@@ -36,6 +36,17 @@ impl WidenState {
     /// unrecoverable from CYCCNT alone — but `last_widened_now` carries the
     /// pre-disable high-water across the gap, so the timeline is monotonic
     /// from the foreground's perspective even if we miss exact wrap counts.
+    /// Force-set the high water-mark from a known u64 baseline. Used by the
+    /// Linux sim host to seed the engine's widen state with a wrap count
+    /// matching Klipper's clocksync widening (which started counting at
+    /// process boot, before the engine pthread spun up). Without this, the
+    /// engine's `now` undercounts wraps and lags the host's projected
+    /// MCU-clock value, causing scheduled segments to be future-dated by
+    /// integer multiples of 2^32 cycles in the engine's frame.
+    pub fn seed_high(&mut self, baseline_high: u64) {
+        self.high = baseline_high & !0xFFFF_FFFFu64;
+    }
+
     pub fn reinit(&mut self, raw: u32, last_widened_now: u64) {
         let captured_low = last_widened_now as u32;
         self.high = last_widened_now & !0xFFFF_FFFFu64;
