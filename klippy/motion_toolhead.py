@@ -782,7 +782,14 @@ class MotionToolhead:
                 try:
                     retired = int(params.get("retired_through_segment_id", 0))
                     free_slots = int(params.get("free_slots", 0))
-                    _bridge.on_credit_freed(_handle, retired, free_slots)
+                    result = _bridge.on_credit_freed(
+                        _handle, retired, free_slots,
+                    )
+                    # New return shape: (n_released, completed_arm_or_None).
+                    if isinstance(result, tuple) and len(result) >= 2:
+                        completed_arm = result[1]
+                        if completed_arm is not None:
+                            _bridge.fire_homing_completion(completed_arm)
                 except Exception:
                     logging.exception(
                         "MotionToolhead: bridge.on_credit_freed failed for "
