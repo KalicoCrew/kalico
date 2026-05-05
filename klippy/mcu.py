@@ -635,28 +635,42 @@ class MCU_endstop:
         return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
 
     def _home_wait_bridge(self, home_end_time):
-        # Spec §5.3: bounded wait, then map terminal reason → return
-        # value. On REASON_ENDSTOP_HIT, take_trip_event from the bridge,
-        # apply per-stepper step counts via
-        # MCU_stepper.bridge_set_position_from_step_count, and return
-        # the trip print-time.
+        # MCU-driven terminals: trip → REASON_ENDSTOP_HIT (via
+        # _on_trip_message); no-trip retire → REASON_PAST_END_TIME (via
+        # MotionBridgeWrapper.fire_homing_completion → _fire_past_end_time).
+        # The wall-clock deadline is a silence backstop: if the MCU has
+        # gone silent (no credit-freed, no trip event) past the expected
+        # end-time plus 1.0 s of slack, raise a distinct error so the
+        # failure mode is diagnosable.
         from . import motion_bridge as _mb
 
         eventtime = self._mcu.get_printer().get_reactor().monotonic()
-        deadline = eventtime + max(
+        backstop = eventtime + max(
             0.0, home_end_time - self._mcu.estimated_print_time(eventtime)
-        )
+        ) + 1.0
         completion = self._dispatch._completion
-        result = completion.wait(waketime=deadline)
+        result = completion.wait(waketime=backstop)
         if result is None:
-            # Timeout — disarm and report past-end.
-            self._dispatch._reason = _mb.REASON_PAST_END_TIME
+            # MCU-silence backstop fired. Disarm and surface a distinct
+            # error — operationally this means the MCU never reported
+            # either a trip or a credit-freed past the homing segment,
+            # which is a comms / runtime fault, not a homing-not-found.
+            self._dispatch._reason = _mb.REASON_COMMS_TIMEOUT
             self._dispatch.stop()
-            return 0.0
+            cmderr = self._mcu.get_printer().command_error
+            raise cmderr(
+                "Homing wait: MCU silent past expected end-time + 1.0s "
+                "(no trip event, no credit-freed for homing segment)"
+            )
         reason = self._dispatch.stop()
         if reason == _mb.REASON_COMMS_TIMEOUT:
             cmderr = self._mcu.get_printer().command_error
             raise cmderr("Communication timeout during homing")
+        if reason == _mb.REASON_PAST_END_TIME:
+            # MCU told us the homing segment retired without a trip.
+            # Klippy's homing.py converts this return value of 0.0 into
+            # the standard "No trigger" error.
+            return 0.0
         if reason != _mb.REASON_ENDSTOP_HIT:
             return 0.0
         evt = self._dispatch.get_trip_event() or {}
