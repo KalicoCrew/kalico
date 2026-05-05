@@ -1518,8 +1518,9 @@ fn max_axis_ratio(
 /// successive iters tightening. Without this, the iter-1 cut at strict
 /// `(1+ε)` is infeasible inside the trust region whenever `R_current ≫ 1`.
 ///
-/// Cuts at i=0 use forward FD; cuts at i=N-1 use backward FD; interior cuts
-/// use central FD (matching `verify::da_ds_at`). See
+/// All cuts use the width-1 backward FD stencil from `stencil::s_dddot_at`
+/// (with i=0 mirrored to forward FD on (b₀, b₁)); same stencil as
+/// `verify::check` and `max_axis_ratio`. See
 /// `append_axis_jerk_cut_to_clarabel` for the row-coefficient algebra.
 fn build_axis_jerk_cuts(
     result: &SolverResult,
