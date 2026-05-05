@@ -829,7 +829,7 @@ fn solve_with_cuts_and_trust_region(
     // the empirical CL-2024 counterexample fixture. 1000 iters is enough
     // headroom; runtime is still ≤ 1 s per outer iteration on N=200 grids.
     //
-    // Reduced tolerances match verify::check's EPS_FEAS=1e-3 (spec §6.2).
+    // Reduced tolerances match verify::check's EPS_FEAS=2e-3 (spec §6.2).
     // Allows AlmostSolved states at this tolerance to map to SolvedInexact
     // instead of MaxIter; SLP outer loop can then continue with cuts.
     // Solved gating remains at default eps_abs.

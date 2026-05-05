@@ -245,6 +245,16 @@ pub fn build(grid: &ArclengthGrid, limits: &Limits, endpoints: EndpointVelocitie
     // both SOCP relaxation AND verification — is deferred to Step 9 (likely
     // SLP / Lee-2024 outer iteration); the two MUST land together.
     // BindingConstraint::AxisJerk{axis} is reserved for that path.
+    //
+    // Note (2026-05-05): the per-axis SLP machinery downstream of this SOC
+    // chain (verifier `check` and `append_axis_jerk_cut_to_clarabel`) was
+    // unified at width-1 b-FD per
+    // `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`.
+    // This brings the system's stencil count from 2 to 1 and resolves the
+    // prior boundary-adjacent O(1)·b'' bias in the verifier's central-FD-on-`a`
+    // estimator. The per-axis Cartesian jerk SOC relaxation in *this* file
+    // (block-(h) territory) is still the warning above — that work remains
+    // deferred.
     let j_path = limits.j_max[0].min(limits.j_max[1]).min(limits.j_max[2]);
     debug_assert!(j_path > 0.0, "jerk limit must be positive");
 
