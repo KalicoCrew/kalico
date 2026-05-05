@@ -683,6 +683,12 @@ class MCU_endstop:
                 stepper_for.bridge_set_position_from_step_count(cnt)
         trip_clock = int(evt.get("trip_clock", 0))
         if trip_clock == 0:
+            # No MCU trip snapshot (e.g. synchronous AlreadyTripped at
+            # arm time where no tick ran). Fall back to arm_print_time as
+            # the trigger time — it's the closest we have.
+            arm_pt = self._dispatch.get_arm_print_time()
+            if arm_pt is not None and arm_pt > 0.0:
+                return arm_pt
             return 0.0
         return self._mcu.clock_to_print_time(trip_clock)
 

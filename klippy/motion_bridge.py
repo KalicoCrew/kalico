@@ -338,6 +338,7 @@ class BridgeTriggerDispatch:
         self._steppers = []         # list of MCU_stepper, retained for IK lookups
         self._reason = None         # legacy-compatible reason code
         self._trip_event = None     # decoded async event payload
+        self._arm_print_time = None # print_time at arm time (fallback trigger)
         self._handler_registered = False
         self._toolhead_arms = None  # set at start() for stop() cleanup
 
@@ -371,6 +372,8 @@ class BridgeTriggerDispatch:
     # ── start / wait / stop ─────────────────────────────────────────
 
     def start(self, arm_print_time, mcu_obj):
+        # Stash for use as fallback trigger time in AlreadyTripped path.
+        self._arm_print_time = arm_print_time
         # Convert print_time → MCU clock for arm_clock.
         arm_clock = int(mcu_obj.print_time_to_clock(arm_print_time))
 
@@ -420,8 +423,10 @@ class BridgeTriggerDispatch:
         )
         logging.info("[bridge-trace] endstop_arm status=%s", status)
         if status == ARM_STATUS_ALREADY_TRIPPED:
-            # Pin asserted at arm time under TripImmediately. Treat as
-            # immediate trigger.
+            # Pin asserted at arm time under TripImmediately. The
+            # firmware published a trip snapshot in arm() itself —
+            # fetch it now so home_wait can return a real trigger time.
+            self._trip_event = self._bridge.take_trip_event() or {}
             self._reason = REASON_ENDSTOP_HIT
             self._completion.complete(self._reason)
         elif status == ARM_STATUS_REJECTED:
@@ -482,3 +487,6 @@ class BridgeTriggerDispatch:
 
     def get_trip_event(self):
         return self._trip_event
+
+    def get_arm_print_time(self):
+        return self._arm_print_time

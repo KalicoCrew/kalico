@@ -2,12 +2,12 @@
 """G28 X end-to-end tests against the klippy-in-loop sim.
 
 Two scenarios:
-  - trip_path: arm endstop LOW, schedule a delayed_gcode at +0.6 s to
-    flip pin HIGH, send G28 X, expect success and M114 reporting X=0.
-  - notrip_path: arm endstop LOW, send G28 X with no trip scheduled,
-    expect the new MCU-driven past-end-time terminal to surface as a
-    "No trigger on x after full movement" error returned in well under
-    the host wall-clock backstop.
+  - trip_path: pin already HIGH (asserted) when G28 arms the endstop;
+    bridge returns AlreadyTripped → REASON_ENDSTOP_HIT synchronously
+    and homing succeeds.
+  - notrip_path: pin LOW; the homing segment retires without a trip;
+    MCU emits credit-freed; bridge fires past-end-time;
+    homing.py raises "No trigger on x".
 """
 import json, os, pathlib, signal, socket, subprocess, sys, time
 
@@ -75,20 +75,23 @@ def send_gcode(script, timeout=30.0):
     out = buf.split(b"\x03",1)[0]
     return json.loads(out.decode()) if out else {}
 
-def run_scenario(name, schedule_trip):
+def run_scenario(name, trip_at_arm):
     cleanup_prior()
     elf = spawn_elf(); klippy = spawn_klippy()
     try:
-        send_gcode("KALICO_SIM_ENDSTOP_SET_PIN GPIO=20 LEVEL=0")
-        if schedule_trip:
-            # Reactor-driven: fires from klippy's loop, NOT serialized
-            # behind the in-flight G28 gcode-script command.
-            send_gcode("UPDATE_DELAYED_GCODE ID=trip_x DURATION=0.6")
+        # trip_at_arm=True: pin already HIGH (asserted) when G28 arms
+        # the endstop; the bridge returns AlreadyTripped → REASON_ENDSTOP_HIT
+        # synchronously and homing succeeds.
+        # trip_at_arm=False: pin LOW; the homing segment retires without
+        # a trip; MCU emits credit-freed; bridge fires past-end-time;
+        # homing.py raises "No trigger on x".
+        send_gcode("KALICO_SIM_ENDSTOP_SET_PIN GPIO=20 LEVEL=%d"
+                   % (1 if trip_at_arm else 0))
         t0 = time.time()
         r = send_gcode("G28 X", timeout=30.0)
         elapsed = time.time() - t0
         print(f"[{name}] G28 X result: {r} elapsed={elapsed:.2f}s")
-        if schedule_trip:
+        if trip_at_arm:
             ok = "result" in r and "error" not in r.get("error", {})
         else:
             err_msg = r.get("error", {}).get("message", "")
@@ -101,9 +104,9 @@ def run_scenario(name, schedule_trip):
 
 def main():
     failures = []
-    if not run_scenario("trip_path", schedule_trip=True):
+    if not run_scenario("trip_path", trip_at_arm=True):
         failures.append("trip_path")
-    if not run_scenario("notrip_path", schedule_trip=False):
+    if not run_scenario("notrip_path", trip_at_arm=False):
         failures.append("notrip_path")
     if failures:
         print(f"FAIL: {failures}"); return 1

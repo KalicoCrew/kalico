@@ -397,6 +397,33 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
+
+    // Synchronous AlreadyTripped: if any TripImmediately source is
+    // already asserted at arm time, publish a snapshot immediately and
+    // return AlreadyTripped so the host can complete the homing terminal
+    // synchronously without waiting for the first ISR tick.
+    let source_count = usize::from(msg.source_count);
+    for (idx, cfg) in msg.sources.iter().take(source_count).enumerate() {
+        if cfg.policy != ArmPolicy::TripImmediately {
+            continue;
+        }
+        let pin_high = read_pin(cfg.gpio);
+        let asserted = if cfg.active_high { pin_high } else { !pin_high };
+        if asserted {
+            // Transition to Tripping → TrippedReady.
+            ARM.state
+                .store(ArmState::Tripping as u8, Ordering::Release);
+            // Publish snapshot with arm_clock as the trip clock (no
+            // actual MCU tick yet; best-effort timestamp).
+            let empty_counts: &[i32] = &[];
+            publish_snapshot(msg.arm_clock, idx as u8, empty_counts);
+            ARM.state
+                .store(ArmState::TrippedReady as u8, Ordering::Release);
+            TRIP_EVENT_QUEUED.store(true, Ordering::Release);
+            return Ok(ArmStatus::AlreadyTripped);
+        }
+    }
+
     Ok(ArmStatus::Armed)
 }
 
@@ -909,10 +936,50 @@ mod tests {
         let _guard = reset();
         let mut source = cfg(SourceKind::Physical, ArmPolicy::TripImmediately, 1, 11);
         source.active_high = false;
-        arm(msg(source)).expect("arm");
+        // Active-low: HIGH = not asserted, LOW = asserted.
+        // Set pin HIGH before arming so arm() does not see an asserted
+        // pin and immediately return AlreadyTripped.
         set_pin_level(11, true);
+        arm(msg(source)).expect("arm");
         assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
         set_pin_level(11, false);
         assert_eq!(tick(2, [0, 0, 0], &[1]), TripAction::AbortNow);
+    }
+
+    #[test]
+    fn already_tripped_at_arm_time_active_high() {
+        // TripImmediately + pin already HIGH when arm() is called:
+        // arm() should return AlreadyTripped synchronously, publish a
+        // snapshot, and set state to TrippedReady so poll_trip() works.
+        let _guard = reset();
+        set_pin_level(12, true);
+        let result = arm(msg(cfg(
+            SourceKind::Physical,
+            ArmPolicy::TripImmediately,
+            1,
+            12,
+        )));
+        assert_eq!(result, Ok(ArmStatus::AlreadyTripped));
+        // State should be TrippedReady; poll_trip() must return Some.
+        let evt = poll_trip().expect("trip event after AlreadyTripped");
+        assert_eq!(evt.arm_id, 42);
+        assert_eq!(evt.trip_source_idx, 0);
+        // No further ticks should trip again.
+        assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
+    }
+
+    #[test]
+    fn already_tripped_requires_trip_immediately_policy() {
+        // WaitForClear source with pin HIGH at arm time must NOT return
+        // AlreadyTripped — the policy requires a clear-then-assert cycle.
+        let _guard = reset();
+        set_pin_level(13, true);
+        let result = arm(msg(cfg(
+            SourceKind::Physical,
+            ArmPolicy::WaitForClear,
+            1,
+            13,
+        )));
+        assert_eq!(result, Ok(ArmStatus::Armed));
     }
 }

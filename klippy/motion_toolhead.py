@@ -289,6 +289,12 @@ class MotionToolhead:
         # snapshot, not here.
         if self.bridge is None:
             return
+        # If a drip_completion was already signalled (e.g. synchronous
+        # AlreadyTripped at arm time), skip the homing segment submission.
+        # The endstop terminal was already delivered in home_start; there
+        # is nothing for the MCU segment to contribute.
+        if drip_completion is not None and drip_completion.test():
+            return
         arm_ids = list(self.active_homing_arms)
         if not arm_ids:
             # No bridge endstops armed (e.g. file-output simulation, or

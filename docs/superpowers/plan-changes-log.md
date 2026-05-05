@@ -20,6 +20,23 @@ The architecturally-correct fix is at the trajectory layer: the post-shape curve
 
 ---
 
+## 2026-05-06 — Homing past-end-time event (sim-driven discovery)
+
+**What changed:** Wired MCU-driven `kalico_credit_freed` retirement of the homing segment as the authoritative no-trip terminal for `MCU_endstop.home_wait` in bridge mode. Demoted `_home_wait_bridge`'s host wall-clock deadline from primary terminal to silence backstop with a distinct error. Mid-execution discovery: the trip event was *also* never wired — `kalico_endstop_tripped` was being silently discarded as `UnknownOutput` because `RuntimeEvent::lift()` had no match arm for it, so `_on_trip_message` was registered but never fired. Added the variant + dispatch path to close the trip terminal too.
+
+Implementation also required adding the synchronous AlreadyTripped detection to `runtime::endstop::arm()`: for `TripImmediately` sources, if the pin is asserted when `arm()` is called, publish a snapshot immediately and return `ArmStatus::AlreadyTripped`. Prior to this, `arm()` always returned `Armed` and the AlreadyTripped path in the Python bridge was dead code. The test change to "pin already HIGH at arm time" (`trip_at_arm=True`) exposed this gap. Three additional fixes were required: `drip_move` now checks `drip_completion.test()` before submitting the homing segment (skip if already terminal), `BridgeTriggerDispatch.start()` calls `take_trip_event()` on AlreadyTripped to pre-populate `_trip_event`, and `_home_wait_bridge` uses `arm_print_time` as fallback trigger time when the trip snapshot's `trip_clock` is zero (AlreadyTripped produces no async MCU trip snapshot). `homing_retract_dist: 0` added to `[stepper_x]` in the sim config so the AlreadyTripped first-home succeeds without a retract+re-approach that would immediately re-trigger.
+
+**Why:** klippy-in-loop sim revealed that the host-side bounded `home_wait` (added in step-7d-endstop-homing-design rev 2→3 per Codex round-2 feedback) was *the only* no-trip terminal in the bridge path, and the deadline math `home_end_time - estimated_print_time` collapses to ~0 under the bridge MCU's clock — G28 errored ~100 ms after motion began while the runtime was still happily stepping. Investigation of the trip path then revealed it had never worked end-to-end either; the design assumed an MCU-driven trip event would resolve `_completion` but the wire-format lift was never written. Mainline trsync uses MCU-clock past-end-time as the authoritative signal *and* a trip event; this restores the same shape using the existing `kalico_credit_freed` event for past-end-time and adding the missing `EndstopTripped` variant for trips.
+
+**Evidence:**
+- Investigation transcript: 2026-05-05 conversation.
+- Plan: `docs/superpowers/plans/2026-05-05-homing-past-end-time-event.md`.
+- Sim coverage: `tools/sim_klippy/test_home_x.py` `trip_path` (pin asserted at arm → AlreadyTripped → success) and `notrip_path` (pin LOW → past-end-time → "No trigger" promptly).
+
+**Lesson:** When a Codex review asks for a defensive bound, treat it as "add a backstop," not "make this the primary terminal." The mainline-equivalent design had three signals (MCU trip event + MCU past-end-time + host backstop); we shipped only the backstop and called it good. Bias toward at-parity-with-mainline when the prior art exists, even if the review didn't explicitly ask for it. Trust Codex less.
+
+---
+
 ### 2026-05-05 — Stencil unification (Option B) for path-third-derivative s‴
 
 **What:** Replaced the temporal crate's mixed finite-difference stencils for `s‴` with a uniform width-1 b-FD stencil across verifier, per-axis Cartesian-jerk SLP convergence test, and per-axis SLP cut linearization. New shared module `rust/temporal/src/topp/stencil.rs` with `s_dddot_at(b, i, h)`. `verify::da_ds_at`, `solver::da_ds_along`, and the prior cut algebra removed; `append_axis_jerk_cut_to_clarabel` re-derived per spec §5 with interior cuts touching `(b_{i-1}, b_i, b_{i+1}, a_i)` instead of `(b_i, a_{i-1}, a_i, a_{i+1})`. Path-jerk SOC chain (block (h)) and path-jerk SLP cuts unchanged — they already used width-1 b-FD; this change brings everything else into agreement.
