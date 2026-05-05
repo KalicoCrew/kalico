@@ -2564,6 +2564,9 @@ class TradRackKinematics:
     def get_fil_driver_rail(self):
         return self.rails[1]
 
+    def get_endstops_for_safe_move(self, axis, is_positive_dir):
+        return None  # not supported
+
 
 class TradRackHoming(Homing, object):
     def __init__(self, printer, toolhead):

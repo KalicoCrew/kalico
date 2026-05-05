@@ -139,6 +139,9 @@ class PolarKinematics:
             "axis_maximum": self.axes_max,
         }
 
+    def get_endstops_for_safe_move(self, axis, is_positive_dir):
+        return None  # not supported
+
 
 def load_kinematics(toolhead, config):
     return PolarKinematics(toolhead, config)

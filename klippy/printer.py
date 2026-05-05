@@ -320,6 +320,7 @@ class Printer:
             "respond",
             "exclude_object",
             "telemetry",
+            "safe_move",
         ]:
             self.load_object(config, section_config, None)
         if self.get_start_args().get("debuginput") is not None:

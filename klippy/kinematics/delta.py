@@ -225,6 +225,9 @@ class DeltaKinematics:
             self.radius, self.angles, self.arm_lengths, endstops, stepdists
         )
 
+    def get_endstops_for_safe_move(self, axis, is_positive_dir):
+        return None  # not supported
+
 
 # Delta parameter calibration for DELTA_CALIBRATE tool
 class DeltaCalibration:

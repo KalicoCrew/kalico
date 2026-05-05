@@ -163,6 +163,16 @@ class CartKinematics:
             "axis_maximum": self.axes_max,
         }
 
+    def get_endstops_for_safe_move(self, axis, is_positive_dir):
+        """
+        Returns the endstops for the given axis and direction.
+        """
+        if axis < 0 or axis > 2:
+            raise ValueError(f"Invalid axis '{axis}'")
+        if axis == self.dual_carriage_axis:
+            return None  # not supported yet
+        return self.rails[axis].get_endstops_for_direction(is_positive_dir)
+
 
 def load_kinematics(toolhead, config):
     return CartKinematics(toolhead, config)

@@ -1610,6 +1610,18 @@ The following additional commands are also available.
   prepended with `<prefix>`. (The `PREFIX` parameter will take
   priority over the `TYPE` parameter)
 
+### [safe_move]
+
+The following command is available:
+
+#### SAFE_MOVE
+
+`SAFE_MOVE AXIS=<X|Y|Z> DIST=<distance> SPEED=<speed>`: Performs a protected
+single-axis move in the given direction. The move stops early if the directional
+endstop triggers or the end of the axis is reached.
+
+Trying to move into a direction that does not have an endstop will raise an error.
+
 ### [save_variables]
 
 The following command is enabled if a

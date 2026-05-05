@@ -5,12 +5,24 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import math
+from enum import Enum
 
 from .danger_options import get_danger_options
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = 0.000015
 ENDSTOP_SAMPLE_COUNT = 4
+
+
+class MoveResult(str, Enum):
+    # The move has covered the full requested distance without triggering an endstop.
+    FULL_MOVE = "full_move"
+
+    # The endstop was hit before covering the full distance.
+    HIT_ENDSTOP = "hit_endstop"
+
+    # There was no move because the endstop was already triggered.
+    ALREADY_AT_ENDSTOP = "already_at_endstop"
 
 
 # Return a completion that completes when all completions in a list complete
@@ -25,6 +37,32 @@ def multi_complete(printer, completions):
         reactor.register_callback(
             lambda e, c=c: cp.complete(1) if c.wait() else 0
         )
+    return cp
+
+
+# Return a completion that completes when the first completion in a list complete
+def any_complete(printer, completions):
+    if len(completions) == 1:
+        return completions[0]
+    # Build completion that completes on the first completion.
+    reactor = printer.get_reactor()
+    cp = reactor.completion()
+
+    def _wait_one(eventtime, c):
+        res = c.wait()
+        if cp.test():
+            # Another callback already completed cp (and unblocked the other waits) while we were blocked in c.wait().
+            return 0
+        # Complete the main completion and abort any remaining waits so that
+        # callers are not blocked waiting on completions that will never fire.
+        cp.complete(res)
+        for oc in completions:
+            if oc is not c and not oc.test():
+                oc.complete(res)
+        return 0
+
+    for c in completions:
+        reactor.register_callback(lambda e, c=c: _wait_one(e, c))
     return cp
 
 
@@ -104,6 +142,7 @@ class HomingMove:
         probe_pos=False,
         triggered=True,
         check_triggered=True,
+        complete=multi_complete,
     ):
         # Notify start of homing/probing move
         self.printer.send_event("homing:homing_move_begin", self)
@@ -131,7 +170,7 @@ class HomingMove:
                 triggered=triggered,
             )
             endstop_triggers.append(wait)
-        all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
+        all_endstop_trigger = complete(self.printer, endstop_triggers)
 
         self.toolhead.dwell(HOMING_START_DELAY)
         # Issue move
@@ -176,15 +215,19 @@ class HomingMove:
                 sp.verify_no_probe_skew(haltpos)
         else:
             haltpos = trigpos = movepos
-            over_steps = {
-                sp.stepper_name: sp.halt_pos - sp.trig_pos
-                for sp in self.stepper_positions
-            }
-            steps_moved = {
-                sp.stepper_name: (sp.halt_pos - sp.start_pos)
-                * sp.stepper.get_step_dist()
-                for sp in self.stepper_positions
-            }
+            over_steps = {}
+            steps_moved = {}
+            for sp in self.stepper_positions:
+                halt_pos = sp.halt_pos
+                trig_pos = sp.trig_pos
+                if halt_pos is None or trig_pos is None:
+                    raise self.printer.command_error(
+                        "Internal error: missing endstop position data"
+                    )
+                over_steps[sp.stepper_name] = halt_pos - trig_pos
+                steps_moved[sp.stepper_name] = (
+                    halt_pos - sp.start_pos
+                ) * sp.stepper.get_step_dist()
             filled_steps_moved = {
                 sname: steps_moved.get(sname, 0)
                 for sname in [s.get_name() for s in kin.get_steppers()]
@@ -453,6 +496,30 @@ class PrinterHoming:
                 "Probe triggered prior to movement"
             )
         return epos
+
+    def endstop_move(self, endstops, pos, speed, *, complete=multi_complete):
+        hmove = HomingMove(self.printer, endstops)
+        try:
+            epos = hmove.homing_move(
+                pos,
+                speed,
+                probe_pos=True,
+                check_triggered=False,
+                complete=complete,
+            )
+        except self.printer.command_error:
+            if self.printer.is_shutdown():
+                raise self.printer.command_error(
+                    "Endstop move failed due to printer shutdown"
+                )
+            raise
+
+        if hmove.check_no_movement():
+            return epos, MoveResult.ALREADY_AT_ENDSTOP
+        elif all(math.isclose(p, e) for p, e in zip(pos, epos)):
+            return epos, MoveResult.FULL_MOVE
+        else:
+            return epos, MoveResult.HIT_ENDSTOP
 
     def cmd_G28(self, gcmd):
         # Move to origin

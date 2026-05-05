@@ -183,6 +183,9 @@ class RotaryDeltaKinematics:
     def get_calibration(self):
         return self.calibration
 
+    def get_endstops_for_safe_move(self, axis, is_positive_dir):
+        return None  # not supported
+
 
 # Rotary delta parameter calibration for DELTA_CALIBRATE tool
 class RotaryDeltaCalibration:

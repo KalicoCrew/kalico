@@ -271,7 +271,6 @@ class DockableProbe:
         self.finish_home_complete = self.wait_trigger_complete = None
 
         # State
-        self.last_z = -9999
         self.multi = MULTI_OFF
         self._last_homed = None
 
@@ -383,6 +382,7 @@ class DockableProbe:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
+        self.safe_move = self.printer.lookup_object("safe_move")
         rails = self.toolhead.get_kinematics().rails
         endstops = [es for rail in rails for es, name in rail.get_endstops()]
         positions = [
@@ -846,18 +846,13 @@ class DockableProbe:
 
     # Hop z and return to un-homed state
     def _force_z_hop(self):
-        this_z = self.toolhead.get_position()[2]
-        if self.last_z == this_z:
-            return
-
-        tpos = self.toolhead.get_position()
-        self.toolhead.set_position(
-            [tpos[0], tpos[1], 0.0, tpos[3]], homing_axes=[2]
+        self.safe_move.move(
+            self.toolhead,
+            "z",
+            self.z_hop,
+            self.lift_speed,
+            allow_unsafe=True,
         )
-        self.toolhead.manual_move([None, None, self.z_hop], self.lift_speed)
-        kin = self.toolhead.get_kinematics()
-        kin.clear_homing_state([2])
-        self.last_z = self.toolhead.get_position()[2]
 
     #######################################################################
     # Probe Wrappers

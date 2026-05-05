@@ -13,10 +13,12 @@ class CoreXYKinematics:
             stepper.LookupMultiRail(config.getsection("stepper_" + n))
             for n in "xyz"
         ]
+
+        # Cross-connect endpoints and steppers.
         for s in self.rails[1].get_steppers():
-            self.rails[0].get_endstops()[0][0].add_stepper(s)
+            self.rails[0].add_foreign_stepper(s)
         for s in self.rails[0].get_steppers():
-            self.rails[1].get_endstops()[0][0].add_stepper(s)
+            self.rails[1].add_foreign_stepper(s)
         self.rails[0].setup_itersolve("corexy_stepper_alloc", b"+")
         self.rails[1].setup_itersolve("corexy_stepper_alloc", b"-")
         self.rails[2].setup_itersolve("cartesian_stepper_alloc", b"z")
@@ -118,6 +120,15 @@ class CoreXYKinematics:
             "axis_minimum": self.axes_min,
             "axis_maximum": self.axes_max,
         }
+
+    def get_endstops_for_safe_move(self, axis, is_positive_dir):
+        """
+        Returns the endstops for the given axis and direction.
+        Returns None if this direction is not supported and empty list if no endstops have been configured.
+        """
+        if axis < 0 or axis > 2:
+            raise ValueError(f"Invalid axis '{axis}'")
+        return self.rails[axis].get_endstops_for_direction(is_positive_dir)
 
 
 def load_kinematics(toolhead, config):
