@@ -30,6 +30,10 @@ class MotionBridgeWrapper:
             )
         self._bridge = _native.MotionBridge()
         self._reactor = reactor
+        # arm_id → BridgeTriggerDispatch registry. Populated by
+        # BridgeTriggerDispatch.start so the credit-freed handler can
+        # fire _completion on past-end-time.
+        self._homing_dispatches = {}
 
     def get_bridge(self):
         return self._bridge
@@ -163,6 +167,20 @@ class MotionBridgeWrapper:
         return self._bridge.on_credit_freed(
             mcu_handle, retired_through_segment_id, free_slots,
         )
+
+    def register_homing_dispatch(self, arm_id, dispatch):
+        self._homing_dispatches[int(arm_id)] = dispatch
+
+    def unregister_homing_dispatch(self, arm_id):
+        self._homing_dispatches.pop(int(arm_id), None)
+
+    def fire_homing_completion(self, arm_id):
+        """Resolve the BridgeTriggerDispatch for arm_id with
+        REASON_PAST_END_TIME. No-op if no dispatch is registered (race
+        with stop)."""
+        dispatch = self._homing_dispatches.get(int(arm_id))
+        if dispatch is not None:
+            dispatch._fire_past_end_time()
 
     # ------------------------------------------------------------------
     # Phase 2: msgproto handover
@@ -370,6 +388,10 @@ class BridgeTriggerDispatch:
         if self._queue is None:
             self._queue = self._bridge.alloc_command_queue(self._mcu)
 
+        # Register in the bridge's arm_id → dispatch map so the
+        # credit-freed handler can resolve past-end-time terminals.
+        self._bridge.register_homing_dispatch(self._arm_id, self)
+
         # Register an async handler for kalico_endstop_tripped before
         # arming so we don't race the firmware emitting the event.
         if not self._handler_registered:
@@ -424,6 +446,14 @@ class BridgeTriggerDispatch:
         self._reason = REASON_ENDSTOP_HIT
         self._completion.complete(self._reason)
 
+    def _fire_past_end_time(self):
+        # MCU-driven no-trip terminal. Mirror _on_trip_message's
+        # ownership semantics: only fire if no terminal yet.
+        if self._reason is not None:
+            return
+        self._reason = REASON_PAST_END_TIME
+        self._completion.complete(self._reason)
+
     def stop(self):
         # Called from MCU_endstop.home_wait. Disarm if no trip yet.
         if self._reason is None:
@@ -441,6 +471,7 @@ class BridgeTriggerDispatch:
                 self._reason = REASON_ENDSTOP_HIT
             if not self._completion.test():
                 self._completion.complete(self._reason)
+        self._bridge.unregister_homing_dispatch(self._arm_id)
         # Unregister from the toolhead's active-arms registry. start()
         # cached the set reference; this keeps drip_move from passing a
         # stale arm_id on a subsequent unrelated move.
