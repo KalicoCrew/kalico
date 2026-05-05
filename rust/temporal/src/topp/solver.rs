@@ -1327,7 +1327,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
     };
 
     // Initial violator scan.
-    let initial_max = max_axis_ratio(&last_result, grid, limits);
+    let initial_max = max_axis_ratio(&last_result, grid, limits, bundle.h);
     if initial_max <= 1.0 + SLP9_EPS_FEAS {
         // Path-jerk-feasible iterate is also per-axis-feasible. Return it.
         return Ok((
@@ -1401,7 +1401,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
                 continue;
             }
             // Evaluate verifier-form max-ratio at the candidate.
-            let cand_ratio = max_axis_ratio(&candidate, grid, limits);
+            let cand_ratio = max_axis_ratio(&candidate, grid, limits, bundle.h);
             if cand_ratio < best_ratio {
                 accepted = Some(candidate);
                 best_ratio = cand_ratio;
@@ -1424,7 +1424,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
                 candidate.status,
                 SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
             ) {
-                let cand_ratio = max_axis_ratio(&candidate, grid, limits);
+                let cand_ratio = max_axis_ratio(&candidate, grid, limits, bundle.h);
                 if cand_ratio < best_ratio {
                     accepted = Some(candidate);
                     best_ratio = cand_ratio;
@@ -1476,11 +1476,13 @@ pub(crate) fn slp_solve_with_axis_jerk(
 }
 
 /// Verifier-form per-axis Cartesian jerk ratio at every (i, axis), max over
-/// the whole grid. Mirrors `verify::check`'s formula and FD stencil exactly.
+/// the whole grid. Mirrors `verify::check`'s formula and uses the shared
+/// width-1 b-FD stencil from `topp::stencil::s_dddot_at`.
 fn max_axis_ratio(
     result: &SolverResult,
     grid: &crate::topp::path::ArclengthGrid,
     limits: &crate::Limits,
+    h: f64,
 ) -> f64 {
     let n = result.b.len();
     debug_assert_eq!(grid.s.len(), n);
@@ -1489,8 +1491,7 @@ fn max_axis_ratio(
         let s_dot = result.b[i].max(0.0).sqrt();
         let s_dot3 = s_dot * s_dot * s_dot;
         let s_ddot = result.a[i];
-        let da_ds = da_ds_along(&result.a, &grid.s, i);
-        let s_dddot = da_ds * s_dot;
+        let s_dddot = crate::topp::stencil::s_dddot_at(&result.b, i, h);
         for ax in 0..3 {
             let cp = grid.c_prime[i][ax];
             let cpp = grid.c_double_prime[i][ax];
@@ -1576,37 +1577,6 @@ fn build_axis_jerk_cuts(
         }
     }
     cuts
-}
-
-/// `da/ds` at grid index `i`, mirroring `verify::da_ds_at` exactly. Central
-/// FD interior, one-sided FD at boundaries.
-fn da_ds_along(a: &[f64], s: &[f64], i: usize) -> f64 {
-    let n = s.len();
-    if n <= 1 {
-        return 0.0;
-    }
-    if i == 0 {
-        let ds = s[1] - s[0];
-        if ds.abs() > 1e-15 {
-            (a[1] - a[0]) / ds
-        } else {
-            0.0
-        }
-    } else if i == n - 1 {
-        let ds = s[n - 1] - s[n - 2];
-        if ds.abs() > 1e-15 {
-            (a[n - 1] - a[n - 2]) / ds
-        } else {
-            0.0
-        }
-    } else {
-        let ds = s[i + 1] - s[i - 1];
-        if ds.abs() > 1e-15 {
-            (a[i + 1] - a[i - 1]) / ds
-        } else {
-            0.0
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
