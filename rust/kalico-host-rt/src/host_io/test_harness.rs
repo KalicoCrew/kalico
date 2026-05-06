@@ -135,9 +135,9 @@ impl ReactorHarness {
         let (submission_tx, submission_rx) = std::sync::mpsc::channel();
         let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
         let config = KalicoHostIoConfig::default();
-        let reactor = Reactor::new_with_clock(
+        let reactor = Reactor::new_for_tests(
             port, parser, submission_rx, status_snapshot,
-            Vec::new(), config, clock.clone(),
+            config, clock.clone(),
         );
         Self { reactor, clock, port_handles, submission_tx }
     }

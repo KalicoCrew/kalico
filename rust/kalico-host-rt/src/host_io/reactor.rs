@@ -1,7 +1,6 @@
 //! Single-thread poll-reactor. Spec §3.7.
 
 use std::collections::VecDeque;
-use std::io::Read;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,20 +17,20 @@ use crate::host_io::kalico_native::{
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::rtt::RttEstimator;
 use crate::host_io::runtime_events::{FaultEvent, StatusEvent};
+use crate::host_io::serial_frame_io::SerialFrameIo;
 use crate::host_io::window::{UnackedWindow, AwaitingResponse};
-use kalico_native_transport::demux::{Demuxer, Frame};
+use kalico_native_transport::demux::{Frame, KlipperFrame, PollOutcome};
 use crate::passthrough_queue::{McuHandle, NotifyId, PassthroughRouter};
 use crate::transport::TransportError;
 use runtime::error::FaultCode;
 
 pub struct Reactor {
-    pub(crate) port:               Box<dyn serialport::SerialPort>,
+    pub(crate) io:                 SerialFrameIo,
     pub(crate) parser:             Arc<MsgProtoParser>,
     pub(crate) submission_rx:      Receiver<ReactorCommand>,
     pub(crate) unacked_window:     UnackedWindow,
     pub(crate) awaiting_response:  AwaitingResponse,
     pub(crate) rtt:                RttEstimator,
-    pub(crate) rx_buf:             Vec<u8>,
     pub(crate) status_snapshot:    Arc<ArcSwap<StatusEvent>>,
     pub(crate) event_dispatcher:   EventDispatcher,
 
@@ -82,11 +81,8 @@ pub struct Reactor {
     pub(crate) passthrough_mcu: Option<McuHandle>,
 
     // ── Phase C-B: kalico-native transport state ───────────────────────
-    /// Stream-level demuxer (spec §6) — every incoming byte goes through
-    /// this. Klipper-shaped frames flow back into `rx_buf` for
-    /// `extract_packet`; kalico-shaped frames land at `dispatch_kalico_frame`.
-    pub(crate) kalico_demuxer: Demuxer,
-    /// Pending kalico calls / identify state.
+    /// Pending kalico calls / identify state. Stream demuxing now lives
+    /// inside `io: SerialFrameIo`.
     pub(crate) kalico_state: KalicoNativeState,
 }
 
@@ -106,25 +102,23 @@ pub enum ReactorState {
 
 impl Reactor {
     pub fn new(
-        port: Box<dyn serialport::SerialPort>,
+        io: SerialFrameIo,
         parser: Arc<MsgProtoParser>,
         submission_rx: Receiver<ReactorCommand>,
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
-        rx_buf_initial: Vec<u8>,
         config: crate::host_io::KalicoHostIoConfig,
     ) -> Self {
         Self::new_with_clock(
-            port, parser, submission_rx, status_snapshot,
-            rx_buf_initial, config, Arc::new(RealClock),
+            io, parser, submission_rx, status_snapshot,
+            config, Arc::new(RealClock),
         )
     }
 
     pub fn new_with_clock(
-        port: Box<dyn serialport::SerialPort>,
+        io: SerialFrameIo,
         parser: Arc<MsgProtoParser>,
         submission_rx: Receiver<ReactorCommand>,
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
-        rx_buf_initial: Vec<u8>,
         config: crate::host_io::KalicoHostIoConfig,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -134,13 +128,12 @@ impl Reactor {
             config.host_event_capacity,
         );
         Self {
-            port,
+            io,
             parser,
             submission_rx,
             unacked_window: UnackedWindow::default(),
             awaiting_response: AwaitingResponse::default(),
             rtt: RttEstimator::default(),
-            rx_buf: rx_buf_initial,
             status_snapshot,
             event_dispatcher,
             send_seq: 1,
@@ -159,15 +152,37 @@ impl Reactor {
             passthrough_router: None,
             passthrough_notify_map: std::collections::HashMap::new(),
             passthrough_mcu: None,
-            kalico_demuxer: Demuxer::new(),
             kalico_state: KalicoNativeState::default(),
         }
     }
 
+    /// Test-only constructor that wraps a raw `Box<dyn SerialPort>` in a
+    /// `SerialFrameIo` internally. Lets the existing test fixtures and
+    /// harnesses keep using bespoke `SerialPort` implementations without
+    /// each callsite having to know about `SerialFrameIo`.
+    #[cfg(any(test, feature = "test-harness"))]
+    pub fn new_for_tests(
+        port: Box<dyn serialport::SerialPort>,
+        parser: Arc<MsgProtoParser>,
+        submission_rx: Receiver<ReactorCommand>,
+        status_snapshot: Arc<ArcSwap<StatusEvent>>,
+        config: crate::host_io::KalicoHostIoConfig,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self::new_with_clock(
+            SerialFrameIo::new(port),
+            parser,
+            submission_rx,
+            status_snapshot,
+            config,
+            clock,
+        )
+    }
+
     /// Single chokepoint for all wire writes. Per spec §3.7.
     pub(crate) fn write_frame(&mut self, frame: &[u8]) -> Result<(), TransportError> {
-        self.port.write_all(frame).map_err(TransportError::Io)?;
-        self.port.flush().map_err(TransportError::Io)?;
+        self.io.write_all(frame)?;
+        self.io.flush()?;
         Ok(())
     }
 }
@@ -539,12 +554,13 @@ impl Reactor {
 // ---------------------------------------------------------------------------
 
 impl Reactor {
-    pub(crate) fn handle_inbound_frame(&mut self, packet: Vec<u8>) -> Result<(), TransportError> {
-        if packet.len() < crate::host_io::wire::MESSAGE_MIN {
+    pub(crate) fn handle_inbound_frame(&mut self, frame: KlipperFrame) -> Result<(), TransportError> {
+        let bytes = frame.bytes();
+        if bytes.len() < crate::host_io::wire::MESSAGE_MIN {
             return Ok(());
         }
-        let wire_seq_nibble = packet[1] & 0x0F;
-        if packet.len() == crate::host_io::wire::MESSAGE_MIN {
+        let wire_seq_nibble = bytes[1] & 0x0F;
+        if bytes.len() == crate::host_io::wire::MESSAGE_MIN {
             // 5-byte ack/nak frame.
             self.handle_ack_nak(wire_seq_nibble)?;
             return Ok(());
@@ -556,7 +572,7 @@ impl Reactor {
         }
         // Parse + dispatch. Decode errors are warn-logged and the frame is dropped
         // (not propagated as Closed) — dictionary version skew is recoverable.
-        let decoded = match self.parser.decode(&packet) {
+        let decoded = match self.parser.decode(bytes) {
             Ok(d) => d,
             Err(e) => {
                 log::warn!("decode error on inbound frame: {e:?}; dropping");
@@ -566,11 +582,11 @@ impl Reactor {
         // Extract the raw payload (between header and trailer) for
         // passthrough notify dispatch. The payload is bytes [2..msglen-3].
         let raw_payload = {
-            let msglen = packet[0] as usize;
+            let msglen = bytes[0] as usize;
             let trailer = crate::host_io::wire::MESSAGE_TRAILER_SIZE;
             let header = crate::host_io::wire::MESSAGE_HEADER_SIZE;
             if msglen > header + trailer {
-                packet[header..msglen - trailer].to_vec()
+                bytes[header..msglen - trailer].to_vec()
             } else {
                 Vec::new()
             }
@@ -640,43 +656,30 @@ impl Reactor {
 
 impl Reactor {
     fn poll_serial(&mut self) {
-        let mut scratch = [0u8; 256];
-        if self.port.set_timeout(READ_TIMEOUT).is_err() {
-            return;
-        }
-        match self.port.read(&mut scratch) {
-            Ok(n) if n > 0 => {
+        let deadline = self.clock.now() + READ_TIMEOUT;
+        match self.io.poll_frames_until(deadline) {
+            Ok(PollOutcome::Frames { frames, errors }) => {
                 self.zero_byte_first_seen = None;
-                // Feed every incoming byte through the kalico-native demuxer
-                // (spec §6). Klipper-shaped frames are appended to `rx_buf`
-                // for the existing `extract_packet` path; kalico-shaped
-                // frames are dispatched inline below.
-                let (frames, errors) = self.kalico_demuxer.feed_slice(&scratch[..n]);
-                for e in errors { log::warn!("kalico stream error: {e}"); }
+                for e in errors {
+                    log::warn!("kalico stream error: {e}");
+                }
                 for f in frames {
                     match f {
                         Frame::Klipper(kf) => {
-                            // The demuxer already validated CRC + sync.
-                            // Append the full frame bytes to `rx_buf` so the
-                            // existing `extract_packet` path owns parsing /
-                            // dispatch. Redundancy goes away in Task 8 when
-                            // SerialFrameIo replaces this path.
-                            self.rx_buf.extend_from_slice(kf.bytes());
+                            if self.handle_inbound_frame(kf).is_err() {
+                                return;
+                            }
                         }
                         Frame::Kalico { channel, payload } => {
                             self.handle_kalico_frame(channel, &payload);
                         }
                     }
                 }
-                while let Some(packet) = crate::host_io::wire::extract_packet(&mut self.rx_buf) {
-                    if self.handle_inbound_frame(packet).is_err() {
-                        return; // Closed — run loop will see state and exit.
-                    }
-                }
             }
-            Ok(_) => {
-                // Spec §3.11: phantom Ok(0) is rare on USB-CDC; if it persists
-                // past ZERO_BYTE_DEBOUNCE we treat the port as disconnected.
+            Ok(PollOutcome::Timeout) => {
+                self.zero_byte_first_seen = None;
+            }
+            Ok(PollOutcome::PhantomZero) => {
                 let now = self.clock.now();
                 let first = *self.zero_byte_first_seen.get_or_insert(now);
                 if now.duration_since(first) >= ZERO_BYTE_DEBOUNCE {
@@ -690,9 +693,6 @@ impl Reactor {
                     self.state = ReactorState::Closed;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => {
                 log::warn!("port read error: {e:?}; transitioning to Closed");
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
@@ -1048,9 +1048,10 @@ mod tests {
             crate::host_io::runtime_events::StatusEvent::default(),
         ));
 
-        let mut reactor = Reactor::new(
-            Box::new(port), parser, rx, status_snapshot, Vec::new(),
+        let mut reactor = Reactor::new_for_tests(
+            Box::new(port), parser, rx, status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
+            Arc::new(crate::clock::RealClock),
         );
 
         // Pre-populate the unacked window.
@@ -1312,9 +1313,10 @@ mod tests {
             crate::host_io::runtime_events::StatusEvent::default(),
         ));
         let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
-        let mut reactor = Reactor::new(
-            Box::new(BrokenWritePort), parser, rx, status_snapshot, Vec::new(),
+        let mut reactor = Reactor::new_for_tests(
+            Box::new(BrokenWritePort), parser, rx, status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
+            Arc::new(crate::clock::RealClock),
         );
 
         // Queue one pending submission. unacked_window is empty so the
@@ -1354,9 +1356,10 @@ mod tests {
             crate::host_io::runtime_events::StatusEvent::default(),
         ));
         let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
-        let mut reactor = Reactor::new(
-            Box::new(BrokenPipePort), parser, rx, status_snapshot, Vec::new(),
+        let mut reactor = Reactor::new_for_tests(
+            Box::new(BrokenPipePort), parser, rx, status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
+            Arc::new(crate::clock::RealClock),
         );
 
         reactor.run(); // runs until Closed

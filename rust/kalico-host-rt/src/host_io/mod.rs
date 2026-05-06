@@ -238,9 +238,10 @@ impl KalicoHostIo {
     ) -> Result<Self, TransportError> {
         // Ensure read timeout is set (pipe_open path skips .timeout() builder).
         let _ = port_box.set_timeout(Duration::from_millis(100));
+        let mut io = crate::host_io::serial_frame_io::SerialFrameIo::new(port_box);
 
-        let (parser_owned, raw_identify_bytes, _seq, rx_buf) = identify::identify_handshake(
-            &mut port_box,
+        let (parser_owned, raw_identify_bytes, _seq, _rx_buf) = identify::identify_handshake(
+            &mut io,
             config.identify_timeout,
         )?;
 
@@ -255,7 +256,7 @@ impl KalicoHostIo {
         let reactor_clock = Arc::clone(&clock);
         let reactor_handle = std::thread::spawn(move || {
             let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
-                port_box, reactor_parser, submission_rx, reactor_status, rx_buf, reactor_config,
+                io, reactor_parser, submission_rx, reactor_status, reactor_config,
                 reactor_clock,
             );
             reactor.run();

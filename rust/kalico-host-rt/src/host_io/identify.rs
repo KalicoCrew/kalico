@@ -1,18 +1,16 @@
 //! Synchronous identify handshake — extracts the firmware data-dictionary
 //! so we can build a [`MsgProtoParser`] before the reactor starts.
 
-use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
-use serialport::SerialPort;
-
 use crate::host_io::parser::{DataDictionary, MsgProtoParser, decode_vlq, encode_vlq};
+use crate::host_io::serial_frame_io::SerialFrameIo;
 use crate::host_io::wire::{
     MESSAGE_HEADER_SIZE, MESSAGE_MIN, MESSAGE_SEQ_MASK, MESSAGE_TRAILER_SIZE,
     build_frame,
 };
 use crate::transport::{MessageParams, MessageValue, TransportError};
-use kalico_native_transport::demux::{Demuxer, Frame};
+use kalico_native_transport::demux::{Frame, PollOutcome};
 
 const IDENTIFY_CHUNK: u32 = 40;
 
@@ -23,32 +21,31 @@ const IDENTIFY_CHUNK: u32 = 40;
 /// raw_identify_bytes, seq, rx_buf)` on success. `raw_identify_bytes` is
 /// the raw (zlib-compressed or plain) blob as received from the firmware —
 /// suitable for passing to klippy's `msgproto.MessageParser.process_identify`.
+///
+/// The 4th tuple element (`rx_buf`) is now always an empty `Vec` — the
+/// `SerialFrameIo`'s internal demuxer is what crosses the identify→reactor
+/// boundary, by being moved by-value into the reactor. Task 11 retires this
+/// empty placeholder from the signature.
 pub fn identify_handshake(
-    port: &mut Box<dyn SerialPort>,
+    io: &mut SerialFrameIo,
     timeout: Duration,
 ) -> Result<(MsgProtoParser, Vec<u8>, u8, Vec<u8>), TransportError> {
     let deadline = Instant::now() + timeout;
 
+    // Drain phase: poll for ~300ms and discard everything (frames + errors).
+    // The firmware emits unsolicited `kalico_status` frames on channel 1 from
+    // boot, and pre-existing klipper output we want gone before we start
+    // the identify exchange.
     let drain_until = Instant::now() + Duration::from_millis(300);
-    let mut scratch = [0u8; 4096];
     while Instant::now() < drain_until {
-        port.set_timeout(Duration::from_millis(50)).map_err(|e| super::sp_err(&e))?;
-        match port.read(&mut scratch) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
-            Err(e) => return Err(TransportError::Io(e)),
+        match io.poll_frames_until(drain_until)? {
+            PollOutcome::Frames { .. } => {}
+            PollOutcome::Timeout | PollOutcome::PhantomZero => break,
         }
     }
 
-    let mut rx_buf: Vec<u8> = Vec::new();
     let mut seq: u8 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
-    // The firmware emits unsolicited `kalico_status` frames on channel 1 from
-    // boot, interleaved with our klipper-protocol identify response. The
-    // demuxer separates those out so the slow O(n²) byte-by-byte resync
-    // inside `extract_packet` never sees them.
-    let mut demuxer = Demuxer::new();
 
     loop {
         // Encode `identify offset=N count=40` by hand (no dict yet).
@@ -67,22 +64,17 @@ pub fn identify_handshake(
             .expect("identify count is u32-range");
 
         let frame = build_frame(&payload, seq);
-        port.write_all(&frame).map_err(TransportError::Io)?;
-        port.flush().map_err(TransportError::Io)?;
+        io.write_all(&frame)?;
+        io.flush()?;
         seq = seq.wrapping_add(1) & MESSAGE_SEQ_MASK;
 
         let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(150));
-        let resp = wait_for_identify_response(
-            port,
-            &mut rx_buf,
-            &mut demuxer,
-            attempt_deadline,
-        )?
-        .ok_or_else(|| {
-            TransportError::Parse(
-                "identify timed out (Phase-B shim, no NAK resync)".into(),
-            )
-        })?;
+        let resp = wait_for_identify_response(io, attempt_deadline)?
+            .ok_or_else(|| {
+                TransportError::Parse(
+                    "identify timed out (Phase-B shim, no NAK resync)".into(),
+                )
+            })?;
 
         let offset = resp.get_u32("offset") as usize;
         if offset != identify_data.len() {
@@ -100,46 +92,39 @@ pub fn identify_handshake(
 
     let raw_identify_bytes = identify_data.clone();
     let parser = build_parser_from_identify(&identify_data)?;
-    Ok((parser, raw_identify_bytes, seq, rx_buf))
+    Ok((parser, raw_identify_bytes, seq, Vec::new()))
 }
 
 fn wait_for_identify_response(
-    port: &mut Box<dyn SerialPort>,
-    rx_buf: &mut Vec<u8>,
-    demuxer: &mut Demuxer,
+    io: &mut SerialFrameIo,
     deadline: Instant,
 ) -> Result<Option<MessageParams>, TransportError> {
-    let mut scratch = [0u8; 256];
     loop {
         let now = Instant::now();
         if now >= deadline {
             return Ok(None);
         }
-        let remaining = deadline - now;
-        let read_to = remaining.min(Duration::from_millis(100));
-        port.set_timeout(read_to).map_err(|e| super::sp_err(&e))?;
-        match port.read(&mut scratch) {
-            Ok(n) if n > 0 => {
-                // Keep raw bytes for the reactor to consume after identify
-                // completes — its own demuxer re-processes them from scratch.
-                rx_buf.extend_from_slice(&scratch[..n]);
-                // Run our own local demuxer so kalico-protocol frames don't
-                // confuse the legacy klipper packet parser. Kalico frames and
-                // stream errors are dropped here; only Klipper frames are
-                // checked for the identify_response.
-                let (frames, errors) = demuxer.feed_slice(&scratch[..n]);
-                for e in errors { log::warn!("identify stream error: {e}"); }
+        match io.poll_frames_until(deadline)? {
+            PollOutcome::Frames { frames, errors } => {
+                for e in errors {
+                    log::warn!("identify stream error: {e}");
+                }
                 for f in frames {
                     if let Frame::Klipper(kf) = f {
                         if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(Some(params));
                         }
                     }
+                    // Kalico-native frames that arrive during identify are
+                    // discarded — the reactor's `kalico_state` is not yet
+                    // initialized to receive them.
                 }
             }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => return Err(TransportError::Io(e)),
+            PollOutcome::Timeout | PollOutcome::PhantomZero => {
+                // Loop back, re-checking the deadline. PhantomZero during
+                // identify is treated as a benign idle tick; SerialFrameIo's
+                // debounce semantics belong to the reactor.
+            }
         }
     }
 }
