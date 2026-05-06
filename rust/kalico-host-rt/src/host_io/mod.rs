@@ -241,7 +241,7 @@ impl KalicoHostIo {
         let _ = port_box.set_timeout(Duration::from_millis(100));
         let mut io = crate::host_io::serial_frame_io::SerialFrameIo::new(port_box);
 
-        let (parser_owned, raw_identify_bytes, _seq) = identify::identify_handshake(
+        let (parser_owned, raw_identify_bytes, _identify_seq) = identify::identify_handshake(
             &mut io,
             config.identify_timeout,
         )?;

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::host_io::parser::{DataDictionary, MsgProtoParser, decode_vlq, encode_vlq};
 use crate::host_io::serial_frame_io::SerialFrameIo;
+use crate::host_io::wire;
 use crate::host_io::wire::{
     MESSAGE_HEADER_SIZE, MESSAGE_MIN, MESSAGE_SEQ_MASK, MESSAGE_TRAILER_SIZE,
     build_frame,
@@ -39,7 +40,7 @@ const IDENTIFY_CHUNK: u32 = 40;
 pub fn identify_handshake(
     io: &mut SerialFrameIo,
     timeout: Duration,
-) -> Result<(MsgProtoParser, Vec<u8>, u8), TransportError> {
+) -> Result<(MsgProtoParser, Vec<u8>, IdentifySeqState), TransportError> {
     let deadline = Instant::now() + timeout;
 
     // Drain phase: poll for ~300ms and discard everything (frames + errors).
@@ -54,7 +55,11 @@ pub fn identify_handshake(
         }
     }
 
-    let mut seq: u8 = 0;
+    // Absolute seq counters per spec §4.2. `next_send_seq_abs` starts at 1
+    // to match the reactor's pre-refactor default; `mcu_recv_abs` starts at
+    // 0 and walks via wire::decode_absolute on every validated Klipper frame.
+    let mut next_send_seq_abs: u64 = 1;
+    let mut mcu_recv_abs: u64 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
 
     loop {
@@ -73,13 +78,14 @@ pub fn identify_handshake(
         encode_vlq(&mut payload, i64::from(IDENTIFY_CHUNK))
             .expect("identify count is u32-range");
 
-        let frame = build_frame(&payload, seq);
+        let wire_seq = (next_send_seq_abs as u8) & MESSAGE_SEQ_MASK;
+        let frame = build_frame(&payload, wire_seq);
         io.write_all(&frame)?;
         io.flush()?;
-        seq = seq.wrapping_add(1) & MESSAGE_SEQ_MASK;
+        next_send_seq_abs += 1;
 
         let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(150));
-        let resp = wait_for_identify_response(io, attempt_deadline)?
+        let resp = wait_for_identify_response(io, attempt_deadline, &mut mcu_recv_abs)?
             .ok_or_else(|| {
                 TransportError::Parse(
                     "identify timed out (Phase-B shim, no NAK resync)".into(),
@@ -102,12 +108,20 @@ pub fn identify_handshake(
 
     let raw_identify_bytes = identify_data.clone();
     let parser = build_parser_from_identify(&identify_data)?;
-    Ok((parser, raw_identify_bytes, seq))
+    Ok((
+        parser,
+        raw_identify_bytes,
+        IdentifySeqState {
+            next_send_seq_abs,
+            mcu_receive_seq_abs: mcu_recv_abs,
+        },
+    ))
 }
 
 fn wait_for_identify_response(
     io: &mut SerialFrameIo,
     deadline: Instant,
+    mcu_recv_abs: &mut u64,
 ) -> Result<Option<MessageParams>, TransportError> {
     loop {
         let now = Instant::now();
@@ -121,6 +135,16 @@ fn wait_for_identify_response(
                 }
                 for f in frames {
                     if let Frame::Klipper(kf) = f {
+                        // Walk mcu_recv_abs for *every* validated Klipper
+                        // frame, before attempting to decode it as an
+                        // identify_response. Stray frames during identify
+                        // (e.g. residual responses to drained-but-still-
+                        // in-flight requests) still advance the absolute
+                        // seq, pinning consistency with the wire (spec §4.2).
+                        *mcu_recv_abs = wire::decode_absolute(
+                            *mcu_recv_abs,
+                            kf.seq_byte() & MESSAGE_SEQ_MASK,
+                        );
                         if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(Some(params));
                         }
