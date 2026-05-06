@@ -22,6 +22,12 @@ pub fn build_frame(payload: &[u8], seq: u8) -> Vec<u8> {
     frame
 }
 
+/// Offline klipper-frame parser. Retained for `tests/captures_replay.rs`,
+/// `tests/partial_frame_assembly.rs`, `tests/passthrough_integration.rs`,
+/// and reactor's own test module to decode bytes the reactor wrote through
+/// SerialFrameIo::write_all (raw passthrough). The live reactor path no
+/// longer calls this — see SerialFrameIo + Demuxer for live decoding.
+#[doc(hidden)]
 pub fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     while !buf.is_empty() {
         let msglen = buf[0] as usize;
