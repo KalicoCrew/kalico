@@ -24,6 +24,8 @@ pub enum MessageKind {
     PushSegmentResponse = 0x0021,
     ConfigureAxes = 0x0030,
     ConfigureAxesResponse = 0x0031,
+    QueryRuntimeCaps = 0x0040,
+    RuntimeCapsResponse = 0x0041,
     StatusEvent = 0x0080,
     CreditFreed = 0x0081,
     FaultEvent = 0x0082,
@@ -40,6 +42,8 @@ impl MessageKind {
             0x0021 => Self::PushSegmentResponse,
             0x0030 => Self::ConfigureAxes,
             0x0031 => Self::ConfigureAxesResponse,
+            0x0040 => Self::QueryRuntimeCaps,
+            0x0041 => Self::RuntimeCapsResponse,
             0x0080 => Self::StatusEvent,
             0x0081 => Self::CreditFreed,
             0x0082 => Self::FaultEvent,
@@ -302,6 +306,45 @@ impl Decode for ConfigureAxesResponse {
 }
 
 // =============================================================================
+// QueryRuntimeCaps (0x0040) — request body: empty.
+// RuntimeCapsResponse (0x0041) — body layout:
+//   0..4   max_control_points  : u32_le
+//   4..8   max_knot_vector_len : u32_le
+//   8      max_degree          : u8
+//   9..11  curve_pool_n        : u16_le
+// Total: 11 bytes.
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeCapsResponse {
+    pub max_control_points: u32,
+    pub max_knot_vector_len: u32,
+    pub max_degree: u8,
+    pub curve_pool_n: u16,
+}
+
+pub const RUNTIME_CAPS_RESPONSE_BODY_LEN: usize = 11;
+
+impl Encode for RuntimeCapsResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u32(out, self.max_control_points);
+        put_u32(out, self.max_knot_vector_len);
+        put_u8(out, self.max_degree);
+        put_u16(out, self.curve_pool_n);
+    }
+}
+
+impl Decode for RuntimeCapsResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        let max_control_points = get_u32(c)?;
+        let max_knot_vector_len = get_u32(c)?;
+        let max_degree = get_u8(c)?;
+        let curve_pool_n = get_u16(c)?;
+        Ok(Self { max_control_points, max_knot_vector_len, max_degree, curve_pool_n })
+    }
+}
+
+// =============================================================================
 // StatusEvent (0x0080) — spec §7.4
 // =============================================================================
 
@@ -418,6 +461,8 @@ mod tests {
             MessageKind::PushSegmentResponse,
             MessageKind::ConfigureAxes,
             MessageKind::ConfigureAxesResponse,
+            MessageKind::QueryRuntimeCaps,
+            MessageKind::RuntimeCapsResponse,
             MessageKind::StatusEvent,
             MessageKind::CreditFreed,
             MessageKind::FaultEvent,
@@ -535,6 +580,22 @@ mod tests {
         let v = FaultEvent { fault_code: 0x0007, fault_detail: 0xBAAD_F00D, segment_id: 11 };
         assert_eq!(roundtrip(&v), v);
         assert_eq!(v.encoded_to_vec().len(), 10);
+    }
+
+    #[test]
+    fn runtime_caps_roundtrip() {
+        let original = RuntimeCapsResponse {
+            max_control_points: 512,
+            max_knot_vector_len: 524,
+            max_degree: 10,
+            curve_pool_n: 4,
+        };
+        let mut buf = Vec::new();
+        original.encode(&mut buf);
+        assert_eq!(buf.len(), RUNTIME_CAPS_RESPONSE_BODY_LEN);
+        let mut c = Cursor::new(&buf);
+        let decoded = RuntimeCapsResponse::decode_from(&mut c).unwrap();
+        assert_eq!(decoded, original);
     }
 
     #[test]
