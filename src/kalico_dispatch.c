@@ -475,15 +475,16 @@ extern volatile uint16_t usbotg_rxflvl_bulk_count;
 extern volatile uint16_t usb_bulk_out_task_count;
 extern volatile uint16_t usb_pump_call_count;
 extern volatile uint16_t usb_pump_bytes_total;
-extern volatile uint8_t usb_first_pump_byte;
 extern volatile uint8_t usb_last_read_ret_neg;
+extern volatile uint8_t usb_first16_bytes[16];
+extern volatile uint8_t usb_first16_filled;
 
 void
 kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
                                 uint32_t current_segment_id,
                                 int32_t last_fault, uint32_t fault_detail)
 {
-    // Body is StatusEvent (18 B) + USB diagnostic block (16 B).
+    // Body is StatusEvent (18 B) + USB diagnostic block (32 B).
     // Layout of diag block:
     //   [18..19] usbotg_irq_count          u16 LE
     //   [20..21] usbotg_rxflvl_count       u16 LE
@@ -492,9 +493,10 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     //   [26..27] usb_bulk_out_task_count   u16 LE
     //   [28..29] usb_pump_call_count       u16 LE
     //   [30..31] usb_pump_bytes_total      u16 LE
-    //   [32]     usb_first_pump_byte       u8
-    //   [33]     usb_last_read_ret_neg     u8
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18 + 16];
+    //   [32]     usb_last_read_ret_neg     u8
+    //   [33]     usb_first16_filled        u8
+    //   [34..49] usb_first16_bytes[16]     bytes
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18 + 32];
     encode_message_header(payload, KALICO_MSG_STATUS_EVENT,
                           MESSAGE_VERSION_DEFAULT, 0);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
@@ -525,8 +527,10 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     v = usb_bulk_out_task_count;   b[26] = (uint8_t)v; b[27] = (uint8_t)(v >> 8);
     v = usb_pump_call_count;       b[28] = (uint8_t)v; b[29] = (uint8_t)(v >> 8);
     v = usb_pump_bytes_total;      b[30] = (uint8_t)v; b[31] = (uint8_t)(v >> 8);
-    b[32] = usb_first_pump_byte;
-    b[33] = usb_last_read_ret_neg;
+    b[32] = usb_last_read_ret_neg;
+    b[33] = usb_first16_filled;
+    for (uint8_t i = 0; i < 16; i++)
+        b[34 + i] = usb_first16_bytes[i];
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 

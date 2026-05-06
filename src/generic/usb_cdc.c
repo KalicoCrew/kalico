@@ -130,8 +130,11 @@ static uint8_t receive_buf[128], receive_pos;
 volatile uint16_t usb_bulk_out_task_count;
 volatile uint16_t usb_pump_call_count;
 volatile uint16_t usb_pump_bytes_total;
-volatile uint8_t usb_first_pump_byte;
 volatile uint8_t usb_last_read_ret_neg;
+// Capture the first 16 bytes ever delivered to the demuxer, byte-for-byte.
+// Filled progressively across pump calls until full.
+volatile uint8_t usb_first16_bytes[16];
+volatile uint8_t usb_first16_filled;
 #endif
 
 void
@@ -174,8 +177,11 @@ usb_bulk_out_task(void)
     if (rpos > 0) {
         usb_pump_call_count++;
         usb_pump_bytes_total += rpos;
-        if (usb_first_pump_byte == 0)
-            usb_first_pump_byte = receive_buf[0];
+        // Append into the first16 capture until full.
+        uint_fast8_t fill = usb_first16_filled;
+        for (uint_fast8_t i = 0; i < rpos && fill < 16; i++, fill++)
+            usb_first16_bytes[fill] = receive_buf[i];
+        usb_first16_filled = fill;
     }
     kalico_demux_pump(receive_buf, rpos);
     receive_pos = 0;
