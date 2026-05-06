@@ -42,17 +42,21 @@ src-$(CONFIG_NEED_LOAD_CELL_PROBE) += load_cell_probe.c
 # cargo is invoked every build — cargo itself handles up-to-date checks
 # (incremental compilation), so this is cheap on no-op builds.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
-ifeq ($(CONFIG_MACH_STM32H7),y)
-# Production firmware: thumbv7em + f32 mcu-h7 features. Sim build
+# Production firmware: thumbv7em + per-MCU-family Rust features. Sim build
 # (CONFIG_KALICO_SIM=y) appends `kalico-sim` to compile in the sim-only
 # fixture path (sim_fixtures.rs + kalico_runtime_load_fixture FFI), per
 # Step-6 plan Phase 0 Task 0.2. Never include in production firmware —
 # the fixture path skips curve validation; it's safe only under sim.
+ifeq ($(CONFIG_MACH_STM32H7),y)
 KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
+else ifeq ($(CONFIG_MACH_STM32F4),y)
+KALICO_RUST_FEATURES := mcu-f4,header-nurbs,header-runtime
+endif
 ifeq ($(CONFIG_KALICO_SIM),y)
 KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
 
+ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4)))
 rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
 	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
 		KALICO_RUNTIME_MAX_CONTROL_POINTS=$(CONFIG_RUNTIME_MAX_CONTROL_POINTS) \
