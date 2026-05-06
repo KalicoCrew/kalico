@@ -9,9 +9,10 @@ use serialport::SerialPort;
 use crate::host_io::parser::{DataDictionary, MsgProtoParser, decode_vlq, encode_vlq};
 use crate::host_io::wire::{
     MESSAGE_HEADER_SIZE, MESSAGE_MIN, MESSAGE_SEQ_MASK, MESSAGE_TRAILER_SIZE,
-    build_frame, extract_packet,
+    build_frame,
 };
 use crate::transport::{MessageParams, MessageValue, TransportError};
+use kalico_native_transport::demux::{Demuxer, DemuxOutput};
 
 const IDENTIFY_CHUNK: u32 = 40;
 
@@ -43,6 +44,11 @@ pub fn identify_handshake(
     let mut rx_buf: Vec<u8> = Vec::new();
     let mut seq: u8 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
+    // The firmware emits unsolicited `kalico_status` frames on channel 1 from
+    // boot, interleaved with our klipper-protocol identify response. The
+    // demuxer separates those out so the slow O(n²) byte-by-byte resync
+    // inside `extract_packet` never sees them.
+    let mut demuxer = Demuxer::new();
 
     loop {
         // Encode `identify offset=N count=40` by hand (no dict yet).
@@ -66,12 +72,17 @@ pub fn identify_handshake(
         seq = seq.wrapping_add(1) & MESSAGE_SEQ_MASK;
 
         let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(150));
-        let resp = wait_for_identify_response(port, &mut rx_buf, attempt_deadline)?
-            .ok_or_else(|| {
-                TransportError::Parse(
-                    "identify timed out (Phase-B shim, no NAK resync)".into(),
-                )
-            })?;
+        let resp = wait_for_identify_response(
+            port,
+            &mut rx_buf,
+            &mut demuxer,
+            attempt_deadline,
+        )?
+        .ok_or_else(|| {
+            TransportError::Parse(
+                "identify timed out (Phase-B shim, no NAK resync)".into(),
+            )
+        })?;
 
         let offset = resp.get_u32("offset") as usize;
         if offset != identify_data.len() {
@@ -95,6 +106,7 @@ pub fn identify_handshake(
 fn wait_for_identify_response(
     port: &mut Box<dyn SerialPort>,
     rx_buf: &mut Vec<u8>,
+    demuxer: &mut Demuxer,
     deadline: Instant,
 ) -> Result<Option<MessageParams>, TransportError> {
     let mut scratch = [0u8; 256];
@@ -108,10 +120,18 @@ fn wait_for_identify_response(
         port.set_timeout(read_to).map_err(|e| super::sp_err(&e))?;
         match port.read(&mut scratch) {
             Ok(n) if n > 0 => {
+                // Keep raw bytes for the reactor to consume after identify
+                // completes — its own demuxer re-processes them from scratch.
                 rx_buf.extend_from_slice(&scratch[..n]);
-                while let Some(packet) = extract_packet(rx_buf) {
-                    if let Some(params) = decode_identify_response(&packet) {
-                        return Ok(Some(params));
+                // Run our own local demuxer so kalico-protocol frames don't
+                // confuse the legacy klipper packet parser. KalicoFrame and
+                // StreamError outputs are dropped here; only KlipperFrame
+                // outputs are checked for the identify_response.
+                for out in demuxer.feed_slice(&scratch[..n]) {
+                    if let DemuxOutput::KlipperFrame(packet) = out {
+                        if let Some(params) = decode_identify_response(&packet) {
+                            return Ok(Some(params));
+                        }
                     }
                 }
             }
