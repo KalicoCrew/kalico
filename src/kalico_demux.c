@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "kalico_demux.h"
-#include "board/misc.h" // crc16_ccitt
+#include "board/misc.h" // crc16_ccitt, bootloader_request
+#include "command.h"    // command_find_and_dispatch
+#include "kalico_dispatch.h" // kalico_dispatch_frame
 #include "sched.h"      // DECL_INIT
 
 #define KLIPPER_LEN_MIN          5
@@ -175,4 +177,46 @@ uint8_t
 kalico_demux_kalico_channel(void)
 {
     return kalico_buf[3];
+}
+
+void
+kalico_demux_pump(const uint8_t *buf, uint16_t len)
+{
+    for (uint16_t i = 0; i < len; i++) {
+        kalico_demux_output_t out = kalico_demux_feed_byte(buf[i]);
+        switch (out) {
+        case KALICO_DEMUX_OUT_NONE:
+            break;
+        case KALICO_DEMUX_OUT_KLIPPER: {
+            // Bootloader-request sentinel detection. The 32-byte sentinel
+            // begins with 0x20 (= 32 decimal), which falls inside the
+            // demuxer's [KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64] range, so
+            // the demuxer reassembles all 32 bytes into klipper_buf
+            // regardless of how the bytes arrive at the transport (one
+            // burst, many small bursts, byte-by-byte). Checking here is
+            // the only location that survives fragmentation.
+            const uint8_t *kbuf = kalico_demux_klipper_buf();
+            uint8_t klen = kalico_demux_klipper_len();
+            if (CONFIG_HAVE_BOOTLOADER_REQUEST && klen == 32
+                && !memcmp(kbuf,
+                           " \x1c Request Serial Bootloader!! ~", 32))
+                bootloader_request();   // does not return
+            uint_fast8_t pop_count;
+            command_find_and_dispatch(
+                (uint8_t *)kbuf, klen, &pop_count);
+            kalico_demux_consume();
+            break;
+        }
+        case KALICO_DEMUX_OUT_KALICO:
+            kalico_dispatch_frame(
+                kalico_demux_kalico_channel(),
+                kalico_demux_kalico_payload(),
+                kalico_demux_kalico_payload_len());
+            kalico_demux_consume();
+            break;
+        case KALICO_DEMUX_OUT_ERROR:
+            kalico_demux_consume();
+            break;
+        }
+    }
 }

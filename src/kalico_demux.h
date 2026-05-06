@@ -54,6 +54,17 @@ kalico_demux_output_t kalico_demux_feed_byte(uint8_t b);
 // recently emitted frame.
 void kalico_demux_consume(void);
 
+// Drain a buffer of bytes through the demuxer state machine, dispatching
+// klipper frames via command_find_and_dispatch and kalico-native frames
+// via kalico_dispatch_frame as they surface. Demuxer state persists across
+// calls, so partial frames at buffer boundaries are handled correctly.
+//
+// Bootloader-request sentinel detection (32-byte magic string) runs inside
+// this function on the OUT_KLIPPER branch, so callers do NOT need to check
+// for the sentinel separately. The check is gated on
+// CONFIG_HAVE_BOOTLOADER_REQUEST.
+void kalico_demux_pump(const uint8_t *buf, uint16_t len);
+
 const uint8_t *kalico_demux_klipper_buf(void);
 uint8_t        kalico_demux_klipper_len(void);
 
