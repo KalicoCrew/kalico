@@ -439,15 +439,6 @@ usb_init(void)
 #endif
     while (!(OTG->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL))
         ;
-    // Soft-reset the OTG core. Required on H7 when PHYSEL is being changed
-    // from a previous configuration (system bootloader uses the same OTG
-    // core for DFU). Without CSRST the core can hold half-configured EP
-    // state across the transition.
-    OTG->GRSTCTL |= USB_OTG_GRSTCTL_CSRST;
-    while (OTG->GRSTCTL & USB_OTG_GRSTCTL_CSRST)
-        ;
-    while (!(OTG->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL))
-        ;
 
     // Configure USB in full-speed device mode
     OTG->GUSBCFG = (USB_OTG_GUSBCFG_FDMOD | USB_OTG_GUSBCFG_PHYSEL
