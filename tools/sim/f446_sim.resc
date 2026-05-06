@@ -1,0 +1,80 @@
+:name: kalico-f446-sim
+:description: Renode simulator for the kalico runtime on STM32F446 (uses F429 model).
+#
+# Usage (from worktree root):
+#   bash tools/sim/run_sim_f446.sh
+# or manually:
+#   renode --console --disable-gui -e "include @tools/sim/f446_sim.resc"
+#
+# Why F429 .repl: Renode 1.16.1 ships stm32f4.repl, stm32f412.repl, and
+# stm32f429.repl. F429 is the closest match to F446 in peripheral coverage —
+# TIM5 + DWT + USART2 are all modeled. Differences from F446 silicon (e.g.
+# different RCC PLL config registers, no SAI on the F429 side) are not
+# touched by the kalico runtime path we're exercising here.
+#
+# In the planned topology F446 drives Z (and possibly E) only — small
+# runtime profile (CURVE_POOL_N=4, MAX_CONTROL_POINTS=512). USART2 (PA2/PA3)
+# is bridged to a TCP socket; OTG_FS is not modeled by stm32f429.repl, so
+# the firmware is built with CONFIG_STM32_SERIAL_USART2=y for sim, mirroring
+# the H7 setup.
+#
+# What this simulates:
+# - Klipper firmware running on a Cortex-M4F with TIM5/DWT/NVIC modeled.
+# - Runtime kalico_runtime_init / TIM5 ISR / engine state machine — these are
+#   pure Rust + memory-mapped I/O the F429 .repl already covers.
+# - USART2 bridged to a TCP socket so host tools can talk to the MCU
+#   over `socket://localhost:3334`.
+#
+# What is NOT simulated (use real hardware for these):
+# - DWT->CYCCNT cycle accuracy: Renode CYCCNT advances on virtual time, so
+#   Surface-C cycle benchmarks are meaningless here.
+# - USB-CDC / OTG_FS.
+# - IWDG real-world timeout pacing.
+# - Real-printer hardware (TMC drivers, motors, sensors).
+
+using sysbus
+mach create "f446"
+
+# Reuse Renode's F429 platform description (closest F4 to F446 with TIM5+DWT).
+machine LoadPlatformDescription @/opt/homebrew/Cellar/renode/1.16.1/libexec/platforms/cpus/stm32f429.repl
+
+# Enable the Cortex-M4 FPU. The F429 .repl uses cpuType: "cortex-m4" without
+# a `+fpu` flag; without this monitor command, Renode silently drops writes
+# to SCB->CPACR (CP10/CP11 enable bits), so the FPU stays disabled. Any FPU
+# instruction in the firmware (curve validation, segment evaluation, function
+# prologues with `vpush`) then raises a UsageFault → DefaultHandler infinite
+# loop. Mirrors the H7 sim configuration.
+cpu FpuEnabled true
+
+# NOTE: F4 RCC/PWR are fully modeled by stm32f429.repl — no D3-domain tags
+# needed (D3 is H7-only). If a clock-PLL spin loop shows up at runtime, add
+# RCC_CR / PLL-ready tags here mirroring h723_sim.resc:46-52.
+
+# NOTE on IWDG: Renode's IWDG model doesn't honor Klipper's IWDG->KR=0xAAAA
+# refresh writes the same way real silicon does. For runs longer than ~15 s,
+# build the sim firmware with CONFIG_KALICO_SIM=y to skip watchdog_init /
+# kicks. See tools/sim/sim_f446.config.
+
+# Bridge USART2 (Klipper's CONFIG_STM32_SERIAL_USART2 console + Kalico command
+# surface) to a TCP socket. Host-side tools connect via
+# `socket://localhost:3334`. Default baud 250 kbaud is set in the firmware;
+# Renode's UART model ignores baud rate (timing is virtual).
+emulation CreateServerSocketTerminal 3334 "uart_term" false
+connector Connect sysbus.usart2 uart_term
+
+# Tight quantum: 1 us. See h723_sim.resc:70-77 — same overrun reasoning.
+emulation SetGlobalQuantum "0.000001"
+
+# Expose Renode's GDB server (port 3333). Attach with:
+#   arm-none-eabi-gdb out/klipper.elf -ex "target remote :3333"
+# The `true` arg means the CPU starts halted; type `continue` in gdb to run.
+machine StartGdbServer 3333 true
+
+# Load the firmware. Klipper's bootloader-aware F4 build uses a vector table
+# at 0x08008000 (CONFIG_STM32_FLASH_START_8000 → 32 KB bootloader offset).
+# Renode's CPU reads the initial PC/SP from the ELF entry point and sets
+# VTOR via its standard heuristic.
+sysbus LoadELF @out/klipper.elf
+
+echo "Renode kalico-f446-sim ready. UART2 -> tcp localhost:3334"
+echo "Type 'start' to begin emulation, or 'help' for monitor commands."
