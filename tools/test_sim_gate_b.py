@@ -27,7 +27,7 @@ Items covered:
     `kalico_fault` async event with fault_code = (-133) & 0xFFFF
     (KALICO_FAULT_TRACE_OVERFLOW; lower 16 bits = 0xFF7B).
 
-Reset semantics — important: `kalico_stream_flush` does NOT clear
+Reset semantics — important: `runtime_stream_flush` does NOT clear
 `last_error` / `runtime_status` (per `runtime/src/stream.rs::flush`
 step 7 — fault state is preserved so the host can observe the failure
 history). Once the engine latches into Fault (items 6 + 7 produce
@@ -133,14 +133,14 @@ def push_segment(
 
 
 def stream_open(io, stream_id, timeout=3.0):
-    io.send(f"kalico_stream_open stream_id={stream_id}")
+    io.send(f"runtime_stream_open stream_id={stream_id}")
     r = io.wait_for_response("kalico_stream_open_response", timeout)
     return int(r["result"]), int(r.get("credit_epoch", 0))
 
 
 def stream_arm(io, t_start_t0, arm_lead_cycles, timeout=3.0):
     cmd = (
-        f"kalico_stream_arm "
+        f"runtime_stream_arm "
         f"t_start_t0_lo={t_start_t0 & 0xFFFFFFFF} "
         f"t_start_t0_hi={(t_start_t0 >> 32) & 0xFFFFFFFF} "
         f"arm_lead_cycles={arm_lead_cycles}"
@@ -151,7 +151,7 @@ def stream_arm(io, t_start_t0, arm_lead_cycles, timeout=3.0):
 
 
 def stream_terminal(io, segment_id, timeout=3.0):
-    io.send(f"kalico_stream_terminal segment_id={segment_id}")
+    io.send(f"runtime_stream_terminal segment_id={segment_id}")
     r = io.wait_for_response("kalico_stream_terminal_response", timeout)
     return int(r["result"])
 

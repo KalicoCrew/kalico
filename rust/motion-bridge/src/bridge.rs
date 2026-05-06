@@ -1462,7 +1462,7 @@ impl PyMotionBridge {
     // and handles async `kalico_endstop_tripped` events via the existing
     // `passthrough_register_handler` plumbing.
 
-    /// Send `kalico_arm_endstop` and wait for the synchronous response.
+    /// Send `runtime_arm_endstop` and wait for the synchronous response.
     /// Returns the status byte (0=Armed, 1=AlreadyTripped, 2=Rejected) per
     /// spec §3.2.
     #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=0.1))]
@@ -1520,7 +1520,7 @@ impl PyMotionBridge {
         Ok(status as u8)
     }
 
-    /// Send `kalico_disarm_endstop` and wait for the response. Returns the
+    /// Send `runtime_disarm_endstop` and wait for the response. Returns the
     /// status byte (0=Disarmed, 1=AlreadyTripped, 2=Unknown) per spec §3.5.
     #[pyo3(signature = (mcu, queue, arm_id, timeout_s=0.1))]
     fn endstop_disarm(
@@ -1539,7 +1539,7 @@ impl PyMotionBridge {
         Ok(status as u8)
     }
 
-    /// Send `kalico_set_homed_state homed=%c`. Spec §8.
+    /// Send `runtime_set_homed_state homed=%c`. Spec §8.
     #[pyo3(signature = (mcu, queue, homed, timeout_s=0.1))]
     fn set_homed_state(
         &self,

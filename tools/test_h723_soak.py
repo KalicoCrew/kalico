@@ -2,7 +2,7 @@
 # Surface C — H723 soak test.
 #
 # Per Step-5 plan Task 29 (referenced by `Makefile.kalico:test-h723` recipe).
-# Polls kalico_query_status every 1 second for `--minutes` minutes; FAILs
+# Polls runtime_query_status every 1 second for `--minutes` minutes; FAILs
 # immediately on any FAULT status. Idempotent — can be killed and restarted.
 #
 # Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y
@@ -50,7 +50,7 @@ def main():
     fault_count = 0
     try:
         while time.monotonic() < end_at:
-            io.send("kalico_query_status")
+            io.send("runtime_query_status")
             try:
                 resp = io.wait_for_response("kalico_status", timeout=2.0)
             except HostIoError as exc:

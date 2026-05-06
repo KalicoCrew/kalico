@@ -355,7 +355,7 @@ class BridgeTriggerDispatch:
 
     def add_stepper(self, mcu_stepper):
         # MCU_stepper.get_oid() returns the per-MCU oid — exactly what
-        # the kalico_arm_endstop wire format expects (spec §3.1).
+        # the runtime_arm_endstop wire format expects (spec §3.1).
         self._stepper_oids.append(mcu_stepper.get_oid())
         self._steppers.append(mcu_stepper)
 
@@ -431,7 +431,7 @@ class BridgeTriggerDispatch:
             self._completion.complete(self._reason)
         elif status == ARM_STATUS_REJECTED:
             raise printer.command_error(
-                "kalico_arm_endstop rejected (status=%d)" % status
+                "runtime_arm_endstop rejected (status=%d)" % status
             )
         return self._completion
 

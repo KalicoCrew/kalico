@@ -501,7 +501,7 @@ class PrinterHoming:
                 bridge.set_homed_state(mcu_handle, queue, True)
             except Exception as e:
                 logging.exception(
-                    "kalico_set_homed_state failed on %s: %s", mcu_name, e
+                    "runtime_set_homed_state failed on %s: %s", mcu_name, e
                 )
 
 

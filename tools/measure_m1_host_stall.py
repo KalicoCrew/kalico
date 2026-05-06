@@ -151,14 +151,14 @@ def read_mcu_clock(io):
 
 
 def stream_open(io, stream_id):
-    io.send(f"kalico_stream_open stream_id={stream_id}")
+    io.send(f"runtime_stream_open stream_id={stream_id}")
     r = io.wait_for_response("kalico_stream_open_response", 3.0)
     return int(r["result"])
 
 
 def stream_arm(io, t_start_t0, arm_lead_cycles):
     io.send(
-        f"kalico_stream_arm "
+        f"runtime_stream_arm "
         f"t_start_t0_lo={t_start_t0 & 0xFFFFFFFF} "
         f"t_start_t0_hi={(t_start_t0 >> 32) & 0xFFFFFFFF} "
         f"arm_lead_cycles={arm_lead_cycles}"
@@ -203,7 +203,7 @@ def main():
         # Required before stream_open: with a stream open the engine ISR
         # latches FAULT on every tick if !homed, so the first prefill push
         # would return KALICO_ERR_FAULT_LATCHED (-8).
-        io.send("kalico_set_homed")
+        io.send("runtime_set_homed")
         sh = io.wait_for_response("kalico_set_homed_response", 2.0)
         if int(sh["result"]) != 0:
             raise SystemExit(f"FAIL: set_homed rc={sh['result']}")
@@ -270,7 +270,7 @@ def main():
                 continue
             if rc != 0:
                 # Backpressure or fault — fault aborts.
-                io.send("kalico_query_status")
+                io.send("runtime_query_status")
                 try:
                     s = io.wait_for_response("kalico_status", 1.0)
                     if int(s["status"]) == 3:

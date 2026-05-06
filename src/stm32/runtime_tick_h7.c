@@ -131,8 +131,8 @@ TIM5_IRQHandler(void)
     // via `command_kalico_sim_endstop_set_pin`, and a real-GPIO sample
     // here would clobber the test's override every tick.
 #if !CONFIG_KALICO_SIM
-    extern void kalico_endstop_sample_pins(void);
-    kalico_endstop_sample_pins();
+    extern void runtime_endstop_sample_pins(void);
+    runtime_endstop_sample_pins();
 #endif
 
     uint32_t before = runtime_cyccnt_read();

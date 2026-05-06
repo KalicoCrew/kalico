@@ -18,7 +18,7 @@
 #include "sched.h" // shutdown handling — currently unused but matches H7
 
 extern void *runtime_handle;
-extern void kalico_endstop_sample_pins(void); // src/runtime_tick.c
+extern void runtime_endstop_sample_pins(void); // src/runtime_tick.c
 
 // Watchdog liveness flag (defined on H7 in src/stm32/watchdog.c). The
 // Linux build has no IWDG; default to ok=1 so the runtime drain doesn't
@@ -100,7 +100,7 @@ host_tick_main(void *arg)
         // FFI-driven kalico_sim_endstop_set_pin path isn't clobbered
         // every tick by an unhelpful gpio_in_read of an unconnected pin.
 #if !CONFIG_KALICO_SIM
-        kalico_endstop_sample_pins();
+        runtime_endstop_sample_pins();
 #endif
 
         uint32_t cyc = runtime_cyccnt_read();

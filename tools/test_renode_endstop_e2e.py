@@ -3,7 +3,7 @@
 Renode end-to-end test for the Step 7-D endstop arm/disarm/trip wire path.
 
 This is the §10 spec acceptance test: it boots the H723 Renode sim, exercises
-the host→MCU `kalico_arm_endstop` and `kalico_disarm_endstop` commands and
+the host→MCU `runtime_arm_endstop` and `runtime_disarm_endstop` commands and
 the MCU→host `kalico_arm_endstop_response` / `kalico_disarm_endstop_response`
 sync responses + async `kalico_endstop_tripped` output, all via real
 msgproto framing through the existing `KalicoHostIO` client. The test wires
@@ -50,7 +50,7 @@ A. Endstop ISR must run. `Engine::tick` calls `poll_endstop_trip` from
    the empty-queue path (rust/runtime/src/engine.rs:323). This fires
    every modulation tick once `homed=1` (otherwise the homed gate
    short-circuits before reaching the queue check). So the test issues
-   `kalico_set_homed_state homed=1` after identify and never opens a
+   `runtime_set_homed_state homed=1` after identify and never opens a
    stream — the runtime ticks, sees no segments, and runs the endstop
    poll each tick.
 
@@ -103,7 +103,7 @@ def encode_steppers(oids):
 
 
 def send_arm_endstop(io, arm_id, arm_clock, sources, stepper_oids):
-    """Issue `kalico_arm_endstop` with raw blob params via msgproto.
+    """Issue `runtime_arm_endstop` with raw blob params via msgproto.
 
     KalicoHostIO.send takes a string command that
     msgproto.MessageParser.create_command parses by splitting on
@@ -120,11 +120,11 @@ def send_arm_endstop(io, arm_id, arm_clock, sources, stepper_oids):
     arm_clock_hi = (arm_clock >> 32) & 0xFFFFFFFF
     msg = None
     for fmt in parser.messages_by_id.values():
-        if getattr(fmt, "name", None) == "kalico_arm_endstop":
+        if getattr(fmt, "name", None) == "runtime_arm_endstop":
             msg = fmt
             break
     if msg is None:
-        raise RuntimeError("kalico_arm_endstop missing from data dict")
+        raise RuntimeError("runtime_arm_endstop missing from data dict")
     params = {
         "arm_id": int(arm_id),
         "arm_clock_lo": int(arm_clock_lo),
@@ -159,11 +159,11 @@ def _send_encoded(io, cmd_bytes):
 
 
 def send_disarm_endstop(io, arm_id):
-    io.send("kalico_disarm_endstop arm_id=%d" % (int(arm_id),))
+    io.send("runtime_disarm_endstop arm_id=%d" % (int(arm_id),))
 
 
 def send_set_homed(io, homed):
-    io.send("kalico_set_homed_state homed=%d" % (int(bool(homed)),))
+    io.send("runtime_set_homed_state homed=%d" % (int(bool(homed)),))
 
 
 def send_sim_set_endstop_pin(io, gpio, level):
@@ -200,7 +200,7 @@ def test_arm_trip_disarm(io, renode):
     set_homed_resp = io.wait_for_response("kalico_set_homed_response",
                                           timeout=3.0)
     assert int(set_homed_resp["result"]) == 0, (
-        "kalico_set_homed_state homed=1 failed: %s" % (set_homed_resp,)
+        "runtime_set_homed_state homed=1 failed: %s" % (set_homed_resp,)
     )
     print("[arm_trip] homed=1 acked")
 
@@ -386,9 +386,9 @@ def run(args):
                 if isinstance(fmt, str):
                     names.add(fmt.split(None, 1)[0])
         for need in (
-            "kalico_arm_endstop",
-            "kalico_disarm_endstop",
-            "kalico_set_homed_state",
+            "runtime_arm_endstop",
+            "runtime_disarm_endstop",
+            "runtime_set_homed_state",
             "kalico_sim_endstop_set_pin",
             "kalico_sim_engine_tick_start",
         ):

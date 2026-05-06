@@ -6,7 +6,7 @@ hardware. Useful for state-machine bring-up, FFI symbol checks, and quick
 iteration on small commands.
 
 **Status: v0.1, Phase-0 Gate A passing.** `identify`,
-`kalico_query_status`, `kalico_load_curve`, and `kalico_push_segment` all
+`runtime_query_status`, `kalico_load_curve`, and `kalico_push_segment` all
 work end-to-end. Engine state advances, segments retire, trace samples flow.
 The two Step-5 known-broken paths (load_curve hang; CYCCNT freeze) closed in
 Step-6 Phase 0 — see [Phase-0 fixes](#phase-0-fixes-step-6).
@@ -133,7 +133,7 @@ kalico-sim FFI surface is a debugging build only.
 
 **Step 6 ships two acceptance gates (spec §3.3):**
 
-- **Gate A** — basic comm-protocol round-trip on sim. Drives `kalico_query_status`,
+- **Gate A** — basic comm-protocol round-trip on sim. Drives `runtime_query_status`,
   `kalico_load_curve` (or `kalico_load_fixture_curve` when sim FPU is broken),
   `kalico_push_segment`, segment retirement.
 - **Gate B** — stream-lifecycle, status-frame, fault paths. Re-validates that the
@@ -182,7 +182,7 @@ do not flash CONFIG_KALICO_SIM=y to silicon, the watchdog is disabled there):
 make -f Makefile.kalico test-h723-step5 SERIAL_PORT=/dev/ttyACM0
 
 # Step-6 Phase 13 Gate B chain. Each sub-target requires a clean MCU state
-# (power-cycle or reflash between sub-targets), because `kalico_stream_flush`
+# (power-cycle or reflash between sub-targets), because `runtime_stream_flush`
 # does NOT clear latched fault state — items 6 and 7 deliberately latch
 # faults and preserve them for host inspection.
 make -f Makefile.kalico test-h723-gate-b-item-5 SERIAL_PORT=/dev/ttyACM0

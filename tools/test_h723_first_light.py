@@ -43,7 +43,7 @@ def floats_to_blob(values):
 
 
 def query_status(io, timeout=2.0):
-    io.send("kalico_query_status")
+    io.send("runtime_query_status")
     resp = io.wait_for_response("kalico_status", timeout)
     return int(resp["status"]), int(resp["last_err"])
 
@@ -124,7 +124,7 @@ def read_mcu_clock(io, request_id=1, timeout=2.0):
 
 
 def query_pool_state(io, slot, timeout=1.0):
-    io.send("kalico_query_pool_state slot=%d" % slot)
+    io.send("runtime_query_pool_state slot=%d" % slot)
     resp = io.wait_for_response("kalico_pool_state_response", timeout)
     return (
         int(resp["result"]),
@@ -134,7 +134,7 @@ def query_pool_state(io, slot, timeout=1.0):
 
 
 def stream_open(io, stream_id=0, timeout=2.0):
-    io.send("kalico_stream_open stream_id=%d" % stream_id)
+    io.send("runtime_stream_open stream_id=%d" % stream_id)
     resp = io.wait_for_response("kalico_stream_open_response", timeout)
     if int(resp["result"]) != 0:
         raise SystemExit(
@@ -145,7 +145,7 @@ def stream_open(io, stream_id=0, timeout=2.0):
 
 def stream_arm(io, t_start, arm_lead_cycles, timeout=2.0):
     cmd = (
-        "kalico_stream_arm t_start_t0_lo=%d t_start_t0_hi=%d "
+        "runtime_stream_arm t_start_t0_lo=%d t_start_t0_hi=%d "
         "arm_lead_cycles=%d"
         % (t_start & 0xFFFFFFFF, (t_start >> 32) & 0xFFFFFFFF, arm_lead_cycles)
     )
@@ -161,7 +161,7 @@ def stream_arm(io, t_start, arm_lead_cycles, timeout=2.0):
 
 
 def stream_terminal(io, segment_id, timeout=2.0):
-    io.send("kalico_stream_terminal segment_id=%d" % segment_id)
+    io.send("runtime_stream_terminal segment_id=%d" % segment_id)
     resp = io.wait_for_response("kalico_stream_terminal_response", timeout)
     if int(resp["result"]) != 0:
         raise SystemExit(
@@ -170,7 +170,7 @@ def stream_terminal(io, segment_id, timeout=2.0):
 
 
 def stream_flush(io, timeout=2.0):
-    io.send("kalico_stream_flush")
+    io.send("runtime_stream_flush")
     resp = io.wait_for_response("kalico_stream_flush_response", timeout)
     if int(resp["result"]) != 0:
         raise SystemExit(
@@ -260,7 +260,7 @@ def main():
 
         # We need to call set_homed before any stream_open: while a stream
         # is open, the engine ISR latches FAULT on every tick if !homed.
-        io.send("kalico_set_homed")
+        io.send("runtime_set_homed")
         resp = io.wait_for_response("kalico_set_homed_response", timeout=2.0)
         if int(resp["result"]) != 0:
             raise SystemExit(
@@ -366,7 +366,7 @@ def main():
 
         # No final flush: once the engine drains naturally (terminal
         # segment retires), runtime_tick.c disables TIM5 to save CPU.
-        # Issuing `kalico_stream_flush` after that point trips
+        # Issuing `runtime_stream_flush` after that point trips
         # KALICO_ERR_LIVENESS_STALLED (-132) because the §8.5 force_idle
         # handshake needs an active ISR to ack within 1 ms. DRAINED is
         # itself the clean end-state for the happy path; flush is for

@@ -21,7 +21,7 @@
 # Step-6-specific protocol-handler additions (clock-sync responder, stream-
 # state machine, force_idle path, generation-handle lookup, seqlock
 # publication) are exercised on the ISR side by the foreground driver pumping
-# kalico_query_status / kalico_stream_open and friends in parallel; the
+# runtime_query_status / runtime_stream_open and friends in parallel; the
 # bench loop captures the worst ISR-side tick across that load.
 #
 # Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y.
@@ -190,8 +190,8 @@ def main():
         "--m2-stir-protocol",
         action="store_true",
         help=(
-            "M2 helper: between rounds, fire kalico_query_status + "
-            "kalico_stream_open / arm / flush so the protocol-handler "
+            "M2 helper: between rounds, fire runtime_query_status + "
+            "runtime_stream_open / arm / flush so the protocol-handler "
             "additions land on top of the ISR. Use with --m2-rounds; the "
             "WORST_ISR_CYCLES then captures protocol-induced load."
         ),
@@ -223,7 +223,7 @@ def main():
             )
 
         if not skip_bringup:
-            io.send("kalico_set_homed")
+            io.send("runtime_set_homed")
             resp = io.wait_for_response("kalico_set_homed_response", timeout=2.0)
             if int(resp["result"]) != 0:
                 raise SystemExit(
@@ -358,14 +358,14 @@ def main():
                     # Fire a few protocol commands between rounds so the
                     # next bench's ISR observes the post-Step-6 handler
                     # additions in their natural state.
-                    # Note: original stir set included kalico_stream_flush,
+                    # Note: original stir set included runtime_stream_flush,
                     # but that would force-idle the long-running prime segment
                     # and disable TIM5 for subsequent rounds. We now stick to
                     # read-only protocol surfaces (query_status, query_pool_state,
                     # clock_sync_request) to keep the engine RUNNING.
                     for stir in (
-                        "kalico_query_status",
-                        "kalico_query_pool_state slot=0",
+                        "runtime_query_status",
+                        "runtime_query_pool_state slot=0",
                         ("kalico_clock_sync_request request_id=%d "
                          "host_send_time_lo=0 host_send_time_hi=0"
                          % (round_idx & 0xFFFFFFFF)),

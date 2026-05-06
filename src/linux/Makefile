@@ -12,6 +12,7 @@ src-y += linux/sensor_ds18b20.c
 # Rust runtime's producer-protocol calls across the FFI boundary.
 src-$(CONFIG_KALICO_RUNTIME) += linux/runtime_tick_host.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
+src-$(CONFIG_KALICO_RUNTIME) += runtime_commands.c
 
 # Generated FFI header (cbindgen) shared with the H7 build.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)

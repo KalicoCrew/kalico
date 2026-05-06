@@ -68,14 +68,14 @@ def push_segment(
 
 
 def stream_open(io, stream_id, timeout=5.0):
-    io.send(f"kalico_stream_open stream_id={stream_id}")
+    io.send(f"runtime_stream_open stream_id={stream_id}")
     r = io.wait_for_response("kalico_stream_open_response", timeout)
     return int(r["result"]), int(r.get("credit_epoch", 0))
 
 
 def stream_arm(io, t_start_t0, arm_lead_cycles, timeout=5.0):
     cmd = (
-        f"kalico_stream_arm "
+        f"runtime_stream_arm "
         f"t_start_t0_lo={t_start_t0 & 0xFFFFFFFF} "
         f"t_start_t0_hi={(t_start_t0 >> 32) & 0xFFFFFFFF} "
         f"arm_lead_cycles={arm_lead_cycles}"
@@ -89,13 +89,13 @@ def stream_arm(io, t_start_t0, arm_lead_cycles, timeout=5.0):
 
 
 def stream_terminal(io, segment_id, timeout=5.0):
-    io.send(f"kalico_stream_terminal segment_id={segment_id}")
+    io.send(f"runtime_stream_terminal segment_id={segment_id}")
     r = io.wait_for_response("kalico_stream_terminal_response", timeout)
     return int(r["result"])
 
 
 def stream_flush(io, timeout=5.0):
-    io.send("kalico_stream_flush")
+    io.send("runtime_stream_flush")
     r = io.wait_for_response("kalico_stream_flush_response", timeout)
     return int(r["result"]), int(r.get("credit_epoch", 0))
 

@@ -14,7 +14,7 @@ multi-day soak: the residual of the sliding-window regression
 (`residual_max_in_window`), the drift vs the configured `clock_freq`
 baseline, and the freshness of the most recent dedicated (RTT-aware)
 sample. The Step-6 ARMING quality gate (`§12.4` + Plan-decision B)
-refuses to issue `kalico_stream_arm` when:
+refuses to issue `runtime_stream_arm` when:
 
   - `residual_max_in_window > MAX_RESIDUAL_US` (default 100 µs), or
   - `|drift_ppm| > MAX_DRIFT_PPM`              (default 100 ppm), or
