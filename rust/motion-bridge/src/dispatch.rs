@@ -29,6 +29,43 @@ pub struct McuAxisConfig {
     pub axes: Vec<usize>,
     /// Kinematics tag forwarded to the MCU in `SegmentPushParams::kinematics`.
     pub kinematics: u8,
+    /// Per-MCU runtime sizing limits as reported by `QueryRuntimeCaps`
+    /// (or `McuCaps::default()` for firmware that predates the message).
+    pub caps: McuCaps,
+}
+
+/// Subset of `RuntimeCapsResponse` that the dispatcher needs to enforce
+/// per-MCU sizing limits when planning a curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McuCaps {
+    pub max_control_points: u32,
+    pub max_knot_vector_len: u32,
+    pub max_degree: u8,
+    pub curve_pool_n: u16,
+}
+
+impl Default for McuCaps {
+    /// Large-profile defaults for backward compatibility with firmware
+    /// that doesn't yet implement QueryRuntimeCaps.
+    fn default() -> Self {
+        Self {
+            max_control_points: 1830,
+            max_knot_vector_len: 1850,
+            max_degree: 10,
+            curve_pool_n: 16,
+        }
+    }
+}
+
+impl From<kalico_protocol::messages::RuntimeCapsResponse> for McuCaps {
+    fn from(r: kalico_protocol::messages::RuntimeCapsResponse) -> Self {
+        Self {
+            max_control_points: r.max_control_points,
+            max_knot_vector_len: r.max_knot_vector_len,
+            max_degree: r.max_degree,
+            curve_pool_n: r.curve_pool_n,
+        }
+    }
 }
 
 /// One MCU's slice of work for a single shaped segment: the curves it must
@@ -166,11 +203,13 @@ mod tests {
                 mcu_id: 0,
                 axes: vec![AXIS_X, AXIS_Y],
                 kinematics: 1,
+                caps: McuCaps::default(),
             },
             McuAxisConfig {
                 mcu_id: 1,
                 axes: vec![AXIS_Z],
                 kinematics: 2,
+                caps: McuCaps::default(),
             },
         ]
     }

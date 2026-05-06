@@ -25,7 +25,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
-use crate::dispatch::{build_push_params, McuAxisConfig, AXIS_X, AXIS_Y, AXIS_Z};
+use crate::dispatch::{build_push_params, McuAxisConfig, McuCaps, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::homing::HomingState;
 use crate::planner::{PlannerError, PlannerHandle};
 use crate::slot_pool::{SlotPool, CURVE_POOL_N};
@@ -1038,17 +1038,36 @@ impl PyMotionBridge {
         // Persist for runtime updates.
         *self.planner_config.lock().unwrap() = cfg.clone();
 
-        // Two-MCU first-print MVP topology.
+        // Two-MCU first-print MVP topology. Pull `runtime_caps` from each
+        // `McuConnection` (set during bootstrap by `query_runtime_caps`); fall
+        // back to large-profile defaults if the firmware predates
+        // `QueryRuntimeCaps`.
+        let (octopus_caps, f446_caps) = {
+            let mcus = self.mcus.lock().unwrap();
+            let oc = mcus
+                .get(&octopus_handle)
+                .and_then(|c| c.runtime_caps)
+                .map(McuCaps::from)
+                .unwrap_or_default();
+            let fc = mcus
+                .get(&f446_handle)
+                .and_then(|c| c.runtime_caps)
+                .map(McuCaps::from)
+                .unwrap_or_default();
+            (oc, fc)
+        };
         let mcu_configs = vec![
             McuAxisConfig {
                 mcu_id: octopus_handle,
                 axes: vec![AXIS_X, AXIS_Y],
                 kinematics: 0, // CoreXyAndE
+                caps: octopus_caps,
             },
             McuAxisConfig {
                 mcu_id: f446_handle,
                 axes: vec![AXIS_Z],
                 kinematics: 1, // CartesianXyzAndE
+                caps: f446_caps,
             },
         ];
         *self.mcu_axis_configs.lock().unwrap() = mcu_configs.clone();
