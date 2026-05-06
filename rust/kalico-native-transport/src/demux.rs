@@ -18,6 +18,13 @@ use crate::frame::{crc16_ccitt, FRAME_MIN_LEN_FIELD, FRAME_SYNC};
 const KLIPPER_LEN_MIN: u8 = 5;
 const KLIPPER_LEN_MAX: u8 = 64;
 const KLIPPER_INTERFRAME_SYNC: u8 = 0x7E;
+// The next four shadow authoritative definitions in
+// `kalico-host-rt::host_io::wire`. We can't import from that crate
+// (it's downstream); keep these in sync if `wire.rs` ever changes them.
+const MESSAGE_DEST: u8 = 0x10;
+const MESSAGE_SEQ_MASK: u8 = 0x0F;
+const MESSAGE_SYNC: u8 = 0x7E;
+const MESSAGE_TRAILER_SIZE: usize = 3;
 
 #[derive(Debug)]
 enum State {
@@ -205,12 +212,6 @@ impl Demuxer {
 }
 
 fn parse_klipper_frame(frame: Vec<u8>) -> DemuxOutput {
-    use crate::frame::crc16_ccitt;
-    const MESSAGE_DEST: u8 = 0x10;
-    const MESSAGE_SEQ_MASK: u8 = 0x0F;
-    const MESSAGE_SYNC: u8 = 0x7E;
-    const MESSAGE_TRAILER_SIZE: usize = 3;
-
     let len = frame.len();
     // Trailer check.
     if frame[len - 1] != MESSAGE_SYNC {
@@ -262,10 +263,6 @@ mod tests {
 
     fn good_klipper_frame(payload: &[u8], seq: u8) -> Vec<u8> {
         // Build a valid Klipper frame: [len][seq|DEST][payload][crc_hi][crc_lo][0x7E]
-        use crate::frame::crc16_ccitt;
-        const MESSAGE_DEST: u8 = 0x10;
-        const MESSAGE_SEQ_MASK: u8 = 0x0F;
-        const MESSAGE_SYNC: u8 = 0x7E;
         let len = 5 + payload.len();
         assert!(len <= 64);
         let mut buf = Vec::with_capacity(len);
@@ -420,5 +417,22 @@ mod tests {
         let kal = encode_frame(CHANNEL_CONTROL, b"x");
         let outs = d.feed_slice(&kal);
         assert_eq!(outs.len(), 1);
+    }
+
+    #[test]
+    fn klipper_bad_dest_emits_stream_error() {
+        // Build a real frame, then clobber the seq byte's DEST flag (upper nibble).
+        // Both DEST-clear and DEST-with-extra-bits should fail.
+        let mut frame = good_klipper_frame(&[0x01, 0x02], 0);
+        frame[1] = 0x05; // DEST bit clear, low nibble 5
+        // CRC is now stale; recompute so we test ONLY the DEST check, not CRC.
+        let crc_off = frame.len() - 3;
+        let crc = crc16_ccitt(&frame[..crc_off]);
+        frame[crc_off] = (crc >> 8) as u8;
+        frame[crc_off + 1] = (crc & 0xFF) as u8;
+        let mut d = Demuxer::new();
+        let outs = d.feed_slice(&frame);
+        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
+            "expected StreamError for bad DEST flag, got {outs:?}");
     }
 }
