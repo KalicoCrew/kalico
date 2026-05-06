@@ -5,7 +5,7 @@ Renode GPIO injection + virtual-time fixture for kalico-rewrite.
 This is the Step 7-D deterministic simulator fixture. It intentionally uses
 Option A: a Renode monitor wrapper drives virtual time and GPIO state, while
 the firmware is touched only by a tiny CONFIG_KALICO_SIM-only validation
-command (`kalico_sim_gpio_sample`). That keeps the simulator controls outside
+command (`runtime_sim_gpio_sample`). That keeps the simulator controls outside
 production firmware and still proves the host can poll async firmware output
 through the normal Klipper msgproto path.
 
@@ -279,12 +279,12 @@ def poll_async_event(io, name, timeout=3.0):
 
 def sample_gpio(io, renode, sample_id, pin_name, pull_up=0):
     io.send(
-        "kalico_sim_gpio_sample sample_id=%d pin=%s pull_up=%d" %
+        "runtime_sim_gpio_sample sample_id=%d pin=%s pull_up=%d" %
         (int(sample_id), pin_name, int(pull_up))
     )
     renode.advance_time(0.002)
-    resp = io.wait_for_response("kalico_sim_gpio_sample_response", timeout=3.0)
-    event = poll_async_event(io, "kalico_sim_gpio_sample", timeout=3.0)
+    resp = io.wait_for_response("runtime_sim_gpio_sample_response", timeout=3.0)
+    event = poll_async_event(io, "runtime_sim_gpio_sample", timeout=3.0)
     return resp, event
 
 
@@ -327,10 +327,10 @@ def test_gpio_injection_fixture(args):
             if isinstance(m, (tuple, list)) and len(m) >= 3:
                 return m[2] if isinstance(m[2], str) else ""
             return ""
-        if not any(_msg_fmt(m).startswith("kalico_sim_gpio_sample ")
+        if not any(_msg_fmt(m).startswith("runtime_sim_gpio_sample ")
                    for m in messages):
             raise AssertionError(
-                "kalico_sim_gpio_sample is missing from identify dict; "
+                "runtime_sim_gpio_sample is missing from identify dict; "
                 "rebuild with CONFIG_KALICO_SIM=y"
             )
 

@@ -3,7 +3,7 @@
 Phase 0 Gate A acceptance test (Step-6 spec §3.3 / plan Phase 0 Task 0.3).
 
 Boots the firmware in the Renode sim, loads three NURBS curves (via
-kalico_load_fixture_curve under CONFIG_KALICO_SIM=y, or kalico_load_curve
+runtime_load_fixture_curve under CONFIG_KALICO_SIM=y, or kalico_load_curve
 if --use-real-loads is passed), pushes 10 segments referencing them in
 rotation, and verifies:
 
@@ -25,7 +25,7 @@ half-split refactor). Empirically the trace ring drains as 0 in sim even
 when the engine demonstrably evaluates segments (status=RUNNING,
 tick_counter advances). The full trace-stream check is deferred to Gate B
 (spec §3.3) once Phase 1 lands the half-split. For Gate A the substitute
-is the engine-progress check via `kalico_sim_diag` (sim-only), which
+is the engine-progress check via `runtime_sim_diag` (sim-only), which
 observes the same forward progress through a different surface.
 
 Usage:
@@ -114,8 +114,8 @@ def load_via_real_path(io, slot, fx, timeout=5.0):
 def load_via_fixture(io, slot, fixture_id, timeout=5.0):
     """Returns (result_code, curve_handle_packed). On non-zero result,
     curve_handle_packed is 0."""
-    io.send(f"kalico_load_fixture_curve slot={slot} fixture_id={fixture_id}")
-    r = io.wait_for_response("kalico_load_fixture_response", timeout)
+    io.send(f"runtime_load_fixture_curve slot={slot} fixture_id={fixture_id}")
+    r = io.wait_for_response("runtime_load_fixture_response", timeout)
     return int(r["result"]), int(r.get("curve_handle_packed", 0))
 
 
@@ -140,8 +140,8 @@ def push_segment(
 
 
 def query_diag(io, timeout=10.0):
-    io.send("kalico_sim_diag")
-    return io.wait_for_response("kalico_sim_diag_response", timeout)
+    io.send("runtime_sim_diag")
+    return io.wait_for_response("runtime_sim_diag_response", timeout)
 
 
 def run_gate_a(use_real_loads):
@@ -398,7 +398,7 @@ def main():
         action="store_true",
         help=(
             "Use kalico_load_curve (production blob path) instead of "
-            "kalico_load_fixture_curve. Default is the fixture path."
+            "runtime_load_fixture_curve. Default is the fixture path."
         ),
     )
     args = p.parse_args()

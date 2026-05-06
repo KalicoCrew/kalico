@@ -42,7 +42,7 @@ timer_set_diff(uint32_t value)
 // Return the current time (in absolute clock ticks).
 //
 // Under CONFIG_KALICO_SIM (Renode), DWT->CYCCNT is unmodeled and reads as
-// 0. Fork to the software CYCCNT (kalico_sim_cyccnt, bumped from the TIM5
+// 0. Fork to the software CYCCNT (runtime_sim_cyccnt, bumped from the TIM5
 // ISR by cycles-per-tick per fire — see src/stm32/kalico_h7_timer.c) so
 // timer_dispatch_many() and the engine's widen state both observe forward
 // progress. Per Step-6 plan Phase 0 Task 0.1 + Task 0.3. Production builds
@@ -53,8 +53,8 @@ uint32_t
 timer_read_time(void)
 {
 #if CONFIG_KALICO_SIM
-    extern volatile uint32_t kalico_sim_cyccnt;
-    return kalico_sim_cyccnt;
+    extern volatile uint32_t runtime_sim_cyccnt;
+    return runtime_sim_cyccnt;
 #else
     return DWT->CYCCNT;
 #endif

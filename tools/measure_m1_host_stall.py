@@ -98,7 +98,7 @@ def floats_to_blob(values):
 def load_stall_curve(io, slot=1, timeout=5.0):
     """Load a tiny scalar curve via the current production ABI.
 
-    The old soak used `kalico_load_fixture_curve`; production firmware now
+    The old soak used `runtime_load_fixture_curve`; production firmware now
     exposes only `kalico_load_curve`, so this keeps M1 on the real ABI.
     """
     cps = [0.0, 0.33333334, 0.6666667, 1.0]

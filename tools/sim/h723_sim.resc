@@ -36,7 +36,7 @@ machine LoadPlatformDescription @/opt/homebrew/Cellar/renode/1.16.1/libexec/plat
 # prologues with `vpush`) then raises a UsageFault → DefaultHandler infinite
 # loop. Per Step-6 plan Phase 0 Task 0.2 GDB-attach diagnosis. Only Renode
 # 1.16+ exposes `FpuEnabled`; if you're on an older release upgrade or use
-# the kalico_load_fixture_curve escape hatch as a workaround.
+# the runtime_load_fixture_curve escape hatch as a workaround.
 cpu FpuEnabled true
 
 # H7 PWR controller (D3 domain). Klipper's stm32h7.c polls D3CR.VOSRDY at boot

@@ -33,7 +33,7 @@ runtime_tick_disable(void)
 //
 // Per Step-6 spec §3.1: under CONFIG_KALICO_SIM, Renode's H7 .repl tags
 // DWT->CYCCNT as opaque memory (reads return 0), which freezes the engine's
-// widening loop in sim. Fork to a software counter (kalico_sim_cyccnt) bumped
+// widening loop in sim. Fork to a software counter (runtime_sim_cyccnt) bumped
 // from the TIM5 ISR. Production firmware (CONFIG_KALICO_SIM=n) reads the
 // hardware DWT register directly. NEVER flash a CONFIG_KALICO_SIM=y image to
 // silicon — IWDG-disable + software CYCCNT is a debugging build only.
@@ -42,8 +42,8 @@ uint32_t
 runtime_cyccnt_read(void)
 {
 #if CONFIG_KALICO_SIM
-    extern volatile uint32_t kalico_sim_cyccnt;
-    return kalico_sim_cyccnt;
+    extern volatile uint32_t runtime_sim_cyccnt;
+    return runtime_sim_cyccnt;
 #else
     return DWT->CYCCNT;
 #endif
@@ -109,13 +109,13 @@ TIM5_IRQHandler(void)
     // engine widening loop has no forward progress source unless we drive a
     // software counter from this ISR. Delta = cycles-per-tick so the widened
     // u64 advances at the same rate the engine would observe on silicon.
-    extern volatile uint32_t kalico_sim_cyccnt;
-    kalico_sim_cyccnt += (runtime_clock_freq / 40000U);
+    extern volatile uint32_t runtime_sim_cyccnt;
+    runtime_sim_cyccnt += (runtime_clock_freq / 40000U);
     // Sim-only wake of the drain task; the foreground timer system is
     // unreliable under Renode (DWT-based dispatch) so we drive the drain
     // cadence deterministically off TIM5 fires. Throttled in runtime_tick.c.
-    extern void kalico_sim_isr_wake_drain(void);
-    kalico_sim_isr_wake_drain();
+    extern void runtime_sim_isr_wake_drain(void);
+    runtime_sim_isr_wake_drain();
 #endif
 
     // Use the abstraction so cycle-count snapshots stay consistent under the
@@ -128,7 +128,7 @@ TIM5_IRQHandler(void)
     // `endstop::tick` observes fresh pin levels in the same modulation
     // period. No-op when no arm is active (table empty). Skipped under
     // CONFIG_KALICO_SIM: the Renode e2e test drives pin levels directly
-    // via `command_kalico_sim_endstop_set_pin`, and a real-GPIO sample
+    // via `command_runtime_sim_endstop_set_pin`, and a real-GPIO sample
     // here would clobber the test's override every tick.
 #if !CONFIG_KALICO_SIM
     extern void runtime_endstop_sample_pins(void);

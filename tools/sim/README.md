@@ -86,11 +86,11 @@ Both are documented here so future debugging knows what to NOT chase again.
 2. **DWT->CYCCNT freeze** (was: "engine widening loop never advances").
    Renode tags `DWT->CYCCNT` as opaque memory; reads return 0. C-side fork
    in `src/stm32/kalico_h7_timer.c::kalico_h7_read_cyccnt()` returns a
-   software counter (`kalico_sim_cyccnt` in `src/stm32/kalico_sim_clock.c`)
+   software counter (`runtime_sim_cyccnt` in `src/stm32/runtime_sim_clock.c`)
    bumped from the TIM5 ISR by `kalico_clock_freq / 40000` cycles per fire.
    Production builds (CONFIG_KALICO_SIM=n) read `DWT->CYCCNT` directly.
 
-A third Phase-0 deliverable, the `kalico_load_fixture_curve` escape hatch
+A third Phase-0 deliverable, the `runtime_load_fixture_curve` escape hatch
 (spec §3.2), is wired through but not strictly required: with the FPU fix
 above, the regular `kalico_load_curve` path works in sim. The escape hatch
 remains as a backup if Renode regresses — gated on the `kalico-sim` Cargo
@@ -134,7 +134,7 @@ kalico-sim FFI surface is a debugging build only.
 **Step 6 ships two acceptance gates (spec §3.3):**
 
 - **Gate A** — basic comm-protocol round-trip on sim. Drives `runtime_query_status`,
-  `kalico_load_curve` (or `kalico_load_fixture_curve` when sim FPU is broken),
+  `kalico_load_curve` (or `runtime_load_fixture_curve` when sim FPU is broken),
   `kalico_push_segment`, segment retirement.
 - **Gate B** — stream-lifecycle, status-frame, fault paths. Re-validates that the
   Phase-7/8/9 features (curve-pool generation handles, stream open/arm/terminal,

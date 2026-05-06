@@ -171,7 +171,7 @@ double kalico_runtime_get_axis_accumulator(kalico_nurbs_KalicoRuntime *rt, uint8
 /**
  * Read the cumulative signed step count for stepper `oid` (0-indexed).
  * Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
- * Used by the sim diagnostic command `kalico_sim_stepper_count_query`.
+ * Used by the sim diagnostic command `runtime_sim_stepper_count_query`.
  */
 int32_t kalico_runtime_get_stepper_count(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
 
@@ -328,7 +328,7 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * and pushes each result through this FFI before `endstop::tick`
  * observes it. Sim builds (Renode e2e at
  * tools/test_renode_endstop_e2e.py) call the same FFI directly via
- * the `command_kalico_sim_endstop_set_pin` shim, bypassing real GPIO.
+ * the `command_runtime_sim_endstop_set_pin` shim, bypassing real GPIO.
  */
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 

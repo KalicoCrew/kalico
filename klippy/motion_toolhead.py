@@ -495,8 +495,8 @@ class MotionToolhead:
         try:
             resp = self.bridge.bridge_call(
                 handle,
-                "kalico_sim_stepper_count_query oid=%d" % oid,
-                "kalico_sim_stepper_count_response",
+                "runtime_sim_stepper_count_query oid=%d" % oid,
+                "runtime_sim_stepper_count_response",
                 timeout_s=5.0,
             )
             count = resp.get("count", 0)
@@ -517,8 +517,8 @@ class MotionToolhead:
         try:
             resp = self.bridge.bridge_call(
                 handle,
-                "kalico_sim_axis_steps_query oid=%d" % oid,
-                "kalico_sim_axis_steps_response",
+                "runtime_sim_axis_steps_query oid=%d" % oid,
+                "runtime_sim_axis_steps_response",
                 timeout_s=5.0,
             )
             milli = resp.get("milli_spm", 0)
@@ -539,8 +539,8 @@ class MotionToolhead:
         try:
             resp = self.bridge.bridge_call(
                 handle,
-                "kalico_sim_axis_accum_query oid=%d" % oid,
-                "kalico_sim_axis_accum_response",
+                "runtime_sim_axis_accum_query oid=%d" % oid,
+                "runtime_sim_axis_accum_response",
                 timeout_s=5.0,
             )
             milli = resp.get("milli", 0)
@@ -555,7 +555,7 @@ class MotionToolhead:
         """[sim] Drive a Linux-MCU GPIO level via the firmware shim.
 
         The Linux MCU has no real hardware to assert an endstop with;
-        `command_kalico_sim_endstop_set_pin` injects a level into the
+        `command_runtime_sim_endstop_set_pin` injects a level into the
         firmware's PIN_LEVELS table so test fixtures can simulate trips.
         """
         gpio = gcmd.get_int("GPIO", minval=0, maxval=0xFFFF)
@@ -568,8 +568,8 @@ class MotionToolhead:
         try:
             resp = self.bridge.bridge_call(
                 handle,
-                "kalico_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
-                "kalico_sim_endstop_set_pin_response",
+                "runtime_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
+                "runtime_sim_endstop_set_pin_response",
                 timeout_s=5.0,
             )
             gcmd.respond_info(

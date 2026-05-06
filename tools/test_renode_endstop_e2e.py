@@ -33,7 +33,7 @@ fixture demonstrates real-GPIO injection working — but the runtime never
 samples real GPIOs on its own). The fix here is the minimal
 CONFIG_KALICO_SIM-only scaffold:
 
-    src/runtime_tick.c       command_kalico_sim_endstop_set_pin
+    src/runtime_tick.c       command_runtime_sim_endstop_set_pin
     rust/kalico-c-api/src/runtime_ffi.rs
                              pub extern "C" kalico_endstop_set_pin_level
                              (gated `#[cfg(feature = "kalico-sim")]`)
@@ -57,7 +57,7 @@ A. Endstop ISR must run. `Engine::tick` calls `poll_endstop_trip` from
 B. CONFIG_KALICO_SIM build: the new commands require the sim build
    (`tools/sim/build_sim_firmware.sh`). The endstop production wire
    surface is NOT gated on CONFIG_KALICO_SIM and is present in any
-   build; only `kalico_sim_endstop_set_pin` is sim-only.
+   build; only `runtime_sim_endstop_set_pin` is sim-only.
 
 C. arm_clock=0 makes the arm immediately effective (clock comparison in
    `endstop::tick` is `clock < ARM.arm_clock`).
@@ -168,7 +168,7 @@ def send_set_homed(io, homed):
 
 def send_sim_set_endstop_pin(io, gpio, level):
     io.send(
-        "kalico_sim_endstop_set_pin gpio=%d level=%d" %
+        "runtime_sim_endstop_set_pin gpio=%d level=%d" %
         (int(gpio), int(bool(level)))
     )
 
@@ -206,12 +206,12 @@ def test_arm_trip_disarm(io, renode):
 
     # TIM5 (40 kHz modulation timer) is gated until first-segment push in
     # production. The e2e test never pushes a segment, so we use the
-    # sim-only `kalico_sim_engine_tick_start` shim to start TIM5 directly
+    # sim-only `runtime_sim_engine_tick_start` shim to start TIM5 directly
     # so endstop::tick runs each modulation period.
-    io.send("kalico_sim_engine_tick_start")
+    io.send("runtime_sim_engine_tick_start")
     renode.advance_time(0.005)
     tick_start_resp = io.wait_for_response(
-        "kalico_sim_engine_tick_start_response", timeout=3.0
+        "runtime_sim_engine_tick_start_response", timeout=3.0
     )
     assert int(tick_start_resp["result"]) == 0
     print("[arm_trip] TIM5 enabled")
@@ -246,7 +246,7 @@ def test_arm_trip_disarm(io, renode):
     # 5 ms = 200 periods, plenty of margin).
     send_sim_set_endstop_pin(io, gpio=test_gpio, level=1)
     renode.advance_time(0.010)
-    pin_resp = io.wait_for_response("kalico_sim_endstop_set_pin_response",
+    pin_resp = io.wait_for_response("runtime_sim_endstop_set_pin_response",
                                     timeout=3.0)
     assert int(pin_resp["result"]) == 0, (
         "set_pin failed: %s" % (pin_resp,)
@@ -329,7 +329,7 @@ def test_arm_disarm_clean(io, renode):
     # this case).
     send_sim_set_endstop_pin(io, gpio=test_gpio, level=0)
     renode.advance_time(0.005)
-    io.wait_for_response("kalico_sim_endstop_set_pin_response", timeout=3.0)
+    io.wait_for_response("runtime_sim_endstop_set_pin_response", timeout=3.0)
 
     send_arm_endstop(io, arm_id=arm_id, arm_clock=0,
                      sources=sources, stepper_oids=stepper_oids)
@@ -389,8 +389,8 @@ def run(args):
             "runtime_arm_endstop",
             "runtime_disarm_endstop",
             "runtime_set_homed_state",
-            "kalico_sim_endstop_set_pin",
-            "kalico_sim_engine_tick_start",
+            "runtime_sim_endstop_set_pin",
+            "runtime_sim_engine_tick_start",
         ):
             assert need in names, (
                 "%s missing from data dict; rebuild with CONFIG_KALICO_SIM=y" %

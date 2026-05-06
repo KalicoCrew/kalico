@@ -157,14 +157,14 @@ def stream_terminal(io, segment_id, timeout=3.0):
 
 
 def load_fixture(io, slot, fixture_id, timeout=5.0):
-    io.send(f"kalico_load_fixture_curve slot={slot} fixture_id={fixture_id}")
-    r = io.wait_for_response("kalico_load_fixture_response", timeout)
+    io.send(f"runtime_load_fixture_curve slot={slot} fixture_id={fixture_id}")
+    r = io.wait_for_response("runtime_load_fixture_response", timeout)
     return int(r["result"]), int(r.get("curve_handle_packed", 0))
 
 
 def query_diag(io, timeout=5.0):
-    io.send("kalico_sim_diag")
-    return io.wait_for_response("kalico_sim_diag_response", timeout)
+    io.send("runtime_sim_diag")
+    return io.wait_for_response("runtime_sim_diag_response", timeout)
 
 
 # --- Test cases -----------------------------------------------------------

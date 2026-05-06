@@ -93,7 +93,7 @@ runtime_irq_restore(uint32_t flags)
 }
 
 void* runtime_handle = 0;            // exposed (non-static) for kalico_h7_timer.c
-static struct task_wake runtime_drain_wake;
+struct task_wake runtime_drain_wake;  // non-static: shared with runtime_sim_commands.c
 static struct timer runtime_drain_timer;
 
 // Phase 11 §5.3 periodic status frame state. Emit cadence is ~10 Hz against
@@ -131,33 +131,6 @@ runtime_drain_event(struct timer *t)
     t->waketime += timer_from_us(1000);  // 1 kHz
     return SF_RESCHEDULE;
 }
-
-#if CONFIG_KALICO_SIM
-// Sim-only direct wake from the TIM5 ISR. Under Renode, the DWT-based
-// timer system is best-effort even with the kalico_sim_cyccnt fork
-// (timer_set_diff -> SysTick->LOAD interactions are subtle with a
-// stepping software counter), so the runtime_drain_timer's 1 kHz cadence
-// can be unreliable. Step-6 plan Phase 0 Gate A trace-stream verification
-// requires drain to be invoked deterministically while segments are
-// retiring; this provides a guaranteed wake path keyed off TIM5 fires.
-//
-// Throttle: wake every KALICO_SIM_DRAIN_PERIOD_TICKS = 40 fires (= once
-// per 1 ms at 40 kHz tick rate). sched_wake_task is ISR-safe (sets a
-// volatile flag + atomic write).
-extern void sched_wake_task(struct task_wake *w);
-volatile uint32_t kalico_sim_drain_counter = 0;
-#define KALICO_SIM_DRAIN_PERIOD_TICKS 40
-
-__attribute__((used, externally_visible))
-void
-kalico_sim_isr_wake_drain(void)
-{
-    if (++kalico_sim_drain_counter >= KALICO_SIM_DRAIN_PERIOD_TICKS) {
-        kalico_sim_drain_counter = 0;
-        sched_wake_task(&runtime_drain_wake);
-    }
-}
-#endif
 
 void
 runtime_init(void)
@@ -199,7 +172,7 @@ DECL_INIT(runtime_init);
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
 #if CONFIG_KALICO_SIM
-volatile uint32_t kalico_sim_drain_calls = 0;
+extern volatile uint32_t runtime_sim_drain_calls;  // defined in runtime_sim_commands.c
 #endif
 
 void
@@ -209,7 +182,7 @@ runtime_drain(void)
     if (!sched_check_wake(&runtime_drain_wake)) return;
 
 #if CONFIG_KALICO_SIM
-    kalico_sim_drain_calls++;
+    runtime_sim_drain_calls++;
 #endif
 
     // Phase 11 Task 11.2 §10.4 reclaim drain pipeline. Drains a batch of
@@ -489,162 +462,8 @@ DECL_CTR("_DECL_OUTPUT "
 // they now ride the kalico-native events channel via
 // kalico_native_emit_credit_freed / _fault_event / _status_event in
 // src/kalico_dispatch.c.
-#if CONFIG_KALICO_SIM
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_sim_gpio_sample sample_id=%u pin=%c value=%c");
-#endif
-
-#if CONFIG_KALICO_SIM
-extern volatile uint32_t kalico_sim_drain_calls;
-extern volatile uint32_t kalico_sim_cyccnt;
-extern volatile uint32_t kalico_sim_drain_counter;
-
-void
-command_kalico_sim_diag(uint32_t *args)
-{
-    uint8_t status = runtime_handle ? runtime_handle_status(runtime_handle) : 255;
-    int32_t last_err = runtime_handle ? runtime_handle_last_error(runtime_handle) : 0;
-    uint32_t tick_counter = runtime_handle ? runtime_handle_tick_counter(runtime_handle) : 0;
-    sendf(
-        "kalico_sim_diag_response drain_calls=%u cyccnt=%u drain_counter=%u "
-        "status=%c last_err=%i tick_counter=%u",
-        kalico_sim_drain_calls, kalico_sim_cyccnt, kalico_sim_drain_counter,
-        status, last_err, tick_counter);
-}
-DECL_COMMAND(command_kalico_sim_diag, "kalico_sim_diag");
-
-void
-command_kalico_sim_gpio_sample(uint32_t *args)
-{
-    uint32_t sample_id = args[0];
-    uint8_t pin = args[1];
-    uint8_t pull_up = args[2];
-    struct gpio_in g = gpio_in_setup(pin, pull_up);
-    uint8_t value = gpio_in_read(g);
-
-    sendf("kalico_sim_gpio_sample_response sample_id=%u pin=%c value=%c",
-          sample_id, pin, value);
-    output("kalico_sim_gpio_sample sample_id=%u pin=%c value=%c",
-           sample_id, pin, value);
-}
-DECL_COMMAND(command_kalico_sim_gpio_sample,
-    "kalico_sim_gpio_sample sample_id=%u pin=%c pull_up=%c");
-
-// Phase 4 step-count diagnostic: returns the cumulative step count for the
-// given stepper oid (0-indexed). Used by the sim test harness to verify that
-// G1 moves produce real step pulses without needing GPIO state readback.
-void
-command_kalico_sim_stepper_count_query(uint32_t *args)
-{
-    uint8_t oid = (uint8_t)args[0];
-    int32_t count = runtime_handle
-        ? kalico_runtime_get_stepper_count(runtime_handle, oid)
-        : 0;
-    sendf("kalico_sim_stepper_count_response oid=%c count=%i", oid, count);
-}
-DECL_COMMAND(command_kalico_sim_stepper_count_query,
-    "kalico_sim_stepper_count_query oid=%c");
-
-// Phase 4 diagnostic: returns the configured steps_per_mm for axis `oid`
-// (motor space, 0..=3). Used to verify that ConfigureAxes actually wrote
-// the motor blob into the engine.
-void
-command_kalico_sim_axis_steps_query(uint32_t *args)
-{
-    uint8_t oid = (uint8_t)args[0];
-    float spm = runtime_handle
-        ? runtime_handle_get_axis_steps_per_mm(runtime_handle, oid)
-        : 0.0f;
-    // Send as i32 micro-steps-per-mm so we don't have to teach the wire
-    // codec about f32 here.
-    int32_t milli = (int32_t)(spm * 1000.0f);
-    sendf("kalico_sim_axis_steps_response oid=%c milli_spm=%i", oid, milli);
-}
-DECL_COMMAND(command_kalico_sim_axis_steps_query,
-    "kalico_sim_axis_steps_query oid=%c");
-
-void
-command_kalico_sim_axis_accum_query(uint32_t *args)
-{
-    uint8_t oid = (uint8_t)args[0];
-    double a = runtime_handle
-        ? kalico_runtime_get_axis_accumulator(runtime_handle, oid)
-        : 0.0;
-    int32_t milli = (int32_t)(a * 1000.0);
-    sendf("kalico_sim_axis_accum_response oid=%c milli=%i", oid, milli);
-}
-DECL_COMMAND(command_kalico_sim_axis_accum_query,
-    "kalico_sim_axis_accum_query oid=%c");
-#endif
-
-#if CONFIG_KALICO_SIM
-// Sim-only escape hatch (Step-6 plan Phase 0 Task 0.2). Diagnoses the
-// load_curve hang in Renode (the H7 .repl ignores SCB->CPACR writes from
-// SystemInit, so any FPU instruction in CurvePool::load — including
-// is_finite() and > 0.0 checks — UsageFaults). The fixture path uses static
-// pre-validated curve data and CurvePool::load_unchecked (integer-only
-// memcpy), bypassing the FPU entirely. NEVER include in production.
-extern int32_t kalico_runtime_load_fixture(
-    void *rt, uint16_t slot, uint16_t fixture_id, uint32_t *out_handle_packed);
-
-void
-command_kalico_load_fixture_curve(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
-              -7, 0);
-        return;
-    }
-    uint16_t slot = args[0];
-    uint16_t fixture_id = args[1];
-    uint32_t handle_packed = 0;
-    int32_t r = kalico_runtime_load_fixture(
-        runtime_handle, slot, fixture_id, &handle_packed);
-    sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
-          r, handle_packed);
-}
-DECL_COMMAND(command_kalico_load_fixture_curve,
-    "kalico_load_fixture_curve slot=%hu fixture_id=%hu");
-
-// Step 7-D §10 Renode endstop e2e test scaffold. Production firmware does
-// not yet wire real MCU GPIO sampling into `endstop::set_pin_level`
-// (rust/runtime/src/endstop.rs:311) — that abstract-pin-level table is
-// only addressable from the runtime crate and tests. The e2e test pokes
-// it directly through this sim-only shim instead of driving a real GPIO
-// in Renode. NEVER include in production firmware.
-extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
-
-void
-command_kalico_sim_endstop_set_pin(uint32_t *args)
-{
-    uint16_t gpio = args[0];
-    uint8_t level = args[1];
-    int32_t r = kalico_endstop_set_pin_level(gpio, level);
-    sendf("kalico_sim_endstop_set_pin_response gpio=%hu level=%c result=%i",
-          gpio, level, r);
-}
-DECL_COMMAND(command_kalico_sim_endstop_set_pin,
-    "kalico_sim_endstop_set_pin gpio=%hu level=%c");
-
-// Step 7-D §10 Renode endstop e2e: TIM5 (40 kHz modulation timer) is not
-// enabled until the first segment push triggers the producer protocol
-// (`runtime_tick_init` only configures it; `runtime_tick_enable`
-// starts it). The endstop e2e test never pushes segments — it just
-// arms, asserts a pin, expects a trip. Without TIM5 ticking, the
-// modulation ISR never invokes `endstop::tick` and the trip never
-// fires. This sim-only shim drives `runtime_tick_enable` directly so
-// the test can run the engine in steady-state without a segment.
-
-void
-command_kalico_sim_engine_tick_start(uint32_t *args)
-{
-    (void)args;
-    runtime_tick_enable();
-    sendf("kalico_sim_engine_tick_start_response result=%i", 0);
-}
-DECL_COMMAND(command_kalico_sim_engine_tick_start,
-    "kalico_sim_engine_tick_start");
-#endif // CONFIG_KALICO_SIM
+// Sim-only commands and the sim drain-wake hook live in
+// src/runtime_sim_commands.c (CONFIG_KALICO_SIM). Spec §4.5.
 
 // Cycle-count bench command + storage moved to src/generic/runtime_bench.c
 // (selected by CONFIG_RUNTIME_BENCH). The H7 ISR calls the unconditional

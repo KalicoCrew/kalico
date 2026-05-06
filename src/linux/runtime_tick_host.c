@@ -28,7 +28,7 @@ volatile uint8_t runtime_liveness_ok = 1;
 // Sim-only cycle counter (defined on H7 under CONFIG_KALICO_SIM in
 // stm32/kalico_sim_clock.c). The Linux build maps it onto the host
 // monotonic-derived counter that runtime_cyccnt_read returns.
-volatile uint32_t kalico_sim_cyccnt = 0;
+volatile uint32_t runtime_sim_cyccnt = 0;
 
 #define HOST_TICK_HZ 40000UL
 #define HOST_TICK_NS (1000000000UL / HOST_TICK_HZ)

@@ -928,7 +928,7 @@ pub mod exports {
 
     /// Read the cumulative signed step count for stepper `oid` (0-indexed).
     /// Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
-    /// Used by the sim diagnostic command `kalico_sim_stepper_count_query`.
+    /// Used by the sim diagnostic command `runtime_sim_stepper_count_query`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_get_stepper_count(
         rt: *mut KalicoRuntime,
@@ -1568,7 +1568,7 @@ pub mod exports {
     /// and pushes each result through this FFI before `endstop::tick`
     /// observes it. Sim builds (Renode e2e at
     /// tools/test_renode_endstop_e2e.py) call the same FFI directly via
-    /// the `command_kalico_sim_endstop_set_pin` shim, bypassing real GPIO.
+    /// the `command_runtime_sim_endstop_set_pin` shim, bypassing real GPIO.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_endstop_set_pin_level(gpio: u16, level: u8) -> i32 {
         if runtime::endstop::set_pin_level(gpio, level != 0) {

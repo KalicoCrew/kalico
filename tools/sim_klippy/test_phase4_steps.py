@@ -4,7 +4,7 @@
 Run from the repo root inside the Docker container:
     python3 tools/sim_klippy/test_phase4_steps.py
 
-Uses the bridge's bridge_call() to query kalico_sim_stepper_count_query oid=0
+Uses the bridge's bridge_call() to query runtime_sim_stepper_count_query oid=0
 (X-axis stepper, OID 0 in the sim printer.cfg) after a fake-homed G1 X10.
 
 Gate: step_count > 0 after the move.  Expected: ~10 mm × steps_per_mm.
