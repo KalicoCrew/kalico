@@ -19,6 +19,7 @@
 
 pub mod frame;
 pub mod demux;
+pub mod frame_source;
 pub mod wire_helpers;
 pub mod bootstrap;
 pub mod transport;
@@ -26,6 +27,7 @@ pub mod connection;
 
 pub use frame::{decode_frame, encode_frame, FrameError, CHANNEL_CONTROL, CHANNEL_EVENTS, FRAME_SYNC};
 pub use demux::{Demuxer, Frame, KlipperFrame, StreamError, PollOutcome};
+pub use frame_source::{FrameSource, FrameSourceError};
 pub use kalico_protocol::{MessageKind, PROTO_VERSION, SCHEMA_HASH};
 pub use bootstrap::{
     decode_identify_response, encode_identify, IdentifyResponse, BOOTSTRAP_IDENTIFY_LEN,
