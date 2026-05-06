@@ -1,4 +1,4 @@
-// src/stm32/kalico_h7_timer.c
+// src/stm32/runtime_tick_h7.c
 //
 // H723-specific TIM5 init + IRQ handler. Spec §2.4 / §4.1 / §4.2 / §4.4.
 
@@ -6,7 +6,7 @@
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
-#include "kalico_h7_timer.h"   // helper sigs
+#include "generic/runtime_tick.h"   // interface contract
 #include "generic/runtime_bench.h" // runtime_bench_capture hook
 
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
@@ -23,7 +23,7 @@ extern void* kalico_rt_handle;   // exposed in src/runtime_tick.c
 // --gc-sections, mirroring kalico_clock_freq / kalico_liveness_ok.
 __attribute__((used, externally_visible))
 void
-kalico_h7_disable_tim5(void)
+runtime_tick_disable(void)
 {
     TIM5->CR1 &= ~TIM_CR1_CEN;
     NVIC_DisableIRQ(TIM5_IRQn);
@@ -39,7 +39,7 @@ kalico_h7_disable_tim5(void)
 // silicon — IWDG-disable + software CYCCNT is a debugging build only.
 __attribute__((used, externally_visible))
 uint32_t
-kalico_h7_read_cyccnt(void)
+runtime_cyccnt_read(void)
 {
 #if CONFIG_KALICO_SIM
     extern volatile uint32_t kalico_sim_cyccnt;
@@ -51,7 +51,7 @@ kalico_h7_read_cyccnt(void)
 
 __attribute__((used, externally_visible))
 void
-kalico_h7_enable_tim5(void)
+runtime_tick_enable(void)
 {
     TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
@@ -59,7 +59,7 @@ kalico_h7_enable_tim5(void)
 }
 
 void
-kalico_h7_timer_init(void)
+runtime_tick_init(void)
 {
     // Disable IRQ at the NVIC first — that's safe even with TIM5 clock off,
     // since NVIC is core-local. Touching TIM5 registers before its peripheral
@@ -96,7 +96,7 @@ kalico_h7_timer_init(void)
     NVIC_SetPriority(TIM5_IRQn, 3);
 
     // Don't enable yet — runtime_init pushes segments first; first push triggers
-    // kalico_h7_enable_tim5() via the producer protocol.
+    // runtime_tick_enable() via the producer protocol.
 }
 
 void
@@ -135,11 +135,11 @@ TIM5_IRQHandler(void)
     kalico_endstop_sample_pins();
 #endif
 
-    uint32_t before = kalico_h7_read_cyccnt();
+    uint32_t before = runtime_cyccnt_read();
     if (kalico_rt_handle) {
         kalico_runtime_tick(kalico_rt_handle, before);
     }
-    uint32_t after = kalico_h7_read_cyccnt();
+    uint32_t after = runtime_cyccnt_read();
 
     // Bench capture: weak no-op unless CONFIG_RUNTIME_BENCH=y.
     runtime_bench_capture(after - before);

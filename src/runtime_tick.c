@@ -17,11 +17,9 @@
 #include "kalico_runtime.h"
 #include "kalico_dispatch.h" // kalico_native_emit_*
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
-#if CONFIG_MACH_STM32H7
-#include "stm32/kalico_h7_timer.h" // kalico_h7_disable_tim5 / enable / read_cyccnt
-#elif CONFIG_MACH_LINUX
+#if CONFIG_MACH_LINUX
 // Host build: pthread-driven tick replaces the TIM5 ISR. The Rust runtime
-// still calls kalico_h7_enable_tim5/disable_tim5/read_cyccnt across the
+// still calls runtime_tick_enable/disable/runtime_cyccnt_read across the
 // producer-protocol boundary; we provide host-side stubs in
 // src/linux/kalico_host_tick.c.
 #include "linux/kalico_host_tick.h"
@@ -179,8 +177,7 @@ runtime_init(void)
     // TIM5 (DOES NOT enable; the first segment push triggers enable via
     // the producer protocol §4.4). On Linux it spawns the host pthread
     // that calls kalico_runtime_tick at 40 kHz.
-    extern void kalico_h7_timer_init(void);
-    kalico_h7_timer_init();
+    runtime_tick_init();
 
     // Wire the periodic 1 kHz drain wake.
     runtime_drain_timer.func = runtime_drain_event;
@@ -339,7 +336,7 @@ runtime_drain(void)
     // anyway to avoid redundant disable calls.
     if ((cur_status == 2 /* DRAINED */ || cur_status == 3 /* FAULT */)
         && prev_engine_status != cur_status) {
-        kalico_h7_disable_tim5();
+        runtime_tick_disable();
     }
 
     prev_engine_status = cur_status;
@@ -914,19 +911,18 @@ DECL_COMMAND(command_kalico_sim_endstop_set_pin,
 
 // Step 7-D §10 Renode endstop e2e: TIM5 (40 kHz modulation timer) is not
 // enabled until the first segment push triggers the producer protocol
-// (`kalico_h7_timer_init` only configures it; `kalico_h7_enable_tim5`
+// (`runtime_tick_init` only configures it; `runtime_tick_enable`
 // starts it). The endstop e2e test never pushes segments — it just
 // arms, asserts a pin, expects a trip. Without TIM5 ticking, the
 // modulation ISR never invokes `endstop::tick` and the trip never
-// fires. This sim-only shim drives `kalico_h7_enable_tim5` directly so
+// fires. This sim-only shim drives `runtime_tick_enable` directly so
 // the test can run the engine in steady-state without a segment.
-extern void kalico_h7_enable_tim5(void);
 
 void
 command_kalico_sim_engine_tick_start(uint32_t *args)
 {
     (void)args;
-    kalico_h7_enable_tim5();
+    runtime_tick_enable();
     sendf("kalico_sim_engine_tick_start_response result=%i", 0);
 }
 DECL_COMMAND(command_kalico_sim_engine_tick_start,

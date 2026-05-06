@@ -57,7 +57,7 @@ src-y += generic/crc16_ccitt.c
 src-y += generic/armcm_boot.c generic/armcm_irq.c generic/armcm_reset.c
 
 # Kalico runtime glue (only meaningful on STM32H7; Kconfig depends on MACH_STM32H7).
-src-$(CONFIG_KALICO_RUNTIME) += stm32/kalico_h7_timer.c
+src-$(CONFIG_KALICO_RUNTIME) += stm32/runtime_tick_h7.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 # Sim-only: software CYCCNT under CONFIG_KALICO_SIM. Per Step-6 spec §3.1.
 src-$(CONFIG_KALICO_SIM) += stm32/kalico_sim_clock.c
