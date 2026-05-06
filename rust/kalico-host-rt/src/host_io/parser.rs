@@ -12,7 +12,11 @@ use crate::transport::MessageValue;
 pub struct DataDictionary {
     pub commands:     IndexMap<String, i32>,
     pub responses:    IndexMap<String, i32>,
+    // `output` is emitted by Kalico-runtime firmware and most modern Klipper
+    // builds, but may be absent on older / minimal firmware. Default to empty.
+    #[serde(default)]
     pub output:       IndexMap<String, i32>,
+    #[serde(default)]
     pub enumerations: IndexMap<String, IndexMap<String, EnumValue>>,
     pub config:       serde_json::Value,
     pub version:      String,
