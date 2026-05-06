@@ -39,7 +39,7 @@ KALICO_SYNC = 0x55
 KLIPPER_SYNC = 0x7E
 KIND_QUERY_RUNTIME_CAPS = 0x0040
 KIND_RUNTIME_CAPS_RESPONSE = 0x0041
-CHANNEL_CONTROL = 0x01
+CHANNEL_CONTROL = 0x00
 
 EXPECTED_SMALL = {
     "max_control_points": 512,
@@ -50,11 +50,14 @@ EXPECTED_SMALL = {
 
 
 def crc16_ccitt(data: bytes) -> int:
+    """CRC-16/CCITT (poly 0x1021, init 0xFFFF, no reflection, no final xor) —
+    byte-at-a-time variant. Matches src/generic/crc16_ccitt.c (firmware) and
+    rust/kalico-native-transport/src/frame.rs::crc16_ccitt (host)."""
     crc = 0xFFFF
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
+    for byte in data:
+        d = (byte ^ (crc & 0x00FF))
+        d = (d ^ ((d << 4) & 0x00FF)) & 0xFF
+        crc = ((crc >> 8) ^ (d << 8) ^ (d << 3) ^ (d >> 4)) & 0xFFFF
     return crc
 
 
