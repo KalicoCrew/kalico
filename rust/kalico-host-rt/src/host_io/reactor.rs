@@ -425,19 +425,6 @@ impl Reactor {
     // Wire-protocol ack/nak handling — spec §3.5 (Codex finding #1 corrected).
     // -------------------------------------------------------------------------
 
-    /// Reconstruct an absolute 64-bit seq from the 4-bit wire nibble.
-    ///
-    /// The wire nibble is the low 4 bits of the MCU's receive_seq.
-    /// Outstanding window ≤ 12 << 16, so one nibble-mod-16 delta suffices.
-    fn decode_absolute(&self, wire_seq: u8) -> u64 {
-        let delta = (u64::from(wire_seq).wrapping_sub(self.receive_seq)) & 0x0F;
-        // Modular arithmetic on the 64-bit absolute seq counter. Practical
-        // wraparound is unreachable (would take >500 years at 1 GHz frame
-        // rate) but `wrapping_add` makes the boundary explicit and lets
-        // tests probe the high end without debug panics.
-        self.receive_seq.wrapping_add(delta)
-    }
-
     /// Advance `receive_seq` and pop newly-acked entries from the window.
     ///
     /// Special case: if the unacked window is empty this is the very first
@@ -484,7 +471,7 @@ impl Reactor {
     ///     • rseq > ignore_nak_seq AND window non-empty → duplicate-ack NAK.
     ///     • else → stale, drop.
     pub(crate) fn handle_ack_nak(&mut self, wire_seq_nibble: u8) -> Result<(), TransportError> {
-        let rseq = self.decode_absolute(wire_seq_nibble);
+        let rseq = crate::host_io::wire::decode_absolute(self.receive_seq, wire_seq_nibble);
 
         // Step 1: advance receive_seq if rseq is new.
         if rseq > self.receive_seq {
@@ -566,7 +553,7 @@ impl Reactor {
             return Ok(());
         }
         // Real msg-id frame — advance receive_seq if needed.
-        let rseq = self.decode_absolute(wire_seq_nibble);
+        let rseq = crate::host_io::wire::decode_absolute(self.receive_seq, wire_seq_nibble);
         if rseq != self.receive_seq {
             self.update_receive_seq(rseq)?;
         }
@@ -970,6 +957,7 @@ impl Reactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_io::wire;
     use std::sync::{Arc, Mutex};
 
     // -----------------------------------------------------------------------
@@ -1080,13 +1068,13 @@ mod tests {
     fn decode_absolute_wraps_correctly() {
         let (reactor, _) = test_reactor_with_inflight(&[]);
         // receive_seq = 1 (default). Wire nibble 0x02 → delta = (2 - 1) & 0x0F = 1 → abs = 2.
-        assert_eq!(reactor.decode_absolute(0x02), 2);
+        assert_eq!(wire::decode_absolute(reactor.receive_seq, 0x02), 2);
 
         // Simulate receive_seq = 14.
         let mut r2 = test_reactor_with_inflight(&[]).0;
         r2.receive_seq = 14;
         // Wire nibble 0x01 → delta = (1 - 14) & 0x0F = (-13 mod 16) = 3 → abs = 14 + 3 = 17.
-        assert_eq!(r2.decode_absolute(0x01), 17);
+        assert_eq!(wire::decode_absolute(r2.receive_seq, 0x01), 17);
     }
 
     // -----------------------------------------------------------------------

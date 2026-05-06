@@ -57,6 +57,21 @@ pub fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     None
 }
 
+/// Decode a 4-bit wire-seq nibble back to an absolute u64 by computing
+/// the mod-16 delta from `prev_abs` and adding it. Outstanding window
+/// ≤ 12 entries, so one mod-16 delta always uniquely identifies the
+/// next absolute seq. Modular arithmetic on the 64-bit counter is via
+/// `wrapping_add` so tests can probe the high end without debug panics
+/// (true wraparound is unreachable in practice — >500 years at 1 GHz
+/// frame rate).
+///
+/// Hoisted from `Reactor::decode_absolute` (was a method) so identify
+/// and other callers can reuse the logic without holding a Reactor.
+pub fn decode_absolute(prev_abs: u64, wire_seq: u8) -> u64 {
+    let delta = (u64::from(wire_seq).wrapping_sub(prev_abs)) & 0x0F;
+    prev_abs.wrapping_add(delta)
+}
+
 /// Build a retransmit buffer: leading MESSAGE_SYNC byte followed by every
 /// frame in the unacked window concatenated. Per spec §3.8 step 1+2.
 pub fn build_retransmit_buffer<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
@@ -71,6 +86,20 @@ pub fn build_retransmit_buffer<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_absolute_walks_within_one_epoch() {
+        assert_eq!(decode_absolute(0, 0), 0);
+        assert_eq!(decode_absolute(0, 1), 1);
+        assert_eq!(decode_absolute(0, 5), 5);
+    }
+
+    #[test]
+    fn decode_absolute_handles_wrap() {
+        assert_eq!(decode_absolute(15, 0), 16);
+        assert_eq!(decode_absolute(15, 5), 21);
+        assert_eq!(decode_absolute(31, 0), 32);
+    }
 
     #[test]
     fn crc16_matches_klipper_test_vector() {
