@@ -11,6 +11,7 @@
 #include "board/misc.h" // console_sendf
 #include "board/pgm.h" // READP
 #include "command.h" // DECL_CONSTANT
+#include "kalico_demux.h" // kalico_demux_pump
 #include "sched.h" // sched_wake_tasks
 #include "serial_irq.h" // serial_enable_tx_irq
 
@@ -88,7 +89,29 @@ console_pop_input(uint_fast8_t len)
 void
 console_task(void)
 {
-    uint_fast8_t rpos = readb(&receive_pos), pop_count;
+    uint_fast8_t rpos = readb(&receive_pos);
+
+#if CONFIG_KALICO_RUNTIME
+    kalico_demux_pump(receive_buf, rpos);
+
+    // Bytes the IRQ deposited during pump live in [rpos, now). Rebase
+    // them down to the start of receive_buf and update receive_pos
+    // atomically so a fresh IRQ doesn't write into a slot we just
+    // moved. Doing the memmove inside irq_save trades latency for the
+    // simpler invariant; no retry loop needed (unlike console_pop_input,
+    // which does memmove outside irq_save and therefore must retry).
+    irqstatus_t flag = irq_save();
+    uint_fast8_t now = readb(&receive_pos);
+    if (now == rpos) {
+        receive_pos = 0;
+    } else {
+        uint_fast8_t tail = now - rpos;
+        memmove(receive_buf, &receive_buf[rpos], tail);
+        receive_pos = tail;
+    }
+    irq_restore(flag);
+#else
+    uint_fast8_t pop_count;
     int_fast8_t ret = command_find_block(receive_buf, rpos, &pop_count);
     if (ret > 0)
         command_dispatch(receive_buf, pop_count);
@@ -100,6 +123,7 @@ console_task(void)
         if (ret > 0)
             command_send_ack();
     }
+#endif
 }
 DECL_TASK(console_task);
 
