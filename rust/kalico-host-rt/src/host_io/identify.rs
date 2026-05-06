@@ -7,7 +7,7 @@ use crate::host_io::parser::{DataDictionary, MsgProtoParser, decode_vlq, encode_
 use crate::host_io::serial_frame_io::SerialFrameIo;
 use crate::host_io::wire;
 use crate::host_io::wire::{
-    MESSAGE_HEADER_SIZE, MESSAGE_MIN, MESSAGE_SEQ_MASK, MESSAGE_TRAILER_SIZE,
+    MESSAGE_HEADER_SIZE, MESSAGE_MIN, MESSAGE_SEQ_MASK, MESSAGE_SYNC, MESSAGE_TRAILER_SIZE,
     build_frame,
 };
 use crate::transport::{MessageParams, MessageValue, TransportError};
@@ -43,10 +43,34 @@ pub fn identify_handshake(
 ) -> Result<(MsgProtoParser, Vec<u8>, IdentifySeqState), TransportError> {
     let deadline = Instant::now() + timeout;
 
+    // Demuxer-flush phase. Between USB enumeration and the moment our caller
+    // applied raw-mode termios (cfmakeraw inside `serialport::open`), the
+    // Linux TTY layer ran with default cooked-mode settings — including
+    // `ECHO=on`. That echoes every byte the firmware emits (our periodic
+    // kalico-native StatusEvent frames) right back to the device as bulk-OUT
+    // data. The firmware's demuxer is byte-stateful: a leading `0x55` puts
+    // it into `DEMUX_S_KALICO`, where it sits accumulating bytes until a
+    // length-determined frame size is reached and CRC-validated. If raw mode
+    // takes effect mid-StatusEvent-echo, the demuxer is left holding a
+    // partial frame and waits for more bytes. The first identify request we
+    // send then gets consumed as the *tail* of that corrupt kalico frame
+    // instead of being recognized as a fresh Klipper frame — identify times
+    // out without ever reaching command_find_and_dispatch.
+    //
+    // Fix: write 70 bytes of `0x7E` (Klipper's interframe sync byte) before
+    // the drain. After at most 63 bytes any partial frame in either state
+    // overflows its known length and falls through to validation (which
+    // fails on the all-`0x7E` payload), and the demuxer resets to WAITING.
+    // Subsequent `0x7E` bytes are tolerated in WAITING. The flush is
+    // idempotent on a clean demuxer, so it costs us nothing in the common
+    // case and rescues us in the racy hot-plug case.
+    io.write_all(&[MESSAGE_SYNC; 70])?;
+    io.flush()?;
+
     // Drain phase: poll for ~300ms and discard everything (frames + errors).
     // The firmware emits unsolicited `kalico_status` frames on channel 1 from
-    // boot, and pre-existing klipper output we want gone before we start
-    // the identify exchange.
+    // boot, plus any pre-existing klipper output and any frames our flush
+    // bytes triggered (e.g. a stale partial-frame's CRC-fail dispatch).
     let drain_until = Instant::now() + Duration::from_millis(300);
     while Instant::now() < drain_until {
         match io.poll_frames_until(drain_until)? {
