@@ -181,11 +181,6 @@ kalico_demux_kalico_channel(void)
     return kalico_buf[3];
 }
 
-// Diagnostic: count what the demuxer emits.
-volatile uint16_t demux_emit_klipper;
-volatile uint16_t demux_emit_kalico;
-volatile uint16_t demux_emit_error;
-
 void
 kalico_demux_pump(const uint8_t *buf, uint16_t len)
 {
@@ -195,7 +190,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
         case KALICO_DEMUX_OUT_NONE:
             break;
         case KALICO_DEMUX_OUT_KLIPPER: {
-            demux_emit_klipper++;
             // Bootloader-request sentinel detection. The 32-byte sentinel
             // begins with 0x20 (= 32 decimal), which falls inside the
             // demuxer's [KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64] range, so
@@ -216,7 +210,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             break;
         }
         case KALICO_DEMUX_OUT_KALICO:
-            demux_emit_kalico++;
             kalico_dispatch_frame(
                 kalico_demux_kalico_channel(),
                 kalico_demux_kalico_payload(),
@@ -224,7 +217,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             kalico_demux_consume();
             break;
         case KALICO_DEMUX_OUT_ERROR:
-            demux_emit_error++;
             kalico_demux_consume();
             break;
         }
