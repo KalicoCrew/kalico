@@ -125,6 +125,15 @@ kalico_console_write_raw(const uint8_t *buf, uint16_t len)
 static struct task_wake usb_bulk_out_wake;
 static uint8_t receive_buf[128], receive_pos;
 
+#if CONFIG_KALICO_RUNTIME
+// H7 RX-path diagnostic counters (read by the periodic StatusEvent emitter).
+volatile uint16_t usb_bulk_out_task_count;
+volatile uint16_t usb_pump_call_count;
+volatile uint16_t usb_pump_bytes_total;
+volatile uint8_t usb_first_pump_byte;
+volatile uint8_t usb_last_read_ret_neg;
+#endif
+
 void
 usb_notify_bulk_out(void)
 {
@@ -136,6 +145,9 @@ usb_bulk_out_task(void)
 {
     if (!sched_check_wake(&usb_bulk_out_wake))
         return;
+#if CONFIG_KALICO_RUNTIME
+    usb_bulk_out_task_count++;
+#endif
     // Read data
     uint_fast8_t rpos = receive_pos;
     if (rpos + USB_CDC_EP_BULK_OUT_SIZE <= sizeof(receive_buf)) {
@@ -145,6 +157,12 @@ usb_bulk_out_task(void)
             rpos += ret;
             usb_notify_bulk_out();
         }
+#if CONFIG_KALICO_RUNTIME
+        else {
+            // Capture last negative return code (-1 = no packet, -2 = err).
+            usb_last_read_ret_neg = (uint8_t)(-ret);
+        }
+#endif
     } else {
         usb_notify_bulk_out();
     }
@@ -153,6 +171,12 @@ usb_bulk_out_task(void)
     // is task-only (no IRQ writer), so a blanket reset after pump is
     // safe.
 #if CONFIG_KALICO_RUNTIME
+    if (rpos > 0) {
+        usb_pump_call_count++;
+        usb_pump_bytes_total += rpos;
+        if (usb_first_pump_byte == 0)
+            usb_first_pump_byte = receive_buf[0];
+    }
     kalico_demux_pump(receive_buf, rpos);
     receive_pos = 0;
 #else
