@@ -421,8 +421,8 @@ DECL_TASK(runtime_status_drain);
 // the larger sizing.
 // Non-static so kalico_dispatch.c's LoadCurve handler can reuse the same
 // scratch (the legacy DECL_COMMAND begin/chunk/finalize path is retired).
-float kalico_aligned_cps[1830];    // MAX_CONTROL_POINTS
-float kalico_aligned_knots[1850];  // MAX_KNOT_VECTOR_LEN
+float kalico_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
+float kalico_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
 
 // Phase C of the kalico-native transport spec
 // (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md` §15)

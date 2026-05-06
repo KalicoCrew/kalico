@@ -22,8 +22,8 @@ extern void *kalico_rt_handle;
 
 // Phase C: shared aligned scratch with command_kalico_load_curve_finalize
 // path retired in runtime_tick.c. Defined there.
-extern float kalico_aligned_cps[1830];
-extern float kalico_aligned_knots[1850];
+extern float kalico_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
+extern float kalico_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
 #endif
 
 // Forward decl: platform-specific raw byte output. The Linux sim implements
