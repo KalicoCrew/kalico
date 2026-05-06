@@ -3,11 +3,11 @@
 //! Routes a single incoming USB-CDC byte stream into two parallel logical
 //! streams:
 //!
-//! * Klipper frames — emitted as `DemuxOutput::KlipperFrame(Vec<u8>)`. The
+//! * Klipper frames — emitted as `Frame::Klipper(KlipperFrame)`. The
 //!   forwarded bytes are the *full* Klipper frame including the leading
 //!   length byte. Caller hands these to the existing Klipper parser
 //!   (`kalico-host-rt`'s `extract_packet`).
-//! * Kalico frames — emitted as `DemuxOutput::KalicoFrame { channel, payload }`
+//! * Kalico frames — emitted as `Frame::Kalico { channel, payload }`
 //!   already CRC-validated. Caller hands payload to schema dispatch.
 //!
 //! The state machine is byte-oriented and interruptible at any boundary;
@@ -71,6 +71,7 @@ impl KlipperFrame {
 pub enum StreamError {
     KlipperCrcMismatch    { seq: u8, expected: u16, actual: u16 },
     KlipperBadTrailer     { got: u8 },
+    KlipperBadSeqDest     { got: u8 },
     KlipperLenOutOfRange  { len: u8 },
     KalicoCrcMismatch     { channel: u8, expected: u16, actual: u16 },
     KalicoLenBelowMin     { len: u16 },
@@ -84,6 +85,8 @@ impl std::fmt::Display for StreamError {
                 write!(f, "klipper crc mismatch seq=0x{seq:02x} expected=0x{expected:04x} actual=0x{actual:04x}"),
             Self::KlipperBadTrailer { got } =>
                 write!(f, "klipper bad trailer 0x{got:02x}"),
+            Self::KlipperBadSeqDest { got } =>
+                write!(f, "klipper bad seq/DEST byte 0x{got:02x}"),
             Self::KlipperLenOutOfRange { len } =>
                 write!(f, "klipper len out of range: {len}"),
             Self::KalicoCrcMismatch { channel, expected, actual } =>
@@ -110,16 +113,6 @@ pub enum PollOutcome {
 }
 
 #[derive(Debug)]
-pub enum DemuxOutput {
-    /// Complete Klipper frame, starting with the length byte.
-    KlipperFrame(Vec<u8>),
-    /// CRC-validated kalico frame.
-    KalicoFrame { channel: u8, payload: Vec<u8> },
-    /// Stream-level error; the demuxer has resynced to `WaitingForFrame`.
-    StreamError(String),
-}
-
-#[derive(Debug)]
 pub struct Demuxer {
     state: State,
     replay: std::collections::VecDeque<u8>,
@@ -139,27 +132,45 @@ impl Demuxer {
         }
     }
 
-    pub fn feed_slice(&mut self, bytes: &[u8]) -> Vec<DemuxOutput> {
-        let mut out = Vec::new();
+    pub fn feed_slice(&mut self, bytes: &[u8]) -> (Vec<Frame>, Vec<StreamError>) {
+        let mut frames = Vec::new();
+        let mut errors = Vec::new();
         // Drain any pre-existing replay before consuming new bytes.
         while let Some(rb) = self.replay.pop_front() {
-            if let Some(o) = self.feed_inner(rb) { out.push(o); }
+            match self.feed_inner(rb) {
+                Ok(Some(f)) => frames.push(f),
+                Ok(None) => {}
+                Err(e) => errors.push(e),
+            }
         }
         for &b in bytes {
-            if let Some(o) = self.feed_inner(b) { out.push(o); }
+            match self.feed_inner(b) {
+                Ok(Some(f)) => frames.push(f),
+                Ok(None) => {}
+                Err(e) => errors.push(e),
+            }
             // Each new byte may trigger validation that pushes bytes into
             // replay; drain them all before the next live byte.
             while let Some(rb) = self.replay.pop_front() {
-                if let Some(o) = self.feed_inner(rb) { out.push(o); }
+                match self.feed_inner(rb) {
+                    Ok(Some(f)) => frames.push(f),
+                    Ok(None) => {}
+                    Err(e) => errors.push(e),
+                }
             }
         }
-        out
+        (frames, errors)
     }
 
-    /// Feed a single byte through the state machine; returns at most one output.
-    /// On Klipper validation failure, pushes `frame[1..]` into `self.replay`
-    /// for 1-byte-shift resync.
-    fn feed_inner(&mut self, byte: u8) -> Option<DemuxOutput> {
+    /// Feed a single byte through the state machine.
+    ///
+    /// Returns:
+    /// - `Ok(Some(frame))` — a complete, validated frame was produced.
+    /// - `Ok(None)` — still accumulating bytes.
+    /// - `Err(e)` — validation failure; the demuxer has resynced and (for
+    ///   Klipper frames) pushed `frame[1..]` into `self.replay` for
+    ///   1-byte-shift resync.
+    fn feed_inner(&mut self, byte: u8) -> Result<Option<Frame>, StreamError> {
         match &mut self.state {
             State::WaitingForFrame => {
                 match byte {
@@ -169,21 +180,21 @@ impl Demuxer {
                         let mut buf = Vec::with_capacity(total);
                         buf.push(byte);
                         self.state = State::InsideKlipper { buf, remaining: total - 1 };
-                        None
+                        Ok(None)
                     }
                     FRAME_SYNC => {
                         let mut buf = Vec::with_capacity(64);
                         buf.push(byte);
                         self.state = State::InsideKalico { buf, total_len: 0 };
-                        None
+                        Ok(None)
                     }
                     KLIPPER_INTERFRAME_SYNC => {
                         // Stray inter-frame sync byte; tolerated.
-                        None
+                        Ok(None)
                     }
                     other => {
                         log::trace!("demuxer: dropping out-of-frame byte 0x{other:02x}");
-                        None
+                        Ok(None)
                     }
                 }
             }
@@ -193,17 +204,19 @@ impl Demuxer {
                 if *remaining == 0 {
                     let frame = std::mem::take(buf);
                     self.state = State::WaitingForFrame;
-                    let result = parse_klipper_frame(&frame);
-                    if matches!(result, DemuxOutput::StreamError(_)) {
-                        // 1-byte-shift resync: re-feed frame[1..] through the
-                        // demuxer (preserving the demux.rs:13 "byte-oriented
-                        // and interruptible" invariant). Drop only the false-latch
-                        // length byte (frame[0]).
-                        self.replay.extend(frame.iter().copied().skip(1));
+                    match parse_klipper_frame(&frame) {
+                        Ok(f) => Ok(Some(f)),
+                        Err(e) => {
+                            // 1-byte-shift resync: re-feed frame[1..] through the
+                            // demuxer (preserving the demux.rs:13 "byte-oriented
+                            // and interruptible" invariant). Drop only the false-latch
+                            // length byte (frame[0]).
+                            self.replay.extend(frame.iter().copied().skip(1));
+                            Err(e)
+                        }
                     }
-                    Some(result)
                 } else {
-                    None
+                    Ok(None)
                 }
             }
             State::InsideKalico { buf, total_len } => {
@@ -212,69 +225,66 @@ impl Demuxer {
                     // Header (sync + len_lo + len_hi) is now in the buffer.
                     let len_field = u16::from_le_bytes([buf[1], buf[2]]) as usize;
                     if len_field < FRAME_MIN_LEN_FIELD {
-                        let err = format!(
-                            "kalico frame len field {len_field} below minimum {FRAME_MIN_LEN_FIELD}"
-                        );
                         self.state = State::WaitingForFrame;
-                        return Some(DemuxOutput::StreamError(err));
+                        return Err(StreamError::KalicoLenBelowMin { len: len_field as u16 });
                     }
                     *total_len = 1 + len_field;
                 }
                 if *total_len > 0 && buf.len() == *total_len {
                     let frame = std::mem::take(buf);
                     self.state = State::WaitingForFrame;
-                    Some(parse_kalico_frame(&frame))
+                    parse_kalico_frame(&frame).map(Some)
                 } else {
-                    None
+                    Ok(None)
                 }
             }
         }
     }
 }
 
-fn parse_klipper_frame(frame: &[u8]) -> DemuxOutput {
+fn parse_klipper_frame(frame: &[u8]) -> Result<Frame, StreamError> {
     let len = frame.len();
     // Trailer check.
     if frame[len - 1] != MESSAGE_SYNC {
-        return DemuxOutput::StreamError(format!(
-            "klipper bad trailer 0x{:02x}", frame[len - 1]
-        ));
+        return Err(StreamError::KlipperBadTrailer { got: frame[len - 1] });
     }
     // Seq-byte DEST flag (per extract_packet at wire.rs:44).
     let seq_byte = frame[1];
     if (seq_byte & !MESSAGE_SEQ_MASK) != MESSAGE_DEST {
-        return DemuxOutput::StreamError(format!(
-            "klipper bad seq/DEST byte 0x{:02x}", seq_byte
-        ));
+        return Err(StreamError::KlipperBadSeqDest { got: seq_byte });
     }
     // CRC over bytes[0 .. len-3] (length byte + seq + payload), big-endian.
     let crc_off = len - MESSAGE_TRAILER_SIZE;
     let crc_expected = (u16::from(frame[crc_off]) << 8) | u16::from(frame[crc_off + 1]);
     let crc_actual = crc16_ccitt(&frame[..crc_off]);
     if crc_expected != crc_actual {
-        return DemuxOutput::StreamError(format!(
-            "klipper crc mismatch: expected 0x{crc_expected:04x}, got 0x{crc_actual:04x}"
-        ));
+        return Err(StreamError::KlipperCrcMismatch {
+            seq: seq_byte & MESSAGE_SEQ_MASK,
+            expected: crc_expected,
+            actual: crc_actual,
+        });
     }
-    DemuxOutput::KlipperFrame(frame.to_vec())
+    Ok(Frame::Klipper(KlipperFrame::from_validated(frame.to_vec())))
 }
 
-fn parse_kalico_frame(frame: &[u8]) -> DemuxOutput {
+fn parse_kalico_frame(frame: &[u8]) -> Result<Frame, StreamError> {
     // We've consumed exactly `total_len` bytes; revalidate CRC + extract.
     if frame.len() < 1 + FRAME_MIN_LEN_FIELD {
-        return DemuxOutput::StreamError("kalico frame shorter than minimum".to_string());
+        return Err(StreamError::KalicoFrameTooShort { got: frame.len() });
     }
     let payload_end = frame.len() - 2;
     let crc_expected = u16::from_le_bytes([frame[payload_end], frame[payload_end + 1]]);
     let crc_actual = crc16_ccitt(&frame[1..payload_end]);
     if crc_expected != crc_actual {
-        return DemuxOutput::StreamError(format!(
-            "kalico crc mismatch: expected 0x{crc_expected:04x}, got 0x{crc_actual:04x}"
-        ));
+        return Err(StreamError::KalicoCrcMismatch {
+            channel: frame[3],
+            expected: crc_expected,
+            actual: crc_actual,
+        });
     }
     let channel = frame[3];
     let payload = frame[4..payload_end].to_vec();
-    DemuxOutput::KalicoFrame { channel, payload }
+    Ok(Frame::Kalico { channel, payload })
 }
 
 #[cfg(test)]
@@ -305,9 +315,13 @@ mod tests {
     fn klipper_validates_good_crc_and_trailer() {
         let frame = good_klipper_frame(&[0x01, 0x02, 0x03], 0);
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&frame);
-        assert_eq!(outs.len(), 1, "expected one DemuxOutput");
-        assert!(matches!(&outs[0], DemuxOutput::KlipperFrame(f) if f == &frame));
+        let (frames, errors) = d.feed_slice(&frame);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(frames.len(), 1, "expected one frame");
+        match &frames[0] {
+            Frame::Klipper(kf) => assert_eq!(kf.bytes(), &frame[..]),
+            other => panic!("expected Klipper frame, got {other:?}"),
+        }
     }
 
     #[test]
@@ -316,9 +330,8 @@ mod tests {
         let len = frame.len();
         frame[len - 3] ^= 0xFF; // corrupt CRC hi
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&frame);
-        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
-            "expected a StreamError, got {outs:?}");
+        let (_, errors) = d.feed_slice(&frame);
+        assert!(!errors.is_empty(), "expected a StreamError, got none");
     }
 
     #[test]
@@ -327,9 +340,8 @@ mod tests {
         let last = frame.len() - 1;
         frame[last] = 0x00; // not 0x7E
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&frame);
-        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
-            "expected a StreamError, got {outs:?}");
+        let (_, errors) = d.feed_slice(&frame);
+        assert!(!errors.is_empty(), "expected a StreamError, got none");
     }
 
     #[test]
@@ -343,18 +355,25 @@ mod tests {
         stream.extend_from_slice(&k1);
         stream.extend_from_slice(&kal);
         stream.extend_from_slice(&k2);
-        let outs = d.feed_slice(&stream);
+        let (frames, errors) = d.feed_slice(&stream);
 
-        assert_eq!(outs.len(), 3);
-        assert!(matches!(&outs[0], DemuxOutput::KlipperFrame(f) if f == &k1));
-        match &outs[1] {
-            DemuxOutput::KalicoFrame { channel, payload } => {
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(frames.len(), 3);
+        match &frames[0] {
+            Frame::Klipper(kf) => assert_eq!(kf.bytes(), &k1[..]),
+            other => panic!("expected Klipper frame, got {other:?}"),
+        }
+        match &frames[1] {
+            Frame::Kalico { channel, payload } => {
                 assert_eq!(*channel, CHANNEL_CONTROL);
                 assert_eq!(payload.as_slice(), b"hello there kalico");
             }
             other => panic!("expected kalico frame, got {other:?}"),
         }
-        assert!(matches!(&outs[2], DemuxOutput::KlipperFrame(f) if f == &k2));
+        match &frames[2] {
+            Frame::Klipper(kf) => assert_eq!(kf.bytes(), &k2[..]),
+            other => panic!("expected Klipper frame, got {other:?}"),
+        }
     }
 
     #[test]
@@ -364,10 +383,11 @@ mod tests {
         let payload = vec![0x7E; 200];
         let kal = encode_frame(CHANNEL_CONTROL, &payload);
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&kal);
-        assert_eq!(outs.len(), 1);
-        match &outs[0] {
-            DemuxOutput::KalicoFrame { channel, payload: p } => {
+        let (frames, errors) = d.feed_slice(&kal);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(frames.len(), 1);
+        match &frames[0] {
+            Frame::Kalico { channel, payload: p } => {
                 assert_eq!(*channel, CHANNEL_CONTROL);
                 assert_eq!(p, &payload);
             }
@@ -380,9 +400,10 @@ mod tests {
         let payload = vec![FRAME_SYNC; 200];
         let kal = encode_frame(CHANNEL_CONTROL, &payload);
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&kal);
-        assert_eq!(outs.len(), 1);
-        assert!(matches!(&outs[0], DemuxOutput::KalicoFrame { .. }));
+        let (frames, errors) = d.feed_slice(&kal);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(&frames[0], Frame::Kalico { .. }));
     }
 
     #[test]
@@ -392,9 +413,9 @@ mod tests {
         // Feed in 17-byte chunks.
         let mut total = 0;
         for chunk in kal.chunks(17) {
-            let outs = d.feed_slice(chunk);
-            for o in outs {
-                if matches!(o, DemuxOutput::KalicoFrame { .. }) {
+            let (frames, _) = d.feed_slice(chunk);
+            for f in frames {
+                if matches!(f, Frame::Kalico { .. }) {
                     total += 1;
                 }
             }
@@ -408,36 +429,41 @@ mod tests {
         let mut d = Demuxer::new();
         let mut bytes = vec![FRAME_SYNC];
         bytes.extend_from_slice(&2u16.to_le_bytes());
-        let outs = d.feed_slice(&bytes);
-        assert_eq!(outs.len(), 1);
-        assert!(matches!(&outs[0], DemuxOutput::StreamError(_)));
+        let (frames, errors) = d.feed_slice(&bytes);
+        assert!(frames.is_empty(), "expected no frames, got {frames:?}");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], StreamError::KalicoLenBelowMin { .. }));
         // Now feed a valid Klipper frame; should still parse.
         let k = fake_klipper_frame(&[1]);
-        let outs = d.feed_slice(&k);
-        assert_eq!(outs.len(), 1);
-        assert!(matches!(&outs[0], DemuxOutput::KlipperFrame(_)));
+        let (frames, errors) = d.feed_slice(&k);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(&frames[0], Frame::Klipper(_)));
     }
 
     #[test]
     fn stray_7e_between_frames_tolerated() {
         let mut d = Demuxer::new();
         let kal = encode_frame(CHANNEL_CONTROL, b"abc");
-        let outs = d.feed_slice(&[0x7E, 0x7E, 0x7E]);
-        assert!(outs.is_empty());
-        let outs = d.feed_slice(&kal);
-        assert_eq!(outs.len(), 1);
-        assert!(matches!(&outs[0], DemuxOutput::KalicoFrame { .. }));
+        let (frames, errors) = d.feed_slice(&[0x7E, 0x7E, 0x7E]);
+        assert!(frames.is_empty());
+        assert!(errors.is_empty());
+        let (frames, errors) = d.feed_slice(&kal);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(&frames[0], Frame::Kalico { .. }));
     }
 
     #[test]
     fn out_of_frame_garbage_dropped() {
         let mut d = Demuxer::new();
         // 0x80 is not Klipper-len-range (5..=64), not 0x55, not 0x7E.
-        let outs = d.feed_slice(&[0x80, 0x81, 0x82]);
-        assert!(outs.is_empty());
+        let (frames, errors) = d.feed_slice(&[0x80, 0x81, 0x82]);
+        assert!(frames.is_empty());
+        assert!(errors.is_empty());
         let kal = encode_frame(CHANNEL_CONTROL, b"x");
-        let outs = d.feed_slice(&kal);
-        assert_eq!(outs.len(), 1);
+        let (frames, _) = d.feed_slice(&kal);
+        assert_eq!(frames.len(), 1);
     }
 
     #[test]
@@ -459,15 +485,15 @@ mod tests {
         stream.push(5u8);
         stream.extend_from_slice(&real);
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&stream);
+        let (frames, errors) = d.feed_slice(&stream);
         // Expect: at least one StreamError + the real KlipperFrame.
-        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
-            "expected stream error from false latch, got {outs:?}");
-        let klippers: Vec<_> = outs.iter().filter_map(|o| match o {
-            DemuxOutput::KlipperFrame(f) => Some(f.clone()),
+        assert!(!errors.is_empty(),
+            "expected stream error from false latch, got {errors:?}");
+        let klippers: Vec<&[u8]> = frames.iter().filter_map(|f| match f {
+            Frame::Klipper(kf) => Some(kf.bytes()),
             _ => None,
         }).collect();
-        assert!(klippers.iter().any(|f| f == &real),
+        assert!(klippers.iter().any(|b| *b == real.as_slice()),
             "expected the real frame to be recovered after resync; got {klippers:?}");
     }
 
@@ -484,12 +510,12 @@ mod tests {
         stream.push(5u8);
         stream.extend_from_slice(&real);
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&stream);
-        let klippers: Vec<_> = outs.iter().filter_map(|o| match o {
-            DemuxOutput::KlipperFrame(f) => Some(f.clone()),
+        let (frames, _errors) = d.feed_slice(&stream);
+        let klippers: Vec<&[u8]> = frames.iter().filter_map(|f| match f {
+            Frame::Klipper(kf) => Some(kf.bytes()),
             _ => None,
         }).collect();
-        assert!(klippers.iter().any(|f| f == &real),
+        assert!(klippers.iter().any(|b| *b == real.as_slice()),
             "expected the real frame to be recovered; got {klippers:?}");
     }
 
@@ -505,8 +531,10 @@ mod tests {
         frame[crc_off] = (crc >> 8) as u8;
         frame[crc_off + 1] = (crc & 0xFF) as u8;
         let mut d = Demuxer::new();
-        let outs = d.feed_slice(&frame);
-        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
-            "expected StreamError for bad DEST flag, got {outs:?}");
+        let (_, errors) = d.feed_slice(&frame);
+        assert!(!errors.is_empty(),
+            "expected StreamError for bad DEST flag, got none");
+        assert!(errors.iter().any(|e| matches!(e, StreamError::KlipperBadSeqDest { .. })),
+            "expected KlipperBadSeqDest variant, got {errors:?}");
     }
 }

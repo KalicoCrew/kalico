@@ -17,7 +17,7 @@ use crate::bootstrap::{
     decode_identify_response, encode_identify, BOOTSTRAP_IDENTIFY_RESPONSE_LEN,
 };
 use crate::connection::Connection;
-use crate::demux::{Demuxer, DemuxOutput};
+use crate::demux::{Demuxer, Frame, StreamError};
 use crate::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
 use crate::wire_helpers::{
     decode_message_header, encode_message_header, status_event_reset_epoch,
@@ -222,25 +222,25 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         if n == 0 {
             return Ok(());
         }
-        let outputs = self.inner.demuxer.lock().unwrap().feed_slice(&buf[..n]);
-        for out in outputs {
-            self.dispatch(out);
-        }
+        let (frames, errors) = self.inner.demuxer.lock().unwrap().feed_slice(&buf[..n]);
+        for e in errors { self.dispatch_error(e); }
+        for f in frames { self.dispatch_frame(f); }
         Ok(())
     }
 
-    fn dispatch(&self, out: DemuxOutput) {
-        match out {
-            DemuxOutput::KlipperFrame(_) => {
+    fn dispatch_error(&self, e: StreamError) {
+        log::warn!("kalico stream error: {e}");
+    }
+
+    fn dispatch_frame(&self, f: Frame) {
+        match f {
+            Frame::Klipper(_) => {
                 // Klipper bytes are not this transport's concern; in
                 // production they're forwarded to kalico-host-rt's parser.
                 // Here we drop them (tests inject only kalico bytes through
                 // the kalico-native demuxer).
             }
-            DemuxOutput::StreamError(e) => {
-                log::warn!("kalico stream error: {e}");
-            }
-            DemuxOutput::KalicoFrame { channel, payload } => {
+            Frame::Kalico { channel, payload } => {
                 self.dispatch_kalico(channel, &payload);
             }
         }

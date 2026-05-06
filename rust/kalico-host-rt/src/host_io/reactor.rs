@@ -19,7 +19,7 @@ use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::rtt::RttEstimator;
 use crate::host_io::runtime_events::{FaultEvent, StatusEvent};
 use crate::host_io::window::{UnackedWindow, AwaitingResponse};
-use kalico_native_transport::demux::{Demuxer, DemuxOutput};
+use kalico_native_transport::demux::{Demuxer, Frame};
 use crate::passthrough_queue::{McuHandle, NotifyId, PassthroughRouter};
 use crate::transport::TransportError;
 use runtime::error::FaultCode;
@@ -651,21 +651,20 @@ impl Reactor {
                 // (spec §6). Klipper-shaped frames are appended to `rx_buf`
                 // for the existing `extract_packet` path; kalico-shaped
                 // frames are dispatched inline below.
-                let outputs = self.kalico_demuxer.feed_slice(&scratch[..n]);
-                for out in outputs {
-                    match out {
-                        DemuxOutput::KlipperFrame(frame) => {
-                            // The demuxer already consumed `length` bytes
-                            // exactly; the legacy `extract_packet` re-validates
-                            // CRC + sync. We append the whole frame to `rx_buf`
-                            // so existing logic owns parsing/dispatch.
-                            self.rx_buf.extend_from_slice(&frame);
+                let (frames, errors) = self.kalico_demuxer.feed_slice(&scratch[..n]);
+                for e in errors { log::warn!("kalico stream error: {e}"); }
+                for f in frames {
+                    match f {
+                        Frame::Klipper(kf) => {
+                            // The demuxer already validated CRC + sync.
+                            // Append the full frame bytes to `rx_buf` so the
+                            // existing `extract_packet` path owns parsing /
+                            // dispatch. Redundancy goes away in Task 8 when
+                            // SerialFrameIo replaces this path.
+                            self.rx_buf.extend_from_slice(kf.bytes());
                         }
-                        DemuxOutput::KalicoFrame { channel, payload } => {
+                        Frame::Kalico { channel, payload } => {
                             self.handle_kalico_frame(channel, &payload);
-                        }
-                        DemuxOutput::StreamError(e) => {
-                            log::warn!("kalico stream error: {e}");
                         }
                     }
                 }

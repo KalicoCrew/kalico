@@ -12,7 +12,7 @@ use crate::host_io::wire::{
     build_frame,
 };
 use crate::transport::{MessageParams, MessageValue, TransportError};
-use kalico_native_transport::demux::{Demuxer, DemuxOutput};
+use kalico_native_transport::demux::{Demuxer, Frame};
 
 const IDENTIFY_CHUNK: u32 = 40;
 
@@ -124,12 +124,14 @@ fn wait_for_identify_response(
                 // completes — its own demuxer re-processes them from scratch.
                 rx_buf.extend_from_slice(&scratch[..n]);
                 // Run our own local demuxer so kalico-protocol frames don't
-                // confuse the legacy klipper packet parser. KalicoFrame and
-                // StreamError outputs are dropped here; only KlipperFrame
-                // outputs are checked for the identify_response.
-                for out in demuxer.feed_slice(&scratch[..n]) {
-                    if let DemuxOutput::KlipperFrame(packet) = out {
-                        if let Some(params) = decode_identify_response(&packet) {
+                // confuse the legacy klipper packet parser. Kalico frames and
+                // stream errors are dropped here; only Klipper frames are
+                // checked for the identify_response.
+                let (frames, errors) = demuxer.feed_slice(&scratch[..n]);
+                for e in errors { log::warn!("identify stream error: {e}"); }
+                for f in frames {
+                    if let Frame::Klipper(kf) = f {
+                        if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(Some(params));
                         }
                     }
