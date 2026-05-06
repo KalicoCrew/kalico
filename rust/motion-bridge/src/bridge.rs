@@ -55,6 +55,57 @@ struct McuConnection {
     /// Runtime event receiver — populated by `attach_serial`. Drained by
     /// `take_runtime_event` for klippy-side dispatch.
     runtime_rx: Option<Receiver<kalico_host_rt::host_io::runtime_events::RuntimeEvent>>,
+    /// Per-MCU runtime capabilities, queried via `QueryRuntimeCaps` after
+    /// the kalico-native Identify handshake completes (Task 10). Falls back
+    /// to the large-profile defaults if the firmware doesn't reply (older
+    /// firmware predates the QueryRuntimeCaps message). Task 11 will move
+    /// this onto `McuAxisConfig::caps`; for now the bootstrap stores it here.
+    runtime_caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
+}
+
+/// Default fallback caps used when the MCU doesn't respond to
+/// `QueryRuntimeCaps` (older firmware). Matches the large-profile pool sizing
+/// the host previously assumed unconditionally.
+const FALLBACK_RUNTIME_CAPS: kalico_protocol::messages::RuntimeCapsResponse =
+    kalico_protocol::messages::RuntimeCapsResponse {
+        max_control_points: 1830,
+        max_knot_vector_len: 1850,
+        max_degree: 10,
+        curve_pool_n: 16,
+    };
+
+/// Decode a `RuntimeCapsResponse` from a raw control-channel response body.
+/// Extracted so the bootstrap path can be unit-tested without spinning a
+/// reactor + serial port (the actual `kalico_call` round-trip is exercised
+/// in higher-level integration tests against Renode / hardware).
+fn decode_runtime_caps_body(
+    body: &[u8],
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, String> {
+    use kalico_protocol::codec::{Cursor, Decode};
+    use kalico_protocol::messages::RuntimeCapsResponse;
+    let mut c = Cursor::new(body);
+    RuntimeCapsResponse::decode_from(&mut c)
+        .map_err(|e| format!("decode RuntimeCapsResponse: {e:?}"))
+}
+
+/// Issue a `QueryRuntimeCaps` control-channel call and decode the response
+/// body. On any transport / decode error returns `Err` — the bootstrap path
+/// logs a warning and falls back to [`FALLBACK_RUNTIME_CAPS`] so older
+/// firmware (predating QueryRuntimeCaps) still attaches.
+fn query_runtime_caps(
+    io: &KalicoHostIo,
+    timeout: std::time::Duration,
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, String> {
+    use kalico_protocol::MessageKind;
+    let (kind, body) = io
+        .kalico_call(MessageKind::QueryRuntimeCaps, Vec::new(), timeout)
+        .map_err(|e| format!("kalico_call QueryRuntimeCaps: {e:?}"))?;
+    if kind != MessageKind::RuntimeCapsResponse {
+        return Err(format!(
+            "QueryRuntimeCaps: unexpected response kind {kind:?}"
+        ));
+    }
+    decode_runtime_caps_body(&body)
 }
 
 /// An event queued for Python consumption via `poll_event()`.
@@ -226,6 +277,7 @@ impl PyMotionBridge {
                 baud,
                 host_io: None,
                 runtime_rx: None,
+                runtime_caps: None,
             },
         );
         Ok(raw)
@@ -553,6 +605,35 @@ impl PyMotionBridge {
             }
         }
 
+        // Task 10: query per-MCU runtime caps. Older firmware predates this
+        // message — on any error fall back to the large-profile defaults so
+        // attach still succeeds. Task 11 will route this onto
+        // `McuAxisConfig::caps` for sizing decisions; for now we just stash
+        // it on the per-MCU connection.
+        let runtime_caps = match query_runtime_caps(
+            &host_io,
+            std::time::Duration::from_secs(2),
+        ) {
+            Ok(caps) => {
+                log::info!(
+                    "attach_serial: runtime caps for {serial_path}: \
+                     max_cp={} max_kv={} max_deg={} pool_n={}",
+                    caps.max_control_points,
+                    caps.max_knot_vector_len,
+                    caps.max_degree,
+                    caps.curve_pool_n,
+                );
+                caps
+            }
+            Err(e) => {
+                log::warn!(
+                    "attach_serial: QueryRuntimeCaps failed for {serial_path} ({e}); \
+                     falling back to large-profile defaults",
+                );
+                FALLBACK_RUNTIME_CAPS
+            }
+        };
+
         let mut mcus = self.mcus.lock().unwrap();
         let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
             PyRuntimeError::new_err(format!(
@@ -561,6 +642,7 @@ impl PyMotionBridge {
         })?;
         conn.host_io = Some(Arc::new(host_io));
         conn.runtime_rx = Some(runtime_rx);
+        conn.runtime_caps = Some(runtime_caps);
         Ok(())
     }
 
