@@ -14,6 +14,7 @@ pub mod reactor;
 pub mod rtt;
 pub mod runtime_events;
 pub mod serial_frame_io;
+pub use identify::IdentifySeqState;
 pub use serial_frame_io::SerialFrameIo;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod test_harness;

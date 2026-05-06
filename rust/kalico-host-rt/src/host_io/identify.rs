@@ -12,6 +12,19 @@ use crate::host_io::wire::{
 use crate::transport::{MessageParams, MessageValue, TransportError};
 use kalico_native_transport::demux::{Frame, PollOutcome};
 
+/// Sequence-state snapshot returned by identify, adopted by the reactor.
+/// See spec §3.1, §3.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentifySeqState {
+    /// Next absolute send-seq the reactor should use for its first
+    /// outbound frame after identify completes.
+    pub next_send_seq_abs: u64,
+    /// Absolute receive-seq adopted from the seq nibble of the last
+    /// validated Klipper frame seen during identify (walked across
+    /// all responses via wire::decode_absolute).
+    pub mcu_receive_seq_abs: u64,
+}
+
 const IDENTIFY_CHUNK: u32 = 40;
 
 /// Synchronous identify handshake.
