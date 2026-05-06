@@ -6,15 +6,7 @@ pub const MESSAGE_DEST: u8 = 0x10;
 pub const MESSAGE_SYNC: u8 = 0x7E;
 pub const MESSAGE_MAX: usize = 64;
 
-pub fn crc16_ccitt(buf: &[u8]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
-    for &byte in buf {
-        let data = u16::from(byte) ^ (crc & 0x00FF);
-        let data = (data ^ ((data << 4) & 0x00FF)) & 0xFF;
-        crc = (crc >> 8) ^ (data << 8) ^ (data << 3) ^ (data >> 4);
-    }
-    crc
-}
+pub use kalico_native_transport::frame::crc16_ccitt;
 
 pub fn build_frame(payload: &[u8], seq: u8) -> Vec<u8> {
     let msglen = MESSAGE_MIN + payload.len();
