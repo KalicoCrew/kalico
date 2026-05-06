@@ -147,23 +147,28 @@ These currently differ only in `dep:libm` (both pull it). After this change they
 
 ## 5. Host↔MCU capability handshake
 
-### 5.1 Identify response gains capability fields
+### 5.1 New `QueryRuntimeCaps` / `RuntimeCapsResponse` message pair
 
-The fork-native Identify response in `rust/kalico-protocol/src/messages.rs` is extended with four new fields:
+The IdentifyResponse layout is declared frozen at `rust/kalico-protocol/src/bootstrap.rs:47` ("Spec §5 byte layout (frozen forever)") with a test asserting field offsets are immutable. Extending Identify in place is not allowed.
+
+Instead, define a new request/response pair in `rust/kalico-protocol/src/messages.rs`:
 
 ```rust
-pub struct IdentifyResponse {
-    // ... existing fields ...
-    pub max_control_points: u32,
-    pub max_knot_vector_len: u32,
-    pub max_degree: u8,
-    pub curve_pool_n: u16,
+// New message kinds (next free 16-bit slots in the existing kind enum):
+QueryRuntimeCaps     = 0x0014,   // request body: empty
+RuntimeCapsResponse  = 0x0015,   // response body: 11 bytes
+
+pub struct RuntimeCapsResponse {
+    pub max_control_points: u32,   // 0..4
+    pub max_knot_vector_len: u32,  // 4..8
+    pub max_degree: u8,            // 8
+    pub curve_pool_n: u16,         // 9..11
 }
 ```
 
-The MCU populates these from `CONFIG_RUNTIME_*` (via `autoconf.h` constants reachable in `src/kalico_dispatch.c::handle_identify`).
+Layout is little-endian, matches existing message conventions in `rust/kalico-protocol/src/messages.rs`. C-side handler in `src/kalico_dispatch.c` populates fields from `CONFIG_RUNTIME_*` via `autoconf.h`.
 
-Wire-format addition: append the four fields to the existing Identify body. Trailing-field append is the protocol's evolution rule per `docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md`; a host built against the old layout simply stops reading after the original fields, while a host built against the new layout reads the trailing four. Confirm during implementation whether the schema-hash mechanism still considers this a breaking change requiring a version bump or accepts trailing-append as compatible.
+Host bootstrap flow gains a step: after Identify succeeds, the bridge sends `QueryRuntimeCaps` and waits for `RuntimeCapsResponse` before declaring the MCU ready. If the MCU does not respond (older firmware without the message handler), the bridge logs a warning and falls back to assuming the `large` profile values — preserves backward-compatibility with already-flashed firmware that only knows Identify. (This fallback is opt-in via a config knob; production prefers fail-fast on unknown firmware.)
 
 ### 5.2 Host stores caps per-MCU
 
@@ -245,7 +250,7 @@ Existing `kalico_*` symbols (crate names, file names like `src/kalico_dispatch.c
 
 None blocking. Two minor items deferred to implementation:
 
-1. **Identify schema-hash bump:** the kalico-native protocol's schema-hash mechanism may force a host-side guard against old firmware. Confirm whether trailing-field append truly compiles under the existing schema-hash policy or whether a version bump is required. Pin during implementation.
+1. **Schema-hash bump:** adding a new message kind (`QueryRuntimeCaps` / `RuntimeCapsResponse`) likely re-derives the schema_hash. Confirm whether existing host code rejects mismatches strictly, and document the rollout (flash MCU first, then update host — or use the loose-mismatch fallback in §5.1).
 2. **Bridge-side split implementation detail:** the existing trajectory-layer pipeline already supports multi-segment plans for one logical G-code move; the per-MCU cap check needs to live at the bridge boundary, not inside the planner (the planner is host-CPU-bound and shouldn't know about MCU sizes). Plumbing point: `bridge.rs::dispatch` callback at line ~1086.
 
 ## 11. References
