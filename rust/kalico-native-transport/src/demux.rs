@@ -164,10 +164,9 @@ impl Demuxer {
                 if *remaining == 0 {
                     let frame = std::mem::take(buf);
                     self.state = State::WaitingForFrame;
-                    Some(DemuxOutput::KlipperFrame(frame))
-                } else {
-                    None
+                    return Some(parse_klipper_frame(frame));
                 }
+                None
             }
             State::InsideKalico { buf, total_len } => {
                 buf.push(byte);
@@ -205,6 +204,39 @@ impl Demuxer {
     }
 }
 
+fn parse_klipper_frame(frame: Vec<u8>) -> DemuxOutput {
+    use crate::frame::crc16_ccitt;
+    const MESSAGE_DEST: u8 = 0x10;
+    const MESSAGE_SEQ_MASK: u8 = 0x0F;
+    const MESSAGE_SYNC: u8 = 0x7E;
+    const MESSAGE_TRAILER_SIZE: usize = 3;
+
+    let len = frame.len();
+    // Trailer check.
+    if frame[len - 1] != MESSAGE_SYNC {
+        return DemuxOutput::StreamError(format!(
+            "klipper bad trailer 0x{:02x}", frame[len - 1]
+        ));
+    }
+    // Seq-byte DEST flag (per extract_packet at wire.rs:44).
+    let seq_byte = frame[1];
+    if (seq_byte & !MESSAGE_SEQ_MASK) != MESSAGE_DEST {
+        return DemuxOutput::StreamError(format!(
+            "klipper bad seq/DEST byte 0x{:02x}", seq_byte
+        ));
+    }
+    // CRC over bytes[0 .. len-3] (length byte + seq + payload), big-endian.
+    let crc_off = len - MESSAGE_TRAILER_SIZE;
+    let crc_expected = (u16::from(frame[crc_off]) << 8) | u16::from(frame[crc_off + 1]);
+    let crc_actual = crc16_ccitt(&frame[..crc_off]);
+    if crc_expected != crc_actual {
+        return DemuxOutput::StreamError(format!(
+            "klipper crc mismatch: expected 0x{crc_expected:04x}, got 0x{crc_actual:04x}"
+        ));
+    }
+    DemuxOutput::KlipperFrame(frame)
+}
+
 fn parse_kalico_frame(frame: &[u8]) -> DemuxOutput {
     // We've consumed exactly `total_len` bytes; revalidate CRC + extract.
     if frame.len() < 1 + FRAME_MIN_LEN_FIELD {
@@ -228,19 +260,58 @@ mod tests {
     use super::*;
     use crate::frame::{encode_frame, CHANNEL_CONTROL};
 
-    fn fake_klipper_frame(payload: &[u8]) -> Vec<u8> {
-        // The demuxer doesn't validate Klipper frame contents — it just
-        // forwards `length` bytes. So we build any plausible-shaped buffer.
-        let total = 5 + payload.len();
-        assert!(total <= 64);
-        let mut buf = Vec::with_capacity(total);
-        buf.push(total as u8);
-        buf.push(0x10); // seq byte (DEST flag, no CRC validation here)
+    fn good_klipper_frame(payload: &[u8], seq: u8) -> Vec<u8> {
+        // Build a valid Klipper frame: [len][seq|DEST][payload][crc_hi][crc_lo][0x7E]
+        use crate::frame::crc16_ccitt;
+        const MESSAGE_DEST: u8 = 0x10;
+        const MESSAGE_SEQ_MASK: u8 = 0x0F;
+        const MESSAGE_SYNC: u8 = 0x7E;
+        let len = 5 + payload.len();
+        assert!(len <= 64);
+        let mut buf = Vec::with_capacity(len);
+        buf.push(len as u8);
+        buf.push((seq & MESSAGE_SEQ_MASK) | MESSAGE_DEST);
         buf.extend_from_slice(payload);
-        buf.push(0); // crc hi
-        buf.push(0); // crc lo
-        buf.push(KLIPPER_INTERFRAME_SYNC);
+        let crc = crc16_ccitt(&buf);
+        buf.push((crc >> 8) as u8);
+        buf.push((crc & 0xFF) as u8);
+        buf.push(MESSAGE_SYNC);
         buf
+    }
+
+    fn fake_klipper_frame(payload: &[u8]) -> Vec<u8> {
+        good_klipper_frame(payload, 0)
+    }
+
+    #[test]
+    fn klipper_validates_good_crc_and_trailer() {
+        let frame = good_klipper_frame(&[0x01, 0x02, 0x03], 0);
+        let mut d = Demuxer::new();
+        let outs = d.feed_slice(&frame);
+        assert_eq!(outs.len(), 1, "expected one DemuxOutput");
+        assert!(matches!(&outs[0], DemuxOutput::KlipperFrame(f) if f == &frame));
+    }
+
+    #[test]
+    fn klipper_bad_crc_emits_stream_error() {
+        let mut frame = good_klipper_frame(&[0x01, 0x02, 0x03], 0);
+        let len = frame.len();
+        frame[len - 3] ^= 0xFF; // corrupt CRC hi
+        let mut d = Demuxer::new();
+        let outs = d.feed_slice(&frame);
+        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
+            "expected a StreamError, got {outs:?}");
+    }
+
+    #[test]
+    fn klipper_bad_trailer_emits_stream_error() {
+        let mut frame = good_klipper_frame(&[0x01, 0x02, 0x03], 0);
+        let last = frame.len() - 1;
+        frame[last] = 0x00; // not 0x7E
+        let mut d = Demuxer::new();
+        let outs = d.feed_slice(&frame);
+        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
+            "expected a StreamError, got {outs:?}");
     }
 
     #[test]
