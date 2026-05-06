@@ -132,17 +132,15 @@ static struct task_wake console_wake;
 static uint8_t receive_buf[4096];
 static int receive_pos;
 
-// Klipper-only byte accumulator. The kalico demuxer extracts bytes belonging
-// to legacy Klipper frames out of the raw read buffer; we re-assemble those
-// here so command_find_and_dispatch sees a contiguous Klipper-only stream
-// (it expects a buffer it can pop_count out of).
-static uint8_t klipper_only_buf[4096];
-static int klipper_only_pos;
-
 void *
 console_receive_buffer(void)
 {
-    return klipper_only_buf;
+    // Returns the raw RX buffer used by command_find_and_dispatch's
+    // pop_count arithmetic. Pre-demuxer-integration shape; the
+    // klipper_only_buf accumulator that briefly lived between this
+    // function and the dispatch path was removed when kalico_demux_pump
+    // landed (see docs/superpowers/specs/2026-05-06-kalico-demux-rx-wiring-design.md).
+    return receive_buf;
 }
 
 // Raw byte writer used by the kalico transport TX path. Bypasses Klipper's
@@ -180,58 +178,30 @@ console_task(void)
         && memcmp(&receive_buf[receive_pos], "FORCE_SHUTDOWN\n", 15) == 0)
         shutdown("Force shutdown command");
 
-    // Drive the kalico-native demuxer over the freshly-read bytes, routing
-    // Klipper bytes into klipper_only_buf and dispatching kalico frames
-    // inline. See spec §6 (stream-level demux).
-    int new_bytes = ret;
-    for (int i = 0; i < new_bytes; i++) {
-        uint8_t b = receive_buf[receive_pos + i];
-        kalico_demux_output_t out = kalico_demux_feed_byte(b);
-        switch (out) {
-        case KALICO_DEMUX_OUT_NONE:
-            break;
-        case KALICO_DEMUX_OUT_KLIPPER: {
-            const uint8_t *kbuf = kalico_demux_klipper_buf();
-            uint8_t klen = kalico_demux_klipper_len();
-            if (klipper_only_pos + klen
-                <= (int)sizeof(klipper_only_buf)) {
-                memcpy(&klipper_only_buf[klipper_only_pos], kbuf, klen);
-                klipper_only_pos += klen;
-            }
-            kalico_demux_consume();
-            break;
-        }
-        case KALICO_DEMUX_OUT_KALICO: {
-            uint8_t channel = kalico_demux_kalico_channel();
-            const uint8_t *payload = kalico_demux_kalico_payload();
-            uint16_t payload_len = kalico_demux_kalico_payload_len();
-            kalico_dispatch_frame(channel, payload, payload_len);
-            kalico_demux_consume();
-            break;
-        }
-        case KALICO_DEMUX_OUT_ERROR:
-            kalico_demux_consume();
-            break;
-        }
-    }
-    // The raw read buffer is fully consumed by the demuxer per byte.
+    // Drive the kalico-native demuxer over the freshly-read bytes,
+    // dispatching klipper and kalico frames as they surface. State
+    // persists across console_task firings for partial frames.
+#if CONFIG_KALICO_RUNTIME
+    if (ret > 0)
+        kalico_demux_pump(&receive_buf[receive_pos], (uint16_t)ret);
+    // Linux receive_buf is task-only; the demuxer fully consumes the
+    // bytes it was handed.
     receive_pos = 0;
-
-    // Drain Klipper frames from klipper_only_buf via the existing parser.
-    int len = klipper_only_pos;
-    while (len > 0) {
+#else
+    if (ret > 0)
+        receive_pos += ret;
+    while (receive_pos > 0) {
         uint_fast8_t pop_count;
-        uint_fast8_t msglen = len > MESSAGE_MAX ? MESSAGE_MAX : len;
-        ret = command_find_and_dispatch(klipper_only_buf, msglen, &pop_count);
-        if (!ret)
+        uint_fast8_t msglen = receive_pos > MESSAGE_MAX ? MESSAGE_MAX : receive_pos;
+        int_fast8_t r = command_find_and_dispatch(receive_buf, msglen, &pop_count);
+        if (!r)
             break;
-        len -= pop_count;
-        if (len)
-            memmove(klipper_only_buf, &klipper_only_buf[pop_count], len);
+        int needcopy = receive_pos - pop_count;
+        if (needcopy)
+            memmove(receive_buf, &receive_buf[pop_count], needcopy);
+        receive_pos = needcopy;
     }
-    klipper_only_pos = len;
-    if (klipper_only_pos > 0)
-        sched_wake_task(&console_wake);
+#endif
 }
 DECL_TASK(console_task);
 
