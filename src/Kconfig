@@ -458,13 +458,13 @@ config KALICO_SIM
       enable for a flashed-to-silicon build — it leaves the IWDG
       effectively off, which is unsafe on real hardware.
 
-config RUNTIME_WEAK_PROBE
-    bool "Weak-symbol feasibility probe (temporary, Task 1.5)"
-    depends on KALICO_RUNTIME
-    default n
+config RUNTIME_BENCH
+    bool "Cycle-count benchmark for runtime tick"
+    depends on KALICO_RUNTIME && MACH_STM32H7
+    default y if MACH_STM32H7
     help
-      Adds a strong override for runtime_weak_probe so we can verify the
-      weak-fallback / strong-override pattern resolves correctly under
-      -fwhole-program -flto. Removed in plan Task 2.
+      Captures per-tick cycle counts for performance regression tracking.
+      Enabled by default on H7. F4 / host targets do not currently provide
+      a cycle counter suitable for bench; left unselected.
 
 source "src/extras/Kconfig"

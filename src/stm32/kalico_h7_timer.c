@@ -6,7 +6,8 @@
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
-#include "kalico_h7_timer.h"   // shared bench buffer + helper sigs
+#include "kalico_h7_timer.h"   // helper sigs
+#include "generic/runtime_bench.h" // runtime_bench_capture hook
 
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
@@ -98,21 +99,10 @@ kalico_h7_timer_init(void)
     // kalico_h7_enable_tim5() via the producer protocol.
 }
 
-// Cycle-count bench buffer storage. Declared `extern` in kalico_h7_timer.h
-// so src/runtime_tick.c's bench command can read it. SAFETY: only this ISR
-// writes; foreground reads after observing `count == target`.
-volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
-volatile uint16_t kalico_bench_count = 0;
-volatile uint16_t kalico_bench_target = 0;
-volatile uint8_t  kalico_bench_isolate = 0;
-
 void
 TIM5_IRQHandler(void)
 {
     TIM5->SR = ~TIM_SR_UIF;            // entry-time ack (spec §2.4)
-
-    extern void runtime_weak_probe(uint32_t);
-    runtime_weak_probe(0xDEADBEEF);   // Task 1.5 trial — removed in Task 2
 
 #if CONFIG_KALICO_SIM
     // Step-6 spec §3.1: Renode's H7 model returns 0 for DWT->CYCCNT, so the
@@ -151,11 +141,8 @@ TIM5_IRQHandler(void)
     }
     uint32_t after = kalico_h7_read_cyccnt();
 
-    // Bench capture (Task 27). Wraps subtract correctly modulo 2^32.
-    if (kalico_bench_count < kalico_bench_target) {
-        kalico_bench_samples_buf[kalico_bench_count] = after - before;
-        kalico_bench_count++;
-    }
+    // Bench capture: weak no-op unless CONFIG_RUNTIME_BENCH=y.
+    runtime_bench_capture(after - before);
     // No late ack.
 }
 

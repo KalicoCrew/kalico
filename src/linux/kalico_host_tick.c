@@ -20,13 +20,6 @@
 extern void *kalico_rt_handle;
 extern void kalico_endstop_sample_pins(void); // src/runtime_tick.c
 
-// Bench buffer storage — required by the symbol contract; never written
-// on the Linux build (no DWT to sample).
-volatile uint32_t kalico_bench_samples_buf[KALICO_BENCH_MAX_SAMPLES];
-volatile uint16_t kalico_bench_count = 0;
-volatile uint16_t kalico_bench_target = 0;
-volatile uint8_t  kalico_bench_isolate = 0;
-
 // Watchdog liveness flag (defined on H7 in src/stm32/watchdog.c). The
 // Linux build has no IWDG; default to ok=1 so the runtime drain doesn't
 // short-circuit. Mutated by the runtime liveness gate.
