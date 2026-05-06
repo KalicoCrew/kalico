@@ -587,23 +587,31 @@ impl PyMotionBridge {
             .take_runtime_event_subscription()
             .map_err(|e| PyRuntimeError::new_err(format!("attach_serial: runtime_event subscribe: {e:?}")))?;
 
-        // Phase C-B: kalico-native bootstrap-ABI Identify handshake. The
-        // Klipper-protocol identify above already drained the MCU's data
-        // dictionary so this can run against the live reactor. Validates
-        // schema_hash + reset_epoch; failure refuses to attach.
-        match host_io.kalico_identify(std::time::Duration::from_secs(5)) {
-            Ok(out) => {
-                log::info!(
-                    "attach_serial: kalico identified — reset_epoch=0x{:08x}",
-                    out.reset_epoch
-                );
-            }
-            Err(e) => {
-                return Err(PyRuntimeError::new_err(format!(
-                    "attach_serial: kalico_identify failed for {serial_path}: {e}"
-                )));
-            }
-        }
+        // Phase C-B: kalico-native bootstrap-ABI Identify handshake. Stock
+        // Klipper firmware (no CONFIG_KALICO_RUNTIME) does not have the
+        // kalico-native dispatch path, so this query times out. We treat
+        // that case as "no kalico runtime here" rather than refusing the
+        // attach — the bridge still routes Klipper-protocol commands fine
+        // and the runtime-specific surface (curve uploads, etc.) just
+        // stays unused for that MCU.
+        let kalico_native_supported =
+            match host_io.kalico_identify(std::time::Duration::from_secs(5)) {
+                Ok(out) => {
+                    log::info!(
+                        "attach_serial: kalico identified — reset_epoch=0x{:08x}",
+                        out.reset_epoch
+                    );
+                    true
+                }
+                Err(e) => {
+                    log::warn!(
+                        "attach_serial: kalico_identify timed out for {serial_path} ({e}); \
+                         continuing attach as a Klipper-protocol-only MCU"
+                    );
+                    false
+                }
+            };
+        let _ = kalico_native_supported; // currently unused downstream
 
         // Task 10: query per-MCU runtime caps. Older firmware predates this
         // message — on any error fall back to the large-profile defaults so
