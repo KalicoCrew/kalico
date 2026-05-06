@@ -89,7 +89,7 @@ The four-function shape was validated by an architect-reviewer pass (2026-05-06)
 
 Per-family implementations are renamed/relocated:
 
-- **H7**: `src/stm32/kalico_h7_timer.c` → `src/stm32/runtime_tick_h7.c`. Symbol renames: `kalico_h7_timer_init` → `runtime_tick_init`, `kalico_h7_enable_tim5` → `runtime_tick_enable`, `kalico_h7_disable_tim5` → `runtime_tick_disable`, `kalico_h7_read_cyccnt` → `runtime_cyccnt_read`. The corresponding `src/stm32/kalico_h7_timer.h` is deleted (its only export was the bench buffer extern, which moves — see §4.3).
+- **H7**: `src/stm32/kalico_h7_timer.c` → `src/stm32/runtime_tick_h7.c`. Symbol renames: `kalico_h7_timer_init` → `runtime_tick_init`, `kalico_h7_enable_tim5` → `runtime_tick_enable`, `kalico_h7_disable_tim5` → `runtime_tick_disable`, `kalico_h7_read_cyccnt` → `runtime_cyccnt_read`. The corresponding `src/stm32/kalico_h7_timer.h` is deleted; its content (the bench buffer extern + `KALICO_BENCH_MAX_SAMPLES` macro) relocates to `src/generic/runtime_bench.h` per §4.3 (renamed `RUNTIME_BENCH_MAX_SAMPLES`).
 
 - **Host-sim**: `src/linux/kalico_host_tick.c` → `src/linux/runtime_tick_host.c`. Same symbol renames.
 
@@ -133,35 +133,32 @@ config RUNTIME_BENCH
 
 The dependency on `MACH_STM32H7` reflects today's reality (only H7 has the cycle-counter implementation wired). Lifting it to `MACH_STM32F4` is a one-line Kconfig change once the F446 backend lands and decides whether to provide bench.
 
-### 4.4 Weak-symbol ISR hook fallbacks (`src/runtime_tick_weak.c`)
+### 4.4 Optional ISR hooks — `#ifdef`-gated, matching Klipper conventions
 
-When `CONFIG_RUNTIME_BENCH=n`, the per-family ISR's `runtime_bench_capture()` call must still link. A single small TU declares no-op fallbacks:
+The per-family ISR has two optional hooks: `runtime_bench_capture()` (when `CONFIG_RUNTIME_BENCH=y`) and `runtime_sim_isr_wake_drain()` (when `CONFIG_KALICO_SIM=y`). Production firmware should call neither.
+
+**Originally proposed:** weak-symbol fallback in a `runtime_tick_weak.c` TU, strong override from the bench/sim modules. **Rejected on second-pass review:** Klipper compiles with `-fwhole-program -flto`. The codebase nowhere uses the weak/strong override pattern; existing optional-symbol patterns use Kconfig + Makefile TU selection or `#ifdef` at the call site. Introducing weak symbols across LTO without empirical grounding is a build-system risk the spec should not take.
+
+**Adopted:** the per-family ISR `#ifdef`-gates the calls directly:
 
 ```c
-// src/runtime_tick_weak.c
-//
-// Weak-symbol fallbacks for optional runtime-tick ISR hooks. Always linked.
-// When CONFIG_RUNTIME_BENCH=y, runtime_bench.c provides a strong definition
-// of `runtime_bench_capture` and link order picks it. Same pattern for the
-// sim-only `runtime_sim_isr_wake_drain` hook.
+// In src/stm32/runtime_tick_h7.c TIM5_IRQHandler:
+#if CONFIG_KALICO_SIM
+    runtime_sim_isr_wake_drain();
+#endif
 
-#include <stdint.h>
+uint32_t before = runtime_cyccnt_read();
+if (runtime_handle) runtime_handle_tick(runtime_handle, before);
+uint32_t after = runtime_cyccnt_read();
 
-__attribute__((weak)) void
-runtime_bench_capture(uint32_t cycles_delta)
-{
-    (void)cycles_delta;
-}
-
-__attribute__((weak)) void
-runtime_sim_isr_wake_drain(void)
-{
-}
+#if CONFIG_RUNTIME_BENCH
+    runtime_bench_capture(after - before);
+#endif
 ```
 
-Per-family ISRs call both unconditionally — link-time selection picks the strong definition when the corresponding Kconfig is on, and the no-op when it isn't. Zero runtime cost on the disabled path; no `#ifdef` in the per-family ISR.
+The bench module's strong definition lives in `src/generic/runtime_bench.c`, included by the build only when `CONFIG_RUNTIME_BENCH=y`. The sim drain wake's strong definition lives in `src/runtime_sim_commands.c`, included only when `CONFIG_KALICO_SIM=y`. No `runtime_tick_weak.c` TU. No weak symbols. No LTO surprises.
 
-The same weak-symbol pattern was already partially in use for `kalico_sim_isr_wake_drain` (an `extern` declared inline in the H7 ISR). This refactor formalizes it.
+The per-family ISR pays a single `#ifdef` per hook — boring, proven, and consistent with how Klipper handles every other optional feature.
 
 ### 4.5 `runtime_tick.c` slimming + sibling TU split
 
@@ -179,11 +176,11 @@ The other concerns split out into:
 
 - **`src/runtime_commands.c`** (NEW) — every `DECL_COMMAND` belonging to the runtime: `query_status`, `set_homed`, `configure_axes`, `stream_open` / `arm` / `terminal` / `flush`, `clock_sync`, `query_pool_state`, `arm_endstop` / `disarm_endstop`. ~250 lines. Includes `generic/runtime_tick.h` only when commands need to manipulate the tick (they don't directly — the producer protocol does — so includes may be minimal).
 
-- **`src/runtime_sim_commands.c`** (NEW, gated `CONFIG_KALICO_SIM`) — every `command_kalico_sim_*` plus the load-fixture shim. ~150 lines.
+- **`src/runtime_sim_commands.c`** (NEW, gated `CONFIG_KALICO_SIM`) — every `command_kalico_sim_*` plus the load-fixture shim plus the strong definition of `runtime_sim_isr_wake_drain` (per §4.4). ~150 lines.
 
-- **`src/generic/runtime_bench.c`** — bench, per §4.3.
+- **`src/generic/runtime_bench.c`** — bench storage + command + strong `runtime_bench_capture` definition, per §4.3.
 
-- **`src/runtime_tick_weak.c`** — weak fallbacks, per §4.4.
+The endstop sampler currently in `runtime_tick.c` — `endstop_pin_table[]` storage + `kalico_endstop_sample_pins()` (called from the per-family ISR) + `command_kalico_arm_endstop` / `command_kalico_disarm_endstop` — moves to `src/runtime_commands.c`. Both the table population (commands) and the per-tick sampler (called from the ISR via `extern`) colocate. The H7 ISR's existing `extern void kalico_endstop_sample_pins(void)` reference renames in lockstep with the rest of the table in §4.7.
 
 The shared C globals (`runtime_handle`, `runtime_clock_freq`) stay as `extern void *` / `extern const uint32_t` references shared across TUs. Per architect feedback: putting them behind accessors adds a function call to every command for zero readability gain (single-writer-at-init pattern).
 
@@ -210,11 +207,17 @@ pub(super) static RT_CELL: RuntimeCell = ...;
 
 Now the Klipper Makefile selecting `KALICO_RUST_FEATURES = mcu-h7,...` automatically pulls `axi-bss-placement`. Selecting `mcu-f4` does not — and on F4 the `RT_CELL` static lands in regular bss, where the linker has been updated (per peer spec already in flight) to define `.axi_bss` in regular RAM as a fallback. (The Cargo-feature approach makes that linker fallback redundant for the Rust side, but the linker fallback is still useful for any C-side `__attribute__((section(".axi_bss")))` symbol, e.g. the demux buffer.)
 
+**Linux host build** selects `host,header-nurbs,header-runtime,kalico-sim` features — neither `mcu-h7` nor `mcu-f4`, so `axi-bss-placement` is off. `RT_CELL` lands in default bss. This matches today's behavior (the current `cfg_attr(target_arch = "arm", ...)` attribute is also off on Linux because `target_arch` is `x86_64` / `aarch64` there). Net change on Linux: none.
+
 Architect-reviewer rationale: Cargo features are visible to `cargo metadata`, IDEs, doc-builds, and downstream cargo consumers; bare `--cfg` flags are invisible. Features compose with the existing `KALICO_RUST_FEATURES` Makefile pattern as a one-line addition; `--cfg` would be a parallel mechanism.
 
 ### 4.7 Klipper command + Rust FFI symbol renames
 
-The runtime-tick subsystem owns these symbols today; this refactor renames them as part of the prefix phase-out. Every symbol moved by §4.2–4.5 is also renamed:
+The runtime-tick subsystem owns these symbols today; this refactor renames them as part of the prefix phase-out. Every symbol moved by §4.2–4.5 is also renamed.
+
+**This table is illustrative, not exhaustive.** Implementation step 1 (§5) produces the canonical superset by grepping `kalico_*` across `src/`, `rust/`, `klippy/`, `tools/sim_klippy/`, and the test corpora. Known additions the grep pass must capture: `kalico_irq_save` / `kalico_irq_restore` (host-tick critical-section helpers), `kalico_host_now_us` / `kalico_host_widened_clock_now`, `kalico_endstop_sample_pins` (per-tick endstop sampler called from each backend's ISR), `kalico_aligned_cps` / `kalico_aligned_knots` (Rust-side scratch buffers exposed to C), `kalico_sim_drain_calls` / `kalico_sim_drain_counter`, `kalico_liveness_ok`, and every `command_kalico_*` C function body that backs a `DECL_COMMAND` text identifier.
+
+**Not renamed (out of subsystem scope):** the staticlib filename `libkalico_c_api.a` does NOT change — that's the Cargo crate name, deliberately untouched per §3 non-goals. The Makefile path / build artifact filenames stay as-is.
 
 | Old name (in code) | New name |
 |---|---|
@@ -269,8 +272,12 @@ ifeq ($(CONFIG_MACH_STM32H7),y)
     KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
 else ifeq ($(CONFIG_MACH_STM32F4),y)
     KALICO_RUST_FEATURES := mcu-f4,header-nurbs,header-runtime
+else ifeq ($(CONFIG_MACH_LINUX),y)
+    KALICO_RUST_FEATURES := host,header-nurbs,header-runtime,kalico-sim
 endif
 ```
+
+The `MACH_LINUX` branch matches today's host-sim build flags exactly — preserves existing behavior unchanged.
 
 Per architect-reviewer feedback: this is an explicit allowlist (H7 || F4), NOT a blanket thumbv7em check, until per-family Cargo features cover other thumbv7em boards (G4, F7, etc.).
 
@@ -280,21 +287,21 @@ After this refactor lands, the **F446 backend follow-up plan** will (a) add `src
 
 Each step is a self-contained commit. Steps are sequential — earlier ones unblock later ones.
 
-1. **Rust extern grep.** Catalog every `kalico_*` symbol name appearing in `extern` blocks across `rust/`. Pre-condition for §4.7 renames; no source changes yet.
+1. **Symbol catalog (no code changes).** Grep every `kalico_*` symbol name appearing in C `extern`s, Rust `extern "C"` blocks, Klipper command-name string literals, schema files, test fixtures, klipper-sim corpora, captured-log fixtures, and host-side dispatch tables. The output is the canonical superset that subsequent rename steps must cover; §4.7's table is illustrative. Audit paths: `src/`, `rust/`, `klippy/`, `tools/sim_klippy/`, `tests/`, `scripts/`, `docs/superpowers/handoff/`, plus the local `~/Developer/klipper-sim/` corpus tree if reachable.
 
-2. **Add weak-symbol fallback TU** (`src/runtime_tick_weak.c`). Compile with the existing build (no caller change yet).
+2. **Extract bench to `src/generic/runtime_bench.c`** (and `runtime_bench.h`) + add `CONFIG_RUNTIME_BENCH` Kconfig + introduce `runtime_bench_capture(uint32_t)` called from the H7 ISR under `#if CONFIG_RUNTIME_BENCH` (per §4.4, no weak symbols). Bench symbols renamed in this step. The H7 ISR computes `after - before` and passes the delta; the bench module owns count/target state. H7 builds; bench still works.
 
-3. **Extract bench to `src/generic/runtime_bench.c`** + add `CONFIG_RUNTIME_BENCH` Kconfig + wire `runtime_bench_capture` weak-call into the H7 ISR. Bench symbols renamed in this step (table §4.7). H7 builds; bench still works.
+3. **Add `src/generic/runtime_tick.h`** (the four-function interface). No file moves yet; existing H7 and host backends still expose old names but `runtime_tick.c` includes the new header alongside the existing extern decls. Compiles unchanged.
 
-4. **Add `src/generic/runtime_tick.h`** + rename H7 backend symbols (`kalico_h7_*` → `runtime_tick_*` / `runtime_cyccnt_read`). Rename file `src/stm32/kalico_h7_timer.c` → `src/stm32/runtime_tick_h7.c`. Update `src/stm32/Makefile` selection. Rust FFI extern blocks updated in this commit. H7 still builds.
+4. **Rename H7 backend internal symbols only.** `src/stm32/kalico_h7_timer.c` → `src/stm32/runtime_tick_h7.c`. The four backend-interface functions rename: `kalico_h7_timer_init` → `runtime_tick_init`, `kalico_h7_enable_tim5` → `runtime_tick_enable`, `kalico_h7_disable_tim5` → `runtime_tick_disable`, `kalico_h7_read_cyccnt` → `runtime_cyccnt_read`. References to `kalico_rt_handle`, `kalico_clock_freq`, `kalico_runtime_tick`, `kalico_sim_isr_wake_drain`, `kalico_endstop_sample_pins` inside the renamed file STAY at their old names — they rename in step 6 (cross-language) and step 7 (endstop sampler relocation). `runtime_tick.c`'s extern decl block updates to the new four-function names. **No Rust extern blocks change in this step** — Rust does not call any of the four backend-interface functions; only `runtime_tick.c` (C) does. Update `src/stm32/Makefile` to select the renamed file. H7 still builds.
 
-5. **Rename host-sim backend** (`src/linux/kalico_host_tick.c` → `src/linux/runtime_tick_host.c`) + same symbol renames. Host-sim still builds.
+5. **Rename host-sim backend internal symbols.** `src/linux/kalico_host_tick.c` → `src/linux/runtime_tick_host.c` + same four-function renames. Same scope rule as step 4 — references to FFI-surface symbols stay until step 6. Host-sim still builds.
 
-6. **Rename runtime FFI surface symbols** (`kalico_rt_handle`, `kalico_clock_freq`, `kalico_runtime_tick`, `kalico_runtime_init`, `kalico_runtime_seed_widen`) — the cross-language surface between C and Rust. Both Rust crate updates and C extern updates land in one commit (atomic across language boundary).
+6. **Rename runtime FFI surface symbols (cross-language atomic commit).** `kalico_rt_handle` → `runtime_handle`; `kalico_clock_freq` → `runtime_clock_freq`; `kalico_runtime_tick` → `runtime_handle_tick`; `kalico_runtime_init` → `runtime_handle_create`; `kalico_runtime_seed_widen` → `runtime_handle_seed_widen`; plus any additional FFI-crossing symbols surfaced by step 1's catalog (e.g. `kalico_irq_save` / `kalico_irq_restore` / `kalico_host_now_us` / `kalico_aligned_cps` / `kalico_aligned_knots` / `kalico_liveness_ok` if they cross). Both the Rust definition/extern-block and every C `extern` reference land in one commit. The staticlib filename `libkalico_c_api.a` does NOT change (crate name unchanged per §3 non-goal).
 
-7. **Extract command surface** to `src/runtime_commands.c`. Move every `DECL_COMMAND` not directly related to runtime lifecycle. Klipper command-name strings rename in lockstep with host-side dispatch (klippy + motion-bridge + tests).
+7. **Extract command surface** to `src/runtime_commands.c` (includes the `endstop_pin_table` storage + `runtime_endstop_sample_pins` per-tick sampler; the H7 ISR's `extern` reference renames to match). Move every `DECL_COMMAND` not directly related to runtime lifecycle. Klipper command-name strings rename in lockstep with host-side dispatch (klippy + motion-bridge + tests + klipper-sim corpora flagged in step 1). Schema-hash regenerates; tests pinning the hash literal update inline.
 
-8. **Extract sim commands** to `src/runtime_sim_commands.c` (gated `CONFIG_KALICO_SIM`).
+8. **Extract sim commands** to `src/runtime_sim_commands.c` (gated `CONFIG_KALICO_SIM`). Includes the strong definition of `runtime_sim_isr_wake_drain` per §4.4. The H7 ISR's `extern` reference renames to match.
 
 9. **Final slim** `src/runtime_tick.c` to lifecycle-only (~300 lines).
 
@@ -320,7 +327,7 @@ After step 11: H7 firmware and host-sim both build clean, behave identically. F4
 
 1. **Symbol-rename Rust-side breakage** (architect-flagged). Mitigated by Step 1: explicit grep-then-rename catalog; Step 6 lands C and Rust changes atomically.
 
-2. **Klipper command-name string renames** propagate to host-side dispatchers. Step 7 lands C + klippy + motion-bridge in a single commit. Test: `tools/sim_klippy/run_local.sh` validates the host↔C surface end-to-end.
+2. **Klipper command-name string renames** propagate to host-side dispatchers AND to any test fixture / log corpus / replay tool that pins the literal strings. Step 1's catalog audit covers `tools/sim_klippy/`, `tests/`, `scripts/`, `docs/superpowers/handoff/` capture corpora, and the external `~/Developer/klipper-sim/` corpus tree. Anything that pins literals (e.g. `"kalico_query_status"`, `"kalico_arm_endstop"`, `"kalico_stream_*"`) breaks silently if missed. Step 7 lands C + klippy + motion-bridge + the catalog's fixture updates in a single commit. Test: `tools/sim_klippy/run_local.sh` validates the host↔C surface end-to-end. Klipper's auto-discovered `data_dictionary` (consumed by Moonraker / Mainsail) is opaque and self-adapting, so external host tooling is not affected.
 
 3. **Build-rule widening on currently-unsupported MCU families.** Mitigated by §4.8's explicit allowlist (H7 || F4). The widened rule does not fire on F7/G4/G7 even if a user has `CONFIG_MACH_STM32G4=y` somewhere.
 
