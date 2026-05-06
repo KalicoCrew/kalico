@@ -58,6 +58,7 @@ static uint32_t reset_epoch;
 static void handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
 // reset_epoch generation
@@ -235,9 +236,50 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_CONFIGURE_AXES:
         handle_configure_axes(correlation_id, body, body_len);
         return;
+    case KALICO_MSG_QUERY_RUNTIME_CAPS:
+        handle_query_runtime_caps(correlation_id, body, body_len);
+        return;
     default:
         return;
     }
+}
+
+// ---------------------------------------------------------------------------
+// QueryRuntimeCaps handler — per-MCU runtime sizing report (§5.1).
+// ---------------------------------------------------------------------------
+//
+// RuntimeCapsResponse body is pulled from Kconfig at compile time via
+// autoconf.h — same source of truth that sizes the Rust runtime's curve pool.
+static void
+handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
+                          uint16_t body_len)
+{
+    (void)body;
+    (void)body_len; // request body is empty
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 11];
+    encode_message_header(payload, KALICO_MSG_RUNTIME_CAPS_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    uint32_t mcp = (uint32_t)CONFIG_RUNTIME_MAX_CONTROL_POINTS;
+    uint32_t mkv = (uint32_t)CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN;
+    uint32_t pool = (uint32_t)CONFIG_RUNTIME_CURVE_POOL_N;
+    // u32 max_control_points
+    b[0] = (uint8_t)(mcp & 0xFF);
+    b[1] = (uint8_t)((mcp >> 8) & 0xFF);
+    b[2] = (uint8_t)((mcp >> 16) & 0xFF);
+    b[3] = (uint8_t)((mcp >> 24) & 0xFF);
+    // u32 max_knot_vector_len
+    b[4] = (uint8_t)(mkv & 0xFF);
+    b[5] = (uint8_t)((mkv >> 8) & 0xFF);
+    b[6] = (uint8_t)((mkv >> 16) & 0xFF);
+    b[7] = (uint8_t)((mkv >> 24) & 0xFF);
+    // u8 max_degree
+    b[8] = (uint8_t)CONFIG_RUNTIME_MAX_DEGREE;
+    // u16 curve_pool_n
+    b[9] = (uint8_t)(pool & 0xFF);
+    b[10] = (uint8_t)((pool >> 8) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
+                                payload, sizeof(payload));
 }
 
 // ---------------------------------------------------------------------------
