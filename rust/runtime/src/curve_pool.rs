@@ -18,29 +18,19 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::error::FaultCode;
 
-/// Per-curve storage capacity. Per kalico-native-transport spec §10
-/// (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md`):
-/// H723 (X+Y heavy shaping) sizes its slots for a post-shape degree-9
-/// trajectory at production grid resolution — ~1810 cps, ~1820 knots.
-/// We pick H723 sizing for the unified build; F446 will get a separate
-/// build later in Phase D with smaller constants. The sim is single-MCU
-/// and benefits from H723 sizing (loose-fit for any payload).
-///
-/// Phase C bump from 100/111 → 1830/1840: covers worst-case 100 mm move
-/// at adaptive grid spacing 0.5 mm (~200 pieces × degree 9 ≈ 1810 cps,
-/// 1820 knots) plus headroom.
-pub const MAX_CONTROL_POINTS: usize = 1830;
-pub const MAX_KNOT_VECTOR_LEN: usize = 1850; // MAX_CONTROL_POINTS + MAX_DEGREE + 1 + headroom
-pub const MAX_DEGREE: u8 = 10;
+/// Build-time-configurable sizing constants. The four `pub const`s (see
+/// `runtime/build.rs`) are emitted from Klipper's Kconfig values:
+///   CONFIG_RUNTIME_MAX_CONTROL_POINTS
+///   CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN
+///   CONFIG_RUNTIME_MAX_DEGREE
+///   CONFIG_RUNTIME_CURVE_POOL_N
+/// Defaults (no Klipper Makefile in the loop) match the `large` profile per
+/// `docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md`.
+include!(concat!(env!("OUT_DIR"), "/sizing.rs"));
 
-// Looser invariant than before: the precise relationship is
-// MAX_KNOT_VECTOR_LEN >= MAX_CONTROL_POINTS + MAX_DEGREE + 1 (NURBS knot rule).
+// Looser invariant: MAX_KNOT_VECTOR_LEN >= MAX_CONTROL_POINTS + MAX_DEGREE + 1
+// (NURBS knot rule). Mismatched Kconfig values fail this assert at compile time.
 const _: () = assert!(MAX_KNOT_VECTOR_LEN >= MAX_CONTROL_POINTS + MAX_DEGREE as usize + 1);
-
-/// Slab capacity. Reduced from 64 → 16 per spec §10: with larger slots,
-/// fewer slots fit the SRAM budget; 16 slots × 14.7 KB ≈ 232 KB on H723,
-/// well within budget and sufficient for the planner's look-ahead depth.
-pub const CURVE_POOL_N: usize = 16;
 
 /// Deprecated — kept for `kalico-c-api` compilation until Task 8 updates
 /// the FFI. The scalar architecture uses 1D control points, not 3D vectors.
