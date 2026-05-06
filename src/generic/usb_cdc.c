@@ -13,6 +13,7 @@
 #include "command.h" // output
 #include "generic/usbstd.h" // struct usb_device_descriptor
 #include "generic/usbstd_cdc.h" // struct usb_cdc_header_descriptor
+#include "kalico_demux.h" // kalico_demux_pump
 #include "sched.h" // sched_wake_task
 #include "usb_cdc.h" // usb_notify_ep0
 
@@ -136,7 +137,7 @@ usb_bulk_out_task(void)
     if (!sched_check_wake(&usb_bulk_out_wake))
         return;
     // Read data
-    uint_fast8_t rpos = receive_pos, pop_count;
+    uint_fast8_t rpos = receive_pos;
     if (rpos + USB_CDC_EP_BULK_OUT_SIZE <= sizeof(receive_buf)) {
         int_fast8_t ret = usb_read_bulk_out(
             &receive_buf[rpos], USB_CDC_EP_BULK_OUT_SIZE);
@@ -147,10 +148,17 @@ usb_bulk_out_task(void)
     } else {
         usb_notify_bulk_out();
     }
-    // Process a message block
+    // Process incoming bytes: kalico-aware drain when the runtime is
+    // enabled; legacy single-block dispatch otherwise. USB receive_buf
+    // is task-only (no IRQ writer), so a blanket reset after pump is
+    // safe.
+#if CONFIG_KALICO_RUNTIME
+    kalico_demux_pump(receive_buf, rpos);
+    receive_pos = 0;
+#else
+    uint_fast8_t pop_count;
     int_fast8_t ret = command_find_and_dispatch(receive_buf, rpos, &pop_count);
     if (ret) {
-        // Move buffer
         uint_fast8_t needcopy = rpos - pop_count;
         if (needcopy) {
             memmove(receive_buf, &receive_buf[pop_count], needcopy);
@@ -159,6 +167,7 @@ usb_bulk_out_task(void)
         rpos = needcopy;
     }
     receive_pos = rpos;
+#endif
 }
 DECL_TASK(usb_bulk_out_task);
 
