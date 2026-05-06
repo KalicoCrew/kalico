@@ -105,6 +105,25 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0040,
+        name: "QueryRuntimeCaps",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x0041,
+        name: "RuntimeCapsResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "max_control_points", ty: "u32" },
+            SchemaField { name: "max_knot_vector_len", ty: "u32" },
+            SchemaField { name: "max_degree", ty: "u8" },
+            SchemaField { name: "curve_pool_n", ty: "u16" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0080,
         name: "StatusEvent",
         version: 1,
