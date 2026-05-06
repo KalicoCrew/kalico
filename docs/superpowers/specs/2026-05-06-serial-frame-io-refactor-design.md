@@ -128,7 +128,7 @@ Identify and reactor share **one** `SerialFrameIo` instance:
 
 `Demuxer::feed` gains symmetric Klipper-frame validation. When the trailing byte arrives in `InsideKlipper`:
 
-- Validate CRC16-CCITT over `bytes[1..len-3]` against `bytes[len-3..len-1]` (little-endian).
+- Validate CRC16-CCITT over `bytes[0..len-3]` (length byte + seq byte + payload) against `bytes[len-3..len-1]` interpreted big-endian (`hi << 8 | lo`). Per `wire::build_frame` / `extract_packet`.
 - Validate `bytes[len-1] == 0x7E` (MESSAGE_SYNC).
 - On any failure, emit the appropriate `StreamError` variant **and** trigger 1-byte-shift resync.
 - On success, emit `Frame::Klipper(KlipperFrame { bytes })`.
