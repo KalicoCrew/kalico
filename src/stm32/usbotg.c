@@ -429,9 +429,23 @@ usb_init(void)
         SET_BIT(PWR->CR3, PWR_CR3_USB33DEN);
     }
     SET_BIT(RCC->AHB1ENR, USBOTGEN);
+    // The H7 system DFU bootloader leaves RCC->AHB1ENR.USB1OTGHSULPIEN set;
+    // with no external ULPI PHY connected this routes TX bytes through the
+    // ULPI block's loopback path and they re-emerge in the RX FIFO. The
+    // embedded FS PHY does not need the ULPI clock.
+    CLEAR_BIT(RCC->AHB1ENR, RCC_AHB1ENR_USB1OTGHSULPIEN);
 #else
     RCC->AHB2ENR |= RCC_AHB2ENR_OTGFSEN;
 #endif
+    while (!(OTG->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL))
+        ;
+    // Soft-reset the OTG core. Required on H7 when PHYSEL is being changed
+    // from a previous configuration (system bootloader uses the same OTG
+    // core for DFU). Without CSRST the core can hold half-configured EP
+    // state across the transition.
+    OTG->GRSTCTL |= USB_OTG_GRSTCTL_CSRST;
+    while (OTG->GRSTCTL & USB_OTG_GRSTCTL_CSRST)
+        ;
     while (!(OTG->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL))
         ;
 
