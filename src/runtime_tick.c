@@ -16,6 +16,7 @@
 #include "sched.h"          // DECL_INIT, DECL_TASK
 #include "kalico_runtime.h"
 #include "kalico_dispatch.h" // kalico_native_emit_*
+#include "generic/runtime_tick.h"   // backend interface (consumer view)
 #if CONFIG_MACH_STM32H7
 #include "stm32/kalico_h7_timer.h" // kalico_h7_disable_tim5 / enable / read_cyccnt
 #elif CONFIG_MACH_LINUX
