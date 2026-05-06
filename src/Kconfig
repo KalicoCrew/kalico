@@ -392,6 +392,62 @@ config KALICO_RUNTIME
       STM32H7 (TIM5 ISR); MACH_LINUX builds a host-process
       simulator (pthread tick) for klippy-in-loop testing.
 
+choice
+    prompt "Runtime sizing profile"
+    default RUNTIME_TARGET_LARGE if MACH_STM32H7
+    default RUNTIME_TARGET_SMALL if MACH_STM32F4
+    default RUNTIME_TARGET_LARGE
+    depends on KALICO_RUNTIME
+    help
+      Selects per-MCU runtime sizing presets. `large` is the H7-class
+      profile that places the curve pool in AXI SRAM. `small` is the
+      F4-class profile that fits in 128 KB SRAM. `custom` lets you
+      override individual values below.
+
+    config RUNTIME_TARGET_LARGE
+        bool "Large (H7-class — fits in AXI SRAM)"
+
+    config RUNTIME_TARGET_SMALL
+        bool "Small (F4-class — fits in 128 KB SRAM)"
+
+    config RUNTIME_TARGET_CUSTOM
+        bool "Custom (override individual values)"
+endchoice
+
+config RUNTIME_MAX_CONTROL_POINTS
+    int "Max control points per curve slot"
+    default 1830 if RUNTIME_TARGET_LARGE
+    default 512 if RUNTIME_TARGET_SMALL
+    default 512
+    range 16 4096
+    depends on KALICO_RUNTIME
+
+config RUNTIME_MAX_KNOT_VECTOR_LEN
+    int "Max knot-vector length per curve slot"
+    default 1850 if RUNTIME_TARGET_LARGE
+    default 524 if RUNTIME_TARGET_SMALL
+    default 524
+    range 27 4108
+    depends on KALICO_RUNTIME
+    help
+      Must satisfy: RUNTIME_MAX_KNOT_VECTOR_LEN >= RUNTIME_MAX_CONTROL_POINTS
+      + RUNTIME_MAX_DEGREE + 1. The Rust runtime asserts this at compile
+      time; mismatched values fail the build.
+
+config RUNTIME_MAX_DEGREE
+    int "Max polynomial degree"
+    default 10
+    range 1 16
+    depends on KALICO_RUNTIME
+
+config RUNTIME_CURVE_POOL_N
+    int "Curve-pool slot count (planner look-ahead depth)"
+    default 16 if RUNTIME_TARGET_LARGE
+    default 4 if RUNTIME_TARGET_SMALL
+    default 4
+    range 1 64
+    depends on KALICO_RUNTIME
+
 config KALICO_SIM
     bool "Build for Renode simulator (disables IWDG)"
     depends on KALICO_RUNTIME
