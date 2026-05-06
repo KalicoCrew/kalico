@@ -17,12 +17,14 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use serialport::SerialPort;
 
-use crate::clock::MockClock;
+use crate::clock::{Clock, MockClock};
 use crate::host_io::KalicoHostIoConfig;
 use crate::host_io::ReactorCommand;
+use crate::host_io::identify::IdentifySeqState;
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::reactor::{Reactor, TickOutcome};
 use crate::host_io::runtime_events::StatusEvent;
+use crate::host_io::serial_frame_io::SerialFrameIo;
 use crate::transport::{MessageParams, TransportError};
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,29 @@ impl ReactorHarness {
         let reactor = Reactor::new_for_tests(
             port, parser, submission_rx, status_snapshot,
             config, clock.clone(),
+        );
+        Self { reactor, clock, port_handles, submission_tx }
+    }
+
+    /// Construct a harness with an explicit `IdentifySeqState`, simulating
+    /// a reactor coming up after identify burned a non-zero number of
+    /// sequences. Used by the H7 regression test (spec §3.3, §5.2).
+    pub fn new_with_seq_state(seq: IdentifySeqState) -> Self {
+        let (port, port_handles) = FakeSerialPort::new();
+        let clock = MockClock::new();
+        let parser = Arc::new(MsgProtoParser::new_empty());
+        let (submission_tx, submission_rx) = std::sync::mpsc::channel();
+        let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        let config = KalicoHostIoConfig::default();
+        let clock_dyn: Arc<dyn Clock> = clock.clone();
+        let reactor = Reactor::new_with_clock(
+            SerialFrameIo::new(port),
+            parser,
+            submission_rx,
+            status_snapshot,
+            seq,
+            config,
+            clock_dyn,
         );
         Self { reactor, clock, port_handles, submission_tx }
     }
@@ -337,6 +362,43 @@ mod smoke {
         assert_eq!(h.unacked_depth(), 0);
         assert_eq!(h.awaiting_depth(), 0);
         assert!(h.tx_log().is_empty());
+    }
+
+    #[test]
+    fn reactor_first_bridge_call_after_identify_succeeds_with_nonzero_initial_seq() {
+        // Spec §3.3, §5.2 — H7 regression. Pre-refactor the reactor hardcoded
+        // send_seq:1 / receive_seq:1, so any post-identify state where the
+        // host had already burned ≥1 sequences would put a stale seq=1 on the
+        // wire. Firmware that already advanced past seq=1 ignores it; first
+        // bridge_call hangs until host-side timeout.
+        //
+        // With IdentifySeqState plumbing, the reactor adopts the post-identify
+        // counters and the next outbound frame carries the correct seq nibble.
+        let mut h = ReactorHarness::new_with_seq_state(IdentifySeqState {
+            next_send_seq_abs: 5,
+            mcu_receive_seq_abs: 5,
+        });
+
+        // Sanity: the public send_seq accessor reflects the adopted state
+        // *before* any frame goes out.
+        assert_eq!(h.send_seq(), 5, "reactor must adopt next_send_seq_abs from identify");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let _completion = h.submit_via_dispatch(
+            42, vec![0x01], "noop", deadline,
+        );
+
+        let written = h.tx_log();
+        assert!(!written.is_empty(), "reactor should have written a frame");
+        // Frame layout (see wire::build_frame): [len][seq|DEST][payload..][crc_hi][crc_lo][SYNC]
+        let seq_byte = written[1];
+        let wire_seq = seq_byte & 0x0F;
+        assert_eq!(
+            wire_seq, 5,
+            "first frame after identify must carry seq=5 (= next_send_seq_abs mod 16), not seq=1",
+        );
+        // And send_seq must have advanced past it.
+        assert_eq!(h.send_seq(), 6, "send_seq must increment after dispatch");
     }
 
     #[test]

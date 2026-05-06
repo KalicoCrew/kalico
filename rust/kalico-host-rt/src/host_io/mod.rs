@@ -241,7 +241,7 @@ impl KalicoHostIo {
         let _ = port_box.set_timeout(Duration::from_millis(100));
         let mut io = crate::host_io::serial_frame_io::SerialFrameIo::new(port_box);
 
-        let (parser_owned, raw_identify_bytes, _identify_seq) = identify::identify_handshake(
+        let (parser_owned, raw_identify_bytes, identify_seq) = identify::identify_handshake(
             &mut io,
             config.identify_timeout,
         )?;
@@ -257,8 +257,8 @@ impl KalicoHostIo {
         let reactor_clock = Arc::clone(&clock);
         let reactor_handle = std::thread::spawn(move || {
             let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
-                io, reactor_parser, submission_rx, reactor_status, reactor_config,
-                reactor_clock,
+                io, reactor_parser, submission_rx, reactor_status, identify_seq,
+                reactor_config, reactor_clock,
             );
             reactor.run();
         });

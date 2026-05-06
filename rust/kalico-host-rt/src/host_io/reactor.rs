@@ -10,6 +10,7 @@ use arc_swap::ArcSwap;
 use crate::clock::{Clock, RealClock};
 use crate::host_io::ReactorCommand;
 use crate::host_io::events::EventDispatcher;
+use crate::host_io::identify::IdentifySeqState;
 use crate::host_io::kalico_native::{
     build_kalico_control_frame, build_kalico_identify_frame, dispatch_kalico_frame,
     KalicoDispatchResult, KalicoNativeState, PendingKalicoCall,
@@ -106,11 +107,12 @@ impl Reactor {
         parser: Arc<MsgProtoParser>,
         submission_rx: Receiver<ReactorCommand>,
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
+        seq: IdentifySeqState,
         config: crate::host_io::KalicoHostIoConfig,
     ) -> Self {
         Self::new_with_clock(
             io, parser, submission_rx, status_snapshot,
-            config, Arc::new(RealClock),
+            seq, config, Arc::new(RealClock),
         )
     }
 
@@ -119,6 +121,7 @@ impl Reactor {
         parser: Arc<MsgProtoParser>,
         submission_rx: Receiver<ReactorCommand>,
         status_snapshot: Arc<ArcSwap<StatusEvent>>,
+        seq: IdentifySeqState,
         config: crate::host_io::KalicoHostIoConfig,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -136,9 +139,9 @@ impl Reactor {
             rtt: RttEstimator::default(),
             status_snapshot,
             event_dispatcher,
-            send_seq: 1,
-            receive_seq: 1,
-            last_ack_seq: 0,
+            send_seq: seq.next_send_seq_abs,
+            receive_seq: seq.mcu_receive_seq_abs,
+            last_ack_seq: seq.mcu_receive_seq_abs.saturating_sub(1),
             ignore_nak_seq: 0,
             retransmit_seq: 0,
             rtt_sample_seq: 0,
@@ -174,6 +177,7 @@ impl Reactor {
             parser,
             submission_rx,
             status_snapshot,
+            IdentifySeqState { next_send_seq_abs: 1, mcu_receive_seq_abs: 1 },
             config,
             clock,
         )
