@@ -3,6 +3,7 @@
 //! Spec: docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md §5.3.
 
 use crate::dispatch::McuCaps;
+use kalico_host_rt::producer::CurveLoadParams;
 use nurbs::ScalarNurbs;
 
 /// True if the curve fits within the caps reported by the destination MCU.
@@ -10,6 +11,15 @@ pub fn fits(caps: &McuCaps, curve: &ScalarNurbs<f64>) -> bool {
     curve.control_points().len() as u32 <= caps.max_control_points
         && curve.knots().len() as u32 <= caps.max_knot_vector_len
         && curve.degree() <= caps.max_degree
+}
+
+/// True if a `CurveLoadParams` payload fits the destination MCU's caps.
+/// Mirrors the dispatch-time check in `bridge.rs`; both must agree on what
+/// "fits" means.
+pub fn fits_curve_load(caps: &McuCaps, curve: &CurveLoadParams) -> bool {
+    curve.cps_f32.len() as u32 <= caps.max_control_points
+        && curve.knots_f32.len() as u32 <= caps.max_knot_vector_len
+        && curve.degree <= caps.max_degree
 }
 
 #[cfg(test)]
@@ -52,6 +62,24 @@ mod tests {
         let knots = clamped_uniform_knots(n_cps, 3);
         let curve = ScalarNurbs::try_new(3, knots, cps, None).unwrap();
         assert!(fits(&small_caps(), &curve));
+    }
+
+    #[test]
+    fn curve_load_params_over_cap_does_not_fit() {
+        let caps = small_caps();
+        let too_big = CurveLoadParams {
+            degree: 3,
+            knots_f32: vec![0.0_f32; 104], // > 76
+            cps_f32: vec![0.0_f32; 100],   // > 64
+        };
+        assert!(!fits_curve_load(&caps, &too_big));
+
+        let just_right = CurveLoadParams {
+            degree: 3,
+            knots_f32: vec![0.0_f32; 29],
+            cps_f32: vec![0.0_f32; 25],
+        };
+        assert!(fits_curve_load(&caps, &just_right));
     }
 
     #[test]

@@ -1186,6 +1186,38 @@ impl PyMotionBridge {
             // before we can fill in the timing fields.
             let mcu_plans = build_push_params(seg, &mcu_configs_for_cb, 0, 0);
 
+            // Cap-check each curve against the destination MCU's caps before
+            // dispatch. `build_push_params` does not enforce caps; if a planned
+            // curve exceeds its target's pool slot, fail-fast (Task 13 reduced
+            // scope; full per-segment bisection is a follow-up).
+            for plan in &mcu_plans {
+                let caps = mcu_configs_for_cb
+                    .iter()
+                    .find(|c| c.mcu_id == plan.mcu_id)
+                    .map(|c| c.caps)
+                    .unwrap_or_default();
+                for (_axis, curve) in &plan.curves_to_load {
+                    let n_cps = curve.cps_f32.len() as u32;
+                    let n_knots = curve.knots_f32.len() as u32;
+                    if n_cps > caps.max_control_points
+                        || n_knots > caps.max_knot_vector_len
+                        || curve.degree > caps.max_degree
+                    {
+                        let msg = format!(
+                            "motion-bridge: curve for mcu {} exceeds caps \
+                             (cps {} > {}, knots {} > {}, degree {} > {}); \
+                             logical-move splitting not yet implemented (Task 13 follow-up).",
+                            plan.mcu_id,
+                            n_cps, caps.max_control_points,
+                            n_knots, caps.max_knot_vector_len,
+                            curve.degree, caps.max_degree,
+                        );
+                        log::error!("{msg}");
+                        return Err(msg);
+                    }
+                }
+            }
+
             for mut plan in mcu_plans {
                 let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                     Some(v) => v,
