@@ -133,21 +133,6 @@ impl Reactor {
             config.trace_capacity,
             config.host_event_capacity,
         );
-        // Demux the identify-time seed bytes the same way live wire bytes
-        // are handled in `poll_serial`: kalico-native frames are siphoned
-        // out, only legacy klipper frames flow into `rx_buf` for
-        // `extract_packet`. Without this the seed's `kalico_status` chatter
-        // (sync 0x55, ~10 Hz from firmware boot) confuses the legacy parser
-        // exactly the way it did inside identify pre-fix, and the first
-        // `bridge_call` after identify times out. See CLAUDE.md Step 7-D
-        // "Next pickup — DemuxedReader refactor" for the proper fix.
-        let mut seed_demuxer = Demuxer::new();
-        let mut rx_buf: Vec<u8> = Vec::with_capacity(rx_buf_initial.len());
-        for out in seed_demuxer.feed_slice(&rx_buf_initial) {
-            if let DemuxOutput::KlipperFrame(frame) = out {
-                rx_buf.extend_from_slice(&frame);
-            }
-        }
         Self {
             port,
             parser,
@@ -155,7 +140,7 @@ impl Reactor {
             unacked_window: UnackedWindow::default(),
             awaiting_response: AwaitingResponse::default(),
             rtt: RttEstimator::default(),
-            rx_buf,
+            rx_buf: rx_buf_initial,
             status_snapshot,
             event_dispatcher,
             send_seq: 1,
