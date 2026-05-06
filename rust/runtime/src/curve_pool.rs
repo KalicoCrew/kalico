@@ -18,14 +18,14 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::error::FaultCode;
 
-/// Build-time-configurable sizing constants. The four `pub const`s (see
-/// `runtime/build.rs`) are emitted from Klipper's Kconfig values:
-///   CONFIG_RUNTIME_MAX_CONTROL_POINTS
-///   CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN
-///   CONFIG_RUNTIME_MAX_DEGREE
-///   CONFIG_RUNTIME_CURVE_POOL_N
-/// Defaults (no Klipper Makefile in the loop) match the `large` profile per
-/// `docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md`.
+// Build-time-configurable sizing constants. The four `pub const`s (see
+// `runtime/build.rs`) are emitted from Klipper's Kconfig values:
+//   CONFIG_RUNTIME_MAX_CONTROL_POINTS
+//   CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN
+//   CONFIG_RUNTIME_MAX_DEGREE
+//   CONFIG_RUNTIME_CURVE_POOL_N
+// Defaults (no Klipper Makefile in the loop) match the `large` profile per
+// `docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md`.
 include!(concat!(env!("OUT_DIR"), "/sizing.rs"));
 
 // Looser invariant: MAX_KNOT_VECTOR_LEN >= MAX_CONTROL_POINTS + MAX_DEGREE + 1
