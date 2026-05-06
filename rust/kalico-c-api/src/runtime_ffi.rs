@@ -64,7 +64,7 @@ pub mod exports {
     // region, but the H7 has 320 KB of AXI SRAM at 0x24000000 that is
     // unused by the rest of Klipper. Other targets (host / linux / non-H7
     // MCUs) ignore the section name and the static lands in regular .bss.
-    #[cfg_attr(target_arch = "arm", unsafe(link_section = ".axi_bss"))]
+    #[cfg_attr(feature = "axi-bss-placement", unsafe(link_section = ".axi_bss"))]
     pub(super) static RT_CELL: RuntimeCell = RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 
     /// Single-shot init guard. `compare_exchange(false → true)` succeeds

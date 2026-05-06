@@ -17,11 +17,15 @@ required-features = ["host"]
 
 [features]
 default = ["host", "header-nurbs", "header-runtime"]
-mcu-h7 = ["nurbs/mcu-h7", "runtime/mcu-h7"]
+mcu-h7 = ["nurbs/mcu-h7", "runtime/mcu-h7", "axi-bss-placement"]
 mcu-f4 = ["nurbs/mcu-f4", "runtime/mcu-f4"]
 host = ["nurbs/host", "runtime/host", "dep:cbindgen"]
 header-nurbs = []
 header-runtime = []
+# Place RT_CELL in `.axi_bss` (mapped to AXI SRAM on H7). Selected only on
+# targets that have AXI SRAM available; on others (e.g., F4 future, host-sim)
+# RT_CELL lands in default bss.
+axi-bss-placement = []
 # Pass-through to runtime/kalico-sim. See runtime/Cargo.toml for the
 # rationale and the production-firmware safety boundary.
 kalico-sim = ["runtime/kalico-sim"]
