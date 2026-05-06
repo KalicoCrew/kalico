@@ -478,6 +478,7 @@ extern volatile uint16_t usb_pump_bytes_total;
 extern volatile uint8_t usb_last_read_ret_neg;
 extern volatile uint8_t usb_first16_bytes[16];
 extern volatile uint8_t usb_first16_filled;
+extern volatile uint8_t usb_first16_wrap_pos;
 
 void
 kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
@@ -529,8 +530,11 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     v = usb_pump_bytes_total;      b[30] = (uint8_t)v; b[31] = (uint8_t)(v >> 8);
     b[32] = usb_last_read_ret_neg;
     b[33] = usb_first16_filled;
+    // Emit the rolling window in chronological order: oldest first.
+    // wrap_pos points to the next slot to write = the OLDEST byte once filled.
+    uint8_t wp = usb_first16_wrap_pos;
     for (uint8_t i = 0; i < 16; i++)
-        b[34 + i] = usb_first16_bytes[i];
+        b[34 + i] = usb_first16_bytes[(wp + i) & 0x0F];
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 
