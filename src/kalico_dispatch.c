@@ -479,6 +479,9 @@ extern volatile uint8_t usb_last_read_ret_neg;
 extern volatile uint8_t usb_first16_bytes[16];
 extern volatile uint8_t usb_first16_filled;
 extern volatile uint8_t usb_first16_wrap_pos;
+extern volatile uint16_t demux_emit_klipper;
+extern volatile uint16_t demux_emit_kalico;
+extern volatile uint16_t demux_emit_error;
 
 void
 kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
@@ -497,7 +500,10 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     //   [32]     usb_last_read_ret_neg     u8
     //   [33]     usb_first16_filled        u8
     //   [34..49] usb_first16_bytes[16]     bytes
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18 + 32];
+    //   [50..51] demux_emit_klipper        u16 LE
+    //   [52..53] demux_emit_kalico         u16 LE
+    //   [54..55] demux_emit_error          u16 LE
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18 + 32 + 6];
     encode_message_header(payload, KALICO_MSG_STATUS_EVENT,
                           MESSAGE_VERSION_DEFAULT, 0);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
@@ -535,6 +541,9 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     uint8_t wp = usb_first16_wrap_pos;
     for (uint8_t i = 0; i < 16; i++)
         b[34 + i] = usb_first16_bytes[(wp + i) & 0x0F];
+    v = demux_emit_klipper; b[50] = (uint8_t)v; b[51] = (uint8_t)(v >> 8);
+    v = demux_emit_kalico;  b[52] = (uint8_t)v; b[53] = (uint8_t)(v >> 8);
+    v = demux_emit_error;   b[54] = (uint8_t)v; b[55] = (uint8_t)(v >> 8);
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 
