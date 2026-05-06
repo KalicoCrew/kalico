@@ -29,7 +29,7 @@ impl WidenState {
     /// (Klipper's `timer_read_time` is u32 too, with the same wrap period as
     /// CYCCNT on ARMCM where both come from `DWT->CYCCNT`). So the backstop
     /// shape is: foreground captures `engine.last_widened_now()` BEFORE
-    /// `kalico_h7_disable_tim5()`, and passes that u64 value back at re-enable.
+    /// `runtime_tick_disable()`, and passes that u64 value back at re-enable.
     /// Reinit then preserves `high` from the captured high-water mark and
     /// adjusts forward conservatively if `raw < captured_low` (one wrap
     /// detected). Long disables that wrap multiple times are inherently
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn one_tick_cycles_parametric() {
-        // Helper is parametric over kalico_clock_freq. Sanity-check at the
+        // Helper is parametric over runtime_clock_freq. Sanity-check at the
         // H723 Klipper Kconfig default (520 MHz) and a hypothetical 550 MHz.
         assert_eq!(one_tick_cycles(520_000_000), 13_000);
         assert_eq!(one_tick_cycles(550_000_000), 13_750);

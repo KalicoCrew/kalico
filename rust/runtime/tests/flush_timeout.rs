@@ -22,25 +22,25 @@ use runtime::state::RuntimeContext;
 use runtime::stream;
 
 #[unsafe(no_mangle)]
-pub static kalico_clock_freq: u32 = 520_000_000;
+pub static runtime_clock_freq: u32 = 520_000_000;
 
-// Each call to `kalico_host_now_us` advances the counter by 100 µs. With
+// Each call to `runtime_host_now_us` advances the counter by 100 µs. With
 // the 1 ms (1000 µs) deadline, the loop fires the timeout after ~10 calls.
 static HOST_NOW_US: AtomicU64 = AtomicU64::new(0);
 const HOST_TICK_INCREMENT_US: u64 = 100;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_host_now_us() -> u64 {
+pub extern "C" fn runtime_host_now_us() -> u64 {
     HOST_NOW_US.fetch_add(HOST_TICK_INCREMENT_US, Ordering::Relaxed)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_save() -> u32 {
+pub extern "C" fn runtime_irq_save() -> u32 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_restore(_flags: u32) {}
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
 
 fn make_runtime_context() -> *mut RuntimeContext {
     let storage: Box<UnsafeCell<MaybeUninit<RuntimeContext>>> =
@@ -59,7 +59,7 @@ fn flush_timeout_yields_liveness_stalled() {
     let shared = unsafe { &*core::ptr::addr_of!((*rt).shared) };
 
     // No ISR ack ever — flush()'s spin loop must time out at the 1 ms
-    // boundary set against `kalico_host_now_us`.
+    // boundary set against `runtime_host_now_us`.
     HOST_NOW_US.store(0, Ordering::Relaxed);
 
     let mut out_epoch: u32 = 0;

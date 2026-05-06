@@ -20,7 +20,7 @@ endif
 
 # Link libkalico_c_api.a. The Linux build has a mutual-callback edge:
 # host_tick.o calls into libkalico (kalico_runtime_tick) and libkalico
-# calls back out (kalico_h7_enable_tim5 / read_cyccnt). Wrap with
+# calls back out (runtime_tick_enable / read_cyccnt). Wrap with
 # --start-group/--end-group so ld iterates until both sides resolve.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
 KALICO_LIB := rust/target/release/libkalico_c_api.a

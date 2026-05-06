@@ -54,20 +54,20 @@ pub enum FgStreamState {
 
 // Foreign symbols — only present in MCU and integration-test builds. Test
 // crates that link against `runtime` provide `#[no_mangle]` stubs (mirror
-// of `kalico_clock_freq` stubbing in `kalico-c-api/tests/init_once.rs`).
+// of `runtime_clock_freq` stubbing in `kalico-c-api/tests/init_once.rs`).
 unsafe extern "C" {
     /// Klipper-side host-clock helper (foreground only). Returns wall-clock
     /// µs since boot, derived from `timer_read_time()` divided by
-    /// `kalico_clock_freq / 1_000_000`. Not ISR-safe in spirit (the
+    /// `runtime_clock_freq / 1_000_000`. Not ISR-safe in spirit (the
     /// underlying `timer_read_time` may wrap), but the §8.5 flush window is
     /// bounded to ≤1 ms so a single wrap is the worst case.
-    fn kalico_host_now_us() -> u64;
+    fn runtime_host_now_us() -> u64;
 }
 
-// `kalico_irq_save` / `kalico_irq_restore` are declared in `state.rs` —
+// `runtime_irq_save` / `runtime_irq_restore` are declared in `state.rs` —
 // thin C wrappers around Klipper's `irq_save` / `irq_restore` that survive
 // the MCU build's `-flto=auto -fwhole-program` DCE (see state.rs comment).
-use crate::state::{kalico_irq_restore, kalico_irq_save};
+use crate::state::{runtime_irq_restore, runtime_irq_save};
 
 // ────────────────────────────── open ─────────────────────────────────────
 
@@ -275,17 +275,17 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
 
     // Step 1: set force_idle=true. ISR observes on its next tick.
     shared.force_idle.store(true, Ordering::Release);
-    fg.flush_start_tick = Some(unsafe { kalico_host_now_us() });
+    fg.flush_start_tick = Some(unsafe { runtime_host_now_us() });
 
     // Step 2: spin-wait on acked_force_idle with a 1-ms host wall-clock
-    // timeout. Use `kalico_host_now_us` (Klipper's `timer_read_time` µs)
+    // timeout. Use `runtime_host_now_us` (Klipper's `timer_read_time` µs)
     // — NOT `read_widened_now`, because the ISR doesn't update widened_now
     // during force_idle, so the seqlock would appear frozen and the
     // deadline check would never fire (Round 1 review B3).
-    let deadline_us = unsafe { kalico_host_now_us() }.saturating_add(1000);
+    let deadline_us = unsafe { runtime_host_now_us() }.saturating_add(1000);
     while !shared.acked_force_idle.load(Ordering::Acquire) {
         core::hint::spin_loop();
-        let now_us = unsafe { kalico_host_now_us() };
+        let now_us = unsafe { runtime_host_now_us() };
         if now_us >= deadline_us {
             // Timeout — ISR appears stuck. Latch LIVENESS_STALLED.
             shared
@@ -314,9 +314,9 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
     // to IsrState.queue_consumer. SAFETY: under irq_save, no ISR can run, so
     // we transiently hold exclusive access to IsrState — the discipline
     // contract holds because there's no concurrent access window.
-    let irq_flags = unsafe { kalico_irq_save() };
+    let irq_flags = unsafe { runtime_irq_save() };
     {
-        // SAFETY: kalico_irq_save() above pins the ISR off; we transiently
+        // SAFETY: runtime_irq_save() above pins the ISR off; we transiently
         // form `&mut IsrState` via the UnsafeCell projection. No concurrent
         // ISR can race the queue/engine writes below.
         let isr: &mut IsrState = unsafe {
@@ -331,7 +331,7 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
         // its short-circuit, but redundancy here costs nothing.
         isr.engine.clear_current();
     }
-    unsafe { kalico_irq_restore(irq_flags) };
+    unsafe { runtime_irq_restore(irq_flags) };
 
     // Step 5: reset per-slot last_retired_gen = current_gen for all slots.
     pool.reset_all_retired_to_current();

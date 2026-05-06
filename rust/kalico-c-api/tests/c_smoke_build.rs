@@ -43,7 +43,7 @@ fn c_smoke_compiles_and_links() {
     }
 
     // macOS link line: a bare `-lkalico_c_api` is sufficient. The staticlib's
-    // only undefined externals are `kalico_clock_freq` and the `kalico_h7_*`
+    // only undefined externals are `runtime_clock_freq` and the `kalico_h7_*`
     // helpers, which `main.c` itself defines as host stubs. libSystem on
     // darwin already provides pthread/dl/m, so we don't add them. On Linux,
     // pthread/dl/m are typically required when a Rust staticlib pulls in

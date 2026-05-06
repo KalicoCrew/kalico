@@ -1,5 +1,5 @@
 // Host-process modulation tick driver. Spawns a pthread that calls
-// kalico_runtime_tick at 40 kHz, mirroring TIM5_IRQHandler behavior on
+// runtime_handle_tick at 40 kHz, mirroring TIM5_IRQHandler behavior on
 // the H7 firmware (src/stm32/kalico_h7_timer.c). Used by MACH_LINUX
 // builds for klippy-in-loop integration testing.
 
@@ -17,13 +17,13 @@
 #include "kalico_runtime.h"
 #include "sched.h" // shutdown handling — currently unused but matches H7
 
-extern void *kalico_rt_handle;
+extern void *runtime_handle;
 extern void kalico_endstop_sample_pins(void); // src/runtime_tick.c
 
 // Watchdog liveness flag (defined on H7 in src/stm32/watchdog.c). The
 // Linux build has no IWDG; default to ok=1 so the runtime drain doesn't
 // short-circuit. Mutated by the runtime liveness gate.
-volatile uint8_t kalico_liveness_ok = 1;
+volatile uint8_t runtime_liveness_ok = 1;
 
 // Sim-only cycle counter (defined on H7 under CONFIG_KALICO_SIM in
 // stm32/kalico_sim_clock.c). The Linux build maps it onto the host
@@ -50,7 +50,7 @@ host_monotonic_ns(void)
 
 extern uint32_t timer_read_time(void); // src/linux/timer.c
 extern uint64_t timer_read_time_u64(void); // src/linux/timer.c
-extern void kalico_runtime_seed_widen(void *rt, uint64_t baseline);
+extern void runtime_handle_seed_widen(void *rt, uint64_t baseline);
 
 __attribute__((used)) uint32_t
 runtime_cyccnt_read(void)
@@ -65,7 +65,7 @@ runtime_cyccnt_read(void)
 
 // Wrapper exposed for runtime_tick_init's widen-seeding call.
 __attribute__((used)) uint64_t
-kalico_host_widened_clock_now(void)
+runtime_host_widened_clock_now(void)
 {
     return timer_read_time_u64();
 }
@@ -90,7 +90,7 @@ host_tick_main(void *arg)
 
         if (!atomic_load_explicit(&host_tick_enabled, memory_order_acquire))
             continue;
-        if (!kalico_rt_handle)
+        if (!runtime_handle)
             continue;
 
         // Sample any armed endstop GPIOs before the engine tick — same
@@ -104,12 +104,12 @@ host_tick_main(void *arg)
 #endif
 
         uint32_t cyc = runtime_cyccnt_read();
-        kalico_runtime_tick(kalico_rt_handle, cyc);
+        runtime_handle_tick(runtime_handle, cyc);
     }
     return NULL;
 }
 
-extern void *kalico_rt_handle;
+extern void *runtime_handle;
 
 __attribute__((used)) void
 runtime_tick_init(void)
@@ -147,10 +147,10 @@ runtime_tick_enable(void)
     //
     // Seed from stats_send_time_high directly so the two widening paths
     // agree: engine.now == Klippy's last_clock view.
-    if (kalico_rt_handle) {
+    if (runtime_handle) {
         uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
                           | (uint64_t)timer_read_time();
-        kalico_runtime_seed_widen(kalico_rt_handle, baseline);
+        runtime_handle_seed_widen(runtime_handle, baseline);
     }
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }

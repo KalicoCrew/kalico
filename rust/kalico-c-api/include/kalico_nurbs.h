@@ -67,14 +67,14 @@ float kalico_nurbs_param_from_arc_length_f32(const struct kalico_nurbs_ArcLength
  * flat-pointer load path. Returns `KALICO_OK` on a recognised version
  * or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
  */
-int32_t kalico_runtime_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
+int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
 
 /**
  * Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
  * Used after a fault for host-side recovery decisions. Writes the
  * per-slot `current_gen` and `last_retired_gen` into the out-params.
  */
-int32_t kalico_runtime_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
+int32_t runtime_handle_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
                                         uint16_t slot_idx,
                                         uint16_t *out_current_gen,
                                         uint16_t *out_last_retired_gen);
@@ -84,19 +84,19 @@ int32_t kalico_runtime_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
  * published u64 cycle count from the ISR. Safe to call from foreground
  * at any time — the seqlock retries if it sees a torn read.
  */
-uint64_t kalico_runtime_widened_now(kalico_nurbs_KalicoRuntime *rt);
+uint64_t runtime_handle_widened_now(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
  * `kalico_stream_flush` so the host can detect mid-stream resets.
  */
-uint32_t kalico_runtime_credit_epoch(kalico_nurbs_KalicoRuntime *rt);
+uint32_t runtime_handle_credit_epoch(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
  * Mirrors the value placed into the `kalico_push_response` schema.
  */
-uint32_t kalico_runtime_accepted_segment_id(kalico_nurbs_KalicoRuntime *rt);
+uint32_t runtime_handle_accepted_segment_id(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Read the retired-through segment id cursor (§5.3 + §4.1.5). Advances
@@ -104,13 +104,13 @@ uint32_t kalico_runtime_accepted_segment_id(kalico_nurbs_KalicoRuntime *rt);
  * gate flow control and to know when a stream-terminal hand-off is
  * safe to call.
  */
-uint32_t kalico_runtime_retired_through_segment_id(kalico_nurbs_KalicoRuntime *rt);
+uint32_t runtime_handle_retired_through_segment_id(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Read the currently-active segment id (`0` if engine is Idle/Drained
  * or pre-stream).
  */
-uint32_t kalico_runtime_current_segment_id(kalico_nurbs_KalicoRuntime *rt);
+uint32_t runtime_handle_current_segment_id(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Approximate queue depth — number of segments the foreground has
@@ -120,14 +120,14 @@ uint32_t kalico_runtime_current_segment_id(kalico_nurbs_KalicoRuntime *rt);
  * in the worst case). Returns saturating-subtraction in u8 range
  * (`Q_N - 1` is the structural cap; saturate at 255 just in case).
  */
-uint8_t kalico_runtime_queue_depth(kalico_nurbs_KalicoRuntime *rt);
+uint8_t runtime_handle_queue_depth(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Read the latched `fault_detail` payload (§9.2). Mirrors the value
  * the foreground emits with the async `kalico_fault` event. `0` when
  * no fault has latched OR the latched fault carries no detail.
  */
-uint32_t kalico_runtime_fault_detail(kalico_nurbs_KalicoRuntime *rt);
+uint32_t runtime_handle_fault_detail(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
@@ -135,7 +135,38 @@ uint32_t kalico_runtime_fault_detail(kalico_nurbs_KalicoRuntime *rt);
  * uninitialised. Used by Phase 4 sim test to verify that
  * `configure_axes_blob` reached the engine.
  */
-float kalico_runtime_get_axis_steps_per_mm(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
+float runtime_handle_get_axis_steps_per_mm(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
+
+/**
+ * Seed the engine's widen state with a u64 baseline so the engine's
+ * `now` agrees with Klipper's widened MCU clock. Called by the Linux
+ * sim host once at runtime_init, BEFORE the engine pthread starts
+ * ticking. `baseline_widened_clock` is whatever value timer_read_time()
+ * would map to in the widened (no-wrap) frame at this instant; the
+ * caller computes it from clock_gettime so wrap counts already passed
+ * in u32 timer_read_time space are folded in.
+ */
+void runtime_handle_seed_widen(kalico_nurbs_KalicoRuntime *rt, uint64_t baseline_widened_clock);
+
+/**
+ * Diagnostic: read most recent post-PA/IS motor position for axis `oid`.
+ */
+float kalico_runtime_get_axis_motor(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
+
+/**
+ * Diagnostic: read most recent (now, t_start, duration) into the three
+ * out pointers. All u64 cycle counts.
+ */
+void kalico_runtime_get_last_timing(kalico_nurbs_KalicoRuntime *rt,
+                                    uint64_t *now_out,
+                                    uint64_t *t_start_out,
+                                    uint64_t *duration_out);
+
+/**
+ * Diagnostic: read step accumulator (sub-step residual + integer state)
+ * for axis `oid`.  Returns 0.0 if invalid.
+ */
+double kalico_runtime_get_axis_accumulator(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
 
 /**
  * Read the cumulative signed step count for stepper `oid` (0-indexed).
@@ -293,7 +324,7 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
  * endstop.rs:311). The C ISR shim samples real GPIOs via
  * `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
- * src/stm32/kalico_h7_timer.c, just before `kalico_runtime_tick`)
+ * src/stm32/kalico_h7_timer.c, just before `runtime_handle_tick`)
  * and pushes each result through this FFI before `endstop::tick`
  * observes it. Sim builds (Renode e2e at
  * tools/test_renode_endstop_e2e.py) call the same FFI directly via

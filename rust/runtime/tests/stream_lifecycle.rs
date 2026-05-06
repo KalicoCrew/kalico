@@ -23,23 +23,23 @@ use runtime::state::{FgState, SharedState};
 use runtime::stream::{self, FgStreamState};
 use runtime::trace::{TRACE_RING_N, TraceSample};
 
-// stream::flush imports `kalico_host_now_us` (foreign symbol from
+// stream::flush imports `runtime_host_now_us` (foreign symbol from
 // `src/runtime_tick.c`). Stream-lifecycle tests don't call flush(), but the
 // linker still needs to resolve the symbol. Same goes for `irq_save`/
 // `irq_restore` — declared in `runtime::state` for Phase 7's flush. Provide
 // no-op host stubs at file scope.
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_host_now_us() -> u64 {
+pub extern "C" fn runtime_host_now_us() -> u64 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_save() -> u32 {
+pub extern "C" fn runtime_irq_save() -> u32 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_restore(_flags: u32) {}
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
 
 /// Minimal `FgState` constructor for tests. Owns a `Queue<Segment, Q_N>`
 /// and a `Queue<TraceSample, TRACE_RING_N>` on the leaked-Box pattern so

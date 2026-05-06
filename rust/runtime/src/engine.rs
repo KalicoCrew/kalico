@@ -134,7 +134,7 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
 
     /// Production-context constructor. Mirrors `::new(clock_freq)` but keeps
     /// the call site noise low (Step-6 spec §14): the C-side
-    /// `kalico_clock_freq` static is read once at FFI init time and the value
+    /// `runtime_clock_freq` static is read once at FFI init time and the value
     /// is threaded through here.
     pub fn new_production(clock_freq: u32) -> Self {
         Self::new(clock_freq)

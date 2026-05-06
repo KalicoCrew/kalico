@@ -24,22 +24,22 @@ use runtime::state::{FgState, IsrState, RuntimeContext};
 use runtime::stream;
 
 #[unsafe(no_mangle)]
-pub static kalico_clock_freq: u32 = 520_000_000;
+pub static runtime_clock_freq: u32 = 520_000_000;
 
 static HOST_NOW_US: AtomicU64 = AtomicU64::new(0);
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_host_now_us() -> u64 {
+pub extern "C" fn runtime_host_now_us() -> u64 {
     HOST_NOW_US.fetch_add(1, Ordering::Relaxed)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_save() -> u32 {
+pub extern "C" fn runtime_irq_save() -> u32 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_restore(_flags: u32) {}
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
 
 fn make_runtime_context() -> *mut RuntimeContext {
     let storage: Box<UnsafeCell<MaybeUninit<RuntimeContext>>> =

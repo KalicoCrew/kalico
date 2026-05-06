@@ -11,16 +11,16 @@
 
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
-extern const uint32_t kalico_clock_freq;
+extern const uint32_t runtime_clock_freq;
 
-extern void* kalico_rt_handle;   // exposed in src/runtime_tick.c
+extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
 // These three are referenced ONLY from Rust (kalico-c-api's runtime_ffi.rs),
 // not from any C translation unit. Klipper builds with `-fwhole-program -flto`
 // which would otherwise treat them as internal and either inline them or
 // strip them, leaving the Rust archive with unresolved references. The
 // `used, externally_visible` attribute pair survives LTO + whole-program +
-// --gc-sections, mirroring kalico_clock_freq / kalico_liveness_ok.
+// --gc-sections, mirroring runtime_clock_freq / runtime_liveness_ok.
 __attribute__((used, externally_visible))
 void
 runtime_tick_disable(void)
@@ -80,7 +80,7 @@ runtime_tick_init(void)
 
     // 40 kHz tick: PSC = 0, ARR = (clock_freq / 40000) - 1.
     TIM5->PSC = 0;
-    TIM5->ARR = (kalico_clock_freq / 40000U) - 1U;
+    TIM5->ARR = (runtime_clock_freq / 40000U) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;
@@ -110,7 +110,7 @@ TIM5_IRQHandler(void)
     // software counter from this ISR. Delta = cycles-per-tick so the widened
     // u64 advances at the same rate the engine would observe on silicon.
     extern volatile uint32_t kalico_sim_cyccnt;
-    kalico_sim_cyccnt += (kalico_clock_freq / 40000U);
+    kalico_sim_cyccnt += (runtime_clock_freq / 40000U);
     // Sim-only wake of the drain task; the foreground timer system is
     // unreliable under Renode (DWT-based dispatch) so we drive the drain
     // cadence deterministically off TIM5 fires. Throttled in runtime_tick.c.
@@ -136,8 +136,8 @@ TIM5_IRQHandler(void)
 #endif
 
     uint32_t before = runtime_cyccnt_read();
-    if (kalico_rt_handle) {
-        kalico_runtime_tick(kalico_rt_handle, before);
+    if (runtime_handle) {
+        runtime_handle_tick(runtime_handle, before);
     }
     uint32_t after = runtime_cyccnt_read();
 

@@ -33,12 +33,12 @@
 #define IWDG IWDG1
 #endif
 
-// Exposed to Rust via `extern "C" { static kalico_clock_freq: u32; }`.
+// Exposed to Rust via `extern "C" { static runtime_clock_freq: u32; }`.
 // __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
-const uint32_t kalico_clock_freq __attribute__((used, externally_visible))
+const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
     = CONFIG_CLOCK_FREQ;
 
-extern volatile uint8_t kalico_liveness_ok;  // defined in src/stm32/watchdog.c
+extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
 // Foreground host-clock helper for §8.5 flush ack-wait timeout. Returns
 // wall-clock µs since boot, derived from Klipper's `timer_read_time()`
@@ -55,7 +55,7 @@ extern volatile uint8_t kalico_liveness_ok;  // defined in src/stm32/watchdog.c
 // Spec §8.5 + plan Phase 7 Task 7.2.
 __attribute__((used, externally_visible))
 uint64_t
-kalico_host_now_us(void)
+runtime_host_now_us(void)
 {
     uint32_t cycles = timer_read_time();
     // CONFIG_CLOCK_FREQ is in Hz; divide by 1e6 to get cycles-per-µs.
@@ -73,26 +73,26 @@ kalico_host_now_us(void)
 // inline the body at every callsite. The kalico_c_api.a archive then
 // fails to resolve the symbols during the final link.
 //
-// Solution: provide thin wrappers `kalico_irq_save` / `kalico_irq_restore`
+// Solution: provide thin wrappers `runtime_irq_save` / `runtime_irq_restore`
 // that the staticlib calls instead of `irq_save` / `irq_restore` directly.
 // The wrappers are marked `used, externally_visible` so LTO keeps them.
 // They forward to the real functions, which LTO can still inline if it
 // wants — but the staticlib only sees the wrapper symbols.
 __attribute__((used, externally_visible))
 uint32_t
-kalico_irq_save(void)
+runtime_irq_save(void)
 {
     return (uint32_t)irq_save();
 }
 
 __attribute__((used, externally_visible))
 void
-kalico_irq_restore(uint32_t flags)
+runtime_irq_restore(uint32_t flags)
 {
     irq_restore((irqstatus_t)flags);
 }
 
-void* kalico_rt_handle = 0;            // exposed (non-static) for kalico_h7_timer.c
+void* runtime_handle = 0;            // exposed (non-static) for kalico_h7_timer.c
 static struct task_wake runtime_drain_wake;
 static struct timer runtime_drain_timer;
 
@@ -162,20 +162,20 @@ kalico_sim_isr_wake_drain(void)
 void
 runtime_init(void)
 {
-    kalico_rt_handle = kalico_runtime_init();
-    if (!kalico_rt_handle) {
+    runtime_handle = runtime_handle_create();
+    if (!runtime_handle) {
         // Init failed — leave liveness flag at default (1 = OK) but handle unset;
         // calls into the runtime will short-circuit safely.
         return;
     }
-    last_seen_tick_counter = kalico_runtime_tick_counter(kalico_rt_handle);
+    last_seen_tick_counter = runtime_handle_tick_counter(runtime_handle);
     last_progress_time = timer_read_time();
-    last_seen_status = kalico_runtime_status(kalico_rt_handle);
+    last_seen_status = runtime_handle_status(runtime_handle);
 
     // Initialize the modulation tick driver. On STM32H7 this configures
     // TIM5 (DOES NOT enable; the first segment push triggers enable via
     // the producer protocol §4.4). On Linux it spawns the host pthread
-    // that calls kalico_runtime_tick at 40 kHz.
+    // that calls runtime_handle_tick at 40 kHz.
     runtime_tick_init();
 
     // Wire the periodic 1 kHz drain wake.
@@ -205,7 +205,7 @@ volatile uint32_t kalico_sim_drain_calls = 0;
 void
 runtime_drain(void)
 {
-    if (!kalico_rt_handle) return;
+    if (!runtime_handle) return;
     if (!sched_check_wake(&runtime_drain_wake)) return;
 
 #if CONFIG_KALICO_SIM
@@ -217,15 +217,15 @@ runtime_drain(void)
     // also drain-and-reclaim its own internal cursor for SEGMENT_END events
     // (so curve-pool slots get returned promptly) and check the §13.1
     // trace-overflow latch. The two drain paths share the same SPSC ring
-    // (same FgState consumer); the order matters — `kalico_runtime_drain_trace`
+    // (same FgState consumer); the order matters — `runtime_handle_drain_trace`
     // moves samples to the wire FIRST so the host sees the trace data, THEN
     // `kalico_runtime_drain_and_reclaim` consumes any remaining samples for
     // bookkeeping. Both are safe back-to-back because each stops on the
     // first dequeue == None.
     static uint8_t batch_buf[KALICO_TRACE_BATCH * 40];  // 40 bytes per sample
     uint8_t trace_saw_segment_end = 0;
-    uint32_t n = kalico_runtime_drain_trace(
-        kalico_rt_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH,
+    uint32_t n = runtime_handle_drain_trace(
+        runtime_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH,
         &trace_saw_segment_end);
     if (n > 0) {
         // FORMAT-VERSION EXEMPTION (Phase 3.1 / closure-review):
@@ -257,7 +257,7 @@ runtime_drain(void)
     // emission on the reclaim leg alone deadlocks host flow control once
     // the host's credit counter drains.
     uint32_t reclaim_status = kalico_runtime_drain_and_reclaim(
-        kalico_rt_handle, KALICO_TRACE_BATCH);
+        runtime_handle, KALICO_TRACE_BATCH);
     uint8_t saw_segment_end = trace_saw_segment_end |
                               (uint8_t)((reclaim_status >> 17) & 1);
     uint8_t fresh_overflow_fault = (reclaim_status >> 16) & 1;
@@ -269,8 +269,8 @@ runtime_drain(void)
     // the cumulative cursor; `free_slots = Q_N - queue_depth` (with Q_N - 1
     // being the structural cap; saturate at u8 in the Rust accessor).
     if (saw_segment_end) {
-        uint32_t retired = kalico_runtime_retired_through_segment_id(kalico_rt_handle);
-        uint8_t depth = kalico_runtime_queue_depth(kalico_rt_handle);
+        uint32_t retired = runtime_handle_retired_through_segment_id(runtime_handle);
+        uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
         // Phase C: emit as kalico-native CreditFreed event (channel 1).
         kalico_native_emit_credit_freed(retired, free_slots);
@@ -283,9 +283,9 @@ runtime_drain(void)
     // the next 10 Hz tick. We send the async event here so the host gets
     // the fault notification immediately, not up to ~100 ms later.
     if (fresh_overflow_fault) {
-        int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
-        uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
-        uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
+        int32_t fault_code = runtime_handle_last_error(runtime_handle);
+        uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
+        uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
         kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
     }
 
@@ -295,16 +295,16 @@ runtime_drain(void)
     // KALICO_LIVENESS_THRESHOLD_MS of boot otherwise. We refresh the
     // last_progress_time anchor in non-RUNNING states so a state transition
     // INTO RUNNING doesn't immediately trip on a stale anchor.
-    uint32_t cur_counter = kalico_runtime_tick_counter(kalico_rt_handle);
+    uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
-    uint8_t cur_status = kalico_runtime_status(kalico_rt_handle);
+    uint8_t cur_status = runtime_handle_status(runtime_handle);
     if (cur_status == 1 /* RUNNING */) {
         if (cur_counter != last_seen_tick_counter) {
             last_seen_tick_counter = cur_counter;
             last_progress_time = cur_time;
         } else if ((cur_time - last_progress_time) > KALICO_LIVENESS_THRESHOLD_TICKS) {
             // ISR has stalled while RUNNING. Stop kicking the watchdog.
-            kalico_liveness_ok = 0;
+            runtime_liveness_ok = 0;
         }
     } else {
         last_progress_time = cur_time;
@@ -315,11 +315,11 @@ runtime_drain(void)
     // engine just transitioned INTO Fault since the last drain (so the host
     // gets a single notification, not a 1 kHz spam stream).
     if (cur_status == 3 /* FAULT */) {
-        kalico_liveness_ok = 0;
+        runtime_liveness_ok = 0;
         if (prev_engine_status != 3 /* FAULT */) {
-            int32_t fault_code = kalico_runtime_last_error(kalico_rt_handle);
-            uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
-            uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
+            int32_t fault_code = runtime_handle_last_error(runtime_handle);
+            uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
+            uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
             kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
         }
     }
@@ -329,7 +329,7 @@ runtime_drain(void)
     // 40 kHz needlessly burns CPU cycles. Under Renode the ISR load also
     // starves USART2 command dispatch, preventing host tools from talking to
     // the firmware after a print completes. The §4.4 producer protocol
-    // re-enables TIM5 on the next kalico_runtime_push_segment call when
+    // re-enables TIM5 on the next runtime_handle_push_segment call when
     // status is IDLE or DRAINED, so this is safe. Under IDLE the ISR was
     // never enabled (no-op to call disable), but we gate on the transition
     // anyway to avoid redundant disable calls.
@@ -355,7 +355,7 @@ DECL_TASK(runtime_drain);
 void
 runtime_status_drain(void)
 {
-    if (!kalico_rt_handle) return;
+    if (!runtime_handle) return;
     uint32_t now = timer_read_time();
     // Spec §5.3: 10 Hz cadence. The cast through int32_t handles u32 wrap
     // (~8.3 s at 520 MHz, ~83 s in sim) — at 100 ms cadence the difference
@@ -365,11 +365,11 @@ runtime_status_drain(void)
         return;
     last_status_emit_time = now;
 
-    uint8_t status = kalico_runtime_status(kalico_rt_handle);
-    int32_t last_err = kalico_runtime_last_error(kalico_rt_handle);
-    uint32_t cur_seg = kalico_runtime_current_segment_id(kalico_rt_handle);
-    uint8_t depth = kalico_runtime_queue_depth(kalico_rt_handle);
-    uint32_t fault_detail = kalico_runtime_fault_detail(kalico_rt_handle);
+    uint8_t status = runtime_handle_status(runtime_handle);
+    int32_t last_err = runtime_handle_last_error(runtime_handle);
+    uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
+    uint8_t depth = runtime_handle_queue_depth(runtime_handle);
+    uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
 
     // Phase C: replace the legacy `kalico_status_v6` Klipper-protocol output
     // with a native StatusEvent on the events channel. The host bridge maps
@@ -380,9 +380,9 @@ runtime_status_drain(void)
     // Sim-only: dump stepper counters so a test that lost its klippy
     // bridge_call link can still observe motion progress via the elf log.
     // Phase 4 test polls this to confirm GATE GREEN.
-    int32_t c0 = kalico_runtime_get_stepper_count(kalico_rt_handle, 0);
-    int32_t c1 = kalico_runtime_get_stepper_count(kalico_rt_handle, 1);
-    int32_t c2 = kalico_runtime_get_stepper_count(kalico_rt_handle, 2);
+    int32_t c0 = kalico_runtime_get_stepper_count(runtime_handle, 0);
+    int32_t c1 = kalico_runtime_get_stepper_count(runtime_handle, 1);
+    int32_t c2 = kalico_runtime_get_stepper_count(runtime_handle, 2);
     fprintf(stderr,
         "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]\n",
         status, cur_seg, c0, c1, c2);
@@ -418,8 +418,8 @@ DECL_TASK(runtime_status_drain);
 // the larger sizing.
 // Non-static so kalico_dispatch.c's LoadCurve handler can reuse the same
 // scratch (the legacy DECL_COMMAND begin/chunk/finalize path is retired).
-float kalico_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
-float kalico_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
+float runtime_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
+float runtime_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
 
 // Phase C of the kalico-native transport spec
 // (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md` §15)
@@ -431,12 +431,12 @@ float kalico_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
 void
 command_kalico_query_status(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_status status=%c last_err=%i", (uint8_t)255, -7);
         return;
     }
-    uint8_t status = kalico_runtime_status(kalico_rt_handle);
-    int32_t last_err = kalico_runtime_last_error(kalico_rt_handle);
+    uint8_t status = runtime_handle_status(runtime_handle);
+    int32_t last_err = runtime_handle_last_error(runtime_handle);
     sendf("kalico_status status=%c last_err=%i", status, last_err);
 }
 DECL_COMMAND(command_kalico_query_status, "kalico_query_status");
@@ -447,11 +447,11 @@ void
 command_kalico_set_homed(uint32_t *args)
 {
     (void)args;
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_set_homed_response result=%i", -7);
         return;
     }
-    int32_t r = kalico_set_homed(kalico_rt_handle);
+    int32_t r = kalico_set_homed(runtime_handle);
     sendf("kalico_set_homed_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_set_homed, "kalico_set_homed");
@@ -462,12 +462,12 @@ DECL_COMMAND(command_kalico_set_homed, "kalico_set_homed");
 void
 command_kalico_set_homed_state(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_set_homed_response result=%i", -7);
         return;
     }
     uint8_t homed = args[0];
-    int32_t r = kalico_set_homed_state(kalico_rt_handle, homed);
+    int32_t r = kalico_set_homed_state(runtime_handle, homed);
     sendf("kalico_set_homed_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_set_homed_state, "kalico_set_homed_state homed=%c");
@@ -478,7 +478,7 @@ DECL_COMMAND(command_kalico_set_homed_state, "kalico_set_homed_state homed=%c");
 // levels from an internal abstract pin table (rust/runtime/src/endstop.rs's
 // PIN_LEVELS). To trip on real hardware we sample the configured GPIOs from
 // the modulation ISR (TIM5_IRQHandler) once per tick and push the result
-// through `kalico_endstop_set_pin_level` before `kalico_runtime_tick`
+// through `kalico_endstop_set_pin_level` before `runtime_handle_tick`
 // observes the table. The active set is populated when an arm succeeds and
 // cleared on disarm. Slot count must match runtime::endstop::MAX_SOURCES.
 #define KALICO_ENDSTOP_MAX_SOURCES 4
@@ -492,7 +492,7 @@ static struct endstop_pin_slot endstop_pin_table[KALICO_ENDSTOP_MAX_SOURCES];
 
 extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
-// Called from TIM5_IRQHandler immediately before kalico_runtime_tick.
+// Called from TIM5_IRQHandler immediately before runtime_handle_tick.
 // Hot path: at most KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
 void
 kalico_endstop_sample_pins(void)
@@ -597,7 +597,7 @@ DECL_CTR("_DECL_OUTPUT "
 void
 runtime_endstop_drain(void)
 {
-    if (!kalico_rt_handle) return;
+    if (!runtime_handle) return;
     uint8_t buf[64];
     size_t actual = 0;
     int32_t r = kalico_endstop_poll_trip(buf, sizeof(buf), &actual);
@@ -626,12 +626,12 @@ DECL_TASK(runtime_endstop_drain);
 void
 command_kalico_configure_axes(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_configure_axes_response result=%i", -7);
         return;
     }
     uint8_t kinematics = args[0];
-    int32_t r = kalico_configure_axes(kalico_rt_handle, kinematics);
+    int32_t r = kalico_configure_axes(runtime_handle, kinematics);
     sendf("kalico_configure_axes_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_configure_axes, "kalico_configure_axes kinematics=%c");
@@ -644,14 +644,14 @@ DECL_COMMAND(command_kalico_configure_axes, "kalico_configure_axes kinematics=%c
 void
 command_kalico_stream_open(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_stream_open_response result=%i credit_epoch=%u", -7, 0);
         return;
     }
     uint32_t stream_id = args[0];
     uint32_t credit_epoch = 0;
     int32_t r = kalico_runtime_stream_open(
-        kalico_rt_handle, stream_id, &credit_epoch);
+        runtime_handle, stream_id, &credit_epoch);
     sendf("kalico_stream_open_response result=%i credit_epoch=%u",
           r, credit_epoch);
 }
@@ -660,7 +660,7 @@ DECL_COMMAND(command_kalico_stream_open, "kalico_stream_open stream_id=%u");
 void
 command_kalico_stream_arm(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf(
             "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
             -7, 0, 0);
@@ -670,7 +670,7 @@ command_kalico_stream_arm(uint32_t *args)
     uint32_t arm_lead_cycles = args[2];
     uint64_t armed_t_start = 0;
     int32_t r = kalico_runtime_stream_arm(
-        kalico_rt_handle, t_start_t0, arm_lead_cycles, &armed_t_start);
+        runtime_handle, t_start_t0, arm_lead_cycles, &armed_t_start);
     sendf(
         "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
         r, (uint32_t)armed_t_start, (uint32_t)(armed_t_start >> 32));
@@ -681,12 +681,12 @@ DECL_COMMAND(command_kalico_stream_arm,
 void
 command_kalico_stream_terminal(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_stream_terminal_response result=%i", -7);
         return;
     }
     uint32_t segment_id = args[0];
-    int32_t r = kalico_runtime_stream_terminal(kalico_rt_handle, segment_id);
+    int32_t r = kalico_runtime_stream_terminal(runtime_handle, segment_id);
     sendf("kalico_stream_terminal_response result=%i", r);
 }
 DECL_COMMAND(command_kalico_stream_terminal,
@@ -696,12 +696,12 @@ void
 command_kalico_stream_flush(uint32_t *args)
 {
     (void)args;
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_stream_flush_response result=%i credit_epoch=%u", -7, 0);
         return;
     }
     uint32_t credit_epoch = 0;
-    int32_t r = kalico_runtime_stream_flush(kalico_rt_handle, &credit_epoch);
+    int32_t r = kalico_runtime_stream_flush(runtime_handle, &credit_epoch);
     sendf("kalico_stream_flush_response result=%i credit_epoch=%u",
           r, credit_epoch);
 }
@@ -711,7 +711,7 @@ DECL_COMMAND(command_kalico_stream_flush, "kalico_stream_flush");
 void
 command_kalico_clock_sync_request(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf(
             "kalico_clock_sync_response request_id=%u mcu_clock_lo=%u mcu_clock_hi=%u",
             0, 0, 0);
@@ -722,7 +722,7 @@ command_kalico_clock_sync_request(uint32_t *args)
     uint32_t host_send_time_hi = args[2];
     uint64_t mcu_clock = 0;
     kalico_runtime_clock_sync_request(
-        kalico_rt_handle, request_id,
+        runtime_handle, request_id,
         host_send_time_lo, host_send_time_hi,
         &mcu_clock);
     sendf(
@@ -739,7 +739,7 @@ DECL_COMMAND(command_kalico_clock_sync_request,
 void
 command_kalico_query_pool_state(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf(
             "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
             -7, (uint16_t)0, (uint16_t)0, (uint16_t)0);
@@ -748,8 +748,8 @@ command_kalico_query_pool_state(uint32_t *args)
     uint16_t slot = args[0];
     uint16_t current_gen = 0;
     uint16_t last_retired_gen = 0;
-    int32_t r = kalico_runtime_query_pool_state(
-        kalico_rt_handle, slot, &current_gen, &last_retired_gen);
+    int32_t r = runtime_handle_query_pool_state(
+        runtime_handle, slot, &current_gen, &last_retired_gen);
     sendf(
         "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
         r, slot, current_gen, last_retired_gen);
@@ -784,9 +784,9 @@ extern volatile uint32_t kalico_sim_drain_counter;
 void
 command_kalico_sim_diag(uint32_t *args)
 {
-    uint8_t status = kalico_rt_handle ? kalico_runtime_status(kalico_rt_handle) : 255;
-    int32_t last_err = kalico_rt_handle ? kalico_runtime_last_error(kalico_rt_handle) : 0;
-    uint32_t tick_counter = kalico_rt_handle ? kalico_runtime_tick_counter(kalico_rt_handle) : 0;
+    uint8_t status = runtime_handle ? runtime_handle_status(runtime_handle) : 255;
+    int32_t last_err = runtime_handle ? runtime_handle_last_error(runtime_handle) : 0;
+    uint32_t tick_counter = runtime_handle ? runtime_handle_tick_counter(runtime_handle) : 0;
     sendf(
         "kalico_sim_diag_response drain_calls=%u cyccnt=%u drain_counter=%u "
         "status=%c last_err=%i tick_counter=%u",
@@ -819,8 +819,8 @@ void
 command_kalico_sim_stepper_count_query(uint32_t *args)
 {
     uint8_t oid = (uint8_t)args[0];
-    int32_t count = kalico_rt_handle
-        ? kalico_runtime_get_stepper_count(kalico_rt_handle, oid)
+    int32_t count = runtime_handle
+        ? kalico_runtime_get_stepper_count(runtime_handle, oid)
         : 0;
     sendf("kalico_sim_stepper_count_response oid=%c count=%i", oid, count);
 }
@@ -834,8 +834,8 @@ void
 command_kalico_sim_axis_steps_query(uint32_t *args)
 {
     uint8_t oid = (uint8_t)args[0];
-    float spm = kalico_rt_handle
-        ? kalico_runtime_get_axis_steps_per_mm(kalico_rt_handle, oid)
+    float spm = runtime_handle
+        ? runtime_handle_get_axis_steps_per_mm(runtime_handle, oid)
         : 0.0f;
     // Send as i32 micro-steps-per-mm so we don't have to teach the wire
     // codec about f32 here.
@@ -849,8 +849,8 @@ void
 command_kalico_sim_axis_accum_query(uint32_t *args)
 {
     uint8_t oid = (uint8_t)args[0];
-    double a = kalico_rt_handle
-        ? kalico_runtime_get_axis_accumulator(kalico_rt_handle, oid)
+    double a = runtime_handle
+        ? kalico_runtime_get_axis_accumulator(runtime_handle, oid)
         : 0.0;
     int32_t milli = (int32_t)(a * 1000.0);
     sendf("kalico_sim_axis_accum_response oid=%c milli=%i", oid, milli);
@@ -872,7 +872,7 @@ extern int32_t kalico_runtime_load_fixture(
 void
 command_kalico_load_fixture_curve(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
               -7, 0);
         return;
@@ -881,7 +881,7 @@ command_kalico_load_fixture_curve(uint32_t *args)
     uint16_t fixture_id = args[1];
     uint32_t handle_packed = 0;
     int32_t r = kalico_runtime_load_fixture(
-        kalico_rt_handle, slot, fixture_id, &handle_packed);
+        runtime_handle, slot, fixture_id, &handle_packed);
     sendf("kalico_load_fixture_response result=%i curve_handle_packed=%u",
           r, handle_packed);
 }

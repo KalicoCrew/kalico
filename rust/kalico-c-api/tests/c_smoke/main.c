@@ -8,7 +8,7 @@
  *   2. Link against libkalico_c_api.a — verifies every kalico_runtime_*
  *      symbol the header declares actually resolves.
  *
- * Host-side stubs for kalico_clock_freq + kalico_h7_* symbols are provided
+ * Host-side stubs for runtime_clock_freq + kalico_h7_* symbols are provided
  * here because the staticlib leaves them undefined (on MCU they come from
  * src/runtime_tick.c and the H7 timer driver; on host the unit tests in
  * tests/init_once.rs supply them via #[no_mangle], but a pure-C link cannot
@@ -38,23 +38,23 @@ _Static_assert(offsetof(TraceSample, _pad) == 33, "_pad offset");
 _Static_assert(sizeof(((TraceSample *)0)->_pad) == 7, "_pad length");
 
 /* Host-side stubs for symbols the staticlib leaves undefined. */
-const uint32_t kalico_clock_freq = 520000000u;
+const uint32_t runtime_clock_freq = 520000000u;
 
-void kalico_h7_enable_tim5(void) {}
-void kalico_h7_disable_tim5(void) {}
-uint32_t kalico_h7_read_cyccnt(void) { return 0u; }
+void runtime_tick_enable(void) {}
+void runtime_tick_disable(void) {}
+uint32_t runtime_cyccnt_read(void) { return 0u; }
 
 /* Step-6 Phase 7 §8.5 force_idle handshake symbols. */
-uint64_t kalico_host_now_us(void) { return 0ULL; }
-uint32_t kalico_irq_save(void) { return 0u; }
-void kalico_irq_restore(uint32_t flags) { (void)flags; }
+uint64_t runtime_host_now_us(void) { return 0ULL; }
+uint32_t runtime_irq_save(void) { return 0u; }
+void runtime_irq_restore(uint32_t flags) { (void)flags; }
 
 int main(void) {
     /* Trivial smoke — link symbol resolution check. We don't assert on the
      * returned handle's value; init may legitimately succeed or (on a second
      * invocation in some test ordering) return null. The point is the symbol
      * resolves and the program runs without crashing. */
-    KalicoRuntime *h = kalico_runtime_init();
+    KalicoRuntime *h = runtime_handle_create();
     (void)h;
     return 0;
 }

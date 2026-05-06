@@ -39,8 +39,8 @@ runtime_bench_capture(uint32_t cycles_delta)
 
 // Externs into the runtime FFI surface — names retained as-is in this task;
 // renamed (if at all) by Task 6's FFI sweep.
-extern volatile uint8_t kalico_liveness_ok;     // src/stm32/watchdog.c
-extern void* kalico_rt_handle;                  // src/runtime_tick.c
+extern volatile uint8_t runtime_liveness_ok;     // src/stm32/watchdog.c
+extern void* runtime_handle;                  // src/runtime_tick.c
 
 // Bench error codes — all sites use the canonical sendf format
 // `runtime_bench_done count=%hu error=%i` per Klipper's one-format-per-message
@@ -55,7 +55,7 @@ extern void* kalico_rt_handle;                  // src/runtime_tick.c
 void
 command_runtime_bench_run(uint32_t *args)
 {
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         sendf("runtime_bench_done count=%hu error=%i", 0, RUNTIME_BENCH_ERR_NOT_INIT);
         return;
     }
@@ -63,7 +63,7 @@ command_runtime_bench_run(uint32_t *args)
     // Liveness pre-check (round-4 review): if the runtime had already
     // tripped a liveness fault before we got here, manually kicking IWDG
     // inside the bench loop would mask it. Refuse to bench in that case.
-    if (!kalico_liveness_ok) {
+    if (!runtime_liveness_ok) {
         sendf("runtime_bench_done count=%hu error=%i", 0, RUNTIME_BENCH_ERR_LIVENESS);
         return;
     }
@@ -99,7 +99,7 @@ command_runtime_bench_run(uint32_t *args)
     uint32_t timeout_ticks = timer_from_us(100000);  // 100 ms
     while (runtime_bench_count < runtime_bench_target) {
         // Manually kick the IWDG (foreground watchdog_reset would otherwise
-        // get pre-empted by our spin and starve). Spec §5.7 — `kalico_liveness_ok`
+        // get pre-empted by our spin and starve). Spec §5.7 — `runtime_liveness_ok`
         // is set true here because we KNOW the runtime is healthy; the gate
         // is only meaningful for unattended operation.
         IWDG->KR = 0xAAAA;

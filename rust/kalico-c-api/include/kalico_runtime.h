@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
-
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
+
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -100,11 +100,11 @@ typedef struct TraceSample {
 
 
 
-extern void kalico_h7_enable_tim5(void);
+extern void runtime_tick_enable(void);
 
-extern void kalico_h7_disable_tim5(void);
+extern void runtime_tick_disable(void);
 
-extern uint32_t kalico_h7_read_cyccnt(void);
+extern uint32_t runtime_cyccnt_read(void);
 
 /**
  * Init-once. Spec §3.2.
@@ -113,7 +113,7 @@ extern uint32_t kalico_h7_read_cyccnt(void);
  * subsequent call. The handle is the address of the static
  * `RuntimeContext` storage; its lifetime is `'static`.
  */
-struct KalicoRuntime *kalico_runtime_init(void);
+struct KalicoRuntime *runtime_handle_create(void);
 
 /**
  * Push a segment. Producer protocol per spec §4.4 + §10.1.
@@ -129,7 +129,7 @@ struct KalicoRuntime *kalico_runtime_init(void);
  * published into `SharedState` on success — host caller sees the same
  * values via the `kalico_push_response` schema (§5.3).
  */
-int32_t kalico_runtime_push_segment(struct KalicoRuntime *rt,
+int32_t runtime_handle_push_segment(struct KalicoRuntime *rt,
                                     uint32_t id,
                                     uint32_t x_handle_packed,
                                     uint32_t y_handle_packed,
@@ -150,7 +150,7 @@ int32_t kalico_runtime_push_segment(struct KalicoRuntime *rt,
  *
  * Step 7-B: accepts scalar control points (1D). No weights (polynomial-only).
  */
-int32_t kalico_runtime_load_curve(struct KalicoRuntime *rt,
+int32_t runtime_handle_load_curve(struct KalicoRuntime *rt,
                                   uint16_t slot_idx,
                                   const float *control_points_flat,
                                   uint16_t n_cp,
@@ -166,14 +166,14 @@ int32_t kalico_runtime_load_curve(struct KalicoRuntime *rt,
  * flat-pointer load path. Returns `KALICO_OK` on a recognised version
  * or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
  */
-int32_t kalico_runtime_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
+int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
 
 /**
  * Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
  * Used after a fault for host-side recovery decisions. Writes the
  * per-slot `current_gen` and `last_retired_gen` into the out-params.
  */
-int32_t kalico_runtime_query_pool_state(struct KalicoRuntime *rt,
+int32_t runtime_handle_query_pool_state(struct KalicoRuntime *rt,
                                         uint16_t slot_idx,
                                         uint16_t *out_current_gen,
                                         uint16_t *out_last_retired_gen);
@@ -183,7 +183,7 @@ int32_t kalico_runtime_query_pool_state(struct KalicoRuntime *rt,
  * `raw_cyccnt` is the raw 32-bit DWT->CYCCNT value; Rust widens to u64.
  * Skips null-check (caller is the C ISR shim with stable handle).
  */
-void kalico_runtime_tick(struct KalicoRuntime *rt, uint32_t raw_cyccnt);
+void runtime_handle_tick(struct KalicoRuntime *rt, uint32_t raw_cyccnt);
 
 /**
  * Foreground drain. Returns count of samples written.
@@ -203,35 +203,35 @@ void kalico_runtime_tick(struct KalicoRuntime *rt, uint32_t raw_cyccnt);
  * event and deadlocking host flow control. The C handler now ORs this
  * bit with the reclaim leg's bit.
  */
-uint32_t kalico_runtime_drain_trace(struct KalicoRuntime *rt,
+uint32_t runtime_handle_drain_trace(struct KalicoRuntime *rt,
                                     struct TraceSample *out_buf,
                                     uint32_t out_cap,
                                     uint8_t *out_saw_segment_end);
 
-uint8_t kalico_runtime_status(struct KalicoRuntime *rt);
+uint8_t runtime_handle_status(struct KalicoRuntime *rt);
 
-int32_t kalico_runtime_last_error(struct KalicoRuntime *rt);
+int32_t runtime_handle_last_error(struct KalicoRuntime *rt);
 
-uint32_t kalico_runtime_tick_counter(struct KalicoRuntime *rt);
+uint32_t runtime_handle_tick_counter(struct KalicoRuntime *rt);
 
 /**
  * Read the widened MCU clock (§11.4 seqlock). Returns the most recently
  * published u64 cycle count from the ISR. Safe to call from foreground
  * at any time — the seqlock retries if it sees a torn read.
  */
-uint64_t kalico_runtime_widened_now(struct KalicoRuntime *rt);
+uint64_t runtime_handle_widened_now(struct KalicoRuntime *rt);
 
 /**
  * Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
  * `kalico_stream_flush` so the host can detect mid-stream resets.
  */
-uint32_t kalico_runtime_credit_epoch(struct KalicoRuntime *rt);
+uint32_t runtime_handle_credit_epoch(struct KalicoRuntime *rt);
 
 /**
  * Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
  * Mirrors the value placed into the `kalico_push_response` schema.
  */
-uint32_t kalico_runtime_accepted_segment_id(struct KalicoRuntime *rt);
+uint32_t runtime_handle_accepted_segment_id(struct KalicoRuntime *rt);
 
 /**
  * Read the retired-through segment id cursor (§5.3 + §4.1.5). Advances
@@ -239,13 +239,13 @@ uint32_t kalico_runtime_accepted_segment_id(struct KalicoRuntime *rt);
  * gate flow control and to know when a stream-terminal hand-off is
  * safe to call.
  */
-uint32_t kalico_runtime_retired_through_segment_id(struct KalicoRuntime *rt);
+uint32_t runtime_handle_retired_through_segment_id(struct KalicoRuntime *rt);
 
 /**
  * Read the currently-active segment id (`0` if engine is Idle/Drained
  * or pre-stream).
  */
-uint32_t kalico_runtime_current_segment_id(struct KalicoRuntime *rt);
+uint32_t runtime_handle_current_segment_id(struct KalicoRuntime *rt);
 
 /**
  * Approximate queue depth — number of segments the foreground has
@@ -255,14 +255,14 @@ uint32_t kalico_runtime_current_segment_id(struct KalicoRuntime *rt);
  * in the worst case). Returns saturating-subtraction in u8 range
  * (`Q_N - 1` is the structural cap; saturate at 255 just in case).
  */
-uint8_t kalico_runtime_queue_depth(struct KalicoRuntime *rt);
+uint8_t runtime_handle_queue_depth(struct KalicoRuntime *rt);
 
 /**
  * Read the latched `fault_detail` payload (§9.2). Mirrors the value
  * the foreground emits with the async `kalico_fault` event. `0` when
  * no fault has latched OR the latched fault carries no detail.
  */
-uint32_t kalico_runtime_fault_detail(struct KalicoRuntime *rt);
+uint32_t runtime_handle_fault_detail(struct KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
@@ -270,7 +270,18 @@ uint32_t kalico_runtime_fault_detail(struct KalicoRuntime *rt);
  * uninitialised. Used by Phase 4 sim test to verify that
  * `configure_axes_blob` reached the engine.
  */
-float kalico_runtime_get_axis_steps_per_mm(struct KalicoRuntime *rt, uint8_t oid);
+float runtime_handle_get_axis_steps_per_mm(struct KalicoRuntime *rt, uint8_t oid);
+
+/**
+ * Seed the engine's widen state with a u64 baseline so the engine's
+ * `now` agrees with Klipper's widened MCU clock. Called by the Linux
+ * sim host once at runtime_init, BEFORE the engine pthread starts
+ * ticking. `baseline_widened_clock` is whatever value timer_read_time()
+ * would map to in the widened (no-wrap) frame at this instant; the
+ * caller computes it from clock_gettime so wrap counts already passed
+ * in u32 timer_read_time space are folded in.
+ */
+void runtime_handle_seed_widen(struct KalicoRuntime *rt, uint64_t baseline_widened_clock);
 
 /**
  * Diagnostic: read most recent post-PA/IS motor position for axis `oid`.
@@ -448,7 +459,7 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
  * endstop.rs:311). The C ISR shim samples real GPIOs via
  * `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
- * src/stm32/kalico_h7_timer.c, just before `kalico_runtime_tick`)
+ * src/stm32/kalico_h7_timer.c, just before `runtime_handle_tick`)
  * and pushes each result through this FFI before `endstop::tick`
  * observes it. Sim builds (Renode e2e at
  * tools/test_renode_endstop_e2e.py) call the same FFI directly via

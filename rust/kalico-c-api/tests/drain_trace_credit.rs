@@ -1,5 +1,5 @@
 //! Closure-review regression test for finding #1 (HIGH, SHIP-BLOCKER):
-//! `kalico_runtime_drain_trace` must signal whether it consumed any
+//! `runtime_handle_drain_trace` must signal whether it consumed any
 //! `TRACE_FLAG_SEGMENT_END` samples, so the C-side `runtime_drain` can
 //! emit `kalico_credit_freed` even when the trace leg consumes the
 //! `SEGMENT_END` before the reclaim leg sees it.
@@ -21,36 +21,36 @@
 use runtime::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
 
 #[unsafe(no_mangle)]
-pub static kalico_clock_freq: u32 = 520_000_000;
+pub static runtime_clock_freq: u32 = 520_000_000;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_h7_enable_tim5() {}
+pub extern "C" fn runtime_tick_enable() {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_h7_disable_tim5() {}
+pub extern "C" fn runtime_tick_disable() {}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_h7_read_cyccnt() -> u32 {
+pub extern "C" fn runtime_cyccnt_read() -> u32 {
     0
 }
 
 /// End-to-end smoke: init the runtime, push a `SEGMENT_END` trace sample
 /// into the ISR-side trace producer (via the published `RT_CELL` pointer),
-/// drain through `kalico_runtime_drain_trace` with a non-null
+/// drain through `runtime_handle_drain_trace` with a non-null
 /// `out_saw_segment_end`, and assert the bit is set + the sample is
 /// reported.
 ///
 /// SAFETY notes inline. The test runs as its own integration-test
 /// binary so it has exclusive ownership of the runtime singleton; no
-/// other test in this binary calls `kalico_runtime_init`.
+/// other test in this binary calls `runtime_handle_create`.
 #[test]
 fn drain_trace_reports_segment_end_to_caller() {
     use core::cell::UnsafeCell;
     use runtime::curve_pool::CurveHandle;
     use runtime::state::{IsrState, RuntimeContext};
 
-    let rt = kalico_c_api::kalico_runtime_init();
-    assert!(!rt.is_null(), "kalico_runtime_init returned null");
+    let rt = kalico_c_api::runtime_handle_create();
+    assert!(!rt.is_null(), "runtime_handle_create returned null");
 
     // Inject a SEGMENT_END sample directly into the ISR trace producer.
     // This mirrors what the engine does on segment retirement, but
@@ -97,7 +97,7 @@ fn drain_trace_reports_segment_end_to_caller() {
     }; 4];
     let mut saw_segment_end: u8 = 0;
     let n = unsafe {
-        kalico_c_api::kalico_runtime_drain_trace(
+        kalico_c_api::runtime_handle_drain_trace(
             rt,
             out_buf.as_mut_ptr(),
             4,
@@ -116,7 +116,7 @@ fn drain_trace_reports_segment_end_to_caller() {
     // Empty-drain afterwards: bit must clear.
     saw_segment_end = 0xFF;
     let n2 = unsafe {
-        kalico_c_api::kalico_runtime_drain_trace(
+        kalico_c_api::runtime_handle_drain_trace(
             rt,
             out_buf.as_mut_ptr(),
             4,
@@ -131,7 +131,7 @@ fn drain_trace_reports_segment_end_to_caller() {
 
     // Null out-param is permitted (caller may not care about the bit).
     let n3 = unsafe {
-        kalico_c_api::kalico_runtime_drain_trace(rt, out_buf.as_mut_ptr(), 4, core::ptr::null_mut())
+        kalico_c_api::runtime_handle_drain_trace(rt, out_buf.as_mut_ptr(), 4, core::ptr::null_mut())
     };
     assert_eq!(n3, 0);
 }

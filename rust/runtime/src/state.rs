@@ -13,7 +13,7 @@
 
 // The half-split FFI projection (see `init` below) needs raw-pointer writes
 // through `MaybeUninit` and an `unsafe impl Sync` for `RuntimeContext`; the
-// foreign symbol declarations for `kalico_clock_freq` / `irq_save` /
+// foreign symbol declarations for `runtime_clock_freq` / `irq_save` /
 // `irq_restore` also require `unsafe extern "C"`. Workspace lints deny
 // `unsafe_code` globally — this module is one of two places in `runtime`
 // (alongside `curve_pool::load_unchecked`) where we opt out, with the
@@ -57,7 +57,7 @@ pub type EngineImpl = Engine<NoopPa, NoopIs>;
 
 // Phase 7 §8.5 force_idle handshake calls Klipper's `irq_save`/`irq_restore`
 // to gate the queue-drain step. We import via thin C wrappers
-// `kalico_irq_save` / `kalico_irq_restore` defined in `src/runtime_tick.c`,
+// `runtime_irq_save` / `runtime_irq_restore` defined in `src/runtime_tick.c`,
 // not the bare functions directly: Klipper's MCU build uses
 // `-flto=auto -fwhole-program`, which empirically lets the LTO/whole-program
 // inliner DCE the standalone `irq_save` / `irq_restore` symbols (their
@@ -66,8 +66,8 @@ pub type EngineImpl = Engine<NoopPa, NoopIs>;
 // marked `used + externally_visible` on the C side so LTO keeps them.
 #[allow(dead_code)]
 unsafe extern "C" {
-    pub fn kalico_irq_save() -> u32;
-    pub fn kalico_irq_restore(flags: u32);
+    pub fn runtime_irq_save() -> u32;
+    pub fn runtime_irq_restore(flags: u32);
 }
 
 /// Foreground-only state. Touched exclusively by the command-dispatch task
@@ -250,7 +250,7 @@ unsafe impl Sync for RuntimeContext {}
 
 unsafe extern "C" {
     /// C-side static, set at `runtime_init` time in `src/runtime_tick.c`.
-    static kalico_clock_freq: u32;
+    static runtime_clock_freq: u32;
 }
 
 impl RuntimeContext {
@@ -288,9 +288,9 @@ impl RuntimeContext {
             pool_ptr.write(CurvePool::new());
 
             // Read C-side clock frequency once so the ISR's WidenState +
-            // Engine::new_production both see the same value. `kalico_clock_freq`
+            // Engine::new_production both see the same value. `runtime_clock_freq`
             // is set at static-init time before the runtime ever runs.
-            let freq = core::ptr::read_volatile(core::ptr::addr_of!(kalico_clock_freq));
+            let freq = core::ptr::read_volatile(core::ptr::addr_of!(runtime_clock_freq));
 
             // Initialize FgState.
             let fg_ptr = core::ptr::addr_of_mut!((*rt_ptr).fg);

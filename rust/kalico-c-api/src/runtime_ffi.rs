@@ -71,7 +71,7 @@ pub mod exports {
     /// exactly once; subsequent calls observe `Err(true)` and return null.
     pub(super) static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
-    // C-side `kalico_clock_freq` constant — defined in src/runtime_tick.c
+    // C-side `runtime_clock_freq` constant — defined in src/runtime_tick.c
     // (or, on host builds, by the integration-test harness).
     //
     // NOTE: `RuntimeContext::init` re-imports this same symbol on the
@@ -79,16 +79,16 @@ pub mod exports {
     // producer-protocol re-enable path can read the freq for
     // `min_segment_cycles` arithmetic.
     unsafe extern "C" {
-        pub(super) static kalico_clock_freq: u32;
+        pub(super) static runtime_clock_freq: u32;
     }
 
     // C-side timer-control helpers — defined in src/stm32/kalico_h7_timer.c
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
-        fn kalico_h7_enable_tim5();
+        fn runtime_tick_enable();
         #[allow(dead_code)]
-        fn kalico_h7_disable_tim5();
-        fn kalico_h7_read_cyccnt() -> u32;
+        fn runtime_tick_disable();
+        fn runtime_cyccnt_read() -> u32;
     }
 
     /// Init-once. Spec §3.2.
@@ -97,7 +97,7 @@ pub mod exports {
     /// subsequent call. The handle is the address of the static
     /// `RuntimeContext` storage; its lifetime is `'static`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn kalico_runtime_init() -> *mut KalicoRuntime {
+    pub extern "C" fn runtime_handle_create() -> *mut KalicoRuntime {
         // Guard against double-init. Klipper calls this exactly once from a
         // single-threaded DECL_INIT sequence before TIM5 is armed, so a plain
         // relaxed load is sufficient — there is no concurrent caller.
@@ -140,7 +140,7 @@ pub mod exports {
     /// values via the `kalico_push_response` schema (§5.3).
     #[unsafe(no_mangle)]
     #[allow(clippy::too_many_arguments)]
-    pub unsafe extern "C" fn kalico_runtime_push_segment(
+    pub unsafe extern "C" fn runtime_handle_push_segment(
         rt: *mut KalicoRuntime,
         id: u32,
         x_handle_packed: u32,
@@ -207,7 +207,7 @@ pub mod exports {
     ///
     /// SAFETY (caller): `isr_ptr_const` must point at the same `RuntimeContext`'s
     /// `IsrState`, and the ISR must be disabled while the producer-protocol
-    /// re-enable branch runs (Klipper's `kalico_h7_disable_tim5()` does
+    /// re-enable branch runs (Klipper's `runtime_tick_disable()` does
     /// this; callers via the C shim hold to that contract).
     #[allow(clippy::too_many_arguments)]
     unsafe fn push_segment_impl(
@@ -242,7 +242,7 @@ pub mod exports {
         }
         // SAFETY: C-side immutable constant set at static-init time.
         let min_seg_cycles = u64::from(runtime::clock::min_segment_cycles(unsafe {
-            super::exports::kalico_clock_freq
+            super::exports::runtime_clock_freq
         }));
         if t_end - t_start < min_seg_cycles {
             return KALICO_ERR_INVALID_DURATION;
@@ -350,7 +350,7 @@ pub mod exports {
             // ISR-state UnsafeCell *only* under the ISR-disabled
             // discipline.
             unsafe {
-                let raw = super::exports::kalico_h7_read_cyccnt();
+                let raw = super::exports::runtime_cyccnt_read();
                 let isr_ptr_mut = isr_ptr_const.cast_mut();
                 let widen_state = &mut (*isr_ptr_mut).widen_state;
                 // Reconstruct last-widened high-water mark from the ISR's
@@ -361,7 +361,7 @@ pub mod exports {
                 // produced before being disabled.
                 let last_widened = runtime::clock::read_widened_now(shared);
                 widen_state.reinit(raw, last_widened);
-                super::exports::kalico_h7_enable_tim5();
+                super::exports::runtime_tick_enable();
             }
         }
         KALICO_OK
@@ -374,7 +374,7 @@ pub mod exports {
     /// Step 7-B: accepts scalar control points (1D). No weights (polynomial-only).
     #[unsafe(no_mangle)]
     #[allow(clippy::too_many_arguments)]
-    pub unsafe extern "C" fn kalico_runtime_load_curve(
+    pub unsafe extern "C" fn runtime_handle_load_curve(
         rt: *mut KalicoRuntime,
         slot_idx: u16,
         control_points_flat: *const f32,
@@ -429,7 +429,7 @@ pub mod exports {
     /// flat-pointer load path. Returns `KALICO_OK` on a recognised version
     /// or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_check_blob_version(
+    pub unsafe extern "C" fn runtime_handle_check_blob_version(
         payload_ptr: *const u8,
         payload_len: u32,
     ) -> i32 {
@@ -449,7 +449,7 @@ pub mod exports {
     /// Used after a fault for host-side recovery decisions. Writes the
     /// per-slot `current_gen` and `last_retired_gen` into the out-params.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_query_pool_state(
+    pub unsafe extern "C" fn runtime_handle_query_pool_state(
         rt: *mut KalicoRuntime,
         slot_idx: u16,
         out_current_gen: *mut u16,
@@ -485,7 +485,7 @@ pub mod exports {
     /// `raw_cyccnt` is the raw 32-bit DWT->CYCCNT value; Rust widens to u64.
     /// Skips null-check (caller is the C ISR shim with stable handle).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_tick(rt: *mut KalicoRuntime, raw_cyccnt: u32) {
+    pub unsafe extern "C" fn runtime_handle_tick(rt: *mut KalicoRuntime, raw_cyccnt: u32) {
         // Defensive Acquire-load — guards against early-fire during init.
         if !INIT_DONE.load(Ordering::Acquire) {
             return;
@@ -554,7 +554,7 @@ pub mod exports {
     /// event and deadlocking host flow control. The C handler now ORs this
     /// bit with the reclaim leg's bit.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_drain_trace(
+    pub unsafe extern "C" fn runtime_handle_drain_trace(
         rt: *mut KalicoRuntime,
         out_buf: *mut TraceSample,
         out_cap: u32,
@@ -617,7 +617,7 @@ pub mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_status(rt: *mut KalicoRuntime) -> u8 {
+    pub unsafe extern "C" fn runtime_handle_status(rt: *mut KalicoRuntime) -> u8 {
         if rt.is_null() {
             return RuntimeStatus::Fault as u8;
         }
@@ -635,7 +635,7 @@ pub mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_last_error(rt: *mut KalicoRuntime) -> i32 {
+    pub unsafe extern "C" fn runtime_handle_last_error(rt: *mut KalicoRuntime) -> i32 {
         if rt.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
@@ -651,7 +651,7 @@ pub mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_tick_counter(rt: *mut KalicoRuntime) -> u32 {
+    pub unsafe extern "C" fn runtime_handle_tick_counter(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {
             return 0;
         }
@@ -676,7 +676,7 @@ pub mod exports {
     // Each helper projects to `&SharedState` (atomics-only) and reads one
     // field. Released as a separate FFI per Klipper's "one C-side `sendf`
     // call passes scalar args" pattern: the status-frame DECL_TASK assembles
-    // the values via these accessors, the `kalico_runtime_widened_now` helper
+    // the values via these accessors, the `runtime_handle_widened_now` helper
     // reads the §11.4 seqlock-protected widened clock, and the periodic
     // `kalico_status_v6` frame goes out at ~10 Hz.
 
@@ -684,7 +684,7 @@ pub mod exports {
     /// published u64 cycle count from the ISR. Safe to call from foreground
     /// at any time — the seqlock retries if it sees a torn read.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_widened_now(rt: *mut KalicoRuntime) -> u64 {
+    pub unsafe extern "C" fn runtime_handle_widened_now(rt: *mut KalicoRuntime) -> u64 {
         if rt.is_null() {
             return 0;
         }
@@ -702,7 +702,7 @@ pub mod exports {
     /// Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
     /// `kalico_stream_flush` so the host can detect mid-stream resets.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_credit_epoch(rt: *mut KalicoRuntime) -> u32 {
+    pub unsafe extern "C" fn runtime_handle_credit_epoch(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {
             return 0;
         }
@@ -720,7 +720,7 @@ pub mod exports {
     /// Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
     /// Mirrors the value placed into the `kalico_push_response` schema.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_accepted_segment_id(rt: *mut KalicoRuntime) -> u32 {
+    pub unsafe extern "C" fn runtime_handle_accepted_segment_id(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {
             return 0;
         }
@@ -740,7 +740,7 @@ pub mod exports {
     /// gate flow control and to know when a stream-terminal hand-off is
     /// safe to call.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_retired_through_segment_id(
+    pub unsafe extern "C" fn runtime_handle_retired_through_segment_id(
         rt: *mut KalicoRuntime,
     ) -> u32 {
         if rt.is_null() {
@@ -762,7 +762,7 @@ pub mod exports {
     /// Read the currently-active segment id (`0` if engine is Idle/Drained
     /// or pre-stream).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_current_segment_id(rt: *mut KalicoRuntime) -> u32 {
+    pub unsafe extern "C" fn runtime_handle_current_segment_id(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {
             return 0;
         }
@@ -784,7 +784,7 @@ pub mod exports {
     /// in the worst case). Returns saturating-subtraction in u8 range
     /// (`Q_N - 1` is the structural cap; saturate at 255 just in case).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_queue_depth(rt: *mut KalicoRuntime) -> u8 {
+    pub unsafe extern "C" fn runtime_handle_queue_depth(rt: *mut KalicoRuntime) -> u8 {
         if rt.is_null() {
             return 0;
         }
@@ -810,7 +810,7 @@ pub mod exports {
     /// the foreground emits with the async `kalico_fault` event. `0` when
     /// no fault has latched OR the latched fault carries no detail.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_fault_detail(rt: *mut KalicoRuntime) -> u32 {
+    pub unsafe extern "C" fn runtime_handle_fault_detail(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {
             return 0;
         }
@@ -830,7 +830,7 @@ pub mod exports {
     /// uninitialised. Used by Phase 4 sim test to verify that
     /// `configure_axes_blob` reached the engine.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_get_axis_steps_per_mm(
+    pub unsafe extern "C" fn runtime_handle_get_axis_steps_per_mm(
         rt: *mut KalicoRuntime,
         oid: u8,
     ) -> f32 {
@@ -853,7 +853,7 @@ pub mod exports {
     /// caller computes it from clock_gettime so wrap counts already passed
     /// in u32 timer_read_time space are folded in.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_seed_widen(
+    pub unsafe extern "C" fn runtime_handle_seed_widen(
         rt: *mut KalicoRuntime,
         baseline_widened_clock: u64,
     ) {
@@ -1142,7 +1142,7 @@ pub mod exports {
     /// lifecycle FFI shims below. Caller must guarantee `rt` non-null and
     /// `INIT_DONE=true`.
     ///
-    /// SAFETY: same contract as `kalico_runtime_push_segment`'s projection.
+    /// SAFETY: same contract as `runtime_handle_push_segment`'s projection.
     /// Only one `&mut FgState` may be live at a time across the FFI surface;
     /// the foreground task is single-threaded so this is enforced by call-
     /// site discipline, not the type system.
@@ -1295,7 +1295,7 @@ pub mod exports {
     /// Per Step-6 plan Phase 0 Task 0.2 GDB-attach diagnosis: under Renode,
     /// the H7 platform model silently ignores `SCB->CPACR` writes from
     /// `SystemInit()`, leaving the FPU disabled. The regular
-    /// `kalico_runtime_load_curve` path runs `is_finite()` / `> 0.0` checks
+    /// `runtime_handle_load_curve` path runs `is_finite()` / `> 0.0` checks
     /// on caller-supplied data; those FPU instructions raise a UsageFault
     /// that lands in Klipper's `DefaultHandler` infinite loop. This entrypoint
     /// uses static pre-validated fixtures and the
@@ -1564,7 +1564,7 @@ pub mod exports {
     /// `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
     /// endstop.rs:311). The C ISR shim samples real GPIOs via
     /// `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
-    /// src/stm32/kalico_h7_timer.c, just before `kalico_runtime_tick`)
+    /// src/stm32/kalico_h7_timer.c, just before `runtime_handle_tick`)
     /// and pushes each result through this FFI before `endstop::tick`
     /// observes it. Sim builds (Renode e2e at
     /// tools/test_renode_endstop_e2e.py) call the same FFI directly via

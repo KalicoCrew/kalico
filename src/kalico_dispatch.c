@@ -18,12 +18,12 @@
 
 #if CONFIG_KALICO_RUNTIME
 #include "kalico_runtime.h"
-extern void *kalico_rt_handle;
+extern void *runtime_handle;
 
 // Phase C: shared aligned scratch with command_kalico_load_curve_finalize
 // path retired in runtime_tick.c. Defined there.
-extern float kalico_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
-extern float kalico_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
+extern float runtime_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
+extern float runtime_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
 #endif
 
 // Forward decl: platform-specific raw byte output. The Linux sim implements
@@ -352,23 +352,23 @@ handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_le
         send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
         return;
     }
-    if (cps_bytes > sizeof(kalico_aligned_cps)
-        || knots_bytes > sizeof(kalico_aligned_knots)) {
+    if (cps_bytes > sizeof(runtime_aligned_cps)
+        || knots_bytes > sizeof(runtime_aligned_knots)) {
         send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
         return;
     }
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
         return;
     }
     // Copy into 4-byte-aligned scratch (frame body offset is arbitrary).
-    memcpy(kalico_aligned_cps, &body[11], cps_bytes);
-    memcpy(kalico_aligned_knots, &body[11 + cps_bytes], knots_bytes);
+    memcpy(runtime_aligned_cps, &body[11], cps_bytes);
+    memcpy(runtime_aligned_knots, &body[11 + cps_bytes], knots_bytes);
     uint32_t handle_packed = 0;
-    int32_t r = kalico_runtime_load_curve(
-        kalico_rt_handle, slot,
-        kalico_aligned_cps, (uint16_t)n_cps,
-        kalico_aligned_knots, (uint16_t)n_knots,
+    int32_t r = runtime_handle_load_curve(
+        runtime_handle, slot,
+        runtime_aligned_cps, (uint16_t)n_cps,
+        runtime_aligned_knots, (uint16_t)n_knots,
         degree, &handle_packed);
     send_load_curve_response(correlation_id, r, handle_packed);
 #else
@@ -386,7 +386,7 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
         send_push_segment_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0, 0);
         return;
     }
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
         return;
     }
@@ -411,8 +411,8 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
     uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
                                   | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
     uint32_t accepted_id = 0, credit_epoch = 0;
-    int32_t r = kalico_runtime_push_segment(
-        kalico_rt_handle, id, x_handle, y_handle, z_handle, e_handle,
+    int32_t r = runtime_handle_push_segment(
+        runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
         t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
         &accepted_id, &credit_epoch);
     send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
@@ -449,11 +449,11 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
         send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
         return;
     }
-    if (!kalico_rt_handle) {
+    if (!runtime_handle) {
         send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
         return;
     }
-    int32_t r = kalico_runtime_configure_axes_blob(kalico_rt_handle, body, body_len);
+    int32_t r = kalico_runtime_configure_axes_blob(runtime_handle, body, body_len);
     send_configure_axes_response(correlation_id, r);
 #else
     (void)body; (void)body_len;

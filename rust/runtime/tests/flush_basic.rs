@@ -22,10 +22,10 @@ use runtime::error::{KALICO_ERR_NULL_PTR, KALICO_OK};
 use runtime::state::RuntimeContext;
 use runtime::stream;
 
-// flush() imports `kalico_host_now_us` and `irq_save`/`irq_restore` from C.
+// flush() imports `runtime_host_now_us` and `irq_save`/`irq_restore` from C.
 // On host we provide no-op stubs so the linker resolves.
 #[unsafe(no_mangle)]
-pub static kalico_clock_freq: u32 = 520_000_000;
+pub static runtime_clock_freq: u32 = 520_000_000;
 
 // Strictly monotone host-clock counter so the deadline math in flush()
 // always advances. The flush_basic tests don't exercise the timeout path,
@@ -34,17 +34,17 @@ pub static kalico_clock_freq: u32 = 520_000_000;
 static HOST_NOW_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_host_now_us() -> u64 {
+pub extern "C" fn runtime_host_now_us() -> u64 {
     HOST_NOW_US.fetch_add(1, Ordering::Relaxed)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_save() -> u32 {
+pub extern "C" fn runtime_irq_save() -> u32 {
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kalico_irq_restore(_flags: u32) {}
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
 
 /// Build a fully initialized `RuntimeContext` on the heap and return a raw
 /// pointer the test can pass to `stream::flush`. The Box leaks for the test
