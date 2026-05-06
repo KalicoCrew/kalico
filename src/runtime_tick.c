@@ -21,8 +21,7 @@
 // Host build: pthread-driven tick replaces the TIM5 ISR. The Rust runtime
 // still calls runtime_tick_enable/disable/runtime_cyccnt_read across the
 // producer-protocol boundary; we provide host-side stubs in
-// src/linux/kalico_host_tick.c.
-#include "linux/kalico_host_tick.h"
+// src/linux/runtime_tick_host.c.
 #endif
 
 #if CONFIG_KALICO_RUNTIME

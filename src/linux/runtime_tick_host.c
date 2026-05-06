@@ -3,7 +3,7 @@
 // the H7 firmware (src/stm32/kalico_h7_timer.c). Used by MACH_LINUX
 // builds for klippy-in-loop integration testing.
 
-#include "kalico_host_tick.h"
+#include "generic/runtime_tick.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -27,7 +27,7 @@ volatile uint8_t kalico_liveness_ok = 1;
 
 // Sim-only cycle counter (defined on H7 under CONFIG_KALICO_SIM in
 // stm32/kalico_sim_clock.c). The Linux build maps it onto the host
-// monotonic-derived counter that kalico_h7_read_cyccnt returns.
+// monotonic-derived counter that runtime_cyccnt_read returns.
 volatile uint32_t kalico_sim_cyccnt = 0;
 
 #define HOST_TICK_HZ 40000UL
@@ -53,7 +53,7 @@ extern uint64_t timer_read_time_u64(void); // src/linux/timer.c
 extern void kalico_runtime_seed_widen(void *rt, uint64_t baseline);
 
 __attribute__((used)) uint32_t
-kalico_h7_read_cyccnt(void)
+runtime_cyccnt_read(void)
 {
     // Use Klipper's own clock (timer_read_time) so the engine's `now` lives
     // in the same reference frame as the values klippy's clocksync sends to
@@ -63,7 +63,7 @@ kalico_h7_read_cyccnt(void)
     return timer_read_time();
 }
 
-// Wrapper exposed for kalico_h7_timer_init's widen-seeding call.
+// Wrapper exposed for runtime_tick_init's widen-seeding call.
 __attribute__((used)) uint64_t
 kalico_host_widened_clock_now(void)
 {
@@ -103,7 +103,7 @@ host_tick_main(void *arg)
         kalico_endstop_sample_pins();
 #endif
 
-        uint32_t cyc = kalico_h7_read_cyccnt();
+        uint32_t cyc = runtime_cyccnt_read();
         kalico_runtime_tick(kalico_rt_handle, cyc);
     }
     return NULL;
@@ -112,7 +112,7 @@ host_tick_main(void *arg)
 extern void *kalico_rt_handle;
 
 __attribute__((used)) void
-kalico_h7_timer_init(void)
+runtime_tick_init(void)
 {
     if (atomic_exchange(&host_tick_thread_started, 1))
         return;
@@ -125,7 +125,7 @@ kalico_h7_timer_init(void)
     pthread_attr_destroy(&attr);
     if (rc != 0) {
         fprintf(stderr, "kalico_host_tick: pthread_create failed: %d\n", rc);
-        // Mark as not started so a later kalico_h7_timer_init can retry —
+        // Mark as not started so a later runtime_tick_init can retry —
         // but this is a fatal init path on the H7 too; we just log here.
         atomic_store(&host_tick_thread_started, 0);
     }
@@ -134,7 +134,7 @@ kalico_h7_timer_init(void)
 extern uint32_t stats_send_time_high; // src/basecmd.c
 
 __attribute__((used)) void
-kalico_h7_enable_tim5(void)
+runtime_tick_enable(void)
 {
     // Seed widen state to match Klippy's view of widened MCU clock.
     // Klippy widens via stats_send_time_high (incremented by stats_update
@@ -156,7 +156,7 @@ kalico_h7_enable_tim5(void)
 }
 
 __attribute__((used)) void
-kalico_h7_disable_tim5(void)
+runtime_tick_disable(void)
 {
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
 }

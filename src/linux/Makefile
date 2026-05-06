@@ -10,7 +10,7 @@ src-y += linux/sensor_ds18b20.c
 # Kalico host-tick driver — pthread-based modulation tick replacing TIM5
 # on the host build. Provides the kalico_h7_* symbol surface that the
 # Rust runtime's producer-protocol calls across the FFI boundary.
-src-$(CONFIG_KALICO_RUNTIME) += linux/kalico_host_tick.c
+src-$(CONFIG_KALICO_RUNTIME) += linux/runtime_tick_host.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 
 # Generated FFI header (cbindgen) shared with the H7 build.
