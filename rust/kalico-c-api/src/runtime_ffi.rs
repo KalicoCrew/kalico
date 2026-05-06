@@ -59,6 +59,12 @@ pub mod exports {
     // helpers in each FFI entry preserves strict aliasing.
     unsafe impl Sync for RuntimeCell {}
 
+    // Placed in AXI SRAM on H7 via the linker script (.axi_bss section).
+    // The 282 KB RuntimeContext doesn't fit in the H723's 128 KB DTCM
+    // region, but the H7 has 320 KB of AXI SRAM at 0x24000000 that is
+    // unused by the rest of Klipper. Other targets (host / linux / non-H7
+    // MCUs) ignore the section name and the static lands in regular .bss.
+    #[cfg_attr(target_arch = "arm", unsafe(link_section = ".axi_bss"))]
     pub(super) static RT_CELL: RuntimeCell = RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
 
     /// Single-shot init guard. `compare_exchange(false → true)` succeeds

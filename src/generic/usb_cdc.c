@@ -31,7 +31,21 @@
  ****************************************************************/
 
 static struct task_wake usb_bulk_in_wake;
-static uint8_t transmit_buf[192], transmit_pos;
+// Default sizing matches upstream Klipper. When the kalico-native transport
+// is enabled, the same TX buffer is shared with raw kalico frames (up to
+// KALICO_TX_BUF_SIZE = 256 in src/kalico_dispatch.c), so the buffer is sized
+// to hold one kalico frame plus a klipper response, and the position counter
+// widens to u16. AVR / smaller MCUs without CONFIG_KALICO_RUNTIME keep the
+// original 192-byte buffer with an 8-bit pos.
+#if CONFIG_KALICO_RUNTIME
+static uint8_t transmit_buf[320];
+static uint16_t transmit_pos;
+typedef uint16_t transmit_pos_t;
+#else
+static uint8_t transmit_buf[192];
+static uint8_t transmit_pos;
+typedef uint_fast8_t transmit_pos_t;
+#endif
 
 void
 usb_notify_bulk_in(void)
@@ -44,7 +58,7 @@ usb_bulk_in_task(void)
 {
     if (!sched_check_wake(&usb_bulk_in_wake))
         return;
-    uint_fast8_t tpos = transmit_pos, max_tpos = tpos;
+    transmit_pos_t tpos = transmit_pos, max_tpos = tpos;
     if (!tpos)
         return;
     if (max_tpos > USB_CDC_EP_BULK_IN_SIZE)
@@ -54,7 +68,7 @@ usb_bulk_in_task(void)
     int_fast8_t ret = usb_send_bulk_in(transmit_buf, max_tpos);
     if (ret <= 0)
         return;
-    uint_fast8_t needcopy = tpos - ret;
+    transmit_pos_t needcopy = tpos - ret;
     if (needcopy) {
         memmove(transmit_buf, &transmit_buf[ret], needcopy);
         usb_notify_bulk_in();
@@ -68,7 +82,8 @@ void
 console_sendf(const struct command_encoder *ce, va_list args)
 {
     // Verify space for message
-    uint_fast8_t tpos = transmit_pos, max_size = READP(ce->max_size);
+    transmit_pos_t tpos = transmit_pos;
+    uint_fast8_t max_size = READP(ce->max_size);
     if (tpos + max_size > sizeof(transmit_buf))
         // Not enough space for message
         return;
@@ -81,6 +96,25 @@ console_sendf(const struct command_encoder *ce, va_list args)
     transmit_pos = tpos + msglen;
     usb_notify_bulk_in();
 }
+
+#if CONFIG_KALICO_RUNTIME
+// Raw byte writer used by the kalico-native transport TX path. Bytes are
+// already a complete kalico frame (sync + len + channel + payload + CRC).
+// Returns the number of bytes accepted, or -1 if there is no room. Frame
+// contents are not split across calls — caller (kalico_transport_send_frame
+// in src/kalico_dispatch.c) hands a single, complete frame.
+int
+kalico_console_write_raw(const uint8_t *buf, uint16_t len)
+{
+    transmit_pos_t tpos = transmit_pos;
+    if ((uint32_t)tpos + (uint32_t)len > sizeof(transmit_buf))
+        return -1;
+    memcpy(&transmit_buf[tpos], buf, len);
+    transmit_pos = tpos + len;
+    usb_notify_bulk_in();
+    return len;
+}
+#endif
 
 
 /****************************************************************

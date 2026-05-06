@@ -13,6 +13,12 @@ MEMORY
 {
   rom (rx) : ORIGIN = CONFIG_FLASH_APPLICATION_ADDRESS , LENGTH = CONFIG_FLASH_SIZE
   ram (rwx) : ORIGIN = CONFIG_RAM_START , LENGTH = CONFIG_RAM_SIZE
+#if CONFIG_MACH_STM32H7
+  // STM32H7 AXI SRAM (D1 domain). 320 KB on H723; clock is always-on after
+  // reset. Used to host large statics (notably the kalico Rust runtime's
+  // RT_CELL curve pool) that don't fit in the 128 KB DTCM `ram` region.
+  axi_ram (rwx) : ORIGIN = 0x24000000 , LENGTH = 320K
+#endif
 }
 
 SECTIONS
@@ -56,6 +62,20 @@ SECTIONS
         . = ALIGN(4);
         _bss_end = .;
     } > ram
+
+#if CONFIG_MACH_STM32H7
+    // Symbols / statics tagged `__attribute__((section(".axi_bss")))` (C) or
+    // `#[link_section = ".axi_bss"]` (Rust) are placed in AXI SRAM rather
+    // than DTCM. NOLOAD because these are uninitialised (BSS-style) and we
+    // do not want them in the flash image.
+    .axi_bss (NOLOAD) : {
+        . = ALIGN(8);
+        _axi_bss_start = .;
+        *(.axi_bss .axi_bss.*)
+        . = ALIGN(8);
+        _axi_bss_end = .;
+    } > axi_ram
+#endif
 
     _stack_start = CONFIG_RAM_START + CONFIG_RAM_SIZE - CONFIG_STACK_SIZE ;
     .stack _stack_start (NOLOAD) :
