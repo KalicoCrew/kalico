@@ -118,6 +118,12 @@ pub fn identify_handshake(
 
             let wire_seq = (next_send_seq_abs as u8) & MESSAGE_SEQ_MASK;
             let frame = build_frame(&payload, wire_seq);
+            eprintln!(
+                "identify: send seq=0x{:02x} offset={} (attempt {})",
+                wire_seq | crate::host_io::wire::MESSAGE_DEST,
+                identify_data.len(),
+                _attempt,
+            );
             io.write_all(&frame)?;
             io.flush()?;
 
@@ -127,6 +133,15 @@ pub fn identify_handshake(
                 attempt_deadline,
                 &mut mcu_recv_abs,
             )?;
+            eprintln!(
+                "identify: outcome={} mcu_recv_abs={}",
+                match &outcome {
+                    IdentifyOutcome::Response(_) => "Response",
+                    IdentifyOutcome::Nak => "Nak",
+                    IdentifyOutcome::Timeout => "Timeout",
+                },
+                mcu_recv_abs,
+            );
 
             match outcome {
                 IdentifyOutcome::Response(params) => {
