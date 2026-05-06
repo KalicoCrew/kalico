@@ -1,6 +1,6 @@
 // Host-process modulation tick driver. Spawns a pthread that calls
 // runtime_handle_tick at 40 kHz, mirroring TIM5_IRQHandler behavior on
-// the H7 firmware (src/stm32/kalico_h7_timer.c). Used by MACH_LINUX
+// the H7 firmware (src/stm32/runtime_tick_h7.c). Used by MACH_LINUX
 // builds for klippy-in-loop integration testing.
 
 #include "generic/runtime_tick.h"

@@ -85,7 +85,7 @@ Both are documented here so future debugging knows what to NOT chase again.
 
 2. **DWT->CYCCNT freeze** (was: "engine widening loop never advances").
    Renode tags `DWT->CYCCNT` as opaque memory; reads return 0. C-side fork
-   in `src/stm32/kalico_h7_timer.c::kalico_h7_read_cyccnt()` returns a
+   in `src/stm32/runtime_tick_h7.c::runtime_cyccnt_read()` returns a
    software counter (`runtime_sim_cyccnt` in `src/stm32/runtime_sim_clock.c`)
    bumped from the TIM5 ISR by `kalico_clock_freq / 40000` cycles per fire.
    Production builds (CONFIG_KALICO_SIM=n) read `DWT->CYCCNT` directly.

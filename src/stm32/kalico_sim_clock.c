@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-// Bumped by TIM5 ISR (kalico_h7_timer.c) once per tick.
+// Bumped by TIM5 ISR (runtime_tick_h7.c) once per tick.
 __attribute__((used, externally_visible))
 volatile uint32_t runtime_sim_cyccnt = 0;
 

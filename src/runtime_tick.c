@@ -104,7 +104,7 @@ runtime_irq_restore(uint32_t flags)
     irq_restore((irqstatus_t)flags);
 }
 
-void* runtime_handle = 0;            // exposed (non-static) for kalico_h7_timer.c
+void* runtime_handle = 0;            // exposed (non-static) for runtime_tick_h7.c
 struct task_wake runtime_drain_wake;  // non-static: shared with runtime_sim_commands.c
 static struct timer runtime_drain_timer;
 

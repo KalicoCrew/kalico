@@ -324,7 +324,7 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
  * endstop.rs:311). The C ISR shim samples real GPIOs via
  * `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
- * src/stm32/kalico_h7_timer.c, just before `runtime_handle_tick`)
+ * src/stm32/runtime_tick_h7.c, just before `runtime_handle_tick`)
  * and pushes each result through this FFI before `endstop::tick`
  * observes it. Sim builds (Renode e2e at
  * tools/test_renode_endstop_e2e.py) call the same FFI directly via

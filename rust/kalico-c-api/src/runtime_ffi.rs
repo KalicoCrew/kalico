@@ -82,7 +82,7 @@ pub mod exports {
         pub(super) static runtime_clock_freq: u32;
     }
 
-    // C-side timer-control helpers — defined in src/stm32/kalico_h7_timer.c
+    // C-side timer-control helpers — defined in src/stm32/runtime_tick_h7.c
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
         fn runtime_tick_enable();
@@ -1564,7 +1564,7 @@ pub mod exports {
     /// `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
     /// endstop.rs:311). The C ISR shim samples real GPIOs via
     /// `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
-    /// src/stm32/kalico_h7_timer.c, just before `runtime_handle_tick`)
+    /// src/stm32/runtime_tick_h7.c, just before `runtime_handle_tick`)
     /// and pushes each result through this FFI before `endstop::tick`
     /// observes it. Sim builds (Renode e2e at
     /// tools/test_renode_endstop_e2e.py) call the same FFI directly via
