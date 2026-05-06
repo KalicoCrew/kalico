@@ -63,11 +63,23 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
         case KALICO_DEMUX_OUT_NONE:
             break;
         case KALICO_DEMUX_OUT_KLIPPER: {
+            // Bootloader-request sentinel detection must happen here,
+            // not in the transport task: the 32-byte sentinel can
+            // arrive split across multiple task firings, in which case
+            // a transport-side `rpos == 32` pre-pump check would never
+            // fire. The demuxer reassembles the full sentinel as a
+            // 32-byte "klipper frame" whether the bytes arrive in one
+            // burst or many; checking after surfacing is the only
+            // location that survives fragmentation.
+            const uint8_t *kbuf = kalico_demux_klipper_buf();
+            uint8_t klen = kalico_demux_klipper_len();
+            if (CONFIG_HAVE_BOOTLOADER_REQUEST && klen == 32
+                && !memcmp(kbuf,
+                           " \x1c Request Serial Bootloader!! ~", 32))
+                bootloader_request();   // does not return
             uint_fast8_t pop_count;
             command_find_and_dispatch(
-                (uint8_t *)kalico_demux_klipper_buf(),
-                kalico_demux_klipper_len(),
-                &pop_count);
+                (uint8_t *)kbuf, klen, &pop_count);
             kalico_demux_consume();
             break;
         }
@@ -86,7 +98,9 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
 }
 ```
 
-The demuxer's static `klipper_buf` is the staging area — no separate stack or bss copy. `command_find_and_dispatch` runs synchronously and does not retain the pointer past return, so `kalico_demux_consume()` immediately afterwards is safe.
+The demuxer's static `klipper_buf` is the staging area — no separate stack or bss copy. `command_find_and_dispatch` runs synchronously and does not retain the pointer past return, so `kalico_demux_consume()` immediately afterwards is safe. The cast away `const` on `kbuf` is benign: `command_find_and_dispatch` and its downstream `command_find_block` never write through the buffer (verified at `src/command.c:273-329`, `:361-370`); a future command handler that decodes a pointer pointing inside the staging buffer and mutates through it would change this — flag in a comment if introduced.
+
+Re-entrancy note: handlers invoked through `command_dispatch` may call `console_sendf` (writes to the transport's `transmit_buf`, separate from `receive_buf`) and may schedule wake events that fire only after the current task returns. They do not recurse into `kalico_demux_pump`. Per-frame ack timing matches the legacy `command_find_and_dispatch` loop bit-for-bit.
 
 ### 4.2 Per-transport integration
 
@@ -94,14 +108,10 @@ Each of the three transports gates the new path behind `#if CONFIG_KALICO_RUNTIM
 
 #### 4.2.1 `src/generic/usb_cdc.c::usb_bulk_out_task`
 
-USB RX is task-context-polled (`usb_read_bulk_out`), not IRQ-driven into `receive_buf`. The reset-after-pump pattern is therefore safe:
+USB RX is task-context-polled (`usb_read_bulk_out`), not IRQ-driven into `receive_buf`. The reset-after-pump pattern is therefore safe. Bootloader-sentinel detection lives inside `kalico_demux_pump`'s `OUT_KLIPPER` branch (§4.1), so no separate pre-pump memcmp is needed here:
 
 ```c
 #if CONFIG_KALICO_RUNTIME
-    if (CONFIG_HAVE_BOOTLOADER_REQUEST && rpos == 32
-        && !memcmp(receive_buf,
-                   " \x1c Request Serial Bootloader!! ~", 32))
-        bootloader_request();   // does not return
     kalico_demux_pump(receive_buf, rpos);
     receive_pos = 0;
 #else
@@ -121,50 +131,56 @@ USB RX is task-context-polled (`usb_read_bulk_out`), not IRQ-driven into `receiv
 
 #### 4.2.2 `src/generic/serial_irq.c::console_task`
 
-USART RX is IRQ-driven via `serial_rx_byte`. The runtime branch must replicate `console_pop_input`'s irq-save / tail-memmove dance, since IRQ-driven bytes may arrive during the pump call:
+USART RX is IRQ-driven via `serial_rx_byte`. The runtime branch must atomically rebase `receive_pos` after the pump consumes the snapshot range, preserving any bytes the IRQ deposited during the pump call:
 
 ```c
 #if CONFIG_KALICO_RUNTIME
     uint_fast8_t rpos = readb(&receive_pos);
-    if (CONFIG_HAVE_BOOTLOADER_REQUEST && rpos == 32
-        && !memcmp(receive_buf,
-                   " \x1c Request Serial Bootloader!! ~", 32))
-        bootloader_request();
     kalico_demux_pump(receive_buf, rpos);
 
-    // Bytes that arrived during the pump need to survive: copy the tail
-    // down and atomically update receive_pos. Mirrors console_pop_input.
-    for (;;) {
-        irqstatus_t flag = irq_save();
-        uint_fast8_t now = readb(&receive_pos);
-        if (now == rpos) {
-            // No new bytes; trivially reset.
-            receive_pos = 0;
-            irq_restore(flag);
-            break;
-        }
-        // New bytes are at indices [rpos, now). Move them down.
+    // Bytes that arrived during the pump (in [rpos, now)) must survive.
+    // Read receive_pos and rebase under irq_save so an IRQ cannot fire
+    // mid-memmove. The IRQ never writes below receive_pos at the time
+    // it runs, and the task is the only writer that ever lowers it, so
+    // a single irq_save-protected pass suffices — no retry loop needed
+    // (unlike console_pop_input, which does memmove outside irq_save
+    // and therefore must retry on a concurrent IRQ).
+    irqstatus_t flag = irq_save();
+    uint_fast8_t now = readb(&receive_pos);
+    if (now == rpos) {
+        receive_pos = 0;
+    } else {
         uint_fast8_t tail = now - rpos;
         memmove(receive_buf, &receive_buf[rpos], tail);
         receive_pos = tail;
-        irq_restore(flag);
-        break;
     }
+    irq_restore(flag);
 #else
     /* existing command_find_block + console_pop_input flow unchanged */
 #endif
 ```
+
+Bootloader-sentinel detection lives inside `kalico_demux_pump` (§4.1), so no separate pre-pump check is needed here. The demuxer assembles the 32-byte sentinel into its `klipper_buf` regardless of whether the bytes arrive in one or several USART RX bursts; the post-assembly memcmp inside pump catches it in either case.
 
 #### 4.2.3 `src/linux/console.c::console_task`
 
 Replace the inline byte loop + `klipper_only_buf` accumulator (lines 186-234) with:
 
 ```c
-kalico_demux_pump(receive_buf, ret > 0 ? ret : 0);
-receive_pos = 0;
+#if CONFIG_KALICO_RUNTIME
+    kalico_demux_pump(receive_buf, ret > 0 ? ret : 0);
+    receive_pos = 0;
+#else
+    /* legacy direct command_find_and_dispatch loop (pre-demuxer
+       integration) */
+#endif
 ```
 
-Delete the `klipper_only_buf` static, the `klipper_only_pos` static, and the `console_receive_buffer()` special-case (or update its docstring; the linux harness uses it differently). The bootloader-request check has no equivalent on linux (it's STM32-only via `CONFIG_HAVE_BOOTLOADER_REQUEST`), so no preservation logic needed there.
+Delete the `klipper_only_buf` static and the `klipper_only_pos` static. **`console_receive_buffer()` must remain** — it's part of the platform surface declared in `src/generic/misc.h:9` and called from `src/command.c:22, :30`. Restore it to return `receive_buf` (its pre-demuxer-integration behavior), since the staging buffer it currently returns is going away.
+
+The `#if CONFIG_KALICO_RUNTIME` gate is added to match the STM32 transports and to fix a pre-existing latent issue: today `src/linux/console.c` uses `kalico_demux_*` symbols unconditionally while `kalico_demux.c` is built only under `CONFIG_KALICO_RUNTIME` (per `src/Makefile`), so a Linux build with the runtime disabled fails to link. The fallback branch reverts to the legacy direct dispatch (the shape that existed before commit `8f32f6fcd`). Since current Linux builds in this fork always enable `KALICO_RUNTIME`, the regression is theoretical, but the gate keeps the build matrix consistent and matches §4.2.1 / §4.2.2.
+
+The bootloader-request check has no equivalent on linux (it's STM32-only via `CONFIG_HAVE_BOOTLOADER_REQUEST`), so the in-pump sentinel detection compiles out cleanly there.
 
 ### 4.3 Build gating
 
@@ -172,11 +188,16 @@ Three `#if CONFIG_KALICO_RUNTIME` islands across `usb_cdc.c`, `serial_irq.c`, an
 
 ### 4.4 Bootloader-request magic string
 
-The 32-byte sentinel ` \x1c Request Serial Bootloader!! ~` starts with `0x20` (= 32 decimal), which lies in the demuxer's `[KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64]` range. If the bytes go through the demuxer first, it accumulates a 32-byte "klipper frame", then `command_find_and_dispatch` rejects it (no MESSAGE_SYNC trailer / bad CRC), and the original `console_pop_input`'s `pop_count == 32 && memcmp(receive_buf, …)` check has already lost access to the unmodified buffer.
+The 32-byte sentinel ` \x1c Request Serial Bootloader!! ~` starts with `0x20` (= 32 decimal), which lies in the demuxer's `[KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64]` range. The demuxer therefore consumes it as a 32-byte "klipper frame" — accumulating all 32 bytes into its internal `klipper_buf` and surfacing `OUT_KLIPPER` once the count is reached.
 
-Preservation (already shown above): run the magic-string memcmp on `receive_buf` BEFORE calling `kalico_demux_pump`. The 32-byte sentinel always arrives in a single USART RX burst (it's emitted as a single host write), so `rpos == 32` is the correct gate. `bootloader_request()` does not return, so we never need to fall through.
+The legacy detection (`pop_count == 32 && memcmp(receive_buf, sentinel, 32)` after `command_find_block` failure) operated on the raw transport receive buffer at task-entry time. That location no longer works in the new design for two reasons:
 
-USB CDC adopts the same pattern for symmetry. (Whether the host actually emits the bootloader sentinel over USB CDC is unclear, but adding the 32-byte check costs <50 ROM bytes and preserves any code path that does.)
+1. **Fragmentation hazard.** The sentinel can arrive split across multiple `console_task` firings (USART byte-IRQ accumulates incrementally; USB stack may submit partial transfers). A pre-pump `rpos == 32` check fires only on a configuration where all 32 bytes happen to be present at task entry — fragile.
+2. **The demuxer would consume the bytes anyway.** Even if a pre-pump check existed, by the time the next pump runs the demuxer's state machine is already mid-frame on the sentinel's leading `0x20`.
+
+Resolution (codified in §4.1's pump implementation): the memcmp runs **inside** `kalico_demux_pump` on the `OUT_KLIPPER` branch, against the demuxer's reassembled `klipper_buf`. The demuxer's per-byte state machine guarantees that all 32 sentinel bytes accumulate in `klipper_buf` regardless of how the bytes arrive at the transport — single burst, two halves, or one byte at a time. `bootloader_request()` does not return.
+
+This works on both USART and USB CDC. `CONFIG_HAVE_BOOTLOADER_REQUEST` gates the check so non-bootloader builds drop it.
 
 ## 5. Data flow
 
