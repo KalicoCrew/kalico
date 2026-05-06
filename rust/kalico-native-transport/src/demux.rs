@@ -122,6 +122,7 @@ pub enum DemuxOutput {
 #[derive(Debug)]
 pub struct Demuxer {
     state: State,
+    replay: std::collections::VecDeque<u8>,
 }
 
 impl Default for Demuxer {
@@ -132,12 +133,33 @@ impl Default for Demuxer {
 
 impl Demuxer {
     pub fn new() -> Self {
-        Self { state: State::WaitingForFrame }
+        Self {
+            state: State::WaitingForFrame,
+            replay: std::collections::VecDeque::new(),
+        }
     }
 
-    /// Feed a single byte; returns at most one output (a complete frame, or
-    /// a stream error). Multiple calls may be needed before a frame emerges.
-    pub fn feed(&mut self, byte: u8) -> Option<DemuxOutput> {
+    pub fn feed_slice(&mut self, bytes: &[u8]) -> Vec<DemuxOutput> {
+        let mut out = Vec::new();
+        // Drain any pre-existing replay before consuming new bytes.
+        while let Some(rb) = self.replay.pop_front() {
+            if let Some(o) = self.feed_inner(rb) { out.push(o); }
+        }
+        for &b in bytes {
+            if let Some(o) = self.feed_inner(b) { out.push(o); }
+            // Each new byte may trigger validation that pushes bytes into
+            // replay; drain them all before the next live byte.
+            while let Some(rb) = self.replay.pop_front() {
+                if let Some(o) = self.feed_inner(rb) { out.push(o); }
+            }
+        }
+        out
+    }
+
+    /// Feed a single byte through the state machine; returns at most one output.
+    /// On Klipper validation failure, pushes `frame[1..]` into `self.replay`
+    /// for 1-byte-shift resync.
+    fn feed_inner(&mut self, byte: u8) -> Option<DemuxOutput> {
         match &mut self.state {
             State::WaitingForFrame => {
                 match byte {
@@ -171,9 +193,18 @@ impl Demuxer {
                 if *remaining == 0 {
                     let frame = std::mem::take(buf);
                     self.state = State::WaitingForFrame;
-                    return Some(parse_klipper_frame(frame));
+                    let result = parse_klipper_frame(&frame);
+                    if matches!(result, DemuxOutput::StreamError(_)) {
+                        // 1-byte-shift resync: re-feed frame[1..] through the
+                        // demuxer (preserving the demux.rs:13 "byte-oriented
+                        // and interruptible" invariant). Drop only the false-latch
+                        // length byte (frame[0]).
+                        self.replay.extend(frame.iter().copied().skip(1));
+                    }
+                    Some(result)
+                } else {
+                    None
                 }
-                None
             }
             State::InsideKalico { buf, total_len } => {
                 buf.push(byte);
@@ -199,19 +230,9 @@ impl Demuxer {
             }
         }
     }
-
-    pub fn feed_slice(&mut self, bytes: &[u8]) -> Vec<DemuxOutput> {
-        let mut out = Vec::new();
-        for &b in bytes {
-            if let Some(o) = self.feed(b) {
-                out.push(o);
-            }
-        }
-        out
-    }
 }
 
-fn parse_klipper_frame(frame: Vec<u8>) -> DemuxOutput {
+fn parse_klipper_frame(frame: &[u8]) -> DemuxOutput {
     let len = frame.len();
     // Trailer check.
     if frame[len - 1] != MESSAGE_SYNC {
@@ -235,7 +256,7 @@ fn parse_klipper_frame(frame: Vec<u8>) -> DemuxOutput {
             "klipper crc mismatch: expected 0x{crc_expected:04x}, got 0x{crc_actual:04x}"
         ));
     }
-    DemuxOutput::KlipperFrame(frame)
+    DemuxOutput::KlipperFrame(frame.to_vec())
 }
 
 fn parse_kalico_frame(frame: &[u8]) -> DemuxOutput {
@@ -417,6 +438,59 @@ mod tests {
         let kal = encode_frame(CHANNEL_CONTROL, b"x");
         let outs = d.feed_slice(&kal);
         assert_eq!(outs.len(), 1);
+    }
+
+    #[test]
+    fn klipper_bad_crc_followed_immediately_by_valid_frame_recovers() {
+        // Produce a stream where a "false length latch" byte starts a fake
+        // klipper frame that overlaps the start of a real, valid frame.
+        // After the false frame fails validation, 1-byte-shift resync MUST
+        // recover and emit the real frame.
+        let real = good_klipper_frame(&[0xAA, 0xBB], 0);
+        // Prepend one byte in the Klipper-len-range (5..=64) to force a false latch.
+        // 5 = minimum Klipper length, which consumes 4 bytes of `real` as payload;
+        // the false frame's trailer check fails, triggering 1-byte-shift resync.
+        let mut stream = Vec::new();
+        // False latch: 5 (minimum Klipper len). The false frame consumes
+        // real[0..4] as its payload bytes, then fails trailer validation
+        // (real[3]=0xBB ≠ 0x7E). The replay queue then re-feeds real[0..4],
+        // and together with the remaining real[4..7] the demuxer reassembles
+        // and validates the true frame.
+        stream.push(5u8);
+        stream.extend_from_slice(&real);
+        let mut d = Demuxer::new();
+        let outs = d.feed_slice(&stream);
+        // Expect: at least one StreamError + the real KlipperFrame.
+        assert!(outs.iter().any(|o| matches!(o, DemuxOutput::StreamError(_))),
+            "expected stream error from false latch, got {outs:?}");
+        let klippers: Vec<_> = outs.iter().filter_map(|o| match o {
+            DemuxOutput::KlipperFrame(f) => Some(f.clone()),
+            _ => None,
+        }).collect();
+        assert!(klippers.iter().any(|f| f == &real),
+            "expected the real frame to be recovered after resync; got {klippers:?}");
+    }
+
+    #[test]
+    fn klipper_false_length_latch_recovers_to_valid_frame() {
+        // Stream: a false-length-latch byte in 5..=64 range that partially
+        // overlaps the start of a real frame, followed by the real frame's
+        // remaining bytes. The demuxer must recover the real frame via resync.
+        let real = good_klipper_frame(&[0xAA], 0);
+        let mut stream = Vec::new();
+        // False latch 5 (minimum Klipper len) consumes 4 bytes of `real` as payload;
+        // the trailer check fails, replay re-feeds those 4 bytes, and the remaining
+        // live bytes from `real` complete the valid frame.
+        stream.push(5u8);
+        stream.extend_from_slice(&real);
+        let mut d = Demuxer::new();
+        let outs = d.feed_slice(&stream);
+        let klippers: Vec<_> = outs.iter().filter_map(|o| match o {
+            DemuxOutput::KlipperFrame(f) => Some(f.clone()),
+            _ => None,
+        }).collect();
+        assert!(klippers.iter().any(|f| f == &real),
+            "expected the real frame to be recovered; got {klippers:?}");
     }
 
     #[test]
