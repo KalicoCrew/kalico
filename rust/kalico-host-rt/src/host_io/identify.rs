@@ -18,18 +18,15 @@ const IDENTIFY_CHUNK: u32 = 40;
 ///
 /// Drains stale RX bytes, then issues `identify offset=N count=40` until
 /// the response data terminates with an empty chunk. Returns `(parser,
-/// raw_identify_bytes, seq, rx_buf)` on success. `raw_identify_bytes` is
-/// the raw (zlib-compressed or plain) blob as received from the firmware —
-/// suitable for passing to klippy's `msgproto.MessageParser.process_identify`.
-///
-/// The 4th tuple element (`rx_buf`) is now always an empty `Vec` — the
-/// `SerialFrameIo`'s internal demuxer is what crosses the identify→reactor
-/// boundary, by being moved by-value into the reactor. Task 11 retires this
-/// empty placeholder from the signature.
+/// raw_identify_bytes, seq)` on success. `raw_identify_bytes` is the raw
+/// (zlib-compressed or plain) blob as received from the firmware — suitable
+/// for passing to klippy's `msgproto.MessageParser.process_identify`. `seq`
+/// is the next sequence number to use on the wire (wired into the reactor as
+/// `IdentifySeqState` in commit 2).
 pub fn identify_handshake(
     io: &mut SerialFrameIo,
     timeout: Duration,
-) -> Result<(MsgProtoParser, Vec<u8>, u8, Vec<u8>), TransportError> {
+) -> Result<(MsgProtoParser, Vec<u8>, u8), TransportError> {
     let deadline = Instant::now() + timeout;
 
     // Drain phase: poll for ~300ms and discard everything (frames + errors).
@@ -92,7 +89,7 @@ pub fn identify_handshake(
 
     let raw_identify_bytes = identify_data.clone();
     let parser = build_parser_from_identify(&identify_data)?;
-    Ok((parser, raw_identify_bytes, seq, Vec::new()))
+    Ok((parser, raw_identify_bytes, seq))
 }
 
 fn wait_for_identify_response(
