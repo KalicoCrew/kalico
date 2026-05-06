@@ -111,6 +111,9 @@ TIM5_IRQHandler(void)
 {
     TIM5->SR = ~TIM_SR_UIF;            // entry-time ack (spec §2.4)
 
+    extern void runtime_weak_probe(uint32_t);
+    runtime_weak_probe(0xDEADBEEF);   // Task 1.5 trial — removed in Task 2
+
 #if CONFIG_KALICO_SIM
     // Step-6 spec §3.1: Renode's H7 model returns 0 for DWT->CYCCNT, so the
     // engine widening loop has no forward progress source unless we drive a

@@ -458,4 +458,13 @@ config KALICO_SIM
       enable for a flashed-to-silicon build — it leaves the IWDG
       effectively off, which is unsafe on real hardware.
 
+config RUNTIME_WEAK_PROBE
+    bool "Weak-symbol feasibility probe (temporary, Task 1.5)"
+    depends on KALICO_RUNTIME
+    default n
+    help
+      Adds a strong override for runtime_weak_probe so we can verify the
+      weak-fallback / strong-override pattern resolves correctly under
+      -fwhole-program -flto. Removed in plan Task 2.
+
 source "src/extras/Kconfig"
