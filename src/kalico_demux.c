@@ -32,6 +32,9 @@ static uint16_t klipper_remaining;
 // Layout of kalico_buf: [sync(1)][len_lo(1)][len_hi(1)][channel(1)][payload..][crc(2)].
 // We accumulate the entire on-wire frame here, including the sync byte,
 // because that simplifies header parsing (matches the Rust implementation).
+#if CONFIG_MACH_STM32H7
+__attribute__((section(".axi_bss")))
+#endif
 static uint8_t kalico_buf[KALICO_DEMUX_KALICO_BUF_SIZE];
 static uint16_t kalico_pos;
 static uint16_t kalico_total_len; // 0 means header not yet known

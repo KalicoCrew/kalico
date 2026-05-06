@@ -24,10 +24,18 @@
 #define __KALICO_DEMUX_H
 
 #include <stdint.h>
+#include "autoconf.h"
 #include "command.h" // MESSAGE_MAX
 
 #define KALICO_DEMUX_KLIPPER_BUF_SIZE MESSAGE_MAX
-#define KALICO_DEMUX_KALICO_BUF_SIZE  8192
+// Largest in-bound kalico frame is a LoadCurve carrying one slot's worth of
+// control points + knots, plus a small per-frame header. Sizing: 4 bytes per
+// f32 × (cps + knots) + 32 bytes for sync/len/channel/header/CRC and
+// per-message envelope. Stays in lockstep with the Rust runtime's pool
+// dimensions (CONFIG_RUNTIME_MAX_*) so the firmware never has to drop a
+// curve upload that the Rust side would still accept.
+#define KALICO_DEMUX_KALICO_BUF_SIZE \
+    (4u * (CONFIG_RUNTIME_MAX_CONTROL_POINTS + CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) + 32u)
 
 typedef enum {
     KALICO_DEMUX_OUT_NONE,    // need more bytes; no frame ready
