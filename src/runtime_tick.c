@@ -1,6 +1,18 @@
 // src/runtime_tick.c
 //
-// Klipper-side portable glue for kalico runtime. Spec §2.4 / §4.5 / §5.7.
+// Klipper-side lifecycle for the kalico runtime: DECL_INIT brings up the
+// Rust runtime + the per-family tick backend; DECL_TASK pumps drain the
+// Rust → Klipper response queue. Shared globals (runtime_handle,
+// runtime_clock_freq, runtime_aligned_*) live here as the single
+// definition site.
+//
+// Klipper command surface is in src/runtime_commands.c.
+// Sim-only commands are in src/runtime_sim_commands.c (gated CONFIG_KALICO_SIM).
+// Bench is in src/generic/runtime_bench.c (gated CONFIG_RUNTIME_BENCH).
+// Per-family backends:
+//   src/stm32/runtime_tick_h7.c   (H7 TIM5 ISR)
+//   src/linux/runtime_tick_host.c (pthread tick for host-sim)
+// Backend interface contract: src/generic/runtime_tick.h.
 
 #include <string.h>         // memcpy
 #if defined(__linux__) || defined(__APPLE__)
