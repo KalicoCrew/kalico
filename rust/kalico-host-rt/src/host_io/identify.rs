@@ -79,10 +79,18 @@ pub fn identify_handshake(
         }
     }
 
-    // Absolute seq counters per spec §4.2. `next_send_seq_abs` starts at 1
-    // to match the reactor's pre-refactor default; `mcu_recv_abs` starts at
-    // 0 and walks via wire::decode_absolute on every validated Klipper frame.
-    let mut next_send_seq_abs: u64 = 1;
+    // Absolute seq counters per spec §4.2. The firmware's `next_sequence`
+    // initializes to `MESSAGE_DEST | 0x0` (seq_nibble = 0) at boot, so the
+    // first wire seq the host sends MUST be 0 — anything else triggers the
+    // firmware's NAK path (command.c:298) which our Phase-B shim doesn't
+    // handle. `next_send_seq_abs = 0` makes the first wire_seq nibble be
+    // 0 → wire byte `MESSAGE_DEST | 0x0` = 0x10. After identify completes
+    // successfully the reactor takes over and the absolute counter walks
+    // forward from there.
+    //
+    // mcu_recv_abs starts at 0 and walks via wire::decode_absolute on every
+    // validated Klipper frame the firmware sends back.
+    let mut next_send_seq_abs: u64 = 0;
     let mut mcu_recv_abs: u64 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
 
