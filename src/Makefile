@@ -52,7 +52,12 @@ KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
 
 rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
-	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" cargo build -p kalico-c-api \
+	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
+		KALICO_RUNTIME_MAX_CONTROL_POINTS=$(CONFIG_RUNTIME_MAX_CONTROL_POINTS) \
+		KALICO_RUNTIME_MAX_KNOT_VECTOR_LEN=$(CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) \
+		KALICO_RUNTIME_MAX_DEGREE=$(CONFIG_RUNTIME_MAX_DEGREE) \
+		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
+		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
 		--target thumbv7em-none-eabi --release
@@ -64,7 +69,12 @@ ifeq ($(CONFIG_MACH_LINUX),y)
 KALICO_RUST_FEATURES := host,header-nurbs,header-runtime,kalico-sim
 
 rust/target/release/libkalico_c_api.a: FORCE
-	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" cargo build -p kalico-c-api \
+	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
+		KALICO_RUNTIME_MAX_CONTROL_POINTS=$(CONFIG_RUNTIME_MAX_CONTROL_POINTS) \
+		KALICO_RUNTIME_MAX_KNOT_VECTOR_LEN=$(CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) \
+		KALICO_RUNTIME_MAX_DEGREE=$(CONFIG_RUNTIME_MAX_DEGREE) \
+		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
+		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
 		--release
