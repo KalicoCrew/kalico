@@ -133,32 +133,50 @@ config RUNTIME_BENCH
 
 The dependency on `MACH_STM32H7` reflects today's reality (only H7 has the cycle-counter implementation wired). Lifting it to `MACH_STM32F4` is a one-line Kconfig change once the F446 backend lands and decides whether to provide bench.
 
-### 4.4 Optional ISR hooks — `#ifdef`-gated, matching Klipper conventions
+### 4.4 Optional ISR hooks via weak symbols (`src/runtime_tick_weak.c`)
 
 The per-family ISR has two optional hooks: `runtime_bench_capture()` (when `CONFIG_RUNTIME_BENCH=y`) and `runtime_sim_isr_wake_drain()` (when `CONFIG_KALICO_SIM=y`). Production firmware should call neither.
 
-**Originally proposed:** weak-symbol fallback in a `runtime_tick_weak.c` TU, strong override from the bench/sim modules. **Rejected on second-pass review:** Klipper compiles with `-fwhole-program -flto`. The codebase nowhere uses the weak/strong override pattern; existing optional-symbol patterns use Kconfig + Makefile TU selection or `#ifdef` at the call site. Introducing weak symbols across LTO without empirical grounding is a build-system risk the spec should not take.
+The per-family ISR calls both unconditionally (no `#ifdef`). A small always-linked TU defines weak no-op fallbacks; the bench / sim TUs, when their Kconfig is enabled, provide strong overrides that the linker selects.
 
-**Adopted:** the per-family ISR `#ifdef`-gates the calls directly:
+```c
+// src/runtime_tick_weak.c — always linked.
+//
+// Weak no-op fallbacks for optional runtime-tick ISR hooks. When the
+// matching CONFIG_* is on, a strong override (in src/generic/runtime_bench.c
+// or src/runtime_sim_commands.c) is linked instead. Per-family ISRs call
+// these unconditionally — link-time selection picks strong-when-present.
+
+#include <stdint.h>
+
+__attribute__((weak)) void
+runtime_bench_capture(uint32_t cycles_delta)
+{
+    (void)cycles_delta;
+}
+
+__attribute__((weak)) void
+runtime_sim_isr_wake_drain(void)
+{
+}
+```
+
+The H7 ISR call site:
 
 ```c
 // In src/stm32/runtime_tick_h7.c TIM5_IRQHandler:
-#if CONFIG_KALICO_SIM
-    runtime_sim_isr_wake_drain();
-#endif
+runtime_sim_isr_wake_drain();   // weak no-op unless CONFIG_KALICO_SIM=y
 
 uint32_t before = runtime_cyccnt_read();
 if (runtime_handle) runtime_handle_tick(runtime_handle, before);
 uint32_t after = runtime_cyccnt_read();
 
-#if CONFIG_RUNTIME_BENCH
-    runtime_bench_capture(after - before);
-#endif
+runtime_bench_capture(after - before);   // weak no-op unless CONFIG_RUNTIME_BENCH=y
 ```
 
-The bench module's strong definition lives in `src/generic/runtime_bench.c`, included by the build only when `CONFIG_RUNTIME_BENCH=y`. The sim drain wake's strong definition lives in `src/runtime_sim_commands.c`, included only when `CONFIG_KALICO_SIM=y`. No `runtime_tick_weak.c` TU. No weak symbols. No LTO surprises.
+Zero runtime cost on the disabled path (the call goes to a function that returns immediately; modern Cortex-M branch prediction handles it without measurable overhead at 40 kHz). No `#ifdef` in any per-family ISR, so adding a third backend (e.g. F446) is one new file with no awareness of which optional features happen to be enabled.
 
-The per-family ISR pays a single `#ifdef` per hook — boring, proven, and consistent with how Klipper handles every other optional feature.
+**Build-system feasibility caveat.** Klipper compiles with `-fwhole-program -flto`. Under that combination, GCC can sometimes fold a weak no-op into a caller before the strong override is observed by the linker, depending on link partitioning. The pattern *does* work in practice — Klipper itself uses `__attribute__((weak))` in `src/avr/main.c:30` (`alt_stack_save`), and weak/strong override is standard in the Linux kernel and libc. But it's not deployed in this fork's build today. Implementation step 1.5 (§5) is a 30-line trial commit that proves the override resolves correctly on H7 before the rest of the refactor relies on it. If the trial fails (weak no-op linked in production despite a strong override existing), the fallback is `#ifdef`-gating at the call site — a one-commit reversal, no other spec changes needed.
 
 ### 4.5 `runtime_tick.c` slimming + sibling TU split
 
@@ -179,6 +197,8 @@ The other concerns split out into:
 - **`src/runtime_sim_commands.c`** (NEW, gated `CONFIG_KALICO_SIM`) — every `command_kalico_sim_*` plus the load-fixture shim plus the strong definition of `runtime_sim_isr_wake_drain` (per §4.4). ~150 lines.
 
 - **`src/generic/runtime_bench.c`** — bench storage + command + strong `runtime_bench_capture` definition, per §4.3.
+
+- **`src/runtime_tick_weak.c`** — weak no-op fallbacks for `runtime_bench_capture` and `runtime_sim_isr_wake_drain`, per §4.4. Always linked; ~25 lines total.
 
 The endstop sampler currently in `runtime_tick.c` — `endstop_pin_table[]` storage + `kalico_endstop_sample_pins()` (called from the per-family ISR) + `command_kalico_arm_endstop` / `command_kalico_disarm_endstop` — moves to `src/runtime_commands.c`. Both the table population (commands) and the per-tick sampler (called from the ISR via `extern`) colocate. The H7 ISR's existing `extern void kalico_endstop_sample_pins(void)` reference renames in lockstep with the rest of the table in §4.7.
 
@@ -289,7 +309,9 @@ Each step is a self-contained commit. Steps are sequential — earlier ones unbl
 
 1. **Symbol catalog (no code changes).** Grep every `kalico_*` symbol name appearing in C `extern`s, Rust `extern "C"` blocks, Klipper command-name string literals, schema files, test fixtures, klipper-sim corpora, captured-log fixtures, and host-side dispatch tables. The output is the canonical superset that subsequent rename steps must cover; §4.7's table is illustrative. Audit paths: `src/`, `rust/`, `klippy/`, `tools/sim_klippy/`, `tests/`, `scripts/`, `docs/superpowers/handoff/`, plus the local `~/Developer/klipper-sim/` corpus tree if reachable.
 
-2. **Extract bench to `src/generic/runtime_bench.c`** (and `runtime_bench.h`) + add `CONFIG_RUNTIME_BENCH` Kconfig + introduce `runtime_bench_capture(uint32_t)` called from the H7 ISR under `#if CONFIG_RUNTIME_BENCH` (per §4.4, no weak symbols). Bench symbols renamed in this step. The H7 ISR computes `after - before` and passes the delta; the bench module owns count/target state. H7 builds; bench still works.
+1.5. **Weak-symbol feasibility trial (no functional change).** Add a 30-line proof-of-concept commit: a single weak `__attribute__((weak)) void runtime_weak_probe(void) {}` in a new always-linked TU + an unconditional caller in the H7 ISR + a Kconfig-gated strong override in a separate TU. Build H7 with the override TU enabled and verify the strong definition is linked (`arm-none-eabi-objdump -d out/klipper.elf | grep -A1 runtime_weak_probe` shows the strong body, not a `bx lr`-only stub). Build with override TU disabled and verify the no-op resolves. If either check fails, **abandon the weak-symbol approach** and fall back to `#ifdef`-gating per the rejected alternative in §4.4 — single-commit reversal, no other spec changes. The probe itself is removed in the same commit as step 2 (replaced by the real bench / sim hooks).
+
+2. **Extract bench to `src/generic/runtime_bench.c`** (and `runtime_bench.h`) + add `CONFIG_RUNTIME_BENCH` Kconfig + add `src/runtime_tick_weak.c` with the weak `runtime_bench_capture` no-op + add the unconditional `runtime_bench_capture(after - before)` call to the H7 ISR. Bench symbols renamed in this step. The H7 ISR computes `after - before` and passes the delta; the bench module owns count/target state. With `CONFIG_RUNTIME_BENCH=y`, the bench module's strong override is linked; with `=n`, the weak no-op resolves. H7 builds; bench still works.
 
 3. **Add `src/generic/runtime_tick.h`** (the four-function interface). No file moves yet; existing H7 and host backends still expose old names but `runtime_tick.c` includes the new header alongside the existing extern decls. Compiles unchanged.
 
