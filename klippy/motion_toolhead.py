@@ -18,6 +18,8 @@ class BridgeKinematics:
             raise config.error("Unsupported bridge kinematics '%s'" % (kin_name,))
         self.kinematics = kin_name
         self.rails = []
+        self.homed_axes = set()
+        self._printer = config.get_printer()
 
         axes = "xy"
         if kin_name in ("cartesian", "hybrid_corexy"):
@@ -31,6 +33,18 @@ class BridgeKinematics:
             self._register_axis(
                 config, "z", trapq, extras=("1", "2", "3")
             )
+
+        # Mirror mainline klippy/toolhead.py + cartesian/corexy kinematics:
+        # when steppers are de-energized (M84 / shutdown) the homed state
+        # must clear so klippy correctly reports the axes as un-homed and
+        # subsequent G1s require re-homing.
+        self._printer.register_event_handler(
+            "stepper_enable:motor_off",
+            self._handle_motor_off,
+        )
+
+    def _handle_motor_off(self, print_time):
+        self.clear_homing_state("xyz")
 
     def _register_axis(self, config, axis, trapq, extras=()):
         rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
@@ -82,6 +96,15 @@ class BridgeKinematics:
                     position_max - hi.position_endstop
                 )
             homing_state.home_rails([rail], forcepos, homepos)
+            self.homed_axes.add(axis)
+
+    def set_homed(self, axes):
+        for a in axes:
+            self.homed_axes.add(a)
+
+    def clear_homing_state(self, axes):
+        for a in axes:
+            self.homed_axes.discard(a)
 
     def get_status(self, eventtime):
         from . import gcode as gcode_mod
@@ -94,8 +117,9 @@ class BridgeKinematics:
         x_min, x_max = ranges.get("x", (0.0, 0.0))
         y_min, y_max = ranges.get("y", (0.0, 0.0))
         z_min, z_max = ranges.get("z", (0.0, 0.0))
+        homed = "".join(a for a in "xyz" if "xyz".index(a) in self.homed_axes)
         return {
-            "homed_axes": "",
+            "homed_axes": homed,
             "axis_minimum": gcode_mod.Coord(x_min, y_min, z_min, 0.0),
             "axis_maximum": gcode_mod.Coord(x_max, y_max, z_max, 0.0),
         }
@@ -245,12 +269,15 @@ class MotionToolhead:
         self.commanded_pos[:] = newpos
         if self.bridge is not None:
             self.bridge.set_position(newpos[0], newpos[1], newpos[2])
+        if homing_axes and self.kin is not None and hasattr(self.kin, "set_homed"):
+            self.kin.set_homed(homing_axes)
 
     # ------------------------------------------------------------------
     # Move commands — raise until Phase 2
     # ------------------------------------------------------------------
 
     def move(self, newpos, speed):
+        import logging
         dx = newpos[0] - self.commanded_pos[0]
         dy = newpos[1] - self.commanded_pos[1]
         dz = newpos[2] - self.commanded_pos[2]
@@ -258,9 +285,47 @@ class MotionToolhead:
         feedrate = min(speed, self.max_velocity)
         if abs(dz) > 1e-9 and abs(dx) < 1e-9 and abs(dy) < 1e-9:
             feedrate = min(feedrate, self.max_z_velocity)
+        logging.info(
+            "[bridge-trace] move: newpos=%s speed=%s dx=%.4f dy=%.4f dz=%.4f de=%.4f feedrate=%.4f bridge_is_none=%s",
+            list(newpos), speed, dx, dy, dz, de, feedrate, self.bridge is None,
+        )
         if self.bridge is not None:
             self.bridge.submit_move(dx, dy, dz, de, feedrate)
+            # Fire stepper active_callbacks for axes that actually move.
+            # In legacy mode klippy's stepper.generate_steps() drives this
+            # via _itersolve_check_active, which triggers
+            # StepperEnablePin.set_enable() to energize the motors. The
+            # bridge bypasses generate_steps entirely (the kalico runtime
+            # synthesizes steps), so we fire the callbacks here ourselves
+            # so motors actually energize before the move starts.
+            self._fire_active_callbacks(dx, dy, dz, de)
         self.commanded_pos[:] = newpos
+
+    def _fire_active_callbacks(self, dx, dy, dz, de):
+        if self.kin is None:
+            return
+        active_axes = []
+        if abs(dx) > 1e-9: active_axes.append("x")
+        if abs(dy) > 1e-9: active_axes.append("y")
+        if abs(dz) > 1e-9: active_axes.append("z")
+        if not active_axes and abs(de) <= 1e-9:
+            return
+        # commanded_pos is in mm; we need a print_time to schedule the
+        # enable pulse. Use the bridge's last move time to keep the enable
+        # transition just before the move.
+        try:
+            print_time = self.bridge.get_last_move_time()
+        except Exception:
+            print_time = 0.0
+        for stepper in self.kin.get_steppers():
+            if not stepper._active_callbacks:
+                continue
+            if not any(stepper.is_active_axis(a) for a in active_axes):
+                continue
+            cbs = stepper._active_callbacks
+            stepper._active_callbacks = []
+            for cb in cbs:
+                cb(print_time)
 
     def manual_move(self, coord, speed):
         curpos = list(self.commanded_pos)
@@ -287,26 +352,42 @@ class MotionToolhead:
         # segment retires (Completed or Tripped). commanded_pos
         # reconciliation happens in MCU_endstop.home_wait via the trip
         # snapshot, not here.
+        import logging
+        logging.info(
+            "[bridge-trace] drip_move entered: newpos=%s speed=%s "
+            "bridge_is_none=%s drip_test=%s active_homing_arms=%s",
+            list(newpos), speed, self.bridge is None,
+            (drip_completion.test() if drip_completion is not None else None),
+            sorted(self.active_homing_arms),
+        )
         if self.bridge is None:
+            logging.info("[bridge-trace] drip_move: bridge is None, returning")
             return
         # If a drip_completion was already signalled (e.g. synchronous
         # AlreadyTripped at arm time), skip the homing segment submission.
         # The endstop terminal was already delivered in home_start; there
         # is nothing for the MCU segment to contribute.
         if drip_completion is not None and drip_completion.test():
+            logging.info("[bridge-trace] drip_move: drip_completion already signalled, returning")
             return
         arm_ids = list(self.active_homing_arms)
         if not arm_ids:
             # No bridge endstops armed (e.g. file-output simulation, or
             # legacy code path). Fall back to a regular move so bring-up
             # doesn't crash.
+            logging.info("[bridge-trace] drip_move: no arm_ids, falling back to regular move")
             self.move(newpos, speed)
             return
         # Pad / truncate to 3 axes for the bridge submit_homing_move
         # signature (newpos[:3]); E follows shaped XY per MVP.
         pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
+        logging.info(
+            "[bridge-trace] drip_move: calling submit_homing_move(pos3=%s speed=%s arm_ids=%s)",
+            pos3, speed, arm_ids,
+        )
         self.bridge.submit_homing_move(pos3, speed, arm_ids)
         self.bridge.wait_moves()
+        logging.info("[bridge-trace] drip_move: submit_homing_move + wait_moves returned")
 
     # ------------------------------------------------------------------
     # Extruder
