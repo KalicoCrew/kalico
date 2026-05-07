@@ -169,14 +169,13 @@ fn dispatch_push_segment(
     io: &KalicoHostIo,
     credit: &CreditCounter,
     params: &producer::SegmentPushParams,
-) -> Result<(), producer::ProducerError> {
+) -> Result<producer::PushedSegmentInfo, producer::ProducerError> {
     producer::push_segment_with_timeout(
         io,
         credit,
         params,
         producer::DEFAULT_PUSH_RESPONSE_TIMEOUT,
     )
-    .map(|_info| ())
 }
 
 // ── PyMotionBridge ──────────────────────────────────────────────────────
@@ -902,6 +901,26 @@ impl PyMotionBridge {
                 d.set_item("format", format)?;
                 d.set_item("msg", msg)?;
             }
+            RuntimeEvent::PassthroughResponse { name, params } => {
+                d.set_item("type", "response")?;
+                d.set_item("name", name)?;
+                // Spread params fields directly into the dict so klippy's
+                // registered handlers receive them with their original names
+                // (e.g. analog_in_state's `oid`, `value`, `next_clock`,
+                // `value_avg`). Serial-protocol field names never collide
+                // with the keys we set above.
+                for (k, v) in &params.fields {
+                    use kalico_host_rt::transport::MessageValue;
+                    match v {
+                        MessageValue::U32(n) => d.set_item(k, *n)?,
+                        MessageValue::I32(n) => d.set_item(k, *n)?,
+                        MessageValue::U64(n) => d.set_item(k, *n)?,
+                        MessageValue::Bytes(b) => d.set_item(
+                            k, pyo3::types::PyBytes::new(py, b.as_slice()))?,
+                        MessageValue::String(s) => d.set_item(k, s)?,
+                    }
+                }
+            }
         }
         Ok(Some(d.unbind()))
     }
@@ -1207,6 +1226,10 @@ impl PyMotionBridge {
                 + Send
                 + Sync,
         > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), String> {
+            log::info!(
+                "[bridge-trace] dispatch closure entered: seg.t_start={} seg.t_end={}",
+                seg.t_start, seg.t_end,
+            );
             // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
             //
             // The B.1 multi-piece chunker has been retired (see spec
@@ -1225,6 +1248,13 @@ impl PyMotionBridge {
             // Build per-axis-per-segment plans first; we still need clocks
             // before we can fill in the timing fields.
             let mcu_plans = build_push_params(seg, &mcu_configs_for_cb, 0, 0);
+            log::info!(
+                "[bridge-trace] mcu_plans built: count={} mcu_ids=[{}]",
+                mcu_plans.len(),
+                mcu_plans.iter()
+                    .map(|p| format!("{}({}c)", p.mcu_id, p.curves_to_load.len()))
+                    .collect::<Vec<_>>().join(","),
+            );
 
             // Cap-check each curve against the destination MCU's caps before
             // dispatch. `build_push_params` does not enforce caps; if a planned
@@ -1268,6 +1298,10 @@ impl PyMotionBridge {
                     .copied()
                     .unwrap_or(false)
                 {
+                    log::info!(
+                        "[bridge-trace] skipping plan mcu={} (not kalico-native)",
+                        plan.mcu_id,
+                    );
                     continue;
                 }
                 let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
@@ -1346,6 +1380,10 @@ impl PyMotionBridge {
                     plan.params.id = *entry;
                     *entry = entry.wrapping_add(1);
                 }
+                log::info!(
+                    "[bridge-trace] push_segment plan: mcu={} seg_id={} t_start={} t_end={}",
+                    plan.mcu_id, plan.params.id, plan.params.t_start, plan.params.t_end,
+                );
                 homing.mark_dispatched_segment(plan.params.id);
 
                 // Allocate slots, load curves. On any error, release every
@@ -1415,11 +1453,23 @@ impl PyMotionBridge {
                     }
                 }
 
-                if let Err(e) = dispatch_push_segment(
+                let push_result = dispatch_push_segment(
                     io.as_ref(),
                     credit,
                     &plan.params,
-                ) {
+                );
+                match &push_result {
+                    Ok(info) => log::info!(
+                        "[bridge-trace] push_segment ok: mcu={} sent_id={} accepted_id={} credit_epoch={}",
+                        plan.mcu_id, plan.params.id,
+                        info.accepted_segment_id, info.credit_epoch,
+                    ),
+                    Err(e) => log::info!(
+                        "[bridge-trace] push_segment err: mcu={} sent_id={} err={:?}",
+                        plan.mcu_id, plan.params.id, e,
+                    ),
+                }
+                if let Err(e) = push_result {
                     // Defensive cleanup — release this segment's slots so
                     // the pool doesn't leak (the MCU never accepted them).
                     let mut pool = slot_pool.lock().unwrap();
@@ -1791,6 +1841,13 @@ impl PyMotionBridge {
         self.homing.begin(arm_id);
 
         let pos = *self.commanded_pos.lock().unwrap();
+        log::info!(
+            "[bridge-trace] submit_homing_move arm_id={} pos=[{:.3},{:.3},{:.3}] newpos=[{:.3},{:.3},{:.3}] speed={:.3}",
+            arm_id,
+            pos[0], pos[1], pos[2],
+            newpos[0], newpos[1], newpos[2],
+            speed,
+        );
         let classified = classify::classify_and_build(
             pos,
             newpos[0] - pos[0],

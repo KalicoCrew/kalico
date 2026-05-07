@@ -589,7 +589,17 @@ impl Reactor {
                     let entry = self.awaiting_response.remove(idx);
                     let _ = entry.completion.send(Ok(params));
                 } else if !self.try_dispatch_passthrough_response(&raw_payload) {
-                    let event = crate::host_io::runtime_events::RuntimeEvent::lift(&name, params);
+                    // Unsolicited Klipper-protocol Response frames
+                    // (analog_in_state, trsync_state, stats, homing_state, …)
+                    // need to reach klippy's per-(name, oid) handlers. The
+                    // bridge owns the wire so klippy's serialqueue never
+                    // sees them; forward as PassthroughResponse with the full
+                    // params dict so `serialhdl._bridge_event_poller` can
+                    // dispatch by name+oid.
+                    let event = crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
+                        name,
+                        params,
+                    };
                     self.dispatch_runtime_event(event);
                 }
             }
@@ -770,11 +780,13 @@ impl Reactor {
                 match self.parser.encode(&cmd) {
                     Ok(payload) => {
                         if let Err(e) = self.dispatch_fire_and_forget(payload) {
-                            log::warn!("FireAndForget: send error: {e}");
+                            eprintln!("[bridge-error] FireAndForget send: {e}");
                         }
                     }
                     Err(e) => {
-                        log::warn!("FireAndForget: encode error for {:?}: {e:?}", cmd);
+                        eprintln!(
+                            "[bridge-error] FireAndForget encode failed for cmd={cmd:?}: {e:?}"
+                        );
                     }
                 }
             }

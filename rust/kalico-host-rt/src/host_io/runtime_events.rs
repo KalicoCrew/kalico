@@ -47,7 +47,17 @@ pub enum RuntimeEvent {
     Status(StatusEvent),
     Trace(TraceEvent),
     EndstopTripped(EndstopTrippedEvent),
+    /// Free-form `output("...")` from firmware that the host parser decodes
+    /// into the canonical `('#output', {'#msg': formatted})` form. Routed to
+    /// klippy's `#output` handler.
     UnknownOutput { format: String, msg: String },
+    /// Klipper-protocol response frames the firmware emits unsolicited
+    /// (analog_in_state, trsync_state, stats, homing_state, …). The bridge
+    /// owns the wire so klippy's serialqueue never sees these directly; they
+    /// have to be forwarded by name+oid to klippy's `register_response`-set
+    /// handlers. Carries the full decoded params dict so per-OID dispatch can
+    /// resolve the right callback and pass the structured fields through.
+    PassthroughResponse { name: String, params: MessageParams },
 }
 
 impl RuntimeEvent {

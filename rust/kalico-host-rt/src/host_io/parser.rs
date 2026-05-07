@@ -523,7 +523,18 @@ pub fn encode_field_str<'a>(
             FieldType::I16 | FieldType::I32 => {
                 let v: i64 = value_str.parse().map_err(|_| ParseError::MalformedField)?;
                 range_check(*ty, v)?;
-                encode_vlq(out, v)
+                // Clipper-protocol clock fields (clock=%u) carry 64-bit
+                // host-side absolute clocks; the firmware reads 32 bits and
+                // truncates. Mirror klippy/msgproto.py PT_uint32 / PT_int32:
+                // for U32/I32 fields, mask down to 32 bits before VLQ
+                // encoding so encode_vlq's strict [i32::MIN, u32::MAX] range
+                // accepts the value.
+                let v_for_vlq = match ty {
+                    FieldType::U32 => i64::from((v as u64 & 0xFFFF_FFFF) as u32),
+                    FieldType::I32 => i64::from(v as i32),
+                    _ => v,
+                };
+                encode_vlq(out, v_for_vlq)
             }
             FieldType::String => {
                 let bytes = value_str.as_bytes();
@@ -582,12 +593,17 @@ pub fn encode_wrapped_field_typed<'a>(
 }
 
 fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
+    // Klipper's msgproto allows U32/I32 fields to carry 64-bit clock values
+    // and lets the firmware truncate to its native 32-bit register on receipt
+    // (encode_vlq already produces a self-delimited VLQ that the firmware
+    // decodes and masks). Mirror that: U32/I32 accept any i64. U16/I16/Byte
+    // remain strict — those are never used for clocks and a wrong value there
+    // is always a real bug.
     let in_range = match ty {
         FieldType::Byte => (0..=255).contains(&v),
         FieldType::U16  => (0..=65535).contains(&v),
         FieldType::I16  => (-32768..=32767).contains(&v),
-        FieldType::U32  => (0..=i64::from(u32::MAX)).contains(&v),
-        FieldType::I32  => (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&v),
+        FieldType::U32 | FieldType::I32 => return Ok(()),
         _ => return Ok(()),
     };
     if !in_range {

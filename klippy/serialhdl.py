@@ -133,6 +133,32 @@ class SerialReader:
                 except Exception:
                     logging.exception("%sException in bridge output callback", self.warn_prefix)
                 continue
+            elif ev_type == "response":
+                # Klipper-protocol Response frame the firmware emitted
+                # unsolicited (analog_in_state, trsync_state, stats, …).
+                # Bridge owns the wire so klippy's serialqueue never receives
+                # these directly — route by (name, oid) to handlers registered
+                # via register_response. Fields from the firmware are spread
+                # into ev by the bridge; preserve them for the callback.
+                name = ev.get("name", "")
+                ev["#name"] = name
+                ev["#sent_time"] = now
+                ev["#receive_time"] = now
+                oid = ev.get("oid")
+                with self.lock:
+                    hdl = (
+                        self.handlers.get((name, oid))
+                        or self.handlers.get((name, None))
+                        or self.handle_default
+                    )
+                try:
+                    hdl(ev)
+                except Exception:
+                    logging.exception(
+                        "%sException in bridge response callback (name=%s, oid=%s)",
+                        self.warn_prefix, name, oid,
+                    )
+                continue
             else:
                 continue
             ev["#name"] = name
