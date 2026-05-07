@@ -255,13 +255,33 @@ def sim(tmp_path):
         }
 
         cfg_text = (_CFG_DIR / "printer.cfg").read_text()
+        # SCOPE-REDUCTION: with [beacon] stripped, the 'probe' pin chip
+        # never registers. The real config uses
+        # 'endstop_pin: probe:z_virtual_endstop' on stepper_z. Substitute
+        # a benign GPIO pin so klippy can complete config parsing.
+        cfg_text = cfg_text.replace(
+            "probe:z_virtual_endstop", "gpiochip0/gpio15"
+        )
         rendered_cfg_text = apply_overrides(cfg_text, overrides)
-        # Strip sections whose plugin module isn't installed in this tree.
-        # autotune_tmc / motor_constants come from the Klipper-TMC-Autotune
-        # third-party project — not vendored here, not required for boot.
+        # Strip sections whose plugin module isn't installed in this tree
+        # OR whose stub isn't faithful enough to satisfy klippy's MCU
+        # identify handshake. SCOPE-REDUCTION: [beacon] is stripped
+        # because beacon_serial_stub.py is a logging scaffold — it doesn't
+        # speak msgproto, so the beacon MCU's identify hangs forever and
+        # klippy never reaches "ready". Restoring faithful beacon support
+        # is a follow-up task. [bed_mesh], [resonance_tester], and
+        # [motors_sync] all reference beacon as their probe / accel_chip
+        # so they're stripped together.
+        # [beacon model default] is a stored model section that depends
+        # on [beacon] — strip together. [bed_mesh] (when configured for
+        # beacon) likewise needs the probe.
         rendered_cfg_text = _strip_sections(
             rendered_cfg_text,
-            prefixes=("autotune_tmc", "motor_constants"),
+            prefixes=(
+                "autotune_tmc", "motor_constants",
+                "beacon", "bed_mesh", "resonance_tester", "motors_sync",
+                "z_tilt_ng",
+            ),
         )
         rendered_cfg = tmp_path / "printer.cfg"
         rendered_cfg.write_text(rendered_cfg_text)
@@ -272,7 +292,11 @@ def sim(tmp_path):
         _stage_config_dir(
             _CFG_DIR,
             tmp_path,
-            strip_prefixes=("autotune_tmc", "motor_constants"),
+            strip_prefixes=(
+                "autotune_tmc", "motor_constants",
+                "beacon", "bed_mesh", "resonance_tester", "motors_sync",
+                "z_tilt_ng",
+            ),
         )
 
         # 5) Build PYTHONPATH so klippy finds the vendored third-party plugins.
