@@ -13,6 +13,7 @@ class BridgeKinematics:
     """Minimal kinematics shim for motion-bridge hardware initialization."""
 
     def __init__(self, toolhead, config, trapq):
+        self._toolhead = toolhead
         kin_name = config.get("kinematics")
         if kin_name not in ("cartesian", "corexy", "hybrid_corexy"):
             raise config.error("Unsupported bridge kinematics '%s'" % (kin_name,))
@@ -98,8 +99,15 @@ class BridgeKinematics:
             homing_state.home_rails([rail], forcepos, homepos)
             self.homed_axes.add(axis)
 
-    def set_homed(self, axes):
-        for a in axes:
+    def set_position(self, newpos, homing_axes=()):
+        # Upstream kinematics contract: this method owns runtime
+        # position-state sync. For cartesian, it drives itersolve. For
+        # the bridge, it pushes the new basis into the planner runtime.
+        if self._toolhead.bridge is not None:
+            self._toolhead.bridge.set_position(
+                newpos[0], newpos[1], newpos[2]
+            )
+        for a in homing_axes:
             self.homed_axes.add(a)
 
     def clear_homing_state(self, axes):
@@ -269,8 +277,8 @@ class MotionToolhead:
         self.commanded_pos[:] = newpos
         if self.bridge is not None:
             self.bridge.set_position(newpos[0], newpos[1], newpos[2])
-        if homing_axes and self.kin is not None and hasattr(self.kin, "set_homed"):
-            self.kin.set_homed(homing_axes)
+        if homing_axes and self.kin is not None:
+            self.kin.set_position(newpos, homing_axes)
 
     # ------------------------------------------------------------------
     # Move commands — raise until Phase 2
