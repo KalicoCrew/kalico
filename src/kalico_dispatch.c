@@ -465,12 +465,45 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
 // Event emitters (Phase C — events channel, fire-and-forget, correlation_id=0)
 // ---------------------------------------------------------------------------
 
+// H7 RX-path diagnostic counters (defined in src/stm32/usbotg.c and
+// src/generic/usb_cdc.c). Appended to StatusEvent payload until the
+// USB-CDC RX bug is fixed.
+extern volatile uint16_t usbotg_irq_count;
+extern volatile uint16_t usbotg_rxflvl_count;
+extern volatile uint16_t usbotg_rxflvl_ep0_count;
+extern volatile uint16_t usbotg_rxflvl_bulk_count;
+extern volatile uint16_t usb_bulk_out_task_count;
+extern volatile uint16_t usb_pump_call_count;
+extern volatile uint16_t usb_pump_bytes_total;
+extern volatile uint8_t usb_last_read_ret_neg;
+extern volatile uint8_t usb_first16_bytes[16];
+extern volatile uint8_t usb_first16_filled;
+extern volatile uint8_t usb_first16_wrap_pos;
+extern volatile uint16_t demux_emit_klipper;
+extern volatile uint16_t demux_emit_kalico;
+extern volatile uint16_t demux_emit_error;
+
 void
 kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
                                 uint32_t current_segment_id,
                                 int32_t last_fault, uint32_t fault_detail)
 {
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18];
+    // Body is StatusEvent (18 B) + USB diagnostic block (32 B).
+    // Layout of diag block:
+    //   [18..19] usbotg_irq_count          u16 LE
+    //   [20..21] usbotg_rxflvl_count       u16 LE
+    //   [22..23] usbotg_rxflvl_ep0_count   u16 LE
+    //   [24..25] usbotg_rxflvl_bulk_count  u16 LE
+    //   [26..27] usb_bulk_out_task_count   u16 LE
+    //   [28..29] usb_pump_call_count       u16 LE
+    //   [30..31] usb_pump_bytes_total      u16 LE
+    //   [32]     usb_last_read_ret_neg     u8
+    //   [33]     usb_first16_filled        u8
+    //   [34..49] usb_first16_bytes[16]     bytes
+    //   [50..51] demux_emit_klipper        u16 LE
+    //   [52..53] demux_emit_kalico         u16 LE
+    //   [54..55] demux_emit_error          u16 LE
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18 + 32 + 6];
     encode_message_header(payload, KALICO_MSG_STATUS_EVENT,
                           MESSAGE_VERSION_DEFAULT, 0);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
@@ -493,6 +526,24 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     b[15] = (uint8_t)((epoch >> 8) & 0xFF);
     b[16] = (uint8_t)((epoch >> 16) & 0xFF);
     b[17] = (uint8_t)((epoch >> 24) & 0xFF);
+    uint16_t v;
+    v = usbotg_irq_count;          b[18] = (uint8_t)v; b[19] = (uint8_t)(v >> 8);
+    v = usbotg_rxflvl_count;       b[20] = (uint8_t)v; b[21] = (uint8_t)(v >> 8);
+    v = usbotg_rxflvl_ep0_count;   b[22] = (uint8_t)v; b[23] = (uint8_t)(v >> 8);
+    v = usbotg_rxflvl_bulk_count;  b[24] = (uint8_t)v; b[25] = (uint8_t)(v >> 8);
+    v = usb_bulk_out_task_count;   b[26] = (uint8_t)v; b[27] = (uint8_t)(v >> 8);
+    v = usb_pump_call_count;       b[28] = (uint8_t)v; b[29] = (uint8_t)(v >> 8);
+    v = usb_pump_bytes_total;      b[30] = (uint8_t)v; b[31] = (uint8_t)(v >> 8);
+    b[32] = usb_last_read_ret_neg;
+    b[33] = usb_first16_filled;
+    // Emit the rolling window in chronological order: oldest first.
+    // wrap_pos points to the next slot to write = the OLDEST byte once filled.
+    uint8_t wp = usb_first16_wrap_pos;
+    for (uint8_t i = 0; i < 16; i++)
+        b[34 + i] = usb_first16_bytes[(wp + i) & 0x0F];
+    v = demux_emit_klipper; b[50] = (uint8_t)v; b[51] = (uint8_t)(v >> 8);
+    v = demux_emit_kalico;  b[52] = (uint8_t)v; b[53] = (uint8_t)(v >> 8);
+    v = demux_emit_error;   b[54] = (uint8_t)v; b[55] = (uint8_t)(v >> 8);
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 

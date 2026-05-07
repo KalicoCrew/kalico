@@ -381,19 +381,32 @@ usb_set_configure(void)
  * Setup and interrupts
  ****************************************************************/
 
+// H7 RX-path diagnostic counters (read by the periodic StatusEvent emitter).
+// Sized u16, wraparound is acceptable for the diagnostic — we only need to
+// see *that* the chain is firing, not exact totals.
+volatile uint16_t usbotg_irq_count;
+volatile uint16_t usbotg_rxflvl_count;
+volatile uint16_t usbotg_rxflvl_ep0_count;
+volatile uint16_t usbotg_rxflvl_bulk_count;
+
 // Main irq handler
 void
 OTG_FS_IRQHandler(void)
 {
+    usbotg_irq_count++;
     uint32_t sts = OTG->GINTSTS;
     if (sts & USB_OTG_GINTSTS_RXFLVL) {
+        usbotg_rxflvl_count++;
         // Received data - disable irq and notify endpoint
         OTG->GINTMSK &= ~USB_OTG_GINTMSK_RXFLVLM;
         uint32_t grx = OTG->GRXSTSR, ep = grx & USB_OTG_GRXSTSP_EPNUM_Msk;
-        if (ep == 0)
+        if (ep == 0) {
+            usbotg_rxflvl_ep0_count++;
             usb_notify_ep0();
-        else
+        } else {
+            usbotg_rxflvl_bulk_count++;
             usb_notify_bulk_out();
+        }
     }
     if (sts & USB_OTG_GINTSTS_IEPINT) {
         // Can transmit data - disable irq and notify endpoint
