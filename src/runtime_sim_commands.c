@@ -203,5 +203,61 @@ command_runtime_sim_engine_tick_start(uint32_t *args)
 DECL_COMMAND(command_runtime_sim_engine_tick_start,
     "runtime_sim_engine_tick_start");
 
+#if CONFIG_MACH_LINUX
+
+#include <string.h>
+#include "linux/sim_chip_socket.h"
+
+// Weak stub so the file links before Task 5.1 lands the real definition in
+// src/linux/analog.c. When Task 5.1 lands, the strong symbol there overrides
+// this automatically.
+__attribute__((weak)) void
+analog_set_simulated_value(uint8_t adc_pin, uint16_t value)
+{
+    (void)adc_pin;
+    (void)value;
+}
+
+void
+command_runtime_sim_route_spi(uint32_t *args)
+{
+    uint32_t bus = args[0];
+    uint8_t path_len = args[1];
+    char path[128] = {0};
+    if (path_len >= sizeof(path)) shutdown("sim_route_spi path too long");
+    memcpy(path, command_decode_ptr(args[2]), path_len);
+    sim_spi_register_route(bus, path);
+    sendf("runtime_sim_route_spi_response bus=%u result=%i", bus, 0);
+}
+DECL_COMMAND(command_runtime_sim_route_spi,
+    "runtime_sim_route_spi bus=%u path=%*s");
+
+void
+command_runtime_sim_route_tmcuart(uint32_t *args)
+{
+    uint8_t oid = args[0];
+    uint8_t path_len = args[1];
+    char path[128] = {0};
+    if (path_len >= sizeof(path)) shutdown("sim_route_tmcuart path too long");
+    memcpy(path, command_decode_ptr(args[2]), path_len);
+    sim_tmcuart_register_route(oid, path);
+    sendf("runtime_sim_route_tmcuart_response oid=%c result=%i", oid, 0);
+}
+DECL_COMMAND(command_runtime_sim_route_tmcuart,
+    "runtime_sim_route_tmcuart oid=%c path=%*s");
+
+void
+command_runtime_sim_adc_set(uint32_t *args)
+{
+    uint8_t adc_pin = args[0];
+    uint16_t value = args[1];
+    analog_set_simulated_value(adc_pin, value);
+    sendf("runtime_sim_adc_set_response adc_pin=%c result=%i", adc_pin, 0);
+}
+DECL_COMMAND(command_runtime_sim_adc_set,
+    "runtime_sim_adc_set adc_pin=%c value=%hu");
+
+#endif // CONFIG_MACH_LINUX
+
 #endif // CONFIG_KALICO_SIM
 #endif // CONFIG_KALICO_RUNTIME
