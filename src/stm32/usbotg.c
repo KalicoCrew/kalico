@@ -381,32 +381,19 @@ usb_set_configure(void)
  * Setup and interrupts
  ****************************************************************/
 
-// H7 RX-path diagnostic counters (read by the periodic StatusEvent emitter).
-// Sized u16, wraparound is acceptable for the diagnostic — we only need to
-// see *that* the chain is firing, not exact totals.
-volatile uint16_t usbotg_irq_count;
-volatile uint16_t usbotg_rxflvl_count;
-volatile uint16_t usbotg_rxflvl_ep0_count;
-volatile uint16_t usbotg_rxflvl_bulk_count;
-
 // Main irq handler
 void
 OTG_FS_IRQHandler(void)
 {
-    usbotg_irq_count++;
     uint32_t sts = OTG->GINTSTS;
     if (sts & USB_OTG_GINTSTS_RXFLVL) {
-        usbotg_rxflvl_count++;
         // Received data - disable irq and notify endpoint
         OTG->GINTMSK &= ~USB_OTG_GINTMSK_RXFLVLM;
         uint32_t grx = OTG->GRXSTSR, ep = grx & USB_OTG_GRXSTSP_EPNUM_Msk;
-        if (ep == 0) {
-            usbotg_rxflvl_ep0_count++;
+        if (ep == 0)
             usb_notify_ep0();
-        } else {
-            usbotg_rxflvl_bulk_count++;
+        else
             usb_notify_bulk_out();
-        }
     }
     if (sts & USB_OTG_GINTSTS_IEPINT) {
         // Can transmit data - disable irq and notify endpoint
@@ -429,27 +416,11 @@ usb_init(void)
         SET_BIT(PWR->CR3, PWR_CR3_USB33DEN);
     }
     SET_BIT(RCC->AHB1ENR, USBOTGEN);
-    // The H7 system DFU bootloader leaves RCC->AHB1ENR.USB1OTGHSULPIEN set;
-    // the embedded FS PHY does not need the ULPI clock and leaving it on
-    // is suspected to interact badly with the OTG core's clock domains
-    // when the printer was last in DFU.
-    CLEAR_BIT(RCC->AHB1ENR, RCC_AHB1ENR_USB1OTGHSULPIEN);
 #else
     RCC->AHB2ENR |= RCC_AHB2ENR_OTGFSEN;
 #endif
     while (!(OTG->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL))
         ;
-
-#if CONFIG_MACH_STM32H7
-    // Power up the embedded FS PHY transceiver BEFORE configuring GUSBCFG
-    // and the endpoints. With the transceiver powered down (GCCFG.PWRDWN=0,
-    // the reset default on H7) the configuration writes don't take effect
-    // properly: the OTG core enumerates but the bulk-OUT path either
-    // doesn't deliver host bytes or duplicates internal state into the
-    // RX FIFO, blocking identify on real hardware. ST HAL (USB_DevInit)
-    // powers the PHY first, then configures.
-    OTG->GCCFG |= USB_OTG_GCCFG_PWRDWN;
-#endif
 
     // Configure USB in full-speed device mode
     OTG->GUSBCFG = (USB_OTG_GUSBCFG_FDMOD | USB_OTG_GUSBCFG_PHYSEL

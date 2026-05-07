@@ -181,22 +181,12 @@ kalico_demux_kalico_channel(void)
     return kalico_buf[3];
 }
 
-// Diagnostic: count what the demuxer emits.
-volatile uint16_t demux_emit_klipper;
-volatile uint16_t demux_emit_kalico;
-volatile uint16_t demux_emit_error;
-
 // Idle-reset timeout for the demuxer's per-frame state. If a frame starts
-// (sync byte received) but never finishes — e.g. because Linux TTY echo
-// dropped a partial copy of one of our own outbound kalico frames into the
-// RX FIFO during the brief window between USB enumeration and the host
-// applying raw-mode termios — we resync to WAITING after this many idle
-// ticks, regardless of which mid-frame state we got stuck in.
-//
+// (sync byte received) but never finishes, we resync to WAITING after this
+// many idle ticks, regardless of which mid-frame state we got stuck in.
 // 100 ms is well above any legitimate inter-byte gap inside a single host
-// frame on USB-CDC FS (a 64-byte bulk packet is ~5 µs at the wire) and
-// short enough that a stuck demuxer self-heals before the host's identify
-// timeout (15 s) elapses.
+// frame on USB-CDC FS and short enough that a stuck demuxer self-heals
+// before the host's identify timeout elapses.
 static uint32_t last_byte_time;
 
 void
@@ -222,7 +212,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
         case KALICO_DEMUX_OUT_NONE:
             break;
         case KALICO_DEMUX_OUT_KLIPPER: {
-            demux_emit_klipper++;
             // Bootloader-request sentinel detection. The 32-byte sentinel
             // begins with 0x20 (= 32 decimal), which falls inside the
             // demuxer's [KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64] range, so
@@ -243,7 +232,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             break;
         }
         case KALICO_DEMUX_OUT_KALICO:
-            demux_emit_kalico++;
             kalico_dispatch_frame(
                 kalico_demux_kalico_channel(),
                 kalico_demux_kalico_payload(),
@@ -251,7 +239,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             kalico_demux_consume();
             break;
         case KALICO_DEMUX_OUT_ERROR:
-            demux_emit_error++;
             kalico_demux_consume();
             break;
         }

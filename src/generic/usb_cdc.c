@@ -125,19 +125,6 @@ kalico_console_write_raw(const uint8_t *buf, uint16_t len)
 static struct task_wake usb_bulk_out_wake;
 static uint8_t receive_buf[128], receive_pos;
 
-#if CONFIG_KALICO_RUNTIME
-// H7 RX-path diagnostic counters (read by the periodic StatusEvent emitter).
-volatile uint16_t usb_bulk_out_task_count;
-volatile uint16_t usb_pump_call_count;
-volatile uint16_t usb_pump_bytes_total;
-volatile uint8_t usb_last_read_ret_neg;
-// Rolling window of the last 16 bytes pumped to the demuxer. Older bytes
-// at low indices, newest at high indices (after the wrap, see below).
-volatile uint8_t usb_first16_bytes[16];
-volatile uint8_t usb_first16_filled;
-volatile uint8_t usb_first16_wrap_pos;
-#endif
-
 void
 usb_notify_bulk_out(void)
 {
@@ -149,9 +136,6 @@ usb_bulk_out_task(void)
 {
     if (!sched_check_wake(&usb_bulk_out_wake))
         return;
-#if CONFIG_KALICO_RUNTIME
-    usb_bulk_out_task_count++;
-#endif
     // Read data
     uint_fast8_t rpos = receive_pos;
     if (rpos + USB_CDC_EP_BULK_OUT_SIZE <= sizeof(receive_buf)) {
@@ -161,12 +145,6 @@ usb_bulk_out_task(void)
             rpos += ret;
             usb_notify_bulk_out();
         }
-#if CONFIG_KALICO_RUNTIME
-        else {
-            // Capture last negative return code (-1 = no packet, -2 = err).
-            usb_last_read_ret_neg = (uint8_t)(-ret);
-        }
-#endif
     } else {
         usb_notify_bulk_out();
     }
@@ -175,23 +153,6 @@ usb_bulk_out_task(void)
     // is task-only (no IRQ writer), so a blanket reset after pump is
     // safe.
 #if CONFIG_KALICO_RUNTIME
-    if (rpos > 0) {
-        usb_pump_call_count++;
-        usb_pump_bytes_total += rpos;
-        // Rolling window: write each new byte into wrap_pos, advance, mod 16.
-        // After 16 bytes have been written the buffer is "filled"; subsequent
-        // writes overwrite the oldest. To read in chronological order the
-        // host parses bytes [wrap_pos..wrap_pos+15] mod 16.
-        uint_fast8_t pos = usb_first16_wrap_pos;
-        uint_fast8_t fill = usb_first16_filled;
-        for (uint_fast8_t i = 0; i < rpos; i++) {
-            usb_first16_bytes[pos] = receive_buf[i];
-            pos = (pos + 1) & 0x0F;
-            if (fill < 16) fill++;
-        }
-        usb_first16_wrap_pos = pos;
-        usb_first16_filled = fill;
-    }
     kalico_demux_pump(receive_buf, rpos);
     receive_pos = 0;
 #else
