@@ -64,8 +64,21 @@ pub fn identify_handshake(
     // Subsequent `0x7E` bytes are tolerated in WAITING. The flush is
     // idempotent on a clean demuxer, so it costs us nothing in the common
     // case and rescues us in the racy hot-plug case.
-    io.write_all(&[MESSAGE_SYNC; 70])?;
-    io.flush()?;
+    // Send three rounds of flush bytes interleaved with brief drains.
+    // Each round is sized to absorb any partial-frame state in the demuxer
+    // and let the firmware burn through whatever was queued.
+    for _ in 0..3 {
+        io.write_all(&[MESSAGE_SYNC; 256])?;
+        io.flush()?;
+        std::thread::sleep(Duration::from_millis(50));
+        let drain_until = Instant::now() + Duration::from_millis(50);
+        while Instant::now() < drain_until {
+            match io.poll_frames_until(drain_until)? {
+                PollOutcome::Frames { .. } => {}
+                PollOutcome::Timeout | PollOutcome::PhantomZero => break,
+            }
+        }
+    }
 
     // Drain phase: poll for ~300ms and discard everything (frames + errors).
     // The firmware emits unsolicited `kalico_status` frames on channel 1 from
