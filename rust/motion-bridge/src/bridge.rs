@@ -1138,6 +1138,25 @@ impl PyMotionBridge {
             out
         };
 
+        // Snapshot of which MCUs accept kalico-native producer messages
+        // (load_curve / push_segment). MCUs whose firmware is stock Klipper
+        // (no kalico runtime) attach for Klipper-protocol traffic but the
+        // bridge can't send them planner curves. The dispatch closure below
+        // skips plans targeting such MCUs.
+        let kalico_native_for_plans: HashMap<u32, bool> = {
+            let mcus = self.mcus.lock().unwrap();
+            mcu_configs
+                .iter()
+                .map(|cfg| {
+                    let supported = mcus
+                        .get(&cfg.mcu_id)
+                        .map(|c| c.kalico_native_supported)
+                        .unwrap_or(false);
+                    (cfg.mcu_id, supported)
+                })
+                .collect()
+        };
+
         // Per-MCU dispatch context (host I/O + credit + slot pool) keyed by
         // mcu_id. `dispatch_ios` is the closure-local lookup map; the credit
         // and slot-pool tables on `self` are the persistent ones the
@@ -1240,6 +1259,17 @@ impl PyMotionBridge {
             }
 
             for mut plan in mcu_plans {
+                // Skip plans targeting MCUs without kalico-runtime — stock
+                // Klipper firmware can't decode load_curve / push_segment.
+                // Their motion has to be driven via the legacy Klipper-
+                // protocol path (out of scope for the kalico planner).
+                if !kalico_native_for_plans
+                    .get(&plan.mcu_id)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                     Some(v) => v,
                     None => continue,

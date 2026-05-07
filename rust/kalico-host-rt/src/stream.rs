@@ -114,7 +114,7 @@ pub fn arm_all_mcus<T: Transport>(
         let request_id = est.next_clock_sync_request_id();
         let resp = io
             .call(
-                &format!("kalico_clock_sync_request request_id={request_id} host_send_time_lo=0 host_send_time_hi=0"),
+                &format!("runtime_clock_sync_request request_id={request_id} host_send_time_lo=0 host_send_time_hi=0"),
                 "kalico_clock_sync_response",
                 CLOCK_SYNC_REQUEST_TIMEOUT,
             )
@@ -178,7 +178,7 @@ pub fn arm_all_mcus<T: Transport>(
         let t_start_host_secs = est.host_time_at(t_start_wall_clock);
         let t_start_local = est.mcu_time_at_host(t_start_host_secs);
         let cmd = format!(
-            "kalico_stream_arm t_start_t0_lo={lo} t_start_t0_hi={hi} arm_lead_cycles={alc}",
+            "runtime_stream_arm t_start_t0_lo={lo} t_start_t0_hi={hi} arm_lead_cycles={alc}",
             lo = t_start_local as u32,
             hi = (t_start_local >> 32) as u32,
             alc = arm_lead_cycles,

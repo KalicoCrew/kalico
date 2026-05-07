@@ -254,7 +254,7 @@ pub fn arm_endstop_with_timeout<T: Transport>(
     let sources_buf = encode_sources(sources)?;
     let steppers_buf = encode_steppers(stepper_oids)?;
     let resp = io.call_typed(
-        "kalico_arm_endstop",
+        "runtime_arm_endstop",
         &[
             ("arm_id", FieldValue::U32(arm_id)),
             ("arm_clock_lo", FieldValue::U32(arm_clock as u32)),
@@ -284,7 +284,7 @@ pub fn disarm_endstop_with_timeout<T: Transport>(
     timeout: Duration,
 ) -> Result<DisarmStatus, EndstopError> {
     let resp = io.call_typed(
-        "kalico_disarm_endstop",
+        "runtime_disarm_endstop",
         &[("arm_id", FieldValue::U32(arm_id))],
         "kalico_disarm_endstop_response",
         timeout,
@@ -308,7 +308,7 @@ pub fn set_homed_state_with_timeout<T: Transport>(
     timeout: Duration,
 ) -> Result<(), EndstopError> {
     let resp = io.call_typed(
-        "kalico_set_homed_state",
+        "runtime_set_homed_state",
         &[("homed", FieldValue::Byte(if homed { 1 } else { 0 }))],
         "kalico_set_homed_response",
         timeout,
