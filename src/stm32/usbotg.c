@@ -416,6 +416,11 @@ usb_init(void)
         SET_BIT(PWR->CR3, PWR_CR3_USB33DEN);
     }
     SET_BIT(RCC->AHB1ENR, USBOTGEN);
+    // The H7 system DFU bootloader leaves RCC->AHB1ENR.USB1OTGHSULPIEN set;
+    // the embedded FS PHY does not need the ULPI clock and leaving it on
+    // is suspected to interact badly with the OTG core's clock domains
+    // when the printer was last in DFU.
+    CLEAR_BIT(RCC->AHB1ENR, RCC_AHB1ENR_USB1OTGHSULPIEN);
 #else
     RCC->AHB2ENR |= RCC_AHB2ENR_OTGFSEN;
 #endif
