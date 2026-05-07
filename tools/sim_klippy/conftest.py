@@ -153,7 +153,11 @@ def _ensure_elfs() -> None:
         )
 
 
-def _stage_config_dir(cfg_dir: pathlib.Path, dest: pathlib.Path) -> None:
+def _stage_config_dir(
+    cfg_dir: pathlib.Path,
+    dest: pathlib.Path,
+    strip_prefixes: tuple = (),
+) -> None:
     """Symlink or copy every entry from cfg_dir into dest.
 
     printer.cfg is skipped — the caller writes a rendered version.
@@ -161,6 +165,10 @@ def _stage_config_dir(cfg_dir: pathlib.Path, dest: pathlib.Path) -> None:
     in dest so klippy can follow them regardless of cwd.
     Directories are symlinked, not copied, to avoid duplicating large
     third-party trees.
+
+    .cfg files are read, sim-stripped (if strip_prefixes non-empty),
+    and written as regular files into dest so [include]d sections that
+    reference unvendored plugins don't crash boot.
     """
     for entry in cfg_dir.iterdir():
         if entry.name == "printer.cfg":
@@ -175,6 +183,9 @@ def _stage_config_dir(cfg_dir: pathlib.Path, dest: pathlib.Path) -> None:
                 os.symlink(resolved, target)
         elif entry.is_dir():
             os.symlink(entry.resolve(), target)
+        elif entry.suffix == ".cfg" and strip_prefixes:
+            text = entry.read_text()
+            target.write_text(_strip_sections(text, strip_prefixes))
         else:
             shutil.copy2(entry, target)
 
@@ -256,7 +267,13 @@ def sim(tmp_path):
         rendered_cfg.write_text(rendered_cfg_text)
 
         # Stage companion .cfg files so klippy can resolve [include] lines.
-        _stage_config_dir(_CFG_DIR, tmp_path)
+        # Apply the same sim-strip to included .cfg files that we applied
+        # to the main rendered printer.cfg.
+        _stage_config_dir(
+            _CFG_DIR,
+            tmp_path,
+            strip_prefixes=("autotune_tmc", "motor_constants"),
+        )
 
         # 5) Build PYTHONPATH so klippy finds the vendored third-party plugins.
         beacon_klipper_path = _THIRD_PARTY / "beacon_klipper"
