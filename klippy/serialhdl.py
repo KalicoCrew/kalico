@@ -468,7 +468,13 @@ class SerialReader:
 
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
         if self._use_bridge:
-            return  # Bridge manages clock estimation
+            bridge = self.mcu._motion_bridge
+            handle = self.mcu._bridge_handle
+            if bridge is not None and handle is not None:
+                bridge.set_clock_est(
+                    handle, float(freq), float(conv_time), int(last_clock)
+                )
+            return
         self.ffi_lib.serialqueue_set_clock_est(
             self.serialqueue, freq, conv_time, conv_clock, last_clock
         )
