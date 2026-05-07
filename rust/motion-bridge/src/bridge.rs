@@ -1535,14 +1535,14 @@ impl PyMotionBridge {
     }
 
     /// Flush all pending moves and block until the planner has shaped them.
-    fn wait_moves(&self) -> PyResult<()> {
+    fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
         let planner_guard = self.planner.lock().unwrap();
         let planner = planner_guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
         })?;
-        planner.flush().map_err(planner_err)?;
+        py.allow_threads(|| planner.flush()).map_err(planner_err)?;
         self.homing.refresh_after_wait();
         Ok(())
     }
