@@ -1,6 +1,6 @@
 # MotionToolhead extends upstream ToolHead — design
 
-**Status:** Draft, awaiting user approval.
+**Status:** Draft, awaiting user approval. Revised 2026-05-07 after multi-agent review (architect-reviewer, codebase auditor, codex independent reviewer).
 **Date:** 2026-05-07.
 **Scope:** Refactor of `klippy/motion_toolhead.py` and restoration of `klippy/toolhead.py`. No behavior change to the Rust planner, the bridge runtime, or the MCU firmware.
 
@@ -36,7 +36,9 @@ klippy/motion_toolhead.py            ~350 LOC. Contains:
 klippy/printer.py                    unchanged; loads motion_toolhead.
 
 klippy/extras/trad_rack.py           import reverted to klippy.toolhead.
-klippy/extras/probe.py               type-hint import reverted.
+klippy/extras/probe.py               UNCHANGED. Uses `from __future__ import
+                                     annotations`, so `ToolHead` annotations
+                                     are strings — no runtime import needed.
 klippy/extras/nozzle_cleanup.py      type-hint import switched to klippy.toolhead
                                      (runtime instance is still MotionToolhead
                                      via the printer registry; subclass relationship
@@ -165,7 +167,7 @@ class MotionToolhead(ToolHead):
 
 - `__init__` (we call `super().__init__(config)`).
 - `get_position`, `set_position`, `set_extruder`, `get_extruder`, `get_kinematics`, `get_trapq`.
-- `manual_move` — fires `toolhead:manual_move` event (today's bridge omits it; inheriting fixes a latent gcode_move state-drift bug).
+- `manual_move` — fires `toolhead:manual_move` event (today's bridge omits it; inheriting fixes a latent gcode_move state-drift bug). Inherited `manual_move` calls overridden `move()`, which still bypasses the lookahead queue — net effect: manual moves go straight to the bridge, identical to today's behavior plus the corrective event firing.
 - `register_step_generator`, `register_lookahead_callback`, `note_step_generation_scan_time`.
 - `get_max_velocity`, `_calc_junction_deviation`, `limit_next_junction_speed`.
 - `check_busy`, `get_status`, `get_active_rails_for_axis`, `_handle_shutdown`.
@@ -181,7 +183,7 @@ class MotionToolhead(ToolHead):
 | `dwell(delay)` | `bridge.submit_dwell(delay)`. |
 | `wait_moves()` | `bridge.wait_moves()`. |
 | `flush_step_generation()` | No-op. Bridge owns flush. |
-| `get_last_move_time()` | `max(bridge.get_last_move_time(), mcu.estimated_print_time + BUFFER_LEAD)`. The `BUFFER_LEAD = 0.250` floor keeps legacy MCU commands (TMC, SPI, digital_out) issued before the first move from landing in the MCU's past. |
+| `get_last_move_time()` | `max(bridge.get_last_move_time(), mcu.estimated_print_time + toolhead.BUFFER_TIME_START)`. Reuses upstream's `BUFFER_TIME_START = 0.250` constant (imported from the restored `toolhead` module) — defining a duplicate `BUFFER_LEAD` would defeat the source-of-truth restoration. The floor keeps legacy MCU commands (TMC, SPI, digital_out) issued before the first move from landing in the MCU's past. |
 | `note_mcu_movequeue_activity(mq_time, set_step_gen_time=False)` | No-op. Bridge has its own queue. |
 | `set_accel(accel)` | Mutate `self.max_accel`; `bridge.update_limits(...)`. |
 | `reset_accel()` | `bridge.update_limits(self.max_velocity, self.max_accel)`. |
@@ -205,20 +207,25 @@ class MotionToolhead(ToolHead):
 
 ### §3.4 `BridgeKinematics` — `set_position` replaces `set_homed`
 
-Today's `BridgeKinematics.set_homed(axes)` is called from `MotionToolhead.set_position`. To let `MotionToolhead` inherit upstream `set_position` (which calls `self.kin.set_position(newpos, homing_axes)` per the kinematics contract), move the bridge-side position update INTO `BridgeKinematics`:
+Today's `BridgeKinematics.set_homed(axes)` is called from `MotionToolhead.set_position`. To let `MotionToolhead` inherit upstream `set_position` (which calls `self.kin.set_position(newpos, homing_axes)` per the kinematics contract), move the bridge-side position update INTO `BridgeKinematics`. Capture the toolhead reference in `__init__` so we don't go through the printer registry on every call:
 
 ```python
 class BridgeKinematics:
+    def __init__(self, toolhead, config, trapq):
+        self._toolhead = toolhead     # already passed; previously discarded
+        # ... rest of existing __init__ ...
+
     def set_position(self, newpos, homing_axes=()):
         # Upstream contract: kinematics owns runtime position-state sync.
         # For cartesian, this drives itersolve. For us, this drives the
         # bridge runtime's planner basis.
-        bridge = self._printer.lookup_object("motion_bridge", None)
-        if bridge is not None:
-            bridge.set_position(newpos[0], newpos[1], newpos[2])
+        if self._toolhead.bridge is not None:
+            self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
         for a in homing_axes:
             self.homed_axes.add(a)
 ```
+
+Why direct toolhead reference rather than `self._printer.lookup_object("motion_bridge", None)`: the toolhead already holds the bridge handle (set pre-super in `MotionToolhead.__init__`), so the kinematics doesn't need a backward registry lookup. Removes the silent-`None` failure mode.
 
 `set_homed` is dropped — its sole caller (`MotionToolhead.set_position`) is going away.
 
@@ -231,15 +238,22 @@ class BridgeKinematics:
 - from .. import chelper, motion_toolhead as toolhead
 + from .. import chelper, toolhead
 
-# klippy/extras/probe.py
-+ from klippy.toolhead import ToolHead
+# klippy/extras/probe.py — UNCHANGED
+# Uses `from __future__ import annotations` (line 6); ToolHead annotations
+# on lines 516, 600 are strings, no runtime import needed.
 
 # klippy/extras/nozzle_cleanup.py
 - from klippy.motion_toolhead import MotionToolhead as ToolHead
 + from klippy.toolhead import ToolHead
 
 # klippy/printer.py — UNCHANGED
+# Verified: printer.py:336 iterates only `[motion_toolhead]`, NOT both
+# toolhead and motion_toolhead. So `motion_toolhead.add_printer_objects`
+# is the single registrar of the "toolhead" object — no collision with
+# the restored `toolhead.add_printer_objects`.
 ```
+
+**`trad_rack` compatibility note:** `TradRackToolHead.__init__` (line 2316) has a `hasattr(toolhead, "LookAheadQueue")` branch. Restored upstream toolhead exposes `LookAheadQueue`, so the live branch is taken and the `else: toolhead.MoveQueue(...)` path remains dead code (it predates Klipper's MoveQueue → LookAheadQueue rename and is irrelevant to our environment).
 
 `MotionToolhead` is-a `ToolHead`, so existing `isinstance(x, ToolHead)` checks and type hints remain correct. The runtime instance registered as the `"toolhead"` printer object is still `MotionToolhead`, installed by `motion_toolhead.add_printer_objects(config)`.
 
@@ -270,12 +284,20 @@ class BridgeKinematics:
 - `get_status` field set.
 - `_calc_junction_deviation`, `get_max_velocity`, `note_step_generation_scan_time`.
 
-### Pre-existing limitations (unchanged by this refactor — out of scope)
+### Forward-linked correctness hazards (NOT a behavioral change introduced by this refactor — flagged for separate followup)
+
+- **`idle_timeout` firing during long bridge moves.** Upstream's `check_busy` returns `lookahead_empty = not self.lookahead.queue`. Under bridge, lookahead is always empty, so `idle_timeout` evaluates the printer as idle even while the bridge is mid-segment. This is pre-existing today and unchanged by this refactor, but it is a real correctness hazard (motors can de-energize during a long curve). Tracked separately.
+- **`stats()` future direction.** This refactor keeps the bridge's silence-the-stats override because upstream's `is_active = buffer_time > -60` predicate is fed by `print_time = 0` under bridge — wrong inputs, wrong answer. Once the bridge owns a meaningful `print_time` (post-MVP), the override should change to use `bridge.get_last_move_time()` in the predicate rather than inherit upstream verbatim. Captured here so the override doesn't get adopted permanently.
+
+### Pre-existing limitations (unchanged by this refactor — known and accepted)
 
 - `BridgeKinematics.calc_position` returns `[0,0,0]` stub; bridge homing relies on the trip-snapshot, not stepper-count → kinematics inversion. Affects `GET_POSITION` kin reporting and any consumer that reads stepper-count-derived position.
-- Trapq is allocated but never has moves appended → trapq-history queries return empty.
+- Trapq is allocated but never has moves appended → trapq-history queries return empty. Inherited `set_position` calls `trapq_set_position(self.trapq, self.print_time, ...)`; with an empty trapq this is a metadata write only (no segment list to invalidate). Verified harmless via Test §4.9.
 - Step generators registered via `register_step_generator` are never invoked → bridge runtime synthesizes steps directly; itersolve generators are dormant.
-- `idle_timeout`'s "busy" predicate is `lookahead_empty` which under bridge is always True → idle timeout can fire during long bridge moves. Pre-existing.
+
+### Pre-existing kalico bug found during review (out of scope, separate ticket)
+
+- **`input_shaper.cmd_SET_INPUT_SHAPER`** reads `self.shapers[0].shaper_type` and `self.shapers[0].shaper_freq` directly, but `AxisInputShaper` stores those attributes under `.params` (`input_shaper.py:79-82`). This was found during this spec's review but is unrelated to the toolhead refactor. Track separately.
 
 ## Test plan
 
@@ -293,22 +315,38 @@ class BridgeKinematics:
 3. **Velocity-limit commands**
    - `M204 S2000` → `max_accel` updates AND `bridge.update_limits` called.
    - `SET_VELOCITY_LIMIT VELOCITY=200 ACCEL=3000` → both update AND propagate.
+   - `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=10` → upstream parameter handled (verifies the broader-surface gain).
    - `RESET_VELOCITY_LIMIT` → newly-registered command resets to `orig_cfg` AND propagates.
 
-4. **gcode_move state sync (regression check for the latent-bug fix)**
-   - After `G28` then `G92 X0 Y0`, the gcode_move's "last position" matches toolhead's `commanded_pos`. Today this drifts; after refactor it tracks.
+4. **gcode_move state sync — explicit behavioral coverage of the new event firing**
 
-5. **Trad_rack import path**
+   Each of the following must produce a gcode_move state where `last_position` matches `toolhead.commanded_pos` after the move completes (today's bridge fails some of these silently):
+   - `G28` then `G92 X0 Y0`
+   - `SET_GCODE_OFFSET MOVE=1 X=5 Y=5`
+   - `PROBE` (drives `manual_move` for nozzle approach)
+   - `safe_z_home` macro path (drives `manual_move` for z-hop and home XY)
+   - manual_probe reaching its final adjustment (`manual_move` z-bob path)
+   - `dockable_probe` attach/detach sequence (multiple `manual_move` calls in series)
+
+5. **`trad_rack` import path**
    - `import klippy.extras.trad_rack` succeeds. `TradRackToolHead.__init__` resolves `toolhead.LookAheadQueue`, `toolhead.BUFFER_TIME_HIGH`, `toolhead.SDS_CHECK_TIME` against the restored upstream module.
+   - The `hasattr(toolhead, "LookAheadQueue")` branch is taken; the `else: toolhead.MoveQueue(...)` branch remains dead.
 
-6. **Override-surface drift detector**
-   - Test asserts the set of methods defined locally on `MotionToolhead` matches a fixed list. Catches future drift if someone accidentally adds an override.
+6. **Override-surface drift detector — bidirectional**
+   - Asserts `{m for m in MotionToolhead.__dict__ if not m.startswith("__")}` matches a frozen baseline. Catches accidental new overrides.
+   - Asserts `{m for m in ToolHead.__dict__ if not m.startswith("__")}` matches a frozen baseline. Catches NEW upstream additions that the refactor's override list might need to consider — failure means human review, not necessarily a code change.
 
-7. **Legacy upstream path doesn't regress**
-   - With a printer.cfg that does NOT load `[motion_bridge]`, the printer instantiates a vanilla `ToolHead` via the same restored `toolhead.py`. (Note: `motion_toolhead.add_printer_objects` always installs `MotionToolhead`, so this path is exercised only via direct `ToolHead(config)` use in tests, e.g., the trad_rack subclass instantiation. The diff against `1f3d0d070^:klippy/toolhead.py` is mechanically reviewed: only the kinematics-import block extraction.)
+7. **Legacy upstream path doesn't regress (real test, not "mechanically reviewed")**
+   - Unit test imports `klippy.toolhead` and instantiates `ToolHead(config)` against a minimal printer config without `[motion_bridge]`. Verifies upstream init runs to completion (kinematics module resolves, gcode commands register, helper modules load). The trad_rack subclass test (§4.5) covers part of this surface; this is the explicit case.
 
-8. **Offline planner harness (klipper-sim)**
-   - `~/Developer/klipper-sim/...` runs the planner against a representative G-code file using `--klipper-root` pointed at this branch. Output diff vs pre-refactor branch should be byte-identical (no planner-level behavior change).
+8. **Flush-timer silencing invariant**
+   - Test asserts no MotionToolhead method (overridden or inherited) calls `note_mcu_movequeue_activity` along a bridge path; if it did, upstream's body would re-arm `flush_timer` despite our `update_timer(NEVER)` call. Static check via override-list closure: the only methods that call `note_mcu_movequeue_activity` upstream are `_advance_flush_time` and `drip_move`, both of which are no-op'd or overridden under bridge.
+
+9. **`set_position` trapq side-effect under bridge (verify the inherited path is benign)**
+   - Direct test: instantiate the bridge, call `toolhead.set_position([1, 2, 3, 0], homing_axes=[0,1,2])`. Verify (a) `bridge.set_position(1, 2, 3)` was called, (b) `homed_axes` set updated, (c) `commanded_pos` updated, (d) `toolhead:set_position` event fired and `gcode_move.reset_last_position` ran, (e) the inherited `trapq_set_position(self.trapq, self.print_time=0, ...)` did not corrupt anything (subsequent `get_status` returns sensible values, no segfault, no exception).
+
+10. **Offline planner harness (klipper-sim)**
+    - `~/Developer/klipper-sim/...` runs the planner against a representative G-code file using `--klipper-root` pointed at this branch. Output diff vs pre-refactor branch should be byte-identical (no planner-level behavior change).
 
 ## Risks and mitigations
 
