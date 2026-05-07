@@ -1566,6 +1566,20 @@ extended [G-Code command](G-Codes.md#z_tilt) becomes available.
 #use_adjustments: False
 #   If set to true it uses the behaviour described by trails here:
 #   https://github.com/Trails5000/klipper/commit/47b5a91f96761961e693031fa514a0025a877117
+#alternate_probe_direction: False
+#   If True, alternate the physical probing direction between full
+#   probing passes/retries. The first pass uses the configured point
+#   order, and the next pass probes the same points in reverse order.
+#   The measured results are still returned in the configured logical
+#   point order, so the z_tilt calculations are unchanged. This can
+#   reduce repeated twisting of Bowden tubes, filament paths, umbilicals,
+#   and cable bundles on large-format machines. It also avoids the extra
+#   travel move from the last point back to the first point between retry
+#   passes. The default is False.
+#start_reverse: False
+#   If True and alternate_probe_direction is enabled, start the first
+#   probing pass in reverse order. Subsequent retry passes will continue
+#   alternating direction. The default is False.
 ```
 
 #### [z_tilt_ng]
@@ -1710,6 +1724,20 @@ Where x is the 0, 0 point on the bed
 #   By default, the first Z movement to reach `horizontal_move_z` uses `speed`.
 #   Set `enforce_lift_speed` to True to enforce the `lift_speed`.
 #   The default is False.
+#alternate_probe_direction: False
+#   If True, alternate the physical probing direction between full
+#   probing passes/retries. The first pass uses the configured point
+#   order, and the next pass probes the same points in reverse order.
+#   The measured results are still returned in the configured logical
+#   point order, so the quad gantry leveling calculations are unchanged.
+#   This can reduce repeated twisting of Bowden tubes, filament paths,
+#   umbilicals, and cable bundles on large-format machines. It also
+#   avoids the extra travel move from the last point back to the first
+#   point between retry passes. The default is False.
+#start_reverse: False
+#   If True and alternate_probe_direction is enabled, start the first
+#   probing pass in reverse order. Subsequent retry passes will continue
+#   alternating direction. The default is False.
 ```
 
 ### [skew_correction]

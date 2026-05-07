@@ -869,6 +869,13 @@ class ProbePointsHelper:
         self.use_offsets = config.getboolean(
             "use_probe_xy_offsets", use_offsets
         )
+        self.alternate_probe_direction = config.getboolean(
+            "alternate_probe_direction", False
+        )
+        if self.alternate_probe_direction:
+            self.start_reverse = config.getboolean("start_reverse", False)
+        else:
+            self.start_reverse = False
 
         self.enforce_lift_speed = config.getboolean("enforce_lift_speed", False)
 
@@ -878,6 +885,7 @@ class ProbePointsHelper:
         self.lift_speed = self.speed
         self.probe_offsets = (0.0, 0.0, 0.0)
         self.results = []
+        self._probe_pass_direction_reversed = False
 
     def get_probe_points(self):
         return self.probe_points
@@ -900,6 +908,12 @@ class ProbePointsHelper:
             return gcmd.get_float("LIFT_SPEED", self.lift_speed, above=0.0)
         return self.lift_speed
 
+    def _store_probe_result(self, position):
+        if self._probe_pass_direction_reversed:
+            self.results.insert(0, position)
+        else:
+            self.results.append(position)
+
     def _lift_toolhead(self):
         toolhead = self.printer.lookup_object("toolhead")
         # Lift toolhead
@@ -914,7 +928,13 @@ class ProbePointsHelper:
         toolhead.manual_move([None, None, z_pos], speed)
 
     def _next_pos(self):
-        nextpos = list(self.probe_points[len(self.results)])
+        result_count = len(self.results)
+        if self._probe_pass_direction_reversed:
+            point_index = len(self.probe_points) - result_count - 1
+        else:
+            point_index = result_count
+
+        nextpos = list(self.probe_points[point_index])
         if self.use_offsets:
             nextpos[0] -= self.probe_offsets[0]
             nextpos[1] -= self.probe_offsets[1]
@@ -944,6 +964,10 @@ class ProbePointsHelper:
         self._lift_toolhead()
         if finalize:
             self.results = []
+            if not done and self.alternate_probe_direction:
+                self._probe_pass_direction_reversed = (
+                    not self._probe_pass_direction_reversed
+                )
         if done:
             return True
         # Move to next XY probe point
@@ -964,6 +988,7 @@ class ProbePointsHelper:
             method = "automatic"
 
         self.results = []
+        self._probe_pass_direction_reversed = self.start_reverse
 
         def_move_z = self.default_horizontal_move_z
         self.horizontal_move_z = gcmd.get_float("HORIZONTAL_MOVE_Z", def_move_z)
@@ -998,7 +1023,7 @@ class ProbePointsHelper:
                 break
             pos = probe.run_probe(gcmd, self.retry_session)
             logging.info(f"Probe pos:{pos}")
-            self.results.append(pos)
+            self._store_probe_result(pos)
         probe.multi_probe_end()
         self.retry_session.end()
 
@@ -1013,7 +1038,7 @@ class ProbePointsHelper:
     def _manual_probe_finalize(self, kin_pos):
         if kin_pos is None:
             return
-        self.results.append(kin_pos)
+        self._store_probe_result(kin_pos)
         self._manual_probe_start()
 
 
