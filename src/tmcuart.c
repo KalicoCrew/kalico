@@ -12,6 +12,44 @@
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // DECL_SHUTDOWN
 
+#if CONFIG_MACH_LINUX
+#include <stdio.h> // snprintf
+#include "linux/sim_chip_socket.h" // sim_chip_socket_connect, sim_chip_socket_xfer
+
+struct sim_uart_route { uint8_t oid; char socket_path[64]; int fd; };
+static struct sim_uart_route sim_uart_routes[8];
+static int sim_uart_routes_count = 0;
+
+void
+sim_tmcuart_register_route(uint8_t oid, const char *path) {
+    for (int i = 0; i < sim_uart_routes_count; i++)
+        if (sim_uart_routes[i].oid == oid) {
+            snprintf(sim_uart_routes[i].socket_path,
+                     sizeof(sim_uart_routes[i].socket_path), "%s", path);
+            sim_uart_routes[i].fd = -1;
+            return;
+        }
+    sim_uart_routes[sim_uart_routes_count].oid = oid;
+    snprintf(sim_uart_routes[sim_uart_routes_count].socket_path,
+             sizeof(sim_uart_routes[sim_uart_routes_count].socket_path),
+             "%s", path);
+    sim_uart_routes[sim_uart_routes_count].fd = -1;
+    sim_uart_routes_count++;
+}
+
+static int
+sim_uart_lookup_fd(uint8_t oid) {
+    for (int i = 0; i < sim_uart_routes_count; i++)
+        if (sim_uart_routes[i].oid == oid) {
+            if (sim_uart_routes[i].fd < 0)
+                sim_uart_routes[i].fd =
+                    sim_chip_socket_connect(sim_uart_routes[i].socket_path);
+            return sim_uart_routes[i].fd;
+        }
+    return -1;
+}
+#endif // CONFIG_MACH_LINUX
+
 struct tmcuart_s {
     struct timer timer;
     struct gpio_out tx_pin;
@@ -190,6 +228,25 @@ DECL_COMMAND(command_config_tmcuart,
 void
 command_tmcuart_send(uint32_t *args)
 {
+#if CONFIG_MACH_LINUX
+    {
+        uint8_t oid = args[0];
+        int sfd = sim_uart_lookup_fd(oid);
+        if (sfd >= 0) {
+            uint8_t write_len = args[1];
+            uint8_t *write_data = command_decode_ptr(args[2]);
+            uint8_t read_len = args[3];
+            uint8_t reply[16] = {0};
+            if (read_len > sizeof(reply))
+                shutdown("sim tmcuart read_len too big");
+            if (sim_chip_socket_xfer(sfd, write_data, write_len,
+                                     reply, read_len) != 0)
+                shutdown("sim tmcuart xfer failed");
+            sendf("tmcuart_response oid=%c read=%*s", oid, read_len, reply);
+            return;
+        }
+    }
+#endif // CONFIG_MACH_LINUX
     struct tmcuart_s *t = oid_lookup(args[0], command_config_tmcuart);
     if (t->flags & TU_ACTIVE)
         // Uart is busy - silently drop this request (host should retransmit)
