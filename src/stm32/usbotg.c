@@ -422,6 +422,17 @@ usb_init(void)
     while (!(OTG->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL))
         ;
 
+#if CONFIG_MACH_STM32H7
+    // Power up the embedded FS PHY transceiver BEFORE configuring GUSBCFG
+    // and the endpoints. With the transceiver powered down (GCCFG.PWRDWN=0,
+    // the reset default on H7) the configuration writes don't take effect
+    // properly: the OTG core enumerates but the bulk-OUT path either
+    // doesn't deliver host bytes or duplicates internal state into the
+    // RX FIFO, blocking identify on real hardware. ST HAL (USB_DevInit)
+    // powers the PHY first, then configures.
+    OTG->GCCFG |= USB_OTG_GCCFG_PWRDWN;
+#endif
+
     // Configure USB in full-speed device mode
     OTG->GUSBCFG = (USB_OTG_GUSBCFG_FDMOD | USB_OTG_GUSBCFG_PHYSEL
                     | (6 << USB_OTG_GUSBCFG_TRDT_Pos));
