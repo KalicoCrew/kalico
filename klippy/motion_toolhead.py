@@ -232,6 +232,7 @@ class MotionToolhead(ToolHead):
             self.bridge is None,
         )
         if self.bridge is not None:
+            enable_print_time = self.get_last_move_time()
             bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_move(dx, dy, dz, de, feedrate)
             self._bump_pending_end_time(
@@ -241,10 +242,10 @@ class MotionToolhead(ToolHead):
             # itersolve_check_active path doesn't fire. We trigger
             # active-stepper callbacks ourselves so motors energize
             # before the move starts.
-            self._fire_active_callbacks(dx, dy, dz, de)
+            self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
         self.commanded_pos[:] = newpos
 
-    def _fire_active_callbacks(self, dx, dy, dz, de):
+    def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
         if self.kin is None:
             return
         active_axes = []
@@ -253,10 +254,8 @@ class MotionToolhead(ToolHead):
         if abs(dz) > 1e-9: active_axes.append("z")
         if not active_axes and abs(de) <= 1e-9:
             return
-        try:
-            print_time = self.bridge.get_last_move_time()
-        except Exception:
-            print_time = 0.0
+        if print_time is None:
+            print_time = self.get_last_move_time()
         for s in self.kin.get_steppers():
             if not s._active_callbacks:
                 continue
@@ -304,7 +303,7 @@ class MotionToolhead(ToolHead):
         dx = pos3[0] - self.commanded_pos[0]
         dy = pos3[1] - self.commanded_pos[1]
         dz = pos3[2] - self.commanded_pos[2]
-        self._fire_active_callbacks(dx, dy, dz, 0.0)
+        self._fire_active_callbacks(dx, dy, dz, 0.0, self.get_last_move_time())
         bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_homing_move(pos3, speed, arm_ids)
         self.bridge.wait_moves()
