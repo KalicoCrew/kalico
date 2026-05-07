@@ -186,9 +186,36 @@ volatile uint16_t demux_emit_klipper;
 volatile uint16_t demux_emit_kalico;
 volatile uint16_t demux_emit_error;
 
+// Idle-reset timeout for the demuxer's per-frame state. If a frame starts
+// (sync byte received) but never finishes — e.g. because Linux TTY echo
+// dropped a partial copy of one of our own outbound kalico frames into the
+// RX FIFO during the brief window between USB enumeration and the host
+// applying raw-mode termios — we resync to WAITING after this many idle
+// ticks, regardless of which mid-frame state we got stuck in.
+//
+// 100 ms is well above any legitimate inter-byte gap inside a single host
+// frame on USB-CDC FS (a 64-byte bulk packet is ~5 µs at the wire) and
+// short enough that a stuck demuxer self-heals before the host's identify
+// timeout (15 s) elapses.
+static uint32_t last_byte_time;
+
 void
 kalico_demux_pump(const uint8_t *buf, uint16_t len)
 {
+    if (len == 0)
+        return;
+    uint32_t now = timer_read_time();
+    if (state != DEMUX_S_WAITING) {
+        uint32_t idle_ticks = now - last_byte_time;
+        if (idle_ticks > timer_from_us(100000)) {
+            state = DEMUX_S_WAITING;
+            klipper_pos = 0;
+            klipper_remaining = 0;
+            kalico_pos = 0;
+            kalico_total_len = 0;
+        }
+    }
+    last_byte_time = now;
     for (uint16_t i = 0; i < len; i++) {
         kalico_demux_output_t out = kalico_demux_feed_byte(buf[i]);
         switch (out) {
