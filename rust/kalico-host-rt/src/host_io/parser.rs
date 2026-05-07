@@ -19,7 +19,13 @@ pub struct DataDictionary {
     #[serde(default)]
     pub enumerations: IndexMap<String, IndexMap<String, EnumValue>>,
     pub config:       serde_json::Value,
+    // `version` and `app` are present on Klipper / Kalico firmware but absent
+    // on third-party MCUs that ship a Klipper-compatible identify dict (e.g.
+    // Beacon probe). They are stored for diagnostic logging only — nothing
+    // downstream reads them — so default to empty strings.
+    #[serde(default)]
     pub version:      String,
+    #[serde(default)]
     pub app:          String,
     #[serde(default)]
     pub build_versions: Option<String>,

@@ -109,9 +109,15 @@ class CommandQueryWrapper:
     def _bridge_send(self, data):
         """Bridge-mode send: encode as human-readable string and use bridge_call."""
         # Build the command string from the format name + positional args.
+        # Buffer fields (bytes/bytearray) must be hex-encoded so the parser's
+        # whitespace tokenizer sees a single token and parse_hex_buffer can
+        # decode it back to bytes.
         parts = [self._cmd.name]
         for i, (name, _) in enumerate(self._cmd.param_names):
-            parts.append("%s=%s" % (name, data[i]))
+            val = data[i]
+            if isinstance(val, (bytes, bytearray)):
+                val = val.hex()
+            parts.append("%s=%s" % (name, val))
         msg = " ".join(parts)
         try:
             return self._serial.send_with_response(msg, self._response)
