@@ -287,6 +287,17 @@ class MotionToolhead(ToolHead):
             self.move(newpos, speed)
             return
         pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
+        # Energize motors before the homing move. Same reasoning as in
+        # move(): the bridge runtime synthesizes steps directly, so
+        # klippy's itersolve_check_active path that normally fires
+        # StepperEnablePin.set_enable() never runs. Fire the active
+        # callbacks here too, with deltas computed from the toolhead's
+        # current commanded_pos to the homing target — that's what
+        # is_active_axis(...) needs to filter the right rails.
+        dx = pos3[0] - self.commanded_pos[0]
+        dy = pos3[1] - self.commanded_pos[1]
+        dz = pos3[2] - self.commanded_pos[2]
+        self._fire_active_callbacks(dx, dy, dz, 0.0)
         self.bridge.submit_homing_move(pos3, speed, arm_ids)
         self.bridge.wait_moves()
 
