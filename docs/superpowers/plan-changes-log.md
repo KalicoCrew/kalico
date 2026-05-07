@@ -427,3 +427,24 @@ New `runtime/` no_std crate ships per-axis Engine state machine; `kalico-c-api/`
 **Evidence:** docs/superpowers/specs/2026-05-01-step-7c-bridge-design.md §1.4, §9. Codex review passes 1/2/3 surfaced and confirmed the resolution.
 
 **Evidence:** Tail spec at `docs/superpowers/specs/2026-05-01-step-7c-io-tail-design.md`. Plan at `docs/superpowers/plans/2026-05-01-step-7c-io-tail.md`. Implementation: 14 commits on `sota-motion` (`bd943185d..HEAD` modulo cutover). Parent spec §9 Phase F replaced with back-pointer.
+
+---
+
+## 2026-05-07 — MotionToolhead extends upstream ToolHead
+
+**What changed:** Refactored `klippy/motion_toolhead.py` from a 965-LOC standalone reimplementation of upstream Klipper's `ToolHead` into a 654-LOC subclass. Restored `klippy/toolhead.py` (deleted by `1f3d0d070`) with one surgical extraction (`_load_kinematics` extension point). MotionToolhead now overrides only the 13 bridge-owned methods + 4 sim diagnostics + 4 internal helpers, and inherits the rest from upstream.
+
+**Why:** "Be able to iterate on our custom motion implementation, and for the rest of the printer to work as before." The standalone version was diverging from upstream and forcing small upstream fixes to be re-ported by hand; subclassing makes the upstream module the source of truth for non-motion behavior.
+
+**Side-effect benefits (latent bugs fixed):**
+- `toolhead:set_position` and `toolhead:manual_move` events now fire — `gcode_move.reset_last_position` runs, so gcode-move state stays in sync after probe / safe_z_home / dockable_probe / G92 / SET_GCODE_OFFSET MOVE=1 flows. Verified for set_position via `tools/sim_klippy/test_gcode_move_state_sync.py`. The manual_move-event verification awaits Step 7-D Phase 4 dispatch stability.
+- `RESET_VELOCITY_LIMIT` command is now exposed (was absent under bridge). Verified via `tools/sim_klippy/test_velocity_limits.py`.
+- `SET_VELOCITY_LIMIT` accepts the upstream-broader parameter set (`SQUARE_CORNER_VELOCITY`, `MINIMUM_CRUISE_RATIO`, `ACCEL_TO_DECEL`, per-axis args). Verified.
+
+**Forward-linked items (not addressed by this refactor):**
+- `idle_timeout` evaluates `lookahead_empty` which is always True under bridge — can fire during long bridge moves. Tracked separately.
+- `stats()` override stays for now; switch to `bridge.get_last_move_time()`-based predicate once bridge owns meaningful `print_time`.
+- Pre-existing kalico bug found during review: `input_shaper.cmd_SET_INPUT_SHAPER` reads `self.shapers[0].shaper_type` directly while `AxisInputShaper` stores those attributes under `.params`. Track separately.
+- Pre-existing klippy-in-loop sim issue: `test_phase4_steps.py` fails on `load_curve mcu=0: producer transport: transport timed out` for G1 X10 — both pre-refactor and post-refactor identically. Bring-up fragility in Step 7-D Phase 4, unrelated to this refactor.
+
+**Evidence:** spec at `docs/superpowers/specs/2026-05-07-motion-toolhead-extends-upstream-design.md`, plan at `docs/superpowers/plans/2026-05-07-motion-toolhead-extends-upstream.md`. Tests: `tools/test_motion_toolhead_static.py` (4 PASSED), `tools/sim_klippy/test_velocity_limits.py` (PASS), `tools/sim_klippy/test_gcode_move_state_sync.py` (PASS), `tools/sim_klippy/test_set_position_trapq_safe.py` (PASS), `tools/sim_klippy/test_home_x.py` (PASS — regression check).
