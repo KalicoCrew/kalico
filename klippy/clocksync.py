@@ -218,6 +218,17 @@ class ClockSync:
         return last_clock + clock_diff
 
     def is_active(self):
+        # In bridge mode, the legacy get_clock_timer's raw_send call is a
+        # no-op (the bridge owns the wire and runs its own clock-sync
+        # thread), so queries_pending grows monotonically and never
+        # decrements. The counter is meaningless under bridge mode — fall
+        # through to "active" so callers like mcu._restart_via_command can
+        # still issue reset commands. Without this, FIRMWARE_RESTART logs
+        # "Unable to issue reset command on MCU '<name>'" for every bridge
+        # MCU after the first ~5 seconds, and the only recovery from a
+        # latched MCU shutdown is a power cycle.
+        if self.serial is not None and getattr(self.serial, "_use_bridge", False):
+            return True
         return self.queries_pending <= 4
 
     def dump_debug(self):
