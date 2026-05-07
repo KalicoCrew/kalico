@@ -954,14 +954,26 @@ impl PyMotionBridge {
     #[pyo3(signature = (mcu, freq, offset, last_clock))]
     fn set_clock_est(
         &self,
+        py: Python<'_>,
         mcu: u32,
         freq: f64,
         offset: f64,
         last_clock: u64,
     ) -> PyResult<()> {
+        let host_now_same_epoch: f64 = py
+            .import("time")?
+            .getattr("monotonic")?
+            .call0()?
+            .extract()?;
         let mut router = self.router.lock().unwrap();
         router
-            .set_clock_est(mcu_handle_from_raw(mcu), freq, offset, last_clock)
+            .set_clock_est_rebased(
+                mcu_handle_from_raw(mcu),
+                freq,
+                offset,
+                last_clock,
+                host_now_same_epoch,
+            )
             .map_err(router_err)?;
         self.clock_freqs.lock().unwrap().insert(mcu, freq);
         Ok(())

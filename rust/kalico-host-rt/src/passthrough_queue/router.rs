@@ -326,26 +326,31 @@ impl PassthroughRouter {
     ) -> Result<(), RouterError> {
         let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        // Klipper's `offset` is in its `reactor.monotonic()` frame
-        // (Python perf_counter, anchored at process start). The bridge's
-        // `instant_to_f64` is anchored at its own first-call OnceLock,
-        // which is a different epoch. Using `offset` directly in
-        // `compute_ack_clock`'s `(host_now - clock_offset)` would produce
-        // a hugely negative delta (saturated to 0), which makes the
-        // projection collapse to raw `last_clock`.
-        //
-        // Rebase `offset` into the bridge's frame: at this exact instant
-        // the Klipper-frame "now" is whatever value Klipper just sent,
-        // which is `offset + (last_clock_now_klippy_frame_ - last_clock)
-        // / freq`. We don't know Klipper's "now" directly, but we know
-        // that the host_now we'd compute on the bridge side IS the
-        // co-temporal value; so we rebase by storing
-        //   bridge_offset := instant_to_f64(now) - (offset_received - offset_received) = instant_to_f64(now)
-        // and reinterpret last_clock as "the MCU clock value at this
-        // bridge-frame instant". The projection
-        //   projected = last_clock + (host_now - bridge_offset) * freq
-        // then correctly extrapolates forward.
-        rec.clock_offset = instant_to_f64(self.clock.now());
+        // Keep the host timestamp paired with the MCU clock value supplied
+        // by the clocksync estimate. Rebasing the timestamp to "now" while
+        // retaining an older MCU clock makes projections lag by callback
+        // transit latency.
+        rec.clock_offset = offset;
+        rec.last_clock = last_clock;
+        Ok(())
+    }
+
+    /// Update clock estimation when the incoming host timestamp is in a
+    /// caller-owned monotonic clock domain. `host_now_same_epoch` must be
+    /// sampled in that same domain at the time this method is called; the
+    /// router rebases the estimate into its own deterministic clock domain.
+    pub fn set_clock_est_rebased(
+        &mut self,
+        mcu: McuHandle,
+        freq: f64,
+        offset: f64,
+        last_clock: u64,
+        host_now_same_epoch: f64,
+    ) -> Result<(), RouterError> {
+        let bridge_now = instant_to_f64(self.clock.now());
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        rec.clock_freq = freq;
+        rec.clock_offset = bridge_now - (host_now_same_epoch - offset);
         rec.last_clock = last_clock;
         Ok(())
     }
@@ -615,6 +620,24 @@ mod tests {
         let ack1 = router.compute_ack_clock(mcu).unwrap();
         let diff = (ack1 as i64 - 1_000_000_i64).unsigned_abs();
         assert!(diff <= 1, "expected ~1_000_000, got {ack1}");
+    }
+
+    #[test]
+    fn set_clock_est_rebased_projects_from_foreign_host_epoch() {
+        let (mut router, clock) = make_router();
+        let mcu = router.claim_mcu("mcu");
+
+        router
+            .set_clock_est_rebased(mcu, 1_000_000.0, 990.0, 10_000_000, 1000.0)
+            .unwrap();
+
+        let ack0 = router.compute_ack_clock(mcu).unwrap();
+        assert_eq!(ack0, 20_000_000);
+
+        clock.advance(Duration::from_secs(1));
+        let ack1 = router.compute_ack_clock(mcu).unwrap();
+        let diff = (ack1 as i64 - 21_000_000_i64).unsigned_abs();
+        assert!(diff <= 1, "expected ~21_000_000, got {ack1}");
     }
 
     #[test]
