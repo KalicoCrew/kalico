@@ -4,9 +4,10 @@
 # Move-issuing calls raise NotImplementedError; status/query methods work.
 import logging
 
-from .kinematics import extruder
 from . import chelper
 from . import stepper
+from .kinematics import extruder
+from .toolhead import ToolHead, BUFFER_TIME_START
 
 
 class BridgeKinematics:
@@ -133,99 +134,47 @@ class BridgeKinematics:
         }
 
 
-class MotionToolhead:
-    """Phase 1 toolhead skeleton.
+class MotionToolhead(ToolHead):
+    """Bridge-aware ToolHead subclass.
 
-    Status and query methods function normally. Move-issuing calls
-    raise NotImplementedError until the Rust planner is wired (Phase 2).
+    Inherits the upstream surface unchanged; overrides only the methods
+    where the Rust motion bridge owns the behavior (move issuance,
+    timeline, velocity-limit propagation, sim diagnostics).
+
+    See docs/superpowers/specs/2026-05-07-motion-toolhead-extends-upstream-design.md.
     """
 
     def __init__(self, config):
-        self.printer = config.get_printer()
-        self.reactor = self.printer.get_reactor()
-        self.all_mcus = [
-            m for n, m in self.printer.lookup_objects(module="mcu")
-        ]
-        self.mcu = self.all_mcus[0] if self.all_mcus else None
-
-        # Phase 2: motion bridge handle (Rust planner pipeline).
-        self.bridge = self.printer.lookup_object("motion_bridge", None)
-
-        # Step 7-D §6.2: printer-side active homing-arm registry.
-        # BridgeTriggerDispatch.start/stop register/unregister their
-        # arm_id with us; drip_move reads the set when submitting a
-        # homing-tagged segment so the bridge runtime watches the right
-        # arms during ISR ticks.
+        # Pre-super: attributes that BridgeKinematics or registered handlers
+        # may reference during super().__init__.
+        printer = config.get_printer()
+        self.bridge = printer.lookup_object("motion_bridge", None)
         self.active_homing_arms = set()
-
-        # Position tracking
-        self.commanded_pos = [0.0, 0.0, 0.0, 0.0]
-
-        # Velocity / acceleration config (parsed for compat)
-        self.max_velocity = config.getfloat("max_velocity", above=0.0)
-        self.max_accel = config.getfloat("max_accel", above=0.0)
         self.kinematics_name = config.get("kinematics", "")
+
+        # Run upstream init: trapq alloc, gcode commands (G4/M400/
+        # SET_VELOCITY_LIMIT/RESET_VELOCITY_LIMIT/M204), helper modules
+        # (gcode_move/homing/idle_timeout/statistics/manual_probe/
+        # tuning_tower/garbage_collection), lookahead, flush_timer,
+        # _calc_junction_deviation, _handle_shutdown registration,
+        # extruder = DummyExtruder, AND _load_kinematics → BridgeKinematics.
+        super().__init__(config)
+
+        # Bridge owns the timeline; silence upstream's flush machinery.
+        self.reactor.update_timer(self.flush_timer, self.reactor.NEVER)
+        self.do_kick_flush_timer = False
+
+        # Bridge-only config keys (not parsed by upstream ToolHead).
         self.max_z_velocity = config.getfloat(
             "max_z_velocity", self.max_velocity, above=0.0
         )
         self.max_z_accel = config.getfloat(
             "max_z_accel", self.max_accel, above=0.0
         )
-        min_cruise_ratio = 0.5
-        if config.getfloat("minimum_cruise_ratio", None) is None:
-            req_accel_to_decel = config.getfloat(
-                "max_accel_to_decel", None, above=0.0
-            )
-            if req_accel_to_decel is not None:
-                min_cruise_ratio = 1.0 - min(
-                    1.0, (req_accel_to_decel / self.max_accel)
-                )
-        self.min_cruise_ratio = config.getfloat(
-            "minimum_cruise_ratio", min_cruise_ratio, below=1.0, minval=0.0
-        )
-        self.square_corner_velocity = config.getfloat(
-            "square_corner_velocity", 5.0, minval=0.0
-        )
-        self.max_accel_to_decel = self.max_accel * (1.0 - self.min_cruise_ratio)
 
-        # Extruder placeholder
-        self.extruder = extruder.DummyExtruder(self.printer)
-
-        # Coord type from gcode module
-        gcode = self.printer.lookup_object("gcode")
-        self.Coord = gcode.Coord
-
-        # Step generation stubs
-        self.step_generators = []
-        self.kin_flush_delay = 0.001
-        self.kin_flush_times = []
-        self.print_time = 0.0
-        self.print_stall = 0
-        self._flush_callbacks = []
-
-        # Allocate a real trapq so kinematics/stepper hardware init doesn't
-        # crash on set_trapq(). The bridge owns trajectory; itersolve is idle.
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-
-        # Load kinematics for hardware init (creates stepper objects for TMC,
-        # motors_sync, autotune etc.). Bridge overrides actual motion output.
-        self.kin = BridgeKinematics(self, config, self.trapq)
-
-        # Register gcode commands that must exist for compat
-        gcode.register_command("G4", self.cmd_G4)
-        gcode.register_command("M400", self.cmd_M400)
-        gcode.register_command(
-            "SET_VELOCITY_LIMIT",
-            self.cmd_SET_VELOCITY_LIMIT,
-            desc="Set printer velocity limits",
-        )
-        gcode.register_command("M204", self.cmd_M204)
-        # SET_INPUT_SHAPER is registered by the [input_shaper] module; under
-        # the bridge it routes through bridge.update_shaper directly (see
-        # klippy/extras/input_shaper.py::cmd_SET_INPUT_SHAPER).
-        # Sim-only diagnostic: read stepper step count from MCU runtime.
+        # Sim-only diagnostic gcode commands (only when bridge present).
         if self.bridge is not None:
+            gcode = self.printer.lookup_object("gcode")
             gcode.register_command(
                 "KALICO_SIM_STEP_COUNT",
                 self.cmd_KALICO_SIM_STEP_COUNT,
@@ -247,45 +196,25 @@ class MotionToolhead:
                 desc="[sim] Drive a Linux-MCU GPIO level (test fixture)",
             )
 
-        # Phase 2: initialize the Rust planner once all MCUs are connected.
+        # Planner initialization runs once all MCUs have connected.
         self.printer.register_event_handler(
             "klippy:connect", self._init_planner
         )
 
-        # Load modules that toolhead normally loads
-        for module_name in [
-            "gcode_move",
-            "idle_timeout",
-            "statistics",
-            "manual_probe",
-            "tuning_tower",
-            "garbage_collection",
-            "homing",  # registers G28 — mainline klipper loads this from toolhead.py
-        ]:
-            self.printer.load_object(config, module_name)
-
         logging.info("MotionToolhead: Phase 1 skeleton initialized")
 
     # ------------------------------------------------------------------
-    # Position tracking
+    # Kinematics override
     # ------------------------------------------------------------------
 
-    def get_position(self):
-        return list(self.commanded_pos)
-
-    def set_position(self, newpos, homing_axes=()):
-        self.commanded_pos[:] = newpos
-        if self.bridge is not None:
-            self.bridge.set_position(newpos[0], newpos[1], newpos[2])
-        if homing_axes and self.kin is not None:
-            self.kin.set_position(newpos, homing_axes)
+    def _load_kinematics(self, config):
+        return BridgeKinematics(self, config, self.trapq)
 
     # ------------------------------------------------------------------
-    # Move commands — raise until Phase 2
+    # Move issuance — bridge owns these
     # ------------------------------------------------------------------
 
     def move(self, newpos, speed):
-        import logging
         dx = newpos[0] - self.commanded_pos[0]
         dy = newpos[1] - self.commanded_pos[1]
         dz = newpos[2] - self.commanded_pos[2]
@@ -294,18 +223,17 @@ class MotionToolhead:
         if abs(dz) > 1e-9 and abs(dx) < 1e-9 and abs(dy) < 1e-9:
             feedrate = min(feedrate, self.max_z_velocity)
         logging.info(
-            "[bridge-trace] move: newpos=%s speed=%s dx=%.4f dy=%.4f dz=%.4f de=%.4f feedrate=%.4f bridge_is_none=%s",
-            list(newpos), speed, dx, dy, dz, de, feedrate, self.bridge is None,
+            "[bridge-trace] move: newpos=%s speed=%s dx=%.4f dy=%.4f "
+            "dz=%.4f de=%.4f feedrate=%.4f bridge_is_none=%s",
+            list(newpos), speed, dx, dy, dz, de, feedrate,
+            self.bridge is None,
         )
         if self.bridge is not None:
             self.bridge.submit_move(dx, dy, dz, de, feedrate)
-            # Fire stepper active_callbacks for axes that actually move.
-            # In legacy mode klippy's stepper.generate_steps() drives this
-            # via _itersolve_check_active, which triggers
-            # StepperEnablePin.set_enable() to energize the motors. The
-            # bridge bypasses generate_steps entirely (the kalico runtime
-            # synthesizes steps), so we fire the callbacks here ourselves
-            # so motors actually energize before the move starts.
+            # Bridge synthesizes steps in the runtime; klippy's normal
+            # itersolve_check_active path doesn't fire. We trigger
+            # active-stepper callbacks ourselves so motors energize
+            # before the move starts.
             self._fire_active_callbacks(dx, dy, dz, de)
         self.commanded_pos[:] = newpos
 
@@ -318,29 +246,49 @@ class MotionToolhead:
         if abs(dz) > 1e-9: active_axes.append("z")
         if not active_axes and abs(de) <= 1e-9:
             return
-        # commanded_pos is in mm; we need a print_time to schedule the
-        # enable pulse. Use the bridge's last move time to keep the enable
-        # transition just before the move.
         try:
             print_time = self.bridge.get_last_move_time()
         except Exception:
             print_time = 0.0
-        for stepper in self.kin.get_steppers():
-            if not stepper._active_callbacks:
+        for s in self.kin.get_steppers():
+            if not s._active_callbacks:
                 continue
-            if not any(stepper.is_active_axis(a) for a in active_axes):
+            if not any(s.is_active_axis(a) for a in active_axes):
                 continue
-            cbs = stepper._active_callbacks
-            stepper._active_callbacks = []
+            cbs = s._active_callbacks
+            s._active_callbacks = []
             for cb in cbs:
                 cb(print_time)
 
-    def manual_move(self, coord, speed):
-        curpos = list(self.commanded_pos)
-        for i in range(len(coord)):
-            if coord[i] is not None:
-                curpos[i] = coord[i]
-        self.move(curpos, speed)
+    def drip_move(self, newpos, speed, drip_completion):
+        # Step 7-D §6.2: bridge-aware single-segment homing.
+        # Endstops were armed upstream by homing.py via
+        # mcu_endstop.home_start; each BridgeTriggerDispatch.start
+        # registered its arm_id with self.active_homing_arms. Submit one
+        # homing-tagged segment; on trip the runtime ISR aborts and
+        # freezes the curve evaluator. wait_moves() returns when the
+        # segment retires (Completed or Tripped).
+        logging.info(
+            "[bridge-trace] drip_move entered: newpos=%s speed=%s "
+            "bridge_is_none=%s drip_test=%s active_homing_arms=%s",
+            list(newpos), speed, self.bridge is None,
+            (drip_completion.test()
+             if drip_completion is not None else None),
+            sorted(self.active_homing_arms),
+        )
+        if self.bridge is None:
+            return
+        if drip_completion is not None and drip_completion.test():
+            return
+        arm_ids = list(self.active_homing_arms)
+        if not arm_ids:
+            # No bridge endstops armed — fall back to a regular move so
+            # bring-up doesn't crash on file-output / legacy paths.
+            self.move(newpos, speed)
+            return
+        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
+        self.bridge.submit_homing_move(pos3, speed, arm_ids)
+        self.bridge.wait_moves()
 
     def dwell(self, delay):
         if self.bridge is not None:
@@ -350,188 +298,31 @@ class MotionToolhead:
         if self.bridge is not None:
             self.bridge.wait_moves()
 
-    def drip_move(self, newpos, speed, drip_completion):
-        # Step 7-D §6.2: collapse to bridge-aware single-segment homing.
-        # Endstops were armed upstream by homing.py via
-        # mcu_endstop.home_start; each BridgeTriggerDispatch.start
-        # registered its arm_id with self.active_homing_arms. Submit one
-        # homing-tagged segment; on trip the runtime ISR aborts and
-        # freezes the curve evaluator. wait_moves() returns when the
-        # segment retires (Completed or Tripped). commanded_pos
-        # reconciliation happens in MCU_endstop.home_wait via the trip
-        # snapshot, not here.
-        import logging
-        logging.info(
-            "[bridge-trace] drip_move entered: newpos=%s speed=%s "
-            "bridge_is_none=%s drip_test=%s active_homing_arms=%s",
-            list(newpos), speed, self.bridge is None,
-            (drip_completion.test() if drip_completion is not None else None),
-            sorted(self.active_homing_arms),
-        )
-        if self.bridge is None:
-            logging.info("[bridge-trace] drip_move: bridge is None, returning")
-            return
-        # If a drip_completion was already signalled (e.g. synchronous
-        # AlreadyTripped at arm time), skip the homing segment submission.
-        # The endstop terminal was already delivered in home_start; there
-        # is nothing for the MCU segment to contribute.
-        if drip_completion is not None and drip_completion.test():
-            logging.info("[bridge-trace] drip_move: drip_completion already signalled, returning")
-            return
-        arm_ids = list(self.active_homing_arms)
-        if not arm_ids:
-            # No bridge endstops armed (e.g. file-output simulation, or
-            # legacy code path). Fall back to a regular move so bring-up
-            # doesn't crash.
-            logging.info("[bridge-trace] drip_move: no arm_ids, falling back to regular move")
-            self.move(newpos, speed)
-            return
-        # Pad / truncate to 3 axes for the bridge submit_homing_move
-        # signature (newpos[:3]); E follows shaped XY per MVP.
-        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
-        logging.info(
-            "[bridge-trace] drip_move: calling submit_homing_move(pos3=%s speed=%s arm_ids=%s)",
-            pos3, speed, arm_ids,
-        )
-        self.bridge.submit_homing_move(pos3, speed, arm_ids)
-        self.bridge.wait_moves()
-        logging.info("[bridge-trace] drip_move: submit_homing_move + wait_moves returned")
-
-    # ------------------------------------------------------------------
-    # Extruder
-    # ------------------------------------------------------------------
-
-    def set_extruder(self, ext, extrude_pos):
-        self.extruder = ext
-        self.commanded_pos[3] = extrude_pos
-
-    def get_extruder(self):
-        return self.extruder
-
-    # ------------------------------------------------------------------
-    # Kinematics
-    # ------------------------------------------------------------------
-
-    def get_kinematics(self):
-        return self.kin
-
-    def get_trapq(self):
-        return self.trapq
-
-    # ------------------------------------------------------------------
-    # Step generation
-    # ------------------------------------------------------------------
-
-    def register_step_generator(self, handler):
-        self.step_generators.append(handler)
-
-    def note_step_generation_scan_time(self, delay, old_delay=0.0):
-        if old_delay and old_delay in self.kin_flush_times:
-            self.kin_flush_times.remove(old_delay)
-        if delay:
-            self.kin_flush_times.append(delay)
-
-    def register_lookahead_callback(self, callback):
-        callback(self.get_last_move_time())
-
-    def note_mcu_movequeue_activity(self, mq_time, set_step_gen_time=False):
-        pass
-
-    # ------------------------------------------------------------------
-    # Flush
-    # ------------------------------------------------------------------
-
     def flush_step_generation(self):
+        # Bridge owns flush; upstream's body operates on lookahead +
+        # trapq which we bypass.
         pass
 
     def get_last_move_time(self):
-        # Mainline klippy clamps to mcu.estimated_print_time so that
-        # legacy MCU commands scheduled at "next available print_time"
-        # don't land in the past (which the legacy serialqueue rejects
-        # as "Timer too close"). The bridge's own queue starts at 0.0
-        # and only advances when moves are submitted, so without this
-        # clamp any TMC/SPI/digital_out command issued before the first
-        # move shutdowns the MCU.
-        # Mainline klipper keeps print_time ahead of the MCU's clock by a
-        # buffer (~BUFFER_TIME_START = 0.250s) so commands queued at
-        # "the next available print_time" always land in the MCU's future.
-        # The bridge has its own queue and doesn't drive this; we floor at
-        # estimated_print_time + lead to keep legacy MCU commands valid.
-        BUFFER_LEAD = 0.250
+        # Floor at mcu.estimated_print_time + BUFFER_TIME_START so legacy
+        # MCU commands (TMC, SPI, digital_out) issued before the first
+        # bridge move don't land in the MCU's past.
         est = 0.0
         if self.mcu is not None:
             est = self.mcu.estimated_print_time(self.reactor.monotonic())
-        floor = est + BUFFER_LEAD
+        floor = est + BUFFER_TIME_START
         if self.bridge is not None:
             return max(self.bridge.get_last_move_time(), floor)
         return floor
 
-    # ------------------------------------------------------------------
-    # Velocity limits
-    # ------------------------------------------------------------------
-
-    def get_max_velocity(self):
-        return self.max_velocity, self.max_accel
-
-    def limit_next_junction_speed(self, speed):
+    def note_mcu_movequeue_activity(self, mq_time, set_step_gen_time=False):
+        # Bridge has its own queue; upstream's body would re-arm the
+        # silenced flush_timer.
         pass
 
     # ------------------------------------------------------------------
-    # Status
+    # Velocity-limit propagation — bridge mirrors host-side updates
     # ------------------------------------------------------------------
-
-    def get_status(self, eventtime):
-        res = {}
-        if self.kin is not None and hasattr(self.kin, "get_status"):
-            res.update(self.kin.get_status(eventtime))
-        est = 0.0
-        if self.mcu is not None:
-            est = self.mcu.estimated_print_time(eventtime)
-        res.update(
-            {
-                "print_time": self.print_time,
-                "stalls": self.print_stall,
-                "estimated_print_time": est,
-                "extruder": self.extruder.get_name(),
-                "position": self.Coord(*self.commanded_pos),
-                "max_velocity": self.max_velocity,
-                "max_accel": self.max_accel,
-                "minimum_cruise_ratio": self.min_cruise_ratio,
-                "square_corner_velocity": self.square_corner_velocity,
-            },
-        )
-        return res
-
-    def stats(self, eventtime):
-        return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
-            self.print_time,
-            self.print_stall,
-        )
-
-    def check_busy(self, eventtime):
-        est = 0.0
-        if self.mcu is not None:
-            est = self.mcu.estimated_print_time(eventtime)
-        return self.print_time, est, True
-
-    # ------------------------------------------------------------------
-    # Misc
-    # ------------------------------------------------------------------
-
-    def motor_off(self):
-        pass
-
-    # Homing helpers expected by klippy/extras/homing.py.
-    def get_active_rails_for_axis(self, axis_name):
-        # Only XYZ — extruder rails are not part of homing-current logic.
-        if not axis_name or axis_name[0] not in "xyz":
-            return []
-        prefix = axis_name[0]
-        return [
-            rail
-            for rail in self.kin.rails
-            if (rail.get_name(short=True) or "").startswith(prefix)
-        ]
 
     def set_accel(self, accel):
         if accel is not None and accel > 0.0:
@@ -540,146 +331,38 @@ class MotionToolhead:
                 self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     def reset_accel(self):
-        # Restore from configured value. Read once at __init__ time would be
-        # cleaner; this approximation re-uses the current value (homing.py
-        # only calls reset after a matching set, and we don't override across
-        # nested homes).
         if self.bridge is not None:
             self.bridge.update_limits(self.max_velocity, self.max_accel)
 
-    def register_move_handler(self, handler):
-        pass
-
-    # ------------------------------------------------------------------
-    # G-code commands
-    # ------------------------------------------------------------------
-
-    def cmd_G4(self, gcmd):
-        delay = gcmd.get_float("P", 0.0, minval=0.0) / 1000.0
-        self.dwell(delay)
-
-    def cmd_M400(self, gcmd):
-        self.wait_moves()
-
     def cmd_SET_VELOCITY_LIMIT(self, gcmd):
-        max_velocity = gcmd.get_float("VELOCITY", None, above=0.0)
-        max_accel = gcmd.get_float("ACCEL", None, above=0.0)
-        if max_velocity is not None:
-            self.max_velocity = max_velocity
-        if max_accel is not None:
-            self.max_accel = max_accel
-        if self.bridge is not None and (
-            max_velocity is not None or max_accel is not None
-        ):
+        super().cmd_SET_VELOCITY_LIMIT(gcmd)
+        if self.bridge is not None:
             self.bridge.update_limits(self.max_velocity, self.max_accel)
 
-    def cmd_KALICO_SIM_STEP_COUNT(self, gcmd):
-        """[sim] Query cumulative step count for stepper OID from the MCU runtime."""
-        oid = gcmd.get_int("OID", 0, minval=0)
-        if self.bridge is None or self.mcu is None:
-            raise gcmd.error("bridge not available")
-        handle = getattr(self.mcu, "_bridge_handle", None)
-        if handle is None:
-            raise gcmd.error("bridge handle not set")
-        try:
-            resp = self.bridge.bridge_call(
-                handle,
-                "runtime_sim_stepper_count_query oid=%d" % oid,
-                "runtime_sim_stepper_count_response",
-                timeout_s=5.0,
-            )
-            count = resp.get("count", 0)
-            gcmd.respond_info(
-                "[bridge-async] KALICO_SIM_STEP_COUNT oid=%d count=%d" % (oid, count)
-            )
-        except Exception as e:
-            raise gcmd.error("step count query failed: %s" % e)
-
-    def cmd_KALICO_SIM_AXIS_STEPS(self, gcmd):
-        """[sim] Query configured steps_per_mm for axis OID."""
-        oid = gcmd.get_int("OID", 0, minval=0, maxval=3)
-        if self.bridge is None or self.mcu is None:
-            raise gcmd.error("bridge not available")
-        handle = getattr(self.mcu, "_bridge_handle", None)
-        if handle is None:
-            raise gcmd.error("bridge handle not set")
-        try:
-            resp = self.bridge.bridge_call(
-                handle,
-                "runtime_sim_axis_steps_query oid=%d" % oid,
-                "runtime_sim_axis_steps_response",
-                timeout_s=5.0,
-            )
-            milli = resp.get("milli_spm", 0)
-            gcmd.respond_info(
-                "[bridge-async] KALICO_SIM_AXIS_STEPS oid=%d steps_per_mm=%.3f"
-                % (oid, milli / 1000.0)
-            )
-        except Exception as e:
-            raise gcmd.error("axis steps query failed: %s" % e)
-
-    def cmd_KALICO_SIM_AXIS_ACCUM(self, gcmd):
-        oid = gcmd.get_int("OID", 0, minval=0, maxval=3)
-        if self.bridge is None or self.mcu is None:
-            raise gcmd.error("bridge not available")
-        handle = getattr(self.mcu, "_bridge_handle", None)
-        if handle is None:
-            raise gcmd.error("bridge handle not set")
-        try:
-            resp = self.bridge.bridge_call(
-                handle,
-                "runtime_sim_axis_accum_query oid=%d" % oid,
-                "runtime_sim_axis_accum_response",
-                timeout_s=5.0,
-            )
-            milli = resp.get("milli", 0)
-            gcmd.respond_info(
-                "[bridge-async] KALICO_SIM_AXIS_ACCUM oid=%d accum=%.3f"
-                % (oid, milli / 1000.0)
-            )
-        except Exception as e:
-            raise gcmd.error("axis accum query failed: %s" % e)
-
-    def cmd_KALICO_SIM_ENDSTOP_SET_PIN(self, gcmd):
-        """[sim] Drive a Linux-MCU GPIO level via the firmware shim.
-
-        The Linux MCU has no real hardware to assert an endstop with;
-        `command_runtime_sim_endstop_set_pin` injects a level into the
-        firmware's PIN_LEVELS table so test fixtures can simulate trips.
-        """
-        gpio = gcmd.get_int("GPIO", minval=0, maxval=0xFFFF)
-        level = gcmd.get_int("LEVEL", minval=0, maxval=1)
-        if self.bridge is None or self.mcu is None:
-            raise gcmd.error("bridge not available")
-        handle = getattr(self.mcu, "_bridge_handle", None)
-        if handle is None:
-            raise gcmd.error("bridge handle not set")
-        try:
-            resp = self.bridge.bridge_call(
-                handle,
-                "runtime_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
-                "runtime_sim_endstop_set_pin_response",
-                timeout_s=5.0,
-            )
-            gcmd.respond_info(
-                "[bridge-async] KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d result=%d"
-                % (gpio, level, resp.get("result", -1))
-            )
-        except Exception as e:
-            raise gcmd.error("endstop set_pin failed: %s" % e)
+    def cmd_RESET_VELOCITY_LIMIT(self, gcmd):
+        super().cmd_RESET_VELOCITY_LIMIT(gcmd)
+        if self.bridge is not None:
+            self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     # ------------------------------------------------------------------
-    # Phase 2: planner initialization
+    # Stats — bridge-aware silence (see spec §"stats")
+    # ------------------------------------------------------------------
+
+    def stats(self, eventtime):
+        return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
+            self.print_time, self.print_stall,
+        )
+
+    # ------------------------------------------------------------------
+    # Bridge-only: planner init, ConfigureAxes, credit-freed wiring
     # ------------------------------------------------------------------
 
     def _init_planner(self):
         if self.bridge is None:
             return
-        # Locate the two MVP MCUs by name. The first-print topology is:
-        #   - "mcu" (Octopus) drives X+Y
-        #   - "mcu z"  (or first non-primary MCU) drives Z
-        # If only one MCU is configured, reuse its handle for Z so init
-        # succeeds during single-MCU bring-up.
+        # Locate the two MVP MCUs by name. First-print topology:
+        #   "mcu" (Octopus) drives X+Y; "mcu z" drives Z.
+        # If only one MCU is configured, reuse its handle for Z.
         octopus = None
         f446 = None
         bridge_mcus = []
@@ -740,18 +423,11 @@ class MotionToolhead:
                 octopus,
                 f446,
             )
-            # Register the kalico_credit_freed handler on every bridge-MCU's
-            # SerialReader. The Rust slot pool only releases curve slots when
-            # this event is forwarded into bridge.on_credit_freed; without
-            # this wiring slots leak forever and Phase-4 multi-piece dispatch
-            # would starve after CURVE_POOL_N segments. The handler must run
-            # per-MCU because slot pools are per-MCU on the Rust side.
             self._configure_axes_per_mcu(bridge_mcus)
             self._register_credit_freed_handlers(bridge_mcus)
-            # The local Linux sim harness commonly sends a bare movement
-            # command (`run_local.sh "G1 X10 F1000"`) without a preceding
-            # SET_KINEMATIC_POSITION/G28. Keep that source-only smoke path
-            # moving by marking only the single-MCU local sim runtime homed.
+            # The local Linux sim harness sometimes sends a bare movement
+            # command without a preceding G28. Mark single-MCU local sim
+            # runtime homed so smoke tests keep passing.
             if len(bridge_mcus) == 1:
                 _, mcu_obj, mcu_handle = bridge_mcus[0]
                 if getattr(mcu_obj, "_serialport", None) == "/tmp/klipper_sim_socket":
@@ -776,7 +452,7 @@ class MotionToolhead:
         if kin == "corexy":
             kin_tag = 0
             slot_names = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
-            awd_default = 0b0011  # both A and B are driven on every move
+            awd_default = 0b0011
         elif kin == "cartesian":
             kin_tag = 1
             slot_names = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
@@ -788,8 +464,6 @@ class MotionToolhead:
             )
             return
 
-        # Collect MCU_stepper objects from `force_move`, which registers
-        # every stepper by its config-section name during printer setup.
         steppers_by_slot = {}
         fm = self.printer.lookup_object("force_move", None)
         if fm is not None:
@@ -805,9 +479,6 @@ class MotionToolhead:
                 s = steppers_by_slot.get(slot)
                 if s is None:
                     continue
-                # Filter by MCU: only include steppers whose mcu matches this
-                # bridge handle, so multi-MCU configs map cleanly. The single-
-                # MCU sim path falls through this filter trivially.
                 if len(bridge_mcus) > 1:
                     try:
                         s_mcu = s.get_mcu()
@@ -824,17 +495,12 @@ class MotionToolhead:
             if present_mask == 0:
                 logging.info(
                     "MotionToolhead: no steppers matched MCU %s; "
-                    "skipping configure_axes",
-                    name,
+                    "skipping configure_axes", name,
                 )
                 continue
             self.bridge.configure_axes(
-                mcu_handle,
-                kin_tag,
-                present_mask,
-                awd_mask,
-                invert_mask,
-                steps_per_mm,
+                mcu_handle, kin_tag, present_mask, awd_mask,
+                invert_mask, steps_per_mm,
             )
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "
@@ -843,21 +509,14 @@ class MotionToolhead:
             )
 
     def _register_credit_freed_handlers(self, bridge_mcus):
-        """Register a kalico_credit_freed handler on each bridge-attached MCU.
+        """Register a kalico_credit_freed handler on each bridge MCU.
 
-        The dispatch path is:
-
-            MCU emits `kalico_credit_freed` (src/runtime_tick.c)
-              -> Rust host_io lifts to `RuntimeEvent::CreditFreed`
-              -> bridge.try_recv_event surfaces dict {type=credit_freed,...}
-              -> serialhdl._bridge_event_poller renames to
-                 "kalico_credit_freed" and dispatches via self.handlers
-              -> THIS handler -> bridge.on_credit_freed(mcu_handle, ...)
-              -> Rust SlotPool.retire_through_segment + CreditCounter sync
-
-        The mcu_handle is captured in the closure per MCU so we don't need
-        to thread it through the params dict. Exceptions are caught and
-        logged — a credit-freed quirk should never crash the reactor.
+        Dispatch path: MCU emits kalico_credit_freed
+        -> Rust host_io lifts to RuntimeEvent::CreditFreed
+        -> bridge.try_recv_event surfaces dict
+        -> serialhdl._bridge_event_poller renames to "kalico_credit_freed"
+        -> THIS handler -> bridge.on_credit_freed
+        -> Rust SlotPool.retire_through_segment + CreditCounter sync.
         """
         bridge = self.bridge
         for name, mcu_obj, mcu_handle in bridge_mcus:
@@ -865,8 +524,7 @@ class MotionToolhead:
             if serial is None or not hasattr(serial, "register_response"):
                 logging.warning(
                     "MotionToolhead: bridge MCU '%s' has no SerialReader; "
-                    "kalico_credit_freed handler not registered",
-                    name,
+                    "kalico_credit_freed handler not registered", name,
                 )
                 continue
             handle = mcu_handle
@@ -880,7 +538,6 @@ class MotionToolhead:
                     result = _bridge.on_credit_freed(
                         _handle, retired, free_slots,
                     )
-                    # New return shape: (n_released, completed_arm_or_None).
                     if isinstance(result, tuple) and len(result) >= 2:
                         completed_arm = result[1]
                         if completed_arm is not None:
@@ -897,77 +554,101 @@ class MotionToolhead:
                 "MCU '%s' (handle=%s)", name, mcu_handle,
             )
 
-    def cmd_M204(self, gcmd):
-        accel = gcmd.get_float("S", None, above=0.0)
-        if accel is None:
-            p = gcmd.get_float("P", None, above=0.0)
-            t = gcmd.get_float("T", None, above=0.0)
-            if p is not None and t is not None:
-                accel = min(p, t)
-        if accel is not None:
-            self.max_accel = accel
+    # ------------------------------------------------------------------
+    # Sim-only diagnostic gcode commands
+    # ------------------------------------------------------------------
 
+    def cmd_KALICO_SIM_STEP_COUNT(self, gcmd):
+        oid = gcmd.get_int("OID", 0, minval=0)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "runtime_sim_stepper_count_query oid=%d" % oid,
+                "runtime_sim_stepper_count_response",
+                timeout_s=5.0,
+            )
+            count = resp.get("count", 0)
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_STEP_COUNT oid=%d count=%d"
+                % (oid, count)
+            )
+        except Exception as e:
+            raise gcmd.error("step count query failed: %s" % e)
 
-# ---------------------------------------------------------------------------
-# Compat shim — symbols previously exported by klippy/toolhead.py
-#
-# trad_rack.py subclasses ToolHead and references LookAheadQueue,
-# BUFFER_TIME_HIGH, and SDS_CHECK_TIME.  Provide them here so trad_rack can
-# import from motion_toolhead instead of the deleted toolhead module.
-# ---------------------------------------------------------------------------
+    def cmd_KALICO_SIM_AXIS_STEPS(self, gcmd):
+        oid = gcmd.get_int("OID", 0, minval=0, maxval=3)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "runtime_sim_axis_steps_query oid=%d" % oid,
+                "runtime_sim_axis_steps_response",
+                timeout_s=5.0,
+            )
+            milli = resp.get("milli_spm", 0)
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_AXIS_STEPS oid=%d "
+                "steps_per_mm=%.3f" % (oid, milli / 1000.0)
+            )
+        except Exception as e:
+            raise gcmd.error("axis steps query failed: %s" % e)
 
-LOOKAHEAD_FLUSH_TIME = 0.250
-BUFFER_TIME_LOW = 1.0
-BUFFER_TIME_HIGH = 2.0
-BUFFER_TIME_START = 0.250
-SDS_CHECK_TIME = 0.001  # step+dir+step filter in stepcompress.c
+    def cmd_KALICO_SIM_AXIS_ACCUM(self, gcmd):
+        oid = gcmd.get_int("OID", 0, minval=0, maxval=3)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "runtime_sim_axis_accum_query oid=%d" % oid,
+                "runtime_sim_axis_accum_response",
+                timeout_s=5.0,
+            )
+            milli = resp.get("milli", 0)
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_AXIS_ACCUM oid=%d accum=%.3f"
+                % (oid, milli / 1000.0)
+            )
+        except Exception as e:
+            raise gcmd.error("axis accum query failed: %s" % e)
 
-
-class LookAheadQueue:
-    """Minimal lookahead queue used by TradRackToolHead.
-
-    Mirrors the public interface of the original toolhead.LookAheadQueue so
-    that trad_rack.py can operate without importing the deleted toolhead
-    module.
-    """
-
-    def __init__(self, toolhead):
-        self.toolhead = toolhead
-        self.queue = []
-        self.junction_flush = LOOKAHEAD_FLUSH_TIME
-
-    def reset(self):
-        del self.queue[:]
-        self.junction_flush = LOOKAHEAD_FLUSH_TIME
-
-    def set_flush_time(self, flush_time):
-        self.junction_flush = flush_time
-
-    def get_last(self):
-        if self.queue:
-            return self.queue[-1]
-        return None
-
-    def flush(self, lazy=False):
-        # Phase-1 stub: no itersolve-based flush needed.
-        pass
-
-    def add_move(self, move):
-        self.queue.append(move)
-
-
-# Allow code that does ``toolhead.ToolHead`` after aliasing this module
-# as ``toolhead`` to resolve correctly.
-ToolHead = MotionToolhead
+    def cmd_KALICO_SIM_ENDSTOP_SET_PIN(self, gcmd):
+        gpio = gcmd.get_int("GPIO", minval=0, maxval=0xFFFF)
+        level = gcmd.get_int("LEVEL", minval=0, maxval=1)
+        if self.bridge is None or self.mcu is None:
+            raise gcmd.error("bridge not available")
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if handle is None:
+            raise gcmd.error("bridge handle not set")
+        try:
+            resp = self.bridge.bridge_call(
+                handle,
+                "runtime_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
+                "runtime_sim_endstop_set_pin_response",
+                timeout_s=5.0,
+            )
+            gcmd.respond_info(
+                "[bridge-async] KALICO_SIM_ENDSTOP_SET_PIN "
+                "gpio=%d level=%d result=%d"
+                % (gpio, level, resp.get("result", -1))
+            )
+        except Exception as e:
+            raise gcmd.error("endstop set_pin failed: %s" % e)
 
 
 def add_printer_objects(config):
-    """Register the MotionToolhead (and extruder) with the printer.
-
-    Called from printer.py during printer object setup, replacing the
-    equivalent function from the deleted toolhead.py.
-    """
-    from .kinematics import extruder
-
+    """Register the MotionToolhead (and extruder) with the printer."""
     config.get_printer().add_object("toolhead", MotionToolhead(config))
     extruder.add_printer_objects(config)
