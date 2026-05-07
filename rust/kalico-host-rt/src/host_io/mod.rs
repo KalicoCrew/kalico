@@ -214,6 +214,31 @@ impl KalicoHostIo {
             if fd < 0 {
                 return Err(TransportError::Io(std::io::Error::last_os_error()));
             }
+            // Apply cfmakeraw — required for real CDC ACM TTYs (/dev/ttyACM*).
+            // libc::open leaves the TTY in cooked mode (ECHO=on, ICANON=on,
+            // ICRNL=on). On firmware that emits continuous unsolicited frames
+            // (kalico_status @ 10 Hz on H7) the kernel echoes every device→host
+            // byte back to the device's bulk-OUT endpoint, drowning identify
+            // and corrupting the on-firmware demux state. PTYs are usually OK
+            // either way (no flood), but real CDC ACM is not — so apply raw
+            // mode unconditionally on this path. tcgetattr returns ENOTTY for
+            // non-TTY fds (regular files / pipes), in which case we silently
+            // skip raw setup so non-TTY callers (e.g. fixtures using fifos)
+            // still work.
+            #[allow(unsafe_code)]
+            unsafe {
+                let mut tio: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(fd, &mut tio) == 0 {
+                    libc::cfmakeraw(&mut tio);
+                    if libc::tcsetattr(fd, libc::TCSANOW, &tio) != 0 {
+                        let err = std::io::Error::last_os_error();
+                        libc::close(fd);
+                        return Err(TransportError::Io(std::io::Error::other(
+                            format!("tcsetattr({path}): {err}"),
+                        )));
+                    }
+                }
+            }
             unsafe { Box::new(serialport::TTYPort::from_raw_fd(fd)) }
         };
         Self::open_with_port(port_box, config)
