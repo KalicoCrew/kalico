@@ -13,4 +13,9 @@ int sim_chip_socket_connect(const char *path);
 int sim_chip_socket_xfer(int fd, const uint8_t *tx, size_t tx_len,
                          uint8_t *rx, size_t rx_len);
 
+// Register a SPI bus → Unix-socket-path mapping. Called from the
+// runtime_sim_route_spi command handler; takes effect on the next
+// spi_setup that resolves to this bus.
+void sim_spi_register_route(uint32_t bus, const char *path);
+
 #endif

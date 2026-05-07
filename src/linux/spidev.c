@@ -14,10 +14,14 @@
 #include "gpio.h" // spi_setup
 #include "internal.h" // report_errno
 #include "sched.h" // shutdown
+#include "sim_chip_socket.h" // sim_chip_socket_connect, sim_chip_socket_xfer
 
 #define SPIBUS(chip, pin) (((chip)<<8) + (pin))
 #define SPIBUS_TO_BUS(spi_bus) ((spi_bus) >> 8)
 #define SPIBUS_TO_DEV(spi_bus) ((spi_bus) & 0xff)
+
+// sim_spi* bus range starts at 0xFF00; 16 slots mirrors the spidevN.0 count
+#define SIM_SPI_BASE 0xFF00
 
 DECL_ENUMERATION_RANGE("spi_bus", "spidev0.0", SPIBUS(0, 0), 16);
 DECL_ENUMERATION_RANGE("spi_bus", "spidev1.0", SPIBUS(1, 0), 16);
@@ -27,6 +31,7 @@ DECL_ENUMERATION_RANGE("spi_bus", "spidev4.0", SPIBUS(4, 0), 16);
 DECL_ENUMERATION_RANGE("spi_bus", "spidev5.0", SPIBUS(5, 0), 16);
 DECL_ENUMERATION_RANGE("spi_bus", "spidev6.0", SPIBUS(6, 0), 16);
 DECL_ENUMERATION_RANGE("spi_bus", "spidev7.0", SPIBUS(7, 0), 16);
+DECL_ENUMERATION_RANGE("spi_bus", "sim_spi0", SIM_SPI_BASE, 16);
 
 struct spi_s {
     uint32_t bus, dev;
@@ -34,6 +39,45 @@ struct spi_s {
 };
 static struct spi_s devices[16];
 static int devices_count;
+
+// --- sim SPI routing table ---
+// fd is populated by spi_setup() after sim_chip_socket_connect(); used by
+// spi_transfer() to identify sim buses without re-entering connect().
+struct sim_spi_route { uint32_t bus; char socket_path[64]; int fd; };
+static struct sim_spi_route sim_routes[16];
+static int sim_routes_count = 0;
+
+static struct sim_spi_route *
+sim_spi_route_for_bus(uint32_t bus) {
+    for (int i = 0; i < sim_routes_count; i++)
+        if (sim_routes[i].bus == bus) return &sim_routes[i];
+    return NULL;
+}
+
+static int
+sim_spi_fd_is_sim(int fd) {
+    for (int i = 0; i < sim_routes_count; i++)
+        if (sim_routes[i].fd == fd) return 1;
+    return 0;
+}
+
+void
+sim_spi_register_route(uint32_t bus, const char *path) {
+    for (int i = 0; i < sim_routes_count; i++)
+        if (sim_routes[i].bus == bus) {
+            snprintf(sim_routes[i].socket_path,
+                     sizeof(sim_routes[i].socket_path), "%s", path);
+            sim_routes[i].fd = -1;
+            return;
+        }
+    if (sim_routes_count >= (int)ARRAY_SIZE(sim_routes))
+        shutdown("Too many sim SPI routes");
+    snprintf(sim_routes[sim_routes_count].socket_path,
+             sizeof(sim_routes[sim_routes_count].socket_path), "%s", path);
+    sim_routes[sim_routes_count].bus = bus;
+    sim_routes[sim_routes_count].fd = -1;
+    sim_routes_count++;
+}
 
 static int
 spi_open(uint32_t bus, uint32_t dev)
@@ -68,6 +112,14 @@ spi_open(uint32_t bus, uint32_t dev)
 struct spi_config
 spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
 {
+    // Sim-bus short-circuit: connect via Unix socket, skip ioctl setup.
+    struct sim_spi_route *sim_route = sim_spi_route_for_bus(bus);
+    if (sim_route) {
+        int fd = sim_chip_socket_connect(sim_route->socket_path);
+        sim_route->fd = fd;
+        return (struct spi_config) { fd, (int)rate };
+    }
+
     int bus_id = SPIBUS_TO_BUS(bus), dev_id = SPIBUS_TO_DEV(bus);
     int fd = spi_open(bus_id, dev_id);
     int ret = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &rate);
@@ -94,6 +146,19 @@ spi_transfer(struct spi_config config, uint8_t receive_data
 {
     if (!len)
         return;
+
+    // Sim-bus short-circuit: route through Unix socket instead of ioctl.
+    if (sim_spi_fd_is_sim(config.fd)) {
+        uint8_t scratch[256];
+        if (len > sizeof(scratch))
+            shutdown("sim spi xfer too long");
+        memcpy(scratch, data, len);
+        uint8_t reply[256];
+        memset(reply, 0, sizeof(reply));
+        sim_chip_socket_xfer(config.fd, scratch, len,
+                             receive_data ? data : reply, len);
+        return;
+    }
 
     if (receive_data) {
         struct spi_ioc_transfer transfer;
