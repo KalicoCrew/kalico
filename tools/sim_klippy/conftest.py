@@ -31,6 +31,36 @@ _THIRD_PARTY = (
     REPO_ROOT / "tools" / "sim_klippy" / "printer_real" / "third_party_repos"
 )
 
+# Map of third-party plugins → (source path, klippy/extras link target).
+# Klippy discovers extras by walking klippy/extras/, so PYTHONPATH alone is
+# not enough; the plugin must appear as klippy/extras/<name>.py. We
+# install symlinks idempotently at fixture entry and leave them in place
+# (they point at the vendored sources under tools/sim_klippy/printer_real/
+# third_party_repos/, which are checked-in).
+_THIRD_PARTY_PLUGINS = {
+    "beacon": _THIRD_PARTY / "beacon_klipper" / "beacon.py",
+    "motors_sync": _THIRD_PARTY / "motors-sync" / "motors_sync.py",
+}
+
+
+def _install_third_party_plugin_links() -> None:
+    extras_dir = REPO_ROOT / "klippy" / "extras"
+    for name, src in _THIRD_PARTY_PLUGINS.items():
+        if not src.exists():
+            continue
+        link = extras_dir / f"{name}.py"
+        if link.is_symlink():
+            try:
+                if pathlib.Path(os.readlink(link)) == src:
+                    continue
+            except OSError:
+                pass
+            link.unlink()
+        elif link.exists():
+            # A real file shadows our symlink; leave it alone.
+            continue
+        os.symlink(src, link)
+
 
 @dataclasses.dataclass
 class SimContext:
@@ -126,6 +156,7 @@ def _stage_config_dir(cfg_dir: pathlib.Path, dest: pathlib.Path) -> None:
 @pytest.fixture
 def sim(tmp_path):
     _ensure_elfs()
+    _install_third_party_plugin_links()
 
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

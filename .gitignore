@@ -41,3 +41,7 @@ klippy/motion_bridge*.dylib
 klippy/chelper/c_helper.so
 klippy/chelper/c_helper.so.dSYM/
 klippy/chelper/*.dylib
+
+# Sim-only third-party plugin symlinks (created by tools/sim_klippy/conftest.py)
+klippy/extras/beacon.py
+klippy/extras/motors_sync.py
