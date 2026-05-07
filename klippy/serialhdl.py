@@ -476,8 +476,15 @@ class SerialReader:
             bridge = self.mcu._motion_bridge
             handle = self.mcu._bridge_handle
             if bridge is not None and handle is not None:
+                # Forward the (conv_time, conv_clock) anchor pair, NOT
+                # last_clock. Klippy's clocksync model is a regression
+                # line: at host time conv_time, the MCU was at conv_clock.
+                # last_clock is the most-recently-observed MCU clock,
+                # independent of conv_time, so pairing it with conv_time
+                # would mis-anchor the bridge's projection by the
+                # (conv_clock − last_clock) lag (typically several ms).
                 bridge.set_clock_est(
-                    handle, float(freq), float(conv_time), int(last_clock)
+                    handle, float(freq), float(conv_time), int(conv_clock)
                 )
             return
         self.ffi_lib.serialqueue_set_clock_est(
