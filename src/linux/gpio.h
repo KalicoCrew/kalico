@@ -21,6 +21,7 @@ uint8_t gpio_in_read(struct gpio_in g);
 
 struct gpio_adc {
     int fd;
+    uint8_t adc_pin; // channel index (pin - ANALOG_START), used by sim shim
 };
 struct gpio_adc gpio_adc_setup(uint32_t pin);
 uint32_t gpio_adc_sample(struct gpio_adc g);
