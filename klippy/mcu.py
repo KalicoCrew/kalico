@@ -25,6 +25,30 @@ MAX_SCHEDULE_TICKS = (1 << 31) - 1
 # Directly caused by the limitation of MAX_SCHEDULE_TICKS.
 MAX_NOMINAL_DURATION = 3.0
 
+def _format_bridge_msg(cmd, data):
+    """Format a Klipper command as a string for the bridge's text-protocol
+    parser. Used by both query (CommandQueryWrapper) and fire-and-forget
+    (CommandWrapper) command paths.
+
+    Buffer fields must be hex-encoded so the parser's whitespace tokenizer
+    sees a single token and parse_hex_buffer can decode it back to bytes.
+    Klippy passes buffer payloads as bytes/bytearray (tmc_uart) or as a
+    Python list/tuple of ints (spi_transfer, tmc2130 build_cmd) — handle
+    both.
+    """
+    parts = [cmd.name]
+    for i, (name, _) in enumerate(cmd.param_names):
+        val = data[i]
+        if isinstance(val, (bytes, bytearray)):
+            val = val.hex()
+        elif isinstance(val, (list, tuple)) and val and all(
+            isinstance(x, int) for x in val
+        ):
+            val = bytes(val).hex()
+        parts.append("%s=%s" % (name, val))
+    return " ".join(parts)
+
+
 ######################################################################
 # Command transmit helper classes
 ######################################################################
@@ -108,17 +132,7 @@ class CommandQueryWrapper:
 
     def _bridge_send(self, data):
         """Bridge-mode send: encode as human-readable string and use bridge_call."""
-        # Build the command string from the format name + positional args.
-        # Buffer fields (bytes/bytearray) must be hex-encoded so the parser's
-        # whitespace tokenizer sees a single token and parse_hex_buffer can
-        # decode it back to bytes.
-        parts = [self._cmd.name]
-        for i, (name, _) in enumerate(self._cmd.param_names):
-            val = data[i]
-            if isinstance(val, (bytes, bytearray)):
-                val = val.hex()
-            parts.append("%s=%s" % (name, val))
-        msg = " ".join(parts)
+        msg = _format_bridge_msg(self._cmd, data)
         try:
             return self._serial.send_with_response(msg, self._response)
         except serialhdl.error as e:
@@ -140,6 +154,13 @@ class CommandQueryWrapper:
         reqclock=0,
         retry=True,
     ):
+        if self._serial._use_bridge:
+            # Bridge has no serialqueue; route preface as a fire-and-forget
+            # command (bridge_send) and the data as a request expecting a
+            # response (bridge_call). Used by SPI flows that need a bus
+            # selection before the transfer (tmc2130 chain reads/writes).
+            preface_cmd.send(preface_data, minclock=minclock)
+            return self._bridge_send(data)
         cmds = [preface_cmd._cmd.encode(preface_data), self._cmd.encode(data)]
         return self._do_send(cmds, minclock, reqclock, retry)
 
@@ -156,10 +177,22 @@ class CommandWrapper:
         self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
 
     def send(self, data=(), minclock=0, reqclock=0):
+        if self._serial._use_bridge:
+            # Bridge mode has no serialqueue — raw_send is a no-op. Format
+            # the command as a string and route through bridge_send so
+            # fire-and-forget commands (e.g. spi_send used as a SPI bus-
+            # selection preface) actually reach the firmware.
+            self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
+            return
         cmd = self._cmd.encode(data)
         self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
+        if self._serial._use_bridge:
+            # Bridge has no per-frame ack semantics — bridge_send is already
+            # wire-level ACKed. Treat send_wait_ack as a plain send.
+            self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
+            return
         cmd = self._cmd.encode(data)
         self._serial.raw_send_wait_ack(cmd, minclock, reqclock, self._cmd_queue)
 

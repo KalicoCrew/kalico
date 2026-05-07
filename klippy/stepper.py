@@ -65,6 +65,7 @@ class MCU_stepper:
             self._itersolve_generate_steps = lambda sk, ft: None
             self._itersolve_check_active = lambda sk, ft: 0
             self._trapq = None
+            self._bridge_active_axes = b""
         else:
             ffi_main, ffi_lib = chelper.get_ffi()
             self._stepqueue = ffi_main.gc(
@@ -111,7 +112,18 @@ class MCU_stepper:
 
     def setup_itersolve(self, alloc_func, *params):
         if self._use_bridge:
-            return  # Bridge: stepper kinematics handled in Rust
+            # Real stepper kinematics live in Rust, but Python-side callers
+            # (z_tilt_ng, quad_gantry_level, homing axis routing) still query
+            # is_active_axis to pick the steppers that move on a given axis.
+            # All bridge alloc_funcs encode the axes the stepper drives in
+            # their first bytes-typed param (e.g. b"z" for cartesian_stepper_alloc,
+            # b"+x" / b"-y" for corexy_stepper_alloc). Stash that as the
+            # axis-membership lookup table.
+            for p in params:
+                if isinstance(p, (bytes, bytearray)):
+                    self._bridge_active_axes = bytes(p)
+                    break
+            return
         ffi_main, ffi_lib = chelper.get_ffi()
         sk = ffi_main.gc(getattr(ffi_lib, alloc_func)(*params), ffi_lib.free)
         self.set_stepper_kinematics(sk)
@@ -389,7 +401,10 @@ class MCU_stepper:
 
     def is_active_axis(self, axis):
         if self._use_bridge:
-            return False  # Bridge: axis tracking in Rust
+            # Match against the axes recorded at setup_itersolve time. Strings
+            # like b"+x" / b"-y" (corexy) are scanned membership-style so a
+            # query for "x" returns True on either sign.
+            return axis.encode() in self._bridge_active_axes
         ffi_main, ffi_lib = chelper.get_ffi()
         a = axis.encode()
         return ffi_lib.itersolve_is_active_axis(self._stepper_kinematics, a)

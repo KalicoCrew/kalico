@@ -61,6 +61,11 @@ struct McuConnection {
     /// firmware predates the QueryRuntimeCaps message). Task 11 will move
     /// this onto `McuAxisConfig::caps`; for now the bootstrap stores it here.
     runtime_caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
+    /// True when this MCU's kalico-native Identify handshake completed.
+    /// False for stock-Klipper firmware that has no kalico runtime — those
+    /// MCUs still attach for Klipper-protocol commands but cannot accept
+    /// kalico-native bootstrap calls (configure_axes, curve uploads, etc.).
+    kalico_native_supported: bool,
 }
 
 /// Default fallback caps used when the MCU doesn't respond to
@@ -278,6 +283,7 @@ impl PyMotionBridge {
                 host_io: None,
                 runtime_rx: None,
                 runtime_caps: None,
+                kalico_native_supported: false,
             },
         );
         Ok(raw)
@@ -611,7 +617,6 @@ impl PyMotionBridge {
                     false
                 }
             };
-        let _ = kalico_native_supported; // currently unused downstream
 
         // Task 10: query per-MCU runtime caps. Older firmware predates this
         // message — on any error fall back to the large-profile defaults so
@@ -651,6 +656,7 @@ impl PyMotionBridge {
         conn.host_io = Some(Arc::new(host_io));
         conn.runtime_rx = Some(runtime_rx);
         conn.runtime_caps = Some(runtime_caps);
+        conn.kalico_native_supported = kalico_native_supported;
         Ok(())
     }
 
@@ -684,6 +690,13 @@ impl PyMotionBridge {
                     "configure_axes: unknown mcu_handle {mcu_handle}"
                 ))
             })?;
+            // Stock-Klipper firmware (no kalico runtime) cannot accept this
+            // bootstrap message. Silently no-op so multi-MCU setups where one
+            // board runs stock Klipper still complete _configure_axes_per_mcu
+            // for the kalico-runtime board(s).
+            if !conn.kalico_native_supported {
+                return Ok(());
+            }
             conn.host_io.as_ref().ok_or_else(|| {
                 PyRuntimeError::new_err(
                     "configure_axes: attach_serial has not been called for this MCU",
