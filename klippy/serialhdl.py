@@ -173,8 +173,13 @@ class SerialReader:
                 hdl(ev)
             except Exception:
                 logging.exception("%sException in bridge event callback", self.warn_prefix)
-        # Poll at ~10 Hz — fast enough for liveness, not too fast.
-        return eventtime + 0.1
+        # Bridge events carry runtime credit and status for the Rust planner.
+        # During motion_toolhead.wait_moves(), Python releases the GIL while
+        # the planner thread blocks on producer responses, so this timer is
+        # the only Klippy-side drain path for runtime events. Keep it tight
+        # enough that bridge progress is not dependent on unrelated reactor
+        # wakeups.
+        return eventtime + 0.001
 
     def _error(self, msg, *params):
         raise error(self.warn_prefix + (msg % params))

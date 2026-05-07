@@ -212,7 +212,12 @@ pub const PENDING_FIRE_AND_FORGET_CEILING: usize = 256;
 const MAX_RETRY_COUNT: u32 = 8;
 
 const MAX_SUBMITS_PER_ITER: usize = 4;
-const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+// The reactor has no FD/eventfd wakeup for submissions sent over
+// `submission_rx`; planner dispatch can therefore be waiting on a
+// `kalico_call` while this thread is blocked in the serial read. Keep the
+// read poll bounded to 1 ms so producer LoadCurve/PushSegment calls are not
+// blocked by a coarse read timeout.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1);
 const ZERO_BYTE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Reactor {
