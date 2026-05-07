@@ -43,6 +43,32 @@ _THIRD_PARTY_PLUGINS = {
 }
 
 
+def _strip_sections(cfg_text: str, prefixes: tuple) -> str:
+    """Remove [<prefix> ...] sections (and their bodies) from cfg_text.
+
+    A section starts at a line matching ``[<prefix>`` (with an optional
+    instance suffix) and ends at the next top-level section header or
+    EOF. We comment-out the entire range with a leading ``#`` per line so
+    the bytes survive in the rendered cfg for forensics, but klippy
+    treats them as comments.
+    """
+    lines = cfg_text.splitlines(keepends=True)
+    out = []
+    in_strip = False
+    import re
+    section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    for line in lines:
+        m = section_re.match(line)
+        if m:
+            head = m.group(1).split(None, 1)[0]
+            in_strip = head in prefixes
+        if in_strip:
+            out.append("# [sim-strip] " + line if line.strip() else line)
+        else:
+            out.append(line)
+    return "".join(out)
+
+
 def _install_third_party_plugin_links() -> None:
     extras_dir = REPO_ROOT / "klippy" / "extras"
     for name, src in _THIRD_PARTY_PLUGINS.items():
@@ -219,6 +245,13 @@ def sim(tmp_path):
 
         cfg_text = (_CFG_DIR / "printer.cfg").read_text()
         rendered_cfg_text = apply_overrides(cfg_text, overrides)
+        # Strip sections whose plugin module isn't installed in this tree.
+        # autotune_tmc / motor_constants come from the Klipper-TMC-Autotune
+        # third-party project — not vendored here, not required for boot.
+        rendered_cfg_text = _strip_sections(
+            rendered_cfg_text,
+            prefixes=("autotune_tmc", "motor_constants"),
+        )
         rendered_cfg = tmp_path / "printer.cfg"
         rendered_cfg.write_text(rendered_cfg_text)
 
