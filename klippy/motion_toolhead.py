@@ -157,19 +157,21 @@ class BridgeKinematics:
             if rail is not None:
                 self.limits[axis] = rail.get_range()
 
+    def note_z_not_homed(self):
+        # Mirror Kalico's CartKinematics.note_z_not_homed (klippy/kinematics/
+        # cartesian.py:93). `[beacon]`'s compat_kin_note_z_not_homed prefers
+        # this method when present and falls back to clear_homing_state("z")
+        # only when it isn't — by exposing it we keep clear_homing_state
+        # on Kalico's int-iterable contract.
+        self.clear_homing_state([2])
+
     def clear_homing_state(self, axes):
-        # Accepts either a string ("z" / "xyz", upstream-newer convention
-        # used by `[beacon]`, `note_z_not_homed`, `force_move` post-Feb-2025)
-        # or an iterable of axis indices (legacy: `(0, 1, 2)` / `[2]`, used
-        # by `safe_z_home`, `dockable_probe`, our `_handle_motor_off`).
-        if isinstance(axes, str):
-            for axis, axis_name in enumerate("xyz"):
-                if axis_name in axes:
-                    self.limits[axis] = (1.0, -1.0)
-        else:
-            for i in (0, 1, 2):
-                if i in axes:
-                    self.limits[i] = (1.0, -1.0)
+        # Kalico-mainline contract: `axes` is an iterable of axis indices
+        # (e.g. `(0, 1, 2)` from _motor_off, `[2]` from note_z_not_homed /
+        # safe_z_home / dockable_probe, `clear_axes` ints from force_move).
+        for i in (0, 1, 2):
+            if i in axes:
+                self.limits[i] = (1.0, -1.0)
 
     def get_status(self, eventtime):
         from . import gcode as gcode_mod
