@@ -151,6 +151,9 @@ class MotionToolhead(ToolHead):
         self.bridge = printer.lookup_object("motion_bridge", None)
         self.active_homing_arms = set()
         self.kinematics_name = config.get("kinematics", "")
+        # Projected MCU print-time of the END of the last queued bridge
+        # move. See get_last_move_time / _bump_pending_end_time.
+        self._mcu_pending_end_time = 0.0
 
         # Run upstream init: trapq alloc, gcode commands (G4/M400/
         # SET_VELOCITY_LIMIT/RESET_VELOCITY_LIMIT/M204), helper modules
@@ -229,7 +232,11 @@ class MotionToolhead(ToolHead):
             self.bridge is None,
         )
         if self.bridge is not None:
+            bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_move(dx, dy, dz, de, feedrate)
+            self._bump_pending_end_time(
+                self.bridge.get_last_move_time() - bridge_lmt_before
+            )
             # Bridge synthesizes steps in the runtime; klippy's normal
             # itersolve_check_active path doesn't fire. We trigger
             # active-stepper callbacks ourselves so motors energize
@@ -298,12 +305,26 @@ class MotionToolhead(ToolHead):
         dy = pos3[1] - self.commanded_pos[1]
         dz = pos3[2] - self.commanded_pos[2]
         self._fire_active_callbacks(dx, dy, dz, 0.0)
+        bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_homing_move(pos3, speed, arm_ids)
         self.bridge.wait_moves()
+        bridge_lmt_after = self.bridge.get_last_move_time()
+        duration = bridge_lmt_after - bridge_lmt_before
+        self._bump_pending_end_time(duration)
+        logging.info(
+            "[bridge-trace] drip_move dispatched: dx=%.4f dy=%.4f dz=%.4f "
+            "speed=%.4f arms=%s bridge_last_move_time=%.6f -> %.6f "
+            "delta=%.6f mcu_pending_end=%.6f",
+            dx, dy, dz, speed, arm_ids,
+            bridge_lmt_before, bridge_lmt_after, duration,
+            self._mcu_pending_end_time,
+        )
 
     def dwell(self, delay):
         if self.bridge is not None:
             self.bridge.submit_dwell(delay)
+            if delay > 0.0:
+                self._bump_pending_end_time(delay)
 
     def wait_moves(self):
         if self.bridge is not None:
@@ -315,16 +336,41 @@ class MotionToolhead(ToolHead):
         pass
 
     def get_last_move_time(self):
-        # Floor at mcu.estimated_print_time + BUFFER_TIME_START so legacy
-        # MCU commands (TMC, SPI, digital_out) issued before the first
-        # bridge move don't land in the MCU's past.
+        # Two clocks live here:
+        #   - mcu.estimated_print_time(now)   — MCU print-clock (large)
+        #   - bridge.get_last_move_time()     — planner-local seconds since
+        #                                       planner thread start (small)
+        # We need to return MCU print-time of the END of the last queued
+        # move, so callers like homing.py:home_wait can compute the
+        # backstop deadline correctly.
+        #
+        # We track the bridge's last_move_time deltas across submits and
+        # project the pending duration onto the MCU clock. If no bridge
+        # work is pending past the MCU's current clock, the floor wins —
+        # this preserves the legacy-MCU-command-scheduling guarantee.
         est = 0.0
         if self.mcu is not None:
             est = self.mcu.estimated_print_time(self.reactor.monotonic())
         floor = est + BUFFER_TIME_START
-        if self.bridge is not None:
-            return max(self.bridge.get_last_move_time(), floor)
+        if self._mcu_pending_end_time > est:
+            return max(self._mcu_pending_end_time, floor)
         return floor
+
+    def _bump_pending_end_time(self, duration_added):
+        """Extend the projected MCU end-time of the last queued move.
+
+        Called after each bridge submit (move / drip_move / dwell) to
+        keep get_last_move_time() returning a sensible MCU print-time.
+        Anchors to current MCU clock when bridge has no other work
+        pending.
+        """
+        if self.mcu is None or duration_added <= 0.0:
+            return
+        est = self.mcu.estimated_print_time(self.reactor.monotonic())
+        # If the prior pending-end is in the past, the MCU has caught up;
+        # re-anchor at "now" before adding the new duration.
+        base = max(self._mcu_pending_end_time, est)
+        self._mcu_pending_end_time = base + duration_added
 
     def note_mcu_movequeue_activity(self, mq_time, set_step_gen_time=False):
         # Bridge has its own queue; upstream's body would re-arm the

@@ -684,9 +684,14 @@ class MCU_endstop:
         from . import motion_bridge as _mb
 
         eventtime = self._mcu.get_printer().get_reactor().monotonic()
-        backstop = eventtime + max(
-            0.0, home_end_time - self._mcu.estimated_print_time(eventtime)
-        ) + 1.0
+        est_now = self._mcu.estimated_print_time(eventtime)
+        slack = max(0.0, home_end_time - est_now) + 1.0
+        backstop = eventtime + slack
+        logging.info(
+            "[bridge-trace] _home_wait_bridge: home_end_time=%.6f "
+            "est_now=%.6f delta=%.6f slack=%.6f eventtime=%.6f",
+            home_end_time, est_now, home_end_time - est_now, slack, eventtime,
+        )
         completion = self._dispatch._completion
         result = completion.wait(waketime=backstop)
         if result is None:
@@ -697,6 +702,17 @@ class MCU_endstop:
             self._dispatch._reason = _mb.REASON_COMMS_TIMEOUT
             self._dispatch.stop()
             cmderr = self._mcu.get_printer().command_error
+            wake_eventtime = (
+                self._mcu.get_printer().get_reactor().monotonic()
+            )
+            wake_est = self._mcu.estimated_print_time(wake_eventtime)
+            logging.info(
+                "[bridge-trace] _home_wait_bridge backstop fired: "
+                "wake_eventtime=%.6f wake_est_pt=%.6f "
+                "elapsed_wall=%.6f elapsed_mcu=%.6f",
+                wake_eventtime, wake_est,
+                wake_eventtime - eventtime, wake_est - est_now,
+            )
             raise cmderr(
                 "Homing wait: MCU silent past expected end-time + 1.0s "
                 "(no trip event, no credit-freed for homing segment)"
