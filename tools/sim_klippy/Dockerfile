@@ -34,4 +34,10 @@ ENV RUSTUP_HOME=/opt/rust CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
     -y --default-toolchain 1.85 --profile minimal
 
+# Sim test dependencies — pytrinamic provides TMC register-table constants;
+# pytest drives the test harness.
+RUN pip3 install --no-cache-dir --break-system-packages \
+    pytrinamic==0.2.6 \
+    pytest==8.3.4
+
 WORKDIR /work
