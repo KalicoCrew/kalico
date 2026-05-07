@@ -47,12 +47,9 @@ Hard prerequisites the test handles explicitly
 ==============================================
 
 A. Endstop ISR must run. `Engine::tick` calls `poll_endstop_trip` from
-   the empty-queue path (rust/runtime/src/engine.rs:323). This fires
-   every modulation tick once `homed=1` (otherwise the homed gate
-   short-circuits before reaching the queue check). So the test issues
-   `runtime_set_homed_state homed=1` after identify and never opens a
-   stream — the runtime ticks, sees no segments, and runs the endstop
-   poll each tick.
+   the empty-queue path. Without a stream open the runtime sits in
+   Idle/Drained, so each tick falls through to the endstop poll —
+   no preconditions beyond TIM5 running.
 
 B. CONFIG_KALICO_SIM build: the new commands require the sim build
    (`tools/sim/build_sim_firmware.sh`). The endstop production wire
@@ -162,10 +159,6 @@ def send_disarm_endstop(io, arm_id):
     io.send("runtime_disarm_endstop arm_id=%d" % (int(arm_id),))
 
 
-def send_set_homed(io, homed):
-    io.send("runtime_set_homed_state homed=%d" % (int(bool(homed)),))
-
-
 def send_sim_set_endstop_pin(io, gpio, level):
     io.send(
         "runtime_sim_endstop_set_pin gpio=%d level=%d" %
@@ -192,17 +185,8 @@ def _wait_for_response_with_id(io, name, arm_id, timeout=5.0):
 
 def test_arm_trip_disarm(io, renode):
     """Arm → assert pin → expect trip event → disarm and expect AlreadyTripped."""
-    # Make the runtime tick the endstop poll path. With homed=1 and no
-    # stream open, Engine::tick reaches poll_endstop_trip every period
-    # (rust/runtime/src/engine.rs:323).
-    send_set_homed(io, True)
-    renode.advance_time(0.005)
-    set_homed_resp = io.wait_for_response("kalico_set_homed_response",
-                                          timeout=3.0)
-    assert int(set_homed_resp["result"]) == 0, (
-        "runtime_set_homed_state homed=1 failed: %s" % (set_homed_resp,)
-    )
-    print("[arm_trip] homed=1 acked")
+    # Make the runtime tick the endstop poll path. With no stream open,
+    # Engine::tick reaches poll_endstop_trip every period.
 
     # TIM5 (40 kHz modulation timer) is gated until first-segment push in
     # production. The e2e test never pushes a segment, so we use the
@@ -388,7 +372,6 @@ def run(args):
         for need in (
             "runtime_arm_endstop",
             "runtime_disarm_endstop",
-            "runtime_set_homed_state",
             "runtime_sim_endstop_set_pin",
             "runtime_sim_engine_tick_start",
         ):

@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
+
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -311,14 +311,6 @@ double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid
 int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
 
 /**
- * Set the homed gate. Called by the host after all axes have been
- * successfully homed. The ISR checks `shared.homed` before accepting
- * motion segments — until this is called, motion commands are rejected
- * with `KALICO_ERR_NOT_HOMED`.
- */
-int32_t kalico_set_homed(struct KalicoRuntime *rt);
-
-/**
  * Configure axis mapping and kinematics for this MCU. Minimal stub for
  * Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
  * CartesianXyzAndE) and validates. Full motor-config blob
@@ -466,13 +458,5 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * the `command_runtime_sim_endstop_set_pin` shim, bypassing real GPIO.
  */
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
-
-/**
- * Set the homed gate to `homed` (0 = clear, non-zero = set). Required
- * for §8 host-driven homed-state control. The legacy no-arg
- * `kalico_set_homed` (always-set-true) at line ~830 above is preserved
- * for backward compat per spec rev 4.
- */
-int32_t kalico_set_homed_state(struct KalicoRuntime *rt, uint8_t homed);
 
 #endif  /* KALICO_RUNTIME_H */

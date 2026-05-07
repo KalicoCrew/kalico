@@ -115,8 +115,6 @@ fn force_idle_with_active_current_clears_it() {
     let mut widen = WidenState::default();
     let pool = CurvePool::new();
     let shared = SharedState::new();
-    // Step 7-B: homed gate — set homed=true so the first tick can activate a segment.
-    shared.homed.store(true, Ordering::Release);
 
     // Load a real curve so the first tick activates a current segment.
     let knots = [0.0_f32, 0.0, 1.0, 1.0];

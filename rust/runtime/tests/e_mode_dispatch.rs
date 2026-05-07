@@ -8,8 +8,6 @@
     clippy::items_after_statements
 )]
 
-use core::sync::atomic::Ordering;
-
 use heapless::spsc::Queue;
 
 use runtime::clock::{WidenState, one_tick_cycles};
@@ -46,7 +44,6 @@ impl Harness {
             Box::leak(Box::new(Queue::new()));
         let (t_producer, t_consumer) = trace.split();
         let shared = SharedState::new();
-        shared.homed.store(true, Ordering::Release);
         Self {
             engine: Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ),
             widen: WidenState::default(),

@@ -1566,7 +1566,7 @@ impl PyMotionBridge {
         Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 
-    // ── Step 7-D: endstop arm/disarm/set_homed_state wire surface ──────────
+    // ── Step 7-D: endstop arm/disarm wire surface ──────────────────────────
     //
     // These call the kalico-host-rt producer functions over the same
     // KalicoHostIo reactor queue used by bridge_call / bridge_send.
@@ -1650,23 +1650,6 @@ impl PyMotionBridge {
         let status = endstop::disarm_endstop_with_timeout(io.as_ref(), arm_id, timeout)
             .map_err(|e| PyRuntimeError::new_err(format!("endstop_disarm: {e}")))?;
         Ok(status as u8)
-    }
-
-    /// Send `runtime_set_homed_state homed=%c`. Spec §8.
-    #[pyo3(signature = (mcu, queue, homed, timeout_s=0.1))]
-    fn set_homed_state(
-        &self,
-        mcu: u32,
-        queue: u32,
-        homed: bool,
-        timeout_s: f64,
-    ) -> PyResult<()> {
-        use kalico_host_rt::endstop;
-        let _ = queue;
-        let io = self.host_io_for_mcu("set_homed_state", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        endstop::set_homed_state_with_timeout(io.as_ref(), homed, timeout)
-            .map_err(|e| PyRuntimeError::new_err(format!("set_homed_state: {e}")))
     }
 
     /// Submit a dwell: flush + advance print time.

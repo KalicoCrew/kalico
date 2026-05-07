@@ -7,11 +7,20 @@ import logging
 from . import chelper
 from . import stepper
 from .kinematics import extruder
-from .toolhead import ToolHead, BUFFER_TIME_START
+from .toolhead import Move, ToolHead, BUFFER_TIME_START
 
 
 class BridgeKinematics:
-    """Minimal kinematics shim for motion-bridge hardware initialization."""
+    """Kinematics shim for the motion-bridge planner.
+
+    Mirrors mainline `klippy/kinematics/{cartesian,corexy}.py`'s host-side
+    homed/range enforcement: each axis carries a `(low, high)` limit that
+    starts inverted (1.0, -1.0) — meaning "unhomed" — and is replaced with
+    the rail's range once `set_position` is called with that axis in
+    `homing_axes`. `check_move` rejects moves that step outside the
+    per-axis limit, raising "Must home axis first" when the limit is still
+    in its unhomed sentinel form.
+    """
 
     def __init__(self, toolhead, config, trapq):
         self._toolhead = toolhead
@@ -20,7 +29,6 @@ class BridgeKinematics:
             raise config.error("Unsupported bridge kinematics '%s'" % (kin_name,))
         self.kinematics = kin_name
         self.rails = []
-        self.homed_axes = set()
         self._printer = config.get_printer()
 
         axes = "xy"
@@ -36,6 +44,10 @@ class BridgeKinematics:
                 config, "z", trapq, extras=("1", "2", "3")
             )
 
+        # Per-axis (low, high) bounds. `low > high` means "unhomed" and is
+        # what triggers the "Must home axis first" path in `_check_endstops`.
+        self.limits = [(1.0, -1.0)] * 3
+
         # Mirror mainline klippy/toolhead.py + cartesian/corexy kinematics:
         # when steppers are de-energized (M84 / shutdown) the homed state
         # must clear so klippy correctly reports the axes as un-homed and
@@ -46,7 +58,7 @@ class BridgeKinematics:
         )
 
     def _handle_motor_off(self, print_time):
-        self.clear_homing_state("xyz")
+        self.clear_homing_state((0, 1, 2))
 
     def _register_axis(self, config, axis, trapq, extras=()):
         rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
@@ -61,25 +73,57 @@ class BridgeKinematics:
             mcu_stepper.set_trapq(trapq)
         self.rails.append(rail)
 
+    def _axis_rails(self):
+        # Rails are registered in axis order; the corexy "passthrough Z"
+        # branch may append a Z rail after the X/Y pair. Locate by name
+        # prefix so callers always get the right rail per axis.
+        out = {}
+        for rail in self.rails:
+            name = rail.get_name(short=True) or ""
+            if name and name[0] in "xyz":
+                idx = "xyz".index(name[0])
+                out.setdefault(idx, rail)
+        return out
+
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
 
     def calc_position(self, stepper_positions):
         return [0.0, 0.0, 0.0]
 
+    def _check_endstops(self, move):
+        end_pos = move.end_pos
+        for i in (0, 1, 2):
+            if move.axes_d[i] and (
+                end_pos[i] < self.limits[i][0]
+                or end_pos[i] > self.limits[i][1]
+            ):
+                if self.limits[i][0] > self.limits[i][1]:
+                    raise move.move_error("Must home axis first")
+                raise move.move_error()
+
     def check_move(self, move):
-        pass
+        limits = self.limits
+        xpos, ypos = move.end_pos[:2]
+        if (
+            xpos < limits[0][0]
+            or xpos > limits[0][1]
+            or ypos < limits[1][0]
+            or ypos > limits[1][1]
+        ):
+            self._check_endstops(move)
+        if not move.axes_d[2]:
+            return
+        # Move with Z — derate velocity and accel proportional to Z share.
+        self._check_endstops(move)
+        z_ratio = move.move_d / abs(move.axes_d[2])
+        move.limit_speed(
+            self._toolhead.max_z_velocity * z_ratio,
+            self._toolhead.max_z_accel * z_ratio,
+        )
 
     def home(self, homing_state):
-        # Map rails by primary axis name (rail name starts with x/y/z).
-        # Rails were registered in axis order in __init__, but corexy
-        # users sometimes have only x/y; locate by name to be robust.
-        axis_rails = {}
-        for rail in self.rails:
-            name = rail.get_name(short=True) or ""
-            if name and name[0] in "xyz":
-                idx = "xyz".index(name[0])
-                axis_rails[idx] = rail
+        axis_rails = self._axis_rails()
         for axis in homing_state.get_axes():
             rail = axis_rails.get(axis)
             if rail is None:
@@ -98,7 +142,6 @@ class BridgeKinematics:
                     position_max - hi.position_endstop
                 )
             homing_state.home_rails([rail], forcepos, homepos)
-            self.homed_axes.add(axis)
 
     def set_position(self, newpos, homing_axes=()):
         # Upstream kinematics contract: this method owns runtime
@@ -108,12 +151,16 @@ class BridgeKinematics:
             self._toolhead.bridge.set_position(
                 newpos[0], newpos[1], newpos[2]
             )
-        for a in homing_axes:
-            self.homed_axes.add(a)
+        axis_rails = self._axis_rails()
+        for axis in homing_axes:
+            rail = axis_rails.get(axis)
+            if rail is not None:
+                self.limits[axis] = rail.get_range()
 
     def clear_homing_state(self, axes):
-        for a in axes:
-            self.homed_axes.discard(a)
+        for i in (0, 1, 2):
+            if i in axes:
+                self.limits[i] = (1.0, -1.0)
 
     def get_status(self, eventtime):
         from . import gcode as gcode_mod
@@ -126,7 +173,9 @@ class BridgeKinematics:
         x_min, x_max = ranges.get("x", (0.0, 0.0))
         y_min, y_max = ranges.get("y", (0.0, 0.0))
         z_min, z_max = ranges.get("z", (0.0, 0.0))
-        homed = "".join(a for a in "xyz" if "xyz".index(a) in self.homed_axes)
+        homed = "".join(
+            a for i, a in enumerate("xyz") if self.limits[i][0] <= self.limits[i][1]
+        )
         return {
             "homed_axes": homed,
             "axis_minimum": gcode_mod.Coord(x_min, y_min, z_min, 0.0),
@@ -218,11 +267,20 @@ class MotionToolhead(ToolHead):
     # ------------------------------------------------------------------
 
     def move(self, newpos, speed):
-        dx = newpos[0] - self.commanded_pos[0]
-        dy = newpos[1] - self.commanded_pos[1]
-        dz = newpos[2] - self.commanded_pos[2]
-        de = newpos[3] - self.commanded_pos[3]
-        feedrate = min(speed, self.max_velocity)
+        # Mirror upstream `ToolHead.move`'s pre-issue validation: build a
+        # Move so kin.check_move can reject unhomed / out-of-range moves
+        # ("Must home axis first"), and so extruder.check_move can range-
+        # check E. The bridge planner replaces the lookahead, but the
+        # validation that lives on Move/kin must still run.
+        move = Move(self, self.commanded_pos, newpos, speed)
+        if not move.move_d:
+            return
+        if move.is_kinematic_move:
+            self.kin.check_move(move)
+        if move.axes_d[3]:
+            self.extruder.check_move(move)
+        dx, dy, dz, de = move.axes_d
+        feedrate = move.move_d / move.min_move_t
         if abs(dz) > 1e-9 and abs(dx) < 1e-9 and abs(dy) < 1e-9:
             feedrate = min(feedrate, self.max_z_velocity)
         logging.info(
@@ -243,7 +301,7 @@ class MotionToolhead(ToolHead):
             # active-stepper callbacks ourselves so motors energize
             # before the move starts.
             self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
-        self.commanded_pos[:] = newpos
+        self.commanded_pos[:] = move.end_pos
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
         if self.kin is None:
@@ -481,17 +539,6 @@ class MotionToolhead(ToolHead):
             )
             self._configure_axes_per_mcu(bridge_mcus)
             self._register_credit_freed_handlers(bridge_mcus)
-            # The local Linux sim harness sometimes sends a bare movement
-            # command without a preceding G28. Mark single-MCU local sim
-            # runtime homed so smoke tests keep passing.
-            if len(bridge_mcus) == 1:
-                _, mcu_obj, mcu_handle = bridge_mcus[0]
-                if getattr(mcu_obj, "_serialport", None) == "/tmp/klipper_sim_socket":
-                    queue = self.bridge.alloc_command_queue(mcu_handle)
-                    self.bridge.set_homed_state(mcu_handle, queue, True)
-                    logging.info(
-                        "MotionToolhead: marked single-MCU local sim homed"
-                    )
         except Exception:
             logging.exception("MotionToolhead: init_planner failed")
             raise

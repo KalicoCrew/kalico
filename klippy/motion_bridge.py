@@ -267,9 +267,6 @@ class MotionBridgeWrapper:
     def endstop_disarm(self, mcu, queue, arm_id, timeout_s=2.0):
         return self._bridge.endstop_disarm(mcu, queue, arm_id, timeout_s)
 
-    def set_homed_state(self, mcu, queue, homed, timeout_s=2.0):
-        return self._bridge.set_homed_state(mcu, queue, homed, timeout_s)
-
     def submit_homing_move(self, newpos, speed, arm_ids):
         return self._bridge.submit_homing_move(newpos, speed, arm_ids)
 

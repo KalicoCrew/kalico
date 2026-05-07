@@ -35,37 +35,6 @@ command_runtime_query_status(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 
-// ---- Step 7-B: homed gate + axis configuration --------------------------
-
-void
-command_runtime_set_homed(uint32_t *args)
-{
-    (void)args;
-    if (!runtime_handle) {
-        sendf("kalico_set_homed_response result=%i", -7);
-        return;
-    }
-    int32_t r = kalico_set_homed(runtime_handle);
-    sendf("kalico_set_homed_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_set_homed, "runtime_set_homed");
-
-// Step 7-D: parameterized homed-state setter. Spec §8 — sibling of the
-// no-arg runtime_set_homed (preserved for backward compat), letting the
-// host explicitly set or clear the gate (homed=0 clears, non-zero sets).
-void
-command_runtime_set_homed_state(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_set_homed_response result=%i", -7);
-        return;
-    }
-    uint8_t homed = args[0];
-    int32_t r = kalico_set_homed_state(runtime_handle, homed);
-    sendf("kalico_set_homed_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_set_homed_state, "runtime_set_homed_state homed=%c");
-
 // ---- Step 7-D: endstop arm/disarm/tripped wire surface --------------------
 
 // Step 7.5 — Production GPIO sampler. The runtime endstop module reads pin

@@ -318,26 +318,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return Err(RuntimeError::FaultLatched);
         }
 
-        // Step 7-B: homed gate. Before segment activation, reject motion when
-        // the machine is not homed and a stream is open (segments are expected).
-        // When no stream is open (idle / drained), silently return Ok — this
-        // lets non-homed MCU ticks complete without faulting.
-        if !shared.homed.load(Ordering::Acquire) {
-            if shared.stream_open.load(Ordering::Acquire) {
-                self.latch_fault(
-                    RuntimeError::NotHomed,
-                    0,
-                    CurveHandle::UNUSED_SENTINEL,
-                    now,
-                    trace,
-                    shared,
-                    None,
-                );
-                return Err(RuntimeError::NotHomed);
-            }
-            return Ok(());
-        }
-
         // Step 1 + 2: queue + idle check, segment activation. See spec §4.2.
         // Idle/Drained path with §4.4 ISR-disable protocol.
         // (Producer protocol at runtime_ffi.rs re-enables TIM5 on either Idle
@@ -1088,7 +1068,6 @@ mod tests {
         let mut trace_queue: Queue<TraceSample, TRACE_RING_N> = Queue::new();
         let (mut trace_producer, _trace_consumer) = trace_queue.split();
         let shared = SharedState::new();
-        shared.homed.store(true, Ordering::Release);
         let mut engine = Engine::<NoopPa, NoopIs>::new(520_000_000);
         engine.configure(McuAxisConfig {
             motors: [

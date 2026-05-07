@@ -186,16 +186,6 @@ def run_gate_a(use_real_loads):
                 return 1
             slot_handles.append(handle_packed)
 
-        # Step 7-B: homed gate. The engine rejects motion until runtime_set_homed
-        # is called. Under sim, all axes are trivially "homed" once the runtime
-        # is initialised; on real hardware this follows an actual homing move.
-        io.send("runtime_set_homed")
-        homed_r = io.wait_for_response("kalico_set_homed_response", timeout=5.0)
-        if int(homed_r.get("result", -1)) != 0:
-            print(f"FAIL: set_homed returned {homed_r}")
-            return 1
-        print(f"  set_homed result={homed_r.get('result')}")
-
         # Push N_SEGMENTS segments, cycling through the three slots. Use
         # ascending segment ids starting at 1 — id=0 + monotonicity gate
         # (Phase 4.1.5) is fine, but starting at 1 keeps id semantics

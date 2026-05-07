@@ -1,5 +1,23 @@
 # Step 7-B: Layer 4 MCU Evaluator Implementation Plan
 
+> **2026-05-07 amendment — homed gate removed.** The "homed gate" feature
+> introduced by this plan (Task 6 Step 5; FaultCode `NotHomed`; FFI
+> `kalico_set_homed[_state]`; runtime test `tests/homed_gate.rs`; the
+> `shared.homed.store(true, …)` guards added across Tasks 6/7 tests) was
+> later determined to be the wrong abstraction — it gated motion at the
+> MCU runtime layer using a host-side concept (which axes have known
+> position) and produced a chicken-and-egg deadlock against homing
+> motion itself. All of it has been removed in favor of mainline-style
+> host-side `BridgeKinematics.check_move` enforcement (per-axis
+> `limits = (1.0, -1.0)` "unhomed" sentinel ported verbatim from
+> upstream `klippy/kinematics/cartesian.py`). See
+> `docs/superpowers/plan-changes-log.md` 2026-05-07 entry for the
+> diagnosis and full removal scope. Treat the "Step 5: Add homed gate",
+> "Step 8: Write homed gate test", and the FFI / C-command surface
+> Step-7-B introduced as **rolled back** — the rest of the Step 7-B
+> work (per-axis scalar curve pool, 4-handle segment struct, evaluator,
+> step generation, multi-handle retirement, AWD trace) remains landed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Refactor the MCU runtime to evaluate per-axis scalar NURBS at 40 kHz, integrate E-follows-XY extrusion, and generate step pulses for hybrid stepping.

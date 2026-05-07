@@ -474,35 +474,6 @@ class PrinterHoming:
                 )
             self.printer.lookup_object("stepper_enable").motor_off()
             raise
-        # Step 7-D §8: notify the kalico runtime that the requested axes
-        # are now homed. Single-bool MVP: only set the gate when the
-        # user homed all required axes (X, Y, and Z if Z is configured).
-        # Per-axis flags are a Step-10 generalization.
-        bridge = self.printer.lookup_object("motion_bridge", None)
-        if bridge is not None and hasattr(bridge, "set_homed_state"):
-            self._notify_bridge_homed(bridge)
-
-    def _notify_bridge_homed(self, bridge):
-        # Find the bridge MCU + queue. The kalico-trident-production
-        # config (and any sensible bridge config) registers a single
-        # bridge MCU; for MVP we issue set_homed_state on every MCU that
-        # carries the motion_bridge handle. Multi-MCU homed-state sync
-        # is a Step-10 forward-compat concern (spec §7).
-        for mcu_name, mcu_obj in self.printer.lookup_objects(module="mcu"):
-            if not hasattr(mcu_obj, "_motion_bridge"):
-                continue
-            if mcu_obj._motion_bridge is None:
-                continue
-            mcu_handle = getattr(mcu_obj, "_bridge_handle", None)
-            if mcu_handle is None:
-                continue
-            try:
-                queue = mcu_obj.alloc_command_queue()
-                bridge.set_homed_state(mcu_handle, queue, True)
-            except Exception as e:
-                logging.exception(
-                    "runtime_set_homed_state failed on %s: %s", mcu_name, e
-                )
 
 
 def load_config(config):

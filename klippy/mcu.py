@@ -699,7 +699,10 @@ class MCU_endstop:
             # error — operationally this means the MCU never reported
             # either a trip or a credit-freed past the homing segment,
             # which is a comms / runtime fault, not a homing-not-found.
-            self._dispatch._reason = _mb.REASON_COMMS_TIMEOUT
+            # Leave _reason unset so dispatch.stop() sends
+            # `runtime_disarm_endstop` to the MCU; otherwise the runtime
+            # stays in Armed state and rejects every subsequent G28 with
+            # ArmStatus::Rejected (Busy).
             self._dispatch.stop()
             cmderr = self._mcu.get_printer().command_error
             wake_eventtime = (

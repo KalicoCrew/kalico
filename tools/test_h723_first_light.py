@@ -258,16 +258,6 @@ def main():
             % (STATUS_NAMES[status], last_err)
         )
 
-        # We need to call set_homed before any stream_open: while a stream
-        # is open, the engine ISR latches FAULT on every tick if !homed.
-        io.send("runtime_set_homed")
-        resp = io.wait_for_response("kalico_set_homed_response", timeout=2.0)
-        if int(resp["result"]) != 0:
-            raise SystemExit(
-                "FAIL: kalico_set_homed_response result=%s" % resp["result"]
-            )
-        print("  set_homed ok")
-
         # Step 2: probe the slots we're about to use; if any are still
         # occupied from a prior run, fail fast with a clear message rather
         # than the opaque load_curve result=-3. (Pool re-use across runs is

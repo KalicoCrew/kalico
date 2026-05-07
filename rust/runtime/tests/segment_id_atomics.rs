@@ -42,8 +42,6 @@ impl Harness {
             Box::leak(Box::new(Queue::new()));
         let (t_producer, t_consumer) = trace.split();
         let shared = SharedState::new();
-        // Step 7-B: homed gate — set homed=true so segment activation works.
-        shared.homed.store(true, core::sync::atomic::Ordering::Release);
         Self {
             engine: Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ),
             widen: WidenState::default(),

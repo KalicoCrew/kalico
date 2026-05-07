@@ -200,14 +200,6 @@ def main():
         if rc != 0:
             raise SystemExit(f"FAIL: load_curve rc={rc} — abort soak")
 
-        # Required before stream_open: with a stream open the engine ISR
-        # latches FAULT on every tick if !homed, so the first prefill push
-        # would return KALICO_ERR_FAULT_LATCHED (-8).
-        io.send("runtime_set_homed")
-        sh = io.wait_for_response("kalico_set_homed_response", 2.0)
-        if int(sh["result"]) != 0:
-            raise SystemExit(f"FAIL: set_homed rc={sh['result']}")
-
         if stream_open(io, stream_id=900) != 0:
             raise SystemExit("FAIL: stream_open")
 

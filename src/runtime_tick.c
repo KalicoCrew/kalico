@@ -413,9 +413,9 @@ float runtime_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
 // as native kalico frames; see src/kalico_dispatch.c handlers.
 
 
-// Command surface (query_status, set_homed, set_homed_state, arm_endstop,
-// disarm_endstop, configure_axes, stream_*, clock_sync_request,
-// query_pool_state) plus the endstop GPIO sampler hot-path
+// Command surface (query_status, arm_endstop, disarm_endstop,
+// configure_axes, stream_*, clock_sync_request, query_pool_state)
+// plus the endstop GPIO sampler hot-path
 // (`runtime_endstop_sample_pins` + `endstop_pin_table`) live in
 // src/runtime_commands.c. This file keeps only lifecycle (init/drain),
 // sibling drains (status_drain, endstop_drain), and shared globals.

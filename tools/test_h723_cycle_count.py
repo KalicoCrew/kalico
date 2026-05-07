@@ -223,13 +223,6 @@ def main():
             )
 
         if not skip_bringup:
-            io.send("runtime_set_homed")
-            resp = io.wait_for_response("kalico_set_homed_response", timeout=2.0)
-            if int(resp["result"]) != 0:
-                raise SystemExit(
-                    "FAIL: kalico_set_homed_response result=%s" % resp["result"]
-                )
-
             for slot in (0, 1, 2):
                 r, cur_gen, last_ret = query_pool_state(io, slot)
                 if r != 0 or cur_gen != last_ret:

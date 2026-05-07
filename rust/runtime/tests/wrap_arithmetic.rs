@@ -45,8 +45,6 @@ fn boundary_loop_works_near_u64_max() {
 
     let pool = CurvePool::new();
     let shared = SharedState::new();
-    // Step 7-B: homed gate — set homed=true so the tick reaches the evaluator.
-    shared.homed.store(true, core::sync::atomic::Ordering::Release);
 
     // Pre-seed widen_state to a high-water mark close to u64::MAX so the
     // engine's first widen() doesn't reset to 0.

@@ -20,7 +20,6 @@ pub enum RuntimeError {
     /// §8.2: queue empty while `stream_open == true` — host failed to keep
     /// the runtime fed. Hard fault.
     Underrun,
-    NotHomed,
     StepBurstExceeded,
     ZeroDurationSegment,
     HomingTrip,
@@ -83,7 +82,6 @@ pub const KALICO_ERR_BOUNDARY_LOOP_OVERFLOW: i32 = -171;
 pub const KALICO_ERR_INTERNAL_INVARIANT: i32 = -172;
 
 // Step 7-B: motion-safety faults.
-pub const KALICO_ERR_NOT_HOMED: i32 = -20;
 pub const KALICO_ERR_STEP_BURST_EXCEEDED: i32 = -21;
 pub const KALICO_ERR_ZERO_DURATION_SEGMENT: i32 = -22;
 pub const KALICO_ERR_HOMING_TRIP: i32 = -23;
@@ -156,7 +154,6 @@ pub enum FaultCode {
     InternalInvariant = -172,
 
     // Step 7-B: motion-safety faults.
-    NotHomed = -20,
     StepBurstExceeded = -21,
     ZeroDurationSegment = -22,
     HomingTrip = -23,
@@ -195,7 +192,6 @@ impl From<RuntimeError> for i32 {
             RuntimeError::InvalidKinematics => KALICO_ERR_INVALID_KINEMATICS,
             RuntimeError::FaultLatched => KALICO_ERR_FAULT_LATCHED,
             RuntimeError::Underrun => KALICO_ERR_UNDERRUN,
-            RuntimeError::NotHomed => KALICO_ERR_NOT_HOMED,
             RuntimeError::StepBurstExceeded => KALICO_ERR_STEP_BURST_EXCEEDED,
             RuntimeError::ZeroDurationSegment => KALICO_ERR_ZERO_DURATION_SEGMENT,
             RuntimeError::HomingTrip => KALICO_ERR_HOMING_TRIP,
@@ -250,7 +246,6 @@ mod tests {
             ),
             (RuntimeError::FaultLatched, KALICO_ERR_FAULT_LATCHED),
             (RuntimeError::Underrun, KALICO_ERR_UNDERRUN),
-            (RuntimeError::NotHomed, KALICO_ERR_NOT_HOMED),
             (RuntimeError::StepBurstExceeded, KALICO_ERR_STEP_BURST_EXCEEDED),
             (RuntimeError::ZeroDurationSegment, KALICO_ERR_ZERO_DURATION_SEGMENT),
             (RuntimeError::HomingTrip, KALICO_ERR_HOMING_TRIP),

@@ -948,30 +948,6 @@ pub mod exports {
         }
     }
 
-    // ---- Step 7-B: homed gate + axis configuration -------------------------
-
-    /// Set the homed gate. Called by the host after all axes have been
-    /// successfully homed. The ISR checks `shared.homed` before accepting
-    /// motion segments — until this is called, motion commands are rejected
-    /// with `KALICO_ERR_NOT_HOMED`.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_set_homed(rt: *mut KalicoRuntime) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access; Release pairs with the
-        // ISR's Acquire load on `shared.homed`.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr).homed.store(true, Ordering::Release);
-        }
-        KALICO_OK
-    }
-
     /// Configure axis mapping and kinematics for this MCU. Minimal stub for
     /// Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
     /// CartesianXyzAndE) and validates. Full motor-config blob
@@ -1364,7 +1340,7 @@ pub mod exports {
         }
     }
 
-    // ---- Step 7-D: endstop arm/disarm/poll_trip + homed-state ---------------
+    // ---- Step 7-D: endstop arm/disarm/poll_trip ----------------------------
 
     use runtime::endstop::{
         ArmMsg, ArmPolicy, ArmStatus, DisarmStatus, MAX_SOURCES, MAX_STEPPERS, SourceConfig,
@@ -1578,23 +1554,4 @@ pub mod exports {
         }
     }
 
-    /// Set the homed gate to `homed` (0 = clear, non-zero = set). Required
-    /// for §8 host-driven homed-state control. The legacy no-arg
-    /// `kalico_set_homed` (always-set-true) at line ~830 above is preserved
-    /// for backward compat per spec rev 4.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_set_homed_state(rt: *mut KalicoRuntime, homed: u8) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr).homed.store(homed != 0, Ordering::Release);
-        }
-        KALICO_OK
-    }
 }

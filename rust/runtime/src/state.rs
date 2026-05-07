@@ -153,8 +153,6 @@ pub struct SharedState {
     // addition to `accepted_segment_id` which is the cumulative accept
     // cursor) so duplicate-id rejection can short-circuit on the hot path.
     pub accepted_segment_id_seen: AtomicBool,
-    // Step 7-B: homing gate — ISR checks this before accepting motion segments.
-    pub homed: AtomicBool,
     // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
 }
@@ -179,7 +177,6 @@ impl SharedState {
             terminal_segment_id_set: AtomicBool::new(false),
             terminal_segment_id_value: AtomicU32::new(0),
             accepted_segment_id_seen: AtomicBool::new(false),
-            homed: AtomicBool::new(false),
             stepper_counts: [
                 AtomicI32::new(0),
                 AtomicI32::new(0),

@@ -21,7 +21,6 @@ pub const FMT_VERSION_V1: u8 = 1;
 
 pub const DEFAULT_ARM_TIMEOUT: Duration = Duration::from_millis(100);
 pub const DEFAULT_DISARM_TIMEOUT: Duration = Duration::from_millis(100);
-pub const DEFAULT_SET_HOMED_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -293,33 +292,6 @@ pub fn disarm_endstop_with_timeout<T: Transport>(
         .try_get_u32("status")
         .ok_or(EndstopError::MissingField("status"))? as u8;
     DisarmStatus::from_u8(status_byte).ok_or(EndstopError::InvalidStatus(status_byte))
-}
-
-/// Send `kalico_set_homed_state homed=%c`. Spec §8 — sibling of the legacy
-/// no-arg `kalico_set_homed`. Returns the runtime's `result` integer (0 on
-/// success); non-zero is mapped to `EndstopError::McuRejected`.
-pub fn set_homed_state<T: Transport>(io: &T, homed: bool) -> Result<(), EndstopError> {
-    set_homed_state_with_timeout(io, homed, DEFAULT_SET_HOMED_TIMEOUT)
-}
-
-pub fn set_homed_state_with_timeout<T: Transport>(
-    io: &T,
-    homed: bool,
-    timeout: Duration,
-) -> Result<(), EndstopError> {
-    let resp = io.call_typed(
-        "runtime_set_homed_state",
-        &[("homed", FieldValue::Byte(if homed { 1 } else { 0 }))],
-        "kalico_set_homed_response",
-        timeout,
-    )?;
-    let result = resp
-        .try_get_i32("result")
-        .ok_or(EndstopError::MissingField("result"))?;
-    if result != 0 {
-        return Err(EndstopError::McuRejected(result));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

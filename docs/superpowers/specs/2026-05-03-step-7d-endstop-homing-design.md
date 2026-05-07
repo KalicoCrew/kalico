@@ -1,5 +1,18 @@
 # Step 7-D — Endstop watch & homing (SOTA design, rev 2)
 
+> **2026-05-07 amendment.** The `kalico_set_homed_state homed=%c`
+> command + `kalico_set_homed_response` ack defined in §8 (and the
+> `kalico_set_homed_state` FFI / `set_homed_state` host helper / bridge
+> `set_homed_state` PyO3 method / `Homing._notify_bridge_homed` post-G28
+> hook) have all been removed. The Step 7-B "homed" runtime gate they
+> served has been retired in favor of mainline-style host-side
+> `BridgeKinematics.check_move` enforcement; the runtime no longer
+> needs telling whether the host considers the machine homed. Other
+> §8 content (the stream/arm/trip/disarm flow, REASON_* codes,
+> reconciliation, phase-stepping notes) remains correct. See
+> `docs/superpowers/plan-changes-log.md` 2026-05-07 entry for the full
+> rationale.
+
 **Scope:** End-to-end sensorless and physical-switch homing for the kalico-rewrite single-MCU runtime, replacing the fall-back `motion_toolhead.drip_move` stub. Sub-modulation-period trip-to-stop, atomic per-tick snapshot, single-segment homing, one trigger-source primitive shared by physical switches and TMC StallGuard DIAG.
 
 **Precondition:** 7-D Phase 2b-2 reached — TMC SPI bring-up passed (DUMP_TMC clean), drivers locked under `SET_STEPPER_ENABLE`, kalico bridge live on H723 with `kalico_status_v6` ping flow.

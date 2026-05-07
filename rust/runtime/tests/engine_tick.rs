@@ -59,8 +59,6 @@ impl Harness {
             Box::leak(Box::new(Queue::new()));
         let (t_producer, t_consumer) = trace.split();
         let shared = SharedState::new();
-        // Step 7-B: all engine_tick tests assume a homed machine.
-        shared.homed.store(true, core::sync::atomic::Ordering::Release);
         Self {
             engine: Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ),
             widen: WidenState::default(),
@@ -270,7 +268,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
 fn invalid_curve_handle_latches_fault() {
     // Spec §5.5. Engine resolves an unloaded handle → InvalidHandle fault,
     // status latches to Fault, last_error code is set, fault marker emitted.
-    let mut h = Harness::new(); // homed=true set by Harness::new()
+    let mut h = Harness::new();
 
     let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
     // Use a never-issued handle (gen=1) — the slot is empty (gen=0), so
