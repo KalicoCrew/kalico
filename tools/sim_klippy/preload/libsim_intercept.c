@@ -34,10 +34,12 @@
 //   - gpio_state_mtx: held during gpio_lines[] and active_cs reads/writes.
 //   - iio_state_mtx: held during iio_values[] reads/writes.
 //
-// The control-socket thread (Task 8+) must NOT touch active_cs, the
-// spidev slot's chip_socket_fd, or any pwm_file slot — those belong to
-// klipper's main thread. The control thread writes gpio_lines[] (under
-// gpio_state_mtx) and iio_values[] (under iio_state_mtx) only.
+// The control-socket thread (Task 8+) must NOT touch active_cs or the
+// spidev slot's chip_socket_fd — those belong to klipper's main thread.
+// The control thread writes gpio_lines[] (under gpio_state_mtx) and
+// iio_values[] (under iio_state_mtx). It may read pwm_file slot's
+// last_value (under fake_slots_mtx) for the get_pwm diagnostic verb;
+// that is read-only and atomic on the supported platforms.
 
 // Verbose logging — set KALICO_SIM_SHIM_VERBOSE=1 to enable.
 static int verbose = 0;
@@ -151,14 +153,66 @@ static pthread_t control_thread;
 static int control_listen_fd = -1;
 static char control_path[256];
 
+static int parse_kv(const char *args, const char *key, long *out) {
+    char needle[32];
+    snprintf(needle, sizeof(needle), "%s=", key);
+    const char *p = strstr(args, needle);
+    if (!p) return -1;
+    if (out == NULL) return 0;          // presence-only check
+    p += strlen(needle);
+    char *end;
+    long v = strtol(p, &end, 10);
+    if (end == p) return -1;
+    *out = v;
+    return 0;
+}
+
+static void send_resp(int fd, const char *s) {
+    real_write(fd, s, strlen(s));
+}
+
 static void control_handle_line(int client_fd, char *line) {
     if (strncmp(line, "ping", 4) == 0) {
-        const char *resp = "ok\n";
-        real_write(client_fd, resp, 3);
+        send_resp(client_fd, "ok\n");
         return;
     }
-    const char *err = "error: unknown verb\n";
-    real_write(client_fd, err, strlen(err));
+    if (strncmp(line, "set_gpio_input", 14) == 0) {
+        long chip, line_off, value;
+        if (parse_kv(line, "chip", &chip) < 0
+            || parse_kv(line, "line", &line_off) < 0
+            || parse_kv(line, "value", &value) < 0) {
+            send_resp(client_fd, "error: parse error\n");
+            return;
+        }
+        if (chip < 0 || chip >= MAX_GPIO_CHIPS
+            || line_off < 0 || line_off >= MAX_GPIO_LINES) {
+            send_resp(client_fd, "error: chip or line out of range\n");
+            return;
+        }
+        pthread_mutex_lock(&gpio_state_mtx);
+        gpio_lines[chip][line_off].value = value ? 1 : 0;
+        pthread_mutex_unlock(&gpio_state_mtx);
+        send_resp(client_fd, "ok\n");
+        return;
+    }
+    if (strncmp(line, "set_adc", 7) == 0) {
+        long channel, value;
+        if (parse_kv(line, "channel", &channel) < 0
+            || parse_kv(line, "value", &value) < 0) {
+            send_resp(client_fd, "error: parse error\n");
+            return;
+        }
+        if (channel < 0 || channel >= MAX_IIO_CHANNELS) {
+            send_resp(client_fd, "error: channel out of range\n");
+            return;
+        }
+        pthread_mutex_lock(&iio_state_mtx);
+        iio_values[channel] = (uint16_t)(value & 0xFFFF);
+        pthread_mutex_unlock(&iio_state_mtx);
+        send_resp(client_fd, "ok\n");
+        return;
+    }
+    send_resp(client_fd, "error: unknown verb\n");
 }
 
 static void *control_accept_loop(void *unused) {
