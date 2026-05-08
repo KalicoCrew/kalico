@@ -40,6 +40,8 @@ _THIRD_PARTY = (
 _THIRD_PARTY_PLUGINS = {
     "beacon": _THIRD_PARTY / "beacon_klipper" / "beacon.py",
     "motors_sync": _THIRD_PARTY / "motors-sync" / "motors_sync.py",
+    "autotune_tmc": _THIRD_PARTY / "klipper_tmc_autotune" / "autotune_tmc.py",
+    "motor_constants": _THIRD_PARTY / "klipper_tmc_autotune" / "motor_constants.py",
 }
 
 
