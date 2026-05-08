@@ -56,6 +56,20 @@ CORE_COMMANDS = [
     "debug_ping data=%*s",
     "debug_read order=%c addr=%u",
     "debug_write order=%c addr=%u val=%u",
+    # trsync — every klippy MCU object instantiates a `MCU_trsync`
+    # (klippy/mcu.py:208) which looks up these formats verbatim. The
+    # firmware-side authoritative source for the strings is
+    # src/trsync.c (DECL_COMMAND lines for config_trsync, trsync_start,
+    # trsync_set_timeout, trsync_trigger) plus src/stepper.c
+    # (stepper_stop_on_trigger). Beacon presents itself as a full MCU
+    # so this surface must be exposed even though beacon's homing path
+    # uses its own beacon_home / beacon_contact_home commands — klippy
+    # still allocates a trsync OID per MCU at config time.
+    "config_trsync oid=%c",
+    "trsync_start oid=%c report_clock=%u report_ticks=%u expire_reason=%c",
+    "trsync_set_timeout oid=%c clock=%u",
+    "trsync_trigger oid=%c reason=%c",
+    "stepper_stop_on_trigger oid=%c trsync_oid=%c",
 ]
 
 BEACON_COMMANDS = [
@@ -84,6 +98,9 @@ CORE_RESPONSES = [
     "is_shutdown static_string_id=%hu",
     "pong data=%*s",
     "debug_result val=%u",
+    # trsync_state — sent by firmware on every report tick and on
+    # trigger. klippy's MCU_trsync._handle_trsync_state is the consumer.
+    "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
 ]
 
 BEACON_RESPONSES = [

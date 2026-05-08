@@ -234,6 +234,68 @@ def test_beacon_nvm_read_returns_image_bytes(stub):
         os.close(fd)
 
 
+def test_identify_dict_exposes_trsync_command_surface(stub):
+    """The identify dict must include every trsync format string klippy's
+    `MCU_trsync._build_config` looks up — drift breaks lookup_command at
+    klippy connect time."""
+    s, pty_path = stub
+    parser = _parser_with_default_messages()
+    fd = _open_pty_writer(pty_path)
+    try:
+        identify_data = bytearray()
+        seq = 1
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            os.write(fd, _frame(parser, seq, "identify offset=%u count=%c",
+                                offset=len(identify_data), count=40))
+            seq = (seq + 1) & msgproto.MESSAGE_SEQ_MASK or 1
+            params = _read_frames(fd, parser, "identify_response", 2.0)
+            data = params["data"]
+            if not data:
+                break
+            identify_data.extend(data)
+        decoded = json.loads(zlib.decompress(bytes(identify_data)).decode())
+
+        for fmt in [
+            "config_trsync oid=%c",
+            "trsync_start oid=%c report_clock=%u report_ticks=%u"
+            " expire_reason=%c",
+            "trsync_set_timeout oid=%c clock=%u",
+            "trsync_trigger oid=%c reason=%c",
+            "stepper_stop_on_trigger oid=%c trsync_oid=%c",
+        ]:
+            assert fmt in decoded["commands"], (
+                f"missing trsync command in identify dict: {fmt!r}"
+            )
+        assert (
+            "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u"
+            in decoded["responses"]
+        )
+    finally:
+        os.close(fd)
+
+
+def test_trsync_trigger_emits_state_with_can_trigger_zero(stub):
+    """trsync_trigger oid reason → trsync_state oid can_trigger=0
+    trigger_reason=reason. Mirrors src/trsync.c command_trsync_trigger."""
+    s, pty_path = stub
+    parser = msgproto.MessageParser()
+    parser.process_identify(IDENTIFY_BLOB, decompress=True)
+    fd = _open_pty_writer(pty_path)
+    try:
+        # Configure a trsync OID first (klippy does this via send_config
+        # before any trsync_start / trsync_trigger).
+        os.write(fd, _frame(parser, 1, "config_trsync oid=%c", oid=3))
+        os.write(fd, _frame(parser, 2,
+                            "trsync_trigger oid=%c reason=%c", oid=3, reason=2))
+        params = _read_frames(fd, parser, "trsync_state", 2.0)
+        assert params["oid"] == 3
+        assert params["can_trigger"] == 0
+        assert params["trigger_reason"] == 2
+    finally:
+        os.close(fd)
+
+
 def test_beacon_stream_starts_emitting_status_frames(stub):
     """beacon_stream en=1 → beacon_status frames begin arriving."""
     s, pty_path = stub

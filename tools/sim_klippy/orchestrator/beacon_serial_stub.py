@@ -169,6 +169,13 @@ class BeaconMcuStub:
         # then echoes back the crc klippy committed.
         self._is_configured: bool = False
         self._committed_crc: int = 0
+        # trsync — klippy registers one MCU_trsync per MCU. We track the
+        # OIDs that have been configured so we can react sensibly to
+        # `trsync_trigger`, but no firmware-class behaviour is emulated
+        # here yet (no periodic trsync_state report, no expire-timer).
+        # Boot only requires the dictionary surface + acks; the
+        # proximity-trip path lights up in a follow-up commit.
+        self._trsync_oids: set = set()
         # Synthetic sample counter and clock origin (in MCU ticks).
         self._sample_index: int = 0
         # Use a shared clock origin so beacon_status.clock and the
@@ -402,6 +409,21 @@ class BeaconMcuStub:
             "beacon_contact_stop_home": self._handle_noop,
             "beacon_contact_set_latency_min": self._handle_noop,
             "beacon_contact_set_sensitivity": self._handle_noop,
+            # trsync — klippy instantiates an `MCU_trsync` per MCU and
+            # walks through config_trsync / trsync_start /
+            # trsync_set_timeout / trsync_trigger / stepper_stop_on_trigger
+            # at _build_config time. None require a query response; the
+            # state stream is server-pushed via `trsync_state`, which
+            # the proximity-trip follow-up will use to fire the homing
+            # trigger. For this commit we ack everything and emit a
+            # single benign `trsync_state can_trigger=1` after start so
+            # klippy's MCU_trsync._handle_trsync_state has a baseline
+            # callback shape to register against.
+            "config_trsync": self._handle_config_trsync,
+            "trsync_start": self._handle_trsync_start,
+            "trsync_set_timeout": self._handle_noop,
+            "trsync_trigger": self._handle_trsync_trigger,
+            "stepper_stop_on_trigger": self._handle_noop,
         }
 
     def _handle_noop(self, params: dict) -> None:
@@ -491,6 +513,36 @@ class BeaconMcuStub:
         self._send_msg(
             "beacon_contact_state triggered=%c detect_clock=%u",
             triggered=0, detect_clock=0,
+        )
+
+    # -- trsync -------------------------------------------------------
+
+    def _handle_config_trsync(self, params: dict) -> None:
+        # Track the OID so we can validate inbound trsync_* commands
+        # later. The firmware-side equivalent (src/trsync.c) allocates
+        # the per-OID state struct here.
+        self._trsync_oids.add(params["oid"])
+
+    def _handle_trsync_start(self, params: dict) -> None:
+        # The real firmware would store report_clock / report_ticks /
+        # expire_reason and emit periodic `trsync_state` reports plus
+        # one final report on expire. For boot we don't need those —
+        # klippy only consumes trsync_state in `MCU_trsync.start()`,
+        # which isn't reached during config. Track the OID so a
+        # subsequent `trsync_trigger` can reply with a coherent state.
+        self._trsync_oids.add(params["oid"])
+
+    def _handle_trsync_trigger(self, params: dict) -> None:
+        # Mirror src/trsync.c command_trsync_trigger: send a final
+        # `trsync_state` with can_trigger=0 and the requested reason.
+        # klippy's MCU_trsync._handle_trsync_state releases the
+        # completion on can_trigger=0.
+        oid = params["oid"]
+        reason = params["reason"]
+        self._send_msg(
+            "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
+            oid=oid, can_trigger=0, trigger_reason=reason,
+            clock=self._now_clock(),
         )
 
     # ------------------------------------------------------------------
