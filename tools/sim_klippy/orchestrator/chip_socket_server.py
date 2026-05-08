@@ -1,26 +1,38 @@
 """Async-ish Unix-socket server for chip emulators.
 
-Accepts one client per socket; each request is a fixed-length byte
-sequence the handler interprets per-chip. The handler returns a reply
-of equal length (TMC SPI is symmetric; TMC2209 UART writes are 8-byte
-no-reply but reads are 8-byte reply — the chip emulators handle the
-asymmetry by reading the request first and constructing the reply
-accordingly).
+Two wire modes:
+
+- Default (``framed=False``): each client message is a fixed-length
+  ``chunk`` byte sequence; the handler returns a reply of equal length.
+  Used by tmcuart's bit-banged 10-byte-per-logical-byte path.
+
+- Framed (``framed=True``): each client message is
+  ``[cs:1][len:1][payload:len]``; the handler is called with
+  ``(cs, payload)`` and returns the reply payload. The server frames the
+  reply as ``[len:1][reply:len]``. Used by sim SPI buses that multiplex
+  multiple chips behind a single socket — the firmware-side spidev sim
+  path emits the CS byte from the active config_spi pin, and the
+  orchestrator dispatches to the right per-chip emulator.
 
 Threaded model: one accept thread, one worker thread per connection.
 Sufficient for our handful of chip stubs."""
 import os
 import socket
 import threading
-from typing import Callable
+from typing import Callable, Union
+
+UnframedHandler = Callable[[bytes], bytes]
+FramedHandler = Callable[[int, bytes], bytes]
 
 
 class ChipSocketServer:
-    def __init__(self, path: str, handler: Callable[[bytes], bytes],
-                 chunk: int = 16):
+    def __init__(self, path: str,
+                 handler: Union[UnframedHandler, FramedHandler],
+                 chunk: int = 16, framed: bool = False):
         self._path = path
         self._handler = handler
         self._chunk = chunk
+        self._framed = framed
         self._sock = None
         self._accept_thread = None
         self._stop = threading.Event()
@@ -61,13 +73,10 @@ class ChipSocketServer:
     def _serve(self, client: socket.socket):
         client.settimeout(1.0)
         try:
-            while not self._stop.is_set():
-                data = client.recv(self._chunk)
-                if not data:
-                    break
-                reply = self._handler(data)
-                if reply:
-                    client.sendall(reply)
+            if self._framed:
+                self._serve_framed(client)
+            else:
+                self._serve_unframed(client)
         except (socket.timeout, ConnectionResetError, OSError):
             pass
         finally:
@@ -75,3 +84,54 @@ class ChipSocketServer:
                 client.close()
             except OSError:
                 pass
+
+    def _serve_unframed(self, client: socket.socket):
+        while not self._stop.is_set():
+            data = client.recv(self._chunk)
+            if not data:
+                break
+            reply = self._handler(data)
+            if reply:
+                client.sendall(reply)
+
+    def _recv_exactly(self, client: socket.socket, n: int) -> bytes:
+        """Receive exactly n bytes or return b'' on EOF.
+
+        Robust to TCP-style partial reads: keeps recv()'ing until n
+        bytes are accumulated. Returns b'' if the peer closes.
+        """
+        buf = bytearray()
+        while len(buf) < n:
+            if self._stop.is_set():
+                return b""
+            try:
+                chunk = client.recv(n - len(buf))
+            except socket.timeout:
+                # Allow the stop event to interrupt long-idle connections.
+                continue
+            if not chunk:
+                return b""
+            buf.extend(chunk)
+        return bytes(buf)
+
+    def _serve_framed(self, client: socket.socket):
+        while not self._stop.is_set():
+            hdr = self._recv_exactly(client, 2)
+            if len(hdr) < 2:
+                break
+            cs = hdr[0]
+            length = hdr[1]
+            if length == 0:
+                # Zero-length payload is invalid — the firmware never sends it.
+                break
+            payload = self._recv_exactly(client, length)
+            if len(payload) < length:
+                break
+            reply = self._handler(cs, bytes(payload))
+            # SPI is symmetric: reply length must equal request length.
+            if len(reply) != length:
+                raise ValueError(
+                    f"framed handler returned {len(reply)}B reply for "
+                    f"{length}B request (cs={cs:#x})"
+                )
+            client.sendall(bytes([len(reply)]) + reply)

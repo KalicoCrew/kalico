@@ -61,6 +61,24 @@ sim_spi_fd_is_sim(int fd) {
     return 0;
 }
 
+// CS-pin side channel. spidev_transfer (in src/spicmds.c) sets this
+// immediately before the gpio_out_write that asserts CS, and clears it
+// after the post-transfer de-assert. The sim spi_transfer path reads it
+// to dispatch the transfer to the per-chip emulator behind the shared
+// Unix socket. CS_NONE is used for config_spi_without_cs.
+#define SIM_SPI_CS_NONE 0xFF
+static uint8_t sim_pending_cs = SIM_SPI_CS_NONE;
+
+void
+sim_spi_set_pending_cs(uint8_t cs) {
+    sim_pending_cs = cs;
+}
+
+void
+sim_spi_clear_pending_cs(void) {
+    sim_pending_cs = SIM_SPI_CS_NONE;
+}
+
 void
 sim_spi_register_route(uint32_t bus, const char *path) {
     for (int i = 0; i < sim_routes_count; i++)
@@ -173,8 +191,11 @@ spi_transfer(struct spi_config config, uint8_t receive_data
         memcpy(scratch, data, len);
         uint8_t reply[256];
         memset(reply, 0, sizeof(reply));
-        sim_chip_socket_xfer(config.fd, scratch, len,
-                             receive_data ? data : reply, len);
+        // Use the framed protocol so the orchestrator can demultiplex
+        // transfers per CS pin (a single sim_spi<N> bus typically carries
+        // multiple chips, e.g. four TMC5160s + one MAX31865 on H7 spi1).
+        sim_chip_socket_xfer_framed(config.fd, sim_pending_cs, scratch, len,
+                                    receive_data ? data : reply);
         return;
     }
 

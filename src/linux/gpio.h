@@ -54,4 +54,14 @@ int i2c_write(struct i2c_config config, uint8_t write_len, uint8_t *write);
 int i2c_read(struct i2c_config config, uint8_t reg_len, uint8_t *reg
               , uint8_t read_len, uint8_t *read);
 
+#if CONFIG_KALICO_SIM
+// Sim-only hooks for routing SPI transfers per CS pin. spidev_transfer
+// sets the pending CS to the gpio offset just before asserting CS, and
+// clears it after de-assert. linux/spidev.c reads it from the sim path.
+uint8_t sim_gpio_out_offset(struct gpio_out g);
+void sim_spi_set_pending_cs(uint8_t cs);
+void sim_spi_clear_pending_cs(void);
+void sim_gpio_in_set_state(uint32_t pin, uint8_t value);
+#endif
+
 #endif // gpio.h

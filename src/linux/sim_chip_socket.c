@@ -64,3 +64,37 @@ int sim_chip_socket_xfer(int fd, const uint8_t *tx, size_t tx_len,
     }
     return 0;
 }
+
+static int sim_chip_socket_write_all(int fd, const uint8_t *buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, buf + off, len - off);
+        if (n <= 0) return -1;
+        off += n;
+    }
+    return 0;
+}
+
+static int sim_chip_socket_read_all(int fd, uint8_t *buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = read(fd, buf + off, len - off);
+        if (n <= 0) return -1;
+        off += n;
+    }
+    return 0;
+}
+
+int sim_chip_socket_xfer_framed(int fd, uint8_t cs,
+                                const uint8_t *tx, size_t tx_len,
+                                uint8_t *rx) {
+    if (tx_len == 0 || tx_len > 255) return -1;
+    uint8_t hdr[2] = { cs, (uint8_t)tx_len };
+    if (sim_chip_socket_write_all(fd, hdr, sizeof(hdr)) < 0) return -1;
+    if (sim_chip_socket_write_all(fd, tx, tx_len) < 0) return -1;
+    uint8_t rx_len_byte = 0;
+    if (sim_chip_socket_read_all(fd, &rx_len_byte, 1) < 0) return -1;
+    if (rx_len_byte != tx_len) return -1;
+    if (sim_chip_socket_read_all(fd, rx, rx_len_byte) < 0) return -1;
+    return 0;
+}

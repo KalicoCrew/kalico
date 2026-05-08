@@ -208,3 +208,34 @@ gpio_in_read(struct gpio_in g)
     return data.values[0];
 #endif
 }
+
+#if CONFIG_KALICO_SIM
+// Sim-only accessor: return the chardev gpio offset associated with this
+// gpio_out. spidev_transfer uses this to publish the active CS line as a
+// side-channel before invoking spi_transfer, so the sim path can address
+// the right per-chip emulator behind the shared Unix socket.
+uint8_t
+sim_gpio_out_offset(struct gpio_out g)
+{
+    if (g.line == NULL) return 0xFF;
+    return (uint8_t)g.line->offset;
+}
+#endif
+
+#if CONFIG_KALICO_SIM
+// Sim-only escape hatch. The faithful klippy-in-loop test harness needs
+// to drive endstop / DIAG / button input pins from python without going
+// through libgpiod (which doesn't exist on the host build path). This
+// directly pokes the per-line `state` field that gpio_in_read returns.
+//
+// Pin index = chip_id * MAX_GPIO_LINES + offset, matching the GPIO()
+// macro in src/linux/internal.h. Out-of-range writes are silently
+// ignored so a misaddressed test doesn't crash the firmware.
+void
+sim_gpio_in_set_state(uint32_t pin, uint8_t value)
+{
+    if (pin >= sizeof(gpio_lines) / sizeof(gpio_lines[0]))
+        return;
+    gpio_lines[pin].state = !!value;
+}
+#endif

@@ -15,6 +15,8 @@ from tools.sim_klippy.orchestrator.launcher import spawn_mcus, McuHandles
 from tools.sim_klippy.orchestrator.chip_socket_server import ChipSocketServer
 from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
 from tools.sim_klippy.orchestrator.tmc2209_emulator import TMC2209Emulator
+from tools.sim_klippy.orchestrator.max31865_emulator import MAX31865Emulator
+from tools.sim_klippy.orchestrator.spi_router import SpiRouter
 from tools.sim_klippy.orchestrator.beacon_serial_stub import BeaconSerialStub
 from tools.sim_klippy.orchestrator.adc_stub import HeaterModel, temp_to_adc
 from tools.sim_klippy.orchestrator.overrides import (
@@ -205,17 +207,22 @@ def sim(tmp_path):
         # ChipSocketServer unlinks any stale path before bind (single-
         # file unlink) so leftovers from a crashed previous run don't
         # block startup.
-        # H7 SPI bus 0: 4 × TMC5160 for X, Y, X1, Y1. CS pin (the 4-bit
-        # `dev` field encoded into bus_id by spidev.c) determines which
-        # of the 4 chips a given config_spi oid ends up talking to —
-        # but at the auto-route layer they all share the same `bus`
-        # (sim_spi0, idx=0). One emulator stands in for all four; the
-        # firmware multiplexes via CS toggling, which our socket-level
-        # stub doesn't model. That's fine for boot — every TMC5160 sees
-        # the same boilerplate query/reply pattern.
-        chip = TMC5160Emulator()
+        # H7 SPI bus 0 (real-hardware spi1): 4 × TMC5160 stepper drivers
+        # (stepper_x/y/x1/y1) AND 1 × MAX31865 RTD amplifier for the
+        # extruder thermistor — five distinct chips behind one Unix
+        # socket. The firmware-side spidev sim path publishes the active
+        # CS pin's chardev gpio offset on every transfer (framed wire
+        # protocol), and SpiRouter dispatches each frame to the right
+        # per-chip emulator. CS values come from pin-overrides.toml's
+        # [mcu_main.gpio] mapping: PC7=5, PC6=4, PD11=6, PC4=3, PF8=40.
+        h7_spi_router = SpiRouter()
+        h7_spi_router.attach(5, TMC5160Emulator().transfer)   # PC7 stepper_x
+        h7_spi_router.attach(4, TMC5160Emulator().transfer)   # PC6 stepper_y
+        h7_spi_router.attach(6, TMC5160Emulator().transfer)   # PD11 stepper_x1
+        h7_spi_router.attach(3, TMC5160Emulator().transfer)   # PC4 stepper_y1
+        h7_spi_router.attach(40, MAX31865Emulator().transfer) # PF8 extruder_rtd
         srv = ChipSocketServer(
-            "/tmp/klipper_sim_h7_chip_spi0", chip.transfer, chunk=5,
+            "/tmp/klipper_sim_h7_chip_spi0", h7_spi_router, framed=True,
         )
         srv.start()
         chip_servers.append(srv)

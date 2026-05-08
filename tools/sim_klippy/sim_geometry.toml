@@ -18,3 +18,16 @@ sg_threshold = 80
 [stepper_y1]
 homing_endstop_mm = 300.0
 sg_threshold = 80
+
+# Per-CS chip mapping for the H7 sim_spi0 bus (real-hardware spi1).
+# The firmware-side spidev sim path publishes the active CS pin's
+# chardev gpio offset on each transfer; the orchestrator's SpiRouter
+# dispatches that CS value to the chip emulator registered here.
+# Gpio offsets come from tools/sim_klippy/pin-overrides.toml [mcu_main.gpio]:
+#   PC7=5, PC6=4, PD11=6, PC4=3, PF8=40.
+[h7_spi0_chips]
+5  = "tmc5160:stepper_x"     # PC7
+4  = "tmc5160:stepper_y"     # PC6
+6  = "tmc5160:stepper_x1"    # PD11
+3  = "tmc5160:stepper_y1"    # PC4
+40 = "max31865:extruder_rtd" # PF8
