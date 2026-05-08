@@ -48,14 +48,6 @@ struct gpio_pwm gpio_pwm_setup(uint32_t pin, uint32_t cycle_time, uint16_t val)
     struct gpio_pwm g = {};
     g.period = cycle_time * NSECS_PER_TICK;
 
-#if CONFIG_KALICO_SIM
-    // Sim build: no /sys/class/pwm devices exist on the host. Return a
-    // synthetic gpio_pwm with sentinel fds that gpio_pwm_write skips.
-    g.duty_fd = -1;
-    g.enable_fd = -1;
-    return g;
-#endif
-
     // configure period/cycle time. Always in nanoseconds
     snprintf(filename, sizeof(filename), pwm_path, chip_id, pwm_id, "period");
     int fd = open(filename, O_WRONLY|O_CLOEXEC);
@@ -109,10 +101,6 @@ fail:
 
 void gpio_pwm_write(struct gpio_pwm g, uint16_t val)
 {
-#if CONFIG_KALICO_SIM
-    if (g.enable_fd < 0)
-        return;
-#endif
     if (!val) {
         write(g.enable_fd, "0", 2);
         return;
