@@ -55,7 +55,7 @@ PG14 = "gpiochip0/gpio43"
 PG15 = "gpiochip0/gpio44"
 
 [mcu_main.spi]
-spi1 = "sim_spi0"
+spi1 = "spidev0.0"
 
 [mcu_main.serial]
 "usb-Klipper_stm32h723xx_*" = "/tmp/klipper_sim_h7"

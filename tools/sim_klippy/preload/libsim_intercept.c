@@ -536,11 +536,13 @@ static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
     gpio_lines[chip_id][offset].value = v;
     slot->u.gpioline.last_value = v;
     // Track currently-asserted CS for SPI dispatch.
-    if (v == 1 && gpio_lines[chip_id][offset].direction == 1) {
+    // CS is active-low: the chip is selected when the line goes LOW (v==0),
+    // and deselected when the line goes HIGH (v==1).
+    if (v == 0 && gpio_lines[chip_id][offset].direction == 1) {
         active_cs.chip_id = chip_id;
         active_cs.line_offset = offset;
         active_cs.valid = 1;
-    } else if (v == 0 && active_cs.valid
+    } else if (v == 1 && active_cs.valid
                && active_cs.chip_id == chip_id
                && active_cs.line_offset == offset) {
         active_cs.valid = 0;
