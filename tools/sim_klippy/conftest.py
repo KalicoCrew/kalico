@@ -287,7 +287,7 @@ def sim(tmp_path):
         # 'endstop_pin: probe:z_virtual_endstop' on stepper_z. Substitute
         # a benign GPIO pin so klippy can complete config parsing.
         cfg_text = cfg_text.replace(
-            "probe:z_virtual_endstop", "gpiochip0/gpio15"
+            "probe:z_virtual_endstop", "gpiochip0/gpio99"
         )
         rendered_cfg_text = apply_overrides(cfg_text, overrides)
         # Strip sections whose plugin module isn't installed in this tree
