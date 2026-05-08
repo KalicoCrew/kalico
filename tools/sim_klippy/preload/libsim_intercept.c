@@ -147,6 +147,49 @@ static ssize_t (*real_write)(int, const void *, size_t) = NULL;
 static int (*real_fcntl)(int, int, ...) = NULL;
 static int (*real_access)(const char *, int) = NULL;
 
+static pthread_t control_thread;
+static int control_listen_fd = -1;
+static char control_path[256];
+
+static void control_handle_line(int client_fd, char *line) {
+    if (strncmp(line, "ping", 4) == 0) {
+        const char *resp = "ok\n";
+        real_write(client_fd, resp, 3);
+        return;
+    }
+    const char *err = "error: unknown verb\n";
+    real_write(client_fd, err, strlen(err));
+}
+
+static void *control_accept_loop(void *unused) {
+    (void)unused;
+    char buf[1024];
+    while (1) {
+        int client = accept(control_listen_fd, NULL, NULL);
+        if (client < 0) {
+            if (errno == EINTR) continue;
+            LOG("control accept failed: %s", strerror(errno));
+            return NULL;
+        }
+        size_t pos = 0;
+        while (1) {
+            ssize_t n = real_read(client, buf + pos, sizeof(buf) - pos - 1);
+            if (n <= 0) break;
+            pos += n;
+            buf[pos] = '\0';
+            char *nl;
+            while ((nl = memchr(buf, '\n', pos)) != NULL) {
+                *nl = '\0';
+                control_handle_line(client, buf);
+                size_t len = nl - buf + 1;
+                memmove(buf, nl + 1, pos - len);
+                pos -= len;
+            }
+        }
+        real_close(client);
+    }
+}
+
 __attribute__((constructor))
 static void shim_init(void) {
     const char *v = getenv("KALICO_SIM_SHIM_VERBOSE");
@@ -160,7 +203,53 @@ static void shim_init(void) {
     real_write   = dlsym(RTLD_NEXT, "write");
     real_fcntl   = dlsym(RTLD_NEXT, "fcntl");
     real_access  = dlsym(RTLD_NEXT, "access");
+    const char *sock_dir = getenv("KALICO_SIM_SOCK_DIR");
+    if (sock_dir) {
+        snprintf(control_path, sizeof(control_path), "%s/sim_control", sock_dir);
+        unlink(control_path);
+        control_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (control_listen_fd < 0) {
+            LOG("control socket() failed: %s", strerror(errno));
+            return;
+        }
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        int sun_written = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", control_path);
+        if (sun_written < 0 || (size_t)sun_written >= sizeof(addr.sun_path)) {
+            LOG("control socket path too long: %s", control_path);
+            real_close(control_listen_fd);
+            control_listen_fd = -1;
+            return;
+        }
+        if (bind(control_listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            LOG("control bind %s failed: %s", control_path, strerror(errno));
+            real_close(control_listen_fd);
+            control_listen_fd = -1;
+            return;
+        }
+        if (listen(control_listen_fd, 1) < 0) {
+            LOG("control listen failed: %s", strerror(errno));
+            real_close(control_listen_fd);
+            control_listen_fd = -1;
+            return;
+        }
+        if (pthread_create(&control_thread, NULL, control_accept_loop, NULL) != 0) {
+            LOG("control pthread_create failed");
+            real_close(control_listen_fd);
+            control_listen_fd = -1;
+            return;
+        }
+        LOG("control listening on %s", control_path);
+    }
     LOG("init pid=%d", (int)getpid());
+}
+
+__attribute__((destructor))
+static void shim_fini(void) {
+    if (control_listen_fd >= 0) {
+        unlink(control_path);
+    }
 }
 
 // Path classification — returns the slot kind to allocate, or SIM_NONE
