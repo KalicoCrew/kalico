@@ -339,25 +339,38 @@ Today's sim short-circuit: `command_tmcuart_send` detects `oid` is
 sim-routed, bypasses the bit-bang, sends the entire UART frame over a Unix
 socket as bytes.
 
-Under LD_PRELOAD, that short-circuit goes away. The bit-bang runs to
-completion (toggling shim-tracked GPIO output values at firmware-driven
-rates). The shim **observes the GPIO output sequence**, recognizes complete
-UART frames by start/stop bits, and forwards the byte stream over the
-chip socket. Reverse direction: shim drives the GPIO input (which klipper
-samples in `gpio_in_read`) at UART bit timing during the read window.
+**Decision: keep the tmcuart short-circuit in firmware, but on a clean
+explicit-route basis.** Replace the broken `flavor` heuristic and the
+`runtime_sim_route_tmcuart` wire command with a simpler convention:
+firmware reads `KALICO_SIM_SOCK_DIR` env var at startup; each tmcuart oid
+generates its socket path as `${KALICO_SIM_SOCK_DIR}/tmcuart_<oid>`.
+The orchestrator binds matching paths before spawning klipper.elf. No
+runtime route registration; no klippy involvement; no flavor heuristic.
 
-This is the shim's most invasive piece — it has to understand TMC UART
-framing (start bit, 8 data bits LSB-first, stop bit, configurable bit time)
-to bridge between bit-banged GPIO and byte-oriented chip emulator sockets.
-Roughly 150 LOC.
+This is the **one architectural exception** to "production firmware
+knows nothing about sim." The exception is contained:
+- Gated behind `#if CONFIG_KALICO_SIM_TMCUART_BYPASS` (a new fine-grained
+  flag, off by default; `MACH_LINUX` sim build sets it on).
+- ~50 LOC of firmware: getenv, snprintf the path, connect, write+read.
+- One direction (firmware → socket → emulator); no bit-bang state machine
+  in the shim.
 
-Alternative considered: keep `runtime_sim_route_tmcuart` and the firmware
-short-circuit ONLY for tmcuart (delete it for everything else). Rejected:
-the whole point of the shim is "production firmware doesn't know sim
-exists." A residual firmware short-circuit for tmcuart re-introduces the
-layer violation.
+**Why the exception is justified:** the alternative (shim observes GPIO
+toggles, reconstructs UART frames by start/stop bits, drives input at the
+right rate during read windows) is timing-sensitive. Linux scheduler
+jitter under load could desync the shim's UART decoder from firmware's
+bit-clock. That's the kind of intermittent flake that poisons a discovery
+loop — we'd waste time debugging shim timing instead of finding real
+bugs in motion code. The LD_PRELOAD architecture is for breadth (8
+firmware files become bit-identical sim/real); tmcuart is one
+narrow corner where the cost-benefit flips. We trade ideological purity
+for a smaller, more reliable foundation.
 
-Socket path: `${KALICO_SIM_SOCK_DIR}/uart_<chip_id>_<line_offset>`.
+If a future need ever justifies it (e.g., we want to run real-hardware
+tmcuart timing tests in the sim), the shim grows a bit-bang observer in
+v2 and the firmware exception deletes.
+
+Socket path: `${KALICO_SIM_SOCK_DIR}/tmcuart_<oid>`.
 
 ### PWM, IIO
 
@@ -468,10 +481,10 @@ state, not a sim concern. Stays as-is.
 | `src/linux/sim_chip_socket.h` | 37 | 0 | **whole file** |
 | `src/linux/Makefile` | ~5 | n/a | drop `sim_chip_socket.c` reference |
 | `src/spicmds.c` | 12 | 197 | `sim_pending_cs` plumbing |
-| `src/tmcuart.c` | ~73 | ~257 | The entire `#if CONFIG_MACH_LINUX` route block + helpers |
+| `src/tmcuart.c` | ~30 | ~300 | Drop the broken `flavor` heuristic; keep the explicit-route short-circuit gated on `CONFIG_KALICO_SIM_TMCUART_BYPASS` and reading path from `KALICO_SIM_SOCK_DIR` env var |
 | `src/runtime_sim_commands.c` | 263 | 0 | **whole file** |
 | `src/Makefile` | ~3 | n/a | drop `runtime_sim_commands.c` reference |
-| **Total firmware deletions** | **~700** | | |
+| **Total firmware deletions** | **~660** | | |
 
 Note: `runtime_tick.c`'s `[sim-progress]` diagnostic stays. The shim could
 expose stepper counters via a new control-socket verb in a follow-up; for
@@ -490,10 +503,11 @@ v1 we leave the diagnostic alone.
 | `klippy/motion_toolhead.py` | +20 / -25 | Repoint `cmd_KALICO_SIM_ENDSTOP_SET_PIN` to control socket |
 | **Total additions** | **~870** | |
 
-Net delta: roughly **+170 LOC** (+870 added / -700 removed). The added LOC
+Net delta: roughly **+210 LOC** (+870 added / -660 removed). The added LOC
 is concentrated in the shim — one file, single responsibility, syscall ABI
 contract — instead of spread across eight firmware files behind preprocessor
-gates.
+gates. The tmcuart exception is the single residual sim-aware firmware
+piece, contained behind one fine-grained Kconfig flag.
 
 ### `KALICO_SIM` Kconfig option
 
@@ -579,18 +593,13 @@ through the surface files). If a future change introduces them, the shim
 needs to intercept `dup*` and either reject (set EBADF) or duplicate the
 slot. v1 ignores; v2 adds when the need surfaces.
 
-### R5: tmcuart bit-bang observation correctness
-The shim observes GPIO output toggles to reconstruct UART bytes. The bit
-clock comes from firmware-side timer scheduling, which on MACH_LINUX is
-real wall-clock (not ARM cycle counters). Variance under load could
-desynchronize the shim's UART decoder. Mitigation:
-- Shim's UART decoder uses *bit-time configured at `config_tmcuart` time*
-  (firmware sends `bit_time=N`), not wall-clock measurement. Decoder is
-  edge-triggered, with start-bit edge as the timing anchor.
-- If desync proves a problem in practice (vs. theoretically), the
-  alternative is to keep ONE small firmware short-circuit: tmcuart bypasses
-  the bit-bang and writes bytes directly to a per-pin Unix socket. That's
-  the v1 fallback if the cleaner approach proves fragile.
+### R5: ~~tmcuart bit-bang observation correctness~~ → resolved by the firmware exception
+The original concern was timing fragility in a shim-side UART decoder.
+Resolved by the design decision to keep the tmcuart firmware short-circuit
+on an explicit-route basis (see "Chip emulator routing → tmcuart" above).
+The shim does not observe bit-bang output; firmware bypasses bit-banging
+entirely and writes bytes directly to `${KALICO_SIM_SOCK_DIR}/tmcuart_<oid>`.
+The risk this entry tracked is no longer in scope for v1.
 
 ### R6: Test-control socket race
 A test sends `set_gpio_input chip=0 line=20 value=1` while klipper is mid
@@ -713,15 +722,15 @@ lines" rule.
 - Replacing the bridge-protocol PTY — klipper.elf still serves its
   klippy-facing PTY normally; that's not a /dev/* surface.
 
-## Open questions
+## Resolved decisions
 
-- Should the tmcuart bit-bang observation be the v1 approach, or should we
-  keep one targeted firmware short-circuit for tmcuart only and tackle the
-  bit-bang-to-byte translation in a follow-up? Risk R5 captures this.
-  **Recommendation**: do the tmcuart bit-bang observation in v1; it's the
-  one piece that makes the shim feel architecturally "complete." If R5
-  bites in practice we fall back to the firmware short-circuit only for
-  tmcuart, in a v1.1 patch.
-- Do we want a control-socket "ping" liveness check used by the launcher
-  to verify the shim is up before klipper starts trying real syscalls?
-  **Recommendation**: yes — small, makes startup deterministic.
+- **tmcuart**: firmware keeps a contained short-circuit on an explicit
+  env-var-driven path. Shim does not observe bit-bang output. Exception
+  is gated behind `CONFIG_KALICO_SIM_TMCUART_BYPASS`, ~50 LOC. See
+  "Chip emulator routing → tmcuart" for rationale.
+- **Control socket**: line-oriented text protocol. Low-traffic
+  test-control surface; debuggability beats throughput. See "Control
+  socket protocol" for the full grammar.
+- **Liveness check**: `ping` verb included in the control socket
+  protocol. Launcher uses it to verify the shim is up before klipper
+  starts issuing real syscalls — makes startup deterministic.
