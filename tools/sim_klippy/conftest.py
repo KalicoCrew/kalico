@@ -51,13 +51,26 @@ def _strip_sections(cfg_text: str, prefixes: tuple) -> str:
     EOF. We comment-out the entire range with a leading ``#`` per line so
     the bytes survive in the rendered cfg for forensics, but klippy
     treats them as comments.
+
+    Also strips the entire klippy autosave block (lines starting with
+    ``#*#``), which contains stored sections like ``[beacon model
+    default]`` that would re-trigger module loads even with [beacon]
+    stripped.
     """
     lines = cfg_text.splitlines(keepends=True)
     out = []
     in_strip = False
+    in_autosave = False
     import re
     section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
     for line in lines:
+        if line.lstrip().startswith("#*#"):
+            in_autosave = True
+        if in_autosave:
+            # Replace the autosave-marker prefix so klippy's configfile
+            # parser no longer treats this block as autosave content.
+            out.append("# [sim-autosave-strip] " + line)
+            continue
         m = section_re.match(line)
         if m:
             head = m.group(1).split(None, 1)[0]
