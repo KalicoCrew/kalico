@@ -212,6 +212,63 @@ static void control_handle_line(int client_fd, char *line) {
         send_resp(client_fd, "ok\n");
         return;
     }
+    if (strncmp(line, "get_gpio_output", 15) == 0) {
+        long chip, line_off;
+        if (parse_kv(line, "chip", &chip) < 0
+            || parse_kv(line, "line", &line_off) < 0) {
+            send_resp(client_fd, "error: parse error\n");
+            return;
+        }
+        if (chip < 0 || chip >= MAX_GPIO_CHIPS
+            || line_off < 0 || line_off >= MAX_GPIO_LINES) {
+            send_resp(client_fd, "error: chip or line out of range\n");
+            return;
+        }
+        pthread_mutex_lock(&gpio_state_mtx);
+        int v = gpio_lines[chip][line_off].value;
+        pthread_mutex_unlock(&gpio_state_mtx);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "value=%d\n", v);
+        send_resp(client_fd, buf);
+        return;
+    }
+    if (strncmp(line, "get_pwm", 7) == 0) {
+        long chip, pwm;
+        if (parse_kv(line, "chip", &chip) < 0
+            || parse_kv(line, "pwm", &pwm) < 0) {
+            send_resp(client_fd, "error: parse error\n");
+            return;
+        }
+        // Determine which file to read; default to "duty_cycle".
+        const char *want_file = "duty_cycle";
+        char want_buf[32] = {0};
+        const char *p = strstr(line, "file=");
+        if (p && sscanf(p, "file=%31s", want_buf) == 1) {
+            want_file = want_buf;
+        }
+        uint64_t found = 0;
+        int hit = 0;
+        pthread_mutex_lock(&fake_slots_mtx);
+        for (int i = 0; i < MAX_FAKE_FDS; i++) {
+            if (fake_slots[i].kind == SIM_PWM_FILE
+                && fake_slots[i].u.pwm_file.chip_id == chip
+                && fake_slots[i].u.pwm_file.pwm_id == pwm
+                && strcmp(fake_slots[i].u.pwm_file.file, want_file) == 0) {
+                found = fake_slots[i].u.pwm_file.last_value;
+                hit = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&fake_slots_mtx);
+        if (!hit) {
+            send_resp(client_fd, "error: pwm file not found\n");
+            return;
+        }
+        char buf[64];
+        snprintf(buf, sizeof(buf), "value=%llu\n", (unsigned long long)found);
+        send_resp(client_fd, buf);
+        return;
+    }
     send_resp(client_fd, "error: unknown verb\n");
 }
 
