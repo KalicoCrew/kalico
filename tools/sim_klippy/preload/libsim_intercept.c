@@ -20,6 +20,25 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+// THREADING MODEL
+// ===============
+// Klipper firmware on MACH_LINUX is single-threaded for /dev/* and /sys/*
+// access — `console_task` is the sole consumer of these fds. The shim
+// adds ONE additional thread (Task 8: control-socket accept thread).
+//
+// Lock invariants:
+//   - fake_slots_mtx: held during alloc_fake_fd / free_fake_fd. Reads
+//     via slot_for_fd are NOT locked, on the assumption that any given
+//     slot is owned by exactly one of {klipper main, control thread}
+//     at any time.
+//   - gpio_state_mtx: held during gpio_lines[] and active_cs reads/writes.
+//   - iio_state_mtx: held during iio_values[] reads/writes.
+//
+// The control-socket thread (Task 8+) must NOT touch active_cs, the
+// spidev slot's chip_socket_fd, or any pwm_file slot — those belong to
+// klipper's main thread. The control thread writes gpio_lines[] (under
+// gpio_state_mtx) and iio_values[] (under iio_state_mtx) only.
+
 // Verbose logging — set KALICO_SIM_SHIM_VERBOSE=1 to enable.
 static int verbose = 0;
 #define LOG(fmt, ...) do { if (verbose) fprintf(stderr, "[shim] " fmt "\n", ##__VA_ARGS__); } while (0)
@@ -367,8 +386,14 @@ static int spi_get_chip_socket(struct sim_fd_slot *slot) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.*s",
-             (int)(sizeof(addr.sun_path) - 1), path);
+    int written = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    if (written < 0 || (size_t)written >= sizeof(addr.sun_path)) {
+        LOG("spi sock path too long (%d bytes, max %zu): %s",
+            written, sizeof(addr.sun_path) - 1, path);
+        real_close(sock);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG("spi connect %s failed: %s", path, strerror(errno));
         real_close(sock);
@@ -425,12 +450,15 @@ int ioctl(int fd, unsigned long req, ...) {
         case GPIOHANDLE_GET_LINE_VALUES_IOCTL:
             return gpio_handle_get_values(fd, (struct gpiohandle_data *)arg);
         case SPI_IOC_WR_MAX_SPEED_HZ:
+            if (slot->kind != SIM_SPIDEV) { errno = EINVAL; return -1; }
             slot->u.spidev.speed_hz = *(uint32_t *)arg;
             return 0;
         case SPI_IOC_WR_MODE:
+            if (slot->kind != SIM_SPIDEV) { errno = EINVAL; return -1; }
             slot->u.spidev.mode = *(uint8_t *)arg;
             return 0;
         case SPI_IOC_MESSAGE(1):
+            if (slot->kind != SIM_SPIDEV) { errno = EINVAL; return -1; }
             return spi_handle_message(fd, (struct spi_ioc_transfer *)arg);
         default:
             LOG("ioctl(fd=%d, req=0x%lx) UNHANDLED on slot kind=%d", fd, req, slot->kind);
