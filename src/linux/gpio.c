@@ -72,16 +72,8 @@ gpio_out_setup(uint32_t pin, uint8_t val)
     line->offset = GPIO2PIN(pin);
     line->chipid = GPIO2PORT(pin);
     struct gpio_out g = { .line = line };
-#if CONFIG_KALICO_SIM
-    // Sim build: no /dev/gpiochip available (e.g. Docker on macOS).
-    // Skip the kernel ioctls and just track state in memory.
-    line->fd = -1;
-    line->state = !!val;
-    return g;
-#else
     gpio_out_reset(g,val);
     return g;
-#endif
 }
 
 static void
@@ -96,10 +88,6 @@ gpio_release_line(struct gpio_line *line)
 void
 gpio_out_reset(struct gpio_out g, uint8_t val)
 {
-#if CONFIG_KALICO_SIM
-    g.line->state = !!val;
-    return;
-#else
     gpio_release_line(g.line);
     struct gpiohandle_request req;
     memset(&req, 0, sizeof(req));
@@ -117,22 +105,16 @@ gpio_out_reset(struct gpio_out g, uint8_t val)
     set_close_on_exec(req.fd);
     g.line->fd = req.fd;
     g.line->state = !!val;
-#endif
 }
 
 void
 gpio_out_write(struct gpio_out g, uint8_t val)
 {
-#if CONFIG_KALICO_SIM
-    g.line->state = !!val;
-    return;
-#else
     struct gpiohandle_data data;
     memset(&data, 0, sizeof(data));
     data.values[0] = !!val;
     ioctl(g.line->fd, GPIOHANDLE_SET_LINE_VALUES_IOCTL, &data);
     g.line->state = !!val;
-#endif
 }
 
 void
@@ -154,23 +136,13 @@ gpio_in_setup(uint32_t pin, int8_t pull_up)
     line->offset = GPIO2PIN(pin);
     line->chipid = GPIO2PORT(pin);
     struct gpio_in g = { .line = line };
-#if CONFIG_KALICO_SIM
-    line->fd = -1;
-    line->state = pull_up > 0 ? 1 : 0;
-    return g;
-#else
     gpio_in_reset(g, pull_up);
     return g;
-#endif
 }
 
 void
 gpio_in_reset(struct gpio_in g, int8_t pull_up)
 {
-#if CONFIG_KALICO_SIM
-    g.line->state = pull_up > 0 ? 1 : 0;
-    return;
-#else
     gpio_release_line(g.line);
     struct gpiohandle_request req;
     memset(&req, 0, sizeof(req));
@@ -193,49 +165,13 @@ gpio_in_reset(struct gpio_in g, int8_t pull_up)
     }
     set_close_on_exec(req.fd);
     g.line->fd = req.fd;
-#endif
 }
 
 uint8_t
 gpio_in_read(struct gpio_in g)
 {
-#if CONFIG_KALICO_SIM
-    return g.line->state;
-#else
     struct gpiohandle_data data;
     memset(&data, 0, sizeof(data));
     ioctl(g.line->fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &data);
     return data.values[0];
-#endif
 }
-
-#if CONFIG_KALICO_SIM
-// Sim-only accessor: return the chardev gpio offset associated with this
-// gpio_out. spidev_transfer uses this to publish the active CS line as a
-// side-channel before invoking spi_transfer, so the sim path can address
-// the right per-chip emulator behind the shared Unix socket.
-uint8_t
-sim_gpio_out_offset(struct gpio_out g)
-{
-    if (g.line == NULL) return 0xFF;
-    return (uint8_t)g.line->offset;
-}
-#endif
-
-#if CONFIG_KALICO_SIM
-// Sim-only escape hatch. The faithful klippy-in-loop test harness needs
-// to drive endstop / DIAG / button input pins from python without going
-// through libgpiod (which doesn't exist on the host build path). This
-// directly pokes the per-line `state` field that gpio_in_read returns.
-//
-// Pin index = chip_id * MAX_GPIO_LINES + offset, matching the GPIO()
-// macro in src/linux/internal.h. Out-of-range writes are silently
-// ignored so a misaddressed test doesn't crash the firmware.
-void
-sim_gpio_in_set_state(uint32_t pin, uint8_t value)
-{
-    if (pin >= sizeof(gpio_lines) / sizeof(gpio_lines[0]))
-        return;
-    gpio_lines[pin].state = !!value;
-}
-#endif
