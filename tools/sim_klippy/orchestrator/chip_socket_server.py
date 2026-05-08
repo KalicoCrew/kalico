@@ -65,7 +65,21 @@ class ChipSocketServer:
                 data = client.recv(self._chunk)
                 if not data:
                     break
-                reply = self._handler(data)
+                try:
+                    reply = self._handler(data)
+                except Exception as e:
+                    # Don't kill the connection on a single malformed
+                    # frame — that takes the firmware down with us.
+                    # Instead echo a zero reply so klippy retries / sees
+                    # an "all-zero register" rather than a closed pipe.
+                    import sys
+                    print(
+                        f"[chip_socket_server {self._path}] handler "
+                        f"raised {type(e).__name__}: {e} on "
+                        f"{len(data)}-byte frame; replying zeros",
+                        file=sys.stderr,
+                    )
+                    reply = bytes(len(data))
                 if reply:
                     client.sendall(reply)
         except (socket.timeout, ConnectionResetError, OSError):
