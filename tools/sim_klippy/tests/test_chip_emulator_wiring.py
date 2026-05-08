@@ -12,7 +12,7 @@ import pytest
 from tools.sim_klippy.orchestrator.chip_socket_server import ChipSocketServer
 from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
 from tools.sim_klippy.orchestrator.tmc2209_emulator import (
-    TMC2209Emulator, crc8,
+    TMC2209Emulator, crc8, _decode_uart_bits, _encode_uart_bits,
 )
 
 
@@ -54,26 +54,27 @@ def test_tmc5160_via_socket():
 
 
 def test_tmc2209_via_socket_read_request():
-    """4-byte UART read req → 8-byte response."""
+    """5-byte wire-form read request → 10-byte wire-form reply (UART
+    start/stop framing on each logical byte)."""
     sock_path = "/tmp/test_tmc2209_via_socket_read"
     if os.path.exists(sock_path):
         os.unlink(sock_path)
     chip = TMC2209Emulator(slave_addr=0)
-    # IMPORTANT: chunk=4 here matches the read-request size. Writes
-    # are 8 bytes; chunk=4 means a write is delivered as two recvs.
-    # The TMC2209 emulator's handle() expects a complete frame, so
-    # writes through this configuration are fragile. For real use the
-    # orchestrator should buffer until a full frame. For this test we
-    # only exercise reads.
-    server = ChipSocketServer(sock_path, chip.handle, chunk=4)
+    # chunk=5 matches the wire-format read-request size (4 logical bytes
+    # × 10 wire bits / 8 = 5 bytes). Writes are 10 wire bytes; this test
+    # only exercises reads to keep the chunk constant.
+    server = ChipSocketServer(sock_path, chip.handle, chunk=5)
     server.start()
     try:
         assert _wait_for_socket(sock_path)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.connect(sock_path)
         body = bytes([0x05, 0x00, 0x00])  # GCONF read from slave 0
-        client.sendall(body + bytes([crc8(body)]))
-        reply = client.recv(8)
+        logical = body + bytes([crc8(body)])
+        client.sendall(_encode_uart_bits(logical))
+        reply_wire = client.recv(10)
+        assert len(reply_wire) == 10
+        reply = _decode_uart_bits(reply_wire)
         assert len(reply) == 8
         assert reply[0] == 0x05
         assert reply[1] == 0xFF

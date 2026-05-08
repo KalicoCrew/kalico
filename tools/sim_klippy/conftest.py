@@ -43,59 +43,6 @@ _THIRD_PARTY_PLUGINS = {
 }
 
 
-def _strip_sections(cfg_text: str, prefixes: tuple) -> str:
-    """Remove [<prefix> ...] sections (and their bodies) from cfg_text.
-
-    A section starts at a line matching ``[<prefix>`` (with an optional
-    instance suffix) and ends at the next top-level section header or
-    EOF. We comment-out the entire range with a leading ``#`` per line so
-    the bytes survive in the rendered cfg for forensics, but klippy
-    treats them as comments.
-
-    Also strips the entire klippy autosave block (lines starting with
-    ``#*#``), which contains stored sections like ``[beacon model
-    default]`` that would re-trigger module loads even with [beacon]
-    stripped.
-    """
-    lines = cfg_text.splitlines(keepends=True)
-    out = []
-    in_strip = False
-    in_autosave_strip = False
-    import re
-    section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
-    autosave_section_re = re.compile(r"^#\*#\s*\[([^\]]+)\]\s*$")
-    for line in lines:
-        m_auto = autosave_section_re.match(line)
-        if m_auto:
-            head = m_auto.group(1).split(None, 1)[0]
-            in_autosave_strip = head in prefixes
-            if in_autosave_strip:
-                # Replace with a no-op #*# comment so configfile.py's
-                # autosave parser still considers each line valid (every
-                # autosave line must start with '#*#') but the section
-                # header is gone.
-                out.append("#*# \n")
-                continue
-        if in_autosave_strip:
-            if line.startswith("#*#"):
-                # Inside a stripped autosave section — replace the line
-                # body but keep '#*#' so the parser stays happy.
-                out.append("#*# \n")
-                continue
-            else:
-                # End of autosave content (blank or non-#*# line).
-                in_autosave_strip = False
-        m = section_re.match(line)
-        if m:
-            head = m.group(1).split(None, 1)[0]
-            in_strip = head in prefixes
-        if in_strip:
-            out.append("# [sim-strip] " + line if line.strip() else line)
-        else:
-            out.append(line)
-    return "".join(out)
-
-
 def _install_third_party_plugin_links() -> None:
     extras_dir = REPO_ROOT / "klippy" / "extras"
     for name, src in _THIRD_PARTY_PLUGINS.items():
@@ -183,7 +130,6 @@ def _ensure_elfs() -> None:
 def _stage_config_dir(
     cfg_dir: pathlib.Path,
     dest: pathlib.Path,
-    strip_prefixes: tuple = (),
     overrides: Optional[dict] = None,
 ) -> None:
     """Symlink or copy every entry from cfg_dir into dest.
@@ -194,12 +140,11 @@ def _stage_config_dir(
     Directories are symlinked, not copied, to avoid duplicating large
     third-party trees.
 
-    .cfg files are read, sim-stripped (if strip_prefixes non-empty),
-    have ``overrides`` applied (if given), and written as regular files
-    into dest so [include]d sections that reference unvendored plugins
-    or real-hardware pin / bus names work after sim substitution.
+    .cfg files have ``overrides`` applied (if given) and are written as
+    regular files into dest so [include]d sections that reference
+    real-hardware pin / bus names work after sim substitution.
     """
-    needs_rewrite = bool(strip_prefixes) or overrides is not None
+    needs_rewrite = overrides is not None
     for entry in cfg_dir.iterdir():
         if entry.name == "printer.cfg":
             continue
@@ -215,8 +160,6 @@ def _stage_config_dir(
             os.symlink(entry.resolve(), target)
         elif entry.suffix == ".cfg" and needs_rewrite:
             text = entry.read_text()
-            if strip_prefixes:
-                text = _strip_sections(text, strip_prefixes)
             if overrides is not None:
                 text = apply_overrides(text, overrides)
             target.write_text(text)
@@ -320,57 +263,17 @@ def sim(tmp_path):
         }
 
         cfg_text = (_CFG_DIR / "printer.cfg").read_text()
-        # SCOPE-REDUCTION: with [beacon] stripped, the 'probe' pin chip
-        # never registers. The real config uses
-        # 'endstop_pin: probe:z_virtual_endstop' on stepper_z. Substitute
-        # a benign GPIO pin so klippy can complete config parsing.
-        cfg_text = cfg_text.replace(
-            "probe:z_virtual_endstop", "gpiochip0/gpio99"
-        )
-        # The real config commented-out position_endstop because it
-        # relies on the beacon probe to derive it. With beacon stripped,
-        # add a sane default so klippy can construct the stepper rail.
-        cfg_text = cfg_text.replace(
-            "# position_endstop: -0.5",
-            "position_endstop: -0.5",
-        )
         rendered_cfg_text = apply_overrides(cfg_text, overrides)
-        # Strip sections whose plugin module isn't installed in this tree
-        # OR whose stub isn't faithful enough to satisfy klippy's MCU
-        # identify handshake. SCOPE-REDUCTION: [beacon] is stripped
-        # because beacon_serial_stub.py is a logging scaffold — it doesn't
-        # speak msgproto, so the beacon MCU's identify hangs forever and
-        # klippy never reaches "ready". Restoring faithful beacon support
-        # is a follow-up task. [bed_mesh], [resonance_tester], and
-        # [motors_sync] all reference beacon as their probe / accel_chip
-        # so they're stripped together.
-        # [beacon model default] is a stored model section that depends
-        # on [beacon] — strip together. [bed_mesh] (when configured for
-        # beacon) likewise needs the probe.
-        rendered_cfg_text = _strip_sections(
-            rendered_cfg_text,
-            prefixes=(
-                "autotune_tmc", "motor_constants",
-                "beacon", "bed_mesh", "resonance_tester", "motors_sync",
-                "z_tilt_ng",
-            ),
-        )
         rendered_cfg = tmp_path / "printer.cfg"
         rendered_cfg.write_text(rendered_cfg_text)
 
         # Stage companion .cfg files so klippy can resolve [include] lines.
-        # Apply the same sim-strip and pin/bus overrides to included
-        # .cfg files that we applied to the main rendered printer.cfg —
-        # otherwise extruder.cfg etc. still reference real-hardware names
-        # like ``spi_bus: spi1`` that klippy cannot resolve.
+        # Apply pin/bus overrides to included .cfg files — otherwise
+        # extruder.cfg etc. still reference real-hardware names like
+        # ``spi_bus: spi1`` that klippy cannot resolve.
         _stage_config_dir(
             _CFG_DIR,
             tmp_path,
-            strip_prefixes=(
-                "autotune_tmc", "motor_constants",
-                "beacon", "bed_mesh", "resonance_tester", "motors_sync",
-                "z_tilt_ng",
-            ),
             overrides=overrides,
         )
 

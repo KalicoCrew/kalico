@@ -1,40 +1,54 @@
 """TMC2209 single-wire UART protocol emulator.
 
-Read request:  4 bytes — 0x05 sync, slave_addr, reg_addr, CRC8
-Read response: 8 bytes — 0x05 sync, 0xFF master, reg_addr, data×4, CRC8
-Write request: 8 bytes — 0x05 sync, slave_addr, reg_addr|0x80, data×4, CRC8
-              (no reply)
+Logical TMC2209 datagrams (per datasheet):
+  Read request:  4 bytes — 0x05 sync, slave_addr, reg_addr, CRC8
+  Read response: 8 bytes — 0x05 sync, 0xFF master, reg_addr, data×4, CRC8
+  Write request: 8 bytes — 0x05 sync, slave_addr, reg_addr|0x80, data×4, CRC8
+                (no reply)
+
+Wire-level reality: klippy's tmc_uart driver wraps each logical byte with
+UART start (0) and stop (1) bits before sending to the firmware, so
+the on-wire frame sizes are 5 (read req) and 10 (write req / read reply)
+bytes. The emulator's `handle()` decodes inbound wire-format frames
+back to logical bytes and re-encodes replies before returning.
+
+The test feeds wire-format input and decodes the wire-format reply for
+assertion, mirroring exactly what the firmware-side bit-bang path sees.
 
 CRC8: polynomial 0x07, init 0, LSB-first within each byte."""
 import pytest
 from tools.sim_klippy.orchestrator.tmc2209_emulator import (
-    TMC2209Emulator, crc8,
+    TMC2209Emulator, crc8, _decode_uart_bits, _encode_uart_bits,
 )
 
 
+def _wire(logical: bytes) -> bytes:
+    return _encode_uart_bits(logical)
+
+
+def _logical(wire: bytes) -> bytes:
+    return _decode_uart_bits(wire)
+
+
 def test_crc8_known_vector():
-    """Verifies CRC8 matches the TMC datasheet for a representative
-    GCONF read request from slave 0."""
-    msg = bytes([0x05, 0x00, 0x00])
-    expected = crc8(msg)
-    # Validate by re-feeding into a real read flow (round-trip)
+    """Verify a GCONF read request from slave 0 round-trips through the
+    handler at the wire level."""
+    body = bytes([0x05, 0x00, 0x00])
+    logical_req = body + bytes([crc8(body)])
     chip = TMC2209Emulator(slave_addr=0)
-    request = msg + bytes([expected])
-    reply = chip.handle(request)
-    assert len(reply) == 8
+    reply_wire = chip.handle(_wire(logical_req))
+    assert len(reply_wire) == 10  # 8 logical bytes × 10 wire bits / 8 = 10
 
 
 def test_write_then_read_roundtrip_gconf():
     chip = TMC2209Emulator(slave_addr=0)
-    # Write GCONF (0x00) = 0x05
     write_body = bytes([0x05, 0x00, 0x00 | 0x80, 0x00, 0x00, 0x00, 0x05])
-    write_msg = write_body + bytes([crc8(write_body)])
-    reply = chip.handle(write_msg)
-    assert reply == b""
+    write_logical = write_body + bytes([crc8(write_body)])
+    assert chip.handle(_wire(write_logical)) == b""
 
     read_body = bytes([0x05, 0x00, 0x00])
-    read_msg = read_body + bytes([crc8(read_body)])
-    reply = chip.handle(read_msg)
+    read_logical = read_body + bytes([crc8(read_body)])
+    reply = _logical(chip.handle(_wire(read_logical)))
     assert len(reply) == 8
     assert reply[0] == 0x05         # sync
     assert reply[1] == 0xFF         # master addr (datasheet)
@@ -47,23 +61,23 @@ def test_gstat_clears_on_read():
     chip = TMC2209Emulator(slave_addr=0)
     chip._registers[0x01] = 0x07
     body = bytes([0x05, 0x00, 0x01])
-    msg = body + bytes([crc8(body)])
-    first = chip.handle(msg)
+    msg = _wire(body + bytes([crc8(body)]))
+    first = _logical(chip.handle(msg))
     assert first[3:7] == bytes([0, 0, 0, 0x07])
-    second = chip.handle(msg)
-    assert second[3:7] == bytes([0, 0, 0, 0x00])  # cleared
+    second = _logical(chip.handle(msg))
+    assert second[3:7] == bytes([0, 0, 0, 0x00])
 
 
 def test_wrong_slave_ignored():
     chip = TMC2209Emulator(slave_addr=0)
     body = bytes([0x05, 0x07, 0x00])  # slave 7
-    msg = body + bytes([crc8(body)])
+    msg = _wire(body + bytes([crc8(body)]))
     assert chip.handle(msg) == b""
 
 
 def test_bad_crc_raises():
     chip = TMC2209Emulator(slave_addr=0)
     body = bytes([0x05, 0x00, 0x00])
-    bad_msg = body + bytes([0xFF])  # wrong CRC
+    bad = _wire(body + bytes([0xFF]))  # wrong CRC, valid wire framing
     with pytest.raises(ValueError, match="CRC"):
-        chip.handle(bad_msg)
+        chip.handle(bad)

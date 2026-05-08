@@ -113,16 +113,7 @@ class TMC5160Emulator:
         Writes return five zero bytes (status byte is 0x00 for simplicity).
         """
         if len(req) != 5:
-            # Non-TMC5160 traffic on the same shared sim_spi0 socket
-            # (e.g. the H7's MAX31865 hotend RTD, which klippy puts on
-            # the same bus via cs_pin discrimination). The socket-level
-            # stub can't tell the chips apart, so we echo back an equal-
-            # length zero reply rather than killing the test thread —
-            # MAX31865 just sees ADC=0 / OK status and klippy reads
-            # whatever simulated temperature path applies. Real chip
-            # discrimination would require routing config_spi oid → chip
-            # at the runtime_sim_route_spi level; that's a follow-up.
-            return bytes(len(req))
+            raise ValueError(f"TMC5160 expects 5-byte datagram, got {len(req)}")
 
         is_write = bool(req[0] & 0x80)
         addr = req[0] & 0x7F
