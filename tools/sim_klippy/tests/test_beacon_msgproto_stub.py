@@ -169,7 +169,7 @@ def test_identify_chunked_returns_full_dict(stub):
                 f"missing response in identify dict: {resp!r}"
             )
         assert decoded["app"] == "BeaconStub"
-        assert decoded["config"]["BEACON_HAS_ACCEL"] == 0
+        assert decoded["config"]["BEACON_HAS_ACCEL"] == 1
     finally:
         os.close(fd)
 
@@ -310,5 +310,67 @@ def test_beacon_stream_starts_emitting_status_frames(stub):
         # And we should see the counter incrementing on a second sample.
         params2 = _read_frames(fd, parser, "beacon_status", 2.0)
         assert params2["sample"] != params["sample"]
+    finally:
+        os.close(fd)
+
+
+def test_identify_dict_exposes_accelerometer_surface(stub):
+    """Per the user's RevH having an LIS2DW12, identify must advertise
+    BEACON_HAS_ACCEL=1, BEACON_ACCEL_BITS, the per-scale constants, the
+    `beacon_accel_scales` enumeration, and the accel command/response
+    triples that `BeaconAccelHelper.reinit` looks up."""
+    s, pty_path = stub
+    parser = _parser_with_default_messages()
+    fd = _open_pty_writer(pty_path)
+    try:
+        identify_data = bytearray()
+        seq = 1
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            os.write(fd, _frame(parser, seq, "identify offset=%u count=%c",
+                                offset=len(identify_data), count=40))
+            seq = (seq + 1) & msgproto.MESSAGE_SEQ_MASK or 1
+            params = _read_frames(fd, parser, "identify_response", 2.0)
+            data = params["data"]
+            if not data:
+                break
+            identify_data.extend(data)
+        decoded = json.loads(zlib.decompress(bytes(identify_data)).decode())
+
+        assert decoded["config"]["BEACON_HAS_ACCEL"] == 1
+        assert decoded["config"]["BEACON_ACCEL_BITS"] == 16
+        for scale in ("2G", "4G", "8G", "16G"):
+            assert f"BEACON_ACCEL_SCALE_{scale}" in decoded["config"]
+        assert "beacon_accel_scales" in decoded["enumerations"]
+        assert "beacon_accel_stream en=%c scale=%c" in decoded["commands"]
+        assert (
+            "beacon_accel_data start_clock=%u delta_clock=%u data=%*s"
+            in decoded["responses"]
+        )
+        assert "beacon_accel_state errors=%u" in decoded["responses"]
+    finally:
+        os.close(fd)
+
+
+def test_beacon_accel_stream_emits_data_batches(stub):
+    """beacon_accel_stream en=1 → beacon_accel_data batches arrive
+    with non-empty 6-byte-sample payloads. Disabling the stream stops
+    new emits."""
+    s, pty_path = stub
+    parser = msgproto.MessageParser()
+    parser.process_identify(IDENTIFY_BLOB, decompress=True)
+    fd = _open_pty_writer(pty_path)
+    try:
+        os.write(fd, _frame(parser, 1,
+                            "beacon_accel_stream en=%c scale=%c",
+                            en=1, scale=0))
+        params = _read_frames(fd, parser, "beacon_accel_data", 2.0)
+        # 6-byte samples (xl xh yl yh zl zh).
+        assert len(params["data"]) > 0
+        assert len(params["data"]) % 6 == 0
+        # Two consecutive batches should have monotonically advancing
+        # start_clock — proving the loop is running, not just one shot.
+        params2 = _read_frames(fd, parser, "beacon_accel_data", 2.0)
+        assert params2["start_clock"] != params["start_clock"]
     finally:
         os.close(fd)

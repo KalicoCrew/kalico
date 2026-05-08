@@ -83,6 +83,12 @@ BEACON_COMMANDS = [
     "beacon_contact_stop_home",
     "beacon_contact_set_latency_min latency_min=%c",
     "beacon_contact_set_sensitivity sensitivity=%c",
+    # Accelerometer surface — present on beacon RevH and required by
+    # `BeaconAccelHelper.reinit` (beacon.py:3462). Triggered when the
+    # firmware-side `BEACON_HAS_ACCEL=1` constant is set; turn that off
+    # and the live `[motors_sync]` extra fails with
+    # `configparser.Error: This Beacon has no accelerometer`.
+    "beacon_accel_stream en=%c scale=%c",
 ]
 
 CORE_RESPONSES = [
@@ -109,6 +115,14 @@ BEACON_RESPONSES = [
     "beacon_contact triggered=%c clock=%u sample=%i frequency=%u",
     "beacon_nvm_data bytes=%*s offset=%hu",
     "beacon_contact_state triggered=%c detect_clock=%u",
+    # Accelerometer responses. `_handle_accel_data` reads start_clock /
+    # delta_clock / data; the data buffer carries 6-byte samples
+    # (xl, xh, yl, yh, zl, zh) per beacon.py ACCEL_BYTES_PER_SAMPLE=6.
+    # `_handle_accel_state` is `pass` — no field accesses — so the
+    # state response shape need only round-trip through msgproto. We
+    # report a single-uint32 error counter.
+    "beacon_accel_data start_clock=%u delta_clock=%u data=%*s",
+    "beacon_accel_state errors=%u",
 ]
 
 
@@ -125,7 +139,25 @@ CONFIG = {
     "STATS_SUMSQ_BASE": 1,
     "ADC_MAX": 4095,
     "BEACON_ADC_SMOOTH_COUNT": 8,
-    "BEACON_HAS_ACCEL": 0,
+    # Beacon RevH ships with an LIS2DW12 accelerometer. The user's
+    # printer.cfg routes `[motors_sync] accel_chip = beacon`, which
+    # in turn requires `beacon.accel_helper` to be non-None — and
+    # that only happens when `BEACON_HAS_ACCEL=1` (beacon.py:408).
+    "BEACON_HAS_ACCEL": 1,
+    # Accelerometer data is 16-bit signed LSB. Used by
+    # `BeaconAccelHelper.reinit` to compute clip bounds (beacon.py:3460).
+    "BEACON_ACCEL_BITS": 16,
+    # Per-scale full-range constants. Keys named
+    # `BEACON_ACCEL_SCALE_<NAME>` are looked up by name from the
+    # `beacon_accel_scales` enumeration; the value is the m/s²
+    # full-range, which `BeaconAccelHelper._fetch_scales` parses with
+    # `float()` (beacon.py:3484). LIS2DW12 supports ±2/4/8/16 g; we
+    # expose the standard four scales plus values matching the LSB
+    # convention the firmware uses.
+    "BEACON_ACCEL_SCALE_2G": "0.000061",   # g/LSB at ±2g  (≈ 1/2^14)
+    "BEACON_ACCEL_SCALE_4G": "0.000122",
+    "BEACON_ACCEL_SCALE_8G": "0.000244",
+    "BEACON_ACCEL_SCALE_16G": "0.000488",
 }
 
 
@@ -169,6 +201,16 @@ def build_identify_dict() -> dict:
         "enumerations": {
             "pin": {"gpio0": [0, 32]},
             "static_string_id": {"shutdown": 0},
+            # `BeaconAccelHelper._fetch_scales` (beacon.py:3473) reads
+            # this enumeration to discover available accelerometer
+            # full-range scales; for each scale, it then looks up
+            # `BEACON_ACCEL_SCALE_<NAME>` in the constants table.
+            "beacon_accel_scales": {
+                "2g": 0,
+                "4g": 1,
+                "8g": 2,
+                "16g": 3,
+            },
         },
         "commands": commands,
         "responses": responses,

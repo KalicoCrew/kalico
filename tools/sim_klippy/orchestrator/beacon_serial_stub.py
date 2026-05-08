@@ -176,6 +176,15 @@ class BeaconMcuStub:
         # Boot only requires the dictionary surface + acks; the
         # proximity-trip path lights up in a follow-up commit.
         self._trsync_oids: set = set()
+        # Accelerometer streaming — driven on by motors_sync (via
+        # APIDumpHelper batch_bulk) and off by `BeaconAccelHelper.reinit`
+        # at boot (beacon.py:3466). Independent thread; the data path
+        # is `beacon_accel_data start_clock delta_clock data` with
+        # 6-byte (xl xh yl yh zl zh) samples per batch.
+        self._accel_stream_en: bool = False
+        self._accel_scale_id: int = 0
+        self._accel_thread: Optional[threading.Thread] = None
+        self._accel_clock_at_last_emit: int = 0
         # Synthetic sample counter and clock origin (in MCU ticks).
         self._sample_index: int = 0
         # Use a shared clock origin so beacon_status.clock and the
@@ -263,6 +272,9 @@ class BeaconMcuStub:
         if self._sample_thread is not None:
             self._sample_thread.join(timeout=2.0)
             self._sample_thread = None
+        if self._accel_thread is not None:
+            self._accel_thread.join(timeout=2.0)
+            self._accel_thread = None
         try:
             os.unlink(self._pty_path)
         except FileNotFoundError:
@@ -424,6 +436,11 @@ class BeaconMcuStub:
             "trsync_set_timeout": self._handle_noop,
             "trsync_trigger": self._handle_trsync_trigger,
             "stepper_stop_on_trigger": self._handle_noop,
+            # Accelerometer — `BeaconAccelHelper.reinit` immediately
+            # sends `beacon_accel_stream en=0 scale=0` on connect to
+            # ensure streaming is off; motors_sync flips it back on
+            # via the APIDumpHelper batch_bulk callback at sync time.
+            "beacon_accel_stream": self._handle_beacon_accel_stream,
         }
 
     def _handle_noop(self, params: dict) -> None:
@@ -544,6 +561,73 @@ class BeaconMcuStub:
             oid=oid, can_trigger=0, trigger_reason=reason,
             clock=self._now_clock(),
         )
+
+    # -- accelerometer ------------------------------------------------
+
+    def _handle_beacon_accel_stream(self, params: dict) -> None:
+        en = bool(params["en"])
+        self._accel_scale_id = params["scale"]
+        was_en = self._accel_stream_en
+        self._accel_stream_en = en
+        if en and not was_en:
+            self._start_accel_thread()
+
+    def _start_accel_thread(self) -> None:
+        if self._accel_thread is not None and self._accel_thread.is_alive():
+            return
+        self._accel_thread = threading.Thread(
+            target=self._accel_loop, name="beacon-stub-accel", daemon=True
+        )
+        self._accel_thread.start()
+
+    def _accel_loop(self) -> None:
+        """Emit `beacon_accel_data` batches at ~1 kHz.
+
+        Each batch carries 8 samples of 6 bytes (xl xh yl yh zl zh) for
+        a printer at rest: x=0, y=0, z=+1g (in raw 16-bit signed counts
+        at the configured scale). 8 samples per batch keeps the wire
+        rate below the MESSAGE_PAYLOAD_MAX limit while still emitting
+        ~8 kSps — comfortably above motors_sync's
+        ACCEL_FILTER_THRESHOLD.
+        """
+        # 1g full-scale at 2g range (scale_id=0): raw_z = (1g) / (2g/2^15)
+        #                                             = 2^15 / 2 = 16384.
+        # We pick the value matching the default 2g scale; for other
+        # scales the accelerometer would emit different counts, but
+        # motors_sync's filter doesn't care about absolute magnitude
+        # at config time — only that batches arrive.
+        # MESSAGE_PAYLOAD_MAX = MESSAGE_MAX - MESSAGE_MIN = 59 bytes.
+        # Frame overhead: msgid (≤5) + start_clock (≤5) + delta_clock (≤5)
+        # + buffer length prefix (1) ≈ 16. Six 6-byte samples = 36 bytes
+        # data. Total ~52 — comfortably under the limit.
+        SAMPLES_PER_BATCH = 6
+        BATCH_PERIOD_S = 0.001  # 1 kHz batches → 6 kSps
+        # Pre-build the per-sample 6-byte payload (constant Z = +1g).
+        z_raw = 16384  # int16, +1g at ±2g scale.
+        sample_bytes = bytes([
+            0x00, 0x00,                               # x = 0
+            0x00, 0x00,                               # y = 0
+            z_raw & 0xFF, (z_raw >> 8) & 0xFF,        # z
+        ])
+        batch_payload = sample_bytes * SAMPLES_PER_BATCH
+        next_tick = time.monotonic()
+        last_clock = self._now_clock()
+        while not self._stop.is_set() and self._accel_stream_en:
+            now = time.monotonic()
+            sleep_for = next_tick - now
+            if sleep_for > 0:
+                time.sleep(min(sleep_for, BATCH_PERIOD_S))
+                continue
+            next_tick += BATCH_PERIOD_S
+            cur_clock = self._now_clock()
+            delta = (cur_clock - last_clock) & 0xFFFFFFFF
+            self._send_msg(
+                "beacon_accel_data start_clock=%u delta_clock=%u data=%*s",
+                start_clock=last_clock,
+                delta_clock=delta,
+                data=list(batch_payload),
+            )
+            last_clock = cur_clock
 
     # ------------------------------------------------------------------
     # Sample stream
