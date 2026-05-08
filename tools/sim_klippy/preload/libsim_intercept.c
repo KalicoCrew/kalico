@@ -72,6 +72,16 @@ static pthread_mutex_t gpio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
 struct sim_active_cs { int chip_id; int line_offset; int valid; };
 static struct sim_active_cs active_cs;
 
+#define MAX_IIO_CHANNELS 32
+#define DEFAULT_ADC_VALUE 3900
+static uint16_t iio_values[MAX_IIO_CHANNELS];
+static pthread_mutex_t iio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+__attribute__((constructor(101)))
+static void iio_init(void) {
+    for (int i = 0; i < MAX_IIO_CHANNELS; i++) iio_values[i] = DEFAULT_ADC_VALUE;
+}
+
 static int alloc_fake_fd(enum sim_slot_kind kind) {
     pthread_mutex_lock(&fake_slots_mtx);
     for (int i = 1; i < MAX_FAKE_FDS; i++) {  // slot 0 reserved
@@ -202,9 +212,21 @@ static int sim_open_pwm(const char *path, int flags) {
     return fd;
 }
 static int sim_open_iio(const char *path, int flags) {
-    LOG("open iio(%s) STUB", path);
-    errno = ENOSYS;
-    return -1;
+    (void)flags;
+    int channel = -1;
+    if (sscanf(path,
+               "/sys/bus/iio/devices/iio:device0/in_voltage%d_raw",
+               &channel) != 1
+        || channel < 0 || channel >= MAX_IIO_CHANNELS) {
+        LOG("iio open: unrecognized path %s", path);
+        errno = ENOENT;
+        return -1;
+    }
+    int fd = alloc_fake_fd(SIM_IIO_FILE);
+    if (fd < 0) return -1;
+    slot_for_fd(fd)->u.iio_file.channel = channel;
+    LOG("open iio channel=%d -> fd=%d", channel, fd);
+    return fd;
 }
 
 int open(const char *path, int flags, ...) {
@@ -471,4 +493,25 @@ ssize_t write(int fd, const void *buf, size_t count) {
             errno = EINVAL;
             return -1;
     }
+}
+
+ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
+    (void)offset;
+    if (!is_fake_fd(fd)) return real_pread(fd, buf, count, offset);
+    struct sim_fd_slot *slot = slot_for_fd(fd);
+    if (!slot || slot->kind != SIM_IIO_FILE) { errno = EBADF; return -1; }
+    pthread_mutex_lock(&iio_state_mtx);
+    uint16_t val = iio_values[slot->u.iio_file.channel];
+    pthread_mutex_unlock(&iio_state_mtx);
+    char tmp[16];
+    int n = snprintf(tmp, sizeof(tmp), "%u\n", (unsigned)val);
+    if (n < 0) { errno = EIO; return -1; }
+    size_t copy = (size_t)n < count ? (size_t)n : count;
+    memcpy(buf, tmp, copy);
+    return (ssize_t)copy;
+}
+
+ssize_t read(int fd, void *buf, size_t count) {
+    if (!is_fake_fd(fd)) return real_read(fd, buf, count);
+    return pread(fd, buf, count, 0);
 }
