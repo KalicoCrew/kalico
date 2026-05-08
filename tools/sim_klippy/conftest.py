@@ -75,6 +75,8 @@ class SimContext:
     klippy_log: pathlib.Path
     api_socket: str
     log_dir: pathlib.Path
+    h7_sim_control: str
+    f4_sim_control: str
 
     def gcode(self, script: str, timeout: float = 5.0) -> dict:
         """Send a gcode script via the klippy api socket."""
@@ -199,53 +201,55 @@ def sim(tmp_path):
         )
 
         # 2) Start chip emulators.
-        # The MCU-side spidev / tmcuart stubs auto-route a sim_spi<N> bus
-        # or a tmcuart oid<N> with no explicit route to a per-MCU socket
-        # path of the form /tmp/klipper_sim_<flavor>_chip_<spi|uart><N>.
-        # Flavor is `h7` for the KALICO_RUNTIME build (mcu_main) and
-        # `f4` otherwise (mcu bottom). We bind those exact paths here.
-        # ChipSocketServer unlinks any stale path before bind (single-
-        # file unlink) so leftovers from a crashed previous run don't
-        # block startup.
-        # H7 SPI bus 0 (real-hardware spi1): 4 × TMC5160 stepper drivers
-        # (stepper_x/y/x1/y1) AND 1 × MAX31865 RTD amplifier for the
-        # extruder thermistor — five distinct chips behind one Unix
-        # socket. The firmware-side spidev sim path publishes the active
-        # CS pin's chardev gpio offset on every transfer (framed wire
-        # protocol), and SpiRouter dispatches each frame to the right
-        # per-chip emulator. CS values come from pin-overrides.toml's
-        # [mcu_main.gpio] mapping: PC7=5, PC6=4, PD11=6, PC4=3, PF8=40.
-        h7_spi_router = SpiRouter()
-        h7_spi_router.attach(5, TMC5160Emulator().transfer)   # PC7 stepper_x
-        h7_spi_router.attach(4, TMC5160Emulator().transfer)   # PC6 stepper_y
-        h7_spi_router.attach(6, TMC5160Emulator().transfer)   # PD11 stepper_x1
-        h7_spi_router.attach(3, TMC5160Emulator().transfer)   # PC4 stepper_y1
-        h7_spi_router.attach(40, MAX31865Emulator().transfer) # PF8 extruder_rtd
-        srv = ChipSocketServer(
-            "/tmp/klipper_sim_h7_chip_spi0", h7_spi_router, framed=True,
-        )
-        srv.start()
-        chip_servers.append(srv)
-        # H7 UART: 1 × TMC2209 for the extruder (oid=0). chunk=10 covers
-        # the longest UART-framed wire request klippy emits (8 logical
-        # bytes × 10 wire bits = 10 bytes); the emulator strips the
-        # start/stop framing internally.
+        # The shim (linux/runtime_tick_host.c) reads KALICO_SIM_SOCK_DIR
+        # from env (set by spawn_mcus) and binds its sim_control listener
+        # there. For SPI transfers it CONNECTS to a per-CS-pin socket at
+        # ${sock}/spi_cs_<bus>_<line>; for tmcuart it connects to
+        # ${sock}/tmcuart_<oid>. We pre-create the same directories here
+        # and bind one chip emulator per socket. ChipSocketServer unlinks
+        # any stale path before bind so leftovers from a crashed run
+        # don't block startup.
+        h7_sock = tmp_path / "sim" / "h7"
+        f4_sock = tmp_path / "sim" / "f4"
+        h7_sock.mkdir(parents=True, exist_ok=True)
+        f4_sock.mkdir(parents=True, exist_ok=True)
+
+        # H7 SPI bus 0: 5 chips, one socket per CS pin. Shim demultiplexes
+        # by currently-asserted CS pin and connects to the matching
+        # spi_cs_0_<line> socket. CS line numbers come from
+        # pin-overrides.toml [mcu_main.gpio]: PC7=5, PC6=4, PD11=6,
+        # PC4=3, PF8=40.
+        h7_chips_by_cs = [
+            (5,  TMC5160Emulator().transfer),   # PC7 stepper_x
+            (4,  TMC5160Emulator().transfer),   # PC6 stepper_y
+            (6,  TMC5160Emulator().transfer),   # PD11 stepper_x1
+            (3,  TMC5160Emulator().transfer),   # PC4 stepper_y1
+            (40, MAX31865Emulator().transfer),  # PF8 extruder_rtd
+        ]
+        for cs_line, transfer in h7_chips_by_cs:
+            path = str(h7_sock / f"spi_cs_0_{cs_line}")
+            srv = ChipSocketServer(path, transfer, framed=False)
+            srv.start()
+            chip_servers.append(srv)
+
+        # H7 tmcuart oid=0 → ${h7_sock}/tmcuart_0 (extruder TMC2209).
+        # chunk=10 covers the longest UART-framed wire request klippy
+        # emits (8 logical bytes × 10 wire bits = 10 bytes); the emulator
+        # strips start/stop framing internally.
         chip = TMC2209Emulator(slave_addr=0)
         srv = ChipSocketServer(
-            "/tmp/klipper_sim_h7_chip_uart0", chip.handle, chunk=10,
+            str(h7_sock / "tmcuart_0"), chip.handle, chunk=10,
         )
         srv.start()
         chip_servers.append(srv)
-        # F4 UART: 3 × TMC2209 for Z, Z1, Z2 on oids 0..2. Each is
-        # physically a separate chip on its own UART pin (uart_pin:
-        # bottom:gpiochip0/gpio6, gpio3, gpio4 in printer.cfg) — they
-        # all answer to slave_addr=0 because each is the only chip on
-        # its bus. The auto-route routes oid=N to a per-oid socket so
-        # the firmware-side multiplexing works without UART address
-        # discrimination.
+
+        # F4 tmcuart oids 0..2 → ${f4_sock}/tmcuart_{0,1,2} for Z, Z1, Z2.
+        # Each is physically a separate chip on its own UART pin (uart_pin
+        # bottom:gpiochip0/gpio{6,3,4} in printer.cfg); all answer to
+        # slave_addr=0 because each is the only chip on its bus.
         for i in range(3):
             chip = TMC2209Emulator(slave_addr=0)
-            path = f"/tmp/klipper_sim_f4_chip_uart{i}"
+            path = str(f4_sock / f"tmcuart_{i}")
             srv = ChipSocketServer(path, chip.handle, chunk=10)
             srv.start()
             chip_servers.append(srv)
@@ -347,6 +351,8 @@ def sim(tmp_path):
             klippy_log=klippy_log,
             api_socket=api_socket,
             log_dir=log_dir,
+            h7_sim_control=str(h7_sock / "sim_control"),
+            f4_sim_control=str(f4_sock / "sim_control"),
         )
 
         yield ctx
