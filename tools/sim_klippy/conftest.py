@@ -60,17 +60,17 @@ def _strip_sections(cfg_text: str, prefixes: tuple) -> str:
     lines = cfg_text.splitlines(keepends=True)
     out = []
     in_strip = False
-    in_autosave = False
     import re
     section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    autosave_section_re = re.compile(r"^#\*#\s*\[([^\]]+)\]\s*$")
     for line in lines:
-        if line.lstrip().startswith("#*#"):
-            in_autosave = True
-        if in_autosave:
-            # Replace the autosave-marker prefix so klippy's configfile
-            # parser no longer treats this block as autosave content.
-            out.append("# [sim-autosave-strip] " + line)
-            continue
+        m_auto = autosave_section_re.match(line)
+        if m_auto:
+            head = m_auto.group(1).split(None, 1)[0]
+            in_strip = head in prefixes
+            if in_strip:
+                out.append("# [sim-autosave-strip] " + line)
+                continue
         m = section_re.match(line)
         if m:
             head = m.group(1).split(None, 1)[0]
