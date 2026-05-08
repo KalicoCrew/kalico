@@ -462,6 +462,21 @@ config KALICO_SIM
       silicon build — it leaves the IWDG effectively off, which is
       unsafe on real hardware.
 
+config KALICO_SIM_TMCUART_BYPASS
+    bool "Bypass tmcuart bit-bang and write bytes to a Unix socket"
+    depends on MACH_LINUX
+    default n
+    help
+      Sim-only escape hatch for the tmcuart driver. When enabled, the
+      tmcuart_send command bypasses the GPIO bit-bang and writes raw
+      bytes directly to ${KALICO_SIM_SOCK_DIR}/tmcuart_<oid>. This is
+      the one architectural exception to the otherwise-clean
+      "production firmware knows nothing about sim" rule for MACH_LINUX
+      builds — the bit-bang's timing fragility under Linux scheduler
+      jitter would make a shim-side decoder flake intermittently. See
+      docs/superpowers/specs/2026-05-08-syscall-shim-design.md
+      §"Chip emulator routing → tmcuart" for rationale.
+
 config RUNTIME_BENCH
     bool "Cycle-count benchmark for runtime tick"
     depends on KALICO_RUNTIME && MACH_STM32H7
