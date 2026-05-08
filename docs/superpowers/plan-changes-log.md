@@ -4,6 +4,31 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 
 <!-- entries below -->
 
+### 2026-05-08 — Faithful klippy-in-loop sim: infra landed, integration deferred
+
+**What:** Built the faithful klippy-in-loop simulator infrastructure described in `docs/superpowers/specs/2026-05-08-faithful-klippy-sim-design.md` and planned in `docs/superpowers/plans/2026-05-08-faithful-klippy-sim.md`. Phases 0–6 + the conftest scaffold (Phase 7 part 1) all landed cleanly: vendored printer config + third-party plugin snapshot under `tools/sim_klippy/printer_real/`, two MACH_LINUX `.config` files (h7-sim.config + f4-sim.config), Unix-socket `sim_chip_socket.c/h` transport in firmware, `runtime_sim_route_spi/tmcuart/adc_set` + auto-routed sim_spi/tmcuart fall-backs, behavioral TMC5160/TMC2209 emulators with TDD coverage (35 unit tests passing, including a real wire-format discovery — klippy's `tmc_uart._add_serial_bits` wraps each logical byte with start/stop bits, so a 4-byte logical TMC2209 frame is 5 bytes on the wire and an 8-byte logical write is 10), beacon scaffolding stub that logs traffic to a per-test `beacon_traffic.log`, ADC heater model + thermistor curve, sensorless StallGuard `SensorlessTrigger` with virtual-position-vs-wall model, pin/SPI-bus/serial-path override layer over the vendored printer.cfg, multi-MCU launcher, and the pytest `sim` fixture that wires all of the above together.
+
+**What's deferred:** Phase 7 parts 2–4 (test_boot end-to-end green / test_g28_full / test_small_print) and Phase 8 (`make sim-test` target + this changelog entry — partial). The 18-iteration push that made test_boot pass on the first day used several signal-hiding workarounds (silenced `[beacon]` / `[bed_mesh]` / `[motors_sync]` / `[z_tilt_ng]` / `[autotune_tmc]` / `[motor_constants]` sections from the rendered printer.cfg, swallowed handler exceptions in `chip_socket_server`, made `TMC5160Emulator.transfer` return zero-length-matched bytes for non-5-byte frames as a "probably MAX31865 sharing the bus" workaround, auto-injected a `[sim_gpio]` test-helper block) that defeat the unknown-unknown-catching purpose. Reverted all of those (commit f6c5d7d09); test_boot now fails because klippy can't load beacon (the stub doesn't speak msgproto). That failing state is the starting point for the next session, which should do proper fixes — faithful beacon msgproto stub, real chip-CS-pin discrimination instead of one-emulator-shared-by-four-TMCs, real motors_sync coverage — rather than papering over.
+
+**Why infra now / integration later:** The user's framing in conversation: "if we have the sim, this current task is done. Remove the shitty patches. even questionable ones. only keep ones that are unquestionable and there's no doubt that the fixes are okay. so I can start a new session with the sim failing, and do proper fixes for all of those." The infra (Phases 0–7 part 1) IS unambiguous and reusable; the integration push leaned on workarounds that hide the very bugs the sim exists to catch. Better to commit a clean foundation that fails on real signals than a green test that passes by silencing them.
+
+**Real wire-format discoveries from the iteration that ARE preserved:**
+- TMC2209 UART start/stop bit framing per byte (10 wire bits per logical byte).
+- TMC2209 sync byte high nibble is reserved (klippy emits 0xF5; only low-nibble 0x05 identifies the protocol).
+- F4 TMC2209s on the user's printer all use `slave_addr=0` because each has its own UART pin (not slave-addressed bus).
+- The literal string "Printer is ready" is NOT written to klippy.log — that's `state_message` exposed only via api socket. Test asserts must poll `info` over the api socket.
+
+**Evidence:**
+- Spec: `docs/superpowers/specs/2026-05-08-faithful-klippy-sim-design.md`
+- Plan: `docs/superpowers/plans/2026-05-08-faithful-klippy-sim.md`
+- Vendored snapshot: `tools/sim_klippy/printer_real/` (commit a68619665)
+- Sim core landed across commits 875e837e6 → 1d5370ee8
+- Cleanup of signal-hiding patches: commit f6c5d7d09 (reverts conftest section-stripping, chip_socket_server exception swallow, TMC5160 non-5-byte silence; deletes orphan `klippy/extras/sim_gpio.py` and `tests/test_g28_full.py`)
+
+**Next-session work order:** Re-run `python3 -m pytest tools/sim_klippy/tests/test_boot.py` after `make` rebuilds the missing `out/klipper-h7-sim.elf`; fix beacon stub fidelity, then chip-CS-pin discrimination, then motors_sync / autotune_tmc compat — each as its own commit, each with TDD where the failure mode permits.
+
+---
+
 ### 2026-05-07 — Step 7-B `homed` runtime gate removed (mainline-aligned)
 
 **What changed:** Removed the Step 7-B MCU runtime "homed gate" entirely. The atomic `SharedState.homed`, `RuntimeError::NotHomed` / `FaultCode::NotHomed` / `KALICO_ERR_NOT_HOMED`, the `kalico_set_homed` and `kalico_set_homed_state` FFI exports, the `runtime_set_homed[_state]` C command surface and `kalico_set_homed_response` ack, the `kalico_host_rt::endstop::set_homed_state[_with_timeout]` host helper, the `PyMotionBridge::set_homed_state` PyO3 method and `MotionBridgeWrapper.set_homed_state` Python wrapper, the `Homing._notify_bridge_homed` post-G28 plumbing, the SET_KINEMATIC_POSITION-time set_homed_state in `force_move.py`, and the local-sim init-time set_homed shim in `motion_toolhead.py` are all gone. `runtime/tests/homed_gate.rs` deleted; the `shared.homed.store(true, …)` lines that bypassed the gate in nine other runtime tests are also gone. Tests in `tools/` (`test_h723_first_light.py`, `test_h723_cycle_count.py`, `test_sim_gate_a.py`, `measure_m1_host_stall.py`, `test_renode_endstop_e2e.py`) drop their `runtime_set_homed[_state]` setup calls. C headers regenerated via `tools/regen_headers.sh`.
