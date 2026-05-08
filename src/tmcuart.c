@@ -47,6 +47,29 @@ sim_uart_lookup_fd(uint8_t oid) {
                     sim_chip_socket_connect(sim_uart_routes[i].socket_path);
             return sim_uart_routes[i].fd;
         }
+#if CONFIG_KALICO_SIM
+    // Auto-route: any tmcuart oid with no explicit route falls back to
+    // a canonical per-MCU socket path. The flavor prefix (`h7` for the
+    // KALICO_RUNTIME-enabled H7 build, `f4` otherwise) differentiates
+    // sockets so the H7 extruder TMC2209 (oid=0) and the F4 stepper_z
+    // TMC2209 (also oid=0) talk to distinct emulators. The orchestrator
+    // binds matching paths in conftest.py before klippy attaches.
+    char path[64];
+#if CONFIG_KALICO_RUNTIME
+    const char *flavor = "h7";
+#else
+    const char *flavor = "f4";
+#endif
+    snprintf(path, sizeof(path), "/tmp/klipper_sim_%s_chip_uart%u",
+             flavor, (unsigned)oid);
+    sim_tmcuart_register_route(oid, path);
+    for (int i = 0; i < sim_uart_routes_count; i++)
+        if (sim_uart_routes[i].oid == oid) {
+            sim_uart_routes[i].fd =
+                sim_chip_socket_connect(sim_uart_routes[i].socket_path);
+            return sim_uart_routes[i].fd;
+        }
+#endif
     return -1;
 }
 #endif // CONFIG_MACH_LINUX

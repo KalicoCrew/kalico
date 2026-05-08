@@ -114,6 +114,24 @@ spi_setup(uint32_t bus, uint8_t mode, uint32_t rate)
 {
     // Sim-bus short-circuit: connect via Unix socket, skip ioctl setup.
     struct sim_spi_route *sim_route = sim_spi_route_for_bus(bus);
+    if (!sim_route && bus >= SIM_SPI_BASE && bus < SIM_SPI_BASE + 16) {
+        // Auto-route: any sim_spi<N> bus with no explicit route falls
+        // back to a canonical per-MCU socket path. Flavor prefix mirrors
+        // tmcuart's auto-route so H7 and F4 sim builds talk to distinct
+        // emulator sockets. The orchestrator binds matching paths in
+        // conftest.py before klippy attaches.
+        char path[64];
+        uint32_t idx = bus - SIM_SPI_BASE;
+#if CONFIG_KALICO_RUNTIME
+        const char *flavor = "h7";
+#else
+        const char *flavor = "f4";
+#endif
+        snprintf(path, sizeof(path), "/tmp/klipper_sim_%s_chip_spi%u",
+                 flavor, (unsigned)idx);
+        sim_spi_register_route(bus, path);
+        sim_route = sim_spi_route_for_bus(bus);
+    }
     if (sim_route) {
         int fd = sim_chip_socket_connect(sim_route->socket_path);
         sim_route->fd = fd;

@@ -30,8 +30,19 @@ gpio_adc_setup(uint32_t pin)
 
     int fd = open(fname, O_RDONLY|O_CLOEXEC);
     if (fd < 0) {
+#if CONFIG_KALICO_SIM
+        // Sim builds: the IIO sysfs path doesn't exist on a host running
+        // the test sim binary. Fall back to a synthetic gpio_adc whose
+        // reads are served by analog_get_simulated_value. Channels that
+        // haven't been seeded with runtime_sim_adc_set still return 0
+        // (ADC_MIN), which klippy will treat as out-of-range — the test
+        // fixture is responsible for seeding sane ADC values before
+        // klippy attaches.
+        return (struct gpio_adc){ .fd = -1, .adc_pin = idx };
+#else
         report_errno("analog open", fd);
         goto fail;
+#endif
     }
     int ret = set_non_blocking(fd);
     if (ret < 0)
@@ -48,9 +59,22 @@ fail:
 // small 0-based channel index). Set by command_runtime_sim_adc_set via
 // this strong definition, which overrides the weak stub in
 // src/runtime_sim_commands.c at link time.
+//
+// Default seed: ADC value matching ~25 °C on a typical NTC thermistor
+// with 4.7 kΩ pull-up. For Generic 3950 (R0=100 kΩ @ 25 °C) the
+// divider ratio R/(R+R_pull) ≈ 100/(100+4.7) ≈ 0.955 → ADC ≈ 3910 of
+// 4095. Picking 3900 keeps every reasonable [min_temp, max_temp] band
+// (e.g. min_temp=0, max_temp=120 for a heated bed) inside-bounds at
+// boot. Tests that need a specific temperature seed via
+// runtime_sim_adc_set; the seeded value overrides this default.
 #define MAX_SIM_ADC 32
-static uint16_t sim_adc_values[MAX_SIM_ADC];
-static uint8_t  sim_adc_set[MAX_SIM_ADC];
+#define SIM_ADC_DEFAULT 3900
+static uint16_t sim_adc_values[MAX_SIM_ADC] = {
+    [0 ... MAX_SIM_ADC - 1] = SIM_ADC_DEFAULT,
+};
+static uint8_t  sim_adc_set[MAX_SIM_ADC] = {
+    [0 ... MAX_SIM_ADC - 1] = 1,
+};
 
 void
 analog_set_simulated_value(uint8_t adc_pin, uint16_t value)
@@ -87,6 +111,15 @@ gpio_adc_read(struct gpio_adc g)
     uint16_t sv = analog_get_simulated_value(g.adc_pin, &is_set);
     if (is_set)
         return sv;
+
+#if CONFIG_KALICO_SIM
+    // Sim build with no seeded value: return 0. Tests should seed an
+    // appropriate value via runtime_sim_adc_set; if they don't, klippy
+    // will see ADC=0 and report out-of-range, which is a clearer
+    // diagnostic than a sysfs read failure.
+    if (g.fd < 0)
+        return 0;
+#endif
 
     char buf[64];
     int ret = pread(g.fd, buf, sizeof(buf)-1, 0);
