@@ -8,13 +8,16 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <linux/gpio.h>
+#include <linux/spi/spidev.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 // Verbose logging — set KALICO_SIM_SHIM_VERBOSE=1 to enable.
@@ -158,9 +161,20 @@ static int sim_open_gpiochip(const char *path, int flags) {
     return fd;
 }
 static int sim_open_spidev(const char *path, int flags) {
-    LOG("open spidev(%s) STUB", path);
-    errno = ENOSYS;
-    return -1;
+    (void)flags;
+    int bus = -1, dev = -1;
+    if (sscanf(path, "/dev/spidev%d.%d", &bus, &dev) != 2) {
+        errno = ENOENT;
+        return -1;
+    }
+    int fd = alloc_fake_fd(SIM_SPIDEV);
+    if (fd < 0) return -1;
+    struct sim_fd_slot *slot = slot_for_fd(fd);
+    slot->u.spidev.bus = bus;
+    slot->u.spidev.dev = dev;
+    slot->u.spidev.chip_socket_fd = -1;
+    LOG("open spidev(%s) -> fd=%d", path, fd);
+    return fd;
 }
 static int sim_open_pwm(const char *path, int flags) {
     LOG("open pwm(%s) STUB", path);
@@ -288,6 +302,73 @@ static int gpio_handle_get_values(int line_fd, struct gpiohandle_data *data) {
     return 0;
 }
 
+static int spi_get_chip_socket(struct sim_fd_slot *slot) {
+    if (slot->u.spidev.chip_socket_fd >= 0) {
+        return slot->u.spidev.chip_socket_fd;
+    }
+    if (!active_cs.valid) {
+        LOG("spi xfer with no active CS");
+        errno = EIO;
+        return -1;
+    }
+    const char *sock_dir = getenv("KALICO_SIM_SOCK_DIR");
+    if (!sock_dir) {
+        LOG("KALICO_SIM_SOCK_DIR not set");
+        errno = EIO;
+        return -1;
+    }
+    char path[256];
+    snprintf(path, sizeof(path), "%s/spi_cs_%d_%d",
+             sock_dir, active_cs.chip_id, active_cs.line_offset);
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%.*s",
+             (int)(sizeof(addr.sun_path) - 1), path);
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOG("spi connect %s failed: %s", path, strerror(errno));
+        real_close(sock);
+        return -1;
+    }
+    slot->u.spidev.chip_socket_fd = sock;
+    LOG("spi connected to %s -> sock=%d", path, sock);
+    return sock;
+}
+
+static void spi_drop_chip_socket(struct sim_fd_slot *slot) {
+    if (slot->u.spidev.chip_socket_fd >= 0) {
+        real_close(slot->u.spidev.chip_socket_fd);
+        slot->u.spidev.chip_socket_fd = -1;
+    }
+}
+
+static int spi_handle_message(int fd, struct spi_ioc_transfer *xfer) {
+    struct sim_fd_slot *slot = slot_for_fd(fd);
+    if (!slot || slot->kind != SIM_SPIDEV) { errno = EBADF; return -1; }
+    int sock = spi_get_chip_socket(slot);
+    if (sock < 0) return -1;
+    const uint8_t *tx = (const uint8_t *)(uintptr_t)xfer->tx_buf;
+    uint8_t *rx = (uint8_t *)(uintptr_t)xfer->rx_buf;
+    size_t off = 0;
+    while (off < xfer->len) {
+        ssize_t n = real_write(sock, tx + off, xfer->len - off);
+        if (n <= 0) { spi_drop_chip_socket(slot); errno = EIO; return -1; }
+        off += n;
+    }
+    if (rx) {
+        off = 0;
+        while (off < xfer->len) {
+            ssize_t n = real_read(sock, rx + off, xfer->len - off);
+            if (n <= 0) { spi_drop_chip_socket(slot); errno = EIO; return -1; }
+            off += n;
+        }
+    }
+    spi_drop_chip_socket(slot);
+    return 0;
+}
+
 int ioctl(int fd, unsigned long req, ...) {
     void *arg;
     va_list ap; va_start(ap, req); arg = va_arg(ap, void *); va_end(ap);
@@ -301,6 +382,14 @@ int ioctl(int fd, unsigned long req, ...) {
             return gpio_handle_set_values(fd, (struct gpiohandle_data *)arg);
         case GPIOHANDLE_GET_LINE_VALUES_IOCTL:
             return gpio_handle_get_values(fd, (struct gpiohandle_data *)arg);
+        case SPI_IOC_WR_MAX_SPEED_HZ:
+            slot->u.spidev.speed_hz = *(uint32_t *)arg;
+            return 0;
+        case SPI_IOC_WR_MODE:
+            slot->u.spidev.mode = *(uint8_t *)arg;
+            return 0;
+        case SPI_IOC_MESSAGE(1):
+            return spi_handle_message(fd, (struct spi_ioc_transfer *)arg);
         default:
             LOG("ioctl(fd=%d, req=0x%lx) UNHANDLED on slot kind=%d", fd, req, slot->kind);
             errno = EINVAL;
@@ -325,4 +414,32 @@ int close(int fd) {
     if (!is_fake_fd(fd)) return real_close(fd);
     free_fake_fd(fd);
     return 0;
+}
+
+ssize_t write(int fd, const void *buf, size_t count) {
+    if (!is_fake_fd(fd)) return real_write(fd, buf, count);
+    struct sim_fd_slot *slot = slot_for_fd(fd);
+    if (!slot) { errno = EBADF; return -1; }
+    switch (slot->kind) {
+        case SIM_SPIDEV: {
+            // No-receive SPI write — same shape as a one-way transfer.
+            int sock = spi_get_chip_socket(slot);
+            if (sock < 0) return -1;
+            size_t off = 0;
+            while (off < count) {
+                ssize_t n = real_write(sock, (const uint8_t *)buf + off, count - off);
+                if (n <= 0) { spi_drop_chip_socket(slot); errno = EIO; return -1; }
+                off += n;
+            }
+            spi_drop_chip_socket(slot);
+            return (ssize_t)count;
+        }
+        case SIM_PWM_FILE:
+            // Filled in Task 6.
+            errno = EINVAL;
+            return -1;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
 }
