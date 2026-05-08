@@ -177,9 +177,29 @@ static int sim_open_spidev(const char *path, int flags) {
     return fd;
 }
 static int sim_open_pwm(const char *path, int flags) {
-    LOG("open pwm(%s) STUB", path);
-    errno = ENOSYS;
-    return -1;
+    (void)flags;
+    // Klipper opens /sys/class/pwm/pwmchip<N>/pwm<M>/<file>
+    // or /sys/class/pwm/pwm-<chip>:<id>/<file> (BeagleBoard).
+    int chip = 0, pwm = 0;
+    char file[32] = {0};
+    int matched = sscanf(path, "/sys/class/pwm/pwmchip%d/pwm%d/%31s", &chip, &pwm, file);
+    if (matched != 3) {
+        matched = sscanf(path, "/sys/class/pwm/pwm-%d:%d/%31s", &chip, &pwm, file);
+    }
+    if (matched != 3) {
+        LOG("pwm open: unrecognized path %s", path);
+        errno = ENOENT;
+        return -1;
+    }
+    int fd = alloc_fake_fd(SIM_PWM_FILE);
+    if (fd < 0) return -1;
+    struct sim_fd_slot *slot = slot_for_fd(fd);
+    slot->u.pwm_file.chip_id = chip;
+    slot->u.pwm_file.pwm_id = pwm;
+    snprintf(slot->u.pwm_file.file, sizeof(slot->u.pwm_file.file), "%s", file);
+    slot->u.pwm_file.last_value = 0;
+    LOG("open pwm chip=%d pwm=%d file=%s -> fd=%d", chip, pwm, file, fd);
+    return fd;
 }
 static int sim_open_iio(const char *path, int flags) {
     LOG("open iio(%s) STUB", path);
@@ -434,10 +454,19 @@ ssize_t write(int fd, const void *buf, size_t count) {
             spi_drop_chip_socket(slot);
             return (ssize_t)count;
         }
-        case SIM_PWM_FILE:
-            // Filled in Task 6.
-            errno = EINVAL;
-            return -1;
+        case SIM_PWM_FILE: {
+            // Parse the integer value klipper wrote (ASCII decimal).
+            char buf2[32];
+            size_t copy = count < sizeof(buf2) - 1 ? count : sizeof(buf2) - 1;
+            memcpy(buf2, buf, copy);
+            buf2[copy] = '\0';
+            uint64_t val = strtoull(buf2, NULL, 10);
+            slot->u.pwm_file.last_value = val;
+            LOG("pwm write chip=%d pwm=%d file=%s val=%llu",
+                slot->u.pwm_file.chip_id, slot->u.pwm_file.pwm_id,
+                slot->u.pwm_file.file, (unsigned long long)val);
+            return (ssize_t)count;
+        }
         default:
             errno = EINVAL;
             return -1;
