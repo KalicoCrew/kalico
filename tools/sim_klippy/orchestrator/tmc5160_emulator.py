@@ -121,6 +121,14 @@ class TMC5160Emulator:
 
         if is_write:
             self._do_write(addr, data)
+            # Real TMC5160: every reply contains the data field of the
+            # PRIOR datagram. After a write, the next transfer's reply
+            # echoes the written value — klippy's tmc2130.set_register
+            # relies on this for write verification (write_cmd then a
+            # dummy_read; the dummy_read's reply must carry the written
+            # value). Mirror that here by latching the post-clamp stored
+            # value into _last_read_data.
+            self._last_read_data = self._registers.get(addr, 0)
             return bytes(5)
 
         # Read path: return previously latched data, then capture current value

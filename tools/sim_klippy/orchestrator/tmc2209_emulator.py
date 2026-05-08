@@ -152,6 +152,10 @@ class TMC2209Emulator:
             reg = msg[2] & 0x7F
             value = (msg[3] << 24) | (msg[4] << 16) | (msg[5] << 8) | msg[6]
             self._registers[reg] = value
+            # Real TMC2209: IFCNT increments by 1 on every successful
+            # register write. klippy's tmc_uart.set_register verifies
+            # writes by reading IFCNT before and after, expecting +1.
+            self._registers[IFCNT] = (self._registers.get(IFCNT, 0) + 1) & 0xFF
             return b""
 
         raise ValueError(f"TMC2209 frame must be 4 or 8 bytes, got {len(msg)}")
