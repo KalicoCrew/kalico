@@ -184,6 +184,7 @@ def _stage_config_dir(
     cfg_dir: pathlib.Path,
     dest: pathlib.Path,
     strip_prefixes: tuple = (),
+    overrides: Optional[dict] = None,
 ) -> None:
     """Symlink or copy every entry from cfg_dir into dest.
 
@@ -194,9 +195,11 @@ def _stage_config_dir(
     third-party trees.
 
     .cfg files are read, sim-stripped (if strip_prefixes non-empty),
-    and written as regular files into dest so [include]d sections that
-    reference unvendored plugins don't crash boot.
+    have ``overrides`` applied (if given), and written as regular files
+    into dest so [include]d sections that reference unvendored plugins
+    or real-hardware pin / bus names work after sim substitution.
     """
+    needs_rewrite = bool(strip_prefixes) or overrides is not None
     for entry in cfg_dir.iterdir():
         if entry.name == "printer.cfg":
             continue
@@ -210,9 +213,13 @@ def _stage_config_dir(
                 os.symlink(resolved, target)
         elif entry.is_dir():
             os.symlink(entry.resolve(), target)
-        elif entry.suffix == ".cfg" and strip_prefixes:
+        elif entry.suffix == ".cfg" and needs_rewrite:
             text = entry.read_text()
-            target.write_text(_strip_sections(text, strip_prefixes))
+            if strip_prefixes:
+                text = _strip_sections(text, strip_prefixes)
+            if overrides is not None:
+                text = apply_overrides(text, overrides)
+            target.write_text(text)
         else:
             shutil.copy2(entry, target)
 
@@ -245,18 +252,49 @@ def sim(tmp_path):
         )
 
         # 2) Start chip emulators.
-        # 4 × TMC5160 for X, Y, X1, Y1 on the H7 SPI bus.
-        for i in range(4):
-            chip = TMC5160Emulator()
-            path = str(tmp_path / f"chip_spi{i}")
-            srv = ChipSocketServer(path, chip.transfer, chunk=5)
-            srv.start()
-            chip_servers.append(srv)
-        # 3 × TMC2209 for Z, Z1, Z2 on the F4 UART bus.
+        # The MCU-side spidev / tmcuart stubs auto-route a sim_spi<N> bus
+        # or a tmcuart oid<N> with no explicit route to a per-MCU socket
+        # path of the form /tmp/klipper_sim_<flavor>_chip_<spi|uart><N>.
+        # Flavor is `h7` for the KALICO_RUNTIME build (mcu_main) and
+        # `f4` otherwise (mcu bottom). We bind those exact paths here.
+        # ChipSocketServer unlinks any stale path before bind (single-
+        # file unlink) so leftovers from a crashed previous run don't
+        # block startup.
+        # H7 SPI bus 0: 4 × TMC5160 for X, Y, X1, Y1. CS pin (the 4-bit
+        # `dev` field encoded into bus_id by spidev.c) determines which
+        # of the 4 chips a given config_spi oid ends up talking to —
+        # but at the auto-route layer they all share the same `bus`
+        # (sim_spi0, idx=0). One emulator stands in for all four; the
+        # firmware multiplexes via CS toggling, which our socket-level
+        # stub doesn't model. That's fine for boot — every TMC5160 sees
+        # the same boilerplate query/reply pattern.
+        chip = TMC5160Emulator()
+        srv = ChipSocketServer(
+            "/tmp/klipper_sim_h7_chip_spi0", chip.transfer, chunk=5,
+        )
+        srv.start()
+        chip_servers.append(srv)
+        # H7 UART: 1 × TMC2209 for the extruder (oid=0). chunk=10 covers
+        # the longest UART-framed wire request klippy emits (8 logical
+        # bytes × 10 wire bits = 10 bytes); the emulator strips the
+        # start/stop framing internally.
+        chip = TMC2209Emulator(slave_addr=0)
+        srv = ChipSocketServer(
+            "/tmp/klipper_sim_h7_chip_uart0", chip.handle, chunk=10,
+        )
+        srv.start()
+        chip_servers.append(srv)
+        # F4 UART: 3 × TMC2209 for Z, Z1, Z2 on oids 0..2. Each is
+        # physically a separate chip on its own UART pin (uart_pin:
+        # bottom:gpiochip0/gpio6, gpio3, gpio4 in printer.cfg) — they
+        # all answer to slave_addr=0 because each is the only chip on
+        # its bus. The auto-route routes oid=N to a per-oid socket so
+        # the firmware-side multiplexing works without UART address
+        # discrimination.
         for i in range(3):
-            chip = TMC2209Emulator(slave_addr=i)
-            path = str(tmp_path / f"chip_uart{i}")
-            srv = ChipSocketServer(path, chip.handle, chunk=8)
+            chip = TMC2209Emulator(slave_addr=0)
+            path = f"/tmp/klipper_sim_f4_chip_uart{i}"
+            srv = ChipSocketServer(path, chip.handle, chunk=10)
             srv.start()
             chip_servers.append(srv)
 
@@ -321,8 +359,10 @@ def sim(tmp_path):
         rendered_cfg.write_text(rendered_cfg_text)
 
         # Stage companion .cfg files so klippy can resolve [include] lines.
-        # Apply the same sim-strip to included .cfg files that we applied
-        # to the main rendered printer.cfg.
+        # Apply the same sim-strip and pin/bus overrides to included
+        # .cfg files that we applied to the main rendered printer.cfg —
+        # otherwise extruder.cfg etc. still reference real-hardware names
+        # like ``spi_bus: spi1`` that klippy cannot resolve.
         _stage_config_dir(
             _CFG_DIR,
             tmp_path,
@@ -331,6 +371,7 @@ def sim(tmp_path):
                 "beacon", "bed_mesh", "resonance_tester", "motors_sync",
                 "z_tilt_ng",
             ),
+            overrides=overrides,
         )
 
         # 5) Build PYTHONPATH so klippy finds the vendored third-party plugins.
@@ -364,17 +405,20 @@ def sim(tmp_path):
             cwd=str(REPO_ROOT),
         )
 
-        # 7) Wait for "Printer is ready" (or early exit / fatal error).
-        deadline = time.monotonic() + 30.0
+        # 7) Wait until klippy finishes its connect callbacks (or
+        # exits / hits a fatal). The klippy state machine sets
+        # state_message="Printer is ready" but only exposes that via
+        # the API socket — the log contains "Welcome to Kalico" from
+        # the telemetry klippy:ready handler, which is a deterministic
+        # post-ready marker we can grep for.
+        deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             if klippy_log.exists():
                 content = klippy_log.read_bytes()
-                if b"Printer is ready" in content:
+                if b"Welcome to Kalico" in content:
                     break
-                # Stop waiting early if klippy already died.
                 if klippy.poll() is not None:
                     break
-                # Also stop early on fatal conditions so we don't burn 30s.
                 if (b"Internal error" in content or
                         b"shutdown:" in content):
                     if klippy.poll() is not None:
