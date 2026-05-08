@@ -7,6 +7,7 @@
 
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <linux/gpio.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -52,7 +53,22 @@ struct sim_fd_slot {
 static struct sim_fd_slot fake_slots[MAX_FAKE_FDS];
 static pthread_mutex_t fake_slots_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-__attribute__((unused))
+// Per-line state. Indexed by [chip_id][offset].
+// Must match firmware's src/linux/internal.h: MAX_GPIO_LINES=288, 9 chips.
+#define MAX_GPIO_CHIPS 9
+#define MAX_GPIO_LINES 288
+
+struct sim_gpio_line {
+    int direction;   // 0 = input, 1 = output, -1 = unconfigured
+    int value;       // 0 or 1
+};
+static struct sim_gpio_line gpio_lines[MAX_GPIO_CHIPS][MAX_GPIO_LINES];
+static pthread_mutex_t gpio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+// Currently-asserted output line — used as the SPI CS demultiplex key.
+struct sim_active_cs { int chip_id; int line_offset; int valid; };
+static struct sim_active_cs active_cs;
+
 static int alloc_fake_fd(enum sim_slot_kind kind) {
     pthread_mutex_lock(&fake_slots_mtx);
     for (int i = 1; i < MAX_FAKE_FDS; i++) {  // slot 0 reserved
@@ -69,7 +85,6 @@ static int alloc_fake_fd(enum sim_slot_kind kind) {
     return -1;
 }
 
-__attribute__((unused))
 static void free_fake_fd(int fd) {
     int idx = fd - FAKE_FD_BASE;
     if (idx <= 0 || idx >= MAX_FAKE_FDS) return;
@@ -78,7 +93,6 @@ static void free_fake_fd(int fd) {
     pthread_mutex_unlock(&fake_slots_mtx);
 }
 
-__attribute__((unused))
 static struct sim_fd_slot *slot_for_fd(int fd) {
     int idx = fd - FAKE_FD_BASE;
     if (idx <= 0 || idx >= MAX_FAKE_FDS) return NULL;
@@ -86,7 +100,6 @@ static struct sim_fd_slot *slot_for_fd(int fd) {
     return &fake_slots[idx];
 }
 
-__attribute__((unused))
 static int is_fake_fd(int fd) {
     return fd >= FAKE_FD_BASE && fd < FAKE_FD_BASE + MAX_FAKE_FDS;
 }
@@ -131,9 +144,18 @@ static enum sim_slot_kind classify_path(const char *path) {
 
 // Stubbed per-handler entries; later tasks fill in real allocation.
 static int sim_open_gpiochip(const char *path, int flags) {
-    LOG("open gpiochip(%s) STUB", path);
-    errno = ENOSYS;
-    return -1;
+    (void)flags;
+    int chip_id = -1;
+    if (sscanf(path, "/dev/gpiochip%d", &chip_id) != 1
+        || chip_id < 0 || chip_id >= MAX_GPIO_CHIPS) {
+        errno = ENOENT;
+        return -1;
+    }
+    int fd = alloc_fake_fd(SIM_GPIOCHIP);
+    if (fd < 0) return -1;
+    slot_for_fd(fd)->u.gpiochip.chip_id = chip_id;
+    LOG("open gpiochip(%s) -> fd=%d", path, fd);
+    return fd;
 }
 static int sim_open_spidev(const char *path, int flags) {
     LOG("open spidev(%s) STUB", path);
@@ -187,4 +209,120 @@ int access(const char *path, int mode) {
         return 0;
     }
     return real_access(path, mode);
+}
+
+static int gpio_handle_get_linehandle(int chip_fd, struct gpiohandle_request *req) {
+    struct sim_fd_slot *slot = slot_for_fd(chip_fd);
+    if (!slot || slot->kind != SIM_GPIOCHIP) {
+        errno = EBADF;
+        return -1;
+    }
+    if (req->lines != 1) {
+        // Klipper always requests exactly one line; reject otherwise.
+        errno = EINVAL;
+        return -1;
+    }
+    int chip_id = slot->u.gpiochip.chip_id;
+    int offset = req->lineoffsets[0];
+    if (offset < 0 || offset >= MAX_GPIO_LINES) {
+        errno = EINVAL;
+        return -1;
+    }
+    int line_fd = alloc_fake_fd(SIM_GPIOLINE);
+    if (line_fd < 0) return -1;
+    struct sim_fd_slot *line_slot = slot_for_fd(line_fd);
+    line_slot->u.gpioline.chip_id = chip_id;
+    line_slot->u.gpioline.line_offset = offset;
+    line_slot->u.gpioline.flags = req->flags;
+    int direction = (req->flags & GPIOHANDLE_REQUEST_OUTPUT) ? 1 : 0;
+    pthread_mutex_lock(&gpio_state_mtx);
+    gpio_lines[chip_id][offset].direction = direction;
+    if (direction == 1) {
+        gpio_lines[chip_id][offset].value = req->default_values[0] ? 1 : 0;
+    }
+    line_slot->u.gpioline.last_value = gpio_lines[chip_id][offset].value;
+    pthread_mutex_unlock(&gpio_state_mtx);
+    req->fd = line_fd;
+    LOG("gpio get_linehandle chip=%d offset=%d dir=%d -> fd=%d",
+        chip_id, offset, direction, line_fd);
+    return 0;
+}
+
+static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
+    struct sim_fd_slot *slot = slot_for_fd(line_fd);
+    if (!slot || slot->kind != SIM_GPIOLINE) {
+        errno = EBADF;
+        return -1;
+    }
+    int chip_id = slot->u.gpioline.chip_id;
+    int offset = slot->u.gpioline.line_offset;
+    int v = data->values[0] ? 1 : 0;
+    pthread_mutex_lock(&gpio_state_mtx);
+    gpio_lines[chip_id][offset].value = v;
+    slot->u.gpioline.last_value = v;
+    // Track currently-asserted CS for SPI dispatch.
+    if (v == 1 && gpio_lines[chip_id][offset].direction == 1) {
+        active_cs.chip_id = chip_id;
+        active_cs.line_offset = offset;
+        active_cs.valid = 1;
+    } else if (v == 0 && active_cs.valid
+               && active_cs.chip_id == chip_id
+               && active_cs.line_offset == offset) {
+        active_cs.valid = 0;
+    }
+    pthread_mutex_unlock(&gpio_state_mtx);
+    return 0;
+}
+
+static int gpio_handle_get_values(int line_fd, struct gpiohandle_data *data) {
+    struct sim_fd_slot *slot = slot_for_fd(line_fd);
+    if (!slot || slot->kind != SIM_GPIOLINE) {
+        errno = EBADF;
+        return -1;
+    }
+    int chip_id = slot->u.gpioline.chip_id;
+    int offset = slot->u.gpioline.line_offset;
+    pthread_mutex_lock(&gpio_state_mtx);
+    data->values[0] = gpio_lines[chip_id][offset].value ? 1 : 0;
+    pthread_mutex_unlock(&gpio_state_mtx);
+    return 0;
+}
+
+int ioctl(int fd, unsigned long req, ...) {
+    void *arg;
+    va_list ap; va_start(ap, req); arg = va_arg(ap, void *); va_end(ap);
+    if (!is_fake_fd(fd)) return real_ioctl(fd, req, arg);
+    struct sim_fd_slot *slot = slot_for_fd(fd);
+    if (!slot) { errno = EBADF; return -1; }
+    switch (req) {
+        case GPIO_GET_LINEHANDLE_IOCTL:
+            return gpio_handle_get_linehandle(fd, (struct gpiohandle_request *)arg);
+        case GPIOHANDLE_SET_LINE_VALUES_IOCTL:
+            return gpio_handle_set_values(fd, (struct gpiohandle_data *)arg);
+        case GPIOHANDLE_GET_LINE_VALUES_IOCTL:
+            return gpio_handle_get_values(fd, (struct gpiohandle_data *)arg);
+        default:
+            LOG("ioctl(fd=%d, req=0x%lx) UNHANDLED on slot kind=%d", fd, req, slot->kind);
+            errno = EINVAL;
+            return -1;
+    }
+}
+
+int fcntl(int fd, int cmd, ...) {
+    if (!is_fake_fd(fd)) {
+        // Pass through. Use va_arg conservatively (cmd determines arg type).
+        va_list ap; va_start(ap, cmd);
+        long arg = va_arg(ap, long);
+        va_end(ap);
+        return real_fcntl(fd, cmd, arg);
+    }
+    // Fake fd — no-op for FD_CLOEXEC, F_SETFL, F_GETFL.
+    (void)cmd;
+    return 0;
+}
+
+int close(int fd) {
+    if (!is_fake_fd(fd)) return real_close(fd);
+    free_fake_fd(fd);
+    return 0;
 }
