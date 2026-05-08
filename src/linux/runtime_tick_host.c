@@ -50,7 +50,7 @@ host_monotonic_ns(void)
 
 extern uint32_t timer_read_time(void); // src/linux/timer.c
 extern uint64_t timer_read_time_u64(void); // src/linux/timer.c
-extern void runtime_handle_seed_widen(void *rt, uint64_t baseline);
+// runtime_handle_seed_widen is declared in kalico_runtime.h (included above)
 
 __attribute__((used)) uint32_t
 runtime_cyccnt_read(void)

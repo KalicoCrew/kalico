@@ -32,5 +32,8 @@ docker run --rm -i \
       # ELF environment. Cheap rebuild (~2s) and avoids architecture skew.
       rm -f klippy/chelper/c_helper.so klippy/chelper/c_helper.so.dSYM 2>/dev/null
       rm -rf klippy/chelper/c_helper.so.dSYM 2>/dev/null || true
+      # Remove any stale misnamed motion_bridge.so that shadows motion_bridge.py.
+      # The correct native module is always motion_bridge_native.so (built above).
+      rm -f klippy/motion_bridge.so 2>/dev/null || true
       mkdir -p /work/tools/sim_klippy/.local-logs
       python3 tools/sim_klippy/run.py $SCRIPT_ARGS"
