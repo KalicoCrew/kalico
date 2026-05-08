@@ -86,8 +86,17 @@ class ChipSocketServer:
                 pass
 
     def _serve_unframed(self, client: socket.socket):
+        # client.settimeout(1.0) is set in _serve so a stopped server can
+        # exit promptly. recv() raising socket.timeout is NOT a fatal
+        # condition — clients legitimately go idle between requests
+        # (e.g. tmc.py's drv_status periodic queries run every 1.0 s,
+        # exactly racing the timeout). Re-loop on timeout; only break on
+        # EOF or genuine I/O error.
         while not self._stop.is_set():
-            data = client.recv(self._chunk)
+            try:
+                data = client.recv(self._chunk)
+            except socket.timeout:
+                continue
             if not data:
                 break
             reply = self._handler(data)

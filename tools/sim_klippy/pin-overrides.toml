@@ -69,3 +69,45 @@ spi1 = "spidev0.0"
 # update, so we set the "skip" flag a real headless user would also set.
 [beacon.config_inject]
 skip_firmware_version_check = "True"
+
+# Replace the real config's sensorless X/Y endstops with synthetic GPIO
+# pins on the H7 sim. The real config wires endstop_pin to
+# ``tmc5160_stepper_<axis>1:virtual_endstop`` (DIAG line via SG_RESULT
+# threshold inside the TMC5160 emulator); under sim we trade fidelity
+# for coverage of the trsync / bridge / runtime homing path by
+# repointing endstop_pin at a regular gpiochip line.
+#
+# Tests (see tools/sim_klippy/tests/test_g28_homing_actual.py) drive
+# these pins via the LD_PRELOAD shim's set_gpio_input control verb.
+# Line numbers (200, 201) are well clear of the PA*-PG* remap range
+# (gpio0..44) so they cannot collide with a real-pin override.
+#
+# use_sensorless_homing must flip to False — without it, klippy still
+# runs the sensorless homing dance (driver_SGT setup, current swap,
+# stallguard arming) which the regular endstop pin path doesn't need.
+# homing_retract_dist + min_home_dist = 0 prevents the standard "back
+# off after trip and re-approach" second pass from immediately
+# re-tripping a pin we've left HIGH for the AlreadyTripped scenario.
+#
+# position_max / position_endstop are also shrunk (from 300 → 20). The
+# unmodified range produced a ~4.5 s homing move (corexy doubles the
+# stepper distance) which raced klippy's ~1 Hz tmc.py periodic stallguard
+# query against the bridge — a separate sim-infra bug surfaces as
+# "RuntimeError: bridge_call: transport closed" mid-homing, before
+# past-end-time can fire. Shrinking the range keeps the no-trigger move
+# under ~0.3 s so it completes inside one tmc-poll window.
+[stepper_x.config_set]
+endstop_pin = "^gpiochip0/gpio200"
+use_sensorless_homing = "False"
+homing_retract_dist = "0"
+min_home_dist = "0"
+position_endstop = "20"
+position_max = "20"
+
+[stepper_y.config_set]
+endstop_pin = "^gpiochip0/gpio201"
+use_sensorless_homing = "False"
+homing_retract_dist = "0"
+min_home_dist = "0"
+position_endstop = "20"
+position_max = "20"

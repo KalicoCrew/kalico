@@ -113,6 +113,81 @@ def _inject_section_keys(cfg_text: str, section: str, kv: dict) -> str:
     return "".join(out_lines)
 
 
+def _replace_section_keys(cfg_text: str, section: str, kv: dict) -> str:
+    """Replace existing key values in a klippy [section] block.
+
+    For every key in ``kv``, rewrites a matching ``key: value`` (or
+    ``key = value``) line inside the target section. Keys not present
+    in the section are appended after the section header. Comments and
+    blank lines are preserved.
+    """
+    if not kv:
+        return cfg_text
+    lc_kv = {k.lower(): (k, v) for k, v in kv.items()}
+    lines = cfg_text.splitlines(keepends=True)
+    out_lines: list = []
+    in_target = False
+    target_seen = False
+    seen_keys: set = set()
+
+    def _flush_missing(buf: list) -> list:
+        injected = []
+        for lk, (orig_k, val) in lc_kv.items():
+            if lk not in seen_keys:
+                injected.append(f"{orig_k}: {val}\n")
+        if injected and buf and not buf[-1].endswith("\n"):
+            buf[-1] = buf[-1] + "\n"
+        return buf + injected
+
+    section_buf: list = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _SECTION_HEADER_RE.match(line.rstrip("\n"))
+        if m:
+            if in_target:
+                out_lines.extend(_flush_missing(section_buf))
+                section_buf = []
+                seen_keys = set()
+                in_target = False
+            sec_name = m.group(1).strip()
+            if sec_name == section and not target_seen:
+                target_seen = True
+                in_target = True
+                out_lines.append(line)
+                i += 1
+                continue
+            out_lines.append(line)
+            i += 1
+            continue
+        if in_target:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                km = re.match(r"^([A-Za-z0-9_]+)(\s*[:=]\s*)(.*)$", line)
+                if km:
+                    key_l = km.group(1).lower()
+                    if key_l in lc_kv:
+                        seen_keys.add(key_l)
+                        orig_k, new_v = lc_kv[key_l]
+                        # Preserve leading indentation if any.
+                        leading = line[: len(line) - len(line.lstrip())]
+                        section_buf.append(
+                            f"{leading}{km.group(1)}{km.group(2)}{new_v}\n"
+                        )
+                        i += 1
+                        continue
+            section_buf.append(line)
+            i += 1
+            continue
+        out_lines.append(line)
+        i += 1
+
+    if in_target:
+        out_lines.extend(_flush_missing(section_buf))
+
+    return "".join(out_lines)
+
+
 def apply_overrides(cfg_text: str, overrides: dict) -> str:
     """Substitute real-hardware identifiers with sim equivalents.
 
@@ -149,4 +224,14 @@ def apply_overrides(cfg_text: str, overrides: dict) -> str:
             continue
         section = key[: -len(".config_inject")]
         out = _inject_section_keys(out, section, table)
+    # Apply per-section ``config_set`` tables. Unlike config_inject these
+    # rewrite existing keys (and append missing ones), used to override
+    # values like ``endstop_pin`` that already appear in the source cfg.
+    for key, table in overrides.items():
+        if not isinstance(table, dict):
+            continue
+        if not key.endswith(".config_set"):
+            continue
+        section = key[: -len(".config_set")]
+        out = _replace_section_keys(out, section, table)
     return out
