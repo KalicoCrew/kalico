@@ -4,6 +4,29 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 
 <!-- entries below -->
 
+### 2026-05-08 — LD_PRELOAD syscall-intercept shim retires firmware sim-isms
+
+**What:** Replaced ~660 lines of `#ifdef CONFIG_KALICO_SIM` plumbing across 8 firmware files with a `tools/sim_klippy/preload/libsim_intercept.so` LD_PRELOAD shim (~700 LOC, single C file). Production firmware (Category A: `linux/gpio.c`, `linux/hard_pwm.c`, `linux/analog.c`, `linux/spidev.c`, `linux/sim_chip_socket.{c,h}` deleted, `spicmds.c`, `tmcuart.c`, `runtime_sim_commands.c` deleted) is now bit-identical between Pi-Klipper and the test sim. The shim intercepts 9 libc syscalls (`open/openat/ioctl/read/pread/write/close/fcntl/access`) and dispatches `/dev/gpiochip*`, `/dev/spidev*`, `/sys/class/pwm/*`, `/sys/bus/iio/*` to in-shim state plus per-CS-pin chip-emulator sockets. A line-oriented text protocol on `${KALICO_SIM_SOCK_DIR}/sim_control` lets the orchestrator poke shim state (`set_gpio_input`, `set_adc`, etc.) for endstops and thermistors. One contained firmware exception remains: `tmcuart` keeps a short-circuit gated on `CONFIG_KALICO_SIM_TMCUART_BYPASS` and reads its socket path from `KALICO_SIM_SOCK_DIR` env var (no flavor heuristic, no klippy involvement). Renode's STM32 sim path is untouched (different build target, never sees LD_PRELOAD).
+
+**Why:** Earlier in the same session, a discovery loop on `test_g28_x_smoke` traced through three nested issues — TMC chip emulator write-verify echo, F4 sim missing `KALICO_RUNTIME=y`, and finally a broken `flavor` heuristic in `tmcuart.c`/`spidev.c` that hardcoded `"h7"`/`"f4"` based on `CONFIG_KALICO_RUNTIME` — to identify the architectural problem: sim plumbing baked into production firmware. Fixing each symptom was a layer violation; the principled fix was retiring the violation entirely. Brainstormed v1 (a `[sim_router]` klippy extra with explicit-route commands) was specced and rejected as the second-best answer; v2 (LD_PRELOAD + delete firmware sim-isms) is what landed.
+
+**Verification:**
+- Direct C test harness (`tools/sim_klippy/preload/tests/test_shim`): 5/5 PASS
+- Python `test_sim_control` pytest: 4/4 PASS
+- `tools/sim_klippy/tests/test_boot.py`: 1/1 PASS (was failing pre-cutover)
+- `tools/sim_klippy/tests/test_g28_x_smoke.py`: 1/1 PASS
+
+**Real bug caught during cutover:** SPI CS active-low polarity was inverted in `gpio_handle_set_values` — initially the shim tracked CS as asserted on logic-high, but real SPI CS is active-low. Caught when test_boot got past the previous blocker and surfaced an "Unable to write to spi" → MCU shutdown. Fix landed in the same commit as the `sim_spi0` → `spidev0.0` pin-overrides remap.
+
+**Evidence:**
+- Spec: `docs/superpowers/specs/2026-05-08-syscall-shim-design.md`
+- Plan: `docs/superpowers/plans/2026-05-08-syscall-shim.md`
+- 23 commits from `7474c2a6d` (Task 1 skeleton) through the verification fixes (`3c59cdb63`)
+
+**Lesson:** When the second similar bug pattern appears in the same code (broken auto-route in `tmcuart.c` → broken auto-route in `spidev.c`), that's the signal to fix the architecture, not the symptom. The firmware sim-isms had grown 690 lines of plumbing one #ifdef at a time over multiple sessions; collapsing all of it into one LD_PRELOAD shim is a net wash on LOC but eliminates the layer violation that was generating new bugs.
+
+---
+
 ### 2026-05-08 — Faithful klippy-in-loop sim: infra landed, integration deferred
 
 **What:** Built the faithful klippy-in-loop simulator infrastructure described in `docs/superpowers/specs/2026-05-08-faithful-klippy-sim-design.md` and planned in `docs/superpowers/plans/2026-05-08-faithful-klippy-sim.md`. Phases 0–6 + the conftest scaffold (Phase 7 part 1) all landed cleanly: vendored printer config + third-party plugin snapshot under `tools/sim_klippy/printer_real/`, two MACH_LINUX `.config` files (h7-sim.config + f4-sim.config), Unix-socket `sim_chip_socket.c/h` transport in firmware, `runtime_sim_route_spi/tmcuart/adc_set` + auto-routed sim_spi/tmcuart fall-backs, behavioral TMC5160/TMC2209 emulators with TDD coverage (35 unit tests passing, including a real wire-format discovery — klippy's `tmc_uart._add_serial_bits` wraps each logical byte with start/stop bits, so a 4-byte logical TMC2209 frame is 5 bytes on the wire and an 8-byte logical write is 10), beacon scaffolding stub that logs traffic to a per-test `beacon_traffic.log`, ADC heater model + thermistor curve, sensorless StallGuard `SensorlessTrigger` with virtual-position-vs-wall model, pin/SPI-bus/serial-path override layer over the vendored printer.cfg, multi-MCU launcher, and the pytest `sim` fixture that wires all of the above together.
