@@ -63,6 +63,68 @@ def test_spi_bus_word_boundary():
     assert "spi10" in out  # untouched
 
 
+def test_config_inject_appends_missing_key():
+    """``[<section>.config_inject]`` adds key=value into the section."""
+    cfg_in = """
+[beacon]
+serial: /tmp/foo
+x_offset: 0
+"""
+    overrides = {
+        "beacon.config_inject": {"skip_firmware_version_check": "True"},
+    }
+    out = apply_overrides(cfg_in, overrides)
+    assert "skip_firmware_version_check: True" in out
+    # Existing keys retained.
+    assert "x_offset: 0" in out
+    assert "serial: /tmp/foo" in out
+
+
+def test_config_inject_does_not_duplicate_existing_key():
+    """If the key is already present, no second copy is added."""
+    cfg_in = """
+[beacon]
+serial: /tmp/foo
+skip_firmware_version_check: False
+"""
+    overrides = {
+        "beacon.config_inject": {"skip_firmware_version_check": "True"},
+    }
+    out = apply_overrides(cfg_in, overrides)
+    assert out.count("skip_firmware_version_check") == 1
+    # The user's value wins.
+    assert "skip_firmware_version_check: False" in out
+
+
+def test_config_inject_section_boundary_respected():
+    """Injection writes into the named section only, not into the next one."""
+    cfg_in = """
+[beacon]
+serial: /tmp/foo
+
+[stepper_x]
+step_pin: PG4
+"""
+    overrides = {
+        "beacon.config_inject": {"skip_firmware_version_check": "True"},
+    }
+    out = apply_overrides(cfg_in, overrides)
+    # The injected line must appear before [stepper_x], not after.
+    beacon_pos = out.index("skip_firmware_version_check")
+    stepper_pos = out.index("[stepper_x]")
+    assert beacon_pos < stepper_pos
+
+
+def test_config_inject_missing_section_is_noop():
+    """If the section doesn't exist, apply_overrides leaves cfg unchanged."""
+    cfg_in = "[stepper_x]\nstep_pin: PG4\n"
+    overrides = {
+        "beacon.config_inject": {"skip_firmware_version_check": "True"},
+    }
+    out = apply_overrides(cfg_in, overrides)
+    assert out == cfg_in
+
+
 def test_load_overrides(tmp_path):
     """load_overrides reads a TOML file and returns the dict."""
     from tools.sim_klippy.orchestrator.overrides import load_overrides

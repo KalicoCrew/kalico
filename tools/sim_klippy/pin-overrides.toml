@@ -61,3 +61,11 @@ spi1 = "sim_spi0"
 "usb-Klipper_stm32h723xx_*" = "/tmp/klipper_sim_h7"
 "usb-Klipper_stm32f446xx_*" = "/tmp/klipper_sim_f4"
 "usb-Beacon_*" = "/tmp/klipper_sim_beacon"
+
+# Inject options that a headless user would set in their own printer.cfg
+# but the vendored test config doesn't carry. Beacon's _check_mcu_version
+# normally spawns a subprocess running update_firmware.py to talk DFU to
+# the serial port; in the sim there is no DFU and no real firmware to
+# update, so we set the "skip" flag a real headless user would also set.
+[beacon.config_inject]
+skip_firmware_version_check = "True"
