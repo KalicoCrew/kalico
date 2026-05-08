@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 // Verbose logging — set KALICO_SIM_SHIM_VERBOSE=1 to enable.
@@ -90,9 +91,100 @@ static int is_fake_fd(int fd) {
     return fd >= FAKE_FD_BASE && fd < FAKE_FD_BASE + MAX_FAKE_FDS;
 }
 
+// Real libc symbols — populated by shim_init.
+static int (*real_open)(const char *, int, ...) = NULL;
+static int (*real_openat)(int, const char *, int, ...) = NULL;
+static int (*real_close)(int) = NULL;
+static int (*real_ioctl)(int, unsigned long, ...) = NULL;
+static ssize_t (*real_read)(int, void *, size_t) = NULL;
+static ssize_t (*real_pread)(int, void *, size_t, off_t) = NULL;
+static ssize_t (*real_write)(int, const void *, size_t) = NULL;
+static int (*real_fcntl)(int, int, ...) = NULL;
+static int (*real_access)(const char *, int) = NULL;
+
 __attribute__((constructor))
 static void shim_init(void) {
     const char *v = getenv("KALICO_SIM_SHIM_VERBOSE");
     verbose = (v && v[0] == '1');
+    real_open    = dlsym(RTLD_NEXT, "open");
+    real_openat  = dlsym(RTLD_NEXT, "openat");
+    real_close   = dlsym(RTLD_NEXT, "close");
+    real_ioctl   = dlsym(RTLD_NEXT, "ioctl");
+    real_read    = dlsym(RTLD_NEXT, "read");
+    real_pread   = dlsym(RTLD_NEXT, "pread");
+    real_write   = dlsym(RTLD_NEXT, "write");
+    real_fcntl   = dlsym(RTLD_NEXT, "fcntl");
+    real_access  = dlsym(RTLD_NEXT, "access");
     LOG("init pid=%d", (int)getpid());
+}
+
+// Path classification — returns the slot kind to allocate, or SIM_NONE
+// if the path should pass through to the real syscall.
+static enum sim_slot_kind classify_path(const char *path) {
+    if (!path) return SIM_NONE;
+    if (strncmp(path, "/dev/gpiochip", 13) == 0) return SIM_GPIOCHIP;
+    if (strncmp(path, "/dev/spidev", 11) == 0) return SIM_SPIDEV;
+    if (strncmp(path, "/sys/class/pwm/", 15) == 0) return SIM_PWM_FILE;
+    if (strncmp(path, "/sys/bus/iio/", 13) == 0) return SIM_IIO_FILE;
+    return SIM_NONE;
+}
+
+// Stubbed per-handler entries; later tasks fill in real allocation.
+static int sim_open_gpiochip(const char *path, int flags) {
+    LOG("open gpiochip(%s) STUB", path);
+    errno = ENOSYS;
+    return -1;
+}
+static int sim_open_spidev(const char *path, int flags) {
+    LOG("open spidev(%s) STUB", path);
+    errno = ENOSYS;
+    return -1;
+}
+static int sim_open_pwm(const char *path, int flags) {
+    LOG("open pwm(%s) STUB", path);
+    errno = ENOSYS;
+    return -1;
+}
+static int sim_open_iio(const char *path, int flags) {
+    LOG("open iio(%s) STUB", path);
+    errno = ENOSYS;
+    return -1;
+}
+
+int open(const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap; va_start(ap, flags); mode = va_arg(ap, mode_t); va_end(ap);
+    }
+    enum sim_slot_kind k = classify_path(path);
+    switch (k) {
+        case SIM_GPIOCHIP:  return sim_open_gpiochip(path, flags);
+        case SIM_SPIDEV:    return sim_open_spidev(path, flags);
+        case SIM_PWM_FILE:  return sim_open_pwm(path, flags);
+        case SIM_IIO_FILE:  return sim_open_iio(path, flags);
+        default:            return real_open(path, flags, mode);
+    }
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap; va_start(ap, flags); mode = va_arg(ap, mode_t); va_end(ap);
+    }
+    enum sim_slot_kind k = classify_path(path);
+    switch (k) {
+        case SIM_GPIOCHIP:  return sim_open_gpiochip(path, flags);
+        case SIM_SPIDEV:    return sim_open_spidev(path, flags);
+        case SIM_PWM_FILE:  return sim_open_pwm(path, flags);
+        case SIM_IIO_FILE:  return sim_open_iio(path, flags);
+        default:            return real_openat(dirfd, path, flags, mode);
+    }
+}
+
+int access(const char *path, int mode) {
+    if (classify_path(path) != SIM_NONE) {
+        // Sim paths always exist if the shim is loaded.
+        return 0;
+    }
+    return real_access(path, mode);
 }
