@@ -74,6 +74,33 @@ sim_uart_lookup_fd(uint8_t oid) {
 }
 #endif // CONFIG_MACH_LINUX
 
+#if CONFIG_KALICO_SIM_TMCUART_BYPASS
+#include <stdio.h>     // snprintf
+#include <stdlib.h>    // getenv
+#include "linux/sim_chip_socket.h"
+
+// Per-oid socket fd cache. Path computed from KALICO_SIM_SOCK_DIR env var
+// at first use; orchestrator binds matching paths before spawn.
+#define MAX_TMCUART_OIDS 8
+static int sim_tmcuart_fds[MAX_TMCUART_OIDS];
+static int sim_tmcuart_fds_initialized = 0;
+
+static int sim_tmcuart_lookup_fd(uint8_t oid) {
+    if (oid >= MAX_TMCUART_OIDS) return -1;
+    if (!sim_tmcuart_fds_initialized) {
+        for (int i = 0; i < MAX_TMCUART_OIDS; i++) sim_tmcuart_fds[i] = -1;
+        sim_tmcuart_fds_initialized = 1;
+    }
+    if (sim_tmcuart_fds[oid] >= 0) return sim_tmcuart_fds[oid];
+    const char *sock_dir = getenv("KALICO_SIM_SOCK_DIR");
+    if (!sock_dir) return -1;
+    char path[256];
+    snprintf(path, sizeof(path), "%s/tmcuart_%u", sock_dir, (unsigned)oid);
+    sim_tmcuart_fds[oid] = sim_chip_socket_connect(path);
+    return sim_tmcuart_fds[oid];
+}
+#endif // CONFIG_KALICO_SIM_TMCUART_BYPASS
+
 struct tmcuart_s {
     struct timer timer;
     struct gpio_out tx_pin;
@@ -252,10 +279,10 @@ DECL_COMMAND(command_config_tmcuart,
 void
 command_tmcuart_send(uint32_t *args)
 {
-#if CONFIG_MACH_LINUX
+#if CONFIG_KALICO_SIM_TMCUART_BYPASS
     {
         uint8_t oid = args[0];
-        int sfd = sim_uart_lookup_fd(oid);
+        int sfd = sim_tmcuart_lookup_fd(oid);
         if (sfd >= 0) {
             uint8_t write_len = args[1];
             uint8_t *write_data = command_decode_ptr(args[2]);
@@ -270,7 +297,7 @@ command_tmcuart_send(uint32_t *args)
             return;
         }
     }
-#endif // CONFIG_MACH_LINUX
+#endif // CONFIG_KALICO_SIM_TMCUART_BYPASS
     struct tmcuart_s *t = oid_lookup(args[0], command_config_tmcuart);
     if (t->flags & TU_ACTIVE)
         // Uart is busy - silently drop this request (host should retransmit)
