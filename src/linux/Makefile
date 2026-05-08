@@ -4,7 +4,7 @@ dirs-y += src/linux src/generic
 
 src-y += linux/main.c linux/timer.c linux/console.c linux/watchdog.c
 src-y += linux/pca9685.c linux/spidev.c linux/analog.c linux/hard_pwm.c
-src-y += linux/sim_chip_socket.c
+src-$(CONFIG_KALICO_SIM_TMCUART_BYPASS) += linux/sim_chip_socket.c
 src-y += linux/i2c.c linux/gpio.c generic/crc16_ccitt.c generic/alloc.c
 src-y += linux/sensor_ds18b20.c
 
@@ -14,8 +14,6 @@ src-y += linux/sensor_ds18b20.c
 src-$(CONFIG_KALICO_RUNTIME) += linux/runtime_tick_host.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_commands.c
-# Sim-only: diagnostic commands + ISR drain wake under CONFIG_KALICO_SIM.
-src-$(CONFIG_KALICO_SIM) += runtime_sim_commands.c
 
 # Generated FFI header (cbindgen) shared with the H7 build.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)

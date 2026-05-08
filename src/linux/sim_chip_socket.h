@@ -25,13 +25,4 @@ int sim_chip_socket_xfer_framed(int fd, uint8_t cs,
                                 const uint8_t *tx, size_t tx_len,
                                 uint8_t *rx);
 
-// Register a SPI bus → Unix-socket-path mapping. Called from the
-// runtime_sim_route_spi command handler; takes effect on the next
-// spi_setup that resolves to this bus.
-void sim_spi_register_route(uint32_t bus, const char *path);
-
-// Register a tmcuart oid → Unix-socket-path mapping. Mirror of
-// sim_spi_register_route for the bit-banged TMC2209 path.
-void sim_tmcuart_register_route(uint8_t oid, const char *path);
-
 #endif
