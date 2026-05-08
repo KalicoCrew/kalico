@@ -60,6 +60,7 @@ def _strip_sections(cfg_text: str, prefixes: tuple) -> str:
     lines = cfg_text.splitlines(keepends=True)
     out = []
     in_strip = False
+    in_autosave_strip = False
     import re
     section_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
     autosave_section_re = re.compile(r"^#\*#\s*\[([^\]]+)\]\s*$")
@@ -67,10 +68,23 @@ def _strip_sections(cfg_text: str, prefixes: tuple) -> str:
         m_auto = autosave_section_re.match(line)
         if m_auto:
             head = m_auto.group(1).split(None, 1)[0]
-            in_strip = head in prefixes
-            if in_strip:
-                out.append("# [sim-autosave-strip] " + line)
+            in_autosave_strip = head in prefixes
+            if in_autosave_strip:
+                # Replace with a no-op #*# comment so configfile.py's
+                # autosave parser still considers each line valid (every
+                # autosave line must start with '#*#') but the section
+                # header is gone.
+                out.append("#*# \n")
                 continue
+        if in_autosave_strip:
+            if line.startswith("#*#"):
+                # Inside a stripped autosave section — replace the line
+                # body but keep '#*#' so the parser stays happy.
+                out.append("#*# \n")
+                continue
+            else:
+                # End of autosave content (blank or non-#*# line).
+                in_autosave_strip = False
         m = section_re.match(line)
         if m:
             head = m.group(1).split(None, 1)[0]
