@@ -289,6 +289,13 @@ def sim(tmp_path):
         cfg_text = cfg_text.replace(
             "probe:z_virtual_endstop", "gpiochip0/gpio99"
         )
+        # The real config commented-out position_endstop because it
+        # relies on the beacon probe to derive it. With beacon stripped,
+        # add a sane default so klippy can construct the stepper rail.
+        cfg_text = cfg_text.replace(
+            "# position_endstop: -0.5",
+            "position_endstop: -0.5",
+        )
         rendered_cfg_text = apply_overrides(cfg_text, overrides)
         # Strip sections whose plugin module isn't installed in this tree
         # OR whose stub isn't faithful enough to satisfy klippy's MCU
