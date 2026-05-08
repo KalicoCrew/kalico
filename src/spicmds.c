@@ -118,24 +118,10 @@ spidev_transfer(struct spidev_s *spi, uint8_t receive_data
     if (flags & SF_HAVE_PIN)
         gpio_out_write(spi->pin, !!(flags & SF_CS_ACTIVE_HIGH));
 
-#if CONFIG_KALICO_SIM
-    // Publish the active CS to the sim spi side-channel so spi_transfer's
-    // sim-route branch can demultiplex this transfer to the right per-CS
-    // emulator behind the shared Unix socket.
-    if (flags & SF_HAVE_PIN)
-        sim_spi_set_pending_cs(sim_gpio_out_offset(spi->pin));
-    else
-        sim_spi_clear_pending_cs();
-#endif
-
     if (CONFIG_WANT_SOFTWARE_SPI && flags & SF_SOFTWARE)
         spi_software_transfer(spi->spi_software, receive_data, data_len, data);
     else
         spi_transfer(spi->spi_config, receive_data, data_len, data);
-
-#if CONFIG_KALICO_SIM
-    sim_spi_clear_pending_cs();
-#endif
 
     if (flags & SF_HAVE_PIN)
         gpio_out_write(spi->pin, !(flags & SF_CS_ACTIVE_HIGH));
