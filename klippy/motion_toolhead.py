@@ -3,11 +3,36 @@
 # This file is part of the Kalico motion-bridge integration (Stage D).
 # Move-issuing calls raise NotImplementedError; status/query methods work.
 import logging
+import os
 
 from . import chelper
 from . import stepper
 from .kinematics import extruder
 from .toolhead import Move, ToolHead, BUFFER_TIME_START
+
+
+def _open_sim_control():
+    """Open the shim's control socket. Returns SimControlClient or None
+    if shim is not in use (real hardware or vanilla MACH_LINUX).
+
+    The launcher passes KALICO_SIM_SOCK_DIR per MCU; we connect to the
+    H7's control socket since KALICO_SIM_ENDSTOP_SET_PIN is for endstops
+    which are wired to the H7 in the Trident config. If the F4 ever
+    needs a similar surface, add a parallel cmd_KALICO_SIM_F4_*.
+    """
+    sock_dir = os.environ.get("KALICO_SIM_SOCK_DIR")
+    if not sock_dir:
+        return None
+    sock_path = os.path.join(sock_dir, "sim_control")
+    if not os.path.exists(sock_path):
+        return None
+    try:
+        from tools.sim_klippy.orchestrator.sim_control_client import (
+            SimControlClient,
+        )
+    except ImportError:
+        return None
+    return SimControlClient(sock_path)
 
 
 class BridgeKinematics:
@@ -741,25 +766,27 @@ class MotionToolhead(ToolHead):
     def cmd_KALICO_SIM_ENDSTOP_SET_PIN(self, gcmd):
         gpio = gcmd.get_int("GPIO", minval=0, maxval=0xFFFF)
         level = gcmd.get_int("LEVEL", minval=0, maxval=1)
-        if self.bridge is None or self.mcu is None:
-            raise gcmd.error("bridge not available")
-        handle = getattr(self.mcu, "_bridge_handle", None)
-        if handle is None:
-            raise gcmd.error("bridge handle not set")
-        try:
-            resp = self.bridge.bridge_call(
-                handle,
-                "runtime_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
-                "runtime_sim_endstop_set_pin_response",
-                timeout_s=5.0,
+        # GPIO pin index is chip_id * MAX_GPIO_LINES + offset, matching
+        # the firmware's GPIO() macro. MAX_GPIO_LINES=288 per
+        # src/linux/internal.h.
+        MAX_GPIO_LINES = 288
+        chip_id = gpio // MAX_GPIO_LINES
+        line = gpio % MAX_GPIO_LINES
+        client = _open_sim_control()
+        if client is None:
+            raise gcmd.error(
+                "KALICO_SIM_ENDSTOP_SET_PIN requires the shim "
+                "(KALICO_SIM_SOCK_DIR not set or sim_control missing)"
             )
+        try:
+            with client:
+                client.set_gpio_input(chip=chip_id, line=line, value=level)
             gcmd.respond_info(
-                "[bridge-async] KALICO_SIM_ENDSTOP_SET_PIN "
-                "gpio=%d level=%d result=%d"
-                % (gpio, level, resp.get("result", -1))
+                "KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d -> ok"
+                % (gpio, level)
             )
         except Exception as e:
-            raise gcmd.error("endstop set_pin failed: %s" % e)
+            raise gcmd.error("set_gpio_input failed: %s" % e)
 
 
 def add_printer_objects(config):

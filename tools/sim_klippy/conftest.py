@@ -302,6 +302,9 @@ def sim(tmp_path):
                 existing,
             ])
         )
+        # Expose H7 sock_dir to klippy so cmd_KALICO_SIM_ENDSTOP_SET_PIN
+        # can open the sim_control socket (endstops are wired to H7).
+        env["KALICO_SIM_SOCK_DIR"] = str(h7_sock)
 
         # 6) Spawn klippy.
         klippy_log = log_dir / "klippy.log"
