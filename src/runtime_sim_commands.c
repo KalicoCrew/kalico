@@ -16,10 +16,10 @@
 #include "board/gpio.h"           // gpio_in_setup / gpio_in_read
 #include "command.h"              // DECL_COMMAND, sendf, output, DECL_CTR
 #include "sched.h"                // task_wake, sched_wake_task
-#include "kalico_runtime.h"       // FFI export prototypes
-#include "generic/runtime_tick.h" // runtime_tick_enable
 
 #if CONFIG_KALICO_RUNTIME
+#include "kalico_runtime.h"       // FFI export prototypes
+#include "generic/runtime_tick.h" // runtime_tick_enable
 #if CONFIG_KALICO_SIM
 
 extern void *runtime_handle;             // defined in src/runtime_tick.c

@@ -451,14 +451,16 @@ config RUNTIME_CURVE_POOL_N
     depends on KALICO_RUNTIME
 
 config KALICO_SIM
-    bool "Build for Renode simulator (disables IWDG)"
-    depends on KALICO_RUNTIME
+    bool "Build for simulator (disables IWDG, enables Linux sim shims)"
     default n
     help
       Builds a sim-flavor image: skips watchdog_init / watchdog_reset
-      so Renode's IWDG model can't trigger spurious resets. NEVER
-      enable for a flashed-to-silicon build — it leaves the IWDG
-      effectively off, which is unsafe on real hardware.
+      so Renode's IWDG model can't trigger spurious resets, and (on
+      MACH_LINUX) replaces real /dev/gpiochip / /dev/spidev / /sys/iio
+      / /sys/class/pwm access with in-memory stubs and Unix-socket
+      passthroughs to chip emulators. NEVER enable for a flashed-to-
+      silicon build — it leaves the IWDG effectively off, which is
+      unsafe on real hardware.
 
 config RUNTIME_BENCH
     bool "Cycle-count benchmark for runtime tick"
