@@ -29,6 +29,7 @@
 #include "kalico_runtime.h"
 #include "kalico_dispatch.h" // kalico_native_emit_*
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
+#include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
 #if CONFIG_MACH_LINUX
 // Host build: pthread-driven tick replaces the TIM5 ISR. The Rust runtime
 // still calls runtime_tick_enable/disable/runtime_cyccnt_read across the
@@ -193,6 +194,14 @@ runtime_drain(void)
     if (!runtime_handle) return;
     if (!sched_check_wake(&runtime_drain_wake)) return;
 
+    // Diag heartbeat for runtime_drain. Threshold: 50 ms (engine drain is
+    // expected to run ~1 kHz under load).
+    diag_task_heartbeat(diag_slot_rt_drain_calls(),
+                        diag_slot_rt_drain_last_tick(),
+                        diag_slot_rt_drain_max_gap(),
+                        timer_from_us(50000),
+                        0); // no event tag — runtime_drain idle gaps are normal
+
 #if CONFIG_KALICO_SIM
     runtime_sim_drain_calls++;
 #endif
@@ -323,6 +332,13 @@ runtime_drain(void)
         runtime_tick_disable();
     }
 
+    if (cur_status != prev_engine_status) {
+        // Diag: capture every engine state transition with the engine's
+        // own tick_counter as temporal context. Catches the hypothesised
+        // "engine briefly armed in IRQ then reverted" scenario by virtue
+        // of having multiple xitions in tight succession.
+        diag_record_engine_xition(prev_engine_status, cur_status, cur_counter);
+    }
     prev_engine_status = cur_status;
 
     // Track last status (used by future LED hook on a non-SWD pin).
@@ -350,6 +366,15 @@ runtime_status_drain(void)
         return;
     last_status_emit_time = now;
 
+    // Diag heartbeat for the status emit task. Threshold: 200 ms (we run
+    // at 10 Hz so a 200 ms gap means we missed two cycles, which is what
+    // we expect during the 500 ms stall).
+    diag_task_heartbeat(diag_slot_rt_status_calls(),
+                        diag_slot_rt_status_last_tick(),
+                        diag_slot_rt_status_max_gap(),
+                        timer_from_us(200000),
+                        0); // no event tag — emit gap shows up as missing emits
+
     uint8_t status = runtime_handle_status(runtime_handle);
     int32_t last_err = runtime_handle_last_error(runtime_handle);
     uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
@@ -360,6 +385,38 @@ runtime_status_drain(void)
     // with a native StatusEvent on the events channel. The host bridge maps
     // it back into klippy's RuntimeEvent::Status path.
     kalico_native_emit_status_event(status, depth, cur_seg, last_err, fault_detail);
+
+    // Diag emit — piggyback on the same 10 Hz cadence. A snapshot of the
+    // counter deltas (and per-interval max trackers reset by
+    // diag_take_snapshot). One output() line goes through console_sendf,
+    // so it shares transmit_buf with the kalico-native frames; total per
+    // emit is ~250 bytes which fits comfortably alongside the status event
+    // (10 Hz × 250 B = 2.5 KB/s extra wire load — well under 64 KB/s
+    // theoretical max for USB FS bulk).
+    {
+        struct diag_snapshot s;
+        diag_take_snapshot(&s);
+        // Convert DWT cycles → us for human-readable output. H7 is 520 MHz,
+        // so 520 cyc/us; on F4 it's 168 or 180. We pass cycles raw since
+        // the host knows the clock. Keep one line per logical group so
+        // klippy's parser doesn't truncate.
+        output("diag_v1 tim5_n %u tim5_max_cyc %u tim5_total_cyc %u"
+               " otg_n %u otg_max_cyc %u otg_total_cyc %u",
+               s.tim5_n, s.tim5_max, s.tim5_total,
+               s.otg_n, s.otg_max, s.otg_total);
+        output("diag_v1_tasks out_n %u out_max_gap %u in_n %u in_max_gap %u"
+               " drain_n %u drain_max_gap %u stat_n %u stat_max_gap %u"
+               " ring_seq %u ring_overflow %u",
+               s.usb_out_calls, s.usb_out_max_gap,
+               s.usb_in_calls, s.usb_in_max_gap,
+               s.runtime_drain_calls, s.runtime_drain_max_gap,
+               s.runtime_status_calls, s.runtime_status_max_gap,
+               s.ring_seq, s.ring_overflow);
+        if (s.tx_drops_kalico || s.tx_drops_klipper) {
+            output("diag_v1_drops kalico %u klipper %u",
+                   s.tx_drops_kalico, s.tx_drops_klipper);
+        }
+    }
 
 #if defined(__linux__) || defined(__APPLE__)
     // Sim-only: dump stepper counters so a test that lost its klippy

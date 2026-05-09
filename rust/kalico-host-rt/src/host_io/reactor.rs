@@ -185,9 +185,28 @@ impl Reactor {
 
     /// Single chokepoint for all wire writes. Per spec §3.7.
     pub(crate) fn write_frame(&mut self, frame: &[u8]) -> Result<(), TransportError> {
-        self.io.write_all(frame)?;
-        self.io.flush()?;
-        Ok(())
+        // Diag: trace write durations and errors. The investigation
+        // (`docs/superpowers/specs/2026-05-09-bridge-call-stall-investigation.md`)
+        // captured a 509 ms write_frame block under repro — this trace makes
+        // such anomalies visible in klippy.log without re-running the
+        // investigation's instrumented build.
+        let t0 = std::time::Instant::now();
+        let proto = if !frame.is_empty() && frame[0] == 0x55 { "kalico" } else { "klipper" };
+        let bytes = frame.len();
+        let result: Result<(), TransportError> = (|| {
+            self.io.write_all(frame)?;
+            self.io.flush()?;
+            Ok(())
+        })();
+        let dt = t0.elapsed();
+        if dt > std::time::Duration::from_millis(5) || result.is_err() {
+            eprintln!(
+                "[trace-write] proto={proto} bytes={bytes} dt_ms={:.2} result={:?}",
+                dt.as_secs_f64() * 1000.0,
+                result.as_ref().map(|_| "OK")
+            );
+        }
+        result
     }
 }
 
@@ -662,8 +681,27 @@ impl Reactor {
 
 impl Reactor {
     fn poll_serial(&mut self) {
+        let t0 = std::time::Instant::now();
         let deadline = self.clock.now() + READ_TIMEOUT;
-        match self.io.poll_frames_until(deadline) {
+        let outcome = self.io.poll_frames_until(deadline);
+        let dt = t0.elapsed();
+        if dt > std::time::Duration::from_millis(5) {
+            // Long polls indicate either a slow underlying read (host-side
+            // kernel issue) or that the read itself blocks past its
+            // intended deadline. The READ_TIMEOUT is ~1 ms; anything
+            // beyond 5 ms is anomalous.
+            let label: &'static str = match &outcome {
+                Ok(PollOutcome::Frames { .. }) => "Frames",
+                Ok(PollOutcome::Timeout) => "Timeout",
+                Ok(PollOutcome::PhantomZero) => "PhantomZero",
+                Err(_) => "Err",
+            };
+            eprintln!(
+                "[trace-poll] dt_ms={:.2} outcome={label}",
+                dt.as_secs_f64() * 1000.0
+            );
+        }
+        match outcome {
             Ok(PollOutcome::Frames { frames, errors }) => {
                 self.zero_byte_first_seen = None;
                 for e in errors {
@@ -943,7 +981,14 @@ impl Reactor {
     /// (spec §2.4). Closed-state cleanup runs inside; on `TickOutcome::Closed`
     /// the next call must not be made (the loop in `run()` exits).
     pub fn tick_once(&mut self) -> TickOutcome {
+        // Diag: tick_once duration. Long ticks (>5 ms) point at reactor
+        // thread starvation independent of write_frame / poll_serial. Per-
+        // step breakdown (drain_pending, poll_serial, drain_passthrough,
+        // RTO step) helps isolate where the time went.
+        let t_tick = std::time::Instant::now();
+
         // 1. Drain reactor commands (bounded per iteration).
+        let s1 = std::time::Instant::now();
         for _ in 0..MAX_SUBMITS_PER_ITER {
             match self.submission_rx.try_recv() {
                 Ok(cmd) => self.handle_command(cmd),
@@ -955,23 +1000,37 @@ impl Reactor {
             }
         }
 
+        let t_step1 = s1.elapsed();
+
         // 2. Poll serial port.
+        let s2 = std::time::Instant::now();
         self.poll_serial();
+        let t_step2 = s2.elapsed();
 
         // 3. Drain pending submissions (ack in step 2 may have freed window slots).
+        let s3 = std::time::Instant::now();
         self.drain_pending_submissions();
+        let t_step3 = s3.elapsed();
 
         // 3b. Drain passthrough entries from the router onto the wire.
+        let s3b = std::time::Instant::now();
         self.drain_passthrough();
+        let t_step3b = s3b.elapsed();
 
         // 4. RTO timer step. On Io error from write_retransmit, escalate
         // to Closed (mirrors drain-path / poll_serial / dispatch_submission
         // Io-error handling). See Finding 6 in
         // docs/superpowers/specs/2026-05-09-bridge-call-stall-investigation.md.
+        let s4 = std::time::Instant::now();
         if let Some(front) = self.unacked_window.front() {
             let now = self.clock.now();
             if now >= front.sent_at + self.rtt.current_rto() {
+                let unacked_n = self.unacked_window.len();
+                let front_seq = front.seq;
                 if let Err(e) = self.write_retransmit(RetransmitTrigger::TimeoutDriven) {
+                    eprintln!(
+                        "[trace-rto] retransmit error front_seq={front_seq} unacked_n={unacked_n} err={e:?}"
+                    );
                     if matches!(e, TransportError::Io(_)) {
                         log::warn!("retransmit Io error: {e:?}; transitioning Closed");
                         self.transition_closed_on_io_fault();
@@ -979,6 +1038,7 @@ impl Reactor {
                 }
             }
         }
+        let t_step4 = s4.elapsed();
 
         // 4b. Drain staged host fault into the FaultLatch.
         if let Some(fault) = self.pending_host_fault.take() {
@@ -1003,6 +1063,19 @@ impl Reactor {
         if self.state == ReactorState::Closed {
             self.flush_all_completions();
             return TickOutcome::Closed;
+        }
+
+        let dt_tick = t_tick.elapsed();
+        if dt_tick > std::time::Duration::from_millis(5) {
+            eprintln!(
+                "[trace-tick] dt_ms={:.2} step1={:.2} step2={:.2} step3={:.2} step3b={:.2} step4={:.2}",
+                dt_tick.as_secs_f64() * 1000.0,
+                t_step1.as_secs_f64() * 1000.0,
+                t_step2.as_secs_f64() * 1000.0,
+                t_step3.as_secs_f64() * 1000.0,
+                t_step3b.as_secs_f64() * 1000.0,
+                t_step4.as_secs_f64() * 1000.0
+            );
         }
         TickOutcome::Continue
     }

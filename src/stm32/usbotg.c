@@ -385,6 +385,16 @@ usb_set_configure(void)
 void
 OTG_FS_IRQHandler(void)
 {
+#if CONFIG_KALICO_RUNTIME
+    // Diag accounting — DWT is enabled by runtime_tick_h7.c::runtime_tick_init
+    // (and the F4 equivalent). DWT->CYCCNT is free-running once enabled, so
+    // a simple read at entry/exit is sufficient. The handler runs at NVIC
+    // priority 1 (per usb_init below), so the cycle window is uninterrupted
+    // by other sources we instrument.
+    extern void diag_otg_account(uint32_t enter, uint32_t exit);
+    uint32_t diag_enter = DWT->CYCCNT;
+#endif
+
     uint32_t sts = OTG->GINTSTS;
     if (sts & USB_OTG_GINTSTS_RXFLVL) {
         // Received data - disable irq and notify endpoint
@@ -404,6 +414,10 @@ OTG_FS_IRQHandler(void)
         if (pend & (1 << USB_CDC_EP_BULK_IN))
             usb_notify_bulk_in();
     }
+
+#if CONFIG_KALICO_RUNTIME
+    diag_otg_account(diag_enter, DWT->CYCCNT);
+#endif
 }
 
 // Initialize the usb controller

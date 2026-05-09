@@ -11,6 +11,7 @@
 #include "board/usb_cdc_ep.h" // USB_CDC_EP_BULK_IN
 #include "byteorder.h" // cpu_to_le16
 #include "command.h" // output
+#include "fault_handler.h" // diag_task_heartbeat, diag_record_tx_drop_*
 #include "generic/usbstd.h" // struct usb_device_descriptor
 #include "generic/usbstd_cdc.h" // struct usb_cdc_header_descriptor
 #include "kalico_demux.h" // kalico_demux_pump
@@ -59,6 +60,17 @@ usb_bulk_in_task(void)
 {
     if (!sched_check_wake(&usb_bulk_in_wake))
         return;
+    // Diag heartbeat — captures the gap from the last call so we can
+    // observe foreground starvation. Threshold = 20 ms (timer ticks at
+    // CONFIG_CLOCK_FREQ; passing the µs literal is converted at the
+    // call site below).
+#if CONFIG_KALICO_RUNTIME
+    diag_task_heartbeat(diag_slot_usb_in_calls(),
+                        diag_slot_usb_in_last_tick(),
+                        diag_slot_usb_in_max_gap(),
+                        timer_from_us(20000),
+                        DIAG_EV_USB_IN_GAP);
+#endif
     transmit_pos_t tpos = transmit_pos, max_tpos = tpos;
     if (!tpos)
         return;
@@ -85,9 +97,15 @@ console_sendf(const struct command_encoder *ce, va_list args)
     // Verify space for message
     transmit_pos_t tpos = transmit_pos;
     uint_fast8_t max_size = READP(ce->max_size);
-    if (tpos + max_size > sizeof(transmit_buf))
-        // Not enough space for message
+    if (tpos + max_size > sizeof(transmit_buf)) {
+        // Not enough space for message — silent drop. Investigation says
+        // this should NOT fire under the bridge-stall repro; counter
+        // confirms that empirically.
+#if CONFIG_KALICO_RUNTIME
+        diag_record_tx_drop_klipper(max_size, tpos);
+#endif
         return;
+    }
 
     // Generate message
     uint8_t *buf = &transmit_buf[tpos];
@@ -108,8 +126,13 @@ int
 kalico_console_write_raw(const uint8_t *buf, uint16_t len)
 {
     transmit_pos_t tpos = transmit_pos;
-    if ((uint32_t)tpos + (uint32_t)len > sizeof(transmit_buf))
+    if ((uint32_t)tpos + (uint32_t)len > sizeof(transmit_buf)) {
+        // Silent drop — caller (kalico_transport_send_frame) ignores
+        // the -1 return per investigation §7. Counter records the event
+        // for postmortem.
+        diag_record_tx_drop_kalico(len, tpos);
         return -1;
+    }
     memcpy(&transmit_buf[tpos], buf, len);
     transmit_pos = tpos + len;
     usb_notify_bulk_in();
@@ -136,6 +159,16 @@ usb_bulk_out_task(void)
 {
     if (!sched_check_wake(&usb_bulk_out_wake))
         return;
+    // Diag heartbeat — this is the task most likely to be starved during
+    // the bridge-call stall. Gap detection here is the smoking gun for
+    // the IRQ-storm hypothesis.
+#if CONFIG_KALICO_RUNTIME
+    diag_task_heartbeat(diag_slot_usb_out_calls(),
+                        diag_slot_usb_out_last_tick(),
+                        diag_slot_usb_out_max_gap(),
+                        timer_from_us(20000),
+                        DIAG_EV_USB_OUT_GAP);
+#endif
     // Read data
     uint_fast8_t rpos = receive_pos;
     if (rpos + USB_CDC_EP_BULK_OUT_SIZE <= sizeof(receive_buf)) {

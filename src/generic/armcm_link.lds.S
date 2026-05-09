@@ -18,6 +18,15 @@ MEMORY
   // reset. Used to host large statics (notably the kalico Rust runtime's
   // RT_CELL curve pool) that don't fit in the 128 KB DTCM `ram` region.
   axi_ram (rwx) : ORIGIN = 0x24000000 , LENGTH = 320K
+  // Backup SRAM (D3 domain). 4 KB at 0x38800000. Survives any system
+  // reset (IWDG, software, NRST) and even VBAT-only — the only thing
+  // that wipes it is full power loss / POR with VBAT disconnected.
+  // Used by the diagnostic fault handler to record CPU-fault details
+  // and runtime-engine snapshots so we can read out what state the
+  // firmware was in just before a watchdog-triggered reset.
+  // Requires runtime enable: PWR->CR2 |= BREN, RCC->AHB4ENR |= BKPRAMEN
+  // (see generic/fault_handler.c::fault_handler_init).
+  bkp_ram (rwx) : ORIGIN = 0x38800000 , LENGTH = 4K
 #endif
 }
 
@@ -75,6 +84,17 @@ SECTIONS
         . = ALIGN(8);
         _axi_bss_end = .;
     } > axi_ram
+
+    // Backup-SRAM-resident statics. NOLOAD because the bootloader
+    // doesn't initialize this region; we rely on prior contents
+    // surviving the reset (or detect uninitialised state via a magic).
+    .bkp_bss (NOLOAD) : {
+        . = ALIGN(4);
+        _bkp_bss_start = .;
+        *(.bkp_bss .bkp_bss.*)
+        . = ALIGN(4);
+        _bkp_bss_end = .;
+    } > bkp_ram
 #endif
 
     _stack_start = CONFIG_RAM_START + CONFIG_RAM_SIZE - CONFIG_STACK_SIZE ;

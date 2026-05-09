@@ -6,6 +6,7 @@
 import logging
 import math
 import os
+import time
 import zlib
 
 from . import chelper, clocksync, msgproto, pins, serialhdl
@@ -133,9 +134,36 @@ class CommandQueryWrapper:
     def _bridge_send(self, data):
         """Bridge-mode send: encode as human-readable string and use bridge_call."""
         msg = _format_bridge_msg(self._cmd, data)
+        # Diag instrumentation for the 2026-05-09 bridge-call stall
+        # investigation. Logs entry/exit timing per call so the host log
+        # correlates against the reactor's [trace-write] / [trace-tick] and
+        # the MCU's diag_v1 emits. Uses logging.info so the line carries a
+        # timestamp; when the bug fires we want sub-millisecond resolution
+        # on entry/exit pairs.
+        _t0 = time.monotonic()
+        logging.info(
+            "[py-trace] _bridge_send enter cmd=%s response=%s",
+            getattr(self._cmd, "msgformat", "<unknown>"),
+            self._response,
+        )
         try:
-            return self._serial.send_with_response(msg, self._response)
+            r = self._serial.send_with_response(msg, self._response)
+            _dt_ms = (time.monotonic() - _t0) * 1000.0
+            if _dt_ms > 5.0:
+                logging.info(
+                    "[py-trace] _bridge_send exit OK cmd=%s dt_ms=%.2f",
+                    getattr(self._cmd, "msgformat", "<unknown>"),
+                    _dt_ms,
+                )
+            return r
         except serialhdl.error as e:
+            _dt_ms = (time.monotonic() - _t0) * 1000.0
+            logging.info(
+                "[py-trace] _bridge_send exit ERR cmd=%s dt_ms=%.2f err=%s",
+                getattr(self._cmd, "msgformat", "<unknown>"),
+                _dt_ms,
+                e,
+            )
             raise self._error(str(e))
 
     def send(self, data=(), minclock=0, reqclock=0, retry=True):
