@@ -229,6 +229,10 @@ impl KalicoHostIo {
             unsafe {
                 let mut tio: libc::termios = std::mem::zeroed();
                 if libc::tcgetattr(fd, &mut tio) == 0 {
+                    eprintln!(
+                        "[tio-pre-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x}",
+                        tio.c_iflag, tio.c_oflag, tio.c_cflag, tio.c_lflag,
+                    );
                     libc::cfmakeraw(&mut tio);
                     if libc::tcsetattr(fd, libc::TCSANOW, &tio) != 0 {
                         let err = std::io::Error::last_os_error();
@@ -237,9 +241,31 @@ impl KalicoHostIo {
                             format!("tcsetattr({path}): {err}"),
                         )));
                     }
+                    // Read back to verify cfmakeraw stuck.
+                    let mut tio2: libc::termios = std::mem::zeroed();
+                    if libc::tcgetattr(fd, &mut tio2) == 0 {
+                        eprintln!(
+                            "[tio-post-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
+                            tio2.c_iflag, tio2.c_oflag, tio2.c_cflag, tio2.c_lflag,
+                            tio2.c_cc[libc::VMIN], tio2.c_cc[libc::VTIME],
+                        );
+                    }
                 }
             }
-            unsafe { Box::new(serialport::TTYPort::from_raw_fd(fd)) }
+            let port = unsafe { Box::new(serialport::TTYPort::from_raw_fd(fd)) };
+            // Verify serialport::TTYPort didn't mutate termios behind our back.
+            #[allow(unsafe_code)]
+            unsafe {
+                let mut tio3: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(fd, &mut tio3) == 0 {
+                    eprintln!(
+                        "[tio-post-serialport] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
+                        tio3.c_iflag, tio3.c_oflag, tio3.c_cflag, tio3.c_lflag,
+                        tio3.c_cc[libc::VMIN], tio3.c_cc[libc::VTIME],
+                    );
+                }
+            }
+            port
         };
         Self::open_with_port(port_box, config)
     }
