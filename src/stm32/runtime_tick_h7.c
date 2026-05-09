@@ -53,9 +53,12 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
-    TIM5->CR1 |= TIM_CR1_CEN;
-    NVIC_EnableIRQ(TIM5_IRQn);
+    // WEDGE-ISOLATION 2026-05-09: 40 kHz TIM5 IRQ at ~14us avg / 65us max
+    // saturates the CPU when the engine has work, starving foreground tasks
+    // (incl. watchdog_reset). IWDG fires within 511 ms. Disable to confirm.
+    // TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
+    // TIM5->CR1 |= TIM_CR1_CEN;
+    // NVIC_EnableIRQ(TIM5_IRQn);
 }
 
 void
