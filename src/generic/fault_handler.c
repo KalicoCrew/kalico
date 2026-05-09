@@ -231,14 +231,6 @@ struct diag_counters {
     // (path B, drained it).
     uint32_t peek_empty_n;
     uint32_t peek_data_n;
-
-    // Round 4 — OEPINT recovery counters. otg_oepint_fires_n is total
-    // OEPINT-branch entries in the OTG IRQ handler. otepdis_rearm_n is
-    // the count of times OTEPDIS was set in DOEPINT and we re-armed the
-    // EP from IRQ context. These should be 0 in healthy steady state and
-    // grow when the wedge fires + recovers.
-    uint32_t otg_oepint_fires_n;
-    uint32_t otepdis_rearm_n;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -545,12 +537,6 @@ uint32_t diag_get_enable_rx_n(void)       { return diag.enable_rx_n; }
 uint32_t diag_get_enable_rx_rearm(void)   { return diag.enable_rx_rearmed_n; }
 uint32_t diag_get_peek_empty(void)        { return diag.peek_empty_n; }
 uint32_t diag_get_peek_data(void)         { return diag.peek_data_n; }
-
-// Round 4 — OEPINT recovery counters.
-volatile uint32_t *diag_slot_oepint(void)        { return &diag.otg_oepint_fires_n; }
-volatile uint32_t *diag_slot_otepdis_rearm(void) { return &diag.otepdis_rearm_n; }
-uint32_t diag_get_oepint(void)        { return diag.otg_oepint_fires_n; }
-uint32_t diag_get_otepdis_rearm(void) { return diag.otepdis_rearm_n; }
 
 void __attribute__((noreturn, used))
 fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)

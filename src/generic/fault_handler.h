@@ -114,12 +114,6 @@ uint32_t diag_get_enable_rx_rearm(void);
 uint32_t diag_get_peek_empty(void);
 uint32_t diag_get_peek_data(void);
 
-// Round 4 — OEPINT recovery counters.
-volatile uint32_t *diag_slot_oepint(void);
-volatile uint32_t *diag_slot_otepdis_rearm(void);
-uint32_t diag_get_oepint(void);
-uint32_t diag_get_otepdis_rearm(void);
-
 #ifdef __cplusplus
 }
 #endif
