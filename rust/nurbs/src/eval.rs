@@ -196,6 +196,91 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     result
 }
 
+/// Evaluate a scalar B-spline NURBS at `u` directly from raw cps + knots
+/// slices, without going through `ScalarNurbsRef::try_new` (which re-runs the
+/// full O(n) NURBS-invariant validation on every call). MCU hot path: callers
+/// are responsible for ensuring slice shapes satisfy `knots.len() == cps.len()
+/// + degree + 1` and that the curve was validated upstream (e.g. CurvePool
+/// on segment load).
+///
+/// Polynomial (non-rational) only — for weighted curves go through `eval`.
+#[inline]
+pub fn eval_polynomial<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
+    debug_assert!((degree as usize) <= MAX_DEGREE);
+    debug_assert!(knots.len() == cps.len() + (degree as usize) + 1);
+    de_boor_inner(cps, knots, degree, u)
+}
+
+/// Evaluate `dC/du` for a scalar B-spline NURBS at parameter `u`, without
+/// materializing the degree-lowered curve. Computes only the de Boor window
+/// of derivative control points (`O(p)` of them) and runs one de Boor walk
+/// on a `[T; WORKSPACE_SIZE]` stack scratch.
+///
+/// MCU hot path: `scalar_derivative_eval` in the runtime crate calls this
+/// per-axis at every TIM5 fire (40 kHz × 3 axes). The previous form
+/// allocated `[T; MAX_CONTROL_POINTS]` + `[T; MAX_KNOT_VECTOR_LEN]` stack
+/// arrays per call (~14.7 KB at the H7 sizing) and got memset-zero'd on
+/// every entry; this windowed form keeps stack usage to a couple hundred
+/// bytes.
+///
+/// Polynomial (non-rational) NURBS only — for weighted curves, project to
+/// homogeneous coordinates upstream. `degree` must be ≥ 1 (returns
+/// `T::ZERO` for `degree == 0`).
+///
+/// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 (derivative cps),
+/// Algorithm A4.1 (de Boor) on the lowered knot vector.
+#[inline]
+pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
+    debug_assert!((degree as usize) <= MAX_DEGREE);
+    if degree == 0 {
+        return T::ZERO;
+    }
+    let p = degree as usize;
+    let n = cps.len();
+    if n < 2 || knots.len() < n + p + 1 {
+        return T::ZERO;
+    }
+    let new_p = p - 1;
+    let new_n = n - 1;
+    // Lowered knot vector drops first and last entries of original.
+    // Length = (n + p + 1) - 2 = n + p - 1 = new_n + new_p + 1, the
+    // shape `find_knot_span` expects.
+    let lowered_knots = &knots[1..n + p];
+
+    let k = find_knot_span(lowered_knots, new_p, new_n, u);
+
+    // Initialize de Boor scratch from the Q-window only. d[j] (j ∈ 0..=new_p)
+    // corresponds to derivative cp index i = k - new_p + j in the lowered
+    // curve, which maps to original cp index i = k - new_p + j (same offset
+    // because Q_i is defined for i = 0..new_n in the original cp space).
+    let mut d = [T::ZERO; WORKSPACE_SIZE];
+    let p_t = T::from_f64(f64::from(degree));
+    for j in 0..=new_p {
+        let i = k - new_p + j;
+        let denom = knots[i + p + 1] - knots[i + 1];
+        d[j] = if denom > T::ZERO {
+            p_t * (cps[i + 1] - cps[i]) / denom
+        } else {
+            T::ZERO
+        };
+    }
+
+    // de Boor recurrence on lowered_knots, identical shape to de_boor_inner.
+    for r in 1..=new_p {
+        for j in (r..=new_p).rev() {
+            let denom = lowered_knots[k + 1 + j - r] - lowered_knots[k - new_p + j];
+            let alpha = if denom > T::ZERO {
+                (u - lowered_knots[k - new_p + j]) / denom
+            } else {
+                T::ZERO
+            };
+            d[j] = (d[j] - d[j - 1]).mul_add(alpha, d[j - 1]);
+        }
+    }
+
+    d[new_p]
+}
+
 /// Compute the parametric derivative `dP/du` as a new owned NURBS via degree
 /// lowering. Result has degree `p - 1`, knot vector with the first and last
 /// knots dropped, and control points
@@ -485,6 +570,50 @@ mod tests {
             (actual - expected).abs() < 1e-6,
             "got {actual}, expected {expected}"
         );
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn eval_derivative_matches_materialized_derivative_quadratic() {
+        // The MCU windowed `eval_derivative` must give the same value as
+        // building the lowered curve via `derivative` and evaluating it.
+        let curve = quadratic_curve_f64();
+        let lowered = derivative(&curve);
+        for u_pct in 0..=100 {
+            let u = u_pct as f64 / 100.0;
+            let materialized = eval(&lowered.as_view(), u);
+            let windowed =
+                eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
+            assert!(
+                (materialized - windowed).abs() < 1e-12,
+                "u={u}: materialized={materialized}, windowed={windowed}"
+            );
+        }
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn eval_derivative_cubic_matches_materialized() {
+        // Cubic with a non-uniform knot vector and 5 cps — exercises the
+        // de Boor walk on a non-trivial knot span.
+        let curve = crate::ScalarNurbs::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.5, 4.0, 5.0],
+            None,
+        )
+        .unwrap();
+        let lowered = derivative(&curve);
+        for u_pct in 0..=100 {
+            let u = u_pct as f64 / 100.0;
+            let materialized = eval(&lowered.as_view(), u);
+            let windowed =
+                eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
+            assert!(
+                (materialized - windowed).abs() < 1e-12,
+                "u={u}: materialized={materialized}, windowed={windowed}"
+            );
+        }
     }
 
     #[cfg(feature = "host")]
