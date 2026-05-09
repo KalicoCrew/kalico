@@ -136,10 +136,24 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_SPE;
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_CSTART | SPI_CR1_SPE;
 
+    // Bridge-call stall investigation (2026-05-09): bound the busy-wait
+    // loops with a 100us-per-byte deadline. The original code had no
+    // timeout — a hardware-level SPI deadlock (CS glitch, FIFO state
+    // inconsistency, MISO transient) wedges the cooperative scheduler
+    // forever, ALL tasks block, IWDG fires after 30s, host sees
+    // "transport closed/timeout". This converts the silent wedge into a
+    // clean shutdown with a diagnosable reason.
+    //
+    // Budget: 4MHz SPI = 2us per byte clocked. 100us is 50x headroom for
+    // FIFO drain. EOT also gets 100us — generous since EOT fires after
+    // the last bit clocks out.
     while (len--) {
         writeb((void *)&spi->TXDR, *data);
-        while ((spi->SR & (SPI_SR_RXWNE | SPI_SR_RXPLVL)) == 0)
-            ;
+        uint32_t spi_deadline = timer_read_time() + timer_from_us(100);
+        while ((spi->SR & (SPI_SR_RXWNE | SPI_SR_RXPLVL)) == 0) {
+            if (!timer_is_before(timer_read_time(), spi_deadline))
+                shutdown("spi rx timeout");
+        }
         rdata = readb((void *)&spi->RXDR);
 
         if (receive_data) {
@@ -148,8 +162,11 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
         data++;
     }
 
-    while ((spi->SR & SPI_SR_EOT) == 0)
-        ;
+    uint32_t eot_deadline = timer_read_time() + timer_from_us(100);
+    while ((spi->SR & SPI_SR_EOT) == 0) {
+        if (!timer_is_before(timer_read_time(), eot_deadline))
+            shutdown("spi eot timeout");
+    }
 
     // Clear flags and disable SPI
     spi->IFCR = 0xFFFFFFFF;

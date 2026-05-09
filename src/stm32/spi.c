@@ -5,6 +5,7 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
 #include "board/io.h" // readb, writeb
+#include "board/misc.h" // timer_is_before, timer_from_us, timer_read_time
 #include "command.h" // shutdown
 #include "gpio.h" // spi_setup
 #include "internal.h" // gpio_peripheral
@@ -143,16 +144,25 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
              uint8_t len, uint8_t *data)
 {
     SPI_TypeDef *spi = config.spi;
+    // Bridge-call stall investigation (2026-05-09): bound busy-waits
+    // with 100us deadlines. See stm32h7_spi.c for context. Same fix on
+    // F4 since the cooperative-scheduler wedge has the same shape.
     while (len--) {
         writeb((void*)&spi->DR, *data);
-        while (!(spi->SR & SPI_SR_RXNE))
-            ;
+        uint32_t rxne_deadline = timer_read_time() + timer_from_us(100);
+        while (!(spi->SR & SPI_SR_RXNE)) {
+            if (!timer_is_before(timer_read_time(), rxne_deadline))
+                shutdown("spi rx timeout");
+        }
         uint8_t rdata = readb((void*)&spi->DR);
         if (receive_data)
             *data = rdata;
         data++;
     }
     // Wait for any remaining SCLK updates before returning
-    while ((spi->SR & (SPI_SR_TXE|SPI_SR_BSY)) != SPI_SR_TXE)
-        ;
+    uint32_t bsy_deadline = timer_read_time() + timer_from_us(100);
+    while ((spi->SR & (SPI_SR_TXE|SPI_SR_BSY)) != SPI_SR_TXE) {
+        if (!timer_is_before(timer_read_time(), bsy_deadline))
+            shutdown("spi bsy timeout");
+    }
 }
