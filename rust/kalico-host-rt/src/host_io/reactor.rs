@@ -205,7 +205,8 @@ impl Reactor {
         // Wedge-isolation: log EVERY write unconditionally. Volume is
         // bounded and we need full visibility around the bridge_call hang.
         eprintln!(
-            "[trace-write] seq={seq} proto={proto} bytes={bytes} dt_ms={:.3} result={:?} first8={:02x?}",
+            "[trace-write] tid={:?} seq={seq} proto={proto} bytes={bytes} dt_ms={:.3} result={:?} first8={:02x?}",
+            std::thread::current().id(),
             dt.as_secs_f64() * 1000.0,
             result.as_ref().map(|_| "OK"),
             &frame[..frame.len().min(8)]
@@ -284,7 +285,8 @@ impl Reactor {
             abandoned: false,
         })?;
         eprintln!(
-            "[trace-await] push call_id={call_id} seq={seq} name={_trace_name} await_len={}",
+            "[trace-await] tid={:?} push call_id={call_id} seq={seq} name={_trace_name} await_len={}",
+            std::thread::current().id(),
             self.awaiting_response.len()
         );
 
@@ -633,13 +635,14 @@ impl Reactor {
                 if let Some(idx) = self.awaiting_response.find_match(&name) {
                     let entry = self.awaiting_response.remove(idx);
                     eprintln!(
-                        "[trace-resp] match name={name} idx={idx} await_len={await_len_before} matched_call_id={} matched_seq={}",
-                        entry.call_id, entry.seq
+                        "[trace-resp] tid={:?} match name={name} idx={idx} await_len={await_len_before} matched_call_id={} matched_seq={}",
+                        std::thread::current().id(), entry.call_id, entry.seq
                     );
                     let _ = entry.completion.send(Ok(params));
                 } else if !self.try_dispatch_passthrough_response(&raw_payload) {
                     eprintln!(
-                        "[trace-resp] unsolicited name={name} await_len={await_len_before}"
+                        "[trace-resp] tid={:?} unsolicited name={name} await_len={await_len_before}",
+                        std::thread::current().id()
                     );
                     // Unsolicited Klipper-protocol Response frames
                     // (analog_in_state, trsync_state, stats, homing_state, …)

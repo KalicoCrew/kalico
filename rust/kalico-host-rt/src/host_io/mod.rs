@@ -307,6 +307,10 @@ impl KalicoHostIo {
         let reactor_config = config.clone();
         let reactor_clock = Arc::clone(&clock);
         let reactor_handle = std::thread::spawn(move || {
+            eprintln!(
+                "[reactor-spawn] thread_id={:?} port-bound reactor starting",
+                std::thread::current().id()
+            );
             let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
                 io, reactor_parser, submission_rx, reactor_status, identify_seq,
                 reactor_config, reactor_clock,
