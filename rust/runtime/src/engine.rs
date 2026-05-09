@@ -6,9 +6,7 @@ use heapless::spsc::{Consumer, Producer};
 use nurbs::Float;
 
 use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
-use crate::curve_pool::{
-    CurveHandle, CurvePool, CurveView, MAX_CONTROL_POINTS, MAX_KNOT_VECTOR_LEN,
-};
+use crate::curve_pool::{CurveHandle, CurvePool, CurveView};
 use crate::endstop::{self, TripAction};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
@@ -20,6 +18,61 @@ use crate::trace::{
     TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_HOLD_SAMPLE, TRACE_FLAG_SEGMENT_END, TRACE_RING_N,
     TraceSample,
 };
+
+/// Per-stage diagnostic timing helpers. Cycle counter + accumulator is the
+/// MCU build's path; host builds get inert stubs so the runtime crate's
+/// host-side tests still link without the C-side BKPSRAM symbols.
+#[inline(always)]
+#[allow(unsafe_code)]
+fn diag_cyccnt() -> u32 {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            fn runtime_cyccnt_read() -> u32;
+        }
+        // SAFETY: stable C ABI symbol provided by src/stm32/runtime_tick_h7.c
+        // on the MCU; reads DWT->CYCCNT, no side effects, no preconditions.
+        unsafe { runtime_cyccnt_read() }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        0
+    }
+}
+
+#[inline(always)]
+#[allow(unsafe_code)]
+fn diag_eval_record(cycles: u32) {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            fn diag_rt_eval_account(cycles: u32);
+        }
+        // SAFETY: stable C ABI symbol; takes one u32 by value, no aliasing.
+        unsafe { diag_rt_eval_account(cycles) }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = cycles;
+    }
+}
+
+#[inline(always)]
+#[allow(unsafe_code)]
+fn diag_dvel_record(cycles: u32) {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            fn diag_rt_dvel_account(cycles: u32);
+        }
+        // SAFETY: stable C ABI symbol; takes one u32 by value, no aliasing.
+        unsafe { diag_rt_dvel_account(cycles) }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = cycles;
+    }
+}
 
 /// Bounded sub-tick boundary-loop iteration count.
 ///
@@ -914,19 +967,44 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 /// Evaluate a scalar NURBS curve at parameter `u`. Returns the scalar value
 /// or `Err(())` if the curve data is malformed (degree/knot/CP mismatch).
 fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
-    use nurbs::ScalarNurbsRef;
-
-    let view = ScalarNurbsRef::<f32>::try_new(
-        curve.degree,
-        curve.knots,
+    let t0 = diag_cyccnt();
+    // Cheap shape sanity check (degree fits, knots length matches degree + cps).
+    // CurvePool validates the full NURBS invariants on segment load, so the
+    // hot path skips ScalarNurbsRef::try_new's O(n) revalidation per tick.
+    let p = usize::from(curve.degree);
+    if p > nurbs::MAX_DEGREE
+        || curve.knots.len() != curve.control_points.len() + p + 1
+        || curve.control_points.is_empty()
+    {
+        return Err(());
+    }
+    let result = nurbs::eval::eval_polynomial(
         curve.control_points,
-        None, // polynomial — no weights
-    )
-    .map_err(|_| ())?;
-    Ok(nurbs::eval::eval(&view, u))
+        curve.knots,
+        curve.degree,
+        u,
+    );
+    let t1 = diag_cyccnt();
+    diag_eval_record(t1.wrapping_sub(t0));
+    Ok(result)
 }
 
 fn axis_velocity_q16(
+    pool: &CurvePool,
+    handle: CurveHandle,
+    u: f32,
+    duration_cycles: f32,
+    one_tick_cycles_value: u64,
+) -> u32 {
+    let t0 = diag_cyccnt();
+    let result = axis_velocity_q16_inner(pool, handle, u, duration_cycles, one_tick_cycles_value);
+    let t1 = diag_cyccnt();
+    diag_dvel_record(t1.wrapping_sub(t0));
+    result
+}
+
+#[inline(always)]
+fn axis_velocity_q16_inner(
     pool: &CurvePool,
     handle: CurveHandle,
     u: f32,
@@ -957,55 +1035,22 @@ fn axis_velocity_q16(
 }
 
 fn scalar_derivative_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
-    use nurbs::ScalarNurbsRef;
-
     if curve.degree == 0 {
         return Ok(0.0);
     }
+    // Bounds check up front: shapes that would tripped indexing inside
+    // eval_derivative now bail cleanly here.
     let p = usize::from(curve.degree);
-    let new_n = curve.control_points.len().saturating_sub(1);
-    let new_knot_len = curve.knots.len().saturating_sub(2);
-    if new_n == 0 || new_knot_len == 0 {
+    let n = curve.control_points.len();
+    if n < 2 || curve.knots.len() < n + p + 1 {
         return Err(());
     }
-
-    let mut cps = [0.0_f32; MAX_CONTROL_POINTS];
-    for i in 0..new_n {
-        let (Some(&p0), Some(&p1), Some(&k0), Some(&k1), Some(dst)) = (
-            curve.control_points.get(i),
-            curve.control_points.get(i + 1),
-            curve.knots.get(i + 1),
-            curve.knots.get(i + p + 1),
-            cps.get_mut(i),
-        ) else {
-            return Err(());
-        };
-        let denom = k1 - k0;
-        *dst = if denom > 0.0 {
-            f32::from(curve.degree) * (p1 - p0) / denom
-        } else {
-            0.0
-        };
-    }
-
-    let mut knots = [0.0_f32; MAX_KNOT_VECTOR_LEN];
-    for (dst, src) in knots
-        .iter_mut()
-        .zip(curve.knots.iter().skip(1))
-        .take(new_knot_len)
-    {
-        *dst = *src;
-    }
-
-    let Some(cps_slice) = cps.get(..new_n) else {
-        return Err(());
-    };
-    let Some(knots_slice) = knots.get(..new_knot_len) else {
-        return Err(());
-    };
-    let view = ScalarNurbsRef::<f32>::try_new(curve.degree - 1, knots_slice, cps_slice, None)
-        .map_err(|_| ())?;
-    Ok(nurbs::eval::eval(&view, u))
+    Ok(nurbs::eval::eval_derivative(
+        curve.control_points,
+        curve.knots,
+        curve.degree,
+        u,
+    ))
 }
 
 #[cfg(test)]
