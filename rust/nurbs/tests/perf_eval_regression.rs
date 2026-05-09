@@ -168,6 +168,92 @@ fn eval_polynomial_at_least_as_fast_as_eval_for_validated_curves() {
 }
 
 #[test]
+fn eval_polynomial_with_derivative_at_least_1_3x_faster_than_separate_calls() {
+    // Combined `eval_polynomial_with_derivative` shares find_knot_span +
+    // d-array init + the full de Boor pyramid between the value and
+    // derivative recurrences. On the H7 (degree 9, 82 cps, 92 knots) this
+    // collapses 2 + 3 per-tick eval/derivative calls into 2 combined
+    // calls, dropping motion-tick avg from ~28 us to ~20 us.
+    //
+    // On host the combined recurrence has more arithmetic ops than the
+    // separate-pass form (it carries a parallel `dd` recurrence on top of
+    // `d`), but better ILP + halved find_knot_span/init overhead +
+    // halved function-call overhead net out faster. Threshold is
+    // conservative for noisy CI hosts.
+    let curve = synthetic_postshape_curve();
+
+    let mut sink = 0.0_f64;
+    let separate = {
+        let start = Instant::now();
+        for i in 0..ITERATIONS {
+            let u = (i as f64) / (ITERATIONS as f64);
+            let v = eval::eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);
+            let d = eval::eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
+            sink += v + d;
+        }
+        start.elapsed()
+    };
+
+    let combined = {
+        let start = Instant::now();
+        for i in 0..ITERATIONS {
+            let u = (i as f64) / (ITERATIONS as f64);
+            let (v, d) = eval::eval_polynomial_with_derivative(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            sink += v + d;
+        }
+        start.elapsed()
+    };
+
+    assert!(sink.is_finite(), "sink={sink}");
+
+    let ratio = separate.as_nanos() as f64 / combined.as_nanos().max(1) as f64;
+    eprintln!(
+        "combined-eval perf: separate={:?}, combined={:?}, ratio={:.2}x",
+        separate, combined, ratio
+    );
+    assert!(
+        ratio >= 1.3,
+        "combined eval+derivative regressed: only {ratio:.2}x faster than \
+         separate eval_polynomial + eval_derivative (expected ≥1.3×). \
+         Did the d/dd parallel recurrence get split into separate passes?"
+    );
+}
+
+#[test]
+fn eval_polynomial_with_derivative_matches_separate_calls_bitwise() {
+    // Bit-exact agreement (within 1e-12) between combined and separate
+    // forms. Guards against subtle algebraic divergence.
+    for curve in [synthetic_postshape_curve(), cubic_bezier_curve()] {
+        for i in 0..=200 {
+            let u = i as f64 / 200.0;
+            let (v_combined, d_combined) = eval::eval_polynomial_with_derivative(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            let v_sep =
+                eval::eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);
+            let d_sep =
+                eval::eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
+            assert!(
+                (v_combined - v_sep).abs() < 1e-12,
+                "u={u}: combined value {v_combined} vs separate {v_sep}"
+            );
+            assert!(
+                (d_combined - d_sep).abs() < 1e-12,
+                "u={u}: combined deriv {d_combined} vs separate {d_sep}"
+            );
+        }
+    }
+}
+
+#[test]
 fn eval_polynomial_matches_eval_bitwise_for_polynomial_curves() {
     // Bit-exact agreement between fast-path and validated path — guards
     // against any future refactor that diverges the two evaluators.
