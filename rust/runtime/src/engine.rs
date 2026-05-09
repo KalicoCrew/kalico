@@ -74,6 +74,50 @@ fn diag_dvel_record(cycles: u32) {
     }
 }
 
+#[inline(always)]
+#[allow(unsafe_code)]
+fn diag_curve_meta_record(axis_idx: u32, degree: u32, cps_len: u32, knots_len: u32) {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            fn diag_rt_curve_meta(axis_idx: u32, degree: u32, cps_len: u32, knots_len: u32);
+        }
+        // SAFETY: stable C ABI symbol; takes four u32s by value, no aliasing.
+        unsafe { diag_rt_curve_meta(axis_idx, degree, cps_len, knots_len) }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = (axis_idx, degree, cps_len, knots_len);
+    }
+}
+
+/// Snapshot the per-axis curve dimensions for the freshly activated
+/// segment into the BKPSRAM diag struct. Called from the new-segment
+/// branches of `tick` / `tick_with_current` boundary loop.
+#[inline]
+fn capture_segment_curve_meta(seg: &Segment, pool: &CurvePool) {
+    let resolve_meta = |handle: CurveHandle| -> (u32, u32, u32) {
+        if handle.is_unused_sentinel() {
+            return (0, 0, 0);
+        }
+        if let Some(view) = pool.resolve(handle) {
+            (
+                u32::from(view.degree),
+                view.control_points.len() as u32,
+                view.knots.len() as u32,
+            )
+        } else {
+            (0, 0, 0)
+        }
+    };
+    let (xd, xc, xk) = resolve_meta(seg.x_handle);
+    diag_curve_meta_record(0, xd, xc, xk);
+    let (yd, yc, yk) = resolve_meta(seg.y_handle);
+    diag_curve_meta_record(1, yd, yc, yk);
+    let (zd, zc, zk) = resolve_meta(seg.z_handle);
+    diag_curve_meta_record(2, zd, zc, zk);
+}
+
 /// Bounded sub-tick boundary-loop iteration count.
 ///
 /// Step-6 Phase 12.2: aligned to the queue's effective capacity (`Q_N - 1 = 7`)
@@ -405,6 +449,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // so foreground status / Gate-B observers see it. Release so
                 // the runtime_status update above is paired.
                 shared.current_segment_id.store(seg.id, Ordering::Release);
+                // Diagnostic: snapshot the per-axis curve dimensions so we
+                // can characterize what shape post-shape curves take on
+                // representative workloads.
+                capture_segment_curve_meta(&seg, pool);
                 // Fall through with the freshly dequeued segment.
                 return self.tick_with_current(seg, now, queue, pool, trace, shared);
             }
@@ -546,6 +594,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             shared
                 .current_segment_id
                 .store(current.id, Ordering::Release);
+            // Diagnostic: snapshot per-axis curve dimensions for the
+            // freshly activated segment.
+            capture_segment_curve_meta(&current, pool);
         }
 
         // §6.5 hold-segment short-circuit: AFTER force_idle (handled in

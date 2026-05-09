@@ -202,6 +202,17 @@ struct diag_counters {
     uint32_t rt_dvel_cycles_max;
     uint64_t rt_dvel_cycles_total;
 
+    // Curve-shape characterization. The Rust engine writes the most-recent
+    // segment's per-axis (degree, cps_len) on segment activation so we can
+    // see what shape post-shape curves actually take on representative
+    // workloads. Matters for picking the right per-tick eval optimization
+    // (e.g. piecewise-Bezier fast path requires piecewise-polynomial form).
+    // Per-axis: [0]=X, [1]=Y, [2]=Z. degree=0 / cps_len=0 means "axis idle"
+    // (UNUSED_SENTINEL handle on this segment).
+    uint8_t  rt_curve_degree[3];
+    uint16_t rt_curve_cps_len[3];
+    uint16_t rt_curve_knots_len[3];
+
     // Foreground task heartbeats. `last_tick` is timer_read_time() at the
     // most recent task entry; max_gap_ticks is the largest observed gap
     // between consecutive entries (in timer ticks, same units as
@@ -407,6 +418,24 @@ diag_rt_eval_account(uint32_t cycles)
         diag.rt_eval_cycles_max = cycles;
 #else
     (void)cycles;
+#endif
+}
+
+// Curve-shape capture: called from the Rust engine on segment activation
+// for each non-idle axis. axis_idx in 0..=2 (X/Y/Z). cps_len/knots_len
+// truncated to u16 (curve pool's hard cap is 1850, fits in u16).
+__attribute__((used, externally_visible))
+void
+diag_rt_curve_meta(uint32_t axis_idx, uint32_t degree,
+                   uint32_t cps_len, uint32_t knots_len)
+{
+#if CONFIG_KALICO_RUNTIME
+    if (axis_idx >= 3) return;
+    diag.rt_curve_degree[axis_idx]    = (uint8_t)(degree & 0xFFu);
+    diag.rt_curve_cps_len[axis_idx]   = (uint16_t)(cps_len & 0xFFFFu);
+    diag.rt_curve_knots_len[axis_idx] = (uint16_t)(knots_len & 0xFFFFu);
+#else
+    (void)axis_idx; (void)degree; (void)cps_len; (void)knots_len;
 #endif
 }
 
@@ -835,6 +864,11 @@ fault_handler_report_task(void)
             prior_diag.rt_dvel_n            = diag.rt_dvel_n;
             prior_diag.rt_dvel_cycles_max   = diag.rt_dvel_cycles_max;
             prior_diag.rt_dvel_cycles_total = diag.rt_dvel_cycles_total;
+            for (uint32_t axis = 0; axis < 3; axis++) {
+                prior_diag.rt_curve_degree[axis]    = diag.rt_curve_degree[axis];
+                prior_diag.rt_curve_cps_len[axis]   = diag.rt_curve_cps_len[axis];
+                prior_diag.rt_curve_knots_len[axis] = diag.rt_curve_knots_len[axis];
+            }
             for (uint32_t i = 0; i < DIAG_HIST_NBUCKETS; i++) {
                 prior_diag.tim5_irq_buckets[i] = diag.tim5_irq_buckets[i];
                 prior_diag.rt_tick_buckets[i]  = diag.rt_tick_buckets[i];
@@ -999,6 +1033,17 @@ fault_handler_report_task(void)
                prior_diag.rt_dvel_n, prior_diag.rt_dvel_cycles_max,
                (uint32_t)(prior_diag.rt_dvel_cycles_total & 0xFFFFFFFFu),
                (uint32_t)(prior_diag.rt_dvel_cycles_total >> 32));
+        output("prior_diag_summary_curve x_deg %u x_cps %u x_knots %u"
+               " y_deg %u y_cps %u y_knots %u z_deg %u z_cps %u z_knots %u",
+               (uint32_t)prior_diag.rt_curve_degree[0],
+               (uint32_t)prior_diag.rt_curve_cps_len[0],
+               (uint32_t)prior_diag.rt_curve_knots_len[0],
+               (uint32_t)prior_diag.rt_curve_degree[1],
+               (uint32_t)prior_diag.rt_curve_cps_len[1],
+               (uint32_t)prior_diag.rt_curve_knots_len[1],
+               (uint32_t)prior_diag.rt_curve_degree[2],
+               (uint32_t)prior_diag.rt_curve_cps_len[2],
+               (uint32_t)prior_diag.rt_curve_knots_len[2]);
         output("prior_diag_summary_otg otg_n %u otg_max_cyc %u"
                " otg_total_lo %u otg_total_hi %u",
                prior_diag.otg_irq_count,
