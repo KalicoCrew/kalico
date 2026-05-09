@@ -386,13 +386,12 @@ runtime_status_drain(void)
     // it back into klippy's RuntimeEvent::Status path.
     kalico_native_emit_status_event(status, depth, cur_seg, last_err, fault_detail);
 
-    // Diag emit — piggyback on the same 10 Hz cadence. A snapshot of the
-    // counter deltas (and per-interval max trackers reset by
-    // diag_take_snapshot). One output() line goes through console_sendf,
-    // so it shares transmit_buf with the kalico-native frames; total per
-    // emit is ~250 bytes which fits comfortably alongside the status event
-    // (10 Hz × 250 B = 2.5 KB/s extra wire load — well under 64 KB/s
-    // theoretical max for USB FS bulk).
+    // Diag emit — DISABLED for wedge-isolation test 2026-05-09. The
+    // 5-lines-per-100ms rate was overrunning transmit_buf (320 bytes vs
+    // ~600 B/cycle), generating klipper TX drops that may themselves be
+    // the wedge trigger. Counters still update in BKPSRAM; read them via
+    // prior_diag dump on next boot.
+#if 0
     {
         struct diag_snapshot s;
         diag_take_snapshot(&s);
@@ -479,6 +478,7 @@ runtime_status_drain(void)
                diag_get_peek_empty());
     }
 #endif
+#endif // 0 — diag emit disabled
 
 #if defined(__linux__) || defined(__APPLE__)
     // Sim-only: dump stepper counters so a test that lost its klippy
