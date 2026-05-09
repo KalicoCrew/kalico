@@ -185,11 +185,14 @@ impl Reactor {
 
     /// Single chokepoint for all wire writes. Per spec §3.7.
     pub(crate) fn write_frame(&mut self, frame: &[u8]) -> Result<(), TransportError> {
-        // Diag: trace write durations and errors. The investigation
-        // (`docs/superpowers/specs/2026-05-09-bridge-call-stall-investigation.md`)
-        // captured a 509 ms write_frame block under repro — this trace makes
-        // such anomalies visible in klippy.log without re-running the
-        // investigation's instrumented build.
+        // Diag: trace write durations and errors. Every write is logged with
+        // a monotonic sequence number so we can correlate against the MCU
+        // diag's rxflvl_n. If write_n grows during the wedge but rxflvl_n
+        // stays frozen, the bytes left the host but never reached the MCU.
+        // If write_n also freezes, the reactor itself is starving.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
         let t0 = std::time::Instant::now();
         let proto = if !frame.is_empty() && frame[0] == 0x55 { "kalico" } else { "klipper" };
         let bytes = frame.len();
@@ -199,9 +202,18 @@ impl Reactor {
             Ok(())
         })();
         let dt = t0.elapsed();
-        if dt > std::time::Duration::from_millis(5) || result.is_err() {
+        // Log every write, with throttling: full detail at first 50 writes
+        // (catches the identify burst) plus any write longer than 0.5 ms or
+        // any error. The "every-50th" rate emit gives a counter heartbeat
+        // even when steady-state writes are fast (so we can tell write_n
+        // froze vs kept growing during the wedge).
+        let log_full = seq < 50
+            || dt > std::time::Duration::from_micros(500)
+            || result.is_err()
+            || (seq % 50 == 0);
+        if log_full {
             eprintln!(
-                "[trace-write] proto={proto} bytes={bytes} dt_ms={:.2} result={:?}",
+                "[trace-write] seq={seq} proto={proto} bytes={bytes} dt_ms={:.3} result={:?}",
                 dt.as_secs_f64() * 1000.0,
                 result.as_ref().map(|_| "OK")
             );
