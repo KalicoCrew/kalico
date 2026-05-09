@@ -202,22 +202,14 @@ impl Reactor {
             Ok(())
         })();
         let dt = t0.elapsed();
-        // Log every write, with throttling: full detail at first 50 writes
-        // (catches the identify burst) plus any write longer than 0.5 ms or
-        // any error. The "every-50th" rate emit gives a counter heartbeat
-        // even when steady-state writes are fast (so we can tell write_n
-        // froze vs kept growing during the wedge).
-        let log_full = seq < 50
-            || dt > std::time::Duration::from_micros(500)
-            || result.is_err()
-            || (seq % 50 == 0);
-        if log_full {
-            eprintln!(
-                "[trace-write] seq={seq} proto={proto} bytes={bytes} dt_ms={:.3} result={:?}",
-                dt.as_secs_f64() * 1000.0,
-                result.as_ref().map(|_| "OK")
-            );
-        }
+        // Wedge-isolation: log EVERY write unconditionally. Volume is
+        // bounded and we need full visibility around the bridge_call hang.
+        eprintln!(
+            "[trace-write] seq={seq} proto={proto} bytes={bytes} dt_ms={:.3} result={:?} first8={:02x?}",
+            dt.as_secs_f64() * 1000.0,
+            result.as_ref().map(|_| "OK"),
+            &frame[..frame.len().min(8)]
+        );
         result
     }
 }
@@ -282,6 +274,7 @@ impl Reactor {
         self.unacked_window.push(crate::host_io::window::UnackedEntry {
             seq, frame_bytes: frame, sent_at: now, retry_count: 0,
         });
+        let _trace_name = expected_response_name.clone();
         self.awaiting_response.push(crate::host_io::window::AwaitEntry {
             call_id, seq,
             expected_response_name,
@@ -290,6 +283,10 @@ impl Reactor {
             deadline,
             abandoned: false,
         })?;
+        eprintln!(
+            "[trace-await] push call_id={call_id} seq={seq} name={_trace_name} await_len={}",
+            self.awaiting_response.len()
+        );
 
         if !self.rtt_sample_armed {
             self.rtt_sample_seq = seq;
@@ -594,6 +591,13 @@ impl Reactor {
         }
         // Real msg-id frame — advance receive_seq if needed.
         let rseq = crate::host_io::wire::decode_absolute(self.receive_seq, wire_seq_nibble);
+        let rseq_jump = rseq.saturating_sub(self.receive_seq);
+        if rseq_jump > 1 {
+            eprintln!(
+                "[trace-rx-jump] receive_seq prev={} new={} jump={} (>1 means MCU dropped a response or we missed a frame)",
+                self.receive_seq, rseq, rseq_jump
+            );
+        }
         if rseq != self.receive_seq {
             self.update_receive_seq(rseq)?;
         }
@@ -602,7 +606,11 @@ impl Reactor {
         let decoded = match self.parser.decode(bytes) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("decode error on inbound frame: {e:?}; dropping");
+                eprintln!(
+                    "[trace-decode-err] decode error: {e:?}; bytes_len={} first16={:02x?}",
+                    bytes.len(),
+                    &bytes[..bytes.len().min(16)]
+                );
                 return Ok(());
             }
         };
@@ -621,10 +629,18 @@ impl Reactor {
 
         match decoded {
             crate::host_io::parser::DecodedFrame::Response { name, params } => {
+                let await_len_before = self.awaiting_response.len();
                 if let Some(idx) = self.awaiting_response.find_match(&name) {
                     let entry = self.awaiting_response.remove(idx);
+                    eprintln!(
+                        "[trace-resp] match name={name} idx={idx} await_len={await_len_before} matched_call_id={} matched_seq={}",
+                        entry.call_id, entry.seq
+                    );
                     let _ = entry.completion.send(Ok(params));
                 } else if !self.try_dispatch_passthrough_response(&raw_payload) {
+                    eprintln!(
+                        "[trace-resp] unsolicited name={name} await_len={await_len_before}"
+                    );
                     // Unsolicited Klipper-protocol Response frames
                     // (analog_in_state, trsync_state, stats, homing_state, …)
                     // need to reach klippy's per-(name, oid) handlers. The
