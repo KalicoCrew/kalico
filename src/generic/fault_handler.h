@@ -73,6 +73,33 @@ struct diag_snapshot {
 // Coherent under IRQ via brief irq_save.
 void diag_take_snapshot(struct diag_snapshot *s);
 
+// Round 2 — wedge instrumentation. Callers increment via the returned
+// pointer (`(*p)++`); the pointer aliases a volatile member of the
+// BKPSRAM-resident `diag` struct.
+volatile uint32_t *diag_slot_otg_rxflvl(void);
+volatile uint32_t *diag_slot_otg_iepint(void);
+volatile uint32_t *diag_slot_otg_other(void);
+volatile uint32_t *diag_slot_otg_other_sts(void);
+volatile uint32_t *diag_slot_notify_bulk_out(void);
+volatile uint32_t *diag_slot_task_invoke(void);
+volatile uint32_t *diag_slot_read_zero(void);
+volatile uint32_t *diag_slot_read_data(void);
+
+// Snapshot OTG live registers (called from foreground in periodic emit).
+void diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts);
+
+// Reads of the wedge counters and OTG-register snapshots.
+uint32_t diag_get_otg_rxflvl(void);
+uint32_t diag_get_otg_iepint(void);
+uint32_t diag_get_otg_other(void);
+uint32_t diag_get_otg_other_sts(void);
+uint32_t diag_get_notify_bulk_out(void);
+uint32_t diag_get_task_invoke(void);
+uint32_t diag_get_read_zero(void);
+uint32_t diag_get_read_data(void);
+uint32_t diag_get_otg_gintmsk_now(void);
+uint32_t diag_get_otg_gintsts_now(void);
+
 #ifdef __cplusplus
 }
 #endif

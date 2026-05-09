@@ -165,6 +165,20 @@ class CommandQueryWrapper:
                 e,
             )
             raise self._error(str(e))
+        except Exception as e:
+            # Bridge raises RuntimeError("bridge_call: transport ...") which
+            # is NOT serialhdl.error. Catch broadly so the timeout case still
+            # produces an exit line — the original handler above would let
+            # those bypass the trace and we'd see enter without exit.
+            _dt_ms = (time.monotonic() - _t0) * 1000.0
+            logging.info(
+                "[py-trace] _bridge_send exit EXC cmd=%s dt_ms=%.2f exc=%s msg=%s",
+                getattr(self._cmd, "msgformat", "<unknown>"),
+                _dt_ms,
+                type(e).__name__,
+                e,
+            )
+            raise
 
     def send(self, data=(), minclock=0, reqclock=0, retry=True):
         if self._serial._use_bridge:

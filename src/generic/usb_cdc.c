@@ -151,12 +151,25 @@ static uint8_t receive_buf[128], receive_pos;
 void
 usb_notify_bulk_out(void)
 {
+#if CONFIG_KALICO_RUNTIME
+    // Round 2 — count when something tries to wake the bulk-OUT drain.
+    // If this counter grows but task_invoke_count stagnates, sched_wake
+    // is being suppressed.
+    (*diag_slot_notify_bulk_out())++;
+#endif
     sched_wake_task(&usb_bulk_out_wake);
 }
 
 void
 usb_bulk_out_task(void)
 {
+#if CONFIG_KALICO_RUNTIME
+    // Round 2 — count every task entry, BEFORE the wake gate. If
+    // notify_bulk_out_calls grows but task_invoke_count doesn't, the
+    // task isn't being scheduled. If task_invoke_count grows but the
+    // heartbeat (after the gate) doesn't, the wake check is failing.
+    (*diag_slot_task_invoke())++;
+#endif
     if (!sched_check_wake(&usb_bulk_out_wake))
         return;
     // Diag heartbeat — this is the task most likely to be starved during
@@ -174,6 +187,13 @@ usb_bulk_out_task(void)
     if (rpos + USB_CDC_EP_BULK_OUT_SIZE <= sizeof(receive_buf)) {
         int_fast8_t ret = usb_read_bulk_out(
             &receive_buf[rpos], USB_CDC_EP_BULK_OUT_SIZE);
+#if CONFIG_KALICO_RUNTIME
+        // Round 2 — distinguish "EP had data" vs "EP returned nothing".
+        // If we wake but read returns 0 every time, RXFLVL is firing
+        // without actual bulk-OUT bytes (a likely USB-stack quirk).
+        if (ret > 0) (*diag_slot_read_data())++;
+        else         (*diag_slot_read_zero())++;
+#endif
         if (ret > 0) {
             rpos += ret;
             usb_notify_bulk_out();

@@ -61,6 +61,17 @@ usb_irq_enable(void)
 
 #define OTG ((USB_OTG_GlobalTypeDef*)USB_PERIPH_BASE)
 #define OTGD ((USB_OTG_DeviceTypeDef*)(USB_PERIPH_BASE + USB_OTG_DEVICE_BASE))
+
+// Round 2 — read OTG live state for periodic diag emit. Defined here so
+// it has access to the OTG/USB_PERIPH_BASE macros above. Called from
+// foreground; reads of volatile MMIO are fine concurrently with the IRQ.
+void
+usb_diag_read_otg_state(uint32_t *gintmsk, uint32_t *gintsts)
+{
+    *gintmsk = OTG->GINTMSK;
+    *gintsts = OTG->GINTSTS;
+}
+
 #define EPFIFO(EP) ((void*)(USB_PERIPH_BASE + USB_OTG_FIFO_BASE + ((EP) << 12)))
 #define EPIN(EP) ((USB_OTG_INEndpointTypeDef*)                          \
                   (USB_PERIPH_BASE + USB_OTG_IN_ENDPOINT_BASE + ((EP) << 5)))
@@ -396,7 +407,18 @@ OTG_FS_IRQHandler(void)
 #endif
 
     uint32_t sts = OTG->GINTSTS;
+#if CONFIG_KALICO_RUNTIME
+    extern volatile uint32_t *diag_slot_otg_rxflvl(void);
+    extern volatile uint32_t *diag_slot_otg_iepint(void);
+    extern volatile uint32_t *diag_slot_otg_other(void);
+    extern volatile uint32_t *diag_slot_otg_other_sts(void);
+    uint32_t diag_handled = 0;
+#endif
     if (sts & USB_OTG_GINTSTS_RXFLVL) {
+#if CONFIG_KALICO_RUNTIME
+        (*diag_slot_otg_rxflvl())++;
+        diag_handled = 1;
+#endif
         // Received data - disable irq and notify endpoint
         OTG->GINTMSK &= ~USB_OTG_GINTMSK_RXFLVLM;
         uint32_t grx = OTG->GRXSTSR, ep = grx & USB_OTG_GRXSTSP_EPNUM_Msk;
@@ -406,6 +428,10 @@ OTG_FS_IRQHandler(void)
             usb_notify_bulk_out();
     }
     if (sts & USB_OTG_GINTSTS_IEPINT) {
+#if CONFIG_KALICO_RUNTIME
+        (*diag_slot_otg_iepint())++;
+        diag_handled = 1;
+#endif
         // Can transmit data - disable irq and notify endpoint
         uint32_t daint = OTGD->DAINT, msk = OTGD->DAINTMSK, pend = daint & msk;
         OTGD->DAINTMSK = msk & ~daint;
@@ -414,6 +440,17 @@ OTG_FS_IRQHandler(void)
         if (pend & (1 << USB_CDC_EP_BULK_IN))
             usb_notify_bulk_in();
     }
+#if CONFIG_KALICO_RUNTIME
+    if (!diag_handled) {
+        // OTG IRQ fired but neither RXFLVL nor IEPINT was set. Could be
+        // SOF, USBSUSP, USBRST, or a flag we don't service. Capture sts
+        // for diagnosis — if the ratio of "other" rises right when
+        // usb_bulk_out_task freezes, that's a clue to which flag we're
+        // missing.
+        (*diag_slot_otg_other())++;
+        *diag_slot_otg_other_sts() = sts;
+    }
+#endif
 
 #if CONFIG_KALICO_RUNTIME
     diag_otg_account(diag_enter, DWT->CYCCNT);

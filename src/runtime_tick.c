@@ -418,6 +418,40 @@ runtime_status_drain(void)
         }
     }
 
+    // Round 2 — wedge instrumentation. Snapshot OTG live registers and
+    // emit a single line capturing per-flag IRQ counts, wake-path
+    // counters, and live OTG state. The expected steady-state pattern
+    // when bulk-OUT is healthy:
+    //   notify_n ≈ task_n ≈ rxflvl_n
+    //   read_data_n grows with notify_n (host → MCU bytes flowing)
+    //   read_zero_n stays low
+    //   gintmsk has RXFLVLM bit (0x10) set unless an IRQ just fired
+    //   gintsts.RXFLVL (0x10) clears once foreground services it
+    // The wedge signature we're trying to catch:
+    //   notify_n grows but task_n stagnates → sched-side issue
+    //   task_n grows but read_data_n stays flat → EP returns no data
+    //   gintmsk has RXFLVLM bit CLEARED for >1 emit cycle → never re-armed
+#if CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7
+    {
+        extern void usb_diag_read_otg_state(uint32_t *, uint32_t *);
+        uint32_t gintmsk = 0, gintsts = 0;
+        usb_diag_read_otg_state(&gintmsk, &gintsts);
+        diag_snapshot_otg_regs(gintmsk, gintsts);
+        output("diag_v1_otg rxflvl_n %u iepint_n %u other_n %u other_sts %u"
+               " notify_n %u task_n %u read_data %u read_zero %u"
+               " gintmsk %u gintsts %u",
+               diag_get_otg_rxflvl(),
+               diag_get_otg_iepint(),
+               diag_get_otg_other(),
+               diag_get_otg_other_sts(),
+               diag_get_notify_bulk_out(),
+               diag_get_task_invoke(),
+               diag_get_read_data(),
+               diag_get_read_zero(),
+               gintmsk, gintsts);
+    }
+#endif
+
 #if defined(__linux__) || defined(__APPLE__)
     // Sim-only: dump stepper counters so a test that lost its klippy
     // bridge_call link can still observe motion progress via the elf log.

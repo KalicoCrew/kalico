@@ -81,6 +81,32 @@ __attribute__((used))
 #endif
 static volatile struct live_snapshot live_snap;
 
+// Cortex-M7 D-cache is enabled on H7 (see src/stm32/stm32h7.c::SCB_EnableDCache).
+// BKPSRAM (D3 domain) ends up cached too, which means writes sit in cache and
+// don't commit to the actual SRAM until eviction. Round 1's prior_diag dump
+// caught this — `ring_seq` came back 0 even though live emits had observed
+// it growing past 7000. The fix: clean the BKPSRAM cache lines after every
+// significant write set, AND once at the end of each periodic emit cycle, so
+// the SRAM is guaranteed in sync within ~100 ms of any counter update.
+//
+// `__DSB()` alone (Round 1's barrier) only flushes the CPU's store buffer; it
+// does not push cached lines to memory. We need `SCB_CleanDCache_by_Addr` for
+// that. The clean operation is non-trivial cycle-wise but bounded — the
+// BKPSRAM region is < 1 KB.
+#if CONFIG_MACH_STM32H7
+static inline void
+diag_cache_clean(void)
+{
+    extern uint8_t _bkp_bss_start, _bkp_bss_end;
+    uint32_t addr = (uint32_t)&_bkp_bss_start;
+    uint32_t size = (uint32_t)(&_bkp_bss_end - &_bkp_bss_start);
+    SCB_CleanDCache_by_Addr((uint32_t*)addr, (int32_t)size);
+    __DSB();
+}
+#else
+static inline void diag_cache_clean(void) { __DSB(); }
+#endif
+
 // =============================================================================
 // Diagnostic counters + event ring — for the bridge-call stall investigation.
 //
@@ -169,6 +195,23 @@ struct diag_counters {
 
     // Boot-time bookkeeping.
     uint32_t boot_count;
+
+    // Round 2 — wedge-mechanism instrumentation.
+    // Per-flag OTG IRQ counters (RXFLVL → host-to-MCU notify path).
+    uint32_t otg_rxflvl_fires;
+    uint32_t otg_iepint_fires;
+    uint32_t otg_otherflag_fires;
+    uint32_t otg_otherflag_last_sts;
+
+    // Wake / task / read-side counters for the bulk-OUT path.
+    uint32_t notify_bulk_out_calls;     // usb_notify_bulk_out invocations
+    uint32_t task_invoke_count;         // usb_bulk_out_task entries (before wake gate)
+    uint32_t usb_read_zero_returns;     // usb_read_bulk_out returned <= 0
+    uint32_t usb_read_data_returns;     // usb_read_bulk_out returned > 0
+
+    // Snapshots of OTG live state (read at periodic emit time).
+    uint32_t otg_gintmsk_now;
+    uint32_t otg_gintsts_now;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -219,6 +262,11 @@ diag_ring_push(uint8_t tag, uint32_t a, uint32_t b)
     if (diag.ring_seq > DIAG_RING_LEN
         && (diag.ring_seq - DIAG_RING_LEN) > diag.ring_overflow)
         diag.ring_overflow = diag.ring_seq - DIAG_RING_LEN;
+    // Flush the cache so the ring entry + ring_seq survive a near-future
+    // reset. SCB_CleanDCache_by_Addr is bounded (< 1 KB region) but
+    // non-trivial in IRQ context — we accept the cost because the only
+    // alternative is losing ring data to cache eviction lag.
+    diag_cache_clean();
     irq_restore(flag);
 #else
     (void)tag; (void)a; (void)b;
@@ -347,6 +395,7 @@ diag_take_snapshot(struct diag_snapshot *s)
     diag.usb_in_max_gap_ticks  = 0;
     diag.runtime_drain_max_gap_ticks = 0;
     diag.runtime_status_max_gap_ticks = 0;
+    diag_cache_clean();
     irq_restore(flag);
 #else
     memset(s, 0, sizeof(*s));
@@ -405,6 +454,44 @@ diag_record_engine_xition(uint8_t prev, uint8_t cur, uint32_t samples_taken)
     (void)prev; (void)cur; (void)samples_taken;
 #endif
 }
+
+// Round 2 — wedge instrumentation accessors. All increments via volatile
+// stores; called from IRQ + task paths. Returning pointers lets callers
+// use simple pre-increment without taking ad-hoc addresses of volatile
+// struct members across compilation units.
+volatile uint32_t *diag_slot_otg_rxflvl(void)         { return &diag.otg_rxflvl_fires; }
+volatile uint32_t *diag_slot_otg_iepint(void)         { return &diag.otg_iepint_fires; }
+volatile uint32_t *diag_slot_otg_other(void)          { return &diag.otg_otherflag_fires; }
+volatile uint32_t *diag_slot_otg_other_sts(void)      { return &diag.otg_otherflag_last_sts; }
+volatile uint32_t *diag_slot_notify_bulk_out(void)    { return &diag.notify_bulk_out_calls; }
+volatile uint32_t *diag_slot_task_invoke(void)        { return &diag.task_invoke_count; }
+volatile uint32_t *diag_slot_read_zero(void)          { return &diag.usb_read_zero_returns; }
+volatile uint32_t *diag_slot_read_data(void)          { return &diag.usb_read_data_returns; }
+
+// Snapshot OTG live registers into BKPSRAM before periodic emit reads them.
+// Called from runtime_status_drain (foreground); no IRQ-safety needed.
+void
+diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts)
+{
+#if CONFIG_KALICO_RUNTIME
+    diag.otg_gintmsk_now = gintmsk;
+    diag.otg_gintsts_now = gintsts;
+#else
+    (void)gintmsk; (void)gintsts;
+#endif
+}
+
+// Round 2 — extended snapshot accessors.
+uint32_t diag_get_otg_rxflvl(void)        { return diag.otg_rxflvl_fires; }
+uint32_t diag_get_otg_iepint(void)        { return diag.otg_iepint_fires; }
+uint32_t diag_get_otg_other(void)         { return diag.otg_otherflag_fires; }
+uint32_t diag_get_otg_other_sts(void)     { return diag.otg_otherflag_last_sts; }
+uint32_t diag_get_notify_bulk_out(void)   { return diag.notify_bulk_out_calls; }
+uint32_t diag_get_task_invoke(void)       { return diag.task_invoke_count; }
+uint32_t diag_get_read_zero(void)         { return diag.usb_read_zero_returns; }
+uint32_t diag_get_read_data(void)         { return diag.usb_read_data_returns; }
+uint32_t diag_get_otg_gintmsk_now(void)   { return diag.otg_gintmsk_now; }
+uint32_t diag_get_otg_gintsts_now(void)   { return diag.otg_gintsts_now; }
 
 void __attribute__((noreturn, used))
 fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
@@ -637,6 +724,29 @@ fault_handler_report_task(void)
             diag_ring[i].a = 0;
             diag_ring[i].b = 0;
         }
+        // Sanity-check emit: capture prior_diag values RIGHT NOW so we
+        // can compare against the periodic-emit version that fires later.
+        // If these values match the periodic emit, prior_diag is being
+        // captured correctly. If they differ, the periodic emit has a
+        // staleness bug. Emitting BEFORE the first non-init code path
+        // touches anything related to BKPSRAM.
+        if (prior_diag_present) {
+            output("prior_diag_at_init boot %u tim5_n %u otg_n %u out_n %u in_n %u"
+                   " drain_n %u stat_n %u ring_seq %u ring_overflow %u"
+                   " drops_kal %u drops_klp %u",
+                   prior_diag.boot_count,
+                   prior_diag.tim5_irq_count,
+                   prior_diag.otg_irq_count,
+                   prior_diag.usb_out_calls,
+                   prior_diag.usb_in_calls,
+                   prior_diag.runtime_drain_calls,
+                   prior_diag.runtime_status_calls,
+                   prior_diag.ring_seq,
+                   prior_diag.ring_overflow,
+                   prior_diag.tx_drops_kalico,
+                   prior_diag.tx_drops_klipper);
+        }
+        diag_cache_clean();
         return;
     }
     // Refresh the liveness snapshot every task call (once per scheduler
