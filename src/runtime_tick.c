@@ -480,6 +480,14 @@ runtime_status_drain(void)
                diag_get_peek_empty(),
                diag_get_oepint(),
                diag_get_otepdis_rearm());
+        // Round 5 — suspend-bit-clear counters. If usbsusp_clears grows
+        // and bulk-OUT keeps working, the suspend hypothesis is correct.
+        // If usbsusp_clears stays 0 across the wedge, suspend isn't the
+        // mechanism and we look further upstream (host kernel / USB phy).
+        output("diag_v1_susp usbsusp %u wkuint %u esusp %u",
+               diag_get_usbsusp_clears(),
+               diag_get_wkuint_clears(),
+               diag_get_esusp_clears());
     }
 #endif
 
