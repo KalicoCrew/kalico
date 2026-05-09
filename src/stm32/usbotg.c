@@ -233,6 +233,14 @@ usb_read_bulk_out(void *data, uint_fast8_t max_len)
         extern volatile uint32_t *diag_slot_peek_empty(void);
         (*diag_slot_peek_empty())++;
 #endif
+        // Round 4 Fix 1 — defensive re-arm. Path A used to only re-enable
+        // RXFLVLM and assume the EP was still armed. Round 3 diagnosis
+        // showed the EP can be in EPENA=0 (auto-cleared by hardware after
+        // a packet) while the task wakes for an unrelated reason or while
+        // klippy is idle and the host's next packet arrives at a disabled
+        // EP. enable_rx_endpoint is gated by `!EPENA || NAKSTS` so this
+        // is a no-op when the EP is already armed; otherwise it re-arms.
+        enable_rx_endpoint(USB_CDC_EP_BULK_OUT);
         OTG->GINTMSK |= USB_OTG_GINTMSK_RXFLVLM;
         usb_irq_enable();
         return -1;
@@ -468,6 +476,33 @@ OTG_FS_IRQHandler(void)
         if (pend & (1 << USB_CDC_EP_BULK_IN))
             usb_notify_bulk_in();
     }
+    if (sts & USB_OTG_GINTSTS_OEPINT) {
+        // Round 4 Fix 2 — OUT-EP interrupt. Currently we only service
+        // OTEPDIS (host sent OUT token while EP was disabled). The
+        // recovery: re-arm the EP so the host's retry succeeds. Without
+        // this, EPENA stayed cleared after auto-disable on the last
+        // packet, host's subsequent OUT tokens got NAKed forever.
+#if CONFIG_KALICO_RUNTIME
+        extern volatile uint32_t *diag_slot_oepint(void);
+        extern volatile uint32_t *diag_slot_otepdis_rearm(void);
+        (*diag_slot_oepint())++;
+        diag_handled = 1;
+#endif
+        USB_OTG_OUTEndpointTypeDef *epo = EPOUT(USB_CDC_EP_BULK_OUT);
+        uint32_t doepint = epo->DOEPINT;
+        if (doepint & USB_OTG_DOEPINT_OTEPDIS) {
+#if CONFIG_KALICO_RUNTIME
+            (*diag_slot_otepdis_rearm())++;
+#endif
+            epo->DOEPTSIZ = 64 | (1 << USB_OTG_DOEPTSIZ_PKTCNT_Pos);
+            epo->DOEPCTL |= USB_OTG_DOEPCTL_EPENA | USB_OTG_DOEPCTL_CNAK;
+        }
+        // Write 1 to clear all serviceable DOEPINT flags. Bits we're not
+        // explicitly handling (XFRC etc) are also cleared — XFRC is sticky
+        // and not relied upon downstream for the bulk-OUT EP, so this is
+        // safe.
+        epo->DOEPINT = doepint;
+    }
 #if CONFIG_KALICO_RUNTIME
     if (!diag_handled) {
         // OTG IRQ fired but neither RXFLVL nor IEPINT was set. Could be
@@ -529,7 +564,15 @@ usb_init(void)
 
     // Enable interrupts
     OTGD->DIEPMSK = USB_OTG_DIEPMSK_XFRCM;
-    OTG->GINTMSK = USB_OTG_GINTMSK_RXFLVLM | USB_OTG_GINTMSK_IEPINT;
+    OTG->GINTMSK = (USB_OTG_GINTMSK_RXFLVLM
+                   | USB_OTG_GINTMSK_IEPINT
+                   | USB_OTG_GINTMSK_OEPINT);
+    // Round 4 Fix 2 — enable DOEPINT.OTEPDIS to surface in OEPINT so the
+    // IRQ handler can detect "host sent OUT token while EP was disabled"
+    // and recover by re-arming the EP. Also enable the bulk-OUT EP in
+    // DAINTMSK (OUT EP bits at offset 16 in DAINTMSK).
+    OTGD->DOEPMSK = USB_OTG_DOEPMSK_OTEPDM;
+    OTGD->DAINTMSK |= (1U << (16 + USB_CDC_EP_BULK_OUT));
     OTG->GAHBCFG = USB_OTG_GAHBCFG_GINT;
     armcm_enable_irq(OTG_FS_IRQHandler, OTG_IRQn, 1);
 

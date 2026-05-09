@@ -469,14 +469,17 @@ runtime_status_drain(void)
         //   bit 1 EPDISD — EP disabled
         //   bit 3 STUP — setup phase done (only EP0)
         output("diag_v1_ep doepctl %u doeptsiz %u doepint %u"
-               " enable_rx_n %u rearmed_n %u peek_data %u peek_empty %u",
+               " enable_rx_n %u rearmed_n %u peek_data %u peek_empty %u"
+               " oepint_n %u otepdis_rearm %u",
                diag_get_out_ep_doepctl(),
                diag_get_out_ep_doeptsiz(),
                diag_get_out_ep_doepint(),
                diag_get_enable_rx_n(),
                diag_get_enable_rx_rearm(),
                diag_get_peek_data(),
-               diag_get_peek_empty());
+               diag_get_peek_empty(),
+               diag_get_oepint(),
+               diag_get_otepdis_rearm());
     }
 #endif
 
