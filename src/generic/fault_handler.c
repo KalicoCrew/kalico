@@ -212,6 +212,25 @@ struct diag_counters {
     // Snapshots of OTG live state (read at periodic emit time).
     uint32_t otg_gintmsk_now;
     uint32_t otg_gintsts_now;
+
+    // Round 3 — OUT EP state and re-arm bookkeeping.
+    // Snapshots of the bulk-OUT EP control / size / interrupt registers.
+    // EPENA bit (0x80000000) tells us if the EP is currently enabled.
+    // NAKSTS (0x00020000) tells us if it's NAKing. PKTCNT in DOEPTSIZ
+    // tells us how many slots remain to receive into. DOEPINT exposes
+    // per-EP interrupt flags (XFRC, EPDISD, etc).
+    uint32_t out_ep_doepctl;
+    uint32_t out_ep_doeptsiz;
+    uint32_t out_ep_doepint;
+    // enable_rx_endpoint accounting. enable_n is total invocations;
+    // enable_rearmed_n is the branch that actually wrote EPENA|CNAK.
+    uint32_t enable_rx_n;
+    uint32_t enable_rx_rearmed_n;
+    // usb_read_bulk_out path classifier. peek_empty_n = queue had no
+    // packet (path A, re-enabled RXFLVLM). peek_data_n = queue had data
+    // (path B, drained it).
+    uint32_t peek_empty_n;
+    uint32_t peek_data_n;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -492,6 +511,32 @@ uint32_t diag_get_read_zero(void)         { return diag.usb_read_zero_returns; }
 uint32_t diag_get_read_data(void)         { return diag.usb_read_data_returns; }
 uint32_t diag_get_otg_gintmsk_now(void)   { return diag.otg_gintmsk_now; }
 uint32_t diag_get_otg_gintsts_now(void)   { return diag.otg_gintsts_now; }
+
+// Round 3 — OUT EP and enable_rx counters.
+volatile uint32_t *diag_slot_enable_rx(void)        { return &diag.enable_rx_n; }
+volatile uint32_t *diag_slot_enable_rx_rearm(void)  { return &diag.enable_rx_rearmed_n; }
+volatile uint32_t *diag_slot_peek_empty(void)       { return &diag.peek_empty_n; }
+volatile uint32_t *diag_slot_peek_data(void)        { return &diag.peek_data_n; }
+
+void
+diag_snapshot_out_ep(uint32_t doepctl, uint32_t doeptsiz, uint32_t doepint)
+{
+#if CONFIG_KALICO_RUNTIME
+    diag.out_ep_doepctl  = doepctl;
+    diag.out_ep_doeptsiz = doeptsiz;
+    diag.out_ep_doepint  = doepint;
+#else
+    (void)doepctl; (void)doeptsiz; (void)doepint;
+#endif
+}
+
+uint32_t diag_get_out_ep_doepctl(void)    { return diag.out_ep_doepctl; }
+uint32_t diag_get_out_ep_doeptsiz(void)   { return diag.out_ep_doeptsiz; }
+uint32_t diag_get_out_ep_doepint(void)    { return diag.out_ep_doepint; }
+uint32_t diag_get_enable_rx_n(void)       { return diag.enable_rx_n; }
+uint32_t diag_get_enable_rx_rearm(void)   { return diag.enable_rx_rearmed_n; }
+uint32_t diag_get_peek_empty(void)        { return diag.peek_empty_n; }
+uint32_t diag_get_peek_data(void)         { return diag.peek_data_n; }
 
 void __attribute__((noreturn, used))
 fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)

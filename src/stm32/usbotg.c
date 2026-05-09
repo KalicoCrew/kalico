@@ -72,11 +72,23 @@ usb_diag_read_otg_state(uint32_t *gintmsk, uint32_t *gintsts)
     *gintsts = OTG->GINTSTS;
 }
 
+
 #define EPFIFO(EP) ((void*)(USB_PERIPH_BASE + USB_OTG_FIFO_BASE + ((EP) << 12)))
 #define EPIN(EP) ((USB_OTG_INEndpointTypeDef*)                          \
                   (USB_PERIPH_BASE + USB_OTG_IN_ENDPOINT_BASE + ((EP) << 5)))
 #define EPOUT(EP) ((USB_OTG_OUTEndpointTypeDef*)                        \
                    (USB_PERIPH_BASE + USB_OTG_OUT_ENDPOINT_BASE + ((EP) << 5)))
+
+// Round 3 — read OUT EP1 register state for periodic diag emit. Placed
+// after EPOUT macro definition so EPOUT is in scope.
+void
+usb_diag_read_out_ep(uint32_t *doepctl, uint32_t *doeptsiz, uint32_t *doepint)
+{
+    USB_OTG_OUTEndpointTypeDef *epo = EPOUT(USB_CDC_EP_BULK_OUT);
+    *doepctl  = epo->DOEPCTL;
+    *doeptsiz = epo->DOEPTSIZ;
+    *doepint  = epo->DOEPINT;
+}
 
 // Setup the USB fifos
 static void
@@ -159,9 +171,17 @@ fifo_read_packet(uint8_t *dest, uint_fast8_t max_len)
 static void
 enable_rx_endpoint(uint32_t ep)
 {
+#if CONFIG_KALICO_RUNTIME
+    extern volatile uint32_t *diag_slot_enable_rx(void);
+    extern volatile uint32_t *diag_slot_enable_rx_rearm(void);
+    (*diag_slot_enable_rx())++;
+#endif
     USB_OTG_OUTEndpointTypeDef *epo = EPOUT(ep);
     uint32_t ctl = epo->DOEPCTL;
     if (!(ctl & USB_OTG_DOEPCTL_EPENA) || ctl & USB_OTG_DOEPCTL_NAKSTS) {
+#if CONFIG_KALICO_RUNTIME
+        (*diag_slot_enable_rx_rearm())++;
+#endif
         epo->DOEPTSIZ = 64 | (1 << USB_OTG_DOEPTSIZ_PKTCNT_Pos);
         epo->DOEPCTL = ctl | USB_OTG_DOEPCTL_EPENA | USB_OTG_DOEPCTL_CNAK;
     }
@@ -209,10 +229,18 @@ usb_read_bulk_out(void *data, uint_fast8_t max_len)
     uint32_t grx = peek_rx_queue(USB_CDC_EP_BULK_OUT);
     if (!grx) {
         // Wait for packet
+#if CONFIG_KALICO_RUNTIME
+        extern volatile uint32_t *diag_slot_peek_empty(void);
+        (*diag_slot_peek_empty())++;
+#endif
         OTG->GINTMSK |= USB_OTG_GINTMSK_RXFLVLM;
         usb_irq_enable();
         return -1;
     }
+#if CONFIG_KALICO_RUNTIME
+    extern volatile uint32_t *diag_slot_peek_data(void);
+    (*diag_slot_peek_data())++;
+#endif
     int_fast8_t ret = fifo_read_packet(data, max_len);
     enable_rx_endpoint(USB_CDC_EP_BULK_OUT);
     usb_irq_enable();

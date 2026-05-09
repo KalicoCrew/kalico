@@ -434,9 +434,13 @@ runtime_status_drain(void)
 #if CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7
     {
         extern void usb_diag_read_otg_state(uint32_t *, uint32_t *);
+        extern void usb_diag_read_out_ep(uint32_t *, uint32_t *, uint32_t *);
         uint32_t gintmsk = 0, gintsts = 0;
+        uint32_t doepctl = 0, doeptsiz = 0, doepint = 0;
         usb_diag_read_otg_state(&gintmsk, &gintsts);
+        usb_diag_read_out_ep(&doepctl, &doeptsiz, &doepint);
         diag_snapshot_otg_regs(gintmsk, gintsts);
+        diag_snapshot_out_ep(doepctl, doeptsiz, doepint);
         output("diag_v1_otg rxflvl_n %u iepint_n %u other_n %u other_sts %u"
                " notify_n %u task_n %u read_data %u read_zero %u"
                " gintmsk %u gintsts %u",
@@ -449,6 +453,30 @@ runtime_status_drain(void)
                diag_get_read_data(),
                diag_get_read_zero(),
                gintmsk, gintsts);
+        // Round 3 — OUT EP register snapshot + enable_rx + peek
+        // counters. This emits one extra ~150 byte line per 100 ms
+        // (1.5 KB/s extra wire load).
+        // doepctl bits of interest:
+        //   0x80000000 EPENA — EP enabled to receive
+        //   0x00020000 NAKSTS — EP NAKing (sticky)
+        //   0x00010000 STALL — EP stalling
+        //   0x00008000 USBAEP — EP active in this configuration
+        // doeptsiz bits of interest:
+        //   bits 30..29 PKTCNT — packets remaining to receive
+        //   bits 18..0  XFRSIZ — bytes remaining to receive
+        // doepint bits of interest:
+        //   bit 0 XFRC — transfer completed
+        //   bit 1 EPDISD — EP disabled
+        //   bit 3 STUP — setup phase done (only EP0)
+        output("diag_v1_ep doepctl %u doeptsiz %u doepint %u"
+               " enable_rx_n %u rearmed_n %u peek_data %u peek_empty %u",
+               diag_get_out_ep_doepctl(),
+               diag_get_out_ep_doeptsiz(),
+               diag_get_out_ep_doepint(),
+               diag_get_enable_rx_n(),
+               diag_get_enable_rx_rearm(),
+               diag_get_peek_data(),
+               diag_get_peek_empty());
     }
 #endif
 

@@ -100,6 +100,20 @@ uint32_t diag_get_read_data(void);
 uint32_t diag_get_otg_gintmsk_now(void);
 uint32_t diag_get_otg_gintsts_now(void);
 
+// Round 3 — OUT EP register snapshot + enable_rx counters.
+volatile uint32_t *diag_slot_enable_rx(void);
+volatile uint32_t *diag_slot_enable_rx_rearm(void);
+volatile uint32_t *diag_slot_peek_empty(void);
+volatile uint32_t *diag_slot_peek_data(void);
+void diag_snapshot_out_ep(uint32_t doepctl, uint32_t doeptsiz, uint32_t doepint);
+uint32_t diag_get_out_ep_doepctl(void);
+uint32_t diag_get_out_ep_doeptsiz(void);
+uint32_t diag_get_out_ep_doepint(void);
+uint32_t diag_get_enable_rx_n(void);
+uint32_t diag_get_enable_rx_rearm(void);
+uint32_t diag_get_peek_empty(void);
+uint32_t diag_get_peek_data(void);
+
 #ifdef __cplusplus
 }
 #endif
