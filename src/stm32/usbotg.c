@@ -515,61 +515,6 @@ OTG_FS_IRQHandler(void)
     }
 #endif
 
-    // Round 5 — clear sticky W1C bits in GINTSTS that we don't service.
-    // Specifically USBSUSP, WKUINT, ESUSP — the H7 OTG_HS in FS device
-    // mode latches USBSUSP after ~3 ms of bus idle, and the controller
-    // stops processing bulk-OUT traffic while in latched-suspend state.
-    // If we never clear it, klippy's next bridge_call after even brief
-    // idle finds the bus dead. Clearing the bit at IRQ exit keeps the
-    // controller out of the stuck state. Also clear the other sticky
-    // OTG/enumeration flags we observed set in the diag dumps so the
-    // GINTSTS register stays in a clean state.
-    {
-        uint32_t clear_bits = 0;
-#if CONFIG_KALICO_RUNTIME
-        extern volatile uint32_t *diag_slot_usbsusp_clears(void);
-        extern volatile uint32_t *diag_slot_wkuint_clears(void);
-        extern volatile uint32_t *diag_slot_esusp_clears(void);
-#endif
-        if (sts & USB_OTG_GINTSTS_USBSUSP) {
-            clear_bits |= USB_OTG_GINTSTS_USBSUSP;
-#if CONFIG_KALICO_RUNTIME
-            (*diag_slot_usbsusp_clears())++;
-#endif
-        }
-        if (sts & USB_OTG_GINTSTS_WKUINT) {
-            clear_bits |= USB_OTG_GINTSTS_WKUINT;
-#if CONFIG_KALICO_RUNTIME
-            (*diag_slot_wkuint_clears())++;
-#endif
-        }
-        if (sts & USB_OTG_GINTSTS_ESUSP) {
-            clear_bits |= USB_OTG_GINTSTS_ESUSP;
-#if CONFIG_KALICO_RUNTIME
-            (*diag_slot_esusp_clears())++;
-#endif
-        }
-        // Also clear other unhandled sticky bits we've observed:
-        // SOF, USBRST, ENUMDNE, ISOODRP, EOPF, EPMIS, IISOIXFR,
-        // IPXFR/INCOMPISOOUT, DATAFSUSP, CIDSCHG, DISCINT, SRQINT, MMIS,
-        // OTGINT. All write-1-clear. Harmless to clear when set.
-        clear_bits |= (sts & (USB_OTG_GINTSTS_SOF
-                              | USB_OTG_GINTSTS_USBRST
-                              | USB_OTG_GINTSTS_ENUMDNE
-                              | USB_OTG_GINTSTS_ISOODRP
-                              | USB_OTG_GINTSTS_EOPF
-                              | USB_OTG_GINTSTS_IISOIXFR
-                              | USB_OTG_GINTSTS_PXFR_INCOMPISOOUT
-                              | USB_OTG_GINTSTS_DATAFSUSP
-                              | USB_OTG_GINTSTS_CIDSCHG
-                              | USB_OTG_GINTSTS_DISCINT
-                              | USB_OTG_GINTSTS_SRQINT
-                              | USB_OTG_GINTSTS_MMIS
-                              | USB_OTG_GINTSTS_OTGINT));
-        if (clear_bits)
-            OTG->GINTSTS = clear_bits;
-    }
-
 #if CONFIG_KALICO_RUNTIME
     diag_otg_account(diag_enter, DWT->CYCCNT);
 #endif
@@ -619,17 +564,9 @@ usb_init(void)
 
     // Enable interrupts
     OTGD->DIEPMSK = USB_OTG_DIEPMSK_XFRCM;
-    // Round 5 — also fire IRQ on USBSUSP / WKUINT so the IRQ handler can
-    // clear them promptly. The H7 OTG_HS controller stops processing
-    // bulk-OUT traffic while latched-suspend; clearing the bit at IRQ
-    // exit prevents that. Without the mask bits set, the IRQ never fires
-    // for these events and we'd only catch them when an unrelated IRQ
-    // happens to also be pending.
     OTG->GINTMSK = (USB_OTG_GINTMSK_RXFLVLM
                    | USB_OTG_GINTMSK_IEPINT
-                   | USB_OTG_GINTMSK_OEPINT
-                   | USB_OTG_GINTMSK_USBSUSPM
-                   | USB_OTG_GINTMSK_WUIM);
+                   | USB_OTG_GINTMSK_OEPINT);
     // Round 4 Fix 2 — enable DOEPINT.OTEPDIS to surface in OEPINT so the
     // IRQ handler can detect "host sent OUT token while EP was disabled"
     // and recover by re-arming the EP. Also enable the bulk-OUT EP in

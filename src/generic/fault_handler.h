@@ -120,14 +120,6 @@ volatile uint32_t *diag_slot_otepdis_rearm(void);
 uint32_t diag_get_oepint(void);
 uint32_t diag_get_otepdis_rearm(void);
 
-// Round 5 — suspend / resume bit-clear counters.
-volatile uint32_t *diag_slot_usbsusp_clears(void);
-volatile uint32_t *diag_slot_wkuint_clears(void);
-volatile uint32_t *diag_slot_esusp_clears(void);
-uint32_t diag_get_usbsusp_clears(void);
-uint32_t diag_get_wkuint_clears(void);
-uint32_t diag_get_esusp_clears(void);
-
 #ifdef __cplusplus
 }
 #endif

@@ -239,16 +239,6 @@ struct diag_counters {
     // grow when the wedge fires + recovers.
     uint32_t otg_oepint_fires_n;
     uint32_t otepdis_rearm_n;
-
-    // Round 5 — suspend / resume / sticky-bit accounting.
-    // GINTSTS.USBSUSP latches when the bus is idle for ~3 ms.
-    // GINTSTS.WKUINT latches on resume. ESUSP latches ~3 ms before USBSUSP.
-    // The H7 OTG controller stops processing bulk OUT while suspended.
-    // We clear these bits at IRQ exit so the controller doesn't sit in a
-    // latched suspend state.
-    uint32_t usbsusp_clears_n;
-    uint32_t wkuint_clears_n;
-    uint32_t esusp_clears_n;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -561,14 +551,6 @@ volatile uint32_t *diag_slot_oepint(void)        { return &diag.otg_oepint_fires
 volatile uint32_t *diag_slot_otepdis_rearm(void) { return &diag.otepdis_rearm_n; }
 uint32_t diag_get_oepint(void)        { return diag.otg_oepint_fires_n; }
 uint32_t diag_get_otepdis_rearm(void) { return diag.otepdis_rearm_n; }
-
-// Round 5 — suspend/resume bit-clear counters.
-volatile uint32_t *diag_slot_usbsusp_clears(void) { return &diag.usbsusp_clears_n; }
-volatile uint32_t *diag_slot_wkuint_clears(void)  { return &diag.wkuint_clears_n; }
-volatile uint32_t *diag_slot_esusp_clears(void)   { return &diag.esusp_clears_n; }
-uint32_t diag_get_usbsusp_clears(void) { return diag.usbsusp_clears_n; }
-uint32_t diag_get_wkuint_clears(void)  { return diag.wkuint_clears_n; }
-uint32_t diag_get_esusp_clears(void)   { return diag.esusp_clears_n; }
 
 void __attribute__((noreturn, used))
 fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
