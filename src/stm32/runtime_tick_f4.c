@@ -144,6 +144,9 @@ TIM5_IRQHandler(void)
     runtime_bench_capture(after - before);
     // No late ack.
 
+    extern void diag_runtime_tick_account(uint32_t cycles);
+    diag_runtime_tick_account(after - before);
+
     diag_tim5_account(diag_enter, DWT->CYCCNT);
 }
 

@@ -27,10 +27,7 @@ watchdog_reset(void)
     return;  // Renode's IWDG model misbehaves; sim build is silicon-unsafe
 #endif
 #if CONFIG_KALICO_RUNTIME
-    // WEDGE-ISOLATION TEST 2026-05-09: was `if (!runtime_liveness_ok) return;`.
-    // Suspect this self-bricks under load. Always kick IWDG to confirm
-    // whether the wedge is via this self-imposed liveness gate.
-    (void)runtime_liveness_ok;
+    if (!runtime_liveness_ok) return;   // kalico runtime detected liveness fault
 #endif
     IWDG->KR = 0xAAAA;
 }

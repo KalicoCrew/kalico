@@ -53,12 +53,9 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // WEDGE-ISOLATION 2026-05-09: 40 kHz TIM5 IRQ at ~14us avg / 65us max
-    // saturates the CPU when the engine has work, starving foreground tasks
-    // (incl. watchdog_reset). IWDG fires within 511 ms. Disable to confirm.
-    // TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
-    // TIM5->CR1 |= TIM_CR1_CEN;
-    // NVIC_EnableIRQ(TIM5_IRQn);
+    TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
+    TIM5->CR1 |= TIM_CR1_CEN;
+    NVIC_EnableIRQ(TIM5_IRQn);
 }
 
 void
@@ -152,6 +149,13 @@ TIM5_IRQHandler(void)
     // Bench capture: weak no-op unless CONFIG_RUNTIME_BENCH=y.
     runtime_bench_capture(after - before);
     // No late ack.
+
+    // Histogram the runtime_handle_tick subwindow before the full-IRQ
+    // accounting at exit. Distinguishing the two tells us whether the IRQ
+    // cost lives in the engine evaluator or in the surrounding ISR overhead
+    // (endstop sample, accounting, vector entry/exit).
+    extern void diag_runtime_tick_account(uint32_t cycles);
+    diag_runtime_tick_account(after - before);
 
     // Diag accounting at IRQ exit. Cost: ~10 cycles (DWT read + 3 mem
     // increments + max compare + threshold check). Negligible at 40 kHz.

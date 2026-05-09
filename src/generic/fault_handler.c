@@ -151,18 +151,56 @@ struct diag_event {
     uint32_t b;
 };
 
+// Histogram of per-IRQ DWT cycle durations. 16 buckets × 4096 cycles each;
+// at 520 MHz that's ~7.88 µs per bucket, covering 0–126 µs. Anything >126 µs
+// lands in the top bucket (the absolute peak is still tracked separately by
+// `*_cycles_max`). Bucket index = clamp(dur >> 12, 0..15).
+//
+// The 8 µs bucket width is chosen so the "interesting" region (a 25 µs tick
+// interval at 40 kHz, with tails to 65+ µs) spreads across buckets 3–8
+// instead of all collapsing into one. Trades off resolution at the low end,
+// which we don't currently care about (no fast-path ticks observed).
+#define DIAG_HIST_NBUCKETS 16
+#define DIAG_HIST_SHIFT    12
+
 struct diag_counters {
     uint32_t magic;
 
     // IRQ counters. `cycles_*` are DWT cycles (520 MHz on H7 — 1us = 520
     // cycles). Both production and prior-run dumps use the same units;
-    // emit converts to us for human readability.
+    // emit converts to us for human readability. `cycles_total` is u64 so
+    // it doesn't wrap silently — at 40 kHz × 60 µs/tick = 31 M cycles/sec,
+    // a u32 wraps in ~138 s; u64 is good for ~18000 years.
     uint32_t tim5_irq_count;
-    uint32_t tim5_irq_cycles_total;
+    uint64_t tim5_irq_cycles_total;
     uint32_t tim5_irq_cycles_max;
     uint32_t otg_irq_count;
-    uint32_t otg_irq_cycles_total;
+    uint64_t otg_irq_cycles_total;
     uint32_t otg_irq_cycles_max;
+
+    // Per-IRQ duration distribution. tim5_irq_buckets covers the full
+    // TIM5_IRQHandler entry-to-exit window (incl. endstop sampling, runtime
+    // tick, and accounting); rt_tick_buckets covers `runtime_handle_tick`
+    // alone. Pairing these tells us whether the cost is concentrated in
+    // the engine evaluator or in surrounding ISR overhead.
+    uint32_t tim5_irq_buckets[DIAG_HIST_NBUCKETS];
+    uint32_t rt_tick_count;
+    uint32_t rt_tick_cycles_max;
+    uint64_t rt_tick_cycles_total;
+    uint32_t rt_tick_buckets[DIAG_HIST_NBUCKETS];
+
+    // Per-stage cumulative timing inside runtime_handle_tick. `eval_*` covers
+    // every scalar_eval call (≈3–4 per tick: X, Y, Z, optionally E). `dvel_*`
+    // covers every axis_velocity_q16 call (3 per tick: X, Y, Z) — that's the
+    // call that internally invokes `scalar_derivative_eval`, the function
+    // that allocates two ~7 KB stack arrays per call. Whichever pair carries
+    // most of the per-tick cost is the optimization target.
+    uint32_t rt_eval_n;
+    uint32_t rt_eval_cycles_max;
+    uint64_t rt_eval_cycles_total;
+    uint32_t rt_dvel_n;
+    uint32_t rt_dvel_cycles_max;
+    uint64_t rt_dvel_cycles_total;
 
     // Foreground task heartbeats. `last_tick` is timer_read_time() at the
     // most recent task entry; max_gap_ticks is the largest observed gap
@@ -342,12 +380,68 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     diag.tim5_irq_cycles_total += dur;
     if (dur > diag.tim5_irq_cycles_max)
         diag.tim5_irq_cycles_max = dur;
+    uint32_t bucket = dur >> DIAG_HIST_SHIFT;
+    if (bucket >= DIAG_HIST_NBUCKETS)
+        bucket = DIAG_HIST_NBUCKETS - 1;
+    diag.tim5_irq_buckets[bucket]++;
     // Threshold: 50us at 520 MHz = 26000 cycles. Steady-state TIM5 is ~3000
     // cycles. 50us ≈ 8x normal — a real outlier worth recording.
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
 #else
     (void)enter_cycles; (void)exit_cycles;
+#endif
+}
+
+// Per-stage timing inside runtime_handle_tick. Called from Rust at each
+// scalar_eval / axis_velocity_q16 call boundary. `cycles` is the elapsed
+// DWT cycle delta (caller computed `t1.wrapping_sub(t0)`).
+__attribute__((used, externally_visible))
+void
+diag_rt_eval_account(uint32_t cycles)
+{
+#if CONFIG_KALICO_RUNTIME
+    diag.rt_eval_n++;
+    diag.rt_eval_cycles_total += cycles;
+    if (cycles > diag.rt_eval_cycles_max)
+        diag.rt_eval_cycles_max = cycles;
+#else
+    (void)cycles;
+#endif
+}
+
+__attribute__((used, externally_visible))
+void
+diag_rt_dvel_account(uint32_t cycles)
+{
+#if CONFIG_KALICO_RUNTIME
+    diag.rt_dvel_n++;
+    diag.rt_dvel_cycles_total += cycles;
+    if (cycles > diag.rt_dvel_cycles_max)
+        diag.rt_dvel_cycles_max = cycles;
+#else
+    (void)cycles;
+#endif
+}
+
+// Histogram-only sibling for the runtime_handle_tick subwindow. Caller
+// provides the already-computed delta in DWT cycles (i.e. `after - before`
+// from the IRQ, where the runtime_handle_tick call is bracketed). Cost is
+// bounded to a few cycles: shift, clamp, two stores.
+void
+diag_runtime_tick_account(uint32_t cycles)
+{
+#if CONFIG_KALICO_RUNTIME
+    diag.rt_tick_count++;
+    diag.rt_tick_cycles_total += cycles;
+    if (cycles > diag.rt_tick_cycles_max)
+        diag.rt_tick_cycles_max = cycles;
+    uint32_t bucket = cycles >> DIAG_HIST_SHIFT;
+    if (bucket >= DIAG_HIST_NBUCKETS)
+        bucket = DIAG_HIST_NBUCKETS - 1;
+    diag.rt_tick_buckets[bucket]++;
+#else
+    (void)cycles;
 #endif
 }
 
@@ -389,10 +483,13 @@ diag_take_snapshot(struct diag_snapshot *s)
 #if CONFIG_KALICO_RUNTIME
     irqstatus_t flag = irq_save();
     s->tim5_n      = diag.tim5_irq_count;
-    s->tim5_total  = diag.tim5_irq_cycles_total;
+    // Snapshot truncates u64 totals to u32 — this snapshot only feeds the
+    // currently-disabled live periodic emit. The prior_diag dump path emits
+    // the full u64 as lo/hi pairs.
+    s->tim5_total  = (uint32_t)diag.tim5_irq_cycles_total;
     s->tim5_max    = diag.tim5_irq_cycles_max;
     s->otg_n       = diag.otg_irq_count;
-    s->otg_total   = diag.otg_irq_cycles_total;
+    s->otg_total   = (uint32_t)diag.otg_irq_cycles_total;
     s->otg_max     = diag.otg_irq_cycles_max;
     s->usb_out_calls    = diag.usb_out_calls;
     s->usb_out_max_gap  = diag.usb_out_max_gap_ticks;
@@ -729,6 +826,19 @@ fault_handler_report_task(void)
             prior_diag.otg_irq_count        = diag.otg_irq_count;
             prior_diag.otg_irq_cycles_total = diag.otg_irq_cycles_total;
             prior_diag.otg_irq_cycles_max   = diag.otg_irq_cycles_max;
+            prior_diag.rt_tick_count        = diag.rt_tick_count;
+            prior_diag.rt_tick_cycles_max   = diag.rt_tick_cycles_max;
+            prior_diag.rt_tick_cycles_total = diag.rt_tick_cycles_total;
+            prior_diag.rt_eval_n            = diag.rt_eval_n;
+            prior_diag.rt_eval_cycles_max   = diag.rt_eval_cycles_max;
+            prior_diag.rt_eval_cycles_total = diag.rt_eval_cycles_total;
+            prior_diag.rt_dvel_n            = diag.rt_dvel_n;
+            prior_diag.rt_dvel_cycles_max   = diag.rt_dvel_cycles_max;
+            prior_diag.rt_dvel_cycles_total = diag.rt_dvel_cycles_total;
+            for (uint32_t i = 0; i < DIAG_HIST_NBUCKETS; i++) {
+                prior_diag.tim5_irq_buckets[i] = diag.tim5_irq_buckets[i];
+                prior_diag.rt_tick_buckets[i]  = diag.rt_tick_buckets[i];
+            }
             prior_diag.usb_out_calls        = diag.usb_out_calls;
             prior_diag.usb_out_max_gap_ticks = diag.usb_out_max_gap_ticks;
             prior_diag.usb_in_calls         = diag.usb_in_calls;
@@ -866,15 +976,35 @@ fault_handler_report_task(void)
     // with 32 entries in one go). Across 30 emit cycles we get plenty
     // of redundancy for the host to pick up at least one full pass.
     if (prior_diag_present) {
-        output("prior_diag_summary boot %u tim5_n %u tim5_max_cyc %u tim5_total_cyc %u"
-               " otg_n %u otg_max_cyc %u otg_total_cyc %u",
+        // *_total_cyc fields are u64 — split as lo/hi u32 pairs for Klipper's
+        // output() which only knows %u. Combine on host: total = (hi<<32)|lo.
+        output("prior_diag_summary boot %u tim5_n %u tim5_max_cyc %u"
+               " tim5_total_lo %u tim5_total_hi %u",
                prior_diag.boot_count,
                prior_diag.tim5_irq_count,
                prior_diag.tim5_irq_cycles_max,
-               prior_diag.tim5_irq_cycles_total,
+               (uint32_t)(prior_diag.tim5_irq_cycles_total & 0xFFFFFFFFu),
+               (uint32_t)(prior_diag.tim5_irq_cycles_total >> 32));
+        output("prior_diag_summary_rt rt_n %u rt_max_cyc %u"
+               " rt_total_lo %u rt_total_hi %u",
+               prior_diag.rt_tick_count,
+               prior_diag.rt_tick_cycles_max,
+               (uint32_t)(prior_diag.rt_tick_cycles_total & 0xFFFFFFFFu),
+               (uint32_t)(prior_diag.rt_tick_cycles_total >> 32));
+        output("prior_diag_summary_eval n %u max %u total_lo %u total_hi %u",
+               prior_diag.rt_eval_n, prior_diag.rt_eval_cycles_max,
+               (uint32_t)(prior_diag.rt_eval_cycles_total & 0xFFFFFFFFu),
+               (uint32_t)(prior_diag.rt_eval_cycles_total >> 32));
+        output("prior_diag_summary_dvel n %u max %u total_lo %u total_hi %u",
+               prior_diag.rt_dvel_n, prior_diag.rt_dvel_cycles_max,
+               (uint32_t)(prior_diag.rt_dvel_cycles_total & 0xFFFFFFFFu),
+               (uint32_t)(prior_diag.rt_dvel_cycles_total >> 32));
+        output("prior_diag_summary_otg otg_n %u otg_max_cyc %u"
+               " otg_total_lo %u otg_total_hi %u",
                prior_diag.otg_irq_count,
                prior_diag.otg_irq_cycles_max,
-               prior_diag.otg_irq_cycles_total);
+               (uint32_t)(prior_diag.otg_irq_cycles_total & 0xFFFFFFFFu),
+               (uint32_t)(prior_diag.otg_irq_cycles_total >> 32));
         output("prior_diag_tasks out_n %u out_max_gap %u in_n %u in_max_gap %u"
                " drain_n %u drain_max_gap %u stat_n %u stat_max_gap %u",
                prior_diag.usb_out_calls,
@@ -893,6 +1023,32 @@ fault_handler_report_task(void)
                prior_diag.tx_drops_klipper_last_max,
                prior_diag.ring_seq,
                prior_diag.ring_overflow);
+        // IRQ duration histogram (buckets are 2048 DWT cycles ≈ 3.94 µs each
+        // on H7; bucket 15 absorbs everything ≥59 µs — see tim5_max_cyc /
+        // rt_max_cyc for the absolute peak). Klipper's wire framing caps at
+        // MESSAGE_MAX=64 bytes per output(), so each histogram is split
+        // across two lines (low / high 8 buckets) to stay well below that
+        // limit. The lo line carries the bucket count for context.
+        output("prior_diag_hist_irq_lo b0 %u b1 %u b2 %u b3 %u b4 %u b5 %u b6 %u b7 %u",
+               prior_diag.tim5_irq_buckets[0], prior_diag.tim5_irq_buckets[1],
+               prior_diag.tim5_irq_buckets[2], prior_diag.tim5_irq_buckets[3],
+               prior_diag.tim5_irq_buckets[4], prior_diag.tim5_irq_buckets[5],
+               prior_diag.tim5_irq_buckets[6], prior_diag.tim5_irq_buckets[7]);
+        output("prior_diag_hist_irq_hi b8 %u b9 %u b10 %u b11 %u b12 %u b13 %u b14 %u b15 %u",
+               prior_diag.tim5_irq_buckets[8], prior_diag.tim5_irq_buckets[9],
+               prior_diag.tim5_irq_buckets[10], prior_diag.tim5_irq_buckets[11],
+               prior_diag.tim5_irq_buckets[12], prior_diag.tim5_irq_buckets[13],
+               prior_diag.tim5_irq_buckets[14], prior_diag.tim5_irq_buckets[15]);
+        output("prior_diag_hist_rt_lo b0 %u b1 %u b2 %u b3 %u b4 %u b5 %u b6 %u b7 %u",
+               prior_diag.rt_tick_buckets[0], prior_diag.rt_tick_buckets[1],
+               prior_diag.rt_tick_buckets[2], prior_diag.rt_tick_buckets[3],
+               prior_diag.rt_tick_buckets[4], prior_diag.rt_tick_buckets[5],
+               prior_diag.rt_tick_buckets[6], prior_diag.rt_tick_buckets[7]);
+        output("prior_diag_hist_rt_hi b8 %u b9 %u b10 %u b11 %u b12 %u b13 %u b14 %u b15 %u",
+               prior_diag.rt_tick_buckets[8], prior_diag.rt_tick_buckets[9],
+               prior_diag.rt_tick_buckets[10], prior_diag.rt_tick_buckets[11],
+               prior_diag.rt_tick_buckets[12], prior_diag.rt_tick_buckets[13],
+               prior_diag.rt_tick_buckets[14], prior_diag.rt_tick_buckets[15]);
         // Walk the ring in stored order (head = next write slot, so the
         // OLDEST entry is at index `head`). Emit up to 4 per cycle so 30
         // cycles cover all 32 entries with margin.

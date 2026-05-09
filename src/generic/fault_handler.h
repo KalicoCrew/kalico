@@ -35,6 +35,10 @@ void diag_task_heartbeat(volatile uint32_t *calls,
 void diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles);
 void diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles);
 
+// Histogram accounting for the runtime_handle_tick subwindow alone. Call
+// from the TIM5 ISR with the already-computed `after - before` cycle delta.
+void diag_runtime_tick_account(uint32_t cycles);
+
 // Heartbeat slot accessors — pointer to the BKPSRAM struct member, suitable
 // to pass into diag_task_heartbeat. Each function names the task slot.
 volatile uint32_t *diag_slot_usb_out_calls(void);
