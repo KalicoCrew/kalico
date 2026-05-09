@@ -196,6 +196,93 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     result
 }
 
+/// Evaluate `P(u)` and `dP/du` simultaneously from raw cps + knots slices,
+/// running the de Boor recurrence and its derivative recurrence in parallel.
+/// Saves a second de Boor pyramid pass vs calling `eval_polynomial` and
+/// `eval_derivative` separately.
+///
+/// Per-pass cost is `O(p^2)` arithmetic ops; this function does `~2x` the
+/// work of `eval_polynomial` alone, vs `~3x` if you call eval and derivative
+/// separately (eval pays for the lowered curve's de Boor, plus its own
+/// init / find_knot_span). On the H7 at degree 9 / 82 cps / 92 knots, the
+/// combined form is materially cheaper than the sum of the separate calls.
+///
+/// MCU hot path: callers are responsible for ensuring slice shapes satisfy
+/// `knots.len() == cps.len() + degree + 1` and that the curve was validated
+/// upstream (e.g. CurvePool on segment load).
+///
+/// Polynomial (non-rational) only — for weighted curves go via separate
+/// `eval` + appropriate quotient-rule construction.
+///
+/// Reference: differentiate the de Boor recurrence
+/// `d^(r)_j = (1 - α) * d^(r-1)_{j-1} + α * d^(r-1)_j` w.r.t. `u`:
+///   `∂_u d^(r)_j = (1 - α) * ∂_u d^(r-1)_{j-1} + α * ∂_u d^(r-1)_j
+///                + (d^(r-1)_j - d^(r-1)_{j-1}) / denom`.
+/// Initial `∂_u d^(0)_j = 0` since the original cps don't depend on u.
+/// After full recurrence, `dd[p] = P'(u)`.
+#[inline]
+pub fn eval_polynomial_with_derivative<T: Float>(
+    cps: &[T],
+    knots: &[T],
+    degree: u8,
+    u: T,
+) -> (T, T) {
+    debug_assert!((degree as usize) <= MAX_DEGREE);
+    debug_assert!(knots.len() == cps.len() + (degree as usize) + 1);
+
+    if degree == 0 {
+        // Step function: derivative is 0 everywhere, value is the active cp.
+        let p = 0;
+        let n = cps.len();
+        let k = find_knot_span(knots, p, n, u);
+        return (cps[k], T::ZERO);
+    }
+
+    let p = degree as usize;
+    let n = cps.len();
+    let k = find_knot_span(knots, p, n, u);
+
+    let mut d = [T::ZERO; WORKSPACE_SIZE];
+    let mut dd = [T::ZERO; WORKSPACE_SIZE];
+    for j in 0..=p {
+        d[j] = cps[k - p + j];
+        // dd[j] = 0 — original cps don't depend on u, already in default.
+    }
+
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let lo = knots[k - p + j];
+            let hi = knots[k + 1 + j - r];
+            let denom = hi - lo;
+            // Save old d[j-1] / d[j] / dd[j-1] / dd[j] before any writes.
+            // (Reverse-j iteration means d[j-1] hasn't been touched at this r.)
+            let old_d_jm1 = d[j - 1];
+            let old_d_j = d[j];
+            let old_dd_jm1 = dd[j - 1];
+            let old_dd_j = dd[j];
+            if denom > T::ZERO {
+                let inv_denom = T::ONE / denom;
+                let alpha = (u - lo) * inv_denom;
+                let one_minus_alpha = T::ONE - alpha;
+                // dd[j] = (1-α) * dd[j-1] + α * dd[j]
+                //       + (d[j] - d[j-1]) / denom
+                dd[j] = one_minus_alpha * old_dd_jm1
+                    + alpha * old_dd_j
+                    + (old_d_j - old_d_jm1) * inv_denom;
+                d[j] = (old_d_j - old_d_jm1).mul_add(alpha, old_d_jm1);
+            } else {
+                // Degenerate knot interval: alpha undefined, freeze d[j] to
+                // d[j-1] and dd[j] to dd[j-1] (consistent with the
+                // alpha=0 fallback in `de_boor_inner`).
+                d[j] = old_d_jm1;
+                dd[j] = old_dd_jm1;
+            }
+        }
+    }
+
+    (d[p], dd[p])
+}
+
 /// Evaluate a scalar B-spline NURBS at `u` directly from raw cps + knots
 /// slices, without going through `ScalarNurbsRef::try_new` (which re-runs the
 /// full O(n) NURBS-invariant validation on every call). MCU hot path: callers
@@ -570,6 +657,81 @@ mod tests {
             (actual - expected).abs() < 1e-6,
             "got {actual}, expected {expected}"
         );
+    }
+
+    #[test]
+    fn eval_polynomial_with_derivative_matches_separate_calls_quadratic() {
+        let curve = quadratic_curve_f64();
+        for u_pct in 0..=100 {
+            let u = u_pct as f64 / 100.0;
+            let (v_combined, d_combined) = eval_polynomial_with_derivative(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            let v_sep = eval_polynomial(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            let d_sep = eval_derivative(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            assert!(
+                (v_combined - v_sep).abs() < 1e-12,
+                "u={u}: combined value {v_combined} vs separate {v_sep}"
+            );
+            assert!(
+                (d_combined - d_sep).abs() < 1e-12,
+                "u={u}: combined deriv {d_combined} vs separate {d_sep}"
+            );
+        }
+    }
+
+    #[test]
+    fn eval_polynomial_with_derivative_matches_separate_calls_cubic() {
+        // Non-uniform 5-cp cubic, exercises a non-trivial knot span.
+        let curve = crate::ScalarNurbs::try_new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 2.5, 4.0, 5.0],
+            None,
+        )
+        .unwrap();
+        for u_pct in 0..=100 {
+            let u = u_pct as f64 / 100.0;
+            let (v_combined, d_combined) = eval_polynomial_with_derivative(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            let v_sep = eval_polynomial(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            let d_sep = eval_derivative(
+                curve.control_points(),
+                curve.knots(),
+                curve.degree(),
+                u,
+            );
+            assert!(
+                (v_combined - v_sep).abs() < 1e-12,
+                "u={u}: combined value {v_combined} vs separate {v_sep}"
+            );
+            assert!(
+                (d_combined - d_sep).abs() < 1e-12,
+                "u={u}: combined deriv {d_combined} vs separate {d_sep}"
+            );
+        }
     }
 
     #[cfg(feature = "host")]

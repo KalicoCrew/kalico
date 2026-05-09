@@ -59,23 +59,6 @@ fn diag_eval_record(cycles: u32) {
 
 #[inline(always)]
 #[allow(unsafe_code)]
-fn diag_dvel_record(cycles: u32) {
-    #[cfg(target_os = "none")]
-    {
-        unsafe extern "C" {
-            fn diag_rt_dvel_account(cycles: u32);
-        }
-        // SAFETY: stable C ABI symbol; takes one u32 by value, no aliasing.
-        unsafe { diag_rt_dvel_account(cycles) }
-    }
-    #[cfg(not(target_os = "none"))]
-    {
-        let _ = cycles;
-    }
-}
-
-#[inline(always)]
-#[allow(unsafe_code)]
 fn diag_curve_meta_record(axis_idx: u32, degree: u32, cps_len: u32, knots_len: u32) {
     #[cfg(target_os = "none")]
     {
@@ -661,9 +644,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let duration = current.duration().max(1) as f32;
         let u = (t_segment as f32 / duration).clamp(0.0, 1.0);
 
-        // -- X axis --
-        let x = if current.x_handle.is_unused_sentinel() {
-            0.0
+        // -- X axis -- (combined position + dx/du from one de Boor walk)
+        let (x, dx_du_x) = if current.x_handle.is_unused_sentinel() {
+            (0.0, 0.0)
         } else {
             let Some(cv) = pool.resolve(current.x_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
@@ -682,8 +665,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 );
                 return Err(RuntimeError::InvalidHandle);
             };
-            match scalar_eval(&cv, u) {
-                Ok(v) => v,
+            match scalar_eval_with_derivative(&cv, u) {
+                Ok(pair) => pair,
                 Err(()) => {
                     self.latch_fault(
                         RuntimeError::InvalidCurve,
@@ -699,9 +682,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
         };
 
-        // -- Y axis --
-        let y = if current.y_handle.is_unused_sentinel() {
-            0.0
+        // -- Y axis -- (combined position + dy/du)
+        let (y, dx_du_y) = if current.y_handle.is_unused_sentinel() {
+            (0.0, 0.0)
         } else {
             let Some(cv) = pool.resolve(current.y_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
@@ -720,8 +703,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 );
                 return Err(RuntimeError::InvalidHandle);
             };
-            match scalar_eval(&cv, u) {
-                Ok(v) => v,
+            match scalar_eval_with_derivative(&cv, u) {
+                Ok(pair) => pair,
                 Err(()) => {
                     self.latch_fault(
                         RuntimeError::InvalidCurve,
@@ -737,9 +720,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
         };
 
-        // -- Z axis --
-        let z = if current.z_handle.is_unused_sentinel() {
-            0.0
+        // -- Z axis -- (combined position + dz/du)
+        let (z, dx_du_z) = if current.z_handle.is_unused_sentinel() {
+            (0.0, 0.0)
         } else {
             let Some(cv) = pool.resolve(current.z_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
@@ -758,8 +741,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 );
                 return Err(RuntimeError::InvalidHandle);
             };
-            match scalar_eval(&cv, u) {
-                Ok(v) => v,
+            match scalar_eval_with_derivative(&cv, u) {
+                Ok(pair) => pair,
                 Err(()) => {
                     self.latch_fault(
                         RuntimeError::InvalidCurve,
@@ -888,30 +871,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
 
         // Endstop tick is after tick-N evaluation but before tick-N pulse
-        // intent. No no_std borrowed derivative accessor exists, so this
-        // degree-lowers the scalar NURBS on stack and evaluates dx/du here.
+        // intent. The per-axis dx/du was computed alongside the position
+        // value via `scalar_eval_with_derivative`'s combined de Boor walk
+        // — no second pass needed. `velocity_q16_from_dx_du` just rescales
+        // to the q16 endstop trip-checker units.
         let v_per_axis_q16 = [
-            axis_velocity_q16(
-                pool,
-                current.x_handle,
-                u,
-                duration,
-                self.one_tick_cycles_value,
-            ),
-            axis_velocity_q16(
-                pool,
-                current.y_handle,
-                u,
-                duration,
-                self.one_tick_cycles_value,
-            ),
-            axis_velocity_q16(
-                pool,
-                current.z_handle,
-                u,
-                duration,
-                self.one_tick_cycles_value,
-            ),
+            velocity_q16_from_dx_du(dx_du_x, duration, self.one_tick_cycles_value),
+            velocity_q16_from_dx_du(dx_du_y, duration, self.one_tick_cycles_value),
+            velocity_q16_from_dx_du(dx_du_z, duration, self.one_tick_cycles_value),
         ];
         if self.poll_endstop_trip(now, v_per_axis_q16, trace, shared) {
             return Err(RuntimeError::HomingTrip);
@@ -1015,13 +982,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     }
 }
 
-/// Evaluate a scalar NURBS curve at parameter `u`. Returns the scalar value
-/// or `Err(())` if the curve data is malformed (degree/knot/CP mismatch).
+/// Plain-eval form for the E-axis paths (segment-retire endpoint sync and
+/// Independent-mode E position) — they don't need the derivative, and E
+/// is not in the per-tick X/Y/Z hot path. Trips one `find_knot_span` +
+/// one de Boor walk, no derivative pyramid.
 fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
-    let t0 = diag_cyccnt();
-    // Cheap shape sanity check (degree fits, knots length matches degree + cps).
-    // CurvePool validates the full NURBS invariants on segment load, so the
-    // hot path skips ScalarNurbsRef::try_new's O(n) revalidation per tick.
     let p = usize::from(curve.degree);
     if p > nurbs::MAX_DEGREE
         || curve.knots.len() != curve.control_points.len() + p + 1
@@ -1029,7 +994,34 @@ fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
     {
         return Err(());
     }
-    let result = nurbs::eval::eval_polynomial(
+    Ok(nurbs::eval::eval_polynomial(
+        curve.control_points,
+        curve.knots,
+        curve.degree,
+        u,
+    ))
+}
+
+/// Evaluate a scalar NURBS curve at `u`, returning `(P(u), dP/du)` from a
+/// single combined de Boor walk. The eval and derivative recurrences run
+/// in parallel, sharing `find_knot_span` + the d-array initialization +
+/// most of the pyramid (~2× the work of plain eval, vs ~3× for two
+/// separate passes).
+///
+/// X/Y/Z always need `dx/du` for the endstop trip-checker, so the combined
+/// form is the universal hot path. Derivative-only callers would route
+/// through `nurbs::eval::eval_derivative` (the public windowed form), but
+/// none exist in the runtime crate today.
+fn scalar_eval_with_derivative(curve: &CurveView<'_>, u: f32) -> Result<(f32, f32), ()> {
+    let t0 = diag_cyccnt();
+    let p = usize::from(curve.degree);
+    if p > nurbs::MAX_DEGREE
+        || curve.knots.len() != curve.control_points.len() + p + 1
+        || curve.control_points.is_empty()
+    {
+        return Err(());
+    }
+    let result = nurbs::eval::eval_polynomial_with_derivative(
         curve.control_points,
         curve.knots,
         curve.degree,
@@ -1040,37 +1032,12 @@ fn scalar_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
     Ok(result)
 }
 
-fn axis_velocity_q16(
-    pool: &CurvePool,
-    handle: CurveHandle,
-    u: f32,
-    duration_cycles: f32,
-    one_tick_cycles_value: u64,
-) -> u32 {
-    let t0 = diag_cyccnt();
-    let result = axis_velocity_q16_inner(pool, handle, u, duration_cycles, one_tick_cycles_value);
-    let t1 = diag_cyccnt();
-    diag_dvel_record(t1.wrapping_sub(t0));
-    result
-}
-
-#[inline(always)]
-fn axis_velocity_q16_inner(
-    pool: &CurvePool,
-    handle: CurveHandle,
-    u: f32,
-    duration_cycles: f32,
-    one_tick_cycles_value: u64,
-) -> u32 {
-    if handle.is_unused_sentinel() {
-        return 0;
-    }
-    let Some(curve) = pool.resolve(handle) else {
-        return 0;
-    };
-    let Ok(dx_du) = scalar_derivative_eval(&curve, u) else {
-        return 0;
-    };
+/// Scale a `dP/du` (in the segment's normalized `u ∈ [0,1]` parameterization)
+/// to the q16 velocity units the endstop trip-checker expects (`steps/sec`
+/// scaled by `2^16`). Pulled out of the old `axis_velocity_q16` so callers
+/// can feed in a `dx_du` they already computed alongside the position.
+#[inline]
+fn velocity_q16_from_dx_du(dx_du: f32, duration_cycles: f32, one_tick_cycles_value: u64) -> u32 {
     if duration_cycles <= 0.0 {
         return 0;
     }
@@ -1083,25 +1050,6 @@ fn axis_velocity_q16_inner(
     } else {
         scaled as u32
     }
-}
-
-fn scalar_derivative_eval(curve: &CurveView<'_>, u: f32) -> Result<f32, ()> {
-    if curve.degree == 0 {
-        return Ok(0.0);
-    }
-    // Bounds check up front: shapes that would tripped indexing inside
-    // eval_derivative now bail cleanly here.
-    let p = usize::from(curve.degree);
-    let n = curve.control_points.len();
-    if n < 2 || curve.knots.len() < n + p + 1 {
-        return Err(());
-    }
-    Ok(nurbs::eval::eval_derivative(
-        curve.control_points,
-        curve.knots,
-        curve.degree,
-        u,
-    ))
 }
 
 #[cfg(test)]
