@@ -378,45 +378,110 @@ impl ShaperState {
     }
 }
 
-/// Scan all `BezierPiece`s of every fitted segment's X / Y axes and return
-/// the absolute time (in the plan's own coordinate system) at which the
-/// path-speed `√(vx² + vy²)` is globally maximal. This is the start of the
-/// decel-to-zero ramp under the streaming planner's contract
-/// (`terminal_v = 0.0` => the profile decelerates monotonically from the
-/// peak to the path terminus). Sampling is per-piece on a dense uniform
-/// grid (32 samples / piece) — enough to bracket the peak well below the
-/// `T_commit` margin, with plenty of headroom for the post-shape
-/// dispatch-boundary calculation.
+/// Find the START of the path's terminal decel-to-zero ramp by walking
+/// backward from the path's terminus through dense `||v_xy(t)||` samples.
+///
+/// **Why this and not "time of global path-speed maximum":** the dispatch
+/// boundary is `t_decel_start - max_h`. If we naively reported "time of peak
+/// path-speed" we'd report end-of-accel / start-of-cruise on any move with
+/// a real cruise plateau, holding back the entire cruise + decel region
+/// from dispatch. Throughput suffers measurably on long-cruise jogs. Spec
+/// §3.2 explicitly defines `t_decel_start` as "the start of the terminal
+/// decel ramp" — we deliver that here.
+///
+/// **Algorithm.** Sample `||v_xy||` densely along every X/Y `BezierPiece`
+/// in time order (32 samples / piece — same density as the legacy peak
+/// finder, well below any post-shape feature size). Walk the sample list
+/// backward from the terminus while the forward-direction velocity is
+/// monotonically decreasing — i.e., while `v_earlier > v_later + epsilon`
+/// at each step. When the strict-decrease condition fails (cruise plateau
+/// or accel ramp reached), stop. The current sample time is the start of
+/// the trailing decel ramp.
+///
+/// **Epsilon.** A small absolute tolerance (`1e-6` mm/s squared, in the
+/// `v_sq` domain we compare on) absorbs floating-point noise on a true
+/// constant-v cruise. TOPP-RA's per-segment velocity caps can produce tiny
+/// numerical wiggles on a nominally-constant plateau; these are well
+/// below the threshold and correctly read as "still on the plateau."
+///
+/// **Edge cases.**
+/// - Pure accel-decel triangle (no cruise plateau): the walk stops at
+///   the peak (where `v_earlier` is just-below-peak and `v_later` is
+///   the peak, so `v_earlier > v_later + epsilon` is false). The peak
+///   time IS the start of decel under that trajectory shape, so this
+///   degenerates to the legacy "argmax velocity" answer — correct, and
+///   identical to the previous implementation on short / no-cruise
+///   moves where the bug had no observable effect.
+/// - All-zero / fewer-than-2 samples (degenerate plan): fall back to
+///   `fitted[0].t_start`.
+/// - Multiple `FittedSegment`s chain naturally — we flatten all pieces
+///   in time order before walking.
 fn find_decel_start_time(fitted: &[FittedSegment]) -> f64 {
     const SAMPLES_PER_PIECE: usize = 32;
-    let mut best_t = fitted[0].t_start;
-    let mut best_v_sq = -1.0_f64;
+    /// Absolute tolerance on `v_sq` (mm²/s²) below which we treat two samples
+    /// as "equal" for the monotonic-decrease check. Conservatively small —
+    /// well below any post-shape feature on production trajectories.
+    const V_SQ_EPSILON: f64 = 1e-6;
 
+    // Walk every piece in time order, accumulating (t, v_sq) samples.
+    // We sample v_sq rather than v to avoid a `sqrt` per sample; the
+    // monotonic-decrease check is sign-preserving under `sqrt` so working
+    // in v_sq is equivalent.
+    let mut samples: Vec<(f64, f64)> = Vec::new();
     for f in fitted {
         let x_pieces = nurbs::bezier::extract_bezier_pieces(&f.axes[0]);
         let y_pieces = nurbs::bezier::extract_bezier_pieces(&f.axes[1]);
         for (xp, yp) in x_pieces.iter().zip(y_pieces.iter()) {
             // X and Y pieces share the same time-domain partition (they
             // came out of the same C1-Hermite refit). Sample along X's
-            // domain and combine the per-axis velocities for `||v||`.
+            // domain and combine the per-axis velocities for `||v||²`.
             let dx = xp.differentiate();
             let dy = yp.differentiate();
             let u0 = xp.u_start;
             let u1 = xp.u_end;
-            for s in 0..=SAMPLES_PER_PIECE {
+            // To avoid duplicating boundary samples across adjacent pieces
+            // (which would inflate `samples.len()` without changing the
+            // walk's outcome), only emit the right endpoint here; the next
+            // piece's iteration will emit its left endpoint as its own
+            // left endpoint. We still emit the very-first piece's left
+            // endpoint by initializing the loop from `s = 0` on the first
+            // piece only.
+            let start_s = if samples.is_empty() { 0 } else { 1 };
+            for s in start_s..=SAMPLES_PER_PIECE {
                 let t = u0 + (u1 - u0) * (s as f64) / (SAMPLES_PER_PIECE as f64);
                 let vx = dx.evaluate(t);
                 let vy = dy.evaluate(t);
                 let v_sq = vx * vx + vy * vy;
-                if v_sq > best_v_sq {
-                    best_v_sq = v_sq;
-                    best_t = t;
-                }
+                samples.push((t, v_sq));
             }
         }
     }
 
-    best_t
+    // Degenerate cases — fall back to the path start.
+    if samples.len() < 2 {
+        return fitted[0].t_start;
+    }
+
+    // Walk backward. At each step compare v_sq[earlier] vs v_sq[later]:
+    // if forward-decel monotonically decreasing (`v_sq[earlier] >
+    // v_sq[later] + eps`), continue back; otherwise stop. The sample
+    // index where we stopped is the start of the trailing decel ramp.
+    let mut i = samples.len() - 1;
+    while i > 0 {
+        let v_later = samples[i].1;
+        let v_earlier = samples[i - 1].1;
+        if v_earlier > v_later + V_SQ_EPSILON {
+            // Forward decel — `i-1 → i` showed velocity dropping.
+            // Step further back; the decel ramp continues.
+            i -= 1;
+        } else {
+            // Cruise plateau or accel ramp reached — `i-1 → i` did NOT
+            // strictly decel. Stop. Sample `i` is the start of the
+            // terminal decel ramp.
+            break;
+        }
+    }
+    samples[i].0
 }
 
 // ---------------------------------------------------------------------------
@@ -999,12 +1064,12 @@ mod tests {
 
         // The chained plan covers move 1 + move 2 (2 mm total) and so
         // takes strictly longer than the move-1-only plan (1 mm). The
-        // peak of the path speed (`t_decel_start`) can be earlier in the
-        // chained plan than in the move-1-only plan — over a longer path
-        // TOPP-RA reaches a higher peak earlier and spends more of the
-        // total duration in decel — but the **decel ramp itself** runs
-        // from `t_decel_start` all the way to `t_appended`, which is
-        // strictly longer than the move-1-only plan's full duration.
+        // **start of the terminal decel ramp** (`t_decel_start`) sits
+        // at the cruise-to-decel boundary; for a longer path with a
+        // longer cruise plateau it can land further into the plan than
+        // for a shorter path. What we can assert unconditionally is
+        // that the decel ramp itself runs from `t_decel_start` all the
+        // way to `t_appended` and occupies a non-empty trailing region.
         assert!(
             state.t_appended > t_appended_after_move_1,
             "two-move plan must take longer than one-move plan: \
@@ -1016,9 +1081,9 @@ mod tests {
             state.t_decel_start < state.t_appended,
             "decel ramp must occupy a non-empty tail of the plan",
         );
-        // Sanity: the move-1-only decel start was strictly past 0; the
-        // chained plan's decel ramp is much longer, so its decel-start /
-        // t_appended ratio is closer to 0.5 (peak near the midpoint).
+        // Sanity reference; not asserted-on directly because the
+        // move-1-only vs chained decel-start relationship depends on
+        // TOPP-RA's peak shape under each input.
         let _ = t_decel_after_move_1;
     }
 
@@ -1081,5 +1146,174 @@ mod tests {
         // got rewritten by the new plan; the original t_end is no longer
         // a meaningful cursor). Both moves are present.
         assert_eq!(state.uncommitted_moves.len(), 2);
+    }
+
+    /// Spec §3.2 correctness: on a move with a real cruise plateau,
+    /// `t_decel_start` must land at the **start of the terminal decel
+    /// ramp**, not at the end-of-accel / start-of-cruise boundary.
+    ///
+    /// Why this matters: the dispatch boundary is `t_decel_start - max_h`.
+    /// If `t_decel_start` landed at end-of-accel (the bug-symptom on
+    /// the prior `find_decel_start_time` implementation, which reported
+    /// the time of global path-speed maximum), almost the entire
+    /// cruise + decel region would be held back from dispatch on a
+    /// long-cruise jog. Throughput suffers measurably.
+    ///
+    /// **Move:** 2000 mm pure-X. With the test context's `v_max =
+    /// 500 mm/s`, `a_max = 5_000 mm/s²` the unshaped profile cruises
+    /// at 500 mm/s for the bulk of the move; post-shape (smooth-MZV
+    /// @ 60 Hz, β-medium derated, C¹ refit at 0.5 mm tolerance) the
+    /// plateau remains a clearly dominant flat region (~3 s out of
+    /// ~4.3 s total). On a shorter move (~200 mm at the same limits)
+    /// the smooth-shaper / refit pipeline smears the accel and decel
+    /// ramps into the cruise and there is no recognizable plateau —
+    /// the test would degenerate into pinning a pure-bell shape and
+    /// neither the old nor the new `find_decel_start_time` would
+    /// have a meaningfully different answer there.
+    ///
+    /// That gives us the cruise plateau the bug-symptom would have
+    /// hidden behind the held-back boundary.
+    #[test]
+    fn t_decel_start_lands_on_actual_decel_for_cruise_move() {
+        let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+        // Bump the grid density so TOPP-RA resolves the long cruise
+        // plateau cleanly under Fixed-grid sampling.
+        let mut ctx = replan_context();
+        ctx.grid_strategy = temporal::multi::GridStrategy::Fixed(50);
+        let seg = linear_x_segment(0.0, 2000.0, 500.0);
+
+        state
+            .append_and_replan(seg, &ctx)
+            .expect("long-cruise append should succeed");
+
+        let t_appended = state.t_appended;
+        let t_decel_start = state.t_decel_start;
+
+        assert!(t_decel_start > 0.0 && t_decel_start < t_appended);
+
+        // Sample path-speed on a dense uniform grid across the whole
+        // move. 400 samples → ~1-2 ms resolution on a ~500 ms move.
+        const N: usize = 400;
+        let dt = t_appended / (N as f64);
+        let samples: Vec<(f64, f64)> = (0..=N)
+            .map(|i| {
+                let t = (i as f64) * dt;
+                (t, state.read_path_speed_at(t, 0.0))
+            })
+            .collect();
+
+        // (1) Samples strictly after `t_decel_start` must be
+        //     monotonically non-increasing — this is the decel ramp.
+        //     Allow a small absolute tolerance (1e-3 mm/s) so the C¹
+        //     refit's piece-boundary wobble doesn't falsely trip the
+        //     check.
+        let decel_samples: Vec<&(f64, f64)> = samples
+            .iter()
+            .filter(|(t, _)| *t > t_decel_start + 1e-9 && *t <= t_appended)
+            .collect();
+        assert!(
+            decel_samples.len() >= 4,
+            "must have at least 4 samples on the decel ramp; got {}",
+            decel_samples.len(),
+        );
+        for w in decel_samples.windows(2) {
+            let (t_a, v_a) = *w[0];
+            let (t_b, v_b) = *w[1];
+            assert!(
+                v_a >= v_b - 1e-3,
+                "decel ramp must be monotonically non-increasing: \
+                 v({}) = {} mm/s but v({}) = {} mm/s — that is forward-accel \
+                 inside the supposed decel region",
+                t_a, v_a, t_b, v_b,
+            );
+        }
+
+        // (2) There must exist a clear cruise plateau **before**
+        //     `t_decel_start` — a contiguous stretch where path-speed
+        //     varies by less than 1 mm/s across the window. We search
+        //     for the longest such stretch within [0, t_decel_start]
+        //     and assert it is non-trivial: at least 10% of the total
+        //     move duration. (The bug-symptom on the prior
+        //     implementation reported the time of global path-speed
+        //     maximum, which on a long-cruise plateau is the **first**
+        //     sample to hit v_peak — i.e., somewhere in or just past
+        //     the accel ramp. With the bug, there would be at most a
+        //     single-piece-wide "plateau" candidate; the new behaviour
+        //     gives a multi-sample wide one.)
+        let mut best_len_samples = 0usize;
+        let mut best_window: Option<(f64, f64, f64)> = None; // (t_start, t_end, v_avg)
+        let plateau_v_tol = 1.0f64; // mm/s — flat-enough threshold
+        let mut i = 0usize;
+        while i < samples.len() {
+            // Only consider plateau windows that end at or before t_decel_start.
+            if samples[i].0 > t_decel_start {
+                break;
+            }
+            let v_i = samples[i].1;
+            // Plateau samples must also be at the high-velocity regime,
+            // so we don't accidentally find a "plateau" at the start
+            // where v ≈ 0 and stays near 0 for a few samples.
+            if v_i < 50.0 {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < samples.len()
+                && samples[j].0 <= t_decel_start + 1e-9
+                && (samples[j].1 - v_i).abs() < plateau_v_tol
+            {
+                j += 1;
+            }
+            let len = j - i;
+            if len > best_len_samples {
+                best_len_samples = len;
+                let t_start = samples[i].0;
+                let t_end = samples[j - 1].0;
+                let v_avg: f64 =
+                    samples[i..j].iter().map(|(_, v)| *v).sum::<f64>() / (len as f64);
+                best_window = Some((t_start, t_end, v_avg));
+            }
+            i = j.max(i + 1);
+        }
+
+        let (plateau_start, plateau_end, plateau_v) =
+            best_window.expect("a cruise plateau must exist before t_decel_start");
+        let plateau_duration = plateau_end - plateau_start;
+        assert!(
+            plateau_duration > t_appended * 0.10,
+            "cruise plateau must span >10% of the move ({:.4} s); \
+             found ({:.4}, {:.4}) = {:.4} s at v ≈ {:.2} mm/s — this is \
+             the bug-symptom (t_decel_start landed at end-of-accel so the \
+             cruise plateau got bundled into the decel side and shrank).",
+            t_appended,
+            plateau_start,
+            plateau_end,
+            plateau_duration,
+            plateau_v,
+        );
+
+        // (3) The plateau must end at or just before `t_decel_start`,
+        //     and the immediate post-plateau direction must be decel.
+        //     This is the crisp positive form of "`t_decel_start` sits
+        //     between cruise and decel."
+        assert!(
+            plateau_end <= t_decel_start + 1e-6,
+            "plateau end {} must be at or before t_decel_start {}",
+            plateau_end,
+            t_decel_start,
+        );
+        assert!(
+            plateau_end > t_decel_start - dt * 4.0,
+            "plateau end {} must be within a few samples of t_decel_start {} \
+             — the decel ramp starts right where cruise stops",
+            plateau_end,
+            t_decel_start,
+        );
+        // Plateau speed should be the high-regime value, not near zero.
+        assert!(
+            plateau_v > 50.0,
+            "plateau speed must be at the high-regime cruise value, got {:.2} mm/s",
+            plateau_v,
+        );
     }
 }
