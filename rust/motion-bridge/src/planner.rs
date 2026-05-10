@@ -25,7 +25,8 @@ use geometry::segment::CubicSegment;
 
 use crate::classify::ClassifiedMove;
 use crate::config::{PlannerConfig, PlannerLimits};
-use trajectory::{ShaperConfig, ShapedSegment};
+use trajectory::streaming::ShaperState;
+use trajectory::{AxisShaper, RequiredShaper, ShaperConfig, ShapedSegment};
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -93,12 +94,18 @@ impl PlannerHandle {
         let error = Arc::new(Mutex::new(None));
         let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
 
+        // Phase 1 plumbing: construct a `ShaperState` from the planner config
+        // and seed it at home_pos = [0; 4]. Homing wires the real home pose
+        // later (Phase 5). The state is owned by the planner thread.
+        let shapers = shaper_config_to_axis_shapers(&config.shaper);
+        let state = ShaperState::new([0.0; 4], &shapers);
+
         let error_thread = Arc::clone(&error);
         let last_thread = Arc::clone(&last_move_time_bits);
         let join = thread::Builder::new()
             .name("kalico-planner".to_string())
             .spawn(move || {
-                run_loop(rx, config, dispatch, error_thread, last_thread);
+                run_loop(rx, config, state, dispatch, error_thread, last_thread);
             })
             .expect("spawn planner thread");
 
@@ -206,6 +213,7 @@ fn store_print_time(bits: &AtomicU64, t: f64) {
 fn run_loop(
     rx: Receiver<PlannerMsg>,
     mut config: PlannerConfig,
+    mut state: ShaperState,
     dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
     error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
@@ -233,6 +241,7 @@ fn run_loop(
             &mut pending_config_update,
             &mut shutdown,
             &mut config,
+            &mut state,
         );
 
         // Drain until window is full or we hit a sync barrier.
@@ -251,6 +260,7 @@ fn run_loop(
                     &mut pending_config_update,
                     &mut shutdown,
                     &mut config,
+                    &mut state,
                 ),
                 Err(_) => break,
             }
@@ -260,14 +270,29 @@ fn run_loop(
         if !buffer.is_empty() {
             match run_pipeline(&buffer, &config) {
                 Ok(shaped) => {
+                    // Phase 1 plumbing: route the existing pipeline's output
+                    // through `ShaperState` to establish the seam. The shim's
+                    // `append_batch` would re-shape an already-shaped segment
+                    // (it ingests `FittedSegment`, the trajectory crate's
+                    // *pre-shape* per-segment form, which is not exposed
+                    // through the public `shape_batch` API), so for Phase 1
+                    // we stage the already-shaped output directly into
+                    // `pending_dispatch` and drain through the same handle
+                    // Phase 2+ will use. Behaviour is byte-identical to the
+                    // pre-Phase-1 direct-dispatch path; the only difference
+                    // is that `state.drain_committed()` is now the single
+                    // source of truth for committed shaped segments.
+                    state.pending_dispatch.extend(shaped);
+                    let drained = state.drain_committed();
+
                     // shape_batch emits zero-relative t_start/t_end (batch_t_start = 0.0
                     // in trajectory::beta), so the last segment's t_end is this batch's
                     // total duration. Sum is robust against future API changes.
                     let batch_dur: f64 =
-                        shaped.iter().map(|s| s.t_end - s.t_start).sum();
+                        drained.iter().map(|s| s.t_end - s.t_start).sum();
                     print_time += batch_dur;
                     store_print_time(&last_move_time_bits, print_time);
-                    for s in &shaped {
+                    for s in &drained {
                         if let Err(msg) = dispatch(s) {
                             *error.lock().unwrap() = Some(PlannerError::Dispatch(msg));
                             pending_flush = None;
@@ -300,7 +325,19 @@ fn run_loop(
         if let Some(update) = pending_config_update.take() {
             match update {
                 ConfigUpdate::Limits(l) => config.limits = l,
-                ConfigUpdate::Shaper(s) => config.shaper = s,
+                ConfigUpdate::Shaper(s) => {
+                    config.shaper = s;
+                    // Phase 1: rebuild the streaming-shaper kernels from the
+                    // new config. We fully re-seed at home_pos = [0; 4] for
+                    // now (homing wires the real pose later in Phase 5);
+                    // since `pending_dispatch` was drained immediately above
+                    // and the per-axis queues are not yet history-aware,
+                    // this is behaviour-equivalent to the prior direct-call
+                    // path, which simply re-built kernels inside the next
+                    // `shape_batch`.
+                    let shapers = shaper_config_to_axis_shapers(&config.shaper);
+                    state = ShaperState::new([0.0; 4], &shapers);
+                }
             }
         }
 
@@ -323,6 +360,7 @@ fn handle_msg(
     pending_config_update: &mut Option<ConfigUpdate>,
     shutdown: &mut bool,
     config: &mut PlannerConfig,
+    state: &mut ShaperState,
 ) {
     match msg {
         PlannerMsg::Move(m) => buffer.push(m.segment),
@@ -343,11 +381,42 @@ fn handle_msg(
         PlannerMsg::UpdateShaper(s) => {
             if buffer.is_empty() {
                 config.shaper = s;
+                // Phase 1 plumbing: re-seed the streaming-shaper state so its
+                // per-axis kernels match the new config. Behaviour-equivalent
+                // to the prior path (which rebuilt kernels inside the next
+                // `shape_batch`) because Phase 1 doesn't yet rely on history.
+                let shapers = shaper_config_to_axis_shapers(&config.shaper);
+                *state = ShaperState::new([0.0; 4], &shapers);
             } else {
                 *pending_config_update = Some(ConfigUpdate::Shaper(s));
             }
         }
         PlannerMsg::Shutdown => *shutdown = true,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShaperState construction helper
+// ---------------------------------------------------------------------------
+
+/// Convert the planner-config-level `ShaperConfig` (X/Y required + Z
+/// optional) into the per-axis `[Option<AxisShaper>; 4]` array
+/// `streaming::ShaperState::new` consumes (X, Y, Z, E). The E slot is `None`
+/// in Phase 1 — extruder follows the shaped XY arc-length and is not a
+/// separately shaped axis.
+fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
+    [
+        Some(required_to_axis(cfg.x)),
+        Some(required_to_axis(cfg.y)),
+        Some(cfg.z),
+        None,
+    ]
+}
+
+fn required_to_axis(req: RequiredShaper) -> AxisShaper {
+    match req {
+        RequiredShaper::SmoothZv { frequency_hz } => AxisShaper::SmoothZv { frequency_hz },
+        RequiredShaper::SmoothMzv { frequency_hz } => AxisShaper::SmoothMzv { frequency_hz },
     }
 }
 
