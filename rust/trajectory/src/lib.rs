@@ -180,6 +180,17 @@ pub enum ShapeError {
     /// Input segment buffer was empty.
     #[error("empty segment buffer")]
     EmptySegments,
+    /// A `Passthrough` shaper was requested on the X or Y axis. The current
+    /// β-medium loop assumes both X and Y are actively shaped; lifting this
+    /// limitation is Phase 3 scope. Returned only by [`plan_velocity`] today.
+    #[error("unsupported shaper configuration: Passthrough on X or Y is not supported")]
+    UnsupportedShaperOnXY,
+    /// A non-zero `initial_v` or `terminal_v` boundary velocity was requested.
+    /// Phase 2 callers must hand the planner a path that starts and ends at
+    /// rest; [`temporal::multi::plan_batch`] hard-codes zero boundary
+    /// velocities. Phase 3's `append_and_replan` will lift this.
+    #[error("unsupported boundary velocity: initial_v and terminal_v must both be 0.0")]
+    UnsupportedBoundaryVelocity,
 }
 
 // ---------------------------------------------------------------------------

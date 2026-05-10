@@ -77,12 +77,84 @@ pub fn beta_loop(
 /// β-medium loop interprets the post-shape peak in the trailing-`h` region of
 /// the last XY-motion segment. See [`SafetyMode`] documentation for the bound
 /// derivation (spec §3.6).
-#[allow(clippy::too_many_lines)] // Orchestration function — splitting hurts readability.
 pub fn beta_loop_with_safety(
     input: &ShapeBatchInput<'_>,
     partition: &BatchPartition,
     safety_mode: SafetyMode,
 ) -> Result<ShapeBatchOutput, ShapeError> {
+    // If there are no XY-motion runs, we only have E-gap segments.
+    if partition.runs.is_empty() {
+        return assemble_e_only_output(input, partition);
+    }
+
+    let outcome = beta_iterate_inner(input, partition, safety_mode)?;
+    assemble_output(
+        input,
+        partition,
+        outcome.result,
+        outcome.converged,
+        outcome.beta_warning,
+    )
+}
+
+/// Drive the β-medium loop over `partition` and return only the time-domain
+/// **fitted** (unshaped, but β-converged) segments. This is the planning half
+/// of the Phase-2 split (§5.2 of the streaming-shaper spec): no shaping
+/// convolution / refit / final assembly. The shaping half (Task 2.2's
+/// `emit_shaped`) consumes the returned `Vec<FittedSegment>` to produce the
+/// per-axis shaped `ScalarNurbs`.
+///
+/// Internally this still convolves and refits per iteration in order to
+/// compute the post-shape peak that drives the β-derate; only the final
+/// shaped output is discarded. Phase 2 keeps the full duplication; Phase 3
+/// will optimize by hoisting shaping out of the inner iteration when it
+/// exceeds peak-only computation needs.
+pub fn plan_velocity_inner(
+    input: &ShapeBatchInput<'_>,
+    partition: &BatchPartition,
+    safety_mode: SafetyMode,
+) -> Result<Vec<FittedSegment>, ShapeError> {
+    // No XY runs — nothing to plan. The shaping half handles E-only output.
+    if partition.runs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let outcome = beta_iterate_inner(input, partition, safety_mode)?;
+    Ok(outcome.result.fitted)
+}
+
+/// Outcome of the shared β-medium iteration loop. The terminal `BetaIterResult`
+/// carries the data both callers need (fitted, shaped, peaks, joining status,
+/// `global_ends`); `converged` and `beta_warning` are populated for
+/// `beta_loop_with_safety`'s `assemble_output` call and ignored by
+/// `plan_velocity_inner`.
+struct BetaIterationOutcome {
+    /// Final iteration's result.
+    result: BetaIterResult,
+    /// True iff some iteration produced a derate-free result. Forwarded to
+    /// [`assemble_output`] to set `beta_iters = 1` (vs `beta_max_iters`).
+    converged: bool,
+    /// `None` if `converged`; otherwise a diagnostic describing which segments
+    /// still exceed their machine limits at exhaustion.
+    beta_warning: Option<BetaWarning>,
+}
+
+/// Shared β-medium iteration kernel. Used by both [`beta_loop_with_safety`]
+/// (which then assembles the final `ShapeBatchOutput`) and
+/// [`plan_velocity_inner`] (which only needs `result.fitted`). The two
+/// callers differ only in what they do with the returned outcome — the
+/// iteration itself (kernel build, XY-index gather, TOPP-RA / fit / shape /
+/// peak per iteration, derate apply, exhaustion handling) is identical.
+///
+/// Caller is responsible for the "all-E-gap" fast path (`partition.runs`
+/// is empty); this function panics on an empty XY-index list rather than
+/// silently returning a degenerate result.
+#[allow(clippy::too_many_lines)] // Orchestration kernel — splitting hurts readability.
+fn beta_iterate_inner(
+    input: &ShapeBatchInput<'_>,
+    partition: &BatchPartition,
+    safety_mode: SafetyMode,
+) -> Result<BetaIterationOutcome, ShapeError> {
     // Pre-build kernels from config.
     let kernels = AxisKernels {
         x: input.shaper.x.to_kernel(),
@@ -97,10 +169,10 @@ pub fn beta_loop_with_safety(
     // The maximum half-support across all axes determines global padding needs.
     let t_sm_half_max = half_supports.x.max(half_supports.y).max(half_supports.z);
 
-    // If there are no XY-motion runs, we only have E-gap segments.
-    if partition.runs.is_empty() {
-        return assemble_e_only_output(input, partition);
-    }
+    debug_assert!(
+        !partition.runs.is_empty(),
+        "beta_iterate_inner caller must handle empty-runs fast path"
+    );
 
     // Machine a_max: immutable per-segment per-axis limits from the input.
     // We collect for all XY-motion segments across all runs.
@@ -168,15 +240,6 @@ pub fn beta_loop_with_safety(
             last_result = Some(result);
             converged = true;
             break;
-        }
-
-        // Check near-convergence: if worst ratio is within threshold, declare
-        // convergence with a warning.
-        if derate_info.worst_ratio > 1.0 - input.beta_convergence_ratio.recip() {
-            // Near-converged. Run one final iteration with the current derated
-            // limits and return with warning.
-            // (Actually, we already have the result for these limits. The derate
-            // info tells us the ratio is close. Apply the final derate and re-run.)
         }
 
         // Apply monotone derate: planning_a_max[seg][axis] *= machine / peak,
@@ -257,136 +320,11 @@ pub fn beta_loop_with_safety(
         }
     };
 
-    // Assemble the final output with E-gap segments inserted.
-    assemble_output(input, partition, result, converged, beta_warning)
-}
-
-/// Drive the β-medium loop over `partition` and return only the time-domain
-/// **fitted** (unshaped, but β-converged) segments. This is the planning half
-/// of the Phase-2 split (§5.2 of the streaming-shaper spec): no shaping
-/// convolution / refit / final assembly. The shaping half (Task 2.2's
-/// `emit_shaped`) consumes the returned `Vec<FittedSegment>` to produce the
-/// per-axis shaped `ScalarNurbs`.
-///
-/// Internally this still convolves and refits per iteration in order to
-/// compute the post-shape peak that drives the β-derate; only the final
-/// shaped output is discarded. Phase 2 keeps the full duplication; Phase 3
-/// will optimize by hoisting shaping out of the inner iteration when it
-/// exceeds peak-only computation needs.
-#[allow(clippy::too_many_lines)] // Orchestration function — mirrors `beta_loop_with_safety`.
-pub fn plan_velocity_inner(
-    input: &ShapeBatchInput<'_>,
-    partition: &BatchPartition,
-    safety_mode: SafetyMode,
-) -> Result<Vec<FittedSegment>, ShapeError> {
-    // Pre-build kernels from config.
-    let kernels = AxisKernels {
-        x: input.shaper.x.to_kernel(),
-        y: input.shaper.y.to_kernel(),
-        z: input.shaper.z.to_kernel(),
-    };
-    let half_supports = HalfSupports {
-        x: kernel_half_support(&kernels.x),
-        y: kernel_half_support(&kernels.y),
-        z: kernels.z.as_ref().map_or(0.0, kernel_half_support),
-    };
-    let t_sm_half_max = half_supports.x.max(half_supports.y).max(half_supports.z);
-
-    // No XY runs — nothing to plan. The shaping half handles E-only output.
-    if partition.runs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let all_xy_indices: Vec<usize> = partition
-        .runs
-        .iter()
-        .flat_map(|r| r.segment_range.clone())
-        .collect();
-
-    let machine_a_max: Vec<[f64; 3]> = all_xy_indices
-        .iter()
-        .map(|&i| input.segments[i].temporal.limits.a_max)
-        .collect();
-
-    let derate_machine_a_max = effective_machine_a_max(&machine_a_max, safety_mode);
-
-    let mut planning_a_max: Vec<[f64; 3]> = machine_a_max.clone();
-    let mut last_result: Option<BetaIterResult> = None;
-
-    for iteration in 0..input.beta_max_iters {
-        let result = match run_one_iteration(
-            input,
-            partition,
-            &planning_a_max,
-            &kernels,
-            &half_supports,
-            t_sm_half_max,
-        ) {
-            Ok(result) => result,
-            Err(_) if last_result.is_some() => break,
-            Err(e) => return Err(e),
-        };
-
-        let derate_info = compute_derate(&result.peaks, &derate_machine_a_max, &result.fitted);
-
-        if !derate_info.needs_derate {
-            return Ok(result.fitted);
-        }
-
-        for (seg_flat_idx, peak_per_axis) in result.peaks.iter().enumerate() {
-            for axis in 0..3 {
-                let peak = peak_per_axis[axis];
-                let machine = derate_machine_a_max[seg_flat_idx][axis];
-                if peak > machine {
-                    let fitted_span = axis_span(&result.fitted[seg_flat_idx].axes[axis]);
-                    if fitted_span < MIN_AXIS_SPAN_FOR_DERATE {
-                        continue;
-                    }
-
-                    let ratio = machine / peak;
-                    let floor = machine * BETA_ACCEL_MIN_RATIO;
-                    planning_a_max[seg_flat_idx][axis] = (planning_a_max[seg_flat_idx][axis]
-                        * ratio)
-                        .min(planning_a_max[seg_flat_idx][axis])
-                        .max(floor);
-                }
-            }
-        }
-
-        if iteration == input.beta_max_iters - 1 {
-            let final_result = match run_one_iteration(
-                input,
-                partition,
-                &planning_a_max,
-                &kernels,
-                &half_supports,
-                t_sm_half_max,
-            ) {
-                Ok(r) => r,
-                Err(_) => {
-                    last_result = Some(result);
-                    break;
-                }
-            };
-            last_result = Some(final_result);
-        } else {
-            last_result = Some(result);
-        }
-    }
-
-    let result = match last_result {
-        Some(r) => r,
-        None => run_one_iteration(
-            input,
-            partition,
-            &planning_a_max,
-            &kernels,
-            &half_supports,
-            t_sm_half_max,
-        )?,
-    };
-
-    Ok(result.fitted)
+    Ok(BetaIterationOutcome {
+        result,
+        converged,
+        beta_warning,
+    })
 }
 
 /// Build the effective per-segment per-axis machine accel limits used by the
@@ -1271,5 +1209,66 @@ mod tests {
         assert_eq!(output.segments[0].e_mode, EMode::Independent);
         assert!(output.segments[0].e_independent.is_some());
         assert!(output.segments[0].t_end > output.segments[0].t_start);
+    }
+
+    // ------------------------------------------------------------------
+    // Test 5: effective_machine_a_max — only last segment is derated
+    // ------------------------------------------------------------------
+    //
+    // Direct unit test of the spec §3.6 derate-target selection. The
+    // end-to-end planner can't witness this exactly because TOPP-RA's
+    // joining loop propagates segment N's tighter limit back through
+    // segment N-1's tail. This test asserts the invariant at its source.
+    #[test]
+    fn effective_machine_a_max_terminal_known_is_identity() {
+        let machine = vec![
+            [5_000.0, 5_000.0, 5_000.0],
+            [3_000.0, 4_000.0, 2_500.0],
+            [1_000.0, 1_500.0, 2_000.0],
+        ];
+        let effective = effective_machine_a_max(&machine, SafetyMode::TerminalKnown);
+        assert_eq!(effective, machine);
+    }
+
+    #[test]
+    fn effective_machine_a_max_worst_case_only_halves_last_segment() {
+        let machine = vec![
+            [5_000.0, 5_000.0, 5_000.0],
+            [3_000.0, 4_000.0, 2_500.0],
+            [1_000.0, 1_500.0, 2_000.0],
+        ];
+        let effective = effective_machine_a_max(&machine, SafetyMode::WorstCaseFuture);
+
+        // Segments 0 and 1 must be unchanged.
+        assert_eq!(effective[0], machine[0]);
+        assert_eq!(effective[1], machine[1]);
+        // Segment 2 (last) is halved on every axis.
+        for axis in 0..3 {
+            assert!(
+                (effective[2][axis] - machine[2][axis] * 0.5).abs() < 1e-12,
+                "axis {axis}: expected {} (half of {}), got {}",
+                machine[2][axis] * 0.5,
+                machine[2][axis],
+                effective[2][axis],
+            );
+        }
+    }
+
+    #[test]
+    fn effective_machine_a_max_worst_case_single_segment() {
+        // Single-segment edge case: the only segment IS the last segment.
+        let machine = vec![[5_000.0, 4_000.0, 3_000.0]];
+        let effective = effective_machine_a_max(&machine, SafetyMode::WorstCaseFuture);
+        assert_eq!(effective.len(), 1);
+        for axis in 0..3 {
+            assert!((effective[0][axis] - machine[0][axis] * 0.5).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn effective_machine_a_max_worst_case_empty_is_empty() {
+        let machine: Vec<[f64; 3]> = vec![];
+        let effective = effective_machine_a_max(&machine, SafetyMode::WorstCaseFuture);
+        assert!(effective.is_empty());
     }
 }

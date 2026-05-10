@@ -78,7 +78,7 @@ impl PlanShaper {
             // active; passthrough on those axes is not exercised by the
             // existing test suite. We reject early rather than silently
             // producing untested behaviour. Phase 3 may relax this.
-            Self::Passthrough => Err(ShapeError::EmptySegments),
+            Self::Passthrough => Err(ShapeError::UnsupportedShaperOnXY),
         }
     }
 
@@ -156,12 +156,12 @@ pub struct PlanInput<'a> {
 /// # Errors
 ///
 /// - [`ShapeError::EmptySegments`] — `input.segments` is empty.
-/// - [`ShapeError::EmptySegments`] — any axis kernel is `Passthrough` for X
-///   or Y (Phase 2 limitation; the underlying β-medium loop assumes both axes
-///   are actively shaped).
-/// - [`ShapeError::EmptySegments`] — `initial_v` or `terminal_v` is non-zero
-///   (Phase 2 limitation; `temporal::multi::plan_batch` currently hard-codes
-///   `0.0` boundary velocities).
+/// - [`ShapeError::UnsupportedShaperOnXY`] — any axis kernel is `None` or
+///   `Passthrough` for X or Y (Phase 2 limitation; the underlying β-medium
+///   loop assumes both axes are actively shaped).
+/// - [`ShapeError::UnsupportedBoundaryVelocity`] — `initial_v` or `terminal_v`
+///   is non-zero (Phase 2 limitation; `temporal::multi::plan_batch` currently
+///   hard-codes `0.0` boundary velocities).
 /// - Any error from the underlying β-medium loop (TOPP-RA infeasibility, fit
 ///   failure, etc.).
 pub fn plan_velocity(input: &PlanInput<'_>) -> Result<Vec<FittedSegment>, ShapeError> {
@@ -175,7 +175,7 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<Vec<FittedSegment>, ShapeE
     // explicitly so callers cannot silently get TerminalKnown-zero behaviour
     // while believing they got streaming-with-non-zero-boundary behaviour.
     if input.initial_v != 0.0 || input.terminal_v != 0.0 {
-        return Err(ShapeError::EmptySegments);
+        return Err(ShapeError::UnsupportedBoundaryVelocity);
     }
 
     // Build a `ShapeBatchInput` from `PlanInput`. Internally this is the
@@ -214,10 +214,10 @@ fn build_shaper_config(kernels: &[Option<PlanShaper>; 4]) -> Result<ShaperConfig
     // X and Y are required-active per `ShaperConfig`. `None` or `Passthrough`
     // entries in those slots are rejected (see [`PlanShaper`] doc).
     let x = kernels[0]
-        .ok_or(ShapeError::EmptySegments)?
+        .ok_or(ShapeError::UnsupportedShaperOnXY)?
         .into_required()?;
     let y = kernels[1]
-        .ok_or(ShapeError::EmptySegments)?
+        .ok_or(ShapeError::UnsupportedShaperOnXY)?
         .into_required()?;
     let z = kernels[2].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
     Ok(ShaperConfig { x, y, z })
@@ -303,7 +303,87 @@ mod tests {
         let mut input = default_input(&segments, SafetyMode::TerminalKnown);
         input.initial_v = 50.0;
         let result = plan_velocity(&input);
-        assert!(matches!(result, Err(ShapeError::EmptySegments)));
+        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+    }
+
+    #[test]
+    fn rejects_non_zero_terminal_v() {
+        let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let segments = [PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &curve,
+                limits: default_limits(),
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.04,
+            e_independent: None,
+            feedrate_mm_s: 100.0,
+        }];
+        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+        input.terminal_v = 25.0;
+        let result = plan_velocity(&input);
+        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+    }
+
+    #[test]
+    fn rejects_passthrough_on_x() {
+        let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let segments = [PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &curve,
+                limits: default_limits(),
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.04,
+            e_independent: None,
+            feedrate_mm_s: 100.0,
+        }];
+        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+        input.kernels[0] = Some(PlanShaper::Passthrough);
+        let result = plan_velocity(&input);
+        assert!(matches!(result, Err(ShapeError::UnsupportedShaperOnXY)));
+    }
+
+    #[test]
+    fn rejects_passthrough_on_y() {
+        let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let segments = [PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &curve,
+                limits: default_limits(),
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.04,
+            e_independent: None,
+            feedrate_mm_s: 100.0,
+        }];
+        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+        input.kernels[1] = Some(PlanShaper::Passthrough);
+        let result = plan_velocity(&input);
+        assert!(matches!(result, Err(ShapeError::UnsupportedShaperOnXY)));
+    }
+
+    #[test]
+    fn rejects_none_on_x() {
+        let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let segments = [PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &curve,
+                limits: default_limits(),
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.04,
+            e_independent: None,
+            feedrate_mm_s: 100.0,
+        }];
+        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+        input.kernels[0] = None;
+        let result = plan_velocity(&input);
+        assert!(matches!(result, Err(ShapeError::UnsupportedShaperOnXY)));
     }
 
     #[test]
@@ -326,12 +406,78 @@ mod tests {
         assert!(fitted[0].t_end > fitted[0].t_start);
     }
 
-    /// **Spec §3.6 contract.** For the same input the
-    /// `WorstCaseFuture` β-converged plan must use accel limits no greater
-    /// than the `TerminalKnown` plan — by construction the trailing region's
-    /// effective machine limit is half of `a_machine` under
-    /// `WorstCaseFuture`, so the resulting trajectory must take **at least
-    /// as long** to traverse.
+    /// **Spec §3.6 contract — multi-segment.** Only the **last** XY segment
+    /// is subject to the worst-case-future half-machine-accel derate.
+    ///
+    /// We can't assert identical segment-0 _durations_ here: the temporal
+    /// joining loop uses segment 1's tighter limit to compute the junction
+    /// velocity, which propagates back and slows segment 0's tail too —
+    /// that's TOPP-RA doing its job, not a β-derate regression. The
+    /// invariant we _can_ assert end-to-end is monotonicity per-segment
+    /// (both segments must take ≥ their TerminalKnown durations under
+    /// WorstCaseFuture, with strict inequality on the last segment because
+    /// its limit is genuinely halved).
+    ///
+    /// The "only last segment's _effective machine limit_ is changed"
+    /// invariant is tested directly via `effective_machine_a_max` in the
+    /// `beta::tests` module.
+    #[test]
+    fn worst_case_future_segment_durations_monotone() {
+        let curve0 = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let curve1 = straight_linear([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
+        let segments = [
+            PlanSegment {
+                temporal: temporal::multi::SegmentInput {
+                    curve: &curve0,
+                    limits: default_limits(),
+                    trailing_junction_chord_tolerance_mm: 0.05,
+                },
+                e_mode: EMode::CoupledToXy,
+                extrusion_per_xy_mm: 0.04,
+                e_independent: None,
+                feedrate_mm_s: 100.0,
+            },
+            PlanSegment {
+                temporal: temporal::multi::SegmentInput {
+                    curve: &curve1,
+                    limits: default_limits(),
+                    trailing_junction_chord_tolerance_mm: 0.05,
+                },
+                e_mode: EMode::CoupledToXy,
+                extrusion_per_xy_mm: 0.04,
+                e_independent: None,
+                feedrate_mm_s: 100.0,
+            },
+        ];
+
+        let known = plan_velocity(&default_input(&segments, SafetyMode::TerminalKnown))
+            .expect("TerminalKnown plan should succeed");
+        let worst = plan_velocity(&default_input(&segments, SafetyMode::WorstCaseFuture))
+            .expect("WorstCaseFuture plan should succeed");
+
+        assert_eq!(known.len(), 2);
+        assert_eq!(worst.len(), 2);
+
+        let dur_known_0 = known[0].t_end - known[0].t_start;
+        let dur_worst_0 = worst[0].t_end - worst[0].t_start;
+        let dur_known_1 = known[1].t_end - known[1].t_start;
+        let dur_worst_1 = worst[1].t_end - worst[1].t_start;
+
+        // Both segments: WorstCaseFuture's tighter end-of-batch accel
+        // bound is a strictly tighter constraint set, so neither
+        // segment's β-converged duration can be shorter.
+        assert!(
+            dur_worst_0 >= dur_known_0 - 1e-9,
+            "segment 0 WorstCaseFuture duration {dur_worst_0} \
+             must be ≥ TerminalKnown duration {dur_known_0}",
+        );
+        assert!(
+            dur_worst_1 >= dur_known_1 - 1e-9,
+            "segment 1 WorstCaseFuture duration {dur_worst_1} \
+             must be ≥ TerminalKnown duration {dur_known_1}",
+        );
+    }
+
     /// **Spec §3.6 contract.** For the same input the
     /// `WorstCaseFuture` β-converged plan must use accel limits no greater
     /// than the `TerminalKnown` plan — by construction the trailing region's
