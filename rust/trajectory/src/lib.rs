@@ -43,6 +43,22 @@ pub struct ShapeBatchInput<'a> {
     pub beta_convergence_ratio: f64,
     /// Extruder axis limits (for independent-E scheduling).
     pub e_limits: ELimits,
+    /// Velocity boundary at the **batch start** (first XY-run's first segment
+    /// at `u = 0`), in mm/s. Threaded into `temporal::multi::BatchInput.
+    /// initial_velocity` for that run; interior runs (sandwiched by E gaps)
+    /// always use `0.0`. Defaults to `0.0` for legacy callers that always
+    /// start from rest.
+    ///
+    /// Used by the streaming shaper (Phase 3 `append_and_replan`) to chain
+    /// the un-committed replan window into the committed motion already in
+    /// flight on the MCU.
+    pub initial_v: f64,
+    /// Velocity boundary at the **batch end** (last XY-run's last segment at
+    /// `u = 1`), in mm/s. Threaded into `temporal::multi::BatchInput.
+    /// terminal_velocity` for that run; interior runs always use `0.0`.
+    /// Defaults to `0.0` for legacy callers (the streaming shaper's
+    /// decel-to-zero default also uses `0.0`).
+    pub terminal_v: f64,
 }
 
 /// Per-segment input to `shape_batch`.
@@ -188,11 +204,11 @@ pub enum ShapeError {
     /// limitation is Phase 3 scope. Returned only by [`plan_velocity`] today.
     #[error("unsupported shaper configuration: Passthrough on X or Y is not supported")]
     UnsupportedShaperOnXY,
-    /// A non-zero `initial_v` or `terminal_v` boundary velocity was requested.
-    /// Phase 2 callers must hand the planner a path that starts and ends at
-    /// rest; [`temporal::multi::plan_batch`] hard-codes zero boundary
-    /// velocities. Phase 3's `append_and_replan` will lift this.
-    #[error("unsupported boundary velocity: initial_v and terminal_v must both be 0.0")]
+    /// A non-finite or negative `initial_v` / `terminal_v` boundary velocity
+    /// was requested. Phase 3 lifted the (0, 0) restriction; values must be
+    /// finite and ≥ 0.0 (any physical motion is non-negative speed along
+    /// the path).
+    #[error("unsupported boundary velocity: initial_v and terminal_v must be finite and ≥ 0.0")]
     UnsupportedBoundaryVelocity,
 }
 
@@ -260,6 +276,8 @@ mod tests {
                 v_max: 100.0,
                 a_max: 50_000.0,
             },
+            initial_v: 0.0,
+            terminal_v: 0.0,
         };
         let result = shape_batch(&input);
         assert!(matches!(result, Err(ShapeError::EmptySegments)));

@@ -34,6 +34,19 @@ pub struct BatchInput<'a> {
     pub grid_strategy: GridStrategy,
     /// Default 3 on Pi 5 per spec §2.6 (avoids Klipper contention on cores 0-1).
     pub worker_threads: usize,
+    /// Velocity boundary at the **batch start** (`segments[0]`'s `u = 0`),
+    /// in mm/s. Threaded into the seed of `joining::SegmentState[0].v_start`.
+    /// Defaults to `0.0` for legacy callers that always start from rest.
+    ///
+    /// Used by the streaming shaper (Phase 3 `append_and_replan`) to chain
+    /// the un-committed replan window into the committed motion already in
+    /// flight on the MCU.
+    pub initial_velocity: f64,
+    /// Velocity boundary at the **batch end** (`segments[last]`'s `u = 1`),
+    /// in mm/s. Threaded into the seed of `joining::SegmentState[last].v_end`.
+    /// Defaults to `0.0` for legacy callers (the streaming shaper's
+    /// decel-to-zero default also uses `0.0`).
+    pub terminal_velocity: f64,
 }
 
 #[derive(Debug)]
@@ -173,16 +186,20 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         })
         .collect();
 
-    // Stage 3: seed per-segment states.
+    // Stage 3: seed per-segment states. The batch's first segment's `v_start`
+    // and last segment's `v_end` come from the caller-supplied
+    // `initial_velocity` / `terminal_velocity` (defaulting to 0.0 — the
+    // legacy contract). Interior boundaries come from the upfront junction
+    // velocity caps and are subsequently tightened by the joining loop.
     let mut states: Vec<joining::SegmentState> = (0..k)
         .map(|i| {
             let v_start = if i == 0 {
-                0.0
+                input.initial_velocity
             } else {
                 junctions[i - 1].v_junction
             };
             let v_end = if i == k - 1 {
-                0.0
+                input.terminal_velocity
             } else {
                 junctions[i].v_junction
             };
@@ -282,12 +299,64 @@ mod tests {
                 target_grid_spacing_mm: 0.5,
             },
             worker_threads: 1,
+            initial_velocity: 0.0,
+            terminal_velocity: 0.0,
         };
         let output = plan_batch(input).expect("should succeed");
         assert_eq!(output.profiles.len(), 1);
-        assert!(output.junctions.is_empty());
+
         // Single segment endpoints both 0.
         assert!(output.profiles[0].samples[0].v < 1e-3);
+        assert!(output.profiles[0].samples.last().unwrap().v < 1e-3);
+    }
+
+    /// Step-0 plumbing contract: a non-zero `initial_velocity` reaches
+    /// TOPP-RA's boundary condition and the first sample of the first
+    /// (and only) segment's profile matches the requested starting speed
+    /// to within the joining `ε_velocity = 1 mm/s` tolerance.
+    #[test]
+    fn plan_batch_threads_nonzero_initial_velocity() {
+        // 200 mm move: enough path length to feasibly start at 50 mm/s and
+        // decelerate to 0.0 under the textbook 5 km/s² limit.
+        let curve = VectorNurbs::<f64, 3>::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        let segment = SegmentInput {
+            curve: &curve,
+            limits: textbook_limits(),
+            trailing_junction_chord_tolerance_mm: 0.05,
+        };
+        let input = BatchInput {
+            segments: &[segment],
+            grid_strategy: GridStrategy::Adaptive {
+                min_n: 20,
+                max_n: 200,
+                target_grid_spacing_mm: 0.5,
+            },
+            worker_threads: 1,
+            initial_velocity: 50.0,
+            terminal_velocity: 0.0,
+        };
+        let output = plan_batch(input).expect("nonzero initial_velocity should plan");
+        assert_eq!(output.profiles.len(), 1);
+
+        let v0 = output.profiles[0].samples[0].v;
+        assert!(
+            (v0 - 50.0).abs() < 1.0,
+            "first-sample velocity {v0} must equal requested initial_velocity 50.0 mm/s \
+             within the 1 mm/s joining tolerance",
+        );
+        // Terminal should be at rest.
+        let v_last = output.profiles[0].samples.last().unwrap().v;
+        assert!(
+            v_last < 1.0,
+            "terminal velocity {v_last} must be ≈ 0 mm/s under terminal_velocity = 0.0",
+        );
+        assert!(output.junctions.is_empty());
     }
 }
 

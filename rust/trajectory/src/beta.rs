@@ -541,10 +541,26 @@ fn run_one_iteration(
             })
             .collect();
 
+        // Boundary velocities: the streaming shaper (Phase 3) feeds non-zero
+        // values at the batch endpoints — `input.initial_v` applies to the
+        // **first run's first segment**, `input.terminal_v` to the **last
+        // run's last segment**. Interior runs are separated by independent-E
+        // gaps, so the toolhead is stationary at their boundaries and the
+        // run-local boundary velocities are both 0.0 there. For the legacy
+        // (`shape_batch`) caller `input.initial_v` and `input.terminal_v`
+        // are both 0.0, so every run is run-locally zero-boundary —
+        // byte-identical to the pre-Phase-3 behaviour.
+        let is_first_run = std::ptr::eq(run, &partition.runs[0]);
+        let is_last_run = std::ptr::eq(run, &partition.runs[partition.runs.len() - 1]);
+        let run_initial_v = if is_first_run { input.initial_v } else { 0.0 };
+        let run_terminal_v = if is_last_run { input.terminal_v } else { 0.0 };
+
         let batch_input = temporal::multi::BatchInput {
             segments: &run_segments,
             grid_strategy: input.grid_strategy,
             worker_threads: input.worker_threads,
+            initial_velocity: run_initial_v,
+            terminal_velocity: run_terminal_v,
         };
 
         let batch_output = temporal::multi::plan_batch(batch_input)?;
@@ -1135,6 +1151,8 @@ mod tests {
             beta_max_iters: 1,
             beta_convergence_ratio: 1.02,
             e_limits: default_e_limits(),
+            initial_v: 0.0,
+            terminal_v: 0.0,
         };
 
         let output = crate::shape_batch(&input).expect("should succeed");
@@ -1210,6 +1228,8 @@ mod tests {
             beta_max_iters: 1,
             beta_convergence_ratio: 1.02,
             e_limits: default_e_limits(),
+            initial_v: 0.0,
+            terminal_v: 0.0,
         };
 
         let output = crate::shape_batch(&input).expect("should succeed");
@@ -1294,6 +1314,8 @@ mod tests {
             beta_max_iters: 1,
             beta_convergence_ratio: 1.02,
             e_limits: default_e_limits(),
+            initial_v: 0.0,
+            terminal_v: 0.0,
         };
 
         let output = crate::shape_batch(&input).expect("should succeed");

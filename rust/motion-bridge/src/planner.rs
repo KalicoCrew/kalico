@@ -457,6 +457,11 @@ fn run_pipeline(
         beta_max_iters: config.beta_max_iters,
         beta_convergence_ratio: config.beta_convergence_ratio,
         e_limits: config.e_limits,
+        // Phase 1/2 still uses `shape_batch` (the legacy batch-shaping path):
+        // both batch boundaries are at rest. Phase 3 routes around this via
+        // `ShaperState::append_and_replan` directly on per-move geometry.
+        initial_v: 0.0,
+        terminal_v: 0.0,
     };
 
     let output = trajectory::shape_batch(&input).map_err(PlannerError::Shape)?;

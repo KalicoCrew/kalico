@@ -355,6 +355,8 @@ mod tests {
             beta_max_iters: 5,
             beta_convergence_ratio: 1.02,
             e_limits: default_e_limits(),
+            initial_v: 0.0,
+            terminal_v: 0.0,
         };
         let reference = crate::shape_batch(&shape_input).expect("shape_batch should succeed");
 

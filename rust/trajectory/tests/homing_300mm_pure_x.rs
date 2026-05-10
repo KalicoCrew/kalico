@@ -83,6 +83,8 @@ fn homing_300mm_pure_x_at_uniform_jerk_converges() {
             v_max: 50.0,
             a_max: 5000.0,
         },
+        initial_v: 0.0,
+        terminal_v: 0.0,
     };
 
     let result = trajectory::shape_batch(&input);

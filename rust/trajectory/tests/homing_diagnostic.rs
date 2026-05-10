@@ -93,6 +93,8 @@ fn run_shape_variant(
             v_max: 50.0,
             a_max: 5000.0,
         },
+        initial_v: 0.0,
+        terminal_v: 0.0,
     };
     let t0 = std::time::Instant::now();
     let result = trajectory::shape_batch(&input);
@@ -134,6 +136,8 @@ fn run_topp_only_with_grid(
         segments: &[segment],
         grid_strategy,
         worker_threads: 1,
+        initial_velocity: 0.0,
+        terminal_velocity: 0.0,
     });
     let wallclock = t0.elapsed().as_secs_f64();
     let outcome = match result {

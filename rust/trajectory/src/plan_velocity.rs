@@ -115,11 +115,19 @@ pub struct PlanSegment<'a> {
 ///
 /// `initial_v` and `terminal_v` are the velocity boundary conditions at the
 /// **batch start** (`segments[0]`'s u=0) and **batch end** (`segments[last]`'s
-/// u=1) respectively. Phase 2 supports only `(0.0, 0.0)` which matches the
-/// existing `shape_batch` semantics; Phase 3 will extend
-/// [`temporal::multi::plan_batch`] to accept arbitrary boundary velocities so
-/// `ShaperState::append_and_replan` can plan from the velocity at
-/// `t_dispatched`.
+/// u=1) respectively, in mm/s. Phase 3 lifted the prior (0, 0) limitation:
+/// both values are now forwarded to [`temporal::multi::plan_batch`] via
+/// `BatchInput::{initial_velocity, terminal_velocity}`, which threads them
+/// into the joining loop's first-segment `v_start` and last-segment `v_end`
+/// seeds. TOPP-RA's per-segment `schedule_segment_with_tolerance` already
+/// accepted arbitrary boundary velocities; the lift is purely plumbing.
+///
+/// The streaming shaper (`ShaperState::append_and_replan`) uses this to plan
+/// from the velocity already committed at `t_dispatched` (so the un-committed
+/// replan window chains continuously into the in-flight motion) and to
+/// always decelerate the replanned tail to zero at the new move's terminal
+/// (so the spec's "decel-to-zero default" holds even when no follow-on move
+/// arrives in time).
 #[derive(Debug)]
 pub struct PlanInput<'a> {
     /// Multi-axis planning path; must be non-empty.
@@ -139,9 +147,14 @@ pub struct PlanInput<'a> {
     pub beta_convergence_ratio: f64,
     /// Extruder axis limits.
     pub e_limits: ELimits,
-    /// Velocity at the batch start (mm/s). Phase 2 requires `0.0`.
+    /// Velocity at the batch start (mm/s). Must be finite and non-negative.
+    /// Phase 3 accepts arbitrary values; the streaming shaper uses this to
+    /// chain into the committed velocity at `t_dispatched`.
     pub initial_v: f64,
-    /// Velocity at the batch end (mm/s). Phase 2 requires `0.0`.
+    /// Velocity at the batch end (mm/s). Must be finite and non-negative.
+    /// Phase 3 accepts arbitrary values; the streaming shaper's "decel-to-
+    /// zero default" plans always pass `0.0` here so the new move's terminal
+    /// is a safe rest point.
     pub terminal_v: f64,
     /// Boundary-future treatment for the trailing region.
     pub safety_mode: SafetyMode,
@@ -160,8 +173,7 @@ pub struct PlanInput<'a> {
 ///   `Passthrough` for X or Y (Phase 2 limitation; the underlying β-medium
 ///   loop assumes both axes are actively shaped).
 /// - [`ShapeError::UnsupportedBoundaryVelocity`] — `initial_v` or `terminal_v`
-///   is non-zero (Phase 2 limitation; `temporal::multi::plan_batch` currently
-///   hard-codes `0.0` boundary velocities).
+///   is non-finite or negative.
 /// - Any error from the underlying β-medium loop (TOPP-RA infeasibility, fit
 ///   failure, etc.).
 pub fn plan_velocity(input: &PlanInput<'_>) -> Result<Vec<FittedSegment>, ShapeError> {
@@ -169,12 +181,19 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<Vec<FittedSegment>, ShapeE
         return Err(ShapeError::EmptySegments);
     }
 
-    // Phase 2 boundary-velocity limitation: `temporal::multi::plan_batch`
-    // hard-codes 0.0 boundaries today. Phase 3 will extend the temporal API
-    // to take `(initial_v, terminal_v)`. Until then, refuse non-zero inputs
-    // explicitly so callers cannot silently get TerminalKnown-zero behaviour
-    // while believing they got streaming-with-non-zero-boundary behaviour.
-    if input.initial_v != 0.0 || input.terminal_v != 0.0 {
+    // Boundary-velocity validation: Phase 3 lifted the (0, 0) limitation —
+    // `temporal::multi::plan_batch` now accepts arbitrary `(initial_velocity,
+    // terminal_velocity)` and TOPP-RA already handles arbitrary boundary
+    // conditions internally via `schedule_segment_with_tolerance(.., v_start,
+    // v_end, ..)`. Only basic sanity (finite, non-negative) is enforced here;
+    // physical feasibility is the temporal solver's job. The
+    // [`ShapeError::UnsupportedBoundaryVelocity`] variant is retained so
+    // callers that previously got a hard rejection still see a structured
+    // error on out-of-domain inputs.
+    if !input.initial_v.is_finite() || input.initial_v < 0.0 {
+        return Err(ShapeError::UnsupportedBoundaryVelocity);
+    }
+    if !input.terminal_v.is_finite() || input.terminal_v < 0.0 {
         return Err(ShapeError::UnsupportedBoundaryVelocity);
     }
 
@@ -204,6 +223,8 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<Vec<FittedSegment>, ShapeE
         beta_max_iters: input.beta_max_iters,
         beta_convergence_ratio: input.beta_convergence_ratio,
         e_limits: input.e_limits,
+        initial_v: input.initial_v,
+        terminal_v: input.terminal_v,
     };
 
     let partition = partition_batch(&segments, &input.e_limits);
@@ -273,6 +294,9 @@ mod tests {
             beta_max_iters: 5,
             beta_convergence_ratio: 1.02,
             e_limits: default_e_limits(),
+            // Step-0 lift: caller may override these to exercise nonzero
+            // boundary velocities (Phase 3's `append_and_replan` always
+            // does). Defaults match the legacy (0, 0) shape_batch contract.
             initial_v: 0.0,
             terminal_v: 0.0,
             safety_mode: safety,
@@ -287,8 +311,53 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_zero_initial_v() {
+    fn rejects_negative_initial_v() {
         let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let segments = [PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &curve,
+                limits: default_limits(),
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.04,
+            e_independent: None,
+            feedrate_mm_s: 100.0,
+        }];
+        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+        input.initial_v = -1.0;
+        let result = plan_velocity(&input);
+        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+    }
+
+    #[test]
+    fn rejects_nan_terminal_v() {
+        let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        let segments = [PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &curve,
+                limits: default_limits(),
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.04,
+            e_independent: None,
+            feedrate_mm_s: 100.0,
+        }];
+        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+        input.terminal_v = f64::NAN;
+        let result = plan_velocity(&input);
+        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+    }
+
+    /// Step-0 lift contract: a non-zero `initial_v` is accepted (no error)
+    /// and produces a valid plan. The first sample of the first segment's
+    /// TOPP profile reflects the requested starting velocity.
+    #[test]
+    fn nonzero_initial_v_produces_chained_profile() {
+        // 200 mm move to give TOPP-RA enough path length to actually run
+        // an accel-cruise-decel under the default limits.
+        let curve = straight_linear([0.0, 0.0, 0.0], [200.0, 0.0, 0.0]);
         let segments = [PlanSegment {
             temporal: temporal::multi::SegmentInput {
                 curve: &curve,
@@ -302,28 +371,28 @@ mod tests {
         }];
         let mut input = default_input(&segments, SafetyMode::TerminalKnown);
         input.initial_v = 50.0;
-        let result = plan_velocity(&input);
-        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
-    }
+        input.terminal_v = 0.0;
 
-    #[test]
-    fn rejects_non_zero_terminal_v() {
-        let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
-        let segments = [PlanSegment {
-            temporal: temporal::multi::SegmentInput {
-                curve: &curve,
-                limits: default_limits(),
-                trailing_junction_chord_tolerance_mm: 0.05,
-            },
-            e_mode: EMode::CoupledToXy,
-            extrusion_per_xy_mm: 0.04,
-            e_independent: None,
-            feedrate_mm_s: 100.0,
-        }];
-        let mut input = default_input(&segments, SafetyMode::TerminalKnown);
-        input.terminal_v = 25.0;
-        let result = plan_velocity(&input);
-        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+        let fitted = plan_velocity(&input).expect("plan with nonzero initial_v should succeed");
+        assert_eq!(fitted.len(), 1);
+
+        // Sample the X-axis velocity at t = t_start. For a single 200 mm
+        // pure-X move with `initial_v = 50 mm/s`, the toolhead's instantaneous
+        // speed at the start should be 50 mm/s to within TOPP-RA's per-grid
+        // tolerance (the joining loop's `ε_velocity = 1 mm/s`).
+        let seg = &fitted[0];
+        let mut t_eps = (seg.t_end - seg.t_start) * 1e-6;
+        if t_eps <= 0.0 {
+            t_eps = 1e-9;
+        }
+        let t_sample = seg.t_start + t_eps;
+        let x0 = nurbs::eval::eval(&seg.axes[0], seg.t_start);
+        let x1 = nurbs::eval::eval(&seg.axes[0], t_sample);
+        let vx_start = (x1 - x0) / t_eps;
+        assert!(
+            (vx_start - 50.0).abs() < 5.0,
+            "X-axis start velocity {vx_start} mm/s deviates from requested 50.0 mm/s",
+        );
     }
 
     #[test]
