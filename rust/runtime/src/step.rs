@@ -1,20 +1,11 @@
 /// Default maximum steps allowed per tick — burst cap guard.
 ///
-/// Bumped from 16 to 64 (2026-05-05) as a temporary workaround for
-/// post-shape curves coming out higher-degree than the architecture
-/// targets. With smooth-MZV applied to a Hermite-refit-degree-4 input,
-/// the X axis comes out degree 9 with ~1k control points, and `f32`
-/// De Boor evaluation of that on the MCU produces occasional one-tick
-/// position spikes that the previous 16-step cap rejected. At configured
-/// peak velocity (300 mm/s × 80 steps/mm / 40 kHz ≈ 0.6 step/tick), 64
-/// is still ~100× the legitimate per-tick load.
-///
-/// Real fix lives at the trajectory layer: keep the post-shape curve
-/// at low degree (per `CLAUDE.md`'s "uniform cubic Bézier across Layer
-/// 1/2/3/4") so f32 evaluation is well-conditioned. Until then this
-/// cap accepts numerical wobble at the cost of weakening genuine
-/// runaway-curve detection.
-pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 64;
+/// At configured peak velocity (300 mm/s × 80 steps/mm / 40 kHz ≈ 0.6
+/// step/tick), 16 is ~25× the legitimate per-tick load — tight enough
+/// to catch genuine runaway-curve bugs, loose enough to absorb the
+/// f32 De Boor noise floor on the post-shape uniform-cubic representation
+/// produced by `trajectory::refit::refit_to_cubic` (Stage 3b).
+pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 16;
 
 /// Output of a single [`StepMotorState::update`] call.
 #[derive(Debug)]

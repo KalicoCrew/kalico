@@ -70,7 +70,7 @@ fn drift_over_many_ticks() {
 // Verify the exported constant has the expected value.
 #[test]
 fn default_burst_cap_value() {
-    assert_eq!(MAX_STEPS_PER_TICK_DEFAULT, 64);
+    assert_eq!(MAX_STEPS_PER_TICK_DEFAULT, 16);
 }
 
 // StepResult must be Debug (compile-time check via format).

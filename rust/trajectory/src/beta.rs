@@ -483,6 +483,25 @@ fn run_one_iteration(
         shaped.push([x_shaped, y_shaped, z_shaped]);
     }
 
+    // ---- Stage 3b: Cubic refit (post-shape) ----
+    // Each axis NURBS coming out of Stage 3 is up to degree 9 (= d_fit +
+    // d_kernel + 1 for smooth-MZV's degree-4 kernel on degree-4 Hermite
+    // input). f32 De Boor on degree 9 suffers from catastrophic cancellation
+    // when control-point magnitudes grow large relative to per-tick deltas
+    // — observed on H723 as ≥ 0.8 mm position spikes that trip
+    // KALICO_FAULT_STEP_BURST_EXCEEDED. Refit each axis to cubic Bézier
+    // pieces with C¹ continuity; this restores CLAUDE.md's "uniform cubic
+    // Bézier across Layer 1/2/3/4" mandate at the post-shape boundary.
+    //
+    // Closes the deferred-fix entry from plan-changes-log 2026-05-05
+    // ("MCU step-burst cap raised 16 → 64 (deferred-fix workaround)").
+    for axes in shaped.iter_mut() {
+        for axis in axes.iter_mut() {
+            *axis = crate::refit::refit_to_cubic(axis, crate::refit::REFIT_TOLERANCE_MM)
+                .map_err(|detail| ShapeError::FitFailure { index: 0, detail })?;
+        }
+    }
+
     // ---- Stage 4: Peak acceleration check ----
     let peaks: Vec<[f64; 3]> = shaped
         .iter()

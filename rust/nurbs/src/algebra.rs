@@ -298,12 +298,20 @@ fn hermite_fit_recursive<const D: usize>(
     let u_hi = pieces[hi - 1][0].u_end;
 
     // Try fitting the entire range [lo, hi) into one output piece per axis.
-    let candidate = hermite_fit_one_piece::<D>(pieces, lo, hi, target_degree);
+    let mut candidate = hermite_fit_one_piece::<D>(pieces, lo, hi, target_degree);
     let max_residual = hermite_check_residual::<D>(pieces, lo, hi, &candidate, target_degree);
 
     if max_residual <= tolerance_mm {
-        // Accept: push the candidate pieces for each axis.
+        // Snap output endpoints to the exact input boundary values so that
+        // adjacent recursion branches produce bit-exactly contiguous pieces.
+        // hermite_fit_one_piece computes u_end as `u_lo + h`, which can drift
+        // by 1 ULP from the input's u_hi due to the subtract-then-add pattern;
+        // bezier_pieces_to_nurbs's strict-equality contiguity assert catches
+        // that drift. Snapping costs nothing (the polynomial still evaluates
+        // correctly inside the interval).
         for axis in 0..D {
+            candidate[axis].u_start = pieces[lo][axis].u_start;
+            candidate[axis].u_end = pieces[hi - 1][axis].u_end;
             result[axis].push(candidate[axis].clone());
         }
         return Ok(());

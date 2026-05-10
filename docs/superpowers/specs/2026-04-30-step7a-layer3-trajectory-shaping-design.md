@@ -613,13 +613,34 @@ cores 0–1).
 | After composition x(s(t)) | 6 (= d_xs × 2; up to 10) | N |
 | After C¹ refit | 4 | K (4–30, typically 5–15) |
 | After convolution | 9 (= 4 + 4 + 1) | ~2K+1 (9–61, reduced by knot removal) |
+| **After Stage 3b cubic refit (2026-05-10)** | **3** | **~10–50 (input-piece-count dependent)** |
 
-Post-convolution degree 9 means 10 coefficients per piece (f32 on MCU).
-At ~20 pieces per axis (after knot removal) × 4 axes × 3 segment buffer
-× 10 × 4 bytes ≈ 9.6 KB. Fits comfortably in H723's 1 MB SRAM.
+**Stage 3b — post-shape cubic refit (added 2026-05-10).** The original spec
+(this section) accepted degree 9 as the dispatched-to-MCU degree, justified
+on compute-budget grounds (memory ≈ 9.6 KB, Horner FMA load 360K/s,
+"negligible on Cortex-M7"). That review omitted f32 numerical conditioning:
+the runtime engine evaluates curves via De Boor (not Horner as assumed
+here), and degree-9 De Boor in f32 with non-trivial absolute-position
+control-point magnitudes produces catastrophic-cancellation position spikes
+(observed empirically as ≥ 0.8 mm one-tick deltas tripping
+`KALICO_FAULT_STEP_BURST_EXCEEDED` on H7 hardware, 2026-05-05 sim and
+2026-05-10 hardware reproductions).
 
-MCU evaluation: Horner's for degree 9 is 9 FMA operations per sample.
-At 40 kHz × 4 axes = 360K FMA/s. Negligible on Cortex-M7 at 550 MHz.
+Refit lives in `rust/trajectory/src/refit.rs` (Stage 3b in the beta loop,
+between convolution and peak-acceleration check). Per-axis: extract Bézier
+pieces via `nurbs::bezier::extract_bezier_pieces`, fit cubic chain via
+`nurbs::algebra::fit_hermite_c1::<1>` with `target_degree = 3` and L∞
+tolerance 0.1 µm (matches CLAUDE.md's Goldapp 1991 cubic-fit tolerance for
+the Step-13 compat layer arc reduction), recompose via
+`bezier_pieces_to_nurbs`. Adaptive split-and-retry bounded at 8 levels.
+Cubic De Boor in f32 is well-conditioned (3 levels of blending, ~3·ε
+relative error) — `MAX_STEPS_PER_TICK_DEFAULT` restored from the temporary
+64 back to 16, recovering its real role as a runaway-curve detector.
+
+Post-refit memory budget: ~30 cubic pieces per axis × 4 axes × 3 segment
+buffer × 4 cps × 4 bytes ≈ 5.8 KB — smaller than the pre-refit estimate.
+Per-tick eval cost drops from 9 FMAs to 3 FMAs per axis (cubic De Boor),
+freeing budget for Step 10 phase stepping.
 
 ## Verified mathematical claims
 

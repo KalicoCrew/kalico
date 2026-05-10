@@ -9,6 +9,7 @@ mod pad;
 mod parallel;
 mod partition;
 pub mod peak;
+mod refit;
 mod reparam;
 mod shaper;
 
