@@ -198,6 +198,35 @@ impl ShaperState {
 
         Ok(dispatched)
     }
+
+    /// **Phase 4 Task 4.1 stub — quiescence commit handler.**
+    ///
+    /// Fires from `motion-bridge::planner::run_loop` when the inter-move
+    /// `T_commit` quiescence timer elapses without a follow-on
+    /// `PlannerMsg::Move`. Task 4.2 will replace this body with the real
+    /// "commit decel-to-zero" implementation: shape the held-back trailing
+    /// decel-to-zero ramp (the region `[t_decel_start − max_h,
+    /// t_end_of_last_move]`) with constant-extension right-padding at
+    /// `(end_pos, v = 0)`, append to `pending_dispatch`, advance
+    /// `t_dispatched` to `t_end_of_last_move`, and return the freshly-shaped
+    /// segments. Task 4.1 only wires the integration point — it returns an
+    /// empty vector so the run-loop's commit branch can be exercised end-to-
+    /// end (timer fires → handler runs → no segments produced yet) without
+    /// the rest of Phase 4's machinery in place.
+    ///
+    /// The `_ctx` parameter mirrors [`Self::emit_committed`]'s signature so
+    /// Task 4.2 can drop in the convolution without changing the call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Ok(Vec::new())` unconditionally for now. Task 4.2 will
+    /// forward [`ShapeError`]s from `emit_shaped`.
+    pub fn commit_decel_to_zero(
+        &mut self,
+        _ctx: &EmitContext<'_>,
+    ) -> Result<Vec<ShapedSegment>, ShapeError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Restrict each of the segment's X/Y/Z NURBS curves to `[seg.t_start, t_hi]`.

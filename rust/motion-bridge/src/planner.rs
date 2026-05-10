@@ -26,11 +26,12 @@
 //!   assertions only on long-enough moves; the dwell / commit handler in
 //!   Phase 4 will let short moves dispatch the full plan on flush.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use nurbs::algebra::PiecewisePolynomialKernel;
 
 use crate::classify::ClassifiedMove;
@@ -38,6 +39,25 @@ use crate::config::{PlannerConfig, PlannerLimits};
 use trajectory::plan_velocity::{PlanShaper, SafetyMode};
 use trajectory::streaming::{EmitContext, ReplanContext, ShaperState};
 use trajectory::{AxisShaper, EHalo, RequiredShaper, ShaperConfig, ShapedSegment};
+
+// ---------------------------------------------------------------------------
+// Quiescence-commit timer
+// ---------------------------------------------------------------------------
+
+/// Inter-move quiescence threshold for the single-timer commit model
+/// (spec §3.5). If no `PlannerMsg::Move` arrives within this window after
+/// the most recent append, the planner thread calls
+/// [`ShaperState::commit_decel_to_zero`] to dispatch the held-back trailing
+/// decel-to-zero ramp. 50 ms is the spec's proposed default; open-question 1
+/// in §6 reserves empirical calibration on Trident for Phase 7.
+const T_COMMIT: Duration = Duration::from_millis(50);
+
+/// Sentinel "long" timeout used when there is no held-back tail to commit.
+/// We still call `recv_timeout` (rather than `recv`) so the loop reaches a
+/// single uniform message-handling site; an effectively-forever bound keeps
+/// the wake-up overhead negligible while preserving cancellation semantics
+/// on `Shutdown` (the channel close fires `Disconnected`, not `Timeout`).
+const T_IDLE: Duration = Duration::from_secs(3600);
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -94,6 +114,13 @@ pub struct PlannerHandle {
     error: Arc<Mutex<Option<PlannerError>>>,
     /// Latest "last move time" snapshot — bits of an f64.
     last_move_time_bits: Arc<AtomicU64>,
+    /// Monotonic counter incremented every time the planner thread's
+    /// quiescence-commit timer expires and calls
+    /// [`ShaperState::commit_decel_to_zero`]. Phase 4 Task 4.1 uses this
+    /// purely as a wiring-confidence signal for tests; Phase 4 Task 4.3
+    /// keeps the counter live (it remains a cheap observability hook on
+    /// the timer integration point).
+    commit_fire_count: Arc<AtomicU32>,
 }
 
 impl PlannerHandle {
@@ -104,6 +131,7 @@ impl PlannerHandle {
         let (tx, rx) = unbounded();
         let error = Arc::new(Mutex::new(None));
         let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
+        let commit_fire_count = Arc::new(AtomicU32::new(0));
 
         // Streaming-native state. `ShaperState` owns the per-axis queues +
         // un-committed tail; the per-iteration `ReplanContext` /
@@ -114,10 +142,19 @@ impl PlannerHandle {
 
         let error_thread = Arc::clone(&error);
         let last_thread = Arc::clone(&last_move_time_bits);
+        let commit_thread = Arc::clone(&commit_fire_count);
         let join = thread::Builder::new()
             .name("kalico-planner".to_string())
             .spawn(move || {
-                run_loop(rx, config, state, dispatch, error_thread, last_thread);
+                run_loop(
+                    rx,
+                    config,
+                    state,
+                    dispatch,
+                    error_thread,
+                    last_thread,
+                    commit_thread,
+                );
             })
             .expect("spawn planner thread");
 
@@ -126,6 +163,7 @@ impl PlannerHandle {
             join_handle: Some(join),
             error,
             last_move_time_bits,
+            commit_fire_count,
         }
     }
 
@@ -196,6 +234,17 @@ impl PlannerHandle {
     /// Snapshot of the current "last move time" (cumulative print_time, seconds).
     pub fn last_move_time(&self) -> f64 {
         f64::from_bits(self.last_move_time_bits.load(Ordering::Acquire))
+    }
+
+    /// Number of times the quiescence-commit timer has fired on the planner
+    /// thread (i.e., `recv_timeout(T_COMMIT − elapsed)` returned
+    /// `RecvTimeoutError::Timeout` and the run-loop invoked
+    /// [`ShaperState::commit_decel_to_zero`]). Wired by Phase 4 Task 4.1;
+    /// the underlying handler is a stub until Task 4.2 lands. Phase 4 Task
+    /// 4.3 will repurpose this as a small observability hook on the timer
+    /// integration point.
+    pub fn commit_fire_count(&self) -> u32 {
+        self.commit_fire_count.load(Ordering::Acquire)
     }
 
     pub fn shutdown(&mut self) {
@@ -270,14 +319,66 @@ fn run_loop(
     dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
     error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
+    commit_fire_count: Arc<AtomicU32>,
 ) {
     let mut print_time: f64 = 0.0;
     let mut thread_state = PlannerThreadState::build(&config);
 
+    // Phase 4 Task 4.1 — single-timer quiescence-commit state. `Some(t)`
+    // means a real append landed at `t` and the loop should call
+    // `commit_decel_to_zero` if no follow-on message arrives within
+    // `T_COMMIT − t.elapsed()`. `None` means the queue is fully quiesced
+    // (already committed) or no append has happened yet; the loop sleeps
+    // on the long sentinel until a new `Move` arrives. Task 4.1 uses
+    // `is_some()` as the proxy for "held-back tail exists" per the task
+    // spec; Task 4.2 will refine to a precise `t_dispatched <
+    // t_decel_start − max_h` check on `ShaperState` once the real
+    // `commit_decel_to_zero` semantics land.
+    let mut last_append_time: Option<Instant> = None;
+
     loop {
-        let msg = match rx.recv() {
+        // Compute the next timeout. The held-back-tail proxy is "an append
+        // happened and we haven't committed since" (`last_append_time.is_some()`);
+        // when there is no held-back tail, fall through to the long
+        // sentinel so the receiver is effectively a blocking `recv` while
+        // still cancellable on channel close.
+        let next_timeout = match last_append_time {
+            Some(t) => T_COMMIT.checked_sub(t.elapsed()).unwrap_or(Duration::ZERO),
+            None => T_IDLE,
+        };
+
+        let msg = match rx.recv_timeout(next_timeout) {
             Ok(m) => m,
-            Err(_) => return,
+            Err(RecvTimeoutError::Timeout) => {
+                // `T_commit` elapsed without a follow-on message. Fire the
+                // commit handler (stubbed in Task 4.1 — see
+                // `ShaperState::commit_decel_to_zero`'s doc comment); when
+                // Task 4.2 lands, this branch will dispatch the shaped
+                // decel-to-zero ramp the same way the `Move` arm dispatches
+                // `emit_committed` output. Clearing `last_append_time`
+                // disarms the timer until the next `Move` arrives.
+                let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
+                    Ok(out) => out,
+                    Err(e) => {
+                        *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                        last_append_time = None;
+                        continue;
+                    }
+                };
+                let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
+                print_time += batch_dur;
+                store_print_time(&last_move_time_bits, print_time);
+                for s in &drained {
+                    if let Err(detail) = dispatch(s) {
+                        *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+                        break;
+                    }
+                }
+                commit_fire_count.fetch_add(1, Ordering::AcqRel);
+                last_append_time = None;
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
         };
 
         match msg {
@@ -313,6 +414,13 @@ fn run_loop(
                         break;
                     }
                 }
+
+                // Arm / re-arm the quiescence-commit timer. Setting
+                // `last_append_time = Some(Instant::now())` on every
+                // successful append (even when `emit_committed` produced
+                // nothing this round) is what makes the timer the single
+                // "did the user stop submitting moves?" signal.
+                last_append_time = Some(Instant::now());
             }
 
             PlannerMsg::Flush { notify } => {

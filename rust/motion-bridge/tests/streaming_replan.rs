@@ -671,3 +671,89 @@ fn replan_during_long_cruise_preserves_committed_position() {
     h.shutdown();
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4 Task 4.1 — quiescence-commit timer wiring
+// ---------------------------------------------------------------------------
+
+/// Submitting a single move and then idling past `T_commit` (~50 ms) must
+/// cause the planner thread's quiescence timer to fire and invoke
+/// `ShaperState::commit_decel_to_zero` exactly once. The Phase 4 Task 4.1
+/// stub returns `Ok(Vec::new())` so no extra segments hit the dispatch
+/// callback; we observe the timer wiring via the planner-handle counter
+/// (`PlannerHandle::commit_fire_count`).
+///
+/// **Why this is sufficient.** The stub's job is to provide a callable
+/// integration point so the run-loop's `RecvTimeoutError::Timeout` branch
+/// can be exercised end-to-end. Once Task 4.2 replaces the stub body with
+/// the real `emit_shaped` invocation, the same hook gets the dispatched
+/// segments out and a stricter "all `[0, t_end]` shaped output reached the
+/// wire within `T_commit + h` real-time" assertion (Task 4.4 Step 1)
+/// becomes meaningful. Until then, "the timer fired" is the load-bearing
+/// invariant.
+///
+/// **Why ~150 ms.** `T_commit` is 50 ms; we wait 150 ms to give the
+/// scheduler comfortable headroom over `T_commit` plus the
+/// `append_and_replan` work the move triggers (typically tens of ms for a
+/// short move under β-medium). On a wedged thread the counter stays at 0
+/// and the assertion fails fast.
+#[test]
+fn quiescence_timer_fires_after_single_move() {
+    use std::time::Duration;
+
+    let (dispatch, _recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    // Single 1 mm pure-X move at 100 mm/s. Short enough that
+    // `append_and_replan` completes quickly; the absolute distance is
+    // immaterial to the timer assertion (we only care that the timer
+    // re-arms on submit and fires on quiescence).
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move");
+
+    // Sanity barrier — `flush` is a synchronization point that returns
+    // after the planner thread has processed the `Move`. From the moment
+    // `flush` returns, the planner is in the `recv_timeout` arm with
+    // `last_append_time = Some(t)`; the wall-clock sleep below covers the
+    // remaining `T_commit` window.
+    h.flush().expect("flush");
+
+    // Pre-condition: the timer has not yet fired (we just finished the
+    // submit + flush). Catching a stale increment here would mean the
+    // timer fired during `flush` processing, which Phase 4 Task 4.1
+    // does NOT do (flush is still a passive synchronization barrier;
+    // Task 4.4 Step 3 wires force-commit on flush).
+    assert_eq!(
+        h.commit_fire_count(),
+        0,
+        "commit timer fired prematurely (before the sleep window)"
+    );
+
+    // Wait comfortably past `T_commit` (50 ms). 150 ms accommodates host
+    // scheduler jitter plus the `append_and_replan` work the move
+    // triggers, and gives a clear margin over the 50 ms threshold.
+    std::thread::sleep(Duration::from_millis(150));
+
+    let fires = h.commit_fire_count();
+    assert!(
+        fires >= 1,
+        "commit_decel_to_zero was never invoked after {} ms of quiescence (got {} fires)",
+        150,
+        fires,
+    );
+
+    // The stub disarms `last_append_time` after firing, so a second
+    // sleep should NOT produce more fires (the timer is one-shot per
+    // `Move`). This is the small extra invariant Task 4.1 establishes:
+    // the timer doesn't re-arm on its own.
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        h.commit_fire_count(),
+        fires,
+        "commit timer re-fired without a new submit_move — \
+         the disarm step in run_loop's timeout branch is broken",
+    );
+
+    h.shutdown();
+}
+
