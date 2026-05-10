@@ -241,7 +241,9 @@ class ADS131MxBase(LoadCellSensor):
         self.consecutive_fails = 0
         self.reset_chip()
         self.setup_chip()
-        rest_ticks = self.mcu.seconds_to_clock(1.0 / (10.0 * self.sps))
+        rest_ticks = self.mcu.seconds_to_clock(
+            1.0 / (10.0 * self.get_samples_per_second())
+        )
         self.query_ads131m0x_cmd.send([self.oid, rest_ticks])
         logging.info(f"{self.sensor_type} starting '{self.name}' measurements")
         self.ffreader.note_start()
