@@ -24,6 +24,7 @@ use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::bezier::BezierPiece;
 use nurbs::ScalarNurbs;
 
+use crate::beta::kernel_half_support;
 use crate::fit::FittedSegment;
 use crate::pad::{pad_segment_axis_with_history, EHalo};
 use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
@@ -197,13 +198,6 @@ pub fn emit_shaped(
     }
 
     Ok(output)
-}
-
-/// Half-support `(hi - lo) / 2.0` of a kernel. Identical to the private
-/// helper in `beta.rs`; duplicated here to keep `emit_shaped` self-contained.
-fn kernel_half_support(kernel: &PiecewisePolynomialKernel<f64>) -> f64 {
-    let (lo, hi) = kernel.support();
-    (hi - lo) / 2.0
 }
 
 // ---------------------------------------------------------------------------

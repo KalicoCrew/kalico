@@ -46,10 +46,16 @@ pub struct AxisShaperQueue {
 /// Stateful streaming-shaper planner state, sharing one absolute time line
 /// across all axes (every append is multi-axis).
 ///
-/// Phase 1 only uses `axes`, `pending_dispatch`, and the cursors are seeded
-/// to zero / left untouched by `append_batch`. Phases 4+ drive the cursors
-/// (`t_appended`, `t_tentative`, `t_shaped`, `t_dispatched`), the
-/// tentative-rest flag, and the generation counter.
+/// Phase 1 only uses `axes` and `pending_dispatch`; the cursors are seeded
+/// to zero / left untouched by `append_batch`. Phase 3 (`append_and_replan`
+/// / `emit_committed`) drives the cursors (`t_appended`, `t_decel_start`,
+/// `t_shaped`, `t_dispatched`).
+///
+/// **v5 field set.** The v4-era fields `t_tentative`, `rest_tentative`, and
+/// `generation` were removed when v5's design eliminated the
+/// tentative-rest extension model — the streaming planner now appends each
+/// move's terminal decel-to-zero outright and tracks where that decel begins
+/// in `t_decel_start`. See spec §3.1 ("State invariants").
 #[derive(Debug)]
 pub struct ShaperState {
     /// Per-axis queues (X, Y, Z, E). Z is typically passthrough; E is unused
@@ -59,23 +65,22 @@ pub struct ShaperState {
 
     /// Latest absolute time for which a real `append_batch` has been received.
     pub t_appended: f64,
-    /// Tentative right edge after a synthesized rest extension is appended.
-    /// Equal to `t_appended` when no tentative rest is in flight.
-    pub t_tentative: f64,
+    /// Absolute time at which the most-recently-submitted move's terminal
+    /// decel-to-zero begins. Phase 3's `append_and_replan` populates this
+    /// from the planner's velocity profile so the next `submit_move` can
+    /// rewind to it and re-plan the un-committed tail. Initialized to
+    /// `0.0` at construction; equal to `t_appended` when the queue is empty.
+    pub t_decel_start: f64,
     /// Latest absolute time for which a shaped sample has been computed.
     pub t_shaped: f64,
     /// Latest absolute time for which a shaped sample has been *dispatched*
     /// to the wire.
     pub t_dispatched: f64,
 
-    /// Shaped output computed but not yet drained / dispatched.
+    /// Shaped output computed but not yet drained / dispatched. Populated
+    /// transiently by Phase 3's `emit_committed` and by Phase 1's
+    /// `append_batch` shim; drained via `drain_committed`.
     pub pending_dispatch: Vec<ShapedSegment>,
-
-    /// True while a tentative rest extension is in flight (Phase 4+).
-    pub rest_tentative: bool,
-
-    /// Monotonic counter incremented on every state-mutating event (Phase 4+).
-    pub generation: u64,
 }
 
 impl ShaperState {
@@ -94,12 +99,10 @@ impl ShaperState {
         Self {
             axes,
             t_appended: 0.0,
-            t_tentative: 0.0,
+            t_decel_start: 0.0,
             t_shaped: 0.0,
             t_dispatched: 0.0,
             pending_dispatch: Vec::new(),
-            rest_tentative: false,
-            generation: 1,
         }
     }
 
@@ -386,11 +389,9 @@ mod tests {
 
         // Cursors start at zero.
         assert_eq!(state.t_appended, 0.0);
-        assert_eq!(state.t_tentative, 0.0);
+        assert_eq!(state.t_decel_start, 0.0);
         assert_eq!(state.t_shaped, 0.0);
         assert_eq!(state.t_dispatched, 0.0);
-        assert!(!state.rest_tentative);
-        assert_eq!(state.generation, 1);
         assert!(state.pending_dispatch.is_empty());
     }
 

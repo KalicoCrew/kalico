@@ -22,6 +22,7 @@
 //    `machine_a_max[seg][axis] * BETA_ACCEL_MIN_RATIO`. This is a safety net
 //    against the cascade even if the inactive-axis check is not sufficient.
 
+use crate::emit_shaped::{emit_shaped, EmitSegmentMeta, PerAxisHistory};
 use crate::fit::FittedSegment;
 use crate::pad::EHalo;
 use crate::partition::BatchPartition;
@@ -77,6 +78,21 @@ pub fn beta_loop(
 /// β-medium loop interprets the post-shape peak in the trailing-`h` region of
 /// the last XY-motion segment. See [`SafetyMode`] documentation for the bound
 /// derivation (spec §3.6).
+///
+/// **Phase-2 wrapper shape (Task 2.3).** `shape_batch`'s public guarantee is
+/// `plan_velocity` → `emit_shaped(empty history)` → E-gap interleaving. This
+/// function is that pipeline literally:
+///
+/// 1. [`plan_batch_full`] runs the β-medium loop (TOPP-RA + per-iteration
+///    shape via [`emit_shaped`] + peak / derate) and returns the
+///    β-converged time-domain fitted segments + status metadata.
+/// 2. [`emit_shaped`] runs the post-loop shaping pass on those fitted
+///    segments. With an empty [`PerAxisHistory`] the output is byte-identical
+///    to the legacy inline shaping (covered by
+///    [`crate::emit_shaped::tests::empty_history_matches_shape_batch_byte_identical`]).
+/// 3. [`assemble_with_e_gaps`] interleaves the partition's independent-E
+///    segments around the shaped XY output, producing the final
+///    [`ShapeBatchOutput`].
 pub fn beta_loop_with_safety(
     input: &ShapeBatchInput<'_>,
     partition: &BatchPartition,
@@ -87,28 +103,149 @@ pub fn beta_loop_with_safety(
         return assemble_e_only_output(input, partition);
     }
 
+    // ---- 1. plan_velocity (β-medium loop returns fitted + status metadata) ----
+    let planned = plan_batch_full(input, partition, safety_mode)?;
+
+    // ---- 2. emit_shaped (empty history → byte-identical to legacy path) ----
+    let kernel_array = build_kernel_array_from_shaper_config(&input.shaper);
+    let e_halos = build_e_halos(partition, &planned.global_ends);
+    let meta: Vec<EmitSegmentMeta> = collect_xy_meta(input, partition);
+    let batch_t_start = 0.0_f64;
+    let batch_t_end = compute_batch_t_end(partition, &planned.global_ends);
+
+    let emitted_xy = emit_shaped(
+        &planned.fitted,
+        &meta,
+        &kernel_array,
+        &e_halos,
+        &PerAxisHistory::empty(),
+        batch_t_start,
+        batch_t_end,
+    )?;
+
+    // ---- 3. assemble_with_e_gaps (interleave independent-E segments) ----
+    assemble_with_e_gaps(input, partition, &planned, emitted_xy)
+}
+
+/// β-medium-converged time-domain plan for a non-empty XY-motion partition.
+///
+/// Returned by [`plan_batch_full`]; consumed by `beta_loop_with_safety`'s
+/// post-loop shape + assemble flow. All fields are flattened in input-segment
+/// order across runs (E gaps excluded — they're interleaved by
+/// [`assemble_with_e_gaps`]).
+pub struct PlannedBatch {
+    /// β-converged fitted (unshaped) per-axis NURBS for each XY-motion segment.
+    pub fitted: Vec<FittedSegment>,
+    /// Batch-global end time of each XY-motion segment, in flattened order.
+    /// Used by [`build_e_halos`] / [`find_gap_start`] to place E-gap halo
+    /// pieces on the correct global time line.
+    pub global_ends: Vec<f64>,
+    /// Joining status from the final temporal solve (forwarded to
+    /// [`ShapeBatchOutput::temporal_status`]).
+    pub joining_status: temporal::multi::JoiningStatus,
+    /// `true` iff some β iteration produced a derate-free result.
+    pub converged: bool,
+    /// `None` if `converged`; otherwise a diagnostic describing which
+    /// segments still exceed their machine limits at iteration exhaustion.
+    pub beta_warning: Option<BetaWarning>,
+}
+
+/// Plan a non-empty XY-motion batch through the β-medium outer loop and
+/// return the time-domain fitted trajectory + status metadata.
+///
+/// This is the planning half of the Task-2.3 wrapper split: it drives the
+/// full β-medium loop (which still shapes per iteration via [`emit_shaped`]
+/// to compute peaks for derate) but returns only the β-converged fitted
+/// segments — the *final* shaped output is recomputed downstream by
+/// `beta_loop_with_safety`'s explicit `emit_shaped(empty history)` call so
+/// the public flow matches the spec's stated `plan + emit + assemble`
+/// shape literally.
+///
+/// # Panics / errors
+///
+/// Caller must handle the empty-runs fast path; this function expects
+/// `partition.runs` to be non-empty (matches [`beta_iterate_inner`]'s
+/// contract). Errors from TOPP-RA / fit / shape are forwarded.
+pub fn plan_batch_full(
+    input: &ShapeBatchInput<'_>,
+    partition: &BatchPartition,
+    safety_mode: SafetyMode,
+) -> Result<PlannedBatch, ShapeError> {
     let outcome = beta_iterate_inner(input, partition, safety_mode)?;
-    assemble_output(
-        input,
-        partition,
-        outcome.result,
-        outcome.converged,
-        outcome.beta_warning,
-    )
+    Ok(PlannedBatch {
+        fitted: outcome.result.fitted,
+        global_ends: outcome.result.global_ends,
+        joining_status: outcome.result.joining_status,
+        converged: outcome.converged,
+        beta_warning: outcome.beta_warning,
+    })
+}
+
+/// Build the `[Option<PiecewisePolynomialKernel>; 4]` kernel array
+/// `emit_shaped` consumes from a `ShaperConfig` (X / Y required, Z optional).
+fn build_kernel_array_from_shaper_config(
+    shaper: &crate::ShaperConfig,
+) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
+    [
+        Some(shaper.x.to_kernel()),
+        Some(shaper.y.to_kernel()),
+        shaper.z.to_kernel(),
+        None,
+    ]
+}
+
+/// Collect per-XY-segment `EmitSegmentMeta` in flattened-run order to pass to
+/// `emit_shaped`. The meta values are forwarded onto the resulting
+/// `ShapedSegment.e_mode` / `extrusion_per_xy_mm` fields so the output is
+/// already populated with the correct values before assembly.
+fn collect_xy_meta(
+    input: &ShapeBatchInput<'_>,
+    partition: &BatchPartition,
+) -> Vec<EmitSegmentMeta> {
+    partition
+        .runs
+        .iter()
+        .flat_map(|r| r.segment_range.clone())
+        .map(|i| EmitSegmentMeta {
+            e_mode: input.segments[i].e_mode,
+            extrusion_per_xy_mm: input.segments[i].extrusion_per_xy_mm,
+        })
+        .collect()
+}
+
+/// Compute the batch's global `t_end`: the end of the last XY-motion segment
+/// plus the duration of any trailing independent-E gaps. Mirrors the
+/// `t_cursor` accounting `beta_iterate_inner` does internally so the
+/// post-loop `emit_shaped` call sees the same right-pad domain the inline
+/// shaping used to.
+fn compute_batch_t_end(partition: &BatchPartition, global_ends: &[f64]) -> f64 {
+    let mut t = global_ends.last().copied().unwrap_or(0.0);
+    if let Some(last_run) = partition.runs.last() {
+        for eg in &partition.e_gaps {
+            if eg.segment_index >= last_run.segment_range.end {
+                t += eg.duration;
+            }
+        }
+    }
+    t
 }
 
 /// Drive the β-medium loop over `partition` and return only the time-domain
 /// **fitted** (unshaped, but β-converged) segments. This is the planning half
-/// of the Phase-2 split (§5.2 of the streaming-shaper spec): no shaping
-/// convolution / refit / final assembly. The shaping half (Task 2.2's
-/// `emit_shaped`) consumes the returned `Vec<FittedSegment>` to produce the
-/// per-axis shaped `ScalarNurbs`.
+/// of the Phase-2 split (§5.2 of the streaming-shaper spec): no final shaping
+/// pass / E-gap interleaving. The shaping half (Task 2.2's [`emit_shaped`])
+/// consumes the returned `Vec<FittedSegment>` to produce the per-axis shaped
+/// `ScalarNurbs`.
 ///
-/// Internally this still convolves and refits per iteration in order to
-/// compute the post-shape peak that drives the β-derate; only the final
-/// shaped output is discarded. Phase 2 keeps the full duplication; Phase 3
-/// will optimize by hoisting shaping out of the inner iteration when it
-/// exceeds peak-only computation needs.
+/// Internally each β iteration still calls [`emit_shaped`] to compute the
+/// post-shape peak that drives the β-derate decision; only the final
+/// shaped output is discarded here, since the streaming caller wants to
+/// invoke `emit_shaped` itself with a non-empty [`PerAxisHistory`] to get a
+/// continuous-across-`submit_move`-boundary convolution.
+///
+/// Convenience wrapper around [`plan_batch_full`] that drops the status
+/// metadata. Use [`plan_batch_full`] when you also need
+/// `joining_status` / `converged` / `beta_warning` / `global_ends`.
 pub fn plan_velocity_inner(
     input: &ShapeBatchInput<'_>,
     partition: &BatchPartition,
@@ -119,8 +256,8 @@ pub fn plan_velocity_inner(
         return Ok(Vec::new());
     }
 
-    let outcome = beta_iterate_inner(input, partition, safety_mode)?;
-    Ok(outcome.result.fitted)
+    let planned = plan_batch_full(input, partition, safety_mode)?;
+    Ok(planned.fitted)
 }
 
 /// Outcome of the shared β-medium iteration loop. The terminal `BetaIterResult`
@@ -370,8 +507,6 @@ fn beta_warning_from_last(result: &BetaIterResult, machine_a_max: &[[f64; 3]]) -
 struct BetaIterResult {
     /// Fitted segments (one per XY-motion segment, flattened across runs).
     fitted: Vec<FittedSegment>,
-    /// Per-axis shaped NURBS (one per XY-motion segment, flattened across runs).
-    shaped: Vec<[ScalarNurbs<f64>; 3]>,
     /// Per-axis peak acceleration (one per XY-motion segment, flattened across runs).
     peaks: Vec<[f64; 3]>,
     /// Temporal joining status from the last run's solve.
@@ -389,7 +524,7 @@ fn run_one_iteration(
     partition: &BatchPartition,
     planning_a_max: &[[f64; 3]],
     kernels: &AxisKernels,
-    half_supports: &HalfSupports,
+    _half_supports: &HalfSupports,
     _t_sm_half_max: f64,
 ) -> Result<BetaIterResult, ShapeError> {
     let all_xy_indices: Vec<usize> = partition
@@ -547,112 +682,74 @@ fn run_one_iteration(
     // ---- Build E halos for padding ----
     let e_halos = build_e_halos(partition, &global_ends);
 
-    // ---- Stage 3: Padding + convolution per axis ----
-    let mut shaped: Vec<[ScalarNurbs<f64>; 3]> = Vec::with_capacity(fitted.len());
-
-    for seg_idx in 0..fitted.len() {
-        let seg = &fitted[seg_idx];
-        let t_start = seg.t_start;
-        let t_end = seg.t_end;
-
-        // Per-axis: pad, convolve, trim (or passthrough for Z).
-        let x_padded = crate::pad::pad_segment_axis(
-            seg_idx,
-            0,
-            &fitted,
-            &e_halos,
-            half_supports.x,
-            batch_t_start,
-            batch_t_end,
-        );
-        let x_shaped =
-            crate::shaper::shape_axis(&x_padded, &kernels.x, t_start, t_end).map_err(|detail| {
-                ShapeError::Algebra {
-                    index: seg_idx,
-                    detail,
-                }
-            })?;
-
-        let y_padded = crate::pad::pad_segment_axis(
-            seg_idx,
-            1,
-            &fitted,
-            &e_halos,
-            half_supports.y,
-            batch_t_start,
-            batch_t_end,
-        );
-        let y_shaped =
-            crate::shaper::shape_axis(&y_padded, &kernels.y, t_start, t_end).map_err(|detail| {
-                ShapeError::Algebra {
-                    index: seg_idx,
-                    detail,
-                }
-            })?;
-
-        let z_shaped = if let Some(ref z_kernel) = kernels.z {
-            let z_padded = crate::pad::pad_segment_axis(
-                seg_idx,
-                2,
-                &fitted,
-                &e_halos,
-                half_supports.z,
-                batch_t_start,
-                batch_t_end,
-            );
-            crate::shaper::shape_axis(&z_padded, z_kernel, t_start, t_end).map_err(|detail| {
-                ShapeError::Algebra {
-                    index: seg_idx,
-                    detail,
-                }
-            })?
-        } else {
-            // Passthrough: use the fitted Z axis directly.
-            fitted[seg_idx].axes[2].clone()
-        };
-
-        shaped.push([x_shaped, y_shaped, z_shaped]);
-    }
-
-    // ---- Stage 3b: Cubic refit (post-shape) ----
-    // Each axis NURBS coming out of Stage 3 is up to degree 9 (= d_fit +
-    // d_kernel + 1 for smooth-MZV's degree-4 kernel on degree-4 Hermite
-    // input). f32 De Boor on degree 9 suffers from catastrophic cancellation
-    // when control-point magnitudes grow large relative to per-tick deltas
-    // — observed on H723 as ≥ 0.8 mm position spikes that trip
-    // KALICO_FAULT_STEP_BURST_EXCEEDED. Refit each axis to cubic Bézier
-    // pieces with C¹ continuity; this restores CLAUDE.md's "uniform cubic
-    // Bézier across Layer 1/2/3/4" mandate at the post-shape boundary.
+    // ---- Stages 3 + 3b: pad → convolve → trim → cubic refit (via emit_shaped) ----
     //
-    // Closes the deferred-fix entry from plan-changes-log 2026-05-05
-    // ("MCU step-burst cap raised 16 → 64 (deferred-fix workaround)").
-    for axes in shaped.iter_mut() {
-        for axis in axes.iter_mut() {
-            *axis = crate::refit::refit_to_cubic(axis, crate::refit::REFIT_TOLERANCE_MM)
-                .map_err(|detail| ShapeError::FitFailure { index: 0, detail })?;
-        }
-    }
+    // The previous inline implementation duplicated `emit_shaped`'s pad /
+    // convolve / refit / passthrough logic verbatim. Routing the work through
+    // `emit_shaped` here removes ~75 lines of duplication and aligns the
+    // β-loop's per-iteration shape with the post-loop assembly path used by
+    // `shape_batch` / `assemble_with_e_gaps`. The meta values fed in are
+    // unused by `emit_shaped`'s shape pipeline (only the e_mode/extrusion
+    // fields it sets on its `ShapedSegment` outputs, which are discarded
+    // here — `assemble_with_e_gaps` overwrites them from the original
+    // `ShapeBatchInput`).
+    let kernel_array = build_kernel_array_from_axis_kernels(kernels);
+    let dummy_meta: Vec<EmitSegmentMeta> = (0..fitted.len())
+        .map(|_| EmitSegmentMeta {
+            e_mode: EMode::CoupledToXy,
+            extrusion_per_xy_mm: 0.0,
+        })
+        .collect();
+    let emitted = emit_shaped(
+        &fitted,
+        &dummy_meta,
+        &kernel_array,
+        &e_halos,
+        &PerAxisHistory::empty(),
+        batch_t_start,
+        batch_t_end,
+    )?;
 
     // ---- Stage 4: Peak acceleration check ----
-    let peaks: Vec<[f64; 3]> = shaped
+    // The shaped axes are only needed to compute per-segment peaks for the
+    // β-derate decision; they are NOT stored on `BetaIterResult` because the
+    // post-loop `beta_loop_with_safety` re-shapes via `emit_shaped` (with an
+    // empty history) on the converged fitted output. That second pass is
+    // byte-identical by construction (verified by
+    // `emit_shaped::tests::empty_history_matches_shape_batch_byte_identical`).
+    let peaks: Vec<[f64; 3]> = emitted
         .iter()
-        .map(|axes| {
+        .map(|seg| {
             [
-                crate::peak::peak_accel(&axes[0]),
-                crate::peak::peak_accel(&axes[1]),
-                crate::peak::peak_accel(&axes[2]),
+                crate::peak::peak_accel(&seg.axes[0]),
+                crate::peak::peak_accel(&seg.axes[1]),
+                crate::peak::peak_accel(&seg.axes[2]),
             ]
         })
         .collect();
 
     Ok(BetaIterResult {
         fitted,
-        shaped,
         peaks,
         joining_status: last_joining_status,
         _iteration: 0,
         global_ends,
     })
+}
+
+/// Convert the legacy `AxisKernels` (X required, Y required, Z optional) into
+/// the `[Option<PiecewisePolynomialKernel>; 4]` shape that `emit_shaped`
+/// consumes. The E slot is always `None` (E is not a shaped axis in the
+/// MVP).
+fn build_kernel_array_from_axis_kernels(
+    kernels: &AxisKernels,
+) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
+    [
+        Some(kernels.x.clone()),
+        Some(kernels.y.clone()),
+        kernels.z.clone(),
+        None,
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -795,36 +892,51 @@ fn find_gap_start(
 // Output assembly
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::needless_pass_by_value)] // `result` is consumed (fields moved out).
-fn assemble_output(
+/// Interleave independent-E gap segments around the XY-shaped output to
+/// produce the final [`ShapeBatchOutput`].
+///
+/// `emitted_xy` is the [`emit_shaped`] result over `planned.fitted` — one
+/// entry per XY-motion segment, in flattened-run order, with its
+/// `e_mode` / `extrusion_per_xy_mm` / `t_start` / `t_end` fields already
+/// populated by `emit_shaped`. We just place them into the output buffer at
+/// the original input index, build constant-position E-gap segments at the
+/// gap times computed by [`find_gap_start`], and fill the
+/// [`ShapeBatchOutput`] header with the planning-status metadata.
+///
+/// Replaces the legacy `assemble_output` whose XY branch pulled shaped axes
+/// from `BetaIterResult.shaped`; the Task-2.3 wrapper rewire moves shaping
+/// into a dedicated post-loop `emit_shaped` call so this function takes the
+/// already-shaped XY segments by value.
+fn assemble_with_e_gaps(
     input: &ShapeBatchInput<'_>,
     partition: &BatchPartition,
-    result: BetaIterResult,
-    converged: bool,
-    beta_warning: Option<BetaWarning>,
+    planned: &PlannedBatch,
+    emitted_xy: Vec<ShapedSegment>,
 ) -> Result<ShapeBatchOutput, ShapeError> {
     let total_input_segments = input.segments.len();
     let mut output_segments: Vec<Option<ShapedSegment>> = vec![None; total_input_segments];
 
-    // Place XY-motion segments.
+    // Place XY-motion segments at their original input indices.
     let all_xy_indices: Vec<usize> = partition
         .runs
         .iter()
         .flat_map(|r| r.segment_range.clone())
         .collect();
 
-    for (flat_idx, &global_idx) in all_xy_indices.iter().enumerate() {
-        let shaped_axes = result.shaped[flat_idx].clone();
-        let fitted = &result.fitted[flat_idx];
+    debug_assert_eq!(
+        emitted_xy.len(),
+        all_xy_indices.len(),
+        "emitted_xy length must match the number of XY-motion segments",
+    );
 
-        output_segments[global_idx] = Some(ShapedSegment {
-            axes: shaped_axes,
-            e_mode: input.segments[global_idx].e_mode,
-            extrusion_per_xy_mm: input.segments[global_idx].extrusion_per_xy_mm,
-            e_independent: None,
-            t_start: fitted.t_start,
-            t_end: fitted.t_end,
-        });
+    for (flat_idx, mut shaped_seg) in emitted_xy.into_iter().enumerate() {
+        let global_idx = all_xy_indices[flat_idx];
+        // `emit_shaped` already populated e_mode / extrusion_per_xy_mm from
+        // the meta we passed in; overwriting from the original input here is
+        // a no-op but keeps the assignment self-documenting.
+        shaped_seg.e_mode = input.segments[global_idx].e_mode;
+        shaped_seg.extrusion_per_xy_mm = input.segments[global_idx].extrusion_per_xy_mm;
+        output_segments[global_idx] = Some(shaped_seg);
     }
 
     // Place E-gap segments.
@@ -835,7 +947,7 @@ fn assemble_output(
         let t_gap_start = find_gap_start(
             eg.segment_index,
             &all_xy_indices,
-            &result.global_ends,
+            &planned.global_ends,
             partition,
         );
         let t_gap_end = t_gap_start + eg.duration;
@@ -878,13 +990,17 @@ fn assemble_output(
         })
         .collect();
 
-    let beta_iters = if converged { 1 } else { input.beta_max_iters };
+    let beta_iters = if planned.converged {
+        1
+    } else {
+        input.beta_max_iters
+    };
 
     Ok(ShapeBatchOutput {
         segments,
         beta_iters,
-        temporal_status: result.joining_status,
-        beta_warning,
+        temporal_status: planned.joining_status,
+        beta_warning: planned.beta_warning.clone(),
     })
 }
 
@@ -940,7 +1056,9 @@ fn assemble_e_only_output(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn kernel_half_support(kernel: &PiecewisePolynomialKernel<f64>) -> f64 {
+/// Half-support `(hi - lo) / 2.0` of a kernel. Exposed `pub(crate)` so
+/// `emit_shaped` can use the same helper instead of duplicating the math.
+pub(crate) fn kernel_half_support(kernel: &PiecewisePolynomialKernel<f64>) -> f64 {
     let (lo, hi) = kernel.support();
     (hi - lo) / 2.0
 }
