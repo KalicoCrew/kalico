@@ -54,13 +54,6 @@ struct AxisKernels {
     z: Option<PiecewisePolynomialKernel<f64>>,
 }
 
-/// Half-support widths for each axis kernel.
-struct HalfSupports {
-    x: f64,
-    y: f64,
-    z: f64,
-}
-
 /// Run the beta-medium outer loop over the given partition.
 ///
 /// This is the main orchestrator: it drives Stages 1-5 until convergence, then
@@ -261,15 +254,15 @@ pub fn plan_velocity_inner(
 }
 
 /// Outcome of the shared β-medium iteration loop. The terminal `BetaIterResult`
-/// carries the data both callers need (fitted, shaped, peaks, joining status,
+/// carries the data both callers need (fitted, peaks, joining status,
 /// `global_ends`); `converged` and `beta_warning` are populated for
-/// `beta_loop_with_safety`'s `assemble_output` call and ignored by
+/// `beta_loop_with_safety`'s `assemble_with_e_gaps` call and ignored by
 /// `plan_velocity_inner`.
 struct BetaIterationOutcome {
     /// Final iteration's result.
     result: BetaIterResult,
     /// True iff some iteration produced a derate-free result. Forwarded to
-    /// [`assemble_output`] to set `beta_iters = 1` (vs `beta_max_iters`).
+    /// [`assemble_with_e_gaps`] to set `beta_iters = 1` (vs `beta_max_iters`).
     converged: bool,
     /// `None` if `converged`; otherwise a diagnostic describing which segments
     /// still exceed their machine limits at exhaustion.
@@ -298,13 +291,6 @@ fn beta_iterate_inner(
         y: input.shaper.y.to_kernel(),
         z: input.shaper.z.to_kernel(),
     };
-    let half_supports = HalfSupports {
-        x: kernel_half_support(&kernels.x),
-        y: kernel_half_support(&kernels.y),
-        z: kernels.z.as_ref().map_or(0.0, kernel_half_support),
-    };
-    // The maximum half-support across all axes determines global padding needs.
-    let t_sm_half_max = half_supports.x.max(half_supports.y).max(half_supports.z);
 
     debug_assert!(
         !partition.runs.is_empty(),
@@ -354,8 +340,6 @@ fn beta_iterate_inner(
             partition,
             &planning_a_max,
             &kernels,
-            &half_supports,
-            t_sm_half_max,
         ) {
             Ok(result) => result,
             Err(_) if last_result.is_some() => {
@@ -414,8 +398,6 @@ fn beta_iterate_inner(
                 partition,
                 &planning_a_max,
                 &kernels,
-                &half_supports,
-                t_sm_half_max,
             ) {
                 Ok(result) => result,
                 Err(_) => {
@@ -451,8 +433,6 @@ fn beta_iterate_inner(
                 partition,
                 &planning_a_max,
                 &kernels,
-                &half_supports,
-                t_sm_half_max,
             )?
         }
     };
@@ -524,8 +504,6 @@ fn run_one_iteration(
     partition: &BatchPartition,
     planning_a_max: &[[f64; 3]],
     kernels: &AxisKernels,
-    _half_supports: &HalfSupports,
-    _t_sm_half_max: f64,
 ) -> Result<BetaIterResult, ShapeError> {
     let all_xy_indices: Vec<usize> = partition
         .runs
@@ -689,10 +667,10 @@ fn run_one_iteration(
     // `emit_shaped` here removes ~75 lines of duplication and aligns the
     // β-loop's per-iteration shape with the post-loop assembly path used by
     // `shape_batch` / `assemble_with_e_gaps`. The meta values fed in are
-    // unused by `emit_shaped`'s shape pipeline (only the e_mode/extrusion
-    // fields it sets on its `ShapedSegment` outputs, which are discarded
-    // here — `assemble_with_e_gaps` overwrites them from the original
-    // `ShapeBatchInput`).
+    // dummies — only the per-axis shaped NURBS feed back into the peak-accel
+    // check below; the resulting `ShapedSegment` E-mode / extrusion fields
+    // are discarded along with the whole `emitted` vector at the end of this
+    // iteration.
     let kernel_array = build_kernel_array_from_axis_kernels(kernels);
     let dummy_meta: Vec<EmitSegmentMeta> = (0..fitted.len())
         .map(|_| EmitSegmentMeta {
@@ -929,13 +907,10 @@ fn assemble_with_e_gaps(
         "emitted_xy length must match the number of XY-motion segments",
     );
 
-    for (flat_idx, mut shaped_seg) in emitted_xy.into_iter().enumerate() {
+    for (flat_idx, shaped_seg) in emitted_xy.into_iter().enumerate() {
         let global_idx = all_xy_indices[flat_idx];
-        // `emit_shaped` already populated e_mode / extrusion_per_xy_mm from
-        // the meta we passed in; overwriting from the original input here is
-        // a no-op but keeps the assignment self-documenting.
-        shaped_seg.e_mode = input.segments[global_idx].e_mode;
-        shaped_seg.extrusion_per_xy_mm = input.segments[global_idx].extrusion_per_xy_mm;
+        // `emit_shaped` already populated e_mode / extrusion_per_xy_mm from the
+        // `collect_xy_meta` values we passed in — no overwrite needed here.
         output_segments[global_idx] = Some(shaped_seg);
     }
 

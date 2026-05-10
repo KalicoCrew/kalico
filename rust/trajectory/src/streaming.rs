@@ -220,9 +220,9 @@ fn shape_single_segment(
             shaped_axes[1].take().unwrap(),
             shaped_axes[2].take().unwrap(),
         ],
-        // Phase 1 has no E plumbing — match `beta::assemble_output`'s default
-        // for `EMode::CoupledToXy`-with-zero-ratio; the planner-side wiring
-        // (Task 1.2) will overwrite with the real input metadata.
+        // Phase 1 has no E plumbing — match `beta::assemble_with_e_gaps`'s
+        // default for `EMode::CoupledToXy`-with-zero-ratio; the planner-side
+        // wiring (Task 1.2) will overwrite with the real input metadata.
         e_mode: geometry::segment::EMode::CoupledToXy,
         extrusion_per_xy_mm: 0.0,
         e_independent: None,
