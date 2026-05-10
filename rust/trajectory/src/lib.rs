@@ -3,6 +3,7 @@
 
 mod beta;
 mod e_independent;
+pub mod emit_shaped;
 pub mod fit;
 mod kernel;
 mod pad;
@@ -15,6 +16,8 @@ mod reparam;
 mod shaper;
 pub mod streaming;
 
+pub use emit_shaped::{emit_shaped, EmitSegmentMeta, PerAxisHistory};
+pub use pad::EHalo;
 pub use plan_velocity::{plan_velocity, PlanInput, PlanSegment, PlanShaper, SafetyMode};
 
 // ---------------------------------------------------------------------------

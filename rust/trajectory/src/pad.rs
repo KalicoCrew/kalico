@@ -21,6 +21,7 @@ pub struct BatchFittedData {
 }
 
 /// A constant-position halo piece covering an E-gap interval.
+#[derive(Debug, Clone)]
 pub struct EHalo {
     /// XYZ hold position during the E-only move.
     pub xyz_position: [f64; 3],
@@ -51,6 +52,50 @@ pub fn pad_segment_axis(
     batch_t_start: f64,
     batch_t_end: f64,
 ) -> ScalarNurbs<f64> {
+    pad_segment_axis_with_history(
+        seg_idx,
+        axis,
+        fitted,
+        e_halos,
+        &[],
+        t_sm_half,
+        batch_t_start,
+        batch_t_end,
+    )
+}
+
+/// Variant of [`pad_segment_axis`] that consumes a per-axis `history` slice
+/// (`BezierPiece`s in the absolute time domain, immediately preceding
+/// `batch_t_start`) when the neighbour-segment scan exhausts before the
+/// pad target is covered.
+///
+/// Streaming-shaper Phase-2 split: the streaming planner holds the
+/// already-planned, β-converged pieces from prior `submit_move`s in
+/// `ShaperState`. When the un-committed tail is replanned and shaped, the
+/// left-pad must read from those prior pieces rather than fall back to a
+/// constant-extension at the batch start (which would corrupt the convolution
+/// at the seam — the original ~1 mm position-step bug v5 exists to fix).
+///
+/// Empty `history` reproduces [`pad_segment_axis`]'s behaviour byte-for-byte:
+/// after the neighbour scan exhausts, fall back to constant-extension at
+/// `batch_t_start`.
+///
+/// `history` is interpreted as the **left side** of the time line: pieces
+/// preceding `batch_t_start`, in time order. The scan reads pieces from the
+/// tail (largest `u_end` first) until the pad target is covered or the
+/// history is exhausted; degree elevation matches the segment's fitted
+/// degree, identical to the neighbour-segment branch.
+#[allow(clippy::too_many_arguments)] // Mirrors `pad_segment_axis` plus one history slice; splitting hurts call-site readability.
+pub fn pad_segment_axis_with_history(
+    seg_idx: usize,
+    axis: usize,
+    fitted: &[FittedSegment],
+    e_halos: &[EHalo],
+    history: &[BezierPiece<f64>],
+    t_sm_half: f64,
+    batch_t_start: f64,
+    batch_t_end: f64,
+) -> ScalarNurbs<f64> {
     let seg = &fitted[seg_idx];
     let seg_pieces = extract_bezier_pieces(&seg.axes[axis]);
     let target_degree = seg_pieces[0].degree();
@@ -61,6 +106,7 @@ pub fn pad_segment_axis(
         axis,
         fitted,
         e_halos,
+        history,
         t_sm_half,
         batch_t_start,
         target_degree,
@@ -91,11 +137,19 @@ pub fn pad_segment_axis(
 }
 
 /// Collect left padding pieces, scanning backward from `seg_idx`.
+///
+/// `history` (if non-empty) supplies real prior planned `BezierPiece`s in
+/// the absolute time domain immediately preceding `batch_t_start`. After the
+/// neighbour scan exhausts, the history is consumed (tail-first) until the
+/// pad target is covered. Only when both neighbours and history are
+/// exhausted do we fall back to constant-extension at the batch start.
+#[allow(clippy::too_many_arguments)] // Mirrors `collect_right_padding`'s signature; the new `history` slice is the streaming-shaper hook.
 fn collect_left_padding(
     seg_idx: usize,
     axis: usize,
     fitted: &[FittedSegment],
     e_halos: &[EHalo],
+    history: &[BezierPiece<f64>],
     t_sm_half: f64,
     batch_t_start: f64,
     target_degree: usize,
@@ -183,6 +237,26 @@ fn collect_left_padding(
                     target_degree,
                 ));
                 cursor = h_start;
+            }
+        }
+    }
+
+    // Streaming-shaper hook: consume history pieces (tail-first) before
+    // falling back to constant-extension. Each history piece is treated like
+    // a neighbour-segment piece — trimmed to `[pad_target, cursor]` and
+    // degree-elevated. The history slice is in time order, so we walk it
+    // in reverse.
+    if cursor > pad_target {
+        for hp in history.iter().rev() {
+            if cursor <= pad_target {
+                break;
+            }
+            let p_start = hp.u_start.max(pad_target);
+            let p_end = hp.u_end.min(cursor);
+            if p_end > p_start {
+                let trimmed = trim_piece(hp, p_start, p_end);
+                pieces.push(degree_elevate_to(trimmed, target_degree));
+                cursor = p_start;
             }
         }
     }
