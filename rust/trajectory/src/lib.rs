@@ -12,6 +12,7 @@ pub mod peak;
 mod refit;
 mod reparam;
 mod shaper;
+pub mod streaming;
 
 // ---------------------------------------------------------------------------
 // Input types
