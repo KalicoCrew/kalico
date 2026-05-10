@@ -1,32 +1,43 @@
 //! Planner thread core.
 //!
-//! Receives `PlannerMsg` messages, accumulates moves in a window, runs the
-//! reduce → temporal → trajectory pipeline (via `trajectory::shape_batch`),
-//! and dispatches shaped segments through a callback (per Task 6 of the
-//! Phase-2 motion-bridge plan).
+//! Receives `PlannerMsg` messages and runs the streaming-shaper pipeline:
+//! every `PlannerMsg::Move(m)` triggers `ShaperState::append_and_replan` over
+//! the un-committed tail, followed by `ShaperState::emit_committed` to
+//! dispatch any newly-eligible shaped output.
 //!
-//! Actual MCU push logic comes in Task 7. For now, the dispatch callback is
-//! `Arc<dyn Fn(&trajectory::ShapedSegment) + Send + Sync>`.
+//! Phase 3 Task 3.3 replaced the Phase-1 buffered-window shim (which called
+//! `trajectory::shape_batch` on a `Vec<CubicSegment>` window and staged the
+//! result through `ShaperState::pending_dispatch`) with the streaming-native
+//! path. Two consequences for tests / callers:
 //!
-//! ## API divergences from the plan snippet
-//!
-//! - The trajectory crate exports `ShapeError` (not `ShapeBatchError`) as the
-//!   top-level error from `shape_batch`. We map it through
-//!   `PlannerError::Shape(trajectory::ShapeError)`.
-//! - `shape_batch` returns `ShapeBatchOutput { segments, .. }`; we extract
-//!   `segments` per the plan.
+//! - The `window_capacity` field on [`crate::config::PlannerConfig`] is no
+//!   longer consulted — replan + emit happens per `submit_move`. The field
+//!   is retained on the config (the PyO3 surface still accepts it) for
+//!   forward compatibility with Phase 6 print-time rectification; it is
+//!   silently ignored on the streaming hot path.
+//! - `emit_committed` only dispatches up to `t_decel_start − max_h` —
+//!   the trailing decel-to-zero region of the most recent replan is held
+//!   speculatively until either a follow-on move arrives (in which case the
+//!   replan re-anchors the decel-to-zero point further out and more of the
+//!   prior plan becomes committed) or Phase 4's quiescence commit adopts
+//!   the planned decel as the actual trajectory. Tests that submit a single
+//!   short move and immediately flush will therefore see strictly less
+//!   shaped output than the Phase-1 shim produced. For now we keep those
+//!   assertions only on long-enough moves; the dwell / commit handler in
+//!   Phase 4 will let short moves dispatch the full plan on flush.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use geometry::segment::CubicSegment;
+use nurbs::algebra::PiecewisePolynomialKernel;
 
 use crate::classify::ClassifiedMove;
 use crate::config::{PlannerConfig, PlannerLimits};
-use trajectory::streaming::ShaperState;
-use trajectory::{AxisShaper, RequiredShaper, ShaperConfig, ShapedSegment};
+use trajectory::plan_velocity::{PlanShaper, SafetyMode};
+use trajectory::streaming::{EmitContext, ReplanContext, ShaperState};
+use trajectory::{AxisShaper, EHalo, RequiredShaper, ShaperConfig, ShapedSegment};
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -94,9 +105,10 @@ impl PlannerHandle {
         let error = Arc::new(Mutex::new(None));
         let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
 
-        // Phase 1 plumbing: construct a `ShaperState` from the planner config
-        // and seed it at home_pos = [0; 4]. Homing wires the real home pose
-        // later (Phase 5). The state is owned by the planner thread.
+        // Streaming-native state. `ShaperState` owns the per-axis queues +
+        // un-committed tail; the per-iteration `ReplanContext` /
+        // `EmitContext` are rebuilt on every shaper/limits update so live
+        // config changes take effect on the next `submit_move`.
         let shapers = shaper_config_to_axis_shapers(&config.shaper);
         let state = ShaperState::new([0.0; 4], &shapers);
 
@@ -210,6 +222,47 @@ fn store_print_time(bits: &AtomicU64, t: f64) {
     bits.store(t.to_bits(), Ordering::Release);
 }
 
+/// Owned per-thread context buffers consumed by `ShaperState::append_and_replan`
+/// and `ShaperState::emit_committed`. `EmitContext` borrows from the kernel
+/// array + halo list, so we keep both owned on this struct and reborrow on
+/// every call. Rebuilt on `UpdateShaper` so live shaper-config changes
+/// propagate to the next `submit_move`.
+struct PlannerThreadState {
+    emit_kernels: [Option<PiecewisePolynomialKernel<f64>>; 4],
+    /// Streaming `emit_committed` never has E-only gaps (the extruder
+    /// follows shaped XY arc-length on coupled moves; independent-E moves
+    /// don't reach the streaming path today). Retained as an empty slot so
+    /// the borrow plumbing into `EmitContext` is straight-line.
+    e_halos: Vec<EHalo>,
+    replan_ctx: ReplanContext,
+}
+
+impl PlannerThreadState {
+    fn build(config: &PlannerConfig) -> Self {
+        let emit_kernels = shaper_config_to_emit_kernels(&config.shaper);
+        let replan_ctx = build_replan_context(config);
+        Self {
+            emit_kernels,
+            e_halos: Vec::new(),
+            replan_ctx,
+        }
+    }
+
+    fn rebuild(&mut self, config: &PlannerConfig) {
+        let next = Self::build(config);
+        self.emit_kernels = next.emit_kernels;
+        self.e_halos = next.e_halos;
+        self.replan_ctx = next.replan_ctx;
+    }
+
+    fn emit_ctx(&self) -> EmitContext<'_> {
+        EmitContext {
+            kernels: &self.emit_kernels,
+            e_halos: &self.e_halos,
+        }
+    }
+}
+
 fn run_loop(
     rx: Receiver<PlannerMsg>,
     mut config: PlannerConfig,
@@ -219,191 +272,181 @@ fn run_loop(
     last_move_time_bits: Arc<AtomicU64>,
 ) {
     let mut print_time: f64 = 0.0;
+    let mut thread_state = PlannerThreadState::build(&config);
 
     loop {
-        // Block until at least one message arrives.
-        let first = match rx.recv() {
+        let msg = match rx.recv() {
             Ok(m) => m,
             Err(_) => return,
         };
 
-        let mut buffer: Vec<CubicSegment> = Vec::new();
-        let mut pending_flush: Option<Sender<()>> = None;
-        let mut pending_dwell: Option<(f64, Sender<()>)> = None;
-        let mut pending_config_update: Option<ConfigUpdate> = None;
-        let mut shutdown = false;
+        match msg {
+            PlannerMsg::Move(m) => {
+                // Streaming-native: replan the un-committed tail with the
+                // new move appended, then emit anything newly eligible up
+                // to `t_decel_start − max_h`.
+                if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
+                    *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                    continue;
+                }
+                let drained = match state.emit_committed(&thread_state.emit_ctx()) {
+                    Ok(out) => out,
+                    Err(e) => {
+                        *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                        continue;
+                    }
+                };
 
-        handle_msg(
-            first,
-            &mut buffer,
-            &mut pending_flush,
-            &mut pending_dwell,
-            &mut pending_config_update,
-            &mut shutdown,
-            &mut config,
-            &mut state,
-        );
+                // Print-time accounting: sum the eligible-region durations.
+                // Phase 7 Task 7.1 will move this to caller-side advance
+                // (input-time accounting, not output-time accounting) so
+                // the post-decel speculative tail also contributes; for
+                // now we preserve the pre-streaming behaviour of advancing
+                // by what was actually dispatched this round.
+                let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
+                print_time += batch_dur;
+                store_print_time(&last_move_time_bits, print_time);
 
-        // Drain until window is full or we hit a sync barrier.
-        while !(buffer.len() >= config.window_capacity
-            || pending_flush.is_some()
-            || pending_dwell.is_some()
-            || pending_config_update.is_some()
-            || shutdown)
-        {
-            match rx.try_recv() {
-                Ok(m) => handle_msg(
-                    m,
-                    &mut buffer,
-                    &mut pending_flush,
-                    &mut pending_dwell,
-                    &mut pending_config_update,
-                    &mut shutdown,
-                    &mut config,
-                    &mut state,
-                ),
-                Err(_) => break,
-            }
-        }
-
-        // Run pipeline if we have moves.
-        if !buffer.is_empty() {
-            match run_pipeline(&buffer, &config) {
-                Ok(shaped) => {
-                    // Phase 1 plumbing: route the existing pipeline's output
-                    // through `ShaperState` to establish the seam. The shim's
-                    // `append_batch` would re-shape an already-shaped segment
-                    // (it ingests `FittedSegment`, the trajectory crate's
-                    // *pre-shape* per-segment form, which is not exposed
-                    // through the public `shape_batch` API), so for Phase 1
-                    // we stage the already-shaped output directly into
-                    // `pending_dispatch` and drain through the same handle
-                    // Phase 2+ will use. Behaviour is byte-identical to the
-                    // pre-Phase-1 direct-dispatch path; the only difference
-                    // is that `state.drain_committed()` is now the single
-                    // source of truth for committed shaped segments.
-                    state.pending_dispatch.extend(shaped);
-                    let drained = state.drain_committed();
-
-                    // shape_batch emits zero-relative t_start/t_end (batch_t_start = 0.0
-                    // in trajectory::beta), so the last segment's t_end is this batch's
-                    // total duration. Sum is robust against future API changes.
-                    let batch_dur: f64 =
-                        drained.iter().map(|s| s.t_end - s.t_start).sum();
-                    print_time += batch_dur;
-                    store_print_time(&last_move_time_bits, print_time);
-                    for s in &drained {
-                        if let Err(msg) = dispatch(s) {
-                            *error.lock().unwrap() = Some(PlannerError::Dispatch(msg));
-                            pending_flush = None;
-                            pending_dwell = None;
-                            break;
-                        }
+                for s in &drained {
+                    if let Err(detail) = dispatch(s) {
+                        *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+                        break;
                     }
                 }
-                Err(e) => {
-                    *error.lock().unwrap() = Some(e);
-                    // Drop pending notifies — caller will see error on next op.
-                    pending_flush = None;
-                    pending_dwell = None;
-                }
             }
-        }
 
-        if let Some(tx) = pending_flush.take() {
-            let _ = tx.send(());
-        }
-        if let Some((dur, tx)) = pending_dwell.take() {
-            print_time += dur;
-            store_print_time(&last_move_time_bits, print_time);
-            let _ = tx.send(());
-        }
-
-        // Apply the config update *after* the buffered window has been
-        // shaped & dispatched, so subsequent moves see the new config but
-        // already-buffered moves are processed under the old one.
-        if let Some(update) = pending_config_update.take() {
-            match update {
-                ConfigUpdate::Limits(l) => config.limits = l,
-                ConfigUpdate::Shaper(s) => {
-                    config.shaper = s;
-                    // Phase 1: rebuild the streaming-shaper kernels from the
-                    // new config. We fully re-seed at home_pos = [0; 4] for
-                    // now (homing wires the real pose later in Phase 5);
-                    // since `pending_dispatch` was drained immediately above
-                    // and the per-axis queues are not yet history-aware,
-                    // this is behaviour-equivalent to the prior direct-call
-                    // path, which simply re-built kernels inside the next
-                    // `shape_batch`.
-                    let shapers = shaper_config_to_axis_shapers(&config.shaper);
-                    state = ShaperState::new([0.0; 4], &shapers);
-                }
+            PlannerMsg::Flush { notify } => {
+                // No buffer to drain under streaming — replan + emit happen
+                // per `submit_move`. `Flush` remains a synchronization
+                // barrier so callers can wait for prior messages on the
+                // queue to be processed before continuing.
+                let _ = notify.send(());
             }
-        }
 
-        if shutdown {
-            return;
-        }
-    }
-}
+            PlannerMsg::Dwell { duration_s, notify } => {
+                // Phase 3 preserves the pre-streaming dwell behaviour:
+                // advance `print_time` by the dwell duration and unblock
+                // the caller. Phase 4 ("commit decel to zero") will model
+                // dwell properly by committing the planned decel-to-zero
+                // before extending the timeline by `duration_s`.
+                print_time += duration_s;
+                store_print_time(&last_move_time_bits, print_time);
+                let _ = notify.send(());
+            }
 
-enum ConfigUpdate {
-    Limits(PlannerLimits),
-    Shaper(ShaperConfig),
-}
-
-fn handle_msg(
-    msg: PlannerMsg,
-    buffer: &mut Vec<CubicSegment>,
-    pending_flush: &mut Option<Sender<()>>,
-    pending_dwell: &mut Option<(f64, Sender<()>)>,
-    pending_config_update: &mut Option<ConfigUpdate>,
-    shutdown: &mut bool,
-    config: &mut PlannerConfig,
-    state: &mut ShaperState,
-) {
-    match msg {
-        PlannerMsg::Move(m) => buffer.push(m.segment),
-        PlannerMsg::Flush { notify } => *pending_flush = Some(notify),
-        PlannerMsg::Dwell { duration_s, notify } => {
-            *pending_dwell = Some((duration_s, notify));
-        }
-        PlannerMsg::UpdateLimits(l) => {
-            if buffer.is_empty() {
-                // No moves buffered: apply immediately.
+            PlannerMsg::UpdateLimits(l) => {
                 config.limits = l;
-            } else {
-                // Moves buffered: defer so they shape under the old config,
-                // then apply the update as a barrier before further messages.
-                *pending_config_update = Some(ConfigUpdate::Limits(l));
+                thread_state.rebuild(&config);
             }
-        }
-        PlannerMsg::UpdateShaper(s) => {
-            if buffer.is_empty() {
+
+            PlannerMsg::UpdateShaper(s) => {
                 config.shaper = s;
-                // Phase 1 plumbing: re-seed the streaming-shaper state so its
-                // per-axis kernels match the new config. Behaviour-equivalent
-                // to the prior path (which rebuilt kernels inside the next
-                // `shape_batch`) because Phase 1 doesn't yet rely on history.
+                // Rebuild the kernels / replan context so the next
+                // `append_and_replan` sees the new shaper config. We also
+                // re-seed the `ShaperState` itself (matching the prior
+                // Phase-1 behaviour); a future cross-axis-barrier
+                // implementation (Phase 5 Task 5.3) will drain in-flight
+                // moves under the old shaper first.
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
-                *state = ShaperState::new([0.0; 4], &shapers);
-            } else {
-                *pending_config_update = Some(ConfigUpdate::Shaper(s));
+                state = ShaperState::new([0.0; 4], &shapers);
+                thread_state.rebuild(&config);
             }
+
+            PlannerMsg::Shutdown => return,
         }
-        PlannerMsg::Shutdown => *shutdown = true,
     }
 }
 
 // ---------------------------------------------------------------------------
-// ShaperState construction helper
+// Context construction helpers
 // ---------------------------------------------------------------------------
+
+/// Build a `ReplanContext` from the current `PlannerConfig`. Captures the
+/// snapshot the next `append_and_replan` will use; rebuilt on
+/// `UpdateLimits` / `UpdateShaper`.
+fn build_replan_context(config: &PlannerConfig) -> ReplanContext {
+    ReplanContext {
+        limits: config.limits.to_temporal_limits(),
+        kernels: shaper_config_to_plan_shapers(&config.shaper),
+        fit_tolerance_mm: config.fit_tolerance_mm,
+        beta_max_iters: config.beta_max_iters,
+        beta_convergence_ratio: config.beta_convergence_ratio,
+        e_limits: config.e_limits,
+        // Slicer-supplied per-segment in the full pipeline; the streaming
+        // planner does not currently have a per-move plumb, so we use the
+        // same default (`0.05 mm` = 50 µm) the legacy `run_pipeline` used
+        // when it built `ShapeSegmentInput.trailing_junction_chord_tolerance_mm`.
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: config.worker_threads,
+        grid_strategy: temporal::multi::GridStrategy::Adaptive {
+            min_n: 20,
+            max_n: 200,
+            target_grid_spacing_mm: 0.5,
+        },
+        // The streaming planner samples the actual velocity at
+        // `t_dispatched` off its own `pieces` queue when available; this
+        // fallback fires only when the cursor sits outside the pieces'
+        // domain (e.g., the very first `append_and_replan` after a fresh
+        // `ShaperState::new`). At-rest startup is the right default.
+        fallback_initial_v: 0.0,
+        // Phase 3 always uses the worst-case-future safety mode — the
+        // trailing decel-to-zero is speculative until the next move
+        // arrives or quiescence commit fires.
+        safety_mode: SafetyMode::WorstCaseFuture,
+    }
+}
+
+/// Materialize the per-axis `PiecewisePolynomialKernel`s that
+/// `emit_committed`'s convolution consumes. E slot is `None` (extruder is
+/// followed off the shaped XY arc-length, not separately shaped).
+fn shaper_config_to_emit_kernels(
+    cfg: &ShaperConfig,
+) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
+    [
+        Some(required_to_kernel(cfg.x)),
+        Some(required_to_kernel(cfg.y)),
+        cfg.z.to_kernel(),
+        None,
+    ]
+}
+
+fn required_to_kernel(req: RequiredShaper) -> PiecewisePolynomialKernel<f64> {
+    req.to_kernel()
+}
+
+/// Map the planner-side `ShaperConfig` to the `[Option<PlanShaper>; 4]` form
+/// `ReplanContext.kernels` expects. The X and Y axes are always populated
+/// (the `RequiredShaper` types statically guarantee this); Z is taken from
+/// the optional axis enum; E is always `None` (extruder is not shaped here).
+fn shaper_config_to_plan_shapers(cfg: &ShaperConfig) -> [Option<PlanShaper>; 4] {
+    [
+        Some(required_to_plan(cfg.x)),
+        Some(required_to_plan(cfg.y)),
+        Some(axis_to_plan(cfg.z)),
+        None,
+    ]
+}
+
+fn required_to_plan(req: RequiredShaper) -> PlanShaper {
+    match req {
+        RequiredShaper::SmoothZv { frequency_hz } => PlanShaper::SmoothZv { frequency_hz },
+        RequiredShaper::SmoothMzv { frequency_hz } => PlanShaper::SmoothMzv { frequency_hz },
+    }
+}
+
+fn axis_to_plan(ax: AxisShaper) -> PlanShaper {
+    match ax {
+        AxisShaper::SmoothZv { frequency_hz } => PlanShaper::SmoothZv { frequency_hz },
+        AxisShaper::SmoothMzv { frequency_hz } => PlanShaper::SmoothMzv { frequency_hz },
+        AxisShaper::Passthrough => PlanShaper::Passthrough,
+    }
+}
 
 /// Convert the planner-config-level `ShaperConfig` (X/Y required + Z
 /// optional) into the per-axis `[Option<AxisShaper>; 4]` array
-/// `streaming::ShaperState::new` consumes (X, Y, Z, E). The E slot is `None`
-/// in Phase 1 — extruder follows the shaped XY arc-length and is not a
-/// separately shaped axis.
+/// `streaming::ShaperState::new` consumes (X, Y, Z, E). The E slot is
+/// `None` — extruder follows the shaped XY arc-length and is not a
+/// separately shaped axis in MVP scope.
 fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
     [
         Some(required_to_axis(cfg.x)),
@@ -418,54 +461,6 @@ fn required_to_axis(req: RequiredShaper) -> AxisShaper {
         RequiredShaper::SmoothZv { frequency_hz } => AxisShaper::SmoothZv { frequency_hz },
         RequiredShaper::SmoothMzv { frequency_hz } => AxisShaper::SmoothMzv { frequency_hz },
     }
-}
-
-// ---------------------------------------------------------------------------
-// Pipeline
-// ---------------------------------------------------------------------------
-
-fn run_pipeline(
-    segments: &[CubicSegment],
-    config: &PlannerConfig,
-) -> Result<Vec<ShapedSegment>, PlannerError> {
-    let limits = config.limits.to_temporal_limits();
-    let seg_inputs: Vec<trajectory::ShapeSegmentInput<'_>> = segments
-        .iter()
-        .map(|seg| trajectory::ShapeSegmentInput {
-            temporal: temporal::multi::SegmentInput {
-                curve: &seg.xyz,
-                limits,
-                trailing_junction_chord_tolerance_mm: 0.05,
-            },
-            e_mode: seg.e_mode,
-            extrusion_per_xy_mm: seg.extrusion_per_xy_mm,
-            e_independent: seg.e_independent.as_ref(),
-            feedrate_mm_s: seg.feedrate_mm_s,
-        })
-        .collect();
-
-    let input = trajectory::ShapeBatchInput {
-        segments: &seg_inputs,
-        grid_strategy: temporal::multi::GridStrategy::Adaptive {
-            min_n: 20,
-            max_n: 200,
-            target_grid_spacing_mm: 0.5,
-        },
-        worker_threads: config.worker_threads,
-        shaper: config.shaper.clone(),
-        fit_tolerance_mm: config.fit_tolerance_mm,
-        beta_max_iters: config.beta_max_iters,
-        beta_convergence_ratio: config.beta_convergence_ratio,
-        e_limits: config.e_limits,
-        // Phase 1/2 still uses `shape_batch` (the legacy batch-shaping path):
-        // both batch boundaries are at rest. Phase 3 routes around this via
-        // `ShaperState::append_and_replan` directly on per-move geometry.
-        initial_v: 0.0,
-        terminal_v: 0.0,
-    };
-
-    let output = trajectory::shape_batch(&input).map_err(PlannerError::Shape)?;
-    Ok(output.segments)
 }
 
 // ---------------------------------------------------------------------------
@@ -501,13 +496,23 @@ mod tests {
         c
     }
 
+    /// Long-move helper: a 200 mm pure-X move at 200 mm/s feedrate has a
+    /// clear accel-cruise-decel shape so `t_decel_start − max_h` is well
+    /// inside the move and `emit_committed` returns non-trivial output on
+    /// the first submit. Used by the dispatch-non-empty smoke tests; the
+    /// short-move equivalents under the Phase-1 shim would dispatch the
+    /// whole move on flush, but streaming holds the trailing decel-to-zero
+    /// speculatively until commit (Phase 4).
+    fn long_move() -> ClassifiedMove {
+        classify_and_build([0.0; 3], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap()
+    }
+
     #[test]
     fn submit_and_flush_dispatches_segments() {
         let (dispatch, counter) = counting_dispatch();
         let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
 
-        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
-        h.submit_move(m).unwrap();
+        h.submit_move(long_move()).unwrap();
         h.flush().unwrap();
 
         assert!(counter.load(Ordering::Relaxed) > 0, "dispatch never called");
@@ -550,8 +555,7 @@ mod tests {
         };
         h.update_limits(new_limits).unwrap();
 
-        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
-        h.submit_move(m).unwrap();
+        h.submit_move(long_move()).unwrap();
         h.flush().unwrap();
 
         assert!(counter.load(Ordering::Relaxed) > 0);
@@ -574,42 +578,28 @@ mod tests {
     }
 
     #[test]
-    fn window_capacity_triggers_batch_flush_without_explicit_flush() {
+    fn submit_triggers_replan_per_move() {
+        // Under streaming, every `submit_move` runs `append_and_replan` +
+        // `emit_committed` immediately (no buffer accumulation). This test
+        // pins that behaviour by submitting a single long-enough move and
+        // verifying dispatch fires before `flush` is called — `flush` is
+        // used solely as a synchronization point.
+        //
+        // This is the streaming-era successor to the
+        // `window_capacity_triggers_batch_flush_without_explicit_flush`
+        // test, which was retired alongside the buffered-window path.
         let (dispatch, counter) = counting_dispatch();
-        let mut c = relaxed_config();
-        c.window_capacity = 1;
-        let mut h = PlannerHandle::spawn(c, dispatch);
+        let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
 
-        // Submit one move; window_capacity=1 forces immediate batch flush
-        // without an explicit Flush message.
-        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
-        h.submit_move(m).unwrap();
-
-        // Use Flush only as a synchronization point (waits for the worker
-        // to drain the queue). The capacity-triggered batch must have
-        // dispatched already.
+        h.submit_move(long_move()).unwrap();
         h.flush().unwrap();
 
         assert!(
             counter.load(Ordering::Relaxed) > 0,
-            "window-capacity batch never dispatched"
+            "submit_move did not trigger per-move dispatch",
         );
         assert!(h.last_move_time() > 0.0);
-
         h.shutdown();
-    }
-
-    #[test]
-    fn two_adjacent_moves_shape_in_one_batch() {
-        let c = relaxed_config();
-        let m0 = classify_and_build([0.0; 3], 50.0, 0.0, 0.0, 0.0, 1000.0).unwrap();
-        let m1 = classify_and_build([50.0, 0.0, 0.0], 50.0, 0.0, 0.0, 0.0, 1000.0).unwrap();
-        let segments = vec![m0.segment, m1.segment];
-
-        let shaped = run_pipeline(&segments, &c).unwrap();
-
-        assert_eq!(shaped.len(), 2);
-        assert_eq!(shaped[0].t_end, shaped[1].t_start);
     }
 
     #[test]
