@@ -355,6 +355,29 @@ impl PassthroughRouter {
         Ok(())
     }
 
+    /// Update clock-sync state from a freshly recorded RTT-aware sample.
+    /// Used by the bridge's periodic `kalico_clock_sync_request` driver
+    /// (`spawn_periodic_clock_sync`) to keep `compute_ack_clock` from
+    /// drifting once klippy's bridge-mode clocksync stops emitting
+    /// `clock` responses (klippy's `_get_clock_event` raw_send is a
+    /// no-op in bridge mode — there is no other update path).
+    ///
+    /// `host_send` is the wire-send instant; `mcu_at_send` is the MCU
+    /// clock value at that instant (RTT-corrected by the caller).
+    pub fn set_clock_est_from_sample(
+        &mut self,
+        mcu: McuHandle,
+        freq: f64,
+        host_send: Instant,
+        mcu_at_send: u64,
+    ) -> Result<(), RouterError> {
+        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        rec.clock_freq = freq;
+        rec.clock_offset = instant_to_f64(host_send);
+        rec.last_clock = mcu_at_send;
+        Ok(())
+    }
+
     /// Compute the projected MCU ack-clock from the current host time and
     /// clock estimation parameters.
     ///

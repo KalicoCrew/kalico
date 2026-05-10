@@ -87,7 +87,7 @@ Each MCU runs the same kalico runtime (Step-5 substrate), refactored into a half
 - `kalico_push_response result=%i accepted_segment_id=%u credit_epoch=%u` *(extended)*
 - `kalico_stream_*_response` *(NEW)*
 - `kalico_clock_sync_response mcu_clock=%llu` *(NEW)*
-- `kalico_status engine_status=%c queue_depth=%c current_segment_id=%u last_fault=%hu fault_detail=%u mcu_clock_now=%llu` *(extended; periodic ~10 Hz, primary clock-sync sample piggyback)*
+- `kalico_status engine_status=%c queue_depth=%c current_segment_id=%u last_fault=%hu fault_detail=%u mcu_clock_now=%llu` *(extended; periodic ~10 Hz, primary clock-sync sample piggyback)* — **DEFERRED 2026-05-10:** the `mcu_clock_now` field was never wired into the v6 firmware emit (`src/kalico_dispatch.c:469` payload is 18 bytes: status/queue/segment/fault/epoch only) nor the host-side `StatusEvent` (`rust/kalico-host-rt/src/host_io/runtime_events.rs:20`). `ClockSyncEstimator::add_piggyback_sample` exists but is unreferenced outside tests. The bridge instead drives clock-sync via a periodic dedicated `kalico_clock_sync_request` round-trip per MCU at 500 ms cadence (see `rust/motion-bridge/src/bridge.rs::spawn_periodic_clock_sync`, plan-changes-log entry 2026-05-10). Re-evaluate if/when the dedicated path becomes a CPU concern.
 - `kalico_credit_freed accepted_through_segment_id=%u free_slots=%c` *(NEW — primary flow-control event, §6)*
 - `kalico_fault fault_code=%hu fault_detail=%u segment_id=%u` *(NEW — async event)*
 - `kalico_trace count=%u data=%*s` (Step-5; trace ring drain — extended schema in §14)
@@ -292,7 +292,7 @@ kalico_status engine_status=%c queue_depth=%c current_segment_id=%u
 
 The status frame:
 - Carries authoritative full-state for credit reconciliation. If the host's credit count diverges from `(queue_capacity - queue_depth)`, the host re-syncs to the MCU's view and emits a `KALICO_FAULT_INTERNAL_INVARIANT` warning to telemetry.
-- Provides the clock-sync sample on every frame (`mcu_clock_now` is captured at status-frame-emit instant; pairs with `host_recv_time` for the clock-sync regression — see §12.3 for the cadence policy).
+- ~~Provides the clock-sync sample on every frame (`mcu_clock_now` is captured at status-frame-emit instant; pairs with `host_recv_time` for the clock-sync regression — see §12.3 for the cadence policy).~~ **DEFERRED 2026-05-10:** the `mcu_clock_now` field was never added to the v6 firmware emit or host-side `StatusEvent`. Clock-sync is driven instead by a per-MCU 500 ms dedicated `kalico_clock_sync_request` round-trip from the bridge (`rust/motion-bridge/src/bridge.rs::spawn_periodic_clock_sync`). See plan-changes-log entry 2026-05-10.
 - Acts as the keepalive heartbeat: if the host doesn't see a status frame for 3× the expected period, the MCU is declared `KALICO_FAULT_LIVENESS_STALLED` and disconnect-recovery triggers.
 - Carries both `accepted_segment_id` (last enqueued) and `retired_through_segment_id` (last retired) so the host can independently observe queue-fill and queue-drain progress.
 
@@ -923,6 +923,10 @@ Two sample sources:
 Linear regression: `mcu_clock = clock_freq × host_time + offset`. Update on every sample; recompute residual_max as the max abs(observed - predicted) over the current window. Both sample sources MAY feed the same regression, but **§12.3 is authoritative on cadence**: in steady-state only piggyback samples are added to the regression; dedicated `kalico_clock_sync_request/response` samples are used only at arm-time (for quality-gate validation) and after fault recovery (resync). This avoids mixing two sample populations with different one-way-latency biases over a long window — the dedicated samples retain RTT awareness for arm-time precision; the piggyback stream provides the steady-state slope/drift estimate without bias contamination.
 
 ### 12.3 Sample cadence
+
+> **DEFERRED 2026-05-10:** the per-frame `mcu_clock_now` piggyback below was specced but never implemented. v6 firmware emits `kalico_status_v6` without an `mcu_clock_now` field (`src/kalico_dispatch.c:469`), the host-side `StatusEvent` mirrors that schema, and `ClockSyncEstimator::add_piggyback_sample` is unreferenced outside tests. Bridge mode runs an alternate driver: a per-MCU 500 ms dedicated `kalico_clock_sync_request` round-trip from `rust/motion-bridge/src/bridge.rs::spawn_periodic_clock_sync`, ~2 samples/sec/MCU into a per-thread regression that pushes into `PassthroughRouter::set_clock_est_from_sample`. The piggyback path remains a future option if the dedicated round-trip's CPU cost (one foreground call every 500 ms per MCU) becomes a concern. See plan-changes-log entry 2026-05-10 for the discovery and rationale.
+>
+> The original §12.3 design follows for historical/reference purposes:
 
 The periodic `kalico_status` frame at 10 Hz carries `mcu_clock_now` on every frame; **every status frame contributes a clock-sync sample to the regression**. This resolves the §5.3-vs-§12.3 cadence inconsistency Round 1 flagged: previously §5.3 said clock-sync rides every status frame and §12.3 said only 1-of-10 frames. The simpler design (every frame) reduces convergence time at near-zero cost (regression cost is one row update per sample; with WINDOW = ~30 the per-sample CPU cost is negligible).
 
