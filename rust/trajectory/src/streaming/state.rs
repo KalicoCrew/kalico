@@ -15,6 +15,72 @@ use crate::AxisShaper;
 use crate::ShapeError;
 use crate::ShapedSegment;
 
+// ---------------------------------------------------------------------------
+// Shared epsilon / tolerance constants
+// ---------------------------------------------------------------------------
+
+/// Lookup tolerance for absolute-time membership checks across the streaming
+/// planner. Used as a half-open-interval slack so a piece's `u_start` reads as
+/// covering `t` when `t` is bit-equal to the boundary, without admitting a
+/// non-adjacent neighbouring piece. Sub-picosecond ≪ any meaningful timing
+/// quantum on the wire (the MCU's tick rate is ~10 µs).
+const TIME_LOOKUP_TOLERANCE: f64 = 1e-12;
+
+/// Boundary slack for the `s_dispatched ∈ (0, 1)` interior check on the cubic
+/// Bézier inverter result. Below this, the split would either trigger
+/// [`split_cubic_bezier`]'s strict-interior panic or produce a degenerate
+/// left/right half whose control polygon collapses to a single point. Wider
+/// than [`TIME_LOOKUP_TOLERANCE`] because the Newton iterate has more
+/// numerical wander than absolute-time arithmetic.
+const SPLIT_BOUNDARY_TOLERANCE: f64 = 1e-9;
+
+/// Threshold for the pure-X-axis check in [`invert_cubic_bezier_xyz_to_param`]
+/// (control points on Y and Z must vanish to within this tolerance to enable
+/// the closed-form `s` solve). One picometer is well inside the planner's
+/// position resolution and is unaffected by refit noise (refits operate at
+/// `5 µm` L∞ on position).
+const PURE_AXIS_TOLERANCE: f64 = 1e-12;
+
+/// Threshold for the collinear-cubic-Bézier check in
+/// [`invert_cubic_bezier_xyz_to_param`]. A pure-X cubic whose middle control
+/// points sit within this distance of the (1/3, 2/3) lerp of the endpoints
+/// is treated as exactly collinear, allowing the analytic `s = (p − x0) /
+/// (x3 − x0)` shortcut. One nanometer is below typical refit noise so this
+/// short-circuit fires on every collinear-cubic input emitted by
+/// `linear_x_segment` / `to_collinear_g5`.
+const COLLINEAR_TOLERANCE: f64 = 1e-9;
+
+/// Floor for `f_prime` in the Newton denominator. Below this, the iteration
+/// is at a stationary point of the closest-point function; we break out and
+/// accept whatever `s` we have rather than dividing by ~0.
+const NEWTON_DENOMINATOR_FLOOR: f64 = 1e-18;
+
+/// Convergence threshold for the Newton step size on the normalized
+/// parameter `s ∈ [0, 1]`. 1 ULP of `s` corresponds to sub-nanometer position
+/// on a 200 mm move; this is well below the refit's `5 µm` L∞ budget.
+const NEWTON_PARAM_TOLERANCE: f64 = 1e-12;
+
+/// Maximum Newton iterations before bailing. Quadratic convergence on the
+/// closest-point function for a well-behaved single-piece cubic Bézier means
+/// 6 iterations is typical; 12 is defensive insurance against numerical edge
+/// cases.
+const NEWTON_MAX_ITERS: usize = 12;
+
+/// Residual budget for the Newton inverter's post-convergence position
+/// check: `||xyz(s) − p_target|| < NEWTON_RESIDUAL_MM` is required for the
+/// returned `s` to be accepted. Set to 10× the C¹ refit's L∞ tolerance
+/// (`REFIT_TOLERANCE_MM` = 5 µm) so a successful Newton converge on a
+/// genuinely-on-curve target lands well inside the budget, while a Newton
+/// converge to a wrong root (self-intersecting / highly-curved geometry,
+/// stationary-point trap) lies far enough off the curve to be rejected.
+/// Documented inline at the call site.
+const NEWTON_RESIDUAL_MM: f64 = 0.05;
+
+/// Seed clamp band for the Newton initial guess `s_seed`. Keeps the
+/// iteration off the closed-form boundary cases when the time fraction
+/// `(t_d − t_start) / (t_end − t_start)` is numerically equal to 0 or 1.
+const NEWTON_SEED_CLAMP: f64 = 1e-6;
+
 impl ShaperState {
     /// Construct a fresh streaming-shaper state at `home_pos` for each axis,
     /// with the per-axis kernels in `shapers`. Each axis queue is seeded with
@@ -118,40 +184,86 @@ impl ShaperState {
         //    active at that absolute time and combine to a path speed.
         let initial_v = self.read_path_speed_at(self.t_dispatched, ctx.fallback_initial_v);
 
-        // 2. Snapshot the prior `uncommitted_moves` so we can roll back on
-        //    plan failure (per the "atomic on error" contract). Drop any
-        //    entries whose `t_end < t_dispatched` — those are now history.
+        // 2. Snapshot the prior state so we can roll back on plan failure
+        //    (per the "atomic on error" contract). The snapshot covers every
+        //    field this function mutates *before* the error point — that's
+        //    `uncommitted_moves` (mutated in-place by `retain` + the partial-
+        //    split rewrite + the new-move push) and the timeline cursors
+        //    `t_appended` / `t_decel_start`. `planned_fitted` /
+        //    `planned_meta` are not mutated until after `plan_velocity`
+        //    returns Ok, but we snapshot them too as defense-in-depth
+        //    against future edits introducing pre-error mutations — the
+        //    next call's `split_partially_committed_at_t_dispatched` reads
+        //    `planned_fitted` to find the partially-committed move's
+        //    target position, so any inconsistency between `planned_fitted`
+        //    and `uncommitted_moves` would silently mis-split the cubic.
+        //    `Vec::clone` on these is cheap relative to TOPP-RA's runtime.
         let prior_uncommitted = self.uncommitted_moves.clone();
         let prior_t_appended = self.t_appended;
         let prior_t_decel_start = self.t_decel_start;
-        // Capture the prior `planned_fitted` *by reference* before we touch
-        // `uncommitted_moves`. We use it to look up the unshaped position at
-        // `t_dispatched` inside any partially-committed move so we can split
-        // the move's cubic Bézier at the matching `s_dispatched` parameter
-        // (see [`Self::split_partially_committed_at_t_dispatched`]).
+        let prior_planned_fitted = self.planned_fitted.clone();
+        let prior_planned_meta = self.planned_meta.clone();
+
+        // Resolve the partial-commit split against the **pre-mutation**
+        // state. The lookup uses `planned_fitted` (un-committed unshaped
+        // plan) to read the toolhead position at `t_dispatched`; it must
+        // happen before we touch `uncommitted_moves` since the resolver's
+        // 1:1 index alignment between `planned_fitted` and
+        // `uncommitted_moves` is the search invariant.
         let partial_split = self.split_partially_committed_at_t_dispatched();
 
         self.uncommitted_moves
             .retain(|m| m.t_end > self.t_dispatched);
 
-        // Apply the split (if any). This rewrites the front move's
-        // `segment.xyz` to the right-half cubic so the planning input below
-        // sees the *un-committed* path tail, not the move's full geometry.
-        if let Some(split) = partial_split {
-            // The straddling move is the first remaining `uncommitted_moves`
-            // entry by the time-ordering invariant: prior moves were dropped
-            // by `retain` (since their `t_end <= t_dispatched`), and later
-            // moves have `t_start >= prior.t_end > t_dispatched` so they
-            // cannot straddle. If the queue is empty after retain, the
-            // straddling move was already dropped — in that case `split`
-            // is `None` (no prior `planned_fitted` covered `t_dispatched`).
-            if let Some(front) = self.uncommitted_moves.front_mut() {
-                front.segment = split.new_segment;
-                // `t_start` will be refreshed from the new plan; for now
-                // record that the un-committed portion starts at the
-                // dispatch boundary so ordering stays consistent.
-                front.t_start = self.t_dispatched;
+        // Apply the split (if any). Three cases:
+        //
+        //   * `None` — no straddling move (either no `planned_fitted`
+        //     entry covered `t_dispatched`, or `s_dispatched` is near 0
+        //     meaning the dispatched position equals the move's origin).
+        //     Leave the queue untouched.
+        //
+        //   * `Some(Replace { new_segment })` — substitute the front
+        //     move's `segment` with the right-half cubic so the planner
+        //     sees only the un-committed path tail.
+        //
+        //   * `Some(DropFromQueue)` — `s_dispatched ≈ 1`: the move is
+        //     essentially fully committed (the toolhead has been
+        //     dispatched-through to ~its terminus). The `retain` above
+        //     uses `t_end > t_dispatched`, which keeps the move when
+        //     `t_d == t_end - ε` (the typical post-lookup geometry), so
+        //     we must explicitly pop the front entry here. Leaving it
+        //     intact would cause the planner to re-emit the entire move
+        //     from its geometric origin at `t_dispatched` — the exact
+        //     ~94 mm seam jump Phase 3 Task 3.1.5 was introduced to fix.
+        match partial_split {
+            Some(PartialCommitSplit::Replace { new_segment }) => {
+                // The straddling move is the first remaining
+                // `uncommitted_moves` entry by the time-ordering
+                // invariant: prior moves were dropped by `retain` (since
+                // their `t_end <= t_dispatched`), and later moves have
+                // `t_start >= prior.t_end > t_dispatched` so they cannot
+                // straddle. If the queue is empty after retain, the
+                // straddling move was already dropped — in that case
+                // `partial_split` would have been `None` (we cross-check
+                // against `uncommitted_moves` in the resolver), so we
+                // wouldn't reach this branch.
+                if let Some(front) = self.uncommitted_moves.front_mut() {
+                    front.segment = new_segment;
+                    // `t_start` will be refreshed from the new plan; for
+                    // now record that the un-committed portion starts at
+                    // the dispatch boundary so ordering stays consistent.
+                    front.t_start = self.t_dispatched;
+                }
             }
+            Some(PartialCommitSplit::DropFromQueue) => {
+                // Drop the straddling move. `retain` leaves it in place
+                // when `s ≈ 1` because by definition the lookup found a
+                // `planned_fitted` entry with `t_d < t_end` (strict half-
+                // open interval), so `t_end > t_d` and `retain` keeps
+                // it. We pop manually to enforce "drop, not re-include."
+                self.uncommitted_moves.pop_front();
+            }
+            None => {}
         }
 
         // The new move appends after the currently-planned timeline.
@@ -210,11 +322,18 @@ impl ShaperState {
         let fitted = match plan_velocity(&plan_input) {
             Ok(f) => f,
             Err(e) => {
-                // Roll back the uncommitted_moves mutation so the caller
-                // sees an unchanged state on error.
+                // Roll back every field touched (or potentially touched) on
+                // this code path so the caller sees an unchanged state on
+                // error. See the snapshot site above for why
+                // `planned_fitted` / `planned_meta` are restored too — the
+                // next call's partial-commit resolver reads `planned_fitted`
+                // and requires its 1:1 alignment with `uncommitted_moves` to
+                // survive across a failed replan attempt.
                 self.uncommitted_moves = prior_uncommitted;
                 self.t_appended = prior_t_appended;
                 self.t_decel_start = prior_t_decel_start;
+                self.planned_fitted = prior_planned_fitted;
+                self.planned_meta = prior_planned_meta;
                 return Err(e);
             }
         };
@@ -330,12 +449,12 @@ impl ShaperState {
         // Last-piece terminal: clamp `t` to `u_end` (decel-to-zero ends at
         // `v = 0`; the derivative there is well-defined).
         let last = pieces.back().unwrap();
-        if t >= last.u_end && t <= last.u_end + 1e-12 {
+        if t >= last.u_end && t <= last.u_end + TIME_LOOKUP_TOLERANCE {
             return Some(last.differentiate().evaluate(last.u_end));
         }
 
         for p in pieces {
-            if p.u_start - 1e-12 <= t && t < p.u_end {
+            if p.u_start - TIME_LOOKUP_TOLERANCE <= t && t < p.u_end {
                 return Some(p.differentiate().evaluate(t));
             }
         }
@@ -346,20 +465,52 @@ impl ShaperState {
     /// (if any) whose time domain straddles `t_dispatched`, read the
     /// unshaped toolhead position at `t_dispatched` from the **prior**
     /// `planned_fitted` cache, invert the move's source cubic Bézier to
-    /// find the matching parameter `s_dispatched ∈ (0, 1)`, and return the
-    /// right-half cubic Bézier obtained by [`split_cubic_bezier`].
+    /// find the matching parameter `s_dispatched ∈ (0, 1)`, and return an
+    /// owned [`PartialCommitSplit`] describing how the caller should
+    /// rewrite the front of `uncommitted_moves`.
+    ///
+    /// Return value (owned, by value — *not* by reference):
+    /// - `Some(PartialCommitSplit::Replace { new_segment })`: substitute
+    ///   the partially-committed move's `segment` with the right-half cubic
+    ///   covering `s ∈ [s_dispatched, 1]`. This is the typical case — a
+    ///   non-trivial portion of the move remains un-committed.
+    /// - `Some(PartialCommitSplit::DropFromQueue)`: `s_dispatched` lies in
+    ///   the right-boundary band (`≥ 1 − SPLIT_BOUNDARY_TOLERANCE`); the
+    ///   move is essentially fully committed and the caller should ensure
+    ///   it is dropped rather than left intact (otherwise the new plan
+    ///   would re-start that move from its geometric origin, the bug this
+    ///   helper was introduced to fix). In practice the `retain` step in
+    ///   `append_and_replan` already drops the move when
+    ///   `t_dispatched ≥ t_end` — which is guaranteed at `s ≈ 1` for any
+    ///   strictly-monotone time parameterization — so this variant is a
+    ///   tracer for the caller's bookkeeping rather than a separate
+    ///   removal request. We retain it as an explicit, documented case.
     ///
     /// Returns `None` when:
     /// - No `planned_fitted` entry covers `t_dispatched` (e.g., the very
     ///   first append after construction; or a prior emit dispatched all of
     ///   the front move and its `t_end` now equals `t_dispatched`).
-    /// - The covering segment's `t_dispatched - t_start` rounds exactly to
-    ///   zero (the unshaped position at `t_dispatched` equals the move's
-    ///   geometric origin — no split required).
     /// - The matching `UncommittedMove`'s `e_mode` is `Independent`. The
     ///   streaming planner does not currently feed Independent E moves
     ///   through `plan_velocity`, so a partial-commit there cannot arise
     ///   in production; we skip the split defensively.
+    /// - `s_dispatched` lies in the left-boundary band
+    ///   (`≤ SPLIT_BOUNDARY_TOLERANCE`): the unshaped position at
+    ///   `t_dispatched` essentially equals the move's geometric origin, so
+    ///   no split is required — the new plan can use the full move geometry
+    ///   directly.
+    /// - The Newton inverter's residual `||xyz(s_dispatched) − p_target||`
+    ///   exceeds [`NEWTON_RESIDUAL_MM`]. This catches Newton converging
+    ///   to a wrong root (self-intersecting or highly-curved cubics, or
+    ///   stationary-point traps where `f_prime ≈ 0`). On a wrong-root
+    ///   result we skip the split (same effect as out-of-bounds) rather
+    ///   than substituting a geometrically-incorrect right-half cubic. The
+    ///   `debug_assert!` makes the failure visible in test builds; release
+    ///   builds silently fall back to "no split" which produces the same
+    ///   ~94 mm seam jump the Phase 3 Task 3.1.5 fix was introduced to
+    ///   eliminate — but on geometry where our split couldn't have been
+    ///   trusted anyway, this is strictly better than a silent wrong
+    ///   answer downstream.
     ///
     /// **Why we read position from `planned_fitted` rather than the post-
     /// shape `axes[i].pieces` history.** The replan's `plan_velocity` step
@@ -375,14 +526,18 @@ impl ShaperState {
     /// and `uncommitted_moves` still align 1:1.
     fn split_partially_committed_at_t_dispatched(&self) -> Option<PartialCommitSplit> {
         // Find the prior plan's segment whose time domain contains
-        // `t_dispatched`. Tie-break: prefer the segment whose `t_start ≤
-        // t_d < t_end` — i.e., the segment dispatch is currently *inside*.
+        // `t_dispatched`. Standard half-open interval `[t_start, t_end)`
+        // semantics with a small lookup slack on the *left* side only —
+        // the right side stays strict so `t_d == t_end` is unambiguously
+        // *not* covered (it belongs to the next segment if there is one,
+        // and otherwise means dispatch has caught up with the planned
+        // terminus, which is "no straddle" territory).
         let t_d = self.t_dispatched;
         let (idx, planned) = self
             .planned_fitted
             .iter()
             .enumerate()
-            .find(|(_, f)| f.t_start - 1e-12 <= t_d && t_d < f.t_end - 1e-12)?;
+            .find(|(_, f)| f.t_start - TIME_LOOKUP_TOLERANCE <= t_d && t_d < f.t_end)?;
 
         // Cross-check with `uncommitted_moves` — the indices must match.
         let move_ref = self.uncommitted_moves.get(idx)?;
@@ -415,22 +570,38 @@ impl ShaperState {
         // exact; for accel/decel ramps it's within a few percent of the
         // true `s`, which Newton tightens fast.
         let move_span_t = planned.t_end - planned.t_start;
-        let s_seed = if move_span_t > 1e-12 {
-            ((t_d - planned.t_start) / move_span_t).clamp(1e-6, 1.0 - 1e-6)
+        let s_seed = if move_span_t > TIME_LOOKUP_TOLERANCE {
+            ((t_d - planned.t_start) / move_span_t)
+                .clamp(NEWTON_SEED_CLAMP, 1.0 - NEWTON_SEED_CLAMP)
         } else {
             0.5
         };
-        let s_dispatched = invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed);
+        let s_dispatched =
+            invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed)?;
 
-        // Guard against pathologically-close-to-boundary results that
-        // would either trigger `split_cubic_bezier`'s panic or produce a
-        // degenerate left/right half. We tighten the inner band to
-        // `[1e-9, 1 − 1e-9]` so the split is well-defined while still
-        // representing essentially "no split" / "fully committed" at the
-        // boundaries — in those cases there's nothing useful to split, and
-        // we skip the rewrite.
-        if !(1e-9..=1.0 - 1e-9).contains(&s_dispatched) {
+        // Boundary triage. The split function panics on `s == 0` or `s == 1`
+        // and produces a degenerate (zero-arc-length) half on near-boundary
+        // values, so we route those cases away from `split_cubic_bezier`:
+        //
+        //   * `s ≤ SPLIT_BOUNDARY_TOLERANCE` — the dispatched position is
+        //     essentially the move's origin. The new plan can use the full
+        //     move geometry directly; return `None` so the caller leaves
+        //     `uncommitted_moves` untouched.
+        //
+        //   * `s ≥ 1 − SPLIT_BOUNDARY_TOLERANCE` — the move is essentially
+        //     fully committed. The new plan must *not* re-include the
+        //     move's geometry (otherwise the seam-residue bug returns).
+        //     The `retain` step in `append_and_replan` already drops moves
+        //     with `t_end ≤ t_dispatched`, which by strict-monotonicity of
+        //     the move's time parameterization is guaranteed whenever
+        //     `s ≈ 1`. We return `DropFromQueue` as an explicit tracer so
+        //     the call site documents the case rather than relying solely
+        //     on `retain`'s side effect.
+        if s_dispatched <= SPLIT_BOUNDARY_TOLERANCE {
             return None;
+        }
+        if s_dispatched >= 1.0 - SPLIT_BOUNDARY_TOLERANCE {
+            return Some(PartialCommitSplit::DropFromQueue);
         }
 
         let (_left, right) = split_cubic_bezier(&move_ref.segment.xyz, s_dispatched);
@@ -451,7 +622,7 @@ impl ShaperState {
         )
         .expect("split_cubic_bezier output is a valid single-piece cubic Bézier");
 
-        Some(PartialCommitSplit { new_segment })
+        Some(PartialCommitSplit::Replace { new_segment })
     }
 
     /// Replace the `axes[axis_idx].pieces` entries whose `u_start ≥
@@ -476,7 +647,7 @@ impl ShaperState {
         // committed region is by definition behind the dispatch cursor).
         let pieces = &mut self.axes[axis_idx].pieces;
         while let Some(back) = pieces.back() {
-            if back.u_start >= t_keep_cutoff - 1e-12 {
+            if back.u_start >= t_keep_cutoff - TIME_LOOKUP_TOLERANCE {
                 pieces.pop_back();
             } else {
                 break;
@@ -499,16 +670,25 @@ impl ShaperState {
     }
 }
 
-/// Output of [`ShaperState::split_partially_committed_at_t_dispatched`]: the
-/// right-half cubic segment to substitute into the partially-committed move's
-/// slot in `uncommitted_moves`.
-struct PartialCommitSplit {
-    /// `CubicSegment` whose `xyz` is the right-half cubic Bézier covering the
-    /// un-committed portion of the original move's path (`s ∈ [s_dispatched,
-    /// 1]` of the original, re-parameterized to `[0, 1]`). All non-geometric
-    /// metadata (`e_mode`, `extrusion_per_xy_mm`, `feedrate_mm_s`, etc.) is
+/// Output of [`ShaperState::split_partially_committed_at_t_dispatched`]: an
+/// owned description (not a borrow into `self`) of how the caller should
+/// rewrite the front of `uncommitted_moves`.
+enum PartialCommitSplit {
+    /// `s_dispatched` is strictly interior to `(0, 1)`: substitute the
+    /// front move's `segment` with `new_segment`, the right-half cubic
+    /// Bézier covering `s ∈ [s_dispatched, 1]` of the original
+    /// (re-parameterized to `[0, 1]`). All non-geometric metadata
+    /// (`e_mode`, `extrusion_per_xy_mm`, `feedrate_mm_s`, etc.) is
     /// inherited from the original move.
-    new_segment: CubicSegment,
+    Replace { new_segment: CubicSegment },
+    /// `s_dispatched ≥ 1 − SPLIT_BOUNDARY_TOLERANCE`: the partially-
+    /// committed move is essentially fully committed. The caller must
+    /// ensure the move is dropped from `uncommitted_moves` rather than
+    /// re-included in the new plan input. See
+    /// [`ShaperState::split_partially_committed_at_t_dispatched`] for the
+    /// time-ordering invariant that lets the existing `retain` step
+    /// satisfy this requirement automatically.
+    DropFromQueue,
 }
 
 /// Invert a single-piece cubic Bézier in 3D for the parameter `s ∈ [0, 1]`
@@ -518,16 +698,27 @@ struct PartialCommitSplit {
 /// coincide).
 ///
 /// Initialized at `s_seed`. Converges in ≤ 6 iterations on the test corpus;
-/// we cap at 12 as defensive insurance against numerical edge cases.
+/// we cap at [`NEWTON_MAX_ITERS`] as defensive insurance.
 ///
-/// Returns `s` clamped to `[0, 1]` (the convergent neighborhood of any
-/// on-curve target is well inside this range; the clamp guards against
-/// near-boundary numerical wander).
+/// **Wrong-root guard.** For self-intersecting or highly-curved cubics
+/// Newton's local convergence can land on a *different* root of `f(s) = 0`
+/// — geometrically, the closest-point function has additional stationary
+/// points where the curve folds back on itself, and Newton from a far-off
+/// seed can be drawn to one of those. The closest-point function does not
+/// distinguish "the point on the curve at this `s`" from "any other point
+/// on the curve equidistant under the closest-point projection." We
+/// therefore post-check that `||xyz(s) − p_target|| < NEWTON_RESIDUAL_MM`;
+/// if the residual is too large we return `None` (caller treats this the
+/// same as out-of-bounds — no split, skip the rewrite). A `debug_assert!`
+/// surfaces the failure in test builds.
+///
+/// Returns `Some(s)` (clamped to `[0, 1]`) on a residual-checked convergence;
+/// `None` on wrong-root detection.
 fn invert_cubic_bezier_xyz_to_param(
     curve: &nurbs::VectorNurbs<f64, 3>,
     p_target: [f64; 3],
     s_seed: f64,
-) -> f64 {
+) -> Option<f64> {
     use nurbs::eval::vector_eval;
 
     // Build the curve's first and second derivatives once; both Newton
@@ -597,24 +788,60 @@ fn invert_cubic_bezier_xyz_to_param(
     };
 
     let mut s = s_seed.clamp(0.0, 1.0);
-    // Closed-form check: pure-X (control points all on the X axis) lets us
-    // skip Newton and solve `s` exactly from the X coordinate. This is the
-    // common case (most test moves) and avoids Newton's worst-case slow
-    // convergence near a stationary point.
-    let pure_x = cps.iter().all(|p| p[1].abs() < 1e-12 && p[2].abs() < 1e-12);
+    // Closed-form short-circuit for pure-X collinear cubic Béziers. Two
+    // tolerances govern the test:
+    //
+    //   * [`PURE_AXIS_TOLERANCE`] — Y and Z control points all sit within
+    //     ±1 pm of zero. Tight to make the "pure-X" classification
+    //     unambiguous regardless of refit noise (refits operate at 5 µm
+    //     L∞ on position, four orders of magnitude looser).
+    //
+    //   * [`COLLINEAR_TOLERANCE`] — middle X control points sit within
+    //     ±1 nm of the (1/3, 2/3) lerp of the endpoint X coordinates.
+    //     Loose enough to admit any refit-quality collinear cubic but
+    //     tight enough to rule out a near-collinear cubic where the
+    //     analytic `s = (p − x0) / (x3 − x0)` shortcut would mis-locate
+    //     the target. (Near-collinear cubics fall through to Newton,
+    //     which solves them just as exactly under the residual check.)
+    //
+    // The two constants used to be `1e-12` and `1e-9` respectively; they
+    // were promoted to named constants so the rationale is documented.
+    // The collinear bound is `1e-9` rather than `1e-12` because refit
+    // noise on the *control polygon* is dominated by the refit's
+    // sample-grid resolution, not by f64 round-off, and `1e-9` admits
+    // every collinear-cubic the planner produces.
+    let pure_x = cps.iter().all(|p| {
+        p[1].abs() < PURE_AXIS_TOLERANCE && p[2].abs() < PURE_AXIS_TOLERANCE
+    });
     if pure_x {
         let x0 = cps[0][0];
         let x3 = cps[3][0];
-        // For a *collinear* cubic Bézier (control points at 0, 1/3, 2/3, 1
-        // lerp — which is exactly what `linear_x_segment` and
-        // `to_collinear_g5` emit), `X(s) = x0 + s·(x3 − x0)`. Solve
-        // analytically; this is the path that gives us bit-exact split
-        // accuracy on straight moves.
         let span = x3 - x0;
-        let collinear_third = (cps[1][0] - (x0 + span / 3.0)).abs() < 1e-9
-            && (cps[2][0] - (x0 + 2.0 * span / 3.0)).abs() < 1e-9;
-        if collinear_third && span.abs() > 1e-12 {
-            return ((p_target[0] - x0) / span).clamp(0.0, 1.0);
+        let collinear_third = (cps[1][0] - (x0 + span / 3.0)).abs() < COLLINEAR_TOLERANCE
+            && (cps[2][0] - (x0 + 2.0 * span / 3.0)).abs() < COLLINEAR_TOLERANCE;
+        if collinear_third && span.abs() > PURE_AXIS_TOLERANCE {
+            // Analytic solve, then residual-check. Even for a collinear
+            // cubic the residual is meaningful: a Y/Z component on the
+            // target point (e.g., a refit added a sub-pm wobble) would
+            // produce a non-zero `dy / dz` that the analytic formula
+            // ignores. The residual catches that.
+            let s_closed = ((p_target[0] - x0) / span).clamp(0.0, 1.0);
+            let xyz_s = vector_eval(curve, s_closed);
+            let residual = ((xyz_s[0] - p_target[0]).powi(2)
+                + (xyz_s[1] - p_target[1]).powi(2)
+                + (xyz_s[2] - p_target[2]).powi(2))
+            .sqrt();
+            debug_assert!(
+                residual < NEWTON_RESIDUAL_MM,
+                "invert_cubic_bezier_xyz_to_param: pure-X collinear short-circuit \
+                 produced residual {residual} mm > budget {NEWTON_RESIDUAL_MM} mm — \
+                 the target point is not on the curve to within the planner's \
+                 refit budget. Skipping split.",
+            );
+            if residual >= NEWTON_RESIDUAL_MM {
+                return None;
+            }
+            return Some(s_closed);
         }
     }
 
@@ -622,7 +849,7 @@ fn invert_cubic_bezier_xyz_to_param(
     // to lie on `xyz(s)` to within refit noise; Newton converges in ≤ 6
     // iterations on the test corpus, and the contractive radius is large
     // for the well-behaved single-piece cubic Béziers the planner emits.
-    for _ in 0..12 {
+    for _ in 0..NEWTON_MAX_ITERS {
         let xyz_s = vector_eval(curve, s);
         let d1 = eval_d1(s);
         let d2 = eval_d2(s);
@@ -638,21 +865,47 @@ fn invert_cubic_bezier_xyz_to_param(
         let f_prime =
             d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2] + dx[0] * d2[0] + dx[1] * d2[1]
                 + dx[2] * d2[2];
-        if !f.is_finite() || !f_prime.is_finite() || f_prime.abs() < 1e-18 {
+        if !f.is_finite() || !f_prime.is_finite() || f_prime.abs() < NEWTON_DENOMINATOR_FLOOR {
             break;
         }
         let s_next = (s - f / f_prime).clamp(0.0, 1.0);
         // Quadratic convergence — terminate once the step is below curve
-        // precision (1e-12 of normalized parameter ≈ sub-nanometer
+        // precision (1 ULP of normalized parameter ≈ sub-nanometer
         // position on a 200 mm move).
-        if (s_next - s).abs() < 1e-12 {
+        if (s_next - s).abs() < NEWTON_PARAM_TOLERANCE {
             s = s_next;
             break;
         }
         s = s_next;
     }
     // Final sanity clamp.
-    s.clamp(0.0, 1.0)
+    let s = s.clamp(0.0, 1.0);
+
+    // Residual check — the wrong-root guard documented above. We evaluate
+    // the curve at the converged `s` and reject if the distance from
+    // `p_target` exceeds `NEWTON_RESIDUAL_MM` (10× the C¹ Hermite refit's
+    // L∞ tolerance, since the target read off the prior `planned_fitted`
+    // cache is itself a refit-quality value). The `debug_assert!` makes
+    // wrong-root cases loud in test builds without panicking release builds
+    // — the caller falls back to "no split" which is the same defensive
+    // behaviour as out-of-bounds.
+    let xyz_final = vector_eval(curve, s);
+    let residual = ((xyz_final[0] - p_target[0]).powi(2)
+        + (xyz_final[1] - p_target[1]).powi(2)
+        + (xyz_final[2] - p_target[2]).powi(2))
+    .sqrt();
+    debug_assert!(
+        residual < NEWTON_RESIDUAL_MM,
+        "invert_cubic_bezier_xyz_to_param: Newton converged to s = {s} but the \
+         residual ||xyz(s) − p_target|| = {residual} mm exceeds the wrong-root \
+         budget {NEWTON_RESIDUAL_MM} mm. This indicates a wrong-root convergence \
+         (self-intersecting / highly-curved cubic, or stationary-point trap). \
+         Falling back to no-split; the caller will skip the rewrite.",
+    );
+    if residual >= NEWTON_RESIDUAL_MM {
+        return None;
+    }
+    Some(s)
 }
 
 /// Shift a `ScalarNurbs<f64>`'s time domain by `dt` seconds. Extracts the

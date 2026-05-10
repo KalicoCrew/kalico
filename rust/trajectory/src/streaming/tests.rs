@@ -992,6 +992,173 @@ fn read_axis_value_at(state: &ShaperState, axis_idx: usize, t: f64) -> Option<f6
     None
 }
 
+/// **Phase 3 Task 3.1.5 cleanup — Critical 1 regression.** After a
+/// failed `append_and_replan` call (i.e., `plan_velocity` returned `Err`),
+/// the state must be byte-equivalent to its pre-call value so the next
+/// `append_and_replan` sees consistent `planned_fitted` /
+/// `uncommitted_moves` alignment. The original implementation snapshotted
+/// `uncommitted_moves` / `t_appended` / `t_decel_start` but *not*
+/// `planned_fitted` / `planned_meta`; this test guards against a regression
+/// to that incomplete rollback.
+///
+/// **Setup.** Append move 1; `emit_committed` to advance `t_dispatched`
+/// interior to move 1; then call `append_and_replan` with a deliberately
+/// broken `ReplanContext` (Passthrough X kernel → `UnsupportedShaperOnXY`).
+/// After the failure, every snapshot-able field must equal its pre-failure
+/// value, including `planned_fitted` and `planned_meta`. Finally, append
+/// move 2 with the *good* context and verify it succeeds and produces the
+/// same outcome as a fresh `append_and_replan` would have (no leftover
+/// corruption from the failed attempt).
+#[test]
+#[allow(clippy::float_cmp)] // Byte-equivalence rollback check requires exact comparison.
+fn append_and_replan_rolls_back_planned_caches_on_plan_velocity_error() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx_good = replan_context();
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+
+    // 1. Append move 1 and partially dispatch so we have a populated
+    //    `planned_fitted` cache + a `t_dispatched` interior to move 1.
+    let m1 = linear_x_segment(0.0, 200.0, 200.0);
+    state
+        .append_and_replan(m1, &ctx_good)
+        .expect("append move 1 (good context)");
+    let _ = state
+        .emit_committed(&ctx_emit)
+        .expect("emit move 1 (partial)");
+    assert!(state.t_dispatched > 0.0);
+
+    // 2. Snapshot every public field the rollback contract covers, plus
+    //    the private `planned_fitted` / `planned_meta` caches.
+    let snap_uncommitted = state.uncommitted_moves.clone();
+    let snap_t_appended = state.t_appended;
+    let snap_t_decel_start = state.t_decel_start;
+    let snap_planned_fitted_len = state.planned_fitted.len();
+    let snap_planned_meta_len = state.planned_meta.len();
+    let snap_planned_fitted_bounds: Vec<(f64, f64)> = state
+        .planned_fitted
+        .iter()
+        .map(|f| (f.t_start, f.t_end))
+        .collect();
+    let snap_planned_meta_extrusion: Vec<f64> = state
+        .planned_meta
+        .iter()
+        .map(|m| m.extrusion_per_xy_mm)
+        .collect();
+
+    // 3. Build a *broken* context whose only difference is `Passthrough`
+    //    on X — `plan_velocity` rejects this with `UnsupportedShaperOnXY`
+    //    before any state mutation in TOPP-RA. This is the cleanest
+    //    reachable error for the rollback test: we want a deterministic
+    //    failure that exercises the `Err` arm of the `match plan_velocity`
+    //    in `append_and_replan` without depending on TOPP-RA's
+    //    convergence-failure conditions.
+    let mut ctx_bad = ctx_good;
+    ctx_bad.kernels[0] = Some(PlanShaper::Passthrough);
+
+    let m_broken = linear_x_segment(200.0, 400.0, 200.0);
+    let bad_result = state.append_and_replan(m_broken, &ctx_bad);
+    assert!(
+        bad_result.is_err(),
+        "append with Passthrough-X context must fail",
+    );
+
+    // 4. Verify byte-equivalence of every snapshot-able field.
+    assert_eq!(
+        state.uncommitted_moves.len(),
+        snap_uncommitted.len(),
+        "uncommitted_moves length changed across failed append",
+    );
+    for (i, (a, b)) in state
+        .uncommitted_moves
+        .iter()
+        .zip(snap_uncommitted.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            a.t_start, b.t_start,
+            "uncommitted_moves[{i}].t_start changed across failed append",
+        );
+        assert_eq!(
+            a.t_end, b.t_end,
+            "uncommitted_moves[{i}].t_end changed across failed append",
+        );
+    }
+    assert_eq!(
+        state.t_appended, snap_t_appended,
+        "t_appended changed across failed append",
+    );
+    assert_eq!(
+        state.t_decel_start, snap_t_decel_start,
+        "t_decel_start changed across failed append",
+    );
+    assert_eq!(
+        state.planned_fitted.len(),
+        snap_planned_fitted_len,
+        "planned_fitted length changed across failed append \
+         (the headline regression Critical 1 was about)",
+    );
+    assert_eq!(
+        state.planned_meta.len(),
+        snap_planned_meta_len,
+        "planned_meta length changed across failed append",
+    );
+    for (i, (a, b)) in state
+        .planned_fitted
+        .iter()
+        .zip(snap_planned_fitted_bounds.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            a.t_start, b.0,
+            "planned_fitted[{i}].t_start changed across failed append",
+        );
+        assert_eq!(
+            a.t_end, b.1,
+            "planned_fitted[{i}].t_end changed across failed append",
+        );
+    }
+    for (i, (a, b)) in state
+        .planned_meta
+        .iter()
+        .zip(snap_planned_meta_extrusion.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            a.extrusion_per_xy_mm, *b,
+            "planned_meta[{i}].extrusion_per_xy_mm changed across failed append",
+        );
+    }
+
+    // 5. A follow-on good append must still work — and the
+    //    `split_partially_committed_at_t_dispatched` resolver must find
+    //    a consistent (`planned_fitted`, `uncommitted_moves`) pair. We
+    //    verify behaviour-equivalence by reading X at `t_dispatched`
+    //    before and after, mirroring
+    //    `t_dispatched_interior_to_move_replan_preserves_position`'s
+    //    assertion.
+    let t_d = state.t_dispatched;
+    let x_pre = read_axis_value_at(&state, 0, t_d)
+        .expect("axes[0] must cover t_dispatched after the failed call");
+
+    let m2 = linear_x_segment(200.0, 400.0, 200.0);
+    state
+        .append_and_replan(m2, &ctx_good)
+        .expect("good append after failed append must succeed");
+    let x_post = read_axis_value_at(&state, 0, t_d)
+        .expect("axes[0] must still cover t_dispatched after replan");
+    let diff = (x_post - x_pre).abs();
+    assert!(
+        diff < 0.05,
+        "post-rollback replan must preserve X(t_dispatched) within \
+         refit budget (50 µm): pre = {x_pre} mm, post = {x_post} mm, \
+         diff = {diff} mm. If this regresses, the failed-append rollback \
+         left `planned_fitted` out of sync with `uncommitted_moves`, and \
+         the partial-commit split picked the wrong target.",
+    );
+}
+
 /// History trim: pieces whose right edge is strictly before
 /// `t_dispatched − max_h − δ_safety` get dropped. After several
 /// append/emit rounds, no axis-queue piece should violate that
