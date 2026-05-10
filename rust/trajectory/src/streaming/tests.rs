@@ -270,7 +270,15 @@ fn replan_context() -> ReplanContext {
     ReplanContext {
         limits: replan_limits(),
         kernels: replan_kernels_planshaper(),
-        fit_tolerance_mm: 0.5,
+        // Match the production `motion-bridge::config::PlannerConfig`
+        // default (`0.005 mm`). The C¹ Hermite refit's L∞ tolerance gates
+        // the cross-emission seam residue under the streaming flow: a
+        // looser bound here lets two β-converged plans for the same path
+        // tail differ by the full tolerance, which the post-shape kernel
+        // then propagates into shaped output. 5 µm is the
+        // `Phase 3 Task 3.1.5` test target and matches the production
+        // pipeline.
+        fit_tolerance_mm: 0.005,
         beta_max_iters: 5,
         beta_convergence_ratio: 1.02,
         e_limits: ELimits {
@@ -825,7 +833,6 @@ fn emit_committed_chains_across_two_appends() {
         .append_and_replan(m2, &ctx_replan)
         .expect("append move 2");
 
-
     // `t_decel_start` must have advanced — move 2 extends the plan,
     // and the new terminal decel is at the end of move 2.
     let target_2 = state.t_decel_start - max_h;
@@ -844,33 +851,26 @@ fn emit_committed_chains_across_two_appends() {
     let x_at_seam_2 = nurbs::eval::eval(&first_2.axes[0], first_2.t_start);
 
     // Cross-emission position continuity (spec §4.2): the X position
-    // at the seam between emit-1 and emit-2 should match modulo the
-    // numerical residue of `append_and_replan`'s partial-commit
-    // handling.
+    // at the seam between emit-1 and emit-2 must match within refit
+    // noise.
     //
-    // **Known Task-3.1 gap.** When `t_dispatched` lands inside a
-    // partially-committed move, `append_and_replan` currently passes
-    // the FULL prior-move geometry (u ∈ [0, 1]) to `plan_velocity`,
-    // not the residual geometry from `s(t_dispatched)` onward. The
-    // new plan therefore starts at `X = move_start` at absolute time
-    // `t_dispatched`, while the old plan was already at `X ≈ progress
-    // along the move`. The post-shape kernel smooths the unshaped
-    // value-jump, but a residual ~1 mm offset survives on the 200-mm
-    // cruise case in this test. Tracking with Task 3.4 (cross-move
-    // continuity regression tests) and a follow-on `append_and_replan`
-    // refinement that splits the in-flight move at the dispatch s-value
-    // before replanning.
+    // **Phase 3 Task 3.1.5.** When `t_dispatched` lands interior to a
+    // still-uncommitted move, `append_and_replan` rewrites that move's
+    // `segment.xyz` to the right-half cubic (split at the parameter
+    // matching the dispatched position) before feeding `plan_velocity`.
+    // The new unshaped trajectory therefore starts at the *same X*
+    // the prior unshaped plan placed there, and the post-shape kernel
+    // sees no value-jump across the seam.
     //
-    // For now we assert "not catastrophically discontinuous" (single-
-    // digit mm on a 200 mm move) so this test catches a regression
-    // that would push the residue back toward the raw-unshaped
-    // ~94-mm jump.
+    // The residual budget (50 µm) is dominated by the C¹ Hermite
+    // refit's L∞ position error on each side of the seam (5 µm budget
+    // per refit) plus the shaper convolution's response to that error.
     let seam_diff = (x_at_seam_1 - x_at_seam_2).abs();
     assert!(
-        seam_diff < 5.0,
-        "cross-emission X discontinuity at seam exceeds the known \
-         residue budget: emit-1 ends at {} mm, emit-2 starts at {} mm \
-         (diff {}). See Task-3.1 known gap on partial-commit replan.",
+        seam_diff < 0.05,
+        "cross-emission X discontinuity at seam exceeds the refit \
+         noise budget (50 µm): emit-1 ends at {} mm, emit-2 starts at \
+         {} mm (diff {}). See Phase 3 Task 3.1.5.",
         x_at_seam_1,
         x_at_seam_2,
         seam_diff,
@@ -892,6 +892,104 @@ fn emit_committed_chains_across_two_appends() {
             t_dispatched_after_1,
         );
     }
+}
+
+/// Phase 3 Task 3.1.5 — when `t_dispatched` lands interior to a
+/// partially-committed move, the new plan produced by `append_and_replan`
+/// must place the toolhead at the same unshaped X position the old plan
+/// had there. Concretely: read X(t_dispatched) off the old plan's
+/// per-axis cache, run `append_and_replan` for a follow-on move, and
+/// confirm the new plan's per-axis cache still produces the same X at
+/// `t_dispatched`.
+///
+/// This is the direct invariant the split-at-`s_dispatched` fix
+/// preserves; without the fix the new plan starts at `X = 0` at
+/// `t_dispatched`, blowing the assertion by ~94 mm on this 200 mm
+/// cruise.
+#[test]
+fn t_dispatched_interior_to_move_replan_preserves_position() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx_replan = replan_context();
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+
+    // Move 1: 200 mm pure-X. Plan it, then partially dispatch so
+    // `t_dispatched` lands interior to the move (somewhere in the
+    // cruise plateau on the way to 200 mm).
+    let m1 = linear_x_segment(0.0, 200.0, 200.0);
+    state
+        .append_and_replan(m1, &ctx_replan)
+        .expect("append move 1");
+    let _ = state
+        .emit_committed(&ctx_emit)
+        .expect("emit move 1 (partial)");
+    let t_d = state.t_dispatched;
+    assert!(t_d > 0.0, "emit must have advanced t_dispatched");
+
+    // Read X(t_dispatched) off the prior (unshaped) plan's per-axis
+    // queue. By the queue's invariant this is the same value the
+    // post-shape kernel was about to convolve through at the seam.
+    let x_pre_replan = read_axis_value_at(&state, 0, t_d)
+        .expect("axes[0] must cover t_dispatched after emit");
+    // For a 200 mm move with `feedrate = 200 mm/s` and
+    // `a_max = 5_000 mm/s²` the unshaped profile cruises near
+    // 200 mm/s for most of the move; the cruise plateau lands the
+    // toolhead near X ≈ 94 mm at the dispatch boundary
+    // (`t_decel_start − max_h`). Assert "well-interior to the
+    // move" so a regression that drops dispatch back to the move's
+    // origin would fail visibly.
+    assert!(
+        x_pre_replan > 50.0 && x_pre_replan < 150.0,
+        "t_dispatched should land interior to move 1's cruise; \
+         got X(t_d) = {x_pre_replan} mm",
+    );
+
+    // Append move 2. The split-at-`s_dispatched` logic should rewrite
+    // move 1's `xyz` to the right-half cubic *before* feeding
+    // `plan_velocity`. After the call, the new plan's queue at the
+    // same absolute time `t_d` must match `x_pre_replan` within
+    // refit noise.
+    let m2 = linear_x_segment(200.0, 400.0, 200.0);
+    state
+        .append_and_replan(m2, &ctx_replan)
+        .expect("append move 2");
+    let x_post_replan = read_axis_value_at(&state, 0, t_d)
+        .expect("axes[0] must still cover t_dispatched after replan");
+
+    // Refit-noise budget: the C¹ Hermite fit's L∞ tolerance is
+    // `REFIT_TOLERANCE_MM` (5 µm); we allow 50 µm here to absorb the
+    // composite of fit error on both sides of the seam plus the
+    // arc-length / parameter-inversion residual.
+    let diff = (x_post_replan - x_pre_replan).abs();
+    assert!(
+        diff < 0.05,
+        "post-replan X({t_d}) = {x_post_replan} mm deviates from \
+         pre-replan X = {x_pre_replan} mm by {diff} mm (50 µm budget). \
+         If this regresses, `split_partially_committed_at_t_dispatched` \
+         is either not running or computing the wrong split parameter.",
+    );
+}
+
+/// Read the value of axis `axis_idx`'s queued piece active at absolute
+/// time `t`. Tie-break: prefer the right-hand piece on a boundary tie
+/// (`u_start ≤ t < u_end`); on the very last piece's terminus,
+/// extrapolate by clamping `t` to `u_end`.
+fn read_axis_value_at(state: &ShaperState, axis_idx: usize, t: f64) -> Option<f64> {
+    let pieces = &state.axes[axis_idx].pieces;
+    if pieces.is_empty() {
+        return None;
+    }
+    let last = pieces.back().unwrap();
+    if t >= last.u_end && t <= last.u_end + 1e-12 {
+        return Some(last.evaluate(last.u_end));
+    }
+    for p in pieces {
+        if p.u_start - 1e-12 <= t && t < p.u_end {
+            return Some(p.evaluate(t));
+        }
+    }
+    None
 }
 
 /// History trim: pieces whose right edge is strictly before

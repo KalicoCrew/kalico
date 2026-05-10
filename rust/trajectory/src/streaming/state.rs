@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 
-use geometry::segment::CubicSegment;
+use geometry::segment::{split_cubic_bezier, CubicSegment};
 use nurbs::bezier::{extract_bezier_pieces, BezierPiece};
 
 use super::decel_finder::find_decel_start_time;
@@ -124,9 +124,35 @@ impl ShaperState {
         let prior_uncommitted = self.uncommitted_moves.clone();
         let prior_t_appended = self.t_appended;
         let prior_t_decel_start = self.t_decel_start;
+        // Capture the prior `planned_fitted` *by reference* before we touch
+        // `uncommitted_moves`. We use it to look up the unshaped position at
+        // `t_dispatched` inside any partially-committed move so we can split
+        // the move's cubic Bézier at the matching `s_dispatched` parameter
+        // (see [`Self::split_partially_committed_at_t_dispatched`]).
+        let partial_split = self.split_partially_committed_at_t_dispatched();
 
         self.uncommitted_moves
             .retain(|m| m.t_end > self.t_dispatched);
+
+        // Apply the split (if any). This rewrites the front move's
+        // `segment.xyz` to the right-half cubic so the planning input below
+        // sees the *un-committed* path tail, not the move's full geometry.
+        if let Some(split) = partial_split {
+            // The straddling move is the first remaining `uncommitted_moves`
+            // entry by the time-ordering invariant: prior moves were dropped
+            // by `retain` (since their `t_end <= t_dispatched`), and later
+            // moves have `t_start >= prior.t_end > t_dispatched` so they
+            // cannot straddle. If the queue is empty after retain, the
+            // straddling move was already dropped — in that case `split`
+            // is `None` (no prior `planned_fitted` covered `t_dispatched`).
+            if let Some(front) = self.uncommitted_moves.front_mut() {
+                front.segment = split.new_segment;
+                // `t_start` will be refreshed from the new plan; for now
+                // record that the un-committed portion starts at the
+                // dispatch boundary so ordering stays consistent.
+                front.t_start = self.t_dispatched;
+            }
+        }
 
         // The new move appends after the currently-planned timeline.
         // Geometry doesn't have an absolute time yet — that's TOPP-RA's job.
@@ -316,6 +342,118 @@ impl ShaperState {
         None
     }
 
+    /// **Phase 3 Task 3.1.5 — partial-commit replan.** Identify the move
+    /// (if any) whose time domain straddles `t_dispatched`, read the
+    /// unshaped toolhead position at `t_dispatched` from the **prior**
+    /// `planned_fitted` cache, invert the move's source cubic Bézier to
+    /// find the matching parameter `s_dispatched ∈ (0, 1)`, and return the
+    /// right-half cubic Bézier obtained by [`split_cubic_bezier`].
+    ///
+    /// Returns `None` when:
+    /// - No `planned_fitted` entry covers `t_dispatched` (e.g., the very
+    ///   first append after construction; or a prior emit dispatched all of
+    ///   the front move and its `t_end` now equals `t_dispatched`).
+    /// - The covering segment's `t_dispatched - t_start` rounds exactly to
+    ///   zero (the unshaped position at `t_dispatched` equals the move's
+    ///   geometric origin — no split required).
+    /// - The matching `UncommittedMove`'s `e_mode` is `Independent`. The
+    ///   streaming planner does not currently feed Independent E moves
+    ///   through `plan_velocity`, so a partial-commit there cannot arise
+    ///   in production; we skip the split defensively.
+    ///
+    /// **Why we read position from `planned_fitted` rather than the post-
+    /// shape `axes[i].pieces` history.** The replan's `plan_velocity` step
+    /// produces an *unshaped* trajectory. To make that new unshaped
+    /// trajectory continuous with the in-flight motion at `t_dispatched`,
+    /// the splitting `s_dispatched` must correspond to the **unshaped**
+    /// toolhead position the prior plan placed there — not the shaped
+    /// position the kernel convolution produces. `planned_fitted` is the
+    /// prior unshaped time-domain plan, exactly that value.
+    ///
+    /// Called before [`Self::append_and_replan`] mutates `uncommitted_moves`
+    /// (specifically before `retain`), so the indices of `planned_fitted`
+    /// and `uncommitted_moves` still align 1:1.
+    fn split_partially_committed_at_t_dispatched(&self) -> Option<PartialCommitSplit> {
+        // Find the prior plan's segment whose time domain contains
+        // `t_dispatched`. Tie-break: prefer the segment whose `t_start ≤
+        // t_d < t_end` — i.e., the segment dispatch is currently *inside*.
+        let t_d = self.t_dispatched;
+        let (idx, planned) = self
+            .planned_fitted
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.t_start - 1e-12 <= t_d && t_d < f.t_end - 1e-12)?;
+
+        // Cross-check with `uncommitted_moves` — the indices must match.
+        let move_ref = self.uncommitted_moves.get(idx)?;
+
+        // Independent-E moves never carry XY motion to split. Skip
+        // defensively (the streaming planner does not feed these through
+        // `plan_velocity` today, so this branch is unreachable in
+        // production).
+        if matches!(
+            move_ref.segment.e_mode,
+            geometry::segment::EMode::Independent
+        ) {
+            return None;
+        }
+
+        // Read the unshaped XYZ toolhead position at `t_dispatched`.
+        let p_target = [
+            nurbs::eval::eval(&planned.axes[0], t_d),
+            nurbs::eval::eval(&planned.axes[1], t_d),
+            nurbs::eval::eval(&planned.axes[2], t_d),
+        ];
+
+        // Invert the cubic Bézier to find `s_dispatched`. The point is
+        // known to lie on the curve to within refit noise (≤ 5 µm by the
+        // C¹ Hermite fit's tolerance) — so Newton converges in a handful
+        // of iterations regardless of how curved the move is.
+        //
+        // Initial seed: the fraction of *time* dispatched within the
+        // move. For an axis-aligned constant-cruise move that's already
+        // exact; for accel/decel ramps it's within a few percent of the
+        // true `s`, which Newton tightens fast.
+        let move_span_t = planned.t_end - planned.t_start;
+        let s_seed = if move_span_t > 1e-12 {
+            ((t_d - planned.t_start) / move_span_t).clamp(1e-6, 1.0 - 1e-6)
+        } else {
+            0.5
+        };
+        let s_dispatched = invert_cubic_bezier_xyz_to_param(&move_ref.segment.xyz, p_target, s_seed);
+
+        // Guard against pathologically-close-to-boundary results that
+        // would either trigger `split_cubic_bezier`'s panic or produce a
+        // degenerate left/right half. We tighten the inner band to
+        // `[1e-9, 1 − 1e-9]` so the split is well-defined while still
+        // representing essentially "no split" / "fully committed" at the
+        // boundaries — in those cases there's nothing useful to split, and
+        // we skip the rewrite.
+        if !(1e-9..=1.0 - 1e-9).contains(&s_dispatched) {
+            return None;
+        }
+
+        let (_left, right) = split_cubic_bezier(&move_ref.segment.xyz, s_dispatched);
+
+        // Reconstruct a `CubicSegment` from the right half, carrying
+        // through the move's metadata. `extrusion_per_xy_mm` is a *rate*
+        // (mm E per mm XY), so it stays the same on the shorter tail.
+        // `feedrate_mm_s` is the move's target cruise speed and is also
+        // a rate.
+        let new_segment = CubicSegment::try_new(
+            right,
+            move_ref.segment.e_mode,
+            move_ref.segment.extrusion_per_xy_mm,
+            move_ref.segment.e_independent.clone(),
+            move_ref.segment.feedrate_mm_s,
+            move_ref.segment.source,
+            move_ref.segment.split_info,
+        )
+        .expect("split_cubic_bezier output is a valid single-piece cubic Bézier");
+
+        Some(PartialCommitSplit { new_segment })
+    }
+
     /// Replace the `axes[axis_idx].pieces` entries whose `u_start ≥
     /// t_dispatched_now` (i.e., the un-committed tail) with the fresh plan's
     /// per-axis pieces. The plan's `BezierPiece`s are in batch-relative
@@ -359,6 +497,162 @@ impl ShaperState {
             pieces.extend(shifted);
         }
     }
+}
+
+/// Output of [`ShaperState::split_partially_committed_at_t_dispatched`]: the
+/// right-half cubic segment to substitute into the partially-committed move's
+/// slot in `uncommitted_moves`.
+struct PartialCommitSplit {
+    /// `CubicSegment` whose `xyz` is the right-half cubic Bézier covering the
+    /// un-committed portion of the original move's path (`s ∈ [s_dispatched,
+    /// 1]` of the original, re-parameterized to `[0, 1]`). All non-geometric
+    /// metadata (`e_mode`, `extrusion_per_xy_mm`, `feedrate_mm_s`, etc.) is
+    /// inherited from the original move.
+    new_segment: CubicSegment,
+}
+
+/// Invert a single-piece cubic Bézier in 3D for the parameter `s ∈ [0, 1]`
+/// at which `xyz(s)` matches a known on-curve target point. Newton iteration
+/// on `f(s) = (xyz(s) − p_target) · xyz'(s) = 0` (the closest-point criterion;
+/// since `p_target` lies on the curve the closest-point and identity solutions
+/// coincide).
+///
+/// Initialized at `s_seed`. Converges in ≤ 6 iterations on the test corpus;
+/// we cap at 12 as defensive insurance against numerical edge cases.
+///
+/// Returns `s` clamped to `[0, 1]` (the convergent neighborhood of any
+/// on-curve target is well inside this range; the clamp guards against
+/// near-boundary numerical wander).
+fn invert_cubic_bezier_xyz_to_param(
+    curve: &nurbs::VectorNurbs<f64, 3>,
+    p_target: [f64; 3],
+    s_seed: f64,
+) -> f64 {
+    use nurbs::eval::vector_eval;
+
+    // Build the curve's first and second derivatives once; both Newton
+    // iterates use them. `differentiate` (degree → degree − 1) for vector
+    // NURBS is available on `VectorNurbsView` via the algebra layer; for
+    // single-piece cubic Béziers we compute them directly from the
+    // control-point polygon for efficiency and clarity.
+    let cps = curve.control_points();
+    debug_assert_eq!(curve.degree(), 3);
+    debug_assert_eq!(cps.len(), 4);
+
+    // First-derivative control polygon: `3·(P_{i+1} − P_i)` for i in 0..3.
+    // Result is a quadratic Bézier (degree 2, 3 control points).
+    let d1_cps: [[f64; 3]; 3] = [
+        [
+            3.0 * (cps[1][0] - cps[0][0]),
+            3.0 * (cps[1][1] - cps[0][1]),
+            3.0 * (cps[1][2] - cps[0][2]),
+        ],
+        [
+            3.0 * (cps[2][0] - cps[1][0]),
+            3.0 * (cps[2][1] - cps[1][1]),
+            3.0 * (cps[2][2] - cps[1][2]),
+        ],
+        [
+            3.0 * (cps[3][0] - cps[2][0]),
+            3.0 * (cps[3][1] - cps[2][1]),
+            3.0 * (cps[3][2] - cps[2][2]),
+        ],
+    ];
+    // Second-derivative control polygon: `2·(D1_{i+1} − D1_i)` for i in
+    // 0..2. Result is a linear Bézier (degree 1, 2 control points).
+    let d2_cps: [[f64; 3]; 2] = [
+        [
+            2.0 * (d1_cps[1][0] - d1_cps[0][0]),
+            2.0 * (d1_cps[1][1] - d1_cps[0][1]),
+            2.0 * (d1_cps[1][2] - d1_cps[0][2]),
+        ],
+        [
+            2.0 * (d1_cps[2][0] - d1_cps[1][0]),
+            2.0 * (d1_cps[2][1] - d1_cps[1][1]),
+            2.0 * (d1_cps[2][2] - d1_cps[1][2]),
+        ],
+    ];
+
+    // Bernstein-basis evaluators for the derivative polygons. We hand-roll
+    // them rather than building `VectorNurbs` curves to keep this on the
+    // straight-line cubic-Bézier hot path.
+    let eval_d1 = |s: f64| -> [f64; 3] {
+        let one_minus = 1.0 - s;
+        let b0 = one_minus * one_minus;
+        let b1 = 2.0 * one_minus * s;
+        let b2 = s * s;
+        [
+            b0 * d1_cps[0][0] + b1 * d1_cps[1][0] + b2 * d1_cps[2][0],
+            b0 * d1_cps[0][1] + b1 * d1_cps[1][1] + b2 * d1_cps[2][1],
+            b0 * d1_cps[0][2] + b1 * d1_cps[1][2] + b2 * d1_cps[2][2],
+        ]
+    };
+    let eval_d2 = |s: f64| -> [f64; 3] {
+        let one_minus = 1.0 - s;
+        [
+            one_minus * d2_cps[0][0] + s * d2_cps[1][0],
+            one_minus * d2_cps[0][1] + s * d2_cps[1][1],
+            one_minus * d2_cps[0][2] + s * d2_cps[1][2],
+        ]
+    };
+
+    let mut s = s_seed.clamp(0.0, 1.0);
+    // Closed-form check: pure-X (control points all on the X axis) lets us
+    // skip Newton and solve `s` exactly from the X coordinate. This is the
+    // common case (most test moves) and avoids Newton's worst-case slow
+    // convergence near a stationary point.
+    let pure_x = cps.iter().all(|p| p[1].abs() < 1e-12 && p[2].abs() < 1e-12);
+    if pure_x {
+        let x0 = cps[0][0];
+        let x3 = cps[3][0];
+        // For a *collinear* cubic Bézier (control points at 0, 1/3, 2/3, 1
+        // lerp — which is exactly what `linear_x_segment` and
+        // `to_collinear_g5` emit), `X(s) = x0 + s·(x3 − x0)`. Solve
+        // analytically; this is the path that gives us bit-exact split
+        // accuracy on straight moves.
+        let span = x3 - x0;
+        let collinear_third = (cps[1][0] - (x0 + span / 3.0)).abs() < 1e-9
+            && (cps[2][0] - (x0 + 2.0 * span / 3.0)).abs() < 1e-9;
+        if collinear_third && span.abs() > 1e-12 {
+            return ((p_target[0] - x0) / span).clamp(0.0, 1.0);
+        }
+    }
+
+    // Newton iteration on the closest-point function. `p_target` is known
+    // to lie on `xyz(s)` to within refit noise; Newton converges in ≤ 6
+    // iterations on the test corpus, and the contractive radius is large
+    // for the well-behaved single-piece cubic Béziers the planner emits.
+    for _ in 0..12 {
+        let xyz_s = vector_eval(curve, s);
+        let d1 = eval_d1(s);
+        let d2 = eval_d2(s);
+
+        let dx = [
+            xyz_s[0] - p_target[0],
+            xyz_s[1] - p_target[1],
+            xyz_s[2] - p_target[2],
+        ];
+        // f(s)   = (xyz − p_target) · xyz'
+        // f'(s)  = xyz' · xyz' + (xyz − p_target) · xyz''
+        let f = dx[0] * d1[0] + dx[1] * d1[1] + dx[2] * d1[2];
+        let f_prime =
+            d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2] + dx[0] * d2[0] + dx[1] * d2[1]
+                + dx[2] * d2[2];
+        if !f.is_finite() || !f_prime.is_finite() || f_prime.abs() < 1e-18 {
+            break;
+        }
+        let s_next = (s - f / f_prime).clamp(0.0, 1.0);
+        // Quadratic convergence — terminate once the step is below curve
+        // precision (1e-12 of normalized parameter ≈ sub-nanometer
+        // position on a 200 mm move).
+        if (s_next - s).abs() < 1e-12 {
+            s = s_next;
+            break;
+        }
+        s = s_next;
+    }
+    // Final sanity clamp.
+    s.clamp(0.0, 1.0)
 }
 
 /// Shift a `ScalarNurbs<f64>`'s time domain by `dt` seconds. Extracts the
