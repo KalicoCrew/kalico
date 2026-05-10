@@ -9,10 +9,13 @@ mod pad;
 mod parallel;
 mod partition;
 pub mod peak;
+pub mod plan_velocity;
 mod refit;
 mod reparam;
 mod shaper;
 pub mod streaming;
+
+pub use plan_velocity::{plan_velocity, PlanInput, PlanSegment, PlanShaper, SafetyMode};
 
 // ---------------------------------------------------------------------------
 // Input types

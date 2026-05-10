@@ -25,6 +25,7 @@
 use crate::fit::FittedSegment;
 use crate::pad::EHalo;
 use crate::partition::BatchPartition;
+use crate::plan_velocity::SafetyMode;
 use crate::{BetaWarning, ShapeBatchInput, ShapeBatchOutput, ShapeError, ShapedSegment};
 use geometry::segment::EMode;
 use nurbs::algebra::PiecewisePolynomialKernel;
@@ -63,9 +64,24 @@ struct HalfSupports {
 ///
 /// This is the main orchestrator: it drives Stages 1-5 until convergence, then
 /// assembles the final `ShapeBatchOutput` with E-gap segments inserted.
+///
+/// Equivalent to [`beta_loop_with_safety`] called with [`SafetyMode::TerminalKnown`].
 pub fn beta_loop(
     input: &ShapeBatchInput<'_>,
     partition: &BatchPartition,
+) -> Result<ShapeBatchOutput, ShapeError> {
+    beta_loop_with_safety(input, partition, SafetyMode::TerminalKnown)
+}
+
+/// Same as [`beta_loop`] but with explicit `safety_mode` controlling how the
+/// β-medium loop interprets the post-shape peak in the trailing-`h` region of
+/// the last XY-motion segment. See [`SafetyMode`] documentation for the bound
+/// derivation (spec §3.6).
+#[allow(clippy::too_many_lines)] // Orchestration function — splitting hurts readability.
+pub fn beta_loop_with_safety(
+    input: &ShapeBatchInput<'_>,
+    partition: &BatchPartition,
+    safety_mode: SafetyMode,
 ) -> Result<ShapeBatchOutput, ShapeError> {
     // Pre-build kernels from config.
     let kernels = AxisKernels {
@@ -99,6 +115,23 @@ pub fn beta_loop(
         .map(|&i| input.segments[i].temporal.limits.a_max)
         .collect();
 
+    // Effective machine limit for derate purposes. In `TerminalKnown` mode this
+    // equals `machine_a_max`. In `WorstCaseFuture` mode (streaming) the last
+    // XY segment's trailing-`h` region is subject to the worst-case-future
+    // bound (spec §3.6):
+    //
+    //   |ẍ_shaped(t)| ≤ ∫₀ʰ w(s)·|ẍ_past(t-s)|ds + a_machine·∫₋ₕ⁰ w(s)ds
+    //
+    // For a symmetric unit-DC kernel `∫₋ₕ⁰ w = 0.5`, so the second term is
+    // `0.5·a_machine`. To keep the bound ≤ a_machine we require the
+    // past-only term ≤ 0.5·a_machine. Modeling this conservatively: the last
+    // segment's effective machine limit is halved (the trailing-`h` region
+    // overlaps the last segment's terminus).
+    //
+    // This is the "loose but always safe" interpretation §3.6 documents.
+    // A finer per-sample bound is a future refinement.
+    let derate_machine_a_max = effective_machine_a_max(&machine_a_max, safety_mode);
+
     // Planning a_max: mutable copy that gets derated across iterations.
     let mut planning_a_max: Vec<[f64; 3]> = machine_a_max.clone();
 
@@ -119,15 +152,16 @@ pub fn beta_loop(
             Err(_) if last_result.is_some() => {
                 beta_warning = Some(beta_warning_from_last(
                     last_result.as_ref().unwrap(),
-                    &machine_a_max,
+                    &derate_machine_a_max,
                 ));
                 break;
             }
             Err(e) => return Err(e),
         };
 
-        // Stage 5: check post-shape peaks against machine limits.
-        let derate_info = compute_derate(&result.peaks, &machine_a_max, &result.fitted);
+        // Stage 5: check post-shape peaks against effective machine limits
+        // (which fold in the worst-case-future bound when applicable).
+        let derate_info = compute_derate(&result.peaks, &derate_machine_a_max, &result.fitted);
 
         if !derate_info.needs_derate {
             // Converged: no axis on any segment exceeds machine limit.
@@ -151,7 +185,7 @@ pub fn beta_loop(
         for (seg_flat_idx, peak_per_axis) in result.peaks.iter().enumerate() {
             for axis in 0..3 {
                 let peak = peak_per_axis[axis];
-                let machine = machine_a_max[seg_flat_idx][axis];
+                let machine = derate_machine_a_max[seg_flat_idx][axis];
                 if peak > machine {
                     // Skip derating an axis that is not actively contributing to
                     // this segment's motion. A small pre-shape position span means
@@ -185,13 +219,17 @@ pub fn beta_loop(
             ) {
                 Ok(result) => result,
                 Err(_) => {
-                    beta_warning = Some(beta_warning_from_last(&result, &machine_a_max));
+                    beta_warning =
+                        Some(beta_warning_from_last(&result, &derate_machine_a_max));
                     last_result = Some(result);
                     break;
                 }
             };
-            let final_derate =
-                compute_derate(&final_result.peaks, &machine_a_max, &final_result.fitted);
+            let final_derate = compute_derate(
+                &final_result.peaks,
+                &derate_machine_a_max,
+                &final_result.fitted,
+            );
             beta_warning = Some(BetaWarning {
                 worst_ratio: final_derate.worst_ratio,
                 segments_exceeding: final_derate.exceeding_indices.clone(),
@@ -221,6 +259,161 @@ pub fn beta_loop(
 
     // Assemble the final output with E-gap segments inserted.
     assemble_output(input, partition, result, converged, beta_warning)
+}
+
+/// Drive the β-medium loop over `partition` and return only the time-domain
+/// **fitted** (unshaped, but β-converged) segments. This is the planning half
+/// of the Phase-2 split (§5.2 of the streaming-shaper spec): no shaping
+/// convolution / refit / final assembly. The shaping half (Task 2.2's
+/// `emit_shaped`) consumes the returned `Vec<FittedSegment>` to produce the
+/// per-axis shaped `ScalarNurbs`.
+///
+/// Internally this still convolves and refits per iteration in order to
+/// compute the post-shape peak that drives the β-derate; only the final
+/// shaped output is discarded. Phase 2 keeps the full duplication; Phase 3
+/// will optimize by hoisting shaping out of the inner iteration when it
+/// exceeds peak-only computation needs.
+#[allow(clippy::too_many_lines)] // Orchestration function — mirrors `beta_loop_with_safety`.
+pub fn plan_velocity_inner(
+    input: &ShapeBatchInput<'_>,
+    partition: &BatchPartition,
+    safety_mode: SafetyMode,
+) -> Result<Vec<FittedSegment>, ShapeError> {
+    // Pre-build kernels from config.
+    let kernels = AxisKernels {
+        x: input.shaper.x.to_kernel(),
+        y: input.shaper.y.to_kernel(),
+        z: input.shaper.z.to_kernel(),
+    };
+    let half_supports = HalfSupports {
+        x: kernel_half_support(&kernels.x),
+        y: kernel_half_support(&kernels.y),
+        z: kernels.z.as_ref().map_or(0.0, kernel_half_support),
+    };
+    let t_sm_half_max = half_supports.x.max(half_supports.y).max(half_supports.z);
+
+    // No XY runs — nothing to plan. The shaping half handles E-only output.
+    if partition.runs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let all_xy_indices: Vec<usize> = partition
+        .runs
+        .iter()
+        .flat_map(|r| r.segment_range.clone())
+        .collect();
+
+    let machine_a_max: Vec<[f64; 3]> = all_xy_indices
+        .iter()
+        .map(|&i| input.segments[i].temporal.limits.a_max)
+        .collect();
+
+    let derate_machine_a_max = effective_machine_a_max(&machine_a_max, safety_mode);
+
+    let mut planning_a_max: Vec<[f64; 3]> = machine_a_max.clone();
+    let mut last_result: Option<BetaIterResult> = None;
+
+    for iteration in 0..input.beta_max_iters {
+        let result = match run_one_iteration(
+            input,
+            partition,
+            &planning_a_max,
+            &kernels,
+            &half_supports,
+            t_sm_half_max,
+        ) {
+            Ok(result) => result,
+            Err(_) if last_result.is_some() => break,
+            Err(e) => return Err(e),
+        };
+
+        let derate_info = compute_derate(&result.peaks, &derate_machine_a_max, &result.fitted);
+
+        if !derate_info.needs_derate {
+            return Ok(result.fitted);
+        }
+
+        for (seg_flat_idx, peak_per_axis) in result.peaks.iter().enumerate() {
+            for axis in 0..3 {
+                let peak = peak_per_axis[axis];
+                let machine = derate_machine_a_max[seg_flat_idx][axis];
+                if peak > machine {
+                    let fitted_span = axis_span(&result.fitted[seg_flat_idx].axes[axis]);
+                    if fitted_span < MIN_AXIS_SPAN_FOR_DERATE {
+                        continue;
+                    }
+
+                    let ratio = machine / peak;
+                    let floor = machine * BETA_ACCEL_MIN_RATIO;
+                    planning_a_max[seg_flat_idx][axis] = (planning_a_max[seg_flat_idx][axis]
+                        * ratio)
+                        .min(planning_a_max[seg_flat_idx][axis])
+                        .max(floor);
+                }
+            }
+        }
+
+        if iteration == input.beta_max_iters - 1 {
+            let final_result = match run_one_iteration(
+                input,
+                partition,
+                &planning_a_max,
+                &kernels,
+                &half_supports,
+                t_sm_half_max,
+            ) {
+                Ok(r) => r,
+                Err(_) => {
+                    last_result = Some(result);
+                    break;
+                }
+            };
+            last_result = Some(final_result);
+        } else {
+            last_result = Some(result);
+        }
+    }
+
+    let result = match last_result {
+        Some(r) => r,
+        None => run_one_iteration(
+            input,
+            partition,
+            &planning_a_max,
+            &kernels,
+            &half_supports,
+            t_sm_half_max,
+        )?,
+    };
+
+    Ok(result.fitted)
+}
+
+/// Build the effective per-segment per-axis machine accel limits used by the
+/// β-medium derate criterion. In `TerminalKnown` mode this is just the input
+/// machine limits. In `WorstCaseFuture` mode the **last** XY-motion segment's
+/// limit is halved on every axis; the trailing-`h` region of that segment is
+/// where the worst-case-future bound (spec §3.6) bites, and `0.5·a_machine` is
+/// the limit the past-only term must satisfy for the bound to stay
+/// `≤ a_machine` against the unit-DC kernel future-half mass.
+///
+/// **Loose-but-safe** (spec §3.6 wording): we apply the trailing-region limit
+/// to the entire last segment rather than only its trailing-`h` slice. This
+/// over-conservatism affects only the last segment's tail, which is the
+/// portion that gets replanned away the moment a follow-on move arrives.
+fn effective_machine_a_max(
+    machine_a_max: &[[f64; 3]],
+    safety_mode: SafetyMode,
+) -> Vec<[f64; 3]> {
+    let mut effective = machine_a_max.to_vec();
+    if matches!(safety_mode, SafetyMode::WorstCaseFuture) {
+        if let Some(last) = effective.last_mut() {
+            for axis in last.iter_mut() {
+                *axis *= 0.5;
+            }
+        }
+    }
+    effective
 }
 
 fn beta_warning_from_last(result: &BetaIterResult, machine_a_max: &[[f64; 3]]) -> BetaWarning {
