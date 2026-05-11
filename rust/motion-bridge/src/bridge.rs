@@ -1569,10 +1569,26 @@ impl PyMotionBridge {
                     plan.params.id = *entry;
                     *entry = entry.wrapping_add(1);
                 }
-                log::info!(
-                    "[bridge-trace] push_segment plan: mcu={} seg_id={} t_start={} t_end={}",
-                    plan.mcu_id, plan.params.id, plan.params.t_start, plan.params.t_end,
-                );
+                {
+                    let now_check = {
+                        let r = router_for_cb.lock().unwrap();
+                        r.compute_ack_clock(mcu_h).unwrap_or(0)
+                    };
+                    let lead_ms = if t_start_clock > now_check {
+                        (t_start_clock - now_check) as f64 / freq * 1000.0
+                    } else {
+                        -((now_check - t_start_clock) as f64 / freq * 1000.0)
+                    };
+                    let dur_ms = if t_end_clock > t_start_clock {
+                        (t_end_clock - t_start_clock) as f64 / freq * 1000.0
+                    } else {
+                        0.0
+                    };
+                    eprintln!(
+                        "[bridge-trace] dispatch mcu={} seg_id={} lead_ms={:.1} dur_ms={:.1} batch_t_start={:.4}s",
+                        plan.mcu_id, plan.params.id, lead_ms, dur_ms, seg.t_start,
+                    );
+                }
                 homing.mark_dispatched_segment(plan.params.id);
 
                 // Allocate slots, load curves. On any error, release every
@@ -1690,6 +1706,10 @@ impl PyMotionBridge {
         de: f64,
         feedrate: f64,
     ) -> PyResult<()> {
+        eprintln!(
+            "[bridge-trace] submit_move enter dx={:.3} dy={:.3} dz={:.3} feed={:.1}",
+            dx, dy, dz, feedrate,
+        );
         let pos = *self.commanded_pos.lock().unwrap();
         let classified =
             classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
