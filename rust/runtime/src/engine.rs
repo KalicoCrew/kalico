@@ -175,16 +175,27 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// Reset on segment activation; incremented per hold tick. At ~10 ms
     /// (`HOLD_SAMPLE_TICK_PERIOD = 400`) we drop one breadcrumb sample.
     hold_sample_ticks: u32,
-    /// Previous X position for E-mode arc-length integration.
+    /// Previous X position. Used for E-mode arc-length integration AND as
+    /// the "hold" value when the X handle of the current segment is
+    /// `UNUSED_SENTINEL` (the bridge omits constant axis curves; the
+    /// engine must hold the axis at its last known position rather than
+    /// drop it to zero — bench session 2026-05-11, STEP_BURST_EXCEEDED
+    /// fault on cross-segment Y handle transition).
     prev_x: f32,
-    /// Previous Y position for E-mode arc-length integration.
+    /// Previous Y position. Same dual role as `prev_x`.
     prev_y: f32,
+    /// Previous Z position. Same dual role as `prev_x` / `prev_y`. Before
+    /// 2026-05-11 the engine had no `prev_z` field because Z was never
+    /// E-arc-length-integrated and the bridge always sent a Z curve
+    /// (no `UNUSED` case). Added when `UNUSED → hold prev value` became
+    /// the engine's semantic for all kinematic axes.
+    prev_z: f32,
     /// E accumulator for CoupledToXy mode — f64 for sub-step accuracy over
     /// millions of ticks (H723 has hardware double-precision FPU).
     e_accumulator: f64,
     /// Set to `true` on init and after flush/clear so the first segment seeds
-    /// `prev_x`/`prev_y` from X(0)/Y(0) rather than computing a spurious
-    /// delta from (0,0).
+    /// `prev_x`/`prev_y`/`prev_z` from X(0)/Y(0)/Z(0) rather than computing
+    /// a spurious delta from (0,0,0).
     needs_xy_seed: bool,
     /// Diagnostic — last (now, t_start, duration) observed in tick_with_current.
     debug_last_now: u64,
@@ -223,6 +234,7 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             hold_sample_ticks: 0,
             prev_x: 0.0,
             prev_y: 0.0,
+            prev_z: 0.0,
             e_accumulator: 0.0,
             needs_xy_seed: true,
             debug_last_now: 0,
@@ -743,8 +755,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let u = (t_segment as f32 / duration).clamp(0.0, 1.0);
 
         // -- X axis -- (combined position + dx/du from one de Boor walk)
+        //
+        // **UNUSED-handle semantic (2026-05-11 fix).** When the host bridge
+        // omits a curve for this axis (`is_trivially_constant` skip in
+        // `dispatch.rs::build_push_params`), `x_handle` is the unused
+        // sentinel. The engine MUST hold the axis at its last known
+        // position — returning `(0.0, 0.0)` here declares the axis "is at
+        // zero" and, combined with the per-axis kinematic transform
+        // (CoreXY `motor_a = x + y`), produces a phantom 100 mm position
+        // jump that trips STEP_BURST_EXCEEDED on the first tick of the
+        // affected segment. See engine_tests::unused_handle_holds_prev.
         let (x, dx_du_x) = if current.x_handle.is_unused_sentinel() {
-            (0.0, 0.0)
+            (self.prev_x, 0.0)
         } else {
             let Some(cv) = pool.resolve(current.x_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
@@ -781,8 +803,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         };
 
         // -- Y axis -- (combined position + dy/du)
+        // UNUSED-handle semantic: see X-axis branch above.
         let (y, dx_du_y) = if current.y_handle.is_unused_sentinel() {
-            (0.0, 0.0)
+            (self.prev_y, 0.0)
         } else {
             let Some(cv) = pool.resolve(current.y_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
@@ -819,8 +842,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         };
 
         // -- Z axis -- (combined position + dz/du)
+        // UNUSED-handle semantic: see X-axis branch above. `prev_z` was
+        // added in the same 2026-05-11 fix — pre-fix the engine had no
+        // Z hold state because Z was never E-arc-length-integrated.
         let (z, dx_du_z) = if current.z_handle.is_unused_sentinel() {
-            (0.0, 0.0)
+            (self.prev_z, 0.0)
         } else {
             let Some(cv) = pool.resolve(current.z_handle) else {
                 let detail = crate::error::encode_invalid_curve_handle(
@@ -866,10 +892,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         if self.needs_xy_seed {
             let seed_x = x;
             let seed_y = y;
+            let seed_z = z;
             self.prev_x = seed_x;
             self.prev_y = seed_y;
+            self.prev_z = seed_z;
             // Seed step accumulators from initial motor positions.
-            let seed_positions = [seed_x, seed_y, z, self.e_accumulator as f32];
+            let seed_positions = [seed_x, seed_y, seed_z, self.e_accumulator as f32];
             let seed_motors = match current.kinematics {
                 KinematicTag::CoreXyAndE => corexy_with_e(seed_positions),
                 KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(seed_positions),
@@ -893,6 +921,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 self.e_accumulator += f64::from(current.extrusion_ratio) * f64::from(dist);
                 self.prev_x = x;
                 self.prev_y = y;
+                self.prev_z = z;
                 self.e_accumulator as f32
             }
             crate::config::EMode::Independent => {
@@ -938,16 +967,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 if next_t_segment_check >= current.duration() {
                     self.e_accumulator = f64::from(e_val);
                 }
-                // Update prev_x/prev_y even in Independent mode so a
-                // subsequent CoupledToXy segment doesn't see a stale position.
+                // Update prev_x/prev_y/prev_z even in Independent mode so a
+                // subsequent CoupledToXy segment doesn't see a stale position,
+                // and so the UNUSED-handle hold semantic has the right value.
                 self.prev_x = x;
                 self.prev_y = y;
+                self.prev_z = z;
                 e_val
             }
             crate::config::EMode::Travel => {
                 // E unchanged — use current accumulator value.
                 self.prev_x = x;
                 self.prev_y = y;
+                self.prev_z = z;
                 self.e_accumulator as f32
             }
         };
@@ -1278,6 +1310,148 @@ mod tests {
         assert_eq!(
             trip.steppers[0].step_count,
             shared.stepper_counts[0].load(Ordering::Acquire)
+        );
+    }
+
+    /// **Regression for 2026-05-11 STEP_BURST_EXCEEDED on cross-segment
+    /// UNUSED-handle transitions.** Two CoreXY-style segments back to
+    /// back, where the bridge sent Y and Z curves on segment 1 (anchoring
+    /// `prev_y = 100`, `prev_z = 10`) and then UNUSED Y and Z on segment
+    /// 2 (because refit produced exact constants and the now-removed
+    /// `is_trivially_constant` skip would have fired). With the
+    /// pre-2026-05-11 engine, the segment-2 first tick evaluated Y and Z
+    /// as `0.0`, motor A delta = (x + 0) − (x + 100) = −100 mm = −8000
+    /// steps ≫ MAX_STEPS_PER_TICK, faulting STEP_BURST_EXCEEDED.
+    ///
+    /// Post-fix the engine returns `(prev_y, 0.0)` for UNUSED Y (same
+    /// for Z), so segment 2 sees `delta_y = 0` on its first tick — no
+    /// burst, motor A's accumulator tracks just X motion.
+    #[test]
+    fn unused_handle_holds_prev_value_across_segment_boundary() {
+        use crate::queue::Q_N;
+        let pool = CurvePool::new();
+
+        // Segment 1: X 0→25, Y constant 100, Z constant 10 (all three
+        // curves loaded into the pool).
+        let s1_x = pool
+            .validate_and_load(0, 1, &[0.0, 0.0, 1.0, 1.0], &[0.0, 25.0])
+            .expect("s1 x curve");
+        let s1_y = pool
+            .validate_and_load(1, 1, &[0.0, 0.0, 1.0, 1.0], &[100.0, 100.0])
+            .expect("s1 y curve");
+        let s1_z = pool
+            .validate_and_load(2, 1, &[0.0, 0.0, 1.0, 1.0], &[10.0, 10.0])
+            .expect("s1 z curve");
+
+        // Segment 2: X 25→50, Y and Z UNUSED (simulates the bridge having
+        // detected the constant Y/Z curves as trivially-constant on this
+        // segment, even though it sent them on segment 1 — the exact
+        // brittle behaviour that triggered the bug).
+        let s2_x = pool
+            .validate_and_load(3, 1, &[0.0, 0.0, 1.0, 1.0], &[25.0, 50.0])
+            .expect("s2 x curve");
+
+        let mut queue: Queue<Segment, Q_N> = Queue::new();
+        let (mut producer, mut consumer) = queue.split();
+        // Sized so per-tick motion stays well under MAX_STEPS_PER_TICK
+        // (= 16 steps = 0.2 mm at 80 steps/mm). 25 mm over 1000 ticks =
+        // 0.025 mm / tick = 2 steps / tick, comfortably under the cap.
+        const TICKS_PER_SEG: u32 = 1000;
+        const CYC_PER_TICK: u32 = 13_000;
+        const SEG_DURATION: u64 = (TICKS_PER_SEG as u64) * (CYC_PER_TICK as u64);
+
+        producer
+            .enqueue(Segment {
+                id: 1,
+                x_handle: s1_x,
+                y_handle: s1_y,
+                z_handle: s1_z,
+                e_handle: CurveHandle::UNUSED_SENTINEL,
+                t_start: 0,
+                t_end: SEG_DURATION,
+                kinematics: KinematicTag::CoreXyAndE,
+                e_mode: EMode::Travel,
+                extrusion_ratio: 0.0,
+                flags: 0,
+                _pad: [0; 1],
+            })
+            .expect("enqueue s1");
+        producer
+            .enqueue(Segment {
+                id: 2,
+                x_handle: s2_x,
+                y_handle: CurveHandle::UNUSED_SENTINEL,
+                z_handle: CurveHandle::UNUSED_SENTINEL,
+                e_handle: CurveHandle::UNUSED_SENTINEL,
+                t_start: SEG_DURATION,
+                t_end: SEG_DURATION * 2,
+                kinematics: KinematicTag::CoreXyAndE,
+                e_mode: EMode::Travel,
+                extrusion_ratio: 0.0,
+                flags: 0,
+                _pad: [0; 1],
+            })
+            .expect("enqueue s2");
+
+        let mut trace_queue: Queue<TraceSample, TRACE_RING_N> = Queue::new();
+        let (mut trace_producer, _trace_consumer) = trace_queue.split();
+        let shared = SharedState::new();
+        let mut engine = Engine::<NoopPa, NoopIs>::new(520_000_000);
+        // CoreXY MCU: A (motor 0) + B (motor 1) drive X/Y, Z on motor 2.
+        engine.configure(McuAxisConfig {
+            motors: [
+                Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+                Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+                Some(MotorConfig { steps_per_mm: 400.0, is_awd: false, invert_dir: false }),
+                None,
+            ],
+            kinematics: KinematicTag::CoreXyAndE,
+        });
+        let mut widen = WidenState::default();
+
+        // Drive segment 1 to completion.
+        for i in 0..TICKS_PER_SEG {
+            let cyc = i.wrapping_mul(CYC_PER_TICK);
+            let result = engine.tick(
+                cyc,
+                &mut widen,
+                &pool,
+                &mut consumer,
+                &mut trace_producer,
+                &shared,
+            );
+            assert!(
+                result.is_ok(),
+                "segment 1 tick {i} should not fault: {result:?}"
+            );
+        }
+
+        // Critical: first tick of segment 2 (Y/Z handles UNUSED).
+        // Pre-fix: y eval = 0.0 → motor A delta = (x + 0) - (prev x +
+        // 100) ≈ -100 mm → STEP_BURST_EXCEEDED.
+        // Post-fix: y = prev_y = 100 → delta tracks only X motion.
+        let cyc_at_s2_start = TICKS_PER_SEG.wrapping_mul(CYC_PER_TICK);
+        let result = engine.tick(
+            cyc_at_s2_start,
+            &mut widen,
+            &pool,
+            &mut consumer,
+            &mut trace_producer,
+            &shared,
+        );
+        assert!(
+            result.is_ok(),
+            "segment 2 first tick must not fault on UNUSED Y/Z handles: {result:?}"
+        );
+        assert_eq!(
+            engine.last_error(),
+            0,
+            "engine should not have latched any fault"
+        );
+        assert_eq!(
+            engine.status(),
+            RuntimeStatus::Running,
+            "engine should still be running on segment 2"
         );
     }
 }

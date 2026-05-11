@@ -122,9 +122,30 @@ pub fn build_push_params(
                 continue;
             }
             let curve = &shaped.axes[axis_idx];
-            if is_trivially_constant(curve) {
-                continue;
-            }
+            // 2026-05-11 fix — DO NOT skip "trivially constant" curves.
+            // The previous optimization left the corresponding MCU handle
+            // at UNUSED_SENTINEL, and the engine's UNUSED-handle semantic
+            // (engine.rs::tick_with_current X/Y/Z branches) returned
+            // (0.0, 0.0) for "axis at zero". That's wrong for absolute-
+            // coordinate trajectory segments: an axis whose curve was
+            // skipped one segment but sent the next (because refit-noise
+            // pushed the constant-check just past 1e-12) produced phantom
+            // position jumps equal to the actual axis position (e.g.,
+            // 100 mm in Y when jogging on X), reliably tripping
+            // STEP_BURST_EXCEEDED on the next segment activation.
+            //
+            // The architectural fix is twofold: (a) the engine now treats
+            // UNUSED as "hold prev value" (engine.rs same commit), and
+            // (b) the bridge sends every kinematic axis's curve every
+            // segment — including constants — so the engine's hold value
+            // is always anchored to klippy's current commanded position.
+            // Slot-economy cost: every segment uses one slot per
+            // kinematic axis (3 for X/Y/Z on a CoreXY+Z setup) instead of
+            // 1 for pure-X jogs. With CURVE_POOL_N=16 and credit-flow
+            // backpressure (producer.rs::push_segment_with_timeout), this
+            // throttles in-flight depth to ~5 segments — fine for the
+            // MVP; right-sized per-slot capacity is a future
+            // optimization if production prints need more depth.
             curves_to_load.push((
                 axis_idx,
                 CurveLoadParams::from_scalar_nurbs_normalized(
@@ -214,49 +235,92 @@ mod tests {
         ]
     }
 
+    /// **Post-2026-05-11.** Every kinematic axis listed in the MCU's
+    /// `cfg.axes` gets a curve, even when the curve is trivially
+    /// constant. This matches the new "axis is absolute coordinate"
+    /// semantic on the MCU side — `UNUSED` handles mean "hold at
+    /// `prev_value`", and the bridge must therefore anchor each axis to
+    /// klippy's commanded position on every segment.
     #[test]
-    fn x_move_dispatches_to_octopus_only() {
-        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(0.0), constant_curve(0.0)]);
+    fn x_move_sends_curves_for_every_kinematic_axis_on_each_mcu() {
+        // X varies, Y and Z constant. cfgs[0] (Octopus) drives X+Y,
+        // cfgs[1] (F446) drives Z. Both MCUs must receive curves.
+        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(100.0), constant_curve(5.0)]);
         let plans = build_push_params(&seg, &cfgs(), 1_000, 2_000);
 
-        assert_eq!(plans.len(), 1, "only Octopus should get a plan");
-        let plan = &plans[0];
-        assert_eq!(plan.mcu_id, 0);
-        assert_eq!(plan.curves_to_load.len(), 1);
-        assert_eq!(plan.curves_to_load[0].0, AXIS_X);
+        assert_eq!(plans.len(), 2, "both MCUs should get a plan");
 
-        // All handles still UNUSED — caller fills them after load_curve returns.
-        assert_eq!(plan.params.x_handle_packed, UNUSED_HANDLE);
-        assert_eq!(plan.params.y_handle_packed, UNUSED_HANDLE);
-        assert_eq!(plan.params.z_handle_packed, UNUSED_HANDLE);
-        assert_eq!(plan.params.e_handle_packed, UNUSED_HANDLE);
-        assert_eq!(plan.params.t_start, 1_000);
-        assert_eq!(plan.params.t_end, 2_000);
-        assert_eq!(plan.params.kinematics, 1);
-        assert_eq!(plan.params.e_mode, 2);
+        // Octopus: X + Y (both kinematic axes for this MCU).
+        let octopus = plans.iter().find(|p| p.mcu_id == 0).expect("octopus plan");
+        assert_eq!(octopus.curves_to_load.len(), 2);
+        assert_eq!(octopus.curves_to_load[0].0, AXIS_X);
+        assert_eq!(octopus.curves_to_load[1].0, AXIS_Y);
+        assert_eq!(octopus.params.kinematics, 1);
+
+        // F446: Z (only kinematic axis for this MCU).
+        let f446 = plans.iter().find(|p| p.mcu_id == 1).expect("f446 plan");
+        assert_eq!(f446.curves_to_load.len(), 1);
+        assert_eq!(f446.curves_to_load[0].0, AXIS_Z);
+        assert_eq!(f446.params.kinematics, 2);
+
+        // All handle packed fields still default to UNUSED — the caller
+        // fills them after `load_curve` returns.
+        assert_eq!(octopus.params.x_handle_packed, UNUSED_HANDLE);
+        assert_eq!(octopus.params.y_handle_packed, UNUSED_HANDLE);
+        assert_eq!(octopus.params.t_start, 1_000);
+        assert_eq!(octopus.params.t_end, 2_000);
+        assert_eq!(octopus.params.e_mode, 2);
     }
 
     #[test]
-    fn z_move_dispatches_to_f446_only() {
-        let seg = shaped([constant_curve(0.0), constant_curve(0.0), linear_curve(0.0, 5.0)]);
+    fn z_move_sends_curves_for_every_kinematic_axis_on_each_mcu() {
+        // Same pattern: Z varies, X+Y constant. Both MCUs still get plans
+        // because both have kinematic axes that need to be anchored.
+        let seg = shaped([constant_curve(50.0), constant_curve(100.0), linear_curve(0.0, 5.0)]);
         let plans = build_push_params(&seg, &cfgs(), 1_000, 2_000);
 
-        assert_eq!(plans.len(), 1, "only F446 should get a plan");
-        let plan = &plans[0];
-        assert_eq!(plan.mcu_id, 1);
-        assert_eq!(plan.curves_to_load.len(), 1);
-        assert_eq!(plan.curves_to_load[0].0, AXIS_Z);
-        assert_eq!(plan.params.z_handle_packed, UNUSED_HANDLE);
-        assert_eq!(plan.params.kinematics, 2);
+        assert_eq!(plans.len(), 2);
+
+        let octopus = plans.iter().find(|p| p.mcu_id == 0).expect("octopus");
+        assert_eq!(octopus.curves_to_load.len(), 2);
+        let f446 = plans.iter().find(|p| p.mcu_id == 1).expect("f446");
+        assert_eq!(f446.curves_to_load.len(), 1);
     }
 
     #[test]
     fn set_handle_fills_correct_field() {
-        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(0.0), constant_curve(0.0)]);
+        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(100.0), constant_curve(5.0)]);
         let mut plans = build_push_params(&seg, &cfgs(), 0, 100);
-        plans[0].set_handle(AXIS_X, 0xCAFE);
-        assert_eq!(plans[0].params.x_handle_packed, 0xCAFE);
-        assert_eq!(plans[0].params.y_handle_packed, UNUSED_HANDLE);
+        // Find the Octopus plan; it's no longer guaranteed to be plans[0]
+        // since the iteration order over a Vec preserves cfg order, but
+        // be explicit anyway.
+        let octopus_idx = plans.iter().position(|p| p.mcu_id == 0).expect("octopus");
+        plans[octopus_idx].set_handle(AXIS_X, 0xCAFE);
+        assert_eq!(plans[octopus_idx].params.x_handle_packed, 0xCAFE);
+        assert_eq!(plans[octopus_idx].params.y_handle_packed, UNUSED_HANDLE);
     }
 
+    /// **Regression for bench session 2026-05-11.** Verify the bridge
+    /// sends Y curves for pure-X jogs. The old `is_trivially_constant`
+    /// skip would have omitted Y here, leaving the MCU's Y handle at
+    /// UNUSED_SENTINEL — which the engine then evaluated as `y = 0.0`
+    /// instead of holding `prev_y`. The first segment whose Y curve
+    /// non-trivially-noise crossed the 1e-12 threshold would suddenly
+    /// produce `y = 100` instead of `y = 0`, generating a 100 mm delta
+    /// on motor A (CoreXY: `motor_a = x + y`) and tripping
+    /// STEP_BURST_EXCEEDED.
+    #[test]
+    fn constant_y_axis_for_pure_x_move_still_sends_a_curve() {
+        let seg = shaped([linear_curve(0.0, 25.0), constant_curve(100.0), constant_curve(10.0)]);
+        let plans = build_push_params(&seg, &cfgs(), 0, 1_000);
+
+        let octopus = plans.iter().find(|p| p.mcu_id == 0).expect("octopus");
+        let has_x = octopus.curves_to_load.iter().any(|(axis, _)| *axis == AXIS_X);
+        let has_y = octopus.curves_to_load.iter().any(|(axis, _)| *axis == AXIS_Y);
+        assert!(has_x, "X curve must be sent on a pure-X move");
+        assert!(
+            has_y,
+            "Y curve must be sent even when constant — the engine's UNUSED-handle hold semantic needs prev_y anchored to klippy's commanded Y for cross-segment continuity"
+        );
+    }
 }
