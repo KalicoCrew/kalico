@@ -1062,6 +1062,25 @@ pub mod exports {
             (*shared_ptr).accepted_segment_id
                 .store(0, Ordering::Release);
         }
+        // Same "fresh session" semantics: clear the C-side
+        // motor→stepper binding table so the upcoming stream of
+        // config_runtime_stepper commands populates a fresh slate.
+        // Without this, the table accumulates across klippy
+        // reconnects (the MCU stays powered) and motor 0 / motor 1 hit
+        // RUNTIME_MAX_STEPPERS_PER_MOTOR=4 after two reconnects —
+        // the third shutdowns with "too many steppers per motor".
+        // Bench-observed 2026-05-11 after F446 KALICO_RUNTIME
+        // enablement, when klippy began re-running
+        // config_runtime_stepper for both H7 and F446 each session.
+        #[cfg(target_os = "none")]
+        {
+            unsafe extern "C" {
+                fn runtime_reset_stepper_bindings();
+            }
+            // SAFETY: foreground-only, no preconditions; simply zeros
+            // small static arrays in src/stepper.c.
+            unsafe { runtime_reset_stepper_bindings(); }
+        }
         KALICO_OK
     }
 

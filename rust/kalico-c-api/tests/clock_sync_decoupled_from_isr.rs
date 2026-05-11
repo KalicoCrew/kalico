@@ -50,6 +50,9 @@ pub extern "C" fn runtime_widened_host_clock() -> u64 {
     STUB_MCU_CLOCK.load(Ordering::Relaxed)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_reset_stepper_bindings() {}
+
 #[test]
 fn clock_sync_returns_widened_host_clock_not_seqlock() {
     // Spin up the runtime. `runtime_handle_create` runs the half-split

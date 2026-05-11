@@ -30,6 +30,9 @@ pub extern "C" fn runtime_cyccnt_read() -> u32 {
     0
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_reset_stepper_bindings() {}
+
 #[test]
 fn second_init_returns_null() {
     // Step-6 Phase 1: runtime_handle_create is now `extern "C"` (not `unsafe`)

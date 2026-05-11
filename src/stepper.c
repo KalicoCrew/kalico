@@ -438,6 +438,26 @@ static int8_t runtime_motor_last_dir[RUNTIME_MOTOR_COUNT] = { -1, -1, -1, -1 };
 volatile uint32_t runtime_emit_calls __attribute__((used, externally_visible));
 volatile uint32_t runtime_emit_pulses __attribute__((used, externally_visible));
 
+// Called from kalico_runtime_configure_axes_blob (Rust FFI) at the start
+// of every klippy session. Clears the runtime motor->stepper binding
+// table so the subsequent stream of config_runtime_stepper commands
+// populates a fresh slate. Without this, the table accumulates across
+// klippy restarts (MCU stays powered, klippy reconnects) and motor 0 /
+// motor 1 hit RUNTIME_MAX_STEPPERS_PER_MOTOR=4 after two reconnects —
+// the third reconnect shutdowns with "too many steppers per motor".
+// Bench-observed 2026-05-11 after F446 KALICO_RUNTIME enablement, when
+// klippy began re-running config_runtime_stepper for both H7 and F446
+// each session.
+__attribute__((used, externally_visible))
+void
+runtime_reset_stepper_bindings(void)
+{
+    for (uint8_t m = 0; m < RUNTIME_MOTOR_COUNT; m++) {
+        runtime_motor_stepper_count[m] = 0;
+        runtime_motor_last_dir[m] = -1;
+    }
+}
+
 void
 command_config_runtime_stepper(uint32_t *args)
 {
