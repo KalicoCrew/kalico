@@ -166,25 +166,54 @@ fn spawn_periodic_clock_sync(
                             let hi = resp.try_get_u32("mcu_clock_hi").unwrap_or(0);
                             let mcu_at_response =
                                 (u64::from(hi) << 32) | u64::from(lo);
-                            estimator.add_dedicated_sample(
-                                host_send,
-                                host_recv,
-                                mcu_at_response,
-                            );
-                            let rtt = host_recv.saturating_duration_since(host_send);
-                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                            let one_way_cycles = (rtt.as_secs_f64()
-                                * estimator.clock_freq_estimate
-                                / 2.0) as u64;
-                            let mcu_at_send =
-                                mcu_at_response.saturating_sub(one_way_cycles);
-                            let mut r = router.lock().unwrap();
-                            let _ = r.set_clock_est_from_sample(
-                                mcu_h,
-                                estimator.clock_freq_estimate,
-                                host_send,
-                                mcu_at_send,
-                            );
+                            // GUARD: firmware returns `read_widened_now(shared)`
+                            // for `kalico_clock_sync_response.mcu_clock_*`.
+                            // Before the very first segment-push fires
+                            // `runtime_tick_enable`, TIM5 ISR hasn't ticked
+                            // and `widened_now=0`. Feeding that 0 sample
+                            // into the regression collapses slope→0 →
+                            // `set_clock_est_from_sample` overwrites
+                            // klippy's valid 520M clock_freq with 0,
+                            // making `compute_ack_clock` return 0 and
+                            // dispatch wedge waiting for clock-sync.
+                            //
+                            // Skip the sample if MCU clock looks
+                            // uninitialised (well below one wrap of the
+                            // wall-clock-equivalent — any printer that
+                            // boots in <1s is fictional). The regression
+                            // is forward-only; skipping samples is safe.
+                            const MCU_CLOCK_INIT_FLOOR: u64 = 100_000_000;
+                            if mcu_at_response < MCU_CLOCK_INIT_FLOOR {
+                                use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
+                                static SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+                                let n = SKIP_COUNT.fetch_add(1, AOrd::Relaxed);
+                                if n < 3 || n % 100 == 0 {
+                                    eprintln!(
+                                        "[bridge-trace] clock-sync skipping uninit MCU sample #{} mcu_at_response={} (TIM5 likely not yet ticking — pre-first-push)",
+                                        n, mcu_at_response,
+                                    );
+                                }
+                            } else {
+                                estimator.add_dedicated_sample(
+                                    host_send,
+                                    host_recv,
+                                    mcu_at_response,
+                                );
+                                let rtt = host_recv.saturating_duration_since(host_send);
+                                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                                let one_way_cycles = (rtt.as_secs_f64()
+                                    * estimator.clock_freq_estimate
+                                    / 2.0) as u64;
+                                let mcu_at_send =
+                                    mcu_at_response.saturating_sub(one_way_cycles);
+                                let mut r = router.lock().unwrap();
+                                let _ = r.set_clock_est_from_sample(
+                                    mcu_h,
+                                    estimator.clock_freq_estimate,
+                                    host_send,
+                                    mcu_at_send,
+                                );
+                            }
                         }
                     }
                 }
