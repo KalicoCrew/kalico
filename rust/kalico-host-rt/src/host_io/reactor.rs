@@ -914,6 +914,10 @@ impl Reactor {
                 }
             }
             ReactorCommand::KalicoCall { kind, body, completion, deadline } => {
+                eprintln!(
+                    "[reactor-trace] KalicoCall kind={:?} state={:?} identified={} body_len={}",
+                    kind, self.state, self.kalico_state.identified, body.len(),
+                );
                 if !self.kalico_state.identified {
                     let _ = completion.send(Err(TransportError::Parse(
                         "kalico transport not yet identified".into(),
@@ -926,7 +930,12 @@ impl Reactor {
                     cid,
                     PendingKalicoCall { completion: completion.clone(), deadline },
                 );
-                if let Err(e) = self.write_frame(&frame) {
+                let write_result = self.write_frame(&frame);
+                eprintln!(
+                    "[reactor-trace] KalicoCall kind={:?} write_result={:?}",
+                    kind, write_result.as_ref().err(),
+                );
+                if let Err(e) = write_result {
                     let is_io = matches!(e, TransportError::Io(_));
                     if let Some(p) = self.kalico_state.pending.remove(&cid) {
                         let _ = p.completion.send(Err(e));

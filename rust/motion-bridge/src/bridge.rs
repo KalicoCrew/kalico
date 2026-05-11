@@ -893,6 +893,10 @@ impl PyMotionBridge {
             // bootstrap message. Silently no-op so multi-MCU setups where one
             // board runs stock Klipper still complete _configure_axes_per_mcu
             // for the kalico-runtime board(s).
+            eprintln!(
+                "[bridge-trace] configure_axes mcu_handle={} native_supported={} host_io_set={}",
+                mcu_handle, conn.kalico_native_supported, conn.host_io.is_some(),
+            );
             if !conn.kalico_native_supported {
                 return Ok(());
             }
