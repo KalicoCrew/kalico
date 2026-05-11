@@ -445,16 +445,25 @@ static void
 handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
 #if CONFIG_KALICO_RUNTIME
+    // C-side diag breadcrumbs. tag=0xCB = "C-side dispatch". The Rust FFI
+    // uses tag=0xCA. Both update runtime_diag_last_packed which the 10 Hz
+    // status drain surfaces in fault_detail.
+    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
+    runtime_diag_progress(0xCB, 1, body_len);
     if (body_len != 20) {
         send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
         return;
     }
+    runtime_diag_progress(0xCB, 2, 0);
     if (!runtime_handle) {
         send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
         return;
     }
+    runtime_diag_progress(0xCB, 3, 0);
     int32_t r = kalico_runtime_configure_axes_blob(runtime_handle, body, body_len);
+    runtime_diag_progress(0xCB, 4, (uint32_t)r);
     send_configure_axes_response(correlation_id, r);
+    runtime_diag_progress(0xCB, 5, 0);
 #else
     (void)body; (void)body_len;
     send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
