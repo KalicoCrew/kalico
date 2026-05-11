@@ -1567,3 +1567,225 @@ fn clock_sync_rearm_commits_old_bias_first() {
     h.shutdown();
 }
 
+// ---------------------------------------------------------------------------
+// Phase 6 Task 7.5 — caller-side `last_move_time_bits` advance + rectification
+// ---------------------------------------------------------------------------
+//
+// These pin spec §3.8 / §4.5: klippy reads `PlannerHandle::last_move_time()`
+// (the queued-time atomic) immediately after `submit_move` returns to
+// schedule inline events (`M106 S128`, `SET_PIN AT_TIME`, etc.) relative
+// to motion. Before Task 7.1 the atomic was only advanced inside the
+// planner thread after TOPP-RA + shaping completed, so an inline event
+// issued right after `G1 X1` saw a stale value and landed against the
+// *previous* move's print_time. Task 7.1 advances the atomic
+// **synchronously, caller-side, before the channel send** using the
+// klippy-equivalent nominal estimate (`distance / feedrate`). Task 7.2
+// rectifies if the actual TOPP-RA-shaped duration differs.
+
+/// **Task 7.5 (1).** `submit_move` must advance `last_move_time_bits`
+/// synchronously: between the `submit_move` call returning and the
+/// planner thread running, the atomic already reflects the new move's
+/// nominal duration.
+///
+/// This is the regression net for the inline-event scheduling bug — if
+/// this assertion ever flips to "no advance," any `M106`/`SET_PIN` issued
+/// right after `G1 X1` would land against the *previous* move's
+/// print_time.
+#[test]
+fn submit_move_advances_last_move_time_synchronously() {
+    let (dispatch, _recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    let t0 = h.last_move_time();
+    assert!(
+        t0.abs() < 1e-12,
+        "fresh planner should start with last_move_time = 0.0, got {t0}",
+    );
+
+    // Submit a 1 mm X move at 100 mm/s — `nominal_duration` = 0.01 s.
+    let m = classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+    let expected_nominal = m.nominal_duration();
+    assert!(
+        (expected_nominal - 0.01).abs() < 1e-12,
+        "test setup: nominal_duration should be 0.01 s for 1 mm @ 100 mm/s, got {expected_nominal}",
+    );
+
+    h.submit_move(m).expect("submit move");
+
+    // IMMEDIATELY read the atomic — no flush, no sleep, no sync barrier.
+    // The caller-side advance must already be visible because the
+    // `Release` store happens **before** the channel `send` returns.
+    let t1 = h.last_move_time();
+    let advance = t1 - t0;
+    assert!(
+        (advance - expected_nominal).abs() < 1e-9,
+        "last_move_time did not advance synchronously by nominal_duration: \
+         t0 = {t0}, t1 = {t1}, advance = {advance}, expected ≈ {expected_nominal}. \
+         If this fails to ~0 the caller-side advance regressed; if this is the \
+         shaped duration (~0.05+ s on a 1 mm move) the atomic is being clobbered \
+         by the planner thread's rectification before submit_move returns.",
+    );
+
+    h.shutdown();
+}
+
+/// **Task 7.5 (2).** A move whose actual TOPP-RA-shaped duration differs
+/// from the cruise nominal estimate must be rectified by the planner
+/// thread. After `flush` returns (the synchronization barrier), the
+/// atomic must reflect the *actual* planner-time advance — not the
+/// nominal.
+///
+/// We use a short 1 mm move at 100 mm/s. The cruise nominal estimate is
+/// `distance / feedrate = 0.01 s`. The actual TOPP-RA-shaped plan adds
+/// accel-from-zero + decel-to-zero ramps (a single move's
+/// un-committed-tail terminates at rest by construction); on the
+/// `relaxed_limits` machine those ramps make `t_appended` substantially
+/// larger than 0.01 s.
+///
+/// The assertion has two parts:
+///
+/// 1. **Lower bound** — the atomic post-flush is strictly greater than
+///    the cruise nominal. This is the rectification's job: without the
+///    rectification CAS, the atomic would equal `nominal` exactly (the
+///    caller-side advance alone) and this assertion would fail.
+///
+/// 2. **Time accounting consistency** — the atomic post-flush equals
+///    the planner-thread's accumulated print-time for the move
+///    (`t_appended` minus the rectified delta yields the original
+///    `nominal`, by construction; we cross-check by comparing the
+///    atomic against the dispatched-segments' shaped time range as a
+///    sanity floor — the shaped output's last `t_end` is `≤ t_appended`
+///    after kernel-half-support trim, so the atomic should be `≥
+///    dispatched terminus − refit slack`).
+#[test]
+fn rectification_corrects_actual_duration() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    let m = classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+    let nominal = m.nominal_duration();
+
+    h.submit_move(m).expect("submit move");
+    h.flush().expect("flush as sync barrier");
+
+    let post_flush = h.last_move_time();
+
+    // The atomic post-flush must strictly exceed the cruise nominal —
+    // the rectification CAS added `actual − nominal` on top of the
+    // caller-side advance. A 1 mm move starting and ending at rest
+    // cannot physically complete in `distance / feedrate` seconds (the
+    // ramps add real time on top of the cruise estimate), so the
+    // rectified atomic strictly exceeds nominal.
+    //
+    // We use a generous lower-bound multiplier (`>= 2 * nominal`)
+    // rather than asserting an exact actual: the exact value depends
+    // on β-medium iteration count + shaper kernel + refit's piecewise
+    // fitting, which is brittle to pin in a unit test. The point is
+    // "rectification fired and added non-trivial time," and 2× is
+    // already a strong floor — pre-Task-7.2 the atomic would equal
+    // `nominal` exactly (`1.0 × nominal`).
+    assert!(
+        post_flush >= 2.0 * nominal,
+        "rectification did not correct nominal → actual: \
+         atomic post-flush = {post_flush} s, nominal = {nominal} s. \
+         Expected post_flush >= 2 × nominal (the move has accel-from-zero \
+         and decel-to-zero ramps that physically can't fit in the cruise \
+         estimate). If post_flush ≈ nominal the rectification CAS did \
+         not fire.",
+    );
+
+    // Cross-check: the dispatched-segments' shaped-time terminus must
+    // not exceed the atomic. The shaped output's last `t_end` is
+    // `≤ t_appended` after the kernel-half-support trim that
+    // `commit_decel_to_zero` performs, so the rectified atomic (which
+    // equals `t_appended` by construction) must be `≥` the dispatched
+    // terminus.
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "rectification test: no dispatched segments — \
+         flush did not commit the trailing decel-to-zero",
+    );
+    let dispatched_terminus = segs.last().unwrap().t_end;
+    assert!(
+        post_flush + 1e-6 >= dispatched_terminus,
+        "atomic post-flush ({post_flush} s) below dispatched terminus \
+         ({dispatched_terminus} s) — the rectified t_appended is the \
+         upper bound for shaped-time output; if the atomic is smaller \
+         the rectification under-corrected",
+    );
+
+    h.shutdown();
+}
+
+/// **Task 7.5 (3).** Sequential `submit_move` calls must produce
+/// monotonically-increasing `last_move_time` readings, each captured
+/// synchronously before any planner-thread work runs. This pins the
+/// inline-event scheduling contract across multiple moves — every
+/// `submit_move` returns with the atomic reflecting "all prior moves'
+/// queued time + this move's nominal duration."
+#[test]
+fn inline_event_scheduling_uses_queued_time() {
+    let (dispatch, _recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    let m1 = classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+    let nominal1 = m1.nominal_duration();
+    h.submit_move(m1).expect("submit move 1");
+    // Capture immediately — caller-side advance must already be visible.
+    let after_m1 = h.last_move_time();
+
+    let m2 = classify_and_build([1.0, 0.0, 0.0], 2.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+    let nominal2 = m2.nominal_duration();
+    h.submit_move(m2).expect("submit move 2");
+    let after_m2 = h.last_move_time();
+
+    let m3 = classify_and_build([3.0, 0.0, 0.0], 3.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+    let nominal3 = m3.nominal_duration();
+    h.submit_move(m3).expect("submit move 3");
+    let after_m3 = h.last_move_time();
+
+    // Strict monotonicity — each submit advanced the atomic.
+    assert!(
+        after_m1 < after_m2,
+        "after_m1 ({after_m1}) >= after_m2 ({after_m2}); submit_move 2 did not advance the atomic",
+    );
+    assert!(
+        after_m2 < after_m3,
+        "after_m2 ({after_m2}) >= after_m3 ({after_m3}); submit_move 3 did not advance the atomic",
+    );
+
+    // Each reading must include **at least** the cumulative nominal
+    // estimates of moves submitted so far. (The reading may exceed the
+    // pure-nominal sum if rectification has already landed for an
+    // earlier move — that's fine; the inline-event contract is "queued
+    // time is at least the nominal sum at submit_move return," spec
+    // §4.5.) Using a `>=` lower bound with floating-point slack rather
+    // than equality lets the test be order-of-arrival-agnostic
+    // between the synchronous advance and the planner's rectification.
+    //
+    // 1 µs slack matches `RECTIFICATION_TOLERANCE_S` — rectification
+    // deltas below this are skipped, so the lower bound holds with the
+    // same epsilon.
+    const TIME_EPS_S: f64 = 1e-6;
+    assert!(
+        after_m1 + TIME_EPS_S >= nominal1,
+        "after_m1 ({after_m1}) below nominal1 ({nominal1})",
+    );
+    assert!(
+        after_m2 + TIME_EPS_S >= nominal1 + nominal2,
+        "after_m2 ({after_m2}) below cumulative nominal {} (n1 + n2)",
+        nominal1 + nominal2,
+    );
+    assert!(
+        after_m3 + TIME_EPS_S >= nominal1 + nominal2 + nominal3,
+        "after_m3 ({after_m3}) below cumulative nominal {} (n1 + n2 + n3)",
+        nominal1 + nominal2 + nominal3,
+    );
+
+    h.shutdown();
+}
+

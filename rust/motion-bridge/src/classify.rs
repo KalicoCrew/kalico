@@ -16,6 +16,47 @@ pub enum MoveClass {
 pub struct ClassifiedMove {
     pub segment: CubicSegment,
     pub class: MoveClass,
+    /// Total straight-line distance of the move in mm (the L2 norm of
+    /// `(dx, dy, dz)` at classify time). Cached here so [`Self::nominal_duration`]
+    /// is an O(1) read — the segment's `xyz` arc-length is identical to this
+    /// for a collinear-cubic move (the only shape the bridge produces today),
+    /// but going through `nurbs::arc_length::xy_arc_length` would re-walk the
+    /// curve on every submit. Stored at classify time when the deltas are
+    /// already in hand.
+    pub distance_mm: f64,
+}
+
+impl ClassifiedMove {
+    /// Klippy-equivalent **nominal** duration of the move (seconds): the
+    /// time klippy's `toolhead` model would advance its `print_time` by on
+    /// the corresponding `move()` call. Used by
+    /// [`crate::planner::PlannerHandle::submit_move`] to advance
+    /// `last_move_time_bits` **synchronously, caller-side, before the
+    /// channel send** so klippy sees queued-time semantics immediately
+    /// after `submit_move` returns (spec §3.8 / §4.5). The planner thread
+    /// later rectifies if the actual TOPP-RA-shaped duration differs (see
+    /// `run_loop`'s `Move` arm).
+    ///
+    /// The estimate is the cruise-velocity time `distance / feedrate`. This
+    /// is the simplest correct upper-bound-ish nominal:
+    ///
+    /// - Klippy's `toolhead` itself does a trapezoidal accel/cruise/decel
+    ///   estimate, but the bridge does not have klippy's accel state. The
+    ///   actual TOPP-RA-shaped duration is typically *longer* than the
+    ///   cruise estimate (accel/decel ramps slow the move), so the
+    ///   rectification delta in `run_loop` is almost always positive —
+    ///   `last_move_time_bits` strictly advances after the rectify, never
+    ///   retreats past a synchronously-published value.
+    /// - Returns `0.0` for degenerate `feedrate <= 0.0` (the constructor
+    ///   accepts any positive feedrate; defensive against any future
+    ///   call-site that bypasses the constructor's validation).
+    #[must_use]
+    pub fn nominal_duration(&self) -> f64 {
+        if self.segment.feedrate_mm_s <= 0.0 {
+            return 0.0;
+        }
+        self.distance_mm / self.segment.feedrate_mm_s
+    }
 }
 
 /// Classify a G1-style delta move and construct a `CubicSegment`.
@@ -63,7 +104,9 @@ pub fn classify_and_build(
     )
     .map_err(|e| ClassifyError::SegmentConstruction(format!("{e:?}")))?;
 
-    Ok(ClassifiedMove { segment, class })
+    let distance_mm = (dx * dx + dy * dy + dz * dz).sqrt();
+
+    Ok(ClassifiedMove { segment, class, distance_mm })
 }
 
 #[derive(Debug)]
@@ -119,5 +162,19 @@ mod tests {
     fn zero_displacement_rejected() {
         let r = classify_and_build([0.0; 3], 0.0, 0.0, 0.0, 0.0, 100.0);
         assert!(matches!(r, Err(ClassifyError::ZeroDisplacement)));
+    }
+
+    #[test]
+    fn nominal_duration_uses_distance_over_feedrate() {
+        // 10 mm at 100 mm/s ⇒ 0.1 s cruise estimate.
+        let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+        assert!((m.nominal_duration() - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nominal_duration_uses_3d_distance() {
+        // 3-4-5 triangle in XYZ at 5 mm/s ⇒ 1.0 s.
+        let m = classify_and_build([0.0; 3], 3.0, 4.0, 0.0, 0.0, 5.0).unwrap();
+        assert!((m.nominal_duration() - 1.0).abs() < 1e-12);
     }
 }

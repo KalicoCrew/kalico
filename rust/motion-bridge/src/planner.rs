@@ -218,6 +218,38 @@ impl PlannerHandle {
 
     pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
         self.check_error()?;
+
+        // **Phase 6 Task 7.1 — caller-side `last_move_time_bits` advance.**
+        // Spec §3.8 / §4.5: klippy reads `last_move_time` (the queued-time
+        // atomic) immediately after `submit_move` returns to schedule
+        // inline events (`M106 S128`, `SET_PIN AT_TIME`, etc.) relative to
+        // motion. Before this change, `last_move_time_bits` was only
+        // advanced inside the planner thread after TOPP-RA + shaping
+        // completed — so an inline event issued right after `G1 X1` saw a
+        // stale value and landed against the *previous* move's print_time.
+        //
+        // The advance is unconditional on a successful classify and uses
+        // the klippy-equivalent nominal estimate (`distance / feedrate`).
+        // The planner thread later rectifies if the actual shaped
+        // duration differs from the nominal (Task 7.2 in `run_loop`'s
+        // `Move` arm).
+        //
+        // CAS rather than a bare `store(load + nominal)` so a parallel
+        // planner-thread rectification or `Dwell`/commit advance — both
+        // of which `fetch_add`-style adjust the same atomic — cannot be
+        // clobbered by a load+store from this call. Klippy's normal
+        // submission path is single-threaded (the toolhead lock serialises
+        // moves), so this CAS is uncontended in practice; the loop is
+        // defence-in-depth against bridge call-sites that bypass the
+        // serialisation (e.g. homing's `submit_homing_move`).
+        //
+        // Order matters: advance **before** the channel send so the
+        // post-send `submit_move` return guarantees the atomic is fresh.
+        // A `Release` store pairs with klippy's `Acquire` load in
+        // `last_move_time()`.
+        let nominal = m.nominal_duration();
+        advance_last_move_time(&self.last_move_time_bits, nominal);
+
         self.sender
             .send(PlannerMsg::Move(m))
             .map_err(|_| PlannerError::ChannelClosed)
@@ -388,8 +420,65 @@ impl Drop for PlannerHandle {
 // Loop
 // ---------------------------------------------------------------------------
 
-fn store_print_time(bits: &AtomicU64, t: f64) {
-    bits.store(t.to_bits(), Ordering::Release);
+/// Rectification threshold for the `Move`-arm `delta = actual − nominal`
+/// CAS. Below this magnitude (in seconds) we skip the CAS — the delta is
+/// indistinguishable from floating-point noise around the nominal estimate
+/// and there is no scheduling consumer that cares about sub-microsecond
+/// adjustments. 1 µs = 1e-6 s is well below the MCU tick rate (~10 µs)
+/// and the host stepper-dispatch quantum, so any threshold below this is
+/// observably ignored downstream.
+const RECTIFICATION_TOLERANCE_S: f64 = 1e-6;
+
+/// Bounded retry count for the rectification CAS loop. Quadratically more
+/// than enough — the only writer racing this thread is `submit_move`, and
+/// each call to `submit_move` issues at most one CAS attempt before
+/// returning. 100 attempts cover an absurd scenario of 100 back-to-back
+/// `submit_move` calls all winning the race against this thread, which is
+/// physically impossible at klippy's submission cadence.
+const RECTIFICATION_CAS_MAX_ATTEMPTS: usize = 100;
+
+/// Atomically add `delta` to `last_move_time_bits` via a bounded CAS
+/// loop. Used by the `Move` arm's rectification path — the caller-side
+/// `submit_move` advance and this rectification are the two writers
+/// touching the atomic across threads, so we use `compare_exchange` to
+/// avoid clobbering an in-flight caller-side advance from a follow-on
+/// `submit_move`.
+///
+/// Returns `true` if the CAS landed within `RECTIFICATION_CAS_MAX_ATTEMPTS`,
+/// `false` if every attempt was contended (a giveup-with-warning path —
+/// `eprintln!` is emitted). The current-load + add-delta + try-store
+/// shape is deliberate: we want the delta applied **on top of** whatever
+/// the caller-side advance currently shows, not against a stale snapshot.
+fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
+    for _ in 0..RECTIFICATION_CAS_MAX_ATTEMPTS {
+        let cur = last_move_time_bits.load(Ordering::Acquire);
+        let next = (f64::from_bits(cur) + delta).to_bits();
+        if last_move_time_bits
+            .compare_exchange(cur, next, Ordering::Release, Ordering::Acquire)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+    eprintln!(
+        "planner: rectification CAS contended for >{} attempts (delta {} s) — \
+         giving up on this delta; the atomic will reflect the next \
+         caller-side advance only",
+        RECTIFICATION_CAS_MAX_ATTEMPTS, delta,
+    );
+    false
+}
+
+/// Atomically add `delta` to `last_move_time_bits` for the non-`Move`
+/// arms (Dwell / Flush / quiescence-commit). These advances are
+/// **planner-thread-owned** event durations (dwell duration; the
+/// trailing decel-to-zero dispatched on a held-back tail). They also
+/// race the caller-side `submit_move` advance — a `Dwell` arm running
+/// while a follow-on `submit_move` lands would see the atomic moving
+/// underneath it — so the same CAS loop applies. Naming distinguishes
+/// the call-sites in tracing output.
+fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
+    rectify_last_move_time(last_move_time_bits, delta);
 }
 
 /// Drive `ShaperState::commit_decel_to_zero` to completion: shape the
@@ -398,6 +487,21 @@ fn store_print_time(bits: &AtomicU64, t: f64) {
 /// and `PlannerMsg::Flush` paths so both routes through commit have
 /// byte-identical accounting behaviour. Phase 4 Task 4.3 added the
 /// `Flush` caller; Task 4.2 added the timer caller.
+///
+/// **Phase 6 Task 7.2 — atomic-relative advance.** The local `print_time`
+/// accumulator was retired: `last_move_time_bits` is now the single
+/// source of truth (the `Move` arm advances it caller-side, the
+/// non-`Move` arms — including this one — advance it via the CAS-loop
+/// helper). The drained-batch duration is the right increment here
+/// because the held-back tail's nominal portion was already published
+/// by the originating `Move`'s caller-side advance; this function fires
+/// **only on the commit-decel-to-zero path**, where the drained
+/// segments are the trailing decel that streams `emit_committed`
+/// deliberately held back past `t_decel_start − max_h`. That tail's
+/// time was *not* covered by the nominal advance (the nominal is the
+/// klippy-equivalent "cruise"; the post-cruise decel-to-zero ramp is
+/// the planner-side overhead). So this advance is additive on top of
+/// the nominal, exactly mirroring the pre-Task-7.2 semantics.
 ///
 /// Returns `true` if commit succeeded (even if zero segments were
 /// drained — the handler is idempotent for an already-fully-committed
@@ -410,7 +514,6 @@ fn run_commit_and_dispatch(
     error: &Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: &AtomicU64,
     commit_fire_count: &AtomicU32,
-    print_time: &mut f64,
 ) -> bool {
     let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
         Ok(out) => out,
@@ -420,8 +523,7 @@ fn run_commit_and_dispatch(
         }
     };
     let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-    *print_time += batch_dur;
-    store_print_time(last_move_time_bits, *print_time);
+    advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
         if let Err(detail) = dispatch(s) {
             *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
@@ -482,7 +584,6 @@ fn run_loop(
     last_move_time_bits: Arc<AtomicU64>,
     commit_fire_count: Arc<AtomicU32>,
 ) {
-    let mut print_time: f64 = 0.0;
     let mut thread_state = PlannerThreadState::build(&config);
 
     // Phase 4 Task 4.1 — single-timer quiescence-commit state. `Some(t)`
@@ -530,7 +631,6 @@ fn run_loop(
                     &error,
                     &last_move_time_bits,
                     &commit_fire_count,
-                    &mut print_time,
                 );
                 last_append_time = None;
                 continue;
@@ -540,9 +640,22 @@ fn run_loop(
 
         match msg {
             PlannerMsg::Move(m) => {
-                // Streaming-native: replan the un-committed tail with the
-                // new move appended, then emit anything newly eligible up
-                // to `t_decel_start − max_h`.
+                // **Phase 6 Task 7.2 — rectification.** The caller-side
+                // `submit_move` has already advanced
+                // `last_move_time_bits` by `m.nominal_duration()` (spec
+                // §3.8). The planner thread now runs the real plan and
+                // compares: `actual` = the new move's contribution to
+                // `state.t_appended` (which is exactly the planner-time
+                // duration the replan added to the queue) vs. `nominal`
+                // (the klippy-equivalent cruise estimate). If the two
+                // diverge by more than `RECTIFICATION_TOLERANCE_S` we
+                // apply the delta to the atomic via a CAS loop — the
+                // caller-side advance is a writer on the same atomic, so
+                // a blind `store` would race against an in-flight
+                // follow-on `submit_move`.
+                let nominal = m.nominal_duration();
+                let prior_t_appended = state.t_appended;
+
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
                     *error.lock().unwrap() = Some(PlannerError::Shape(e));
                     continue;
@@ -555,21 +668,29 @@ fn run_loop(
                     }
                 };
 
-                // Print-time accounting: sum the eligible-region durations.
-                // Phase 7 Task 7.1 will move this to caller-side advance
-                // (input-time accounting, not output-time accounting) so
-                // the post-decel speculative tail also contributes; for
-                // now we preserve the pre-streaming behaviour of advancing
-                // by what was actually dispatched this round.
-                let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-                print_time += batch_dur;
-                store_print_time(&last_move_time_bits, print_time);
-
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
                         *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
                         break;
                     }
+                }
+
+                // Compute `actual = t_appended_after − t_appended_before`.
+                // For the **streaming** path this is the right measure of
+                // "what duration did this move add to the queue?" — not
+                // the `drained` batch's duration (which is only the
+                // committed-to-wire portion; the post-decel speculative
+                // tail is still part of the appended-but-not-yet-drained
+                // region). The spec §3.8 rectification is against the
+                // *appended* duration, not the dispatched-this-round
+                // duration. The latter would chronically under-rectify
+                // because the trailing decel-to-zero is held back until
+                // a commit fires (timer / Flush / UpdateShaper /
+                // ClockSyncRearm).
+                let actual = state.t_appended - prior_t_appended;
+                let delta = actual - nominal;
+                if delta.abs() > RECTIFICATION_TOLERANCE_S {
+                    rectify_last_move_time(&last_move_time_bits, delta);
                 }
 
                 // Arm / re-arm the quiescence-commit timer. Setting
@@ -608,7 +729,6 @@ fn run_loop(
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                        &mut print_time,
                     );
                     last_append_time = None;
                 }
@@ -616,13 +736,14 @@ fn run_loop(
             }
 
             PlannerMsg::Dwell { duration_s, notify } => {
-                // Phase 3 preserves the pre-streaming dwell behaviour:
-                // advance `print_time` by the dwell duration and unblock
-                // the caller. Phase 4 ("commit decel to zero") will model
-                // dwell properly by committing the planned decel-to-zero
-                // before extending the timeline by `duration_s`.
-                print_time += duration_s;
-                store_print_time(&last_move_time_bits, print_time);
+                // Advance the queued-time atomic by `duration_s` and
+                // unblock the caller. Phase 6 Task 7.2 routed this
+                // through the CAS-loop helper because the caller-side
+                // `submit_move` advance is now a parallel writer on the
+                // same atomic; the previous unconditional `store` would
+                // have clobbered an in-flight caller-side advance from
+                // a follow-on `submit_move` racing this `Dwell`.
+                advance_last_move_time(&last_move_time_bits, duration_s);
                 let _ = notify.send(());
             }
 
@@ -674,7 +795,6 @@ fn run_loop(
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                        &mut print_time,
                     );
                     last_append_time = None;
                 }
@@ -812,7 +932,6 @@ fn run_loop(
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                        &mut print_time,
                     );
                     last_append_time = None;
                 }
