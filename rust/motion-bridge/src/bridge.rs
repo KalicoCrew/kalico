@@ -1518,29 +1518,51 @@ impl PyMotionBridge {
 
                 // Compute schedule base ONCE per (mcu, logical-segment).
                 let mcu_base_clock: u64 = {
-                    let r = router_for_cb.lock().unwrap();
-                    let now_clock = r
-                        .compute_ack_clock(mcu_h)
-                        .map_err(|e| format!("compute_ack_clock: {e}"))?;
-                    // Step 7-D bring-up: 250 ms safety margin. Original
-                    // 100 ms was too tight on this branch (clock-est
-                    // drift was retiring segments instantly via the
-                    // boundary loop, no step pulses). 1 s was visible
-                    // motion delay. 250 ms is responsive enough for a
-                    // jog button while absorbing modest clock drift.
-                    let lead_cycles = (freq * 0.250).round().max(1.0) as u64;
-                    drop(r);
+                    // Block-wait for clock-sync to publish a non-zero
+                    // widened MCU clock. If we dispatched against
+                    // `now_clock=0` (clock-sync hasn't establish a real
+                    // `last_clock` yet — happens on the first dispatch
+                    // immediately after klippy restart while the 8-
+                    // iteration clocksync calibration is still in
+                    // flight), `t_start_clock = 0 + lead_cycles` lands
+                    // far below the firmware's widened `now`. The engine
+                    // sees the segment as already-in-the-past and the
+                    // boundary loop retires it in one tick without
+                    // evaluating any intermediate u-values — segment_id
+                    // advances, status goes Drained, but zero step
+                    // pulses fire ('first jog after restart doesn't
+                    // move' bench symptom 2026-05-11).
+                    let lead_cycles_init = (freq * 0.250).round().max(1.0) as u64;
+                    let wait_start = Instant::now();
+                    let now_clock = loop {
+                        let r = router_for_cb.lock().unwrap();
+                        let n = r
+                            .compute_ack_clock(mcu_h)
+                            .map_err(|e| format!("compute_ack_clock: {e}"))?;
+                        drop(r);
+                        if n > 0 {
+                            break n;
+                        }
+                        if wait_start.elapsed() > Duration::from_secs(5) {
+                            return Err(format!(
+                                "compute_ack_clock returned 0 after 5s — \
+                                 clock-sync didn't establish for mcu {}",
+                                plan.mcu_id
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    };
+                    let lead_cycles = lead_cycles_init;
 
                     // One-shot diag (per-session): on the very first
                     // dispatched segment, dump now_clock + freq + lead.
-                    // Helps diagnose widen-state mismatches without
-                    // taking the lock in the hot path on every segment.
                     use std::sync::atomic::{AtomicBool, Ordering as AOrd};
                     static FIRST_DISPATCH_LOGGED: AtomicBool = AtomicBool::new(false);
                     if !FIRST_DISPATCH_LOGGED.swap(true, AOrd::AcqRel) {
                         eprintln!(
-                            "[bridge-trace] first-dispatch mcu={} freq={} now_clock={} lead_cycles={} seg.t_start={:.6}",
+                            "[bridge-trace] first-dispatch mcu={} freq={} now_clock={} lead_cycles={} seg.t_start={:.6} clock_sync_wait_ms={}",
                             plan.mcu_id, freq as u64, now_clock, lead_cycles, seg.t_start,
+                            wait_start.elapsed().as_millis(),
                         );
                     }
 
