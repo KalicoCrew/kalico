@@ -242,6 +242,10 @@ fn handle_identify_response(state: &mut KalicoNativeState, payload: &[u8]) -> Ka
             reset_epoch: resp.reset_epoch,
         }));
     }
+    eprintln!(
+        "[kalico-id] identified reset_epoch=0x{:08x} state_epoch={:?}",
+        resp.reset_epoch, state.reset_epoch,
+    );
     log::info!(
         "kalico identified: reset_epoch=0x{:08x}, schema_hash matches",
         resp.reset_epoch
@@ -262,8 +266,16 @@ fn lift_event_to_runtime_event(
                 // the host so motion dispatch refuses to continue.
                 if state.reset_epoch.is_none() {
                     state.reset_epoch = Some(s.reset_epoch);
+                    eprintln!(
+                        "[kalico-id] seed reset_epoch via StatusEvent epoch=0x{:08x}",
+                        s.reset_epoch,
+                    );
                 } else if state.reset_epoch != Some(s.reset_epoch) {
                     let old = state.reset_epoch.unwrap_or(0);
+                    eprintln!(
+                        "[kalico-id] reset_epoch MISMATCH state=0x{:08x} status=0x{:08x} — draining {} pending",
+                        old, s.reset_epoch, state.pending.len(),
+                    );
                     log::error!(
                         "kalico reset_epoch changed mid-session ({:#010x} -> {:#010x}); \
                          marking host as un-identified — motion dispatch will refuse new sends",
