@@ -275,7 +275,7 @@ config RAM_SIZE
 
 config STACK_SIZE
     int
-    default 512
+    default 4096
 
 config STM32F103GD_DISABLE_SWD
     bool "Disable SWD at startup (for GigaDevice stm32f103 clones)"
