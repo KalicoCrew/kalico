@@ -603,33 +603,73 @@ class MotionToolhead(ToolHead):
             )
             return
 
-        steppers_by_slot = {}
+        # Build per-slot ordered stepper list. Primary stepper (no numeric
+        # suffix on the section name) goes first; AWD partners (e.g.
+        # stepper_x1, stepper_z2) follow in name order. The runtime path
+        # drives every stepper in a slot in lockstep, so a 4-motor Voron
+        # 2.4 gantry needs both stepper_x AND stepper_x1 bound to motor 0,
+        # both stepper_y AND stepper_y1 bound to motor 1, etc.
+        def _slot_match(stepper_name):
+            for slot_idx, prefix in (
+                (0, "stepper_x"), (1, "stepper_y"),
+                (2, "stepper_z"), (3, "extruder"),
+            ):
+                if stepper_name.startswith(prefix):
+                    suffix = stepper_name[len(prefix):]
+                    if suffix == "":
+                        return (slot_idx, True)
+                    if suffix.isdigit():
+                        return (slot_idx, False)
+            return None
+        slot_steppers = [[], [], [], []]
+        slot_primary = [None, None, None, None]
         fm = self.printer.lookup_object("force_move", None)
         if fm is not None:
             for name, s in fm.steppers.items():
-                if name in slot_names and name not in steppers_by_slot:
-                    steppers_by_slot[name] = s
+                m = _slot_match(name)
+                if m is None:
+                    continue
+                slot_idx, is_primary = m
+                if is_primary:
+                    slot_primary[slot_idx] = (name, s)
+                else:
+                    slot_steppers[slot_idx].append((name, s))
+        for slot_idx in range(4):
+            slot_steppers[slot_idx].sort(key=lambda ns: ns[0])
+            if slot_primary[slot_idx] is not None:
+                slot_steppers[slot_idx].insert(0, slot_primary[slot_idx])
 
         for name, mcu_obj, mcu_handle in bridge_mcus:
             present_mask = 0
             invert_mask = 0
             steps_per_mm = [0.0, 0.0, 0.0, 0.0]
-            for i, slot in enumerate(slot_names):
-                s = steppers_by_slot.get(slot)
-                if s is None:
+            # Per-MCU bind list: ordered (motor_idx, name, oid, invert_dir).
+            bind_list = []
+            for i in range(4):
+                # Filter slot steppers to those that live on this MCU.
+                on_this_mcu = []
+                for (sname, s) in slot_steppers[i]:
+                    if len(bridge_mcus) > 1:
+                        try:
+                            s_mcu = s.get_mcu()
+                        except AttributeError:
+                            s_mcu = None
+                        if s_mcu is not None and s_mcu is not mcu_obj:
+                            continue
+                    on_this_mcu.append((sname, s))
+                if not on_this_mcu:
                     continue
-                if len(bridge_mcus) > 1:
-                    try:
-                        s_mcu = s.get_mcu()
-                    except AttributeError:
-                        s_mcu = None
-                    if s_mcu is not None and s_mcu is not mcu_obj:
-                        continue
-                step_dist = s.get_step_dist()
+                primary_name, primary = on_this_mcu[0]
+                step_dist = primary.get_step_dist()
                 if step_dist <= 0.0:
                     continue
                 steps_per_mm[i] = 1.0 / step_dist
                 present_mask |= 1 << i
+                if getattr(primary, "_invert_dir", False):
+                    invert_mask |= 1 << i
+                for (sname, s) in on_this_mcu:
+                    inv = 1 if getattr(s, "_invert_dir", False) else 0
+                    bind_list.append((i, sname, s.get_oid(), inv))
             awd_mask = awd_default & present_mask
             if present_mask == 0:
                 logging.info(
@@ -641,10 +681,40 @@ class MotionToolhead(ToolHead):
                 mcu_handle, kin_tag, present_mask, awd_mask,
                 invert_mask, steps_per_mm,
             )
+            # Step 7-D: bind every stepper attached to each runtime motor
+            # index to the C-side runtime_emit_step_pulses table. config_stepper
+            # was already issued during MCU config phase; the runtime binding
+            # is sent post-connect as a regular klipper-protocol command.
+            # Each stepper's `invert_dir` (from `dir_pin: !PIN` in printer.cfg)
+            # is forwarded so runtime_emit_step_pulses can XOR it into the
+            # dir_pin level — without this, mainline-style step-count sign
+            # flipping (which lives in stepcompress and is bypassed in bridge
+            # mode) leaves polarity unhonored and motors run in reverse.
+            #
+            # MCUs without CONFIG_KALICO_RUNTIME (no config_runtime_stepper in
+            # their data dict) raise on the lookup; skip silently — those
+            # steppers stay on legacy paths (and do nothing in bridge mode).
+            try:
+                bind_cmd = mcu_obj.lookup_command(
+                    "config_runtime_stepper motor_idx=%c stepper_oid=%c"
+                    " invert_dir=%c"
+                )
+            except Exception:
+                logging.info(
+                    "MotionToolhead: mcu=%s lacks config_runtime_stepper "
+                    "(no CONFIG_KALICO_RUNTIME); skipping runtime binding",
+                    name,
+                )
+                continue
+            for (motor_idx, sname, oid, inv) in bind_list:
+                bind_cmd.send([motor_idx, oid, inv])
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "
-                "present=0x%x awd=0x%x steps_per_mm=%s",
-                name, kin_tag, present_mask, awd_mask, steps_per_mm,
+                "present=0x%x awd=0x%x invert=0x%x steps_per_mm=%s "
+                "runtime_bindings=%s",
+                name, kin_tag, present_mask, awd_mask, invert_mask,
+                steps_per_mm,
+                [(m, n, o, i) for (m, n, o, i) in bind_list],
             )
 
     def _register_credit_freed_handlers(self, bridge_mcus):

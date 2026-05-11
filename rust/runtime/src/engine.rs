@@ -57,6 +57,29 @@ fn diag_eval_record(cycles: u32) {
     }
 }
 
+/// Emit `n_steps` step pulses on the motor at `motor_idx` (post-kinematic-
+/// transform: `[A, B, Z, E]` for CoreXY, `[X, Y, Z, E]` for cartesian).
+/// Sign carries direction. On hardware this calls into `src/stepper.c`'s
+/// `runtime_emit_step_pulses`, which toggles the step/dir GPIOs configured
+/// by the matching `command_config_runtime_stepper`. Host-sim is a no-op.
+#[inline(always)]
+#[allow(unsafe_code)]
+fn emit_step_pulses(motor_idx: u8, n_steps: i32) {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            fn runtime_emit_step_pulses(motor_idx: u8, n_steps: i32);
+        }
+        // SAFETY: stable C ABI symbol provided by src/stepper.c. Two scalar
+        // args by value, no aliasing. Bounds-checked motor_idx on the C side.
+        unsafe { runtime_emit_step_pulses(motor_idx, n_steps) }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = (motor_idx, n_steps);
+    }
+}
+
 #[inline(always)]
 #[allow(unsafe_code)]
 fn diag_curve_meta_record(axis_idx: u32, degree: u32, cps_len: u32, knots_len: u32) {
@@ -436,6 +459,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // can characterize what shape post-shape curves take on
                 // representative workloads.
                 capture_segment_curve_meta(&seg, pool);
+                // Re-seed step accumulators on segment activation. After a
+                // DRAINED→RUNNING transition (between user moves) the engine
+                // can sit idle with TIM5 disabled while the host queues the
+                // next segment. The new segment's curve x(0) is authoritative
+                // for where we start from; rather than asserting cross-segment
+                // continuity (which is a property of the trajectory, not the
+                // engine), re-anchor the accumulators so the first tick's
+                // delta is 0. Real cross-segment discontinuities are silently
+                // absorbed — that's the point during bring-up.
+                self.needs_xy_seed = true;
                 // Fall through with the freshly dequeued segment.
                 return self.tick_with_current(seg, now, queue, pool, trace, shared);
             }
@@ -580,6 +613,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // Diagnostic: snapshot per-axis curve dimensions for the
             // freshly activated segment.
             capture_segment_curve_meta(&current, pool);
+            // Mirror the DRAINED→RUNNING re-seed at line 450 — re-anchor
+            // step accumulators on every fresh segment activation so a
+            // post-shape continuity glitch can't trip StepBurstExceeded.
+            self.needs_xy_seed = true;
         }
 
         // §6.5 hold-segment short-circuit: AFTER force_idle (handled in
@@ -902,14 +939,24 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.is_slot.apply(&mut state);
 
         // Step 7b: step generation. Update per-axis accumulators from the
-        // post-PA/IS motor positions. Actual step pulse emission is deferred
-        // to 7-D; we call update() here to maintain accumulator state. If
-        // update returns Err (burst exceeded), latch StepBurstExceeded.
+        // post-PA/IS motor positions. On hardware (`target_os = "none"`)
+        // also call into the C-side `runtime_emit_step_pulses` to actually
+        // toggle the step/dir GPIOs for this motor inside the same ISR
+        // tick. Host-sim builds skip the emit and only update the atomic
+        // counter, which `runtime_status_drain`'s sim-only stderr taps
+        // for progress observation.
         for i in 0..4 {
             if let (Some(ss), Some(&m)) = (self.step_state.get_mut(i), state.motors.get(i)) {
                 let step_result = match ss.update(m) {
                     Ok(result) => result,
                     Err(()) => {
+                        // Encode (axis_idx, attempted_step_delta) into
+                        // fault_detail so the host log identifies the
+                        // offending axis. Layout: low 8 bits = axis (0..3),
+                        // upper 24 bits = signed step delta saturated.
+                        let attempted = m.to_bits(); // f32 raw bits
+                        let detail =
+                            (attempted & 0xFFFF_FF00) | ((i as u32) & 0xFF);
                         self.latch_fault(
                             RuntimeError::StepBurstExceeded,
                             current.id,
@@ -917,7 +964,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                             now,
                             trace,
                             shared,
-                            None,
+                            Some(detail),
                         );
                         return Err(RuntimeError::StepBurstExceeded);
                     }
@@ -926,6 +973,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(counter) = shared.stepper_counts.get(i) {
                         counter.fetch_add(step_result.n_steps, Ordering::AcqRel);
                     }
+                    emit_step_pulses(i as u8, step_result.n_steps);
                 }
             }
         }

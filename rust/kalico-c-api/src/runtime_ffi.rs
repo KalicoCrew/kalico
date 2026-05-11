@@ -1042,6 +1042,26 @@ pub mod exports {
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.configure(cfg);
         }
+        // Step 7-D: configure_axes is the bridge's "I'm starting a fresh
+        // session" signal. Reset segment-id monotonicity tracking so the
+        // new klippy session's segment_id sequence (which restarts from 1)
+        // doesn't collide with any accepted_segment_id state preserved on
+        // the MCU across the klippy reconnect (-141
+        // SEGMENT_ID_NON_MONOTONIC). NOT calling full `stream::flush()` —
+        // that path does an ISR force_idle handshake which times out into
+        // LIVENESS_STALLED when TIM5 isn't yet running (configure_axes is
+        // called before the first segment push, before ISR enable). Only
+        // these two atomics gate the monotonic check (runtime_ffi.rs:265
+        // and engine.rs / segment::activate paths); resetting them is
+        // safe with no ISR running.
+        unsafe {
+            let shared_ptr: *const runtime::state::SharedState =
+                core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).accepted_segment_id_seen
+                .store(false, Ordering::Release);
+            (*shared_ptr).accepted_segment_id
+                .store(0, Ordering::Release);
+        }
         KALICO_OK
     }
 

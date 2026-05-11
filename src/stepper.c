@@ -391,3 +391,165 @@ stepper_shutdown(void)
     }
 }
 DECL_SHUTDOWN(stepper_shutdown);
+
+// ---------------------------------------------------------------------------
+// Runtime-engine step pulse emission (Step 7-D first-light).
+//
+// The Rust runtime evaluates the trajectory inside the TIM5 ISR (40 kHz on
+// H7) and produces a signed integer step delta per motor per tick. This file
+// owns the GPIO toggle path: a small lookup table maps runtime motor index
+// (0..3, post-kinematic-transform) to the existing klipper-protocol
+// `struct stepper` already configured by `command_config_stepper` from
+// printer.cfg, and `runtime_emit_step_pulses` does the actual pin toggles.
+//
+// The legacy `command_queue_step` / `stepper_event_*` scheduler is unused
+// in the runtime path — the Rust engine emits steps directly per ISR fire,
+// not by queueing future timer events.
+// ---------------------------------------------------------------------------
+
+#if CONFIG_KALICO_RUNTIME
+
+#define RUNTIME_MOTOR_COUNT 4
+// Max steppers physically driven by a single runtime motor index. CoreXY-
+// with-twin-gantry topologies (e.g. Voron 2.4) need 2 per axis pair.
+// Z-axis with 3 lifters needs 3. Keep some headroom; 4 covers anything
+// reasonable without blowing memory.
+#define RUNTIME_MAX_STEPPERS_PER_MOTOR 4
+
+struct runtime_motor_stepper {
+    struct stepper *stepper;
+    uint8_t invert_dir; // XOR'd with the sign-of-n_steps direction at emit
+};
+
+static struct runtime_motor_stepper runtime_motor_steppers[RUNTIME_MOTOR_COUNT]
+                                                          [RUNTIME_MAX_STEPPERS_PER_MOTOR];
+static uint8_t runtime_motor_stepper_count[RUNTIME_MOTOR_COUNT];
+// Last-emitted direction per motor: 0 = forward, 1 = reverse, -1 = unknown
+// (forces a dir-pin write on the next non-zero pulse so the bench gets a
+// known direction even before the first reversal).
+static int8_t runtime_motor_last_dir[RUNTIME_MOTOR_COUNT] = { -1, -1, -1, -1 };
+
+// Step 7-D bring-up diagnostic counters. `runtime_emit_calls` increments
+// once per call to `runtime_emit_step_pulses`, regardless of n_steps;
+// `runtime_emit_pulses` adds |n_steps|. Read by `runtime_status_drain` on
+// each engine state transition so we can tell whether (a) my emit path
+// is being invoked at all and (b) whether it's seeing non-zero step
+// deltas. Volatile because TIM5 ISR writes; foreground reads.
+volatile uint32_t runtime_emit_calls __attribute__((used, externally_visible));
+volatile uint32_t runtime_emit_pulses __attribute__((used, externally_visible));
+
+void
+command_config_runtime_stepper(uint32_t *args)
+{
+    uint8_t motor_idx = args[0];
+    uint8_t stepper_oid = args[1];
+    uint8_t invert_dir = args[2];
+    if (motor_idx >= RUNTIME_MOTOR_COUNT)
+        shutdown("config_runtime_stepper motor_idx out of range");
+    uint8_t cnt = runtime_motor_stepper_count[motor_idx];
+    if (cnt >= RUNTIME_MAX_STEPPERS_PER_MOTOR)
+        shutdown("config_runtime_stepper too many steppers per motor");
+    // oid_lookup walks the same allocation table populated by
+    // command_config_stepper, so this fails (shutdowns) cleanly if the
+    // referenced stepper hasn't been configured yet.
+    struct stepper *s = oid_lookup(stepper_oid, command_config_stepper);
+    runtime_motor_steppers[motor_idx][cnt].stepper = s;
+    runtime_motor_steppers[motor_idx][cnt].invert_dir = invert_dir ? 1 : 0;
+    runtime_motor_stepper_count[motor_idx] = cnt + 1;
+    runtime_motor_last_dir[motor_idx] = -1;
+}
+DECL_COMMAND(command_config_runtime_stepper,
+             "config_runtime_stepper motor_idx=%c stepper_oid=%c invert_dir=%c");
+
+// Busy-wait until DWT->CYCCNT has advanced `ticks` cycles past `start`.
+// Unsigned subtraction handles the u32 wrap correctly (~8.3 s at 520 MHz,
+// far longer than any plausible pulse width).
+static inline void
+runtime_dwt_dwell(uint32_t start, uint32_t ticks)
+{
+    while ((timer_read_time() - start) < ticks)
+        ;
+}
+
+// Called from the TIM5 ISR (priority 3 on H7) after `runtime_handle_tick`
+// produces this tick's step delta. Emits |n_steps| pulses on every stepper
+// bound to this motor index (primary + AWD partners — e.g. Voron 2.4-style
+// 4-motor gantry binds stepper_x and stepper_x1 both to motor 0). All
+// step_pins toggle in lockstep; each dir_pin is set to the per-stepper
+// `want_dir XOR invert_dir` so that printer.cfg `dir_pin: !PIN` polarity
+// is honored end-to-end.
+//
+// Pulse timing: most TMC drivers require ≥100 ns step high and ≥20 ns dir
+// setup; klippy's default `step_pulse_duration` is 2 µs (~1040 cycles at
+// 520 MHz), which is comfortably above both. The same budget is reused for
+// dir-setup dwell — overkill for TMCs, but matches the user-configured
+// driver-side timing without a second knob.
+//
+// Burst budget: the runtime's `MAX_STEPS_PER_TICK_DEFAULT = 16` cap bounds
+// the worst case. At 2 µs pulse_ticks with 2 AWD partners per motor that
+// is 16 × 4 µs = 64 µs of ISR time — exceeds a 25 µs tick. The cap exists
+// for runaway-curve fault detection, not to rate-limit normal operation;
+// at peak velocity (300 mm/s × 80 steps/mm = 24 kHz) average is 0.6
+// step/tick. A genuine burst past 4-5 steps will eat the next tick's
+// budget; the engine's own runaway detection latches a fault before this
+// can sustain.
+__attribute__((used, externally_visible))
+void
+runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
+{
+    runtime_emit_calls++;
+    if (motor_idx >= RUNTIME_MOTOR_COUNT)
+        return;
+    uint8_t cnt = runtime_motor_stepper_count[motor_idx];
+    if (cnt == 0)
+        return;
+    if (n_steps == 0)
+        return;
+    runtime_emit_pulses += (n_steps < 0) ? (uint32_t)-n_steps : (uint32_t)n_steps;
+
+    int8_t want_dir = (n_steps < 0) ? 1 : 0;
+    uint32_t count = (n_steps < 0) ? (uint32_t)-n_steps : (uint32_t)n_steps;
+    // All AWD partners share the same step_pulse_ticks at the printer.cfg
+    // level (default 2 µs); we read it from the primary for simplicity.
+    uint32_t pulse_ticks = runtime_motor_steppers[motor_idx][0].stepper
+                                                              ->step_pulse_ticks;
+
+    if (runtime_motor_last_dir[motor_idx] != want_dir) {
+        // Drive each AWD partner's dir_pin so that printer.cfg
+        // `dir_pin: !PIN` produces motion in the direction klippy
+        // commanded. Empirically (verified on the test bench):
+        //   pin_level = !want_dir XOR invert_dir
+        // gives the right direction. The simpler-looking
+        // `want_dir XOR invert_dir` produced reverse motion.
+        for (uint8_t j = 0; j < cnt; j++) {
+            uint8_t pin_level = (uint8_t)(!want_dir)
+                              ^ runtime_motor_steppers[motor_idx][j].invert_dir;
+            gpio_out_write(runtime_motor_steppers[motor_idx][j].stepper->dir_pin,
+                           pin_level);
+        }
+        runtime_motor_last_dir[motor_idx] = want_dir;
+        // Dir-setup dwell. Driver datasheet wants ≥20 ns; we burn the full
+        // step_pulse_ticks for simplicity.
+        uint32_t t = timer_read_time();
+        runtime_dwt_dwell(t, pulse_ticks);
+    }
+
+    // Toggle-based pulse emission. The step pin's idle level is tracked by
+    // the GPIO layer; toggling lifts it to "active" then back to "idle".
+    // gpio_out_toggle_noirq is the irq-safe variant — caller (us) is in
+    // ISR context with IRQs off by virtue of the priority-3 TIM5 vector.
+    for (uint32_t i = 0; i < count; i++) {
+        // Rising edge on every bound stepper's step pin in lockstep.
+        for (uint8_t j = 0; j < cnt; j++)
+            gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);
+        uint32_t t0 = timer_read_time();
+        runtime_dwt_dwell(t0, pulse_ticks);
+        // Falling edge.
+        for (uint8_t j = 0; j < cnt; j++)
+            gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);
+        uint32_t t1 = timer_read_time();
+        runtime_dwt_dwell(t1, pulse_ticks);
+    }
+}
+
+#endif // CONFIG_KALICO_RUNTIME
