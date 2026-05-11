@@ -107,6 +107,51 @@ impl ShaperState {
         }
     }
 
+    /// **Phase 5 Task 5.1** — reset the streaming state to a fresh
+    /// `home_pos` seed without rebuilding kernels. Mirrors
+    /// [`Self::new`]'s seeding behaviour: per-axis queues are cleared and
+    /// re-seeded with a `(home_pos[i], v=0)` rest extension covering
+    /// `[-( h + δ_safety ), 0]` using the **existing** per-axis `h`
+    /// (kernel / half-support are preserved).
+    ///
+    /// All other planner state is wiped:
+    /// - `uncommitted_moves` cleared (the in-flight tail is invalidated by
+    ///   the reset — homing / underrun / klippy-reconnect by definition
+    ///   abandons whatever was planned).
+    /// - `planned_fitted` / `planned_meta` cleared (their alignment with
+    ///   `uncommitted_moves` is the call-site invariant; both have to go).
+    /// - `pending_dispatch` cleared (un-drained shaped output staged from
+    ///   the previous timeline is no longer valid post-reset).
+    /// - All cursors (`t_appended`, `t_decel_start`, `t_shaped`,
+    ///   `t_dispatched`) zeroed — the absolute-time line restarts at 0
+    ///   matching `ShaperState::new`'s conventions, so the run-loop's
+    ///   `last_append_time` book-keeping behaves identically to a fresh
+    ///   construction.
+    ///
+    /// Called on: `kalico_stream_open`, homing /
+    /// `SET_KINEMATIC_POSITION`, engine `Underrun` fault, `force_idle`,
+    /// klippy reconnect (spec §3.7).
+    ///
+    /// **Kernel preservation.** Unlike `UpdateShaper` — which rebuilds
+    /// kernels — `reset` deliberately retains the existing per-axis
+    /// kernel / `h`. The two paths are different events: shaper
+    /// reconfiguration is a config update, reset is a position re-anchor.
+    /// `UpdateShaper`'s job is to swap kernels; `reset`'s job is to seed
+    /// the queue at a new home position.
+    pub fn reset(&mut self, home_pos: [f64; 4]) {
+        for (i, axis) in self.axes.iter_mut().enumerate() {
+            reseed_axis_queue(axis, home_pos[i]);
+        }
+        self.uncommitted_moves.clear();
+        self.pending_dispatch.clear();
+        self.planned_fitted.clear();
+        self.planned_meta.clear();
+        self.t_appended = 0.0;
+        self.t_decel_start = 0.0;
+        self.t_shaped = 0.0;
+        self.t_dispatched = 0.0;
+    }
+
     /// **Phase 1 shim.** Run the existing per-segment pad → shape → refit
     /// pipeline on `fitted` and stage the resulting `ShapedSegment` into
     /// `pending_dispatch`. The internal queue state (`axes`, `t_appended`,
@@ -957,6 +1002,25 @@ fn build_axis_queue(home_pos: f64, shaper: Option<AxisShaper>) -> AxisShaperQueu
     }
 
     AxisShaperQueue { pieces, kernel, h }
+}
+
+/// Phase 5 Task 5.1 — clear an existing axis queue and re-seed it with the
+/// `(home_pos, v=0)` rest extension that `build_axis_queue` produces at
+/// construction. `kernel` and `h` are preserved (reset is a position
+/// re-anchor, not a shaper config swap — see [`ShaperState::reset`] for
+/// the rationale). For passthrough axes (`h = 0`) no seed piece is added,
+/// matching `build_axis_queue`'s behaviour.
+fn reseed_axis_queue(axis: &mut AxisShaperQueue, home_pos: f64) {
+    axis.pieces.clear();
+    if axis.h > 0.0 {
+        let delta_safety = axis.h;
+        let total = axis.h + delta_safety;
+        axis.pieces.push_back(BezierPiece {
+            u_start: -total,
+            u_end: 0.0,
+            coeffs: vec![home_pos],
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------

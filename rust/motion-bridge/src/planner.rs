@@ -63,6 +63,26 @@ const T_IDLE: Duration = Duration::from_secs(3600);
 // Messages
 // ---------------------------------------------------------------------------
 
+/// Clock-sync bias snapshot — the host-side `(freq, offset, last_clock)` triple
+/// the bridge's per-MCU clock-sync driver maintains. Phase 5 Task 5.1 adds the
+/// `PlannerMsg::ClockSyncRearm` variant that will carry this through to the
+/// planner thread once Task 5.4 wires the host-side detection / dispatch.
+///
+/// The triple matches `kalico_host_rt::router_state::Router::set_clock_est_from_sample`'s
+/// argument shape (freq Hz, offset s, last_clock ticks) so callers reading
+/// existing clock-sync state can forward it verbatim. Task 5.4 will refine the
+/// type if a narrower shape suffices; for now we preserve the full sample
+/// payload so the planner-side handler has everything the dispatch layer needs.
+#[derive(Debug, Clone, Copy)]
+pub struct ClockBias {
+    /// Estimated MCU clock frequency in Hz.
+    pub freq: f64,
+    /// Host-time offset (seconds) of the most recent clock-sync sample.
+    pub offset_s: f64,
+    /// MCU clock counter (ticks) at the time of the most recent sample.
+    pub last_clock: u64,
+}
+
 #[derive(Debug)]
 pub enum PlannerMsg {
     Move(ClassifiedMove),
@@ -76,6 +96,27 @@ pub enum PlannerMsg {
     UpdateLimits(PlannerLimits),
     UpdateShaper(ShaperConfig),
     Shutdown,
+    /// Phase 5 Task 5.1 — `kalico_stream_open` arrived. Reset `ShaperState`
+    /// to the supplied home position before processing any further moves.
+    /// Wired now (see `run_loop`'s match arm).
+    KalicoStreamOpen { home_pos: [f64; 4] },
+    /// Phase 5 Task 5.1 — homing / `SET_KINEMATIC_POSITION` succeeded.
+    /// Reset `ShaperState` to the supplied home position. Wired now.
+    Homing { home_pos: [f64; 4] },
+    /// Phase 5 Task 5.1 — engine `Underrun` fault detected. Host-side
+    /// detection lands in Task 5.2; for now this variant exists so callers
+    /// can be wired against a stable enum, but the run-loop handler logs a
+    /// warning and drops the message. Task 5.2 will replace the placeholder
+    /// with the real reset-to-recovered-position path.
+    Underrun { recovered_pos: [f64; 4] },
+    /// Phase 5 Task 5.1 — engine `force_idle` detected. Same handling as
+    /// `Underrun` (placeholder until Task 5.2 wires the recovery path).
+    ForceIdle { recovered_pos: [f64; 4] },
+    /// Phase 5 Task 5.1 — clock-sync re-arm event. Task 5.4 will wire the
+    /// real handler (drain pending shaped output under the old bias, then
+    /// update the bias for future dispatches per spec §3.7). For now the
+    /// run-loop logs a warning and drops the message.
+    ClockSyncRearm { new_bias: ClockBias },
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +269,33 @@ impl PlannerHandle {
     pub fn update_shaper(&self, s: ShaperConfig) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::UpdateShaper(s))
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    /// Phase 5 Task 5.1 — `kalico_stream_open` entry point. Resets the
+    /// planner's `ShaperState` to the supplied home position. Caller-side
+    /// hook for the klippy bridge's first connect / stream-open handshake
+    /// (the spec §3.7 lifecycle row "kalico_stream_open, homing,
+    /// SET_KINEMATIC_POSITION").
+    ///
+    /// Fire-and-forget: the channel send returns immediately; the planner
+    /// thread will apply the reset on the next message-dispatch tick. No
+    /// barrier semantics — callers that need to know the reset has applied
+    /// should issue a subsequent `flush()` (which is a sync barrier).
+    pub fn kalico_stream_open(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::KalicoStreamOpen { home_pos })
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    /// Phase 5 Task 5.1 — homing / `SET_KINEMATIC_POSITION` entry point.
+    /// Same shape and semantics as [`Self::kalico_stream_open`]; named
+    /// differently to make the call-site intent legible (the bridge wires
+    /// these to distinct klippy hooks even though the planner's response is
+    /// identical — a position re-anchor).
+    pub fn homing(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::Homing { home_pos })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
@@ -522,6 +590,64 @@ fn run_loop(
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
                 state = ShaperState::new([0.0; 4], &shapers);
                 thread_state.rebuild(&config);
+            }
+
+            PlannerMsg::KalicoStreamOpen { home_pos }
+            | PlannerMsg::Homing { home_pos } => {
+                // Phase 5 Task 5.1 — reset the streaming state to the new
+                // home position. `ShaperState::reset` preserves per-axis
+                // kernels (this is a position re-anchor, not a shaper
+                // config swap — see spec §3.7), so we don't rebuild
+                // `thread_state` here.
+                //
+                // Reset the run-loop's quiescence-timer book-keeping
+                // alongside the state — a held-back tail from the prior
+                // timeline is no longer meaningful and the planner is
+                // back to "no append observed since reset." The commit
+                // counter is observability state; we keep it monotonic
+                // across resets so the test/diagnostic counters reflect
+                // cumulative timer-fire history (resetting it would
+                // confuse downstream consumers reading the AtomicU32).
+                state.reset(home_pos);
+                last_append_time = None;
+            }
+
+            PlannerMsg::Underrun { recovered_pos: _ } => {
+                // Phase 5 Task 5.2 will wire the host-derived position
+                // recovery and call `state.reset(recovered_pos)`. The
+                // variant exists so callers can be wired against a
+                // stable enum; until 5.2 the planner can't know whether
+                // the host's detection has fired correctly, so we log
+                // and drop. **DO NOT panic** — see task spec ("safety:
+                // not a hard fault from the planner's perspective").
+                eprintln!(
+                    "planner: PlannerMsg::Underrun received but not yet \
+                     handled (Phase 5 Task 5.2 will provide the real \
+                     handler)",
+                );
+            }
+
+            PlannerMsg::ForceIdle { recovered_pos: _ } => {
+                // Same as `Underrun`: Task 5.2 will replace this with
+                // the real reset-to-recovered-position path.
+                eprintln!(
+                    "planner: PlannerMsg::ForceIdle received but not yet \
+                     handled (Phase 5 Task 5.2 will provide the real \
+                     handler)",
+                );
+            }
+
+            PlannerMsg::ClockSyncRearm { new_bias: _ } => {
+                // Phase 5 Task 5.4 will wire the bias-rearm path (drain
+                // pending shaped output under the old bias, swap bias,
+                // continue dispatching under the new bias per spec §3.7).
+                // Until then the planner doesn't carry per-bias dispatch
+                // state, so the safe behaviour is to log and drop.
+                eprintln!(
+                    "planner: PlannerMsg::ClockSyncRearm received but \
+                     not yet handled (Phase 5 Task 5.4 will provide the \
+                     real handler)",
+                );
             }
 
             PlannerMsg::Shutdown => return,

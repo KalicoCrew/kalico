@@ -1125,3 +1125,154 @@ fn flush_commits_terminal_decel_synchronously() {
     h.shutdown();
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 Task 5.1 — lifecycle reset entry points
+// ---------------------------------------------------------------------------
+
+/// Spec §3.7 reset acceptance, integration layer: after a `kalico_stream_open`
+/// reset to a new home position, a follow-on `submit_move` lands the toolhead
+/// starting near the new home, NOT continuing from wherever the prior
+/// trajectory ended. The original move's contribution is fully discarded —
+/// the post-reset dispatch line starts at `new_home_x` (within the C¹ refit
+/// budget) and ends at `new_home_x + move_distance`.
+#[test]
+fn kalico_stream_open_resets_planner_state() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    // First move: 1 mm pure-X from origin. Flush to dispatch the full
+    // geometry to the wire before the reset (Phase 4 Task 4.3 makes
+    // flush synchronously commit the trailing decel-to-zero).
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move 1");
+    h.flush().expect("flush move 1");
+
+    let segs_before_reset = recorded.lock().unwrap().len();
+    assert!(
+        segs_before_reset > 0,
+        "precondition: first move must produce dispatched segments before the reset",
+    );
+
+    // Reset to a new home position. This is the entry point the bridge
+    // will call on `kalico_stream_open`.
+    let new_home = [10.0, 20.0, 30.0, 0.0];
+    h.kalico_stream_open(new_home)
+        .expect("kalico_stream_open");
+
+    // Follow-on move: 1 mm pure-X starting from the new home. The
+    // bridge's caller is expected to express moves in the reset
+    // position frame, so the `start` argument matches `new_home`. The
+    // submitted move geometry covers `X ∈ [10, 11]` at 100 mm/s.
+    h.submit_move(
+        classify_and_build([new_home[0], new_home[1], new_home[2]], 1.0, 0.0, 0.0, 0.0, 100.0)
+            .unwrap(),
+    )
+    .expect("submit move 2");
+    h.flush().expect("flush move 2");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        segs.len() > segs_before_reset,
+        "second submit/flush produced no new dispatched segments after reset",
+    );
+
+    // The first dispatched segment **after the reset** must start near
+    // `new_home[0] = 10.0` — not near `1.0` (where move 1 ended) — and
+    // not near `0.0` (where the prior timeline began). The seam budget
+    // (50 µm) covers the C¹ Hermite refit's L∞ error.
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
+    let post_reset_first = &segs[segs_before_reset];
+    let x_start = x_pos_at(post_reset_first, post_reset_first.t_start);
+    assert!(
+        (x_start - new_home[0]).abs() < SEAM_BUDGET_MM,
+        "post-reset first dispatched X = {} mm; expected {} mm \
+         (the new home position) within {} mm. The reset did not \
+         clear the planner's prior position, OR the bridge wired the \
+         reset to the wrong handler.",
+        x_start,
+        new_home[0],
+        SEAM_BUDGET_MM,
+    );
+
+    // Terminal dispatched X should be `new_home[0] + 1.0 = 11.0` mm:
+    // the post-reset move covered 1 mm and flush dispatched the
+    // trailing decel-to-zero.
+    let terminal_seg = segs.last().unwrap();
+    let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
+    assert!(
+        (terminal_x - (new_home[0] + 1.0)).abs() < SEAM_BUDGET_MM,
+        "terminal dispatched X = {} mm; expected {} mm \
+         (new_home_x + move_distance) within {} mm",
+        terminal_x,
+        new_home[0] + 1.0,
+        SEAM_BUDGET_MM,
+    );
+
+    h.shutdown();
+}
+
+/// Spec §3.7 reset acceptance via the `homing` entry point. Identical
+/// shape to `kalico_stream_open_resets_planner_state`: the only
+/// difference is which `PlannerHandle` method is called. Both go
+/// through the same `ShaperState::reset` path under the hood (the
+/// run-loop's `KalicoStreamOpen | Homing` match arm collapses them);
+/// pinning both as distinct integration tests catches a regression
+/// that wires only one of the two handlers correctly.
+#[test]
+fn homing_resets_planner_state() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move 1");
+    h.flush().expect("flush move 1");
+
+    let segs_before_reset = recorded.lock().unwrap().len();
+    assert!(
+        segs_before_reset > 0,
+        "precondition: first move must produce dispatched segments before the reset",
+    );
+
+    let new_home = [50.0, 60.0, 70.0, 0.0];
+    h.homing(new_home).expect("homing");
+
+    h.submit_move(
+        classify_and_build([new_home[0], new_home[1], new_home[2]], 1.0, 0.0, 0.0, 0.0, 100.0)
+            .unwrap(),
+    )
+    .expect("submit move 2");
+    h.flush().expect("flush move 2");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        segs.len() > segs_before_reset,
+        "second submit/flush produced no new dispatched segments after homing reset",
+    );
+
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
+    let post_reset_first = &segs[segs_before_reset];
+    let x_start = x_pos_at(post_reset_first, post_reset_first.t_start);
+    assert!(
+        (x_start - new_home[0]).abs() < SEAM_BUDGET_MM,
+        "post-homing first dispatched X = {} mm; expected {} mm \
+         (the new home position) within {} mm",
+        x_start,
+        new_home[0],
+        SEAM_BUDGET_MM,
+    );
+
+    let terminal_seg = segs.last().unwrap();
+    let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
+    assert!(
+        (terminal_x - (new_home[0] + 1.0)).abs() < SEAM_BUDGET_MM,
+        "terminal dispatched X = {} mm; expected {} mm within {} mm",
+        terminal_x,
+        new_home[0] + 1.0,
+        SEAM_BUDGET_MM,
+    );
+
+    h.shutdown();
+}
+

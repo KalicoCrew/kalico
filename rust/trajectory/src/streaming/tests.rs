@@ -1197,3 +1197,86 @@ fn emit_committed_trims_old_history() {
     }
 }
 
+// -----------------------------------------------------------------
+// Phase 5 Task 5.1 — ShaperState::reset
+// -----------------------------------------------------------------
+
+/// Spec §3.7 reset acceptance: after submitting a move, advancing
+/// cursors via the normal append/emit cycle, and then calling
+/// `reset(new_home)`, every observable field of `ShaperState` must
+/// match what a freshly-constructed `ShaperState::new(new_home,
+/// &same_shapers)` would produce — except for `kernel` / `h` which are
+/// deliberately preserved (reset is a position re-anchor, not a shaper
+/// reconfiguration; see [`ShaperState::reset`]'s doc-comment).
+#[test]
+fn reset_after_motion_clears_state_and_reseeds_at_home() {
+    let shapers = replan_shapers();
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+    let ctx_replan = replan_context();
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+
+    // Submit a move and advance cursors via append + emit so the state
+    // is meaningfully non-fresh before the reset.
+    let m1 = linear_x_segment(0.0, 200.0, 200.0);
+    state.append_and_replan(m1, &ctx_replan).expect("append 1");
+    let _ = state.emit_committed(&ctx_emit).expect("emit 1");
+    assert!(state.t_appended > 0.0, "precondition: t_appended advanced");
+    assert!(
+        state.t_dispatched > 0.0,
+        "precondition: t_dispatched advanced",
+    );
+    assert!(
+        !state.uncommitted_moves.is_empty(),
+        "precondition: uncommitted_moves non-empty",
+    );
+    assert!(
+        !state.planned_fitted.is_empty(),
+        "precondition: planned_fitted populated",
+    );
+
+    // Reset to a new home position.
+    let new_home = [10.0, 20.0, 30.0, 0.0];
+    state.reset(new_home);
+
+    // Build the reference fresh state with the **same** shaper config.
+    let fresh = ShaperState::new(new_home, &shapers);
+
+    // Cursors and queues must equal the fresh state.
+    assert_eq!(state.t_appended, fresh.t_appended);
+    assert_eq!(state.t_decel_start, fresh.t_decel_start);
+    assert_eq!(state.t_shaped, fresh.t_shaped);
+    assert_eq!(state.t_dispatched, fresh.t_dispatched);
+    assert!(state.uncommitted_moves.is_empty());
+    assert!(state.pending_dispatch.is_empty());
+    assert!(state.planned_fitted.is_empty());
+    assert!(state.planned_meta.is_empty());
+
+    // Per-axis: the queue's seed piece must match the fresh state's
+    // seed piece byte-for-byte (same `home_pos`, same `h`-derived
+    // span, same constant-polynomial coeffs). `kernel` and `h` are
+    // preserved across reset by construction; we cross-check that
+    // they didn't drift.
+    for axis_idx in 0..4 {
+        let s = &state.axes[axis_idx];
+        let f = &fresh.axes[axis_idx];
+        assert_eq!(
+            s.pieces.len(),
+            f.pieces.len(),
+            "axis {axis_idx}: piece count mismatch after reset",
+        );
+        for (sp, fp) in s.pieces.iter().zip(f.pieces.iter()) {
+            assert_eq!(sp.u_start, fp.u_start, "axis {axis_idx} u_start");
+            assert_eq!(sp.u_end, fp.u_end, "axis {axis_idx} u_end");
+            assert_eq!(sp.coeffs, fp.coeffs, "axis {axis_idx} coeffs");
+        }
+        assert_eq!(s.h, f.h, "axis {axis_idx}: h preserved across reset");
+        assert_eq!(
+            s.kernel.is_some(),
+            f.kernel.is_some(),
+            "axis {axis_idx}: kernel presence preserved across reset",
+        );
+    }
+}
+
