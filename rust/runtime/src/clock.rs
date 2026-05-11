@@ -36,15 +36,47 @@ impl WidenState {
     /// unrecoverable from CYCCNT alone — but `last_widened_now` carries the
     /// pre-disable high-water across the gap, so the timeline is monotonic
     /// from the foreground's perspective even if we miss exact wrap counts.
-    /// Force-set the high water-mark from a known u64 baseline. Used by the
-    /// Linux sim host to seed the engine's widen state with a wrap count
-    /// matching Klipper's clocksync widening (which started counting at
-    /// process boot, before the engine pthread spun up). Without this, the
-    /// engine's `now` undercounts wraps and lags the host's projected
-    /// MCU-clock value, causing scheduled segments to be future-dated by
-    /// integer multiples of 2^32 cycles in the engine's frame.
-    pub fn seed_high(&mut self, baseline_high: u64) {
-        self.high = baseline_high & !0xFFFF_FFFFu64;
+    /// Force-set both halves of the widen state from a known u64 baseline.
+    ///
+    /// Used by both the Linux sim host (at engine boot, before the pthread
+    /// spins up) and the H7 / F4 `runtime_tick_enable` path (on
+    /// DRAINED→RUNNING transitions, where TIM5 disable→re-enable invalidates
+    /// the wrap-counting fast path).
+    ///
+    /// **Why both halves:** the prior version only set `self.high`, leaving
+    /// `self.last_low` whatever stale value was there. The H7 reseed
+    /// sequence is `reinit(raw, last_widened_now_pre_drain) → seed_high(klippy_baseline)`,
+    /// so `last_low` ended up at the raw cyccnt captured in `reinit` — which
+    /// has no relationship to the seeded `high`. On the next ISR tick,
+    /// `widen()` compares the fresh DWT against that orphaned `last_low`; if
+    /// DWT happens to have rolled past 2³² since `reinit` (or was in a
+    /// different relative position than the seeded high implies), `widen`
+    /// spuriously bumps `high` by 2³² ≈ 8.26 s at 520 MHz. Engine's `now`
+    /// jumps ~8 s into the future, every segment's `t_start` lands in the
+    /// past, and the boundary loop retires it without ever evaluating the
+    /// curve — silent motion loss with `current_segment_id` advancing
+    /// normally (the bench-observed "every other jog ignored after long
+    /// idle" symptom, 2026-05-11).
+    ///
+    /// **Fix:** set `last_low` to the baseline's low 32 bits so the next
+    /// `widen()` measures DWT advance from the SAME reference point the
+    /// seeded `high` encodes. The seed comes from the host's view of the
+    /// MCU's widened clock right before `runtime_tick_enable` returns; the
+    /// next ISR fires within microseconds, so DWT will have advanced by
+    /// well under one wrap — `widen` correctly detects no wrap and returns
+    /// `seeded_high | fresh_raw`, which is the correct current widened
+    /// clock.
+    pub fn seed(&mut self, baseline: u64) {
+        self.high = baseline & !0xFFFF_FFFFu64;
+        self.last_low = baseline as u32;
+    }
+
+    /// Back-compat shim. Pre-fix code called `seed_high`; the new spelling
+    /// is `seed` because it sets both halves. The shim forwards verbatim so
+    /// existing call sites (`runtime_handle_seed_widen`) work unchanged.
+    #[inline]
+    pub fn seed_high(&mut self, baseline: u64) {
+        self.seed(baseline);
     }
 
     pub fn reinit(&mut self, raw: u32, last_widened_now: u64) {
@@ -173,6 +205,59 @@ pub fn read_widened_now(shared: &SharedState) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `seed_high` must align `last_low` with the baseline's
+    /// low 32 bits, otherwise the FIRST `widen()` after a reseed spuriously
+    /// detects a wrap and inflates `high` by 2³² cycles. Bench-observed
+    /// 2026-05-11: segments retired without step pulses after long idle.
+    ///
+    /// Scenario replayed here:
+    /// 1. Engine running, `widen(raw=last_low_pre_drain)` → publishes some
+    ///    `last_widened_now`. (Established by the `reinit` arm below.)
+    /// 2. TIM5 disabled. DWT advances on its own; widening loop frozen.
+    /// 3. Push_segment lands. `reinit(raw_post_drain, last_widened_pre)`
+    ///    sets `last_low = raw_post_drain` and `high = pre_drain_high`
+    ///    (possibly +2³² if `raw_post_drain < last_low_pre_drain`).
+    /// 4. `seed_high(klippy_baseline)` overrides `self.high`.
+    /// 5. **The bug:** `self.last_low` still equals `raw_post_drain` from
+    ///    step 3, which has no relationship to the seeded `high`. If the
+    ///    next `widen(new_raw)` sees `new_raw < self.last_low` → spurious
+    ///    `high += 2³²`, breaking the engine's clock by ~8 s.
+    ///
+    /// With the fix, `seed_high` also sets `last_low = baseline.low`, so
+    /// the next `widen` measures advance from the correct reference and
+    /// produces the right widened result.
+    #[test]
+    fn seed_aligns_last_low_so_first_widen_does_not_spuriously_wrap() {
+        let mut state = WidenState::default();
+
+        // Simulate the bridge's reseed sequence on DRAINED→RUNNING after
+        // a TIM5 disable.
+        // Pre-drain state: engine had widened raw=0x4000_0000 to (high=0, low=0x4000_0000).
+        state.reinit(0x4000_0000, 0x0000_0000_4000_0000);
+        assert_eq!(state.last_low, 0x4000_0000);
+
+        // After TIM5 disable, DWT wraps multiple times. Klippy tracks the
+        // wraps and seeds widened-now = 0x0000_0003_1000_0000 (3 wraps +
+        // mid-cycle position 0x1000_0000). The raw DWT happens to be at
+        // 0x1000_0010 right now (just past the seeded low).
+        let baseline: u64 = 0x0000_0003_1000_0000;
+        state.seed_high(baseline);
+
+        // With the fix, last_low should now be 0x1000_0000 (baseline's low).
+        // Without the fix, last_low would still be 0x4000_0000 from reinit.
+        assert_eq!(
+            state.last_low, 0x1000_0000,
+            "seed must align last_low with baseline.low to prevent spurious wrap detection on next widen"
+        );
+
+        // Simulate the next ISR tick — raw advances normally by ~13k cycles.
+        let widened = state.widen(0x1000_0010);
+        assert_eq!(
+            widened, 0x0000_0003_1000_0010,
+            "first widen after seed must NOT bump high; should return seeded_high | fresh_raw"
+        );
+    }
 
     #[test]
     fn no_wrap_returns_raw_extended() {
