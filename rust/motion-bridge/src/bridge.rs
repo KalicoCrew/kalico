@@ -1531,6 +1531,19 @@ impl PyMotionBridge {
                     let lead_cycles = (freq * 0.250).round().max(1.0) as u64;
                     drop(r);
 
+                    // One-shot diag (per-session): on the very first
+                    // dispatched segment, dump now_clock + freq + lead.
+                    // Helps diagnose widen-state mismatches without
+                    // taking the lock in the hot path on every segment.
+                    use std::sync::atomic::{AtomicBool, Ordering as AOrd};
+                    static FIRST_DISPATCH_LOGGED: AtomicBool = AtomicBool::new(false);
+                    if !FIRST_DISPATCH_LOGGED.swap(true, AOrd::AcqRel) {
+                        eprintln!(
+                            "[bridge-trace] first-dispatch mcu={} freq={} now_clock={} lead_cycles={} seg.t_start={:.6}",
+                            plan.mcu_id, freq as u64, now_clock, lead_cycles, seg.t_start,
+                        );
+                    }
+
                     let mut schedule = schedule_state.lock().unwrap();
                     let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
                     if entry.1 == 0 || seg.t_start <= 1.0e-12 {
