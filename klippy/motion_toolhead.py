@@ -6,9 +6,51 @@ import logging
 import os
 
 from . import chelper
+from . import motion_kinematics
 from . import stepper
 from .kinematics import extruder
 from .toolhead import Move, ToolHead, BUFFER_TIME_START
+
+
+# Per-motor-slot prefix table. Slot order matches
+# `motion_kinematics.motor_deltas` and `_configure_axes_per_mcu`'s
+# `slot_names`. Steppers whose name doesn't start with one of these
+# prefixes have no motor slot (e.g. the corexy "passthrough Z" rails
+# the runtime ignores) — their enable callbacks are skipped.
+_MOTOR_SLOT_PREFIXES = (
+    (0, "stepper_x"),
+    (1, "stepper_y"),
+    (2, "stepper_z"),
+    (3, "extruder"),
+)
+
+
+def _name_motor_slot(name):
+    """Map a stepper section name to its motor slot.
+
+    Returns `(slot, is_primary)`:
+      - `slot` is the index into `_MOTOR_SLOT_PREFIXES` / `motor_deltas`.
+      - `is_primary` is True for the unsuffixed primary (`stepper_x`),
+        False for AWD partners (`stepper_x1`, `stepper_z2`, ...).
+    Returns None if the name doesn't match any motor slot.
+    """
+    for slot_idx, prefix in _MOTOR_SLOT_PREFIXES:
+        if not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix):]
+        if suffix == "":
+            return (slot_idx, True)
+        if suffix.isdigit():
+            return (slot_idx, False)
+    return None
+
+
+def _stepper_motor_slot(stepper_obj):
+    """Return the motor slot (0..3) for an MCU_stepper, or None if it
+    isn't bound to one (e.g. corexy passthrough Z rails).
+    """
+    info = _name_motor_slot(stepper_obj.get_name())
+    return None if info is None else info[0]
 
 
 def _open_sim_control():
@@ -340,20 +382,27 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
+        # Energize the motors that will physically move for this segment.
+        # The decision is keyed off the same kinematic transform that
+        # drives stepping (motion_kinematics.motor_deltas mirrors
+        # rust/runtime/src/kinematics.rs): a motor's enable callback
+        # fires iff that motor's post-transform delta is non-zero. On
+        # CoreXY a pure-X cartesian command produces non-zero deltas on
+        # both A and B, so both energize — by construction, not by an
+        # axis-letter registry that can drift from the transform.
         if self.kin is None:
             return
-        active_axes = []
-        if abs(dx) > 1e-9: active_axes.append("x")
-        if abs(dy) > 1e-9: active_axes.append("y")
-        if abs(dz) > 1e-9: active_axes.append("z")
-        if not active_axes and abs(de) <= 1e-9:
+        kin_name = (self.kinematics_name or "").lower()
+        deltas = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, de)
+        if all(abs(d) <= 1e-9 for d in deltas):
             return
         if print_time is None:
             print_time = self.get_last_move_time()
         for s in self.kin.get_steppers():
             if not s._active_callbacks:
                 continue
-            if not any(s.is_active_axis(a) for a in active_axes):
+            slot = _stepper_motor_slot(s)
+            if slot is None or abs(deltas[slot]) <= 1e-9:
                 continue
             cbs = s._active_callbacks
             s._active_callbacks = []
@@ -609,24 +658,12 @@ class MotionToolhead(ToolHead):
         # drives every stepper in a slot in lockstep, so a 4-motor Voron
         # 2.4 gantry needs both stepper_x AND stepper_x1 bound to motor 0,
         # both stepper_y AND stepper_y1 bound to motor 1, etc.
-        def _slot_match(stepper_name):
-            for slot_idx, prefix in (
-                (0, "stepper_x"), (1, "stepper_y"),
-                (2, "stepper_z"), (3, "extruder"),
-            ):
-                if stepper_name.startswith(prefix):
-                    suffix = stepper_name[len(prefix):]
-                    if suffix == "":
-                        return (slot_idx, True)
-                    if suffix.isdigit():
-                        return (slot_idx, False)
-            return None
         slot_steppers = [[], [], [], []]
         slot_primary = [None, None, None, None]
         fm = self.printer.lookup_object("force_move", None)
         if fm is not None:
             for name, s in fm.steppers.items():
-                m = _slot_match(name)
+                m = _name_motor_slot(name)
                 if m is None:
                     continue
                 slot_idx, is_primary = m
