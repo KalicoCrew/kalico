@@ -210,10 +210,17 @@ void
 kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
                       uint16_t payload_len)
 {
+    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     (void)channel;
-    if (payload_len < PER_MESSAGE_HEADER_LEN)
+    if (payload_len < PER_MESSAGE_HEADER_LEN) {
+        runtime_diag_progress(0xCD, 1, payload_len);  // too-short frame
         return;
+    }
     uint16_t kind = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+    // tag=0xCD = "kalico-native frame demuxed". stage=kind, value=payload_len.
+    // Surfaces every received kalico-native message at the dispatcher
+    // entry, before any handler-specific routing.
+    runtime_diag_progress(0xCD, 2 + (uint32_t)kind, (uint32_t)payload_len);
     uint8_t version = payload[2];
     uint32_t correlation_id = (uint32_t)payload[3]
                             | ((uint32_t)payload[4] << 8)
