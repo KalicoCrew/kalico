@@ -350,7 +350,11 @@ impl ShaperState {
             .map(|m| PlanSegment {
                 temporal: temporal::multi::SegmentInput {
                     curve: &m.segment.xyz,
-                    limits: per_segment_limits(&m.segment.xyz, ctx.limits),
+                    limits: per_segment_limits(
+                        &m.segment.xyz,
+                        ctx.limits,
+                        m.segment.feedrate_mm_s,
+                    ),
                     trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
                 },
                 e_mode: m.segment.e_mode,
@@ -996,36 +1000,14 @@ fn invert_cubic_bezier_xyz_to_param(
 fn per_segment_limits(
     curve: &nurbs::VectorNurbs<f64, 3>,
     base: temporal::Limits,
+    feedrate_mm_s: f64,
 ) -> temporal::Limits {
     const AXIS_INACTIVE_SPAN_EPS_MM: f64 = 1e-6;
 
     let cps = curve.control_points();
-    let max_active_j = (0..3)
-        .filter_map(|ax| {
-            let mut lo = f64::INFINITY;
-            let mut hi = f64::NEG_INFINITY;
-            for cp in cps {
-                let v = cp[ax];
-                if v < lo {
-                    lo = v;
-                }
-                if v > hi {
-                    hi = v;
-                }
-            }
-            if hi - lo > AXIS_INACTIVE_SPAN_EPS_MM {
-                Some(base.j_max[ax])
-            } else {
-                None
-            }
-        })
-        .fold(0.0_f64, f64::max);
 
-    if max_active_j == 0.0 {
-        return base;
-    }
-
-    let mut j_max = base.j_max;
+    // Per-axis control-point span (active iff > eps).
+    let mut span = [0.0_f64; 3];
     for ax in 0..3 {
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
@@ -1038,12 +1020,51 @@ fn per_segment_limits(
                 hi = v;
             }
         }
-        if hi - lo <= AXIS_INACTIVE_SPAN_EPS_MM {
-            j_max[ax] = max_active_j;
+        span[ax] = (hi - lo).max(0.0);
+    }
+    let chord_len = (span[0] * span[0] + span[1] * span[1] + span[2] * span[2]).sqrt();
+
+    // --- j_max: bump inactive axes' jerk so SOCP's `min(j_max[X..Z])` doesn't
+    //     collapse to a tiny per-Z value on a pure-XY move. Inactive axes have
+    //     c'_ax(s) ≡ 0, so cartesian jerk on them is identically zero
+    //     regardless of d³s/dt³.
+    let max_active_j = (0..3)
+        .filter_map(|ax| {
+            if span[ax] > AXIS_INACTIVE_SPAN_EPS_MM {
+                Some(base.j_max[ax])
+            } else {
+                None
+            }
+        })
+        .fold(0.0_f64, f64::max);
+    let mut j_max = base.j_max;
+    if max_active_j > 0.0 {
+        for ax in 0..3 {
+            if span[ax] <= AXIS_INACTIVE_SPAN_EPS_MM {
+                j_max[ax] = max_active_j;
+            }
         }
     }
 
-    temporal::Limits::new(base.v_max, base.a_max, j_max, base.a_centripetal_max)
+    // --- v_max: cap active axes by feedrate × direction_fraction so the
+    //     planner respects commanded F. Inactive axes are LEFT AT BASE
+    //     (setting them to 0 introduced numerical issues in the SOCP that
+    //     broke the seam-residue test on a prior attempt — `c'_ax(s) ≡ 0`
+    //     makes the constraint `|v_ax(t)| ≤ v_max[ax]` trivially-satisfied
+    //     at any positive v_max[ax], so leaving inactive axes' v_max
+    //     unchanged is correctness-preserving).
+    let mut v_max = base.v_max;
+    if feedrate_mm_s > 0.0 && chord_len > AXIS_INACTIVE_SPAN_EPS_MM {
+        for ax in 0..3 {
+            if span[ax] > AXIS_INACTIVE_SPAN_EPS_MM {
+                let direction_fraction = span[ax] / chord_len;
+                let feed_cap = feedrate_mm_s * direction_fraction;
+                v_max[ax] = v_max[ax].min(feed_cap);
+            }
+        }
+    }
+
+    temporal::Limits::new(v_max, base.a_max, j_max, base.a_centripetal_max)
 }
 
 fn shift_nurbs_in_time(curve: &nurbs::ScalarNurbs<f64>, dt: f64) -> nurbs::ScalarNurbs<f64> {

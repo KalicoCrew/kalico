@@ -932,16 +932,17 @@ fn t_dispatched_interior_to_move_replan_preserves_position() {
     // post-shape kernel was about to convolve through at the seam.
     let x_pre_replan = read_axis_value_at(&state, 0, t_d)
         .expect("axes[0] must cover t_dispatched after emit");
-    // For a 200 mm move with `feedrate = 200 mm/s` and
-    // `a_max = 5_000 mm/s²` the unshaped profile cruises near
-    // 200 mm/s for most of the move; the cruise plateau lands the
-    // toolhead near X ≈ 94 mm at the dispatch boundary
-    // (`t_decel_start − max_h`). Assert "well-interior to the
-    // move" so a regression that drops dispatch back to the move's
-    // origin would fail visibly.
+    // For a 200 mm move with `feedrate = 200 mm/s`, the unshaped profile
+    // cruises near 200 mm/s for most of the move; t_dispatched (at
+    // `t_decel_start − max_h`) lands somewhere in or past the cruise
+    // plateau. Pre-feedrate-cap (when v_max wasn't bound by F) the
+    // dispatch boundary landed near X ≈ 94 mm; post-cap the longer
+    // cruise pushes it further (~186 mm). Either way, we just want a
+    // "well-interior to the move" sanity check that catches a
+    // regression dropping dispatch back to the move's origin.
     assert!(
-        x_pre_replan > 50.0 && x_pre_replan < 150.0,
-        "t_dispatched should land interior to move 1's cruise; \
+        x_pre_replan > 50.0 && x_pre_replan < 199.0,
+        "t_dispatched should land interior to move 1's plan; \
          got X(t_d) = {x_pre_replan} mm",
     );
 
