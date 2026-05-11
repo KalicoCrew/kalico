@@ -1617,12 +1617,35 @@ impl PyMotionBridge {
 
                     let mut schedule = schedule_state.lock().unwrap();
                     let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
+                    let now_plus_lead = now_clock.saturating_add(lead_cycles);
+                    let planner_offset_cycles =
+                        (seg.t_start * freq).round().max(0.0) as u64;
                     if entry.1 == 0 || seg.t_start <= 1.0e-12 {
-                        entry.0 = entry.1.max(now_clock.saturating_add(lead_cycles));
+                        // Fresh trajectory: first ever dispatch on this MCU,
+                        // or planner-time-zero (post-stream-open reset).
+                        // Anchor base so the first segment lands at now+lead.
+                        entry.0 = entry.1.max(now_plus_lead);
+                    } else if entry.1 < now_clock {
+                        // Continuity break: the previous dispatched segment's
+                        // t_end_clock is already in the past, so the MCU
+                        // engine has drained and is sitting idle. Rebase so
+                        // *this* segment lands at now+lead — that is, choose
+                        // a base such that `base + planner_t_start*freq ==
+                        // now+lead`. The planner emits cumulative
+                        // `seg.t_start` values that grow across moves
+                        // (continuous streaming model); without this
+                        // subtraction, the dispatch would add the cumulative
+                        // planner time on top of wall-clock now, producing
+                        // a perceived ~planner_t_start-second delay before
+                        // motion starts (bench-observed 2026-05-11: "second
+                        // jog is slower" when clicks bracket a drained gap).
+                        entry.0 = now_plus_lead.saturating_sub(planner_offset_cycles);
                     }
-                    if entry.0 < now_clock.saturating_add(lead_cycles) {
-                        entry.0 = now_clock.saturating_add(lead_cycles);
-                    }
+                    // Else: previous dispatched segment is still in flight
+                    // on the MCU (entry.1 >= now_clock). Continuous streaming
+                    // — keep the existing base so the new segment threads
+                    // onto the end of the previous trajectory at the
+                    // planner's intended t_start.
                     entry.0
                 };
 
