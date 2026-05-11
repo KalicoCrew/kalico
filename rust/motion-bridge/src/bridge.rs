@@ -1546,6 +1546,7 @@ impl PyMotionBridge {
                     // move' bench symptom 2026-05-11).
                     let lead_cycles_init = (freq * 0.250).round().max(1.0) as u64;
                     let wait_start = Instant::now();
+                    let mut wait_iter: u32 = 0;
                     let now_clock = loop {
                         let r = router_for_cb.lock().unwrap();
                         let n = r
@@ -1555,11 +1556,18 @@ impl PyMotionBridge {
                         if n > 0 {
                             break n;
                         }
+                        if wait_iter == 0 || wait_iter == 50 || wait_iter == 250 || wait_iter == 499 {
+                            eprintln!(
+                                "[bridge-trace] dispatch-wait iter={} mcu_id={} mcu_h={:?} now_clock=0 freq_from_map={}",
+                                wait_iter, plan.mcu_id, mcu_h, freq as u64,
+                            );
+                        }
+                        wait_iter += 1;
                         if wait_start.elapsed() > Duration::from_secs(5) {
                             return Err(format!(
                                 "compute_ack_clock returned 0 after 5s — \
-                                 clock-sync didn't establish for mcu {}",
-                                plan.mcu_id
+                                 clock-sync didn't establish for mcu {} (mcu_h={:?})",
+                                plan.mcu_id, mcu_h
                             ));
                         }
                         std::thread::sleep(Duration::from_millis(10));
