@@ -882,6 +882,7 @@ impl PyMotionBridge {
                 "configure_axes: steps_per_mm must be a list of 4 floats",
             ));
         }
+        eprintln!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x}");
         let io = {
             let mcus = self.mcus.lock().unwrap();
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
@@ -889,11 +890,15 @@ impl PyMotionBridge {
                     "configure_axes: unknown mcu_handle {mcu_handle}"
                 ))
             })?;
+            eprintln!("[trace-bridge-cax] conn found mcu_handle={mcu_handle} kalico_supported={} host_io_some={}",
+                conn.kalico_native_supported, conn.host_io.is_some()
+            );
             // Stock-Klipper firmware (no kalico runtime) cannot accept this
             // bootstrap message. Silently no-op so multi-MCU setups where one
             // board runs stock Klipper still complete _configure_axes_per_mcu
             // for the kalico-runtime board(s).
             if !conn.kalico_native_supported {
+                eprintln!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
                 return Ok(());
             }
             conn.host_io.as_ref().ok_or_else(|| {
