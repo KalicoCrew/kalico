@@ -131,22 +131,21 @@ runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
 }
 
 // Called once from the boot_diag emit path. Emits the persistent diag
-// snapshot from the previous run (if the magic matches), then clears
-// the magic so a fresh cold boot doesn't keep re-emitting stale data.
+// snapshot from the previous run. Always emits (even on cold boot with
+// no magic match) so we can see what's actually in SRAM — useful for
+// diagnosing whether the persistent section survives soft reset at all.
 __attribute__((used, externally_visible))
 void
 runtime_diag_emit_persistent(void)
 {
-    if (rt_diag_persistent.magic != RT_DIAG_MAGIC)
-        return;
-    output("rt_diag_prior packed=%u us=%u faults=%u",
+    output("rt_diag_prior magic=%u packed=%u us=%u faults=%u",
+           rt_diag_persistent.magic,
            rt_diag_persistent.last_packed,
            rt_diag_persistent.last_us,
            rt_diag_persistent.fault_count);
-    // Clear so we don't re-emit on subsequent reads; the next
-    // configure_axes_blob will repopulate.
-    rt_diag_persistent.magic = 0;
-    rt_diag_persistent.last_packed = 0;
+    // Don't clear during the diag phase — re-emitting every boot_diag
+    // cycle gives the host plenty of redundancy and shows whether the
+    // SRAM contents are actually surviving the soft reset.
 }
 
 // Klipper-widened DWT/timer clock (cycles, u64). Mirrors
