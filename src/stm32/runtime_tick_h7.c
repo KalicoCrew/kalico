@@ -14,7 +14,14 @@
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
 extern const uint32_t runtime_clock_freq;
-extern uint32_t stats_send_time_high; // src/basecmd.c — wraps observed by stats_update
+// Both from src/basecmd.c. `stats_send_time_high` lags reality by up to one
+// u32 wrap between consecutive `stats_update` calls (which run every ~5 s).
+// `stats_send_time` is the timer value at the last bump. Klippy's
+// `command_get_uptime` reconstructs the lookback-aware high count as
+// `stats_send_time_high + (cur < stats_send_time)` — must match exactly here
+// or the engine's WidenState lags klippy's `last_clock` by 2^32 cycles.
+extern uint32_t stats_send_time_high;
+extern uint32_t stats_send_time;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
@@ -73,12 +80,20 @@ runtime_tick_enable(void)
     // Investigation: `docs/superpowers/notes/2026-05-11-first-motion-no-movement-investigation.md`.
     // Linux-sim caller pattern: `src/linux/runtime_tick_host.c:148-156`.
     if (runtime_handle) {
-        uint32_t high_at_seed = stats_send_time_high;
+        // Match klippy's command_get_uptime widening exactly: read `cur`
+        // first, then compute `high` with the "pre-stats_update wrap" lookback.
+        // If we read `high` first and then `cur`, a wrap interleaved between
+        // them would yield `high` from before the wrap with `cur` from after,
+        // off-by-one in the wrong direction.
         uint32_t low_at_seed = timer_read_time();
+        uint32_t high_at_seed = stats_send_time_high
+                              + (low_at_seed < stats_send_time);
         uint64_t baseline = ((uint64_t)high_at_seed) << 32
                           | (uint64_t)low_at_seed;
         runtime_handle_seed_widen(runtime_handle, baseline);
-        output("widen_seed high=%u low=%u", high_at_seed, low_at_seed);
+        output("widen_seed high=%u low=%u sst=%u sstime=%u",
+               high_at_seed, low_at_seed,
+               stats_send_time_high, stats_send_time);
     }
     TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;

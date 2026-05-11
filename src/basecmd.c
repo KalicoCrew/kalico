@@ -288,7 +288,12 @@ command_get_clock(uint32_t *args)
 }
 DECL_COMMAND_FLAGS(command_get_clock, HF_IN_SHUTDOWN, "get_clock");
 
-static uint32_t stats_send_time;
+// Exposed (was `static`) so src/stm32/runtime_tick_*.c can compute the
+// klippy-equivalent widened MCU clock baseline at runtime_tick_enable —
+// `command_get_uptime` reports `high = stats_send_time_high + (cur < stats_send_time)`
+// to klippy, and the engine's WidenState must match exactly or the first
+// segment's t_start is widened past the firmware's `now`.
+uint32_t stats_send_time;
 uint32_t stats_send_time_high;
 
 void

@@ -132,24 +132,29 @@ runtime_tick_init(void)
 }
 
 extern uint32_t stats_send_time_high; // src/basecmd.c
+extern uint32_t stats_send_time;      // src/basecmd.c (exposed 2026-05-11)
 
 __attribute__((used)) void
 runtime_tick_enable(void)
 {
     // Seed widen state to match Klippy's view of widened MCU clock.
-    // Klippy widens via stats_send_time_high (incremented by stats_update
-    // when it observes a u32 wrap). On Linux sim, timer_read_time can
-    // return wrapped values during the first second of process life
-    // (because start_sec = tv_sec + 1), which causes stats_update to
-    // bump stats_send_time_high once spuriously. The engine sees the
-    // same physical u32 timer but widens independently and never sees
-    // that bump — putting it ~86s behind Klippy's view.
     //
-    // Seed from stats_send_time_high directly so the two widening paths
-    // agree: engine.now == Klippy's last_clock view.
+    // Klippy reads `get_uptime` on connect and widens incrementally from
+    // there. `command_get_uptime` returns
+    //   `high = stats_send_time_high + (cur < stats_send_time)`
+    // — the second term captures a wrap that occurred AFTER the last
+    // `stats_update` bumped `stats_send_time_high` but BEFORE this read.
+    // Up to one wrap can fall in that window (stats_update runs every ~5 s,
+    // u32 wraps at 520 MHz every ~8.26 s on H7; on Linux the wrap period
+    // differs but the off-by-one risk is the same), so we MUST replicate
+    // this exact arithmetic or the engine's WidenState lags klippy's
+    // `last_clock` by 2^32 and the first dispatched segment's t_start ends
+    // up unreachable from the engine's `now` (saturating-subtract to zero
+    // → curve evaluated at u=0 → zero step pulses).
     if (runtime_handle) {
-        uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
-                          | (uint64_t)timer_read_time();
+        uint32_t low = timer_read_time();
+        uint32_t high = stats_send_time_high + (low < stats_send_time);
+        uint64_t baseline = ((uint64_t)high) << 32 | (uint64_t)low;
         runtime_handle_seed_widen(runtime_handle, baseline);
     }
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);

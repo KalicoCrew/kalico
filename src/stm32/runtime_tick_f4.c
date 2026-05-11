@@ -62,9 +62,14 @@ runtime_tick_enable(void)
     // WidenState starts at high=0 while klippy's view already includes
     // accumulated wraps).
     if (runtime_handle) {
-        extern uint32_t stats_send_time_high; // src/basecmd.c
-        uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
-                          | (uint64_t)timer_read_time();
+        // Mirror command_get_uptime's "high + (cur < stats_send_time)"
+        // lookback so this matches klippy's view exactly. See
+        // runtime_tick_h7.c for the full rationale.
+        extern uint32_t stats_send_time_high;
+        extern uint32_t stats_send_time;
+        uint32_t low = timer_read_time();
+        uint32_t high = stats_send_time_high + (low < stats_send_time);
+        uint64_t baseline = ((uint64_t)high) << 32 | (uint64_t)low;
         runtime_handle_seed_widen(runtime_handle, baseline);
     }
     TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
