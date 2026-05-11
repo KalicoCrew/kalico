@@ -1136,6 +1136,18 @@ impl PyMotionBridge {
             .getattr("monotonic")?
             .call0()?
             .extract()?;
+        // Diag: log every set_clock_est arrival. Trying to isolate why the
+        // dispatch sees `now_clock=0` despite klippy's clocksync showing
+        // last_clock in the billions.
+        use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
+        static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);
+        let call_n = SET_CLOCK_EST_CALLS.fetch_add(1, AOrd::Relaxed);
+        if call_n < 5 || call_n % 100 == 0 {
+            eprintln!(
+                "[bridge-trace] set_clock_est call#{} mcu={} freq={} offset={:.6} last_clock={}",
+                call_n, mcu, freq as u64, offset, last_clock,
+            );
+        }
         let mut router = self.router.lock().unwrap();
         router
             .set_clock_est_rebased(
