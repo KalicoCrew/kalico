@@ -1557,6 +1557,11 @@ impl PyMotionBridge {
                         1_000_000.0
                     });
 
+                // Captured outside the base-clock block for the
+                // post-dispatch diagnostic log (2026-05-11): they tell us
+                // whether the segment activates on-time or late.
+                let _diag_now_clock: u64;
+                let _diag_branch_outer: &'static str;
                 // Compute schedule base ONCE per (mcu, logical-segment).
                 let mcu_base_clock: u64 = {
                     // Block-wait for clock-sync to publish a non-zero
@@ -1620,11 +1625,14 @@ impl PyMotionBridge {
                     let now_plus_lead = now_clock.saturating_add(lead_cycles);
                     let planner_offset_cycles =
                         (seg.t_start * freq).round().max(0.0) as u64;
+                    let _diag_prev_entry1 = entry.1;
+                    _diag_now_clock = now_clock;
                     if entry.1 == 0 || seg.t_start <= 1.0e-12 {
                         // Fresh trajectory: first ever dispatch on this MCU,
                         // or planner-time-zero (post-stream-open reset).
                         // Anchor base so the first segment lands at now+lead.
                         entry.0 = entry.1.max(now_plus_lead);
+                        _diag_branch_outer = "fresh";
                     } else if entry.1 < now_clock {
                         // Continuity break: the previous dispatched segment's
                         // t_end_clock is already in the past, so the MCU
@@ -1640,12 +1648,15 @@ impl PyMotionBridge {
                         // motion starts (bench-observed 2026-05-11: "second
                         // jog is slower" when clicks bracket a drained gap).
                         entry.0 = now_plus_lead.saturating_sub(planner_offset_cycles);
+                        _diag_branch_outer = "rebase-drained";
+                    } else {
+                        // Previous dispatched segment is still in flight
+                        // on the MCU (entry.1 >= now_clock). Continuous streaming
+                        // — keep the existing base so the new segment threads
+                        // onto the end of the previous trajectory at the
+                        // planner's intended t_start.
+                        _diag_branch_outer = "continuous";
                     }
-                    // Else: previous dispatched segment is still in flight
-                    // on the MCU (entry.1 >= now_clock). Continuous streaming
-                    // — keep the existing base so the new segment threads
-                    // onto the end of the previous trajectory at the
-                    // planner's intended t_start.
                     entry.0
                 };
 
@@ -1744,6 +1755,32 @@ impl PyMotionBridge {
                         pool.register_segment(*slot, plan.params.id);
                     }
                 }
+
+                // Diagnostic 2026-05-11: dump per-segment dispatch info to
+                // distinguish bridge-side curve discontinuity from
+                // late-activation (u_entry > 0) as the cause of
+                // STEP_BURST_EXCEEDED on segment 3 of the second jog.
+                // Evaluate the shaped curves at their `seg.t_start` and
+                // `seg.t_end` so cross-segment continuity can be verified
+                // from the log alone: if seg N's pos_end matches seg N+1's
+                // pos_start, the planner emits continuous geometry and any
+                // burst must be late-activation; if they differ by the
+                // observed delta (e.g. ~15 mm), the discontinuity is real.
+                let pos_at = |axis: usize, u: f64| -> f64 {
+                    let curve = &seg.axes[axis];
+                    nurbs::eval::eval(curve, u)
+                };
+                eprintln!(
+                    "[bridge-trace] seg-dispatch mcu={} seg_id={} branch={} \
+                     now_clock={} mcu_base={} t_start_clock={} t_end_clock={} \
+                     t_start_s={:.6} t_end_s={:.6} \
+                     pos_start=[{:.4},{:.4},{:.4}] pos_end=[{:.4},{:.4},{:.4}]",
+                    plan.mcu_id, plan.params.id, _diag_branch_outer,
+                    _diag_now_clock, mcu_base_clock, t_start_clock, t_end_clock,
+                    seg.t_start, seg.t_end,
+                    pos_at(0, seg.t_start), pos_at(1, seg.t_start), pos_at(2, seg.t_start),
+                    pos_at(0, seg.t_end), pos_at(1, seg.t_end), pos_at(2, seg.t_end),
+                );
 
                 let push_result = dispatch_push_segment(
                     io.as_ref(),
