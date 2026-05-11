@@ -459,16 +459,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // can characterize what shape post-shape curves take on
                 // representative workloads.
                 capture_segment_curve_meta(&seg, pool);
-                // Re-seed step accumulators on segment activation. After a
-                // DRAINED→RUNNING transition (between user moves) the engine
-                // can sit idle with TIM5 disabled while the host queues the
-                // next segment. The new segment's curve x(0) is authoritative
-                // for where we start from; rather than asserting cross-segment
-                // continuity (which is a property of the trajectory, not the
-                // engine), re-anchor the accumulators so the first tick's
-                // delta is 0. Real cross-segment discontinuities are silently
-                // absorbed — that's the point during bring-up.
-                self.needs_xy_seed = true;
+                // 2026-05-11: per-segment re-seed removed. The original
+                // bring-up rationale (re-anchor accumulators to absorb
+                // cross-segment discontinuities) caused silent motion
+                // loss: when a segment activates with `t_segment > 0`
+                // — e.g., the segment sat in queue for a while because
+                // foreground was starved (BKPSRAM showed
+                // `out_max_gap=7.6s` and `ring_overflow=39766`) —
+                // re-seeding from `curve(u_initial)` declares the
+                // skipped virtual position to be physical, and the
+                // motion from `u=0` to `u_initial` never produces step
+                // pulses. Bench-observed symptom: negative jogs sat in
+                // queue while foreground stalled, then "creeped slowly"
+                // in the queued direction once the engine caught up.
+                //
+                // Correct behaviour: TRUST cross-segment continuity as
+                // a planner invariant. The planner emits curves where
+                // `segment_N.end == segment_{N+1}.start` (split-at-s
+                // shaping, commit `c03b3ed5e`); the engine should
+                // therefore let the step accumulator and `prev_x/y`
+                // carry over from one segment to the next without
+                // re-anchoring. A genuine discontinuity is a planner
+                // bug and should surface (StepBurstExceeded fault) so
+                // it gets fixed, not silently absorbed.
+                //
+                // Seed remains in: (1) `Engine::new` initial state, (2)
+                // `force_idle` (flush / homing recovery). The flag is
+                // not touched on per-segment activation any more.
                 // Fall through with the freshly dequeued segment.
                 return self.tick_with_current(seg, now, queue, pool, trace, shared);
             }
@@ -566,9 +583,39 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     }
                 }
             }
+            // Retire the curve-pool slots directly on the ISR, BEFORE
+            // emitting the SEGMENT_END trace sample. Bench-observed
+            // 2026-05-11: the previous design relied on the foreground
+            // trace drain calling `pool.confirm_retired` when it
+            // observed the SEGMENT_END flag on a trace sample. When
+            // foreground stalled (BKPSRAM showed `out_max_gap=7.6s`),
+            // the trace ring overflowed (~40k samples dropped) and
+            // SEGMENT_END samples were lost on the floor. The cursor
+            // `retired_through_segment_id` above advanced anyway, so
+            // the host's `kalico_credit_freed` event fired (and the
+            // host's slot_pool released the slot for reuse), but the
+            // MCU's `last_retired_gen[slot]` never caught up — so the
+            // next host-side `load_curve` into that slot was rejected
+            // with `SlotAlreadyLoaded` (`current_gen != last_retired_gen`
+            // in `curve_pool::try_alloc_and_load`). M84 surfaced the
+            // divergence as an `InvalidHandle` crash. Fix: call
+            // `confirm_retired` directly here so retirement is atomic
+            // with the engine's logical retire and independent of the
+            // trace transport's health. `confirm_retired` is a single
+            // atomic store; safe from ISR.
+            //
+            // Sentinels (UNUSED, HOLD) have `slot_idx > CURVE_POOL_N`
+            // and `confirm_retired` early-returns on them.
+            pool.confirm_retired(current.x_handle);
+            pool.confirm_retired(current.y_handle);
+            pool.confirm_retired(current.z_handle);
+            pool.confirm_retired(current.e_handle);
+
             // Emit SEGMENT_END unconditionally for all segment types (hold
-            // AND motion) so the reclaim pipeline fires `confirm_retired`
-            // for every segment's curve pool handles.
+            // AND motion). After 2026-05-11 the trace sample's role is
+            // narrowed to HOST visibility (telemetry / step-pulse
+            // accounting); MCU-internal slot retirement is handled by
+            // the four `confirm_retired` calls above.
             let _ = trace.enqueue(TraceSample {
                 tick: now,
                 motor_a: self.last_motors[0],
@@ -613,10 +660,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // Diagnostic: snapshot per-axis curve dimensions for the
             // freshly activated segment.
             capture_segment_curve_meta(&current, pool);
-            // Mirror the DRAINED→RUNNING re-seed at line 450 — re-anchor
-            // step accumulators on every fresh segment activation so a
-            // post-shape continuity glitch can't trip StepBurstExceeded.
-            self.needs_xy_seed = true;
+            // 2026-05-11: per-boundary-loop re-seed removed alongside
+            // the DRAINED→RUNNING re-seed above (engine.rs:~461). Same
+            // rationale: silent absorption of `u=0..u_initial` motion
+            // when a segment activates partway through (boundary loop
+            // entered with `t_segment > duration` of a previous
+            // segment, advancing into the next with delta_t > 0). The
+            // planner's cross-segment-continuity invariant means the
+            // step accumulator and `prev_x/y` are already aligned with
+            // the new segment's `curve(0)`; no re-anchoring required.
         }
 
         // §6.5 hold-segment short-circuit: AFTER force_idle (handled in
@@ -653,6 +705,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // would do so, and pre-emit the SEGMENT_END flag now.
             let next_t_segment = t_segment.saturating_add(self.one_tick_cycles_value);
             if next_t_segment >= current.duration() {
+                // Direct slot retirement (see boundary-loop branch above
+                // for full rationale; bench session 2026-05-11). For
+                // hold segments x/y/z handles are typically UNUSED, but
+                // calling confirm_retired on a sentinel is a no-op.
+                pool.confirm_retired(current.x_handle);
+                pool.confirm_retired(current.y_handle);
+                pool.confirm_retired(current.z_handle);
+                pool.confirm_retired(current.e_handle);
+
                 let _ = trace.enqueue(TraceSample {
                     tick: now,
                     motor_a: self.last_motors[0],
