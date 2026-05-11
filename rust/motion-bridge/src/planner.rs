@@ -272,6 +272,46 @@ fn store_print_time(bits: &AtomicU64, t: f64) {
     bits.store(t.to_bits(), Ordering::Release);
 }
 
+/// Drive `ShaperState::commit_decel_to_zero` to completion: shape the
+/// held-back tail, dispatch each segment, and book-keep print-time +
+/// the commit counter. Shared by the quiescence-timer (`T_commit` fire)
+/// and `PlannerMsg::Flush` paths so both routes through commit have
+/// byte-identical accounting behaviour. Phase 4 Task 4.3 added the
+/// `Flush` caller; Task 4.2 added the timer caller.
+///
+/// Returns `true` if commit succeeded (even if zero segments were
+/// drained — the handler is idempotent for an already-fully-committed
+/// queue). Returns `false` if a pipeline error was stored; callers
+/// should not advance further state in that case.
+fn run_commit_and_dispatch(
+    state: &mut ShaperState,
+    thread_state: &PlannerThreadState,
+    dispatch: &Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
+    error: &Arc<Mutex<Option<PlannerError>>>,
+    last_move_time_bits: &AtomicU64,
+    commit_fire_count: &AtomicU32,
+    print_time: &mut f64,
+) -> bool {
+    let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
+        Ok(out) => out,
+        Err(e) => {
+            *error.lock().unwrap() = Some(PlannerError::Shape(e));
+            return false;
+        }
+    };
+    let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
+    *print_time += batch_dur;
+    store_print_time(last_move_time_bits, *print_time);
+    for s in &drained {
+        if let Err(detail) = dispatch(s) {
+            *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+            break;
+        }
+    }
+    commit_fire_count.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
 /// Owned per-thread context buffers consumed by `ShaperState::append_and_replan`
 /// and `ShaperState::emit_committed`. `EmitContext` borrows from the kernel
 /// array + halo list, so we keep both owned on this struct and reborrow on
@@ -359,26 +399,19 @@ fn run_loop(
                 // back). This branch dispatches those segments the same
                 // way the `Move` arm dispatches `emit_committed` output —
                 // print-time accounting + per-segment dispatch + commit
-                // counter increment. Clearing `last_append_time` disarms
+                // counter increment, all factored into
+                // `run_commit_and_dispatch` (shared with the `Flush` arm
+                // wired by Task 4.3). Clearing `last_append_time` disarms
                 // the timer until the next `Move` arrives.
-                let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
-                    Ok(out) => out,
-                    Err(e) => {
-                        *error.lock().unwrap() = Some(PlannerError::Shape(e));
-                        last_append_time = None;
-                        continue;
-                    }
-                };
-                let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-                print_time += batch_dur;
-                store_print_time(&last_move_time_bits, print_time);
-                for s in &drained {
-                    if let Err(detail) = dispatch(s) {
-                        *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
-                        break;
-                    }
-                }
-                commit_fire_count.fetch_add(1, Ordering::AcqRel);
+                let _ok = run_commit_and_dispatch(
+                    &mut state,
+                    &thread_state,
+                    &dispatch,
+                    &error,
+                    &last_move_time_bits,
+                    &commit_fire_count,
+                    &mut print_time,
+                );
                 last_append_time = None;
                 continue;
             }
@@ -428,10 +461,37 @@ fn run_loop(
             }
 
             PlannerMsg::Flush { notify } => {
-                // No buffer to drain under streaming — replan + emit happen
-                // per `submit_move`. `Flush` remains a synchronization
-                // barrier so callers can wait for prior messages on the
-                // queue to be processed before continuing.
+                // Phase 4 Task 4.3 — `Flush` collapses `T_commit` → now
+                // (spec §3.4 lifecycle row). The streaming-native model
+                // holds the trailing decel-to-zero of the most recent
+                // `Move` speculatively until either the quiescence timer
+                // fires or a follow-on `Move` re-anchors the decel
+                // further out. `wait_moves` / `M400` / homing barriers
+                // need to block until *all* submitted motion is on the
+                // wire — including that held-back tail — so `Flush`
+                // synchronously invokes `commit_decel_to_zero` and
+                // dispatches the drained segments before notifying the
+                // waiter.
+                //
+                // Guarding on `last_append_time.is_some()` keeps the
+                // arm a no-op (modulo the notify) when the queue is
+                // already fully committed (every prior commit cleared
+                // the timer). The `_ok` ignore matches the timer arm's
+                // behaviour: a pipeline error has already been stored
+                // and will surface via `PlannerHandle::check_error` on
+                // the caller's next API entry.
+                if last_append_time.is_some() {
+                    let _ok = run_commit_and_dispatch(
+                        &mut state,
+                        &thread_state,
+                        &dispatch,
+                        &error,
+                        &last_move_time_bits,
+                        &commit_fire_count,
+                        &mut print_time,
+                    );
+                    last_append_time = None;
+                }
                 let _ = notify.send(());
             }
 
