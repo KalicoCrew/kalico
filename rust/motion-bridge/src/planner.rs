@@ -515,6 +515,9 @@ fn run_commit_and_dispatch(
     last_move_time_bits: &AtomicU64,
     commit_fire_count: &AtomicU32,
 ) -> bool {
+    let t_app_before = state.t_appended;
+    let t_disp_before = state.t_dispatched;
+    let commit_start = Instant::now();
     let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
         Ok(out) => out,
         Err(e) => {
@@ -522,6 +525,7 @@ fn run_commit_and_dispatch(
             return false;
         }
     };
+    let commit_us = commit_start.elapsed().as_micros();
     let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
     advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
@@ -531,6 +535,15 @@ fn run_commit_and_dispatch(
         }
     }
     commit_fire_count.fetch_add(1, Ordering::AcqRel);
+    eprintln!(
+        "[planner-trace] commit drained={} dur_s={:.6} commit_us={} t_app={:.6} t_disp_before={:.6} t_disp_after={:.6}",
+        drained.len(),
+        batch_dur,
+        commit_us,
+        t_app_before,
+        t_disp_before,
+        state.t_dispatched,
+    );
     true
 }
 
@@ -597,6 +610,7 @@ fn run_loop(
     // t_decel_start − max_h` check on `ShaperState` once the real
     // `commit_decel_to_zero` semantics land.
     let mut last_append_time: Option<Instant> = None;
+    let mut last_recv_time: Option<Instant> = None;
 
     loop {
         // Compute the next timeout. The held-back-tail proxy is "an append
@@ -610,7 +624,28 @@ fn run_loop(
         };
 
         let msg = match rx.recv_timeout(next_timeout) {
-            Ok(m) => m,
+            Ok(m) => {
+                let now = Instant::now();
+                let gap_us = last_recv_time
+                    .map(|t| now.saturating_duration_since(t).as_micros() as i64)
+                    .unwrap_or(-1);
+                last_recv_time = Some(now);
+                let tag = match &m {
+                    PlannerMsg::Move(_) => "Move",
+                    PlannerMsg::Flush { .. } => "Flush",
+                    PlannerMsg::Dwell { .. } => "Dwell",
+                    PlannerMsg::UpdateLimits(_) => "UpdateLimits",
+                    PlannerMsg::UpdateShaper(_) => "UpdateShaper",
+                    PlannerMsg::KalicoStreamOpen { .. } => "KalicoStreamOpen",
+                    PlannerMsg::Homing { .. } => "Homing",
+                    PlannerMsg::Underrun { .. } => "Underrun",
+                    PlannerMsg::ForceIdle { .. } => "ForceIdle",
+                    PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
+                    PlannerMsg::Shutdown => "Shutdown",
+                };
+                eprintln!("[planner-trace] recv {tag} gap_us={gap_us}");
+                m
+            }
             Err(RecvTimeoutError::Timeout) => {
                 // `T_commit` elapsed without a follow-on message. Task 4.2
                 // shipped the real body of `commit_decel_to_zero`: shape
@@ -624,6 +659,10 @@ fn run_loop(
                 // `run_commit_and_dispatch` (shared with the `Flush` arm
                 // wired by Task 4.3). Clearing `last_append_time` disarms
                 // the timer until the next `Move` arrives.
+                let since_arm_ms = last_append_time
+                    .map(|t| t.elapsed().as_micros() as i64)
+                    .unwrap_or(-1);
+                eprintln!("[planner-trace] T_commit fire since_arm_us={since_arm_ms}");
                 let _ok = run_commit_and_dispatch(
                     &mut state,
                     &thread_state,
@@ -655,11 +694,16 @@ fn run_loop(
                 // follow-on `submit_move`.
                 let nominal = m.nominal_duration();
                 let prior_t_appended = state.t_appended;
+                let prior_t_decel = state.t_decel_start;
+                let prior_t_disp = state.t_dispatched;
 
+                let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
                     *error.lock().unwrap() = Some(PlannerError::Shape(e));
                     continue;
                 }
+                let replan_us = replan_start.elapsed().as_micros();
+                let emit_start = Instant::now();
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
@@ -667,6 +711,22 @@ fn run_loop(
                         continue;
                     }
                 };
+                let emit_us = emit_start.elapsed().as_micros();
+                let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
+                eprintln!(
+                    "[planner-trace] Move nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
+                    nominal,
+                    replan_us,
+                    emit_us,
+                    drained.len(),
+                    drained_dur,
+                    prior_t_appended,
+                    state.t_appended,
+                    prior_t_decel,
+                    state.t_decel_start,
+                    prior_t_disp,
+                    state.t_dispatched,
+                );
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
