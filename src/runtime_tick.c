@@ -114,10 +114,11 @@ struct rt_diag_persistent {
     uint32_t fault_count;
 };
 
-// Non-static so fault_handler.c can `extern` it directly (and the linker
-// keeps it). Section attribute places it outside `.bss` so armcm_boot.c's
-// zero-pass leaves it alone across soft reset.
-struct rt_diag_persistent rt_diag_persistent
+// Non-static + volatile so fault_handler.c can `extern` it directly
+// and LTO can't constant-propagate the zero-init values into the
+// output() arguments. Section attribute places it outside `.bss` so
+// armcm_boot.c's zero-pass leaves it alone across soft reset.
+volatile struct rt_diag_persistent rt_diag_persistent
     __attribute__((section(".persistent_diag"), used, externally_visible));
 
 __attribute__((used, externally_visible))

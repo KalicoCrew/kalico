@@ -34,7 +34,7 @@ struct rt_diag_persistent {
     uint32_t last_us;
     uint32_t fault_count;
 };
-extern struct rt_diag_persistent rt_diag_persistent;
+extern volatile struct rt_diag_persistent rt_diag_persistent;
 #endif
 
 // Magic word marks "fault record valid". Chosen unlikely to occur as
