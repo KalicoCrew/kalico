@@ -23,6 +23,7 @@
 extern volatile uint8_t runtime_liveness_ok;
 extern void *runtime_handle;
 extern uint32_t runtime_handle_tick_counter(void *handle);
+extern void runtime_diag_emit_persistent(void);
 extern uint8_t  runtime_handle_status(void *handle);
 #endif
 
@@ -1006,13 +1007,9 @@ fault_handler_report_task(void)
     }
     // Persistent runtime-diag snapshot (set by runtime_diag_progress in
     // src/runtime_tick.c). Survives `NVIC_SystemReset` via the
-    // .persistent_diag linker section. Cleared inside the helper after
-    // emit so cold-boot SRAM noise doesn't keep re-firing.
+    // .persistent_diag linker section.
 #if CONFIG_KALICO_RUNTIME
-    {
-        extern void runtime_diag_emit_persistent(void);
-        runtime_diag_emit_persistent();
-    }
+    runtime_diag_emit_persistent();
 #endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few
