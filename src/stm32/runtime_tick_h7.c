@@ -4,6 +4,7 @@
 
 #include "autoconf.h"
 #include "board/misc.h"        // timer_read_time
+#include "command.h"           // output() diag emit
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
@@ -72,9 +73,12 @@ runtime_tick_enable(void)
     // Investigation: `docs/superpowers/notes/2026-05-11-first-motion-no-movement-investigation.md`.
     // Linux-sim caller pattern: `src/linux/runtime_tick_host.c:148-156`.
     if (runtime_handle) {
-        uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
-                          | (uint64_t)timer_read_time();
+        uint32_t high_at_seed = stats_send_time_high;
+        uint32_t low_at_seed = timer_read_time();
+        uint64_t baseline = ((uint64_t)high_at_seed) << 32
+                          | (uint64_t)low_at_seed;
         runtime_handle_seed_widen(runtime_handle, baseline);
+        output("widen_seed high=%u low=%u", high_at_seed, low_at_seed);
     }
     TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
