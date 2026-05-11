@@ -877,12 +877,18 @@ impl PyMotionBridge {
         steps_per_mm: Vec<f32>,
         timeout_s: f64,
     ) -> PyResult<()> {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/cax-trace.log") {
+            let _ = writeln!(f, "configure_axes ENTRY mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} steps_per_mm_len={}", steps_per_mm.len());
+        }
         if steps_per_mm.len() != 4 {
             return Err(PyRuntimeError::new_err(
                 "configure_axes: steps_per_mm must be a list of 4 floats",
             ));
         }
         eprintln!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x}");
+        // belt-and-suspenders: also force stderr flush
+        let _ = std::io::stderr().flush();
         let io = {
             let mcus = self.mcus.lock().unwrap();
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
