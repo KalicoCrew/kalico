@@ -346,6 +346,11 @@ impl Reactor {
                 let is_io = matches!(e, TransportError::Io(_));
                 let _ = p.completion.send(Err(e));
                 if is_io {
+                    eprintln!("[trace-close] drain_pending_submissions Io error kalico_pending={} await_n={} unacked_n={}",
+                        self.kalico_state.pending.len(),
+                        self.awaiting_response.len(),
+                        self.unacked_window.len(),
+                    );
                     if self.pending_host_fault.is_none() {
                         self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                             fault_code:   FaultCode::HostDisconnect.as_u16(),
@@ -367,6 +372,7 @@ impl Reactor {
             let Some(payload) = self.pending_fire_and_forget.pop_front() else { break; };
             if let Err(e) = self.dispatch_fire_and_forget(payload) {
                 if matches!(e, TransportError::Io(_)) {
+                    eprintln!("[trace-close] drain pending fire-and-forget Io error: {e:?}");
                     if self.pending_host_fault.is_none() {
                         self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                             fault_code:   FaultCode::HostDisconnect.as_u16(),
@@ -423,6 +429,7 @@ impl Reactor {
             let frame = crate::host_io::wire::build_frame(entry.bytes(), wire_seq);
 
             if let Err(_e) = self.write_frame(&frame) {
+                eprintln!("[trace-close] drain_passthrough write_frame Io error: {_e:?}");
                 if self.pending_host_fault.is_none() {
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                         fault_code:   FaultCode::HostDisconnect.as_u16(),
@@ -758,6 +765,11 @@ impl Reactor {
                 let now = self.clock.now();
                 let first = *self.zero_byte_first_seen.get_or_insert(now);
                 if now.duration_since(first) >= ZERO_BYTE_DEBOUNCE {
+                    eprintln!("[trace-close] poll_serial PhantomZero exceeded debounce kalico_pending={} await_n={} unacked_n={}",
+                        self.kalico_state.pending.len(),
+                        self.awaiting_response.len(),
+                        self.unacked_window.len(),
+                    );
                     log::warn!("port read returned Ok(0) for >= {ZERO_BYTE_DEBOUNCE:?}; transitioning to Closed");
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                         fault_code:   FaultCode::HostDisconnect.as_u16(),
@@ -769,6 +781,11 @@ impl Reactor {
                 }
             }
             Err(e) => {
+                eprintln!("[trace-close] poll_serial Io error: {e:?} kalico_pending={} await_n={} unacked_n={}",
+                    self.kalico_state.pending.len(),
+                    self.awaiting_response.len(),
+                    self.unacked_window.len(),
+                );
                 log::warn!("port read error: {e:?}; transitioning to Closed");
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                     fault_code:   FaultCode::HostDisconnect.as_u16(),
@@ -793,6 +810,12 @@ impl Reactor {
     /// KalicoCall) and the RTO retransmit path to mirror the established
     /// drain-path / poll_serial behavior.
     pub(crate) fn transition_closed_on_io_fault(&mut self) {
+        eprintln!("[trace-close] transition_closed_on_io_fault (write-path Io error) state_was={:?} kalico_pending={} await_n={} unacked_n={}",
+            self.state,
+            self.kalico_state.pending.len(),
+            self.awaiting_response.len(),
+            self.unacked_window.len(),
+        );
         if self.pending_host_fault.is_none() {
             self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                 fault_code:   FaultCode::HostDisconnect.as_u16(),
@@ -836,6 +859,11 @@ impl Reactor {
                 self.awaiting_response.mark_abandoned(call_id);
             }
             ReactorCommand::Shutdown => {
+                eprintln!("[trace-close] ReactorCommand::Shutdown received kalico_pending={} await_n={} unacked_n={}",
+                    self.kalico_state.pending.len(),
+                    self.awaiting_response.len(),
+                    self.unacked_window.len(),
+                );
                 self.state = ReactorState::Closed;
             }
             ReactorCommand::AttachCreditCounter(counter) => {
@@ -914,7 +942,19 @@ impl Reactor {
                 }
             }
             ReactorCommand::KalicoCall { kind, body, completion, deadline } => {
+                eprintln!("[trace-kcall] entry kind={kind:?} body_len={} state={:?} identified={} pending_n={}",
+                    body.len(),
+                    self.state,
+                    self.kalico_state.identified,
+                    self.kalico_state.pending.len(),
+                );
+                if matches!(self.state, ReactorState::Closed) {
+                    eprintln!("[trace-kcall] FAIL: reactor already Closed before write — completing with TransportError::Closed");
+                    let _ = completion.send(Err(TransportError::Closed));
+                    return;
+                }
                 if !self.kalico_state.identified {
+                    eprintln!("[trace-kcall] FAIL: not identified");
                     let _ = completion.send(Err(TransportError::Parse(
                         "kalico transport not yet identified".into(),
                     )));
@@ -922,16 +962,20 @@ impl Reactor {
                 }
                 let cid = self.kalico_state.allocate_correlation_id();
                 let frame = build_kalico_control_frame(kind, cid, &body);
+                eprintln!("[trace-kcall] write_frame kind={kind:?} cid={cid} frame_len={}", frame.len());
                 self.kalico_state.pending.insert(
                     cid,
                     PendingKalicoCall { completion: completion.clone(), deadline },
                 );
                 if let Err(e) = self.write_frame(&frame) {
+                    eprintln!("[trace-kcall] write_frame ERROR cid={cid} kind={kind:?} err={e:?}");
                     let is_io = matches!(e, TransportError::Io(_));
                     if let Some(p) = self.kalico_state.pending.remove(&cid) {
                         let _ = p.completion.send(Err(e));
                     }
                     if is_io { self.transition_closed_on_io_fault(); }
+                } else {
+                    eprintln!("[trace-kcall] write_frame OK cid={cid} kind={kind:?}");
                 }
             }
         }
@@ -1025,6 +1069,11 @@ impl Reactor {
                 Ok(cmd) => self.handle_command(cmd),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    eprintln!("[trace-close] submission_rx Disconnected — all senders dropped kalico_pending={} await_n={} unacked_n={}",
+                        self.kalico_state.pending.len(),
+                        self.awaiting_response.len(),
+                        self.unacked_window.len(),
+                    );
                     self.state = ReactorState::Closed;
                     break;
                 }
