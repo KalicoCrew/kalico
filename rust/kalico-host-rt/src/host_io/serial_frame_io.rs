@@ -34,7 +34,22 @@ impl SerialFrameIo {
             return Err(TransportError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())));
         }
         match self.port.read(&mut self.scratch) {
-            Ok(0) => Ok(PollOutcome::PhantomZero),
+            // USB-CDC TTYs (the production transport for kalico MCUs) return
+            // `Ok(0)` during idle gaps as a normal "no bytes available within
+            // timeout" signal — NOT a disconnect. The reactor's PhantomZero
+            // debounce was designed for TCP-style streams where `Ok(0)` is a
+            // genuine half-close. Treating Ok(0) as Timeout here keeps the
+            // reactor alive across idle windows; real USB-CDC disconnects
+            // still surface via the `Err(Io(...))` arm below (the kernel
+            // returns ENODEV when the device is unplugged).
+            //
+            // 2026-05-12 bench: F446 reactor was closing itself between
+            // QueryRuntimeCaps and ConfigureAxes because the idle window
+            // exceeded the 100 ms ZERO_BYTE_DEBOUNCE. configure_axes for
+            // F446 then returned `TransportError::Closed` without writing
+            // any bytes to the wire. H7 dodged the bug only because its
+            // configure_axes ran first without an idle gap.
+            Ok(0) => Ok(PollOutcome::Timeout),
             Ok(n) => {
                 let (frames, errors) = self.demuxer.feed_slice(&self.scratch[..n]);
                 Ok(PollOutcome::Frames { frames, errors })
