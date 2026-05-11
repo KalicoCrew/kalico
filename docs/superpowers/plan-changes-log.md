@@ -4,6 +4,88 @@ Appended by the kalico orchestrator (`/kalico-orchestrate`) when build-order ite
 
 <!-- entries below -->
 
+### 2026-05-11 — Streaming shaper Phase 6 print_time semantics (Tasks 7.3 + 7.4)
+
+**What:** Pinned the `wait_moves` ↔ dispatched-time invariant with a new
+integration test
+(`rust/motion-bridge/tests/streaming_replan.rs::wait_moves_blocks_until_dispatch_catches_up`)
+and audited every klippy `get_last_move_time` reader for Phase 6 compatibility.
+Also enriched the doc-comment on `bridge.rs::wait_moves` with the explicit
+"dispatched time ≥ queued time" contract statement.
+
+No production-code logic changes — Phase 6 semantics are correct as built.
+
+**Why:** Phase 6 made `last_move_time_bits = t_appended` (queued time,
+advanced synchronously caller-side on every `submit_move`, then rectified
+by the planner thread). Tasks 7.3 and 7.4 close the loop by (a) verifying
+that the `wait_moves` barrier — which now functions as
+`wait_for_dispatch_to_match_append` — actually blocks until dispatched
+time covers queued time, and (b) confirming every klippy caller of
+`get_last_move_time` operates correctly under the new queued-time
+semantics. Phase 4 Task 4.3 already made `PlannerMsg::Flush` synchronously
+invoke `commit_decel_to_zero` and dispatch the held-back tail before
+notifying the waiter, so the M400/homing barrier semantics were
+*already* correct — Task 7.3 reduces to pinning the invariant.
+
+**Klippy audit findings:**
+
+- **`klippy/motion_toolhead.py::MotionToolhead.get_last_move_time`
+  (line 431)** — Single bridge-touching reader. Returns MCU print-time
+  projected from `_mcu_pending_end_time`, which tracks
+  `bridge.get_last_move_time` *deltas* across submit/wait pairs.
+  - `MotionToolhead.move` (lines 329–333): pairs `bridge_lmt_before` /
+    `bridge_lmt_after` around `bridge.submit_move`. Captures the
+    synchronous queued-time delta. **Correct for inline scheduling.**
+  - `MotionToolhead.drip_move` (lines 401–405): pairs
+    `bridge_lmt_before` / `bridge_lmt_after` around `submit_homing_move +
+    wait_moves`. Captures rectified actual duration (Phase 4 Task 4.3
+    + Phase 6 Task 7.2). **Correct for homing barriers.**
+  - `MotionToolhead.dwell` (line 420): bumps by the `delay` argument
+    (PlannerMsg::Dwell blocks on its own notify). **Correct.**
+- **`klippy/motion_bridge.py::MotionToolhead.get_last_move_time`
+  (line 246):** thin pass-through to `_bridge.get_last_move_time`.
+  No callers — `MotionToolhead.move` and `drip_move` read it via
+  `self.bridge.get_last_move_time()` directly.
+- **All other `get_last_move_time` callers** (TMC register writes,
+  query_endstops, idle_timeout, stepper_enable, manual_stepper,
+  force_move, probe, adxl345, smart_effector, bltouch, dockable_probe,
+  angle, query_endstops, z_calibration, trad_rack, pid_calibrate,
+  load_cell_probe, eddy_current, tools_calibrate, klippy/gcode.py,
+  klippy/extras/homing.py) operate on `toolhead.get_last_move_time()`
+  (MCU print-time), not on the bridge atomic. They schedule register
+  writes / queries / heater transitions inline against the projected
+  end-time of the last queued move — that's exactly the queued-time
+  contract Phase 6 cements. **No migrations required.**
+
+**Pre-existing asymmetry (not a regression, documented for the record):**
+After `flush`, the bridge atomic equals `state.t_appended + batch_dur`
+(where `batch_dur` is the duration of the just-dispatched held-back
+tail). The Move arm's rectification CAS brings the atomic to
+`state.t_appended`; `run_commit_and_dispatch` then adds the drained
+batch duration on top. This affects only the `drip_move` capture
+(homing): `_bump_pending_end_time` receives `delta = batch_dur` extra
+beyond the true toolhead motion duration. The captured value is an
+*overestimate*, so homing-side barriers schedule conservatively (no
+correctness impact — endstop arm timing is bounded by physics, not by
+the projected timestamp). The new test pins the directional invariant
+(`dispatched_terminus ≥ pre_flush_atomic`) rather than insisting on
+exact equality, leaving this asymmetry visible to future audits.
+
+**Verification:** `cargo test -p trajectory` (62 tests), `cargo test -p
+temporal` (4 + 4 tests), `cargo test -p motion-bridge --test
+streaming_replan` (19 tests including the new
+`wait_moves_blocks_until_dispatch_catches_up`) — all green.
+
+**Evidence:**
+- Diff: `rust/motion-bridge/tests/streaming_replan.rs`
+  (+190, new test), `rust/motion-bridge/src/bridge.rs` (~27 lines of
+  doc-comment expansion on `wait_moves`).
+- Audit grep: `grep -rn
+  'get_last_move_time\|last_move_time\|_mcu_pending_end_time\|_motion_bridge_wait'
+  klippy/` — 60 hits, every match classified above.
+
+---
+
 ### 2026-05-10 — Post-shape cubic refit lands; closes the deferred-fix burst-cap workaround
 
 **What:** New `rust/trajectory/src/refit.rs` module + Stage 3b in `rust/trajectory/src/beta.rs`. After the per-axis convolution stage produces high-degree NURBS (degree 9 for smooth-MZV's degree-4 kernel on degree-4 Hermite-refit input), each axis is refit to a chain of degree-3 Bézier pieces with C¹ continuity and ≤ 0.1 µm L∞ residual. Reuses `nurbs::algebra::fit_hermite_c1::<1>` per axis with `target_degree = 3`. `MAX_STEPS_PER_TICK_DEFAULT` restored from 64 → 16, returning the per-tick step burst cap to its original role as a runaway-curve detector. Also fixed a latent contiguity bug in `nurbs::algebra::hermite_fit_recursive`: output piece endpoints are now snapped to exact input boundaries before push, preventing 1-ULP drift in `u_lo + h` from breaking `bezier_pieces_to_nurbs`'s strict-equality contiguity assert when bisection happens (dormant under D=3 vector callers because their inputs didn't trigger bisection; surfaced under per-axis D=1 post-shape input).

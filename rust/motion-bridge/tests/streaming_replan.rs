@@ -1789,3 +1789,204 @@ fn inline_event_scheduling_uses_queued_time() {
     h.shutdown();
 }
 
+// ---------------------------------------------------------------------------
+// Phase 6 Task 7.3 — `wait_moves` semantics (dispatched-time ≥ queued-time)
+// ---------------------------------------------------------------------------
+
+/// **Phase 6 Task 7.3.** `wait_moves` (i.e. `PlannerHandle::flush` from the
+/// bridge layer) must block until every move that was previously
+/// `submit_move`-d has been dispatched all the way through its trailing
+/// decel-to-zero ramp.
+///
+/// This pins the **dispatched-time ≥ queued-time** invariant at the
+/// integration boundary:
+///
+/// * Under Phase 6's queued-time semantics, `last_move_time_bits` advances
+///   synchronously on every `submit_move` (caller-side advance, then
+///   rectified by the planner thread). After 4 rapid submits the atomic
+///   reflects ~`Σ nominal_durationᵢ` (modulo any rectification deltas
+///   already landed). This is the floor `wait_moves` must dispatch to.
+/// * Phase 4 Task 4.3 made `PlannerMsg::Flush` synchronously call
+///   `commit_decel_to_zero` and dispatch the held-back tail before
+///   notifying the flush waiter. So when `flush` returns, the dispatched
+///   segments cover all the way to `state.t_appended` (the planner-side
+///   queue terminus).
+///
+/// The combination is what `M400` / `wait_moves` actually need: **return
+/// only after the toolhead has been commanded through every queued
+/// segment**. The previous test `flush_commits_terminal_decel_synchronously`
+/// pinned the *terminal X position* property; this test pins the
+/// *time-domain* property — the dispatched segments cover the entire
+/// queued-time window. They are complementary regression nets.
+///
+/// ## Asymmetry between `atomic` and `dispatched_terminus`
+///
+/// The bridge atomic post-flush is **not** identical to the dispatched
+/// segments' terminus. Two separate writers advance the atomic:
+///
+/// 1. The Move arm rectifies it to `state.t_appended` (per-move).
+/// 2. `run_commit_and_dispatch` (shared by Flush + timer + UpdateShaper +
+///    ClockSyncRearm) adds the **drained batch duration** on top.
+///
+/// For the Flush path that means atomic_post_flush ≈ `state.t_appended +
+/// batch_dur`, where `batch_dur` is the held-back tail's duration. The
+/// dispatched terminus, in contrast, is at `state.t_appended` exactly.
+/// `rectification_corrects_actual_duration` covers this asymmetry from
+/// the other side (`atomic >= dispatched_terminus`); the assertion here
+/// stays focused on the **M400 semantics** — i.e. "did dispatch reach the
+/// queued-time floor we captured before flush?"
+///
+/// ## Failure modes this test catches
+///
+/// 1. `Flush` arm regresses to a bare `notify.send(())` without calling
+///    `run_commit_and_dispatch` → the dispatched terminus would stop
+///    short of `lmt_after_submits` (the held-back decel never makes it
+///    to the wire). This is the original M400 contract violation.
+/// 2. `run_commit_and_dispatch` regresses to async dispatch (e.g. some
+///    future refactor that hands segments off to a producer thread) →
+///    the notify could fire before the dispatch closure has run, and
+///    `recorded.lock().unwrap().last().t_end` would be below the
+///    pre-flush atomic.
+/// 3. The Phase 6 caller-side advance regresses to `0` (no advance until
+///    rectification fires from the planner thread) → the captured
+///    `lmt_after_submits` would be `0.0` and the test's "queued ≥ nominal
+///    floor" assertion would fail.
+#[test]
+fn wait_moves_blocks_until_dispatch_catches_up() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    // Submit 4 sequential 1 mm pure-X moves at 100 mm/s, back-to-back
+    // (no interleaved flush). Phase 6 Task 7.1's synchronous advance
+    // means each `submit_move` returns with the atomic already bumped
+    // by ~`nominal_duration`. The planner thread is free to rectify in
+    // parallel; we don't synchronize with it between submits.
+    let starts = [
+        [0.0; 3],
+        [1.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [3.0, 0.0, 0.0],
+    ];
+    let mut cumulative_nominal = 0.0;
+    for start in starts.iter() {
+        let m = classify_and_build(*start, 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
+        cumulative_nominal += m.nominal_duration();
+        h.submit_move(m).expect("submit move");
+    }
+
+    // **Pre-flush snapshot of queued time.** Captured *after* all 4
+    // submits but *before* `flush`. Phase 6 says this reading reflects
+    // the synchronous caller-side advance for each submit. Rectification
+    // from the planner thread may or may not have landed yet — that's
+    // fine; the atomic is monotonic so any partial rectification only
+    // increases the reading. This value is the **floor** dispatch must
+    // catch up to before `flush` is allowed to return.
+    let lmt_after_submits = h.last_move_time();
+    assert!(
+        lmt_after_submits + 1e-6 >= cumulative_nominal,
+        "pre-flush queued time {lmt_after_submits} s below cumulative \
+         nominal {cumulative_nominal} s — caller-side advance regressed \
+         (Phase 6 Task 7.1).",
+    );
+
+    // **The barrier.** `flush` must block until the planner thread has
+    // dispatched every segment all the way through the held-back
+    // decel-to-zero (Phase 4 Task 4.3 semantics).
+    h.flush().expect("flush as wait_moves barrier");
+
+    // **Post-flush snapshot.** Atomic must be monotonic across the
+    // barrier (the rectification CAS + the `run_commit_and_dispatch`
+    // post-commit advance can both only ever add to it).
+    let lmt_post_flush = h.last_move_time();
+    assert!(
+        lmt_post_flush + 1e-9 >= lmt_after_submits,
+        "atomic regressed across flush: pre-flush {lmt_after_submits} > \
+         post-flush {lmt_post_flush}. The atomic must be monotonic.",
+    );
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "wait_moves returned without dispatching anything — the \
+         synchronous Flush commit dropped all segments",
+    );
+
+    // **Dispatched window starts at t = 0.** The first move's planning
+    // origin is the planner's time zero, and there is no committed work
+    // before it. If this is non-zero we'd have a hole at the front of
+    // the dispatched window, which would invalidate the
+    // `last.t_end` shorthand below.
+    let dispatched_start = segs.first().unwrap().t_start;
+    let dispatched_terminus = segs.last().unwrap().t_end;
+    assert!(
+        dispatched_start.abs() < 1e-9,
+        "first dispatched segment t_start = {dispatched_start} — \
+         expected ~0 (the planner's time-zero).",
+    );
+
+    // **The core M400 invariant.** Dispatched time covers the pre-flush
+    // queued time (`lmt_after_submits`). Equivalently: at the moment
+    // `wait_moves` returned, the toolhead had been commanded for at
+    // least `lmt_after_submits` seconds of motion — which is the
+    // synchronously-captured queue-side time before the flush.
+    //
+    // The pre-flush atomic `lmt_after_submits` reflects ~Σ nominal +
+    // any rectification deltas that have already landed (subject to
+    // RECTIFICATION_TOLERANCE_S ≈ 1 µs). The dispatched terminus is
+    // `state.t_appended` exactly. Empirically `t_appended` is *larger*
+    // than the cruise-nominal sum (because the shaped trajectory's
+    // actual duration includes accel/decel ramps that cruise-nominal
+    // ignores); so the inequality below is generous on the "≥" side.
+    // A `<` failure means dispatch stopped short of queued — the
+    // original M400 contract violation.
+    assert!(
+        dispatched_terminus + 1e-6 >= lmt_after_submits,
+        "dispatched_terminus ({dispatched_terminus} s) below pre-flush \
+         queued time ({lmt_after_submits} s); difference = {} s. \
+         `wait_moves` returned before dispatch caught up to the queued \
+         timeline. This is the M400 contract violation Phase 6 Task 7.3 \
+         pins.",
+        lmt_after_submits - dispatched_terminus,
+    );
+
+    // **Belt-and-braces seam check.** All adjacent dispatched segments
+    // are time-contiguous. A hole would mean dispatched time has gaps
+    // within `[0, dispatched_terminus]`, breaking the "covers the
+    // queued window" property even if the endpoints look right.
+    for i in 0..segs.len().saturating_sub(1) {
+        let a = &segs[i];
+        let b = &segs[i + 1];
+        assert!(
+            (a.t_end - b.t_start).abs() < 1e-9,
+            "seam {i}: a.t_end = {} != b.t_start = {} — dispatched \
+             window has a time hole",
+            a.t_end,
+            b.t_start,
+        );
+    }
+
+    // **Post-flush stability under a second flush.** The queue is now
+    // fully committed; another flush must be a no-op (the
+    // `last_append_time.is_some()` guard in `run_loop`'s Flush arm).
+    // Dispatched-segment count, dispatched terminus, and the atomic
+    // stay put.
+    let segs_count_before_second = segs.len();
+    let lmt_before_second = h.last_move_time();
+    h.flush().expect("second flush");
+    let segs_after_second = recorded.lock().unwrap().clone();
+    assert_eq!(
+        segs_after_second.len(),
+        segs_count_before_second,
+        "second flush re-dispatched segments on an already-committed queue",
+    );
+    let lmt_after_second = h.last_move_time();
+    assert!(
+        (lmt_after_second - lmt_before_second).abs() < 1e-9,
+        "second flush advanced the atomic from {lmt_before_second} to \
+         {lmt_after_second}; expected no-op on already-committed queue",
+    );
+
+    h.shutdown();
+}
+

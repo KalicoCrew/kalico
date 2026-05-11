@@ -1723,7 +1723,34 @@ impl PyMotionBridge {
         self.submit_homing_move_inner(&newpos, speed, &arm_ids)
     }
 
-    /// Flush all pending moves and block until the planner has shaped them.
+    /// Flush all pending moves and block until every queued segment is on
+    /// the wire.
+    ///
+    /// ## Contract (Phase 6 Task 7.3 — "wait_for_dispatch_to_match_append")
+    ///
+    /// When this returns, **dispatched time covers queued time**:
+    /// every move that was previously submitted via `submit_move` /
+    /// `submit_homing_move` has been dispatched all the way through its
+    /// trailing decel-to-zero ramp. The bridge atomic
+    /// (`last_move_time_bits`) reflects `t_appended` (queued time) under
+    /// Phase 6's caller-side-advance semantics; after this call returns,
+    /// the dispatched-segment window covers `[0, last_move_time]` up to
+    /// the rectification tolerance (1 µs).
+    ///
+    /// This is what `M400` and homing actually need: a barrier that
+    /// blocks until the toolhead has been commanded the full submitted
+    /// distance — not just until the planner thread acknowledges the
+    /// queue. Phase 4 Task 4.3 ships the mechanism (`PlannerMsg::Flush`
+    /// synchronously calls `commit_decel_to_zero` + dispatches the
+    /// held-back tail before notifying the waiter); Phase 6 Task 7.3
+    /// pins the integration-layer invariant via
+    /// `streaming_replan::wait_moves_blocks_until_dispatch_catches_up`.
+    ///
+    /// Inline-event scheduling (M106, SET_PIN AT_TIME, TMC register
+    /// updates, fan transitions) does **not** need this barrier — those
+    /// callers read `get_last_move_time` directly and schedule against
+    /// the queued timeline, which advances synchronously on
+    /// `submit_move`.
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
         let planner_guard = self.planner.lock().unwrap();
         let planner = planner_guard.as_ref().ok_or_else(|| {
