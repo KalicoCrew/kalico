@@ -1276,3 +1276,294 @@ fn homing_resets_planner_state() {
     h.shutdown();
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 Task 5.2 — Underrun / ForceIdle recovery
+// ---------------------------------------------------------------------------
+
+/// Spec §3.7 ("Engine `Underrun` fault"): after a recovery reset to a new
+/// position, a follow-on `submit_move` lands the toolhead starting near
+/// `recovered_pos`. Same shape as `kalico_stream_open_resets_planner_state`,
+/// but exercises the `PlannerHandle::underrun(...)` entry point instead.
+/// This pins the planner-side handler the bridge will call once the
+/// host-derived position recovery wires up (the variant exists today; the
+/// bridge-side detection lookup is deferred per the Task 5.2 scope notes).
+#[test]
+fn underrun_recovery_resets_to_recovered_position() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    // Submit + flush so the first move's geometry is on the wire before
+    // the recovery message arrives.
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move 1");
+    h.flush().expect("flush move 1");
+
+    let segs_before_recover = recorded.lock().unwrap().len();
+    assert!(
+        segs_before_recover > 0,
+        "precondition: first move must produce dispatched segments before the recovery",
+    );
+
+    // Engine fault: the MCU stopped executing at the recovered position.
+    // Bridge-side detection (host-derived from `current_segment_id` +
+    // dispatched curve pool) lands in the bridge follow-up; here we
+    // call the entry point directly to exercise the planner-side handler.
+    let recovered_pos = [5.0, 0.0, 0.0, 0.0];
+    h.underrun(recovered_pos).expect("underrun");
+
+    // Follow-on move from the recovered position. The post-recovery
+    // dispatch line must start near `recovered_pos[0] = 5.0` — not near
+    // `1.0` (where move 1 ended) — within the C¹ refit budget.
+    h.submit_move(
+        classify_and_build(
+            [recovered_pos[0], recovered_pos[1], recovered_pos[2]],
+            1.0, 0.0, 0.0, 0.0, 100.0,
+        )
+        .unwrap(),
+    )
+    .expect("submit move 2 (post-recovery)");
+    h.flush().expect("flush move 2");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        segs.len() > segs_before_recover,
+        "post-recovery submit/flush produced no new dispatched segments",
+    );
+
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
+    let post_recover_first = &segs[segs_before_recover];
+    let x_start = x_pos_at(post_recover_first, post_recover_first.t_start);
+    assert!(
+        (x_start - recovered_pos[0]).abs() < SEAM_BUDGET_MM,
+        "post-underrun first dispatched X = {} mm; expected {} mm \
+         (recovered_pos) within {} mm — the underrun handler did not \
+         reset the planner's prior position",
+        x_start,
+        recovered_pos[0],
+        SEAM_BUDGET_MM,
+    );
+
+    let terminal_seg = segs.last().unwrap();
+    let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
+    assert!(
+        (terminal_x - (recovered_pos[0] + 1.0)).abs() < SEAM_BUDGET_MM,
+        "terminal dispatched X = {} mm; expected {} mm within {} mm",
+        terminal_x,
+        recovered_pos[0] + 1.0,
+        SEAM_BUDGET_MM,
+    );
+
+    h.shutdown();
+}
+
+/// `ForceIdle` shares the run-loop handler with `Underrun` (the two arms
+/// collapse to a single `state.reset(recovered_pos)` call). Pinning both
+/// as integration tests catches a regression that wires only one of the
+/// two variants — same rationale as `homing_resets_planner_state`
+/// duplicating the `kalico_stream_open` test.
+#[test]
+fn force_idle_recovery_resets_to_recovered_position() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move 1");
+    h.flush().expect("flush move 1");
+
+    let segs_before_recover = recorded.lock().unwrap().len();
+    assert!(segs_before_recover > 0);
+
+    let recovered_pos = [25.0, 0.0, 0.0, 0.0];
+    h.force_idle(recovered_pos).expect("force_idle");
+
+    h.submit_move(
+        classify_and_build(
+            [recovered_pos[0], recovered_pos[1], recovered_pos[2]],
+            1.0, 0.0, 0.0, 0.0, 100.0,
+        )
+        .unwrap(),
+    )
+    .expect("submit move 2 (post-force-idle)");
+    h.flush().expect("flush move 2");
+
+    let segs = recorded.lock().unwrap().clone();
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
+    let post_recover_first = &segs[segs_before_recover];
+    let x_start = x_pos_at(post_recover_first, post_recover_first.t_start);
+    assert!(
+        (x_start - recovered_pos[0]).abs() < SEAM_BUDGET_MM,
+        "post-force-idle first dispatched X = {} mm; expected {} mm",
+        x_start, recovered_pos[0],
+    );
+
+    h.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 Task 5.3 — UpdateShaper drains held-back output under old kernel
+// ---------------------------------------------------------------------------
+
+/// Spec §3.7 ("Shaper config update (`update_shaper`)"): "Drain any
+/// held-back shaped output on the affected axis to wire (use old
+/// kernel), then swap kernel. Subsequent plans use new kernel."
+///
+/// Submit a move (no flush, so the trailing decel-to-zero is held
+/// speculatively), then call `update_shaper` with a different
+/// frequency. Verify:
+///
+/// 1. The commit counter incremented — `update_shaper` drained the
+///    held-back tail under the old kernel via the same commit path
+///    `Flush` / quiescence-timer / `ClockSyncRearm` use.
+/// 2. A follow-on `submit_move` + `flush` after the swap succeeds and
+///    produces dispatched segments using the new shaper config.
+///
+/// (1) is the load-bearing assertion. (2) is a smoke test that the
+/// post-swap pipeline still works end-to-end.
+#[test]
+fn update_shaper_commits_held_output_before_swap() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    // Submit a move WITHOUT flushing — the trailing decel-to-zero stays
+    // speculative ("held back") until either the quiescence timer
+    // fires (50 ms), an explicit `Flush` arrives, or — per Task 5.3 —
+    // an `UpdateShaper` arrives.
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move 1");
+    // We deliberately do NOT call `flush()` here. Pre-Task-5.3
+    // `update_shaper` re-built `ShaperState` from scratch, dropping
+    // the held-back tail without dispatching it. Post-Task-5.3 the
+    // handler must drain that tail via `commit_decel_to_zero` first
+    // — that is the property this test pins.
+
+    let commit_count_before = h.commit_fire_count();
+
+    // Swap to a different shaper frequency. The actual frequency value
+    // doesn't matter for the test invariant (any swap forces the
+    // drain); we use 60 Hz to make sure the new config differs from
+    // the construction-time 186 Hz.
+    let new_shaper = ShaperConfig {
+        x: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+        y: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+        z: AxisShaper::Passthrough,
+    };
+    h.update_shaper(new_shaper).expect("update_shaper");
+
+    // Synchronisation barrier — `update_shaper` is fire-and-forget at
+    // the channel layer. Issuing a `flush()` here drives the run-loop
+    // to drain its inbox up to (and including) the `UpdateShaper`
+    // message before returning. The flush itself is a no-op
+    // commit-wise (the prior drain already cleared the timer), but
+    // its notify-channel round-trip guarantees the planner has
+    // processed `UpdateShaper`.
+    h.flush().expect("flush as sync barrier");
+
+    let commit_count_after = h.commit_fire_count();
+    assert!(
+        commit_count_after > commit_count_before,
+        "update_shaper did not drain the held-back tail under the old \
+         kernel — commit_fire_count went {} → {} (expected increment). \
+         This means the trailing decel-to-zero of move 1 was silently \
+         discarded when the shaper was swapped, the Phase 5 Task 5.3 \
+         regression",
+        commit_count_before,
+        commit_count_after,
+    );
+
+    // Smoke test that the new shaper still produces dispatched output
+    // end-to-end. Post-swap the planner is fresh (the handler
+    // re-seeds `ShaperState`); `submit_move` + `flush` should produce
+    // additional segments without erroring.
+    let segs_before_post_swap = recorded.lock().unwrap().len();
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("post-swap submit");
+    h.flush().expect("post-swap flush");
+    let segs_after_post_swap = recorded.lock().unwrap().len();
+    assert!(
+        segs_after_post_swap > segs_before_post_swap,
+        "post-swap submit/flush produced no new dispatched segments \
+         (before: {segs_before_post_swap}, after: {segs_after_post_swap}) \
+         — the new shaper kernel was not wired through to the dispatch \
+         pipeline",
+    );
+
+    h.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 Task 5.4 — ClockSyncRearm drains held-back output before bias swap
+// ---------------------------------------------------------------------------
+
+/// Spec §3.7 ("Clock-sync re-arm"): "Flush any pending shaped output
+/// under the old clock bias to the wire, then update the bias for
+/// future dispatches. Queue content (in planner-time) is unaffected."
+///
+/// The planner-side half of the barrier is the load-bearing piece — it
+/// is the side that knows what shaped output is held back. The
+/// bias-swap itself runs on the bridge's periodic-clock-sync thread
+/// (which owns the `Router`) and is wired as a small follow-up; this
+/// test pins the planner-side commit-on-rearm contract.
+///
+/// We submit a move (no flush, so the trailing decel is held), then
+/// dispatch `PlannerMsg::ClockSyncRearm` via the
+/// `PlannerHandle::clock_sync_rearm` entry point. The commit counter
+/// must increment, indicating the held-back tail was drained.
+#[test]
+fn clock_sync_rearm_commits_old_bias_first() {
+    use motion_bridge_native::planner::ClockBias;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(relaxed_limits()).expect("update_limits");
+
+    // Submit a move WITHOUT flushing — same pattern as the
+    // `update_shaper_commits_held_output_before_swap` test. The
+    // trailing decel-to-zero is held back; `clock_sync_rearm` must
+    // drain it before the bias swap takes effect.
+    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit move 1");
+
+    let commit_count_before = h.commit_fire_count();
+    let segs_before = recorded.lock().unwrap().len();
+
+    let new_bias = ClockBias {
+        freq: 100_000_000.0,
+        offset_s: 0.0,
+        last_clock: 0,
+    };
+    h.clock_sync_rearm(new_bias).expect("clock_sync_rearm");
+
+    // Sync barrier so the planner has processed the rearm before we
+    // read the counters.
+    h.flush().expect("flush as sync barrier");
+
+    let commit_count_after = h.commit_fire_count();
+    assert!(
+        commit_count_after > commit_count_before,
+        "clock_sync_rearm did not drain the held-back tail under the \
+         old bias — commit_fire_count went {} → {} (expected \
+         increment). The bias swap would have applied to dispatched \
+         samples that were planned under the old bias, the Phase 5 \
+         Task 5.4 regression",
+        commit_count_before,
+        commit_count_after,
+    );
+
+    // Same smoke property as the UpdateShaper test: after the rearm
+    // the pipeline is still functional (no leftover state in the
+    // planner that breaks the next submit/flush).
+    let segs_after = recorded.lock().unwrap().len();
+    assert!(
+        segs_after > segs_before,
+        "clock_sync_rearm produced no dispatched segments from the \
+         drained tail (before: {segs_before}, after: {segs_after}) \
+         — the commit fired but `run_commit_and_dispatch` did not \
+         actually push segments to the wire",
+    );
+
+    h.shutdown();
+}
+

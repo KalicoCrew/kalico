@@ -1522,7 +1522,13 @@ impl PyMotionBridge {
                     let now_clock = r
                         .compute_ack_clock(mcu_h)
                         .map_err(|e| format!("compute_ack_clock: {e}"))?;
-                    let lead_cycles = (freq * 0.100).round().max(1.0) as u64;
+                    // Step 7-D bring-up: 250 ms safety margin. Original
+                    // 100 ms was too tight on this branch (clock-est
+                    // drift was retiring segments instantly via the
+                    // boundary loop, no step pulses). 1 s was visible
+                    // motion delay. 250 ms is responsive enough for a
+                    // jog button while absorbing modest clock drift.
+                    let lead_cycles = (freq * 0.250).round().max(1.0) as u64;
                     drop(r);
 
                     let mut schedule = schedule_state.lock().unwrap();
@@ -1834,11 +1840,54 @@ impl PyMotionBridge {
         planner.dwell(duration_s).map_err(planner_err)
     }
 
-    /// Reset commanded position. The planner does not track absolute
-    /// position (only print_time), so this is a bridge-local update.
+    /// Reset commanded position. Klippy calls this on every homing
+    /// completion (`SET_KINEMATIC_POSITION`, `G28`, manual stepper moves,
+    /// fault-recovery reconnect) so it is the natural hook to re-anchor
+    /// the streaming planner's `ShaperState`.
+    ///
+    /// **Phase 5 Task 5.5 — explicit engine-fault → klippy reset.** Spec
+    /// §3.7 ("Engine fault → klippy reset"): "Explicit
+    /// `ShaperState::reset(home_pos)` on klippy reconnect." `init_planner`
+    /// already does this implicitly by constructing a fresh
+    /// `PlannerHandle::spawn(...)` with `ShaperState::new([0.0; 4], &shapers)`
+    /// — so the *very first* connect / *clean* reconnect (planner is dropped
+    /// and recreated) is already handled. But klippy can also reset the
+    /// kinematic position without reinitialising the planner (e.g.,
+    /// `SET_KINEMATIC_POSITION` after a homing completion, or a
+    /// fault-recovery path that re-uses the existing planner thread). In
+    /// those cases `set_position` is the only signal the bridge receives
+    /// that the host-side notion of "where the toolhead is" has changed.
+    ///
+    /// We forward the new position into the planner via
+    /// `PlannerHandle::kalico_stream_open`, which re-seeds each axis queue
+    /// to `home_pos` at `v = 0` and clears any held-back tail (preserving
+    /// kernels). The E axis tracks shaped XY arc-length under the
+    /// COUPLED_TO_XY model and is not commanded directly via
+    /// `set_position`; we pass `0.0` for the E slot.
+    ///
+    /// If the planner has not yet been initialised the call is a no-op
+    /// (matches the pre-Task-5.5 behaviour — `set_position` worked even
+    /// before motion submission was wired). The forward error is
+    /// surfaced if the planner channel has closed (planner thread
+    /// crashed) so callers see the failure rather than silently losing
+    /// the re-anchor.
     fn set_position(&self, x: f64, y: f64, z: f64) -> PyResult<()> {
-        let mut pos = self.commanded_pos.lock().unwrap();
-        *pos = [x, y, z];
+        {
+            let mut pos = self.commanded_pos.lock().unwrap();
+            *pos = [x, y, z];
+        }
+        // Forward to the planner so the streaming `ShaperState` is
+        // re-anchored to the new home position. See doc above for the
+        // Task 5.5 rationale; `kalico_stream_open` is the entry point
+        // the planner registers for this lifecycle event (see
+        // `PlannerHandle::kalico_stream_open` and
+        // `streaming::ShaperState::reset`).
+        let planner_guard = self.planner.lock().unwrap();
+        if let Some(planner) = planner_guard.as_ref() {
+            planner
+                .kalico_stream_open([x, y, z, 0.0])
+                .map_err(planner_err)?;
+        }
         Ok(())
     }
 

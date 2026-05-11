@@ -299,6 +299,58 @@ impl PlannerHandle {
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
+    /// **Phase 5 Task 5.2** — fire a host-derived `Underrun` recovery into
+    /// the planner. Resets `ShaperState` to `recovered_pos` (the last MCU-
+    /// confirmed position the bridge could derive from the dispatched
+    /// curve pool keyed by `current_segment_id`) before processing any
+    /// further moves. Fire-and-forget — no barrier semantics, mirrors
+    /// [`Self::kalico_stream_open`].
+    ///
+    /// Wire-up status: the planner-side handler is wired (the run-loop's
+    /// `PlannerMsg::Underrun` arm calls `state.reset(recovered_pos)`).
+    /// Bridge-side detection — the `StatusEvent` → `PlannerMsg::Underrun`
+    /// routing — is **deferred**. The bridge's `take_runtime_event`
+    /// surfaces `Fault` events directly to klippy today; the klippy-side
+    /// reconnect path is the load-bearing recovery handle (Task 5.5).
+    /// Once we want the bridge to recover *without* a klippy round-trip,
+    /// the bridge's fault handler will gain a `PlannerHandle.underrun(...)`
+    /// call here. This method exists so that call-site is wirable now.
+    pub fn underrun(&self, recovered_pos: [f64; 4]) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::Underrun { recovered_pos })
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    /// **Phase 5 Task 5.2** — fire a host-derived `ForceIdle` recovery
+    /// into the planner. Same shape and semantics as [`Self::underrun`]
+    /// (the run-loop collapses both arms into the same
+    /// `state.reset(recovered_pos)` call).
+    pub fn force_idle(&self, recovered_pos: [f64; 4]) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::ForceIdle { recovered_pos })
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    /// **Phase 5 Task 5.4** — fire a clock-sync re-arm into the planner.
+    /// The planner-side handler synchronously drains any held-back
+    /// shaped output (via `commit_decel_to_zero`) so dispatched samples
+    /// land under the old bias *before* the bias swap takes effect.
+    ///
+    /// Wire-up status: the planner-side handler is wired (see the
+    /// run-loop's `PlannerMsg::ClockSyncRearm` arm — it calls
+    /// `run_commit_and_dispatch` on the held-back tail). The bias-swap
+    /// itself happens on the bridge thread that owns the `Router`
+    /// (`spawn_periodic_clock_sync`'s `set_clock_est_from_sample` call)
+    /// — see this method's comment in `bridge.rs` for the
+    /// ordering-contract follow-up. This method is the entry point the
+    /// bridge will call **before** swapping the bias when we wire the
+    /// pre-swap barrier.
+    pub fn clock_sync_rearm(&self, new_bias: ClockBias) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::ClockSyncRearm { new_bias })
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
     /// Snapshot of the current "last move time" (cumulative print_time, seconds).
     pub fn last_move_time(&self) -> f64 {
         f64::from_bits(self.last_move_time_bits.load(Ordering::Acquire))
@@ -580,13 +632,53 @@ fn run_loop(
             }
 
             PlannerMsg::UpdateShaper(s) => {
+                // **Phase 5 Task 5.3 — cross-axis barrier on
+                // UpdateShaper.** Spec §3.7 ("Drain any held-back shaped
+                // output on the affected axis to wire (use old kernel),
+                // then swap kernel. Subsequent plans use new kernel."):
+                // we must dispatch any uncommitted shaped output under
+                // the **old** kernels before swapping in the new ones.
+                // Otherwise the trailing tail of the prior trajectory
+                // would be shaped by a kernel it was never planned
+                // against — producing exactly the post-shape `|ẍ_shaped|`
+                // overshoot β-medium was supposed to prevent.
+                //
+                // The drain uses the run-loop's existing commit path
+                // (`run_commit_and_dispatch`, shared with `Flush` and
+                // the quiescence-timer fire). The post-drain
+                // `last_append_time = None` matches the other two
+                // call-sites' invariant.
+                //
+                // The handler then rebuilds the kernels / replan
+                // context on the updated config and **also** rebuilds
+                // the `ShaperState` so the per-axis queues are
+                // re-seeded with the new `h` values (the kernel
+                // half-support drives the seed's left-pad span — see
+                // `build_axis_queue`). The re-seed loses the
+                // committed-history left-pad for the next move's
+                // convolution, but that move's `append_and_replan`
+                // starts from `v = 0` (the drained queue terminus) so
+                // the prior history is moot. Spec §3.7 frames this as
+                // a single per-axis event but the cross-axis barrier
+                // (we drain *any* axis with held output, not just the
+                // changed one) is the simplest correct discipline —
+                // the wire format `UpdateShaper(ShaperConfig)` is
+                // multi-axis already so we can't single-axis the
+                // drain on the receive side without re-shaping the
+                // message.
+                if last_append_time.is_some() {
+                    let _ok = run_commit_and_dispatch(
+                        &mut state,
+                        &thread_state,
+                        &dispatch,
+                        &error,
+                        &last_move_time_bits,
+                        &commit_fire_count,
+                        &mut print_time,
+                    );
+                    last_append_time = None;
+                }
                 config.shaper = s;
-                // Rebuild the kernels / replan context so the next
-                // `append_and_replan` sees the new shaper config. We also
-                // re-seed the `ShaperState` itself (matching the prior
-                // Phase-1 behaviour); a future cross-axis-barrier
-                // implementation (Phase 5 Task 5.3) will drain in-flight
-                // moves under the old shaper first.
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
                 state = ShaperState::new([0.0; 4], &shapers);
                 thread_state.rebuild(&config);
@@ -612,42 +704,118 @@ fn run_loop(
                 last_append_time = None;
             }
 
-            PlannerMsg::Underrun { recovered_pos: _ } => {
-                // Phase 5 Task 5.2 will wire the host-derived position
-                // recovery and call `state.reset(recovered_pos)`. The
-                // variant exists so callers can be wired against a
-                // stable enum; until 5.2 the planner can't know whether
-                // the host's detection has fired correctly, so we log
-                // and drop. **DO NOT panic** — see task spec ("safety:
-                // not a hard fault from the planner's perspective").
-                eprintln!(
-                    "planner: PlannerMsg::Underrun received but not yet \
-                     handled (Phase 5 Task 5.2 will provide the real \
-                     handler)",
-                );
-            }
-
-            PlannerMsg::ForceIdle { recovered_pos: _ } => {
-                // Same as `Underrun`: Task 5.2 will replace this with
-                // the real reset-to-recovered-position path.
-                eprintln!(
-                    "planner: PlannerMsg::ForceIdle received but not yet \
-                     handled (Phase 5 Task 5.2 will provide the real \
-                     handler)",
-                );
+            PlannerMsg::Underrun { recovered_pos }
+            | PlannerMsg::ForceIdle { recovered_pos } => {
+                // **Phase 5 Task 5.2 — planner-side reset to recovered
+                // position.** Engine `Underrun` / `force_idle` faults
+                // invalidate the in-flight planner timeline: the MCU
+                // has stopped executing whatever was on the wire, and
+                // the host's planned-but-undispatched tail is no longer
+                // valid (the engine will resume from
+                // `recovered_pos`, not from the trajectory's expected
+                // continuation). Spec §3.7 maps both events to
+                // "Reset queues to the MCU's last-confirmed position,
+                // host-derived from `current_segment_id` + dispatched
+                // curve pool (no schema change)."
+                //
+                // `ShaperState::reset` zeroes the absolute-time line
+                // and re-seeds each axis queue with the new home
+                // position at `v = 0`. Per-axis kernels are
+                // preserved (this is a position re-anchor, not a
+                // shaper config swap). The run-loop's
+                // `last_append_time` is reset alongside the state — a
+                // held-back tail from the prior timeline is no longer
+                // meaningful.
+                //
+                // **Scope note for Task 5.2 bridge integration.** The
+                // bridge currently surfaces `RuntimeEvent::Fault` to
+                // klippy directly via `take_runtime_event`; klippy's
+                // reactor then drives the recovery (calls back through
+                // the bridge to set positions, etc.). There is no
+                // central bridge-side fault → planner routing today.
+                // The dispatched-curve-pool → `current_segment_id`
+                // → `recovered_pos` lookup is non-trivial (it needs
+                // the bridge's per-MCU curve-pool state +
+                // engine-side segment ID retirement tracking). We
+                // therefore land the planner-side handler now — the
+                // `PlannerHandle::underrun(..)` / `force_idle(..)`
+                // entry points are public so the bridge can wire
+                // them when the lookup machinery lands — and defer
+                // the bridge-side detection to a follow-up. In the
+                // interim, klippy reconnect (Task 5.5) is the
+                // load-bearing recovery handle: klippy treats the
+                // fault as a connection break, drops the planner,
+                // re-`init_planner`s, and re-homes — which
+                // constructs a fresh `ShaperState`.
+                state.reset(recovered_pos);
+                last_append_time = None;
             }
 
             PlannerMsg::ClockSyncRearm { new_bias: _ } => {
-                // Phase 5 Task 5.4 will wire the bias-rearm path (drain
-                // pending shaped output under the old bias, swap bias,
-                // continue dispatching under the new bias per spec §3.7).
-                // Until then the planner doesn't carry per-bias dispatch
-                // state, so the safe behaviour is to log and drop.
-                eprintln!(
-                    "planner: PlannerMsg::ClockSyncRearm received but \
-                     not yet handled (Phase 5 Task 5.4 will provide the \
-                     real handler)",
-                );
+                // **Phase 5 Task 5.4 — planner-side pre-swap barrier.**
+                // Spec §3.7 ("Clock-sync re-arm"): "Flush any pending
+                // shaped output under the old clock bias to the wire,
+                // then update the bias for future dispatches. Queue
+                // content (in planner-time) is unaffected."
+                //
+                // The planner-thread side of the barrier is exactly
+                // the same commit-and-dispatch call that `Flush` /
+                // `UpdateShaper` / the quiescence timer use: drain
+                // any held-back shaped output to the wire so the
+                // dispatched samples land under the bias that was
+                // active when they were planned. Queue content (in
+                // planner-time) survives — we only drain the
+                // committable region; `t_dispatched` advances; the
+                // next `append_and_replan` continues seamlessly under
+                // whatever bias the dispatch closure now uses.
+                //
+                // **The bias swap itself is bridge-thread work.** The
+                // `Router::set_clock_est_from_sample` call lives on
+                // the periodic clock-sync thread
+                // (`spawn_periodic_clock_sync`), not the planner
+                // thread — the planner doesn't carry a `Router`
+                // handle today and the dispatch closure consults the
+                // router on every push for `host_time_to_mcu_clock`.
+                // Two orderings are possible for the full barrier:
+                //
+                //   1. Bridge calls `planner.clock_sync_rearm(...)`
+                //      *before* it calls
+                //      `Router::set_clock_est_from_sample`. The
+                //      planner drains held output; the router
+                //      hasn't swapped yet so the drain runs under
+                //      the old bias. Then the bridge swaps.
+                //
+                //   2. Bridge swaps the router first, then notifies
+                //      the planner. The planner's drain shapes
+                //      samples to dispatch under the **new** bias.
+                //      Wrong: spec requires "old bias" for the
+                //      drained tail.
+                //
+                // Ordering (1) is what we need. The planner-side
+                // handler is now ready (this arm); the bridge-side
+                // wiring — replacing `spawn_periodic_clock_sync`'s
+                // unconditional `set_clock_est_from_sample` with a
+                // pre-barrier `clock_sync_rearm(new_bias)` call to
+                // the planner — is a small follow-up that lives in
+                // `bridge.rs` (Task 5.4 follow-up). The `new_bias`
+                // payload is carried verbatim so the bridge can
+                // apply it post-barrier without re-deriving the
+                // sample. We do not consume `new_bias` here today;
+                // the variant is retained so the wire-format is
+                // forward-compatible once the bridge takes the
+                // ordering-(1) path.
+                if last_append_time.is_some() {
+                    let _ok = run_commit_and_dispatch(
+                        &mut state,
+                        &thread_state,
+                        &dispatch,
+                        &error,
+                        &last_move_time_bits,
+                        &commit_fire_count,
+                        &mut print_time,
+                    );
+                    last_append_time = None;
+                }
             }
 
             PlannerMsg::Shutdown => return,
