@@ -14,8 +14,10 @@ pub mod reactor;
 pub mod rtt;
 pub mod runtime_events;
 pub mod serial_frame_io;
+pub mod tcp_serial_port;
 pub use identify::IdentifySeqState;
 pub use serial_frame_io::SerialFrameIo;
+pub use tcp_serial_port::TcpSerialPort;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod test_harness;
 pub mod window;
@@ -284,7 +286,22 @@ impl KalicoHostIo {
         Self::open_with_port(port_box, config)
     }
 
-    fn open_with_port(
+    /// Open a TCP connection wrapped in a `SerialPort` adapter. Used by sim
+    /// integration tests where Renode exposes the firmware's USART2 over a
+    /// TCP socket (see `tools/sim/h723_sim.resc`'s `CreateServerSocketTerminal`).
+    /// The adapter shims `read`/`write`/`set_timeout` onto a real `TcpStream`;
+    /// other `SerialPort` methods (RTS, parity, baud) return no-op / NotSupported
+    /// because Renode's UART model ignores them.
+    pub fn open_tcp(addr: &str, config: KalicoHostIoConfig) -> Result<Self, TransportError> {
+        let port_box: Box<dyn serialport::SerialPort> =
+            Box::new(tcp_serial_port::TcpSerialPort::connect(addr)?);
+        Self::open_with_port(port_box, config)
+    }
+
+    /// Construct a `KalicoHostIo` from a caller-supplied `SerialPort`. Used
+    /// by integration tests (e.g. the Renode TCP socket adapter) and by
+    /// `open_with_config` / `open_pipe_with_config` / `open_tcp`.
+    pub fn open_with_port(
         mut port_box: Box<dyn serialport::SerialPort>,
         config: KalicoHostIoConfig,
     ) -> Result<Self, TransportError> {
