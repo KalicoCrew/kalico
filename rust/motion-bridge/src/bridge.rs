@@ -1569,26 +1569,6 @@ impl PyMotionBridge {
                     plan.params.id = *entry;
                     *entry = entry.wrapping_add(1);
                 }
-                {
-                    let now_check = {
-                        let r = router_for_cb.lock().unwrap();
-                        r.compute_ack_clock(mcu_h).unwrap_or(0)
-                    };
-                    let lead_ms = if t_start_clock > now_check {
-                        (t_start_clock - now_check) as f64 / freq * 1000.0
-                    } else {
-                        -((now_check - t_start_clock) as f64 / freq * 1000.0)
-                    };
-                    let dur_ms = if t_end_clock > t_start_clock {
-                        (t_end_clock - t_start_clock) as f64 / freq * 1000.0
-                    } else {
-                        0.0
-                    };
-                    eprintln!(
-                        "[bridge-trace] dispatch mcu={} seg_id={} lead_ms={:.1} dur_ms={:.1} batch_t_start={:.4}s",
-                        plan.mcu_id, plan.params.id, lead_ms, dur_ms, seg.t_start,
-                    );
-                }
                 homing.mark_dispatched_segment(plan.params.id);
 
                 // Allocate slots, load curves. On any error, release every

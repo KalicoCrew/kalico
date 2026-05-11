@@ -330,13 +330,27 @@ impl ShaperState {
         // 3. Build the planning input from the un-committed tail.
         //    Every entry contributes one `PlanSegment` (XY-coupled / travel —
         //    the streaming planner does not yet handle Independent E).
+        //
+        //    Per-segment Limits override: the SOCP's path-frame jerk bound is
+        //    `min(j_max[X], j_max[Y], j_max[Z])`
+        //    (temporal/src/topp/constraints.rs:258). For a curve where some
+        //    axes have zero displacement (e.g. pure-X G1 → collinear cubic
+        //    Bezier), the inactive axes' j_max would otherwise dominate this
+        //    min and clamp the path's d³s/dt³ to nonsense values. We bump
+        //    inactive axes' j_max[axis] to the max across active axes so the
+        //    min() reduces to the active-axis bound. Inactive axes have
+        //    c'_ax(s) ≡ 0, so cartesian jerk on them is identically zero
+        //    regardless of d³s/dt³ — the bump is correctness-preserving.
+        //    Step 9 will replace this with per-axis Cartesian jerk SOCP
+        //    relaxation; until then this caller-side patch unblocks high-
+        //    accel printers whose Z (or E) has a much lower jerk than X/Y.
         let segs: Vec<UncommittedMove> = self.uncommitted_moves.iter().cloned().collect();
         let plan_segments: Vec<PlanSegment<'_>> = segs
             .iter()
             .map(|m| PlanSegment {
                 temporal: temporal::multi::SegmentInput {
                     curve: &m.segment.xyz,
-                    limits: ctx.limits,
+                    limits: per_segment_limits(&m.segment.xyz, ctx.limits),
                     trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
                 },
                 e_mode: m.segment.e_mode,
@@ -959,6 +973,81 @@ fn invert_cubic_bezier_xyz_to_param(
 /// underlying curve — but going through `extract_bezier_pieces` + shift +
 /// `bezier_pieces_to_nurbs` avoids duplicating the curve's internal knot
 /// machinery here.
+/// Build per-segment `Limits` from base `Limits` + curve geometry.
+///
+/// The SOCP relaxation in `temporal::topp::constraints` uses
+/// `j_path = min(j_max[X], j_max[Y], j_max[Z])` as a single scalar bound on
+/// `d³s/dt³`. For a curve where some axes have no displacement (e.g. pure-X
+/// G1 → collinear cubic Bezier), the inactive axes' j_max would otherwise
+/// pull this min down to nonsense values (a Voron with `max_z_accel=100`
+/// has `j_max[Z]=200` vs `j_max[X]=140000` — pure-X jogs end up running at
+/// effective ~700× slower than the X-axis is actually capable of).
+///
+/// Patch: bump inactive axes' `j_max[axis]` to the maximum across active
+/// axes. Inactive means the curve's control points have a position span
+/// below `AXIS_INACTIVE_SPAN_EPS_MM` on that axis. Since `c'_ax(s) ≡ 0` on
+/// inactive axes, cartesian jerk on them is identically zero regardless of
+/// `d³s/dt³`, so raising the SOCP's per-axis input limit is correctness-
+/// preserving for the SOCP's `min()` reduction and the verifier's
+/// per-axis Cartesian-jerk check.
+///
+/// Step 9 (proper per-axis Cartesian jerk SOCP relaxation, deferred per
+/// `temporal/src/topp/constraints.rs` comment) will replace this helper.
+fn per_segment_limits(
+    curve: &nurbs::VectorNurbs<f64, 3>,
+    base: temporal::Limits,
+) -> temporal::Limits {
+    const AXIS_INACTIVE_SPAN_EPS_MM: f64 = 1e-6;
+
+    let cps = curve.control_points();
+    let max_active_j = (0..3)
+        .filter_map(|ax| {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for cp in cps {
+                let v = cp[ax];
+                if v < lo {
+                    lo = v;
+                }
+                if v > hi {
+                    hi = v;
+                }
+            }
+            if hi - lo > AXIS_INACTIVE_SPAN_EPS_MM {
+                Some(base.j_max[ax])
+            } else {
+                None
+            }
+        })
+        .fold(0.0_f64, f64::max);
+
+    if max_active_j == 0.0 {
+        // Degenerate: zero displacement on every axis. Return base
+        // unmodified — the planner will reject this curve elsewhere.
+        return base;
+    }
+
+    let mut j_max = base.j_max;
+    for ax in 0..3 {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for cp in cps {
+            let v = cp[ax];
+            if v < lo {
+                lo = v;
+            }
+            if v > hi {
+                hi = v;
+            }
+        }
+        if hi - lo <= AXIS_INACTIVE_SPAN_EPS_MM {
+            j_max[ax] = max_active_j;
+        }
+    }
+
+    temporal::Limits::new(base.v_max, base.a_max, j_max, base.a_centripetal_max)
+}
+
 fn shift_nurbs_in_time(curve: &nurbs::ScalarNurbs<f64>, dt: f64) -> nurbs::ScalarNurbs<f64> {
     use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces};
     let pieces: Vec<BezierPiece<f64>> = extract_bezier_pieces(curve)
