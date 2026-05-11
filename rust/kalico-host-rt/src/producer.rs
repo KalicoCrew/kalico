@@ -26,6 +26,14 @@ pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Default timeout for `PushSegmentResponse`.
 pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
 
+/// Default timeout for the blocking credit acquire in `push_segment`.
+/// The MCU's segment queue (`Q_N - 1 = 7`) drains as segments retire;
+/// at a typical 40 kHz modulation rate with ~50 ms-per-segment moves,
+/// a single retirement frees credit within ~50 ms. 1 s is loose enough
+/// to ride out a single GC pause / scheduling hiccup but tight enough
+/// to surface a truly stuck MCU before klippy's own watchdogs fire.
+pub const DEFAULT_CREDIT_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(1000);
+
 #[derive(Debug, Clone, Copy)]
 pub struct PushedSegmentInfo {
     pub accepted_segment_id: u32,
@@ -34,8 +42,9 @@ pub struct PushedSegmentInfo {
 
 #[derive(Debug)]
 pub enum ProducerError {
-    /// `try_acquire` returned `None` — caller should back off until the
-    /// next CreditFreed event.
+    /// Blocking credit acquire timed out — the MCU's segment queue was
+    /// full for the full timeout window, indicating either a stuck MCU
+    /// (engine not retiring) or a dropped `kalico_credit_freed` event.
     NoCredit,
     /// Transport-layer failure (timeout, I/O, parse).
     Transport(TransportError),
@@ -53,7 +62,10 @@ impl From<TransportError> for ProducerError {
 impl std::fmt::Display for ProducerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProducerError::NoCredit => write!(f, "producer: no credit (MCU queue full)"),
+            ProducerError::NoCredit => write!(
+                f,
+                "producer: timed out waiting for credit (MCU queue stayed full)"
+            ),
             ProducerError::Transport(e) => write!(f, "producer transport: {e}"),
             ProducerError::McuRejected(r) => {
                 write!(f, "producer: MCU rejected command (result={r})")
@@ -94,7 +106,19 @@ pub fn push_segment_with_timeout(
     params: &SegmentPushParams,
     timeout: Duration,
 ) -> Result<PushedSegmentInfo, ProducerError> {
-    credit.try_acquire().ok_or(ProducerError::NoCredit)?;
+    // Spec §5 back-pressure: the MCU's segment queue is capped at
+    // `Q_N - 1 = 7` in flight. Under rapid `submit_move` bursts the
+    // host fills the queue and the next `kalico_credit_freed` event
+    // arrives with `free_slots=0`, snapping `credit.available` to zero.
+    // Block until the MCU retires a segment and emits the next
+    // `credit_freed` (with non-zero free slots), or until `timeout`
+    // elapses. Without this wait, the planner's dispatch closure would
+    // fail on the first oversubscription, store a `Dispatch` error, and
+    // stop — producing the bench-observed "every other jog dropped"
+    // symptom (commit history: bench session 2026-05-11).
+    credit
+        .acquire_blocking(DEFAULT_CREDIT_ACQUIRE_TIMEOUT)
+        .map_err(|()| ProducerError::NoCredit)?;
 
     let body = PushSegment {
         id: params.id,

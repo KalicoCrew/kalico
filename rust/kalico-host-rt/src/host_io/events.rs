@@ -231,9 +231,37 @@ impl EventDispatcher {
     pub fn dispatch(&mut self, event: RuntimeEvent) {
         match event {
             RuntimeEvent::CreditFreed(e) => {
+                let available_before = self
+                    .credit_counter
+                    .as_ref()
+                    .map(|c| c.available())
+                    .unwrap_or(-1);
                 if let Some(counter) = &self.credit_counter {
                     counter.on_credit_freed(e.free_slots);
                 }
+                let available_after = self
+                    .credit_counter
+                    .as_ref()
+                    .map(|c| c.available())
+                    .unwrap_or(-1);
+                let events = self
+                    .credit_counter
+                    .as_ref()
+                    .map(|c| c.credit_freed_events())
+                    .unwrap_or(0);
+                // Diag (bench-session 2026-05-11): every credit_freed
+                // arrival, with before/after available and cumulative
+                // event count. Proves whether MCU is actually emitting
+                // credit_freed and whether free_slots=0 events are
+                // stalling the host.
+                eprintln!(
+                    "[bridge-trace] CreditFreed retired={} free_slots={} available {}->{} events={}",
+                    e.retired_through_segment_id,
+                    e.free_slots,
+                    available_before,
+                    available_after,
+                    events,
+                );
                 // Phase C-B (kalico-native transport): forward CreditFreed
                 // to the python bridge poller so motion-bridge.on_credit_freed
                 // releases curve-pool slots. Pre-Phase-C the legacy Klipper
