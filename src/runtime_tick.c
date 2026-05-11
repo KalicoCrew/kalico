@@ -77,6 +77,33 @@ runtime_host_now_us(void)
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
 }
 
+// Klipper-widened DWT/timer clock (cycles, u64). Mirrors
+// command_get_uptime's widening (basecmd.c:300-304): reads `cur` first,
+// then the high half with a "pre-stats_update wrap" lookback against
+// stats_send_time. Because this widening rides on Klipper's stats task
+// (~5 s cadence) and not on the kalico TIM5 ISR, the value advances
+// monotonically regardless of whether the engine is Idle / Running /
+// Drained / Fault — which is the property kalico_clock_sync_response
+// needs after a drain. Foreground-only; do NOT call from ISR.
+//
+// Bench symptom 2026-05-11: clock_sync_respond read engine-side
+// `read_widened_now` which is published only by the TIM5 ISR. On Drained
+// → TIM5 disabled → widened_now froze → host's regression flatlined →
+// the next jog's t_start_clock landed in the MCU's real past →
+// boundary loop silently retired the segment without producing step
+// pulses. Using Klipper's stats-based widening here decouples
+// clock-sync from engine activity.
+__attribute__((used, externally_visible))
+uint64_t
+runtime_widened_host_clock(void)
+{
+    extern uint32_t stats_send_time;
+    extern uint32_t stats_send_time_high;
+    uint32_t cur = timer_read_time();
+    uint32_t high = stats_send_time_high + (cur < stats_send_time);
+    return ((uint64_t)high << 32) | (uint64_t)cur;
+}
+
 // kalico's stream::flush() FFI calls into Klipper's `irq_save` and
 // `irq_restore` (board/irq.h) under the §8.5 disabled-IRQ window. The
 // build uses `-flto=auto -fwhole-program`, which lets GCC consider

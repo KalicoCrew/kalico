@@ -62,6 +62,16 @@ unsafe extern "C" {
     /// underlying `timer_read_time` may wrap), but the §8.5 flush window is
     /// bounded to ≤1 ms so a single wrap is the worst case.
     fn runtime_host_now_us() -> u64;
+
+    /// Klipper-widened DWT clock helper (foreground only). Returns the
+    /// current DWT cycle count widened to `u64` via the
+    /// `stats_send_time_high` lookback (same primitive
+    /// `command_get_uptime` uses). The widening rides on Klipper's stats
+    /// task (~5 s cadence) and does NOT depend on the kalico TIM5 ISR
+    /// being live, so the value advances monotonically through Drained /
+    /// Fault windows where TIM5 is disabled. Used by
+    /// `clock_sync_respond` to decouple clock-sync from engine activity.
+    fn runtime_widened_host_clock() -> u64;
 }
 
 // `runtime_irq_save` / `runtime_irq_restore` are declared in `state.rs` —
@@ -218,15 +228,54 @@ pub fn check_terminal_on_retire(shared: &SharedState, retired_seg_id: u32) {
 /// machinery uses the `request_id` / `host_send_time` to form a complete
 /// round-trip estimate; here we just sample MCU clock and let the host do
 /// the math.
+///
+/// **2026-05-11 fix.** Previously this read `read_widened_now(shared)`,
+/// which is the seqlock published by the kalico TIM5 ISR. On the H7 we
+/// disable TIM5 on Drained / Fault (`src/runtime_tick.c:326-329`), so the
+/// seqlock freezes at whatever value the last ISR tick published. The
+/// host's clock-sync regression sees a flat slope and projects the next
+/// dispatch's `t_start_clock` against a stale `now_clock` — landing in
+/// the MCU's real past, which the engine's boundary loop
+/// (`engine.rs::tick_with_current`) silently retires without producing
+/// step pulses. Symptom: second sequential jog moves zero physical
+/// distance, MCU reports `engine_status=Drained` + advanced
+/// `current_segment_id`, no fault raised.
+///
+/// Fix: read the Klipper-widened DWT clock via `runtime_widened_host_clock`
+/// (defined in `src/runtime_tick.c`). That widening rides on Klipper's
+/// stats task — ~5 s cadence, independent of the kalico ISR — so the
+/// value advances monotonically through Drained windows. Units match
+/// `read_widened_now`'s old return (DWT cycles), so the bridge's
+/// `compute_ack_clock` and `t_start_clock` arithmetic are unchanged.
 pub fn clock_sync_respond(
     _fg: &mut FgState,
-    shared: &SharedState,
+    _shared: &SharedState,
     _request_id: u32,
     _host_send_time_lo: u32,
     _host_send_time_hi: u32,
 ) -> (i32, u64) {
-    let mcu_clock = crate::clock::read_widened_now(shared);
+    let mcu_clock = read_widened_host_clock();
     (KALICO_OK, mcu_clock)
+}
+
+/// Read the Klipper-widened DWT clock (DWT cycles, u64). Foreground-only.
+///
+/// On the real MCU build this resolves to `runtime_widened_host_clock`,
+/// defined in `src/runtime_tick.c`, which widens `timer_read_time()` with
+/// the `stats_send_time_high` lookback — the same widening
+/// `command_get_uptime` uses, independent of TIM5 state.
+///
+/// Host-test builds resolve the same symbol via `#[no_mangle]` stubs in
+/// the integration-test crate, mirroring `runtime_host_now_us` and
+/// `runtime_cyccnt_read` (see `kalico-c-api/tests/init_once.rs`).
+#[inline]
+#[allow(unsafe_code)]
+fn read_widened_host_clock() -> u64 {
+    // SAFETY: stable C ABI; reads two foreground-only `uint32_t`s on the
+    // MCU side and combines them into a `u64`. No preconditions beyond
+    // foreground-call discipline (enforced by Klipper's single-threaded
+    // command dispatch).
+    unsafe { runtime_widened_host_clock() }
 }
 
 // ────────────────────────────── flush ────────────────────────────────────
