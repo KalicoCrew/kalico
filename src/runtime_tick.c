@@ -93,15 +93,60 @@ runtime_host_now_us(void)
 // Layout: bits 24-31 = tag, 16-23 = stage, 0-15 = low 16 bits of value.
 // Read by `runtime_status_drain` and surfaced as `fault_detail` when
 // `last_err == 0`.
+// Live diag: updated every call, sampled into the kalico_status_v6
+// fault_detail field by the 10 Hz status drain (volatile so the
+// compiler doesn't reorder writes — there are no atomic ordering
+// requirements because foreground is single-threaded).
 volatile uint32_t runtime_diag_last_packed __attribute__((used, externally_visible));
+
+// Persistent crash diag: survives `NVIC_SystemReset` via the
+// .persistent_diag linker section (NOLOAD, outside [_bss_start.._bss_end]
+// so armcm_boot.c's bss-zero pass leaves it alone). On the next boot,
+// `command_runtime_post_init` checks `magic == RT_DIAG_MAGIC` and emits
+// the captured stage via output() so we can see WHERE the previous run
+// crashed even when no BKPSRAM is available (F446 case).
+#define RT_DIAG_MAGIC 0xD1A6BABE
+
+struct rt_diag_persistent {
+    uint32_t magic;
+    uint32_t last_packed;
+    uint32_t last_us;
+    uint32_t fault_count;
+};
+
+static struct rt_diag_persistent rt_diag_persistent
+    __attribute__((section(".persistent_diag"), used));
 
 __attribute__((used, externally_visible))
 void
 runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
 {
-    runtime_diag_last_packed = ((tag & 0xFFu) << 24)
-                             | ((stage & 0xFFu) << 16)
-                             | (value & 0xFFFFu);
+    uint32_t packed = ((tag & 0xFFu) << 24)
+                    | ((stage & 0xFFu) << 16)
+                    | (value & 0xFFFFu);
+    runtime_diag_last_packed = packed;
+    rt_diag_persistent.magic = RT_DIAG_MAGIC;
+    rt_diag_persistent.last_packed = packed;
+    rt_diag_persistent.last_us = timer_read_time();
+}
+
+// Called once from the boot_diag emit path. Emits the persistent diag
+// snapshot from the previous run (if the magic matches), then clears
+// the magic so a fresh cold boot doesn't keep re-emitting stale data.
+__attribute__((used, externally_visible))
+void
+runtime_diag_emit_persistent(void)
+{
+    if (rt_diag_persistent.magic != RT_DIAG_MAGIC)
+        return;
+    output("rt_diag_prior packed=%u us=%u faults=%u",
+           rt_diag_persistent.last_packed,
+           rt_diag_persistent.last_us,
+           rt_diag_persistent.fault_count);
+    // Clear so we don't re-emit on subsequent reads; the next
+    // configure_axes_blob will repopulate.
+    rt_diag_persistent.magic = 0;
+    rt_diag_persistent.last_packed = 0;
 }
 
 // Klipper-widened DWT/timer clock (cycles, u64). Mirrors

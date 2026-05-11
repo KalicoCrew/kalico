@@ -72,6 +72,21 @@ SECTIONS
         _bss_end = .;
     } > ram
 
+    // Persistent diag region. NOLOAD + placed OUTSIDE [_bss_start.._bss_end],
+    // so `armcm_boot.c::boot_memset(&_bss_start, 0, …)` doesn't touch it.
+    // STM32 SRAM contents survive `NVIC_SystemReset` (soft reset) and even
+    // most fault-trampoline resets — only cold POR/BOR clears it. Used by
+    // `runtime_diag_progress` to record the last stage reached before a
+    // hard fault on platforms (e.g. STM32F446) that don't have BKPSRAM. A
+    // 32-bit magic guards against random SRAM contents at cold boot.
+    .persistent_diag (NOLOAD) : {
+        . = ALIGN(4);
+        _persistent_diag_start = .;
+        *(.persistent_diag .persistent_diag.*)
+        . = ALIGN(4);
+        _persistent_diag_end = .;
+    } > ram
+
 #if CONFIG_MACH_STM32H7
     // Symbols / statics tagged `__attribute__((section(".axi_bss")))` (C) or
     // `#[link_section = ".axi_bss"]` (Rust) are placed in AXI SRAM rather

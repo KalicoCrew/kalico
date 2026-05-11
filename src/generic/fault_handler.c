@@ -1004,6 +1004,16 @@ fault_handler_report_task(void)
                fault_rec.bfar, fault_rec.mmfar,
                fault_rec.shcsr, fault_rec.exc_return);
     }
+    // Persistent runtime-diag snapshot (set by runtime_diag_progress in
+    // src/runtime_tick.c). Survives `NVIC_SystemReset` via the
+    // .persistent_diag linker section. Cleared inside the helper after
+    // emit so cold-boot SRAM noise doesn't keep re-firing.
+#if CONFIG_KALICO_RUNTIME
+    {
+        extern void runtime_diag_emit_persistent(void);
+        runtime_diag_emit_persistent();
+    }
+#endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few
     // ring entries per cycle (throttled to avoid flooding `transmit_buf`
