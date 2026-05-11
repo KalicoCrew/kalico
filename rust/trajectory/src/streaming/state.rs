@@ -1022,8 +1022,6 @@ fn per_segment_limits(
         .fold(0.0_f64, f64::max);
 
     if max_active_j == 0.0 {
-        // Degenerate: zero displacement on every axis. Return base
-        // unmodified — the planner will reject this curve elsewhere.
         return base;
     }
 

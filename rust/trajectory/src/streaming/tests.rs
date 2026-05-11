@@ -1281,20 +1281,15 @@ fn reset_after_motion_clears_state_and_reseeds_at_home() {
 }
 
 /// Regression test for the path-frame jerk min() bug fixed in
-/// `per_segment_limits`. Pre-fix, a pure-X 50mm @ 100mm/s jog on a printer
-/// with `max_z_accel=100` (→ `j_max[Z]=200`) produced a 1.447s trajectory
-/// (effective avg-v=34mm/s instead of commanded 100mm/s) because the SOCP
-/// path-frame jerk bound is `min(j_max[X], j_max[Y], j_max[Z])` and
-/// `j_max[Z]` clamped the whole thing. After fix, inactive axes' j_max is
-/// bumped to the max across active axes so the min reduces to active-only.
-///
-/// Sane upper bound: with j_max=140000 mm/s³ binding (X-axis), 50mm jog
-/// should complete in well under 0.8s.
+/// `per_segment_limits`. Pre-fix, the SOCP used
+/// `min(j_max[X], j_max[Y], j_max[Z])` for the path-frame jerk bound;
+/// with `j_max[Z]=200` (from `max_z_accel=100*2`), a pure-X jog ran
+/// ~700× slower than the X-axis is capable of. Pre-fix: 50mm @ 100mm/s
+/// took 1.45s. Fix: inactive axes' `j_max` bumped to max across active
+/// axes so the SOCP's `min()` reduces to active-axis only.
 #[test]
 fn live_limits_50mm_pure_x_completes_quickly() {
     let mut state = ShaperState::new([0.0; 4], &replan_shapers());
-    // Mirror the live Voron config: max_velocity=1000, max_accel=70000,
-    // max_z_velocity=5, max_z_accel=100, square_corner_velocity=5.
     let live = temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 100.0],
@@ -1315,8 +1310,7 @@ fn live_limits_50mm_pure_x_completes_quickly() {
     );
     assert!(
         state.t_appended < 0.8,
-        "50mm pure-X jog took {:.4}s — pre-fix was 1.447s (j_max[Z]=200 bound). \
-         Should now be ~0.55s with j_max[X]=140000 binding.",
+        "50mm pure-X jog took {:.4}s — pre-fix was 1.447s (j_max[Z]=200 bound)",
         state.t_appended,
     );
 }
