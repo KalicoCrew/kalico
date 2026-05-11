@@ -599,6 +599,14 @@ fn run_loop(
 ) {
     let mut thread_state = PlannerThreadState::build(&config);
 
+    {
+        let tl = config.limits.to_temporal_limits();
+        eprintln!(
+            "[planner-trace] startup limits v_max={:?} a_max={:?} j_max={:?} a_centripetal_max={} shaper={:?}",
+            tl.v_max, tl.a_max, tl.j_max, tl.a_centripetal_max, config.shaper,
+        );
+    }
+
     // Phase 4 Task 4.1 — single-timer quiescence-commit state. `Some(t)`
     // means a real append landed at `t` and the loop should call
     // `commit_decel_to_zero` if no follow-on message arrives within
@@ -696,6 +704,8 @@ fn run_loop(
                 let prior_t_appended = state.t_appended;
                 let prior_t_decel = state.t_decel_start;
                 let prior_t_disp = state.t_dispatched;
+                let move_dist = m.distance_mm;
+                let move_feed = m.segment.feedrate_mm_s;
 
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
@@ -714,7 +724,9 @@ fn run_loop(
                 let emit_us = emit_start.elapsed().as_micros();
                 let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
                 eprintln!(
-                    "[planner-trace] Move nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
+                    "[planner-trace] Move dist={:.3}mm feed={:.1} nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} (+{:.6}) t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
+                    move_dist,
+                    move_feed,
                     nominal,
                     replan_us,
                     emit_us,
@@ -722,6 +734,7 @@ fn run_loop(
                     drained_dur,
                     prior_t_appended,
                     state.t_appended,
+                    state.t_appended - prior_t_appended,
                     prior_t_decel,
                     state.t_decel_start,
                     prior_t_disp,
