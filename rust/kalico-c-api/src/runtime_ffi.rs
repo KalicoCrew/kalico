@@ -985,6 +985,25 @@ pub mod exports {
     /// TIM5 is armed (i.e. before any tick can fire). The FFI projects
     /// `&mut IsrState` outside the ISR lock, which is sound only under
     /// that single-threaded precondition.
+    /// Emit a tagged `#output` line to the host for live-step diagnostics.
+    /// On the MCU this calls into `runtime_diag_progress` (defined in
+    /// `src/runtime_tick.c`), which queues an `output(...)` line to the
+    /// USB-CDC TX buffer. The host sees `rt_diag tag=<T> stage=<S> value=<V>`
+    /// even if the chip resets shortly after — buffered bytes flush before
+    /// the disconnect. No-op on host-test builds.
+    #[inline]
+    #[allow(unused_variables)]
+    fn diag_progress(tag: u32, stage: u32, value: u32) {
+        #[cfg(target_os = "none")]
+        {
+            unsafe extern "C" {
+                fn runtime_diag_progress(tag: u32, stage: u32, value: u32);
+            }
+            // SAFETY: stable C ABI; foreground-only.
+            unsafe { runtime_diag_progress(tag, stage, value); }
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_configure_axes_blob(
         rt: *mut KalicoRuntime,
@@ -993,6 +1012,7 @@ pub mod exports {
     ) -> i32 {
         use runtime::config::{EMode as _Unused, McuAxisConfig, MotorConfig};
         let _ = _Unused::CoupledToXy;
+        diag_progress(0xCA, 1, 0); // ENTER
         if rt.is_null() || blob_ptr.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
@@ -1003,6 +1023,7 @@ pub mod exports {
             return KALICO_ERR_INVALID_KINEMATICS;
         }
         let blob = unsafe { core::slice::from_raw_parts(blob_ptr, blob_len as usize) };
+        diag_progress(0xCA, 2, u32::from(blob[0]));
         let kinematics_tag = blob[0];
         let present_mask = blob[1];
         let awd_mask = blob[2];
@@ -1014,6 +1035,7 @@ pub mod exports {
                 blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
             ]);
         }
+        diag_progress(0xCA, 3, u32::from(present_mask));
         let kinematics = match kinematics_tag {
             0 => KinematicTag::CoreXyAndE,
             1 => KinematicTag::CartesianXyzAndE,
@@ -1029,10 +1051,12 @@ pub mod exports {
                 });
             }
         }
+        diag_progress(0xCA, 4, 0);
         let cfg = McuAxisConfig { motors, kinematics };
         if cfg.validate().is_err() {
             return KALICO_ERR_INVALID_KINEMATICS;
         }
+        diag_progress(0xCA, 5, 0);
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: per the doc-comment precondition, no ISR is running yet.
         // Foreground is the sole writer; we project &mut IsrState to call
@@ -1042,6 +1066,7 @@ pub mod exports {
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.configure(cfg);
         }
+        diag_progress(0xCA, 6, 0);
         // Step 7-D: configure_axes is the bridge's "I'm starting a fresh
         // session" signal. Reset segment-id monotonicity tracking so the
         // new klippy session's segment_id sequence (which restarts from 1)
@@ -1072,6 +1097,7 @@ pub mod exports {
         // Bench-observed 2026-05-11 after F446 KALICO_RUNTIME
         // enablement, when klippy began re-running
         // config_runtime_stepper for both H7 and F446 each session.
+        diag_progress(0xCA, 7, 0);
         #[cfg(target_os = "none")]
         {
             unsafe extern "C" {
@@ -1081,6 +1107,7 @@ pub mod exports {
             // small static arrays in src/stepper.c.
             unsafe { runtime_reset_stepper_bindings(); }
         }
+        diag_progress(0xCA, 8, 0);
         KALICO_OK
     }
 

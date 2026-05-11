@@ -318,20 +318,6 @@ int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
  */
 int32_t kalico_configure_axes(struct KalicoRuntime *rt, uint8_t kinematics_tag);
 
-/**
- * Configure axes from a packed motor blob delivered via the kalico-native
- * transport. Layout (matches `kalico-protocol` `ConfigureAxes` body):
- *   kinematics u8 | present_mask u8 | awd_mask u8 | invert_mask u8 |
- *   steps_per_mm[4] f32 little-endian
- *
- * Total: 20 bytes. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
- * Bits in masks index motors `[A/X, B/Y, Z, E]`.
- *
- * Caller invariant: this is one-shot, called from foreground before
- * TIM5 is armed (i.e. before any tick can fire). The FFI projects
- * `&mut IsrState` outside the ISR lock, which is sound only under
- * that single-threaded precondition.
- */
 int32_t kalico_runtime_configure_axes_blob(struct KalicoRuntime *rt,
                                            const uint8_t *blob_ptr,
                                            uint32_t blob_len);

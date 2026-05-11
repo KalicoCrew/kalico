@@ -53,6 +53,9 @@ pub extern "C" fn runtime_widened_host_clock() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn runtime_reset_stepper_bindings() {}
 
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
+
 #[test]
 fn clock_sync_returns_widened_host_clock_not_seqlock() {
     // Spin up the runtime. `runtime_handle_create` runs the half-split

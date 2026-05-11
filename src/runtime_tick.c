@@ -77,6 +77,19 @@ runtime_host_now_us(void)
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
 }
 
+// F446 configure_axes crash diagnostic (2026-05-11). Emits a tagged
+// `#output` line so the host log shows how far the FFI got before
+// crashing. `output(...)` queues to the USB-CDC TX buffer; even if
+// the chip resets shortly after, klippy reads the buffered line
+// before the disconnect. `stage` is a small u8 with stage IDs defined
+// at the Rust call site (runtime_ffi.rs). Foreground-only.
+__attribute__((used, externally_visible))
+void
+runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
+{
+    output("rt_diag tag=%u stage=%u value=%u", tag, stage, value);
+}
+
 // Klipper-widened DWT/timer clock (cycles, u64). Mirrors
 // command_get_uptime's widening (basecmd.c:300-304): reads `cur` first,
 // then the high half with a "pre-stats_update wrap" lookback against
