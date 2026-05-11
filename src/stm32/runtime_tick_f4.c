@@ -5,6 +5,7 @@
 // clock-enable register (F4 has a single APB1ENR vs H7's split APB1LENR).
 
 #include "autoconf.h"
+#include "board/misc.h"        // timer_read_time
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
@@ -55,6 +56,17 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
+    // Seed the engine's WidenState — see runtime_tick_h7.c::runtime_tick_enable
+    // for the full rationale. Same race shape on F4 (slower clock, longer
+    // wrap period, but the bug structurally exists wherever the engine's
+    // WidenState starts at high=0 while klippy's view already includes
+    // accumulated wraps).
+    if (runtime_handle) {
+        extern uint32_t stats_send_time_high; // src/basecmd.c
+        uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
+                          | (uint64_t)timer_read_time();
+        runtime_handle_seed_widen(runtime_handle, baseline);
+    }
     TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);

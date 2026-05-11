@@ -184,9 +184,9 @@ DECL_INIT(runtime_init);
 #define KALICO_LIVENESS_THRESHOLD_TICKS  \
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
-#if CONFIG_KALICO_SIM
-extern volatile uint32_t runtime_sim_drain_calls;  // defined in runtime_sim_commands.c
-#endif
+// runtime_sim_drain_calls extern retired with runtime_sim_commands.c in
+// 085b4b16f; the diag-heartbeat scaffolding now lives in
+// diag_task_heartbeat below.
 
 void
 runtime_drain(void)
@@ -201,10 +201,6 @@ runtime_drain(void)
                         diag_slot_rt_drain_max_gap(),
                         timer_from_us(50000),
                         0); // no event tag — runtime_drain idle gaps are normal
-
-#if CONFIG_KALICO_SIM
-    runtime_sim_drain_calls++;
-#endif
 
     // Phase 11 Task 11.2 §10.4 reclaim drain pipeline. Drains a batch of
     // trace samples for transport to the host, then asks the Rust side to

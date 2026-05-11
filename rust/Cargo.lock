@@ -808,6 +808,7 @@ dependencies = [
  "crossbeam-channel",
  "gcode",
  "geometry",
+ "heapless",
  "kalico-host-rt",
  "kalico-protocol",
  "log",

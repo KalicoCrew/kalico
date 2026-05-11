@@ -3,6 +3,7 @@
 // H723-specific TIM5 init + IRQ handler. Spec §2.4 / §4.1 / §4.2 / §4.4.
 
 #include "autoconf.h"
+#include "board/misc.h"        // timer_read_time
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
@@ -12,6 +13,7 @@
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
 extern const uint32_t runtime_clock_freq;
+extern uint32_t stats_send_time_high; // src/basecmd.c — wraps observed by stats_update
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
@@ -53,6 +55,27 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
+    // Seed the engine's WidenState to match klippy's widened MCU clock.
+    //
+    // Klippy widens the 32-bit MCU timer via `stats_send_time_high`, which
+    // the firmware increments inside `stats_update` on every observed u32
+    // wrap. The engine's `WidenState` starts at `high=0` and only catches
+    // up via wraps observed in the ISR — but the first dispatched segment's
+    // `t_start_clock` is stamped with klippy's widened view (which already
+    // includes accumulated `stats_send_time_high` wraps from the boot →
+    // first-push window). Without this seed the engine's `now` sits below
+    // the segment's `t_start` for ~half a wrap period (~4 s at 520 MHz) and
+    // the curve is evaluated at `u=0` the whole time — segments dequeue,
+    // status reads `Running`, but zero step pulses fire ("first motion
+    // only energizes" bench symptom, 2026-05-11).
+    //
+    // Investigation: `docs/superpowers/notes/2026-05-11-first-motion-no-movement-investigation.md`.
+    // Linux-sim caller pattern: `src/linux/runtime_tick_host.c:148-156`.
+    if (runtime_handle) {
+        uint64_t baseline = ((uint64_t)stats_send_time_high) << 32
+                          | (uint64_t)timer_read_time();
+        runtime_handle_seed_widen(runtime_handle, baseline);
+    }
     TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
