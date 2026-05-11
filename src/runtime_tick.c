@@ -77,17 +77,31 @@ runtime_host_now_us(void)
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
 }
 
-// F446 configure_axes crash diagnostic (2026-05-11). Emits a tagged
-// `#output` line so the host log shows how far the FFI got before
-// crashing. `output(...)` queues to the USB-CDC TX buffer; even if
-// the chip resets shortly after, klippy reads the buffered line
-// before the disconnect. `stage` is a small u8 with stage IDs defined
-// at the Rust call site (runtime_ffi.rs). Foreground-only.
+// F446 configure_axes crash diagnostic (2026-05-11). Packs the latest
+// (tag, stage, value) triple into a single u32 word that
+// `runtime_status_drain` piggybacks onto the periodic `kalico_status_v6`
+// frame's `fault_detail` field when no real fault is latched.
+//
+// Why not `output(...)` directly: kalico-native dispatch context (FFI
+// handlers reached via the kalico-native demux) blocks the foreground
+// task that drains the USB-CDC TX buffer until the handler returns.
+// On F446, configure_axes_blob crashes BEFORE that return, so any
+// `output()` line queued during the FFI never flushes — klippy sees
+// nothing. The status-frame piggyback uses an already-running drain
+// task (10 Hz cadence) that emits even while the foreground is busy.
+//
+// Layout: bits 24-31 = tag, 16-23 = stage, 0-15 = low 16 bits of value.
+// Read by `runtime_status_drain` and surfaced as `fault_detail` when
+// `last_err == 0`.
+volatile uint32_t runtime_diag_last_packed __attribute__((used, externally_visible));
+
 __attribute__((used, externally_visible))
 void
 runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
 {
-    output("rt_diag tag=%u stage=%u value=%u", tag, stage, value);
+    runtime_diag_last_packed = ((tag & 0xFFu) << 24)
+                             | ((stage & 0xFFu) << 16)
+                             | (value & 0xFFFFu);
 }
 
 // Klipper-widened DWT/timer clock (cycles, u64). Mirrors
@@ -416,6 +430,16 @@ runtime_status_drain(void)
     uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
     uint8_t depth = runtime_handle_queue_depth(runtime_handle);
     uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
+
+    // F446-configure_axes diag piggyback: when no real fault is latched,
+    // surface the latest packed `(tag, stage, value)` diag triple in the
+    // status frame's `fault_detail` field. Klippy already logs every
+    // status frame's fault_detail, so we see live FFI progress at the
+    // 10 Hz status cadence without needing the foreground-blocked
+    // `output(...)` path. See `runtime_diag_progress` comments above.
+    if (last_err == 0 && runtime_diag_last_packed != 0) {
+        fault_detail = runtime_diag_last_packed;
+    }
 
     // Phase C: replace the legacy `kalico_status_v6` Klipper-protocol output
     // with a native StatusEvent on the events channel. The host bridge maps
