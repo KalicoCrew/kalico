@@ -23,8 +23,18 @@
 extern volatile uint8_t runtime_liveness_ok;
 extern void *runtime_handle;
 extern uint32_t runtime_handle_tick_counter(void *handle);
-extern void runtime_diag_emit_persistent(void);
 extern uint8_t  runtime_handle_status(void *handle);
+// Persistent diag struct lives in .persistent_diag (runtime_tick.c).
+// Forward-declare the struct + extern the global so fault_handler_report_task
+// can read it directly. Inlining the read avoids LTO stripping a separate
+// runtime_diag_emit_persistent() function whose call site LTO considered dead.
+struct rt_diag_persistent {
+    uint32_t magic;
+    uint32_t last_packed;
+    uint32_t last_us;
+    uint32_t fault_count;
+};
+extern struct rt_diag_persistent rt_diag_persistent;
 #endif
 
 // Magic word marks "fault record valid". Chosen unlikely to occur as
@@ -1007,9 +1017,15 @@ fault_handler_report_task(void)
     }
     // Persistent runtime-diag snapshot (set by runtime_diag_progress in
     // src/runtime_tick.c). Survives `NVIC_SystemReset` via the
-    // .persistent_diag linker section.
+    // .persistent_diag linker section. Inlined here rather than a separate
+    // function because whole-program LTO was stripping the standalone helper
+    // even with `__attribute__((used, externally_visible))`.
 #if CONFIG_KALICO_RUNTIME
-    runtime_diag_emit_persistent();
+    output("rt_diag_prior magic=%u packed=%u us=%u faults=%u",
+           rt_diag_persistent.magic,
+           rt_diag_persistent.last_packed,
+           rt_diag_persistent.last_us,
+           rt_diag_persistent.fault_count);
 #endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few

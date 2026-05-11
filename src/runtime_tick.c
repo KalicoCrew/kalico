@@ -114,8 +114,11 @@ struct rt_diag_persistent {
     uint32_t fault_count;
 };
 
-static struct rt_diag_persistent rt_diag_persistent
-    __attribute__((section(".persistent_diag"), used));
+// Non-static so fault_handler.c can `extern` it directly (and the linker
+// keeps it). Section attribute places it outside `.bss` so armcm_boot.c's
+// zero-pass leaves it alone across soft reset.
+struct rt_diag_persistent rt_diag_persistent
+    __attribute__((section(".persistent_diag"), used, externally_visible));
 
 __attribute__((used, externally_visible))
 void
@@ -130,23 +133,9 @@ runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
     rt_diag_persistent.last_us = timer_read_time();
 }
 
-// Called once from the boot_diag emit path. Emits the persistent diag
-// snapshot from the previous run. Always emits (even on cold boot with
-// no magic match) so we can see what's actually in SRAM — useful for
-// diagnosing whether the persistent section survives soft reset at all.
-__attribute__((used, externally_visible))
-void
-runtime_diag_emit_persistent(void)
-{
-    output("rt_diag_prior magic=%u packed=%u us=%u faults=%u",
-           rt_diag_persistent.magic,
-           rt_diag_persistent.last_packed,
-           rt_diag_persistent.last_us,
-           rt_diag_persistent.fault_count);
-    // Don't clear during the diag phase — re-emitting every boot_diag
-    // cycle gives the host plenty of redundancy and shows whether the
-    // SRAM contents are actually surviving the soft reset.
-}
+// Emission of rt_diag_persistent is inlined into
+// `src/generic/fault_handler.c::fault_handler_report_task` because
+// whole-program LTO was stripping a standalone helper.
 
 // Klipper-widened DWT/timer clock (cycles, u64). Mirrors
 // command_get_uptime's widening (basecmd.c:300-304): reads `cur` first,
