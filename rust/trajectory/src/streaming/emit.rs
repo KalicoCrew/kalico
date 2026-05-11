@@ -199,33 +199,187 @@ impl ShaperState {
         Ok(dispatched)
     }
 
-    /// **Phase 4 Task 4.1 stub — quiescence commit handler.**
+    /// **Phase 4 Task 4.2 — quiescence commit handler (real body).**
     ///
     /// Fires from `motion-bridge::planner::run_loop` when the inter-move
     /// `T_commit` quiescence timer elapses without a follow-on
-    /// `PlannerMsg::Move`. Task 4.2 will replace this body with the real
-    /// "commit decel-to-zero" implementation: shape the held-back trailing
-    /// decel-to-zero ramp (the region `[t_decel_start − max_h,
-    /// t_end_of_last_move]`) with constant-extension right-padding at
-    /// `(end_pos, v = 0)`, append to `pending_dispatch`, advance
-    /// `t_dispatched` to `t_end_of_last_move`, and return the freshly-shaped
-    /// segments. Task 4.1 only wires the integration point — it returns an
-    /// empty vector so the run-loop's commit branch can be exercised end-to-
-    /// end (timer fires → handler runs → no segments produced yet) without
-    /// the rest of Phase 4's machinery in place.
+    /// `PlannerMsg::Move`. Shapes and dispatches the held-back trailing
+    /// region `[t_dispatched, t_appended]` — i.e. **including the terminal
+    /// decel-to-zero ramp** that [`Self::emit_committed`] deliberately holds
+    /// back (everything past `t_decel_start − max_h`).
     ///
-    /// The `_ctx` parameter mirrors [`Self::emit_committed`]'s signature so
-    /// Task 4.2 can drop in the convolution without changing the call site.
+    /// Why "constant-extension at `(end_pos, v = 0)`" is the correct
+    /// right-pad here. TOPP-RA terminates the last move at `v = 0` and the
+    /// unshaped position at `t_appended` is exactly the move's geometric
+    /// end. So a right-pad that extends `end_pos` constantly past
+    /// `t_appended` is **C¹-continuous with the unshaped curve at the
+    /// boundary** — no convolution-edge artefact. (The default
+    /// [`pad_segment_axis_with_history`] right-pad already does
+    /// "constant-extension at the last fitted segment's terminal value"; we
+    /// rely on that path verbatim, which is exactly `end_pos`. No explicit
+    /// "force v = 0 right-pad" parameter is needed because the queue's
+    /// fitted plan already has `v = 0` at `t_appended`.)
+    ///
+    /// Idempotence. If `t_dispatched >= t_appended − ε` the queue is
+    /// already fully committed and the call returns `Ok(Vec::new())`
+    /// without mutating state. So `run_loop` can safely call this twice in
+    /// a row (e.g. on two back-to-back timer expirations) without
+    /// re-dispatching the same trailing region.
+    ///
+    /// Mirrors [`Self::emit_committed`]'s history-build + cursor-advance +
+    /// history-trim logic — the only difference is `target = t_appended`
+    /// (commit through end) instead of `target = t_decel_start − max_h`
+    /// (held-back boundary). The shared steps (left-pad history, post-emit
+    /// history trim) are factored into helpers below.
+    ///
+    /// On error the state is left unchanged (no cursor advance, no history
+    /// trim) so the caller can fall through to a fresh attempt next tick.
     ///
     /// # Errors
     ///
-    /// Returns `Ok(Vec::new())` unconditionally for now. Task 4.2 will
-    /// forward [`ShapeError`]s from `emit_shaped`.
+    /// Forwards [`ShapeError`]s from [`emit_shaped`].
     pub fn commit_decel_to_zero(
         &mut self,
-        _ctx: &EmitContext<'_>,
+        ctx: &EmitContext<'_>,
     ) -> Result<Vec<ShapedSegment>, ShapeError> {
-        Ok(Vec::new())
+        // 1. Idempotence — already fully committed.
+        if self.t_dispatched >= self.t_appended - T_EPSILON {
+            return Ok(Vec::new());
+        }
+
+        // 2. Nothing to emit if the cached plan is empty (defensive — this
+        //    branch shouldn't be reachable, because `t_appended >
+        //    t_dispatched` implies a prior `append_and_replan` succeeded
+        //    and populated `planned_fitted`).
+        if self.planned_fitted.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let max_h = self.axes.iter().map(|a| a.h).fold(0.0_f64, f64::max);
+        let target = self.t_appended;
+
+        // 3. Build history (same as emit_committed: pieces with u_start <
+        //    t_dispatched supply the left-pad).
+        let history_storage = build_history_storage(&self.axes, self.t_dispatched);
+        let history = PerAxisHistory {
+            axes: [
+                history_storage[0].as_slice(),
+                history_storage[1].as_slice(),
+                history_storage[2].as_slice(),
+                history_storage[3].as_slice(),
+            ],
+        };
+
+        // 4. Run `emit_shaped` over the full cached plan with the batch end
+        //    pinned at `t_appended`. The right-pad falls back to
+        //    constant-extension at the last fitted segment's terminal
+        //    value (= `end_pos`); since TOPP-RA terminated the last move at
+        //    `v = 0`, that constant pad is C¹-continuous with the unshaped
+        //    curve and the convolution at `t_appended` has no boundary
+        //    artefact.
+        let batch_t_start = self.t_dispatched;
+        let batch_t_end = self.t_appended;
+
+        let shaped = emit_shaped(
+            &self.planned_fitted,
+            &self.planned_meta,
+            ctx.kernels,
+            ctx.e_halos,
+            &history,
+            batch_t_start,
+            batch_t_end,
+        )?;
+
+        // 5. Trim shaped output to `[t_dispatched, target]`. Most segments
+        //    will fall fully within bounds (target == t_appended is the
+        //    far end). The one that may straddle is the first one (its
+        //    `t_start < t_dispatched` is possible if the segment domain
+        //    started before t_dispatched and we're commit-dispatching from
+        //    mid-segment). We bound on both sides for symmetry with
+        //    emit_committed's trim discipline.
+        let mut dispatched: Vec<ShapedSegment> = Vec::with_capacity(shaped.len());
+        for seg in shaped {
+            // Skip segments entirely before t_dispatched (already
+            // committed).
+            if seg.t_end <= self.t_dispatched + T_EPSILON {
+                continue;
+            }
+            // Drop segments entirely past target — none should exist when
+            // target == t_appended, but the bounds-check keeps the loop
+            // symmetric with emit_committed's.
+            if seg.t_start >= target - T_EPSILON {
+                break;
+            }
+            // Straddling-left case: restrict to `[t_dispatched, seg.t_end]`.
+            // emit_committed doesn't hit this (its straddler is on the
+            // right boundary); commit may hit it because t_dispatched can
+            // be interior to the first fitted segment after a prior
+            // emit_committed.
+            let lo = self.t_dispatched.max(seg.t_start);
+            let hi = target.min(seg.t_end);
+            if hi <= lo + T_EPSILON {
+                continue;
+            }
+            if (lo - seg.t_start).abs() < T_EPSILON && (hi - seg.t_end).abs() < T_EPSILON {
+                dispatched.push(seg);
+            } else {
+                let restricted = restrict_segment_lo_hi(&seg, lo, hi).map_err(|detail| {
+                    ShapeError::Algebra {
+                        index: dispatched.len(),
+                        detail,
+                    }
+                })?;
+                dispatched.push(restricted);
+            }
+        }
+
+        // 6. Advance cursors to the end of the planned timeline.
+        self.t_shaped = target;
+        self.t_dispatched = target;
+
+        // 7. Trim per-axis history (same δ_safety = max_h policy as
+        //    emit_committed).
+        trim_per_axis_history(&mut self.axes, self.t_dispatched, max_h);
+
+        Ok(dispatched)
+    }
+}
+
+/// Build per-axis history storage: pieces with `u_start < t_dispatched + ε`.
+/// Identical filter to [`ShaperState::emit_committed`]'s history build.
+fn build_history_storage(
+    axes: &[super::AxisShaperQueue; 4],
+    t_dispatched: f64,
+) -> [Vec<BezierPiece<f64>>; 4] {
+    std::array::from_fn(|axis_idx| {
+        axes[axis_idx]
+            .pieces
+            .iter()
+            .filter(|p| p.u_start < t_dispatched + T_EPSILON)
+            .cloned()
+            .collect()
+    })
+}
+
+/// Trim each axis's `pieces` deque: drop entries whose right edge is
+/// strictly before `t_dispatched − max_h − δ_safety` (with `δ_safety =
+/// max_h`). Identical policy to [`ShaperState::emit_committed`]'s history
+/// trim — extracted so [`ShaperState::commit_decel_to_zero`] can reuse it.
+fn trim_per_axis_history(
+    axes: &mut [super::AxisShaperQueue; 4],
+    t_dispatched: f64,
+    max_h: f64,
+) {
+    let delta_safety = max_h;
+    let trim_cutoff = t_dispatched - max_h - delta_safety;
+    for axis in axes {
+        while let Some(front) = axis.pieces.front() {
+            if front.u_end < trim_cutoff - T_EPSILON {
+                axis.pieces.pop_front();
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -236,19 +390,32 @@ fn restrict_segment_to(
     seg: &ShapedSegment,
     t_hi: f64,
 ) -> Result<ShapedSegment, nurbs::AlgebraError> {
+    restrict_segment_lo_hi(seg, seg.t_start, t_hi)
+}
+
+/// Restrict each of the segment's X/Y/Z NURBS curves to `[t_lo, t_hi]`.
+/// Used by [`ShaperState::commit_decel_to_zero`] which may need to trim on
+/// the left edge (when `t_dispatched` is interior to the first emitted
+/// segment after a prior `emit_committed`). [`restrict_segment_to`] is the
+/// `t_lo = seg.t_start` specialization used by [`ShaperState::emit_committed`].
+fn restrict_segment_lo_hi(
+    seg: &ShapedSegment,
+    t_lo: f64,
+    t_hi: f64,
+) -> Result<ShapedSegment, nurbs::AlgebraError> {
     use nurbs::algebra::restrict_to_domain;
 
     let restricted_axes: [nurbs::ScalarNurbs<f64>; 3] = [
-        restrict_to_domain(&seg.axes[0], seg.t_start, t_hi)?,
-        restrict_to_domain(&seg.axes[1], seg.t_start, t_hi)?,
-        restrict_to_domain(&seg.axes[2], seg.t_start, t_hi)?,
+        restrict_to_domain(&seg.axes[0], t_lo, t_hi)?,
+        restrict_to_domain(&seg.axes[1], t_lo, t_hi)?,
+        restrict_to_domain(&seg.axes[2], t_lo, t_hi)?,
     ];
     Ok(ShapedSegment {
         axes: restricted_axes,
         e_mode: seg.e_mode,
         extrusion_per_xy_mm: seg.extrusion_per_xy_mm,
         e_independent: seg.e_independent.clone(),
-        t_start: seg.t_start,
+        t_start: t_lo,
         t_end: t_hi,
     })
 }

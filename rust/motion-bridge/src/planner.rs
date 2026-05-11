@@ -240,9 +240,10 @@ impl PlannerHandle {
     /// thread (i.e., `recv_timeout(T_COMMIT − elapsed)` returned
     /// `RecvTimeoutError::Timeout` and the run-loop invoked
     /// [`ShaperState::commit_decel_to_zero`]). Wired by Phase 4 Task 4.1;
-    /// the underlying handler is a stub until Task 4.2 lands. Phase 4 Task
-    /// 4.3 will repurpose this as a small observability hook on the timer
-    /// integration point.
+    /// the underlying handler became real in Task 4.2 (the run-loop now
+    /// dispatches the held-back trailing decel-to-zero on timer fire). The
+    /// counter remains a cheap observability hook on the timer integration
+    /// point.
     pub fn commit_fire_count(&self) -> u32 {
         self.commit_fire_count.load(Ordering::Acquire)
     }
@@ -350,13 +351,16 @@ fn run_loop(
         let msg = match rx.recv_timeout(next_timeout) {
             Ok(m) => m,
             Err(RecvTimeoutError::Timeout) => {
-                // `T_commit` elapsed without a follow-on message. Fire the
-                // commit handler (stubbed in Task 4.1 — see
-                // `ShaperState::commit_decel_to_zero`'s doc comment); when
-                // Task 4.2 lands, this branch will dispatch the shaped
-                // decel-to-zero ramp the same way the `Move` arm dispatches
-                // `emit_committed` output. Clearing `last_append_time`
-                // disarms the timer until the next `Move` arrives.
+                // `T_commit` elapsed without a follow-on message. Task 4.2
+                // shipped the real body of `commit_decel_to_zero`: shape
+                // and dispatch the held-back trailing region
+                // `[t_dispatched, t_appended]` (including the terminal
+                // decel-to-zero ramp `emit_committed` deliberately holds
+                // back). This branch dispatches those segments the same
+                // way the `Move` arm dispatches `emit_committed` output —
+                // print-time accounting + per-segment dispatch + commit
+                // counter increment. Clearing `last_append_time` disarms
+                // the timer until the next `Move` arrives.
                 let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
