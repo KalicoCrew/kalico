@@ -201,25 +201,47 @@ void *
 oid_alloc(uint8_t oid, void *type, uint16_t size)
 {
     // Diag breadcrumb: tag=0xD0, stage encodes WHICH fail-path triggered,
-    // value packs (oid<<8) | oid_count. Lets us see live (via fault_detail
-    // piggyback) what made oid_alloc shut the chip down — out-of-range,
-    // already-typed, or already-finalized.
+    // value packs (oid<<8) | oid_count. Write the diag word DIRECTLY (not
+    // via runtime_diag_progress()) because LTO will happily eliminate any
+    // function call whose only observable effect is a write to a volatile
+    // global that the caller doesn't read — and in production the next thing
+    // we do is shutdown(), which the optimizer can see is unreachable past.
+    // Writing the volatile globals here means GCC has to honor the access.
 #if CONFIG_KALICO_RUNTIME
-    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
-    uint32_t packed = ((uint32_t)oid << 8) | (uint32_t)oid_count;
+    extern volatile uint32_t runtime_diag_last_packed;
+    extern volatile struct rt_diag_persistent {
+        uint32_t magic;
+        uint32_t last_packed;
+        uint32_t last_us;
+        uint32_t fault_count;
+    } rt_diag_persistent;
+    extern volatile uint8_t runtime_diag_frozen;
+    uint32_t packed_base = ((uint32_t)0xD0u << 24)
+                         | ((((uint32_t)oid << 8) | (uint32_t)oid_count) & 0xFFFFu);
     if (oid >= oid_count) {
-        runtime_diag_progress(0xD0, 1, packed);
+        uint32_t p = packed_base | ((uint32_t)1u << 16);
+        runtime_diag_last_packed = p;
+        rt_diag_persistent.magic = 0xD1A6BABEu;
+        rt_diag_persistent.last_packed = p;
+        runtime_diag_frozen = 1;
         shutdown("Can't assign oid");
     }
     if (oids[oid].type) {
-        runtime_diag_progress(0xD0, 2, packed);
+        uint32_t p = packed_base | ((uint32_t)2u << 16);
+        runtime_diag_last_packed = p;
+        rt_diag_persistent.magic = 0xD1A6BABEu;
+        rt_diag_persistent.last_packed = p;
+        runtime_diag_frozen = 1;
         shutdown("Can't assign oid");
     }
     if (is_finalized()) {
-        runtime_diag_progress(0xD0, 3, packed);
+        uint32_t p = packed_base | ((uint32_t)3u << 16);
+        runtime_diag_last_packed = p;
+        rt_diag_persistent.magic = 0xD1A6BABEu;
+        rt_diag_persistent.last_packed = p;
+        runtime_diag_frozen = 1;
         shutdown("Can't assign oid");
     }
-    runtime_diag_progress(0xD0, 4, packed);  // success path
 #else
     if (oid >= oid_count || oids[oid].type || is_finalized())
         shutdown("Can't assign oid");
