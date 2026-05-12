@@ -133,11 +133,22 @@ DefaultHandler(void)
  * Dynamic memory range
  ****************************************************************/
 
-// Return the start of memory available for dynamic allocations
+// Return the start of memory available for dynamic allocations.
+// `.persistent_diag` (NOLOAD, sits at `_bss_end` in the linker script's `ram`
+// region) is RAM we deliberately keep OUTSIDE the boot-time bss-zero pass so
+// it can preserve a diag word across `NVIC_SystemReset`. Without this skip,
+// alloc_init would set alloc_end = &_bss_end — overlapping `.persistent_diag`
+// — and the first `alloc_chunk` (e.g. for `oids[]`) would memset over it,
+// then subsequent oid_alloc/oid_lookup writes would corrupt
+// `rt_diag_persistent.{magic,last_packed,last_us,fault_count}`. Bench-2026-05-12
+// symptom: H7 hit `Invalid oid type` on `tmcuart_send` after dozens of
+// successful per-oid writes — `oids[N].type` was being clobbered by a
+// later runtime_diag_progress write to `rt_diag_persistent.last_packed`.
+extern uint32_t _persistent_diag_end;
 void *
 dynmem_start(void)
 {
-    return &_bss_end;
+    return &_persistent_diag_end;
 }
 
 // Return the end of memory available for dynamic allocations
