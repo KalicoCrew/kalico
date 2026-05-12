@@ -15,7 +15,7 @@
 // Backend interface contract: src/generic/runtime_tick.h.
 
 #include <string.h>         // memcpy
-#include "stepper.h"        // stepper_get_runtime_step_pin
+#include "stepper.h"        // runtime_emit_step_pulses (via stepper.c)
 #if defined(__linux__) || defined(__APPLE__)
 #include <stdio.h>          // fprintf, stderr
 #include <time.h>           // clock_gettime
@@ -765,16 +765,13 @@ DECL_CTR("_DECL_OUTPUT "
 // fires the step pulse, samples endstops on this axis (Task D3 wires this),
 // then asks the engine for the next step time and reschedules.
 //
-// Step-pulse discipline — Option A (toggle-on-fire):
-//   Each step_time_event fires exactly one gpio_out_toggle_noirq, lifting the
-//   step pin from idle to active. The NEXT fire (at the following step time)
-//   toggles it back. This works correctly when the inter-step interval is
-//   greater than the step-pulse-width requirement (≥100 ns for TMC drivers).
-//   At typical Z rates (≤2 kHz) there is >500 µs between steps — vastly
-//   more than the 2 µs pulse-width window. If a future high-rate axis
-//   requires guaranteed pulse width, replace with Option B (paired LOW-edge
-//   chained timer per step), but that doubles timer events and is unnecessary
-//   at current step rates.
+// Step-pulse discipline — runtime_emit_step_pulses (complete rise+fall pair):
+//   Each step_time_event issues one call to runtime_emit_step_pulses with
+//   n_steps=±1, which drives a guaranteed rising edge + step_pulse_ticks dwell
+//   + falling edge on every AWD partner's step pin (e.g. stepper_z / z1 / z2
+//   for a 3-motor Z). The dir_pin is updated (with dwell) whenever direction
+//   changes. This is the shared modulation path — no separate toggle logic
+//   needed in the step-time ISR.
 //
 // MAX_STEPPER_OIDS_C must agree with Rust's MAX_STEPPER_OIDS in
 // rust/runtime/src/state.rs (currently 8). A static_assert on the C side
@@ -787,10 +784,8 @@ DECL_CTR("_DECL_OUTPUT "
 
 struct step_timer_ctx {
     struct timer timer;
-    uint8_t stepper_idx;       // 0-based engine stepper index
-    struct gpio_out step_pin;  // pre-resolved step pin (motor_idx == stepper_idx)
-    uint8_t enabled;           // 1 = registered with scheduler, 0 = idle
-    uint8_t step_pin_resolved; // 1 = step_pin is valid; 0 = no binding yet
+    uint8_t stepper_idx; // 0-based engine stepper index
+    uint8_t enabled;     // 1 = registered with scheduler, 0 = idle
 };
 
 static struct step_timer_ctx step_timers[MAX_STEPPER_OIDS_C];
@@ -821,24 +816,17 @@ step_time_event(struct timer *t)
     struct step_timer_ctx *ctx =
         container_of(t, struct step_timer_ctx, timer);
 
-    // Toggle the step pin (Option A: single toggle per fire).
-    // The ISR alternates the pin between active and idle levels on
-    // consecutive fires; see the "Option A" comment block above.
-    if (ctx->step_pin_resolved)
-        gpio_out_toggle_noirq(ctx->step_pin);
-
-    // Sample endstops armed on this stepper's axis. No-op stub until D3.
-    runtime_endstop_sample_one(ctx->stepper_idx);
-
-    // Ask the engine for the next step time. `t->waketime` (u32) is the
-    // most recent fire time; widen to u64 for the FFI (the engine tracks
-    // its own high-half wrap separately).
+    // Ask the engine for the next step time and direction.
+    // `t->waketime` (u32) is the most recent fire time; widen to u64 for
+    // the FFI (the engine tracks its own high-half wrap separately).
     uint64_t next_cycles_abs = 0;
+    int8_t dir = 1;
     int32_t err = kalico_runtime_compute_next_step_time(
         runtime_handle,
         ctx->stepper_idx,
         (uint64_t)t->waketime,
-        &next_cycles_abs);
+        &next_cycles_abs,
+        &dir);
 
     if (err != KALICO_OK_C) {
         // KALICO_ERR_NO_STEP (segment exhausted) or any other error.
@@ -847,6 +835,21 @@ step_time_event(struct timer *t)
         ctx->enabled = 0;
         return SF_DONE;
     }
+
+    // Emit one step pulse on this motor (step-pin + dir-pin) through the
+    // shared runtime_emit_step_pulses path. This handles:
+    //   - All AWD partners (e.g. stepper_z / stepper_z1 / stepper_z2 for
+    //     a 3-motor Z axis on a Voron 2.4) in a single call — without this,
+    //     only the primary stepper would move and the gantry would tilt.
+    //   - dir_pin write with the correct polarity (printer.cfg `dir_pin: !`
+    //     inversion honored) and a dir-setup dwell before the step edge.
+    //   - n_steps=+1 (dir>0) or n_steps=-1 (dir<0), matching the direction
+    //     computed by the Newton solver from sign(velocity(t_curr)).
+    int32_t n_steps = (dir >= 0) ? 1 : -1;
+    runtime_emit_step_pulses(ctx->stepper_idx, n_steps);
+
+    // Sample endstops armed on this stepper's axis. No-op stub until D3.
+    runtime_endstop_sample_one(ctx->stepper_idx);
 
     // Klipper's scheduler uses the u32 low half of the absolute cycle
     // count — the hardware timer is 32-bit and wraps ~every 8.3 s. The
@@ -859,11 +862,6 @@ step_time_event(struct timer *t)
 // kalico_runtime_configure_axes_blob. Populates step_timers[] but does NOT
 // register any timer with the scheduler — timers are armed in
 // arm_step_time_steppers_after_push once a segment arrives.
-//
-// The step_pin for each slot is resolved lazily: at init time the
-// runtime_motor_steppers table may not yet be populated (config_runtime_stepper
-// commands arrive after configure_axes). Resolution is retried inside
-// arm_step_time_steppers_after_push on each arm attempt.
 void
 init_step_time_timers(void)
 {
@@ -871,8 +869,6 @@ init_step_time_timers(void)
         step_timers[i].timer.func = step_time_event;
         step_timers[i].stepper_idx = i;
         step_timers[i].enabled = 0;
-        step_timers[i].step_pin_resolved = 0;
-        // step_pin resolved lazily in arm_step_time_steppers_after_push.
     }
 }
 
@@ -894,26 +890,12 @@ arm_step_time_steppers_after_push(void)
         uint8_t mode = kalico_runtime_get_step_mode(runtime_handle, i);
         if (mode != 1 /* StepMode::StepTime */) continue;
 
-        // Lazily resolve the step pin if not yet done.
-        // The runtime motor index equals the stepper_idx by construction:
-        // configure_axes_blob populates the engine's stepper array in the
-        // same order that config_runtime_stepper populates runtime_motor_steppers.
-        if (!step_timers[i].step_pin_resolved) {
-            uint8_t resolved = 0;
-            step_timers[i].step_pin =
-                stepper_get_runtime_step_pin(i, &resolved);
-            if (!resolved) {
-                // Stepper not yet registered via config_runtime_stepper.
-                // Skip arming; will retry on the next segment push.
-                continue;
-            }
-            step_timers[i].step_pin_resolved = 1;
-        }
-
         // Ask the engine for the first step time in this segment.
+        // Direction is not needed here — the ISR will receive it on its
+        // first fire via kalico_runtime_compute_next_step_time.
         uint64_t first_cycles_abs = 0;
         int32_t err = kalico_runtime_arm_step_timer(
-            runtime_handle, i, (uint64_t)now, &first_cycles_abs);
+            runtime_handle, i, (uint64_t)now, &first_cycles_abs, NULL);
         if (err != KALICO_OK_C) continue;
 
         step_timers[i].timer.waketime = (uint32_t)first_cycles_abs;

@@ -358,20 +358,23 @@ int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
  * Compute the absolute MCU clock cycle at which `stepper_idx` should
  * fire its next step. Used by the configure/segment-load arming path.
  *
- * On success writes the cycle count to `*out_cycles_abs` and returns
- * `KALICO_OK`. Returns `KALICO_ERR_NO_STEP` when the active segment
- * cannot produce another step (caller must NOT register the timer;
- * the engine re-arms on the next `push_segment`).
+ * On success writes the cycle count to `*out_cycles_abs`, writes the step
+ * direction to `*out_dir` (+1 = forward / positive, -1 = reverse / negative),
+ * and returns `KALICO_OK`. `out_dir` may be NULL (direction discarded).
+ * Returns `KALICO_ERR_NO_STEP` when the active segment cannot produce another
+ * step (caller must NOT register the timer; the engine re-arms on the next
+ * `push_segment`).
  *
  * Returns:
- * - `KALICO_OK` + `*out_cycles_abs` set on success.
+ * - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
  * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
  * - `KALICO_ERR_NO_STEP` if no step is available.
  */
 int32_t kalico_runtime_arm_step_timer(kalico_nurbs_KalicoRuntime *rt,
                                       uint8_t stepper_idx,
                                       uint64_t now_cycles,
-                                      uint64_t *out_cycles_abs);
+                                      uint64_t *out_cycles_abs,
+                                      int8_t *out_dir);
 
 /**
  * Compute the next step time for `stepper_idx`. Identical semantics to
@@ -379,14 +382,17 @@ int32_t kalico_runtime_arm_step_timer(kalico_nurbs_KalicoRuntime *rt,
  * C-side per-stepper `struct timer` ISR re-arm path has a descriptively
  * named entry point. Future engine work may diverge the two.
  *
+ * `out_dir` may be NULL (direction discarded).
+ *
  * Returns:
- * - `KALICO_OK` + `*out_cycles_abs` set on success.
+ * - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
  * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
  * - `KALICO_ERR_NO_STEP` if no step is available.
  */
 int32_t kalico_runtime_compute_next_step_time(kalico_nurbs_KalicoRuntime *rt,
                                               uint8_t stepper_idx,
                                               uint64_t now_cycles,
-                                              uint64_t *out_cycles_abs);
+                                              uint64_t *out_cycles_abs,
+                                              int8_t *out_dir);
 
 #endif  /* KALICO_NURBS_H */

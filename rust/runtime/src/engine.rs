@@ -1160,15 +1160,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// - The Newton solver reports `SegmentExhausted` (no more steps in this
     ///   segment in the current direction)
     ///
-    /// The returned value is an absolute cycle count (same domain as
-    /// `segment.t_start` / `segment.t_end`).
+    /// Returns `(cycles_abs, dir)` where `dir` is `+1` (positive / forward) or
+    /// `-1` (negative / reverse) — the direction the stepper moves at the
+    /// moment of the next step, derived from `sign(velocity(t_curr))`.
     pub fn arm_step_timer(
         &self,
         pool: &CurvePool,
         stepper_idx: u8,
         now_cycles: u64,
         current_step: i32,
-    ) -> Option<u64> {
+    ) -> Option<(u64, i8)> {
         let current = self.current.as_ref()?;
 
         // Bounds-check: only 4 motors supported (indices 0–3).
@@ -1261,14 +1262,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         };
 
         match crate::step_time::compute_next_step_time(&q) {
-            crate::step_time::StepTimeResult::NextAt(t_norm_next) => {
+            crate::step_time::StepTimeResult::NextAt { t: t_norm_next, dir } => {
                 // Convert back to absolute cycles in integer space.
                 // dt_norm is the fractional step over the segment; multiplying
                 // by duration (u64) gives the cycle delta without any f32
                 // precision loss from large absolute offsets.
                 let dt_norm = t_norm_next - t_curr_norm;
                 let dt_cycles = (dt_norm * duration as f32) as u64;
-                Some(now_cycles + dt_cycles)
+                Some((now_cycles + dt_cycles, dir))
             }
             crate::step_time::StepTimeResult::SegmentExhausted => None,
         }
@@ -1293,12 +1294,13 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 /// by gating the call on `Modulated` count.
 ///
 /// Returns `None` on the same conditions as `Engine::arm_step_timer`.
+/// On success, returns `Some((cycles_abs, dir))` — see `Engine::arm_step_timer`.
 #[allow(unsafe_code)]
 pub fn arm_step_timer_for_stepper(
     ctx: &crate::state::RuntimeContext,
     stepper_idx: u8,
     now_cycles: u64,
-) -> Option<u64> {
+) -> Option<(u64, i8)> {
     // SAFETY: We form a shared (non-exclusive) reference to IsrState.
     // The caller guarantees this is invoked from the ISR context where no
     // concurrent &mut IsrState is held. `UnsafeCell::raw_get` is the

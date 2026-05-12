@@ -1772,13 +1772,17 @@ pub mod exports {
     /// Compute the absolute MCU clock cycle at which `stepper_idx` should
     /// fire its next step. Used by the configure/segment-load arming path.
     ///
-    /// On success writes the cycle count to `*out_cycles_abs` and returns
-    /// `KALICO_OK`. Returns `KALICO_ERR_NO_STEP` when the active segment
-    /// cannot produce another step (caller must NOT register the timer;
-    /// the engine re-arms on the next `push_segment`).
+    /// On success writes the cycle count to `*out_cycles_abs` and the step
+    /// direction to `*out_dir` (`+1` = forward / positive, `-1` = reverse /
+    /// negative), then returns `KALICO_OK`.
+    /// Returns `KALICO_ERR_NO_STEP` when the active segment cannot produce
+    /// another step (caller must NOT register the timer; the engine re-arms
+    /// on the next `push_segment`).
+    ///
+    /// `out_dir` may be NULL; if so the direction is computed but discarded.
     ///
     /// Returns:
-    /// - `KALICO_OK` + `*out_cycles_abs` set on success.
+    /// - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
     /// - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
     /// - `KALICO_ERR_NO_STEP` if no step is available.
     #[unsafe(no_mangle)]
@@ -1787,6 +1791,7 @@ pub mod exports {
         stepper_idx: u8,
         now_cycles: u64,
         out_cycles_abs: *mut u64,
+        out_dir: *mut i8,
     ) -> i32 {
         if rt.is_null() || out_cycles_abs.is_null() {
             return KALICO_ERR_INVALID_HANDLE;
@@ -1803,8 +1808,11 @@ pub mod exports {
         unsafe {
             let ctx_ref: &RuntimeContext = &*ctx;
             match runtime::engine::arm_step_timer_for_stepper(ctx_ref, stepper_idx, now_cycles) {
-                Some(t) => {
+                Some((t, dir)) => {
                     *out_cycles_abs = t;
+                    if !out_dir.is_null() {
+                        *out_dir = dir;
+                    }
                     KALICO_OK
                 }
                 None => KALICO_ERR_NO_STEP,
@@ -1817,8 +1825,10 @@ pub mod exports {
     /// C-side per-stepper `struct timer` ISR re-arm path has a descriptively
     /// named entry point. Future engine work may diverge the two.
     ///
+    /// `out_dir` may be NULL; if so the direction is computed but discarded.
+    ///
     /// Returns:
-    /// - `KALICO_OK` + `*out_cycles_abs` set on success.
+    /// - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
     /// - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
     /// - `KALICO_ERR_NO_STEP` if no step is available.
     #[unsafe(no_mangle)]
@@ -1827,11 +1837,14 @@ pub mod exports {
         stepper_idx: u8,
         now_cycles: u64,
         out_cycles_abs: *mut u64,
+        out_dir: *mut i8,
     ) -> i32 {
         // SAFETY: delegates to `kalico_runtime_arm_step_timer`, which carries
         // the same pointer-validity and aliasing requirements. We pass the
         // arguments through unchanged.
-        unsafe { kalico_runtime_arm_step_timer(rt, stepper_idx, now_cycles, out_cycles_abs) }
+        unsafe {
+            kalico_runtime_arm_step_timer(rt, stepper_idx, now_cycles, out_cycles_abs, out_dir)
+        }
     }
 
     /// Read the current `StepMode` discriminant for `stepper_idx`.

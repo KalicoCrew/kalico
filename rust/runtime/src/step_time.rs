@@ -45,8 +45,9 @@ pub struct StepTimeQuery<'a, F: Fn(f32) -> (f32, f32)> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepTimeResult {
-    /// The next step fires at time `t` (same domain as `t_curr`).
-    NextAt(f32),
+    /// The next step fires at time `t` (same domain as `t_curr`), moving in
+    /// `dir` (+1 = forward / positive, -1 = reverse / negative).
+    NextAt { t: f32, dir: i8 },
     /// The active segment can't produce another step in the current
     /// direction. Engine re-arms on the next pushed segment.
     SegmentExhausted,
@@ -59,7 +60,8 @@ pub fn compute_next_step_time<F: Fn(f32) -> (f32, f32)>(
     if v_curr.abs() < EPS_VELOCITY {
         return StepTimeResult::SegmentExhausted;
     }
-    let dir = if v_curr > 0.0 { 1.0_f32 } else { -1.0_f32 };
+    let dir_i8: i8 = if v_curr > 0.0 { 1 } else { -1 };
+    let dir = dir_i8 as f32;
     let target = (q.current_step as f32 + dir) * q.step_distance;
 
     // Initial guess: constant velocity.
@@ -74,7 +76,7 @@ pub fn compute_next_step_time<F: Fn(f32) -> (f32, f32)>(
         let (pos, vel) = (q.eval)(t_try);
         let err = pos - target;
         if err.abs() < tol {
-            return StepTimeResult::NextAt(t_try);
+            return StepTimeResult::NextAt { t: t_try, dir: dir_i8 };
         }
         if vel.abs() < EPS_VELOCITY {
             return StepTimeResult::SegmentExhausted;
@@ -95,7 +97,7 @@ pub fn compute_next_step_time<F: Fn(f32) -> (f32, f32)>(
     }
     let (pos, _) = (q.eval)(t_final);
     if (pos - target).abs() < q.step_distance.abs() * 1e-3 {
-        StepTimeResult::NextAt(t_final)
+        StepTimeResult::NextAt { t: t_final, dir: dir_i8 }
     } else {
         StepTimeResult::SegmentExhausted
     }

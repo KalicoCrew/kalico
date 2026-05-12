@@ -52,13 +52,14 @@ fn arm_step_timer_returns_first_step_time_on_linear_z() {
 
     let result = arm_step_timer_for_stepper(&rt, z_stepper_idx, /*now_cycles=*/0);
 
-    let next = result.expect("expected NextAt for first Z step");
+    let (next, dir) = result.expect("expected NextAt for first Z step");
     assert!(
         (next as i64 - expected_cycles as i64).abs() < 10,
         "expected ~{} cycles for first Z step at 1 mm/s with 400 steps/mm, got {}",
         expected_cycles,
         next,
     );
+    assert_eq!(dir, 1i8, "positive velocity should give dir=+1");
 }
 
 #[test]
@@ -77,7 +78,7 @@ fn arm_step_timer_correct_with_large_anchor() {
     push_test_segment_linear_z_at(&mut rt, anchor, /*velocity_mm_s=*/1.0, /*duration_s=*/1.0);
 
     let z_stepper_idx = 2u8;
-    let next = arm_step_timer_for_stepper(&rt, z_stepper_idx, anchor)
+    let (next, dir) = arm_step_timer_for_stepper(&rt, z_stepper_idx, anchor)
         .expect("expected NextAt at start of segment with large anchor");
 
     let expected = anchor + 450_000;
@@ -85,4 +86,5 @@ fn arm_step_timer_correct_with_large_anchor() {
         (next as i64 - expected as i64).abs() < 10,
         "expected ~{expected} (anchor={anchor}), got {next}",
     );
+    assert_eq!(dir, 1i8, "positive velocity should give dir=+1");
 }

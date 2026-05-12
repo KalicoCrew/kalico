@@ -35,8 +35,9 @@ fn linear_curve_converges_in_one_iteration() {
     };
     let result = compute_next_step_time(&q);
     match result {
-        StepTimeResult::NextAt(t) => {
+        StepTimeResult::NextAt { t, dir } => {
             assert!((t - 0.0025).abs() < 1e-9, "expected t≈0.0025, got {}", t);
+            assert_eq!(dir, 1, "positive velocity should yield dir=+1");
         }
         other => panic!("expected NextAt, got {:?}", other),
     }
@@ -55,8 +56,9 @@ fn linear_curve_reverse_direction() {
     };
     let result = compute_next_step_time(&q);
     match result {
-        StepTimeResult::NextAt(t) => {
+        StepTimeResult::NextAt { t, dir } => {
             assert!((t - 0.0025).abs() < 1e-9);
+            assert_eq!(dir, -1, "negative velocity should yield dir=-1");
         }
         other => panic!("expected NextAt, got {:?}", other),
     }
@@ -77,7 +79,7 @@ fn cubic_curve_converges_within_three_iterations() {
     };
     let result = compute_next_step_time(&q);
     let t = match result {
-        StepTimeResult::NextAt(t) => t,
+        StepTimeResult::NextAt { t, .. } => t,
         other => panic!("expected NextAt, got {:?}", other),
     };
     // Verify the returned time actually puts position at the step boundary.
@@ -145,7 +147,7 @@ fn post_loop_fallback_next_at() {
     // The fallback path should find a valid time (the curve does reach the
     // target within the segment).
     let t = match result {
-        StepTimeResult::NextAt(t) => t,
+        StepTimeResult::NextAt { t, .. } => t,
         StepTimeResult::SegmentExhausted => {
             // If the curve converged tightly enough in 3 iters to hit the
             // early-exit path anyway, that's also acceptable — verify
