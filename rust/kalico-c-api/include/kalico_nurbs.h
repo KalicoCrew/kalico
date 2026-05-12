@@ -184,18 +184,27 @@ int32_t kalico_runtime_get_stepper_count(kalico_nurbs_KalicoRuntime *rt, uint8_t
 int32_t kalico_configure_axes(kalico_nurbs_KalicoRuntime *rt, uint8_t kinematics_tag);
 
 /**
- * Configure axes from a packed motor blob delivered via the kalico-native
- * transport. Layout (matches `kalico-protocol` `ConfigureAxes` body):
- *   kinematics u8 | present_mask u8 | awd_mask u8 | invert_mask u8 |
- *   steps_per_mm[4] f32 little-endian
+ * Extended blob layout (25 bytes):
  *
- * Total: 20 bytes. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
- * Bits in masks index motors `[A/X, B/Y, Z, E]`.
+ * ```text
+ * byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
+ * byte  1     present_mask    (bit i set → motor i is present)
+ * byte  2     awd_mask        (bit i set → motor i is AWD)
+ * byte  3     invert_mask     (bit i set → motor i direction inverted)
+ * bytes 4-7   steps_per_mm[0] (f32 LE)
+ * bytes 8-11  steps_per_mm[1] (f32 LE)
+ * bytes 12-15 steps_per_mm[2] (f32 LE)
+ * bytes 16-19 steps_per_mm[3] (f32 LE)
+ *             -- present only in extended (25-byte) format --
+ * byte 20     mcu_caps        (bit 0 = mcu_supports_phase_stepping)
+ * byte 21     step_mode[0]    (0 = Modulated, 1 = StepTime)
+ * byte 22     step_mode[1]
+ * byte 23     step_mode[2]
+ * byte 24     step_mode[3]
+ * ```
  *
- * Caller invariant: this is one-shot, called from foreground before
- * TIM5 is armed (i.e. before any tick can fire). The FFI projects
- * `&mut IsrState` outside the ISR lock, which is sound only under
- * that single-threaded precondition.
+ * Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
+ * `StepTime` in that case. Any other `blob_len` is rejected.
  */
 int32_t kalico_runtime_configure_axes_blob(kalico_nurbs_KalicoRuntime *rt,
                                            const uint8_t *blob_ptr,
@@ -323,5 +332,61 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * the `command_runtime_sim_endstop_set_pin` shim, bypassing real GPIO.
  */
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
+
+/**
+ * Flip a stepper's `StepMode` at runtime. Spec §10.
+ *
+ * `mode`: 0 = Modulated (phase-stepping), 1 = StepTime (classic).
+ * `mcu_supports_phase`: non-zero if the MCU advertises phase-stepping
+ * capability.
+ *
+ * Returns:
+ * - `KALICO_OK` on success.
+ * - `KALICO_ERR_INVALID_HANDLE` if `handle` is null or
+ *   `stepper_idx >= MAX_STEPPER_OIDS`.
+ * - `KALICO_ERR_INVALID_ARG` if `mode` is not a recognised `StepMode`
+ *   discriminant.
+ * - `KALICO_ERR_CAPABILITY_MISSING` if `mode == Modulated` and
+ *   `mcu_supports_phase == 0`.
+ */
+int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
+                                     uint8_t stepper_idx,
+                                     uint8_t mode,
+                                     uint8_t mcu_supports_phase);
+
+/**
+ * Compute the absolute MCU clock cycle at which `stepper_idx` should
+ * fire its next step. Used by the configure/segment-load arming path.
+ *
+ * On success writes the cycle count to `*out_cycles_abs` and returns
+ * `KALICO_OK`. Returns `KALICO_ERR_NO_STEP` when the active segment
+ * cannot produce another step (caller must NOT register the timer;
+ * the engine re-arms on the next `push_segment`).
+ *
+ * Returns:
+ * - `KALICO_OK` + `*out_cycles_abs` set on success.
+ * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
+ * - `KALICO_ERR_NO_STEP` if no step is available.
+ */
+int32_t kalico_runtime_arm_step_timer(kalico_nurbs_KalicoRuntime *rt,
+                                      uint8_t stepper_idx,
+                                      uint64_t now_cycles,
+                                      uint64_t *out_cycles_abs);
+
+/**
+ * Compute the next step time for `stepper_idx`. Identical semantics to
+ * `kalico_runtime_arm_step_timer`; provided as a separate symbol so the
+ * C-side per-stepper `struct timer` ISR re-arm path has a descriptively
+ * named entry point. Future engine work may diverge the two.
+ *
+ * Returns:
+ * - `KALICO_OK` + `*out_cycles_abs` set on success.
+ * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
+ * - `KALICO_ERR_NO_STEP` if no step is available.
+ */
+int32_t kalico_runtime_compute_next_step_time(kalico_nurbs_KalicoRuntime *rt,
+                                              uint8_t stepper_idx,
+                                              uint64_t now_cycles,
+                                              uint64_t *out_cycles_abs);
 
 #endif  /* KALICO_NURBS_H */

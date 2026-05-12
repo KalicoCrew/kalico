@@ -318,6 +318,29 @@ int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
  */
 int32_t kalico_configure_axes(struct KalicoRuntime *rt, uint8_t kinematics_tag);
 
+/**
+ * Extended blob layout (25 bytes):
+ *
+ * ```text
+ * byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
+ * byte  1     present_mask    (bit i set → motor i is present)
+ * byte  2     awd_mask        (bit i set → motor i is AWD)
+ * byte  3     invert_mask     (bit i set → motor i direction inverted)
+ * bytes 4-7   steps_per_mm[0] (f32 LE)
+ * bytes 8-11  steps_per_mm[1] (f32 LE)
+ * bytes 12-15 steps_per_mm[2] (f32 LE)
+ * bytes 16-19 steps_per_mm[3] (f32 LE)
+ *             -- present only in extended (25-byte) format --
+ * byte 20     mcu_caps        (bit 0 = mcu_supports_phase_stepping)
+ * byte 21     step_mode[0]    (0 = Modulated, 1 = StepTime)
+ * byte 22     step_mode[1]
+ * byte 23     step_mode[2]
+ * byte 24     step_mode[3]
+ * ```
+ *
+ * Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
+ * `StepTime` in that case. Any other `blob_len` is rejected.
+ */
 int32_t kalico_runtime_configure_axes_blob(struct KalicoRuntime *rt,
                                            const uint8_t *blob_ptr,
                                            uint32_t blob_len);

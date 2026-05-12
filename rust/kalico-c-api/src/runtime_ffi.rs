@@ -1032,6 +1032,27 @@ pub mod exports {
         }
     }
 
+    /// Extended blob layout (25 bytes):
+    ///
+    /// ```text
+    /// byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
+    /// byte  1     present_mask    (bit i set → motor i is present)
+    /// byte  2     awd_mask        (bit i set → motor i is AWD)
+    /// byte  3     invert_mask     (bit i set → motor i direction inverted)
+    /// bytes 4-7   steps_per_mm[0] (f32 LE)
+    /// bytes 8-11  steps_per_mm[1] (f32 LE)
+    /// bytes 12-15 steps_per_mm[2] (f32 LE)
+    /// bytes 16-19 steps_per_mm[3] (f32 LE)
+    ///             -- present only in extended (25-byte) format --
+    /// byte 20     mcu_caps        (bit 0 = mcu_supports_phase_stepping)
+    /// byte 21     step_mode[0]    (0 = Modulated, 1 = StepTime)
+    /// byte 22     step_mode[1]
+    /// byte 23     step_mode[2]
+    /// byte 24     step_mode[3]
+    /// ```
+    ///
+    /// Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
+    /// `StepTime` in that case. Any other `blob_len` is rejected.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_configure_axes_blob(
         rt: *mut KalicoRuntime,
@@ -1047,7 +1068,8 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        if blob_len != 20 {
+        // Accept 20-byte (legacy) or 25-byte (extended, with StepMode array).
+        if blob_len != 20 && blob_len != 25 {
             return KALICO_ERR_INVALID_KINEMATICS;
         }
         let blob = unsafe { core::slice::from_raw_parts(blob_ptr, blob_len as usize) };
@@ -1136,6 +1158,54 @@ pub mod exports {
             unsafe { runtime_reset_stepper_bindings(); }
         }
         diag_progress(0xCA, 8, 0);
+
+        // --- Extended format: parse per-stepper StepMode array (spec §4 C1) ---
+        //
+        // byte 20: mcu_caps (bit 0 = mcu_supports_phase_stepping)
+        // bytes 21-24: step_mode[0..4] (0 = Modulated, 1 = StepTime)
+        //
+        // Legacy 20-byte blobs land here with no step_mode bytes; SharedState
+        // already initialises every step_modes[i] to StepTime (default), so no
+        // further action is needed for the legacy path.
+        if blob_len == 25 {
+            let mcu_caps = blob[20];
+            let mcu_supports_phase = (mcu_caps & 0x01) != 0;
+            unsafe {
+                let shared_ptr: *const runtime::state::SharedState =
+                    core::ptr::addr_of!((*ctx).shared);
+                let shared: &runtime::state::SharedState = &*shared_ptr;
+                for i in 0..4usize {
+                    let raw_mode = blob[21 + i];
+                    let mode = match runtime::state::StepMode::from_u8(raw_mode) {
+                        Some(m) => m,
+                        // Unknown discriminant → treat as StepTime (safe default).
+                        None => runtime::state::StepMode::StepTime,
+                    };
+                    match runtime::state::set_step_mode(
+                        shared,
+                        i as u8,
+                        mode,
+                        mcu_supports_phase,
+                    ) {
+                        Ok(()) => {}
+                        Err(runtime::state::SetStepModeError::CapabilityMissing) => {
+                            // Host requested Modulated on an MCU that doesn't
+                            // advertise phase-stepping. Defense-in-depth check —
+                            // the host (Task E1) is supposed to prevent this.
+                            diag_progress(0xCA, 9, i as u32);
+                            return KALICO_ERR_CAPABILITY_MISSING;
+                        }
+                        Err(runtime::state::SetStepModeError::OutOfRange) => {
+                            // i is bounded to 0..4 above; unreachable in practice.
+                            diag_progress(0xCA, 9, 0xFF);
+                            return KALICO_ERR_INVALID_KINEMATICS;
+                        }
+                    }
+                }
+            }
+            diag_progress(0xCA, 10, u32::from(mcu_caps));
+        }
+
         KALICO_OK
     }
 
