@@ -422,6 +422,13 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
         runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
         t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
         &accepted_id, &credit_epoch);
+    if (r == 0 /* KALICO_OK */) {
+        // Arm any StepTime-mode stepper whose timer isn't already running.
+        // Must be called AFTER the segment is in the engine's SPSC queue so
+        // the engine can produce a valid first step time.
+        extern void arm_step_time_steppers_after_push(void);
+        arm_step_time_steppers_after_push();
+    }
     send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
 #else
     (void)body; (void)body_len;
@@ -457,7 +464,8 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     // status drain surfaces in fault_detail.
     extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     runtime_diag_progress(0xCB, 1, body_len);
-    if (body_len != 20) {
+    // Accept 20-byte (legacy) or 25-byte (extended with StepMode array) blobs.
+    if (body_len != 20 && body_len != 25) {
         send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
         return;
     }
@@ -469,6 +477,14 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     runtime_diag_progress(0xCB, 3, 0);
     int32_t r = kalico_runtime_configure_axes_blob(runtime_handle, body, body_len);
     runtime_diag_progress(0xCB, 4, (uint32_t)r);
+    if (r == 0 /* KALICO_OK */) {
+        // Reset and repopulate the per-stepper step-time timer slots now that
+        // the engine has a fresh axes config. Timers are not yet added to the
+        // scheduler — that happens in arm_step_time_steppers_after_push when
+        // the first segment arrives.
+        extern void init_step_time_timers(void);
+        init_step_time_timers();
+    }
     send_configure_axes_response(correlation_id, r);
     runtime_diag_progress(0xCB, 5, 0);
 #else

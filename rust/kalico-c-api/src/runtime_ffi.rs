@@ -1834,4 +1834,37 @@ pub mod exports {
         unsafe { kalico_runtime_arm_step_timer(rt, stepper_idx, now_cycles, out_cycles_abs) }
     }
 
+    /// Read the current `StepMode` discriminant for `stepper_idx`.
+    ///
+    /// Used by the C-side `arm_step_time_steppers_after_push` to determine
+    /// whether a stepper should be registered with Klipper's scheduler (mode
+    /// `StepTime = 1`) or driven by the TIM5 ISR (mode `Modulated = 0`).
+    ///
+    /// Returns:
+    /// - `0`    — `StepMode::Modulated` (phase-stepping via TIM5 ISR).
+    /// - `1`    — `StepMode::StepTime`  (classic Klipper timer scheduling).
+    /// - `0xFF` — null `rt`, `INIT_DONE == false`, or `stepper_idx` out of range.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_step_mode(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+    ) -> u8 {
+        use runtime::state::MAX_STEPPER_OIDS;
+        if rt.is_null() || (stepper_idx as usize) >= MAX_STEPPER_OIDS {
+            return 0xFF;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0xFF;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` is the published RT_CELL pointer (non-null, INIT_DONE=true).
+        // `step_modes` are per-stepper `AtomicU8` fields in `SharedState`;
+        // we read via a shared `&SharedState` reference — no `&mut` is formed.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            shared.step_modes[stepper_idx as usize].load(Ordering::Acquire)
+        }
+    }
+
 }

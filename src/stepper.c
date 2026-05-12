@@ -572,4 +572,23 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
     }
 }
 
+// Return the step pin for motor index `motor_idx` (the primary AWD stepper).
+// Used by the step-time ISR (src/runtime_tick.c) to toggle the step pin
+// for a StepTime-mode stepper without going through the locked queue path.
+// Returns a zeroed-out gpio_out if motor_idx is out of range or has no
+// registered stepper — callers must check `step_pin_resolved`.
+__attribute__((used, externally_visible))
+struct gpio_out
+stepper_get_runtime_step_pin(uint8_t motor_idx, uint8_t *out_resolved)
+{
+    struct gpio_out zero = {0};
+    if (out_resolved) *out_resolved = 0;
+    if (motor_idx >= RUNTIME_MOTOR_COUNT)
+        return zero;
+    if (runtime_motor_stepper_count[motor_idx] == 0)
+        return zero;
+    if (out_resolved) *out_resolved = 1;
+    return runtime_motor_steppers[motor_idx][0].stepper->step_pin;
+}
+
 #endif // CONFIG_KALICO_RUNTIME

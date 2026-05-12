@@ -524,4 +524,19 @@ int32_t kalico_runtime_compute_next_step_time(struct KalicoRuntime *rt,
                                               uint64_t now_cycles,
                                               uint64_t *out_cycles_abs);
 
+/**
+ * Read the current `StepMode` discriminant for `stepper_idx`.
+ *
+ * Used by the C-side `arm_step_time_steppers_after_push` to determine
+ * whether a stepper should be registered with Klipper's scheduler
+ * (`StepTime = 1`) or driven by the TIM5 ISR (`Modulated = 0`).
+ *
+ * Returns:
+ * - `0`    — `StepMode::Modulated`.
+ * - `1`    — `StepMode::StepTime`.
+ * - `0xFF` — null `rt`, uninitialised, or `stepper_idx` out of range.
+ */
+uint8_t kalico_runtime_get_step_mode(struct KalicoRuntime *rt,
+                                     uint8_t stepper_idx);
+
 #endif  /* KALICO_RUNTIME_H */
