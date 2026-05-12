@@ -108,6 +108,20 @@ fn cubic_bezier_xy(
 //
 // They are NOT part of the Renode-sim escape hatch; they live in this module
 // purely for proximity with other fixture-level helpers.
+//
+// The Box-allocating helpers below require std (or `alloc`) so they only
+// compile when targeting a hosted environment, not the no_std MCU firmware.
+// `#[cfg(not(target_os = "none"))]` gates them off for the ARM firmware
+// build (the Renode-sim firmware target is `thumbv7em-none-eabi`, i.e.
+// `target_os = "none"`, so it also skips these and uses the Renode-side
+// fixture lookup only).
+#[cfg(not(target_os = "none"))]
+mod init_test_runtime_impl {
+    pub use ::alloc::boxed::Box;
+}
+
+#[cfg(not(target_os = "none"))]
+use self::init_test_runtime_impl::Box;
 
 /// Clock frequency used by `init_test_runtime`. Chosen so that 400 steps/mm
 /// at 1 mm/s produces a first-step time of exactly 450,000 cycles:
@@ -133,6 +147,7 @@ pub const TEST_Z_STEPS_PER_MM: f32 = 400.0;
 /// `queue_storage` and `trace_storage` inside the returned `RuntimeContext`
 /// are dummy (never used — the split halves reference the separate leaked
 /// queues).
+#[cfg(not(target_os = "none"))]
 #[allow(unsafe_code)]
 pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     use core::cell::UnsafeCell;

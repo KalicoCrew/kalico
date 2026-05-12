@@ -448,6 +448,16 @@ volatile uint32_t runtime_emit_pulses __attribute__((used, externally_visible));
 // Bench-observed 2026-05-11 after F446 KALICO_RUNTIME enablement, when
 // klippy began re-running config_runtime_stepper for both H7 and F446
 // each session.
+// Foreground accessor — surfaces per-motor binding count for the
+// runtime_status_drain diag rotation (runtime_tick.c phase 5).
+__attribute__((used, externally_visible))
+uint8_t
+runtime_motor_binding_count(uint8_t motor_idx)
+{
+    if (motor_idx >= RUNTIME_MOTOR_COUNT) return 0;
+    return runtime_motor_stepper_count[motor_idx];
+}
+
 __attribute__((used, externally_visible))
 void
 runtime_reset_stepper_bindings(void)

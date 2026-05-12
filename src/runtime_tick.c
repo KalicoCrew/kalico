@@ -518,8 +518,16 @@ runtime_status_drain(void)
     //   phase 3: raw last_packed read at runtime_init (= snapshot, doubled
     //            for redundancy in case the host drops one frame).
     static uint8_t status_emit_phase;
-    status_emit_phase = (uint8_t)((status_emit_phase + 1) & 0x03);
+    // 2026-05-13 bench debug: extend to 6 phases so emit_calls /
+    // emit_pulses / stepper_count snapshots are surfaced via fault_detail.
+    // Goal: figure out why segments retire (engine reaches Drained) but no
+    // step pulses reach the motor pins.
+    status_emit_phase = (uint8_t)(status_emit_phase + 1);
+    if (status_emit_phase >= 6) status_emit_phase = 0;
     if (last_err == 0) {
+        extern volatile uint32_t runtime_emit_calls;
+        extern volatile uint32_t runtime_emit_pulses;
+        extern uint8_t runtime_motor_binding_count(uint8_t motor_idx);
         switch (status_emit_phase) {
         case 0:
             if (runtime_diag_last_packed != 0)
@@ -534,6 +542,70 @@ runtime_status_drain(void)
             break;
         case 3:
             fault_detail = runtime_diag_prior_packed_raw;
+            break;
+        case 4:
+            // Tag 0xE1 marker in high byte; low 24 bits = emit_calls.
+            fault_detail = 0xE1000000u | (runtime_emit_calls & 0x00FFFFFFu);
+            break;
+        case 5:
+            // Tag 0xE2 marker in high byte; mid byte = emit_pulses & 0xFF
+            // (rough), low byte = packed motor_stepper_count for motors 0..3.
+            {
+                uint32_t pulses_lo = runtime_emit_pulses & 0xFFFFu;
+                uint32_t cnt0 = runtime_motor_binding_count(0) & 0x3u;
+                uint32_t cnt1 = runtime_motor_binding_count(1) & 0x3u;
+                uint32_t cnt2 = runtime_motor_binding_count(2) & 0x3u;
+                uint32_t cnt3 = runtime_motor_binding_count(3) & 0x3u;
+                uint32_t cnts = (cnt0 << 0) | (cnt1 << 2)
+                              | (cnt2 << 4) | (cnt3 << 6);
+                fault_detail = 0xE2000000u | (cnts << 16) | pulses_lo;
+            }
+            break;
+        }
+    }
+    // Re-roll the rotation for the four new step_time_event-side counters,
+    // gated on the same `last_err == 0`. Cycle resets after these so each
+    // counter gets one observation per ~600 ms at 10 Hz status drain.
+    static uint8_t st_emit_phase;
+    st_emit_phase = (uint8_t)(st_emit_phase + 1);
+    if (st_emit_phase >= 4) st_emit_phase = 0;
+    extern volatile uint32_t step_time_event_fires;
+    extern volatile uint32_t step_time_arm_attempts;
+    extern volatile uint32_t step_time_arm_success;
+    extern volatile uint32_t step_time_no_step_polls;
+    extern uint8_t runtime_motor_binding_count(uint8_t motor_idx);
+    if (last_err == 0 && status_emit_phase == 0) {
+        switch (st_emit_phase) {
+        case 0:
+            // 0xE3 — step_time_event fires (low 24 bits).
+            fault_detail = 0xE3000000u | (step_time_event_fires & 0x00FFFFFFu);
+            break;
+        case 1:
+            // 0xE4 — arm attempts (high) | arm successes (low), 12 bits each.
+            fault_detail = 0xE4000000u
+                         | ((step_time_arm_attempts & 0x0FFFu) << 12)
+                         | (step_time_arm_success  & 0x0FFFu);
+            break;
+        case 2:
+            // 0xE5 — no_step_polls (low 24 bits).
+            fault_detail = 0xE5000000u | (step_time_no_step_polls & 0x00FFFFFFu);
+            break;
+        case 3:
+            // 0xE6 — Live step_mode discriminants for motors 0..3, two
+            // bits each: bit 0 of each pair = mode (0=Modulated/1=StepTime),
+            // bit 1 = "is at least one binding registered" (1 = yes).
+            // Bit-packed into low byte; binding-presence in high nibble.
+            {
+                uint8_t modes_lo = 0;
+                uint8_t binds_lo = 0;
+                for (uint8_t i = 0; i < 4; i++) {
+                    uint8_t m = kalico_runtime_get_step_mode(runtime_handle, i);
+                    if (m == 1) modes_lo |= (uint8_t)(1u << i);
+                    if (runtime_motor_binding_count(i) > 0)
+                        binds_lo |= (uint8_t)(1u << i);
+                }
+                fault_detail = 0xE6000000u | ((uint32_t)binds_lo << 8) | modes_lo;
+            }
             break;
         }
     }
@@ -782,6 +854,11 @@ DECL_CTR("_DECL_OUTPUT "
 #define KALICO_OK_C          0
 #define KALICO_ERR_NO_STEP_C (-25)
 
+// Forward decl: defined in src/stepper.c. -Wimplicit-function-declaration is
+// promoted to error under the sim build's stricter flags, so a header-less
+// extern is required here.
+extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
+
 struct step_timer_ctx {
     struct timer timer;
     uint8_t stepper_idx; // 0-based engine stepper index
@@ -789,6 +866,15 @@ struct step_timer_ctx {
 };
 
 static struct step_timer_ctx step_timers[MAX_STEPPER_OIDS_C];
+
+// 2026-05-13 bench debug counters. Volatile because step_time_event (ISR)
+// and arm_step_time_steppers_after_push (foreground) write them; status
+// drain reads them. ARMv7-M atomic 32-bit loads/stores make this safe
+// without an explicit fence.
+volatile uint32_t step_time_event_fires __attribute__((used, externally_visible));
+volatile uint32_t step_time_arm_attempts __attribute__((used, externally_visible));
+volatile uint32_t step_time_arm_success __attribute__((used, externally_visible));
+volatile uint32_t step_time_no_step_polls __attribute__((used, externally_visible));
 
 // Defined in src/runtime_commands.c (Task D3). Samples all active endstop
 // GPIO slots for the given stepper index. Called from step_time_event so
@@ -803,6 +889,7 @@ extern void runtime_endstop_sample_one(uint8_t stepper_idx);
 static uint_fast8_t
 step_time_event(struct timer *t)
 {
+    step_time_event_fires++;
     struct step_timer_ctx *ctx =
         container_of(t, struct step_timer_ctx, timer);
 
@@ -866,6 +953,7 @@ step_time_event(struct timer *t)
         //
         // `runtime_clock_freq` is defined at file scope (line 52, const) —
         // no extern declaration needed inside this function.
+        step_time_no_step_polls++;
         t->waketime += (runtime_clock_freq / 1000U);
         return SF_RESCHEDULE;
     }
@@ -954,9 +1042,11 @@ arm_step_time_steppers_after_push(void)
         // retries every 1 ms. The first poll fire after the engine activates
         // the segment will succeed and switch to real Newton-iterated step
         // timing. Until then we burn ~1 kHz wakeups per stepper, trivial cost.
+        step_time_arm_attempts++;
         uint64_t first_cycles_abs = 0;
         int32_t err = kalico_runtime_arm_step_timer(
             runtime_handle, i, now_widened, &first_cycles_abs, NULL);
+        if (err == KALICO_OK_C) step_time_arm_success++;
         uint32_t waketime;
         if (err == KALICO_OK_C) {
             waketime = (uint32_t)first_cycles_abs;
