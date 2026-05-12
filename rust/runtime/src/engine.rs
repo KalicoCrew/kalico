@@ -1143,6 +1143,178 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             .store(RuntimeStatus::Running as u8, Ordering::Release);
         Ok(())
     }
+
+    /// Compute the absolute MCU clock cycle at which the next step pulse should
+    /// fire for stepper `stepper_idx`, given the currently active segment.
+    ///
+    /// `stepper_idx` is in motor space (same indexing as `step_state` /
+    /// `stepper_counts`). For Cartesian kinematics: 0=X, 1=Y, 2=Z, 3=E. For
+    /// CoreXY: 0=A(=X+Y), 1=B(=X−Y), 2=Z, 3=E. CoreXY motors 0 and 1 require
+    /// two curves each and are **not yet supported** — they return `None`.
+    ///
+    /// Returns `None` when:
+    /// - No active segment (`engine.current` is `None`)
+    /// - `stepper_idx` is out of range
+    /// - The axis curve handle is the UNUSED sentinel
+    /// - The curve pool lookup fails (stale handle)
+    /// - The Newton solver reports `SegmentExhausted` (no more steps in this
+    ///   segment in the current direction)
+    ///
+    /// The returned value is an absolute cycle count (same domain as
+    /// `segment.t_start` / `segment.t_end`).
+    pub fn arm_step_timer(
+        &self,
+        pool: &CurvePool,
+        stepper_idx: u8,
+        now_cycles: u64,
+        current_step: i32,
+    ) -> Option<u64> {
+        let current = self.current.as_ref()?;
+
+        // Bounds-check: only 4 motors supported (indices 0–3).
+        let motor_idx = stepper_idx as usize;
+        if motor_idx >= 4 {
+            return None;
+        }
+
+        // Map motor index → axis curve handle.
+        // CoreXY motors 0 (A=X+Y) and 1 (B=X−Y) require combining two curves;
+        // not yet implemented — return None.
+        let (handle, is_corexy_xy) = match current.kinematics {
+            KinematicTag::CoreXyAndE => match motor_idx {
+                0 | 1 => return None, // A and B motors: combined X+Y / X-Y
+                2 => (current.z_handle, false),
+                3 => (current.e_handle, false),
+                _ => return None,
+            },
+            KinematicTag::CartesianXyzAndE => match motor_idx {
+                0 => (current.x_handle, false),
+                1 => (current.y_handle, false),
+                2 => (current.z_handle, false),
+                3 => (current.e_handle, false),
+                _ => return None,
+            },
+        };
+        let _ = is_corexy_xy; // reserved for future combined-curve path
+
+        // UNUSED sentinel → axis is constant (no curve); no steps to schedule.
+        if handle.is_unused_sentinel() {
+            return None;
+        }
+
+        // Resolve the curve from the pool.
+        let cv = pool.resolve(handle)?;
+
+        // Segment time domain.
+        let t_start = current.t_start;
+        let t_end = current.t_end;
+
+        // steps_per_mm for this motor axis.
+        let spm = self
+            .step_state
+            .get(motor_idx)
+            .map(|s| s.debug_steps_per_mm())
+            .unwrap_or(0.0);
+        if spm <= 0.0 {
+            // Axis not configured; can't compute step timing.
+            return None;
+        }
+        let step_distance_mm = 1.0_f32 / spm;
+
+        // Convert to normalized segment domain BEFORE entering f32 to avoid
+        // catastrophic cancellation when t_start is a large absolute cycle count.
+        // The u64 subtraction (now_cycles - t_start) is done in integer space.
+        // f32 has 24-bit mantissa → at cycle counts ≥ 2^24 (~93 ms at 180 MHz)
+        // subtracting two large close f32 values in the absolute domain loses
+        // 1-cycle precision per LSB, growing linearly with print time. Normalizing
+        // first keeps both operands near 0..1 where f32 precision is exact.
+        let duration = t_end.saturating_sub(t_start);
+        if duration == 0 {
+            return None;
+        }
+        let t_curr_norm = now_cycles.saturating_sub(t_start) as f32 / duration as f32;
+        let t_end_norm = 1.0_f32;
+
+        if t_curr_norm < 0.0 || t_curr_norm >= 1.0 {
+            return None;
+        }
+
+        let eval = |t_norm: f32| -> (f32, f32) {
+            let u = t_norm.clamp(0.0, 1.0);
+            match scalar_eval_with_derivative(&cv, u) {
+                Ok((pos_mm, dpos_du)) => {
+                    // dpos_du is mm per normalized unit (mm per segment).
+                    // The Newton solver's velocity is in the same domain as its
+                    // time argument (normalized), so no chain-rule scaling needed.
+                    (pos_mm, dpos_du)
+                }
+                Err(()) => (0.0, 0.0),
+            }
+        };
+
+        let q = crate::step_time::StepTimeQuery {
+            eval: &eval,
+            step_distance: step_distance_mm,
+            current_step,
+            t_curr: t_curr_norm,
+            t_segment_end: t_end_norm,
+        };
+
+        match crate::step_time::compute_next_step_time(&q) {
+            crate::step_time::StepTimeResult::NextAt(t_norm_next) => {
+                // Convert back to absolute cycles in integer space.
+                // dt_norm is the fractional step over the segment; multiplying
+                // by duration (u64) gives the cycle delta without any f32
+                // precision loss from large absolute offsets.
+                let dt_norm = t_norm_next - t_curr_norm;
+                let dt_cycles = (dt_norm * duration as f32) as u64;
+                Some(now_cycles + dt_cycles)
+            }
+            crate::step_time::StepTimeResult::SegmentExhausted => None,
+        }
+    }
+}
+
+/// Compute the next step-pulse cycle for stepper `stepper_idx` using the
+/// `RuntimeContext`'s currently active segment.
+///
+/// Called from the per-stepper step-time `struct timer` ISR (Task D1's
+/// `step_time_event` in C) and from the foreground configure/segment-load
+/// path. Forms `&IsrState` via `IsrState::raw_ref_from_ctx`; safety
+/// requires no concurrent `&mut IsrState` writer at the call site.
+///
+/// The invariant: TIM5 is the only writer that forms `&mut IsrState`
+/// (in its handler). Task D2 guarantees TIM5 is disabled whenever no
+/// stepper is in `Modulated` mode, so on F4 (no PHASE_STEPPING capability)
+/// TIM5 never enables and `&IsrState` from this path is exclusive. On
+/// H7 with mixed Modulated/StepTime steppers, callers must ensure their
+/// invocation does not interleave with a TIM5 ISR fire — either by
+/// preempting TIM5 (higher NVIC priority for the step-time timer) or
+/// by gating the call on `Modulated` count.
+///
+/// Returns `None` on the same conditions as `Engine::arm_step_timer`.
+#[allow(unsafe_code)]
+pub fn arm_step_timer_for_stepper(
+    ctx: &crate::state::RuntimeContext,
+    stepper_idx: u8,
+    now_cycles: u64,
+) -> Option<u64> {
+    // SAFETY: We form a shared (non-exclusive) reference to IsrState.
+    // The caller guarantees this is invoked from the ISR context where no
+    // concurrent &mut IsrState is held. `UnsafeCell::raw_get` is the
+    // canonical pattern for this crate (see runtime_ffi.rs).
+    let isr: &crate::state::IsrState =
+        // SAFETY: isr field is valid, initialized at RuntimeContext::init time,
+        // and we hold only a shared reference here.
+        unsafe { &*crate::state::IsrState::raw_ref_from_ctx(ctx) };
+
+    let current_step = ctx
+        .shared
+        .stepper_counts
+        .get(stepper_idx as usize)?
+        .load(core::sync::atomic::Ordering::Acquire);
+
+    isr.engine.arm_step_timer(&ctx.curve_pool, stepper_idx, now_cycles, current_step)
 }
 
 /// Plain-eval form for the E-axis paths (segment-retire endpoint sync and

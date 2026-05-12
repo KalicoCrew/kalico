@@ -20,6 +20,7 @@ pub mod config;
 pub mod curve_pool;
 pub mod endstop;
 pub mod engine;
+pub use engine::arm_step_timer_for_stepper;
 pub mod error;
 pub mod kinematics;
 pub mod queue;

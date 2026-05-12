@@ -139,6 +139,22 @@ pub struct IsrState {
     pub widen_state: WidenState,
 }
 
+impl IsrState {
+    /// Return a raw const pointer to the `IsrState` inside `ctx`.
+    ///
+    /// Used by `engine::arm_step_timer_for_stepper` to form a shared reference
+    /// to the ISR-owned engine and curve-pool state without taking `&mut
+    /// IsrState`. The caller is responsible for the aliasing discipline (see
+    /// the function's SAFETY doc).
+    pub fn raw_ref_from_ctx(ctx: &RuntimeContext) -> *const Self {
+        // `addr_of!` does not form a reference; `raw_get` returns a raw
+        // pointer from the UnsafeCell without any unsafe operation.
+        // The caller is responsible for upholding the non-exclusive borrow
+        // invariant when it dereferences the returned pointer.
+        core::cell::UnsafeCell::raw_get(core::ptr::addr_of!(ctx.isr))
+    }
+}
+
 /// Cross-half shared state. Atomics only; no `&mut` reaches this struct.
 #[derive(Debug)]
 pub struct SharedState {

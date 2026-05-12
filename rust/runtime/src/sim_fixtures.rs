@@ -99,6 +99,190 @@ fn cubic_bezier_xy(
     (3, 4, 8, 4)
 }
 
+// ─── Integration-test helpers (engine + RuntimeContext) ────────────────────
+//
+// These functions are compiled as part of the `kalico-sim` feature so the
+// `step_time_engine` integration test can use them via:
+//
+//   cargo test -p runtime --features kalico-sim --test step_time_engine
+//
+// They are NOT part of the Renode-sim escape hatch; they live in this module
+// purely for proximity with other fixture-level helpers.
+
+/// Clock frequency used by `init_test_runtime`. Chosen so that 400 steps/mm
+/// at 1 mm/s produces a first-step time of exactly 450,000 cycles:
+///
+///   step_distance = 1/400 mm = 0.0025 mm
+///   dt_to_first_step = 0.0025 s
+///   cycles = 0.0025 × 180_000_000 = 450_000
+pub const TEST_CLOCK_FREQ: u32 = 180_000_000;
+
+/// Z-axis step resolution used by `push_test_segment_linear_z`. Matches a
+/// common 400 step/mm Z lead-screw (T8 lead-screw + 16× microstep on a
+/// 200-step motor).
+pub const TEST_Z_STEPS_PER_MM: f32 = 400.0;
+
+/// Initialize a `RuntimeContext` suitable for the step-time engine tests.
+///
+/// The ISR-side engine is configured for Cartesian kinematics with:
+///   - Motor 2 (Z): 400 steps/mm
+///   - Motors 0, 1, 3 (X, Y, E): 80 steps/mm (placeholder; tests use Z only)
+///
+/// The queue / trace backing stores are Box::leaked so the `Producer` /
+/// `Consumer` halves carry `'static` lifetimes as required by the type.
+/// `queue_storage` and `trace_storage` inside the returned `RuntimeContext`
+/// are dummy (never used — the split halves reference the separate leaked
+/// queues).
+#[allow(unsafe_code)]
+pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
+    use core::cell::UnsafeCell;
+    use heapless::spsc::Queue;
+
+    use crate::clock::WidenState;
+    use crate::config::{McuAxisConfig, MotorConfig};
+    use crate::curve_pool::CurvePool;
+    use crate::queue::Q_N;
+    use crate::reclaim::RetirementTable;
+    use crate::segment::{KinematicTag, Segment};
+    use crate::state::{EngineImpl, FgState, IsrState, RuntimeContext, SharedState};
+    use crate::stream::FgStreamState;
+    use crate::trace::{TRACE_RING_N, TraceSample};
+
+    // Box::leak the queues so Producer/Consumer halves are 'static.
+    let seg_queue: &'static mut Queue<Segment, Q_N> =
+        Box::leak(Box::new(Queue::new()));
+    let (q_producer, q_consumer) = seg_queue.split();
+
+    let trace_queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
+        Box::leak(Box::new(Queue::new()));
+    let (t_producer, t_consumer) = trace_queue.split();
+
+    let mut engine = EngineImpl::new(TEST_CLOCK_FREQ);
+    engine.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig {
+                steps_per_mm: TEST_Z_STEPS_PER_MM,
+                is_awd: false,
+                invert_dir: false,
+            }),
+            Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+        ],
+        kinematics: KinematicTag::CartesianXyzAndE,
+    });
+
+    Box::new(RuntimeContext {
+        fg: UnsafeCell::new(FgState {
+            queue_producer: q_producer,
+            trace_consumer: t_consumer,
+            stream_state_machine: FgStreamState::Idle,
+            current_stream_id: None,
+            armed_t_start_t0: None,
+            first_priming_segment_t_start: None,
+            terminal_segment_id: None,
+            flush_start_tick: None,
+            retirement_table: RetirementTable::new(),
+        }),
+        isr: UnsafeCell::new(IsrState {
+            queue_consumer: q_consumer,
+            trace_producer: t_producer,
+            engine,
+            widen_state: WidenState::default(),
+        }),
+        shared: SharedState::new(),
+        curve_pool: CurvePool::new(),
+        // Backing storage not used — we split from the leaked queues above.
+        queue_storage: UnsafeCell::new(Queue::new()),
+        trace_storage: UnsafeCell::new(Queue::new()),
+    })
+}
+
+/// Push a Z-only linear segment into the engine's active-segment slot,
+/// starting at the given absolute cycle anchor `t_start`.
+///
+/// Synthesizes a degree-3 Bézier Z curve with collinear control points so
+/// that `z_position(u) = velocity_mm_s * duration_s * u` — exactly linear
+/// motion at the given velocity over the segment duration.
+///
+/// The segment is placed directly into `engine.current` (bypassing the SPSC
+/// queue) so `arm_step_timer_for_stepper` can find it immediately without a
+/// preceding tick. All other axis handles are set to `UNUSED_SENTINEL` with
+/// Cartesian kinematics.
+///
+/// - `t_start`: absolute cycle at which the segment begins
+/// - `velocity_mm_s`: Z velocity in mm/s (must be > 0)
+/// - `duration_s`: segment duration in seconds
+///
+/// **Motor-space note:** stepper_idx = 2 is the Z motor in both CoreXY and
+/// Cartesian kinematics; the generated curve is consumed via the z_handle.
+#[allow(unsafe_code)]
+pub fn push_test_segment_linear_z_at(
+    ctx: &mut crate::state::RuntimeContext,
+    t_start: u64,
+    velocity_mm_s: f32,
+    duration_s: f32,
+) {
+    use crate::config::EMode;
+    use crate::curve_pool::CurveHandle;
+    use crate::segment::{KinematicTag, Segment};
+
+    // Duration in cycles.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let duration_cycles: u64 = (duration_s * TEST_CLOCK_FREQ as f32) as u64;
+
+    // Total Z displacement: velocity × duration.
+    let z_end_mm = velocity_mm_s * duration_s;
+
+    // Degree-3 Bézier with collinear CPs at 0, L/3, 2L/3, L.
+    // This gives exactly position(u) = L * u (linear in u).
+    let cp0 = 0.0_f32;
+    let cp1 = z_end_mm / 3.0;
+    let cp2 = z_end_mm * 2.0 / 3.0;
+    let cp3 = z_end_mm;
+    let cps = [cp0, cp1, cp2, cp3];
+    // Clamped degree-3 knot vector: [0, 0, 0, 0, 1, 1, 1, 1].
+    let knots = [0.0_f32, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+
+    // Load into curve pool at slot 0 (test assumes a freshly-init pool).
+    let z_handle = ctx
+        .curve_pool
+        .validate_and_load(0, 3, &knots, &cps)
+        .expect("Z curve must load into fresh pool");
+
+    // Place the segment directly into engine.current so arm_step_timer sees
+    // it without needing a preceding tick.
+    // SAFETY: we hold &mut RuntimeContext so no concurrent ISR access exists.
+    let isr = unsafe { &mut *ctx.isr.get() };
+    isr.engine.current = Some(Segment {
+        id: 1,
+        x_handle: CurveHandle::UNUSED_SENTINEL,
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start,
+        t_end: t_start + duration_cycles,
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+    });
+}
+
+/// Push a Z-only linear segment into the engine's active-segment slot,
+/// starting at cycle 0.
+///
+/// Thin wrapper around [`push_test_segment_linear_z_at`] with `t_start = 0`.
+/// See that function for full documentation.
+pub fn push_test_segment_linear_z(
+    ctx: &mut crate::state::RuntimeContext,
+    velocity_mm_s: f32,
+    duration_s: f32,
+) {
+    push_test_segment_linear_z_at(ctx, 0, velocity_mm_s, duration_s);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
