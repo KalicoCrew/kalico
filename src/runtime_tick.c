@@ -127,7 +127,7 @@ volatile struct rt_diag_persistent rt_diag_persistent
 // value. Without this guard, the 10 Hz status drain only ever surfaces the
 // most-recent breadcrumb, which on a shutdown chip is dominated by 0xCF (USB
 // RX) and 0xCE (kalico-frame entry) because foreground tasks keep running.
-static volatile uint8_t runtime_diag_frozen __attribute__((used, externally_visible));
+volatile uint8_t runtime_diag_frozen __attribute__((used, externally_visible));
 
 __attribute__((used, externally_visible))
 void
