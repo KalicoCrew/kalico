@@ -31,6 +31,7 @@ pub mod slot;
 pub mod state;
 pub use state::StepMode;
 pub mod step;
+pub mod step_time;
 pub mod stream;
 pub mod trace;
 pub mod wire;
