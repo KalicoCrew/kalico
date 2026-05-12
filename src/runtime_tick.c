@@ -121,20 +121,10 @@ struct rt_diag_persistent {
 volatile struct rt_diag_persistent rt_diag_persistent
     __attribute__((section(".persistent_diag"), used, externally_visible));
 
-// Once a shutdown-tagged breadcrumb is written (tag 0xD0 = oid_alloc shutdown
-// path; extend as new shutdown breadcrumbs are added), freeze the diag word so
-// subsequent demux pumps / dispatch entries don't overwrite the cause-of-death
-// value. Without this guard, the 10 Hz status drain only ever surfaces the
-// most-recent breadcrumb, which on a shutdown chip is dominated by 0xCF (USB
-// RX) and 0xCE (kalico-frame entry) because foreground tasks keep running.
-volatile uint8_t runtime_diag_frozen __attribute__((used, externally_visible));
-
 __attribute__((used, externally_visible))
 void
 runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
 {
-    if (runtime_diag_frozen)
-        return;
     uint32_t packed = ((tag & 0xFFu) << 24)
                     | ((stage & 0xFFu) << 16)
                     | (value & 0xFFFFu);
@@ -142,13 +132,6 @@ runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
     rt_diag_persistent.magic = RT_DIAG_MAGIC;
     rt_diag_persistent.last_packed = packed;
     rt_diag_persistent.last_us = timer_read_time();
-    // Tag 0xD0 is the "fatal" breadcrumb family (oid_alloc shutdown paths).
-    // Any other tag added later that precedes a `shutdown(...)` call should
-    // freeze too — e.g. via a `runtime_diag_freeze()` helper. Latch first
-    // hit only; clearing on resume is a deliberate non-feature (shutdown
-    // is terminal in production).
-    if (tag == 0xD0)
-        runtime_diag_frozen = 1;
 }
 
 // Emission of rt_diag_persistent is inlined into
@@ -488,8 +471,20 @@ runtime_status_drain(void)
     // status frame's fault_detail, so we see live FFI progress at the
     // 10 Hz status cadence without needing the foreground-blocked
     // `output(...)` path. See `runtime_diag_progress` comments above.
-    if (last_err == 0 && runtime_diag_last_packed != 0) {
-        fault_detail = runtime_diag_last_packed;
+    if (last_err == 0) {
+        if (runtime_diag_last_packed != 0) {
+            fault_detail = runtime_diag_last_packed;
+        } else if (rt_diag_persistent.magic == RT_DIAG_MAGIC
+                   && rt_diag_persistent.last_packed != 0) {
+            // Survive the F446 NVIC_SystemReset: at fresh boot,
+            // `runtime_diag_last_packed` is zero (regular .bss), but
+            // `rt_diag_persistent` (NOLOAD .persistent_diag) carries the
+            // last pre-reset diag word. Surface it via the SAME status
+            // piggyback path so klippy.log captures the cause-of-death
+            // stage of the previous run. Once runtime_diag_progress fires
+            // on this boot, the if-arm above takes over.
+            fault_detail = rt_diag_persistent.last_packed;
+        }
     }
 
     // Phase C: replace the legacy `kalico_status_v6` Klipper-protocol output

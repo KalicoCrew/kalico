@@ -194,11 +194,6 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
 {
     if (len == 0)
         return;
-    // Pre-pump breadcrumb. tag=0xCF = "demux pump entry, before any state-machine touch".
-    // Surfaces every USB-CDC RX delivery to the demuxer so we can see whether
-    // bytes are even reaching us when a frame appears lost.
-    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
-    runtime_diag_progress(0xCF, 1, (uint32_t)len);
     uint32_t now = timer_read_time();
     if (state != DEMUX_S_WAITING) {
         uint32_t idle_ticks = now - last_byte_time;
