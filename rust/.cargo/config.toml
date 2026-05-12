@@ -13,13 +13,30 @@ rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
 # with "uses VFP register arguments, klipper.elf does not". Use the
 # soft-ABI target. Step 6 (phase stepping) may revisit and switch the
 # whole H7 firmware to hard-float if the cycle budget demands it.
+#
+# IMPORTANT: target-cpu is set conservatively to cortex-m4 because the same
+# rust target (thumbv7em-none-eabi) is used for BOTH H7 (cortex-m7) and F4
+# (cortex-m4) Klipper builds. The Makefile-driven cargo invocation tunes
+# this per-target via the KALICO_RUST_FEATURES path (mcu-h7 / mcu-f4),
+# but `target-cpu` is a rustflag not a feature, so it has to be safe for
+# every architecture this target supports. Cortex-M4F is a strict subset
+# of Cortex-M7's ISA, so cortex-m4 codegen runs fine on both — whereas
+# cortex-m7 codegen emits instructions (e.g. some DSP / SIMD variants)
+# that the F446 silently mis-decodes into HardFault.
+#
+# Bench-2026-05-12: F446's ConfigureAxes consistently crashed with USB
+# disconnect (host BrokenPipe) because the FFI's engine.configure() pulled
+# in a cortex-m7-only instruction encoding compiled under the prior
+# target-cpu=cortex-m7 setting. Switching to cortex-m4 here is the fix.
 [target.thumbv7em-none-eabi]
 rustflags = [
-    "-C", "target-cpu=cortex-m7",
+    "-C", "target-cpu=cortex-m4",
     # No `+strict-align`: it forces compiler_builtins to emit byte-by-byte
     # memcpy/memset that get linked as weak symbols and override libgcc's
     # word-aligned versions for the entire firmware, including Klipper's
     # USB stack. Cortex-M7 permits unaligned word/halfword access by default
-    # (CCR.UNALIGN_TRP=0 at reset) so the standard fast copies are correct.
+    # (CCR.UNALIGN_TRP=0 at reset) so the standard fast copies are correct
+    # there too; Cortex-M4F enforces alignment for some accesses but the
+    # generated codegen for our types (no packed access) is alignment-safe.
     "-C", "link-arg=--nmagic",
 ]
