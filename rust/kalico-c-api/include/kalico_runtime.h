@@ -533,6 +533,20 @@ int32_t kalico_runtime_compute_next_step_time(struct KalicoRuntime *rt,
                                               int8_t *out_dir);
 
 /**
+ * Apply `delta_steps` to `shared.stepper_counts[stepper_idx]` atomically.
+ * Called by the C-side `step_time_event` ISR after `runtime_emit_step_pulses`
+ * to commit the just-emitted step into the engine's step counter so the
+ * Newton solver's `current_step` read advances on the next ISR call.
+ *
+ * Manually added 2026-05-12 — cbindgen not installed locally for regen.
+ * If you regenerate from the source crate, leave this declaration intact
+ * (cbindgen will produce an equivalent block).
+ */
+int32_t kalico_runtime_apply_step(struct KalicoRuntime *rt,
+                                  uint8_t stepper_idx,
+                                  int32_t delta_steps);
+
+/**
  * Read the current `StepMode` discriminant for `stepper_idx`.
  *
  * Used by the C-side `arm_step_time_steppers_after_push` to determine

@@ -807,14 +807,42 @@ step_time_event(struct timer *t)
         container_of(t, struct step_timer_ctx, timer);
 
     // Ask the engine for the next step time and direction.
-    // `t->waketime` (u32) is the most recent fire time; widen to u64 for
-    // the FFI (the engine tracks its own high-half wrap separately).
+    //
+    // `t->waketime` is u32 (Klipper scheduler resolution = low 32 bits of
+    // DWT->CYCCNT). The engine compares against `segment.t_start` which
+    // is in widened u64 cycle space (klippy stamps each segment with a
+    // widened MCU clock at push time — accumulated 2^32 wraps included).
+    //
+    // Bench wedge 2026-05-12: passing `(uint64_t)t->waketime` directly
+    // sets high=0, so `now_cycles < t_start` saturating-subbed to 0,
+    // `t_curr_norm` clamped to 0, Newton solver returned step time
+    // "near u=0" with `current_step` reading from `stepper_counts` which
+    // step_time_event never increments — engine retired the segment
+    // (engine_status -> Drained) without ever asking compute_next_step_time
+    // for non-zero step output. `engine_status` showed `2` (Drained, not
+    // Running) for many seconds with `current_segment_id` frozen at the
+    // last-retired id (see RuntimeStatus::Drained = 2 in engine.rs:148).
+    //
+    // Fix: widen `t->waketime` using Klipper's stats-based widening
+    // (same widening klippy uses for the host-side segment t_start
+    // stamp — see `runtime_widened_host_clock`, runtime_tick.c:179).
+    // The two widenings align at boot and stay aligned by virtue of
+    // sharing `stats_send_time_high`, so engine.arm_step_timer sees
+    // `now_cycles` in the same frame as `segment.t_start`.
+    extern uint32_t stats_send_time;
+    extern uint32_t stats_send_time_high;
+    uint32_t waketime_low = t->waketime;
+    uint32_t now_high = stats_send_time_high
+                      + (waketime_low < stats_send_time);
+    uint64_t now_cycles_widened = ((uint64_t)now_high << 32)
+                                | (uint64_t)waketime_low;
+
     uint64_t next_cycles_abs = 0;
     int8_t dir = 1;
     int32_t err = kalico_runtime_compute_next_step_time(
         runtime_handle,
         ctx->stepper_idx,
-        (uint64_t)t->waketime,
+        now_cycles_widened,
         &next_cycles_abs,
         &dir);
 
@@ -854,6 +882,15 @@ step_time_event(struct timer *t)
     int32_t n_steps = (dir >= 0) ? 1 : -1;
     runtime_emit_step_pulses(ctx->stepper_idx, n_steps);
 
+    // Commit the just-emitted step into `shared.stepper_counts` so the
+    // engine's `current_step` read in `arm_step_timer_for_stepper` advances
+    // on the next ISR call. Without this, the Newton solver always sees
+    // current_step=0 and re-solves for the SAME first-step time forever —
+    // pulses emit, but at the NO_STEP-poll rate (1 kHz) rather than the
+    // true Newton-iterated rate (bench wedge 2026-05-12). Mirrors
+    // engine.rs:1067 for the polled-tick path.
+    kalico_runtime_apply_step(runtime_handle, ctx->stepper_idx, n_steps);
+
     // Sample endstops armed on this stepper's axis. No-op stub until D3.
     runtime_endstop_sample_one(ctx->stepper_idx);
 
@@ -886,7 +923,14 @@ arm_step_time_steppers_after_push(void)
 {
     if (!runtime_handle) return;
 
+    // Widen `now` into the u64 cycle space the engine uses to stamp
+    // segment t_start. Foreground caller; using Klipper's stats-based
+    // widening (same source as `runtime_widened_host_clock`).
+    extern uint32_t stats_send_time;
+    extern uint32_t stats_send_time_high;
     uint32_t now = timer_read_time();
+    uint32_t now_high = stats_send_time_high + (now < stats_send_time);
+    uint64_t now_widened = ((uint64_t)now_high << 32) | (uint64_t)now;
 
     for (uint8_t i = 0; i < MAX_STEPPER_OIDS_C; i++) {
         // Skip steppers already running — the ISR reschedules itself.
@@ -912,7 +956,7 @@ arm_step_time_steppers_after_push(void)
         // timing. Until then we burn ~1 kHz wakeups per stepper, trivial cost.
         uint64_t first_cycles_abs = 0;
         int32_t err = kalico_runtime_arm_step_timer(
-            runtime_handle, i, (uint64_t)now, &first_cycles_abs, NULL);
+            runtime_handle, i, now_widened, &first_cycles_abs, NULL);
         uint32_t waketime;
         if (err == KALICO_OK_C) {
             waketime = (uint32_t)first_cycles_abs;

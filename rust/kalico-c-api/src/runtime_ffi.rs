@@ -1879,6 +1879,51 @@ pub mod exports {
         }
     }
 
+    /// Apply `delta_steps` to `shared.stepper_counts[stepper_idx]` atomically.
+    ///
+    /// Called by the C-side `step_time_event` ISR after `runtime_emit_step_pulses`
+    /// to commit the just-emitted step into the engine's step counter. Without
+    /// this, `arm_step_timer_for_stepper`'s `current_step` read stays at 0
+    /// forever and the Newton solver always solves for the FIRST step within
+    /// the active segment — the timer fires, emits a step, then computes the
+    /// same first-step time again and never advances along the curve (bench
+    /// wedge 2026-05-12: engine retired segments by virtue of `Engine::tick`'s
+    /// `now` advancing, but step pulses-per-second was capped at the
+    /// 1 kHz NO_STEP poll rate rather than the true Newton-iterated step rate).
+    ///
+    /// Mirrors `engine.rs:1067`'s `counter.fetch_add(step_result.n_steps, ...)`
+    /// for the polled-tick / Modulated path.
+    ///
+    /// Returns `KALICO_OK` or an error.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_apply_step(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+        delta_steps: i32,
+    ) -> i32 {
+        use runtime::state::MAX_STEPPER_OIDS;
+        if rt.is_null() || (stepper_idx as usize) >= MAX_STEPPER_OIDS {
+            return KALICO_ERR_INVALID_HANDLE;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null + INIT_DONE=true. `stepper_counts` are
+        // `AtomicI32` entries in `SharedState`; the AcqRel fetch_add is
+        // ISR-safe (TIM5 path uses the same Ordering for its own emissions).
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            if let Some(counter) = shared.stepper_counts.get(stepper_idx as usize) {
+                counter.fetch_add(delta_steps, Ordering::AcqRel);
+                KALICO_OK
+            } else {
+                KALICO_ERR_INVALID_HANDLE
+            }
+        }
+    }
+
     /// Read the current `StepMode` discriminant for `stepper_idx`.
     ///
     /// Used by the C-side `arm_step_time_steppers_after_push` to determine
