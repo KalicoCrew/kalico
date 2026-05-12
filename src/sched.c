@@ -336,20 +336,18 @@ sched_shutdown(uint_fast8_t reason)
     // Capture caller-LR + shutdown reason in the kalico runtime diag word
     // so fault_detail piggyback surfaces WHICH code site triggered the
     // shutdown. Pack: tag=0xDB, stage=reason, value=lr & 0xFFFF.
-    {
-        extern volatile uint32_t runtime_diag_last_packed;
-        extern volatile uint8_t runtime_diag_frozen;
-        uint32_t lr;
-        asm volatile("mov %0, lr" : "=r"(lr));
-        if (!runtime_diag_frozen) {
-            uint32_t packed = ((uint32_t)0xDBu << 24)
-                            | ((uint32_t)(reason & 0xFFu) << 16)
-                            | (lr & 0xFFFFu);
-            runtime_diag_last_packed = packed;
-            runtime_diag_frozen = 1;
-        }
-        asm volatile("" ::: "memory");
+    extern volatile uint32_t runtime_diag_last_packed;
+    extern volatile uint8_t runtime_diag_frozen;
+    uint32_t lr;
+    asm volatile("mov %0, lr" : "=r"(lr));
+    if (!runtime_diag_frozen) {
+        uint32_t packed = ((uint32_t)0xDBu << 24)
+                        | ((uint32_t)(reason & 0xFFu) << 16)
+                        | (lr & 0xFFFFu);
+        runtime_diag_last_packed = packed;
+        runtime_diag_frozen = 1;
     }
+    asm volatile("" ::: "memory");
 #endif
     irq_disable();
     longjmp(shutdown_jmp, reason);
