@@ -1078,38 +1078,47 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             0
         };
-        // §13.1: trace-ring overflow handling. Only SEGMENT_END drops are fatal
-        // — the production `runtime_drain` path's only load-bearing consumer
-        // of the trace stream is `drain_and_reclaim`, which acts ONLY on
-        // SEGMENT_END flags (other samples are drained and discarded). The
-        // streamed `kalico_trace count=N data=*` output to the host is
-        // size-larger-than-USB-CDC-transmit_buf (320 B) so it gets dropped
-        // by `console_sendf` anyway, making non-SEGMENT_END samples invisible
-        // to the host in production. Therefore:
-        //   - SEGMENT_END drop  → fatal (pool reclaim would lose a slot)
-        //   - other drop        → silently swallowed
+        // §13.1: trace-ring usage. The production `runtime_drain` path's only
+        // load-bearing consumer of the trace stream is `drain_and_reclaim`,
+        // which acts ONLY on `TRACE_FLAG_SEGMENT_END` samples — per-tick
+        // samples are drained and discarded. The streamed `kalico_trace
+        // count=N data=*` output to the host is wider than the USB-CDC 320 B
+        // `transmit_buf` so `console_sendf` silently drops it in production
+        // anyway. Per-tick samples are observably unused.
         //
-        // Bench-2026-05-12: F446's 180 MHz foreground couldn't drain a
-        // 40 kHz-fed 1199-deep ring under sustained motion load — the ring
-        // overflowed within ~30 ms and `TraceOverflow` latched on segment 2
-        // of an XY jog. The fault was triggered by a NON-SEGMENT_END drop;
-        // the per-tick samples it represented were unused. Filtering the
-        // fault to SEGMENT_END drops lets F446 keep up with the engine.
-        let enqueue_failed = trace
-            .enqueue(TraceSample {
-                tick: now,
-                motor_a: state.motors[0],
-                motor_b: state.motors[1],
-                motor_z: state.motors[2],
-                motor_e: state.motors[3],
-                segment_id: current.id,
-                curve_handle: current.x_handle,
-                flags: segment_end_flag,
-                _pad: [0; 7],
-            })
-            .is_err();
-        if enqueue_failed && segment_end_flag != 0 {
-            shared.sample_drop_pending.store(true, Ordering::Release);
+        // Therefore: enqueue ONLY when SEGMENT_END is set. This makes the
+        // 1199-deep ring effectively unbounded in steady state (one entry
+        // per ~10 Hz segment retirement vs the 40 kHz ISR previously hammering
+        // every tick), eliminating the F446 trace-overflow fault entirely
+        // (180 MHz soft-float foreground previously couldn't drain a fully-
+        // fed ring fast enough to stay ahead, latching `TraceOverflow` mid-
+        // motion). H7 retains identical observable behaviour — its slower
+        // 64 k/s vs 40 k/s drain-vs-fill margin was already comfortable, and
+        // the runtime_drain path still receives every SEGMENT_END.
+        //
+        // If a future cycle wants per-tick host visibility (e.g. live phase
+        // current logging) the path is: (a) widen `transmit_buf`, (b) re-
+        // introduce per-tick enqueue gated on a new `runtime_trace_verbose`
+        // shared flag, (c) keep the SEGMENT_END-drop-only fault filter.
+        if segment_end_flag != 0 {
+            let enqueue_failed = trace
+                .enqueue(TraceSample {
+                    tick: now,
+                    motor_a: state.motors[0],
+                    motor_b: state.motors[1],
+                    motor_z: state.motors[2],
+                    motor_e: state.motors[3],
+                    segment_id: current.id,
+                    curve_handle: current.x_handle,
+                    flags: segment_end_flag,
+                    _pad: [0; 7],
+                })
+                .is_err();
+            if enqueue_failed {
+                // SEGMENT_END drop is still fatal — losing the marker would
+                // leak a CurvePool slot since reclaim is driven by it.
+                shared.sample_drop_pending.store(true, Ordering::Release);
+            }
         }
         // Round-2 B14: when the segment is about to retire (last sample in
         // its window emits SEGMENT_END), advance retired_through_segment_id
