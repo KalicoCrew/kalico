@@ -819,11 +819,27 @@ step_time_event(struct timer *t)
         &dir);
 
     if (err != KALICO_OK_C) {
-        // KALICO_ERR_NO_STEP (segment exhausted) or any other error.
-        // The engine will re-arm this timer when the next segment arrives
-        // via arm_step_time_steppers_after_push.
-        ctx->enabled = 0;
-        return SF_DONE;
+        // KALICO_ERR_NO_STEP fires under several conditions:
+        //   (a) Engine hasn't dequeued the just-pushed segment yet (TIM5 lags
+        //       arm_step_time_steppers_after_push by up to one TIM5 interval),
+        //       so engine.current is still None.
+        //   (b) `now < segment.t_start` — segment is scheduled in the future
+        //       and arm_step_timer's `t_curr_norm < 0` guard fires.
+        //   (c) Current segment exhausted for this axis (no more steps in
+        //       this direction within [t_curr, t_end]) — a new segment may
+        //       arrive with motion on this axis.
+        //   (d) End of motion — no more segments coming.
+        //
+        // For (a)/(b)/(c) the timer must keep polling so it can pick up the
+        // next available step the moment one exists. (d) is indistinguishable
+        // from (c) at this layer, so we accept a ~1 kHz idle wakeup per
+        // StepTime stepper between motions. F4 with 1 Z stepper: trivial.
+        // H7 with 4 XY+E StepTime steppers: ~few µs × 4 = <0.1% CPU.
+        //
+        // `runtime_clock_freq` is defined at file scope (line 52, const) —
+        // no extern declaration needed inside this function.
+        t->waketime += (runtime_clock_freq / 1000U);
+        return SF_RESCHEDULE;
     }
 
     // Emit one step pulse on this motor (step-pin + dir-pin) through the
@@ -880,15 +896,31 @@ arm_step_time_steppers_after_push(void)
         uint8_t mode = kalico_runtime_get_step_mode(runtime_handle, i);
         if (mode != 1 /* StepMode::StepTime */) continue;
 
-        // Ask the engine for the first step time in this segment.
-        // Direction is not needed here — the ISR will receive it on its
-        // first fire via kalico_runtime_compute_next_step_time.
+        // Ask the engine for the first step time in this segment. This can
+        // legitimately fail at push time: arm_step_time_steppers_after_push
+        // runs in the foreground push_segment handler, but Engine::tick
+        // (TIM5 ISR) is what dequeues the just-pushed segment and sets
+        // engine.current. Between push_segment and the next TIM5 tick (up
+        // to one TIM5 interval — 25 µs on H7, 100 µs on F4) engine.current
+        // is still None and arm_step_timer returns NO_STEP. Also returns
+        // NO_STEP when `now < segment.t_start` (segment scheduled in the
+        // future, normal planner lead-time).
+        //
+        // Either way: register the timer at a poll waketime so step_time_event
+        // retries every 1 ms. The first poll fire after the engine activates
+        // the segment will succeed and switch to real Newton-iterated step
+        // timing. Until then we burn ~1 kHz wakeups per stepper, trivial cost.
         uint64_t first_cycles_abs = 0;
         int32_t err = kalico_runtime_arm_step_timer(
             runtime_handle, i, (uint64_t)now, &first_cycles_abs, NULL);
-        if (err != KALICO_OK_C) continue;
-
-        step_timers[i].timer.waketime = (uint32_t)first_cycles_abs;
+        uint32_t waketime;
+        if (err == KALICO_OK_C) {
+            waketime = (uint32_t)first_cycles_abs;
+        } else {
+            // Poll in 1 ms; step_time_event self-reschedules on NO_STEP.
+            waketime = now + (runtime_clock_freq / 1000U);
+        }
+        step_timers[i].timer.waketime = waketime;
         step_timers[i].enabled = 1;
         sched_add_timer(&step_timers[i].timer);
     }
