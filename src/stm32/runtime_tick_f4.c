@@ -56,15 +56,21 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Step-time scheduling refactor (spec §6.3): if no stepper is in
-    // Modulated mode, TIM5 has no work — leave it disabled. F4 (no
-    // PHASE_STEPPING capability) always hits this path; H7 with an
-    // all-StepTime config hits it too.
-    // `kalico_runtime_count_modulated_steppers` is declared in kalico_runtime.h
-    // (included above); no local extern needed.
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
-        return;
-    }
+    // Step-time scheduling refactor (spec §6.3 follow-up, 2026-05-12 bench
+    // wedge): TIM5 must run unconditionally because `Engine::tick` is the
+    // only driver of the engine state machine — segment dequeue (Idle →
+    // Running), retirement, and `kalico_credit_freed` emission all happen
+    // inside the ISR. Conditional-disable on F4 (always 0 Modulated
+    // steppers) stranded Z segments in the ring (engine stayed Idle), the
+    // host's slot pool filled, klippy timed out and reset the MCU.
+    //
+    // Per-axis step emission inside `Engine::tick` is now gated by
+    // `step_modes[i]`: StepTime axes (all of them on F4) skip the polled
+    // StepAccumulator path entirely; the per-stepper `struct timer` ISR
+    // (`step_time_event`) handles GPIO output via Newton-iterated waketimes.
+    // F4's TIM5 fires at 10 kHz (≈100 µs interval) and only does curve eval
+    // + bookkeeping — the wedge-grade saturation from the original 40 kHz
+    // unified-stepping path is not re-introduced.
 
     // Seed the engine's WidenState — see runtime_tick_h7.c::runtime_tick_enable
     // for the full rationale. Same race shape on F4 (slower clock, longer
@@ -107,9 +113,29 @@ runtime_tick_init(void)
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // 40 kHz tick: PSC = 0, ARR = (clock_freq / 40000) - 1.
+    // F4 band-aid (2026-05-12): 10 kHz tick instead of 40 kHz.
+    //
+    // F446 at 180 MHz can't sustain the runtime engine eval (~24 µs avg per
+    // call for a degree-3 NURBS with 64 control points) at 40 kHz: each TIM5
+    // fire takes 50+ µs, the IRQ tail-chains continuously, foreground is
+    // starved for >1 second and IWDG fires at 511 ms. Captured via F4
+    // prior_diag bench 2026-05-12 (tim5_max_cyc=10420, out_max_gap=191M
+    // cycles, eval avg=4304 cycles, hist bucket 2 = 11290 fires at 45-68 µs).
+    //
+    // 10 kHz puts the IRQ at ~50% CPU and gives foreground the other ~50%,
+    // which is enough for usb_bulk_out_task + watchdog kick. Step jitter
+    // becomes 100 µs (vs 25 µs at 40 kHz), invisible on Z which doesn't do
+    // phase stepping. The runtime engine handles multistepping per tick (one
+    // ISR emits as many step pulses as the accumulator crossed), so max step
+    // rate is not bound by tick rate.
+    //
+    // PROPER FIX: per-stepper StepTime scheduling for non-phase-stepped axes.
+    // Spec: docs/superpowers/specs/2026-05-12-step-time-scheduling-design.md
+    // (forthcoming). Once that lands, this rate can move back to whatever
+    // makes sense for any phase-stepped axes hosted on F4 in the future
+    // (none today), or TIM5 can be disabled entirely.
     TIM5->PSC = 0;
-    TIM5->ARR = (runtime_clock_freq / 40000U) - 1U;
+    TIM5->ARR = (runtime_clock_freq / 10000U) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;

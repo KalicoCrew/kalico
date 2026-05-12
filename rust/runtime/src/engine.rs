@@ -1039,6 +1039,24 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // counter, which `runtime_status_drain`'s sim-only stderr taps
         // for progress observation.
         for i in 0..4 {
+            // Skip polled-tick step emission for axes in StepTime mode — their
+            // per-stepper `struct timer` ISR (`step_time_event` in
+            // src/runtime_tick.c) handles step output via Newton-iterated
+            // waketimes. Running both paths would double-count `stepper_counts`
+            // and emit duplicate step pulses.
+            //
+            // The engine state machine (segment dequeue / retirement /
+            // `kalico_credit_freed` emission) still depends on `Engine::tick`
+            // running, so TIM5 stays enabled (spec §6.3 conditional removed):
+            // we just shortcut the per-axis stepping work inside.
+            let mode = shared
+                .step_modes
+                .get(i)
+                .map(|m| m.load(Ordering::Acquire))
+                .unwrap_or(crate::state::StepMode::StepTime as u8);
+            if mode == crate::state::StepMode::StepTime as u8 {
+                continue;
+            }
             if let (Some(ss), Some(&m)) = (self.step_state.get_mut(i), state.motors.get(i)) {
                 let step_result = match ss.update(m) {
                     Ok(result) => result,
@@ -1449,6 +1467,14 @@ mod tests {
         let mut trace_queue: Queue<TraceSample, TRACE_RING_N> = Queue::new();
         let (mut trace_producer, _trace_consumer) = trace_queue.split();
         let shared = SharedState::new();
+        // Test exercises the polled-tick step-accumulator path, which is
+        // gated to `Modulated` mode. Default is `StepTime` (per-stepper
+        // timer ISR handles output instead). Flip motor 0 to Modulated
+        // so `Engine::tick` actually emits the step pulses this test asserts.
+        shared.step_modes[0].store(
+            crate::state::StepMode::Modulated as u8,
+            Ordering::Release,
+        );
         let mut engine = Engine::<NoopPa, NoopIs>::new(520_000_000);
         engine.configure(McuAxisConfig {
             motors: [

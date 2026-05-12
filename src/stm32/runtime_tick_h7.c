@@ -63,15 +63,19 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Step-time scheduling refactor (spec §6.3): if no stepper is in
-    // Modulated mode, TIM5 has no work — leave it disabled. F4 (no
-    // PHASE_STEPPING capability) always hits this path; H7 with an
-    // all-StepTime config hits it too.
-    // `kalico_runtime_count_modulated_steppers` is declared in kalico_runtime.h
-    // (included above); no local extern needed.
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
-        return;
-    }
+    // Step-time scheduling refactor (spec §6.3 follow-up, 2026-05-12 bench
+    // wedge): TIM5 must run unconditionally because `Engine::tick` is the
+    // only driver of the engine state machine — segment dequeue (Idle →
+    // Running), retirement, and `kalico_credit_freed` emission all happen
+    // inside the ISR. Conditional-disable when count_modulated == 0
+    // stranded segments in the ring (engine stayed Idle), the host's slot
+    // pool filled, klippy timed out and reset both MCUs.
+    //
+    // Per-axis step emission inside `Engine::tick` is now gated by
+    // `step_modes[i]`: StepTime axes skip the polled StepAccumulator path
+    // entirely; their per-stepper `struct timer` ISR handles GPIO output.
+    // So TIM5 always-on is cheap on all-StepTime MCUs (curve eval +
+    // bookkeeping only, no step emission overhead).
 
     // Seed the engine's WidenState to match klippy's widened MCU clock.
     //
