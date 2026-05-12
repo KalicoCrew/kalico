@@ -68,9 +68,23 @@ runtime_tick_enable(void)
     // `step_modes[i]`: StepTime axes (all of them on F4) skip the polled
     // StepAccumulator path entirely; the per-stepper `struct timer` ISR
     // (`step_time_event`) handles GPIO output via Newton-iterated waketimes.
-    // F4's TIM5 fires at 10 kHz (≈100 µs interval) and only does curve eval
-    // + bookkeeping — the wedge-grade saturation from the original 40 kHz
-    // unified-stepping path is not re-introduced.
+    //
+    // 2026-05-13 follow-up: drop TIM5 rate to 1 kHz when count_modulated == 0
+    // to avoid F4 CPU saturation (eval ~24 µs at 180 MHz, 10 kHz ARR puts
+    // ISR at 24% CPU — survives but barely, and any drift saturates).
+    // Engine::tick at 1 kHz drives the state machine, publishes widened_now
+    // for clock_sync_respond, and retires segments — that's all the F4
+    // needs from TIM5 because step pulses come from the per-stepper
+    // struct timer ISR not from TIM5.
+    {
+        uint32_t target_rate = (kalico_runtime_count_modulated_steppers(runtime_handle) > 0)
+            ? 10000U  // 10 kHz for any future Modulated stepper on F4 (none today)
+            : 1000U;  // 1 kHz state-machine-only when all-StepTime
+        TIM5->CR1 &= ~TIM_CR1_CEN;
+        TIM5->ARR = (runtime_clock_freq / target_rate) - 1U;
+        TIM5->EGR = TIM_EGR_UG;
+        TIM5->SR = 0;
+    }
 
     // Seed the engine's WidenState — see runtime_tick_h7.c::runtime_tick_enable
     // for the full rationale. Same race shape on F4 (slower clock, longer

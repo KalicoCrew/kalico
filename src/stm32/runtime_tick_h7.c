@@ -74,8 +74,28 @@ runtime_tick_enable(void)
     // Per-axis step emission inside `Engine::tick` is now gated by
     // `step_modes[i]`: StepTime axes skip the polled StepAccumulator path
     // entirely; their per-stepper `struct timer` ISR handles GPIO output.
-    // So TIM5 always-on is cheap on all-StepTime MCUs (curve eval +
-    // bookkeeping only, no step emission overhead).
+    //
+    // 2026-05-13 follow-up: even with the per-axis gate, eval still costs
+    // ~8 µs on H7 (4164 cycles measured) inside the TIM5 ISR — running
+    // that at 40 kHz with a 25 µs interval saturates the CPU and starves
+    // the USB out task (`out_max_gap=7.8s`, `ring_overflow=19k`, klippy
+    // timeouts → command_reset wedge, bench 2026-05-13). Drop TIM5 rate
+    // to 1 kHz when count_modulated == 0 — Engine::tick still drives the
+    // state machine, publishes widened_now (for clock_sync_respond), and
+    // retires segments, just at 1 kHz instead of 40 kHz. 1.5% CPU vs
+    // 60+%. At 40× lower rate the worst-case Newton solver convergence
+    // window for step_time scheduling still holds because step pulses
+    // are emitted by the per-stepper struct timer ISR, NOT by TIM5.
+    {
+        uint32_t target_rate = (kalico_runtime_count_modulated_steppers(runtime_handle) > 0)
+            ? 40000U  // 40 kHz when phase-stepping any axis
+            : 1000U;  // 1 kHz state-machine-only when all-StepTime
+        TIM5->CR1 &= ~TIM_CR1_CEN;
+        TIM5->ARR = (runtime_clock_freq / target_rate) - 1U;
+        // Force-update prescaler register so the new ARR loads immediately.
+        TIM5->EGR = TIM_EGR_UG;
+        TIM5->SR = 0;
+    }
 
     // Seed the engine's WidenState to match klippy's widened MCU clock.
     //
