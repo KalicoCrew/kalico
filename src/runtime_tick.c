@@ -121,6 +121,16 @@ struct rt_diag_persistent {
 volatile struct rt_diag_persistent rt_diag_persistent
     __attribute__((section(".persistent_diag"), used, externally_visible));
 
+// Snapshot of the prior run's packed-diag value, captured at runtime_init
+// time BEFORE the current run starts overwriting rt_diag_persistent. The
+// 10 Hz status drain alternates between the LIVE diag (runtime_diag_last_packed)
+// and this BOOT snapshot (when valid) so klippy.log sees both — needed to
+// catch F446 cause-of-death after NVIC_SystemReset, since the output() emit
+// in fault_handler_report_task gets dropped by USB-CDC TX overrun during
+// the boot_diag burst (320-byte transmit_buf vs ~600 B/cycle).
+volatile uint32_t runtime_diag_prior_boot_snapshot
+    __attribute__((used, externally_visible));
+
 __attribute__((used, externally_visible))
 void
 runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
@@ -236,6 +246,13 @@ runtime_drain_event(struct timer *t)
 void
 runtime_init(void)
 {
+    // Capture prior-run cause-of-death from .persistent_diag BEFORE any
+    // current-run runtime_diag_progress overwrites it. Status drain emits
+    // this snapshot on every Nth status frame so klippy.log preserves it.
+    if (rt_diag_persistent.magic == RT_DIAG_MAGIC
+        && rt_diag_persistent.last_packed != 0) {
+        runtime_diag_prior_boot_snapshot = rt_diag_persistent.last_packed;
+    }
     runtime_handle = runtime_handle_create();
     if (!runtime_handle) {
         // Init failed — leave liveness flag at default (1 = OK) but handle unset;
@@ -471,19 +488,21 @@ runtime_status_drain(void)
     // status frame's fault_detail, so we see live FFI progress at the
     // 10 Hz status cadence without needing the foreground-blocked
     // `output(...)` path. See `runtime_diag_progress` comments above.
+    //
+    // Alternation: on 1-in-8 status emits, surface the boot-snapshot of
+    // the PRIOR run's last_packed (captured in runtime_init before any
+    // current-run overwrite). This is how we catch F446's cause-of-death
+    // after NVIC_SystemReset, since the output("rt_diag_prior") path in
+    // fault_handler.c gets dropped by USB-CDC TX overrun during boot_diag.
+    static uint8_t status_emit_phase;
+    status_emit_phase = (uint8_t)((status_emit_phase + 1) & 0x07);
     if (last_err == 0) {
-        if (runtime_diag_last_packed != 0) {
+        if (status_emit_phase == 0 && runtime_diag_prior_boot_snapshot != 0) {
+            fault_detail = runtime_diag_prior_boot_snapshot;
+        } else if (runtime_diag_last_packed != 0) {
             fault_detail = runtime_diag_last_packed;
-        } else if (rt_diag_persistent.magic == RT_DIAG_MAGIC
-                   && rt_diag_persistent.last_packed != 0) {
-            // Survive the F446 NVIC_SystemReset: at fresh boot,
-            // `runtime_diag_last_packed` is zero (regular .bss), but
-            // `rt_diag_persistent` (NOLOAD .persistent_diag) carries the
-            // last pre-reset diag word. Surface it via the SAME status
-            // piggyback path so klippy.log captures the cause-of-death
-            // stage of the previous run. Once runtime_diag_progress fires
-            // on this boot, the if-arm above takes over.
-            fault_detail = rt_diag_persistent.last_packed;
+        } else if (runtime_diag_prior_boot_snapshot != 0) {
+            fault_detail = runtime_diag_prior_boot_snapshot;
         }
     }
 
