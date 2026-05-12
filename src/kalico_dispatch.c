@@ -212,6 +212,10 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
 {
     extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     (void)channel;
+    // Pre-validation breadcrumb. tag=0xCE = "dispatch entry, before any read of payload".
+    // If F446 crashes between QueryRuntimeCaps (0xCD42...) and ConfigureAxes (0xCD32...),
+    // this lets us see whether dispatch was even entered for the ConfigureAxes frame.
+    runtime_diag_progress(0xCE, 1, payload_len);
     if (payload_len < PER_MESSAGE_HEADER_LEN) {
         runtime_diag_progress(0xCD, 1, payload_len);  // too-short frame
         return;
