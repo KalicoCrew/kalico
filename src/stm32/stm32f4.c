@@ -252,6 +252,23 @@ armcm_main(void)
     SystemInit();
     SCB->VTOR = (uint32_t)VectorTable;
 
+#if CONFIG_KALICO_RUNTIME && __FPU_PRESENT == 1
+    // Enable the FPU (CP10/CP11 = Full Access). SystemInit() only does this
+    // when __FPU_USED == 1, which is gated on -mfloat-abi=hard|softfp at
+    // build time — Klipper compiles -mfloat-abi=soft so SystemInit skips it.
+    // The kalico Rust runtime is also soft-float (target=thumbv7em-none-eabi)
+    // so in principle no FPU instructions are emitted, but defensively we
+    // enable FPU here so that ANY accidental VFP / VLDR emission (rust libcore
+    // sometimes generates `vmov` for u32→u32 reg-reg copies that the M4
+    // soft-float decoder rejects as Undefined when CPACR.CP10/11 are zero)
+    // is handled by hardware rather than HardFaulting. Cost: 16 bytes of
+    // additional context saved on lazy-stacking exception entry. Harmless on
+    // soft-float code that never touches FPU registers.
+    SCB->CPACR |= ((3UL << (10 * 2)) | (3UL << (11 * 2)));
+    __DSB();
+    __ISB();
+#endif
+
     // Reset peripheral clocks (for some bootloaders that don't)
     RCC->AHB1ENR = 0x38000;
     RCC->AHB2ENR = 0;
