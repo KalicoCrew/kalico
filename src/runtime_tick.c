@@ -790,20 +790,10 @@ struct step_timer_ctx {
 
 static struct step_timer_ctx step_timers[MAX_STEPPER_OIDS_C];
 
-// Forward declaration for Task D3. When D3 lands, it will define this in
-// src/runtime_endstop.c (or src/runtime_commands.c). Until then the linker
-// resolves it via the weak stub below so this file compiles standalone.
+// Defined in src/runtime_commands.c (Task D3). Samples all active endstop
+// GPIO slots for the given stepper index. Called from step_time_event so
+// the step-time ISR path catches trips at step resolution.
 extern void runtime_endstop_sample_one(uint8_t stepper_idx);
-
-// Weak no-op stub for runtime_endstop_sample_one — resolved until Task D3
-// provides a real implementation. Marked weak so D3's definition wins at
-// link time without requiring this file to be changed.
-__attribute__((weak))
-void
-runtime_endstop_sample_one(uint8_t stepper_idx)
-{
-    (void)stepper_idx;
-}
 
 // Per-stepper timer ISR. Called by Klipper's scheduler at the waketime
 // previously set by arm_step_time_steppers_after_push (or by the prior

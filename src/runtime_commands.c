@@ -55,17 +55,53 @@ static struct endstop_pin_slot endstop_pin_table[KALICO_ENDSTOP_MAX_SOURCES];
 
 extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
-// Called from TIM5_IRQHandler immediately before runtime_handle_tick.
-// Hot path: at most KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
-void
-runtime_endstop_sample_pins(void)
+/// Scan all active endstop sources and update their trigger state.
+///
+/// `stepper_idx` is currently unused — the endstop pin table is
+/// indexed by source slot, not by stepper OID, so any call samples
+/// all active sources. The argument is kept for API symmetry with
+/// `runtime_endstop_sample_one(stepper_idx)`, which the step-time
+/// ISR calls per-step. If the pin table is ever made stepper-indexed,
+/// this helper can be specialized; for now it's a single function
+/// shared by both paths.
+static inline void
+sample_endstops_for_stepper(uint8_t stepper_idx)
 {
+    (void)stepper_idx;  // unused — documented above
     for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++) {
         if (!endstop_pin_table[i].active)
             continue;
         uint8_t level = gpio_in_read(endstop_pin_table[i].pin);
         (void)kalico_endstop_set_pin_level(endstop_pin_table[i].gpio_id, level);
     }
+}
+
+// Called from TIM5_IRQHandler immediately before runtime_handle_tick.
+// Hot path: at most KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
+// The helper does a full scan of active sources internally; call it once.
+void
+runtime_endstop_sample_pins(void)
+{
+    // The helper does a full scan of active endstop sources internally.
+    // The stepper_idx argument is unused (source-indexed table, not
+    // stepper-indexed) — pass 0 as a convention.
+    sample_endstops_for_stepper(0);
+}
+
+// Called from the per-stepper step-time ISR (Task D1) so the step-time
+// path samples endstops at step resolution, not only at TIM5 cadence.
+// Bounds-checked defensively against the engine stepper limit (8 —
+// must match MAX_STEPPER_OIDS_C in src/runtime_tick.c and
+// MAX_STEPPER_OIDS in rust/runtime/src/state.rs).
+// The endstop_pin_table is source-indexed, not stepper-indexed, so any
+// valid stepper_idx triggers a full active-source scan.
+__attribute__((used, visibility("default")))
+void
+runtime_endstop_sample_one(uint8_t stepper_idx)
+{
+    if (stepper_idx >= 8)   // 8 == MAX_STEPPER_OIDS_C
+        return;
+    sample_endstops_for_stepper(stepper_idx);
 }
 
 static void
