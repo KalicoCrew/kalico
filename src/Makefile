@@ -57,8 +57,24 @@ KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
 
 ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4)))
+# Critical: track which MCU target's `.a` is in the cargo target dir.
+# When switching H7 <-> F4, cargo's incremental cache does NOT reliably
+# rebuild from `--features` differences alone, so the previously-built `.a`
+# (with the wrong RT_CELL section attribute, .axi_bss vs .bss) gets linked.
+# On F4 this puts RT_CELL at 0x24003da0 (invalid F4 address) and crashes on
+# the first FFI write. We stamp the features hash into a marker file inside
+# the cargo target dir; if the hash changes, we `cargo clean` before build.
 rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
-	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
+	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" && \
+		mkdir -p target && \
+		PREV=$$(cat target/.kalico-features-stamp 2>/dev/null || echo ""); \
+		if [ "$$PREV" != "$(KALICO_RUST_FEATURES)" ]; then \
+			echo "kalico-c-api features changed ($$PREV -> $(KALICO_RUST_FEATURES)); cargo clean"; \
+			cargo clean -p kalico-c-api 2>/dev/null || true; \
+			cargo clean -p kalico-host-rt 2>/dev/null || true; \
+			cargo clean -p runtime 2>/dev/null || true; \
+			cargo clean -p nurbs 2>/dev/null || true; \
+		fi && \
 		KALICO_RUNTIME_MAX_CONTROL_POINTS=$(CONFIG_RUNTIME_MAX_CONTROL_POINTS) \
 		KALICO_RUNTIME_MAX_KNOT_VECTOR_LEN=$(CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) \
 		KALICO_RUNTIME_MAX_DEGREE=$(CONFIG_RUNTIME_MAX_DEGREE) \
@@ -66,7 +82,8 @@ rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
-		--target thumbv7em-none-eabi --release
+		--target thumbv7em-none-eabi --release && \
+		echo "$(KALICO_RUST_FEATURES)" > target/.kalico-features-stamp
 endif
 
 ifeq ($(CONFIG_MACH_LINUX),y)
