@@ -200,8 +200,30 @@ oid_lookup(uint8_t oid, void *type)
 void *
 oid_alloc(uint8_t oid, void *type, uint16_t size)
 {
+    // Diag breadcrumb: tag=0xD0, stage encodes WHICH fail-path triggered,
+    // value packs (oid<<8) | oid_count. Lets us see live (via fault_detail
+    // piggyback) what made oid_alloc shut the chip down — out-of-range,
+    // already-typed, or already-finalized.
+#if CONFIG_KALICO_RUNTIME
+    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
+    uint32_t packed = ((uint32_t)oid << 8) | (uint32_t)oid_count;
+    if (oid >= oid_count) {
+        runtime_diag_progress(0xD0, 1, packed);
+        shutdown("Can't assign oid");
+    }
+    if (oids[oid].type) {
+        runtime_diag_progress(0xD0, 2, packed);
+        shutdown("Can't assign oid");
+    }
+    if (is_finalized()) {
+        runtime_diag_progress(0xD0, 3, packed);
+        shutdown("Can't assign oid");
+    }
+    runtime_diag_progress(0xD0, 4, packed);  // success path
+#else
     if (oid >= oid_count || oids[oid].type || is_finalized())
         shutdown("Can't assign oid");
+#endif
     oids[oid].type = type;
     void *data = alloc_chunk(size);
     oids[oid].data = data;
