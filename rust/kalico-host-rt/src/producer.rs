@@ -258,6 +258,20 @@ pub fn load_curve(
         )))
     })?;
     if resp.result != 0 {
+        // Diagnostic 2026-05-12: when the MCU rejects load_curve with
+        // INVALID_HANDLE due to SlotAlreadyLoaded, the FFI side encodes the
+        // slot's (current_gen, last_retired_gen) into `curve_handle_packed`
+        // as (kind << 30) | (cur << 16) | last. Decode and print it so the
+        // host log captures the MCU's slot-state view at the moment of
+        // rejection.
+        let kind = (resp.curve_handle_packed >> 30) & 0x3;
+        let mcu_cur = ((resp.curve_handle_packed >> 16) & 0xFFFF) as u16;
+        let mcu_last = (resp.curve_handle_packed & 0xFFFF) as u16;
+        eprintln!(
+            "[host] producer::load_curve rejected slot={} result={} \
+             diag_kind={} mcu_cur_gen={} mcu_last_retired_gen={}",
+            slot, resp.result, kind, mcu_cur, mcu_last,
+        );
         return Err(ProducerError::McuRejected(resp.result));
     }
     Ok(resp.curve_handle_packed)

@@ -46,16 +46,22 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Mirrors `runtime::curve_pool::CURVE_POOL_N` (cannot import directly
-/// because `runtime` is `no_std` for the MCU build). Phase C of the
-/// kalico-native transport spec
-/// (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md` §10)
-/// reduced from 64 → 16 to fit the new larger per-slot scratch.
+/// Upper-bound default for tests and any caller that doesn't know the
+/// MCU's actual pool size yet. The H7's `large` profile is 16; the F446's
+/// `small` profile is 4. Production code MUST pass the per-MCU
+/// `caps.curve_pool_n` value to `SlotPool::new` so the host's slot
+/// allocator can't hand out indices the MCU will reject as out-of-range
+/// (bench 2026-05-12: F446 reports `pool_n=4`, host previously hardcoded
+/// 16 and the 5th sequential jog crashed with `KALICO_ERR_INVALID_HANDLE`).
 pub const CURVE_POOL_N: usize = 16;
 
 /// Per-MCU free-slot allocator.
 #[derive(Debug)]
 pub struct SlotPool {
+    /// Capacity this pool was constructed with — caller-supplied so it
+    /// matches the per-MCU `caps.curve_pool_n`. Used by diagnostics and
+    /// the "slot pool exhausted" error path.
+    capacity: usize,
     /// Free slot indices, FIFO so reuse cycles all slots before repeating.
     free: VecDeque<u16>,
     /// Slots currently allocated and not yet retired.
@@ -69,18 +75,26 @@ pub struct SlotPool {
 }
 
 impl SlotPool {
-    /// Construct an empty pool with `CURVE_POOL_N` slots free.
-    pub fn new() -> Self {
-        let mut free = VecDeque::with_capacity(CURVE_POOL_N);
-        for slot in 0..CURVE_POOL_N {
+    /// Construct an empty pool with `capacity` slots free (indices `0..capacity`).
+    /// Pass the per-MCU `caps.curve_pool_n` value here so the host and MCU
+    /// agree on the valid slot-index range.
+    pub fn new(capacity: usize) -> Self {
+        let mut free = VecDeque::with_capacity(capacity);
+        for slot in 0..capacity {
             free.push_back(slot as u16);
         }
         Self {
+            capacity,
             free,
-            in_flight: HashSet::with_capacity(CURVE_POOL_N),
-            generation: HashMap::with_capacity(CURVE_POOL_N),
-            slot_to_segment: HashMap::with_capacity(CURVE_POOL_N),
+            in_flight: HashSet::with_capacity(capacity),
+            generation: HashMap::with_capacity(capacity),
+            slot_to_segment: HashMap::with_capacity(capacity),
         }
+    }
+
+    /// Capacity this pool was constructed with.
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Number of slots currently free.
@@ -156,7 +170,7 @@ impl SlotPool {
 
 impl Default for SlotPool {
     fn default() -> Self {
-        Self::new()
+        Self::new(CURVE_POOL_N)
     }
 }
 
@@ -166,14 +180,14 @@ mod tests {
 
     #[test]
     fn fresh_pool_has_full_capacity() {
-        let p = SlotPool::new();
+        let p = SlotPool::new(CURVE_POOL_N);
         assert_eq!(p.free_count(), CURVE_POOL_N);
         assert_eq!(p.in_flight_count(), 0);
     }
 
     #[test]
     fn alloc_advances_generation_per_slot() {
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         let (s0, g0) = p.try_alloc().unwrap();
         assert_eq!(g0, 1, "first alloc is gen=1");
         // Free and re-alloc — same slot should bump to gen=2.
@@ -198,7 +212,7 @@ mod tests {
 
     #[test]
     fn pool_exhausts_at_capacity() {
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         for _ in 0..CURVE_POOL_N {
             assert!(p.try_alloc().is_some());
         }
@@ -211,7 +225,7 @@ mod tests {
 
     #[test]
     fn release_is_idempotent() {
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         let (s, _) = p.try_alloc().unwrap();
         p.release(s);
         p.release(s); // duplicate
@@ -221,7 +235,7 @@ mod tests {
 
     #[test]
     fn retire_through_segment_releases_eligible_slots() {
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         let (s1, _) = p.try_alloc().unwrap();
         p.register_segment(s1, 1);
         let (s2, _) = p.try_alloc().unwrap();
@@ -243,7 +257,7 @@ mod tests {
 
     #[test]
     fn retire_through_lower_id_is_noop() {
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         let (s, _) = p.try_alloc().unwrap();
         p.register_segment(s, 100);
         // Stale event from earlier in the print.
@@ -257,7 +271,7 @@ mod tests {
         // released by a segment-id retirement event — the segment_id is
         // unknown, so the slot stays in-flight until either explicitly
         // released or its eventual segment-id retires.
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         let _ = p.try_alloc().unwrap();
         // No register_segment call yet.
         assert_eq!(p.retire_through_segment(u32::MAX), 0);
@@ -270,7 +284,7 @@ mod tests {
     /// pool to its prior state.
     #[test]
     fn release_after_failed_push_does_not_leak() {
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         let mut allocated: Vec<u16> = Vec::new();
         for i in 0..5 {
             let (s, _) = p.try_alloc().expect("alloc");
@@ -293,7 +307,7 @@ mod tests {
         // Cycle through more than CURVE_POOL_N allocations to verify the
         // pool stays balanced — this is the regression for the original
         // u16 rolling-counter bug (would have errored at slot 64).
-        let mut p = SlotPool::new();
+        let mut p = SlotPool::new(CURVE_POOL_N);
         for i in 0..(CURVE_POOL_N * 5) {
             let (s, _) = p.try_alloc().unwrap_or_else(|| {
                 panic!("alloc {i} failed — pool starved")
