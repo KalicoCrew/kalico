@@ -359,6 +359,37 @@ impl RuntimeContext {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetStepModeError {
+    /// Requested `StepMode::Modulated` on an MCU whose capability bitmap
+    /// does not advertise `PHASE_STEPPING`. Spec §4.
+    CapabilityMissing,
+    /// `stepper_idx >= MAX_STEPPER_OIDS`.
+    OutOfRange,
+}
+
+/// Atomically flip a stepper's `StepMode`. Enforces the capability
+/// ceiling: `Modulated` is rejected if the MCU doesn't advertise the
+/// phase-stepping bit. Spec §10.
+///
+/// `Release` ordering on the store pairs with `Acquire` loads in the
+/// engine ISR and `count_modulated_steppers` foreground reads.
+pub fn set_step_mode(
+    shared: &SharedState,
+    stepper_idx: u8,
+    mode: StepMode,
+    mcu_supports_phase: bool,
+) -> Result<(), SetStepModeError> {
+    if (stepper_idx as usize) >= MAX_STEPPER_OIDS {
+        return Err(SetStepModeError::OutOfRange);
+    }
+    if mode == StepMode::Modulated && !mcu_supports_phase {
+        return Err(SetStepModeError::CapabilityMissing);
+    }
+    shared.step_modes[stepper_idx as usize].store(mode as u8, core::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

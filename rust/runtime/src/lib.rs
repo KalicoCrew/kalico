@@ -29,7 +29,7 @@ pub mod segment;
 pub mod sim_fixtures;
 pub mod slot;
 pub mod state;
-pub use state::StepMode;
+pub use state::{set_step_mode, SetStepModeError, StepMode};
 pub mod step;
 pub mod step_time;
 pub mod stream;
