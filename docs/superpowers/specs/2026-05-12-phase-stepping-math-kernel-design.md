@@ -138,6 +138,7 @@ None of those four pieces lands here. This spec adds only the math that step 1 a
 |------|--------|
 | `rust/runtime/src/phase.rs` | New. Contains the three pure functions + unit tests. |
 | `rust/runtime/src/lib.rs` | One line: `pub mod phase;`. |
+| `rust/runtime/Cargo.toml` | Add `libm = { version = "0.2", optional = true, default-features = false }` and gate it on the existing `mcu-h7` / `mcu-f4` features. Mirrors the dependency posture in `rust/nurbs/Cargo.toml` (which already uses `libm::fmaf` / `sqrtf` / `fabsf` on MCU and falls back to `f32::cos` / `f32::sin` via std on `host`). |
 
 No other file is modified.
 
