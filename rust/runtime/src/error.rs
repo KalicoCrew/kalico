@@ -85,6 +85,11 @@ pub const KALICO_ERR_INTERNAL_INVARIANT: i32 = -172;
 pub const KALICO_ERR_STEP_BURST_EXCEEDED: i32 = -21;
 pub const KALICO_ERR_ZERO_DURATION_SEGMENT: i32 = -22;
 pub const KALICO_ERR_HOMING_TRIP: i32 = -23;
+// Step 7-D: step-time scheduling faults.
+pub const KALICO_ERR_CAPABILITY_MISSING: i32 = -24;
+pub const KALICO_ERR_NO_STEP: i32 = -25;
+/// Invalid argument value (e.g. unknown discriminant for a decoded enum).
+pub const KALICO_ERR_INVALID_ARG: i32 = -26;
 
 // Step 7-C-io host-originated faults (§6.11).
 pub const KALICO_ERR_HOST_DISCONNECT: i32 = -200;
@@ -157,6 +162,10 @@ pub enum FaultCode {
     StepBurstExceeded = -21,
     ZeroDurationSegment = -22,
     HomingTrip = -23,
+    // Step 7-D: step-time scheduling.
+    CapabilityMissing = -24,
+    NoStep = -25,
+    InvalidArg = -26,
 
     // Step 7-C-io host-originated faults (§6.11).
     HostDisconnect = -200,

@@ -27,8 +27,9 @@ pub mod exports {
     use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool};
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
-        KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION,
-        KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT,
+        KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
+        KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
+        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NO_STEP,
         KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
@@ -415,9 +416,36 @@ pub mod exports {
                     KALICO_OK
                 }
                 Err(
-                    runtime::curve_pool::CurvePoolError::OutOfBounds
-                    | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
-                ) => KALICO_ERR_INVALID_HANDLE,
+                    err @ (runtime::curve_pool::CurvePoolError::OutOfBounds
+                    | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded),
+                ) => {
+                    // Diagnostic 2026-05-12: encode the slot's cur/last gens
+                    // into `out_handle_packed` so the host can decode the
+                    // rejection state. Layout: u32 = (kind << 30) |
+                    // (current_gen << 16) | last_retired_gen. kind = 0 for
+                    // OutOfBounds (gens left zero), kind = 1 for SlotAlreadyLoaded.
+                    if !out_handle_packed.is_null() {
+                        let pool: &CurvePool = &*pool_ptr;
+                        let (kind_bits, cur, last) = match err {
+                            runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded => {
+                                if let Some(slot) = pool.slots.get(slot_idx as usize) {
+                                    (
+                                        1u32,
+                                        slot.current_gen.load(Ordering::Acquire),
+                                        slot.last_retired_gen.load(Ordering::Acquire),
+                                    )
+                                } else {
+                                    (1u32, 0u16, 0u16)
+                                }
+                            }
+                            _ => (0u32, 0u16, 0u16),
+                        };
+                        *out_handle_packed = (kind_bits << 30)
+                            | ((cur as u32) << 16)
+                            | (last as u32);
+                    }
+                    KALICO_ERR_INVALID_HANDLE
+                }
                 Err(_) => KALICO_ERR_INVALID_CURVE,
             }
         }
@@ -1618,6 +1646,122 @@ pub mod exports {
         } else {
             KALICO_ERR_NULL_PTR
         }
+    }
+
+    // ---- Step-time scheduling FFI (spec §5) --------------------------------
+
+    /// Flip a stepper's `StepMode` at runtime. Spec §10.
+    ///
+    /// `mode`: 0 = Modulated (phase-stepping), 1 = StepTime (classic).
+    /// `mcu_supports_phase`: non-zero if the MCU advertises phase-stepping
+    /// capability.
+    ///
+    /// Returns:
+    /// - `KALICO_OK` on success.
+    /// - `KALICO_ERR_INVALID_HANDLE` if `handle` is null or
+    ///   `stepper_idx >= MAX_STEPPER_OIDS`.
+    /// - `KALICO_ERR_INVALID_ARG` if `mode` is not a recognised `StepMode`
+    ///   discriminant.
+    /// - `KALICO_ERR_CAPABILITY_MISSING` if `mode == Modulated` and
+    ///   `mcu_supports_phase == 0`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_set_step_mode(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+        mode: u8,
+        mcu_supports_phase: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_INVALID_HANDLE;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let mode = match runtime::state::StepMode::from_u8(mode) {
+            Some(m) => m,
+            None => return KALICO_ERR_INVALID_ARG,
+        };
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState is atomics-only; no `&mut` is formed on this
+        // path. The `set_step_mode` function touches only per-stepper
+        // `AtomicU8` entries in `SharedState::step_modes`, which are
+        // explicitly designed for concurrent foreground writes and ISR reads.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            match runtime::state::set_step_mode(shared, stepper_idx, mode, mcu_supports_phase != 0) {
+                Ok(()) => KALICO_OK,
+                Err(runtime::state::SetStepModeError::CapabilityMissing) => {
+                    KALICO_ERR_CAPABILITY_MISSING
+                }
+                Err(runtime::state::SetStepModeError::OutOfRange) => KALICO_ERR_INVALID_HANDLE,
+            }
+        }
+    }
+
+    /// Compute the absolute MCU clock cycle at which `stepper_idx` should
+    /// fire its next step. Used by the configure/segment-load arming path.
+    ///
+    /// On success writes the cycle count to `*out_cycles_abs` and returns
+    /// `KALICO_OK`. Returns `KALICO_ERR_NO_STEP` when the active segment
+    /// cannot produce another step (caller must NOT register the timer;
+    /// the engine re-arms on the next `push_segment`).
+    ///
+    /// Returns:
+    /// - `KALICO_OK` + `*out_cycles_abs` set on success.
+    /// - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
+    /// - `KALICO_ERR_NO_STEP` if no step is available.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_arm_step_timer(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+        now_cycles: u64,
+        out_cycles_abs: *mut u64,
+    ) -> i32 {
+        if rt.is_null() || out_cycles_abs.is_null() {
+            return KALICO_ERR_INVALID_HANDLE;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null and INIT_DONE=true above.
+        // `arm_step_timer_for_stepper` forms only a shared `&IsrState`
+        // reference (via `IsrState::raw_ref_from_ctx`) and reads atomics in
+        // `SharedState` — it never produces `&mut IsrState`. This is the same
+        // aliasing discipline used by `runtime_handle_tick_counter`.
+        unsafe {
+            let ctx_ref: &RuntimeContext = &*ctx;
+            match runtime::engine::arm_step_timer_for_stepper(ctx_ref, stepper_idx, now_cycles) {
+                Some(t) => {
+                    *out_cycles_abs = t;
+                    KALICO_OK
+                }
+                None => KALICO_ERR_NO_STEP,
+            }
+        }
+    }
+
+    /// Compute the next step time for `stepper_idx`. Identical semantics to
+    /// `kalico_runtime_arm_step_timer`; provided as a separate symbol so the
+    /// C-side per-stepper `struct timer` ISR re-arm path has a descriptively
+    /// named entry point. Future engine work may diverge the two.
+    ///
+    /// Returns:
+    /// - `KALICO_OK` + `*out_cycles_abs` set on success.
+    /// - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
+    /// - `KALICO_ERR_NO_STEP` if no step is available.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_compute_next_step_time(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+        now_cycles: u64,
+        out_cycles_abs: *mut u64,
+    ) -> i32 {
+        // SAFETY: delegates to `kalico_runtime_arm_step_timer`, which carries
+        // the same pointer-validity and aliasing requirements. We pass the
+        // arguments through unchanged.
+        unsafe { kalico_runtime_arm_step_timer(rt, stepper_idx, now_cycles, out_cycles_abs) }
     }
 
 }

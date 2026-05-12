@@ -445,4 +445,60 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  */
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
+/**
+ * Flip a stepper's `StepMode` at runtime. Spec §10.
+ *
+ * `mode`: 0 = Modulated (phase-stepping), 1 = StepTime (classic).
+ * `mcu_supports_phase`: non-zero if the MCU advertises phase-stepping
+ * capability.
+ *
+ * Returns:
+ * - `KALICO_OK` on success.
+ * - `KALICO_ERR_INVALID_HANDLE` if `handle` is null or
+ *   `stepper_idx >= MAX_STEPPER_OIDS`.
+ * - `KALICO_ERR_INVALID_ARG` if `mode` is not a recognised `StepMode`
+ *   discriminant.
+ * - `KALICO_ERR_CAPABILITY_MISSING` if `mode == Modulated` and
+ *   `mcu_supports_phase == 0`.
+ */
+int32_t kalico_runtime_set_step_mode(struct KalicoRuntime *rt,
+                                     uint8_t stepper_idx,
+                                     uint8_t mode,
+                                     uint8_t mcu_supports_phase);
+
+/**
+ * Compute the absolute MCU clock cycle at which `stepper_idx` should
+ * fire its next step. Used by the configure/segment-load arming path.
+ *
+ * On success writes the cycle count to `*out_cycles_abs` and returns
+ * `KALICO_OK`. Returns `KALICO_ERR_NO_STEP` when the active segment
+ * cannot produce another step (caller must NOT register the timer;
+ * the engine re-arms on the next `push_segment`).
+ *
+ * Returns:
+ * - `KALICO_OK` + `*out_cycles_abs` set on success.
+ * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
+ * - `KALICO_ERR_NO_STEP` if no step is available.
+ */
+int32_t kalico_runtime_arm_step_timer(struct KalicoRuntime *rt,
+                                      uint8_t stepper_idx,
+                                      uint64_t now_cycles,
+                                      uint64_t *out_cycles_abs);
+
+/**
+ * Compute the next step time for `stepper_idx`. Identical semantics to
+ * `kalico_runtime_arm_step_timer`; provided as a separate symbol so the
+ * C-side per-stepper `struct timer` ISR re-arm path has a descriptively
+ * named entry point. Future engine work may diverge the two.
+ *
+ * Returns:
+ * - `KALICO_OK` + `*out_cycles_abs` set on success.
+ * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
+ * - `KALICO_ERR_NO_STEP` if no step is available.
+ */
+int32_t kalico_runtime_compute_next_step_time(struct KalicoRuntime *rt,
+                                              uint8_t stepper_idx,
+                                              uint64_t now_cycles,
+                                              uint64_t *out_cycles_abs);
+
 #endif  /* KALICO_RUNTIME_H */
