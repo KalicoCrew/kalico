@@ -131,6 +131,15 @@ volatile struct rt_diag_persistent rt_diag_persistent
 volatile uint32_t runtime_diag_prior_boot_snapshot
     __attribute__((used, externally_visible));
 
+// Verification globals — capture rt_diag_persistent contents at runtime_init
+// time so we can confirm whether .persistent_diag actually survives a soft
+// reset on STM32F4 (unverified before this commit; F4 reference manual is
+// ambiguous about SRAM survival across SYSRESETREQ).
+volatile uint32_t runtime_diag_prior_magic_raw
+    __attribute__((used, externally_visible));
+volatile uint32_t runtime_diag_prior_packed_raw
+    __attribute__((used, externally_visible));
+
 __attribute__((used, externally_visible))
 void
 runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
@@ -249,6 +258,13 @@ runtime_init(void)
     // Capture prior-run cause-of-death from .persistent_diag BEFORE any
     // current-run runtime_diag_progress overwrites it. Status drain emits
     // this snapshot on every Nth status frame so klippy.log preserves it.
+    // Also stash the magic + raw packed values into a SEPARATE static so
+    // we can verify .persistent_diag actually survives (separately from
+    // status drain emit logic).
+    extern volatile uint32_t runtime_diag_prior_magic_raw;
+    extern volatile uint32_t runtime_diag_prior_packed_raw;
+    runtime_diag_prior_magic_raw = rt_diag_persistent.magic;
+    runtime_diag_prior_packed_raw = rt_diag_persistent.last_packed;
     if (rt_diag_persistent.magic == RT_DIAG_MAGIC
         && rt_diag_persistent.last_packed != 0) {
         runtime_diag_prior_boot_snapshot = rt_diag_persistent.last_packed;
@@ -489,20 +505,35 @@ runtime_status_drain(void)
     // 10 Hz status cadence without needing the foreground-blocked
     // `output(...)` path. See `runtime_diag_progress` comments above.
     //
-    // Alternation: on 1-in-8 status emits, surface the boot-snapshot of
-    // the PRIOR run's last_packed (captured in runtime_init before any
-    // current-run overwrite). This is how we catch F446's cause-of-death
-    // after NVIC_SystemReset, since the output("rt_diag_prior") path in
-    // fault_handler.c gets dropped by USB-CDC TX overrun during boot_diag.
+    // Alternation: cycle through 4 phases so klippy.log captures both the
+    // live diag AND the post-reset snapshot data (live overwrites the
+    // single u32 fault_detail field within ~100 ms of a reset, before
+    // klippy can record the prior value).
+    //   phase 0: live diag (runtime_diag_last_packed)
+    //   phase 1: prior-boot snapshot (rt_diag_persistent.last_packed
+    //            captured at runtime_init before overwrite)
+    //   phase 2: raw magic word read at runtime_init (verifies
+    //            .persistent_diag survives the reset — should be RT_DIAG_MAGIC)
+    //   phase 3: raw last_packed read at runtime_init (= snapshot, doubled
+    //            for redundancy in case the host drops one frame).
     static uint8_t status_emit_phase;
-    status_emit_phase = (uint8_t)((status_emit_phase + 1) & 0x07);
+    status_emit_phase = (uint8_t)((status_emit_phase + 1) & 0x03);
     if (last_err == 0) {
-        if (status_emit_phase == 0 && runtime_diag_prior_boot_snapshot != 0) {
-            fault_detail = runtime_diag_prior_boot_snapshot;
-        } else if (runtime_diag_last_packed != 0) {
-            fault_detail = runtime_diag_last_packed;
-        } else if (runtime_diag_prior_boot_snapshot != 0) {
-            fault_detail = runtime_diag_prior_boot_snapshot;
+        switch (status_emit_phase) {
+        case 0:
+            if (runtime_diag_last_packed != 0)
+                fault_detail = runtime_diag_last_packed;
+            break;
+        case 1:
+            if (runtime_diag_prior_boot_snapshot != 0)
+                fault_detail = runtime_diag_prior_boot_snapshot;
+            break;
+        case 2:
+            fault_detail = runtime_diag_prior_magic_raw;
+            break;
+        case 3:
+            fault_detail = runtime_diag_prior_packed_raw;
+            break;
         }
     }
 
