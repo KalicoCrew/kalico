@@ -197,49 +197,41 @@ oid_lookup(uint8_t oid, void *type)
     return oids[oid].data;
 }
 
+#if CONFIG_KALICO_RUNTIME
+// Out-of-line breadcrumb writer. `noinline` + `used` + a real function-call
+// boundary stops whole-program LTO from eliding the volatile writes when it
+// sees the caller's next statement is `shutdown(...)` (noreturn). The function
+// body uses a real `volatile` cast on the symbol addresses so the compiler
+// has no leeway to coalesce or hoist.
+__attribute__((noinline, used, externally_visible))
+static void
+oid_diag_emit_shutdown(uint8_t stage, uint8_t oid, uint8_t oid_count_at_fail)
+{
+    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
+    extern volatile uint8_t runtime_diag_frozen;
+    uint32_t value = ((uint32_t)oid << 8) | (uint32_t)oid_count_at_fail;
+    runtime_diag_progress(0xD0u, (uint32_t)stage, value);
+    runtime_diag_frozen = 1;
+    // Force a memory barrier so the store is observable before shutdown's
+    // longjmp tears down stack frames.
+    asm volatile("" ::: "memory");
+}
+#endif
+
 void *
 oid_alloc(uint8_t oid, void *type, uint16_t size)
 {
-    // Diag breadcrumb: tag=0xD0, stage encodes WHICH fail-path triggered,
-    // value packs (oid<<8) | oid_count. Write the diag word DIRECTLY (not
-    // via runtime_diag_progress()) because LTO will happily eliminate any
-    // function call whose only observable effect is a write to a volatile
-    // global that the caller doesn't read — and in production the next thing
-    // we do is shutdown(), which the optimizer can see is unreachable past.
-    // Writing the volatile globals here means GCC has to honor the access.
 #if CONFIG_KALICO_RUNTIME
-    extern volatile uint32_t runtime_diag_last_packed;
-    extern volatile struct rt_diag_persistent {
-        uint32_t magic;
-        uint32_t last_packed;
-        uint32_t last_us;
-        uint32_t fault_count;
-    } rt_diag_persistent;
-    extern volatile uint8_t runtime_diag_frozen;
-    uint32_t packed_base = ((uint32_t)0xD0u << 24)
-                         | ((((uint32_t)oid << 8) | (uint32_t)oid_count) & 0xFFFFu);
     if (oid >= oid_count) {
-        uint32_t p = packed_base | ((uint32_t)1u << 16);
-        runtime_diag_last_packed = p;
-        rt_diag_persistent.magic = 0xD1A6BABEu;
-        rt_diag_persistent.last_packed = p;
-        runtime_diag_frozen = 1;
+        oid_diag_emit_shutdown(1, oid, oid_count);
         shutdown("Can't assign oid");
     }
     if (oids[oid].type) {
-        uint32_t p = packed_base | ((uint32_t)2u << 16);
-        runtime_diag_last_packed = p;
-        rt_diag_persistent.magic = 0xD1A6BABEu;
-        rt_diag_persistent.last_packed = p;
-        runtime_diag_frozen = 1;
+        oid_diag_emit_shutdown(2, oid, oid_count);
         shutdown("Can't assign oid");
     }
     if (is_finalized()) {
-        uint32_t p = packed_base | ((uint32_t)3u << 16);
-        runtime_diag_last_packed = p;
-        rt_diag_persistent.magic = 0xD1A6BABEu;
-        rt_diag_persistent.last_packed = p;
-        runtime_diag_frozen = 1;
+        oid_diag_emit_shutdown(3, oid, oid_count);
         shutdown("Can't assign oid");
     }
 #else
