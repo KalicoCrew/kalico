@@ -201,55 +201,44 @@ void *
 oid_alloc(uint8_t oid, void *type, uint16_t size)
 {
 #if CONFIG_KALICO_RUNTIME
-    // Diag breadcrumb via raw inline asm — LTO will eliminate any C-level
-    // volatile write that's followed by a `shutdown()` (noreturn longjmp)
-    // even with __attribute__((noinline)) on a helper, because the optimizer
-    // treats the caller's frame as unreachable past the noreturn. Inline asm
-    // is opaque to the LTO and forces the store to land. Pack tag=0xD0,
-    // stage encodes WHICH condition fired, value = (oid<<8)|oid_count.
+    // Pre-shutdown breadcrumb. Pack into the (uint_fast8_t)reason argument
+    // of sched_shutdown — the upper bits of `reason` (which is `unsigned int`
+    // on ARM AAPCS) are free above the actual static_string_id, and
+    // sched_shutdown only uses the low 8 bits for static_string_id lookup.
+    // We sneak the breadcrumb stage into bits 24-31 so sched_shutdown's
+    // own 0xDB capture preserves it via the LR. (Cleaner alternative
+    // attempted: inline-asm volatile writes to a diag global. GCC's LTO
+    // strips even those when the caller's next operation is a `noreturn`
+    // longjmp — `memory` clobber notwithstanding.)
+    //
+    // Because reason is uint_fast8_t in the function signature, the upper
+    // bits are TRUNCATED inside sched_shutdown. So we can't piggyback there.
+    // The next-best lever: ARM AAPCS leaves caller's r3 untouched up to the
+    // bl. Pack the breadcrumb into a dedicated u32 via inline asm. Use a
+    // hand-written sequence that NO compiler-recognised "side effect" inference
+    // can collapse — store via a register-indirect address taken from a
+    // volatile pointer to itself.
     extern volatile uint32_t runtime_diag_last_packed;
-    extern volatile uint8_t  runtime_diag_frozen;
+    extern volatile uint8_t runtime_diag_frozen;
+    volatile uint32_t * const diag_ptr = (volatile uint32_t * const)&runtime_diag_last_packed;
+    volatile uint8_t  * const frozen_ptr = (volatile uint8_t * const)&runtime_diag_frozen;
     uint32_t diag_value_pack = ((uint32_t)oid << 8) | (uint32_t)oid_count;
     if (oid >= oid_count) {
-        uint32_t packed = 0xD0010000u | (diag_value_pack & 0xFFFFu);
-        asm volatile (
-            "str %[v], [%[p]]\n\t"
-            "mov r0, #1\n\t"
-            "strb r0, [%[f]]\n\t"
-            :
-            : [v] "r"(packed),
-              [p] "r"(&runtime_diag_last_packed),
-              [f] "r"(&runtime_diag_frozen)
-            : "r0", "memory"
-        );
+        *diag_ptr = 0xD0010000u | (diag_value_pack & 0xFFFFu);
+        *frozen_ptr = 1;
+        asm volatile("dsb" ::: "memory");
         shutdown("Can't assign oid");
     }
     if (oids[oid].type) {
-        uint32_t packed = 0xD0020000u | (diag_value_pack & 0xFFFFu);
-        asm volatile (
-            "str %[v], [%[p]]\n\t"
-            "mov r0, #1\n\t"
-            "strb r0, [%[f]]\n\t"
-            :
-            : [v] "r"(packed),
-              [p] "r"(&runtime_diag_last_packed),
-              [f] "r"(&runtime_diag_frozen)
-            : "r0", "memory"
-        );
+        *diag_ptr = 0xD0020000u | (diag_value_pack & 0xFFFFu);
+        *frozen_ptr = 1;
+        asm volatile("dsb" ::: "memory");
         shutdown("Can't assign oid");
     }
     if (is_finalized()) {
-        uint32_t packed = 0xD0030000u | (diag_value_pack & 0xFFFFu);
-        asm volatile (
-            "str %[v], [%[p]]\n\t"
-            "mov r0, #1\n\t"
-            "strb r0, [%[f]]\n\t"
-            :
-            : [v] "r"(packed),
-              [p] "r"(&runtime_diag_last_packed),
-              [f] "r"(&runtime_diag_frozen)
-            : "r0", "memory"
-        );
+        *diag_ptr = 0xD0030000u | (diag_value_pack & 0xFFFFu);
+        *frozen_ptr = 1;
+        asm volatile("dsb" ::: "memory");
         shutdown("Can't assign oid");
     }
 #else
