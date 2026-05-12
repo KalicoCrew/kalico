@@ -87,7 +87,6 @@ pub mod exports {
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
         fn runtime_tick_enable();
-        #[allow(dead_code)]
         fn runtime_tick_disable();
         fn runtime_cyccnt_read() -> u32;
     }
@@ -1206,6 +1205,15 @@ pub mod exports {
             diag_progress(0xCA, 10, u32::from(mcu_caps));
         }
 
+        // Spec §6.3: after all step_modes are written, atomically decide
+        // whether TIM5 should be armed. `runtime_tick_enable` will no-op on
+        // the C side when the Modulated count is zero (F4 with all-StepTime
+        // config never starts TIM5 here). This covers both the legacy
+        // 20-byte path (all-StepTime default, count == 0, no-op enable) and
+        // the extended 25-byte path (enables TIM5 only if at least one
+        // Modulated stepper was configured).
+        unsafe { runtime_tick_enable() };
+
         KALICO_OK
     }
 
@@ -1760,7 +1768,31 @@ pub mod exports {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             let shared: &SharedState = &*shared_ptr;
             match runtime::state::set_step_mode(shared, stepper_idx, mode, mcu_supports_phase != 0) {
-                Ok(()) => KALICO_OK,
+                Ok(()) => {
+                    // Spec §6.3: re-evaluate TIM5 arm state after every
+                    // successful step-mode flip. Count Modulated steppers via
+                    // the same loop used by `kalico_runtime_count_modulated_steppers`.
+                    // `runtime_tick_enable` is a no-op when count == 0 (C-side
+                    // guard added in the same commit), so calling it here is
+                    // always safe. `runtime_tick_disable` is called only when
+                    // the count reaches zero — idempotent if TIM5 was never
+                    // started.
+                    use runtime::state::MAX_STEPPER_OIDS;
+                    let mut modulated_count = 0u8;
+                    for i in 0..MAX_STEPPER_OIDS {
+                        if shared.step_modes[i].load(Ordering::Acquire)
+                            == runtime::state::StepMode::Modulated as u8
+                        {
+                            modulated_count = modulated_count.saturating_add(1);
+                        }
+                    }
+                    if modulated_count == 0 {
+                        runtime_tick_disable();
+                    } else {
+                        runtime_tick_enable();
+                    }
+                    KALICO_OK
+                }
                 Err(runtime::state::SetStepModeError::CapabilityMissing) => {
                     KALICO_ERR_CAPABILITY_MISSING
                 }
@@ -1877,6 +1909,45 @@ pub mod exports {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             let shared: &SharedState = &*shared_ptr;
             shared.step_modes[stepper_idx as usize].load(Ordering::Acquire)
+        }
+    }
+
+    /// Count how many steppers are currently in `StepMode::Modulated`.
+    ///
+    /// Used by `runtime_tick_enable` (C-side, spec §6.3) to decide whether
+    /// TIM5 is needed: if the count is zero, TIM5 has no work and is left
+    /// disabled. F4 (no `PHASE_STEPPING` capability) always hits this path;
+    /// H7 in an all-StepTime config also leaves TIM5 idle.
+    ///
+    /// Returns `0` for a null `rt` or uninitialised runtime.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_count_modulated_steppers(
+        rt: *mut KalicoRuntime,
+    ) -> u8 {
+        use runtime::state::MAX_STEPPER_OIDS;
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` is the published RT_CELL pointer (non-null, INIT_DONE=true).
+        // `step_modes` are `AtomicU8` fields; we read via a shared `&SharedState`
+        // reference — no `&mut` is formed. Acquire ordering ensures we see the
+        // latest `set_step_mode` write from any foreground caller.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            let mut count = 0u8;
+            for i in 0..MAX_STEPPER_OIDS {
+                if shared.step_modes[i].load(Ordering::Acquire)
+                    == runtime::state::StepMode::Modulated as u8
+                {
+                    count = count.saturating_add(1);
+                }
+            }
+            count
         }
     }
 

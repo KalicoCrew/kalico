@@ -56,6 +56,16 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
+    // Step-time scheduling refactor (spec §6.3): if no stepper is in
+    // Modulated mode, TIM5 has no work — leave it disabled. F4 (no
+    // PHASE_STEPPING capability) always hits this path; H7 with an
+    // all-StepTime config hits it too.
+    // `kalico_runtime_count_modulated_steppers` is declared in kalico_runtime.h
+    // (included above); no local extern needed.
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        return;
+    }
+
     // Seed the engine's WidenState — see runtime_tick_h7.c::runtime_tick_enable
     // for the full rationale. Same race shape on F4 (slower clock, longer
     // wrap period, but the bug structurally exists wherever the engine's

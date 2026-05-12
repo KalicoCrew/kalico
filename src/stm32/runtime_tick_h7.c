@@ -63,6 +63,16 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
+    // Step-time scheduling refactor (spec §6.3): if no stepper is in
+    // Modulated mode, TIM5 has no work — leave it disabled. F4 (no
+    // PHASE_STEPPING capability) always hits this path; H7 with an
+    // all-StepTime config hits it too.
+    // `kalico_runtime_count_modulated_steppers` is declared in kalico_runtime.h
+    // (included above); no local extern needed.
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        return;
+    }
+
     // Seed the engine's WidenState to match klippy's widened MCU clock.
     //
     // Klippy widens the 32-bit MCU timer via `stats_send_time_high`, which
