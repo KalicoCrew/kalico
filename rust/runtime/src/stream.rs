@@ -229,32 +229,40 @@ pub fn check_terminal_on_retire(shared: &SharedState, retired_seg_id: u32) {
 /// round-trip estimate; here we just sample MCU clock and let the host do
 /// the math.
 ///
-/// **2026-05-11 fix.** Previously this read `read_widened_now(shared)`,
-/// which is the seqlock published by the kalico TIM5 ISR. On the H7 we
-/// disable TIM5 on Drained / Fault (`src/runtime_tick.c:326-329`), so the
-/// seqlock freezes at whatever value the last ISR tick published. The
-/// host's clock-sync regression sees a flat slope and projects the next
-/// dispatch's `t_start_clock` against a stale `now_clock` — landing in
-/// the MCU's real past, which the engine's boundary loop
-/// (`engine.rs::tick_with_current`) silently retires without producing
-/// step pulses. Symptom: second sequential jog moves zero physical
-/// distance, MCU reports `engine_status=Drained` + advanced
-/// `current_segment_id`, no fault raised.
+/// **2026-05-13 re-fix.** Returns to `read_widened_now(shared)` — the
+/// seqlock published by Engine::tick — now that the "always-on TIM5"
+/// fix (commit 0512e962d, 2026-05-12) guarantees Engine::tick runs
+/// continuously regardless of count_modulated. The 2026-05-11
+/// stats-based workaround was correct ONLY while TIM5 could go silent
+/// on Drained / Fault; with TIM5 always armed, the engine-side seqlock
+/// is fresh every 25 µs (H7) / 100 µs (F4).
 ///
-/// Fix: read the Klipper-widened DWT clock via `runtime_widened_host_clock`
-/// (defined in `src/runtime_tick.c`). That widening rides on Klipper's
-/// stats task — ~5 s cadence, independent of the kalico ISR — so the
-/// value advances monotonically through Drained windows. Units match
-/// `read_widened_now`'s old return (DWT cycles), so the bridge's
-/// `compute_ack_clock` and `t_start_clock` arithmetic are unchanged.
+/// The stats-based widening (Klipper's stats_send_time_high, 5 s cadence)
+/// caused a new failure mode after the always-on-TIM5 fix: WidenState
+/// observes 2^32 wraps via TIM5 ISR (40 kHz / 10 kHz) MUCH faster than
+/// stats_send_time_high which only updates on the stats_update task at
+/// ~0.2 Hz. When a wrap occurred, the engine's WidenState bumped `.high`
+/// immediately, but stats_send_time_high lagged up to 5 seconds. During
+/// that window, the host's `t_start_clock` was stamped using stale
+/// stats-based clock → engine's `now` >> `t_start` → segment retired
+/// instantly → no step pulses fired. Bench symptom 2026-05-13: jog
+/// retires 6 segments to Drained in milliseconds, emit_calls=0,
+/// step_time_event fires at 1 kHz poll cadence but always hits NO_STEP
+/// because by the time it polls, engine.current is already None.
+///
+/// Engine-side and host-side now share a SINGLE widening source (the
+/// engine's WidenState, seeded at runtime_tick_enable from
+/// stats_send_time_high but evolved independently via TIM5 ISR
+/// observations) — eliminating the divergence between the frame the
+/// host stamps t_start in and the frame the engine evaluates `now` in.
 pub fn clock_sync_respond(
     _fg: &mut FgState,
-    _shared: &SharedState,
+    shared: &SharedState,
     _request_id: u32,
     _host_send_time_lo: u32,
     _host_send_time_hi: u32,
 ) -> (i32, u64) {
-    let mcu_clock = read_widened_host_clock();
+    let mcu_clock = crate::clock::read_widened_now(shared);
     (KALICO_OK, mcu_clock)
 }
 
