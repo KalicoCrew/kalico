@@ -1078,11 +1078,24 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         } else {
             0
         };
-        // §13.1: trace-ring overflow → set `sample_drop_pending` so foreground
-        // can latch `KALICO_FAULT_TRACE_OVERFLOW`. Unlike the Step-5 carry-bit
-        // approach, the dropped sample is gone — foreground hard-faults
-        // instead of trying to resynchronize a partial trace stream.
-        if trace
+        // §13.1: trace-ring overflow handling. Only SEGMENT_END drops are fatal
+        // — the production `runtime_drain` path's only load-bearing consumer
+        // of the trace stream is `drain_and_reclaim`, which acts ONLY on
+        // SEGMENT_END flags (other samples are drained and discarded). The
+        // streamed `kalico_trace count=N data=*` output to the host is
+        // size-larger-than-USB-CDC-transmit_buf (320 B) so it gets dropped
+        // by `console_sendf` anyway, making non-SEGMENT_END samples invisible
+        // to the host in production. Therefore:
+        //   - SEGMENT_END drop  → fatal (pool reclaim would lose a slot)
+        //   - other drop        → silently swallowed
+        //
+        // Bench-2026-05-12: F446's 180 MHz foreground couldn't drain a
+        // 40 kHz-fed 1199-deep ring under sustained motion load — the ring
+        // overflowed within ~30 ms and `TraceOverflow` latched on segment 2
+        // of an XY jog. The fault was triggered by a NON-SEGMENT_END drop;
+        // the per-tick samples it represented were unused. Filtering the
+        // fault to SEGMENT_END drops lets F446 keep up with the engine.
+        let enqueue_failed = trace
             .enqueue(TraceSample {
                 tick: now,
                 motor_a: state.motors[0],
@@ -1094,8 +1107,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 flags: segment_end_flag,
                 _pad: [0; 7],
             })
-            .is_err()
-        {
+            .is_err();
+        if enqueue_failed && segment_end_flag != 0 {
             shared.sample_drop_pending.store(true, Ordering::Release);
         }
         // Round-2 B14: when the segment is about to retire (last sample in
