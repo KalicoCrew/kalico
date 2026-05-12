@@ -29,6 +29,7 @@ pub mod segment;
 pub mod sim_fixtures;
 pub mod slot;
 pub mod state;
+pub use state::StepMode;
 pub mod step;
 pub mod stream;
 pub mod trace;

@@ -33,6 +33,34 @@ use crate::segment::Segment;
 use crate::slot::{NoopIs, NoopPa};
 use crate::trace::{TRACE_RING_N, TraceSample};
 
+/// Per-stepper stepping-output strategy. Stored as `AtomicU8` in
+/// `SharedState::step_modes`; runtime-mutable via `runtime_set_step_mode`.
+///
+/// Spec: docs/superpowers/specs/2026-05-12-step-time-scheduling-design.md §3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StepMode {
+    /// Driven by TIM5 ISR at the MCU's modulation rate. Current behavior
+    /// (polled curve eval + `StepAccumulator`). Future: grows to include
+    /// sin/cos commutation per build-order Step 10.
+    Modulated = 0,
+    /// Driven by per-stepper Klipper `struct timer`. Engine computes each
+    /// step's firing time via Newton iteration on the position polynomial.
+    /// Default for all steppers; mandatory on MCUs that don't advertise
+    /// the `PHASE_STEPPING` capability bit.
+    StepTime = 1,
+}
+
+impl StepMode {
+    pub fn from_u8(raw: u8) -> Option<StepMode> {
+        match raw {
+            0 => Some(StepMode::Modulated),
+            1 => Some(StepMode::StepTime),
+            _ => None,
+        }
+    }
+}
+
 /// Per-MCU stepper oid counter slots for homing snapshots.
 ///
 /// The MVP firmware owns at most four motors per MCU today; eight slots keep
@@ -155,6 +183,12 @@ pub struct SharedState {
     pub accepted_segment_id_seen: AtomicBool,
     // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
+    /// Per-stepper `StepMode` (spec §5). Atomic so the host can flip a
+    /// stepper between Modulated and StepTime at runtime (needed for future
+    /// sensorless homing on phase-stepped axes — TMC StallGuard requires
+    /// the driver's internal sequencer, which the direct/phase-stepping
+    /// path bypasses). Default `StepTime` (enum value 1).
+    pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
 }
 
 impl SharedState {
@@ -186,6 +220,16 @@ impl SharedState {
                 AtomicI32::new(0),
                 AtomicI32::new(0),
                 AtomicI32::new(0),
+            ],
+            step_modes: [
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
             ],
         }
     }
