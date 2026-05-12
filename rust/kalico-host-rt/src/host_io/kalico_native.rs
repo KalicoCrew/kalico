@@ -53,6 +53,11 @@ pub enum KalicoCallOutcome {
 #[derive(Debug)]
 pub struct IdentifyOutcome {
     pub reset_epoch: u32,
+    /// Raw `capabilities` bitmap from the `IdentifyResponse` (spec §5,
+    /// bytes 61..69). Bit 0 = `PHASE_STEPPING_CAPABLE`. 0 when the
+    /// firmware predates the capability field (shouldn't happen with our
+    /// schema-hash check, but kept defensive).
+    pub capabilities: u64,
 }
 
 /// Per-call wait state held by the reactor. The bridge's `kalico_call`
@@ -240,15 +245,16 @@ fn handle_identify_response(state: &mut KalicoNativeState, payload: &[u8]) -> Ka
     if let Some(c) = state.identify_pending.take() {
         let _ = c.send(Ok(IdentifyOutcome {
             reset_epoch: resp.reset_epoch,
+            capabilities: resp.capabilities,
         }));
     }
     eprintln!(
-        "[kalico-id] identified reset_epoch=0x{:08x} state_epoch={:?}",
-        resp.reset_epoch, state.reset_epoch,
+        "[kalico-id] identified reset_epoch=0x{:08x} caps=0x{:016x} state_epoch={:?}",
+        resp.reset_epoch, resp.capabilities, state.reset_epoch,
     );
     log::info!(
-        "kalico identified: reset_epoch=0x{:08x}, schema_hash matches",
-        resp.reset_epoch
+        "kalico identified: reset_epoch=0x{:08x}, caps=0x{:016x}, schema_hash matches",
+        resp.reset_epoch, resp.capabilities,
     );
     KalicoDispatchResult::Handled
 }

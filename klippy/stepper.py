@@ -435,6 +435,11 @@ def PrinterStepper(config, units_in_radians=False):
         step_pulse_duration,
         units_in_radians,
     )
+    # Phase-stepping mode: read from config; default off (StepTime).
+    # The capability check against the MCU's identify bitmap is deferred to
+    # connect time (MotionToolhead._configure_axes_per_mcu), when the MCU caps
+    # are known.  Config-parse runs before MCU identify.
+    mcu_stepper.phase_stepping = config.getboolean("phase_stepping", False)
     # Register with helper modules
     for mname in ["stepper_enable", "force_move", "motion_report"]:
         m = printer.load_object(config, mname)

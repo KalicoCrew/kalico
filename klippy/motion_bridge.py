@@ -122,6 +122,14 @@ class MotionBridgeWrapper:
         """Return raw zlib identify bytes for process_identify."""
         return bytes(self._bridge.get_identify_data(mcu_handle))
 
+    def get_mcu_capabilities(self, mcu_handle):
+        """Return the raw capabilities bitmap from the MCU's IdentifyResponse.
+
+        Bit 0 = PHASE_STEPPING_CAPABLE. Returns 0 for stock-Klipper MCUs that
+        don't speak kalico-native, or before attach_serial has completed.
+        """
+        return self._bridge.get_mcu_capabilities(mcu_handle)
+
     def configure_axes(
         self,
         mcu_handle,
@@ -130,9 +138,15 @@ class MotionBridgeWrapper:
         awd_mask,
         invert_mask,
         steps_per_mm,
+        step_modes=None,
         timeout_s=2.0,
     ):
-        """Send the kalico-native ConfigureAxes message to an attached MCU."""
+        """Send the kalico-native ConfigureAxes message to an attached MCU.
+
+        step_modes: optional list of 4 ints (0=Modulated/phase-stepping,
+        1=StepTime/classic). When supplied the bridge emits the 25-byte
+        extended format (spec §4 C1). Omit for the legacy 20-byte path.
+        """
         return self._bridge.configure_axes(
             mcu_handle,
             kinematics,
@@ -140,6 +154,7 @@ class MotionBridgeWrapper:
             awd_mask,
             invert_mask,
             list(steps_per_mm),
+            list(step_modes) if step_modes is not None else None,
             timeout_s,
         )
 

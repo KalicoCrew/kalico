@@ -63,6 +63,10 @@ struct McuConnection {
     /// firmware predates the QueryRuntimeCaps message). Task 11 will move
     /// this onto `McuAxisConfig::caps`; for now the bootstrap stores it here.
     runtime_caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
+    /// Raw `capabilities` bitmap from the `IdentifyResponse` (spec §5 bytes
+    /// 61..69). Bit 0 = `PHASE_STEPPING_CAPABLE`. Set during `attach_serial`;
+    /// 0 when `kalico_native_supported` is false (stock-Klipper MCU).
+    identify_caps: u64,
     /// True when this MCU's kalico-native Identify handshake completed.
     /// False for stock-Klipper firmware that has no kalico runtime — those
     /// MCUs still attach for Klipper-protocol commands but cannot accept
@@ -434,6 +438,7 @@ impl PyMotionBridge {
                 host_io: None,
                 runtime_rx: None,
                 runtime_caps: None,
+                identify_caps: 0,
                 kalico_native_supported: false,
                 clock_sync_stop: None,
                 clock_sync_thread: None,
@@ -770,21 +775,22 @@ impl PyMotionBridge {
         // attach — the bridge still routes Klipper-protocol commands fine
         // and the runtime-specific surface (curve uploads, etc.) just
         // stays unused for that MCU.
-        let kalico_native_supported =
+        let (kalico_native_supported, identify_caps) =
             match host_io.kalico_identify(std::time::Duration::from_secs(5)) {
                 Ok(out) => {
                     log::info!(
-                        "attach_serial: kalico identified — reset_epoch=0x{:08x}",
-                        out.reset_epoch
+                        "attach_serial: kalico identified — reset_epoch=0x{:08x} \
+                         caps=0x{:016x}",
+                        out.reset_epoch, out.capabilities,
                     );
-                    true
+                    (true, out.capabilities)
                 }
                 Err(e) => {
                     log::warn!(
                         "attach_serial: kalico_identify timed out for {serial_path} ({e}); \
                          continuing attach as a Klipper-protocol-only MCU"
                     );
-                    false
+                    (false, 0u64)
                 }
             };
 
@@ -798,8 +804,8 @@ impl PyMotionBridge {
             std::time::Duration::from_secs(2),
         ) {
             Ok(caps) => {
-                log::info!(
-                    "attach_serial: runtime caps for {serial_path}: \
+                eprintln!(
+                    "[caps-trace] attach_serial: runtime caps for {serial_path}: \
                      max_cp={} max_kv={} max_deg={} pool_n={}",
                     caps.max_control_points,
                     caps.max_knot_vector_len,
@@ -809,8 +815,8 @@ impl PyMotionBridge {
                 caps
             }
             Err(e) => {
-                log::warn!(
-                    "attach_serial: QueryRuntimeCaps failed for {serial_path} ({e}); \
+                eprintln!(
+                    "[caps-trace] attach_serial: QueryRuntimeCaps failed for {serial_path} ({e}); \
                      falling back to large-profile defaults",
                 );
                 FALLBACK_RUNTIME_CAPS
@@ -853,10 +859,27 @@ impl PyMotionBridge {
         conn.host_io = Some(host_io_arc);
         conn.runtime_rx = Some(runtime_rx);
         conn.runtime_caps = Some(runtime_caps);
+        conn.identify_caps = identify_caps;
         conn.kalico_native_supported = kalico_native_supported;
         conn.clock_sync_stop = clock_sync_stop;
         conn.clock_sync_thread = clock_sync_thread;
         Ok(())
+    }
+
+    /// Return the `capabilities` bitmap from the MCU's `IdentifyResponse`
+    /// (spec §5, bytes 61..69). Bit 0 = `PHASE_STEPPING_CAPABLE`.
+    ///
+    /// Returns 0 for stock-Klipper MCUs that don't speak kalico-native.
+    /// `claim_mcu` must have been called first; `attach_serial` must have
+    /// completed for the value to reflect the real MCU capabilities.
+    fn get_mcu_capabilities(&self, mcu_handle: u32) -> PyResult<u64> {
+        let mcus = self.mcus.lock().unwrap();
+        let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "get_mcu_capabilities: unknown mcu_handle {mcu_handle}"
+            ))
+        })?;
+        Ok(conn.identify_caps)
     }
 
     /// Send the kalico-native `ConfigureAxes` message for an attached MCU.
@@ -865,7 +888,12 @@ impl PyMotionBridge {
     /// `steps_per_mm`: 4 entries indexed [A/X, B/Y, Z, E]; entries whose
     /// `present_mask` bit is 0 are ignored. `awd_mask` and `invert_mask`
     /// are 4-bit per-motor flag masks.
-    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, timeout_s = 2.0))]
+    ///
+    /// `step_modes`: optional list of 4 `u8` values (0 = Modulated / phase
+    /// stepping, 1 = StepTime / classic). When supplied the bridge emits the
+    /// 25-byte extended format (spec §4 C1); when omitted it emits the
+    /// legacy 20-byte format. Firmware accepts both.
+    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, step_modes = None, timeout_s = 2.0))]
     fn configure_axes(
         &self,
         py: Python<'_>,
@@ -875,21 +903,29 @@ impl PyMotionBridge {
         awd_mask: u8,
         invert_mask: u8,
         steps_per_mm: Vec<f32>,
+        step_modes: Option<Vec<u8>>,
         timeout_s: f64,
     ) -> PyResult<()> {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/cax-trace.log") {
-            let _ = writeln!(f, "configure_axes ENTRY mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} steps_per_mm_len={}", steps_per_mm.len());
+            let _ = writeln!(f, "configure_axes ENTRY mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} steps_per_mm_len={} step_modes={step_modes:?}", steps_per_mm.len());
         }
         if steps_per_mm.len() != 4 {
             return Err(PyRuntimeError::new_err(
                 "configure_axes: steps_per_mm must be a list of 4 floats",
             ));
         }
-        eprintln!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x}");
+        if let Some(ref sm) = step_modes {
+            if sm.len() != 4 {
+                return Err(PyRuntimeError::new_err(
+                    "configure_axes: step_modes must be a list of 4 ints (0=Modulated, 1=StepTime)",
+                ));
+            }
+        }
+        eprintln!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}");
         // belt-and-suspenders: also force stderr flush
         let _ = std::io::stderr().flush();
-        let io = {
+        let (io, identify_caps) = {
             let mcus = self.mcus.lock().unwrap();
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!(
@@ -907,19 +943,34 @@ impl PyMotionBridge {
                 eprintln!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
                 return Ok(());
             }
-            conn.host_io.as_ref().ok_or_else(|| {
+            let io = conn.host_io.as_ref().ok_or_else(|| {
                 PyRuntimeError::new_err(
                     "configure_axes: attach_serial has not been called for this MCU",
                 )
-            })?.clone()
+            })?.clone();
+            (io, conn.identify_caps)
         };
-        let mut body = Vec::with_capacity(20);
+        // Always emit the 25-byte extended format when step_modes are provided;
+        // fall back to 20-byte legacy when not. Byte 20 carries the phase-
+        // stepping capability bit from the identify response so the firmware
+        // can double-check the host's understanding. Bytes 21-24 are the per-
+        // motor StepMode array (0=Modulated, 1=StepTime).
+        let mut body = Vec::with_capacity(25);
         body.push(kinematics);
         body.push(present_mask);
         body.push(awd_mask);
         body.push(invert_mask);
         for v in &steps_per_mm {
             body.extend_from_slice(&v.to_le_bytes());
+        }
+        if let Some(ref sm) = step_modes {
+            // byte 20: phase_capable flag (bit 0 from identify capabilities)
+            let phase_capable: u8 = if identify_caps & 0x1 != 0 { 1 } else { 0 };
+            body.push(phase_capable);
+            // bytes 21-24: step_mode[0..4]
+            for &m in sm.iter().take(4) {
+                body.push(m);
+            }
         }
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
         let result = py.allow_threads(|| {
@@ -1428,7 +1479,19 @@ impl PyMotionBridge {
                 .clone();
             let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
             io.attach_credit_counter(Arc::clone(&credit));
-            let slot_pool = Arc::new(Mutex::new(SlotPool::new()));
+            // Bench 2026-05-12: size the host slot pool to the MCU's
+            // actual `caps.curve_pool_n` (queried at attach_serial). The
+            // F446 reports `pool_n=4` under the small profile (per-slot
+            // scratch + 128 KB total RAM forces this); the H7 reports 16.
+            // Hardcoding 16 here previously caused the 5th sequential jog
+            // to allocate slot=4 → F446 rejects with
+            // `KALICO_ERR_INVALID_HANDLE`/OutOfBounds.
+            let pool_capacity = cfg_mcu.caps.curve_pool_n as usize;
+            eprintln!(
+                "[slot-trace] init_pool mcu={} capacity={}",
+                cfg_mcu.mcu_id, pool_capacity,
+            );
+            let slot_pool = Arc::new(Mutex::new(SlotPool::new(pool_capacity)));
             self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
             self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
             dispatch_ios.insert(
@@ -1712,22 +1775,32 @@ impl PyMotionBridge {
                     let curve_params = plan.curves_to_load[i].1.clone();
                     let alloc_result = {
                         let mut pool = slot_pool.lock().unwrap();
+                        let cap = pool.capacity();
+                        let in_flight = pool.in_flight_count();
                         pool.try_alloc().ok_or_else(|| {
                             format!(
-                                "slot pool exhausted for mcu={} (capacity={CURVE_POOL_N}, in_flight={}); \
+                                "slot pool exhausted for mcu={} (capacity={cap}, in_flight={in_flight}); \
                                  awaiting kalico_credit_freed retirement events",
                                 plan.mcu_id,
-                                pool.in_flight_count(),
                             )
                         })
                     };
-                    let (slot, _gen) = match alloc_result {
+                    let (slot, slot_gen) = match alloc_result {
                         Ok(v) => v,
                         Err(e) => {
                             seg_err = Some(e);
                             break;
                         }
                     };
+                    let pool_in_flight_after_alloc = {
+                        let p = slot_pool.lock().unwrap();
+                        p.in_flight_count()
+                    };
+                    eprintln!(
+                        "[slot-trace] try_alloc mcu={} seg_id={} axis={} slot={} gen={} in_flight={}",
+                        plan.mcu_id, plan.params.id, axis_idx, slot, slot_gen,
+                        pool_in_flight_after_alloc,
+                    );
                     allocated_slots.push(slot);
                     match producer::load_curve(
                         io.as_ref(),
@@ -1740,8 +1813,8 @@ impl PyMotionBridge {
                         }
                         Err(e) => {
                             seg_err = Some(format!(
-                                "load_curve mcu={}: {e}",
-                                plan.mcu_id
+                                "load_curve mcu={} slot={} seg_id={} axis={} host_gen={}: {e}",
+                                plan.mcu_id, slot, plan.params.id, axis_idx, slot_gen,
                             ));
                             break;
                         }
@@ -1753,6 +1826,10 @@ impl PyMotionBridge {
                     // segment before propagating.
                     let mut pool = slot_pool.lock().unwrap();
                     for s in &allocated_slots {
+                        eprintln!(
+                            "[slot-trace] release(on-err) mcu={} seg_id={} slot={}",
+                            plan.mcu_id, plan.params.id, s,
+                        );
                         pool.release(*s);
                     }
                     return Err(err);
@@ -1764,6 +1841,10 @@ impl PyMotionBridge {
                     let mut pool = slot_pool.lock().unwrap();
                     for slot in &allocated_slots {
                         pool.register_segment(*slot, plan.params.id);
+                        eprintln!(
+                            "[slot-trace] register_segment mcu={} slot={} seg_id={}",
+                            plan.mcu_id, slot, plan.params.id,
+                        );
                     }
                 }
 
@@ -2162,13 +2243,19 @@ impl PyMotionBridge {
         retired_through_segment_id: u32,
         free_slots: u8,
     ) -> PyResult<(u32, Option<u32>)> {
-        let n_released = match self.slot_pools.lock().unwrap().get(&mcu) {
-            Some(pool_arc) => pool_arc
-                .lock()
-                .unwrap()
-                .retire_through_segment(retired_through_segment_id),
-            None => 0,
+        let (n_released, in_flight_after) = match self.slot_pools.lock().unwrap().get(&mcu) {
+            Some(pool_arc) => {
+                let mut p = pool_arc.lock().unwrap();
+                let n = p.retire_through_segment(retired_through_segment_id);
+                (n, p.in_flight_count())
+            }
+            None => (0, 0),
         };
+        eprintln!(
+            "[slot-trace] on_credit_freed mcu={} retired_through={} free_slots={} \
+             n_released={} in_flight_after={}",
+            mcu, retired_through_segment_id, free_slots, n_released, in_flight_after,
+        );
         if let Some(c) = self.credit_counters.lock().unwrap().get(&mcu) {
             c.on_credit_freed(free_slots);
         }
@@ -2286,7 +2373,7 @@ mod credit_freed_tests {
     /// `on_credit_freed` has something to operate on. `init_planner`
     /// normally does this; tests bypass the planner thread.
     fn install_mcu(bridge: &PyMotionBridge, mcu: u32) -> Arc<Mutex<SlotPool>> {
-        let pool = Arc::new(Mutex::new(SlotPool::new()));
+        let pool = Arc::new(Mutex::new(SlotPool::new(crate::slot_pool::CURVE_POOL_N)));
         bridge.slot_pools.lock().unwrap().insert(mcu, Arc::clone(&pool));
         let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
         bridge.credit_counters.lock().unwrap().insert(mcu, credit);

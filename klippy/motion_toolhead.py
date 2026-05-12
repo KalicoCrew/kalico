@@ -676,10 +676,16 @@ class MotionToolhead(ToolHead):
             if slot_primary[slot_idx] is not None:
                 slot_steppers[slot_idx].insert(0, slot_primary[slot_idx])
 
+        # Capability bit: bit 0 of the IdentifyResponse capabilities bitmap.
+        PHASE_STEPPING_BIT = 0x1
+
         for name, mcu_obj, mcu_handle in bridge_mcus:
             present_mask = 0
             invert_mask = 0
             steps_per_mm = [0.0, 0.0, 0.0, 0.0]
+            # step_modes: 0=Modulated (phase stepping), 1=StepTime (classic).
+            # Default all-StepTime; overridden per motor slot below.
+            step_modes = [1, 1, 1, 1]
             # Per-MCU bind list: ordered (motor_idx, name, oid, invert_dir).
             bind_list = []
             for i in range(4):
@@ -704,6 +710,10 @@ class MotionToolhead(ToolHead):
                 present_mask |= 1 << i
                 if getattr(primary, "_invert_dir", False):
                     invert_mask |= 1 << i
+                # Phase-stepping mode for this motor slot: driven by primary
+                # stepper's phase_stepping flag.
+                if getattr(primary, "phase_stepping", False):
+                    step_modes[i] = 0  # Modulated
                 for (sname, s) in on_this_mcu:
                     inv = 1 if getattr(s, "_invert_dir", False) else 0
                     bind_list.append((i, sname, s.get_oid(), inv))
@@ -714,9 +724,32 @@ class MotionToolhead(ToolHead):
                     "skipping configure_axes", name,
                 )
                 continue
+            # Capability check: any stepper requesting phase_stepping=True on
+            # an MCU that does not advertise PHASE_STEPPING_CAPABLE is a
+            # config error. The check happens here (connect time) because MCU
+            # capabilities are only known after attach_serial / identify, which
+            # runs after config-parse time.
+            mcu_caps = self.bridge.get_mcu_capabilities(mcu_handle)
+            for i in range(4):
+                if step_modes[i] == 0 and not (mcu_caps & PHASE_STEPPING_BIT):
+                    # Find the primary stepper name for this slot to give a
+                    # user-friendly error.
+                    slot_name = (
+                        slot_steppers[i][0][0]
+                        if slot_steppers[i]
+                        else "motor_%d" % i
+                    )
+                    raise self.printer.config_error(
+                        "Stepper '%s' requests phase_stepping: 1, "
+                        "but its MCU does not advertise the "
+                        "PHASE_STEPPING capability. "
+                        "Phase stepping requires a sufficiently fast MCU "
+                        "(STM32H7 family); the STM32F4 family is not "
+                        "supported." % slot_name
+                    )
             self.bridge.configure_axes(
                 mcu_handle, kin_tag, present_mask, awd_mask,
-                invert_mask, steps_per_mm,
+                invert_mask, steps_per_mm, step_modes,
             )
             # Step 7-D: bind every stepper attached to each runtime motor
             # index to the C-side runtime_emit_step_pulses table. config_stepper
@@ -748,9 +781,9 @@ class MotionToolhead(ToolHead):
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "
                 "present=0x%x awd=0x%x invert=0x%x steps_per_mm=%s "
-                "runtime_bindings=%s",
+                "step_modes=%s mcu_caps=0x%x runtime_bindings=%s",
                 name, kin_tag, present_mask, awd_mask, invert_mask,
-                steps_per_mm,
+                steps_per_mm, step_modes, mcu_caps,
                 [(m, n, o, i) for (m, n, o, i) in bind_list],
             )
 
