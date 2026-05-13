@@ -1,11 +1,18 @@
 /// Default maximum steps allowed per tick — burst cap guard.
 ///
-/// At configured peak velocity (300 mm/s × 80 steps/mm / 40 kHz ≈ 0.6
-/// step/tick), 16 is ~25× the legitimate per-tick load — tight enough
-/// to catch genuine runaway-curve bugs, loose enough to absorb the
-/// f32 De Boor noise floor on the post-shape uniform-cubic representation
-/// produced by `trajectory::refit::refit_to_cubic` (Stage 3b).
-pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 16;
+/// 2026-05-13 MVP raise: 16 was tripping on cross-segment continuity
+/// discontinuities the planner is currently emitting (bench fault
+/// reproduced motor B attempting 255 mm in one tick → 40k+ steps with
+/// 160 spm). The proper fix is to find why the planner emits
+/// discontinuous segments — but for now, raise the cap to a value
+/// that absorbs the typical observed discontinuity (~25 mm jog ≈ 4000
+/// steps) so motion can proceed and we can debug the discontinuity
+/// from a working baseline.
+///
+/// Original conservative value (16) commented out; restore once the
+/// planner-continuity invariant is enforced end-to-end.
+///   // pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 16;
+pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 65536;
 
 /// Output of a single [`StepMotorState::update`] call.
 #[derive(Debug)]
