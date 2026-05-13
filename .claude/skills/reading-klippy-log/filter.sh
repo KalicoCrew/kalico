@@ -97,6 +97,39 @@ esac
 # Resolve to actual banner line number (1-based into TMPLOG).
 BANNER_LINE=${BANNER_LINES[$((SESSION_INDEX - 1))]}
 
+# Stage 3b: Fresh-restart fallback (only when caller asked for "latest").
+if [[ "$session_arg" == "latest" && ${#BANNER_LINES[@]} -ge 2 ]]; then
+  # Count non-status lines from BANNER_LINE to EOF.
+  ns_count=$(awk -v start="$BANNER_LINE" 'NR >= start && $0 !~ /kalico_status_v6/' "$TMPLOG" | wc -l | tr -d ' ')
+
+  # Extract banner host-epoch (the first number in parens on the banner line).
+  # macOS awk (one-true-awk) lacks the 3-arg match form; use 2-arg + substr.
+  banner_epoch=$(awk -v ln="$BANNER_LINE" '
+  NR == ln {
+    if (match($0, /\([0-9]+\.[0-9]+ /)) {
+      # strip leading "(" and trailing " "
+      print substr($0, RSTART + 1, RLENGTH - 2)
+    }
+    exit
+  }' "$TMPLOG")
+
+  now=$(date +%s)
+  age=$((now - ${banner_epoch%.*}))
+
+  fallback_reason=""
+  if (( ns_count < 100 )); then
+    fallback_reason="fresh-restart (latest had $ns_count non-status lines, <100)"
+  elif (( age < 60 )); then
+    fallback_reason="fresh-restart (latest is ${age}s old, <60s)"
+  fi
+
+  if [[ -n "$fallback_reason" ]]; then
+    SESSION_INDEX=$(( ${#BANNER_LINES[@]} - 1 ))
+    BANNER_LINE=${BANNER_LINES[$((SESSION_INDEX - 1))]}
+    FALLBACK_REASON="$fallback_reason"
+  fi
+fi
+
 # Compute slice metadata.
 TOTAL_LINES=$(awk 'END{print NR}' "$TMPLOG")
 SLICE_END=$TOTAL_LINES
