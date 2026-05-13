@@ -822,7 +822,8 @@ if [[ "$session_arg" == "latest" && ${#BANNER_LINES[@]} -ge 2 ]]; then
   # Extract banner host-epoch (the first number in parens on the banner line).
   banner_epoch=$(awk -v ln="$BANNER_LINE" 'NR == ln { if (match($0, /\(([0-9]+\.[0-9]+) /, m)) print m[1]; exit }' "$TMPLOG")
   now=$(date +%s)
-  age=$((now - ${banner_epoch%.*}))
+  epoch_int="${banner_epoch%.*}"
+  age=$(( now - ${epoch_int:-0} ))
 
   fallback_reason=""
   if (( ns_count < 100 )); then

@@ -114,7 +114,8 @@ if [[ "$session_arg" == "latest" && ${#BANNER_LINES[@]} -ge 2 ]]; then
   }' "$TMPLOG")
 
   now=$(date +%s)
-  age=$((now - ${banner_epoch%.*}))
+  epoch_int="${banner_epoch%.*}"
+  age=$(( now - ${epoch_int:-0} ))
 
   fallback_reason=""
   if (( ns_count < 100 )); then
