@@ -283,6 +283,128 @@ pub fn eval_polynomial_with_derivative<T: Float>(
     (d[p], dd[p])
 }
 
+/// Knot-span lookup variant that takes f32 knots but an f64 query parameter.
+/// Used by `eval_polynomial_f32_with_pos_vel_accel_f64` to drive the de Boor
+/// recurrence in f64 over f32-storage cps/knots without an intermediate
+/// per-knot widening pass.
+#[inline]
+fn find_knot_span_f32_with_f64_u(knots: &[f32], p: usize, n: usize, u: f64) -> usize {
+    debug_assert!(knots.len() == n + p + 1);
+    if u >= knots[n] as f64 {
+        return n - 1;
+    }
+    if u <= knots[p] as f64 {
+        return p;
+    }
+    let mut low = p;
+    let mut high = n;
+    let mut mid = (low + high) / 2;
+    while u < knots[mid] as f64 || u >= knots[mid + 1] as f64 {
+        if u < knots[mid] as f64 {
+            high = mid;
+        } else {
+            low = mid;
+        }
+        mid = (low + high) / 2;
+    }
+    mid
+}
+
+/// Same recurrence as the f32→f64 de Boor evaluator with first
+/// derivative, but also tracks the second derivative. The position
+/// (`d`) and first derivative (`dd`) follow the standard de Boor
+/// recurrence; we add a parallel `ddd` array whose update rule is the
+/// difference-of-`dd` recurrence — algebraically the second derivative
+/// of the same polynomial.
+///
+/// Cost over the pos+vel variant: one extra triple of f64 ops per
+/// inner iteration. Workspace stays bounded by `WORKSPACE_SIZE` (~168 B
+/// each × 3 = ~504 B stack).
+///
+/// Used by `compute_next_step_time` (in the runtime crate) to obtain
+/// the second derivative needed for the degree-aware Newton seed that
+/// handles `v(0) = 0` cold-start segments — spec
+/// `docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md` §3.6.
+#[inline]
+pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
+    cps: &[f32],
+    knots: &[f32],
+    degree: u8,
+    u: f32,
+) -> (f64, f64, f64) {
+    debug_assert!((degree as usize) <= MAX_DEGREE);
+    debug_assert!(knots.len() == cps.len() + (degree as usize) + 1);
+
+    let u_f64 = u as f64;
+    let p = usize::from(degree);
+    let n = cps.len();
+
+    if degree == 0 {
+        // Step function: position is the active cp, derivatives are zero.
+        let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
+        return (cps[k] as f64, 0.0, 0.0);
+    }
+    if degree == 1 {
+        // Linear: analytic evaluator. Second derivative is identically zero
+        // on each span (the curve is piecewise-linear in u).
+        let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
+        let a = cps[k - 1] as f64;
+        let b = cps[k] as f64;
+        let knot_lo = knots[k] as f64;
+        let knot_hi = knots[k + 1] as f64;
+        let denom = knot_hi - knot_lo;
+        if denom <= 0.0 {
+            return (a, 0.0, 0.0);
+        }
+        let alpha = (u_f64 - knot_lo) / denom;
+        let pos = a + (b - a) * alpha;
+        let vel = (b - a) / denom;
+        return (pos, vel, 0.0);
+    }
+
+    let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
+
+    let mut d = [0.0_f64; WORKSPACE_SIZE];
+    let mut dd = [0.0_f64; WORKSPACE_SIZE];
+    let mut ddd = [0.0_f64; WORKSPACE_SIZE];
+    for j in 0..=p {
+        d[j] = cps[k - p + j] as f64;
+        // dd[j] = 0, ddd[j] = 0 — initial cps don't depend on u.
+    }
+
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let lo = knots[k - p + j] as f64;
+            let hi = knots[k + 1 + j - r] as f64;
+            let denom = hi - lo;
+            let old_d_jm1 = d[j - 1];
+            let old_d_j = d[j];
+            let old_dd_jm1 = dd[j - 1];
+            let old_dd_j = dd[j];
+            let old_ddd_jm1 = ddd[j - 1];
+            let old_ddd_j = ddd[j];
+            if denom > 0.0_f64 {
+                let inv_denom = 1.0_f64 / denom;
+                let alpha = (u_f64 - lo) * inv_denom;
+                let one_minus_alpha = 1.0_f64 - alpha;
+                ddd[j] = one_minus_alpha * old_ddd_jm1
+                    + alpha * old_ddd_j
+                    + 2.0 * (old_dd_j - old_dd_jm1) * inv_denom;
+                dd[j] = one_minus_alpha * old_dd_jm1
+                    + alpha * old_dd_j
+                    + (old_d_j - old_d_jm1) * inv_denom;
+                d[j] = (old_d_j - old_d_jm1) * alpha + old_d_jm1;
+            } else {
+                d[j] = old_d_jm1;
+                dd[j] = old_dd_jm1;
+                ddd[j] = old_ddd_jm1;
+            }
+        }
+    }
+
+    (d[p], dd[p], ddd[p])
+}
+
 /// Evaluate a scalar B-spline NURBS at `u` directly from raw cps + knots
 /// slices, without going through `ScalarNurbsRef::try_new` (which re-runs the
 /// full O(n) NURBS-invariant validation on every call). MCU hot path: callers
@@ -816,6 +938,50 @@ mod tests {
         // The path is straight along X — curvature is 0 everywhere.
         let k = curvature_from_derivs(&first, &second, 0.5_f64);
         assert!(k.abs() < 1e-10, "got {k}");
+    }
+
+    #[test]
+    fn pos_vel_accel_on_quadratic_polynomial() {
+        // f(u) = u² on u ∈ [0,1] as degree-2 Bézier with cps = [0, 0, 1]
+        // (knots [0,0,0,1,1,1]).
+        // Verify: f(0.5)=0.25, f'(0.5)=1.0, f''(0.5)=2.0.
+        let cps = vec![0.0_f32, 0.0, 1.0];
+        let knots = vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let (p, v, a) = eval_polynomial_f32_with_pos_vel_accel_f64(&cps, &knots, 2, 0.5);
+        assert!((p - 0.25).abs() < 1e-9, "pos={}", p);
+        assert!((v - 1.0_f64).abs() < 1e-9, "vel={}", v);
+        assert!((a - 2.0_f64).abs() < 1e-9, "accel={}", a);
+    }
+
+    #[test]
+    fn pos_vel_accel_on_cubic_polynomial() {
+        // f(u) = u³ on u ∈ [0,1] as degree-3 Bézier with cps = [0,0,0,1]
+        // (knots [0,0,0,0,1,1,1,1]).
+        // Verify at u=0.5: f=0.125, f'=0.75, f''=3.0.
+        let cps = vec![0.0_f32, 0.0, 0.0, 1.0];
+        let knots = vec![0.0_f32, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let (p, v, a) = eval_polynomial_f32_with_pos_vel_accel_f64(&cps, &knots, 3, 0.5);
+        assert!((p - 0.125).abs() < 1e-9, "pos={}", p);
+        assert!((v - 0.75_f64).abs() < 1e-9, "vel={}", v);
+        assert!((a - 3.0_f64).abs() < 1e-9, "accel={}", a);
+    }
+
+    #[test]
+    fn pos_vel_accel_on_linear_polynomial_returns_zero_accel() {
+        // f(u) = u, degree-1 Bézier cps=[0,1], knots=[0,0,1,1].
+        // Note: 0.3_f32 widens to ~0.30000001192 in f64, so position tolerance
+        // accommodates the f32→f64 round-trip on u (~1.2e-8). Velocity and
+        // acceleration are exact (rational arithmetic on exact knots/cps).
+        let cps = vec![0.0_f32, 1.0];
+        let knots = vec![0.0_f32, 0.0, 1.0, 1.0];
+        let (p, v, a) = eval_polynomial_f32_with_pos_vel_accel_f64(&cps, &knots, 1, 0.3);
+        assert!((p - 0.3).abs() < 1e-6, "pos={}", p);
+        assert!((v - 1.0_f64).abs() < 1e-9, "vel={}", v);
+        assert!(
+            a.abs() < 1e-9,
+            "linear curve must have zero second derivative; got {}",
+            a
+        );
     }
 
     #[cfg(feature = "host")]
