@@ -20,7 +20,13 @@ for fixture in "$FIXTURES_DIR"/*.log; do
   stderr_grep_file="$EXPECTED_DIR/$name.stderr_grep"
   expected_txt="$EXPECTED_DIR/$name.txt"
 
-  actual_stdout="$(KLOG_LOCAL_OVERRIDE_PATH="$fixture" bash "$FILTER" 2>/tmp/run_sh_stderr.$$)"
+  args_file="$EXPECTED_DIR/$name.args"
+  if [[ -f "$args_file" ]]; then
+    # shellcheck disable=SC2046
+    actual_stdout="$(KLOG_LOCAL_OVERRIDE_PATH="$fixture" bash "$FILTER" $(cat "$args_file") 2>/tmp/run_sh_stderr.$$)"
+  else
+    actual_stdout="$(KLOG_LOCAL_OVERRIDE_PATH="$fixture" bash "$FILTER" 2>/tmp/run_sh_stderr.$$)"
+  fi
   actual_exit=$?
   actual_stderr="$(cat /tmp/run_sh_stderr.$$)"
   rm -f /tmp/run_sh_stderr.$$
