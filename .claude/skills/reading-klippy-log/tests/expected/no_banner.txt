@@ -1,0 +1,4 @@
+SESSION: WARNING no boot banner found, using entire file (slice=L1-L3 non_status_lines=2)
+L1	some random line
+L2	another line with no banner
+L3	mcu 'mcu':  got {'type': 'status', 'engine_status': 0, '#name': 'kalico_status_v6'}

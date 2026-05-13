@@ -44,6 +44,22 @@ if [[ ! -s "$TMPLOG" ]]; then
   exit 1
 fi
 
-# TODO Task 3+: banner indexing, session pick, slice, collapse.
-# For now emit a placeholder so the test driver detects this stage works.
-echo "FETCHED: $(wc -l < "$TMPLOG") lines from $SRC_LABEL"
+# Stage 2: Index boot banners.
+# Each banner line: "Start printer at <date> (<host_epoch> <internal_clock>)"
+mapfile -t BANNER_LINES < <(grep -n "^Start printer at " "$TMPLOG" | cut -d: -f1)
+
+emit_full_file_warning() {
+  total_lines=$(awk 'END{print NR}' "$TMPLOG")
+  non_status=$(grep -cv "kalico_status_v6" "$TMPLOG")
+  echo "SESSION: WARNING no boot banner found, using entire file (slice=L1-L${total_lines} non_status_lines=${non_status})"
+  awk '{ printf("L%d\t%s\n", NR, $0) }' "$TMPLOG"
+}
+
+if (( ${#BANNER_LINES[@]} == 0 )); then
+  emit_full_file_warning
+  exit 0
+fi
+
+# TODO Task 4+: session pick, slice, collapse.
+# For now emit a placeholder showing banner-index worked.
+echo "BANNERS_FOUND: ${#BANNER_LINES[@]} at lines: ${BANNER_LINES[*]}"
