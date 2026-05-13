@@ -41,13 +41,30 @@ pub const STEP_RING_CAPACITY: usize = 1024;
 #[derive(Debug)]
 pub struct StepRing {
     /// Slot storage: when to fire (low 32 bits of MCU cycle counter).
-    pub cycles_abs_lo: [u32; STEP_RING_CAPACITY],
-    /// Slot storage: direction (+1 forward, -1 reverse).
-    pub dirs: [i8; STEP_RING_CAPACITY],
+    ///
+    /// Crate-private: external callers must go through [`StepRing::push`]
+    /// (producer) and [`StepRing::peek_head`] / [`StepRing::peek_next`]
+    /// (consumer) so the Acquire/Release barriers on `head` / `cursor` are
+    /// always paired correctly.
+    pub(crate) cycles_abs_lo: [u32; STEP_RING_CAPACITY],
+    /// Slot storage: direction. Valid values pushed by the producer are
+    /// `+1` (forward) and `-1` (reverse); `0` is the uninitialized sentinel
+    /// written by [`StepRing::new`] and is never observable through
+    /// `peek_head` / `peek_next` because `head == cursor` before the
+    /// producer's first push (so those accessors short-circuit to `None`).
+    ///
+    /// Crate-private for the same reason as `cycles_abs_lo` above.
+    pub(crate) dirs: [i8; STEP_RING_CAPACITY],
     /// Producer monotonic counter. Advances only via [`StepRing::push`].
-    pub head: AtomicU32,
+    ///
+    /// Crate-private: direct mutation would bypass the Release store inside
+    /// `push` and break the SPSC publication contract.
+    pub(crate) head: AtomicU32,
     /// Consumer monotonic counter. Advances only via [`StepRing::advance`].
-    pub cursor: AtomicU32,
+    ///
+    /// Crate-private: direct mutation would bypass the Release store inside
+    /// `advance` and break the SPSC slot-ownership contract.
+    pub(crate) cursor: AtomicU32,
 }
 
 impl StepRing {
@@ -81,6 +98,18 @@ impl StepRing {
     /// The slot is written before `head` is advanced with `Release`, pairing
     /// with the consumer's `Acquire` load of `head` to make the slot
     /// contents visible.
+    ///
+    /// **SPSC contract.** The `&mut self` receiver is a single-producer
+    /// *convention* — it marks that only one producer-side caller exists at
+    /// a time. Concurrent consumer access through `&self` is permitted by
+    /// the SPSC pattern (the consumer reads slot-array indices the producer
+    /// has already finished writing, ordered through the Release barrier on
+    /// `head` below, and only mutates `cursor` via atomic ops). The runtime
+    /// deployment satisfies this by deriving the `&mut` receiver and the
+    /// consumer's `&self` from an `UnsafeCell` projection inside the
+    /// engine's shared state; the type-level `&mut` / `&` distinction here
+    /// records the producer / consumer roles, not Rust's exclusive-borrow
+    /// guarantee.
     #[allow(clippy::indexing_slicing)]
     pub fn push(&mut self, cycles_abs_lo: u32, dir: i8) {
         let head = self.head.load(Ordering::Relaxed);
@@ -145,10 +174,17 @@ impl StepRing {
             .store(cursor.wrapping_add(n), Ordering::Release);
     }
 
-    /// Producer side: reset both counters to 0. Used by `runtime_force_idle`
-    /// (foreground synchronous; no concurrent consumer at the moment of
-    /// call). The slot buffers are left as-is — they will be overwritten by
-    /// future pushes before they are read.
+    /// Reset both counters to 0. Used by `runtime_force_idle` (foreground
+    /// synchronous teardown).
+    ///
+    /// **Caller-side quiescence requirement.** Both the producer *and* the
+    /// consumer must be quiesced at the moment of call — neither side may
+    /// have an in-flight `push` / `advance` / `peek_*` against this ring.
+    /// `reset` zeroes `head` and `cursor` independently, and a concurrent
+    /// producer or consumer would observe a torn (head, cursor) pair and
+    /// could either skip pending entries or read stale slots. The slot
+    /// buffers are left as-is — they will be overwritten by future pushes
+    /// before they are read.
     pub fn reset(&mut self) {
         self.head.store(0, Ordering::Release);
         self.cursor.store(0, Ordering::Release);
