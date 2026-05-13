@@ -125,7 +125,8 @@ function extract_mcu(line,   s) {
 }
 function extract_recv_time(line,   val) {
   if (match(line, /'\''#receive_time'\'': [0-9.]+/)) {
-    val = substr(line, RSTART + 18, RLENGTH - 18)
+    # prefix "'#receive_time': " is 17 chars
+    val = substr(line, RSTART + 17, RLENGTH - 17)
     return val + 0
   }
   return 0

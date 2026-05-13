@@ -1,0 +1,4 @@
+SESSION: banner_line=1 banner_time='Wed May 13 00:00:00 2026' slice=L1-L3 non_status_lines=1 fallback=none
+L1	Start printer at Wed May 13 00:00:00 2026 (1778600000.0 0.0)
+L2	mcu 'mcu':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 26, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 9.9, '#receive_time': 9.9}
+[L2-L3] mcu='mcu' status unchanged: engine_status=2 segment_id=26 last_fault=0 fault_detail=100 (2 frames, 0.2s)
