@@ -1,0 +1,5 @@
+Start printer at Wed May 13 00:00:00 2026 (1778600000.0 0.0)
+mcu 'mcu':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 10, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 1.0, '#receive_time': 1.0}
+mcu 'bottom':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 20, 'last_fault': 0, 'fault_detail': 200, '#name': 'kalico_status_v6', '#sent_time': 1.1, '#receive_time': 1.1}
+mcu 'mcu':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 10, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 1.2, '#receive_time': 1.2}
+mcu 'bottom':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 20, 'last_fault': 0, 'fault_detail': 200, '#name': 'kalico_status_v6', '#sent_time': 1.3, '#receive_time': 1.3}

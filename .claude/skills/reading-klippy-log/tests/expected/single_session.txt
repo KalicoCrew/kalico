@@ -3,4 +3,5 @@ L3	Start printer at Wed May 13 00:09:04 2026 (1778623744.8 15059.2)
 L4	Loaded MCU 'mcu' 175 commands
 L5	G1 X10 F3000
 L6	mcu 'mcu':  got {'type': 'status', 'engine_status': 0, 'current_segment_id': 0, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 100.0, '#receive_time': 100.0}
+[L6-L6] mcu='mcu' status unchanged: engine_status=0 segment_id=0 last_fault=0 fault_detail=100 (1 frames, 0.0s)
 L7	Shutdown: oh no

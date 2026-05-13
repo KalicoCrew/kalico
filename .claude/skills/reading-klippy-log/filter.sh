@@ -103,6 +103,77 @@ SLICE_END=$TOTAL_LINES
 NON_STATUS_LINES=$(awk -v start="$BANNER_LINE" 'NR >= start && $0 !~ /kalico_status_v6/' "$TMPLOG" | wc -l | tr -d ' ')
 BANNER_TIME=$(awk -v ln="$BANNER_LINE" 'NR == ln { sub(/^Start printer at /, ""); sub(/ \(.*$/, ""); print; exit }' "$TMPLOG")
 
-# Stage 4: emit SESSION header + slice. Collapse comes in Task 6.
+# Stage 4: emit SESSION header.
 echo "SESSION: banner_line=$BANNER_LINE banner_time='$BANNER_TIME' slice=L${BANNER_LINE}-L${SLICE_END} non_status_lines=$NON_STATUS_LINES fallback=$FALLBACK_REASON"
-awk -v start="$BANNER_LINE" 'NR >= start { printf("L%d\t%s\n", NR, $0) }' "$TMPLOG"
+
+# Stage 5: collapse-aware slice — per-MCU run tracking for kalico_status_v6 frames.
+awk -v start="$BANNER_LINE" '
+function extract_field(line, field,   pat, val) {
+  pat = "'\''" field "'\'': [0-9]+"
+  if (match(line, pat)) {
+    val = substr(line, RSTART + length(field) + 4, RLENGTH - length(field) - 4)
+    return val + 0
+  }
+  return -1
+}
+function extract_mcu(line,   s) {
+  if (match(line, /^mcu '\''[^'\'']+'\''/)) {
+    s = substr(line, RSTART + 5, RLENGTH - 6)
+    return s
+  }
+  return "?"
+}
+function extract_recv_time(line,   val) {
+  if (match(line, /'\''#receive_time'\'': [0-9.]+/)) {
+    val = substr(line, RSTART + 18, RLENGTH - 18)
+    return val + 0
+  }
+  return 0
+}
+function close_run(mcu,   dur) {
+  if (active[mcu]) {
+    dur = run_end_time[mcu] - run_start_time[mcu]
+    printf("[L%d-L%d] mcu='\''%s'\'' status unchanged: engine_status=%d segment_id=%d last_fault=%d fault_detail=%d (%d frames, %.1fs)\n",
+      run_start_line[mcu], run_end_line[mcu], mcu,
+      run_es[mcu], run_seg[mcu], run_fault[mcu], run_detail[mcu],
+      run_count[mcu], dur)
+    active[mcu] = 0
+  }
+}
+function close_all_sorted(   names, n, i, j, tmp) {
+  n = 0
+  for (m in active) if (active[m]) { names[++n] = m }
+  for (i = 1; i < n; i++) for (j = i+1; j <= n; j++) if (names[i] > names[j]) { tmp = names[i]; names[i] = names[j]; names[j] = tmp }
+  for (i = 1; i <= n; i++) close_run(names[i])
+}
+NR < start { next }
+{
+  if ($0 ~ /kalico_status_v6/) {
+    mcu = extract_mcu($0)
+    es = extract_field($0, "engine_status")
+    seg = extract_field($0, "current_segment_id")
+    fault = extract_field($0, "last_fault")
+    detail = extract_field($0, "fault_detail")
+    t = extract_recv_time($0)
+    if (active[mcu] && es == run_es[mcu] && seg == run_seg[mcu] && fault == run_fault[mcu] && detail == run_detail[mcu]) {
+      run_end_line[mcu] = NR
+      run_end_time[mcu] = t
+      run_count[mcu]++
+    } else {
+      close_run(mcu)
+      printf("L%d\t%s\n", NR, $0)
+      run_es[mcu] = es; run_seg[mcu] = seg; run_fault[mcu] = fault; run_detail[mcu] = detail
+      run_start_line[mcu] = NR; run_end_line[mcu] = NR
+      run_start_time[mcu] = t; run_end_time[mcu] = t
+      run_count[mcu] = 1
+      active[mcu] = 1
+    }
+  } else {
+    close_all_sorted()
+    printf("L%d\t%s\n", NR, $0)
+  }
+}
+END {
+  close_all_sorted()
+}
+' "$TMPLOG"
