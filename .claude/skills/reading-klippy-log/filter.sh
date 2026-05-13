@@ -49,6 +49,7 @@ fi
 mapfile -t BANNER_LINES < <(grep -n "^Start printer at " "$TMPLOG" | cut -d: -f1)
 
 emit_full_file_warning() {
+  local total_lines non_status
   total_lines=$(awk 'END{print NR}' "$TMPLOG")
   non_status=$(grep -cv "kalico_status_v6" "$TMPLOG")
   echo "SESSION: WARNING no boot banner found, using entire file (slice=L1-L${total_lines} non_status_lines=${non_status})"
@@ -60,6 +61,42 @@ if (( ${#BANNER_LINES[@]} == 0 )); then
   exit 0
 fi
 
-# TODO Task 4+: session pick, slice, collapse.
-# For now emit a placeholder showing banner-index worked.
-echo "BANNERS_FOUND: ${#BANNER_LINES[@]} at lines: ${BANNER_LINES[*]}"
+# Stage 3: Pick a session.
+# session_arg is one of: latest (default), previous, N (integer 1-based from start).
+SESSION_INDEX=""  # 1-based index into BANNER_LINES
+FALLBACK_REASON="none"
+
+case "$session_arg" in
+  latest)
+    SESSION_INDEX=${#BANNER_LINES[@]}
+    ;;
+  previous)
+    if (( ${#BANNER_LINES[@]} >= 2 )); then
+      SESSION_INDEX=$(( ${#BANNER_LINES[@]} - 1 ))
+    else
+      echo "requested session 'previous' but only ${#BANNER_LINES[@]} session(s) found" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    # Numeric? 1-based.
+    if [[ "$session_arg" =~ ^[0-9]+$ ]]; then
+      if (( session_arg >= 1 && session_arg <= ${#BANNER_LINES[@]} )); then
+        SESSION_INDEX=$session_arg
+      else
+        echo "requested session $session_arg not found (found ${#BANNER_LINES[@]} sessions)" >&2
+        exit 1
+      fi
+    else
+      echo "invalid --session value: $session_arg (expected latest, previous, or integer)" >&2
+      exit 2
+    fi
+    ;;
+esac
+
+# Resolve to actual banner line number (1-based into TMPLOG).
+BANNER_LINE=${BANNER_LINES[$((SESSION_INDEX - 1))]}
+
+# TODO Task 5+: fresh-restart fallback heuristic refines BANNER_LINE.
+# TODO Task 6+: slice + collapse from BANNER_LINE to EOF.
+echo "PICKED_SESSION: index=$SESSION_INDEX banner_line=$BANNER_LINE"
