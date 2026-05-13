@@ -87,12 +87,16 @@ runtime_tick_enable(void)
     // window for step_time scheduling still holds because step pulses
     // are emitted by the per-stepper struct timer ISR, NOT by TIM5.
     {
+        // 2026-05-13 revert: 1 kHz was too slow for the polled-tick step
+        // emission to drive typical step rates (e.g., 200 mm/s X at 160
+        // steps/mm = 32 kHz step rate; the StepAccumulator can emit
+        // multiple steps per tick but ISR cost grows). 10 kHz on H7 puts
+        // the ISR at ~15% CPU (15.6 µs eval × 10 kHz = 156 ms/s).
         uint32_t target_rate = (kalico_runtime_count_modulated_steppers(runtime_handle) > 0)
-            ? 40000U  // 40 kHz when phase-stepping any axis
-            : 1000U;  // 1 kHz state-machine-only when all-StepTime
+            ? 40000U  // 40 kHz when any axis phase-steps (Step 10 future)
+            : 10000U; // 10 kHz polled-tick (post-revert MVP path)
         TIM5->CR1 &= ~TIM_CR1_CEN;
         TIM5->ARR = (runtime_clock_freq / target_rate) - 1U;
-        // Force-update prescaler register so the new ARR loads immediately.
         TIM5->EGR = TIM_EGR_UG;
         TIM5->SR = 0;
     }

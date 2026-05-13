@@ -77,11 +77,12 @@ runtime_tick_enable(void)
     // needs from TIM5 because step pulses come from the per-stepper
     // struct timer ISR not from TIM5.
     {
-        uint32_t target_rate = (kalico_runtime_count_modulated_steppers(runtime_handle) > 0)
-            ? 10000U  // 10 kHz for any future Modulated stepper on F4 (none today)
-            : 1000U;  // 1 kHz state-machine-only when all-StepTime
+        // 2026-05-13 revert: back to 10 kHz so the polled-tick path can
+        // drive typical Z step rates. F4 at 180 MHz with ~24 µs eval per
+        // ISR sits at ~24% CPU at 10 kHz — survives if foreground is
+        // otherwise lean.
         TIM5->CR1 &= ~TIM_CR1_CEN;
-        TIM5->ARR = (runtime_clock_freq / target_rate) - 1U;
+        TIM5->ARR = (runtime_clock_freq / 10000U) - 1U;
         TIM5->EGR = TIM_EGR_UG;
         TIM5->SR = 0;
     }

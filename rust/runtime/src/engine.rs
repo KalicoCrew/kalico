@@ -1039,24 +1039,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // counter, which `runtime_status_drain`'s sim-only stderr taps
         // for progress observation.
         for i in 0..4 {
-            // Skip polled-tick step emission for axes in StepTime mode — their
-            // per-stepper `struct timer` ISR (`step_time_event` in
-            // src/runtime_tick.c) handles step output via Newton-iterated
-            // waketimes. Running both paths would double-count `stepper_counts`
-            // and emit duplicate step pulses.
-            //
-            // The engine state machine (segment dequeue / retirement /
-            // `kalico_credit_freed` emission) still depends on `Engine::tick`
-            // running, so TIM5 stays enabled (spec §6.3 conditional removed):
-            // we just shortcut the per-axis stepping work inside.
-            let mode = shared
-                .step_modes
-                .get(i)
-                .map(|m| m.load(Ordering::Acquire))
-                .unwrap_or(crate::state::StepMode::StepTime as u8);
-            if mode == crate::state::StepMode::StepTime as u8 {
-                continue;
-            }
+            // 2026-05-13 MVP revert: the StepTime gate (per-stepper struct timer
+            // handles output) is disabled. The per-stepper-timer path was not
+            // catching live segments fast enough on real hardware (bench 2026-05-13:
+            // 88k step_time_event polls, 8 emit_calls; segments retired within
+            // 1 tick of activation, before step_time_event could compute step
+            // pulses). Reverting to the polled-tick StepAccumulator path that
+            // worked pre-refactor: Engine::tick emits all axes every tick, the
+            // accumulator's multi-step-per-tick semantics handle step rates
+            // higher than the tick rate. Per-stepper timer code remains and
+            // step_time_event will continue polling at 1 kHz NO_STEP, but the
+            // double-emit risk is negligible at the 0.01% success rate it was
+            // showing. Re-enable the gate once per-stepper-timer is fixed
+            // properly (spec §6 follow-up).
             if let (Some(ss), Some(&m)) = (self.step_state.get_mut(i), state.motors.get(i)) {
                 let step_result = match ss.update(m) {
                     Ok(result) => result,
