@@ -1203,17 +1203,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // "stepper energized but no XY motion" bench symptom.
         let (handle, second_handle_for_corexy, corexy_sign) = match current.kinematics {
             KinematicTag::CoreXyAndE => match motor_idx {
-                0 => (current.x_handle, Some(current.y_handle), 1.0_f32), // A = X + Y
-                1 => (current.x_handle, Some(current.y_handle), -1.0_f32), // B = X − Y
-                2 => (current.z_handle, None, 0.0_f32),
-                3 => (current.e_handle, None, 0.0_f32),
+                0 => (current.x_handle, Some(current.y_handle), 1.0_f64), // A = X + Y
+                1 => (current.x_handle, Some(current.y_handle), -1.0_f64), // B = X − Y
+                2 => (current.z_handle, None, 0.0_f64),
+                3 => (current.e_handle, None, 0.0_f64),
                 _ => return None,
             },
             KinematicTag::CartesianXyzAndE => match motor_idx {
-                0 => (current.x_handle, None, 0.0_f32),
-                1 => (current.y_handle, None, 0.0_f32),
-                2 => (current.z_handle, None, 0.0_f32),
-                3 => (current.e_handle, None, 0.0_f32),
+                0 => (current.x_handle, None, 0.0_f64),
+                1 => (current.y_handle, None, 0.0_f64),
+                2 => (current.z_handle, None, 0.0_f64),
+                3 => (current.e_handle, None, 0.0_f64),
                 _ => return None,
             },
         };
@@ -1261,48 +1261,50 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // Axis not configured; can't compute step timing.
             return None;
         }
-        let step_distance_mm = 1.0_f32 / spm;
+        let step_distance_mm = 1.0_f64 / f64::from(spm);
 
-        // Convert to normalized segment domain BEFORE entering f32 to avoid
+        // Convert to normalized segment domain BEFORE entering float to avoid
         // catastrophic cancellation when t_start is a large absolute cycle count.
-        // The u64 subtraction (now_cycles - t_start) is done in integer space.
-        // f32 has 24-bit mantissa → at cycle counts ≥ 2^24 (~93 ms at 180 MHz)
-        // subtracting two large close f32 values in the absolute domain loses
-        // 1-cycle precision per LSB, growing linearly with print time. Normalizing
-        // first keeps both operands near 0..1 where f32 precision is exact.
+        // The u64 subtraction (now_cycles - t_start) is done in integer space;
+        // we then normalize once into a small `[0, 1)` range where f64 precision
+        // is essentially exact for our purposes.
         let duration = t_end.saturating_sub(t_start);
         if duration == 0 {
             return None;
         }
-        let t_curr_norm = now_cycles.saturating_sub(t_start) as f32 / duration as f32;
-        let t_end_norm = 1.0_f32;
+        let t_curr_norm = (now_cycles.saturating_sub(t_start) as f64) / duration as f64;
+        let t_end_norm = 1.0_f64;
 
         if t_curr_norm < 0.0 || t_curr_norm >= 1.0 {
             return None;
         }
 
-        let eval = |t_norm: f32| -> (f32, f32) {
+        let eval = |t_norm: f32| -> (f64, f64, f64) {
             let u = t_norm.clamp(0.0, 1.0);
             if is_corexy {
-                // A motor: pos = x + y, vel = dx/du + dy/du
-                // B motor: pos = x − y, vel = dx/du − dy/du
-                let (x_pos, x_dx) = cv_primary
+                // A motor: pos = x + y, vel = dx/du + dy/du, accel similarly.
+                // B motor: pos = x − y, ...
+                let (x_pos, x_dx, x_d2x) = cv_primary
                     .as_ref()
-                    .and_then(|c| scalar_eval_with_derivative(c, u).ok())
-                    .unwrap_or((0.0, 0.0));
-                let (y_pos, y_dy) = cv_secondary
+                    .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
+                    .unwrap_or((0.0, 0.0, 0.0));
+                let (y_pos, y_dy, y_d2y) = cv_secondary
                     .as_ref()
-                    .and_then(|c| scalar_eval_with_derivative(c, u).ok())
-                    .unwrap_or((0.0, 0.0));
-                (x_pos + corexy_sign * y_pos, x_dx + corexy_sign * y_dy)
+                    .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
+                    .unwrap_or((0.0, 0.0, 0.0));
+                (
+                    x_pos + corexy_sign * y_pos,
+                    x_dx + corexy_sign * y_dy,
+                    x_d2x + corexy_sign * y_d2y,
+                )
             } else {
                 // Cartesian / Z / E single-axis path.
                 match cv_primary
                     .as_ref()
-                    .and_then(|c| scalar_eval_with_derivative(c, u).ok())
+                    .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
                 {
-                    Some((pos_mm, dpos_du)) => (pos_mm, dpos_du),
-                    None => (0.0, 0.0),
+                    Some(tuple) => tuple,
+                    None => (0.0, 0.0, 0.0),
                 }
             }
         };
@@ -1319,10 +1321,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             crate::step_time::StepTimeResult::NextAt { t: t_norm_next, dir } => {
                 // Convert back to absolute cycles in integer space.
                 // dt_norm is the fractional step over the segment; multiplying
-                // by duration (u64) gives the cycle delta without any f32
+                // by duration (u64) gives the cycle delta without f32
                 // precision loss from large absolute offsets.
                 let dt_norm = t_norm_next - t_curr_norm;
-                let dt_cycles = (dt_norm * duration as f32) as u64;
+                let dt_cycles = (dt_norm * duration as f64) as u64;
                 Some((now_cycles + dt_cycles, dir))
             }
             crate::step_time::StepTimeResult::SegmentExhausted => None,
@@ -1413,6 +1415,36 @@ fn scalar_eval_with_derivative(curve: &CurveView<'_>, u: f32) -> Result<(f32, f3
         return Err(());
     }
     let result = nurbs::eval::eval_polynomial_with_derivative(
+        curve.control_points,
+        curve.knots,
+        curve.degree,
+        u,
+    );
+    let t1 = diag_cyccnt();
+    diag_eval_record(t1.wrapping_sub(t0));
+    Ok(result)
+}
+
+/// Evaluate a scalar NURBS curve at `u`, returning `(P(u), dP/du, d²P/du²)`
+/// in f64 from a single combined de Boor walk.
+///
+/// Used by `arm_step_timer` to feed the (pos, vel, accel) eval closure
+/// expected by `compute_next_step_time`. The accel term is what lets the
+/// step-time Newton seed handle `v(0) = 0` cold-start segments — see spec
+/// `docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md` §3.6.
+fn scalar_eval_with_pos_vel_accel(
+    curve: &CurveView<'_>,
+    u: f32,
+) -> Result<(f64, f64, f64), ()> {
+    let t0 = diag_cyccnt();
+    let p = usize::from(curve.degree);
+    if p > nurbs::MAX_DEGREE
+        || curve.knots.len() != curve.control_points.len() + p + 1
+        || curve.control_points.is_empty()
+    {
+        return Err(());
+    }
+    let result = nurbs::eval::eval_polynomial_f32_with_pos_vel_accel_f64(
         curve.control_points,
         curve.knots,
         curve.degree,
