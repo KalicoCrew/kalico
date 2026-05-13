@@ -471,7 +471,23 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // can characterize what shape post-shape curves take on
                 // representative workloads.
                 capture_segment_curve_meta(&seg, pool);
-                // 2026-05-11: per-segment re-seed removed. The original
+                // 2026-05-13 revert: re-seed enabled per-segment again.
+                // The 2026-05-11 disable assumed the planner emits perfectly
+                // continuous segments — bench reality says it doesn't:
+                // jog #1 produced visible motion; jog #2's first tick
+                // attempted a 255 mm motor delta and tripped
+                // StepBurstExceeded. Re-enabling the seed absorbs the
+                // discontinuity. The original silent-motion-loss concern
+                // (engine arriving at u>0 because of clock-sync drift)
+                // is mitigated by the always-on-TIM5 + engine-side
+                // WidenState alignment from commits 0512e962d and
+                // 33dd431ba — `now` should now ride `t_start` exactly,
+                // so seeding at the segment's u≈0 position is accurate.
+                self.needs_xy_seed = true;
+                // -- ORIGINAL 2026-05-11 comment retained for historical
+                // reference (the silent-motion-loss case we now expect
+                // not to hit thanks to the always-on-TIM5 fix) --
+                // per-segment re-seed removed. The original
                 // bring-up rationale (re-anchor accumulators to absorb
                 // cross-segment discontinuities) caused silent motion
                 // loss: when a segment activates with `t_segment > 0`
@@ -672,7 +688,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // Diagnostic: snapshot per-axis curve dimensions for the
             // freshly activated segment.
             capture_segment_curve_meta(&current, pool);
-            // 2026-05-11: per-boundary-loop re-seed removed alongside
+            // 2026-05-13 revert: re-seed step accumulators on the
+            // boundary-loop activation too — see the matching seed at
+            // engine.rs:~486 (DRAINED→RUNNING path) for the rationale.
+            self.needs_xy_seed = true;
+            // -- ORIGINAL 2026-05-11 comment retained: --
+            // per-boundary-loop re-seed removed alongside
             // the DRAINED→RUNNING re-seed above (engine.rs:~461). Same
             // rationale: silent absorption of `u=0..u_initial` motion
             // when a segment activates partway through (boundary loop
