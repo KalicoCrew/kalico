@@ -88,7 +88,7 @@ use motion_bridge_native::dispatch::{
     build_push_params, AXIS_X, AXIS_Y, McuAxisConfig, McuCaps,
 };
 use motion_bridge_native::planner::PlannerHandle;
-use motion_bridge_native::slot_pool::SlotPool;
+use motion_bridge_native::slot_pool::{SlotPool, CURVE_POOL_N};
 
 // ---------------------------------------------------------------------------
 // Config constants — mirror the live Trident config (smaller subset; the sim
@@ -700,7 +700,7 @@ impl PlannerCtx {
         let host_io = Arc::clone(&harness.host_io);
         let credit = Arc::new(CreditCounter::new(1024));
         host_io.attach_credit_counter(Arc::clone(&credit));
-        let slot_pool = Arc::new(Mutex::new(SlotPool::new()));
+        let slot_pool = Arc::new(Mutex::new(SlotPool::new(CURVE_POOL_N)));
         let clock_sync = Arc::clone(&harness.clock_sync);
         let clock_sync_samples = Arc::clone(&harness.clock_sync_samples);
 

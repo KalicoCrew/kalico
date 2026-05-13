@@ -358,12 +358,14 @@ int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
  * Compute the absolute MCU clock cycle at which `stepper_idx` should
  * fire its next step. Used by the configure/segment-load arming path.
  *
- * On success writes the cycle count to `*out_cycles_abs`, writes the step
- * direction to `*out_dir` (+1 = forward / positive, -1 = reverse / negative),
- * and returns `KALICO_OK`. `out_dir` may be NULL (direction discarded).
- * Returns `KALICO_ERR_NO_STEP` when the active segment cannot produce another
- * step (caller must NOT register the timer; the engine re-arms on the next
- * `push_segment`).
+ * On success writes the cycle count to `*out_cycles_abs` and the step
+ * direction to `*out_dir` (`+1` = forward / positive, `-1` = reverse /
+ * negative), then returns `KALICO_OK`.
+ * Returns `KALICO_ERR_NO_STEP` when the active segment cannot produce
+ * another step (caller must NOT register the timer; the engine re-arms
+ * on the next `push_segment`).
+ *
+ * `out_dir` may be NULL; if so the direction is computed but discarded.
  *
  * Returns:
  * - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
@@ -382,7 +384,7 @@ int32_t kalico_runtime_arm_step_timer(kalico_nurbs_KalicoRuntime *rt,
  * C-side per-stepper `struct timer` ISR re-arm path has a descriptively
  * named entry point. Future engine work may diverge the two.
  *
- * `out_dir` may be NULL (direction discarded).
+ * `out_dir` may be NULL; if so the direction is computed but discarded.
  *
  * Returns:
  * - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
@@ -394,5 +396,31 @@ int32_t kalico_runtime_compute_next_step_time(kalico_nurbs_KalicoRuntime *rt,
                                               uint64_t now_cycles,
                                               uint64_t *out_cycles_abs,
                                               int8_t *out_dir);
+
+/**
+ * Read the current `StepMode` discriminant for `stepper_idx`.
+ *
+ * Used by the C-side `arm_step_time_steppers_after_push` to determine
+ * whether a stepper should be registered with Klipper's scheduler (mode
+ * `StepTime = 1`) or driven by the TIM5 ISR (mode `Modulated = 0`).
+ *
+ * Returns:
+ * - `0`    — `StepMode::Modulated` (phase-stepping via TIM5 ISR).
+ * - `1`    — `StepMode::StepTime`  (classic Klipper timer scheduling).
+ * - `0xFF` — null `rt`, `INIT_DONE == false`, or `stepper_idx` out of range.
+ */
+uint8_t kalico_runtime_get_step_mode(kalico_nurbs_KalicoRuntime *rt, uint8_t stepper_idx);
+
+/**
+ * Count how many steppers are currently in `StepMode::Modulated`.
+ *
+ * Used by `runtime_tick_enable` (C-side, spec §6.3) to decide whether
+ * TIM5 is needed: if the count is zero, TIM5 has no work and is left
+ * disabled. F4 (no `PHASE_STEPPING` capability) always hits this path;
+ * H7 in an all-StepTime config also leaves TIM5 idle.
+ *
+ * Returns `0` for a null `rt` or uninitialised runtime.
+ */
+uint8_t kalico_runtime_count_modulated_steppers(kalico_nurbs_KalicoRuntime *rt);
 
 #endif  /* KALICO_NURBS_H */

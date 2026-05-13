@@ -449,7 +449,7 @@ impl Harness {
         for cfg in &mcu_configs {
             transports.insert(cfg.mcu_id, Arc::new(RecordingTransport::new()));
             credits.insert(cfg.mcu_id, Arc::new(CreditCounter::new(1024)));
-            slot_pools.insert(cfg.mcu_id, Arc::new(Mutex::new(SlotPool::new())));
+            slot_pools.insert(cfg.mcu_id, Arc::new(Mutex::new(SlotPool::new(CURVE_POOL_N))));
         }
 
         let dispatched = Arc::new(AtomicU64::new(0));

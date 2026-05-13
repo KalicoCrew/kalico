@@ -78,17 +78,25 @@ struct live_snapshot {
 // NRST resets. Requires PWR->CR2.BREN + RCC->AHB4ENR.BKPRAMEN to be
 // set at init (see fault_handler_init below); without those the
 // region reads as zero and writes are silently dropped.
+//
+// On non-H7 (notably STM32F4 without BKPSRAM wired through), fall back
+// to `.persistent_diag` — a NOLOAD section in main RAM that lives
+// outside `[_bss_start.._bss_end]` and past `_persistent_diag_end`
+// (which `dynmem_start()` returns). Main RAM survives soft reset (IWDG
+// / NVIC_SystemReset / NRST) on every STM32 family we care about; only
+// a full power cycle wipes it. That's sufficient to capture wedge
+// forensics on the F446 where BKPSRAM isn't wired up.
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".bkp_bss"), used))
 #else
-__attribute__((used))
+__attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct fault_record fault_rec;
 
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".bkp_bss"), used))
 #else
-__attribute__((used))
+__attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct live_snapshot live_snap;
 
@@ -296,20 +304,20 @@ struct diag_counters {
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".bkp_bss"), used))
 #else
-__attribute__((used))
+__attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct diag_counters diag;
 
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".bkp_bss"), used))
 #else
-__attribute__((used))
+__attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct diag_event diag_ring[DIAG_RING_LEN];
 
 // Saved snapshot of prior-run counters + ring, populated once on boot and
 // emitted by the report task. Lives in .bss (zero on reset, populated from
-// the BKPSRAM diag struct before we overwrite it).
+// the prior-run persistent struct before we overwrite it).
 static struct diag_counters prior_diag;
 static struct diag_event    prior_ring[DIAG_RING_LEN];
 static uint32_t             prior_diag_present;
@@ -852,9 +860,14 @@ fault_handler_report_task(void)
         live_snap.samples_taken = 0;  // reset for this run
 
         // Snapshot the prior-run diag counters + ring before the new run
-        // overwrites them. Both live in BKPSRAM on H7; on F4 the .bss reset
-        // already wiped them by the time we get here, so `diag.magic` will
-        // not equal DIAG_MAGIC and the snapshot is skipped.
+        // overwrites them. Both live in BKPSRAM on H7 and in
+        // `.persistent_diag` (NOLOAD main-RAM section past
+        // `_persistent_diag_end`) on F4 — `armcm_boot.c::boot_memset`
+        // only zeroes `[_bss_start.._bss_end]`, so the section survives
+        // soft reset. `diag.magic` will equal DIAG_MAGIC after at least
+        // one prior boot wrote it; on the very first power-on this is
+        // undefined RAM and the snapshot is skipped (probabilistically
+        // — 1-in-2^32 false positive is acceptable).
         if (diag.magic == DIAG_MAGIC) {
             prior_diag_present = 1;
             // Memcpy through volatile via field-by-field copy. The struct
