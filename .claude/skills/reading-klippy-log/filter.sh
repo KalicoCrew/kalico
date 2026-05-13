@@ -97,6 +97,12 @@ esac
 # Resolve to actual banner line number (1-based into TMPLOG).
 BANNER_LINE=${BANNER_LINES[$((SESSION_INDEX - 1))]}
 
-# TODO Task 5+: fresh-restart fallback heuristic refines BANNER_LINE.
-# TODO Task 6+: slice + collapse from BANNER_LINE to EOF.
-echo "PICKED_SESSION: index=$SESSION_INDEX banner_line=$BANNER_LINE"
+# Compute slice metadata.
+TOTAL_LINES=$(awk 'END{print NR}' "$TMPLOG")
+SLICE_END=$TOTAL_LINES
+NON_STATUS_LINES=$(awk -v start="$BANNER_LINE" 'NR >= start && $0 !~ /kalico_status_v6/' "$TMPLOG" | wc -l | tr -d ' ')
+BANNER_TIME=$(awk -v ln="$BANNER_LINE" 'NR == ln { sub(/^Start printer at /, ""); sub(/ \(.*$/, ""); print; exit }' "$TMPLOG")
+
+# Stage 4: emit SESSION header + slice. Collapse comes in Task 6.
+echo "SESSION: banner_line=$BANNER_LINE banner_time='$BANNER_TIME' slice=L${BANNER_LINE}-L${SLICE_END} non_status_lines=$NON_STATUS_LINES fallback=$FALLBACK_REASON"
+awk -v start="$BANNER_LINE" 'NR >= start { printf("L%d\t%s\n", NR, $0) }' "$TMPLOG"
