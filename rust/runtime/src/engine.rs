@@ -1196,33 +1196,61 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return None;
         }
 
-        // Map motor index → axis curve handle.
-        // CoreXY motors 0 (A=X+Y) and 1 (B=X−Y) require combining two curves;
-        // not yet implemented — return None.
-        let (handle, is_corexy_xy) = match current.kinematics {
+        // Map motor index → curve handle(s) and "is this the CoreXY A or B
+        // combined motor" flag. CoreXY motors 0 (A = X + Y) and 1 (B = X − Y)
+        // need BOTH the X and Y curves combined; the rest are single-axis.
+        //
+        // 2026-05-13: this is the "X/Y don't move on CoreXY" bug from Codex's
+        // step-gen audit. Previously this match returned None for motors 0/1
+        // on CoreXY, so step_time_event for A/B steppers always saw NO_STEP
+        // and never emitted a pulse. The Trident bench uses CoreXY (kin=0 in
+        // motion_toolhead.configure_axes log), which was a 100% repro of the
+        // "stepper energized but no XY motion" bench symptom.
+        let (handle, second_handle_for_corexy, corexy_sign) = match current.kinematics {
             KinematicTag::CoreXyAndE => match motor_idx {
-                0 | 1 => return None, // A and B motors: combined X+Y / X-Y
-                2 => (current.z_handle, false),
-                3 => (current.e_handle, false),
+                0 => (current.x_handle, Some(current.y_handle), 1.0_f32), // A = X + Y
+                1 => (current.x_handle, Some(current.y_handle), -1.0_f32), // B = X − Y
+                2 => (current.z_handle, None, 0.0_f32),
+                3 => (current.e_handle, None, 0.0_f32),
                 _ => return None,
             },
             KinematicTag::CartesianXyzAndE => match motor_idx {
-                0 => (current.x_handle, false),
-                1 => (current.y_handle, false),
-                2 => (current.z_handle, false),
-                3 => (current.e_handle, false),
+                0 => (current.x_handle, None, 0.0_f32),
+                1 => (current.y_handle, None, 0.0_f32),
+                2 => (current.z_handle, None, 0.0_f32),
+                3 => (current.e_handle, None, 0.0_f32),
                 _ => return None,
             },
         };
-        let _ = is_corexy_xy; // reserved for future combined-curve path
 
-        // UNUSED sentinel → axis is constant (no curve); no steps to schedule.
-        if handle.is_unused_sentinel() {
+        // For CoreXY A/B, the combined position is `x + sign·y`. If both
+        // handles are UNUSED, the segment doesn't move this motor (e.g.
+        // a pure-Z segment on a CoreXY MCU's A motor) — return None.
+        let primary_unused = handle.is_unused_sentinel();
+        let secondary_unused = second_handle_for_corexy
+            .map(|h| h.is_unused_sentinel())
+            .unwrap_or(true);
+        if primary_unused && secondary_unused {
             return None;
         }
 
-        // Resolve the curve from the pool.
-        let cv = pool.resolve(handle)?;
+        // Resolve curves. For CoreXY each may be absent (treat as constant 0).
+        // CurveView doesn't impl Copy/Clone, so resolve once and consume into
+        // the closure by move. Use raw pointers to side-step the borrow
+        // checker (the pool reference outlives this scope, so the underlying
+        // slices stay valid for the closure's lifetime).
+        let is_corexy = second_handle_for_corexy.is_some();
+        let cv_primary = if primary_unused { None } else { pool.resolve(handle) };
+        let cv_secondary = second_handle_for_corexy.and_then(|h| {
+            if h.is_unused_sentinel() {
+                None
+            } else {
+                pool.resolve(h)
+            }
+        });
+        if !is_corexy && cv_primary.is_none() {
+            return None;
+        }
 
         // Segment time domain.
         let t_start = current.t_start;
@@ -1260,14 +1288,27 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         let eval = |t_norm: f32| -> (f32, f32) {
             let u = t_norm.clamp(0.0, 1.0);
-            match scalar_eval_with_derivative(&cv, u) {
-                Ok((pos_mm, dpos_du)) => {
-                    // dpos_du is mm per normalized unit (mm per segment).
-                    // The Newton solver's velocity is in the same domain as its
-                    // time argument (normalized), so no chain-rule scaling needed.
-                    (pos_mm, dpos_du)
+            if is_corexy {
+                // A motor: pos = x + y, vel = dx/du + dy/du
+                // B motor: pos = x − y, vel = dx/du − dy/du
+                let (x_pos, x_dx) = cv_primary
+                    .as_ref()
+                    .and_then(|c| scalar_eval_with_derivative(c, u).ok())
+                    .unwrap_or((0.0, 0.0));
+                let (y_pos, y_dy) = cv_secondary
+                    .as_ref()
+                    .and_then(|c| scalar_eval_with_derivative(c, u).ok())
+                    .unwrap_or((0.0, 0.0));
+                (x_pos + corexy_sign * y_pos, x_dx + corexy_sign * y_dy)
+            } else {
+                // Cartesian / Z / E single-axis path.
+                match cv_primary
+                    .as_ref()
+                    .and_then(|c| scalar_eval_with_derivative(c, u).ok())
+                {
+                    Some((pos_mm, dpos_du)) => (pos_mm, dpos_du),
+                    None => (0.0, 0.0),
                 }
-                Err(()) => (0.0, 0.0),
             }
         };
 
