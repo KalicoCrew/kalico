@@ -591,17 +591,29 @@ runtime_status_drain(void)
             fault_detail = 0xE1000000u | (runtime_emit_calls & 0x00FFFFFFu);
             break;
         case 5:
-            // Tag 0xE2 marker in high byte; mid byte = emit_pulses & 0xFF
-            // (rough), low byte = packed motor_stepper_count for motors 0..3.
+            // Tag 0xE2 marker in high byte; bits 16..23 = emit_pulses & 0xFF;
+            // bits 0..15 = motor_stepper_count[0..3], 4 bits each (clamped
+            // to 15). The previous 2-bits-per-motor encoding silently aliased
+            // count=4 to count=0 — RUNTIME_MAX_STEPPERS_PER_MOTOR is 4, so the
+            // legitimate values 0..4 were observationally indistinguishable.
+            // 4-bit clamp resolves it.
             {
-                uint32_t pulses_lo = runtime_emit_pulses & 0xFFFFu;
-                uint32_t cnt0 = runtime_motor_binding_count(0) & 0x3u;
-                uint32_t cnt1 = runtime_motor_binding_count(1) & 0x3u;
-                uint32_t cnt2 = runtime_motor_binding_count(2) & 0x3u;
-                uint32_t cnt3 = runtime_motor_binding_count(3) & 0x3u;
-                uint32_t cnts = (cnt0 << 0) | (cnt1 << 2)
-                              | (cnt2 << 4) | (cnt3 << 6);
-                fault_detail = 0xE2000000u | (cnts << 16) | pulses_lo;
+                uint8_t c0 = runtime_motor_binding_count(0);
+                uint8_t c1 = runtime_motor_binding_count(1);
+                uint8_t c2 = runtime_motor_binding_count(2);
+                uint8_t c3 = runtime_motor_binding_count(3);
+                if (c0 > 15) c0 = 15;
+                if (c1 > 15) c1 = 15;
+                if (c2 > 15) c2 = 15;
+                if (c3 > 15) c3 = 15;
+                uint16_t cnts = (uint16_t)c0
+                              | ((uint16_t)c1 << 4)
+                              | ((uint16_t)c2 << 8)
+                              | ((uint16_t)c3 << 12);
+                uint8_t pulses_lo = (uint8_t)(runtime_emit_pulses & 0xFFu);
+                fault_detail = 0xE2000000u
+                             | ((uint32_t)pulses_lo << 16)
+                             | (uint32_t)cnts;
             }
             break;
         }
@@ -619,13 +631,15 @@ runtime_status_drain(void)
     extern volatile uint32_t runtime_bind_calls_total;
     extern volatile uint8_t runtime_bind_calls_for_motor[4];
     extern volatile uint32_t runtime_bind_reset_calls;
+    extern volatile uint32_t runtime_bind_writes_committed;
+    extern volatile uint32_t runtime_bind_count_snapshot_packed;
     if (last_err == 0 && status_emit_phase == 0) {
-        // Wider rotation now — five step_time tags + a binding-bug
-        // investigation tag (0xB0). Bump the modulo to keep cycle length
-        // matched.
+        // Wider rotation now — five step_time tags + binding-bug
+        // investigation tags (0xB0, 0xB1). Bump the modulo to keep cycle
+        // length matched.
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 5) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 6) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -688,6 +702,29 @@ runtime_status_drain(void)
                              | ((uint32_t)per_motor << 16)
                              | ((uint32_t)total << 8)
                              | reset_calls;
+            }
+            break;
+        case 5:
+            // 0xB1 — binding-write commit + post-write snapshot.
+            //   bits  0..15: runtime_bind_count_snapshot_packed (low 16 bits)
+            //                — count[0..3] captured immediately after the
+            //                  last line-512 write, 4 bits per motor.
+            //   bits 16..23: runtime_bind_writes_committed & 0xFF
+            //                — count of times command_config_runtime_stepper
+            //                  reached its final statement.
+            // If writes_committed < runtime_bind_calls_total (from 0xB0),
+            // some commands enter the dispatcher (incrementing per_motor)
+            // but never reach the count-write. If
+            // runtime_bind_count_snapshot_packed disagrees with the live
+            // 0xE2 read, something is overwriting `runtime_motor_stepper_count`
+            // after the dispatch path returned.
+            {
+                uint32_t snap = runtime_bind_count_snapshot_packed & 0xFFFFu;
+                uint32_t writes =
+                    (runtime_bind_writes_committed & 0xFFu);
+                fault_detail = 0xB1000000u
+                             | (writes << 16)
+                             | snap;
             }
             break;
         }

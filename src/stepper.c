@@ -475,6 +475,22 @@ volatile uint32_t runtime_bind_calls_total __attribute__((used, externally_visib
 volatile uint8_t runtime_bind_calls_for_motor[RUNTIME_MOTOR_COUNT]
                 __attribute__((used, externally_visible));
 volatile uint32_t runtime_bind_reset_calls __attribute__((used, externally_visible));
+// Incremented at the end of `command_config_runtime_stepper`, after the
+// `runtime_motor_stepper_count[motor_idx] = cnt + 1` write. If this lags
+// `runtime_bind_calls_total` at steady state, some path between the
+// dispatch entry (line ~494) and the count write (line ~512) is
+// short-circuiting — `oid_lookup` shutdown is the only known way, but a
+// shutdown would also stop the firmware, so divergence suggests something
+// stranger.
+volatile uint32_t runtime_bind_writes_committed
+                __attribute__((used, externally_visible));
+// 2-bit-per-motor snapshot of `runtime_motor_stepper_count[i]` captured
+// immediately after each successful write at line 512. Packed identically
+// to the 0xE2 tag's 4-bit-per-motor layout so the value can be compared
+// across snapshots — the LATEST per-motor `cnt + 1` is OR'd in (we don't
+// reset between binds, so the high-water mark per motor sticks).
+volatile uint32_t runtime_bind_count_snapshot_packed
+                __attribute__((used, externally_visible));
 
 __attribute__((used, externally_visible))
 void
@@ -511,6 +527,29 @@ command_config_runtime_stepper(uint32_t *args)
     runtime_motor_steppers[motor_idx][cnt].invert_dir = invert_dir ? 1 : 0;
     runtime_motor_stepper_count[motor_idx] = cnt + 1;
     runtime_motor_last_dir[motor_idx] = -1;
+    // Snapshot every per-motor count immediately after the write completes,
+    // packed as 4-bits-per-motor (matches 0xE2 tag layout). Captures the
+    // table state visible from `command_config_runtime_stepper`'s vantage
+    // point — divergence between this and the 0xE2 read in
+    // `runtime_status_drain` indicates an outside writer touching the array
+    // after the dispatch returns. Each invocation overwrites with the live
+    // values; final value = state after the last successful bind.
+    {
+        uint8_t s0 = runtime_motor_stepper_count[0];
+        uint8_t s1 = runtime_motor_stepper_count[1];
+        uint8_t s2 = runtime_motor_stepper_count[2];
+        uint8_t s3 = runtime_motor_stepper_count[3];
+        if (s0 > 15) s0 = 15;
+        if (s1 > 15) s1 = 15;
+        if (s2 > 15) s2 = 15;
+        if (s3 > 15) s3 = 15;
+        uint32_t packed = (uint32_t)s0
+                        | ((uint32_t)s1 << 4)
+                        | ((uint32_t)s2 << 8)
+                        | ((uint32_t)s3 << 12);
+        runtime_bind_count_snapshot_packed = packed;
+    }
+    runtime_bind_writes_committed++;
 }
 DECL_COMMAND(command_config_runtime_stepper,
              "config_runtime_stepper motor_idx=%c stepper_oid=%c invert_dir=%c");
