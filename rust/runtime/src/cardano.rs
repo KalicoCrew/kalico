@@ -95,13 +95,21 @@ const REL_EPS: f64 = 1e-12;
 ///
 /// `F32_NOISE_REL` is layered on top of `REL_EPS`: the effective
 /// threshold is `max(REL_EPS · max(scale, 1.0), F32_NOISE_REL · cp_scale)`
-/// where `cp_scale = max(|c|, |d_shifted|)` — that is, the magnitude of
-/// the polynomial's affine part (linear and constant coefficients), which
-/// correlates with the curve's CP magnitude. For 1 mm-scale jogs the
-/// noise floor is 1e-7; for nm-scale curves it's proportional. Genuine
-/// cubic curves (third-difference of CPs is O(1)) stay above the floor
-/// and use the cubic path.
-const F32_NOISE_REL: f64 = 1e-7;
+/// where `cp_scale = max(|c|, |d_shifted|, |d_original|)` — `d_original`
+/// is the un-shifted constant term `d = d_shifted + target`, which
+/// equals the first control point `P0` and therefore captures the curve's
+/// absolute coordinate magnitude (e.g., 100 mm for a jog starting at
+/// X = 100 mm). Without `|d_original|` in the scale, the f32 noise in
+/// `a` (which scales with `|P_i|`, not with the post-shift polynomial
+/// coefficients) bypasses the gate for any curve whose target value is
+/// close to the curve's start: the bench-observed failure mode for the
+/// piecewise-Bézier walker, where every step's target sat within
+/// half-a-step of the curve start so `|d_shifted| ≈ step_distance` while
+/// `|P0|` was 100 mm. `F32_NOISE_REL = 1e-6` ≈ f32 epsilon × cancellation
+/// factor; tight enough not to mask genuine cubics (whose `|a|` is the
+/// third-difference of CPs, O(1) for typical motion) but loose enough
+/// to absorb the ~5e-5 noise observed at CP magnitudes around 100 mm.
+const F32_NOISE_REL: f64 = 1e-6;
 
 /// Find the smallest real root of `a*u^3 + b*u^2 + c*u + (d - target) = 0`
 /// strictly greater than `t_low` and less-than-or-equal to `t_high`. Returns
@@ -150,13 +158,23 @@ pub fn solve_smallest_root_in(
         libm::fmax(libm::fabs(a), libm::fabs(b)),
         libm::fmax(libm::fabs(c), libm::fabs(d_shifted)),
     );
-    let cp_scale = libm::fmax(libm::fabs(c), libm::fabs(d_shifted));
+    // d_original = d_shifted + target = the un-shifted constant term = P0.
+    // Captures the curve's absolute coordinate magnitude (e.g., 100 mm for
+    // a jog from X=100). f32 noise in `a` scales with |P_i|, NOT with the
+    // post-shift coefficients, so the noise floor must scale with |P0|.
+    let d_original_mag = libm::fabs(d_shifted + target);
+    let cp_scale = libm::fmax(
+        libm::fmax(libm::fabs(c), libm::fabs(d_shifted)),
+        d_original_mag,
+    );
     let eps_a = libm::fmax(
         REL_EPS * libm::fmax(scale, 1.0),
         F32_NOISE_REL * cp_scale,
     );
     if libm::fabs(a) < eps_a {
-        return solve_quadratic_smallest_root_in(b, c, d_shifted, t_low, t_high);
+        return solve_quadratic_smallest_root_in_with_origin(
+            b, c, d_shifted, d_original_mag, t_low, t_high,
+        );
     }
 
     // Normalize to depressed cubic. Working coefficients:
@@ -231,14 +249,34 @@ fn solve_quadratic_smallest_root_in(
     t_low: f64,
     t_high: f64,
 ) -> Option<f64> {
+    // Stand-alone entry (no caller-provided origin magnitude). Use the
+    // affine part of the polynomial as a conservative fallback.
+    let cp_scale_hint = libm::fmax(libm::fabs(b), libm::fabs(c));
+    solve_quadratic_smallest_root_in_with_origin(a, b, c, cp_scale_hint, t_low, t_high)
+}
+
+/// Variant called from the cubic-degenerate fallback. `d_original_mag` is
+/// the unshifted cubic constant `|d| = |P0|` of the original curve, which
+/// captures the curve's absolute-coordinate magnitude. f32 noise in `a`/`b`
+/// (here, the quadratic's `a`/`b`, originally the cubic's `b`/`c`) scales
+/// with |P_i|, so the noise floor must include `|d_original|` in cp_scale.
+fn solve_quadratic_smallest_root_in_with_origin(
+    a: f64,
+    b: f64,
+    c: f64,
+    d_original_mag: f64,
+    t_low: f64,
+    t_high: f64,
+) -> Option<f64> {
     // Relative degeneracy threshold for the quadratic leading coefficient.
-    // Same f32-noise floor as the cubic gate — `a` here is the cubic's `b`
-    // when called from the cubic fallback, so f32 noise propagates the same way.
     let scale = libm::fmax(
         libm::fmax(libm::fabs(a), libm::fabs(b)),
         libm::fabs(c),
     );
-    let cp_scale = libm::fmax(libm::fabs(b), libm::fabs(c));
+    let cp_scale = libm::fmax(
+        libm::fmax(libm::fabs(b), libm::fabs(c)),
+        d_original_mag,
+    );
     let eps_a = libm::fmax(
         REL_EPS * libm::fmax(scale, 1.0),
         F32_NOISE_REL * cp_scale,
@@ -248,7 +286,7 @@ fn solve_quadratic_smallest_root_in(
         let scale_l = libm::fmax(libm::fabs(b), libm::fabs(c));
         let eps_b = libm::fmax(
             REL_EPS * libm::fmax(scale_l, 1.0),
-            F32_NOISE_REL * libm::fabs(c),
+            F32_NOISE_REL * libm::fmax(libm::fabs(c), d_original_mag),
         );
         if libm::fabs(b) < eps_b {
             // Constant. No finite root; if c == 0 every u is a root but
@@ -453,6 +491,44 @@ mod tests {
         let r = solve_smallest_root_in(&c, 1.0, 0.0, 1.0);
         assert!(r.is_some(), "root at t_high boundary must be included");
         assert!((r.unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn solve_offset_linear_curve_f32_noise_falls_through_to_linear() {
+        // Bench regression 2026-05-14: a linear Bézier piece whose CPs are
+        // around X=100 mm (typical toolhead position for a jog) has its
+        // monomial leading coefficient `a` perturbed by ~5e-5 of f32→f64
+        // conversion noise — well above the original 1e-12 REL_EPS gate,
+        // but the curve is still effectively linear and the cubic
+        // trigonometric path mis-handles it (missing the t=1 root,
+        // producing wrong-domain roots elsewhere). The `F32_NOISE_REL`
+        // floor scaled by `|d_original|` must catch this and route to
+        // the quadratic→linear fallback.
+        //
+        // Simulate the f32 noise explicitly so the test doesn't depend
+        // on host f32 rounding behavior: take the exact linear monomial
+        // (`a = b = 0, c = 1/3, d = 100`) and perturb `a` and `b` by
+        // 5e-5 absolute. Then check that target=100.00625 finds a root
+        // near t=0.01875 (the true linear root).
+        let c = CubicCoeffs {
+            a: 5e-5, // f32-noise-magnitude perturbation
+            b: -7e-5,
+            c: 1.0 / 3.0,
+            d: 100.0,
+        };
+        let target = 100.00625;
+        let r = solve_smallest_root_in(&c, target, 0.0, 1.0);
+        assert!(
+            r.is_some(),
+            "offset linear curve with f32 noise must still find its root"
+        );
+        let root = r.unwrap();
+        // True linear root: (100.00625 - 100) / (1/3) = 0.01875.
+        assert!(
+            (root - 0.01875).abs() < 1e-3,
+            "expected root near 0.01875 for target=100.00625 on linear \
+             c·u + 100 curve, got {root}"
+        );
     }
 
     #[test]
