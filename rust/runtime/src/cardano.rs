@@ -68,9 +68,13 @@ impl CubicCoeffs {
     }
 }
 
-/// Smallest leading-coefficient magnitude treated as "non-zero cubic". Below
-/// this we fall back to the quadratic / linear branch.
-const EPS_A: f64 = 1e-12;
+/// Relative degeneracy threshold for leading-coefficient classification.
+/// Each call site scales this against the maximum magnitude of the
+/// polynomial's coefficients (floored at 1.0) so the test scales with the
+/// cubic's working amplitude. Bezier control points span sub-mm precision
+/// moves to 100s of mm of toolhead coordinates; a fixed absolute floor
+/// would misclassify the small-scale regime as degenerate.
+const REL_EPS: f64 = 1e-12;
 
 /// Find the smallest real root of `a*u^3 + b*u^2 + c*u + (d - target) = 0`
 /// strictly greater than `t_low` and less-than-or-equal to `t_high`. Returns
@@ -108,8 +112,15 @@ pub fn solve_smallest_root_in(
     let c = coeffs.c;
     let d_shifted = coeffs.d - target;
 
-    // Degenerate cubic: |a| ~ 0 -> quadratic fallback.
-    if libm::fabs(a) < EPS_A {
+    // Degenerate cubic: |a| relatively small -> quadratic fallback.
+    // Scale the threshold to the largest coefficient magnitude so we judge
+    // `a` against the polynomial's own working scale, not an absolute floor.
+    let scale = libm::fmax(
+        libm::fmax(libm::fabs(a), libm::fabs(b)),
+        libm::fmax(libm::fabs(c), libm::fabs(d_shifted)),
+    );
+    let eps_a = REL_EPS * libm::fmax(scale, 1.0);
+    if libm::fabs(a) < eps_a {
         return solve_quadratic_smallest_root_in(b, c, d_shifted, t_low, t_high);
     }
 
@@ -185,15 +196,23 @@ fn solve_quadratic_smallest_root_in(
     t_low: f64,
     t_high: f64,
 ) -> Option<f64> {
-    if libm::fabs(a) < EPS_A {
+    // Relative degeneracy threshold for the quadratic leading coefficient.
+    let scale = libm::fmax(
+        libm::fmax(libm::fabs(a), libm::fabs(b)),
+        libm::fabs(c),
+    );
+    let eps_a = REL_EPS * libm::fmax(scale, 1.0);
+    if libm::fabs(a) < eps_a {
         // Linear: b*u + c = 0 -> u = -c/b.
-        if libm::fabs(b) < EPS_A {
+        let scale_l = libm::fmax(libm::fabs(b), libm::fabs(c));
+        let eps_b = REL_EPS * libm::fmax(scale_l, 1.0);
+        if libm::fabs(b) < eps_b {
             // Constant. No finite root; if c == 0 every u is a root but
             // "any u" isn't actionable for step timing, so return None.
             return None;
         }
         let u = -c / b;
-        return if u > t_low && u <= t_high {
+        return if u > t_low && u <= t_high && u.is_finite() {
             Some(u)
         } else {
             None
@@ -212,8 +231,11 @@ fn solve_quadratic_smallest_root_in(
     let q = -0.5 * (b + sign_b * sq);
 
     // Two roots: q/a and c/q. Guard against q == 0 (means b == 0 and sq == 0,
-    // i.e. disc == 0, double root at u = 0).
-    let candidates: [Option<f64>; 3] = if libm::fabs(q) < EPS_A {
+    // i.e. disc == 0, double root at u = 0). Use a relative threshold scaled
+    // to the working magnitudes of b and sqrt(disc).
+    let q_scale = libm::fmax(libm::fabs(b), sq);
+    let eps_q = REL_EPS * libm::fmax(q_scale, 1.0);
+    let candidates: [Option<f64>; 3] = if libm::fabs(q) < eps_q {
         // Both formulas degenerate; with b ~ 0 and disc ~ 0 the double root
         // is u = 0 (from -b/(2a) with b ~ 0).
         [Some(0.0), None, None]
@@ -424,6 +446,33 @@ mod tests {
         let b = cx.sub(&cy);
         // B(0.5) = 5 - 1.25 = 3.75
         assert!((b.eval(0.5) - 3.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn solve_relative_threshold_keeps_tiny_uniform_cubic_as_cubic() {
+        // All four control points at nm scale: cps = (0, 1e-9, 2e-9, 3e-9).
+        // Monomial form:
+        //   a = -0 + 3·1e-9 - 3·2e-9 + 3e-9 = 0
+        //   b = 0 - 6e-9 + 6e-9 = 0
+        //   c = -0 + 3e-9 = 3e-9
+        //   d = 0
+        // x(u) = 3e-9 · u (perfectly linear).
+        //
+        // Target = 1.5e-9 -> root at u = 0.5.
+        //
+        // The cubic and quadratic leading coefficients are zero; the linear
+        // coefficient c = 3e-9 is below an absolute 1e-12 threshold *would*
+        // accept (3e-9 > 1e-12), but this case exercises the relative-
+        // threshold fallback chain (cubic -> quadratic -> linear) at small
+        // scale and ensures we still recover the solvable linear root.
+        let c = CubicCoeffs::from_bezier(0.0, 1e-9, 2e-9, 3e-9);
+        let r = solve_smallest_root_in(&c, 1.5e-9, 0.0, 1.0);
+        assert!(r.is_some(), "tiny linear-from-Bezier should still be solvable");
+        assert!(
+            (r.unwrap() - 0.5).abs() < 1e-9,
+            "expected u~=0.5 for tiny linear, got {:?}",
+            r
+        );
     }
 
     #[test]
