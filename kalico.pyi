@@ -36,6 +36,8 @@ class GCodeCommandAPI:
     def __call__(self, *args: str, **params): ...
 
 class HeatersAPI:
+    def turn_off(self):
+        """Turn off all heaters (set targets to 0)"""
     def set_temperature(self, heater_name: str, temp: float | None = None):
         """Set the target temperature for a heater"""
     def temperature_wait(

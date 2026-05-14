@@ -1392,6 +1392,11 @@ class HeatersAPI:
         self._gcode: GCodeDispatch = printer.lookup_object("gcode")
 
     ## API for heaters
+    def turn_off(self):
+        """Turn off all heaters (set targets to 0)"""
+        heaters: PrinterHeaters = self._printer.lookup_object("heaters")
+        heaters.turn_off_all_heaters()
+
     def set_temperature(
         self, heater_name: str, temp: typing.Optional[float] = None
     ):
