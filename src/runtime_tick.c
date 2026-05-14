@@ -64,7 +64,32 @@ const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
 // 1 µs at 520 MHz (H7) = 520 cycles; at 84 MHz (F4) = 84 cycles. Both are
 // comfortably above any per-call drift between sampling `timer_read_time()`
 // and the scheduler's bounds check.
-#define SF_RESCHEDULE_FLOOR (runtime_clock_freq / 1000000U)  // 1 µs
+// Minimum scheduling-into-future margin for SF_RESCHEDULE callbacks.
+// Klipper's `armcm_timer.c:152` shuts down with "Rescheduled timer in
+// the past" when a timer's waketime is >1 ms behind `now` AND the
+// dispatch loop has been running tight (TIMER_REPEAT_TICKS = 100 µs).
+// A 1 µs floor used to be enough to satisfy the "strictly in the
+// future" requirement, but combined with the consumer's catch-up
+// emit loop (which fires step pulses as fast as possible when step
+// times are in the past) it pegged the dispatch loop at >1 MHz
+// per-consumer, starving other timers until one drifted past the 1 ms
+// limit and tripped the shutdown.
+//
+// 10 µs caps the worst-case catch-up emit rate at 100 kHz per motor
+// (400 kHz aggregate across 4 motors), leaves ~50% of the dispatch
+// loop budget for other timers (USB, status drain, drain task), and
+// is still 2× faster than realistic TMC2240 step input rates
+// (~250 kHz datasheet max).
+#define SF_RESCHEDULE_FLOOR (runtime_clock_freq / 100000U)  // 10 µs
+
+// Empty-poll cadence for the consumer when its ring has no entries.
+// Independent of SF_RESCHEDULE_FLOOR — the consumer's "no work, sleep"
+// path runs at 1 kHz, leaving most of the dispatch budget to the
+// producer (which is the actually-loaded timer when the consumer is
+// empty). The producer kicks the consumer indirectly by filling its
+// ring; the consumer notices on its next 1 ms poll. 1 ms of first-
+// step latency after a segment push is invisible at the bench.
+#define EMPTY_POLL_CYCLES (runtime_clock_freq / 1000U)  // 1 ms
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
@@ -1004,7 +1029,7 @@ step_time_event(struct timer *t)
         // accumulating from a stale base and can re-schedule in the past on
         // the next iteration. Anchoring to `timer_read_time()` guarantees
         // the next fire is always 100 µs into the actual future.
-        t->waketime = timer_read_time() + runtime_clock_freq / 10000U;
+        t->waketime = timer_read_time() + EMPTY_POLL_CYCLES;
         return SF_RESCHEDULE;
     }
 
@@ -1061,7 +1086,7 @@ step_time_event(struct timer *t)
         uint32_t floor2 = now2 + SF_RESCHEDULE_FLOOR;
         t->waketime = ((int32_t)(t_next2 - floor2) < 0) ? floor2 : t_next2;
     } else {
-        t->waketime = now + runtime_clock_freq / 10000U;  // +100 µs
+        t->waketime = timer_read_time() + EMPTY_POLL_CYCLES;
     }
     return SF_RESCHEDULE;
 }
@@ -1119,7 +1144,7 @@ init_step_time_timers(void)
     if (!runtime_handle) return;
 
     uint32_t now = timer_read_time();
-    uint32_t boot_poll = runtime_clock_freq / 10000U;  // 100 µs
+    uint32_t boot_poll = EMPTY_POLL_CYCLES;
 
     for (uint8_t i = 0; i < MAX_STEPPER_OIDS_C; i++) {
         // Reset state. Note: if a consumer timer is already enabled from
