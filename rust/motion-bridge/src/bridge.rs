@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -368,8 +368,12 @@ pub struct PyMotionBridge {
     handlers: Mutex<HashMap<(u32, String, u32), PyObject>>,
 
     // ── Phase-2 motion-submission state (Task 8) ────────────────────────
-    /// Spawned planner thread (None until `init_planner` is called).
-    planner: Mutex<Option<PlannerHandle>>,
+    /// Spawned planner thread. `init_planner` sets it exactly once; every
+    /// subsequent motion-submission entry point reads it lock-free via
+    /// `OnceLock::get`. The previous `Mutex<Option<PlannerHandle>>` form
+    /// took an uncontended mutex on every `submit_move` / `flush` /
+    /// `wait_moves` call.
+    planner: OnceLock<PlannerHandle>,
     /// Current planner config snapshot, mutated by `update_limits` / `update_shaper`.
     planner_config: Mutex<PlannerConfig>,
     /// Last commanded toolhead position (set by `set_position`, advanced by `submit_move`).
@@ -412,7 +416,7 @@ impl PyMotionBridge {
             mcus: Mutex::new(HashMap::new()),
             events: Arc::new(Mutex::new(VecDeque::new())),
             handlers: Mutex::new(HashMap::new()),
-            planner: Mutex::new(None),
+            planner: OnceLock::new(),
             planner_config: Mutex::new(PlannerConfig::default()),
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
@@ -1345,8 +1349,7 @@ impl PyMotionBridge {
         window_capacity: usize,
         beta_max_iters: u8,
     ) -> PyResult<()> {
-        let mut planner_slot = self.planner.lock().unwrap();
-        if planner_slot.is_some() {
+        if self.planner.get().is_some() {
             return Err(PyRuntimeError::new_err(
                 "planner already initialized",
             ));
@@ -1922,7 +1925,17 @@ impl PyMotionBridge {
             Ok(())
         });
 
-        *planner_slot = Some(PlannerHandle::spawn(cfg, dispatch));
+        // `set` returns `Err(handle)` if the slot was concurrently
+        // initialized. The early `get().is_some()` check above (combined
+        // with klippy's GIL-serialized init path) makes this race a
+        // logic bug rather than a benign retry — surface it explicitly.
+        self.planner
+            .set(PlannerHandle::spawn(cfg, dispatch))
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "planner already initialized (raced)",
+                )
+            })?;
         Ok(())
     }
 
@@ -1955,14 +1968,12 @@ impl PyMotionBridge {
                 classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
                     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-            let planner_guard = self.planner.lock().unwrap();
-            let planner = planner_guard.as_ref().ok_or_else(|| {
+            let planner = self.planner.get().ok_or_else(|| {
                 PyRuntimeError::new_err(
                     "planner not initialized — call init_planner first",
                 )
             })?;
             planner.submit_move(classified).map_err(planner_err)?;
-            drop(planner_guard);
 
             let mut pos = self.commanded_pos.lock().unwrap();
             pos[0] += dx;
@@ -2013,8 +2024,7 @@ impl PyMotionBridge {
     /// the queued timeline, which advances synchronously on
     /// `submit_move`.
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2119,8 +2129,7 @@ impl PyMotionBridge {
 
     /// Submit a dwell: flush + advance print time.
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2170,8 +2179,7 @@ impl PyMotionBridge {
         // the planner registers for this lifecycle event (see
         // `PlannerHandle::kalico_stream_open` and
         // `streaming::ShaperState::reset`).
-        let planner_guard = self.planner.lock().unwrap();
-        if let Some(planner) = planner_guard.as_ref() {
+        if let Some(planner) = self.planner.get() {
             planner
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
@@ -2192,8 +2200,7 @@ impl PyMotionBridge {
         let new_limits = cfg.limits;
         drop(cfg);
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2219,8 +2226,7 @@ impl PyMotionBridge {
 
         self.planner_config.lock().unwrap().shaper = shaper.clone();
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2230,8 +2236,7 @@ impl PyMotionBridge {
 
     /// Estimated print time of the last queued move, in seconds.
     fn get_last_move_time(&self) -> f64 {
-        let planner_guard = self.planner.lock().unwrap();
-        match planner_guard.as_ref() {
+        match self.planner.get() {
             Some(p) => p.last_move_time(),
             None => 0.0,
         }
@@ -2367,8 +2372,7 @@ impl PyMotionBridge {
         )
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
