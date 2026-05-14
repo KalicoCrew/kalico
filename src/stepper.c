@@ -462,6 +462,15 @@ __attribute__((used, externally_visible))
 void
 runtime_reset_stepper_bindings(void)
 {
+    // 2026-05-14 binding-bug investigation: log pre-reset counts so we
+    // can correlate the reset timing against the inbound
+    // config_runtime_stepper stream. If the reset lands AFTER bindings
+    // were already added, those bindings are silently lost.
+    output("runtime_bind_reset pre_cnts=%c,%c,%c,%c"
+           , runtime_motor_stepper_count[0]
+           , runtime_motor_stepper_count[1]
+           , runtime_motor_stepper_count[2]
+           , runtime_motor_stepper_count[3]);
     for (uint8_t m = 0; m < RUNTIME_MOTOR_COUNT; m++) {
         runtime_motor_stepper_count[m] = 0;
         runtime_motor_last_dir[m] = -1;
@@ -474,6 +483,14 @@ command_config_runtime_stepper(uint32_t *args)
     uint8_t motor_idx = args[0];
     uint8_t stepper_oid = args[1];
     uint8_t invert_dir = args[2];
+    // 2026-05-14 binding-bug investigation: log every invocation BEFORE
+    // any shutdown-able validation so we see exactly which bindings the
+    // host attempted to register and in what order. Pair with the
+    // runtime_bind_reset log above to correlate reset-vs-bind timing.
+    output("runtime_bind_attempt motor=%c oid=%c inv=%c pre_cnt=%c"
+           , motor_idx, stepper_oid, invert_dir
+           , (motor_idx < RUNTIME_MOTOR_COUNT)
+               ? runtime_motor_stepper_count[motor_idx] : 0xFF);
     if (motor_idx >= RUNTIME_MOTOR_COUNT)
         shutdown("config_runtime_stepper motor_idx out of range");
     uint8_t cnt = runtime_motor_stepper_count[motor_idx];
@@ -487,6 +504,9 @@ command_config_runtime_stepper(uint32_t *args)
     runtime_motor_steppers[motor_idx][cnt].invert_dir = invert_dir ? 1 : 0;
     runtime_motor_stepper_count[motor_idx] = cnt + 1;
     runtime_motor_last_dir[motor_idx] = -1;
+    output("runtime_bind_added motor=%c oid=%c new_cnt=%c"
+           , motor_idx, stepper_oid
+           , runtime_motor_stepper_count[motor_idx]);
 }
 DECL_COMMAND(command_config_runtime_stepper,
              "config_runtime_stepper motor_idx=%c stepper_oid=%c invert_dir=%c");
