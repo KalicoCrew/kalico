@@ -80,9 +80,33 @@ int32_t runtime_handle_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
                                         uint16_t *out_last_retired_gen);
 
 /**
- * Read the widened MCU clock (§11.4 seqlock). Returns the most recently
- * published u64 cycle count from the ISR. Safe to call from foreground
- * at any time — the seqlock retries if it sees a torn read.
+ * TIM5 ISR callback for the Modulated (polled-tick StepAccumulator)
+ * path (spec §3.2, T10).
+ *
+ * Computes the widened MCU clock inline from
+ * `timer_read_time()` + `stats_send_time_high` (same widening rule as
+ * `runtime_handle_widened_now`), then dispatches into
+ * `Engine::runtime_modulated_tick`.
+ *
+ * Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`,
+ * which is itself only enabled when `count_modulated_steppers > 0`
+ * (see `runtime_tick_enable`). For the all-StepTime MVP this entry
+ * is never invoked because TIM5 stays disabled.
+ */
+void kalico_runtime_modulated_tick(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Read the widened MCU clock. Spec §3.9 — on-demand widening from
+ * Klipper's `timer_read_time` + the `stats_send_time` / `stats_send_time_high`
+ * counters that Klipper's stats task maintains (basecmd.c). Replaces the
+ * pre-emission-rewrite SharedState seqlock dependency: TIM5 is off when
+ * `count_modulated_steppers == 0`, so the seqlock would not be re-published
+ * in StepTime-only configurations. The stats task runs unconditionally,
+ * so this widening advances regardless of engine activity.
+ *
+ * Mirrors the C-side `runtime_widened_host_clock` in `src/runtime_tick.c`.
+ * Foreground-only — `timer_read_time()` is not re-entrant with the
+ * stats-task wrap update; do not call from ISR context.
  */
 uint64_t runtime_handle_widened_now(kalico_nurbs_KalicoRuntime *rt);
 
@@ -355,47 +379,157 @@ int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t mcu_supports_phase);
 
 /**
- * Compute the absolute MCU clock cycle at which `stepper_idx` should
- * fire its next step. Used by the configure/segment-load arming path.
+ * Producer Klipper-timer callback entry. Runs one `Engine::producer_step`
+ * pass: Newton-fills `(cycles_abs_lo, dir)` entries into every StepTime
+ * motor's `StepRing` up to `PRODUCER_BATCH_CAP` per motor, retires any
+ * segment whose `consumers_remaining` mask drained, and republishes
+ * `producer_pending` / `producer_runs_total` diagnostics.
  *
- * On success writes the cycle count to `*out_cycles_abs` and the step
- * direction to `*out_dir` (`+1` = forward / positive, `-1` = reverse /
- * negative), then returns `KALICO_OK`.
- * Returns `KALICO_ERR_NO_STEP` when the active segment cannot produce
- * another step (caller must NOT register the timer; the engine re-arms
- * on the next `push_segment`).
+ * Returns `true` if at least one motor still has unfinished work
+ * (caller should self-reschedule the producer timer); `false` if every
+ * StepTime motor reached `AllIdle` (caller waits for a wake from
+ * `push_segment`'s CAS or from `kalico_runtime_kick_producer`).
  *
- * `out_dir` may be NULL; if so the direction is computed but discarded.
- *
- * Returns:
- * - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
- * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
- * - `KALICO_ERR_NO_STEP` if no step is available.
+ * SAFETY (caller): `rt` is the published `RT_CELL` pointer and the
+ * producer-side Klipper timer is the single serialised caller — no
+ * other context may concurrently form `&mut IsrState::engine` or
+ * pull from `IsrState::queue_consumer`. The C-side producer timer in
+ * Task 8 will enforce this by routing through one `DECL_TIMER`.
  */
-int32_t kalico_runtime_arm_step_timer(kalico_nurbs_KalicoRuntime *rt,
-                                      uint8_t stepper_idx,
-                                      uint64_t now_cycles,
-                                      uint64_t *out_cycles_abs,
-                                      int8_t *out_dir);
+bool kalico_runtime_producer_step(kalico_nurbs_KalicoRuntime *rt);
 
 /**
- * Compute the next step time for `stepper_idx`. Identical semantics to
- * `kalico_runtime_arm_step_timer`; provided as a separate symbol so the
- * C-side per-stepper `struct timer` ISR re-arm path has a descriptively
- * named entry point. Future engine work may diverge the two.
+ * Per-motor consumer: peek the entry at the cursor without advancing.
  *
- * `out_dir` may be NULL; if so the direction is computed but discarded.
+ * Returns `true` and writes `*out_cycles_abs_lo` + `*out_dir` if the
+ * ring has at least one entry to consume; returns `false` (and leaves
+ * the out-params untouched) on:
+ *   - null `rt`, null out-params, or `motor_idx >= 4`;
+ *   - `INIT_DONE == false`;
+ *   - the ring is empty (producer hasn't caught up).
  *
- * Returns:
- * - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
- * - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
- * - `KALICO_ERR_NO_STEP` if no step is available.
+ * SAFETY (caller): the per-stepper consumer Klipper timer (Task 7) is
+ * the single serialised consumer of motor `motor_idx`'s ring; concurrent
+ * `peek_*` / `advance` against the same motor from another context is
+ * outside the SPSC contract.
  */
-int32_t kalico_runtime_compute_next_step_time(kalico_nurbs_KalicoRuntime *rt,
-                                              uint8_t stepper_idx,
-                                              uint64_t now_cycles,
-                                              uint64_t *out_cycles_abs,
-                                              int8_t *out_dir);
+bool kalico_runtime_step_ring_peek_head(kalico_nurbs_KalicoRuntime *rt,
+                                        uint8_t motor_idx,
+                                        uint32_t *out_cycles_abs_lo,
+                                        int8_t *out_dir);
+
+/**
+ * Per-motor consumer: peek the second entry (the one after the cursor's
+ * head). Used by the per-stepper consumer ISR to compute its next
+ * reschedule time and decide whether the next pulse already has a
+ * known direction (no DIR flip required).
+ *
+ * Same return / safety contract as `kalico_runtime_step_ring_peek_head`,
+ * but reports `false` if fewer than two entries are available.
+ */
+bool kalico_runtime_step_ring_peek_next(kalico_nurbs_KalicoRuntime *rt,
+                                        uint8_t motor_idx,
+                                        uint32_t *out_cycles_abs_lo,
+                                        int8_t *out_dir);
+
+/**
+ * Per-motor consumer: advance the cursor past `n` entries. Called
+ * after the per-stepper consumer Klipper timer has fired the step
+ * pulse(s) corresponding to the entries up to (but not including) the
+ * new cursor.
+ *
+ * `Release` ordering on the cursor (via `StepRing::advance`) pairs
+ * with the producer's `Acquire` load in `StepRing::space`, publishing
+ * that the consumed slots are free for the producer to overwrite.
+ *
+ * No-op on null `rt`, `motor_idx >= 4`, or before init completes.
+ *
+ * SAFETY (caller): see `kalico_runtime_step_ring_peek_head`. The
+ * consumer Klipper timer is the single serialised caller of `advance`
+ * for its motor.
+ */
+void kalico_runtime_step_ring_advance(kalico_nurbs_KalicoRuntime *rt,
+                                      uint8_t motor_idx,
+                                      uint32_t n);
+
+/**
+ * Per-motor consumer: read the count of entries currently available
+ * to consume (i.e. `head - cursor` with wrap-aware arithmetic).
+ *
+ * Used by the consumer Klipper timer's low-water hook to decide if it
+ * should call `kalico_runtime_kick_producer` (e.g. when the ring is
+ * below half full and the producer is currently idle waiting on a
+ * kick).
+ *
+ * Returns `0` on null `rt`, `motor_idx >= 4`, or before init completes.
+ */
+uint32_t kalico_runtime_step_ring_available(kalico_nurbs_KalicoRuntime *rt, uint8_t motor_idx);
+
+/**
+ * Wake the producer: CAS-set `shared.producer_pending` from `false`
+ * to `true`. Returns `true` iff this call won the CAS — in which case
+ * the caller is responsible for actually scheduling the producer
+ * Klipper timer (`sched_add_timer` on the C side, Task 8). Returns
+ * `false` if `producer_pending` was already `true` (another kicker
+ * got there first; their scheduled producer run will see this
+ * caller's wake reason).
+ *
+ * Wake sources covered by this entry point:
+ *   - the per-motor consumer's low-water hook (Task 7);
+ *   - any host-side reason to force a producer fill before the next
+ *     `push_segment` arrives.
+ *
+ * `push_segment` already CAS-sets `producer_pending` inside
+ * `Engine::push_segment` (rust/runtime/src/engine.rs); call sites
+ * invoking `runtime_handle_push_segment` do NOT need to also call
+ * this — the engine wakes itself.
+ */
+bool kalico_runtime_kick_producer(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Synchronous foreground flush. Spec §3.10 (Task 11).
+ *
+ * Drains the segment queue, retires every in-flight curve-pool slot,
+ * resets every `StepRing` (head + cursor → 0), clears every
+ * `ProducerState`, zeroes per-motor `StepAccumulator` residuals, and
+ * clears the engine's `producer_current` + legacy `current` slots.
+ * After this returns, the runtime is in the "fresh, no work" state:
+ * subsequent `kalico_runtime_producer_step` / TIM5
+ * `runtime_modulated_tick` invocations return immediately.
+ *
+ * **Caller contract:** no concurrent `kalico_runtime_producer_step`,
+ * TIM5 ISR, or per-stepper consumer Klipper-timer access may be in
+ * flight. The C side enforces this by either (a) calling under
+ * `irq_save` (the Klipper-timer / ISR paths gate on IRQs), or
+ * (b) serialising through the bridge command channel (which is
+ * single-threaded on the Klipper foreground task). The host's flush
+ * path satisfies (b).
+ *
+ * Returns `true` on success, `false` on null `rt` or pre-init.
+ */
+bool kalico_runtime_force_idle(kalico_nurbs_KalicoRuntime *rt);
+
+/**
+ * Apply `delta_steps` to `shared.stepper_counts[stepper_idx]` atomically.
+ *
+ * Called by the C-side `step_time_event` ISR after `runtime_emit_step_pulses`
+ * to commit the just-emitted step into the engine's step counter. Without
+ * this, `arm_step_timer_for_stepper`'s `current_step` read stays at 0
+ * forever and the Newton solver always solves for the FIRST step within
+ * the active segment — the timer fires, emits a step, then computes the
+ * same first-step time again and never advances along the curve (bench
+ * wedge 2026-05-12: engine retired segments by virtue of `Engine::tick`'s
+ * `now` advancing, but step pulses-per-second was capped at the
+ * 1 kHz NO_STEP poll rate rather than the true Newton-iterated step rate).
+ *
+ * Mirrors `engine.rs:1067`'s `counter.fetch_add(step_result.n_steps, ...)`
+ * for the polled-tick / Modulated path.
+ *
+ * Returns `KALICO_OK` or an error.
+ */
+int32_t kalico_runtime_apply_step(kalico_nurbs_KalicoRuntime *rt,
+                                  uint8_t stepper_idx,
+                                  int32_t delta_steps);
 
 /**
  * Read the current `StepMode` discriminant for `stepper_idx`.

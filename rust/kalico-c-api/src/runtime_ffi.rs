@@ -2150,26 +2150,53 @@ pub mod exports {
         }
     }
 
-    /// Synchronous foreground flush. **Task 11 placeholder.**
+    /// Synchronous foreground flush. Spec §3.10 (Task 11).
     ///
-    /// The real implementation per spec §3.10 will: (1) disable the
-    /// producer + every per-motor consumer Klipper timer; (2) drain the
-    /// segment queue; (3) reset every `StepRing` (head + cursor → 0,
-    /// requires both sides quiesced — see `StepRing::reset`); (4) clear
-    /// every `ProducerState`; (5) `pool.confirm_retired` every in-flight
-    /// curve handle in the retirement table; (6) republish cleared
-    /// SharedState cursors. The handshake is foreground-driven (no ISR
-    /// ack required) because the consumer timers are stopped at step (1).
+    /// Drains the segment queue, retires every in-flight curve-pool slot,
+    /// resets every `StepRing` (head + cursor → 0), clears every
+    /// `ProducerState`, zeroes per-motor `StepAccumulator` residuals, and
+    /// clears the engine's `producer_current` + legacy `current` slots.
+    /// After this returns, the runtime is in the "fresh, no work" state:
+    /// subsequent `kalico_runtime_producer_step` / TIM5
+    /// `runtime_modulated_tick` invocations return immediately.
     ///
-    /// For now this is a no-op returning `false` so the C side (Task 8 /
-    /// Task 9) can link against the symbol while T11 lands the body. The
-    /// `false` return signals "flush not performed" — callers should
-    /// treat the runtime as still active until T11 wires up the real
-    /// teardown.
+    /// **Caller contract:** no concurrent `kalico_runtime_producer_step`,
+    /// TIM5 ISR, or per-stepper consumer Klipper-timer access may be in
+    /// flight. The C side enforces this by either (a) calling under
+    /// `irq_save` (the Klipper-timer / ISR paths gate on IRQs), or
+    /// (b) serialising through the bridge command channel (which is
+    /// single-threaded on the Klipper foreground task). The host's flush
+    /// path satisfies (b).
+    ///
+    /// Returns `true` on success, `false` on null `rt` or pre-init.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_force_idle(rt: *mut KalicoRuntime) -> bool {
-        let _ = rt;
-        false
+        if rt.is_null() {
+            return false;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return false;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null + INIT_DONE=true. We project `&mut IsrState`
+        // via the UnsafeCell raw pointer — same pattern as
+        // `kalico_runtime_producer_step`. The §11.1 ownership discipline
+        // requires the producer + consumer timers and the TIM5 ISR to be
+        // quiesced at the moment of call; the caller's docstring above
+        // documents that contract.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            let isr: &mut IsrState = &mut *isr_ptr;
+            let IsrState {
+                engine,
+                queue_consumer,
+                ..
+            } = isr;
+            engine.runtime_force_idle(pool, queue_consumer, shared);
+        }
+        true
     }
 
     /// Apply `delta_steps` to `shared.stepper_counts[stepper_idx]` atomically.

@@ -72,6 +72,17 @@ impl StepMotorState {
             f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
     }
 
+    /// Drop the sub-step residual without losing the configured
+    /// `steps_per_mm` ratio. Used by `runtime_force_idle` (spec §3.10): the
+    /// motor's position is re-anchored by the host on the next segment
+    /// push, so the accumulator's cross-segment memory is meaningless and
+    /// must be cleared. `Default::default()` would also zero `steps_per_mm`
+    /// — we must NOT use it, because the host doesn't re-call
+    /// `configure()` after a flush.
+    pub fn reset_accumulator(&mut self) {
+        self.step_accumulator = 0.0;
+    }
+
     /// Advance the accumulator to `motor_position_mm` and return the integer
     /// step delta for this tick.
     ///

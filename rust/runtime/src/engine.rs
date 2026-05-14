@@ -413,6 +413,129 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.e_accumulator = 0.0;
     }
 
+    /// Synchronous foreground flush. Spec §3.10 (Task 11).
+    ///
+    /// Drains every in-flight state container the new step-emission
+    /// architecture holds (`producer_current`, the segment queue, the
+    /// step rings, per-motor `ProducerState`, per-motor `StepAccumulator`,
+    /// `clear_current`'s legacy boundary-loop state) and retires every
+    /// curve-pool slot the dropped segments referenced. After this returns,
+    /// the engine is in the "fresh, no work" state: subsequent
+    /// `producer_step` / `runtime_modulated_tick` invocations return
+    /// immediately because both the queue and `producer_current` are
+    /// empty.
+    ///
+    /// **Caller contract:** must guarantee no concurrent `producer_step`,
+    /// `runtime_modulated_tick`, `Engine::tick`, or per-motor consumer
+    /// access. The host-side flush path serialises through the bridge
+    /// command channel before invoking this. The FFI wrapper
+    /// (`kalico_runtime_force_idle`) inherits the same contract and is
+    /// the single legitimate caller.
+    ///
+    /// Returns `()` because the operation is total — there is no failure
+    /// mode beyond preconditions, which are caller-responsibility.
+    pub fn runtime_force_idle(
+        &mut self,
+        pool: &CurvePool,
+        queue: &mut Consumer<'_, Segment, Q_N>,
+        shared: &SharedState,
+    ) {
+        // 1. Disarm producer kicks. Any kick that lands mid-flush
+        //    re-CASes; producer_pending stays false until the next
+        //    legitimate push or low-water hook. Producer-pending is
+        //    consulted only by the kicker (CAS-false→true) and the
+        //    producer entry point (clear-on-entry); the synchronous
+        //    flush path mirrors the "clear-on-entry" half.
+        shared.producer_pending.store(false, Ordering::Release);
+
+        // 2. Drain the segment queue. Each dequeued segment's four pool
+        //    handles are retired now — the host's lookahead is being
+        //    torn down, so we discharge their slot ownership eagerly.
+        //    `confirm_retired` is a no-op on `UNUSED_SENTINEL` (the
+        //    sentinel slot_idx is out-of-range vs `CURVE_POOL_N`).
+        while let Some(seg) = queue.dequeue() {
+            pool.confirm_retired(seg.x_handle);
+            pool.confirm_retired(seg.y_handle);
+            pool.confirm_retired(seg.z_handle);
+            pool.confirm_retired(seg.e_handle);
+        }
+
+        // 3. Reset every step ring. `StepRing::reset` documents its
+        //    caller-side quiescence requirement; the §3.10 contract on
+        //    this method satisfies it.
+        for ring in &mut self.step_rings {
+            ring.reset();
+        }
+
+        // 4. Clear every motor's Newton-fill resume state.
+        for ps in &mut self.producer_states {
+            ps.clear();
+        }
+
+        // 5. Retire the producer's in-flight wall-clock segment if any
+        //    (T7's per-motor path) and clear the slot.
+        if let Some(seg) = self.producer_current.take() {
+            pool.confirm_retired(seg.x_handle);
+            pool.confirm_retired(seg.y_handle);
+            pool.confirm_retired(seg.z_handle);
+            pool.confirm_retired(seg.e_handle);
+        }
+
+        // 6. Per-motor curve cursor + current-segment-id reset. All
+        //    motors restart from "no segment in flight" — the lockstep
+        //    simplification (see `motor_curve_cursor` field doc) makes
+        //    this safe: there is no "this motor is behind that motor"
+        //    state to preserve.
+        for cur in &mut self.motor_curve_cursor {
+            *cur = 0;
+        }
+        for slot in &mut self.motor_current_segment_id {
+            *slot = None;
+        }
+
+        // 7. Reset per-motor `StepAccumulator` residual. The
+        //    cross-segment accumulator memory carries pre-flush
+        //    sub-step position; on the next segment push the host
+        //    re-anchors motor position via `SET_KINEMATIC_POSITION`
+        //    (or via a planner-emitted re-seed) so the residual is
+        //    meaningless. We must NOT `*ss = Default::default()` —
+        //    that would zero the configured `steps_per_mm`, which the
+        //    host doesn't re-emit after a flush.
+        for ss in &mut self.step_state {
+            ss.reset_accumulator();
+        }
+
+        // 8. Clear the legacy boundary-loop / tick-path state. T12 will
+        //    delete `Engine::tick` and `current`/`needs_xy_seed`/
+        //    `e_accumulator` will move out; until then keep the clear
+        //    here so a same-process re-stream after force_idle is
+        //    clean even on the legacy path.
+        self.clear_current();
+        self.last_motors = [0.0; 4];
+        self.prev_x = 0.0;
+        self.prev_y = 0.0;
+        self.prev_z = 0.0;
+
+        // 9. Re-publish settled engine status. After force_idle the
+        //    host either re-streams (transitions Idle → Running on
+        //    next segment activation) or stays idle, so `Idle` is the
+        //    most accurate post-flush state. Fault status is NOT
+        //    cleared — the host explicitly inspects the fault before
+        //    issuing flush; clearing it would mask the failure history.
+        if self.status() != RuntimeStatus::Fault {
+            self.status
+                .store(RuntimeStatus::Idle as u8, Ordering::Release);
+        }
+
+        // 10. Transition gesture for the legacy `acked_force_idle`
+        //     polling path (e.g., `runtime::stream::flush`'s Plan-
+        //     decision A spin loop). Setting the ack here lets the
+        //     legacy code path observe "ISR ack" after the synchronous
+        //     flush returns; the legacy atomic deletion is T12's
+        //     cleanup-pass scope.
+        shared.acked_force_idle.store(true, Ordering::Release);
+    }
+
     /// Phase 12.2 test-only helper: prime the boundary-loop iteration
     /// counter so the next tick that carries across one segment boundary
     /// trips the `MAX_BOUNDARY_ITERS` fault. The public producer API caps
@@ -496,17 +619,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
     ) -> Result<(), RuntimeError> {
-        // §8.5 step 2: force_idle short-circuit. BEFORE anything else —
-        // BEFORE widen_state mutation, BEFORE queue dequeue, BEFORE
-        // evaluation. Aborts current evaluation, sets acked_force_idle,
-        // returns. Bounded ~25 µs at 40 kHz (single atomic load + branch).
-        // The hold-segment short-circuit (Phase 9) lands AFTER this block.
-        if shared.force_idle.load(Ordering::Acquire) {
-            self.clear_current();
-            shared.acked_force_idle.store(true, Ordering::Release);
-            return Ok(());
-        }
-
+        // T11 (spec §3.10): the legacy ISR-side `force_idle` short-circuit
+        // is gone. Force-idle is now a synchronous foreground call
+        // (`Engine::runtime_force_idle` / `kalico_runtime_force_idle`)
+        // that drains queue + step rings + producer state directly under
+        // the caller's quiescence contract — no ISR ack required.
+        // `shared.force_idle` / `shared.acked_force_idle` survive in
+        // SharedState as a transition-period courtesy for the legacy
+        // `runtime::stream::flush` polling code (set by
+        // `runtime_force_idle`'s tail); T12's cleanup pass deletes both
+        // atomics once no caller polls them.
         let now = widen_state.widen(raw_cyccnt);
         // §11.4: republish the widened u64 to SharedState so foreground readers
         // (clock-sync responder, status frame) can fetch it without forming a

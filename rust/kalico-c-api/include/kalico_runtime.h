@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
-
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
+
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -620,22 +620,25 @@ uint32_t kalico_runtime_step_ring_available(struct KalicoRuntime *rt, uint8_t mo
 bool kalico_runtime_kick_producer(struct KalicoRuntime *rt);
 
 /**
- * Synchronous foreground flush. **Task 11 placeholder.**
+ * Synchronous foreground flush. Spec §3.10 (Task 11).
  *
- * The real implementation per spec §3.10 will: (1) disable the
- * producer + every per-motor consumer Klipper timer; (2) drain the
- * segment queue; (3) reset every `StepRing` (head + cursor → 0,
- * requires both sides quiesced — see `StepRing::reset`); (4) clear
- * every `ProducerState`; (5) `pool.confirm_retired` every in-flight
- * curve handle in the retirement table; (6) republish cleared
- * SharedState cursors. The handshake is foreground-driven (no ISR
- * ack required) because the consumer timers are stopped at step (1).
+ * Drains the segment queue, retires every in-flight curve-pool slot,
+ * resets every `StepRing` (head + cursor → 0), clears every
+ * `ProducerState`, zeroes per-motor `StepAccumulator` residuals, and
+ * clears the engine's `producer_current` + legacy `current` slots.
+ * After this returns, the runtime is in the "fresh, no work" state:
+ * subsequent `kalico_runtime_producer_step` / TIM5
+ * `runtime_modulated_tick` invocations return immediately.
  *
- * For now this is a no-op returning `false` so the C side (Task 8 /
- * Task 9) can link against the symbol while T11 lands the body. The
- * `false` return signals "flush not performed" — callers should
- * treat the runtime as still active until T11 wires up the real
- * teardown.
+ * **Caller contract:** no concurrent `kalico_runtime_producer_step`,
+ * TIM5 ISR, or per-stepper consumer Klipper-timer access may be in
+ * flight. The C side enforces this by either (a) calling under
+ * `irq_save` (the Klipper-timer / ISR paths gate on IRQs), or
+ * (b) serialising through the bridge command channel (which is
+ * single-threaded on the Klipper foreground task). The host's flush
+ * path satisfies (b).
+ *
+ * Returns `true` on success, `false` on null `rt` or pre-init.
  */
 bool kalico_runtime_force_idle(struct KalicoRuntime *rt);
 

@@ -17,8 +17,8 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::Ordering;
 
 use crate::error::{
-    FaultCode, KALICO_ERR_ARM_REJECTED, KALICO_ERR_LIVENESS_STALLED, KALICO_ERR_NULL_PTR,
-    KALICO_ERR_STREAM_STATE_VIOLATION, KALICO_OK, encode_stream_state_violation,
+    KALICO_ERR_ARM_REJECTED, KALICO_ERR_NULL_PTR, KALICO_ERR_STREAM_STATE_VIOLATION, KALICO_OK,
+    encode_stream_state_violation,
 };
 use crate::state::{FgState, IsrState, RuntimeContext, SharedState};
 
@@ -288,24 +288,29 @@ fn read_widened_host_clock() -> u64 {
 
 // ────────────────────────────── flush ────────────────────────────────────
 
-/// §8.5 flush sequence per Plan-decision A.
+/// §8.5 flush sequence — T11 rewrite.
 ///
-/// Plan-decision A ordering:
-///   1. `force_idle` = true
-///   2. spin-wait for `acked_force_idle` with 1 ms wall-clock timeout
-///   3. THEN `stream_open` = false (only after ISR ack — avoids spurious
-///      Underrun race against an in-flight ISR mid-tick)
-///   4. IRQ-disable + drain queue + clear in-flight segment
-///   5. reset every slot's `last_retired_gen` to `current_gen`
-///   6. bump `credit_epoch`
-///   7. clear flags + reset stream-machine + clear `terminal_segment_id`
-///   8. clear `acked_force_idle` + `force_idle` (ISR resumes on next tick)
+/// New ordering (post-T11; the legacy spin-wait handshake is removed):
+///   1. `stream_open` = false (queue-empty ticks now go Drained, not
+///      Underrun, before the in-flight ISR is even touched).
+///   2. `irq_save` + synchronous `Engine::runtime_force_idle` (drains
+///      queue, retires every in-flight pool slot, resets step rings +
+///      producer states + per-motor cursors + step accumulators, clears
+///      `producer_current` / legacy `current`).
+///   3. `pool.reset_all_retired_to_current()` (defense-in-depth: the
+///      synchronous flush already retired the *queued* + *in-flight*
+///      handles, but slots holding pre-arm-rejected loads may still
+///      have a generation gap).
+///   4. bump `credit_epoch`.
+///   5. clear flags + reset stream-machine + clear `terminal_segment_id`.
+///   6. clear `force_idle` / `acked_force_idle` atomics (transition-period
+///      cleanup; T12 deletes them).
 ///
-/// Takes `*mut RuntimeContext` because step 4 transiently projects to
-/// `IsrState.queue_consumer` under disabled IRQ. The half-split discipline
-/// holds: with IRQs disabled, the foreground is the sole context running
-/// → no concurrent ISR access window exists → forming `&mut IsrState`
-/// briefly is sound.
+/// Takes `*mut RuntimeContext` because step 2 transiently projects to
+/// `IsrState` under disabled IRQ. The half-split discipline holds: with
+/// IRQs disabled, the foreground is the sole context running → no
+/// concurrent ISR / producer-timer / consumer-timer access window exists
+/// → forming `&mut IsrState` briefly is sound.
 ///
 /// SAFETY: caller must guarantee single-threaded foreground entry (the
 /// command-dispatch task is single-threaded by Klipper's design) and
@@ -328,65 +333,52 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
         (&mut *fg_ptr, &*shared_ptr, &*pool_ptr)
     };
 
-    // ─── Plan-decision A: force_idle FIRST, ack-wait, THEN stream_open=false ───
-
-    // Step 1: set force_idle=true. ISR observes on its next tick.
-    shared.force_idle.store(true, Ordering::Release);
+    // ─── T11: synchronous foreground flush, no ISR handshake ────────────
+    //
+    // The legacy Plan-decision A spin-wait on `acked_force_idle` is gone.
+    // The new step-emission architecture (spec §3.10) makes flush a
+    // foreground-only operation: the caller already serialises through
+    // the bridge command channel, and under `irq_save` the producer +
+    // every per-motor consumer Klipper timer is held off, so we form
+    // `&mut IsrState` and drive `Engine::runtime_force_idle` directly.
+    // The ISR-side short-circuit branch in `Engine::tick` was removed
+    // in the same task; `runtime_force_idle` itself sets
+    // `acked_force_idle = true` at its tail as a transition courtesy
+    // so any external observer polling that bit still sees the ack.
     fg.flush_start_tick = Some(unsafe { runtime_host_now_us() });
 
-    // Step 2: spin-wait on acked_force_idle with a 1-ms host wall-clock
-    // timeout. Use `runtime_host_now_us` (Klipper's `timer_read_time` µs)
-    // — NOT `read_widened_now`, because the ISR doesn't update widened_now
-    // during force_idle, so the seqlock would appear frozen and the
-    // deadline check would never fire (Round 1 review B3).
-    let deadline_us = unsafe { runtime_host_now_us() }.saturating_add(1000);
-    while !shared.acked_force_idle.load(Ordering::Acquire) {
-        core::hint::spin_loop();
-        let now_us = unsafe { runtime_host_now_us() };
-        if now_us >= deadline_us {
-            // Timeout — ISR appears stuck. Latch LIVENESS_STALLED.
-            shared
-                .last_error
-                .store(FaultCode::LivenessStalled as i32, Ordering::Release);
-            shared
-                .runtime_status
-                .store(crate::engine::RuntimeStatus::Fault as u8, Ordering::Release);
-            // Clear force_idle so the (presumably stuck) ISR isn't
-            // permanently pinned in the short-circuit path; this is
-            // best-effort cleanup, not recovery.
-            shared.force_idle.store(false, Ordering::Release);
-            return KALICO_ERR_LIVENESS_STALLED;
-        }
-    }
-
-    // ISR is now parked in the §8.5 step-2 short-circuit. From this point
-    // until step 8 clears force_idle, no ISR fire performs any segment
-    // evaluation, queue access, or curve-pool access.
-
-    // Step 3: NOW clear stream_open (post-ack). Subsequent ticks (after
-    // step 8) on empty queue see stream_open=false → Drained, not Underrun.
+    // Step 1: clear stream_open BEFORE the synchronous flush. Without
+    // an ISR ack to gate this on, the ordering simplifies — there is
+    // no in-flight ISR mid-tick to race with the host's drain (irq_save
+    // below holds it off). Subsequent ticks on empty queue see
+    // stream_open=false → Drained, not Underrun.
     shared.stream_open.store(false, Ordering::Release);
 
-    // Step 4: IRQ-disable + transient queue drain via raw-pointer projection
-    // to IsrState.queue_consumer. SAFETY: under irq_save, no ISR can run, so
-    // we transiently hold exclusive access to IsrState — the discipline
-    // contract holds because there's no concurrent access window.
+    // Step 2: IRQ-disable + synchronous flush via raw-pointer projection
+    // to IsrState. SAFETY: under irq_save, no ISR / producer-timer /
+    // consumer-timer can run, so we transiently hold exclusive access
+    // to IsrState — the discipline contract holds because there's no
+    // concurrent access window.
     let irq_flags = unsafe { runtime_irq_save() };
     {
-        // SAFETY: runtime_irq_save() above pins the ISR off; we transiently
-        // form `&mut IsrState` via the UnsafeCell projection. No concurrent
-        // ISR can race the queue/engine writes below.
+        // SAFETY: runtime_irq_save() above pins the ISR + producer +
+        // consumer timers off; we transiently form `&mut IsrState` via
+        // the UnsafeCell projection. No concurrent context can race the
+        // engine / queue / step-ring / producer-state writes below.
         let isr: &mut IsrState = unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             &mut *isr_ptr
         };
-        // Drain all enqueued segments. None are evaluated; they're
-        // discarded. No retire events emitted (segments never executed).
-        while isr.queue_consumer.dequeue().is_some() {}
-        // Defense-in-depth: clear any in-flight current segment in the
-        // engine. Step 2's contract says ISR has already done this in
-        // its short-circuit, but redundancy here costs nothing.
-        isr.engine.clear_current();
+        // Drive the synchronous flush. Drains the queue, retires every
+        // in-flight pool slot, resets step rings + producer states +
+        // per-motor curve cursors + step accumulators, and clears the
+        // engine's legacy `current` / `producer_current` slots.
+        let IsrState {
+            engine,
+            queue_consumer,
+            ..
+        } = isr;
+        engine.runtime_force_idle(pool, queue_consumer, shared);
     }
     unsafe { runtime_irq_restore(irq_flags) };
 
