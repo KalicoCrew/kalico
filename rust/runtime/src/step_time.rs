@@ -1,177 +1,83 @@
 //! Step-time scheduling: compute the next step pulse time for a stepper
-//! by Newton-iterating the position polynomial.
+//! by closed-form Cardano solution on the cubic Bézier position polynomial.
 //!
-//! ## Why (pos, vel, accel)
+//! Replaces the prior Newton-based iteration. Cardano is deterministic,
+//! has no convergence/seed issues, and handles `v(0) = 0` (accel-from-rest)
+//! analytically. See `cardano.rs` for the math.
 //!
-//! The `eval` closure returns position, first derivative, and second
-//! derivative of the motor-frame position polynomial. Newton's initial
-//! `dt` guess is taken from the highest-magnitude non-degenerate
-//! derivative:
-//!   - `|v| ≥ EPS_VELOCITY` → linear: `dt = step_distance / |v|`
-//!   - else `|a| ≥ EPS_ACCEL` → quadratic: `dt = sqrt(2·step_distance/|a|)`
-//!   - else: forward-scan probe (rare; only on triple-degenerate curves
-//!     which the planner does not emit in practice).
-//!
-//! Returning `SegmentExhausted` happens only when `t_try` exits
-//! `[t_curr, t_segment_end]` for `MAX_NEWTON_ITERS` consecutive
-//! iterations, OR when all three derivatives are below their thresholds
-//! AND the forward scan finds no motion within the segment. Mid-segment
-//! velocity collapse (decel-to-rest) no longer bails — the accel-based
-//! seed handles it.
-//!
-//! Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §3.6
+//! Plan: docs/superpowers/plans/2026-05-14-cardano-cubic-solver.md
 
-const NEWTON_TOL_FRACTION: f64 = 1e-6;
-const MAX_NEWTON_ITERS: usize = 3;
-const EPS_VELOCITY: f64 = 1e-12;
-const EPS_ACCEL: f64 = 1e-9;
-const FORWARD_SCAN_FRACTION: f64 = 1e-3; // 0.1% of segment
+use crate::cardano::{solve_smallest_root_in, CubicCoeffs};
 
-// `f64::sqrt` / `f64::cbrt` are inherent methods provided by `std`. On
-// `no_std` MCU targets they are unavailable, so we route through `libm`.
-// Same dispatch pattern as `nurbs::float::sqrt`.
-#[inline]
-fn sqrt_f64(x: f64) -> f64 {
-    #[cfg(feature = "host")]
-    {
-        f64::sqrt(x)
-    }
-    #[cfg(not(feature = "host"))]
-    {
-        libm::sqrt(x)
-    }
-}
-
-#[inline]
-fn cbrt_f64(x: f64) -> f64 {
-    #[cfg(feature = "host")]
-    {
-        f64::cbrt(x)
-    }
-    #[cfg(not(feature = "host"))]
-    {
-        libm::cbrt(x)
-    }
-}
-
-/// Query for `compute_next_step_time`. The `eval` closure must return
-/// `(position, velocity, acceleration)` at the requested time in the
-/// stepper's motor frame (already through kinematics — for a Cartesian
-/// Z this is just the axis position).
-///
-/// All scalar time/position values are `f64` for host-side precision; the
-/// closure receives an `f32` `u` (the de Boor evaluator's native input
-/// type) and returns `f64` derivatives.
-pub struct StepTimeQuery<'a, F: Fn(f32) -> (f64, f64, f64)> {
-    pub eval: &'a F,
+/// Query for `compute_next_step_time`. The caller (engine) constructs the
+/// `coeffs` from the segment's curve control points + kinematic transform.
+pub struct StepTimeQuery<'a> {
+    pub coeffs: &'a CubicCoeffs,
     pub step_distance: f64,
     pub current_step: i32,
-    /// Time at which to start the search. The unit is whatever domain the
-    /// `eval` closure uses; the production path passes MCU clock cycles
-    /// directly, but unit tests pass normalized segment time.
+    /// Lower bound (exclusive) of the search interval, in normalized u-domain.
     pub t_curr: f64,
-    /// End of the active segment in the same time domain as `t_curr`.
+    /// Upper bound (inclusive). Always `1.0` in the production path.
     pub t_segment_end: f64,
+}
+
+impl core::fmt::Debug for StepTimeQuery<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StepTimeQuery")
+            .field("coeffs", &self.coeffs)
+            .field("step_distance", &self.step_distance)
+            .field("current_step", &self.current_step)
+            .field("t_curr", &self.t_curr)
+            .field("t_segment_end", &self.t_segment_end)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepTimeResult {
-    /// The next step fires at time `t` (same domain as `t_curr`), moving in
-    /// `dir` (+1 = forward / positive, -1 = reverse / negative).
+    /// The next step fires at time `t` in `(t_curr, t_segment_end]`. Same
+    /// time domain as the caller's `t_curr`.
     NextAt { t: f64, dir: i8 },
-    /// The active segment can't produce another step in the current
-    /// direction. Engine re-arms on the next pushed segment.
+    /// No step exists in the search interval in the determined direction.
+    /// Engine retires the motor's contribution to the segment.
     SegmentExhausted,
 }
 
-pub fn compute_next_step_time<F: Fn(f32) -> (f64, f64, f64)>(
-    q: &StepTimeQuery<F>,
-) -> StepTimeResult {
-    let (_p0, v0, a0) = (q.eval)(q.t_curr as f32);
-
-    // Direction + initial-dt: pick the cheapest analytic seed available.
-    // When BOTH v0 and a0 are degenerate, fall back to spec §3.6 option (a):
-    // estimate jerk by finite-differencing accel against a forward probe and
-    // seed `dt = (6·step_distance / |j|)^(1/3)`. The probe also doubles as the
-    // direction source for the triple-degenerate path.
-    let (dir_i8, mut dt) = if v0.abs() >= EPS_VELOCITY {
-        let dir = if v0 > 0.0 { 1_i8 } else { -1_i8 };
-        (dir, q.step_distance / v0.abs())
-    } else if a0.abs() >= EPS_ACCEL {
-        let dir = if a0 > 0.0 { 1_i8 } else { -1_i8 };
-        (dir, sqrt_f64(2.0 * q.step_distance / a0.abs()))
+/// Compute the time at which the next step pulse should fire.
+///
+/// Steps:
+/// 1. Determine motion direction from `eval_d1(t_curr)` (with midpoint
+///    probe fallback when v(0)=0).
+/// 2. Compute the step target `(current_step + dir) * step_distance`.
+/// 3. Solve `coeffs(u) = target` for the smallest `u ∈ (t_curr, t_segment_end]`
+///    via Cardano (cardano::solve_smallest_root_in).
+/// 4. Return `NextAt { t, dir }` or `SegmentExhausted` if no root.
+#[must_use]
+pub fn compute_next_step_time(q: &StepTimeQuery<'_>) -> StepTimeResult {
+    // Direction from instantaneous velocity at t_curr. If zero (e.g.,
+    // accel-from-rest), probe the midpoint of the search interval for
+    // position change sign. If still zero, the segment is genuinely
+    // motionless.
+    let v0 = q.coeffs.eval_d1(q.t_curr);
+    let dir_i8: i8 = if libm::fabs(v0) > 1e-12 {
+        if v0 > 0.0 { 1 } else { -1 }
     } else {
         let span = q.t_segment_end - q.t_curr;
         if span <= 0.0 {
             return StepTimeResult::SegmentExhausted;
         }
-        // Probe halfway through the remaining segment to look for any
-        // non-degenerate motion.
-        let probe_dt = span * 0.5;
-        let (_, v_probe, a_probe) = (q.eval)((q.t_curr + probe_dt) as f32);
-        if v_probe.abs() >= EPS_VELOCITY {
-            // Cubic-ramp-from-rest: jerk ≈ a_probe / probe_dt (since a0 ≈ 0),
-            // or fall back to a linear seed from v_probe scaled to the
-            // step_distance / v_probe ratio if accel info is unreliable.
-            let dir = if v_probe > 0.0 { 1_i8 } else { -1_i8 };
-            let seed = if a_probe.abs() >= EPS_ACCEL {
-                // Cubic ramp x(u) ≈ (j/6)·u³ where j = (a_probe - a0)/probe_dt
-                // and a0 ≈ 0. Solve (j/6)·u³ = step_distance for u.
-                let j = a_probe.abs() / probe_dt;
-                cbrt_f64(6.0 * q.step_distance.abs() / j)
-            } else {
-                q.step_distance.abs() / v_probe.abs()
-            };
-            (dir, seed)
-        } else if a_probe.abs() >= EPS_ACCEL {
-            let dir = if a_probe > 0.0 { 1_i8 } else { -1_i8 };
-            (dir, sqrt_f64(2.0 * q.step_distance / a_probe.abs()))
-        } else {
-            // Triple-degenerate everywhere we looked — no usable motion.
+        let probe = q.t_curr + 0.5 * span;
+        let delta = q.coeffs.eval(probe) - q.coeffs.eval(q.t_curr);
+        if libm::fabs(delta) < 1e-12 {
             return StepTimeResult::SegmentExhausted;
         }
+        if delta > 0.0 { 1 } else { -1 }
     };
-    let dir = f64::from(dir_i8);
-    let target = (f64::from(q.current_step) + dir) * q.step_distance;
 
-    // Guard against pathological seeds that would step outside the segment.
-    let max_dt = q.t_segment_end - q.t_curr;
-    if max_dt <= 0.0 {
-        return StepTimeResult::SegmentExhausted;
-    }
-    if dt <= 0.0 {
-        dt = max_dt * FORWARD_SCAN_FRACTION;
-    }
-    let tol = q.step_distance.abs() * NEWTON_TOL_FRACTION;
-
-    for _ in 0..MAX_NEWTON_ITERS {
-        let t_try = q.t_curr + dt;
-        if t_try > q.t_segment_end || t_try < q.t_curr {
-            return StepTimeResult::SegmentExhausted;
-        }
-        let (pos, vel, _acc) = (q.eval)(t_try as f32);
-        let err = pos - target;
-        if err.abs() < tol {
-            return StepTimeResult::NextAt { t: t_try, dir: dir_i8 };
-        }
-        // If velocity at the candidate is degenerate, fall back to a
-        // forward step. Rare; happens on degenerate accel crossings.
-        if vel.abs() < EPS_VELOCITY {
-            dt += (q.t_segment_end - q.t_curr) * FORWARD_SCAN_FRACTION;
-            continue;
-        }
-        dt -= err / vel;
-    }
-
-    // After MAX iters: accept last candidate within 0.1% step_distance tolerance.
-    let t_final = q.t_curr + dt;
-    if t_final > q.t_segment_end || t_final < q.t_curr {
-        return StepTimeResult::SegmentExhausted;
-    }
-    let (pos, _vel, _acc) = (q.eval)(t_final as f32);
-    if (pos - target).abs() < q.step_distance.abs() * 1e-3 {
-        StepTimeResult::NextAt { t: t_final, dir: dir_i8 }
-    } else {
-        StepTimeResult::SegmentExhausted
+    let target =
+        (f64::from(q.current_step) + f64::from(dir_i8)) * q.step_distance;
+    match solve_smallest_root_in(q.coeffs, target, q.t_curr, q.t_segment_end) {
+        Some(t) => StepTimeResult::NextAt { t, dir: dir_i8 },
+        None => StepTimeResult::SegmentExhausted,
     }
 }
