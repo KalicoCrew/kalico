@@ -2312,6 +2312,51 @@ pub mod exports {
         }
     }
 
+    /// Diagnostic: read low 32 bits of `producer_primary_resolved_total`.
+    /// Number of times pool.resolve(primary) returned Some in producer_step.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_primary_resolved_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_primary_resolved_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: low 32 bits of `producer_primary_stale_total`.
+    /// Counted when handle != UNUSED but pool.resolve returned None.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_primary_stale_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_primary_stale_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: low 32 bits of `producer_primary_unused_total`.
+    /// Counted when handle is the UNUSED sentinel (stationary axis).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_primary_unused_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_primary_unused_total.load(Ordering::Acquire) as u32
+        }
+    }
+
     /// Diagnostic: read the last result code from `push_segment_impl`.
     /// 0 = KALICO_OK, negative = an error code (see error.rs). Updated on
     /// every call regardless of outcome.

@@ -444,6 +444,15 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
     uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
                                   | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
     uint32_t accepted_id = 0, credit_epoch = 0;
+    // Diag: surface the parsed handle values so we can tell whether the
+    // host is sending UNUSED sentinels (0xFFFFFFFF) or real handles.
+    // 0xCD20 already covers per-frame dispatch; reuse with stage 0xD0..0xD3
+    // for the 4 handles, but pack only the low 16 bits (slot_idx + low gen
+    // bits) to fit in the value field.
+    runtime_diag_progress(0xCE, 0xD0, x_handle & 0xFFFFu);
+    runtime_diag_progress(0xCE, 0xD1, y_handle & 0xFFFFu);
+    runtime_diag_progress(0xCE, 0xD2, z_handle & 0xFFFFu);
+    runtime_diag_progress(0xCE, 0xD3, e_handle & 0xFFFFu);
     int32_t r = runtime_handle_push_segment(
         runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
         t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,

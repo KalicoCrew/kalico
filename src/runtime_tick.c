@@ -651,13 +651,17 @@ runtime_status_drain(void)
     extern volatile uint32_t handle_push_segment_invalid_body_total;
     extern volatile uint32_t handle_push_segment_no_handle_total;
     extern volatile int32_t handle_push_segment_last_r;
+    extern uint32_t kalico_runtime_primary_resolved_lo(void *rt);
+    extern uint32_t kalico_runtime_primary_stale_lo(void *rt);
+    extern uint32_t kalico_runtime_primary_unused_lo(void *rt);
     if (last_err == 0 && status_emit_phase == 0) {
         // Wider rotation now — five step_time tags + binding-bug
         // investigation tags (0xB0, 0xB1) + producer-side tags
-        // (0xB2, 0xB3, 0xB4, 0xB5) + handler-side tags (0xB6, 0xB7).
+        // (0xB2, 0xB3, 0xB4, 0xB5) + handler-side tags (0xB6, 0xB7)
+        // + curve-resolve tag (0xB8).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 12) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 13) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -734,6 +738,27 @@ runtime_status_drain(void)
                 uint32_t ib = handle_push_segment_invalid_body_total & 0xFu;
                 uint32_t nh = handle_push_segment_no_handle_total & 0xFu;
                 fault_detail = 0xB6000000u | (nh << 20) | (ib << 16) | c;
+            }
+            break;
+        case 12:
+            // 0xB8 — curve resolution outcomes per primary handle.
+            //   bits  0.. 7: producer_primary_resolved_total & 0xFF
+            //   bits  8..15: producer_primary_unused_total & 0xFF
+            //   bits 16..23: producer_primary_stale_total & 0xFF
+            // If resolved > 0 → real curves are being used; Cardano
+            //   exhaustion is a different root cause.
+            // If unused dominates and stale = 0 → host is sending UNUSED
+            //   handles for the moving axis (planner bug).
+            // If stale > 0 → host sent real handles but the pool retired
+            //   the slot generation prematurely (CurvePool gen mismatch).
+            {
+                uint32_t res = kalico_runtime_primary_resolved_lo(runtime_handle) & 0xFFu;
+                uint32_t un = kalico_runtime_primary_unused_lo(runtime_handle) & 0xFFu;
+                uint32_t st = kalico_runtime_primary_stale_lo(runtime_handle) & 0xFFu;
+                fault_detail = 0xB8000000u
+                             | (st << 16)
+                             | (un << 8)
+                             | res;
             }
             break;
         case 11:

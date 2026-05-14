@@ -1788,9 +1788,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     continue;
                 };
                 let cv_primary = if primary.is_unused_sentinel() {
+                    shared
+                        .producer_primary_unused_total
+                        .fetch_add(1, Ordering::AcqRel);
                     None
                 } else {
-                    pool.resolve(primary)
+                    let r = pool.resolve(primary);
+                    if r.is_some() {
+                        shared
+                            .producer_primary_resolved_total
+                            .fetch_add(1, Ordering::AcqRel);
+                    } else {
+                        shared
+                            .producer_primary_stale_total
+                            .fetch_add(1, Ordering::AcqRel);
+                    }
+                    r
                 };
                 let cv_secondary = secondary.and_then(|h| {
                     if h.is_unused_sentinel() {

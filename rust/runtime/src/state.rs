@@ -271,6 +271,21 @@ pub struct SharedState {
     /// negative = an error path (see error.rs constants). Set on every
     /// call so the C-side diag can show which rejection path is firing.
     pub last_push_segment_result: AtomicI32,
+    /// Count of times `pool.resolve(primary)` returned `Some` in
+    /// `Engine::producer_step` (i.e. the primary curve handle was valid
+    /// and the slot's generation matched). Cross-check against
+    /// `producer_fetch_attempts_total`: if the latter is non-zero but
+    /// this is 0, every primary handle is either UNUSED or the slot's
+    /// generation has been retired without a matching reload.
+    pub producer_primary_resolved_total: AtomicU64,
+    /// Count of times `pool.resolve(primary)` returned `None` AND the
+    /// handle was NOT the UNUSED sentinel. Distinguishes "host sent
+    /// a real handle but the pool no longer has it" from "host sent
+    /// UNUSED on purpose."
+    pub producer_primary_stale_total: AtomicU64,
+    /// Count of times `primary.is_unused_sentinel()` was true. The
+    /// natural case for a stationary-axis segment.
+    pub producer_primary_unused_total: AtomicU64,
 }
 
 impl SharedState {
@@ -340,6 +355,9 @@ impl SharedState {
             producer_fetch_attempts_total: AtomicU64::new(0),
             producer_enqueue_success_total: AtomicU64::new(0),
             last_push_segment_result: AtomicI32::new(0),
+            producer_primary_resolved_total: AtomicU64::new(0),
+            producer_primary_stale_total: AtomicU64::new(0),
+            producer_primary_unused_total: AtomicU64::new(0),
         }
     }
 }
