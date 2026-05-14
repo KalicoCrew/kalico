@@ -2312,15 +2312,18 @@ fn scalar_eval_with_derivative(curve: &CurveView<'_>, u: f32) -> Result<(f32, f3
 fn extract_uniform_cubic_bezier_coeffs(
     cv: &CurveView<'_>,
 ) -> Option<crate::cardano::CubicCoeffs> {
-    if cv.degree != 3 || cv.control_points.len() != 4 {
+    if cv.degree != 3 {
         return None;
     }
-    let cps = cv.control_points;
+    // Pattern match the slice — proves to clippy that we won't panic
+    // on indexing and replaces the `len() == 4` + four index-into-slice
+    // accesses that tripped `clippy::indexing_slicing` (deny-level).
+    let [c0, c1, c2, c3] = *<&[f32; 4]>::try_from(cv.control_points).ok()?;
     Some(crate::cardano::CubicCoeffs::from_bezier(
-        f64::from(cps[0]),
-        f64::from(cps[1]),
-        f64::from(cps[2]),
-        f64::from(cps[3]),
+        f64::from(c0),
+        f64::from(c1),
+        f64::from(c2),
+        f64::from(c3),
     ))
 }
 
