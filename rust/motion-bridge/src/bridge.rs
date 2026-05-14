@@ -235,18 +235,33 @@ fn spawn_periodic_clock_sync(
         .expect("clock-sync thread spawn")
 }
 
+/// Errors returned by `query_runtime_caps` / `decode_runtime_caps_body`.
+/// The bootstrap path discriminates only via Display today (logged + falls
+/// back), but the typed variants make future routing (e.g. distinguishing
+/// "old firmware lacks the message" from "transport hiccup") possible
+/// without restructuring callers.
+#[derive(Debug, thiserror::Error)]
+enum RuntimeCapsError {
+    #[error("kalico_call QueryRuntimeCaps: {0}")]
+    Call(String),
+    #[error("QueryRuntimeCaps: unexpected response kind {got:?}")]
+    UnexpectedKind { got: kalico_protocol::MessageKind },
+    #[error("decode RuntimeCapsResponse: {0}")]
+    Decode(String),
+}
+
 /// Decode a `RuntimeCapsResponse` from a raw control-channel response body.
 /// Extracted so the bootstrap path can be unit-tested without spinning a
 /// reactor + serial port (the actual `kalico_call` round-trip is exercised
 /// in higher-level integration tests against Renode / hardware).
 fn decode_runtime_caps_body(
     body: &[u8],
-) -> Result<kalico_protocol::messages::RuntimeCapsResponse, String> {
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
     use kalico_protocol::codec::{Cursor, Decode};
     use kalico_protocol::messages::RuntimeCapsResponse;
     let mut c = Cursor::new(body);
     RuntimeCapsResponse::decode_from(&mut c)
-        .map_err(|e| format!("decode RuntimeCapsResponse: {e:?}"))
+        .map_err(|e| RuntimeCapsError::Decode(format!("{e:?}")))
 }
 
 /// Issue a `QueryRuntimeCaps` control-channel call and decode the response
@@ -256,15 +271,13 @@ fn decode_runtime_caps_body(
 fn query_runtime_caps(
     io: &KalicoHostIo,
     timeout: std::time::Duration,
-) -> Result<kalico_protocol::messages::RuntimeCapsResponse, String> {
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
     use kalico_protocol::MessageKind;
     let (kind, body) = io
         .kalico_call(MessageKind::QueryRuntimeCaps, Vec::new(), timeout)
-        .map_err(|e| format!("kalico_call QueryRuntimeCaps: {e:?}"))?;
+        .map_err(|e| RuntimeCapsError::Call(format!("{e:?}")))?;
     if kind != MessageKind::RuntimeCapsResponse {
-        return Err(format!(
-            "QueryRuntimeCaps: unexpected response kind {kind:?}"
-        ));
+        return Err(RuntimeCapsError::UnexpectedKind { got: kind });
     }
     decode_runtime_caps_body(&body)
 }
