@@ -1913,9 +1913,18 @@ impl PyMotionBridge {
     }
 
     /// Submit a travel move. Phase 2: `de` must be 0.
+    //
+    // `py.allow_threads` releases the GIL across `classify_and_build`
+    // (NURBS construction + validation, real work) and the planner mutex
+    // acquisitions, so the clock-sync thread and other Python callers can
+    // make progress under sustained motion submission. The channel send
+    // inside `planner.submit_move` is unbounded today, but releasing the
+    // GIL here also future-proofs against converting it to bounded
+    // backpressure without retrofitting every call-site.
     #[pyo3(signature = (dx, dy, dz, de, feedrate))]
     fn submit_move(
         &self,
+        py: Python<'_>,
         dx: f64,
         dy: f64,
         dz: f64,
@@ -1926,25 +1935,27 @@ impl PyMotionBridge {
             "[bridge-trace] submit_move enter dx={:.3} dy={:.3} dz={:.3} feed={:.1}",
             dx, dy, dz, feedrate,
         );
-        let pos = *self.commanded_pos.lock().unwrap();
-        let classified =
-            classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        py.allow_threads(|| -> PyResult<()> {
+            let pos = *self.commanded_pos.lock().unwrap();
+            let classified =
+                classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err(
-                "planner not initialized — call init_planner first",
-            )
-        })?;
-        planner.submit_move(classified).map_err(planner_err)?;
-        drop(planner_guard);
+            let planner_guard = self.planner.lock().unwrap();
+            let planner = planner_guard.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "planner not initialized — call init_planner first",
+                )
+            })?;
+            planner.submit_move(classified).map_err(planner_err)?;
+            drop(planner_guard);
 
-        let mut pos = self.commanded_pos.lock().unwrap();
-        pos[0] += dx;
-        pos[1] += dy;
-        pos[2] += dz;
-        Ok(())
+            let mut pos = self.commanded_pos.lock().unwrap();
+            pos[0] += dx;
+            pos[1] += dy;
+            pos[2] += dz;
+            Ok(())
+        })
     }
 
     /// Submit one homing-tagged absolute move. MVP watches the first arm id;
