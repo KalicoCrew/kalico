@@ -52,6 +52,20 @@
 const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
     = CONFIG_CLOCK_FREQ;
 
+// Minimum scheduling-into-future margin for SF_RESCHEDULE callbacks and
+// for sched_add_timer waketimes computed relative to "now". Klipper's
+// scheduler (src/sched.c sched_add_timer) trips `try_shutdown("Timer too
+// close")` if a freshly-added timer's waketime is already < the current
+// `timer_read_time()` by the time the insert check runs — and any value
+// sampled before the irq_save in sched_add_timer is essentially guaranteed
+// to be in the past a few cycles later. Always add this floor when a
+// callback wants "ASAP but in the future."
+//
+// 1 µs at 520 MHz (H7) = 520 cycles; at 84 MHz (F4) = 84 cycles. Both are
+// comfortably above any per-call drift between sampling `timer_read_time()`
+// and the scheduler's bounds check.
+#define SF_RESCHEDULE_FLOOR (runtime_clock_freq / 1000000U)  // 1 µs
+
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
 // Foreground host-clock helper for §8.5 flush ack-wait timeout. Returns
@@ -934,7 +948,15 @@ arm_producer_timer_if_kicked_inline(uint32_t waketime)
         return;
     }
     runtime_producer_timer.enabled = 1;
-    runtime_producer_timer.timer.waketime = waketime;
+    // sched_add_timer trips `try_shutdown("Timer too close")` if the
+    // waketime is already behind `timer_read_time()` by the time the
+    // irq-save-protected bounds check runs. Callers pass "now-ish" values
+    // (the result of an earlier `timer_read_time()`); enforce the floor
+    // here so every entry into sched_add_timer is strictly in the future.
+    uint32_t now_arm = timer_read_time();
+    uint32_t floor_arm = now_arm + SF_RESCHEDULE_FLOOR;
+    runtime_producer_timer.timer.waketime =
+        ((int32_t)(waketime - floor_arm) < 0) ? floor_arm : waketime;
     sched_add_timer(&runtime_producer_timer.timer);
 }
 
@@ -977,7 +999,12 @@ step_time_event(struct timer *t)
         // before the first segment).
         step_time_empty_polls++;
         arm_producer_timer_if_kicked_inline(timer_read_time());
-        t->waketime += runtime_clock_freq / 10000U;  // +100 µs
+        // Now-relative reschedule (NOT `+= 100 µs` from the prior waketime):
+        // if the consumer fell behind for any reason, the `+=` form keeps
+        // accumulating from a stale base and can re-schedule in the past on
+        // the next iteration. Anchoring to `timer_read_time()` guarantees
+        // the next fire is always 100 µs into the actual future.
+        t->waketime = timer_read_time() + runtime_clock_freq / 10000U;
         return SF_RESCHEDULE;
     }
 
@@ -985,8 +1012,12 @@ step_time_event(struct timer *t)
     if ((int32_t)(t_next - now) > 0) {
         // Head entry is in the future — schedule the next wake at that
         // time. No emit, no advance. The scheduler will wake us at the
-        // exact step time.
-        t->waketime = t_next;
+        // exact step time. Clamp to a minimum-future-floor in case the
+        // entry is only a handful of cycles ahead (Klipper's
+        // sched_add_timer-style "Timer too close" check expects strictly
+        // > now after the irq_save races a few cycles).
+        uint32_t floor = now + SF_RESCHEDULE_FLOOR;
+        t->waketime = ((int32_t)(t_next - floor) < 0) ? floor : t_next;
         return SF_RESCHEDULE;
     }
 
@@ -1021,7 +1052,14 @@ step_time_event(struct timer *t)
     int8_t  dir2 = 1;
     if (kalico_runtime_step_ring_peek_next(
             runtime_handle, motor, &t_next2, &dir2)) {
-        t->waketime = t_next2;
+        // The producer may have queued entries whose scheduled time is
+        // already in the past (e.g. consumer catching up after a hiccup).
+        // Clamp to a minimum-future-floor so Klipper's scheduler doesn't
+        // see a waketime that races behind `timer_read_time()` between
+        // here and the re-insert.
+        uint32_t now2 = timer_read_time();
+        uint32_t floor2 = now2 + SF_RESCHEDULE_FLOOR;
+        t->waketime = ((int32_t)(t_next2 - floor2) < 0) ? floor2 : t_next2;
     } else {
         t->waketime = now + runtime_clock_freq / 10000U;  // +100 µs
     }
@@ -1038,12 +1076,14 @@ runtime_producer_event(struct timer *t)
 {
     bool work_pending = kalico_runtime_producer_step(runtime_handle);
     if (work_pending) {
-        // Self-reschedule at `now`: the producer batched some entries
+        // Self-reschedule "ASAP": the producer batched some entries
         // but there's more to fill. Yielding back to the scheduler lets
         // higher-priority Klipper timers (USB, USART, step_time_event)
         // run between batches; the next sched_check_periodic will pick
-        // us back up.
-        t->waketime = timer_read_time();
+        // us back up. Must be strictly in the future (see
+        // SF_RESCHEDULE_FLOOR) — a bare `timer_read_time()` would already
+        // be in the past by the time Klipper's dispatch path re-checks.
+        t->waketime = timer_read_time() + SF_RESCHEDULE_FLOOR;
         return SF_RESCHEDULE;
     }
     // No more work — wait for a kick from push_segment or a consumer
