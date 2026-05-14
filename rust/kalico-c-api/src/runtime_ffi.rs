@@ -29,8 +29,8 @@ pub mod exports {
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
         KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NO_STEP,
-        KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
+        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
+        KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
     use runtime::segment::{KinematicTag, Segment};
@@ -708,22 +708,40 @@ pub mod exports {
     // reads the §11.4 seqlock-protected widened clock, and the periodic
     // `kalico_status_v6` frame goes out at ~10 Hz.
 
-    /// Read the widened MCU clock (§11.4 seqlock). Returns the most recently
-    /// published u64 cycle count from the ISR. Safe to call from foreground
-    /// at any time — the seqlock retries if it sees a torn read.
+    /// Read the widened MCU clock. Spec §3.9 — on-demand widening from
+    /// Klipper's `timer_read_time` + the `stats_send_time` / `stats_send_time_high`
+    /// counters that Klipper's stats task maintains (basecmd.c). Replaces the
+    /// pre-emission-rewrite SharedState seqlock dependency: TIM5 is off when
+    /// `count_modulated_steppers == 0`, so the seqlock would not be re-published
+    /// in StepTime-only configurations. The stats task runs unconditionally,
+    /// so this widening advances regardless of engine activity.
+    ///
+    /// Mirrors the C-side `runtime_widened_host_clock` in `src/runtime_tick.c`.
+    /// Foreground-only — `timer_read_time()` is not re-entrant with the
+    /// stats-task wrap update; do not call from ISR context.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn runtime_handle_widened_now(rt: *mut KalicoRuntime) -> u64 {
-        if rt.is_null() {
-            return 0;
+        // `rt` is unused — the widening reads only Klipper-side globals — but
+        // the parameter is retained so the C ABI stays stable across the
+        // pre/post seqlock refactor.
+        let _ = rt;
+        unsafe extern "C" {
+            fn timer_read_time() -> u32;
+            static stats_send_time: u32;
+            static stats_send_time_high: u32;
         }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access; no `&mut` forms.
+        // SAFETY: `timer_read_time` is a single u32 read of an MMIO timer
+        // register (or a software counter in sim builds), safe from any
+        // non-ISR caller. `stats_send_time` / `stats_send_time_high` are
+        // u32 globals written by the stats DECL_TASK; a concurrent update
+        // can produce a torn read, but the "low < stats_send_time" probe
+        // self-corrects within one stats cadence (~5 s) and the resulting
+        // error is bounded by one u32 wrap (a ~37 s window on 120 MHz F4,
+        // ~16 s on H7 — both far longer than any drift the host tolerates).
         unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            runtime::clock::read_widened_now(&*shared_ptr)
+            let low = timer_read_time();
+            let high = stats_send_time_high + ((low < stats_send_time) as u32);
+            ((high as u64) << 32) | (low as u64)
         }
     }
 
@@ -1802,82 +1820,298 @@ pub mod exports {
         }
     }
 
-    /// Compute the absolute MCU clock cycle at which `stepper_idx` should
-    /// fire its next step. Used by the configure/segment-load arming path.
+    // ---- Step-emission rewrite FFI surface (Task 6) -----------------------
+    //
+    // The pre-emission `kalico_runtime_arm_step_timer` /
+    // `kalico_runtime_compute_next_step_time` exports (per-segment schedule
+    // architecture) were retired here in favour of the per-motor step-ring
+    // surface below. The new model splits arming into:
+    //
+    //   - producer (1 shared Klipper timer)   →  `kalico_runtime_producer_step`
+    //   - per-motor consumers (1 timer each)  →  `kalico_runtime_step_ring_peek_head`
+    //                                         /  `peek_next` / `advance` / `available`
+    //   - wake source for the producer        →  `kalico_runtime_kick_producer`
+    //   - foreground synchronous flush        →  `kalico_runtime_force_idle` (T11 stub)
+    //
+    // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md
+    // §3.4 (producer), §3.5 (consumer), §3.10 (force_idle).
+
+    /// Producer Klipper-timer callback entry. Runs one `Engine::producer_step`
+    /// pass: Newton-fills `(cycles_abs_lo, dir)` entries into every StepTime
+    /// motor's `StepRing` up to `PRODUCER_BATCH_CAP` per motor, retires any
+    /// segment whose `consumers_remaining` mask drained, and republishes
+    /// `producer_pending` / `producer_runs_total` diagnostics.
     ///
-    /// On success writes the cycle count to `*out_cycles_abs` and the step
-    /// direction to `*out_dir` (`+1` = forward / positive, `-1` = reverse /
-    /// negative), then returns `KALICO_OK`.
-    /// Returns `KALICO_ERR_NO_STEP` when the active segment cannot produce
-    /// another step (caller must NOT register the timer; the engine re-arms
-    /// on the next `push_segment`).
+    /// Returns `true` if at least one motor still has unfinished work
+    /// (caller should self-reschedule the producer timer); `false` if every
+    /// StepTime motor reached `AllIdle` (caller waits for a wake from
+    /// `push_segment`'s CAS or from `kalico_runtime_kick_producer`).
     ///
-    /// `out_dir` may be NULL; if so the direction is computed but discarded.
-    ///
-    /// Returns:
-    /// - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
-    /// - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
-    /// - `KALICO_ERR_NO_STEP` if no step is available.
+    /// SAFETY (caller): `rt` is the published `RT_CELL` pointer and the
+    /// producer-side Klipper timer is the single serialised caller — no
+    /// other context may concurrently form `&mut IsrState::engine` or
+    /// pull from `IsrState::queue_consumer`. The C-side producer timer in
+    /// Task 8 will enforce this by routing through one `DECL_TIMER`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_arm_step_timer(
-        rt: *mut KalicoRuntime,
-        stepper_idx: u8,
-        now_cycles: u64,
-        out_cycles_abs: *mut u64,
-        out_dir: *mut i8,
-    ) -> i32 {
-        if rt.is_null() || out_cycles_abs.is_null() {
-            return KALICO_ERR_INVALID_HANDLE;
+    pub unsafe extern "C" fn kalico_runtime_producer_step(rt: *mut KalicoRuntime) -> bool {
+        if rt.is_null() {
+            return false;
         }
         if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
+            return false;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `rt` non-null and INIT_DONE=true above.
-        // `arm_step_timer_for_stepper` forms only a shared `&IsrState`
-        // reference (via `IsrState::raw_ref_from_ctx`) and reads atomics in
-        // `SharedState` — it never produces `&mut IsrState`. This is the same
-        // aliasing discipline used by `runtime_handle_tick_counter`.
+        // SAFETY: `rt` non-null + INIT_DONE=true above. The projection
+        // mirrors `runtime_handle_tick` (the long-running ISR-half mutator):
+        // we materialise `&mut IsrState` once via `UnsafeCell::raw_get`,
+        // then field-disjoint-borrow `engine` and `queue_consumer` out of
+        // it; the curve pool and shared half are projected through
+        // `addr_of!` as `&` references (atomics-only access on those
+        // halves). The §11.1 ownership discipline says the producer timer
+        // and the TIM5 ISR never run concurrently against the same
+        // `IsrState` (foreground producer timer fires from `sched_check_periodic`
+        // with IRQs disabled; TIM5 ISR is suspended on entry to the same
+        // critical section — Task 8 wires the gating).
         unsafe {
-            let ctx_ref: &RuntimeContext = &*ctx;
-            match runtime::engine::arm_step_timer_for_stepper(ctx_ref, stepper_idx, now_cycles) {
-                Some((t, dir)) => {
-                    *out_cycles_abs = t;
-                    if !out_dir.is_null() {
-                        *out_dir = dir;
-                    }
-                    KALICO_OK
-                }
-                None => KALICO_ERR_NO_STEP,
+            use runtime::step_producer::ProducerTickResult;
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            let isr: &mut IsrState = &mut *isr_ptr;
+            let IsrState {
+                engine,
+                queue_consumer,
+                ..
+            } = isr;
+            match engine.producer_step(pool, queue_consumer, shared) {
+                ProducerTickResult::WorkPending => true,
+                ProducerTickResult::AllIdle => false,
             }
         }
     }
 
-    /// Compute the next step time for `stepper_idx`. Identical semantics to
-    /// `kalico_runtime_arm_step_timer`; provided as a separate symbol so the
-    /// C-side per-stepper `struct timer` ISR re-arm path has a descriptively
-    /// named entry point. Future engine work may diverge the two.
+    /// Per-motor consumer: peek the entry at the cursor without advancing.
     ///
-    /// `out_dir` may be NULL; if so the direction is computed but discarded.
+    /// Returns `true` and writes `*out_cycles_abs_lo` + `*out_dir` if the
+    /// ring has at least one entry to consume; returns `false` (and leaves
+    /// the out-params untouched) on:
+    ///   - null `rt`, null out-params, or `motor_idx >= 4`;
+    ///   - `INIT_DONE == false`;
+    ///   - the ring is empty (producer hasn't caught up).
     ///
-    /// Returns:
-    /// - `KALICO_OK` + `*out_cycles_abs` and `*out_dir` set on success.
-    /// - `KALICO_ERR_INVALID_HANDLE` for a null `rt` or `out_cycles_abs`.
-    /// - `KALICO_ERR_NO_STEP` if no step is available.
+    /// SAFETY (caller): the per-stepper consumer Klipper timer (Task 7) is
+    /// the single serialised consumer of motor `motor_idx`'s ring; concurrent
+    /// `peek_*` / `advance` against the same motor from another context is
+    /// outside the SPSC contract.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_compute_next_step_time(
+    pub unsafe extern "C" fn kalico_runtime_step_ring_peek_head(
         rt: *mut KalicoRuntime,
-        stepper_idx: u8,
-        now_cycles: u64,
-        out_cycles_abs: *mut u64,
+        motor_idx: u8,
+        out_cycles_abs_lo: *mut u32,
         out_dir: *mut i8,
-    ) -> i32 {
-        // SAFETY: delegates to `kalico_runtime_arm_step_timer`, which carries
-        // the same pointer-validity and aliasing requirements. We pass the
-        // arguments through unchanged.
-        unsafe {
-            kalico_runtime_arm_step_timer(rt, stepper_idx, now_cycles, out_cycles_abs, out_dir)
+    ) -> bool {
+        if rt.is_null()
+            || (motor_idx as usize) >= 4
+            || out_cycles_abs_lo.is_null()
+            || out_dir.is_null()
+        {
+            return false;
         }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return false;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: read-only ring access — `StepRing::peek_head` takes `&self`
+        // and only loads atomics. We project to `&IsrState` (shared, not
+        // mutable) and call the const accessor.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr: &IsrState = &*isr_ptr;
+            let Some(ring) = isr.engine.step_ring(motor_idx as usize) else {
+                return false;
+            };
+            let Some((t, dir)) = ring.peek_head() else {
+                return false;
+            };
+            *out_cycles_abs_lo = t;
+            *out_dir = dir;
+            true
+        }
+    }
+
+    /// Per-motor consumer: peek the second entry (the one after the cursor's
+    /// head). Used by the per-stepper consumer ISR to compute its next
+    /// reschedule time and decide whether the next pulse already has a
+    /// known direction (no DIR flip required).
+    ///
+    /// Same return / safety contract as `kalico_runtime_step_ring_peek_head`,
+    /// but reports `false` if fewer than two entries are available.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_step_ring_peek_next(
+        rt: *mut KalicoRuntime,
+        motor_idx: u8,
+        out_cycles_abs_lo: *mut u32,
+        out_dir: *mut i8,
+    ) -> bool {
+        if rt.is_null()
+            || (motor_idx as usize) >= 4
+            || out_cycles_abs_lo.is_null()
+            || out_dir.is_null()
+        {
+            return false;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return false;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: read-only ring access through atomics (same as
+        // `peek_head`); `StepRing::peek_next` is `&self`.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr: &IsrState = &*isr_ptr;
+            let Some(ring) = isr.engine.step_ring(motor_idx as usize) else {
+                return false;
+            };
+            let Some((t, dir)) = ring.peek_next() else {
+                return false;
+            };
+            *out_cycles_abs_lo = t;
+            *out_dir = dir;
+            true
+        }
+    }
+
+    /// Per-motor consumer: advance the cursor past `n` entries. Called
+    /// after the per-stepper consumer Klipper timer has fired the step
+    /// pulse(s) corresponding to the entries up to (but not including) the
+    /// new cursor.
+    ///
+    /// `Release` ordering on the cursor (via `StepRing::advance`) pairs
+    /// with the producer's `Acquire` load in `StepRing::space`, publishing
+    /// that the consumed slots are free for the producer to overwrite.
+    ///
+    /// No-op on null `rt`, `motor_idx >= 4`, or before init completes.
+    ///
+    /// SAFETY (caller): see `kalico_runtime_step_ring_peek_head`. The
+    /// consumer Klipper timer is the single serialised caller of `advance`
+    /// for its motor.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_step_ring_advance(
+        rt: *mut KalicoRuntime,
+        motor_idx: u8,
+        n: u32,
+    ) {
+        if rt.is_null() || (motor_idx as usize) >= 4 {
+            return;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `StepRing::advance` takes `&self` (the cursor atomic
+        // does the synchronization). We project read-only into IsrState.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr: &IsrState = &*isr_ptr;
+            let Some(ring) = isr.engine.step_ring(motor_idx as usize) else {
+                return;
+            };
+            ring.advance(n);
+        }
+    }
+
+    /// Per-motor consumer: read the count of entries currently available
+    /// to consume (i.e. `head - cursor` with wrap-aware arithmetic).
+    ///
+    /// Used by the consumer Klipper timer's low-water hook to decide if it
+    /// should call `kalico_runtime_kick_producer` (e.g. when the ring is
+    /// below half full and the producer is currently idle waiting on a
+    /// kick).
+    ///
+    /// Returns `0` on null `rt`, `motor_idx >= 4`, or before init completes.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_step_ring_available(
+        rt: *mut KalicoRuntime,
+        motor_idx: u8,
+    ) -> u32 {
+        if rt.is_null() || (motor_idx as usize) >= 4 {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `StepRing::available` is `&self` and only loads atomics.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr: &IsrState = &*isr_ptr;
+            isr.engine
+                .step_ring(motor_idx as usize)
+                .map(|r| r.available())
+                .unwrap_or(0)
+        }
+    }
+
+    /// Wake the producer: CAS-set `shared.producer_pending` from `false`
+    /// to `true`. Returns `true` iff this call won the CAS — in which case
+    /// the caller is responsible for actually scheduling the producer
+    /// Klipper timer (`sched_add_timer` on the C side, Task 8). Returns
+    /// `false` if `producer_pending` was already `true` (another kicker
+    /// got there first; their scheduled producer run will see this
+    /// caller's wake reason).
+    ///
+    /// Wake sources covered by this entry point:
+    ///   - the per-motor consumer's low-water hook (Task 7);
+    ///   - any host-side reason to force a producer fill before the next
+    ///     `push_segment` arrives.
+    ///
+    /// `push_segment` already CAS-sets `producer_pending` inside
+    /// `Engine::push_segment` (rust/runtime/src/engine.rs); call sites
+    /// invoking `runtime_handle_push_segment` do NOT need to also call
+    /// this — the engine wakes itself.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_kick_producer(rt: *mut KalicoRuntime) -> bool {
+        if rt.is_null() {
+            return false;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return false;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access; no `&mut` forms. The CAS
+        // ordering matches `Engine::push_segment`'s own kick (Release on
+        // success / Acquire on failure) so a winning kick publishes any
+        // prior writes the kicker performed (e.g. the consumer's cursor
+        // advance preceding the low-water decision).
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared
+                .producer_pending
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        }
+    }
+
+    /// Synchronous foreground flush. **Task 11 placeholder.**
+    ///
+    /// The real implementation per spec §3.10 will: (1) disable the
+    /// producer + every per-motor consumer Klipper timer; (2) drain the
+    /// segment queue; (3) reset every `StepRing` (head + cursor → 0,
+    /// requires both sides quiesced — see `StepRing::reset`); (4) clear
+    /// every `ProducerState`; (5) `pool.confirm_retired` every in-flight
+    /// curve handle in the retirement table; (6) republish cleared
+    /// SharedState cursors. The handshake is foreground-driven (no ISR
+    /// ack required) because the consumer timers are stopped at step (1).
+    ///
+    /// For now this is a no-op returning `false` so the C side (Task 8 /
+    /// Task 9) can link against the symbol while T11 lands the body. The
+    /// `false` return signals "flush not performed" — callers should
+    /// treat the runtime as still active until T11 wires up the real
+    /// teardown.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_force_idle(rt: *mut KalicoRuntime) -> bool {
+        let _ = rt;
+        false
     }
 
     /// Apply `delta_steps` to `shared.stepper_counts[stepper_idx]` atomically.
