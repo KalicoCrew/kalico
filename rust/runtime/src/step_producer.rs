@@ -55,6 +55,38 @@ impl ProducerState {
         self.t_resume = None;
         self.steps_pushed_this_curve = 0;
     }
+
+    // ─── Accessors used by `Engine::producer_step` (Task 5) ──────────────
+
+    #[inline]
+    pub fn step_distance(&self) -> f64 {
+        self.step_distance
+    }
+
+    #[inline]
+    pub fn t_resume(&self) -> Option<f64> {
+        self.t_resume
+    }
+
+    #[inline]
+    pub fn set_t_resume(&mut self, v: Option<f64>) {
+        self.t_resume = v;
+    }
+
+    #[inline]
+    pub fn step_at_curve_start(&self) -> i32 {
+        self.step_at_curve_start
+    }
+
+    #[inline]
+    pub fn steps_pushed_this_curve(&self) -> i32 {
+        self.steps_pushed_this_curve
+    }
+
+    #[inline]
+    pub fn bump_steps_pushed(&mut self, by: i32) {
+        self.steps_pushed_this_curve = self.steps_pushed_this_curve.saturating_add(by);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

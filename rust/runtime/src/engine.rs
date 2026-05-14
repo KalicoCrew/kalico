@@ -11,13 +11,25 @@ use crate::endstop::{self, TripAction};
 use crate::error::RuntimeError;
 use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
 use crate::queue::Q_N;
-use crate::segment::{KinematicTag, SEGMENT_FLAG_HOLD_SEGMENT, Segment};
+use crate::segment::{
+    CONS_REMAINING_E_SHIFT, CONS_REMAINING_X_SHIFT, CONS_REMAINING_Y_SHIFT,
+    CONS_REMAINING_Z_SHIFT, KinematicTag, SEGMENT_FLAG_HOLD_SEGMENT, Segment,
+};
 use crate::slot::{IsSlot, PaSlot};
-use crate::state::{SharedState, TickState};
+use crate::state::{SharedState, StepMode, TickState};
+use crate::step_producer::{ProducerState, ProducerTickResult};
+use crate::step_ring::StepRing;
+use crate::step_time::{StepTimeQuery, StepTimeResult, compute_next_step_time};
 use crate::trace::{
     TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_HOLD_SAMPLE, TRACE_FLAG_SEGMENT_END, TRACE_RING_N,
     TraceSample,
 };
+
+/// Batch cap for one call to [`Engine::producer_step`] per motor. Sized for
+/// the ~30 cycle/step Newton inner loop on H7 (520 MHz): 32 steps × 30
+/// cycles ≈ 960 cycles ≈ 1.85 µs per motor; 4 motors ≈ 7.4 µs per call.
+/// Bounded to keep producer-timer dispatch latency under control. Spec §3.4.
+pub const PRODUCER_BATCH_CAP: u32 = 32;
 
 /// Per-stage diagnostic timing helpers. Cycle counter + accumulator is the
 /// MCU build's path; host builds get inert stubs so the runtime crate's
@@ -208,6 +220,44 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// Per-MCU axis configuration. `None` until `configure()` is called;
     /// step generation is skipped when unconfigured.
     mcu_config: Option<crate::config::McuAxisConfig>,
+
+    // ─── Step-emission rewrite (Task 5) ──────────────────────────────────
+    // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md
+    /// Per-motor append-only step-pulse rings (spec §3.3). The producer
+    /// (`Engine::producer_step`) pushes `(cycles_abs_lo, dir)` entries
+    /// derived by Newton iteration on the curve; the per-stepper C-side
+    /// timer consumer (Task 7) reads and fires them. Indexed in motor
+    /// space: CoreXY `[A, B, Z, E]`; Cartesian `[X, Y, Z, E]`.
+    ///
+    /// Field is `pub` so the FFI (Task 6) can hand the C consumer a
+    /// pointer to a specific motor's ring without going through a Rust
+    /// accessor each tick.
+    pub step_rings: [StepRing; 4],
+    /// Per-motor Newton-fill resume state (spec §3.4). Tracks the active
+    /// curve's `(step_distance, t_resume, step_at_curve_start,
+    /// steps_pushed_this_curve)` between batch-capped producer_step
+    /// invocations.
+    pub producer_states: [ProducerState; 4],
+    /// Per-motor monotonic counter — how many segments this motor has
+    /// finished consuming. Currently advances in lockstep with the engine's
+    /// shared `producer_current` slot (see `producer_step` for the
+    /// simplification rationale). Reserved for true per-motor cursor
+    /// independence post-MVP.
+    pub motor_curve_cursor: [u32; 4],
+    /// Per-motor "currently-filling-this-segment-id" stash. `Some(seg.id)`
+    /// while the motor's producer state is Newton-filling a curve;
+    /// cleared back to `None` when Newton returns `SegmentExhausted` so
+    /// `producer_step` can clear the motor's bit in the segment's
+    /// `consumers_remaining` mask.
+    pub motor_current_segment_id: [Option<u32>; 4],
+    /// Shared "segment currently being filled by the StepTime producer
+    /// path." Lockstep simplification: all four motors operate on this
+    /// same segment until every motor's `consumers_remaining` bit is
+    /// clear, then the segment retires and we dequeue the next. Distinct
+    /// from `current` (which the legacy `tick`/TIM5 path uses) so the
+    /// two paths can coexist during the T5→T11 transition.
+    pub producer_current: Option<Segment>,
+
     /// Phase 12.2 test-only injection — when non-zero, the boundary loop
     /// pretends it has already iterated this many times before the first
     /// carry, so the `n+1`-th carry trips the `MAX_BOUNDARY_ITERS` guard.
@@ -242,6 +292,21 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             debug_last_duration: 0,
             step_state: [crate::step::StepMotorState::default(); 4],
             mcu_config: None,
+            step_rings: [
+                StepRing::new(),
+                StepRing::new(),
+                StepRing::new(),
+                StepRing::new(),
+            ],
+            producer_states: [
+                ProducerState::new(0.0),
+                ProducerState::new(0.0),
+                ProducerState::new(0.0),
+                ProducerState::new(0.0),
+            ],
+            motor_curve_cursor: [0; 4],
+            motor_current_segment_id: [None; 4],
+            producer_current: None,
             #[cfg(any(test, feature = "test-injection"))]
             injected_iter_start: 0,
         }
@@ -310,9 +375,28 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 if let Some(ss) = self.step_state.get_mut(i) {
                     *ss = crate::step::StepMotorState::new(motor.steps_per_mm);
                 }
+                if let Some(ps) = self.producer_states.get_mut(i) {
+                    // Seed the producer's step_distance so Newton's target math
+                    // (step n × step_distance) lines up with the configured
+                    // steps_per_mm. The producer recomputes step_distance only
+                    // on configure() — there's no per-segment override.
+                    let step_distance = if motor.steps_per_mm > 0.0 {
+                        1.0_f64 / f64::from(motor.steps_per_mm)
+                    } else {
+                        0.0
+                    };
+                    *ps = ProducerState::new(step_distance);
+                }
             }
         }
         self.mcu_config = Some(config);
+    }
+
+    /// Read-only accessor for a motor's step ring. Used by the new
+    /// integration tests and by Task 7's C-side consumer (which gets its
+    /// pointer via FFI in Task 6, not through this Rust accessor).
+    pub fn step_ring(&self, motor_idx: usize) -> Option<&StepRing> {
+        self.step_rings.get(motor_idx)
     }
 
     /// Round-2 fix B4: clear the current segment from outside the engine
@@ -1328,6 +1412,448 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 Some((now_cycles + dt_cycles, dir))
             }
             crate::step_time::StepTimeResult::SegmentExhausted => None,
+        }
+    }
+
+    // ─── Step-emission rewrite (Task 5) ──────────────────────────────────
+    // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md
+
+    /// Enqueue a segment into the runtime's segment queue and kick the
+    /// StepTime producer.
+    ///
+    /// The segment's `consumers_remaining` mask is recomputed here so the
+    /// caller (test harness or bridge) doesn't have to thread the
+    /// kinematics-aware bitmask logic — any bits already set in `seg.consumers_remaining`
+    /// are ignored.
+    ///
+    /// Returns `Err(seg)` if the queue is full (mirrors `heapless::spsc::Producer::enqueue`).
+    ///
+    /// Spec §3.4 wake source #1.
+    pub fn push_segment<'q>(
+        &mut self,
+        mut seg: Segment,
+        queue_producer: &mut Producer<'q, Segment, Q_N>,
+        shared: &SharedState,
+    ) -> Result<(), Segment> {
+        seg.consumers_remaining = Segment::compute_consumers_remaining(
+            seg.kinematics,
+            seg.x_handle,
+            seg.y_handle,
+            seg.z_handle,
+            seg.e_handle,
+        );
+        queue_producer.enqueue(seg)?;
+        // CAS-set the kick flag false→true. If we win, the caller's wake-
+        // scheduling path (typically `sched_add_timer(producer_timer, now)`
+        // on the C side, Task 8) fires next; if we lose, a pending kick is
+        // already queued — the producer will see our new segment on its
+        // next run regardless.
+        let _ = shared.producer_pending.compare_exchange(
+            false,
+            true,
+            Ordering::Release,
+            Ordering::Acquire,
+        );
+        Ok(())
+    }
+
+    /// Pull the next un-consumed segment for motor `motor_idx`.
+    ///
+    /// **Lockstep simplification.** Today the StepTime producer operates
+    /// on a single shared `producer_current` segment — when it's `None`
+    /// we dequeue the next from the queue. The per-motor cursor
+    /// (`motor_curve_cursor[i]`) tracks how many segments each motor has
+    /// finished, but in the lockstep regime all four cursors advance
+    /// together. Returns the (possibly newly-dequeued) shared segment and
+    /// its effective per-motor curve handle.
+    fn fetch_segment_for_motor(
+        &mut self,
+        motor_idx: usize,
+        queue: &mut Consumer<'_, Segment, Q_N>,
+    ) -> Option<(Segment, CurveHandle, Option<CurveHandle>, f64)> {
+        if self.producer_current.is_none() {
+            self.producer_current = queue.dequeue();
+        }
+        let seg = self.producer_current?;
+
+        // Map motor index → curve handle(s) under the segment's kinematics.
+        // For CoreXY A (motor 0) and B (motor 1) we get TWO handles
+        // (x_handle + y_handle); for the cartesian / Z / E single-axis
+        // case we get one handle and the optional second is None.
+        let (primary, secondary, sign) = match seg.kinematics {
+            KinematicTag::CoreXyAndE => match motor_idx {
+                0 => (seg.x_handle, Some(seg.y_handle), 1.0_f64),
+                1 => (seg.x_handle, Some(seg.y_handle), -1.0_f64),
+                2 => (seg.z_handle, None, 0.0_f64),
+                3 => (seg.e_handle, None, 0.0_f64),
+                _ => return None,
+            },
+            KinematicTag::CartesianXyzAndE => match motor_idx {
+                0 => (seg.x_handle, None, 0.0_f64),
+                1 => (seg.y_handle, None, 0.0_f64),
+                2 => (seg.z_handle, None, 0.0_f64),
+                3 => (seg.e_handle, None, 0.0_f64),
+                _ => return None,
+            },
+        };
+
+        // If the motor consumes neither handle (e.g. CoreXY motor 2 on a
+        // segment whose Z handle is UNUSED, or CoreXY motor 0 on a segment
+        // where BOTH X and Y are UNUSED), this motor has no work for this
+        // segment.
+        let primary_unused = primary.is_unused_sentinel();
+        let secondary_unused = secondary.map(|h| h.is_unused_sentinel()).unwrap_or(true);
+        if primary_unused && secondary_unused {
+            return None;
+        }
+
+        Some((seg, primary, secondary, sign))
+    }
+
+    /// Clear motor `motor_idx`'s consumer bit across the segment's
+    /// `consumers_remaining` mask (one bit per UNUSED-aware axis curve).
+    /// Called after Newton returns `SegmentExhausted` for that motor.
+    ///
+    /// Lockstep note: in the MVP regime where all four motors finish a
+    /// segment within the same producer_step call, this drains the mask
+    /// for every contributing motor; once all bits are clear the segment
+    /// retires (curve handles → `pool.confirm_retired`) and is dropped
+    /// from `producer_current`.
+    fn clear_motor_bits_in_mask(seg: &mut Segment, motor_idx: u8) {
+        // Compute which axis-nibbles this motor reads under the segment's
+        // kinematics — only those nibbles get the motor's bit cleared.
+        let motor_bit = 1_u16 << motor_idx;
+        let consumes_x = match seg.kinematics {
+            KinematicTag::CartesianXyzAndE => motor_idx == 0,
+            KinematicTag::CoreXyAndE => motor_idx == 0 || motor_idx == 1,
+        };
+        let consumes_y = match seg.kinematics {
+            KinematicTag::CartesianXyzAndE => motor_idx == 1,
+            KinematicTag::CoreXyAndE => motor_idx == 0 || motor_idx == 1,
+        };
+        let consumes_z = motor_idx == 2;
+        let consumes_e = motor_idx == 3;
+        if consumes_x && !seg.x_handle.is_unused_sentinel() {
+            seg.consumers_remaining &= !(motor_bit << CONS_REMAINING_X_SHIFT);
+        }
+        if consumes_y && !seg.y_handle.is_unused_sentinel() {
+            seg.consumers_remaining &= !(motor_bit << CONS_REMAINING_Y_SHIFT);
+        }
+        if consumes_z && !seg.z_handle.is_unused_sentinel() {
+            seg.consumers_remaining &= !(motor_bit << CONS_REMAINING_Z_SHIFT);
+        }
+        if consumes_e && !seg.e_handle.is_unused_sentinel() {
+            seg.consumers_remaining &= !(motor_bit << CONS_REMAINING_E_SHIFT);
+        }
+    }
+
+    /// Mainline producer entry point. Called from the C-side producer
+    /// Klipper struct timer (Task 8) and from integration tests directly.
+    ///
+    /// Pipeline:
+    /// 1. Clear `producer_pending`. Kicks landing after this point re-set
+    ///    it and trigger a follow-on call.
+    /// 2. Increment `producer_runs_total` (heartbeat).
+    /// 3. For each StepTime motor whose `ProducerState` is idle, look up
+    ///    its next curve from the segment queue (via `fetch_segment_for_motor`,
+    ///    which dequeues into `producer_current` on demand). If no curve
+    ///    is available, that motor stays idle this round.
+    /// 4. For each StepTime motor with an active curve, Newton-fill its
+    ///    ring up to `PRODUCER_BATCH_CAP` or `ring.space()`, whichever
+    ///    comes first. The per-motor eval closure applies the kinematic
+    ///    transform inline (CoreXY mixes x + y / x − y for motors 0 / 1;
+    ///    cartesian / Z / E is identity on the single handle).
+    /// 5. When Newton returns `SegmentExhausted` for a motor, that
+    ///    motor's bit in the segment's `consumers_remaining` mask is
+    ///    cleared and `motor_curve_cursor[i]` advances by one. Once the
+    ///    mask reaches zero, the segment retires: every curve handle
+    ///    runs through `pool.confirm_retired`, and `producer_current` is
+    ///    cleared so the next call dequeues the next segment.
+    ///
+    /// Returns `ProducerTickResult::WorkPending` iff at least one motor
+    /// still has an active curve at exit (more work for the caller to
+    /// reschedule via `sched_add_timer`); `AllIdle` iff every motor is
+    /// idle (caller waits for a kick).
+    ///
+    /// Spec §3.4 (`producer_step` pseudocode) + §3.8 (retirement).
+    pub fn producer_step(
+        &mut self,
+        pool: &CurvePool,
+        queue: &mut Consumer<'_, Segment, Q_N>,
+        shared: &SharedState,
+    ) -> ProducerTickResult {
+        // (1) Clear kick-pending flag at start; (2) heartbeat.
+        shared.producer_pending.store(false, Ordering::Release);
+        shared.producer_runs_total.fetch_add(1, Ordering::AcqRel);
+
+        let mut any_pending = false;
+
+        // Loop until we've done something useful for every motor or all
+        // motors are idle. Each iteration: try to drive one motor as far
+        // as its batch cap / ring space allows; if Newton finishes its
+        // curve, attempt segment retirement; then attempt to start a new
+        // curve for any motor still idle.
+        //
+        // We bound the outer loop so producer_step can't spin
+        // indefinitely on a runaway segment chain — at most 4 motors ×
+        // 2 segment-transitions per call. Beyond that we exit
+        // WorkPending and let the caller reschedule.
+        for _outer in 0..8 {
+            let mut made_progress = false;
+
+            // (3) Per-motor work pass.
+            for motor_idx in 0..4_usize {
+                let mode = shared
+                    .step_modes
+                    .get(motor_idx)
+                    .map(|m| m.load(Ordering::Acquire))
+                    .unwrap_or(StepMode::Modulated as u8);
+                if mode != StepMode::StepTime as u8 {
+                    continue;
+                }
+                // Skip motors with no configured step_distance — they
+                // can't produce step times.
+                let step_distance = self
+                    .producer_states
+                    .get(motor_idx)
+                    .map(|s| s.step_distance())
+                    .unwrap_or(0.0);
+                if step_distance <= 0.0 {
+                    continue;
+                }
+
+                // Start a curve if this motor's producer state is idle.
+                if self
+                    .producer_states
+                    .get(motor_idx)
+                    .map(|s| s.is_idle())
+                    .unwrap_or(true)
+                {
+                    let Some((seg, _primary, _secondary, _sign)) =
+                        self.fetch_segment_for_motor(motor_idx, queue)
+                    else {
+                        continue;
+                    };
+                    // Seed producer state with motor's current step count
+                    // so absolute step targets line up with `stepper_counts`.
+                    let initial_step = shared
+                        .stepper_counts
+                        .get(motor_idx)
+                        .map(|c| c.load(Ordering::Acquire))
+                        .unwrap_or(0);
+                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
+                        ps.start_curve(initial_step);
+                    }
+                    if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
+                        *slot = Some(seg.id);
+                    }
+                    made_progress = true;
+                }
+
+                // Fill ring while space permits, capped at PRODUCER_BATCH_CAP.
+                // The motor's "current curve" is whatever resolves out of
+                // producer_current under the segment's kinematics —
+                // re-fetch here to pick up freshly-started curves.
+                let Some((seg_for_fill, primary, secondary, sign)) =
+                    self.fetch_segment_for_motor(motor_idx, queue)
+                else {
+                    continue;
+                };
+                let cv_primary = if primary.is_unused_sentinel() {
+                    None
+                } else {
+                    pool.resolve(primary)
+                };
+                let cv_secondary = secondary.and_then(|h| {
+                    if h.is_unused_sentinel() {
+                        None
+                    } else {
+                        pool.resolve(h)
+                    }
+                });
+
+                let is_corexy = matches!(seg_for_fill.kinematics, KinematicTag::CoreXyAndE)
+                    && (motor_idx == 0 || motor_idx == 1);
+
+                let t_start_cycles = seg_for_fill.t_start;
+                let duration_cycles = seg_for_fill.duration();
+                if duration_cycles == 0 {
+                    // Zero-duration segment — can't produce step times.
+                    // Retire the motor's contribution and move on.
+                    Self::clear_motor_bits_in_mask(
+                        self.producer_current
+                            .as_mut()
+                            .expect("producer_current set"),
+                        motor_idx as u8,
+                    );
+                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
+                        ps.clear();
+                    }
+                    if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
+                        *slot = None;
+                    }
+                    if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
+                        *cur = cur.wrapping_add(1);
+                    }
+                    made_progress = true;
+                    continue;
+                }
+                let duration_f64 = duration_cycles as f64;
+
+                let eval = move |t_norm: f32| -> (f64, f64, f64) {
+                    let u = t_norm.clamp(0.0, 1.0);
+                    if is_corexy {
+                        let (x_pos, x_dx, x_d2x) = cv_primary
+                            .as_ref()
+                            .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
+                            .unwrap_or((0.0, 0.0, 0.0));
+                        let (y_pos, y_dy, y_d2y) = cv_secondary
+                            .as_ref()
+                            .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
+                            .unwrap_or((0.0, 0.0, 0.0));
+                        (
+                            x_pos + sign * y_pos,
+                            x_dx + sign * y_dy,
+                            x_d2x + sign * y_d2y,
+                        )
+                    } else {
+                        cv_primary
+                            .as_ref()
+                            .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
+                            .unwrap_or((0.0, 0.0, 0.0))
+                    }
+                };
+
+                // Inline Newton fill — equivalent to step_producer::producer_step
+                // for one motor, but here we have the engine-context loop so
+                // we can short-circuit on ring-full and pick up the curve
+                // closure (which borrows cv_primary/cv_secondary captured
+                // by-move above) without slicing four parallel arrays of
+                // closures across motors.
+                let mut filled = 0_u32;
+                let ring = match self.step_rings.get_mut(motor_idx) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                let ps = match self.producer_states.get_mut(motor_idx) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let mut motor_finished_curve = false;
+                while filled < PRODUCER_BATCH_CAP && ring.space() > 0 {
+                    let q = StepTimeQuery {
+                        eval: &eval,
+                        step_distance: ps.step_distance(),
+                        current_step: ps
+                            .step_at_curve_start()
+                            .wrapping_add(ps.steps_pushed_this_curve()),
+                        t_curr: ps.t_resume().unwrap_or(0.0),
+                        t_segment_end: 1.0,
+                    };
+                    match compute_next_step_time(&q) {
+                        StepTimeResult::NextAt { t, dir } => {
+                            // Convert normalized u → absolute cycles low-32.
+                            let dt_cycles = (t * duration_f64) as u64;
+                            let abs_cycles = t_start_cycles.saturating_add(dt_cycles);
+                            ring.push(abs_cycles as u32, dir);
+                            ps.set_t_resume(Some(t));
+                            ps.bump_steps_pushed(i32::from(dir));
+                            filled += 1;
+                            made_progress = true;
+                        }
+                        StepTimeResult::SegmentExhausted => {
+                            ps.clear();
+                            motor_finished_curve = true;
+                            made_progress = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Update ring high-water mark.
+                let avail = ring.available();
+                if let Some(hw) = shared.ring_high_water.get(motor_idx) {
+                    let mut prev = hw.load(Ordering::Relaxed);
+                    while avail > prev {
+                        match hw.compare_exchange_weak(
+                            prev,
+                            avail,
+                            Ordering::Release,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => break,
+                            Err(observed) => prev = observed,
+                        }
+                    }
+                }
+
+                if motor_finished_curve {
+                    if let Some(seg_mut) = self.producer_current.as_mut() {
+                        Self::clear_motor_bits_in_mask(seg_mut, motor_idx as u8);
+                    }
+                    if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
+                        *slot = None;
+                    }
+                    if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
+                        *cur = cur.wrapping_add(1);
+                    }
+                }
+            }
+
+            // (5) Retire the producer-current segment if every consumer bit
+            // is clear. The Modulated path (TIM5) writes its own bits in
+            // future Task 10; today (StepTime-only) bits clear exclusively
+            // through the loop above.
+            if let Some(seg) = self.producer_current {
+                if seg.consumers_done() {
+                    // Curve-handle retirement. Sentinels are no-ops in
+                    // `confirm_retired`, so this is safe regardless of
+                    // which handles were UNUSED.
+                    pool.confirm_retired(seg.x_handle);
+                    pool.confirm_retired(seg.y_handle);
+                    pool.confirm_retired(seg.z_handle);
+                    pool.confirm_retired(seg.e_handle);
+                    // Publish the retired-through cursor so the host's
+                    // `kalico_credit_freed` plumbing (still wired through
+                    // the existing trace-drain path on the C side) sees
+                    // the segment as retired without a SEGMENT_END trace
+                    // sample. The trace path itself stays alive for the
+                    // legacy `tick` callers during the T5→T11 transition.
+                    shared
+                        .retired_through_segment_id
+                        .store(seg.id, Ordering::Release);
+                    crate::stream::check_terminal_on_retire(shared, seg.id);
+                    self.producer_current = None;
+                    made_progress = true;
+                }
+            }
+
+            if !made_progress {
+                break;
+            }
+        }
+
+        // Final result: any motor non-idle ⇒ WorkPending.
+        for ps in &self.producer_states {
+            if !ps.is_idle() {
+                any_pending = true;
+                break;
+            }
+        }
+        // Also pending if we still have a producer_current segment with
+        // pending consumer bits (e.g., one motor finished but others
+        // haven't even started yet because their ring was full this round).
+        if !any_pending {
+            if let Some(seg) = self.producer_current {
+                if !seg.consumers_done() {
+                    any_pending = true;
+                }
+            }
+        }
+        if any_pending {
+            ProducerTickResult::WorkPending
+        } else {
+            ProducerTickResult::AllIdle
         }
     }
 }
