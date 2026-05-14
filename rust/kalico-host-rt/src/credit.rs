@@ -108,7 +108,7 @@ impl CreditCounter {
             return Ok(());
         }
         let deadline = Instant::now() + timeout;
-        let mut guard = self.wait_lock.lock().unwrap();
+        let mut guard = self.wait_lock.lock().unwrap_or_else(|p| p.into_inner());
         loop {
             // Re-check after grabbing the lock; a notification may have
             // raced between our `try_acquire` above and `lock()`.
@@ -199,7 +199,7 @@ impl CreditCounter {
         // `wait_timeout` sees the notification. `Condvar::notify_all`
         // requires the lock to be held by the notifier, per the std
         // contract.
-        let _guard = self.wait_lock.lock().unwrap();
+        let _guard = self.wait_lock.lock().unwrap_or_else(|p| p.into_inner());
         self.wait_cv.notify_all();
     }
 }

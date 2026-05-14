@@ -262,7 +262,7 @@ impl PlannerHandle {
     }
 
     fn check_error(&self) -> Result<(), PlannerError> {
-        let mut guard = self.error.lock().unwrap();
+        let mut guard = self.error.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = guard.take() {
             return Err(e);
         }
@@ -574,7 +574,7 @@ fn run_commit_and_dispatch(
     let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
         Ok(out) => out,
         Err(e) => {
-            *error.lock().unwrap() = Some(PlannerError::Shape(e));
+            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
             return false;
         }
     };
@@ -583,7 +583,7 @@ fn run_commit_and_dispatch(
     advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
         if let Err(detail) = dispatch(s) {
-            *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
             break;
         }
     }
@@ -762,7 +762,7 @@ fn run_loop(
 
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
-                    *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                    *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                     continue;
                 }
                 let replan_us = replan_start.elapsed().as_micros();
@@ -770,7 +770,7 @@ fn run_loop(
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
-                        *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                         continue;
                     }
                 };
@@ -796,7 +796,7 @@ fn run_loop(
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
-                        *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
                         break;
                     }
                 }
