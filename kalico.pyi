@@ -12,10 +12,13 @@ from klippy.extras.homing import Homing, HomingMove
 from klippy.extras.load_cell import LoadCell
 from klippy.extras.save_variables import SaveVariables as SaveVariables
 from klippy.gcode import GCodeDispatch as GCodeDispatch
+from klippy.kalico_api.kalico import Configuration as Configuration
 from klippy.stepper import (
     MCU_stepper,
     PrinterRail,
 )
+
+config: Configuration
 
 BlockingResult = typing.TypeVar("BlockingResult")
 

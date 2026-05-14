@@ -1,0 +1,142 @@
+import enum
+import json
+from typing import Annotated
+
+import pytest
+from kalico import Above, IntRange, Kalico, gcode_macro
+
+from .asserts import assert_eq
+
+
+class Direction(enum.Enum):
+    up = -1
+    down = 1
+
+
+class Location(enum.Enum):
+    front = "FRONT"
+    back = "BACK"
+
+
+@gcode_macro
+def test_parameters(
+    k: Kalico,
+    string,
+    required_temp: Annotated[float, Above(0)],
+    optional_temp: float = None,
+    direction: Direction = None,
+    location: Location = Location.front,
+    validated: IntRange[0, 5] = -1,
+):
+    "Validate a wide array of parameter types"
+
+
+@gcode_macro
+def do_the_thing(kalico: Kalico, validated: IntRange[0, 5] = -1):
+    "Run a suite of api tests"
+
+    # Ensure parameter docs are json serializable
+    assert json.dumps(kalico.status.gcode.data)
+
+    # Test to make sure the enum parameters are handled correctly
+    assert_eq(
+        kalico.status.gcode.commands.TEST_PARAMETERS,
+        {
+            "help": "Validate a wide array of parameter types",
+            "params": {
+                "STRING": {"required": True},
+                "REQUIRED_TEMP": {
+                    "required": True,
+                    "type": "float",
+                    "valid": {"above": 0},
+                },
+                "OPTIONAL_TEMP": {"type": "float"},
+                "DIRECTION": {"type": "enum", "choices": [-1, 1]},
+                "LOCATION": {
+                    "type": "enum",
+                    "choices": ["FRONT", "BACK"],
+                    "default": "FRONT",
+                },
+                "VALIDATED": {
+                    "type": "int",
+                    "default": -1,
+                    "valid": {"minimum": 0, "maximum": 5},
+                },
+            },
+        },
+    )
+
+    # Test the gcode_macro params were parsed
+    assert_eq(
+        kalico.status.gcode.commands.TEST_GCODE_MACRO_PARAMS,
+        {
+            "help": "example description",
+            "params": {
+                "REQUIRED": {"type": "int", "required": True},
+                "OPTIONAL": {"type": "float"},
+                "DEFAULT": {"type": "str", "default": "test"},
+                "DEFAULT_INT": {"type": "int", "default": 5},
+            },
+        },
+    )
+
+    with pytest.raises(kalico._printer.command_error):
+        do_the_thing(kalico, validated=-1)
+
+    with pytest.raises(kalico._printer.command_error):
+        kalico.move(x=-999)
+
+    # Attribute proxy for gcode
+    kalico.gcode.g28("x", "y")
+    assert kalico.status.toolhead.homed_axes == "xy"
+
+    # And direct gcode calls
+    kalico.gcode("g28")
+    assert kalico.status.toolhead.homed_axes == "xyz"
+    assert kalico.status.gcode_move.absolute_coordinates
+
+    assert kalico.status.toolhead.position.x == 5.0
+    with kalico.move.save_state(restore_position=True):
+        kalico.gcode.g0(x=5, y=5, z=5)
+        assert kalico.status.toolhead.position[:3] == (5.0, 5.0, 5.0)
+
+        kalico.gcode.relative_movement()
+        assert not kalico.status.gcode_move.absolute_coordinates
+
+        kalico.gcode.g0(x=5)
+        assert kalico.status.toolhead.position.x == 10.0
+    assert kalico.status.toolhead.position.x == 5.0
+
+    # Ensure the gcode state was restored
+    assert kalico.status.gcode_move.absolute_coordinates
+    assert kalico.status.gcode_move.homing_origin.y == 0.0
+
+    # Test the new move API
+    kalico.move(dx=5)
+    assert kalico.status.toolhead.position.x == 10.0
+
+    kalico.move(dx=-5)
+    assert kalico.status.toolhead.position.x == 5.0
+
+    kalico.move(x=3)
+    assert kalico.status.toolhead.position.x == 3.0
+
+    # Test gcode offsets
+    assert kalico.status.toolhead.position.y == 5.0
+
+    kalico.move.set_gcode_offset(y=5)
+    assert kalico.status.gcode_move.homing_origin.x == 0.0
+    assert kalico.status.gcode_move.homing_origin.y == 5.0
+
+    kalico.move.set_gcode_offset(dy=5, move=True)
+    assert kalico.status.gcode_move.homing_origin.y == 10.0
+    assert kalico.status.gcode_move.position.y == 10.0
+
+    # Check the variable proxy saves values
+    do_the_thing.vars["test"] = 1
+    assert kalico.status["gcode_macro DO_THE_THING"].test == 1
+
+
+@gcode_macro(rename_existing="PAUSE_BASE")
+def pause(k: Kalico):
+    k.gcode.pause_base()

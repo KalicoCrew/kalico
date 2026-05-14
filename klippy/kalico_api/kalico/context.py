@@ -11,7 +11,6 @@ from klippy.extras.gcode_macro import (
 )
 
 if typing.TYPE_CHECKING:
-    from klippy.configfile import ConfigWrapper
     from klippy.extras.fan import FanAPI
     from klippy.extras.gcode_macro import GCodeMacro
     from klippy.extras.gcode_move import MoveAPI
@@ -20,6 +19,7 @@ if typing.TYPE_CHECKING:
     from klippy.gcode import GCodeAPI, GCodeDispatch
     from klippy.printer import Printer
     from klippy.reactor import SelectReactor
+    from klippy.toolhead import ToolHead
 
 BlockingResult = typing.TypeVar("BlockingResult")
 
@@ -30,7 +30,7 @@ class TimerCallback(typing.Protocol):
 
 
 class Kalico:
-    'The magic "Printer" object for macros'
+    "Context object for python gcode functions"
 
     status: GetStatusWrapperPython
     saved_vars: SaveVariablesAPI
@@ -40,7 +40,7 @@ class Kalico:
     heaters: HeatersAPI
     move: MoveAPI
 
-    def __init__(self, printer: Printer, config: ConfigWrapper):
+    def __init__(self, printer: Printer):
         self._printer = printer
         self._gcode: GCodeDispatch = printer.lookup_object("gcode")
 
@@ -48,7 +48,7 @@ class Kalico:
             "klippy:configured", self._load_components
         )
 
-    def _load_components(self):
+    def _load_components(self, _config):
         components = self._printer.lookup_components("kalico_api")
         for name, klass in components.items():
             if hasattr(self, name):
@@ -78,7 +78,7 @@ class Kalico:
 
     def wait_moves(self):
         "Wait until all moves are completed"
-        toolhead = self._printer.lookup_object("toolhead")
+        toolhead: ToolHead = self._printer.lookup_object("toolhead")
         toolhead.wait_moves()
 
     def blocking(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import importlib
 import importlib.util
 import pathlib
 import sys
@@ -7,6 +9,7 @@ import types
 import typing
 
 from klippy import configfile
+from klippy.configfile import ConfigWrapper
 from klippy.extras.gcode_macro import (
     GCodeMacro,
 )
@@ -18,15 +21,10 @@ from .kalico.loader import load_context
 if typing.TYPE_CHECKING:
     from klippy.printer import Printer
 
-sys.modules["kalico"] = kalico
-sys.modules["printer_config"] = types.ModuleType(
-    "printer_config", "imported user configuration"
-)
-
 
 # gcode_macro template shim
 class MacroApiTemplate:
-    def __init__(self, config, macro: Macro):
+    def __init__(self, config: ConfigWrapper, macro: Macro):
         self.printer = config.get_printer()
 
         self.macro = macro
@@ -43,36 +41,57 @@ class MacroApiTemplate:
         return self.run_gcode_from_command(context)
 
 
-class MacroLoader:
-    def __init__(self, config: configfile.ConfigWrapper):
+sys.modules["kalico"] = kalico
+
+
+@contextlib.contextmanager
+def temporary_module(module: types.ModuleType):
+    sys.modules[module.__name__] = module
+    try:
+        yield
+    finally:
+        for key in list(sys.modules):
+            if key.startswith(f"{module.__name__}."):
+                sys.modules.pop(key)
+        del sys.modules[module.__name__]
+
+
+class KalicoAPI:
+    def __init__(self, config: ConfigWrapper):
         self.printer: Printer = config.get_printer()
         self._config = config
         self._root_path: pathlib.Path = self.printer.get_user_path()
 
-        self.kalico = kalico.Kalico(self.printer, config)
-        self.user_modules = {"kalico": kalico}
+        self.kalico = kalico.Kalico(self.printer)
+        kalico.config = kalico.Configuration(config)
         load_context.set_loader(self)
+
         self.load()
 
     def load(self):
-        files = self._config.getlist("python", [], sep="\n")
-        for file in files:
-            if not file.strip():
-                continue
-            self._load_file(file)
+        module = types.ModuleType(
+            "printer_config",
+            "Virtual parent module for imported user configuration",
+        )
 
-    def _load_file(self, filename):
+        with temporary_module(module):
+            files: list[str] = self._config.getlist("python", [], sep="\n")
+            for file in files:
+                if not file.strip():
+                    continue
+                self._load_file(module, file)
+
+    def _load_file(self, module: types.ModuleType, filename: str):
         file: pathlib.Path = self._root_path / filename
+        module_name = f"{module.__name__}.{file.name}"
+
+        if file.is_dir() and (file / "__init__.py").is_file():
+            file = file / "__init__.py"
 
         if not file.exists():
             raise configfile.error(
                 f"Error loading python macros: {file} does not exist"
             )
-
-        module_name = f"printer_config.{file.name}"
-
-        if file.is_dir() and (file / "__init__.py").is_file():
-            file = file / "__init__.py"
 
         spec = importlib.util.spec_from_file_location(module_name, file)
         module = importlib.util.module_from_spec(spec)
@@ -107,5 +126,8 @@ class MacroLoader:
             self.printer.add_object(section, gcode_macro)
 
 
-def load_config(config):
-    return MacroLoader(config)
+def add_printer_objects(config: ConfigWrapper):
+    printer = config.get_printer()
+    section = config.getsection("kalico_api")
+
+    printer.add_object("kalico_api", KalicoAPI(section))

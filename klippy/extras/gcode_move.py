@@ -437,7 +437,7 @@ class MoveAPI:
         self._printer = printer
         printer.register_event_handler("klippy:configured", self._on_configured)
 
-    def _on_configured(self):
+    def _on_configured(self, _config):
         self._gcode_move: GCodeMove = self._printer.lookup_object("gcode_move")
 
     def __call__(

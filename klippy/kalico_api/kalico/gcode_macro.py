@@ -27,7 +27,7 @@ except:
 if typing.TYPE_CHECKING:
     from klippy.printer import Printer
 
-    from .. import MacroLoader
+    from .. import KalicoAPI
 
 
 MacroParams = ParamSpec("MacroParams")
@@ -160,7 +160,7 @@ class Macro(typing.Generic[MacroParams, MacroReturn]):
 
     def __init__(
         self,
-        loader: MacroLoader,
+        loader: KalicoAPI,
         func: typing.Callable[Concatenate[Kalico, MacroParams], MacroReturn],
     ):
         self.__printer = loader.printer

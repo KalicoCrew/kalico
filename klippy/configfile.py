@@ -139,6 +139,9 @@ class ConfigWrapper:
             )
         return v
 
+    def has(self, option):
+        return self.fileconfig.has_option(self.section, option)
+
     def get(self, option, default=sentinel, note_valid=True):
         return self._get_wrapper(
             self.fileconfig.get, option, default, note_valid=note_valid
@@ -146,6 +149,8 @@ class ConfigWrapper:
 
     def getscript(self, option, default=sentinel, note_valid=True):
         value: str = self.get(option, default, note_valid).strip()
+        if value.startswith("!!gcode_function:"):
+            return ("gcode_function", value.split(":", 1)[-1])
 
         match = _INCLUDERE.search(value)
         if match:
@@ -391,9 +396,10 @@ class PrinterConfig:
         regular_data = data
         autosave_data = ""
         pos = data.find(AUTOSAVE_HEADER)
-        if pos >= 0:
-            regular_data = data[:pos]
-            autosave_data = data[pos + len(AUTOSAVE_HEADER) :].strip()
+        if pos < 0:
+            return regular_data, autosave_data
+        regular_data = data[:pos]
+        autosave_data = data[pos + len(AUTOSAVE_HEADER) :].strip()
         # Check for errors and strip line prefixes
         if "\n#*# " in regular_data:
             logging.warning(
@@ -531,7 +537,15 @@ class PrinterConfig:
 
     def read_main_config(self):
         filename = self.main_config_path
-        data = self._read_config_file(filename)
+        if filename.suffix == ".py" or (
+            filename.suffix == "" and (filename / "__init__.py").exists()
+        ):
+            python = filename
+            if python.name == "__init__.py":
+                python = python.parent  # Module loading
+            data = f"[kalico_api]\n python: {python}"
+        else:
+            data = self._read_config_file(filename)
         regular_data, autosave_data = self._find_autosave_data(data)
         if autosave_data:
             self.save_config_pending = True

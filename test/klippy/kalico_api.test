@@ -1,5 +1,5 @@
 # Test case for python gcode
-CONFIG kalico_api.cfg
+CONFIG ./kalico_api
 DICTIONARY atmega2560.dict
 
 HELLO_WORLD
@@ -7,4 +7,9 @@ HELLO_WORLD NAME="Frank"
 RELOAD_GCODE_MACROS
 
 DO_THE_THING
+ASSERT_EVENT_HANDLER_RAN
+
+# Test that the user config reloads after a restart
+RESTART
+
 ASSERT_EVENT_HANDLER_RAN

@@ -1,145 +1,111 @@
-import enum
-import json
-from typing import Annotated
-
-import pytest
-
-from kalico import Above, IntRange, Kalico, gcode_macro
+from kalico import config
 
 from . import events as events
 from . import hello_world as hello_world
-from .asserts import assert_eq
+from . import macros as macros
 
+config("mcu", serial="/dev/ttyACM0")
 
-class Direction(enum.Enum):
-    up = -1
-    down = 1
+config(
+    "printer",
+    kinematics="cartesian",
+    max_velocity=300,
+    max_accel=3000,
+    max_z_velocity=5,
+    max_z_accel=100,
+)
 
+config(
+    "stepper_x",
+    step_pin="PF0",
+    dir_pin="PF1",
+    enable_pin="!PD7",
+    microsteps=16,
+    rotation_distance=40,
+    endstop_pin="^PE5",
+    position_endstop=0,
+    position_max=200,
+    homing_speed=50,
+)
 
-class Location(enum.Enum):
-    front = "FRONT"
-    back = "BACK"
+config(
+    "stepper_y",
+    step_pin="PF6",
+    dir_pin="!PF7",
+    enable_pin="!PF2",
+    microsteps=16,
+    rotation_distance=40,
+    endstop_pin="^PJ1",
+    position_endstop=0,
+    position_max=200,
+    homing_speed=50,
+)
 
+config(
+    "stepper_z",
+    step_pin="PL3",
+    dir_pin="PL1",
+    enable_pin="!PK0",
+    microsteps="16",
+    rotation_distance="8",
+    endstop_pin="probe:z_virtual_endstop",
+    position_max="200",
+)
 
-@gcode_macro
-def test_parameters(
-    k: Kalico,
-    string,
-    required_temp: Annotated[float, Above(0)],
-    optional_temp: float = None,
-    direction: Direction = None,
-    location: Location = Location.front,
-    validated: IntRange[0, 5] = -1,
-):
-    "Validate a wide array of parameter types"
+config(
+    "extruder",
+    step_pin="PA4",
+    dir_pin="PA6",
+    enable_pin="!PA2",
+    microsteps="16",
+    rotation_distance="33.5",
+    nozzle_diameter="0.400",
+    filament_diameter="1.750",
+    heater_pin="PB4",
+    sensor_type="EPCOS 100K B57560G104F",
+    sensor_pin="PK5",
+    control="pid",
+    pid_Kp="22.2",
+    pid_Ki="1.08",
+    pid_Kd="114",
+    min_temp="0",
+    max_temp="250",
+)
 
+config(
+    "heater_bed",
+    heater_pin="PH5",
+    sensor_type="EPCOS 100K B57560G104F",
+    sensor_pin="PK6",
+    control="watermark",
+    min_temp="0",
+    max_temp="130",
+)
 
-@gcode_macro
-def do_the_thing(k: Kalico, validated: IntRange[0, 5] = -1):
-    "Run a suite of api tests"
+config(
+    "probe",
+    pin="PH6",
+    z_offset="1.15",
+    drop_first_result="true",
+)
 
-    # Ensure parameter docs are json serializable
-    assert json.dumps(k.status.gcode.data)
+config(
+    "bed_mesh",
+    mesh_min="10, 10",
+    mesh_max="180, 180",
+)
 
-    # Test to make sure the enum parameters are handled correctly
-    assert_eq(
-        k.status.gcode.commands.TEST_PARAMETERS,
-        {
-            "help": "Validate a wide array of parameter types",
-            "params": {
-                "STRING": {"required": True},
-                "REQUIRED_TEMP": {
-                    "required": True,
-                    "type": "float",
-                    "valid": {"above": 0},
-                },
-                "OPTIONAL_TEMP": {"type": "float"},
-                "DIRECTION": {"type": "enum", "choices": [-1, 1]},
-                "LOCATION": {
-                    "type": "enum",
-                    "choices": ["FRONT", "BACK"],
-                    "default": "FRONT",
-                },
-                "VALIDATED": {
-                    "type": "int",
-                    "default": -1,
-                    "valid": {"minimum": 0, "maximum": 5},
-                },
-            },
-        },
-    )
+config("pause_resume")
 
-    # Test the gcode_macro params were parsed
-    assert_eq(
-        k.status.gcode.commands.TEST_GCODE_MACRO_PARAMS,
-        {
-            "help": "example description",
-            "params": {
-                "REQUIRED": {"type": "int", "required": True},
-                "OPTIONAL": {"type": "float"},
-                "DEFAULT": {"type": "str", "default": "test"},
-                "DEFAULT_INT": {"type": "int", "default": 5},
-            },
-        },
-    )
-
-    with pytest.raises(k._printer.command_error):
-        do_the_thing(k, validated=-1)
-
-    with pytest.raises(k._printer.command_error):
-        k.move(x=-999)
-
-    # Attribute proxy for gcode
-    k.gcode.g28("x", "y")
-    assert k.status.toolhead.homed_axes == "xy"
-
-    # And direct gcode calls
-    k.gcode("g28")
-    assert k.status.toolhead.homed_axes == "xyz"
-    assert k.status.gcode_move.absolute_coordinates
-
-    assert k.status.toolhead.position.x == 5.0
-    with k.move.save_state(restore_position=True):
-        k.gcode.g0(x=5, y=5, z=5)
-        assert k.status.toolhead.position[:3] == (5.0, 5.0, 5.0)
-
-        k.gcode.relative_movement()
-        assert not k.status.gcode_move.absolute_coordinates
-
-        k.gcode.g0(x=5)
-        assert k.status.toolhead.position.x == 10.0
-    assert k.status.toolhead.position.x == 5.0
-
-    # Ensure the gcode state was restored
-    assert k.status.gcode_move.absolute_coordinates
-    assert k.status.gcode_move.homing_origin.y == 0.0
-
-    # Test the new move API
-    k.move(dx=5)
-    assert k.status.toolhead.position.x == 10.0
-
-    k.move(dx=-5)
-    assert k.status.toolhead.position.x == 5.0
-
-    k.move(x=3)
-    assert k.status.toolhead.position.x == 3.0
-
-    # Test gcode offsets
-    assert k.status.toolhead.position.y == 5.0
-
-    k.move.set_gcode_offset(y=5)
-    assert k.status.gcode_move.homing_origin.x == 0.0
-    assert k.status.gcode_move.homing_origin.y == 5.0
-
-    k.move.set_gcode_offset(dy=5, move=True)
-    assert k.status.gcode_move.homing_origin.y == 10.0
-    assert k.status.gcode_move.position.y == 10.0
-
-    # Check the variable proxy saves values
-    do_the_thing.vars["test"] = 1
-    assert k.status["gcode_macro DO_THE_THING"].test == 1
-
-
-@gcode_macro(rename_existing="PAUSE_BASE")
-def pause(k: Kalico):
-    k.gcode.pause_base()
+test_gcode_macro_params = config(
+    "gcode_macro",
+    "test_gcode_macro_params",
+    description="example description",
+    gcode="M117 Hi!",
+    gcode_params="""\
+required: int
+optional: float =
+default: str = 'test'
+default_int: int = 5
+""",
+)

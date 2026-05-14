@@ -348,12 +348,16 @@ class PrinterGCodeMacro:
             "RELOAD_GCODE_MACROS", self.cmd_RELOAD_GCODE_MACROS
         )
 
+        self._gcode_functions = {}
+
     def load_template(self, config, option, default=None):
         name = "%s:%s" % (config.get_name(), option)
         if default is None:
             script_type, script = config.getscript(option)
         else:
             script_type, script = config.getscript(option, default)
+        if script_type == "gcode_function":
+            return self._gcode_functions[script]
         return Template(
             self.printer, self.env, name, script, script_type=script_type
         )
@@ -408,9 +412,8 @@ class PrinterGCodeMacro:
                 script_type, new_script = new_section.getscript("gcode")
                 template.reload(script_type, new_script)
 
-        kalico_api = self.printer.lookup_object("kalico_api", None)
-        if kalico_api:
-            kalico_api.load()
+        kalico_api = self.printer.lookup_object("kalico_api")
+        kalico_api.load()
 
 
 def load_config(config):

@@ -4,11 +4,11 @@ from __future__ import annotations
 import typing
 
 if typing.TYPE_CHECKING:
-    from .. import MacroLoader
+    from klippy.kalico_api import KalicoAPI
 
 
 class _LoadContext:
-    def set_loader(self, loader: MacroLoader):
+    def set_loader(self, loader: KalicoAPI):
         self.loader = loader
 
 
