@@ -319,6 +319,27 @@ impl CurvePool {
         }
     }
 
+    /// Returns `true` if `slot_idx`'s `last_retired_gen` matches its
+    /// `current_gen` — i.e. the slot is back in the "free for reuse"
+    /// state. Used by integration tests to assert that retirement fired.
+    /// Sentinel slot indices (`>= CURVE_POOL_N`) return `true` (a sentinel
+    /// is never "in use"). Foreground-only convenience accessor; the ISR
+    /// reads the same atomic in `try_alloc_and_load`.
+    pub fn is_slot_free(&self, slot_idx: u16) -> bool {
+        let idx = slot_idx as usize;
+        if idx >= CURVE_POOL_N {
+            return true;
+        }
+        match self.slots.get(idx) {
+            Some(slot) => {
+                let cur = slot.current_gen.load(Ordering::Acquire);
+                let last = slot.last_retired_gen.load(Ordering::Acquire);
+                cur == last
+            }
+            None => true,
+        }
+    }
+
     /// Resolve a handle to a scalar curve view. Returns `None` on stale
     /// handle or out-of-range. Convenience wrapper around `lookup` that
     /// converts to a borrowed-slice view.
