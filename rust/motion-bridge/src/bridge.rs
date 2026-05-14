@@ -308,7 +308,7 @@ fn build_shaper_config(
     freq_x: f64,
     type_y: &str,
     freq_y: f64,
-) -> Result<ShaperConfig, String> {
+) -> Result<ShaperConfig, crate::config::ShaperConfigError> {
     Ok(ShaperConfig {
         x: parse_required_shaper(type_x, freq_x)?,
         y: parse_required_shaper(type_y, freq_y)?,
@@ -1345,7 +1345,7 @@ impl PyMotionBridge {
             shaper_type_y,
             shaper_freq_y,
         )
-        .map_err(PyRuntimeError::new_err)?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         let limits = PlannerLimits {
             max_velocity,
@@ -2201,7 +2201,7 @@ impl PyMotionBridge {
             shaper_type_y,
             freq_y,
         )
-        .map_err(PyRuntimeError::new_err)?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         self.planner_config.lock().unwrap().shaper = shaper.clone();
 

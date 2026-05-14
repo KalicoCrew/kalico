@@ -28,6 +28,7 @@ crossbeam-channel = "0.5"
 log = "0.4"
 arc-swap = "1"
 serde_json = "1"
+thiserror = { workspace = true }
 
 [dev-dependencies]
 rustfft = "6"

@@ -2,7 +2,23 @@
 //! passed through PyO3 at bridge init and runtime updates.
 
 use temporal::Limits;
+use thiserror::Error;
 use trajectory::{AxisShaper, ELimits, RequiredShaper, ShaperConfig};
+
+/// Errors returned by `parse_required_shaper` and `build_shaper_config`.
+#[derive(Debug, Error)]
+pub enum ShaperConfigError {
+    #[error(
+        "shaper frequency must be finite and > 0 Hz, got {value}; \
+         check shaper_freq_x / shaper_freq_y in printer.cfg \
+         (sim configs commonly set 0 to disable shaping — there is no passthrough \
+         for X/Y today; use a real frequency, e.g. 50)"
+    )]
+    InvalidFrequency { value: f64 },
+
+    #[error("unsupported shaper type for MVP: '{kind}'. Use smooth_zv or smooth_mzv")]
+    UnsupportedKind { kind: String },
+}
 
 /// Full planner configuration snapshot.
 #[derive(Debug, Clone)]
@@ -75,21 +91,19 @@ impl Default for PlannerConfig {
 }
 
 /// Parse a shaper type string into a `RequiredShaper`.
-pub fn parse_required_shaper(name: &str, freq: f64) -> Result<RequiredShaper, String> {
+pub fn parse_required_shaper(
+    name: &str,
+    freq: f64,
+) -> Result<RequiredShaper, ShaperConfigError> {
     if !freq.is_finite() || freq <= 0.0 {
-        return Err(format!(
-            "shaper frequency must be finite and > 0 Hz, got {freq}; \
-             check shaper_freq_x / shaper_freq_y in printer.cfg \
-             (sim configs commonly set 0 to disable shaping — there is no passthrough \
-             for X/Y today; use a real frequency, e.g. 50)"
-        ));
+        return Err(ShaperConfigError::InvalidFrequency { value: freq });
     }
     match name {
         "smooth_zv" | "smooth-zv" => Ok(RequiredShaper::SmoothZv { frequency_hz: freq }),
         "smooth_mzv" | "smooth-mzv" => Ok(RequiredShaper::SmoothMzv { frequency_hz: freq }),
-        other => Err(format!(
-            "unsupported shaper type for MVP: '{other}'. Use smooth_zv or smooth_mzv"
-        )),
+        other => Err(ShaperConfigError::UnsupportedKind {
+            kind: other.to_string(),
+        }),
     }
 }
 
@@ -128,7 +142,7 @@ mod tests {
         assert!(parse_required_shaper("ei", 50.0).is_err());
 
         // freq=0 must be rejected with an error mentioning the field name
-        let err = parse_required_shaper("smooth_zv", 0.0).unwrap_err();
+        let err = parse_required_shaper("smooth_zv", 0.0).unwrap_err().to_string();
         assert!(err.contains("shaper_freq"), "error must name the field, got: {err}");
 
         // negative freq rejected
