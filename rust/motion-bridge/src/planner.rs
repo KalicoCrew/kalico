@@ -128,7 +128,7 @@ pub enum PlannerError {
     Shape(trajectory::ShapeError),
     ChannelClosed,
     /// Dispatch callback (e.g. wire push) returned an error.
-    Dispatch(String),
+    Dispatch(DispatchError),
 }
 
 impl std::fmt::Display for PlannerError {
@@ -142,6 +142,59 @@ impl std::fmt::Display for PlannerError {
 }
 
 impl std::error::Error for PlannerError {}
+
+/// Failures the wire-side dispatch closure can surface to the planner
+/// thread. Each variant carries enough structured context that future
+/// telemetry / retry policy can discriminate transient (clock-sync,
+/// transport hiccup) from terminal (caps-exceeded) cases without
+/// string-matching.
+#[derive(Debug, thiserror::Error)]
+pub enum DispatchError {
+    #[error(
+        "motion-bridge: curve for mcu {mcu_id} exceeds caps \
+         (cps {cps} > {max_cps}, knots {knots} > {max_knots}, degree {degree} > {max_degree}); \
+         logical-move splitting not yet implemented (Task 13 follow-up)."
+    )]
+    CapsExceeded {
+        mcu_id: u32,
+        cps: u32,
+        max_cps: u32,
+        knots: u32,
+        max_knots: u32,
+        degree: u8,
+        max_degree: u8,
+    },
+    #[error("compute_ack_clock: {0}")]
+    ComputeAckClock(String),
+    #[error(
+        "compute_ack_clock returned 0 after 5s — \
+         clock-sync didn't establish for mcu {mcu_id} (mcu_h={mcu_handle:?})"
+    )]
+    ClockSyncTimeout {
+        mcu_id: u32,
+        mcu_handle: kalico_host_rt::passthrough_queue::McuHandle,
+    },
+    #[error(
+        "slot pool exhausted for mcu={mcu_id} (capacity={capacity}, in_flight={in_flight}); \
+         awaiting kalico_credit_freed retirement events"
+    )]
+    SlotPoolExhausted {
+        mcu_id: u32,
+        capacity: usize,
+        in_flight: usize,
+    },
+    #[error("load_curve mcu={mcu_id} slot={slot} seg_id={seg_id} axis={axis} host_gen={host_gen}: {detail}")]
+    LoadCurve {
+        mcu_id: u32,
+        slot: u16,
+        seg_id: u32,
+        axis: usize,
+        host_gen: u16,
+        detail: String,
+    },
+    #[error("push_segment mcu={mcu_id}: {detail}")]
+    PushSegment { mcu_id: u32, detail: String },
+}
 
 // ---------------------------------------------------------------------------
 // Handle
@@ -167,7 +220,7 @@ pub struct PlannerHandle {
 impl PlannerHandle {
     pub fn spawn(
         config: PlannerConfig,
-        dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
+        dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
     ) -> Self {
         let (tx, rx) = unbounded();
         let error = Arc::new(Mutex::new(None));
@@ -209,7 +262,7 @@ impl PlannerHandle {
     }
 
     fn check_error(&self) -> Result<(), PlannerError> {
-        let mut guard = self.error.lock().unwrap();
+        let mut guard = self.error.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(e) = guard.take() {
             return Err(e);
         }
@@ -446,7 +499,7 @@ const RECTIFICATION_CAS_MAX_ATTEMPTS: usize = 100;
 ///
 /// Returns `true` if the CAS landed within `RECTIFICATION_CAS_MAX_ATTEMPTS`,
 /// `false` if every attempt was contended (a giveup-with-warning path —
-/// `eprintln!` is emitted). The current-load + add-delta + try-store
+/// `log::debug!` is emitted). The current-load + add-delta + try-store
 /// shape is deliberate: we want the delta applied **on top of** whatever
 /// the caller-side advance currently shows, not against a stale snapshot.
 fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
@@ -460,7 +513,7 @@ fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
             return true;
         }
     }
-    eprintln!(
+    log::debug!(
         "planner: rectification CAS contended for >{} attempts (delta {} s) — \
          giving up on this delta; the atomic will reflect the next \
          caller-side advance only",
@@ -510,7 +563,7 @@ fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
 fn run_commit_and_dispatch(
     state: &mut ShaperState,
     thread_state: &PlannerThreadState,
-    dispatch: &Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
+    dispatch: &Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
     error: &Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: &AtomicU64,
     commit_fire_count: &AtomicU32,
@@ -521,7 +574,7 @@ fn run_commit_and_dispatch(
     let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
         Ok(out) => out,
         Err(e) => {
-            *error.lock().unwrap() = Some(PlannerError::Shape(e));
+            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
             return false;
         }
     };
@@ -530,12 +583,12 @@ fn run_commit_and_dispatch(
     advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
         if let Err(detail) = dispatch(s) {
-            *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
             break;
         }
     }
     commit_fire_count.fetch_add(1, Ordering::AcqRel);
-    eprintln!(
+    log::debug!(
         "[planner-trace] commit drained={} dur_s={:.6} commit_us={} t_app={:.6} t_disp_before={:.6} t_disp_after={:.6}",
         drained.len(),
         batch_dur,
@@ -592,7 +645,7 @@ fn run_loop(
     rx: Receiver<PlannerMsg>,
     mut config: PlannerConfig,
     mut state: ShaperState,
-    dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
+    dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
     error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
     commit_fire_count: Arc<AtomicU32>,
@@ -601,7 +654,7 @@ fn run_loop(
 
     {
         let tl = config.limits.to_temporal_limits();
-        eprintln!(
+        log::debug!(
             "[planner-trace] startup limits v_max={:?} a_max={:?} j_max={:?} a_centripetal_max={} shaper={:?}",
             tl.v_max, tl.a_max, tl.j_max, tl.a_centripetal_max, config.shaper,
         );
@@ -651,7 +704,7 @@ fn run_loop(
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
                     PlannerMsg::Shutdown => "Shutdown",
                 };
-                eprintln!("[planner-trace] recv {tag} gap_us={gap_us}");
+                log::debug!("[planner-trace] recv {tag} gap_us={gap_us}");
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -670,7 +723,7 @@ fn run_loop(
                 let since_arm_ms = last_append_time
                     .map(|t| t.elapsed().as_micros() as i64)
                     .unwrap_or(-1);
-                eprintln!("[planner-trace] T_commit fire since_arm_us={since_arm_ms}");
+                log::debug!("[planner-trace] T_commit fire since_arm_us={since_arm_ms}");
                 let _ok = run_commit_and_dispatch(
                     &mut state,
                     &thread_state,
@@ -709,7 +762,7 @@ fn run_loop(
 
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
-                    *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                    *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                     continue;
                 }
                 let replan_us = replan_start.elapsed().as_micros();
@@ -717,13 +770,13 @@ fn run_loop(
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
-                        *error.lock().unwrap() = Some(PlannerError::Shape(e));
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                         continue;
                     }
                 };
                 let emit_us = emit_start.elapsed().as_micros();
                 let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-                eprintln!(
+                log::debug!(
                     "[planner-trace] Move dist={:.3}mm feed={:.1} nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} (+{:.6}) t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
                     move_dist,
                     move_feed,
@@ -743,7 +796,7 @@ fn run_loop(
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
-                        *error.lock().unwrap() = Some(PlannerError::Dispatch(detail));
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
                         break;
                     }
                 }
@@ -1132,12 +1185,12 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     fn counting_dispatch() -> (
-        Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
+        Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
         Arc<AtomicUsize>,
     ) {
         let counter = Arc::new(AtomicUsize::new(0));
         let c = Arc::clone(&counter);
-        let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync> =
+        let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> =
             Arc::new(move |_seg: &ShapedSegment| {
                 c.fetch_add(1, Ordering::Relaxed);
                 Ok(())

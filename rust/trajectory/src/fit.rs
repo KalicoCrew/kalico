@@ -175,10 +175,17 @@ pub fn split_without_refit(
     let t_start = composed[0][0].u_start;
     let t_end = composed.last().unwrap()[0].u_end;
 
-    // Collect per-axis pieces and convert directly.
-    let x_pieces: Vec<BezierPiece<f64>> = composed.iter().map(|arr| arr[0].clone()).collect();
-    let y_pieces: Vec<BezierPiece<f64>> = composed.iter().map(|arr| arr[1].clone()).collect();
-    let z_pieces: Vec<BezierPiece<f64>> = composed.iter().map(|arr| arr[2].clone()).collect();
+    // Collect per-axis pieces and convert directly. Single-pass split:
+    // walks `composed` once and pushes per-axis clones into preallocated
+    // vecs, avoiding three independent iterator passes.
+    let mut x_pieces: Vec<BezierPiece<f64>> = Vec::with_capacity(composed.len());
+    let mut y_pieces: Vec<BezierPiece<f64>> = Vec::with_capacity(composed.len());
+    let mut z_pieces: Vec<BezierPiece<f64>> = Vec::with_capacity(composed.len());
+    for arr in composed {
+        x_pieces.push(arr[0].clone());
+        y_pieces.push(arr[1].clone());
+        z_pieces.push(arr[2].clone());
+    }
 
     let axes = [
         bezier_pieces_to_nurbs(&x_pieces),

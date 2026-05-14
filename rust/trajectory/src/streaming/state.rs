@@ -344,8 +344,8 @@ impl ShaperState {
         //    Step 9 will replace this with per-axis Cartesian jerk SOCP
         //    relaxation; until then this caller-side patch unblocks high-
         //    accel printers whose Z (or E) has a much lower jerk than X/Y.
-        let segs: Vec<UncommittedMove> = self.uncommitted_moves.iter().cloned().collect();
-        let plan_segments: Vec<PlanSegment<'_>> = segs
+        let plan_segments: Vec<PlanSegment<'_>> = self
+            .uncommitted_moves
             .iter()
             .map(|m| PlanSegment {
                 temporal: temporal::multi::SegmentInput {

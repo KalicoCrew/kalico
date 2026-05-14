@@ -87,7 +87,7 @@ use motion_bridge_native::config::{PlannerConfig, PlannerLimits};
 use motion_bridge_native::dispatch::{
     build_push_params, AXIS_X, AXIS_Y, McuAxisConfig, McuCaps,
 };
-use motion_bridge_native::planner::PlannerHandle;
+use motion_bridge_native::planner::{DispatchError, PlannerHandle};
 use motion_bridge_native::slot_pool::{SlotPool, CURVE_POOL_N};
 
 // ---------------------------------------------------------------------------
@@ -522,9 +522,9 @@ fn build_dispatch(
     clock_sync_samples: Arc<AtomicU64>,
     mcu_axis_configs: Vec<McuAxisConfig>,
     stats: Arc<DispatchStats>,
-) -> Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync> {
+) -> Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> {
     let next_seg_id = Arc::new(Mutex::new(1_u32));
-    Arc::new(move |seg: &ShapedSegment| -> Result<(), String> {
+    Arc::new(move |seg: &ShapedSegment| -> Result<(), DispatchError> {
         // Build per-MCU plans. `t_start/t_end` get overwritten below.
         let mut plans = build_push_params(seg, &mcu_axis_configs, 0, 0);
         if plans.is_empty() {
@@ -556,7 +556,7 @@ fn build_dispatch(
                             plan.mcu_id,
                         );
                         *stats.last_error.lock().unwrap() = Some(msg.clone());
-                        return Err(msg);
+                        return Err(DispatchError::ComputeAckClock(msg));
                     }
                     thread::sleep(Duration::from_millis(20));
                 }
@@ -596,18 +596,25 @@ fn build_dispatch(
             // Load each axis curve, then push the segment. Mirror bridge.rs's
             // partial-failure slot release.
             let mut allocated_slots: Vec<u16> = Vec::with_capacity(plan.curves_to_load.len());
-            let mut load_err: Option<String> = None;
+            let mut load_err: Option<DispatchError> = None;
             for i in 0..plan.curves_to_load.len() {
                 let axis_idx = plan.curves_to_load[i].0;
                 let curve_params = plan.curves_to_load[i].1.clone();
-                let alloc = slot_pool.lock().unwrap().try_alloc();
-                let (slot, _gen) = match alloc {
-                    Some(v) => v,
-                    None => {
-                        load_err = Some(format!(
-                            "slot pool exhausted for mcu={}",
-                            plan.mcu_id,
-                        ));
+                let alloc = {
+                    let mut pool = slot_pool.lock().unwrap();
+                    let cap = pool.capacity();
+                    let in_flight = pool.in_flight_count();
+                    pool.try_alloc()
+                        .ok_or(DispatchError::SlotPoolExhausted {
+                            mcu_id: plan.mcu_id,
+                            capacity: cap,
+                            in_flight,
+                        })
+                };
+                let (slot, slot_gen) = match alloc {
+                    Ok(v) => v,
+                    Err(e) => {
+                        load_err = Some(e);
                         break;
                     }
                 };
@@ -620,10 +627,14 @@ fn build_dispatch(
                 ) {
                     Ok(handle) => plan.set_handle(axis_idx, handle),
                     Err(e) => {
-                        load_err = Some(format!(
-                            "load_curve axis={axis_idx} mcu={}: {e:?}",
-                            plan.mcu_id,
-                        ));
+                        load_err = Some(DispatchError::LoadCurve {
+                            mcu_id: plan.mcu_id,
+                            slot,
+                            seg_id: plan.params.id,
+                            axis: axis_idx,
+                            host_gen: slot_gen,
+                            detail: format!("{e:?}"),
+                        });
                         break;
                     }
                 }
@@ -634,7 +645,7 @@ fn build_dispatch(
                 for s in &allocated_slots {
                     pool.release(*s);
                 }
-                *stats.last_error.lock().unwrap() = Some(err.clone());
+                *stats.last_error.lock().unwrap() = Some(err.to_string());
                 return Err(err);
             }
 
@@ -662,12 +673,12 @@ fn build_dispatch(
                     for s in &allocated_slots {
                         pool.release(*s);
                     }
-                    let msg = format!(
-                        "push_segment mcu={}: {e:?}",
-                        plan.mcu_id,
-                    );
-                    *stats.last_error.lock().unwrap() = Some(msg.clone());
-                    return Err(msg);
+                    let err = DispatchError::PushSegment {
+                        mcu_id: plan.mcu_id,
+                        detail: format!("{e:?}"),
+                    };
+                    *stats.last_error.lock().unwrap() = Some(err.to_string());
+                    return Err(err);
                 }
             }
         }

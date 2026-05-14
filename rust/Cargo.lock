@@ -672,6 +672,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -818,6 +819,7 @@ dependencies = [
  "rustfft",
  "serde_json",
  "temporal",
+ "thiserror 2.0.18",
  "trajectory",
 ]
 

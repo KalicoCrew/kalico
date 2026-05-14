@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use heapless::spsc::Queue;
 use motion_bridge_native::classify::classify_and_build;
 use motion_bridge_native::config::{PlannerConfig, PlannerLimits};
-use motion_bridge_native::planner::PlannerHandle;
+use motion_bridge_native::planner::{DispatchError, PlannerHandle};
 use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
 
 use runtime::clock::{WidenState, one_tick_cycles};
@@ -115,12 +115,12 @@ fn live_planner_config() -> PlannerConfig {
 type Recorded = Arc<Mutex<Vec<ShapedSegment>>>;
 
 fn recording_dispatch() -> (
-    Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync>,
+    Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
     Recorded,
 ) {
     let recorded: Recorded = Arc::new(Mutex::new(Vec::new()));
     let rec_for_closure = Arc::clone(&recorded);
-    let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), String> + Send + Sync> =
+    let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> =
         Arc::new(move |seg: &ShapedSegment| {
             rec_for_closure.lock().unwrap().push(seg.clone());
             Ok(())

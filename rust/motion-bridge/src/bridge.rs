@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,7 @@ use crate::classify;
 use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
 use crate::dispatch::{build_push_params, McuAxisConfig, McuCaps, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::homing::HomingState;
-use crate::planner::{PlannerError, PlannerHandle};
+use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::slot_pool::{SlotPool, CURVE_POOL_N};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
@@ -142,7 +142,7 @@ fn spawn_periodic_clock_sync(
             // few samples regardless of the seed; only the very first
             // RTT half-correction depends on it.
             let initial_freq = {
-                let guard = clock_freqs.lock().unwrap();
+                let guard = clock_freqs.lock().unwrap_or_else(|p| p.into_inner());
                 guard.get(&mcu_handle_raw).copied().unwrap_or(100_000_000.0)
             };
             let mut estimator = ClockSyncEstimator::new(initial_freq);
@@ -192,7 +192,7 @@ fn spawn_periodic_clock_sync(
                                 static SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
                                 let n = SKIP_COUNT.fetch_add(1, AOrd::Relaxed);
                                 if n < 3 || n % 100 == 0 {
-                                    eprintln!(
+                                    log::debug!(
                                         "[bridge-trace] clock-sync skipping uninit MCU sample #{} mcu_at_response={} (TIM5 likely not yet ticking — pre-first-push)",
                                         n, mcu_at_response,
                                     );
@@ -210,7 +210,7 @@ fn spawn_periodic_clock_sync(
                                     / 2.0) as u64;
                                 let mcu_at_send =
                                     mcu_at_response.saturating_sub(one_way_cycles);
-                                let mut r = router.lock().unwrap();
+                                let mut r = router.lock().unwrap_or_else(|p| p.into_inner());
                                 let _ = r.set_clock_est_from_sample(
                                     mcu_h,
                                     estimator.clock_freq_estimate,
@@ -235,18 +235,33 @@ fn spawn_periodic_clock_sync(
         .expect("clock-sync thread spawn")
 }
 
+/// Errors returned by `query_runtime_caps` / `decode_runtime_caps_body`.
+/// The bootstrap path discriminates only via Display today (logged + falls
+/// back), but the typed variants make future routing (e.g. distinguishing
+/// "old firmware lacks the message" from "transport hiccup") possible
+/// without restructuring callers.
+#[derive(Debug, thiserror::Error)]
+enum RuntimeCapsError {
+    #[error("kalico_call QueryRuntimeCaps: {0}")]
+    Call(String),
+    #[error("QueryRuntimeCaps: unexpected response kind {got:?}")]
+    UnexpectedKind { got: kalico_protocol::MessageKind },
+    #[error("decode RuntimeCapsResponse: {0}")]
+    Decode(String),
+}
+
 /// Decode a `RuntimeCapsResponse` from a raw control-channel response body.
 /// Extracted so the bootstrap path can be unit-tested without spinning a
 /// reactor + serial port (the actual `kalico_call` round-trip is exercised
 /// in higher-level integration tests against Renode / hardware).
 fn decode_runtime_caps_body(
     body: &[u8],
-) -> Result<kalico_protocol::messages::RuntimeCapsResponse, String> {
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
     use kalico_protocol::codec::{Cursor, Decode};
     use kalico_protocol::messages::RuntimeCapsResponse;
     let mut c = Cursor::new(body);
     RuntimeCapsResponse::decode_from(&mut c)
-        .map_err(|e| format!("decode RuntimeCapsResponse: {e:?}"))
+        .map_err(|e| RuntimeCapsError::Decode(format!("{e:?}")))
 }
 
 /// Issue a `QueryRuntimeCaps` control-channel call and decode the response
@@ -256,15 +271,13 @@ fn decode_runtime_caps_body(
 fn query_runtime_caps(
     io: &KalicoHostIo,
     timeout: std::time::Duration,
-) -> Result<kalico_protocol::messages::RuntimeCapsResponse, String> {
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
     use kalico_protocol::MessageKind;
     let (kind, body) = io
         .kalico_call(MessageKind::QueryRuntimeCaps, Vec::new(), timeout)
-        .map_err(|e| format!("kalico_call QueryRuntimeCaps: {e:?}"))?;
+        .map_err(|e| RuntimeCapsError::Call(format!("{e:?}")))?;
     if kind != MessageKind::RuntimeCapsResponse {
-        return Err(format!(
-            "QueryRuntimeCaps: unexpected response kind {kind:?}"
-        ));
+        return Err(RuntimeCapsError::UnexpectedKind { got: kind });
     }
     decode_runtime_caps_body(&body)
 }
@@ -308,7 +321,7 @@ fn build_shaper_config(
     freq_x: f64,
     type_y: &str,
     freq_y: f64,
-) -> Result<ShaperConfig, String> {
+) -> Result<ShaperConfig, crate::config::ShaperConfigError> {
     Ok(ShaperConfig {
         x: parse_required_shaper(type_x, freq_x)?,
         y: parse_required_shaper(type_y, freq_y)?,
@@ -355,8 +368,12 @@ pub struct PyMotionBridge {
     handlers: Mutex<HashMap<(u32, String, u32), PyObject>>,
 
     // ── Phase-2 motion-submission state (Task 8) ────────────────────────
-    /// Spawned planner thread (None until `init_planner` is called).
-    planner: Mutex<Option<PlannerHandle>>,
+    /// Spawned planner thread. `init_planner` sets it exactly once; every
+    /// subsequent motion-submission entry point reads it lock-free via
+    /// `OnceLock::get`. The previous `Mutex<Option<PlannerHandle>>` form
+    /// took an uncontended mutex on every `submit_move` / `flush` /
+    /// `wait_moves` call.
+    planner: OnceLock<PlannerHandle>,
     /// Current planner config snapshot, mutated by `update_limits` / `update_shaper`.
     planner_config: Mutex<PlannerConfig>,
     /// Last commanded toolhead position (set by `set_position`, advanced by `submit_move`).
@@ -399,7 +416,7 @@ impl PyMotionBridge {
             mcus: Mutex::new(HashMap::new()),
             events: Arc::new(Mutex::new(VecDeque::new())),
             handlers: Mutex::new(HashMap::new()),
-            planner: Mutex::new(None),
+            planner: OnceLock::new(),
             planner_config: Mutex::new(PlannerConfig::default()),
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
@@ -426,10 +443,10 @@ impl PyMotionBridge {
     /// The actual serial open + identify handshake is Phase 2+.
     #[pyo3(signature = (label, serial_path, baud))]
     fn claim_mcu(&self, label: &str, serial_path: &str, baud: u32) -> PyResult<u32> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let handle = router.claim_mcu(label);
         let raw = handle.raw();
-        self.mcus.lock().unwrap().insert(
+        self.mcus.lock().unwrap_or_else(|p| p.into_inner()).insert(
             raw,
             McuConnection {
                 label: label.to_owned(),
@@ -455,7 +472,7 @@ impl PyMotionBridge {
         // the router slot. Holds neither lock during the join so the
         // thread can't deadlock on its final router update.
         let (stop, join) = {
-            let mut mcus = self.mcus.lock().unwrap();
+            let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn_opt = mcus.remove(&handle);
             match conn_opt {
                 Some(mut c) => (c.clock_sync_stop.take(), c.clock_sync_thread.take()),
@@ -469,7 +486,7 @@ impl PyMotionBridge {
             let _ = join.join();
         }
 
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router.release_mcu(mcu_handle_from_raw(handle));
         self.handlers
             .lock()
@@ -482,7 +499,7 @@ impl PyMotionBridge {
 
     /// Allocate a command queue for the given MCU. Returns queue id as int.
     fn alloc_command_queue(&self, handle: u32) -> PyResult<u32> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let qid = router
             .alloc_command_queue(mcu_handle_from_raw(handle))
             .map_err(router_err)?;
@@ -507,7 +524,7 @@ impl PyMotionBridge {
             req_clock,
             NotifyId::none(),
         );
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .push(mcu_handle_from_raw(mcu), cq_id_from_raw(queue), entry)
             .map_err(router_err)?;
@@ -530,7 +547,7 @@ impl PyMotionBridge {
         min_clock: u64,
         req_clock: u64,
     ) -> PyResult<u64> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let mcu_h = mcu_handle_from_raw(mcu);
 
         // Clone the Arc so the callback can push to the shared event queue.
@@ -549,7 +566,7 @@ impl PyMotionBridge {
                         sent_time: resp.sent_time,
                         receive_time: resp.receive_time,
                     };
-                    events_ref.lock().unwrap().push_back(ev);
+                    events_ref.lock().unwrap_or_else(|p| p.into_inner()).push_back(ev);
                 }),
             )
             .map_err(router_err)?;
@@ -608,7 +625,7 @@ impl PyMotionBridge {
         mcu: u32,
         callback: PyObject,
     ) -> PyResult<()> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let mcu_h = mcu_handle_from_raw(mcu);
 
         // Wrap the Python callback so it acquires the GIL when called.
@@ -630,7 +647,7 @@ impl PyMotionBridge {
 
     /// Drain one event from the events queue. Returns None if empty.
     fn poll_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock().unwrap_or_else(|p| p.into_inner());
         match events.pop_front() {
             Some(ev) => Ok(Some(ev.to_pydict(py)?)),
             None => Ok(None),
@@ -641,7 +658,7 @@ impl PyMotionBridge {
 
     /// Add a config command for the given MCU.
     fn add_config_cmd(&self, mcu: u32, data: &[u8]) -> PyResult<bool> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .add_config_cmd(mcu_handle_from_raw(mcu), data.to_vec())
             .map_err(router_err)
@@ -649,7 +666,7 @@ impl PyMotionBridge {
 
     /// Add an init command for the given MCU.
     fn add_init_cmd(&self, mcu: u32, data: &[u8]) -> PyResult<bool> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .add_init_cmd(mcu_handle_from_raw(mcu), data.to_vec())
             .map_err(router_err)
@@ -657,7 +674,7 @@ impl PyMotionBridge {
 
     /// Add a restart command for the given MCU.
     fn add_restart_cmd(&self, mcu: u32, data: &[u8]) -> PyResult<bool> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .add_restart_cmd(mcu_handle_from_raw(mcu), data.to_vec())
             .map_err(router_err)
@@ -665,7 +682,7 @@ impl PyMotionBridge {
 
     /// Transition the MCU to the config-sending phase.
     fn begin_config_phase(&self, mcu: u32) -> PyResult<()> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .begin_config_phase(mcu_handle_from_raw(mcu))
             .map_err(router_err)
@@ -673,7 +690,7 @@ impl PyMotionBridge {
 
     /// Get the next config/init entry for the given MCU, or None.
     fn next_config_entry(&self, mcu: u32) -> PyResult<Option<Vec<u8>>> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .next_config_entry(mcu_handle_from_raw(mcu))
             .map_err(router_err)
@@ -681,7 +698,7 @@ impl PyMotionBridge {
 
     /// Snapshot statistics for the given MCU as a Python dict.
     fn get_stats(&self, py: Python<'_>, mcu: u32) -> PyResult<Py<PyDict>> {
-        let router = self.router.lock().unwrap();
+        let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let stats = router
             .get_stats(mcu_handle_from_raw(mcu))
             .map_err(router_err)?;
@@ -701,7 +718,7 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("dict json parse: {e}")))?;
         let parser = MsgProtoParser::from_dictionary(dict)
             .map_err(|e| PyRuntimeError::new_err(format!("parser build: {e:?}")))?;
-        *self.parser.lock().unwrap() = Some(Arc::new(parser));
+        *self.parser.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(parser));
         Ok(())
     }
 
@@ -804,7 +821,7 @@ impl PyMotionBridge {
             std::time::Duration::from_secs(2),
         ) {
             Ok(caps) => {
-                eprintln!(
+                log::debug!(
                     "[caps-trace] attach_serial: runtime caps for {serial_path}: \
                      max_cp={} max_kv={} max_deg={} pool_n={}",
                     caps.max_control_points,
@@ -815,7 +832,7 @@ impl PyMotionBridge {
                 caps
             }
             Err(e) => {
-                eprintln!(
+                log::debug!(
                     "[caps-trace] attach_serial: QueryRuntimeCaps failed for {serial_path} ({e}); \
                      falling back to large-profile defaults",
                 );
@@ -850,7 +867,7 @@ impl PyMotionBridge {
             (None, None)
         };
 
-        let mut mcus = self.mcus.lock().unwrap();
+        let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
             PyRuntimeError::new_err(format!(
                 "attach_serial: unknown mcu_handle {mcu_handle}"
@@ -873,7 +890,7 @@ impl PyMotionBridge {
     /// `claim_mcu` must have been called first; `attach_serial` must have
     /// completed for the value to reflect the real MCU capabilities.
     fn get_mcu_capabilities(&self, mcu_handle: u32) -> PyResult<u64> {
-        let mcus = self.mcus.lock().unwrap();
+        let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu_handle).ok_or_else(|| {
             PyRuntimeError::new_err(format!(
                 "get_mcu_capabilities: unknown mcu_handle {mcu_handle}"
@@ -922,17 +939,17 @@ impl PyMotionBridge {
                 ));
             }
         }
-        eprintln!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}");
+        log::debug!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}");
         // belt-and-suspenders: also force stderr flush
         let _ = std::io::stderr().flush();
         let (io, identify_caps) = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!(
                     "configure_axes: unknown mcu_handle {mcu_handle}"
                 ))
             })?;
-            eprintln!("[trace-bridge-cax] conn found mcu_handle={mcu_handle} kalico_supported={} host_io_some={}",
+            log::debug!("[trace-bridge-cax] conn found mcu_handle={mcu_handle} kalico_supported={} host_io_some={}",
                 conn.kalico_native_supported, conn.host_io.is_some()
             );
             // Stock-Klipper firmware (no kalico runtime) cannot accept this
@@ -940,7 +957,7 @@ impl PyMotionBridge {
             // board runs stock Klipper still complete _configure_axes_per_mcu
             // for the kalico-runtime board(s).
             if !conn.kalico_native_supported {
-                eprintln!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
+                log::debug!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
                 return Ok(());
             }
             let io = conn.host_io.as_ref().ok_or_else(|| {
@@ -1008,7 +1025,7 @@ impl PyMotionBridge {
     /// `msgproto.MessageParser.process_identify(data)`.
     fn get_identify_data(&self, mcu_handle: u32) -> PyResult<Vec<u8>> {
         let io = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!(
                     "get_identify_data: unknown mcu_handle {mcu_handle}"
@@ -1053,7 +1070,7 @@ impl PyMotionBridge {
         // Clone the Arc out of the mutex so we can call blocking I/O without
         // holding the lock.
         let io = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!(
                     "bridge_call: unknown mcu_handle {mcu_handle}"
@@ -1109,7 +1126,7 @@ impl PyMotionBridge {
         use std::sync::mpsc::TryRecvError;
 
         let event = {
-            let mut mcus = self.mcus.lock().unwrap();
+            let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!(
                     "take_runtime_event: unknown mcu_handle {mcu_handle}"
@@ -1196,7 +1213,7 @@ impl PyMotionBridge {
     #[pyo3(signature = (mcu_handle, msg))]
     fn bridge_send(&self, mcu_handle: u32, msg: &str) -> PyResult<()> {
         let io = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!(
                     "bridge_send: unknown mcu_handle {mcu_handle}"
@@ -1234,12 +1251,12 @@ impl PyMotionBridge {
         static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);
         let call_n = SET_CLOCK_EST_CALLS.fetch_add(1, AOrd::Relaxed);
         if call_n < 5 || call_n % 100 == 0 {
-            eprintln!(
+            log::debug!(
                 "[bridge-trace] set_clock_est call#{} mcu={} freq={} offset={:.6} last_clock={}",
                 call_n, mcu, freq as u64, offset, last_clock,
             );
         }
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .set_clock_est_rebased(
                 mcu_handle_from_raw(mcu),
@@ -1249,14 +1266,14 @@ impl PyMotionBridge {
                 host_now_same_epoch,
             )
             .map_err(router_err)?;
-        self.clock_freqs.lock().unwrap().insert(mcu, freq);
+        self.clock_freqs.lock().unwrap_or_else(|p| p.into_inner()).insert(mcu, freq);
         Ok(())
     }
 
     /// Drain the debug log for crash diagnostics. Returns a dict with
     /// `sent` and `received` lists of dicts.
     fn extract_old(&self, py: Python<'_>, mcu: u32) -> PyResult<Py<PyDict>> {
-        let mut router = self.router.lock().unwrap();
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let (sent, received) = router
             .extract_old(mcu_handle_from_raw(mcu))
             .map_err(router_err)?;
@@ -1332,8 +1349,7 @@ impl PyMotionBridge {
         window_capacity: usize,
         beta_max_iters: u8,
     ) -> PyResult<()> {
-        let mut planner_slot = self.planner.lock().unwrap();
-        if planner_slot.is_some() {
+        if self.planner.get().is_some() {
             return Err(PyRuntimeError::new_err(
                 "planner already initialized",
             ));
@@ -1345,7 +1361,7 @@ impl PyMotionBridge {
             shaper_type_y,
             shaper_freq_y,
         )
-        .map_err(PyRuntimeError::new_err)?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         let limits = PlannerLimits {
             max_velocity,
@@ -1362,14 +1378,14 @@ impl PyMotionBridge {
         cfg.beta_max_iters = beta_max_iters;
 
         // Persist for runtime updates.
-        *self.planner_config.lock().unwrap() = cfg.clone();
+        *self.planner_config.lock().unwrap_or_else(|p| p.into_inner()) = cfg.clone();
 
         // Two-MCU first-print MVP topology. Pull `runtime_caps` from each
         // `McuConnection` (set during bootstrap by `query_runtime_caps`); fall
         // back to large-profile defaults if the firmware predates
         // `QueryRuntimeCaps`.
         let (octopus_caps, f446_caps) = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let oc = mcus
                 .get(&octopus_handle)
                 .and_then(|c| c.runtime_caps)
@@ -1396,7 +1412,7 @@ impl PyMotionBridge {
                 caps: f446_caps,
             },
         ];
-        *self.mcu_axis_configs.lock().unwrap() = mcu_configs.clone();
+        *self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner()) = mcu_configs.clone();
 
         // ── Task 8b: wire the dispatch closure to producer::load_curve /
         // producer::push_segment via KalicoHostIo ─────────────────────────
@@ -1423,7 +1439,7 @@ impl PyMotionBridge {
         let router_arc = Arc::clone(&self.router);
 
         let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let mut out = HashMap::new();
             for cfg_mcu in &mcu_configs {
                 let conn = mcus.get(&cfg_mcu.mcu_id).ok_or_else(|| {
@@ -1449,7 +1465,7 @@ impl PyMotionBridge {
         // bridge can't send them planner curves. The dispatch closure below
         // skips plans targeting such MCUs.
         let kalico_native_for_plans: HashMap<u32, bool> = {
-            let mcus = self.mcus.lock().unwrap();
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcu_configs
                 .iter()
                 .map(|cfg| {
@@ -1468,8 +1484,8 @@ impl PyMotionBridge {
         // event-routing API (`on_credit_freed`) drives.
         let mut dispatch_ios: HashMap<u32, (Arc<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>)> =
             HashMap::new();
-        let mut self_credits = self.credit_counters.lock().unwrap();
-        let mut self_pools = self.slot_pools.lock().unwrap();
+        let mut self_credits = self.credit_counters.lock().unwrap_or_else(|p| p.into_inner());
+        let mut self_pools = self.slot_pools.lock().unwrap_or_else(|p| p.into_inner());
         self_credits.clear();
         self_pools.clear();
         for cfg_mcu in &mcu_configs {
@@ -1487,7 +1503,7 @@ impl PyMotionBridge {
             // to allocate slot=4 → F446 rejects with
             // `KALICO_ERR_INVALID_HANDLE`/OutOfBounds.
             let pool_capacity = cfg_mcu.caps.curve_pool_n as usize;
-            eprintln!(
+            log::debug!(
                 "[slot-trace] init_pool mcu={} capacity={}",
                 cfg_mcu.mcu_id, pool_capacity,
             );
@@ -1520,10 +1536,10 @@ impl PyMotionBridge {
             Arc::new(Mutex::new(HashMap::new()));
 
         let dispatch: Arc<
-            dyn Fn(&trajectory::ShapedSegment) -> Result<(), String>
+            dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError>
                 + Send
                 + Sync,
-        > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), String> {
+        > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), DispatchError> {
             log::info!(
                 "[bridge-trace] dispatch closure entered: seg.t_start={} seg.t_end={}",
                 seg.t_start, seg.t_end,
@@ -1571,17 +1587,17 @@ impl PyMotionBridge {
                         || n_knots > caps.max_knot_vector_len
                         || curve.degree > caps.max_degree
                     {
-                        let msg = format!(
-                            "motion-bridge: curve for mcu {} exceeds caps \
-                             (cps {} > {}, knots {} > {}, degree {} > {}); \
-                             logical-move splitting not yet implemented (Task 13 follow-up).",
-                            plan.mcu_id,
-                            n_cps, caps.max_control_points,
-                            n_knots, caps.max_knot_vector_len,
-                            curve.degree, caps.max_degree,
-                        );
-                        log::error!("{msg}");
-                        return Err(msg);
+                        let err = DispatchError::CapsExceeded {
+                            mcu_id: plan.mcu_id,
+                            cps: n_cps,
+                            max_cps: caps.max_control_points,
+                            knots: n_knots,
+                            max_knots: caps.max_knot_vector_len,
+                            degree: curve.degree,
+                            max_degree: caps.max_degree,
+                        };
+                        log::error!("{err}");
+                        return Err(err);
                     }
                 }
             }
@@ -1619,7 +1635,7 @@ impl PyMotionBridge {
                     .unwrap_or_else(|| {
                         fallback_counter.fetch_add(1, Ordering::Relaxed);
                         let first_for_mcu = {
-                            let mut warned = warned_mcus.lock().unwrap();
+                            let mut warned = warned_mcus.lock().unwrap_or_else(|p| p.into_inner());
                             warned.insert(plan.mcu_id)
                         };
                         if first_for_mcu {
@@ -1656,27 +1672,26 @@ impl PyMotionBridge {
                     let wait_start = Instant::now();
                     let mut wait_iter: u32 = 0;
                     let now_clock = loop {
-                        let r = router_for_cb.lock().unwrap();
+                        let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                         let n = r
                             .compute_ack_clock(mcu_h)
-                            .map_err(|e| format!("compute_ack_clock: {e}"))?;
+                            .map_err(|e| DispatchError::ComputeAckClock(e.to_string()))?;
                         drop(r);
                         if n > 0 {
                             break n;
                         }
                         if wait_iter == 0 || wait_iter == 50 || wait_iter == 250 || wait_iter == 499 {
-                            eprintln!(
+                            log::debug!(
                                 "[bridge-trace] dispatch-wait iter={} mcu_id={} mcu_h={:?} now_clock=0 freq_from_map={}",
                                 wait_iter, plan.mcu_id, mcu_h, freq as u64,
                             );
                         }
                         wait_iter += 1;
                         if wait_start.elapsed() > Duration::from_secs(5) {
-                            return Err(format!(
-                                "compute_ack_clock returned 0 after 5s — \
-                                 clock-sync didn't establish for mcu {} (mcu_h={:?})",
-                                plan.mcu_id, mcu_h
-                            ));
+                            return Err(DispatchError::ClockSyncTimeout {
+                                mcu_id: plan.mcu_id,
+                                mcu_handle: mcu_h,
+                            });
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     };
@@ -1687,14 +1702,14 @@ impl PyMotionBridge {
                     use std::sync::atomic::{AtomicBool, Ordering as AOrd};
                     static FIRST_DISPATCH_LOGGED: AtomicBool = AtomicBool::new(false);
                     if !FIRST_DISPATCH_LOGGED.swap(true, AOrd::AcqRel) {
-                        eprintln!(
+                        log::debug!(
                             "[bridge-trace] first-dispatch mcu={} freq={} now_clock={} lead_cycles={} seg.t_start={:.6} clock_sync_wait_ms={}",
                             plan.mcu_id, freq as u64, now_clock, lead_cycles, seg.t_start,
                             wait_start.elapsed().as_millis(),
                         );
                     }
 
-                    let mut schedule = schedule_state.lock().unwrap();
+                    let mut schedule = schedule_state.lock().unwrap_or_else(|p| p.into_inner());
                     let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
                     let now_plus_lead = now_clock.saturating_add(lead_cycles);
                     let planner_offset_cycles =
@@ -1745,7 +1760,7 @@ impl PyMotionBridge {
                 // Update tail of schedule so the next logical segment sees
                 // the correct end-of-batch.
                 {
-                    let mut schedule = schedule_state.lock().unwrap();
+                    let mut schedule = schedule_state.lock().unwrap_or_else(|p| p.into_inner());
                     let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
                     entry.1 = entry.1.max(t_end_clock);
                 }
@@ -1756,7 +1771,7 @@ impl PyMotionBridge {
                 // Allocate a fresh segment id for this logical move (one per
                 // MCU per ShapedSegment, restoring pre-B.1 semantics).
                 {
-                    let mut ids = next_seg_id.lock().unwrap();
+                    let mut ids = next_seg_id.lock().unwrap_or_else(|p| p.into_inner());
                     let entry = ids.entry(plan.mcu_id).or_insert(1);
                     plan.params.id = *entry;
                     *entry = entry.wrapping_add(1);
@@ -1769,20 +1784,18 @@ impl PyMotionBridge {
                 // to begin + N×chunk + finalize over the wire.
                 let mut allocated_slots: Vec<u16> =
                     Vec::with_capacity(plan.curves_to_load.len());
-                let mut seg_err: Option<String> = None;
+                let mut seg_err: Option<DispatchError> = None;
                 for i in 0..plan.curves_to_load.len() {
                     let axis_idx = plan.curves_to_load[i].0;
                     let curve_params = plan.curves_to_load[i].1.clone();
                     let alloc_result = {
-                        let mut pool = slot_pool.lock().unwrap();
+                        let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                         let cap = pool.capacity();
                         let in_flight = pool.in_flight_count();
-                        pool.try_alloc().ok_or_else(|| {
-                            format!(
-                                "slot pool exhausted for mcu={} (capacity={cap}, in_flight={in_flight}); \
-                                 awaiting kalico_credit_freed retirement events",
-                                plan.mcu_id,
-                            )
+                        pool.try_alloc().ok_or(DispatchError::SlotPoolExhausted {
+                            mcu_id: plan.mcu_id,
+                            capacity: cap,
+                            in_flight,
                         })
                     };
                     let (slot, slot_gen) = match alloc_result {
@@ -1793,10 +1806,10 @@ impl PyMotionBridge {
                         }
                     };
                     let pool_in_flight_after_alloc = {
-                        let p = slot_pool.lock().unwrap();
+                        let p = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                         p.in_flight_count()
                     };
-                    eprintln!(
+                    log::debug!(
                         "[slot-trace] try_alloc mcu={} seg_id={} axis={} slot={} gen={} in_flight={}",
                         plan.mcu_id, plan.params.id, axis_idx, slot, slot_gen,
                         pool_in_flight_after_alloc,
@@ -1812,10 +1825,14 @@ impl PyMotionBridge {
                             plan.set_handle(axis_idx, handle);
                         }
                         Err(e) => {
-                            seg_err = Some(format!(
-                                "load_curve mcu={} slot={} seg_id={} axis={} host_gen={}: {e}",
-                                plan.mcu_id, slot, plan.params.id, axis_idx, slot_gen,
-                            ));
+                            seg_err = Some(DispatchError::LoadCurve {
+                                mcu_id: plan.mcu_id,
+                                slot,
+                                seg_id: plan.params.id,
+                                axis: axis_idx,
+                                host_gen: slot_gen,
+                                detail: e.to_string(),
+                            });
                             break;
                         }
                     }
@@ -1824,9 +1841,9 @@ impl PyMotionBridge {
                 if let Some(err) = seg_err {
                     // Partial failure: release every slot allocated for this
                     // segment before propagating.
-                    let mut pool = slot_pool.lock().unwrap();
+                    let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                     for s in &allocated_slots {
-                        eprintln!(
+                        log::debug!(
                             "[slot-trace] release(on-err) mcu={} seg_id={} slot={}",
                             plan.mcu_id, plan.params.id, s,
                         );
@@ -1838,10 +1855,10 @@ impl PyMotionBridge {
                 // Bind every freshly-allocated slot to this segment id so
                 // `kalico_credit_freed`-driven retirement can release them.
                 {
-                    let mut pool = slot_pool.lock().unwrap();
+                    let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                     for slot in &allocated_slots {
                         pool.register_segment(*slot, plan.params.id);
-                        eprintln!(
+                        log::debug!(
                             "[slot-trace] register_segment mcu={} slot={} seg_id={}",
                             plan.mcu_id, slot, plan.params.id,
                         );
@@ -1862,7 +1879,7 @@ impl PyMotionBridge {
                     let curve = &seg.axes[axis];
                     nurbs::eval::eval(curve, u)
                 };
-                eprintln!(
+                log::debug!(
                     "[bridge-trace] seg-dispatch mcu={} seg_id={} branch={} \
                      now_clock={} mcu_base={} t_start_clock={} t_end_clock={} \
                      t_start_s={:.6} t_end_s={:.6} \
@@ -1893,14 +1910,14 @@ impl PyMotionBridge {
                 if let Err(e) = push_result {
                     // Defensive cleanup — release this segment's slots so
                     // the pool doesn't leak (the MCU never accepted them).
-                    let mut pool = slot_pool.lock().unwrap();
+                    let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                     for s in &allocated_slots {
                         pool.release(*s);
                     }
-                    return Err(format!(
-                        "push_segment mcu={}: {e}",
-                        plan.mcu_id
-                    ));
+                    return Err(DispatchError::PushSegment {
+                        mcu_id: plan.mcu_id,
+                        detail: e.to_string(),
+                    });
                 }
             }
 
@@ -1908,43 +1925,62 @@ impl PyMotionBridge {
             Ok(())
         });
 
-        *planner_slot = Some(PlannerHandle::spawn(cfg, dispatch));
+        // `set` returns `Err(handle)` if the slot was concurrently
+        // initialized. The early `get().is_some()` check above (combined
+        // with klippy's GIL-serialized init path) makes this race a
+        // logic bug rather than a benign retry — surface it explicitly.
+        self.planner
+            .set(PlannerHandle::spawn(cfg, dispatch))
+            .map_err(|_| {
+                PyRuntimeError::new_err(
+                    "planner already initialized (raced)",
+                )
+            })?;
         Ok(())
     }
 
     /// Submit a travel move. Phase 2: `de` must be 0.
+    //
+    // `py.allow_threads` releases the GIL across `classify_and_build`
+    // (NURBS construction + validation, real work) and the planner mutex
+    // acquisitions, so the clock-sync thread and other Python callers can
+    // make progress under sustained motion submission. The channel send
+    // inside `planner.submit_move` is unbounded today, but releasing the
+    // GIL here also future-proofs against converting it to bounded
+    // backpressure without retrofitting every call-site.
     #[pyo3(signature = (dx, dy, dz, de, feedrate))]
     fn submit_move(
         &self,
+        py: Python<'_>,
         dx: f64,
         dy: f64,
         dz: f64,
         de: f64,
         feedrate: f64,
     ) -> PyResult<()> {
-        eprintln!(
+        log::debug!(
             "[bridge-trace] submit_move enter dx={:.3} dy={:.3} dz={:.3} feed={:.1}",
             dx, dy, dz, feedrate,
         );
-        let pos = *self.commanded_pos.lock().unwrap();
-        let classified =
-            classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        py.allow_threads(|| -> PyResult<()> {
+            let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
+            let classified =
+                classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err(
-                "planner not initialized — call init_planner first",
-            )
-        })?;
-        planner.submit_move(classified).map_err(planner_err)?;
-        drop(planner_guard);
+            let planner = self.planner.get().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "planner not initialized — call init_planner first",
+                )
+            })?;
+            planner.submit_move(classified).map_err(planner_err)?;
 
-        let mut pos = self.commanded_pos.lock().unwrap();
-        pos[0] += dx;
-        pos[1] += dy;
-        pos[2] += dz;
-        Ok(())
+            let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
+            pos[0] += dx;
+            pos[1] += dy;
+            pos[2] += dz;
+            Ok(())
+        })
     }
 
     /// Submit one homing-tagged absolute move. MVP watches the first arm id;
@@ -1988,8 +2024,7 @@ impl PyMotionBridge {
     /// the queued timeline, which advances synchronously on
     /// `submit_move`.
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2094,8 +2129,7 @@ impl PyMotionBridge {
 
     /// Submit a dwell: flush + advance print time.
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2136,7 +2170,7 @@ impl PyMotionBridge {
     /// the re-anchor.
     fn set_position(&self, x: f64, y: f64, z: f64) -> PyResult<()> {
         {
-            let mut pos = self.commanded_pos.lock().unwrap();
+            let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             *pos = [x, y, z];
         }
         // Forward to the planner so the streaming `ShaperState` is
@@ -2145,8 +2179,7 @@ impl PyMotionBridge {
         // the planner registers for this lifecycle event (see
         // `PlannerHandle::kalico_stream_open` and
         // `streaming::ShaperState::reset`).
-        let planner_guard = self.planner.lock().unwrap();
-        if let Some(planner) = planner_guard.as_ref() {
+        if let Some(planner) = self.planner.get() {
             planner
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
@@ -2161,14 +2194,13 @@ impl PyMotionBridge {
         max_velocity: f64,
         max_accel: f64,
     ) -> PyResult<()> {
-        let mut cfg = self.planner_config.lock().unwrap();
+        let mut cfg = self.planner_config.lock().unwrap_or_else(|p| p.into_inner());
         cfg.limits.max_velocity = max_velocity;
         cfg.limits.max_accel = max_accel;
         let new_limits = cfg.limits;
         drop(cfg);
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2190,12 +2222,11 @@ impl PyMotionBridge {
             shaper_type_y,
             freq_y,
         )
-        .map_err(PyRuntimeError::new_err)?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        self.planner_config.lock().unwrap().shaper = shaper.clone();
+        self.planner_config.lock().unwrap_or_else(|p| p.into_inner()).shaper = shaper.clone();
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2205,8 +2236,7 @@ impl PyMotionBridge {
 
     /// Estimated print time of the last queued move, in seconds.
     fn get_last_move_time(&self) -> f64 {
-        let planner_guard = self.planner.lock().unwrap();
-        match planner_guard.as_ref() {
+        match self.planner.get() {
             Some(p) => p.last_move_time(),
             None => 0.0,
         }
@@ -2243,20 +2273,20 @@ impl PyMotionBridge {
         retired_through_segment_id: u32,
         free_slots: u8,
     ) -> PyResult<(u32, Option<u32>)> {
-        let (n_released, in_flight_after) = match self.slot_pools.lock().unwrap().get(&mcu) {
+        let (n_released, in_flight_after) = match self.slot_pools.lock().unwrap_or_else(|p| p.into_inner()).get(&mcu) {
             Some(pool_arc) => {
-                let mut p = pool_arc.lock().unwrap();
+                let mut p = pool_arc.lock().unwrap_or_else(|p| p.into_inner());
                 let n = p.retire_through_segment(retired_through_segment_id);
                 (n, p.in_flight_count())
             }
             None => (0, 0),
         };
-        eprintln!(
+        log::debug!(
             "[slot-trace] on_credit_freed mcu={} retired_through={} free_slots={} \
              n_released={} in_flight_after={}",
             mcu, retired_through_segment_id, free_slots, n_released, in_flight_after,
         );
-        if let Some(c) = self.credit_counters.lock().unwrap().get(&mcu) {
+        if let Some(c) = self.credit_counters.lock().unwrap_or_else(|p| p.into_inner()).get(&mcu) {
             c.on_credit_freed(free_slots);
         }
         self.homing.complete_if_retired(retired_through_segment_id);
@@ -2271,7 +2301,7 @@ impl PyMotionBridge {
             .lock()
             .unwrap()
             .get(&mcu)
-            .map(|p| p.lock().unwrap().in_flight_count() as u32)
+            .map(|p| p.lock().unwrap_or_else(|p| p.into_inner()).in_flight_count() as u32)
             .unwrap_or(0)
     }
 
@@ -2296,7 +2326,7 @@ impl PyMotionBridge {
 
 impl PyMotionBridge {
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
-        let mcus = self.mcus.lock().unwrap();
+        let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu).ok_or_else(|| {
             PyRuntimeError::new_err(format!("{caller}: unknown mcu_handle {mcu}"))
         })?;
@@ -2324,7 +2354,7 @@ impl PyMotionBridge {
         // TODO(Step 10): accept all arm_ids as a logical OR set.
         self.homing.begin(arm_id);
 
-        let pos = *self.commanded_pos.lock().unwrap();
+        let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
         log::info!(
             "[bridge-trace] submit_homing_move arm_id={} pos=[{:.3},{:.3},{:.3}] newpos=[{:.3},{:.3},{:.3}] speed={:.3}",
             arm_id,
@@ -2342,8 +2372,7 @@ impl PyMotionBridge {
         )
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let planner_guard = self.planner.lock().unwrap();
-        let planner = planner_guard.as_ref().ok_or_else(|| {
+        let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err(
                 "planner not initialized — call init_planner first",
             )
@@ -2374,9 +2403,9 @@ mod credit_freed_tests {
     /// normally does this; tests bypass the planner thread.
     fn install_mcu(bridge: &PyMotionBridge, mcu: u32) -> Arc<Mutex<SlotPool>> {
         let pool = Arc::new(Mutex::new(SlotPool::new(crate::slot_pool::CURVE_POOL_N)));
-        bridge.slot_pools.lock().unwrap().insert(mcu, Arc::clone(&pool));
+        bridge.slot_pools.lock().unwrap_or_else(|p| p.into_inner()).insert(mcu, Arc::clone(&pool));
         let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
-        bridge.credit_counters.lock().unwrap().insert(mcu, credit);
+        bridge.credit_counters.lock().unwrap_or_else(|p| p.into_inner()).insert(mcu, credit);
         pool
     }
 
@@ -2388,7 +2417,7 @@ mod credit_freed_tests {
 
         // Allocate three in-flight segments with monotonic ids.
         {
-            let mut p = pool.lock().unwrap();
+            let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
             for seg_id in 1u32..=3 {
                 let (slot, _credit) = p
                     .try_alloc()
@@ -2403,14 +2432,14 @@ mod credit_freed_tests {
             .on_credit_freed(mcu, 2, /* free_slots */ 2)
             .expect("on_credit_freed returns Ok");
         assert_eq!(n, 2, "two slots should be released");
-        assert_eq!(pool.lock().unwrap().in_flight_count(), 1);
+        assert_eq!(pool.lock().unwrap_or_else(|p| p.into_inner()).in_flight_count(), 1);
 
         // Higher-id retirement releases the rest.
         let (n, _arm) = bridge
             .on_credit_freed(mcu, 100, 1)
             .expect("on_credit_freed returns Ok");
         assert_eq!(n, 1);
-        assert_eq!(pool.lock().unwrap().in_flight_count(), 0);
+        assert_eq!(pool.lock().unwrap_or_else(|p| p.into_inner()).in_flight_count(), 0);
     }
 
     #[test]
