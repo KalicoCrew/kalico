@@ -27,6 +27,19 @@ pub enum ArmPolicy {
     IgnoreUntilMoving = 2,
 }
 
+impl TryFrom<u8> for ArmPolicy {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::TripImmediately),
+            1 => Ok(Self::WaitForClear),
+            2 => Ok(Self::IgnoreUntilMoving),
+            other => Err(other),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct VelocityAxis(u8);
 
@@ -465,42 +478,56 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
         let pin_high = read_pin(gpio);
         let active_high = src.active_high.load(Ordering::Acquire);
         let asserted = if active_high { pin_high } else { !pin_high };
-        let policy = src.policy.load(Ordering::Acquire);
+        // Decode the policy byte. An unrecognised value (would require a
+        // wire-corruption or future firmware-vs-host version skew) maps
+        // conservatively to `TripImmediately` — that matches the previous
+        // implicit fall-through behaviour (the old `else if !asserted`
+        // arm) without depending on raw-discriminant comparisons.
+        let policy = ArmPolicy::try_from(src.policy.load(Ordering::Acquire))
+            .unwrap_or(ArmPolicy::TripImmediately);
 
-        if policy == ArmPolicy::IgnoreUntilMoving as u8 {
-            let axis = VelocityAxis::from_bits_truncate(src.velocity_axis.load(Ordering::Acquire));
-            let v_sel = max_axis_velocity(v_per_axis_q16, axis);
-            if !src.moved_above_v.load(Ordering::Acquire)
-                && v_sel >= src.v_min_q16.load(Ordering::Acquire)
-            {
-                src.moved_above_v.store(true, Ordering::Release);
+        match policy {
+            ArmPolicy::IgnoreUntilMoving => {
+                let axis = VelocityAxis::from_bits_truncate(
+                    src.velocity_axis.load(Ordering::Acquire),
+                );
+                let v_sel = max_axis_velocity(v_per_axis_q16, axis);
+                if !src.moved_above_v.load(Ordering::Acquire)
+                    && v_sel >= src.v_min_q16.load(Ordering::Acquire)
+                {
+                    src.moved_above_v.store(true, Ordering::Release);
+                }
+                if !src.moved_above_v.load(Ordering::Acquire) {
+                    src.sample_acc.store(0, Ordering::Release);
+                    continue;
+                }
+                if !asserted {
+                    src.cleared.store(true, Ordering::Release);
+                    src.sample_acc.store(0, Ordering::Release);
+                    continue;
+                }
+                if !src.cleared.load(Ordering::Acquire) {
+                    src.sample_acc.store(0, Ordering::Release);
+                    continue;
+                }
             }
-            if !src.moved_above_v.load(Ordering::Acquire) {
-                src.sample_acc.store(0, Ordering::Release);
-                continue;
+            ArmPolicy::WaitForClear => {
+                if !asserted {
+                    src.cleared.store(true, Ordering::Release);
+                    src.sample_acc.store(0, Ordering::Release);
+                    continue;
+                }
+                if !src.cleared.load(Ordering::Acquire) {
+                    src.sample_acc.store(0, Ordering::Release);
+                    continue;
+                }
             }
-            if !asserted {
-                src.cleared.store(true, Ordering::Release);
-                src.sample_acc.store(0, Ordering::Release);
-                continue;
+            ArmPolicy::TripImmediately => {
+                if !asserted {
+                    src.sample_acc.store(0, Ordering::Release);
+                    continue;
+                }
             }
-            if !src.cleared.load(Ordering::Acquire) {
-                src.sample_acc.store(0, Ordering::Release);
-                continue;
-            }
-        } else if policy == ArmPolicy::WaitForClear as u8 {
-            if !asserted {
-                src.cleared.store(true, Ordering::Release);
-                src.sample_acc.store(0, Ordering::Release);
-                continue;
-            }
-            if !src.cleared.load(Ordering::Acquire) {
-                src.sample_acc.store(0, Ordering::Release);
-                continue;
-            }
-        } else if !asserted {
-            src.sample_acc.store(0, Ordering::Release);
-            continue;
         }
 
         let sample_acc = src.sample_acc.load(Ordering::Acquire).saturating_add(1);
@@ -819,6 +846,35 @@ mod tests {
             4,
         )))
         .expect("arm");
+        set_pin_level(4, true);
+        assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::AbortNow);
+    }
+
+    #[test]
+    fn arm_policy_try_from_decodes_known_variants_and_rejects_others() {
+        assert_eq!(ArmPolicy::try_from(0).unwrap(), ArmPolicy::TripImmediately);
+        assert_eq!(ArmPolicy::try_from(1).unwrap(), ArmPolicy::WaitForClear);
+        assert_eq!(ArmPolicy::try_from(2).unwrap(), ArmPolicy::IgnoreUntilMoving);
+        assert_eq!(ArmPolicy::try_from(3).unwrap_err(), 3);
+        assert_eq!(ArmPolicy::try_from(255).unwrap_err(), 255);
+    }
+
+    #[test]
+    fn unknown_policy_byte_falls_back_to_trip_immediately_behavior() {
+        // Defensive: if a wire-corruption or version-skew ever planted a
+        // non-{0,1,2} value into the policy atomic, the decoded fallback
+        // is `TripImmediately` — same observable behavior as setting
+        // policy to 0 explicitly: trip when asserted, no-op otherwise.
+        let _guard = reset();
+        arm(msg(cfg(
+            SourceKind::Physical,
+            ArmPolicy::TripImmediately,
+            1,
+            4,
+        )))
+        .expect("arm");
+        // Plant a bogus byte directly into the source's policy atomic.
+        ARM.sources[0].policy.store(99, Ordering::Release);
         set_pin_level(4, true);
         assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::AbortNow);
     }
