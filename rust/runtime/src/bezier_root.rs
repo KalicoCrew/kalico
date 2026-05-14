@@ -180,7 +180,7 @@ pub fn solve_monotone_cubic_root(
 /// Mainar & Peña 2004, "Evaluation of the derivative of a polynomial
 /// in Bernstein form," App. Math. and Computation 158(1):195-204.
 #[inline]
-fn eval_cubic_bernstein(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+pub(crate) fn eval_cubic_bernstein(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let one_minus_t = 1.0 - t;
     // Round 1: collapse 4 CPs to 3
     let b00 = one_minus_t * p0 + t * p1;
@@ -198,7 +198,7 @@ fn eval_cubic_bernstein(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
 /// control points `d_i = 3·(P_{i+1} - P_i)`; evaluate by de Casteljau
 /// on those.
 #[inline]
-fn eval_cubic_derivative_bernstein(
+pub(crate) fn eval_cubic_derivative_bernstein(
     p0: f64,
     p1: f64,
     p2: f64,

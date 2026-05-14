@@ -1488,33 +1488,43 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return None;
         }
 
-        // Build per-motor cubic Bézier coefficients. The planner emits
-        // uniform cubic Béziers (knots [0,0,0,0,1,1,1,1]); we extract the
-        // 4 control points per axis and compose them under the motor's
-        // kinematic transform (CoreXY A = X+Y, B = X−Y; Cartesian = single
-        // axis). Missing/UNUSED axes default to all-zero coefficients so
-        // the Cardano solver naturally reports no root crossing and the
-        // caller treats the motor as motionless on this segment.
-        let coeffs_primary = cv_primary
+        // Build per-motor cubic Bézier CPs. The planner emits uniform
+        // cubic Béziers (knots [0,0,0,0,1,1,1,1]) for `arm_step_timer`'s
+        // single-piece path; we extract the 4 control points per axis
+        // and compose them under the motor's kinematic transform (CoreXY
+        // A = X+Y, B = X−Y; Cartesian = single axis). Missing/UNUSED
+        // axes default to all-zero CPs so `solve_monotone_cubic_root`
+        // reports no root and the caller treats the motor as motionless.
+        let cps_primary: [f64; 4] = cv_primary
             .as_ref()
-            .and_then(extract_uniform_cubic_bezier_coeffs)
-            .unwrap_or_else(|| crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0));
-        let coeffs_secondary = cv_secondary
+            .and_then(|cv| cubic_piece(cv, 0).map(|(_, _, cps)| cps))
+            .unwrap_or([0.0; 4]);
+        let cps_secondary: [f64; 4] = cv_secondary
             .as_ref()
-            .and_then(extract_uniform_cubic_bezier_coeffs)
-            .unwrap_or_else(|| crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0));
-        let coeffs = if is_corexy {
+            .and_then(|cv| cubic_piece(cv, 0).map(|(_, _, cps)| cps))
+            .unwrap_or([0.0; 4]);
+        let cps: [f64; 4] = if is_corexy {
             if corexy_sign > 0.0 {
-                coeffs_primary.add(&coeffs_secondary)
+                [
+                    cps_primary[0] + cps_secondary[0],
+                    cps_primary[1] + cps_secondary[1],
+                    cps_primary[2] + cps_secondary[2],
+                    cps_primary[3] + cps_secondary[3],
+                ]
             } else {
-                coeffs_primary.sub(&coeffs_secondary)
+                [
+                    cps_primary[0] - cps_secondary[0],
+                    cps_primary[1] - cps_secondary[1],
+                    cps_primary[2] - cps_secondary[2],
+                    cps_primary[3] - cps_secondary[3],
+                ]
             }
         } else {
-            coeffs_primary
+            cps_primary
         };
 
         let q = crate::step_time::StepTimeQuery {
-            coeffs: &coeffs,
+            cps,
             step_distance: step_distance_mm,
             current_step,
             t_curr: t_curr_norm,
@@ -1864,15 +1874,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // 2–10 pieces depending on the shaper kernel.
                 //
                 // The pre-2026-05-14 producer assumed a single 4-CP cubic
-                // (`extract_uniform_cubic_bezier_coeffs`) and fell back to
-                // zero-coeffs for anything else, which made every motor
-                // immediately exhaust on the first `compute_next_step_time`
-                // call — zero steps emitted, host slot pool drained
-                // segment-after-segment, no toolhead motion.
+                // (extract_uniform_cubic_bezier_coeffs, since deleted) and
+                // fell back to zero-coeffs for anything else, which made
+                // every motor immediately exhaust on the first
+                // `compute_next_step_time` call — zero steps emitted, host
+                // slot pool drained segment-after-segment, no toolhead motion.
                 //
-                // Now: walk pieces sequentially per Cardano call, mapping
-                // local `t ∈ [0,1]` of each piece back to global `u ∈
-                // [u_start_piece, u_end_piece]` of the segment.
+                // Now: walk pieces sequentially per `compute_next_step_time`
+                // call, mapping local `t ∈ [0,1]` of each piece back to
+                // global `u ∈ [u_start_piece, u_end_piece]` of the segment.
                 let n_pieces_primary = cv_primary.as_ref().map_or(0, cubic_n_pieces);
                 let n_pieces_secondary = cv_secondary.as_ref().map_or(0, cubic_n_pieces);
 
@@ -1927,18 +1937,28 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // when secondary is UNUSED.
                 let cv_primary_ref = cv_primary.as_ref();
                 let cv_secondary_ref = cv_secondary.as_ref();
-                let piece_coeffs = |pi: usize| -> Option<(f64, f64, crate::cardano::CubicCoeffs)> {
-                    let (u_lo, u_hi, c_p) = cubic_piece(cv_primary_ref?, pi)?;
+                let piece_coeffs = |pi: usize| -> Option<(f64, f64, [f64; 4])> {
+                    let (u_lo, u_hi, cps_p) = cubic_piece(cv_primary_ref?, pi)?;
                     if is_corexy && !secondary_is_zero {
-                        let (_, _, c_s) = cubic_piece(cv_secondary_ref?, pi)?;
+                        let (_, _, cps_s) = cubic_piece(cv_secondary_ref?, pi)?;
                         let combined = if sign > 0.0 {
-                            c_p.add(&c_s)
+                            [
+                                cps_p[0] + cps_s[0],
+                                cps_p[1] + cps_s[1],
+                                cps_p[2] + cps_s[2],
+                                cps_p[3] + cps_s[3],
+                            ]
                         } else {
-                            c_p.sub(&c_s)
+                            [
+                                cps_p[0] - cps_s[0],
+                                cps_p[1] - cps_s[1],
+                                cps_p[2] - cps_s[2],
+                                cps_p[3] - cps_s[3],
+                            ]
                         };
                         Some((u_lo, u_hi, combined))
                     } else {
-                        Some((u_lo, u_hi, c_p))
+                        Some((u_lo, u_hi, cps_p))
                     }
                 };
 
@@ -1951,7 +1971,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // motor-frame position klippy planned.
                 if is_idle {
                     let pos0 = match piece_coeffs(0) {
-                        Some((_, _, c0)) => c0.eval(0.0),
+                        // Bézier eval at t=0 collapses to P0 (degenerate
+                        // de Casteljau).
+                        Some((_, _, cps0)) => cps0[0],
                         None => 0.0,
                     };
                     let initial_step = if step_distance > 0.0 {
@@ -1970,11 +1992,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     }
                 }
 
-                // Inline Cardano-per-piece step-fill. For each step pulse:
+                // Inline bezier_root-per-piece step-fill. For each step
+                // pulse:
                 //   1. Find the piece containing `t_resume` (or the first
                 //      piece if `t_resume == 0`).
-                //   2. Solve Cardano in local `t ∈ [t_low_local, 1]` for
-                //      that piece.
+                //   2. Solve `solve_monotone_cubic_root` in local
+                //      `t ∈ [t_low_local, 1]` for that piece.
                 //   3. If NextAt: map t back to global u, push step, advance.
                 //   4. If SegmentExhausted on this piece: advance to next
                 //      piece and retry.
@@ -1994,7 +2017,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     let t_curr = ps.t_resume().unwrap_or(0.0);
                     let mut found_root: Option<(f64, i8)> = None;
                     for pi in 0..n_pieces_primary {
-                        let Some((u_lo, u_hi, coeffs)) = piece_coeffs(pi) else {
+                        let Some((u_lo, u_hi, cps)) = piece_coeffs(pi) else {
                             continue;
                         };
                         if u_hi <= t_curr {
@@ -2002,14 +2025,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         }
                         let span = u_hi - u_lo;
                         // Local t-bounds: clamp current u into [0, 1] of
-                        // this piece. `solve_smallest_root_in` uses
+                        // this piece. `solve_monotone_cubic_root` uses
                         // `(t_low, t_high]` (exclusive low, inclusive high)
                         // so a `t_curr` exactly at a piece boundary picks
                         // up roots in the next piece.
                         let t_low_local =
                             if t_curr > u_lo { (t_curr - u_lo) / span } else { 0.0 };
                         let q = StepTimeQuery {
-                            coeffs: &coeffs,
+                            cps,
                             step_distance: ps.step_distance(),
                             current_step: ps
                                 .step_at_curve_start()
@@ -2419,38 +2442,6 @@ fn scalar_eval_with_derivative(curve: &CurveView<'_>, u: f32) -> Result<(f32, f3
     Ok(result)
 }
 
-/// Extract uniform-cubic-Bézier monomial coefficients from a `CurveView`.
-///
-/// Returns `None` when the curve isn't a degree-3 with 4 control points;
-/// such a curve can't be inverted in closed form by the Cardano solver,
-/// and the producer should treat the affected motor as motionless for
-/// this segment. The planner-emit invariant is uniform cubic Bézier with
-/// knots `[0,0,0,0,1,1,1,1]`, so the conversion is exact via the
-/// standard Bernstein → monomial expansion in `CubicCoeffs::from_bezier`.
-///
-/// We trust the knot vector without re-checking — if a non-uniform-knot
-/// cubic ever reaches the producer, that's a planner/bridge contract
-/// violation upstream, not a producer bug. The hard length/degree guard
-/// remains because a malformed curve in a release MCU build must not
-/// silently produce garbage coefficients.
-fn extract_uniform_cubic_bezier_coeffs(
-    cv: &CurveView<'_>,
-) -> Option<crate::cardano::CubicCoeffs> {
-    if cv.degree != 3 {
-        return None;
-    }
-    // Pattern match the slice — proves to clippy that we won't panic
-    // on indexing and replaces the `len() == 4` + four index-into-slice
-    // accesses that tripped `clippy::indexing_slicing` (deny-level).
-    let [c0, c1, c2, c3] = *<&[f32; 4]>::try_from(cv.control_points).ok()?;
-    Some(crate::cardano::CubicCoeffs::from_bezier(
-        f64::from(c0),
-        f64::from(c1),
-        f64::from(c2),
-        f64::from(c3),
-    ))
-}
-
 /// Number of cubic Bézier pieces in a degree-3 NURBS expressed in piecewise-
 /// Bézier form (each interior knot has multiplicity 3). Returns 0 for any
 /// other shape (non-cubic degree, too few CPs, n_cps - 1 not divisible by 3).
@@ -2480,10 +2471,10 @@ fn cubic_n_pieces(cv: &CurveView<'_>) -> usize {
 }
 
 /// Extract the `piece_idx`-th cubic Bézier piece of a degree-3 NURBS in
-/// piecewise-Bézier form. Returns `(u_start, u_end, coeffs)` where
+/// piecewise-Bézier form. Returns `(u_start, u_end, cps)` where
 /// `u_start`/`u_end` are the piece's domain in the curve's global parameter
-/// space, and `coeffs` is the cubic in monomial form on local `t ∈ [0, 1]`
-/// where `t = (u - u_start) / (u_end - u_start)`.
+/// space, and `cps` are the four Bernstein control points of the piece on
+/// local `t ∈ [0, 1]` where `t = (u - u_start) / (u_end - u_start)`.
 ///
 /// Caller is responsible for mapping `t` back to `u` after solving:
 /// `u_global = u_start + t * (u_end - u_start)`.
@@ -2493,7 +2484,7 @@ fn cubic_n_pieces(cv: &CurveView<'_>) -> usize {
 fn cubic_piece(
     cv: &CurveView<'_>,
     piece_idx: usize,
-) -> Option<(f64, f64, crate::cardano::CubicCoeffs)> {
+) -> Option<(f64, f64, [f64; 4])> {
     let n_pieces = cubic_n_pieces(cv);
     if piece_idx >= n_pieces {
         return None;
@@ -2516,8 +2507,7 @@ fn cubic_piece(
     if !(u_end > u_start) {
         return None;
     }
-    let coeffs = crate::cardano::CubicCoeffs::from_bezier(p0, p1, p2, p3);
-    Some((u_start, u_end, coeffs))
+    Some((u_start, u_end, [p0, p1, p2, p3]))
 }
 
 /// Scale a `dP/du` (in the segment's normalized `u ∈ [0,1]` parameterization)
