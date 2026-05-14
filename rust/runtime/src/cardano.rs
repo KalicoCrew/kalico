@@ -105,11 +105,20 @@ const REL_EPS: f64 = 1e-12;
 /// close to the curve's start: the bench-observed failure mode for the
 /// piecewise-Bézier walker, where every step's target sat within
 /// half-a-step of the curve start so `|d_shifted| ≈ step_distance` while
-/// `|P0|` was 100 mm. `F32_NOISE_REL = 1e-6` ≈ f32 epsilon × cancellation
-/// factor; tight enough not to mask genuine cubics (whose `|a|` is the
-/// third-difference of CPs, O(1) for typical motion) but loose enough
-/// to absorb the ~5e-5 noise observed at CP magnitudes around 100 mm.
-const F32_NOISE_REL: f64 = 1e-6;
+/// `|P0|` was 100 mm. `F32_NOISE_REL = 1e-5` ≈ f32 epsilon × cancellation
+/// factor with one order of magnitude margin; tight enough not to mask
+/// genuine cubics (third-difference of CPs is O(0.1) to O(1) for typical
+/// 1 mm-scale motion), but loose enough to absorb f32→f64 cast noise
+/// that for a piecewise-Bézier piece at 100 mm magnitude reaches ~5e-5
+/// in `a` after the four-term Bernstein cancellation, plus margin for
+/// the bridge's full-precision multi-piece curves (where smooth-shaper
+/// output has noise distribution we don't fully characterize from the
+/// host repro). Bench-observed failure at the pre-1e-5 setting: producer
+/// pushed zero steps on real bridge curves despite passing the
+/// `solve_offset_linear_curve_f32_noise_falls_through_to_linear` host
+/// repro, because the bench curves had a/b noise just above 1e-4 from
+/// shaper-side artefacts not modelled in the host repro.
+const F32_NOISE_REL: f64 = 1e-5;
 
 /// Find the smallest real root of `a*u^3 + b*u^2 + c*u + (d - target) = 0`
 /// strictly greater than `t_low` and less-than-or-equal to `t_high`. Returns
