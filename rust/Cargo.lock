@@ -1118,8 +1118,10 @@ name = "runtime"
 version = "0.1.0"
 dependencies = [
  "heapless",
+ "libm",
  "loom",
  "nurbs",
+ "portable-atomic",
  "proptest",
  "serde",
  "serde_json",

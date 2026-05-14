@@ -27,6 +27,33 @@ const EPS_VELOCITY: f64 = 1e-12;
 const EPS_ACCEL: f64 = 1e-9;
 const FORWARD_SCAN_FRACTION: f64 = 1e-3; // 0.1% of segment
 
+// `f64::sqrt` / `f64::cbrt` are inherent methods provided by `std`. On
+// `no_std` MCU targets they are unavailable, so we route through `libm`.
+// Same dispatch pattern as `nurbs::float::sqrt`.
+#[inline]
+fn sqrt_f64(x: f64) -> f64 {
+    #[cfg(feature = "host")]
+    {
+        f64::sqrt(x)
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        libm::sqrt(x)
+    }
+}
+
+#[inline]
+fn cbrt_f64(x: f64) -> f64 {
+    #[cfg(feature = "host")]
+    {
+        f64::cbrt(x)
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        libm::cbrt(x)
+    }
+}
+
 /// Query for `compute_next_step_time`. The `eval` closure must return
 /// `(position, velocity, acceleration)` at the requested time in the
 /// stepper's motor frame (already through kinematics — for a Cartesian
@@ -72,7 +99,7 @@ pub fn compute_next_step_time<F: Fn(f32) -> (f64, f64, f64)>(
         (dir, q.step_distance / v0.abs())
     } else if a0.abs() >= EPS_ACCEL {
         let dir = if a0 > 0.0 { 1_i8 } else { -1_i8 };
-        (dir, (2.0 * q.step_distance / a0.abs()).sqrt())
+        (dir, sqrt_f64(2.0 * q.step_distance / a0.abs()))
     } else {
         let span = q.t_segment_end - q.t_curr;
         if span <= 0.0 {
@@ -91,14 +118,14 @@ pub fn compute_next_step_time<F: Fn(f32) -> (f64, f64, f64)>(
                 // Cubic ramp x(u) ≈ (j/6)·u³ where j = (a_probe - a0)/probe_dt
                 // and a0 ≈ 0. Solve (j/6)·u³ = step_distance for u.
                 let j = a_probe.abs() / probe_dt;
-                (6.0 * q.step_distance.abs() / j).cbrt()
+                cbrt_f64(6.0 * q.step_distance.abs() / j)
             } else {
                 q.step_distance.abs() / v_probe.abs()
             };
             (dir, seed)
         } else if a_probe.abs() >= EPS_ACCEL {
             let dir = if a_probe > 0.0 { 1_i8 } else { -1_i8 };
-            (dir, (2.0 * q.step_distance / a_probe.abs()).sqrt())
+            (dir, sqrt_f64(2.0 * q.step_distance / a_probe.abs()))
         } else {
             // Triple-degenerate everywhere we looked — no usable motion.
             return StepTimeResult::SegmentExhausted;

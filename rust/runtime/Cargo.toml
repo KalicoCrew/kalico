@@ -11,6 +11,17 @@ license.workspace = true
 [dependencies]
 nurbs = { path = "../nurbs", default-features = false }
 heapless = { workspace = true }
+# `portable-atomic` provides software 64-bit atomics on targets that lack
+# native u64 CAS (thumbv7em-none-eabi[hf]: Cortex-M7 only has 32-bit
+# LDREX/STREX). The `fallback` feature is on by default; we make it
+# explicit so future changes do not silently disable the software impl.
+portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
+# Software floating-point fallbacks for `no_std` MCU builds where `f64::sqrt`
+# / `f64::cbrt` (which live on the inherent impl in `std`) are unavailable.
+# Already in the dep tree transitively via `nurbs` MCU features; declaring it
+# here so the runtime crate can use it unconditionally regardless of which
+# `nurbs` feature is active.
+libm = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 proptest = "1.5"
