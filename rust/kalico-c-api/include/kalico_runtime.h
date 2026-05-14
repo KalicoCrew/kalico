@@ -186,6 +186,22 @@ int32_t runtime_handle_query_pool_state(struct KalicoRuntime *rt,
 void runtime_handle_tick(struct KalicoRuntime *rt, uint32_t raw_cyccnt);
 
 /**
+ * TIM5 ISR callback for the Modulated (polled-tick StepAccumulator)
+ * path (spec §3.2, T10).
+ *
+ * Computes the widened MCU clock inline from
+ * `timer_read_time()` + `stats_send_time_high` (same widening rule as
+ * `runtime_handle_widened_now`), then dispatches into
+ * `Engine::runtime_modulated_tick`.
+ *
+ * Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`,
+ * which is itself only enabled when `count_modulated_steppers > 0`
+ * (see `runtime_tick_enable`). For the all-StepTime MVP this entry
+ * is never invoked because TIM5 stays disabled.
+ */
+void kalico_runtime_modulated_tick(struct KalicoRuntime *rt);
+
+/**
  * Foreground drain. Returns count of samples written.
  *
  * Phase 11 §10.4 expansion: alongside writing the sample to the wire

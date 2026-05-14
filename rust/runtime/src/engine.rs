@@ -1843,6 +1843,199 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             ProducerTickResult::AllIdle
         }
     }
+
+    /// TIM5 callback for Modulated motors (spec §3.2, T10).
+    ///
+    /// Runs only when at least one motor is in `StepMode::Modulated` (the
+    /// FFI's caller — the TIM5 ISR — is itself gated on
+    /// `count_modulated_steppers > 0`; `runtime_tick_enable` leaves TIM5
+    /// disabled otherwise).
+    ///
+    /// Per-tick body:
+    ///   1. Determine `u = (now - t_start) / duration` for the currently-
+    ///      playing wall-clock segment (`producer_current` under the
+    ///      lockstep simplification — see §7 question 2 of the spec).
+    ///   2. For each Modulated motor: evaluate position from the segment's
+    ///      axis curves at `u`, apply the kinematic transform, call
+    ///      `StepMotorState::update`, and emit step pulses on non-zero
+    ///      deltas.
+    ///   3. When `now ≥ t_end`, clear every Modulated motor's bits in the
+    ///      segment's `consumers_remaining` mask. Once that mask reaches
+    ///      zero, retire the four curve-pool slots, publish the
+    ///      `retired_through_segment_id` cursor, and clear `producer_current`.
+    ///
+    /// Does NOT touch the segment queue, the producer state, the step
+    /// rings, or the trace ring. The StepTime path (`producer_step` +
+    /// `step_time_event`) is responsible for those.
+    ///
+    /// **Simplification (T10 scope)**: when `StepMotorState::update` returns
+    /// `Err(StepBurstExceeded)` we set `last_error` / `status` directly via
+    /// the atomics on `SharedState` instead of going through `latch_fault`.
+    /// `latch_fault` requires the trace `Producer`, which `IsrState` holds
+    /// behind the field-disjoint borrow already used by `Engine::tick`; the
+    /// modulated tick's FFI shim is built around the producer_current
+    /// segment and doesn't currently thread the trace ring in. Tightening
+    /// this up to mirror the `tick`-path fault path is wired in T11 once
+    /// the force_idle / trace-emit topology settles.
+    pub fn runtime_modulated_tick(&mut self, now: u64, pool: &CurvePool, shared: &SharedState) {
+        // Pull the wall-clock segment. The producer's segment cursor is the
+        // shared cursor under the MVP lockstep regime.
+        let Some(mut seg) = self.producer_current else {
+            return;
+        };
+
+        let elapsed = now.saturating_sub(seg.t_start);
+        let duration = seg.duration().max(1);
+
+        if elapsed >= duration {
+            // Wall-clock crossed t_end — clear every Modulated motor's
+            // bits in the segment's mask.
+            for motor_idx in 0..4_u8 {
+                let mode = shared
+                    .step_modes
+                    .get(motor_idx as usize)
+                    .map(|m| m.load(Ordering::Acquire))
+                    .unwrap_or(StepMode::StepTime as u8);
+                if mode != StepMode::Modulated as u8 {
+                    continue;
+                }
+                Self::clear_motor_bits_in_mask(&mut seg, motor_idx);
+            }
+            self.producer_current = Some(seg);
+
+            if seg.consumers_done() {
+                // Curve-handle retirement — sentinels are no-ops in
+                // `confirm_retired`, mirroring `producer_step`'s path.
+                pool.confirm_retired(seg.x_handle);
+                pool.confirm_retired(seg.y_handle);
+                pool.confirm_retired(seg.z_handle);
+                pool.confirm_retired(seg.e_handle);
+                shared
+                    .retired_through_segment_id
+                    .store(seg.id, Ordering::Release);
+                crate::stream::check_terminal_on_retire(shared, seg.id);
+                self.producer_current = None;
+            }
+            return;
+        }
+
+        // Wall-clock inside the segment — evaluate per-motor position,
+        // run StepAccumulator, emit pulses.
+        let u = ((elapsed as f32) / (duration as f32)).clamp(0.0, 1.0);
+
+        // Resolve per-axis curve views once. `None` = UNUSED or unresolvable;
+        // the corresponding motor holds its previous position.
+        let cv_x = if seg.x_handle.is_unused_sentinel() {
+            None
+        } else {
+            pool.resolve(seg.x_handle)
+        };
+        let cv_y = if seg.y_handle.is_unused_sentinel() {
+            None
+        } else {
+            pool.resolve(seg.y_handle)
+        };
+        let cv_z = if seg.z_handle.is_unused_sentinel() {
+            None
+        } else {
+            pool.resolve(seg.z_handle)
+        };
+
+        let x = cv_x
+            .as_ref()
+            .and_then(|c| scalar_eval(c, u).ok())
+            .unwrap_or(self.prev_x);
+        let y = cv_y
+            .as_ref()
+            .and_then(|c| scalar_eval(c, u).ok())
+            .unwrap_or(self.prev_y);
+        let z = cv_z
+            .as_ref()
+            .and_then(|c| scalar_eval(c, u).ok())
+            .unwrap_or(self.prev_z);
+
+        // E follows the existing tick-path semantics for Modulated; this
+        // path is reached only when a Modulated motor is present, but the
+        // per-motor StepAccumulator update needs a per-motor target. For
+        // the T10 structural extraction we mirror `tick_with_current`'s
+        // CoupledToXy / Independent / Travel dispatch but skip the
+        // boundary-loop / seed-on-activation bookkeeping (those belong to
+        // the producer side).
+        let e: f32 = match seg.e_mode {
+            crate::config::EMode::CoupledToXy => {
+                let dx = x - self.prev_x;
+                let dy = y - self.prev_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                self.e_accumulator += f64::from(seg.extrusion_ratio) * f64::from(dist);
+                self.e_accumulator as f32
+            }
+            crate::config::EMode::Independent => {
+                let cv_e = if seg.e_handle.is_unused_sentinel() {
+                    None
+                } else {
+                    pool.resolve(seg.e_handle)
+                };
+                cv_e.as_ref()
+                    .and_then(|c| scalar_eval(c, u).ok())
+                    .unwrap_or(self.e_accumulator as f32)
+            }
+            crate::config::EMode::Travel => self.e_accumulator as f32,
+        };
+
+        self.prev_x = x;
+        self.prev_y = y;
+        self.prev_z = z;
+
+        let positions = [x, y, z, e];
+        let motors = match seg.kinematics {
+            KinematicTag::CoreXyAndE => corexy_with_e(positions),
+            KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(positions),
+        };
+
+        for motor_idx in 0..4_usize {
+            let mode = shared
+                .step_modes
+                .get(motor_idx)
+                .map(|m| m.load(Ordering::Acquire))
+                .unwrap_or(StepMode::StepTime as u8);
+            if mode != StepMode::Modulated as u8 {
+                continue;
+            }
+            let Some(ss) = self.step_state.get_mut(motor_idx) else {
+                continue;
+            };
+            let Some(&m) = motors.get(motor_idx) else {
+                continue;
+            };
+            match ss.update(m) {
+                Ok(step_result) => {
+                    if step_result.n_steps != 0 {
+                        if let Some(counter) = shared.stepper_counts.get(motor_idx) {
+                            counter.fetch_add(step_result.n_steps, Ordering::AcqRel);
+                        }
+                        emit_step_pulses(motor_idx as u8, step_result.n_steps);
+                    }
+                }
+                Err(()) => {
+                    // T10 simplification: latch the fault via atomics only
+                    // (no trace marker — see method-level doc comment).
+                    shared
+                        .last_error
+                        .store(crate::error::KALICO_ERR_STEP_BURST_EXCEEDED, Ordering::Release);
+                    shared
+                        .runtime_status
+                        .store(RuntimeStatus::Fault as u8, Ordering::Release);
+                    self.last_error
+                        .store(crate::error::KALICO_ERR_STEP_BURST_EXCEEDED, Ordering::Release);
+                    self.status
+                        .store(RuntimeStatus::Fault as u8, Ordering::Release);
+                    return;
+                }
+            }
+        }
+
+        self.last_motors = motors;
+    }
 }
 
 /// Compute the next step-pulse cycle for stepper `stepper_idx` using the

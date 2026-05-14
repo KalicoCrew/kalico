@@ -181,9 +181,13 @@ TIM5_IRQHandler(void)
     runtime_endstop_sample_pins();
 #endif
 
+    // T10 (spec §3.2): TIM5 dispatches the Modulated polled-tick
+    // StepAccumulator path exclusively. F4 today never enables TIM5 (no
+    // phase-stepped axes), but if/when a future build flips a motor to
+    // Modulated, this handler runs the same path as H7.
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {
-        runtime_handle_tick(runtime_handle, before);
+        kalico_runtime_modulated_tick(runtime_handle);
     }
     uint32_t after = runtime_cyccnt_read();
 

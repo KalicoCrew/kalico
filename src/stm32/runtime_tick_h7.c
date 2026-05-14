@@ -148,12 +148,6 @@ TIM5_IRQHandler(void)
     runtime_sim_isr_wake_drain();
 #endif
 
-    // Use the abstraction so cycle-count snapshots stay consistent under the
-    // sim fork. On production builds this collapses to a direct DWT->CYCCNT
-    // read; under CONFIG_KALICO_SIM both `before` and `after` snapshot the
-    // software counter (cycle-bench numbers are explicitly out of scope for
-    // sim per spec §3, so the bench buffer becomes meaningless under sim and
-    // that is acceptable).
     // Step 7.5 — sample any armed endstop GPIOs before the engine tick so
     // `endstop::tick` observes fresh pin levels in the same modulation
     // period. No-op when no arm is active (table empty). Skipped under
@@ -165,9 +159,17 @@ TIM5_IRQHandler(void)
     runtime_endstop_sample_pins();
 #endif
 
+    // T10 (spec §3.2): TIM5 dispatches the Modulated polled-tick
+    // StepAccumulator path exclusively. The legacy engine state machine
+    // (`runtime_handle_tick` → `Engine::tick`) no longer runs from
+    // TIM5; segment dequeue + retirement are driven by the producer
+    // Klipper timer in `src/runtime_tick.c` (T8) and per-stepper step
+    // pulses fire from the consumer Klipper timers (T7). The Modulated
+    // entry computes its own widened clock from `timer_read_time` +
+    // `stats_send_time*`, so no CYCCNT widening seed is needed here.
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {
-        runtime_handle_tick(runtime_handle, before);
+        kalico_runtime_modulated_tick(runtime_handle);
     }
     uint32_t after = runtime_cyccnt_read();
 
@@ -175,7 +177,7 @@ TIM5_IRQHandler(void)
     runtime_bench_capture(after - before);
     // No late ack.
 
-    // Histogram the runtime_handle_tick subwindow before the full-IRQ
+    // Histogram the modulated-tick subwindow before the full-IRQ
     // accounting at exit. Distinguishing the two tells us whether the IRQ
     // cost lives in the engine evaluator or in the surrounding ISR overhead
     // (endstop sample, accounting, vector entry/exit).

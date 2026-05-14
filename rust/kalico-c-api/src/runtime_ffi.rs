@@ -565,6 +565,64 @@ pub mod exports {
         }
     }
 
+    /// TIM5 ISR callback for the Modulated (polled-tick StepAccumulator)
+    /// path (spec §3.2, T10).
+    ///
+    /// Computes the widened MCU clock inline from
+    /// `timer_read_time()` + `stats_send_time_high` (same widening rule as
+    /// `runtime_handle_widened_now`), then dispatches into
+    /// `Engine::runtime_modulated_tick`.
+    ///
+    /// Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`,
+    /// which is itself only enabled when `count_modulated_steppers > 0`
+    /// (see `runtime_tick_enable`). For the all-StepTime MVP this entry
+    /// is never invoked because TIM5 stays disabled.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_modulated_tick(rt: *mut KalicoRuntime) {
+        if rt.is_null() {
+            return;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null and INIT_DONE=true. The TIM5 ISR is the
+        // SOLE writer of `IsrState`, so the disjoint half-split borrow
+        // discipline (engine via IsrState, curve pool + shared state via
+        // shared `&`s) holds for this entry point exactly as it does for
+        // `runtime_handle_tick`.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let isr: &mut IsrState = &mut *isr_ptr;
+            let pool: &CurvePool = &*pool_ptr;
+            let shared: &SharedState = &*shared_ptr;
+
+            // Compute widened `now` via the C-side helper. The helper
+            // (`runtime_widened_host_clock` in `src/runtime_tick.c`) wraps
+            // `timer_read_time` + the `stats_send_time*` stats counters and
+            // is marked `used, externally_visible` so LTO keeps the symbol
+            // around for staticlib callers like this one. Mirrors the
+            // foreground `runtime_handle_widened_now` widening rule.
+            unsafe extern "C" {
+                fn runtime_widened_host_clock() -> u64;
+            }
+            let now: u64 = runtime_widened_host_clock();
+
+            isr.engine.runtime_modulated_tick(now, pool, shared);
+
+            // Mirror the engine's status into SharedState so the
+            // foreground entrypoints see fault latching.
+            shared
+                .runtime_status
+                .store(isr.engine.status() as u8, Ordering::Release);
+            shared
+                .last_error
+                .store(isr.engine.last_error(), Ordering::Release);
+        }
+    }
+
     /// Foreground drain. Returns count of samples written.
     ///
     /// Phase 11 §10.4 expansion: alongside writing the sample to the wire
