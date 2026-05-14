@@ -1980,9 +1980,47 @@ pub mod exports {
             let IsrState {
                 engine,
                 queue_consumer,
+                trace_producer,
                 ..
             } = isr;
-            match engine.producer_step(pool, queue_consumer, shared) {
+            // Snapshot the retire cursor BEFORE producer_step. After the call
+            // returns, if the cursor advanced, the producer retired one or
+            // more segments. The C-side `runtime_drain` -> `kalico_credit_freed`
+            // path keys off SEGMENT_END trace samples (via `drain_and_reclaim`'s
+            // bit-17 in the packed status word), so we must enqueue one per
+            // retired segment for the host's slot pool to drain. Without
+            // this, the host fills `capacity=4` segments to F446 / `capacity=16`
+            // to H7, then blocks on "slot pool exhausted" and shuts down the
+            // MCU after 4 G1 commands.
+            let retired_before = shared.retired_through_segment_id.load(Ordering::Acquire);
+            let result = engine.producer_step(pool, queue_consumer, shared);
+            let retired_after = shared.retired_through_segment_id.load(Ordering::Acquire);
+            if retired_after != retired_before {
+                // One SEGMENT_END sample per retired segment id. Wraparound-safe
+                // arithmetic across u32 — at worst we emit a couple of stale
+                // samples per wrap, which the host tolerates (credit_freed
+                // is idempotent in `retired_through_segment_id`).
+                use runtime::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
+                let mut id = retired_before.wrapping_add(1);
+                loop {
+                    let _ = trace_producer.enqueue(TraceSample {
+                        tick: 0,
+                        motor_a: 0.0,
+                        motor_b: 0.0,
+                        motor_z: 0.0,
+                        motor_e: 0.0,
+                        segment_id: id,
+                        curve_handle: runtime::curve_pool::CurveHandle::UNUSED_SENTINEL,
+                        flags: TRACE_FLAG_SEGMENT_END,
+                        _pad: [0; 7],
+                    });
+                    if id == retired_after {
+                        break;
+                    }
+                    id = id.wrapping_add(1);
+                }
+            }
+            match result {
                 ProducerTickResult::WorkPending => true,
                 ProducerTickResult::AllIdle => false,
             }
