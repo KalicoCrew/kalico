@@ -1488,38 +1488,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return None;
         }
 
-        let eval = |t_norm: f32| -> (f64, f64, f64) {
-            let u = t_norm.clamp(0.0, 1.0);
-            if is_corexy {
-                // A motor: pos = x + y, vel = dx/du + dy/du, accel similarly.
-                // B motor: pos = x − y, ...
-                let (x_pos, x_dx, x_d2x) = cv_primary
-                    .as_ref()
-                    .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
-                    .unwrap_or((0.0, 0.0, 0.0));
-                let (y_pos, y_dy, y_d2y) = cv_secondary
-                    .as_ref()
-                    .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
-                    .unwrap_or((0.0, 0.0, 0.0));
-                (
-                    x_pos + corexy_sign * y_pos,
-                    x_dx + corexy_sign * y_dy,
-                    x_d2x + corexy_sign * y_d2y,
-                )
+        // Build per-motor cubic Bézier coefficients. The planner emits
+        // uniform cubic Béziers (knots [0,0,0,0,1,1,1,1]); we extract the
+        // 4 control points per axis and compose them under the motor's
+        // kinematic transform (CoreXY A = X+Y, B = X−Y; Cartesian = single
+        // axis). Missing/UNUSED axes default to all-zero coefficients so
+        // the Cardano solver naturally reports no root crossing and the
+        // caller treats the motor as motionless on this segment.
+        let coeffs_primary = cv_primary
+            .as_ref()
+            .and_then(extract_uniform_cubic_bezier_coeffs)
+            .unwrap_or_else(|| crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0));
+        let coeffs_secondary = cv_secondary
+            .as_ref()
+            .and_then(extract_uniform_cubic_bezier_coeffs)
+            .unwrap_or_else(|| crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0));
+        let coeffs = if is_corexy {
+            if corexy_sign > 0.0 {
+                coeffs_primary.add(&coeffs_secondary)
             } else {
-                // Cartesian / Z / E single-axis path.
-                match cv_primary
-                    .as_ref()
-                    .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
-                {
-                    Some(tuple) => tuple,
-                    None => (0.0, 0.0, 0.0),
-                }
+                coeffs_primary.sub(&coeffs_secondary)
             }
+        } else {
+            coeffs_primary
         };
 
         let q = crate::step_time::StepTimeQuery {
-            eval: &eval,
+            coeffs: &coeffs,
             step_distance: step_distance_mm,
             current_step,
             t_curr: t_curr_norm,
@@ -1823,28 +1818,31 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 }
                 let duration_f64 = duration_cycles as f64;
 
-                let eval = move |t_norm: f32| -> (f64, f64, f64) {
-                    let u = t_norm.clamp(0.0, 1.0);
-                    if is_corexy {
-                        let (x_pos, x_dx, x_d2x) = cv_primary
-                            .as_ref()
-                            .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
-                            .unwrap_or((0.0, 0.0, 0.0));
-                        let (y_pos, y_dy, y_d2y) = cv_secondary
-                            .as_ref()
-                            .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
-                            .unwrap_or((0.0, 0.0, 0.0));
-                        (
-                            x_pos + sign * y_pos,
-                            x_dx + sign * y_dy,
-                            x_d2x + sign * y_d2y,
-                        )
+                // Build per-motor cubic Bézier coefficients up-front (see
+                // `arm_step_timer` for the rationale). The planner emits
+                // uniform cubic Béziers; missing/UNUSED axes default to
+                // zero coefficients so the Cardano solver reports no
+                // root and the producer retires the motor's contribution.
+                let coeffs_primary = cv_primary
+                    .as_ref()
+                    .and_then(extract_uniform_cubic_bezier_coeffs)
+                    .unwrap_or_else(|| {
+                        crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0)
+                    });
+                let coeffs_secondary = cv_secondary
+                    .as_ref()
+                    .and_then(extract_uniform_cubic_bezier_coeffs)
+                    .unwrap_or_else(|| {
+                        crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0)
+                    });
+                let coeffs = if is_corexy {
+                    if sign > 0.0 {
+                        coeffs_primary.add(&coeffs_secondary)
                     } else {
-                        cv_primary
-                            .as_ref()
-                            .and_then(|c| scalar_eval_with_pos_vel_accel(c, u).ok())
-                            .unwrap_or((0.0, 0.0, 0.0))
+                        coeffs_primary.sub(&coeffs_secondary)
                     }
+                } else {
+                    coeffs_primary
                 };
 
                 // Seed producer state if idle, using the curve's position at
@@ -1866,7 +1864,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // Klippy's position tracking remain coherent with the
                 // motor's logical step position.
                 if is_idle {
-                    let (pos0, _v0, _a0) = eval(0.0);
+                    // `coeffs.eval(0.0) == c0 == p0` for a uniform cubic
+                    // Bézier — the curve's position at u=0 in motor-frame
+                    // millimetres. Same anchoring as the old eval(0.0).
+                    let pos0 = coeffs.eval(0.0);
                     let initial_step = if step_distance > 0.0 {
                         (pos0 / step_distance) as i32
                     } else {
@@ -1883,12 +1884,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     }
                 }
 
-                // Inline Newton fill — equivalent to step_producer::producer_step
+                // Inline Cardano step-fill — equivalent to step_producer::producer_step
                 // for one motor, but here we have the engine-context loop so
-                // we can short-circuit on ring-full and pick up the curve
-                // closure (which borrows cv_primary/cv_secondary captured
-                // by-move above) without slicing four parallel arrays of
-                // closures across motors.
+                // we can short-circuit on ring-full and reuse the per-motor
+                // `coeffs` value (composed once above from cv_primary /
+                // cv_secondary under the motor's kinematic transform)
+                // without slicing four parallel arrays across motors.
                 let mut filled = 0_u32;
                 let ring = match self.step_rings.get_mut(motor_idx) {
                     Some(r) => r,
@@ -1901,7 +1902,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 let mut motor_finished_curve = false;
                 while filled < PRODUCER_BATCH_CAP && ring.space() > 0 {
                     let q = StepTimeQuery {
-                        eval: &eval,
+                        coeffs: &coeffs,
                         step_distance: ps.step_distance(),
                         current_step: ps
                             .step_at_curve_start()
@@ -2294,34 +2295,33 @@ fn scalar_eval_with_derivative(curve: &CurveView<'_>, u: f32) -> Result<(f32, f3
     Ok(result)
 }
 
-/// Evaluate a scalar NURBS curve at `u`, returning `(P(u), dP/du, d²P/du²)`
-/// in f64 from a single combined de Boor walk.
+/// Extract uniform-cubic-Bézier monomial coefficients from a `CurveView`.
 ///
-/// Used by `arm_step_timer` to feed the (pos, vel, accel) eval closure
-/// expected by `compute_next_step_time`. The accel term is what lets the
-/// step-time Newton seed handle `v(0) = 0` cold-start segments — see spec
-/// `docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md` §3.6.
-fn scalar_eval_with_pos_vel_accel(
-    curve: &CurveView<'_>,
-    u: f32,
-) -> Result<(f64, f64, f64), ()> {
-    let t0 = diag_cyccnt();
-    let p = usize::from(curve.degree);
-    if p > nurbs::MAX_DEGREE
-        || curve.knots.len() != curve.control_points.len() + p + 1
-        || curve.control_points.is_empty()
-    {
-        return Err(());
+/// Returns `None` when the curve isn't a degree-3 with 4 control points;
+/// such a curve can't be inverted in closed form by the Cardano solver,
+/// and the producer should treat the affected motor as motionless for
+/// this segment. The planner-emit invariant is uniform cubic Bézier with
+/// knots `[0,0,0,0,1,1,1,1]`, so the conversion is exact via the
+/// standard Bernstein → monomial expansion in `CubicCoeffs::from_bezier`.
+///
+/// We trust the knot vector without re-checking — if a non-uniform-knot
+/// cubic ever reaches the producer, that's a planner/bridge contract
+/// violation upstream, not a producer bug. The hard length/degree guard
+/// remains because a malformed curve in a release MCU build must not
+/// silently produce garbage coefficients.
+fn extract_uniform_cubic_bezier_coeffs(
+    cv: &CurveView<'_>,
+) -> Option<crate::cardano::CubicCoeffs> {
+    if cv.degree != 3 || cv.control_points.len() != 4 {
+        return None;
     }
-    let result = nurbs::eval::eval_polynomial_f32_with_pos_vel_accel_f64(
-        curve.control_points,
-        curve.knots,
-        curve.degree,
-        u,
-    );
-    let t1 = diag_cyccnt();
-    diag_eval_record(t1.wrapping_sub(t0));
-    Ok(result)
+    let cps = cv.control_points;
+    Some(crate::cardano::CubicCoeffs::from_bezier(
+        f64::from(cps[0]),
+        f64::from(cps[1]),
+        f64::from(cps[2]),
+        f64::from(cps[3]),
+    ))
 }
 
 /// Scale a `dP/du` (in the segment's normalized `u ∈ [0,1]` parameterization)
