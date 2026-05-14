@@ -15,6 +15,16 @@
     unsafe_op_in_unsafe_fn
 )]
 
+// `alloc` is needed by the `sim_fixtures::init_test_runtime` helper, which
+// `Box::leak`s static queues so the split `Producer`/`Consumer` halves carry
+// `'static` lifetimes. Pull it in unconditionally when `kalico-sim` is on so
+// the helper compiles under both the `host` (std) and `no_std`-with-alloc
+// builds. `target_os = "none"` MCU firmware skips the helper via the
+// `#[cfg(not(target_os = "none"))]` gate in `sim_fixtures.rs`, so this
+// `extern crate alloc;` adds no firmware footprint there either.
+#[cfg(feature = "kalico-sim")]
+extern crate alloc;
+
 pub mod clock;
 pub mod config;
 pub mod curve_pool;
