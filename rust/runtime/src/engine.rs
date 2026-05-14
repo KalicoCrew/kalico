@@ -1711,7 +1711,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         shared.producer_pending.store(false, Ordering::Release);
         shared.producer_runs_total.fetch_add(1, Ordering::AcqRel);
 
-        let mut any_pending = false;
+        // We return `WorkPending` only when this call actually made
+        // progress (filled at least one ring entry OR finished a curve).
+        // Returning WorkPending when we did nothing — e.g., because every
+        // motor's ring was full and we filled zero entries — causes the
+        // C-side producer timer to self-reschedule at `now + 1µs`, which
+        // pegs Klipper's timer-dispatch loop at ~333 kHz busy-spinning,
+        // starves other timers, and eventually trips Klipper's
+        // "Rescheduled timer in the past" panic (armcm_timer.c:152
+        // fires when any timer's waketime is >1ms behind `now` while the
+        // dispatch loop has been running tight). The correct contract:
+        // - WorkPending = "I did work, please run me again ASAP."
+        // - AllIdle    = "I'm blocked or done, wait for an external kick
+        //                (push_segment or consumer low-water)."
+        // When the ring is full, the consumer's low-water hook will kick
+        // us back to life after it drains below STEP_RING_LOW_WATER.
+        let mut made_progress = false;
 
         // Single-pass per-motor fill. Spec §3.4 budget: ~30 cycles per
         // Newton solve × PRODUCER_BATCH_CAP=32 entries × 4 motors ≈
@@ -1940,6 +1955,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         *cur = cur.wrapping_add(1);
                     }
                 }
+
+                // Track whether this motor made progress this call. Filling
+                // any ring entries OR finishing a curve both count — both
+                // change the system's state in a way that warrants
+                // self-rescheduling for another batch. Filling zero entries
+                // (because the ring was full or batch budget already
+                // consumed by other motors) is NOT progress.
+                if filled > 0 || motor_finished_curve {
+                    made_progress = true;
+                }
             }
 
             // (5) Retire the producer-current segment if every consumer bit
@@ -1970,24 +1995,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
         }
 
-        // Final result: any motor non-idle ⇒ WorkPending.
-        for ps in &self.producer_states {
-            if !ps.is_idle() {
-                any_pending = true;
-                break;
-            }
-        }
-        // Also pending if we still have a producer_current segment with
-        // pending consumer bits (e.g., one motor finished but others
-        // haven't even started yet because their ring was full this round).
-        if !any_pending {
-            if let Some(seg) = self.producer_current {
-                if !seg.consumers_done() {
-                    any_pending = true;
-                }
-            }
-        }
-        if any_pending {
+        // Result: WorkPending iff we made progress this call (filled at
+        // least one entry OR finished a curve). See the comment at the
+        // declaration of `made_progress` above for why this is correct
+        // and why the prior `any_pending = (!state.is_idle())` was a
+        // busy-spin bug.
+        if made_progress {
             ProducerTickResult::WorkPending
         } else {
             ProducerTickResult::AllIdle
