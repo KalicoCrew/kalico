@@ -1146,13 +1146,14 @@ DECL_CTR("_DECL_OUTPUT "
 // rings on demand, kicked by `push_segment`'s producer-pending CAS or by
 // the consumer's low-water hook.
 //
-// Step-pulse discipline — runtime_emit_step_pulses (complete rise+fall pair):
+// Step-pulse discipline — runtime_emit_step_pulses (edge-triggered):
 //   Each step_time_event issues one call to runtime_emit_step_pulses with
-//   n_steps=±1, which drives a guaranteed rising edge + step_pulse_ticks dwell
-//   + falling edge on every AWD partner's step pin (e.g. stepper_z / z1 / z2
-//   for a 3-motor Z). The dir_pin is updated (with dwell) whenever direction
-//   changes. This is the shared modulation path — no separate toggle logic
-//   needed in the step-time ISR.
+//   n_steps=±1, which toggles every AWD partner's step pin (e.g. stepper_z
+//   / z1 / z2 for a 3-motor Z) exactly once. Stepper drivers configured
+//   for double-edge stepping count each toggle as one step. The dir_pin is
+//   updated whenever direction changes; no busy-wait dwell for either dir
+//   setup or pulse width — natural execution time between gpio writes
+//   provides the ~50 cycle (~100 ns) edge spacing TMC drivers need.
 //
 // MAX_STEPPER_OIDS_C must agree with Rust's MAX_STEPPER_OIDS in
 // rust/runtime/src/state.rs (currently 8). A static_assert on the C side

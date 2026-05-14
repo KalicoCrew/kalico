@@ -554,38 +554,31 @@ command_config_runtime_stepper(uint32_t *args)
 DECL_COMMAND(command_config_runtime_stepper,
              "config_runtime_stepper motor_idx=%c stepper_oid=%c invert_dir=%c");
 
-// Busy-wait until DWT->CYCCNT has advanced `ticks` cycles past `start`.
-// Unsigned subtraction handles the u32 wrap correctly (~8.3 s at 520 MHz,
-// far longer than any plausible pulse width).
-static inline void
-runtime_dwt_dwell(uint32_t start, uint32_t ticks)
-{
-    while ((timer_read_time() - start) < ticks)
-        ;
-}
-
 // Called from the TIM5 ISR (priority 3 on H7) after `runtime_handle_tick`
-// produces this tick's step delta. Emits |n_steps| pulses on every stepper
+// produces this tick's step delta. Emits |n_steps| edges on every stepper
 // bound to this motor index (primary + AWD partners — e.g. Voron 2.4-style
 // 4-motor gantry binds stepper_x and stepper_x1 both to motor 0). All
 // step_pins toggle in lockstep; each dir_pin is set to the per-stepper
 // `want_dir XOR invert_dir` so that printer.cfg `dir_pin: !PIN` polarity
 // is honored end-to-end.
 //
-// Pulse timing: most TMC drivers require ≥100 ns step high and ≥20 ns dir
-// setup; klippy's default `step_pulse_duration` is 2 µs (~1040 cycles at
-// 520 MHz), which is comfortably above both. The same budget is reused for
-// dir-setup dwell — overkill for TMCs, but matches the user-configured
-// driver-side timing without a second knob.
+// Edge-triggered output (mirrors mainline klipper's stepper_event_edge fast
+// path, src/stepper.c:140): each iteration produces one edge per stepper.
+// Successive edges occur ~30-50 cycles apart (BSRR write + AWD inner loop
+// + branch) = ~60-100 ns at 520 MHz, comfortably above TMC datasheet
+// minimums. No busy-wait dwell — neither for the step pulse width nor for
+// dir setup — because:
+//   * TMC drivers configured for double-edge stepping count every edge as
+//     a step; no separate rising/falling pair is required.
+//   * Dir setup time (≥20 ns on TMC2209/5160) is satisfied by the natural
+//     execution between gpio_out_write of dir_pin and the first step toggle.
+// Step-pulse-duration / step_pulse_ticks from printer.cfg is ignored on the
+// runtime path; the legacy stepper_event_* code continues to honor it for
+// the non-runtime command_queue_step path.
 //
-// Burst budget: the runtime's `MAX_STEPS_PER_TICK_DEFAULT = 16` cap bounds
-// the worst case. At 2 µs pulse_ticks with 2 AWD partners per motor that
-// is 16 × 4 µs = 64 µs of ISR time — exceeds a 25 µs tick. The cap exists
-// for runaway-curve fault detection, not to rate-limit normal operation;
-// at peak velocity (300 mm/s × 80 steps/mm = 24 kHz) average is 0.6
-// step/tick. A genuine burst past 4-5 steps will eat the next tick's
-// budget; the engine's own runaway detection latches a fault before this
-// can sustain.
+// Burst budget: at MAX_STEPS_PER_TICK_DEFAULT = 16 with up to 4 AWD
+// partners, ~50 cycles per edge = ~3200 cycles ≈ 6 µs per tick worst case,
+// well inside the 25 µs tick budget.
 __attribute__((used, externally_visible))
 void
 runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
@@ -602,10 +595,6 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
 
     int8_t want_dir = (n_steps < 0) ? 1 : 0;
     uint32_t count = (n_steps < 0) ? (uint32_t)-n_steps : (uint32_t)n_steps;
-    // All AWD partners share the same step_pulse_ticks at the printer.cfg
-    // level (default 2 µs); we read it from the primary for simplicity.
-    uint32_t pulse_ticks = runtime_motor_steppers[motor_idx][0].stepper
-                                                              ->step_pulse_ticks;
 
     if (runtime_motor_last_dir[motor_idx] != want_dir) {
         // Drive each AWD partner's dir_pin so that printer.cfg
@@ -621,27 +610,13 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
                            pin_level);
         }
         runtime_motor_last_dir[motor_idx] = want_dir;
-        // Dir-setup dwell. Driver datasheet wants ≥20 ns; we burn the full
-        // step_pulse_ticks for simplicity.
-        uint32_t t = timer_read_time();
-        runtime_dwt_dwell(t, pulse_ticks);
     }
 
-    // Toggle-based pulse emission. The step pin's idle level is tracked by
-    // the GPIO layer; toggling lifts it to "active" then back to "idle".
     // gpio_out_toggle_noirq is the irq-safe variant — caller (us) is in
     // ISR context with IRQs off by virtue of the priority-3 TIM5 vector.
     for (uint32_t i = 0; i < count; i++) {
-        // Rising edge on every bound stepper's step pin in lockstep.
         for (uint8_t j = 0; j < cnt; j++)
             gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);
-        uint32_t t0 = timer_read_time();
-        runtime_dwt_dwell(t0, pulse_ticks);
-        // Falling edge.
-        for (uint8_t j = 0; j < cnt; j++)
-            gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);
-        uint32_t t1 = timer_read_time();
-        runtime_dwt_dwell(t1, pulse_ticks);
     }
 }
 
