@@ -1,7 +1,15 @@
 // Host-process modulation tick driver. Spawns a pthread that calls
-// runtime_handle_tick at 40 kHz, mirroring TIM5_IRQHandler behavior on
-// the H7 firmware (src/stm32/runtime_tick_h7.c). Used by MACH_LINUX
-// builds for klippy-in-loop integration testing.
+// kalico_runtime_modulated_tick at 40 kHz, mirroring TIM5_IRQHandler
+// behavior on the H7 firmware (src/stm32/runtime_tick_h7.c). Used by
+// MACH_LINUX builds for klippy-in-loop integration testing.
+//
+// Step-emission T10 (2026-05-14): switched from the legacy
+// `runtime_handle_tick` (Engine::tick path) to
+// `kalico_runtime_modulated_tick`, matching the H7/F4 ISR shims. The
+// modulated path computes its widened clock inline via
+// `runtime_widened_host_clock` (defined in src/runtime_tick.c) — the
+// `runtime_handle_seed_widen` call below remains for the foreground
+// clock-sync widening seed.
 
 #include "generic/runtime_tick.h"
 
@@ -103,8 +111,12 @@ host_tick_main(void *arg)
         runtime_endstop_sample_pins();
 #endif
 
-        uint32_t cyc = runtime_cyccnt_read();
-        runtime_handle_tick(runtime_handle, cyc);
+        // T10: TIM5 dispatches the Modulated polled-tick StepAccumulator
+        // path exclusively. CYCCNT widening for the engine has moved
+        // inside `kalico_runtime_modulated_tick`'s C-side helper, so we
+        // no longer thread `raw_cyccnt` through the call.
+        (void)runtime_cyccnt_read();
+        kalico_runtime_modulated_tick(runtime_handle);
     }
     return NULL;
 }
