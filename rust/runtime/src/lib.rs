@@ -43,6 +43,7 @@ pub mod slot;
 pub mod state;
 pub use state::{set_step_mode, SetStepModeError, StepMode};
 pub mod step;
+pub mod step_producer;
 pub mod step_ring;
 pub mod step_time;
 pub mod stream;
