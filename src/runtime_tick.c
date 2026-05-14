@@ -89,7 +89,11 @@ const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
 // empty). The producer kicks the consumer indirectly by filling its
 // ring; the consumer notices on its next 1 ms poll. 1 ms of first-
 // step latency after a segment push is invisible at the bench.
-#define EMPTY_POLL_CYCLES (runtime_clock_freq / 1000U)  // 1 ms
+// TEMPORARY DIAGNOSTIC: 100 ms empty-poll cadence. If empty_polls counter
+// rate remains >40 Hz aggregate after this, our t->waketime isn't being
+// respected by Klipper's scheduler and the dispatch-loop saturation has
+// a different root cause than the consumer's reschedule cadence.
+#define EMPTY_POLL_CYCLES (runtime_clock_freq / 10U)  // 100 ms
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
