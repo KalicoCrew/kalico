@@ -1743,30 +1743,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     continue;
                 }
 
-                // Start a curve if this motor's producer state is idle.
-                if self
+                // Ensure a segment is available for this motor before we
+                // build the eval closure. The actual `start_curve` call
+                // happens AFTER the closure is constructed so we can seed
+                // `initial_step` from `eval(0.0) / step_distance` — see
+                // the comment block at `start_curve` below.
+                let is_idle = self
                     .producer_states
                     .get(motor_idx)
                     .map(|s| s.is_idle())
-                    .unwrap_or(true)
-                {
-                    let Some((seg, _primary, _secondary, _sign)) =
-                        self.fetch_segment_for_motor(motor_idx, queue)
-                    else {
+                    .unwrap_or(true);
+                if is_idle {
+                    if self.fetch_segment_for_motor(motor_idx, queue).is_none() {
                         continue;
-                    };
-                    // Seed producer state with motor's current step count
-                    // so absolute step targets line up with `stepper_counts`.
-                    let initial_step = shared
-                        .stepper_counts
-                        .get(motor_idx)
-                        .map(|c| c.load(Ordering::Acquire))
-                        .unwrap_or(0);
-                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
-                        ps.start_curve(initial_step);
-                    }
-                    if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
-                        *slot = Some(seg.id);
                     }
                 }
 
@@ -1842,6 +1831,42 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                             .unwrap_or((0.0, 0.0, 0.0))
                     }
                 };
+
+                // Seed producer state if idle, using the curve's position at
+                // u=0 as the integer-step baseline. Curves are in absolute
+                // motor-frame mm; Newton's target is `(initial_step + dir) *
+                // step_distance`, which must land within the curve's value
+                // range or Newton diverges out of `[0, 1]` on the first
+                // iteration and the segment exhausts with zero pulses.
+                //
+                // `stepper_counts[i]` cannot be used here: it's a counter,
+                // not an absolute step position. It only grows when
+                // `runtime_emit_step_pulses` fires — so at boot it is 0
+                // regardless of where the toolhead physically is. Anchoring
+                // `initial_step` to `eval(0.0) / step_distance` keeps the
+                // Newton target in the same coordinate frame as the curve.
+                //
+                // We also publish this value to `shared.stepper_counts[i]`
+                // so host queries (`kalico_runtime_get_stepper_count`) and
+                // Klippy's position tracking remain coherent with the
+                // motor's logical step position.
+                if is_idle {
+                    let (pos0, _v0, _a0) = eval(0.0);
+                    let initial_step = if step_distance > 0.0 {
+                        (pos0 / step_distance) as i32
+                    } else {
+                        0
+                    };
+                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
+                        ps.start_curve(initial_step);
+                    }
+                    if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
+                        *slot = Some(seg_for_fill.id);
+                    }
+                    if let Some(c) = shared.stepper_counts.get(motor_idx) {
+                        c.store(initial_step, Ordering::Release);
+                    }
+                }
 
                 // Inline Newton fill — equivalent to step_producer::producer_step
                 // for one motor, but here we have the engine-context loop so

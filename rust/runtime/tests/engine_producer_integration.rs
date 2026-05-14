@@ -37,6 +37,16 @@ fn linear_cubic(end: f32) -> (u8, Vec<f32>, Vec<f32>) {
     (3_u8, knots, cps)
 }
 
+/// 4-CP degree-3 Bézier with collinear control points moving from `start` to
+/// `end` (in mm). Lets us exercise curves that don't start at the coordinate
+/// origin — the realistic case for any jog after the toolhead has moved.
+fn linear_cubic_from_to(start: f32, end: f32) -> (u8, Vec<f32>, Vec<f32>) {
+    let d = end - start;
+    let cps = vec![start, start + d / 3.0, start + 2.0 * d / 3.0, end];
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    (3_u8, knots, cps)
+}
+
 /// Build a Cartesian X-only segment over [t_start, t_start + duration] that
 /// moves X from 0 to `end_mm`. Y/Z/E unused. EMode::Travel.
 fn build_segment_cartesian_x(
@@ -147,6 +157,79 @@ fn one_segment_one_motor_fills_ring() {
         let ring = h.engine.step_ring(m).expect("ring");
         assert_eq!(ring.available(), 0, "motor {m} should not have entries");
     }
+}
+
+#[test]
+fn jog_from_nonzero_position_produces_step_pulses() {
+    // Architectural regression test. Previously `initial_step` was seeded
+    // from `shared.stepper_counts[i]`, which is 0 at boot and only grows
+    // when pulses fire. For a realistic jog where the toolhead is at, say,
+    // X=100 mm and the bridge sends a curve with `curve(0) = 100`, the
+    // Newton target `(0 + dir) * step_distance ≈ ±step_distance` lay
+    // 100 mm away from where the curve actually evaluates. Newton's first
+    // iteration overshot out of `[0, 1]` → `SegmentExhausted` → zero pulses
+    // → stepper_counts stayed at 0 forever → permanent dead-lock.
+    //
+    // Fix anchors `initial_step` to `eval(0.0) / step_distance`, so the
+    // Newton target lands within the curve's value range and Newton
+    // converges normally. This test pins that behavior.
+    let mut h = Harness::cartesian_x();
+    // X 100 → 101 mm. 160 steps at 160 spm. Fits in one ring fill.
+    let (deg, knots, cps) = linear_cubic_from_to(100.0, 101.0);
+    let x_handle = h.pool.validate_and_load(0, deg, &knots, &cps).unwrap();
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: 26_000_000,
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    h.engine
+        .push_segment(seg, &mut h.q_producer, &h.shared)
+        .expect("push ok");
+
+    // Drive the producer until idle.
+    let mut runs = 0_u32;
+    loop {
+        let r = h.engine.producer_step(&h.pool, &mut h.q_consumer, &h.shared);
+        runs += 1;
+        if r == ProducerTickResult::AllIdle {
+            break;
+        }
+        assert!(runs < 200, "producer_step should converge");
+    }
+
+    let ring = h.engine.step_ring(0).expect("motor 0 ring");
+    let avail = ring.available();
+    // 1 mm × 160 spm = 160 steps. Allow ±2 for Newton edge.
+    assert!(
+        (158..=162).contains(&avail),
+        "expected ~160 entries for a 1 mm jog from X=100 to X=101; got {avail}. \
+         If avail==0, the regression is back (initial_step seeded from \
+         stepper_counts instead of curve(0)/step_distance).",
+    );
+
+    // stepper_counts should reflect the curve's coordinate frame after the
+    // first curve, so subsequent curves (which the planner emits with
+    // continuity at the previous curve's endpoint) stay coherent.
+    let counter = h.shared.stepper_counts[0].load(Ordering::Acquire);
+    // The producer seeds stepper_counts to `round(curve(0) / step_distance)`,
+    // then the consumer (not running in this test) would increment it as
+    // pulses fire. With no consumer running, the value should be exactly the
+    // seed: round(100.0 / 0.00625) = 16000.
+    assert_eq!(
+        counter, 16000,
+        "stepper_counts[0] should equal round(100/0.00625) after producer \
+         seeds it from curve(0); got {counter}",
+    );
 }
 
 #[test]
