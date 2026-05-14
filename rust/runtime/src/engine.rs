@@ -1856,56 +1856,104 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 }
                 let duration_f64 = duration_cycles as f64;
 
-                // Build per-motor cubic Bézier coefficients up-front (see
-                // `arm_step_timer` for the rationale). The planner emits
-                // uniform cubic Béziers; missing/UNUSED axes default to
-                // zero coefficients so the Cardano solver reports no
-                // root and the producer retires the motor's contribution.
-                let coeffs_primary = cv_primary
-                    .as_ref()
-                    .and_then(extract_uniform_cubic_bezier_coeffs)
-                    .unwrap_or_else(|| {
-                        crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0)
-                    });
-                let coeffs_secondary = cv_secondary
-                    .as_ref()
-                    .and_then(extract_uniform_cubic_bezier_coeffs)
-                    .unwrap_or_else(|| {
-                        crate::cardano::CubicCoeffs::from_bezier(0.0, 0.0, 0.0, 0.0)
-                    });
-                let coeffs = if is_corexy {
-                    if sign > 0.0 {
-                        coeffs_primary.add(&coeffs_secondary)
-                    } else {
-                        coeffs_primary.sub(&coeffs_secondary)
+                // Multi-piece cubic Bézier walker. Planner emits piecewise-
+                // Bézier degree-3 NURBS (see `trajectory/src/refit.rs::refit_to_cubic`
+                // and `nurbs/src/bezier.rs::bezier_pieces_to_nurbs`): each
+                // interior knot has multiplicity 3, control points span
+                // `3N + 1` for `N` pieces. A 1 mm X jog typically arrives as
+                // 2–10 pieces depending on the shaper kernel.
+                //
+                // The pre-2026-05-14 producer assumed a single 4-CP cubic
+                // (`extract_uniform_cubic_bezier_coeffs`) and fell back to
+                // zero-coeffs for anything else, which made every motor
+                // immediately exhaust on the first `compute_next_step_time`
+                // call — zero steps emitted, host slot pool drained
+                // segment-after-segment, no toolhead motion.
+                //
+                // Now: walk pieces sequentially per Cardano call, mapping
+                // local `t ∈ [0,1]` of each piece back to global `u ∈
+                // [u_start_piece, u_end_piece]` of the segment.
+                let n_pieces_primary = cv_primary.as_ref().map_or(0, cubic_n_pieces);
+                let n_pieces_secondary = cv_secondary.as_ref().map_or(0, cubic_n_pieces);
+
+                // UNUSED handle (no primary curve) → motor has no work
+                // this segment. Clear its mask bit so retirement can fire,
+                // mark progress, move on.
+                if n_pieces_primary == 0 {
+                    if let Some(seg_mut) = self.producer_current.as_mut() {
+                        Self::clear_motor_bits_in_mask(seg_mut, motor_idx as u8);
                     }
-                } else {
-                    coeffs_primary
+                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
+                        ps.clear();
+                    }
+                    if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
+                        *slot = None;
+                    }
+                    if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
+                        *cur = cur.wrapping_add(1);
+                    }
+                    made_progress = true;
+                    continue;
+                }
+
+                // CoreXY combines x + y / x − y per motor. If the
+                // secondary curve is UNUSED (Y missing while X is real),
+                // treat it as a zero-curve — motor 0 = X + 0 = X, motor 1
+                // = X − 0 = X. If BOTH are present, piece-counts must
+                // match (the host's per-axis refit produces matching knot
+                // structure when both axes are shaped from a single
+                // trajectory; if it diverges, a piece-merge pass would
+                // be needed, but that's not reachable from any current
+                // host code path). Cartesian (Trident bench) bypasses
+                // this entirely.
+                let secondary_is_zero = n_pieces_secondary == 0;
+                if is_corexy
+                    && !secondary_is_zero
+                    && n_pieces_secondary != n_pieces_primary
+                {
+                    if let Some(seg_mut) = self.producer_current.as_mut() {
+                        Self::clear_motor_bits_in_mask(seg_mut, motor_idx as u8);
+                    }
+                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
+                        ps.clear();
+                    }
+                    made_progress = true;
+                    continue;
+                }
+
+                // Build the kinematic-transformed coeffs for piece `pi`.
+                // Cartesian: just the primary's piece-coeffs. CoreXY: add/sub
+                // primary and secondary pieces, or pass through primary alone
+                // when secondary is UNUSED.
+                let cv_primary_ref = cv_primary.as_ref();
+                let cv_secondary_ref = cv_secondary.as_ref();
+                let piece_coeffs = |pi: usize| -> Option<(f64, f64, crate::cardano::CubicCoeffs)> {
+                    let (u_lo, u_hi, c_p) = cubic_piece(cv_primary_ref?, pi)?;
+                    if is_corexy && !secondary_is_zero {
+                        let (_, _, c_s) = cubic_piece(cv_secondary_ref?, pi)?;
+                        let combined = if sign > 0.0 {
+                            c_p.add(&c_s)
+                        } else {
+                            c_p.sub(&c_s)
+                        };
+                        Some((u_lo, u_hi, combined))
+                    } else {
+                        Some((u_lo, u_hi, c_p))
+                    }
                 };
 
-                // Seed producer state if idle, using the curve's position at
-                // u=0 as the integer-step baseline. Curves are in absolute
-                // motor-frame mm; Newton's target is `(initial_step + dir) *
-                // step_distance`, which must land within the curve's value
-                // range or Newton diverges out of `[0, 1]` on the first
-                // iteration and the segment exhausts with zero pulses.
-                //
-                // `stepper_counts[i]` cannot be used here: it's a counter,
-                // not an absolute step position. It only grows when
-                // `runtime_emit_step_pulses` fires — so at boot it is 0
-                // regardless of where the toolhead physically is. Anchoring
-                // `initial_step` to `eval(0.0) / step_distance` keeps the
-                // Newton target in the same coordinate frame as the curve.
-                //
-                // We also publish this value to `shared.stepper_counts[i]`
-                // so host queries (`kalico_runtime_get_stepper_count`) and
-                // Klippy's position tracking remain coherent with the
-                // motor's logical step position.
+                // Seed producer state on first call: anchor `initial_step`
+                // to the curve's position at u=0 in motor-frame mm. Same
+                // rationale as the pre-piecewise path — `stepper_counts`
+                // is a counter, not an absolute position, so we cannot
+                // seed from it. Piece 0 evaluated at local t=0 equals
+                // `curve(u_start_of_segment)`, which IS the absolute
+                // motor-frame position klippy planned.
                 if is_idle {
-                    // `coeffs.eval(0.0) == c0 == p0` for a uniform cubic
-                    // Bézier — the curve's position at u=0 in motor-frame
-                    // millimetres. Same anchoring as the old eval(0.0).
-                    let pos0 = coeffs.eval(0.0);
+                    let pos0 = match piece_coeffs(0) {
+                        Some((_, _, c0)) => c0.eval(0.0),
+                        None => 0.0,
+                    };
                     let initial_step = if step_distance > 0.0 {
                         (pos0 / step_distance) as i32
                     } else {
@@ -1922,12 +1970,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     }
                 }
 
-                // Inline Cardano step-fill — equivalent to step_producer::producer_step
-                // for one motor, but here we have the engine-context loop so
-                // we can short-circuit on ring-full and reuse the per-motor
-                // `coeffs` value (composed once above from cv_primary /
-                // cv_secondary under the motor's kinematic transform)
-                // without slicing four parallel arrays across motors.
+                // Inline Cardano-per-piece step-fill. For each step pulse:
+                //   1. Find the piece containing `t_resume` (or the first
+                //      piece if `t_resume == 0`).
+                //   2. Solve Cardano in local `t ∈ [t_low_local, 1]` for
+                //      that piece.
+                //   3. If NextAt: map t back to global u, push step, advance.
+                //   4. If SegmentExhausted on this piece: advance to next
+                //      piece and retry.
+                //   5. If exhausted all pieces past current: real
+                //      SegmentExhausted, break.
                 let mut filled = 0_u32;
                 let ring = match self.step_rings.get_mut(motor_idx) {
                     Some(r) => r,
@@ -1939,29 +1991,54 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 };
                 let mut motor_finished_curve = false;
                 while filled < PRODUCER_BATCH_CAP && ring.space() > 0 {
-                    let q = StepTimeQuery {
-                        coeffs: &coeffs,
-                        step_distance: ps.step_distance(),
-                        current_step: ps
-                            .step_at_curve_start()
-                            .wrapping_add(ps.steps_pushed_this_curve()),
-                        t_curr: ps.t_resume().unwrap_or(0.0),
-                        t_segment_end: 1.0,
-                    };
-                    match compute_next_step_time(&q) {
-                        StepTimeResult::NextAt { t, dir } => {
-                            // Convert normalized u → absolute cycles low-32.
-                            let dt_cycles = (t * duration_f64) as u64;
+                    let t_curr = ps.t_resume().unwrap_or(0.0);
+                    let mut found_root: Option<(f64, i8)> = None;
+                    for pi in 0..n_pieces_primary {
+                        let Some((u_lo, u_hi, coeffs)) = piece_coeffs(pi) else {
+                            continue;
+                        };
+                        if u_hi <= t_curr {
+                            continue; // already past this piece
+                        }
+                        let span = u_hi - u_lo;
+                        // Local t-bounds: clamp current u into [0, 1] of
+                        // this piece. `solve_smallest_root_in` uses
+                        // `(t_low, t_high]` (exclusive low, inclusive high)
+                        // so a `t_curr` exactly at a piece boundary picks
+                        // up roots in the next piece.
+                        let t_low_local =
+                            if t_curr > u_lo { (t_curr - u_lo) / span } else { 0.0 };
+                        let q = StepTimeQuery {
+                            coeffs: &coeffs,
+                            step_distance: ps.step_distance(),
+                            current_step: ps
+                                .step_at_curve_start()
+                                .wrapping_add(ps.steps_pushed_this_curve()),
+                            t_curr: t_low_local,
+                            t_segment_end: 1.0,
+                        };
+                        match compute_next_step_time(&q) {
+                            StepTimeResult::NextAt { t, dir } => {
+                                let u_global = u_lo + t * span;
+                                found_root = Some((u_global, dir));
+                                break;
+                            }
+                            StepTimeResult::SegmentExhausted => continue,
+                        }
+                    }
+                    match found_root {
+                        Some((u_global, dir)) => {
+                            let dt_cycles = (u_global * duration_f64) as u64;
                             let abs_cycles = t_start_cycles.saturating_add(dt_cycles);
                             ring.push(abs_cycles as u32, dir);
                             shared
                                 .producer_steps_pushed_total
                                 .fetch_add(1, Ordering::AcqRel);
-                            ps.set_t_resume(Some(t));
+                            ps.set_t_resume(Some(u_global));
                             ps.bump_steps_pushed(i32::from(dir));
                             filled += 1;
                         }
-                        StepTimeResult::SegmentExhausted => {
+                        None => {
                             ps.clear();
                             shared
                                 .producer_motor_finished_curve_total
@@ -2372,6 +2449,75 @@ fn extract_uniform_cubic_bezier_coeffs(
         f64::from(c2),
         f64::from(c3),
     ))
+}
+
+/// Number of cubic Bézier pieces in a degree-3 NURBS expressed in piecewise-
+/// Bézier form (each interior knot has multiplicity 3). Returns 0 for any
+/// other shape (non-cubic degree, too few CPs, n_cps - 1 not divisible by 3).
+///
+/// The host's `bezier_pieces_to_nurbs` (rust/nurbs/src/bezier.rs:532) produces
+/// exactly this layout: `n_cps = 3N + 1` for `N` pieces, knot vector
+/// `[u₀;p+1, u₁;p, u₂;p, …, u_N;p+1]` (clamped ends, multiplicity-p interior).
+/// `trajectory/src/refit.rs::refit_to_cubic` always emits this form before
+/// the bridge serializes via `from_scalar_nurbs_normalized`.
+fn cubic_n_pieces(cv: &CurveView<'_>) -> usize {
+    if cv.degree != 3 {
+        return 0;
+    }
+    let n_cps = cv.control_points.len();
+    if n_cps < 4 {
+        return 0;
+    }
+    // Piecewise-Bezier layout: n_cps = 3N + 1.
+    if (n_cps - 1) % 3 != 0 {
+        return 0;
+    }
+    // Sanity: knots must satisfy n_knots = n_cps + degree + 1 = 3N + 5.
+    if cv.knots.len() != n_cps + 4 {
+        return 0;
+    }
+    (n_cps - 1) / 3
+}
+
+/// Extract the `piece_idx`-th cubic Bézier piece of a degree-3 NURBS in
+/// piecewise-Bézier form. Returns `(u_start, u_end, coeffs)` where
+/// `u_start`/`u_end` are the piece's domain in the curve's global parameter
+/// space, and `coeffs` is the cubic in monomial form on local `t ∈ [0, 1]`
+/// where `t = (u - u_start) / (u_end - u_start)`.
+///
+/// Caller is responsible for mapping `t` back to `u` after solving:
+/// `u_global = u_start + t * (u_end - u_start)`.
+///
+/// Returns `None` for out-of-range `piece_idx` or for non-cubic/malformed
+/// curves (same gate as `cubic_n_pieces`).
+fn cubic_piece(
+    cv: &CurveView<'_>,
+    piece_idx: usize,
+) -> Option<(f64, f64, crate::cardano::CubicCoeffs)> {
+    let n_pieces = cubic_n_pieces(cv);
+    if piece_idx >= n_pieces {
+        return None;
+    }
+    let p = 3_usize;
+    let cp_base = p * piece_idx;
+    // Bounds-checked indexing — n_pieces already proved n_cps >= 3N + 1 so
+    // cp_base + 3 < n_cps. Use explicit `get` to avoid clippy::indexing_slicing.
+    let p0 = f64::from(*cv.control_points.get(cp_base)?);
+    let p1 = f64::from(*cv.control_points.get(cp_base + 1)?);
+    let p2 = f64::from(*cv.control_points.get(cp_base + 2)?);
+    let p3 = f64::from(*cv.control_points.get(cp_base + 3)?);
+    // Knot indexing: `u_start = knots[p + p*i]`, `u_end = knots[p + p*(i+1)]`.
+    // Validated against the host's emission layout in
+    // `rust/nurbs/src/bezier.rs::bezier_pieces_to_nurbs`.
+    let u_start_idx = p + p * piece_idx;
+    let u_end_idx = p + p * (piece_idx + 1);
+    let u_start = f64::from(*cv.knots.get(u_start_idx)?);
+    let u_end = f64::from(*cv.knots.get(u_end_idx)?);
+    if !(u_end > u_start) {
+        return None;
+    }
+    let coeffs = crate::cardano::CubicCoeffs::from_bezier(p0, p1, p2, p3);
+    Some((u_start, u_end, coeffs))
 }
 
 /// Scale a `dP/du` (in the segment's normalized `u ∈ [0,1]` parameterization)

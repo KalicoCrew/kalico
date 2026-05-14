@@ -430,6 +430,121 @@ fn corexy_motor0_and_motor1_both_step_on_x_jog() {
     );
 }
 
+/// **Multi-piece NURBS regression** — pinned 2026-05-14.
+///
+/// The host bridge sends curves in piecewise-Bézier form (per
+/// `trajectory/src/refit.rs::refit_to_cubic` →
+/// `nurbs/src/bezier.rs::bezier_pieces_to_nurbs`): degree-3, multiplicity-3
+/// interior knots, `n_cps = 3N + 1` for `N` pieces. Bench observation:
+/// a 1 mm X jog arrives as 2–10 pieces depending on the input shaper.
+///
+/// Pre-fix, the producer's `extract_uniform_cubic_bezier_coeffs` required
+/// EXACTLY 4 CPs degree 3. For multi-piece (N≥2) curves it returned `None`,
+/// the producer fell back to zero-coeffs, and `compute_next_step_time`
+/// returned `SegmentExhausted` on the first call — zero step pulses emitted,
+/// segments retired immediately, host slot pool drained, no motion.
+///
+/// This test pushes a synthetic 3-piece curve (4-CP-per-piece, shared
+/// boundary CPs, 10 total CPs) and asserts the producer fills the ring
+/// with step entries across ALL pieces.
+#[test]
+fn producer_handles_multi_piece_cubic_nurbs() {
+    use core::sync::atomic::Ordering as _Order;
+
+    let mut h = Harness::cartesian_x();
+
+    // Build a 3-piece piecewise-Bézier degree-3 NURBS that moves X
+    // monotonically from 0 to 3 mm:
+    //   piece 0: u ∈ [0.0, 0.33], X from 0.0 to 1.0
+    //   piece 1: u ∈ [0.33, 0.67], X from 1.0 to 2.0
+    //   piece 2: u ∈ [0.67, 1.0], X from 2.0 to 3.0
+    // Each piece is collinear (P0, P0+d/3, P0+2d/3, P3 = P0+d), so
+    // CPs are the boundary values and the 1/3 / 2/3 interpolants.
+    // Shared boundary CPs collapse to: [0.0, 0.333, 0.667, 1.0, 1.333,
+    // 1.667, 2.0, 2.333, 2.667, 3.0] — 10 CPs = 3·3 + 1. ✓
+    let cps: Vec<f32> = vec![
+        0.0, 1.0 / 3.0, 2.0 / 3.0,
+        1.0, 4.0 / 3.0, 5.0 / 3.0,
+        2.0, 7.0 / 3.0, 8.0 / 3.0,
+        3.0,
+    ];
+    // Knot vector: [0,0,0,0, 0.33,0.33,0.33, 0.67,0.67,0.67, 1,1,1,1]
+    // (14 entries = 10 CPs + degree(3) + 1).
+    let third = 1.0_f32 / 3.0;
+    let two_thirds = 2.0_f32 / 3.0;
+    let knots: Vec<f32> = vec![
+        0.0, 0.0, 0.0, 0.0,
+        third, third, third,
+        two_thirds, two_thirds, two_thirds,
+        1.0, 1.0, 1.0, 1.0,
+    ];
+    assert_eq!(knots.len(), cps.len() + 4, "knot vector well-formed");
+    let x_handle = h.pool.validate_and_load(0, 3, &knots, &cps).expect("load");
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        // 78 ms at 520 MHz — 3 mm × 160 steps/mm = 480 steps; @100 mm/s
+        // step rate → 16 kHz, well within ring capacity of 1024.
+        t_end: 40_600_000,
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    h.engine
+        .push_segment(seg, &mut h.q_producer, &h.shared)
+        .expect("push ok");
+
+    // Drive producer to completion. With N=3 pieces and 480 total steps,
+    // PRODUCER_BATCH_CAP=32 means ~15 fires expected. Cap loosely at 100.
+    let mut runs = 0_u32;
+    loop {
+        let r = h.engine.producer_step(&h.pool, &mut h.q_consumer, &h.shared);
+        runs += 1;
+        if r == ProducerTickResult::AllIdle {
+            break;
+        }
+        assert!(
+            runs < 100,
+            "multi-piece producer must converge to AllIdle within 100 calls. \
+             Got runs={runs}, ring_avail={}, steps_pushed_total={}",
+            h.engine.step_ring(0).map(|r| r.available()).unwrap_or(0),
+            h.shared.producer_steps_pushed_total.load(_Order::Acquire),
+        );
+    }
+
+    // 3 mm × 160 spm = 480 steps. Allow ±5 for Cardano boundary rounding.
+    let avail = h.engine.step_ring(0).expect("ring 0").available();
+    assert!(
+        (475..=485).contains(&avail),
+        "expected ~480 entries from a 3 mm jog across 3 cubic pieces; got \
+         {avail}. If 0, the multi-piece walker bailed early. If <100, only \
+         the first piece was processed."
+    );
+
+    // Ring entries must be monotonically increasing across piece boundaries.
+    let ring = h.engine.step_ring(0).expect("ring");
+    let mut last = ring.peek_head().expect("ring non-empty").0;
+    ring.advance(1);
+    let mut prev_dir: i8 = 0;
+    while let Some((t, dir)) = ring.peek_head() {
+        assert!(t >= last, "ring time monotonicity broken across pieces: {t} < {last}");
+        if prev_dir != 0 {
+            // Single-direction jog — all entries should have same direction.
+            assert_eq!(dir, prev_dir, "direction flipped mid-jog");
+        }
+        prev_dir = dir;
+        last = t;
+        ring.advance(1);
+    }
+}
+
 /// **IWDG-spin regression** — pinned 2026-05-14.
 ///
 /// Before the `motor_has_remaining_work` guard in `fetch_segment_for_motor`,

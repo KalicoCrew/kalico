@@ -76,6 +76,33 @@ impl CubicCoeffs {
 /// would misclassify the small-scale regime as degenerate.
 const REL_EPS: f64 = 1e-12;
 
+/// Relative noise threshold for f32-sourced coefficients. The MCU receives
+/// curve control points as f32 (spec §7.3 wire format) and the curve pool
+/// stores them as f32. `CubicCoeffs::from_bezier` casts them to f64
+/// before computing monomial coefficients; for a curve whose leading
+/// coefficient should be exactly 0 (e.g., a linear curve `[0, 1/3, 2/3,
+/// 1]` expressed as a degree-3 Bézier), the f32 representation of `1/3`
+/// is not exact, and `3·(1/3) − 3·(2/3) + 1` accumulates ~3e-8 of noise
+/// relative to the curve's working scale.
+///
+/// `REL_EPS = 1e-12` is too strict for such inputs — it leaves the noise
+/// above the "is the cubic leading-coefficient effectively zero?" gate,
+/// so Cardano runs the full cubic path, which is numerically unstable
+/// for vanishingly small leading coefficients and misses real roots at
+/// interval boundaries (bench-observed: linear-from-Bézier piece-0 of
+/// the host's piecewise-cubic curve emits N−1 of N expected step pulses,
+/// then the producer thinks the curve is exhausted and skips ahead).
+///
+/// `F32_NOISE_REL` is layered on top of `REL_EPS`: the effective
+/// threshold is `max(REL_EPS · max(scale, 1.0), F32_NOISE_REL · cp_scale)`
+/// where `cp_scale = max(|c|, |d_shifted|)` — that is, the magnitude of
+/// the polynomial's affine part (linear and constant coefficients), which
+/// correlates with the curve's CP magnitude. For 1 mm-scale jogs the
+/// noise floor is 1e-7; for nm-scale curves it's proportional. Genuine
+/// cubic curves (third-difference of CPs is O(1)) stay above the floor
+/// and use the cubic path.
+const F32_NOISE_REL: f64 = 1e-7;
+
 /// Find the smallest real root of `a*u^3 + b*u^2 + c*u + (d - target) = 0`
 /// strictly greater than `t_low` and less-than-or-equal to `t_high`. Returns
 /// `None` if no such root exists.
@@ -115,11 +142,19 @@ pub fn solve_smallest_root_in(
     // Degenerate cubic: |a| relatively small -> quadratic fallback.
     // Scale the threshold to the largest coefficient magnitude so we judge
     // `a` against the polynomial's own working scale, not an absolute floor.
+    // Also include an f32-noise floor scaled to the polynomial's affine part
+    // (`|c|`, `|d_shifted|`) so f32→f64-cast noise in `a` doesn't bypass the
+    // degeneracy gate for curves whose CPs are exactly linear-in-Bézier-basis
+    // (e.g., piecewise-Bézier output from the host's `refit_to_cubic`).
     let scale = libm::fmax(
         libm::fmax(libm::fabs(a), libm::fabs(b)),
         libm::fmax(libm::fabs(c), libm::fabs(d_shifted)),
     );
-    let eps_a = REL_EPS * libm::fmax(scale, 1.0);
+    let cp_scale = libm::fmax(libm::fabs(c), libm::fabs(d_shifted));
+    let eps_a = libm::fmax(
+        REL_EPS * libm::fmax(scale, 1.0),
+        F32_NOISE_REL * cp_scale,
+    );
     if libm::fabs(a) < eps_a {
         return solve_quadratic_smallest_root_in(b, c, d_shifted, t_low, t_high);
     }
@@ -197,15 +232,24 @@ fn solve_quadratic_smallest_root_in(
     t_high: f64,
 ) -> Option<f64> {
     // Relative degeneracy threshold for the quadratic leading coefficient.
+    // Same f32-noise floor as the cubic gate — `a` here is the cubic's `b`
+    // when called from the cubic fallback, so f32 noise propagates the same way.
     let scale = libm::fmax(
         libm::fmax(libm::fabs(a), libm::fabs(b)),
         libm::fabs(c),
     );
-    let eps_a = REL_EPS * libm::fmax(scale, 1.0);
+    let cp_scale = libm::fmax(libm::fabs(b), libm::fabs(c));
+    let eps_a = libm::fmax(
+        REL_EPS * libm::fmax(scale, 1.0),
+        F32_NOISE_REL * cp_scale,
+    );
     if libm::fabs(a) < eps_a {
         // Linear: b*u + c = 0 -> u = -c/b.
         let scale_l = libm::fmax(libm::fabs(b), libm::fabs(c));
-        let eps_b = REL_EPS * libm::fmax(scale_l, 1.0);
+        let eps_b = libm::fmax(
+            REL_EPS * libm::fmax(scale_l, 1.0),
+            F32_NOISE_REL * libm::fabs(c),
+        );
         if libm::fabs(b) < eps_b {
             // Constant. No finite root; if c == 0 every u is a root but
             // "any u" isn't actionable for step timing, so return None.
