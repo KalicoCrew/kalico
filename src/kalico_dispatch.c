@@ -405,7 +405,13 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
     extern volatile uint32_t handle_push_segment_invalid_body_total;
     extern volatile uint32_t handle_push_segment_no_handle_total;
     extern volatile int32_t handle_push_segment_last_r;
+    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     handle_push_segment_calls_total++;
+    // Independent diag signal — if the counter remains at 0 across many
+    // host PushSegment writes, this confirms it via the 0xCC stage-1 tag
+    // (visible as a value 0xCC01...XX in fault_detail). The counter is
+    // .bss; the diag is foreground-overwriteable, so they cross-check.
+    runtime_diag_progress(0xCC, 1, body_len);
     // §7.4 body: id u32, 4×handle u32, t_start u64, t_end u64, kin u8, e_mode u8, extrusion_ratio f32 — 42 bytes.
     if (body_len != 42) {
         handle_push_segment_invalid_body_total++;
