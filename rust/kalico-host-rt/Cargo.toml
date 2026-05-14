@@ -32,6 +32,7 @@ runtime = { path = "../runtime" }
 nurbs = { path = "../nurbs", features = ["host"] }
 kalico-protocol = { path = "../kalico-protocol" }
 kalico-native-transport = { path = "../kalico-native-transport" }
+thiserror = { workspace = true }
 
 [dependencies.pyo3]
 version = "0.24"
