@@ -1398,12 +1398,15 @@ class HeatersAPI:
         heaters.turn_off_all_heaters()
 
     def set_temperature(
-        self, heater_name: str, temp: typing.Optional[float] = None
+        self,
+        heater_name: str,
+        temp: typing.Optional[float] = None,
+        wait: bool = False,
     ):
         "Set the target temperature for a heater"
         heaters: PrinterHeaters = self._printer.lookup_object("heaters")
         heater = heaters.lookup_heater(heater_name)
-        heaters.set_temperature(heater, temp)
+        heaters.set_temperature(heater, temp, wait=wait)
 
     def temperature_wait(
         self,

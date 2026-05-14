@@ -38,7 +38,9 @@ class GCodeCommandAPI:
 class HeatersAPI:
     def turn_off(self):
         """Turn off all heaters (set targets to 0)"""
-    def set_temperature(self, heater_name: str, temp: float | None = None):
+    def set_temperature(
+        self, heater_name: str, temp: float | None = None, wait: bool = False
+    ):
         """Set the target temperature for a heater"""
     def temperature_wait(
         self, sensor_name, min_temp: float = ..., max_temp: float = ...
