@@ -570,9 +570,8 @@ runtime_status_drain(void)
     st_emit_phase = (uint8_t)(st_emit_phase + 1);
     if (st_emit_phase >= 4) st_emit_phase = 0;
     extern volatile uint32_t step_time_event_fires;
-    extern volatile uint32_t step_time_arm_attempts;
-    extern volatile uint32_t step_time_arm_success;
-    extern volatile uint32_t step_time_no_step_polls;
+    extern volatile uint32_t step_time_producer_kicks;
+    extern volatile uint32_t step_time_empty_polls;
     extern uint8_t runtime_motor_binding_count(uint8_t motor_idx);
     if (last_err == 0 && status_emit_phase == 0) {
         switch (st_emit_phase) {
@@ -581,14 +580,17 @@ runtime_status_drain(void)
             fault_detail = 0xE3000000u | (step_time_event_fires & 0x00FFFFFFu);
             break;
         case 1:
-            // 0xE4 — arm attempts (high) | arm successes (low), 12 bits each.
+            // 0xE4 — producer kicks (low 24 bits) — how often the
+            // consumer / push_segment hook actually CAS-won and queued
+            // the producer timer.
             fault_detail = 0xE4000000u
-                         | ((step_time_arm_attempts & 0x0FFFu) << 12)
-                         | (step_time_arm_success  & 0x0FFFu);
+                         | (step_time_producer_kicks & 0x00FFFFFFu);
             break;
         case 2:
-            // 0xE5 — no_step_polls (low 24 bits).
-            fault_detail = 0xE5000000u | (step_time_no_step_polls & 0x00FFFFFFu);
+            // 0xE5 — empty polls (low 24 bits) — how often the consumer
+            // found its ring empty and short-polled. High = producer
+            // falling behind.
+            fault_detail = 0xE5000000u | (step_time_empty_polls & 0x00FFFFFFu);
             break;
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -831,11 +833,15 @@ DECL_CTR("_DECL_OUTPUT "
 // src/runtime_tick_weak.c resolves when bench is disabled.
 
 // ---------------------------------------------------------------------------
-// Per-stepper step-time scheduling. Spec §6.
+// Per-stepper step-time scheduling — step-emission architecture (spec §3.4 / §3.5).
 //
-// Each StepTime-mode stepper gets its own Klipper `struct timer`. The ISR
-// fires the step pulse, samples endstops on this axis (Task D3 wires this),
-// then asks the engine for the next step time and reschedules.
+// The host-side `Engine::producer_step` Newton-fills per-motor `StepRing`
+// buffers with (cycles_abs_lo, dir) entries. Each StepTime-mode motor gets
+// its own Klipper `struct timer` (the "consumer") that pops one entry per
+// fire, drives the step+dir pins, samples endstops, and reschedules at the
+// next entry's time. A single shared producer Klipper timer refills the
+// rings on demand, kicked by `push_segment`'s producer-pending CAS or by
+// the consumer's low-water hook.
 //
 // Step-pulse discipline — runtime_emit_step_pulses (complete rise+fall pair):
 //   Each step_time_event issues one call to runtime_emit_step_pulses with
@@ -850,9 +856,10 @@ DECL_CTR("_DECL_OUTPUT "
 // can't cross the FFI boundary, so we rely on code review and the comment.
 #define MAX_STEPPER_OIDS_C 8   // must match rust/runtime/src/state.rs::MAX_STEPPER_OIDS
 
-// Error codes needed on the C side. Mirror rust/runtime/src/error.rs.
-#define KALICO_OK_C          0
-#define KALICO_ERR_NO_STEP_C (-25)
+// Low-water threshold: spec §3.4 calls for kicking the producer when the
+// step-ring drains below N/4 of its capacity. With Rust's
+// `StepRing::CAPACITY == 1024` that's 256 entries.
+#define STEP_RING_LOW_WATER 256
 
 // Forward decl: defined in src/stepper.c. -Wimplicit-function-declaration is
 // promoted to error under the sim build's stricter flags, so a header-less
@@ -867,23 +874,85 @@ struct step_timer_ctx {
 
 static struct step_timer_ctx step_timers[MAX_STEPPER_OIDS_C];
 
-// 2026-05-13 bench debug counters. Volatile because step_time_event (ISR)
-// and arm_step_time_steppers_after_push (foreground) write them; status
-// drain reads them. ARMv7-M atomic 32-bit loads/stores make this safe
-// without an explicit fence.
+// Single shared producer Klipper timer. Refills every StepTime motor's
+// step-ring in a single pass via `kalico_runtime_producer_step`. The
+// `enabled` byte mirrors `producer_pending`: set when a kicker (push_segment
+// CAS or consumer low-water) has scheduled the timer, cleared when
+// `runtime_producer_event` returns SF_DONE.
+static struct {
+    struct timer timer;
+    uint8_t enabled;
+} runtime_producer_timer;
+
+// Diag counter: number of step_time_event ISR fires. Surfaced by the 10 Hz
+// status drain via the 0xE3 fault_detail tag. Volatile because the ISR
+// writes and the foreground task reads.
 volatile uint32_t step_time_event_fires __attribute__((used, externally_visible));
-volatile uint32_t step_time_arm_attempts __attribute__((used, externally_visible));
-volatile uint32_t step_time_arm_success __attribute__((used, externally_visible));
-volatile uint32_t step_time_no_step_polls __attribute__((used, externally_visible));
+
+// Diag counter: number of producer kicks (CAS-won) — when the consumer or
+// `kalico_runtime_kick_producer` callers reschedule the producer timer.
+// Surfaced via the 0xE4 fault_detail tag.
+volatile uint32_t step_time_producer_kicks __attribute__((used, externally_visible));
+
+// Diag counter: number of times step_time_event found an empty ring and
+// fell back to a short-poll reschedule. Surfaced via the 0xE5 fault_detail
+// tag. High counts indicate the producer is failing to keep up.
+volatile uint32_t step_time_empty_polls __attribute__((used, externally_visible));
 
 // Defined in src/runtime_commands.c (Task D3). Samples all active endstop
 // GPIO slots for the given stepper index. Called from step_time_event so
 // the step-time ISR path catches trips at step resolution.
 extern void runtime_endstop_sample_one(uint8_t stepper_idx);
 
-// Per-stepper timer ISR. Called by Klipper's scheduler at the waketime
-// previously set by arm_step_time_steppers_after_push (or by the prior
-// invocation of this same callback for reschedule).
+// Forward decl for the producer timer; defined below. Used by the consumer
+// low-water hook and by `arm_producer_timer_if_kicked` (called from
+// handle_push_segment in src/kalico_dispatch.c).
+static uint_fast8_t runtime_producer_event(struct timer *t);
+
+// Helper: if the runtime says the producer should run (CAS-won), make sure
+// the producer Klipper timer is queued. Idempotent — the `enabled` flag
+// guards against double-add. Safe to call from foreground (push_segment)
+// or ISR (step_time_event) contexts.
+static void
+arm_producer_timer_if_kicked_inline(uint32_t waketime)
+{
+    if (!runtime_handle) return;
+    if (!kalico_runtime_kick_producer(runtime_handle)) {
+        // Another caller already won the CAS. Either the producer timer
+        // is already queued, or the previously-pending run is in flight.
+        // Either way, no new schedule is required.
+        return;
+    }
+    step_time_producer_kicks++;
+    if (runtime_producer_timer.enabled) {
+        // Race: the timer was queued by an earlier kick whose
+        // `runtime_producer_event` hasn't run yet (so `enabled` is still
+        // set) AND it cleared `producer_pending` to false before we
+        // CAS-set it back to true. The currently-queued run will observe
+        // our new pending bit via `runtime_handle.shared` and process
+        // accordingly, so no additional schedule is needed.
+        return;
+    }
+    runtime_producer_timer.enabled = 1;
+    runtime_producer_timer.timer.waketime = waketime;
+    sched_add_timer(&runtime_producer_timer.timer);
+}
+
+// Called from handle_push_segment in src/kalico_dispatch.c after
+// runtime_handle_push_segment returns KALICO_OK. Replaces the previous
+// `arm_step_time_steppers_after_push` per-stepper arming loop — the
+// producer fills the rings and the per-stepper consumer timers (registered
+// once at configure_axes time) drain them.
+void
+arm_producer_timer_if_kicked(void)
+{
+    arm_producer_timer_if_kicked_inline(timer_read_time());
+}
+
+// Per-stepper consumer ISR. Called by Klipper's scheduler at the
+// `cycles_abs_lo` time of the next ring entry, or on a short-poll
+// cadence when the ring is empty. Pops one entry per fire and emits one
+// step pulse on this motor.
 //
 // Signature must match `uint_fast8_t (*func)(struct timer*)` — sched.h §14.
 static uint_fast8_t
@@ -892,172 +961,140 @@ step_time_event(struct timer *t)
     step_time_event_fires++;
     struct step_timer_ctx *ctx =
         container_of(t, struct step_timer_ctx, timer);
+    uint8_t motor = ctx->stepper_idx;
 
-    // Ask the engine for the next step time and direction.
-    //
-    // `t->waketime` is u32 (Klipper scheduler resolution = low 32 bits of
-    // DWT->CYCCNT). The engine compares against `segment.t_start` which
-    // is in widened u64 cycle space (klippy stamps each segment with a
-    // widened MCU clock at push time — accumulated 2^32 wraps included).
-    //
-    // Bench wedge 2026-05-12: passing `(uint64_t)t->waketime` directly
-    // sets high=0, so `now_cycles < t_start` saturating-subbed to 0,
-    // `t_curr_norm` clamped to 0, Newton solver returned step time
-    // "near u=0" with `current_step` reading from `stepper_counts` which
-    // step_time_event never increments — engine retired the segment
-    // (engine_status -> Drained) without ever asking compute_next_step_time
-    // for non-zero step output. `engine_status` showed `2` (Drained, not
-    // Running) for many seconds with `current_segment_id` frozen at the
-    // last-retired id (see RuntimeStatus::Drained = 2 in engine.rs:148).
-    //
-    // Fix: widen `t->waketime` using Klipper's stats-based widening
-    // (same widening klippy uses for the host-side segment t_start
-    // stamp — see `runtime_widened_host_clock`, runtime_tick.c:179).
-    // The two widenings align at boot and stay aligned by virtue of
-    // sharing `stats_send_time_high`, so engine.arm_step_timer sees
-    // `now_cycles` in the same frame as `segment.t_start`.
-    extern uint32_t stats_send_time;
-    extern uint32_t stats_send_time_high;
-    uint32_t waketime_low = t->waketime;
-    uint32_t now_high = stats_send_time_high
-                      + (waketime_low < stats_send_time);
-    uint64_t now_cycles_widened = ((uint64_t)now_high << 32)
-                                | (uint64_t)waketime_low;
-
-    uint64_t next_cycles_abs = 0;
+    uint32_t t_next = 0;
     int8_t dir = 1;
-    int32_t err = kalico_runtime_compute_next_step_time(
-        runtime_handle,
-        ctx->stepper_idx,
-        now_cycles_widened,
-        &next_cycles_abs,
-        &dir);
+    bool have_head = kalico_runtime_step_ring_peek_head(
+        runtime_handle, motor, &t_next, &dir);
 
-    if (err != KALICO_OK_C) {
-        // KALICO_ERR_NO_STEP fires under several conditions:
-        //   (a) Engine hasn't dequeued the just-pushed segment yet (TIM5 lags
-        //       arm_step_time_steppers_after_push by up to one TIM5 interval),
-        //       so engine.current is still None.
-        //   (b) `now < segment.t_start` — segment is scheduled in the future
-        //       and arm_step_timer's `t_curr_norm < 0` guard fires.
-        //   (c) Current segment exhausted for this axis (no more steps in
-        //       this direction within [t_curr, t_end]) — a new segment may
-        //       arrive with motion on this axis.
-        //   (d) End of motion — no more segments coming.
-        //
-        // For (a)/(b)/(c) the timer must keep polling so it can pick up the
-        // next available step the moment one exists. (d) is indistinguishable
-        // from (c) at this layer, so we accept a ~1 kHz idle wakeup per
-        // StepTime stepper between motions. F4 with 1 Z stepper: trivial.
-        // H7 with 4 XY+E StepTime steppers: ~few µs × 4 = <0.1% CPU.
-        //
-        // `runtime_clock_freq` is defined at file scope (line 52, const) —
-        // no extern declaration needed inside this function.
-        step_time_no_step_polls++;
-        t->waketime += (runtime_clock_freq / 1000U);
+    if (!have_head) {
+        // Ring empty — the producer hasn't caught up yet (or there's no
+        // active segment for this motor). Short-poll until the producer
+        // refills. The consumer's low-water hook below kicks the producer
+        // when AVAILABLE drops; here we additionally kick on full-empty
+        // to handle the bootstrap case (timer queued by configure_axes
+        // before the first segment).
+        step_time_empty_polls++;
+        arm_producer_timer_if_kicked_inline(timer_read_time());
+        t->waketime += runtime_clock_freq / 10000U;  // +100 µs
         return SF_RESCHEDULE;
     }
 
-    // Emit one step pulse on this motor (step-pin + dir-pin) through the
-    // shared runtime_emit_step_pulses path. This handles:
-    //   - All AWD partners (e.g. stepper_z / stepper_z1 / stepper_z2 for
-    //     a 3-motor Z axis on a Voron 2.4) in a single call — without this,
-    //     only the primary stepper would move and the gantry would tilt.
-    //   - dir_pin write with the correct polarity (printer.cfg `dir_pin: !`
-    //     inversion honored) and a dir-setup dwell before the step edge.
-    //   - n_steps=+1 (dir>0) or n_steps=-1 (dir<0), matching the direction
-    //     computed by the Newton solver from sign(velocity(t_curr)).
+    uint32_t now = timer_read_time();
+    if ((int32_t)(t_next - now) > 0) {
+        // Head entry is in the future — schedule the next wake at that
+        // time. No emit, no advance. The scheduler will wake us at the
+        // exact step time.
+        t->waketime = t_next;
+        return SF_RESCHEDULE;
+    }
+
+    // Head entry is at or past `now` — emit one step pulse. The shared
+    // runtime_emit_step_pulses path handles AWD partners (e.g.
+    // stepper_z / z1 / z2 for a 3-motor Z), dir-pin updates with the
+    // correct polarity, and the dir-setup dwell before the step edge.
     int32_t n_steps = (dir >= 0) ? 1 : -1;
-    runtime_emit_step_pulses(ctx->stepper_idx, n_steps);
+    runtime_emit_step_pulses(motor, n_steps);
 
     // Commit the just-emitted step into `shared.stepper_counts` so the
-    // engine's `current_step` read in `arm_step_timer_for_stepper` advances
-    // on the next ISR call. Without this, the Newton solver always sees
-    // current_step=0 and re-solves for the SAME first-step time forever —
-    // pulses emit, but at the NO_STEP-poll rate (1 kHz) rather than the
-    // true Newton-iterated rate (bench wedge 2026-05-12). Mirrors
-    // engine.rs:1067 for the polled-tick path.
-    kalico_runtime_apply_step(runtime_handle, ctx->stepper_idx, n_steps);
+    // engine's step counters track the consumer's progress (Modulated-mode
+    // parity, and for any host-side step-position queries).
+    kalico_runtime_apply_step(runtime_handle, motor, n_steps);
 
-    // Sample endstops armed on this stepper's axis. No-op stub until D3.
-    runtime_endstop_sample_one(ctx->stepper_idx);
+    // Sample endstops armed on this motor's axis at step resolution.
+    runtime_endstop_sample_one(motor);
 
-    // Klipper's scheduler uses the u32 low half of the absolute cycle
-    // count — the hardware timer is 32-bit and wraps ~every 8.3 s. The
-    // engine returns u64; take the low word.
-    t->waketime = (uint32_t)next_cycles_abs;
+    // Advance the consumer cursor past this entry.
+    kalico_runtime_step_ring_advance(runtime_handle, motor, 1);
+
+    // Low-water hook: kick the producer if this motor's ring drained
+    // below N/4. The kicker is a CAS, so multiple consumers calling this
+    // simultaneously coalesce into a single producer wake.
+    if (kalico_runtime_step_ring_available(runtime_handle, motor)
+            < STEP_RING_LOW_WATER) {
+        arm_producer_timer_if_kicked_inline(now);
+    }
+
+    // Reschedule for the next ring entry, or short-poll if drained.
+    uint32_t t_next2 = 0;
+    int8_t  dir2 = 1;
+    if (kalico_runtime_step_ring_peek_next(
+            runtime_handle, motor, &t_next2, &dir2)) {
+        t->waketime = t_next2;
+    } else {
+        t->waketime = now + runtime_clock_freq / 10000U;  // +100 µs
+    }
     return SF_RESCHEDULE;
 }
 
-// Called from handle_configure_axes in kalico_dispatch.c after a successful
-// kalico_runtime_configure_axes_blob. Populates step_timers[] but does NOT
-// register any timer with the scheduler — timers are armed in
-// arm_step_time_steppers_after_push once a segment arrives.
+// Producer Klipper timer callback. Runs one `Engine::producer_step` pass
+// (Newton-fills the per-motor step rings up to PRODUCER_BATCH_CAP each),
+// then either self-reschedules at `now` (more work pending) or marks
+// itself disabled and exits (every StepTime motor reached AllIdle). The
+// next push_segment / consumer low-water kick will re-arm.
+static uint_fast8_t
+runtime_producer_event(struct timer *t)
+{
+    bool work_pending = kalico_runtime_producer_step(runtime_handle);
+    if (work_pending) {
+        // Self-reschedule at `now`: the producer batched some entries
+        // but there's more to fill. Yielding back to the scheduler lets
+        // higher-priority Klipper timers (USB, USART, step_time_event)
+        // run between batches; the next sched_check_periodic will pick
+        // us back up.
+        t->waketime = timer_read_time();
+        return SF_RESCHEDULE;
+    }
+    // No more work — wait for a kick from push_segment or a consumer
+    // low-water hook. `runtime_producer_step` already cleared
+    // `producer_pending`; the next kicker will CAS it back to true and
+    // re-arm us via `arm_producer_timer_if_kicked`.
+    runtime_producer_timer.enabled = 0;
+    return SF_DONE;
+}
+
+// Called from handle_configure_axes in src/kalico_dispatch.c after
+// kalico_runtime_configure_axes_blob succeeds. Registers each StepTime
+// motor's consumer Klipper timer with the scheduler (one short-poll wake
+// to bootstrap; the first poll will find the ring empty, kick the
+// producer, and switch to ring-driven scheduling once entries arrive)
+// and prepares the shared producer timer (not added to the scheduler
+// yet — push_segment's kick will queue it).
 void
 init_step_time_timers(void)
 {
-    for (uint8_t i = 0; i < MAX_STEPPER_OIDS_C; i++) {
-        step_timers[i].timer.func = step_time_event;
-        step_timers[i].stepper_idx = i;
-        step_timers[i].enabled = 0;
-    }
-}
-
-// Called from handle_push_segment in kalico_dispatch.c after
-// runtime_handle_push_segment returns KALICO_OK. Arms any StepTime stepper
-// whose timer is not already running.
-void
-arm_step_time_steppers_after_push(void)
-{
     if (!runtime_handle) return;
 
-    // Widen `now` into the u64 cycle space the engine uses to stamp
-    // segment t_start. Foreground caller; using Klipper's stats-based
-    // widening (same source as `runtime_widened_host_clock`).
-    extern uint32_t stats_send_time;
-    extern uint32_t stats_send_time_high;
     uint32_t now = timer_read_time();
-    uint32_t now_high = stats_send_time_high + (now < stats_send_time);
-    uint64_t now_widened = ((uint64_t)now_high << 32) | (uint64_t)now;
+    uint32_t boot_poll = runtime_clock_freq / 10000U;  // 100 µs
 
     for (uint8_t i = 0; i < MAX_STEPPER_OIDS_C; i++) {
-        // Skip steppers already running — the ISR reschedules itself.
+        // Reset state. Note: if a consumer timer is already enabled from
+        // a prior configure_axes call within the same boot, leave it
+        // running — the scheduler-side `struct timer` is opaque and
+        // mutating `func` while it's queued is unsafe. ConfigureAxes is
+        // a one-shot per print job in normal operation, so this guard
+        // primarily defends against repeated calls during host-side
+        // bring-up scripts.
         if (step_timers[i].enabled) continue;
+        step_timers[i].timer.func = step_time_event;
+        step_timers[i].stepper_idx = i;
 
-        // Only arm StepTime-mode steppers (discriminant = 1).
+        // Only register StepTime-mode motors (discriminant = 1). Modulated
+        // motors are driven by the TIM5 ISR; their consumer timer slot
+        // stays unregistered.
         uint8_t mode = kalico_runtime_get_step_mode(runtime_handle, i);
         if (mode != 1 /* StepMode::StepTime */) continue;
 
-        // Ask the engine for the first step time in this segment. This can
-        // legitimately fail at push time: arm_step_time_steppers_after_push
-        // runs in the foreground push_segment handler, but Engine::tick
-        // (TIM5 ISR) is what dequeues the just-pushed segment and sets
-        // engine.current. Between push_segment and the next TIM5 tick (up
-        // to one TIM5 interval — 25 µs on H7, 100 µs on F4) engine.current
-        // is still None and arm_step_timer returns NO_STEP. Also returns
-        // NO_STEP when `now < segment.t_start` (segment scheduled in the
-        // future, normal planner lead-time).
-        //
-        // Either way: register the timer at a poll waketime so step_time_event
-        // retries every 1 ms. The first poll fire after the engine activates
-        // the segment will succeed and switch to real Newton-iterated step
-        // timing. Until then we burn ~1 kHz wakeups per stepper, trivial cost.
-        step_time_arm_attempts++;
-        uint64_t first_cycles_abs = 0;
-        int32_t err = kalico_runtime_arm_step_timer(
-            runtime_handle, i, now_widened, &first_cycles_abs, NULL);
-        if (err == KALICO_OK_C) step_time_arm_success++;
-        uint32_t waketime;
-        if (err == KALICO_OK_C) {
-            waketime = (uint32_t)first_cycles_abs;
-        } else {
-            // Poll in 1 ms; step_time_event self-reschedules on NO_STEP.
-            waketime = now + (runtime_clock_freq / 1000U);
-        }
-        step_timers[i].timer.waketime = waketime;
         step_timers[i].enabled = 1;
+        step_timers[i].timer.waketime = now + boot_poll;
         sched_add_timer(&step_timers[i].timer);
     }
+
+    // Set up the producer timer (don't queue it yet — push_segment kicks).
+    runtime_producer_timer.timer.func = runtime_producer_event;
+    runtime_producer_timer.enabled = 0;
 }
 
 #endif // CONFIG_KALICO_RUNTIME

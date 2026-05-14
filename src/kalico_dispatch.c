@@ -423,11 +423,14 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
         t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
         &accepted_id, &credit_epoch);
     if (r == 0 /* KALICO_OK */) {
-        // Arm any StepTime-mode stepper whose timer isn't already running.
-        // Must be called AFTER the segment is in the engine's SPSC queue so
-        // the engine can produce a valid first step time.
-        extern void arm_step_time_steppers_after_push(void);
-        arm_step_time_steppers_after_push();
+        // Wake the step-emission producer Klipper timer. The runtime's
+        // `push_segment` already CAS-set `producer_pending=true` inside
+        // `Engine::push_segment` (rust/runtime/src/engine.rs); we still
+        // need to make sure the producer timer is queued with the
+        // scheduler so the actual fill happens. `arm_producer_timer_if_kicked`
+        // is idempotent and coalesces concurrent kicks.
+        extern void arm_producer_timer_if_kicked(void);
+        arm_producer_timer_if_kicked();
     }
     send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
 #else
@@ -478,10 +481,12 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     int32_t r = kalico_runtime_configure_axes_blob(runtime_handle, body, body_len);
     runtime_diag_progress(0xCB, 4, (uint32_t)r);
     if (r == 0 /* KALICO_OK */) {
-        // Reset and repopulate the per-stepper step-time timer slots now that
-        // the engine has a fresh axes config. Timers are not yet added to the
-        // scheduler — that happens in arm_step_time_steppers_after_push when
-        // the first segment arrives.
+        // Register each StepTime-mode motor's consumer Klipper timer with
+        // the scheduler now that the engine has a fresh axes config. The
+        // consumer timer fires once at a short-poll delay to bootstrap;
+        // its first run finds the ring empty, kicks the producer, and
+        // then switches to ring-driven scheduling once the producer
+        // fills the first batch.
         extern void init_step_time_timers(void);
         init_step_time_timers();
     }
