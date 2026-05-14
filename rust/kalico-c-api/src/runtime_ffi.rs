@@ -2150,6 +2150,60 @@ pub mod exports {
         }
     }
 
+    /// Diagnostic: read the high-water mark for motor `motor_idx`'s step
+    /// ring. Returns the maximum `available()` value observed across the
+    /// runtime's lifetime. Used by the C-side fault_detail rotation (tag
+    /// 0xB2) to localise whether the producer has actually pushed entries
+    /// — `0` means "ring was never written" (Cardano returned no roots, or
+    /// `fetch_segment_for_motor` never returned a curve).
+    ///
+    /// Returns `0` on null `rt`, `motor_idx >= 4`, or before init completes.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_ring_high_water(
+        rt: *mut KalicoRuntime,
+        motor_idx: u8,
+    ) -> u32 {
+        if rt.is_null() || (motor_idx as usize) >= 4 {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared
+                .ring_high_water
+                .get(motor_idx as usize)
+                .map(|a| a.load(Ordering::Acquire))
+                .unwrap_or(0)
+        }
+    }
+
+    /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
+    /// how many `Engine::producer_step` invocations have completed since
+    /// boot. If `step_time_producer_kicks` (C side) is incrementing but
+    /// `producer_runs_total` stays at 0, the kick path is broken between
+    /// the CAS and `sched_add_timer`.
+    ///
+    /// Returns `0` on null `rt` or before init completes.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_producer_runs_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_runs_total.load(Ordering::Acquire) as u32
+        }
+    }
+
     /// Synchronous foreground flush. Spec §3.10 (Task 11).
     ///
     /// Drains the segment queue, retires every in-flight curve-pool slot,

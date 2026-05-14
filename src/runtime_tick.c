@@ -633,13 +633,20 @@ runtime_status_drain(void)
     extern volatile uint32_t runtime_bind_reset_calls;
     extern volatile uint32_t runtime_bind_writes_committed;
     extern volatile uint32_t runtime_bind_count_snapshot_packed;
+    // Producer-side diagnostics surfaced via 0xB2:
+    //   - kalico_runtime_ring_high_water(i): max ring fill ever observed
+    //     per motor. > 0 → producer pushed at least once for this motor.
+    //   - kalico_runtime_producer_runs_lo(): how many producer_step calls
+    //     completed total (low 32 bits of producer_runs_total).
+    extern uint32_t kalico_runtime_ring_high_water(void *rt, uint8_t motor_idx);
+    extern uint32_t kalico_runtime_producer_runs_lo(void *rt);
     if (last_err == 0 && status_emit_phase == 0) {
         // Wider rotation now — five step_time tags + binding-bug
-        // investigation tags (0xB0, 0xB1). Bump the modulo to keep cycle
-        // length matched.
+        // investigation tags (0xB0, 0xB1) + producer-side fill tag (0xB2).
+        // Bump the modulo to keep cycle length matched.
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 6) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 7) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -702,6 +709,40 @@ runtime_status_drain(void)
                              | ((uint32_t)per_motor << 16)
                              | ((uint32_t)total << 8)
                              | reset_calls;
+            }
+            break;
+        case 6:
+            // 0xB2 — producer-side fill diagnostic. Encodes:
+            //   bits  0..15: 4-bit-per-motor ring_high_water (clamped 0..15)
+            //                — > 0 means producer has pushed at least one
+            //                  entry into this motor's ring.
+            //   bits 16..23: producer_runs_total low 8 bits — heartbeat
+            //                for how many producer_step calls completed.
+            //
+            // If high_water[i] == 0 for every motor while producer_runs_lo
+            // is non-zero → producer is running but pushing nothing
+            // (fetch_segment_for_motor returns None, or Cardano returns
+            // SegmentExhausted immediately). If producer_runs_lo is 0
+            // while step_time_producer_kicks (0xE4) is non-zero, the kick
+            // path is broken before sched_add_timer.
+            {
+                uint32_t hw0 = kalico_runtime_ring_high_water(runtime_handle, 0);
+                uint32_t hw1 = kalico_runtime_ring_high_water(runtime_handle, 1);
+                uint32_t hw2 = kalico_runtime_ring_high_water(runtime_handle, 2);
+                uint32_t hw3 = kalico_runtime_ring_high_water(runtime_handle, 3);
+                if (hw0 > 15) hw0 = 15;
+                if (hw1 > 15) hw1 = 15;
+                if (hw2 > 15) hw2 = 15;
+                if (hw3 > 15) hw3 = 15;
+                uint32_t runs_lo =
+                    kalico_runtime_producer_runs_lo(runtime_handle) & 0xFFu;
+                uint16_t hws = (uint16_t)hw0
+                             | ((uint16_t)hw1 << 4)
+                             | ((uint16_t)hw2 << 8)
+                             | ((uint16_t)hw3 << 12);
+                fault_detail = 0xB2000000u
+                             | (runs_lo << 16)
+                             | (uint32_t)hws;
             }
             break;
         case 5:
