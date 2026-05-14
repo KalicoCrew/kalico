@@ -616,8 +616,17 @@ runtime_status_drain(void)
     extern volatile uint32_t step_time_producer_kicks;
     extern volatile uint32_t step_time_empty_polls;
     extern uint8_t runtime_motor_binding_count(uint8_t motor_idx);
+    extern volatile uint32_t runtime_bind_calls_total;
+    extern volatile uint8_t runtime_bind_calls_for_motor[4];
+    extern volatile uint32_t runtime_bind_reset_calls;
     if (last_err == 0 && status_emit_phase == 0) {
-        switch (st_emit_phase) {
+        // Wider rotation now — five step_time tags + a binding-bug
+        // investigation tag (0xB0). Bump the modulo to keep cycle length
+        // matched.
+        static uint8_t st_emit_phase_ext;
+        st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
+        if (st_emit_phase_ext >= 5) st_emit_phase_ext = 0;
+        switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
             fault_detail = 0xE3000000u | (step_time_event_fires & 0x00FFFFFFu);
@@ -650,6 +659,35 @@ runtime_status_drain(void)
                         binds_lo |= (uint8_t)(1u << i);
                 }
                 fault_detail = 0xE6000000u | ((uint32_t)binds_lo << 8) | modes_lo;
+            }
+            break;
+        case 4:
+            // 0xB0 — binding-bug investigation. Encodes:
+            //   bits  0.. 7: runtime_bind_reset_calls & 0xFF
+            //   bits  8..15: runtime_bind_calls_total & 0xFF
+            //   bits 16..23: 4 × 2-bit per-motor call counts (clamped 0..3)
+            // Tag 0xB0 in the high byte.
+            //
+            // If `reset_calls` increments past 1 → klippy is re-configuring
+            //   (reconnect / recovery cycle).
+            // If `total_calls < 5` → klipper-protocol dispatch dropping the
+            //   binding command on the wire before it reached the firmware.
+            // If `total_calls == 5` but `motor 1` per-motor count is 0 →
+            //   command reached firmware but parsed motor_idx is wrong.
+            {
+                uint8_t total = (uint8_t)(runtime_bind_calls_total & 0xFFu);
+                uint8_t per_motor = 0;
+                for (uint8_t i = 0; i < 4; i++) {
+                    uint8_t c = runtime_bind_calls_for_motor[i];
+                    if (c > 3) c = 3;
+                    per_motor |= (uint8_t)(c << (i * 2));
+                }
+                uint8_t reset_calls =
+                    (uint8_t)(runtime_bind_reset_calls & 0xFFu);
+                fault_detail = 0xB0000000u
+                             | ((uint32_t)per_motor << 16)
+                             | ((uint32_t)total << 8)
+                             | reset_calls;
             }
             break;
         }
