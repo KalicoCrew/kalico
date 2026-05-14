@@ -3,6 +3,10 @@
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use heapless::spsc::{Consumer, Producer};
+// `Float` is unused on `host`-feature builds (std provides f32::sqrt) but
+// load-bearing in the MCU `no_std` profile, where it dispatches to libm.
+#[cfg_attr(feature = "host", allow(unused_imports))]
+use nurbs::Float;
 
 use crate::clock::{TickCounter, WidenState, one_tick_cycles, publish_widened_now};
 use crate::curve_pool::{CurveHandle, CurvePool, CurveView};
