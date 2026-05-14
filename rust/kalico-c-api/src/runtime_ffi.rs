@@ -1488,8 +1488,25 @@ pub mod exports {
     }
 
     /// `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
-    /// Phase-6 stub. Out-param receives the MCU local-clock value sampled
-    /// inside the FFI on success.
+    ///
+    /// Returns the on-demand widened MCU clock (timer_read_time +
+    /// stats_send_time_high), NOT the engine seqlock value. Rationale: the
+    /// seqlock published by `Engine::tick` is only updated from the TIM5 ISR,
+    /// and TIM5 stays disabled in the all-StepTime MVP (see
+    /// `runtime_tick_enable` in `src/stm32/runtime_tick_h7.c` — early-return
+    /// when `count_modulated_steppers == 0`). Reading the seqlock in that
+    /// configuration returns its default 0, which the bridge's clock-sync
+    /// driver filters out as "MCU clock looks uninitialised" — the host's
+    /// router clock estimate then never refreshes from its connect-time
+    /// anchor, `compute_ack_clock` extrapolates linearly into the future,
+    /// segment `t_start` lands tens of seconds ahead of the MCU's actual
+    /// clock, and the in-flight credit window deadlocks waiting for
+    /// retirements that can't happen.
+    ///
+    /// The on-demand widening uses Klipper's `stats_send_time_high` (updated
+    /// by the stats DECL_TASK at ~0.2 Hz). Its ~5 s lag in the high half is
+    /// invisible to the bridge's RTT-aware linear regression — the
+    /// regression amortises samples over many ticks.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_clock_sync_request(
         rt: *mut KalicoRuntime,
@@ -1504,22 +1521,25 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // SAFETY: half-split projection per the discipline contract.
-        unsafe {
-            project_fg(rt, |fg, shared| {
-                let (r, mcu_clock) = runtime::stream::clock_sync_respond(
-                    fg,
-                    shared,
-                    request_id,
-                    host_send_time_lo,
-                    host_send_time_hi,
-                );
-                if !out_mcu_clock.is_null() {
-                    *out_mcu_clock = mcu_clock;
-                }
-                r
-            })
+        // SAFETY: identical to `runtime_handle_widened_now` — single u32 reads of
+        // Klipper-owned globals. Safe from any non-ISR caller; clock-sync runs in
+        // command-handler foreground context.
+        let mcu_clock = unsafe {
+            unsafe extern "C" {
+                fn timer_read_time() -> u32;
+                static stats_send_time: u32;
+                static stats_send_time_high: u32;
+            }
+            let low = timer_read_time();
+            let high = stats_send_time_high + ((low < stats_send_time) as u32);
+            ((high as u64) << 32) | (low as u64)
+        };
+        let _ = (request_id, host_send_time_lo, host_send_time_hi);
+        if !out_mcu_clock.is_null() {
+            // SAFETY: out_mcu_clock checked non-null.
+            unsafe { *out_mcu_clock = mcu_clock };
         }
+        KALICO_OK
     }
 
     /// Sim escape hatch: load a pre-baked NURBS fixture into a curve-pool slot.
