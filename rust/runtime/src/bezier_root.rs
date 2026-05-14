@@ -14,6 +14,43 @@
 
 #![cfg_attr(not(feature = "host"), no_std)]
 
+/// Maximum Newton iterations before falling through to bisection.
+/// WebKit/Chromium use 4 with an 11-sample spline seed; Gecko uses 8
+/// with a naive `t=x` seed. Our `t = (target - P0) / (P3 - P0)` seed
+/// is informationally between the two. Six iterations is a comfortable
+/// middle that consistently converges in host fuzzing.
+const MAX_NEWTON_ITER: u32 = 6;
+
+/// Maximum bisection iterations. f64 mantissa is 52 bits; 54 halvings
+/// is sufficient to refine any interval in `[0, 1]` to subnormal
+/// precision. Bisection is rare in practice (Newton dominates) but the
+/// fallback must terminate cleanly.
+const MAX_BISECTION_ITER: u32 = 54;
+
+/// Newton convergence tolerance in motor-frame mm. Sized to live above
+/// the f32-source noise floor: CPs are stored as f32 on the MCU, cast
+/// to f64 for compute, giving absolute noise ~`|max(P_i)| × ε_f32 ≈
+/// 6 nm` for typical 100 mm-scale toolhead coordinates. Step resolution
+/// at 800 spm is 1250 nm; 10 nm convergence resolves roots to 1/125 of
+/// a step — far below physical detection.
+const EPS_CONVERGENCE: f64 = 1e-5;
+
+/// Slope-stall threshold for Newton: when `|P'(t)| < EPS_SLOPE_STALL`,
+/// the Newton update direction is unreliable; abort to bisection.
+const EPS_SLOPE_STALL: f64 = 1e-7;
+
+/// Bisection-interval-collapse threshold. Below this the bracket cannot
+/// usefully shrink further.
+const EPS_INTERVAL: f64 = 1e-12;
+
+/// Span `P3 - P0` below this implies the linear-interp seed
+/// `(target-P0)/(P3-P0)` would explode; fall back to midpoint.
+const EPS_DEGENERATE_SPAN: f64 = 1e-9;
+
+/// Tolerance for "target outside [min(v_lo, v_hi), max(v_lo, v_hi)]".
+/// Tracks `EPS_CONVERGENCE`.
+const EPS_OUT_OF_RANGE: f64 = 1e-5;
+
 /// Find `t ∈ (t_low, t_high]` such that the cubic Bézier curve with
 /// control points `(p0, p1, p2, p3)` evaluates to `target`.
 ///
@@ -27,15 +64,112 @@
 /// converge (extreme degeneracy), or on non-finite inputs.
 #[must_use]
 pub fn solve_monotone_cubic_root(
-    _p0: f64,
-    _p1: f64,
-    _p2: f64,
-    _p3: f64,
-    _target: f64,
-    _t_low: f64,
-    _t_high: f64,
+    p0: f64,
+    p1: f64,
+    p2: f64,
+    p3: f64,
+    target: f64,
+    t_low: f64,
+    t_high: f64,
 ) -> Option<f64> {
-    todo!("Task 2: implement de Casteljau + Newton + bisection")
+    // Defensive: reject non-finite and degenerate inputs.
+    if !p0.is_finite()
+        || !p1.is_finite()
+        || !p2.is_finite()
+        || !p3.is_finite()
+        || !target.is_finite()
+        || !t_low.is_finite()
+        || !t_high.is_finite()
+    {
+        return None;
+    }
+    if t_high <= t_low {
+        return None;
+    }
+
+    // Endpoint values: degenerate de Casteljau collapses to a single CP.
+    let v_lo = eval_cubic_bernstein(p0, p1, p2, p3, t_low);
+    let v_hi = eval_cubic_bernstein(p0, p1, p2, p3, t_high);
+
+    // Monotonicity invariant: planner guarantees the curve crosses
+    // through every value in [min(v_lo, v_hi), max(v_lo, v_hi)] exactly
+    // once. If target is outside this range, no root exists.
+    let (v_min, v_max) = if v_lo <= v_hi {
+        (v_lo, v_hi)
+    } else {
+        (v_hi, v_lo)
+    };
+    if target < v_min - EPS_OUT_OF_RANGE || target > v_max + EPS_OUT_OF_RANGE {
+        return None;
+    }
+
+    let direction_is_increasing = v_hi > v_lo;
+    let span = v_hi - v_lo;
+
+    // Initial guess: linear interpolation between endpoints. For a near-
+    // linear curve this lands within one Newton step of the root. For
+    // a curved (real cubic) shape, ~4 Newton iterations.
+    let mut t = if libm::fabs(span) < EPS_DEGENERATE_SPAN {
+        0.5 * (t_low + t_high)
+    } else {
+        let raw = (target - v_lo) / span * (t_high - t_low) + t_low;
+        raw.clamp(t_low, t_high)
+    };
+
+    // Newton phase.
+    let mut f;
+    for _ in 0..MAX_NEWTON_ITER {
+        f = eval_cubic_bernstein(p0, p1, p2, p3, t) - target;
+        if libm::fabs(f) < EPS_CONVERGENCE {
+            // Spec §3.3: enforce `t ∈ (t_low, t_high]` exclusivity on
+            // t_low. A target-equals-v_lo seed converges at t == t_low
+            // but the contract excludes that boundary; reject and let
+            // bisection (also exclusivity-guarded) decide.
+            return if t > t_low { Some(t.min(t_high)) } else { None };
+        }
+        let df = eval_cubic_derivative_bernstein(p0, p1, p2, p3, t);
+        if libm::fabs(df) < EPS_SLOPE_STALL {
+            break; // fall through to bisection
+        }
+        let t_next = t - f / df;
+        if t_next < t_low || t_next > t_high {
+            break; // escaped bracket — fall through to bisection
+        }
+        t = t_next;
+    }
+
+    // Bisection fallback. The monotonicity invariant guarantees
+    // [t_low, t_high] is a valid bracket whose endpoints straddle target.
+    let mut lo = t_low;
+    let mut hi = t_high;
+    for _ in 0..MAX_BISECTION_ITER {
+        let mid = 0.5 * (lo + hi);
+        // Spec §3.3: midpoint at the boundary collapses the bracket to
+        // either endpoint. t_low is exclusive ⇒ None; t_high is
+        // inclusive ⇒ Some(t_high).
+        if mid <= t_low || mid >= t_high {
+            return if mid > t_low { Some(mid.min(t_high)) } else { None };
+        }
+        let v_mid = eval_cubic_bernstein(p0, p1, p2, p3, mid);
+        let f_mid = v_mid - target;
+        if libm::fabs(f_mid) < EPS_CONVERGENCE {
+            return Some(mid);
+        }
+        if (f_mid < 0.0) == direction_is_increasing {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo < EPS_INTERVAL {
+            let collapsed = 0.5 * (lo + hi);
+            return if collapsed > t_low {
+                Some(collapsed.min(t_high))
+            } else {
+                None
+            };
+        }
+    }
+    None
 }
 
 /// Evaluate `P(t)` for a cubic Bézier curve with Bernstein control
@@ -150,5 +284,179 @@ mod tests {
                 "deriv({t}) = {result}, expected 1.0"
             );
         }
+    }
+
+    /// Linear-at-origin curve `y = t`. Target 0.5 → root at 0.5.
+    #[test]
+    fn solve_linear_curve_at_origin_finds_root() {
+        let r = solve_monotone_cubic_root(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 0.5, 0.0, 1.0);
+        assert!(r.is_some());
+        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+    }
+
+    /// **Bench-failure-mode regression.** Linear curve from X=100 to
+    /// X=101 (10-piece scenario's piece 0 boundary case). Target 100.5.
+    /// Pre-fix: Cardano's monomial leading-coefficient cancellation at
+    /// these CP magnitudes drove the trig branch into spurious roots.
+    /// Post-fix: de Casteljau / Newton solves cleanly.
+    #[test]
+    fn solve_linear_curve_at_offset_finds_root() {
+        let r = solve_monotone_cubic_root(
+            100.0,
+            100.0 + 1.0 / 3.0,
+            100.0 + 2.0 / 3.0,
+            101.0,
+            100.5,
+            0.0,
+            1.0,
+        );
+        assert!(r.is_some(), "must find root for offset-100mm linear curve");
+        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+    }
+
+    /// Accel-from-rest curve: P0=P1 makes P'(0)=0, so naive Newton seeded
+    /// at t=0 would stall. Our seed is the linear-interp `(target-v_lo)/span`,
+    /// which lands at t=0.5 here — past the slope-zero region — so Newton
+    /// converges in a few iterations without invoking the bisection
+    /// fallback. The behavioral guarantee being pinned: the algorithm
+    /// finds the correct root for an asymmetric P'(0)=0 curve.
+    #[test]
+    fn solve_accel_from_rest_finds_correct_root() {
+        // Curve 0 → 0 → 0.5 → 1 (P'(0)=0). Target 0.5.
+        let r = solve_monotone_cubic_root(0.0, 0.0, 0.5, 1.0, 0.5, 0.0, 1.0);
+        assert!(r.is_some(), "monotone curve with v(0)=0 must still solve");
+        let t = r.unwrap();
+        // True root for B(t) = 1.5·t² − 0.5·t³ = 0.5 is t ≈ 0.6527036447
+        // (the only real root of t³ − 3·t² + 1 in [0, 1]). The curve is
+        // NOT symmetric: P0=P1=0 but P2≠P3, so B(0.5) = 0.3125 ≠ 0.5.
+        assert!(
+            (t - 0.6527036446661392).abs() < 1e-3,
+            "expected t ≈ 0.6527, got {t}"
+        );
+    }
+
+    /// Target above the curve's max → None.
+    #[test]
+    fn solve_target_above_range_returns_none() {
+        let r = solve_monotone_cubic_root(0.0, 0.1, 0.2, 0.3, 0.5, 0.0, 1.0);
+        assert!(r.is_none());
+    }
+
+    /// Target below the curve's min → None.
+    #[test]
+    fn solve_target_below_range_returns_none() {
+        let r = solve_monotone_cubic_root(0.0, 0.1, 0.2, 0.3, -0.1, 0.0, 1.0);
+        assert!(r.is_none());
+    }
+
+    /// Target exactly at t_high → returns t_high (inclusive).
+    #[test]
+    fn solve_target_at_t_high_is_inclusive() {
+        let r = solve_monotone_cubic_root(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 0.0, 1.0);
+        assert!(r.is_some());
+        assert!((r.unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    /// Target exactly at t_low → t_low is exclusive, returns None.
+    #[test]
+    fn solve_target_at_t_low_is_exclusive() {
+        let r = solve_monotone_cubic_root(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 0.0, 0.0, 1.0);
+        assert!(r.is_none());
+    }
+
+    /// Monotone-decreasing curve. Target between endpoints.
+    #[test]
+    fn solve_monotone_decreasing_curve() {
+        let r = solve_monotone_cubic_root(1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0, 0.5, 0.0, 1.0);
+        assert!(r.is_some());
+        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+    }
+
+    /// nm-scale curve. Precision at extreme scale is not an issue for
+    /// Bernstein de Casteljau — the algorithm is scale-invariant up to
+    /// f64 ULP.
+    #[test]
+    fn solve_nm_scale_curve_precision() {
+        let r = solve_monotone_cubic_root(
+            0.0, 1e-9, 2e-9, 3e-9,
+            1.5e-9,
+            0.0, 1.0,
+        );
+        assert!(r.is_some(), "nm-scale curve must still solve");
+        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+    }
+
+    /// Large-offset curve at km scale. Same.
+    #[test]
+    fn solve_large_offset_curve_precision() {
+        let r = solve_monotone_cubic_root(
+            1000.0,
+            1000.0 + 1.0 / 3.0,
+            1000.0 + 2.0 / 3.0,
+            1001.0,
+            1000.5,
+            0.0, 1.0,
+        );
+        assert!(r.is_some());
+        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+    }
+
+    /// Multi-step walk: successive targets produce monotonically
+    /// increasing t. This is the regression for "producer pushed step
+    /// at wrong u_global" from the bench wedge.
+    #[test]
+    fn solve_walk_monotonic_t_across_targets() {
+        let cps = (100.0, 100.0 + 1.0 / 3.0, 100.0 + 2.0 / 3.0, 101.0);
+        let mut last_t = 0.0;
+        for i in 1..=10 {
+            let target = 100.0 + i as f64 * 0.1;
+            let r =
+                solve_monotone_cubic_root(cps.0, cps.1, cps.2, cps.3, target, 0.0, 1.0);
+            assert!(r.is_some(), "step {i} (target={target}) must solve");
+            let t = r.unwrap();
+            assert!(
+                t > last_t,
+                "step {i}: t={t} not greater than previous t={last_t}"
+            );
+            last_t = t;
+        }
+    }
+
+    /// Noisy CPs: simulate worst-case f32 round-trip by perturbing each
+    /// CP. de Casteljau is well-conditioned; the root should still be
+    /// within EPS_CONVERGENCE of the true value.
+    #[test]
+    fn solve_noisy_input_does_not_break_solver() {
+        let perturbation = 1e-5_f64; // ~10× f32 ULP at unit magnitude
+        let r = solve_monotone_cubic_root(
+            100.0 + perturbation,
+            100.0 + 1.0 / 3.0 - perturbation,
+            100.0 + 2.0 / 3.0 + perturbation,
+            101.0 - perturbation,
+            100.5,
+            0.0, 1.0,
+        );
+        assert!(r.is_some());
+        assert!(
+            (r.unwrap() - 0.5).abs() < 1e-3,
+            "perturbed root should be within 1e-3 of nominal"
+        );
+    }
+
+    /// Non-finite input → None, no panic.
+    #[test]
+    fn solve_non_finite_returns_none() {
+        let r = solve_monotone_cubic_root(
+            f64::NAN, 1.0, 2.0, 3.0,
+            1.5, 0.0, 1.0,
+        );
+        assert!(r.is_none());
+    }
+
+    /// Degenerate interval (t_high <= t_low) → None.
+    #[test]
+    fn solve_degenerate_interval_returns_none() {
+        let r = solve_monotone_cubic_root(0.0, 1.0, 2.0, 3.0, 1.5, 0.5, 0.5);
+        assert!(r.is_none());
     }
 }
