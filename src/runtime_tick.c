@@ -647,13 +647,17 @@ runtime_status_drain(void)
     extern uint32_t kalico_runtime_fetch_attempts_lo(void *rt);
     extern uint32_t kalico_runtime_enqueue_success_lo(void *rt);
     extern int32_t kalico_runtime_last_push_segment_result(void *rt);
+    extern volatile uint32_t handle_push_segment_calls_total;
+    extern volatile uint32_t handle_push_segment_invalid_body_total;
+    extern volatile uint32_t handle_push_segment_no_handle_total;
+    extern volatile int32_t handle_push_segment_last_r;
     if (last_err == 0 && status_emit_phase == 0) {
         // Wider rotation now — five step_time tags + binding-bug
         // investigation tags (0xB0, 0xB1) + producer-side tags
-        // (0xB2, 0xB3, 0xB4, 0xB5).
+        // (0xB2, 0xB3, 0xB4, 0xB5) + handler-side tags (0xB6, 0xB7).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 10) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 12) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -716,6 +720,33 @@ runtime_status_drain(void)
                              | ((uint32_t)per_motor << 16)
                              | ((uint32_t)total << 8)
                              | reset_calls;
+            }
+            break;
+        case 10:
+            // 0xB6 — kalico_dispatch handle_push_segment counters.
+            //   bits  0..15: handle_push_segment_calls_total & 0xFFFF
+            //   bits 16..19: invalid_body_total & 0xF
+            //   bits 20..23: no_handle_total & 0xF
+            // If calls > 0 but invalid_body == 0 && no_handle == 0, the
+            // C handler IS dispatching to runtime_handle_push_segment.
+            {
+                uint32_t c = handle_push_segment_calls_total & 0xFFFFu;
+                uint32_t ib = handle_push_segment_invalid_body_total & 0xFu;
+                uint32_t nh = handle_push_segment_no_handle_total & 0xFu;
+                fault_detail = 0xB6000000u | (nh << 20) | (ib << 16) | c;
+            }
+            break;
+        case 11:
+            // 0xB7 — last r returned by runtime_handle_push_segment
+            // (the C-side capture of the Rust FFI return). 0 = OK,
+            // negative = error. Compare with 0xB5
+            // (kalico_runtime_last_push_segment_result, which is set
+            // INSIDE the Rust FFI wrapper). If 0xB7 != 0xB5, something
+            // between the Rust wrapper and the C caller is munging the
+            // return value.
+            {
+                int32_t r = handle_push_segment_last_r;
+                fault_detail = 0xB7000000u | ((uint32_t)r & 0x00FFFFFFu);
             }
             break;
         case 9:

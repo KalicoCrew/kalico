@@ -55,6 +55,19 @@ static uint8_t tx_buf[KALICO_TX_BUF_SIZE];
 // Reset epoch, generated once at boot. Nonzero by construction.
 static uint32_t reset_epoch;
 
+// 2026-05-14 push_segment investigation counters. Surfaced via
+// fault_detail tags 0xB6/0xB7 so we can localise whether
+// PushSegment frames reach handle_push_segment and what runtime_handle_push_segment
+// actually returns. All in .bss; cleared on MCU reset.
+volatile uint32_t handle_push_segment_calls_total
+                __attribute__((used, externally_visible));
+volatile uint32_t handle_push_segment_invalid_body_total
+                __attribute__((used, externally_visible));
+volatile uint32_t handle_push_segment_no_handle_total
+                __attribute__((used, externally_visible));
+volatile int32_t handle_push_segment_last_r
+                __attribute__((used, externally_visible));
+
 static void handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
@@ -388,12 +401,19 @@ static void
 handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
 #if CONFIG_KALICO_RUNTIME
+    extern volatile uint32_t handle_push_segment_calls_total;
+    extern volatile uint32_t handle_push_segment_invalid_body_total;
+    extern volatile uint32_t handle_push_segment_no_handle_total;
+    extern volatile int32_t handle_push_segment_last_r;
+    handle_push_segment_calls_total++;
     // §7.4 body: id u32, 4×handle u32, t_start u64, t_end u64, kin u8, e_mode u8, extrusion_ratio f32 — 42 bytes.
     if (body_len != 42) {
+        handle_push_segment_invalid_body_total++;
         send_push_segment_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0, 0);
         return;
     }
     if (!runtime_handle) {
+        handle_push_segment_no_handle_total++;
         send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
         return;
     }
@@ -422,6 +442,7 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
         runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
         t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
         &accepted_id, &credit_epoch);
+    handle_push_segment_last_r = r;
     if (r == 0 /* KALICO_OK */) {
         // Wake the step-emission producer Klipper timer. The runtime's
         // `push_segment` already CAS-set `producer_pending=true` inside
