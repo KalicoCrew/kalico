@@ -2180,6 +2180,72 @@ pub mod exports {
         }
     }
 
+    /// Diagnostic: read the low 32 bits of `producer_steps_pushed_total`.
+    /// Number of successful `ring.push` calls across all motors.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_steps_pushed_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_steps_pushed_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: read the low 32 bits of
+    /// `producer_motor_finished_curve_total`. Number of times Cardano
+    /// returned SegmentExhausted in a `producer_step` loop (per motor,
+    /// summed). Distinguishes "Cardano can't find roots" from "fetch
+    /// returns None".
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_motor_finished_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_motor_finished_curve_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: read the low 32 bits of `producer_segment_retired_total`.
+    /// Number of segments fully retired by `producer_step`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_segments_retired_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_segment_retired_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: read the low 32 bits of `producer_segment_dequeued_total`.
+    /// Number of segments pulled off the queue by `producer_step`.
+    /// If host sent N PushSegment but this stays at 0, segments aren't
+    /// reaching the engine queue (kalico_dispatch or runtime_handle_push_segment
+    /// dropping silently).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_segments_dequeued_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_segment_dequeued_total.load(Ordering::Acquire) as u32
+        }
+    }
+
     /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
     /// how many `Engine::producer_step` invocations have completed since
     /// boot. If `step_time_producer_kicks` (C side) is incrementing but

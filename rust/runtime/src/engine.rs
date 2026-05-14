@@ -1590,9 +1590,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         &mut self,
         motor_idx: usize,
         queue: &mut Consumer<'_, Segment, Q_N>,
+        shared: &SharedState,
     ) -> Option<(Segment, CurveHandle, Option<CurveHandle>, f64)> {
         if self.producer_current.is_none() {
             self.producer_current = queue.dequeue();
+            if self.producer_current.is_some() {
+                shared
+                    .producer_segment_dequeued_total
+                    .fetch_add(1, Ordering::AcqRel);
+            }
         }
         let seg = self.producer_current?;
 
@@ -1764,7 +1770,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     .map(|s| s.is_idle())
                     .unwrap_or(true);
                 if is_idle {
-                    if self.fetch_segment_for_motor(motor_idx, queue).is_none() {
+                    if self.fetch_segment_for_motor(motor_idx, queue, shared).is_none() {
                         continue;
                     }
                 }
@@ -1774,7 +1780,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // producer_current under the segment's kinematics —
                 // re-fetch here to pick up freshly-started curves.
                 let Some((seg_for_fill, primary, secondary, sign)) =
-                    self.fetch_segment_for_motor(motor_idx, queue)
+                    self.fetch_segment_for_motor(motor_idx, queue, shared)
                 else {
                     continue;
                 };
@@ -1916,12 +1922,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                             let dt_cycles = (t * duration_f64) as u64;
                             let abs_cycles = t_start_cycles.saturating_add(dt_cycles);
                             ring.push(abs_cycles as u32, dir);
+                            shared
+                                .producer_steps_pushed_total
+                                .fetch_add(1, Ordering::AcqRel);
                             ps.set_t_resume(Some(t));
                             ps.bump_steps_pushed(i32::from(dir));
                             filled += 1;
                         }
                         StepTimeResult::SegmentExhausted => {
                             ps.clear();
+                            shared
+                                .producer_motor_finished_curve_total
+                                .fetch_add(1, Ordering::AcqRel);
                             motor_finished_curve = true;
                             break;
                         }
@@ -1990,6 +2002,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     shared
                         .retired_through_segment_id
                         .store(seg.id, Ordering::Release);
+                    shared
+                        .producer_segment_retired_total
+                        .fetch_add(1, Ordering::AcqRel);
                     crate::stream::check_terminal_on_retire(shared, seg.id);
                     self.producer_current = None;
                 }

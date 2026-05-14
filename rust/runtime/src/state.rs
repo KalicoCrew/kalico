@@ -238,6 +238,25 @@ pub struct SharedState {
     /// Per-motor peak `available` ever observed in the StepRing. Surfaces
     /// how close we are to ring-full back-pressure during steady state.
     pub ring_high_water: [AtomicU32; 4],
+    /// Total successful `ring.push` calls across all motors in
+    /// `Engine::producer_step`. If `producer_runs_total` is growing but
+    /// this stays at 0, the producer is running but every motor either
+    /// hits SegmentExhausted on first Cardano call OR `fetch_segment_for_motor`
+    /// returns None.
+    pub producer_steps_pushed_total: AtomicU64,
+    /// Total times `compute_next_step_time` returned `SegmentExhausted` in
+    /// `Engine::producer_step` (per motor, summed across motors). Tells us
+    /// whether Cardano is finding zero roots immediately.
+    pub producer_motor_finished_curve_total: AtomicU64,
+    /// Total times a full segment was retired (all consumers_remaining
+    /// bits cleared) by `Engine::producer_step`. Increments once per
+    /// dequeued+retired segment.
+    pub producer_segment_retired_total: AtomicU64,
+    /// Total times `Engine::producer_step`'s queue.dequeue returned Some
+    /// (a segment was pulled into `producer_current`). Cross-check against
+    /// host-side PushSegment count to detect dropped frames between
+    /// `runtime_handle_push_segment` and `queue.enqueue`.
+    pub producer_segment_dequeued_total: AtomicU64,
 }
 
 impl SharedState {
@@ -300,6 +319,10 @@ impl SharedState {
                 AtomicU32::new(0),
                 AtomicU32::new(0),
             ],
+            producer_steps_pushed_total: AtomicU64::new(0),
+            producer_motor_finished_curve_total: AtomicU64::new(0),
+            producer_segment_retired_total: AtomicU64::new(0),
+            producer_segment_dequeued_total: AtomicU64::new(0),
         }
     }
 }
