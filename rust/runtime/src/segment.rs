@@ -168,6 +168,46 @@ impl Segment {
     pub fn consumers_done(&self) -> bool {
         self.consumers_remaining == 0
     }
+
+    /// True iff motor `motor_idx` still has at least one un-cleared consumer
+    /// bit in this segment's `consumers_remaining` mask.
+    ///
+    /// Used by the producer to skip motors that have already finished this
+    /// segment's work — without this check, a finished motor whose
+    /// `ProducerState` was cleared at `SegmentExhausted` would, on the next
+    /// `producer_step` call, re-enter the "is_idle, fetch segment, start
+    /// curve, find SegmentExhausted again, mark finished again" path and
+    /// spuriously report `made_progress=true` every fire. That produces an
+    /// infinite `WorkPending` self-reschedule at `SF_RESCHEDULE_FLOOR=100 µs`
+    /// on the C side, pegging the SysTick dispatch loop at 10 kHz and
+    /// starving foreground tasks (including `watchdog_reset`) until IWDG fires.
+    pub fn motor_has_remaining_work(&self, motor_idx: u8) -> bool {
+        let motor_bit: u16 = 1 << motor_idx;
+        let consumes_x = match self.kinematics {
+            KinematicTag::CartesianXyzAndE => motor_idx == 0,
+            KinematicTag::CoreXyAndE => motor_idx == 0 || motor_idx == 1,
+        };
+        let consumes_y = match self.kinematics {
+            KinematicTag::CartesianXyzAndE => motor_idx == 1,
+            KinematicTag::CoreXyAndE => motor_idx == 0 || motor_idx == 1,
+        };
+        let consumes_z = motor_idx == 2;
+        let consumes_e = motor_idx == 3;
+        let mut motor_mask: u16 = 0;
+        if consumes_x {
+            motor_mask |= motor_bit << CONS_REMAINING_X_SHIFT;
+        }
+        if consumes_y {
+            motor_mask |= motor_bit << CONS_REMAINING_Y_SHIFT;
+        }
+        if consumes_z {
+            motor_mask |= motor_bit << CONS_REMAINING_Z_SHIFT;
+        }
+        if consumes_e {
+            motor_mask |= motor_bit << CONS_REMAINING_E_SHIFT;
+        }
+        (self.consumers_remaining & motor_mask) != 0
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +254,94 @@ mod tests {
             consumers_remaining: 0,
         };
         assert_eq!(seg.duration(), 250);
+    }
+
+    #[test]
+    fn motor_has_remaining_work_cartesian() {
+        let mut seg = Segment {
+            id: 1,
+            x_handle: CurveHandle::new(0, 1),
+            y_handle: CurveHandle::new(1, 1),
+            z_handle: CurveHandle::UNUSED_SENTINEL,
+            e_handle: CurveHandle::new(3, 1),
+            t_start: 0,
+            t_end: 1000,
+            kinematics: KinematicTag::CartesianXyzAndE,
+            e_mode: EMode::Travel,
+            extrusion_ratio: 0.0,
+            flags: 0,
+            _pad: [0; 1],
+            consumers_remaining: 0,
+        };
+        seg.consumers_remaining = Segment::compute_consumers_remaining(
+            seg.kinematics,
+            seg.x_handle,
+            seg.y_handle,
+            seg.z_handle,
+            seg.e_handle,
+        );
+
+        // Cartesian: motor 0 ← X, 1 ← Y, 2 ← Z, 3 ← E. Z is UNUSED so
+        // motor 2 has no work even before any clearing.
+        assert!(seg.motor_has_remaining_work(0));
+        assert!(seg.motor_has_remaining_work(1));
+        assert!(!seg.motor_has_remaining_work(2)); // Z is UNUSED
+        assert!(seg.motor_has_remaining_work(3));
+
+        // Clear motor 0's X bit; motor 0 no longer has work.
+        seg.consumers_remaining &= !(1u16 << CONS_REMAINING_X_SHIFT);
+        assert!(!seg.motor_has_remaining_work(0));
+        assert!(seg.motor_has_remaining_work(1));
+        assert!(seg.motor_has_remaining_work(3));
+
+        // Clear motor 1, motor 3. Now no motor has work; consumers_done.
+        seg.consumers_remaining &= !(1u16 << (CONS_REMAINING_Y_SHIFT + 1));
+        seg.consumers_remaining &= !(1u16 << (CONS_REMAINING_E_SHIFT + 3));
+        assert!(!seg.motor_has_remaining_work(0));
+        assert!(!seg.motor_has_remaining_work(1));
+        assert!(!seg.motor_has_remaining_work(3));
+        assert!(seg.consumers_done());
+    }
+
+    #[test]
+    fn motor_has_remaining_work_corexy() {
+        let mut seg = Segment {
+            id: 1,
+            x_handle: CurveHandle::new(0, 1),
+            y_handle: CurveHandle::new(1, 1),
+            z_handle: CurveHandle::new(2, 1),
+            e_handle: CurveHandle::UNUSED_SENTINEL,
+            t_start: 0,
+            t_end: 1000,
+            kinematics: KinematicTag::CoreXyAndE,
+            e_mode: EMode::Travel,
+            extrusion_ratio: 0.0,
+            flags: 0,
+            _pad: [0; 1],
+            consumers_remaining: 0,
+        };
+        seg.consumers_remaining = Segment::compute_consumers_remaining(
+            seg.kinematics,
+            seg.x_handle,
+            seg.y_handle,
+            seg.z_handle,
+            seg.e_handle,
+        );
+
+        // CoreXY: motors 0 and 1 each consume BOTH X and Y. Motor 2 ← Z,
+        // motor 3 ← E (UNUSED here, so no work).
+        assert!(seg.motor_has_remaining_work(0));
+        assert!(seg.motor_has_remaining_work(1));
+        assert!(seg.motor_has_remaining_work(2));
+        assert!(!seg.motor_has_remaining_work(3));
+
+        // Clear motor 0 across BOTH X and Y nibbles — that's what
+        // clear_motor_bits_in_mask does for CoreXY motor 0 when it finishes.
+        seg.consumers_remaining &= !(1u16 << CONS_REMAINING_X_SHIFT);
+        seg.consumers_remaining &= !(1u16 << CONS_REMAINING_Y_SHIFT);
+        assert!(!seg.motor_has_remaining_work(0));
+        // Motor 1 still has its bit in the same nibbles.
+        assert!(seg.motor_has_remaining_work(1));
     }
 
     #[test]

@@ -429,3 +429,137 @@ fn corexy_motor0_and_motor1_both_step_on_x_jog() {
         "motor B should have ~800 entries; got {avail_b}"
     );
 }
+
+/// **IWDG-spin regression** — pinned 2026-05-14.
+///
+/// Before the `motor_has_remaining_work` guard in `fetch_segment_for_motor`,
+/// a Cartesian X-only jog where motors 1 (Y) and 3 (E) get constant curves
+/// (dy=0, de=0) caused the producer to manufacture fake
+/// `motor_finished_curve=true` on every fire AFTER those motors finished:
+///
+///   1. Fire 1: motor 1's `compute_next_step_time` returns `SegmentExhausted`
+///      (constant curve, no motion). `motor_finished_curve=true` → clear
+///      motor 1's consumer bit, increment cursor, `made_progress=true`.
+///   2. Fire 2: `producer_states[1].is_idle()=true` (was cleared at
+///      `engine.rs:1949`). `fetch_segment_for_motor` returns the same
+///      `producer_current` segment because the old code only checked
+///      `handle.is_unused_sentinel()`, not whether motor 1's consumer bit
+///      was still set in `seg.consumers_remaining`. `start_curve` runs.
+///      `compute_next_step_time` returns `SegmentExhausted` again. Bit-clear
+///      is idempotent. `made_progress=true` (spuriously).
+///   3. Producer returns `WorkPending` → C side self-reschedules at
+///      `SF_RESCHEDULE_FLOOR=100 µs` → 10 kHz SysTick storm → foreground
+///      `watchdog_reset` task can't run → IWDG fires at 511 ms → MCU resets.
+///
+/// This test must converge in a bounded number of `producer_step` calls and
+/// observe that motors 1 and 3 do NOT report progress on subsequent fires
+/// once they've finished their constant curves.
+#[test]
+fn fake_finish_loop_does_not_spin_on_finished_constant_axes() {
+    // Cartesian engine with motors 0 (X) and 1 (Y) and 3 (E) all configured.
+    // Motor 0 has a real X jog; motors 1 and 3 get constant curves at their
+    // current positions; motor 2 (Z) unconfigured.
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+    engine.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig {
+                steps_per_mm: 160.0,
+                is_awd: false,
+                invert_dir: false,
+            }),
+            Some(MotorConfig {
+                steps_per_mm: 160.0,
+                is_awd: false,
+                invert_dir: false,
+            }),
+            None,
+            Some(MotorConfig {
+                steps_per_mm: 2207.0,
+                is_awd: false,
+                invert_dir: false,
+            }),
+        ],
+        kinematics: KinematicTag::CartesianXyzAndE,
+    });
+    let pool = CurvePool::new();
+    let shared = SharedState::new();
+    let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+    let (mut q_producer, mut q_consumer) = queue.split();
+
+    // X: 0 → 1 mm (160 steps at 160 spm); Y: constant at 50 mm; E: constant
+    // at 0 mm. This matches the host's "send every kinematic axis's curve
+    // including constants" policy from dispatch.rs.
+    let x_handle = {
+        let (deg, knots, cps) = linear_cubic(1.0);
+        pool.validate_and_load(0, deg, &knots, &cps).expect("x")
+    };
+    let y_handle = {
+        let (deg, knots, cps) = linear_cubic_from_to(50.0, 50.0);
+        pool.validate_and_load(1, deg, &knots, &cps).expect("y")
+    };
+    let e_handle = {
+        let (deg, knots, cps) = linear_cubic_from_to(0.0, 0.0);
+        pool.validate_and_load(2, deg, &knots, &cps).expect("e")
+    };
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle,
+        t_start: 0,
+        t_end: 26_000_000, // 50 ms at 520 MHz
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    engine
+        .push_segment(seg, &mut q_producer, &shared)
+        .expect("push ok");
+
+    // Drive producer until idle. Before the fix this loop ran forever
+    // (WorkPending every fire, producer_runs_total grew unbounded). After
+    // the fix it must converge in well under PRODUCER_CONVERGE_CAP calls
+    // — motor 0 alone needs ~160/32 ≈ 5 fills.
+    const PRODUCER_CONVERGE_CAP: u32 = 100;
+    let mut runs = 0_u32;
+    loop {
+        let r = engine.producer_step(&pool, &mut q_consumer, &shared);
+        runs += 1;
+        if r == ProducerTickResult::AllIdle {
+            break;
+        }
+        assert!(
+            runs < PRODUCER_CONVERGE_CAP,
+            "producer_step must converge to AllIdle; reached {runs} calls \
+             with WorkPending still set — the fake-finish spin is back. \
+             motor 0 avail={}, producer_runs_total={}",
+            engine.step_ring(0).map(|r| r.available()).unwrap_or(0),
+            shared.producer_runs_total.load(Ordering::Acquire),
+        );
+    }
+
+    // Motor 0 filled its ring with ~160 entries; motors 1 and 3 produced 0.
+    let m0 = engine.step_ring(0).expect("ring 0").available();
+    let m1 = engine.step_ring(1).expect("ring 1").available();
+    let m3 = engine.step_ring(3).expect("ring 3").available();
+    assert!(
+        (158..=162).contains(&m0),
+        "motor 0 should have ~160 X-step entries; got {m0}"
+    );
+    assert_eq!(m1, 0, "motor 1 (constant Y) must not produce step pulses");
+    assert_eq!(m3, 0, "motor 3 (constant E) must not produce step pulses");
+
+    // Sanity-check on convergence speed: 100 producer_step calls is plenty
+    // for 160 X steps at PRODUCER_BATCH_CAP=32 per call. If runs > 50 we
+    // are wasting CPU on spurious refires even if we did terminate.
+    assert!(
+        runs <= 50,
+        "producer_step converged but took {runs} calls — that's still \
+         far more than needed for 160 X-steps + 2 trivial finishes. \
+         Suggests the fake-finish guard is leaking some work."
+    );
+}

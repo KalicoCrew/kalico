@@ -1636,6 +1636,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return None;
         }
 
+        // If this motor has already cleared every consumer bit it owns in
+        // `seg.consumers_remaining` (motor previously returned
+        // `SegmentExhausted` for this segment and `clear_motor_bits_in_mask`
+        // ran), do not return the segment for it again. Without this guard the
+        // motor's `ProducerState::is_idle()` -> `start_curve` -> Cardano ->
+        // SegmentExhausted -> `motor_finished_curve=true` cycle re-fires on
+        // every `producer_step` call, manufacturing fake `made_progress=true`
+        // and pegging `runtime_producer_event` at the
+        // `SF_RESCHEDULE_FLOOR=100 µs` cadence indefinitely. Reproduces as IWDG
+        // reset on any G1 jog that has constant-curve axes (Y and E on an
+        // X-only jog with Cartesian kinematics, all four motors in lockstep
+        // on segments after motor 0 also finishes its real work).
+        if !seg.motor_has_remaining_work(motor_idx as u8) {
+            return None;
+        }
+
         Some((seg, primary, secondary, sign))
     }
 
