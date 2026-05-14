@@ -26,7 +26,6 @@
 extern crate alloc;
 
 pub mod bezier_root;
-pub mod cardano;
 pub mod clock;
 pub mod config;
 pub mod curve_pool;
