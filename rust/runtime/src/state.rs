@@ -257,6 +257,16 @@ pub struct SharedState {
     /// host-side PushSegment count to detect dropped frames between
     /// `runtime_handle_push_segment` and `queue.enqueue`.
     pub producer_segment_dequeued_total: AtomicU64,
+    /// Total times `Engine::fetch_segment_for_motor` was called. Bumps
+    /// unconditionally at function entry — distinguishes "producer loop
+    /// is filtering out all motors at the gates" from "fetch is called
+    /// but queue.dequeue always returns None".
+    pub producer_fetch_attempts_total: AtomicU64,
+    /// Total times `push_segment_impl` reached its successful enqueue.
+    /// Bumps AFTER `fg.queue_producer.enqueue(seg)` returns Ok. If this
+    /// is non-zero while `producer_segment_dequeued_total` is 0, the
+    /// queue's enqueue/dequeue ends aren't sharing the backing buffer.
+    pub producer_enqueue_success_total: AtomicU64,
 }
 
 impl SharedState {
@@ -323,6 +333,8 @@ impl SharedState {
             producer_motor_finished_curve_total: AtomicU64::new(0),
             producer_segment_retired_total: AtomicU64::new(0),
             producer_segment_dequeued_total: AtomicU64::new(0),
+            producer_fetch_attempts_total: AtomicU64::new(0),
+            producer_enqueue_success_total: AtomicU64::new(0),
         }
     }
 }

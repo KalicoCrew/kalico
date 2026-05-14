@@ -1592,6 +1592,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         queue: &mut Consumer<'_, Segment, Q_N>,
         shared: &SharedState,
     ) -> Option<(Segment, CurveHandle, Option<CurveHandle>, f64)> {
+        shared
+            .producer_fetch_attempts_total
+            .fetch_add(1, Ordering::AcqRel);
         if self.producer_current.is_none() {
             self.producer_current = queue.dequeue();
             if self.producer_current.is_some() {

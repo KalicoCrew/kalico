@@ -644,13 +644,15 @@ runtime_status_drain(void)
     extern uint32_t kalico_runtime_motor_finished_lo(void *rt);
     extern uint32_t kalico_runtime_segments_retired_lo(void *rt);
     extern uint32_t kalico_runtime_segments_dequeued_lo(void *rt);
+    extern uint32_t kalico_runtime_fetch_attempts_lo(void *rt);
+    extern uint32_t kalico_runtime_enqueue_success_lo(void *rt);
     if (last_err == 0 && status_emit_phase == 0) {
         // Wider rotation now — five step_time tags + binding-bug
-        // investigation tags (0xB0, 0xB1) + producer-side fill tag (0xB2)
-        // + producer-step accounting tag (0xB3).
+        // investigation tags (0xB0, 0xB1) + producer-side tags
+        // (0xB2, 0xB3, 0xB4).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 8) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 9) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -713,6 +715,24 @@ runtime_status_drain(void)
                              | ((uint32_t)per_motor << 16)
                              | ((uint32_t)total << 8)
                              | reset_calls;
+            }
+            break;
+        case 8:
+            // 0xB4 — fetch + enqueue diagnostics. Distinguishes:
+            //   bits  0..15: producer_enqueue_success_total & 0xFFFF
+            //                — confirmed enqueues to fg.queue_producer.
+            //   bits 16..23: producer_fetch_attempts_total & 0xFF
+            //                — unconditional fetch_segment_for_motor entries.
+            // If enqueue>0 but dequeue (0xB3 bits 0..7) is 0, the queue
+            // ends aren't sharing the backing buffer (split is broken).
+            // If fetch_attempts=0 while producer_runs (0xB2 bits 16..23) > 0,
+            // the per-motor loop's gates are filtering every motor.
+            {
+                uint32_t enq = kalico_runtime_enqueue_success_lo(runtime_handle) & 0xFFFFu;
+                uint32_t fa = kalico_runtime_fetch_attempts_lo(runtime_handle) & 0xFFu;
+                fault_detail = 0xB4000000u
+                             | (fa << 16)
+                             | enq;
             }
             break;
         case 7:

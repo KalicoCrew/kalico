@@ -285,6 +285,9 @@ pub mod exports {
         if fg.queue_producer.enqueue(seg).is_err() {
             return KALICO_ERR_QUEUE_FULL;
         }
+        shared
+            .producer_enqueue_success_total
+            .fetch_add(1, Ordering::AcqRel);
         // Register all 4 per-axis handles in the retirement table so the
         // trace-drain pipeline can retire them on SEGMENT_END.
         fg.retirement_table.register(id, [x_handle, y_handle, z_handle, e_handle]);
@@ -2267,6 +2270,41 @@ pub mod exports {
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
             shared.producer_runs_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: read the low 32 bits of `producer_fetch_attempts_total`.
+    /// Bumps unconditionally at function entry — if 0 while
+    /// `producer_runs_total` is non-zero, the per-motor loop is filtering
+    /// every motor at the step_mode / step_distance / is_idle gates.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_fetch_attempts_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_fetch_attempts_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: read the low 32 bits of `producer_enqueue_success_total`.
+    /// Bumps AFTER `fg.queue_producer.enqueue(seg)` returns Ok in
+    /// `push_segment_impl`. If non-zero while
+    /// `producer_segment_dequeued_total` is 0, the queue split is broken
+    /// (producer and consumer ends not sharing the backing buffer).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_enqueue_success_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_enqueue_success_total.load(Ordering::Acquire) as u32
         }
     }
 
