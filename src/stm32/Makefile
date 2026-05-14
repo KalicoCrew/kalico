@@ -45,9 +45,14 @@ $(OUT)klipper.elf: $(OUT)src/generic/armcm_link.ld
 # pitfalls). Empirically, prepending to CFLAGS_klipper.elf works because
 # Klipper's link rule is `$(CC) $(OBJS) $(CFLAGS_klipper.elf) -o $@` and
 # the existing -lgcc tail stays at the end.
+#
+# --start-group / --end-group: a live Rust function pulled from the archive may
+# reference C symbols (e.g. `timer_read_time`, `stats_send_time`) that GNU ld
+# has already passed in its single forward sweep. The grouped pair forces ld
+# to iterate archives until cross-references settle. Matches src/linux/Makefile.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
 KALICO_LIB := rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a
-CFLAGS_klipper.elf := $(KALICO_LIB) $(CFLAGS_klipper.elf)
+CFLAGS_klipper.elf := -Wl,--start-group $(KALICO_LIB) -Wl,--end-group $(CFLAGS_klipper.elf)
 $(OUT)klipper.elf: $(KALICO_LIB)
 endif
 
