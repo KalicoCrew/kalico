@@ -5,7 +5,6 @@
 // clock-enable register (F4 has a single APB1ENR vs H7's split APB1LENR).
 
 #include "autoconf.h"
-#include "board/misc.h"        // timer_read_time
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
@@ -56,54 +55,34 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Step-time scheduling refactor (spec §6.3 follow-up, 2026-05-12 bench
-    // wedge): TIM5 must run unconditionally because `Engine::tick` is the
-    // only driver of the engine state machine — segment dequeue (Idle →
-    // Running), retirement, and `kalico_credit_freed` emission all happen
-    // inside the ISR. Conditional-disable on F4 (always 0 Modulated
-    // steppers) stranded Z segments in the ring (engine stayed Idle), the
-    // host's slot pool filled, klippy timed out and reset the MCU.
-    //
-    // Per-axis step emission inside `Engine::tick` is now gated by
-    // `step_modes[i]`: StepTime axes (all of them on F4) skip the polled
-    // StepAccumulator path entirely; the per-stepper `struct timer` ISR
-    // (`step_time_event`) handles GPIO output via Newton-iterated waketimes.
-    //
-    // 2026-05-13 follow-up: drop TIM5 rate to 1 kHz when count_modulated == 0
-    // to avoid F4 CPU saturation (eval ~24 µs at 180 MHz, 10 kHz ARR puts
-    // ISR at 24% CPU — survives but barely, and any drift saturates).
-    // Engine::tick at 1 kHz drives the state machine, publishes widened_now
-    // for clock_sync_respond, and retires segments — that's all the F4
-    // needs from TIM5 because step pulses come from the per-stepper
-    // struct timer ISR not from TIM5.
-    {
-        // 2026-05-13 revert: back to 10 kHz so the polled-tick path can
-        // drive typical Z step rates. F4 at 180 MHz with ~24 µs eval per
-        // ISR sits at ~24% CPU at 10 kHz — survives if foreground is
-        // otherwise lean.
-        TIM5->CR1 &= ~TIM_CR1_CEN;
-        TIM5->ARR = (runtime_clock_freq / 10000U) - 1U;
-        TIM5->EGR = TIM_EGR_UG;
-        TIM5->SR = 0;
+    // Spec §3.2 (step-emission-architecture, T9): TIM5 is enabled iff at
+    // least one stepper on this MCU runs in Modulated mode (phase stepping
+    // / polled-tick StepAccumulator). On F4 today no axis is modulated, so
+    // TIM5 stays off entirely — see runtime_tick_h7.c for the full
+    // rationale. The engine state machine is no longer TIM5-driven:
+    //   - Segment dequeue + retirement run on the producer Klipper timer
+    //     (`src/runtime_tick.c`, T8).
+    //   - GPIO step pulses fire from per-stepper consumer Klipper timers
+    //     (`step_time_event`, T7) keyed off Newton-iterated waketimes.
+    //   - Widened MCU clock for `clock_sync_respond` is computed on-demand
+    //     via `runtime_handle_widened_now` (T6), no seqlock seeding needed.
+    if (!runtime_handle) {
+        return;
     }
 
-    // Seed the engine's WidenState — see runtime_tick_h7.c::runtime_tick_enable
-    // for the full rationale. Same race shape on F4 (slower clock, longer
-    // wrap period, but the bug structurally exists wherever the engine's
-    // WidenState starts at high=0 while klippy's view already includes
-    // accumulated wraps).
-    if (runtime_handle) {
-        // Mirror command_get_uptime's "high + (cur < stats_send_time)"
-        // lookback so this matches klippy's view exactly. See
-        // runtime_tick_h7.c for the full rationale.
-        extern uint32_t stats_send_time_high;
-        extern uint32_t stats_send_time;
-        uint32_t low = timer_read_time();
-        uint32_t high = stats_send_time_high + (low < stats_send_time);
-        uint64_t baseline = ((uint64_t)high) << 32 | (uint64_t)low;
-        runtime_handle_seed_widen(runtime_handle, baseline);
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        // No phase-stepping / polled-tick consumers — TIM5 stays disabled.
+        return;
     }
-    TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
+
+    // Modulated motors present — arm TIM5 at 10 kHz on F4 (per the historic
+    // F4 CPU budget for the polled-tick path; see runtime_tick_init for the
+    // peripheral-clock + DWT setup).
+    TIM5->CR1 &= ~TIM_CR1_CEN;
+    TIM5->ARR  = (runtime_clock_freq / 10000U) - 1U;
+    TIM5->EGR  = TIM_EGR_UG;
+    TIM5->SR   = 0;
+    TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
 }

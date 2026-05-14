@@ -3,8 +3,6 @@
 // H723-specific TIM5 init + IRQ handler. Spec §2.4 / §4.1 / §4.2 / §4.4.
 
 #include "autoconf.h"
-#include "board/misc.h"        // timer_read_time
-#include "command.h"           // output() diag emit
 #include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
@@ -14,14 +12,6 @@
 #if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
 
 extern const uint32_t runtime_clock_freq;
-// Both from src/basecmd.c. `stats_send_time_high` lags reality by up to one
-// u32 wrap between consecutive `stats_update` calls (which run every ~5 s).
-// `stats_send_time` is the timer value at the last bump. Klippy's
-// `command_get_uptime` reconstructs the lookback-aware high count as
-// `stats_send_time_high + (cur < stats_send_time)` — must match exactly here
-// or the engine's WidenState lags klippy's `last_clock` by 2^32 cycles.
-extern uint32_t stats_send_time_high;
-extern uint32_t stats_send_time;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
@@ -63,77 +53,32 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Step-time scheduling refactor (spec §6.3 follow-up, 2026-05-12 bench
-    // wedge): TIM5 must run unconditionally because `Engine::tick` is the
-    // only driver of the engine state machine — segment dequeue (Idle →
-    // Running), retirement, and `kalico_credit_freed` emission all happen
-    // inside the ISR. Conditional-disable when count_modulated == 0
-    // stranded segments in the ring (engine stayed Idle), the host's slot
-    // pool filled, klippy timed out and reset both MCUs.
-    //
-    // Per-axis step emission inside `Engine::tick` is now gated by
-    // `step_modes[i]`: StepTime axes skip the polled StepAccumulator path
-    // entirely; their per-stepper `struct timer` ISR handles GPIO output.
-    //
-    // 2026-05-13 follow-up: even with the per-axis gate, eval still costs
-    // ~8 µs on H7 (4164 cycles measured) inside the TIM5 ISR — running
-    // that at 40 kHz with a 25 µs interval saturates the CPU and starves
-    // the USB out task (`out_max_gap=7.8s`, `ring_overflow=19k`, klippy
-    // timeouts → command_reset wedge, bench 2026-05-13). Drop TIM5 rate
-    // to 1 kHz when count_modulated == 0 — Engine::tick still drives the
-    // state machine, publishes widened_now (for clock_sync_respond), and
-    // retires segments, just at 1 kHz instead of 40 kHz. 1.5% CPU vs
-    // 60+%. At 40× lower rate the worst-case Newton solver convergence
-    // window for step_time scheduling still holds because step pulses
-    // are emitted by the per-stepper struct timer ISR, NOT by TIM5.
-    {
-        // 2026-05-13 revert: 1 kHz was too slow for the polled-tick step
-        // emission to drive typical step rates (e.g., 200 mm/s X at 160
-        // steps/mm = 32 kHz step rate; the StepAccumulator can emit
-        // multiple steps per tick but ISR cost grows). 10 kHz on H7 puts
-        // the ISR at ~15% CPU (15.6 µs eval × 10 kHz = 156 ms/s).
-        uint32_t target_rate = (kalico_runtime_count_modulated_steppers(runtime_handle) > 0)
-            ? 40000U  // 40 kHz when any axis phase-steps (Step 10 future)
-            : 10000U; // 10 kHz polled-tick (post-revert MVP path)
-        TIM5->CR1 &= ~TIM_CR1_CEN;
-        TIM5->ARR = (runtime_clock_freq / target_rate) - 1U;
-        TIM5->EGR = TIM_EGR_UG;
-        TIM5->SR = 0;
+    // Spec §3.2 (step-emission-architecture, T9): TIM5 is enabled iff at
+    // least one stepper on this MCU runs in Modulated mode (phase stepping
+    // / polled-tick StepAccumulator). For the all-StepTime MVP, TIM5 stays
+    // off entirely — the engine state machine is no longer TIM5-driven:
+    //   - Segment dequeue + retirement run on the producer Klipper timer
+    //     (`src/runtime_tick.c`, T8).
+    //   - GPIO step pulses fire from per-stepper consumer Klipper timers
+    //     (`step_time_event`, T7) keyed off Newton-iterated waketimes.
+    //   - Widened MCU clock for `clock_sync_respond` is computed on-demand
+    //     via `runtime_handle_widened_now` (T6), no seqlock seeding needed.
+    if (!runtime_handle) {
+        return;
     }
 
-    // Seed the engine's WidenState to match klippy's widened MCU clock.
-    //
-    // Klippy widens the 32-bit MCU timer via `stats_send_time_high`, which
-    // the firmware increments inside `stats_update` on every observed u32
-    // wrap. The engine's `WidenState` starts at `high=0` and only catches
-    // up via wraps observed in the ISR — but the first dispatched segment's
-    // `t_start_clock` is stamped with klippy's widened view (which already
-    // includes accumulated `stats_send_time_high` wraps from the boot →
-    // first-push window). Without this seed the engine's `now` sits below
-    // the segment's `t_start` for ~half a wrap period (~4 s at 520 MHz) and
-    // the curve is evaluated at `u=0` the whole time — segments dequeue,
-    // status reads `Running`, but zero step pulses fire ("first motion
-    // only energizes" bench symptom, 2026-05-11).
-    //
-    // Investigation: `docs/superpowers/notes/2026-05-11-first-motion-no-movement-investigation.md`.
-    // Linux-sim caller pattern: `src/linux/runtime_tick_host.c:148-156`.
-    if (runtime_handle) {
-        // Match klippy's command_get_uptime widening exactly: read `cur`
-        // first, then compute `high` with the "pre-stats_update wrap" lookback.
-        // If we read `high` first and then `cur`, a wrap interleaved between
-        // them would yield `high` from before the wrap with `cur` from after,
-        // off-by-one in the wrong direction.
-        uint32_t low_at_seed = timer_read_time();
-        uint32_t high_at_seed = stats_send_time_high
-                              + (low_at_seed < stats_send_time);
-        uint64_t baseline = ((uint64_t)high_at_seed) << 32
-                          | (uint64_t)low_at_seed;
-        runtime_handle_seed_widen(runtime_handle, baseline);
-        output("widen_seed high=%u low=%u sst=%u sstime=%u",
-               high_at_seed, low_at_seed,
-               stats_send_time_high, stats_send_time);
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        // No phase-stepping / polled-tick consumers — TIM5 stays disabled.
+        return;
     }
-    TIM5->SR = ~TIM_SR_UIF;       // clear stale UIF before enabling
+
+    // Modulated motors present — arm TIM5 at 40 kHz for current synthesis
+    // (Step 10 future) and the polled-tick StepAccumulator path.
+    TIM5->CR1 &= ~TIM_CR1_CEN;
+    TIM5->ARR  = (runtime_clock_freq / 40000U) - 1U;
+    TIM5->EGR  = TIM_EGR_UG;
+    TIM5->SR   = 0;
+    TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
 }
