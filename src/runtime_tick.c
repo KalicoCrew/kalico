@@ -1076,22 +1076,34 @@ runtime_producer_event(struct timer *t)
 {
     bool work_pending = kalico_runtime_producer_step(runtime_handle);
     if (work_pending) {
-        // Self-reschedule "ASAP": the producer batched some entries
-        // but there's more to fill. Yielding back to the scheduler lets
-        // higher-priority Klipper timers (USB, USART, step_time_event)
-        // run between batches; the next sched_check_periodic will pick
-        // us back up. Must be strictly in the future (see
-        // SF_RESCHEDULE_FLOOR) — a bare `timer_read_time()` would already
-        // be in the past by the time Klipper's dispatch path re-checks.
+        // Self-reschedule ASAP for the next batch.
         t->waketime = timer_read_time() + SF_RESCHEDULE_FLOOR;
         return SF_RESCHEDULE;
     }
-    // No more work — wait for a kick from push_segment or a consumer
-    // low-water hook. `runtime_producer_step` already cleared
-    // `producer_pending`; the next kicker will CAS it back to true and
-    // re-arm us via `arm_producer_timer_if_kicked`.
-    runtime_producer_timer.enabled = 0;
-    return SF_DONE;
+    // No work — slow heartbeat. We CANNOT return SF_DONE here: that
+    // races with concurrent `arm_producer_timer_if_kicked_inline` calls
+    // from the SysTick-priority consumer ISR. Sequence (race):
+    //   1. Producer sets `enabled = 0` and prepares to return SF_DONE.
+    //   2. SysTick preempts; a consumer's empty-poll calls the kick
+    //      helper. It CAS-wins `producer_pending`, sees `enabled == 0`,
+    //      and `sched_add_timer`s the producer timer.
+    //   3. Producer resumes, returns SF_DONE — Klipper attempts to
+    //      remove the timer from its priority queue, but the consumer
+    //      already re-added it. The queue is left in a corrupted state
+    //      where a stale timer entry has a waketime far in the past;
+    //      Klipper's `armcm_timer.c:152` eventually trips
+    //      "Rescheduled timer in the past" on that stale entry.
+    //
+    // Fix: always SF_RESCHEDULE. Set a 1 ms idle cadence so the producer
+    // runs ~1 kHz when nothing's happening (negligible CPU), and any
+    // kick that lands between fires is observed on the next call (kicks
+    // set `producer_pending` in shared state; the next
+    // `kalico_runtime_producer_step` body sees the work even if it didn't
+    // change scheduling state). `enabled` stays `1` for the lifetime of
+    // the timer's residency in the scheduler queue — set once at the
+    // first kick after `init_step_time_timers`, never cleared.
+    t->waketime = timer_read_time() + runtime_clock_freq / 1000U;  // +1 ms
+    return SF_RESCHEDULE;
 }
 
 // Called from handle_configure_axes in src/kalico_dispatch.c after
