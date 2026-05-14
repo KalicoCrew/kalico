@@ -1530,6 +1530,7 @@ mod tests {
                 extrusion_ratio: 0.0,
                 flags: 0,
                 _pad: [0; 1],
+                consumers_remaining: 0,
             })
             .expect("enqueue segment");
         let mut trace_queue: Queue<TraceSample, TRACE_RING_N> = Queue::new();
@@ -1664,6 +1665,7 @@ mod tests {
                 extrusion_ratio: 0.0,
                 flags: 0,
                 _pad: [0; 1],
+                consumers_remaining: 0,
             })
             .expect("enqueue s1");
         producer
@@ -1680,6 +1682,7 @@ mod tests {
                 extrusion_ratio: 0.0,
                 flags: 0,
                 _pad: [0; 1],
+                consumers_remaining: 0,
             })
             .expect("enqueue s2");
 

@@ -73,6 +73,7 @@ fn injected_iter_start_trips_boundary_loop_fault() {
         extrusion_ratio: 0.0,
         flags: 0,
         _pad: [0; 1],
+        consumers_remaining: 0,
     };
     let seg2 = Segment {
         id: 2,
@@ -87,6 +88,7 @@ fn injected_iter_start_trips_boundary_loop_fault() {
         extrusion_ratio: 0.0,
         flags: 0,
         _pad: [0; 1],
+        consumers_remaining: 0,
     };
     q_producer.enqueue(seg).unwrap();
     q_producer.enqueue(seg2).unwrap();
@@ -151,6 +153,7 @@ fn no_injection_default_path_does_not_fault_on_single_carry() {
         extrusion_ratio: 0.0,
         flags: SEGMENT_FLAG_HOLD_SEGMENT,
         _pad: [0; 1],
+        consumers_remaining: 0,
     };
     let seg2 = Segment {
         id: 2,
@@ -165,6 +168,7 @@ fn no_injection_default_path_does_not_fault_on_single_carry() {
         extrusion_ratio: 0.0,
         flags: SEGMENT_FLAG_HOLD_SEGMENT,
         _pad: [0; 1],
+        consumers_remaining: 0,
     };
     q_producer.enqueue(seg).unwrap();
     q_producer.enqueue(seg2).unwrap();

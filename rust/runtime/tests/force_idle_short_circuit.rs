@@ -60,6 +60,7 @@ fn force_idle_short_circuits_tick() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -137,6 +138,7 @@ fn force_idle_with_active_current_clears_it() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 

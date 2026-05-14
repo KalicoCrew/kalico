@@ -92,6 +92,7 @@ fn current_segment_id_set_on_activation() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -130,6 +131,7 @@ fn retired_through_segment_id_advances_on_retire() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -168,6 +170,7 @@ fn retired_through_segment_id_monotonic_across_two_segments() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
     // Stage a second segment that uses the same slot once gen advances —
@@ -187,6 +190,7 @@ fn retired_through_segment_id_monotonic_across_two_segments() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 

@@ -74,6 +74,7 @@ fn boundary_loop_works_near_u64_max() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 

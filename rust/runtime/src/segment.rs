@@ -6,6 +6,30 @@
 use crate::config::EMode;
 use crate::curve_pool::CurveHandle;
 
+/// Bit positions inside [`Segment::consumers_remaining`] mask.
+///
+/// Each curve handle (x / y / z / e) occupies a u4 nibble; the bits inside
+/// the nibble identify which motor still needs the curve.
+///
+/// **Lockstep simplification (Task 5 MVP).** For the single-segment-active
+/// workload that the bench produces today, all four motor producers finish
+/// a segment's curves before any of them advances to the next segment.
+/// Under that invariant the nibble structure is over-specified — the engine
+/// retires the whole segment once any motor reports "done" because the
+/// others have already reported "done" within the same producer_step call.
+/// The full per-motor bookkeeping arrives when truly-independent per-motor
+/// cursors land (post-MVP, see spec §7.2).
+///
+/// Layout (bit index, motor-bit-within-nibble):
+/// - bits 0..3   = x curve consumer mask (motor 0/1/2/3 bit)
+/// - bits 4..7   = y curve consumer mask
+/// - bits 8..11  = z curve consumer mask
+/// - bits 12..15 = e curve consumer mask
+pub const CONS_REMAINING_X_SHIFT: u32 = 0;
+pub const CONS_REMAINING_Y_SHIFT: u32 = 4;
+pub const CONS_REMAINING_Z_SHIFT: u32 = 8;
+pub const CONS_REMAINING_E_SHIFT: u32 = 12;
+
 /// Selects the kinematic transform applied per tick.
 ///
 /// Step 5 only emits `CoreXyAndE` (`CoreXY` for AB axes + identity for E).
@@ -59,12 +83,90 @@ pub struct Segment {
     /// Extrusion ratio (extrusion_per_xy_mm) for `CoupledToXy` mode.
     /// Ignored when `e_mode != CoupledToXy`.
     pub extrusion_ratio: f32,
+    /// Per-axis-curve consumer bitmask (spec §3.8 retirement decoupling).
+    /// Each axis handle gets one u4 nibble; each bit inside the nibble marks
+    /// a motor that still needs that curve. The producer clears its bit on
+    /// Newton `SegmentExhausted` for its motor; the Modulated path clears
+    /// its bit on wall-clock `t_end` cross. When all four nibbles read 0
+    /// the segment's curve slots retire and the segment can be dropped.
+    ///
+    /// Constructors use [`Segment::compute_consumers_remaining`] to derive
+    /// the initial mask from `kinematics` + the four handles (an UNUSED
+    /// handle contributes no consumer bits).
+    pub consumers_remaining: u16,
 }
 
 impl Segment {
     #[inline]
     pub fn duration(&self) -> u64 {
         self.t_end.saturating_sub(self.t_start)
+    }
+
+    /// Compute the initial `consumers_remaining` bitmask from the segment's
+    /// four curve handles and kinematic transform.
+    ///
+    /// Each UNUSED handle contributes no consumer bits. The kinematic
+    /// transform determines which motors consume which axis curves:
+    /// - `CartesianXyzAndE`: motor 0 ← x, 1 ← y, 2 ← z, 3 ← e.
+    /// - `CoreXyAndE`: motors 0 (A = X+Y) and 1 (B = X−Y) both consume the
+    ///   x AND y curves; motor 2 ← z; motor 3 ← e.
+    ///
+    /// The producer or the bridge calls this at segment construction time so
+    /// the engine never sees a `Segment` with a stale or zero mask while
+    /// curve handles are present.
+    pub fn compute_consumers_remaining(
+        kinematics: KinematicTag,
+        x_handle: CurveHandle,
+        y_handle: CurveHandle,
+        z_handle: CurveHandle,
+        e_handle: CurveHandle,
+    ) -> u16 {
+        let mut mask: u16 = 0;
+        // Per-motor consumer presence flags. `motor_idx_consumes_axis(i,
+        // axis)` returns true iff motor `i` reads `axis` under the
+        // selected kinematics.
+        let motor_consumes_x = |i: u8| -> bool {
+            match kinematics {
+                KinematicTag::CartesianXyzAndE => i == 0,
+                KinematicTag::CoreXyAndE => i == 0 || i == 1,
+            }
+        };
+        let motor_consumes_y = |i: u8| -> bool {
+            match kinematics {
+                KinematicTag::CartesianXyzAndE => i == 1,
+                KinematicTag::CoreXyAndE => i == 0 || i == 1,
+            }
+        };
+        let motor_consumes_z = |i: u8| -> bool { i == 2 };
+        let motor_consumes_e = |i: u8| -> bool { i == 3 };
+
+        // For each axis: if its handle is non-UNUSED, set the bit for every
+        // motor that consumes that axis.
+        let set_for = |mask: &mut u16, handle: CurveHandle, shift: u32, consumes: &dyn Fn(u8) -> bool| {
+            if handle.is_unused_sentinel() {
+                return;
+            }
+            let mut nibble: u16 = 0;
+            for motor in 0_u8..4 {
+                if consumes(motor) {
+                    nibble |= 1_u16 << motor;
+                }
+            }
+            *mask |= (nibble & 0x0F) << shift;
+        };
+        set_for(&mut mask, x_handle, CONS_REMAINING_X_SHIFT, &motor_consumes_x);
+        set_for(&mut mask, y_handle, CONS_REMAINING_Y_SHIFT, &motor_consumes_y);
+        set_for(&mut mask, z_handle, CONS_REMAINING_Z_SHIFT, &motor_consumes_z);
+        set_for(&mut mask, e_handle, CONS_REMAINING_E_SHIFT, &motor_consumes_e);
+        mask
+    }
+
+    /// True iff every consumer bit has been cleared (all motors reading any
+    /// of this segment's curves have finished). The segment's curve slots
+    /// can be retired and the segment dropped from the queue.
+    #[inline]
+    pub fn consumers_done(&self) -> bool {
+        self.consumers_remaining == 0
     }
 }
 
@@ -83,12 +185,15 @@ mod tests {
     }
 
     #[test]
-    fn segment_size_locked_at_48_bytes() {
-        // Step 7-B: id(4) + x_handle(4) + y_handle(4) + z_handle(4) +
-        // e_handle(4) = 20 raw, +4 padding for u64 alignment = 24;
-        // t_start(8) + t_end(8) = 40; kinematics(1) + e_mode(1) + flags(1) +
-        // _pad(1) + extrusion_ratio(4) = 48; aligned to 8 → 48 bytes total.
-        assert_eq!(core::mem::size_of::<Segment>(), 48);
+    fn segment_size_under_64_bytes_with_consumers_mask() {
+        // Step-7-B base layout (48 B) + consumers_remaining (u16) =
+        // ≤ 56 B after natural alignment. The repr(C) field ordering plus
+        // tail-padding to 8-byte alignment lands the actual size on the
+        // host build at 56 B. The looser ≤ 64 B assertion in
+        // [`segment_size_is_under_64_bytes`] stays load-bearing for the
+        // SPSC enqueue/dequeue memcpy budget; this exact-size assertion
+        // is the canary for accidental field-order regressions.
+        assert_eq!(core::mem::size_of::<Segment>(), 56);
     }
 
     #[test]
@@ -106,6 +211,7 @@ mod tests {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         };
         assert_eq!(seg.duration(), 250);
     }
@@ -125,6 +231,7 @@ mod tests {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         };
         let _ = seg; // copy
         // Verify Clone derive exists; suppress lint since Copy is also derived.

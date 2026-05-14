@@ -102,6 +102,7 @@ fn hold_segment(id: u32, t_start: u64, t_end: u64) -> Segment {
         extrusion_ratio: 0.0,
         flags: SEGMENT_FLAG_HOLD_SEGMENT,
         _pad: [0; 1],
+        consumers_remaining: 0,
     }
 }
 

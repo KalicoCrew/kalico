@@ -282,6 +282,7 @@ pub fn push_test_segment_linear_z_at(
         extrusion_ratio: 0.0,
         flags: 0,
         _pad: [0; 1],
+        consumers_remaining: 0,
     });
 }
 

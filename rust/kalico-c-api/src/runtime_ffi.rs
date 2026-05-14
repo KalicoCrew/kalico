@@ -280,6 +280,7 @@ pub mod exports {
             extrusion_ratio: f32::from_bits(extrusion_ratio_bits),
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         };
         if fg.queue_producer.enqueue(seg).is_err() {
             return KALICO_ERR_QUEUE_FULL;

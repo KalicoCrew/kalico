@@ -135,6 +135,7 @@ fn tick_processes_one_segment_to_completion() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -197,6 +198,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
     h.q_producer
@@ -213,6 +215,7 @@ fn sub_tick_boundary_carries_partial_into_next_segment() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -287,6 +290,7 @@ fn invalid_curve_handle_latches_fault() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 

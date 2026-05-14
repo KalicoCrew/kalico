@@ -111,6 +111,7 @@ fn coupled_e_accumulates_arc_length() {
             extrusion_ratio: 0.04,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -160,6 +161,7 @@ fn independent_e_tracks_nurbs() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -211,6 +213,7 @@ fn travel_e_stays_constant() {
             extrusion_ratio: 0.04,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -232,6 +235,7 @@ fn travel_e_stays_constant() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -293,6 +297,7 @@ fn xy_seed_prevents_spurious_extrusion() {
             extrusion_ratio: 0.04,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -363,6 +368,7 @@ fn boundary_loop_emits_segment_end_for_motion_segments() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -380,6 +386,7 @@ fn boundary_loop_emits_segment_end_for_motion_segments() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -440,6 +447,7 @@ fn boundary_loop_syncs_e_accumulator_for_independent_segments() {
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 
@@ -457,6 +465,7 @@ fn boundary_loop_syncs_e_accumulator_for_independent_segments() {
             extrusion_ratio: 0.04,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         })
         .unwrap();
 

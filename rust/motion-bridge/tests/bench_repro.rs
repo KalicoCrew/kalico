@@ -361,6 +361,7 @@ fn run_segments_through_engine(
             extrusion_ratio: 0.0,
             flags: 0,
             _pad: [0; 1],
+            consumers_remaining: 0,
         };
         segment_id_counter += 1;
         q_prod.enqueue(seg).unwrap_or_else(|_| {
