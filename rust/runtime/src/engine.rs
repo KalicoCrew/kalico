@@ -1588,19 +1588,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         let mut any_pending = false;
 
-        // Loop until we've done something useful for every motor or all
-        // motors are idle. Each iteration: try to drive one motor as far
-        // as its batch cap / ring space allows; if Newton finishes its
-        // curve, attempt segment retirement; then attempt to start a new
-        // curve for any motor still idle.
-        //
-        // We bound the outer loop so producer_step can't spin
-        // indefinitely on a runaway segment chain — at most 4 motors ×
-        // 2 segment-transitions per call. Beyond that we exit
-        // WorkPending and let the caller reschedule.
-        for _outer in 0..8 {
-            let mut made_progress = false;
-
+        // Single-pass per-motor fill. Spec §3.4 budget: ~30 cycles per
+        // Newton solve × PRODUCER_BATCH_CAP=32 entries × 4 motors ≈
+        // 3.8k cycles ≈ 7.4 µs at 520 MHz (H7). Earlier revisions ran
+        // up to 8 outer iterations here, which inflated worst-case ISR
+        // duration to ~59 µs (1024 step times per call) and starved
+        // other ISRs. The producer is event-driven: any motor with
+        // remaining work returns WorkPending, the caller reschedules
+        // promptly, and the next call resumes. Spec §3.4 + §3.8.
+        {
             // (3) Per-motor work pass.
             for motor_idx in 0..4_usize {
                 let mode = shared
@@ -1647,7 +1643,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(slot) = self.motor_current_segment_id.get_mut(motor_idx) {
                         *slot = Some(seg.id);
                     }
-                    made_progress = true;
                 }
 
                 // Fill ring while space permits, capped at PRODUCER_BATCH_CAP.
@@ -1695,7 +1690,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
                         *cur = cur.wrapping_add(1);
                     }
-                    made_progress = true;
                     continue;
                 }
                 let duration_f64 = duration_cycles as f64;
@@ -1759,12 +1753,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                             ps.set_t_resume(Some(t));
                             ps.bump_steps_pushed(i32::from(dir));
                             filled += 1;
-                            made_progress = true;
                         }
                         StepTimeResult::SegmentExhausted => {
                             ps.clear();
                             motor_finished_curve = true;
-                            made_progress = true;
                             break;
                         }
                     }
@@ -1824,12 +1816,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         .store(seg.id, Ordering::Release);
                     crate::stream::check_terminal_on_retire(shared, seg.id);
                     self.producer_current = None;
-                    made_progress = true;
                 }
-            }
-
-            if !made_progress {
-                break;
             }
         }
 
