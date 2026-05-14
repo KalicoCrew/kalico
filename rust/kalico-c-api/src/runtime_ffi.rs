@@ -175,7 +175,7 @@ pub mod exports {
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr)).cast_const();
             let fg: &mut FgState = &mut *fg_ptr;
             let shared: &SharedState = &*shared_ptr;
-            push_segment_impl(
+            let result = push_segment_impl(
                 fg,
                 shared,
                 isr_ptr_const,
@@ -191,7 +191,11 @@ pub mod exports {
                 extrusion_ratio_bits,
                 out_accepted_segment_id,
                 out_credit_epoch,
-            )
+            );
+            shared
+                .last_push_segment_result
+                .store(result, Ordering::Release);
+            result
         }
     }
 
@@ -2305,6 +2309,22 @@ pub mod exports {
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
             shared.producer_enqueue_success_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// Diagnostic: read the last result code from `push_segment_impl`.
+    /// 0 = KALICO_OK, negative = an error code (see error.rs). Updated on
+    /// every call regardless of outcome.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_push_segment_result(
+        rt: *mut KalicoRuntime,
+    ) -> i32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_push_segment_result.load(Ordering::Acquire)
         }
     }
 

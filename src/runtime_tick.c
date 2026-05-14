@@ -646,13 +646,14 @@ runtime_status_drain(void)
     extern uint32_t kalico_runtime_segments_dequeued_lo(void *rt);
     extern uint32_t kalico_runtime_fetch_attempts_lo(void *rt);
     extern uint32_t kalico_runtime_enqueue_success_lo(void *rt);
+    extern int32_t kalico_runtime_last_push_segment_result(void *rt);
     if (last_err == 0 && status_emit_phase == 0) {
         // Wider rotation now — five step_time tags + binding-bug
         // investigation tags (0xB0, 0xB1) + producer-side tags
-        // (0xB2, 0xB3, 0xB4).
+        // (0xB2, 0xB3, 0xB4, 0xB5).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 9) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 10) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -715,6 +716,19 @@ runtime_status_drain(void)
                              | ((uint32_t)per_motor << 16)
                              | ((uint32_t)total << 8)
                              | reset_calls;
+            }
+            break;
+        case 9:
+            // 0xB5 — last push_segment result code. Signed i32 from the
+            // runtime; carried in low 24 bits as two's-complement low
+            // bytes. 0 = KALICO_OK. Negative values map to error codes in
+            // rust/runtime/src/error.rs (e.g. -1 = NULL_PTR, -2 = NOT_INIT,
+            // -10 = FAULT_LATCHED, -20 = ZERO_DURATION, -21 = INVALID_DURATION,
+            // -22 = INVALID_KINEMATICS, -23 = QUEUE_FULL,
+            // -141 = SEGMENT_ID_NON_MONOTONIC).
+            {
+                int32_t r = kalico_runtime_last_push_segment_result(runtime_handle);
+                fault_detail = 0xB5000000u | ((uint32_t)r & 0x00FFFFFFu);
             }
             break;
         case 8:

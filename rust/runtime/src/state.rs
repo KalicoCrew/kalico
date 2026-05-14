@@ -267,6 +267,10 @@ pub struct SharedState {
     /// is non-zero while `producer_segment_dequeued_total` is 0, the
     /// queue's enqueue/dequeue ends aren't sharing the backing buffer.
     pub producer_enqueue_success_total: AtomicU64,
+    /// Last result code returned from `push_segment_impl`. 0 = KALICO_OK,
+    /// negative = an error path (see error.rs constants). Set on every
+    /// call so the C-side diag can show which rejection path is firing.
+    pub last_push_segment_result: AtomicI32,
 }
 
 impl SharedState {
@@ -335,6 +339,7 @@ impl SharedState {
             producer_segment_dequeued_total: AtomicU64::new(0),
             producer_fetch_attempts_total: AtomicU64::new(0),
             producer_enqueue_success_total: AtomicU64::new(0),
+            last_push_segment_result: AtomicI32::new(0),
         }
     }
 }
