@@ -205,7 +205,7 @@ class Interval:
 class Timer(Interval):
     def _invoke(self, eventtime):
         self.cancel()
-        self._callback(eventtime)
+        self._callback(self._kalico, eventtime)
         return self._reactor.NEVER
 
 
