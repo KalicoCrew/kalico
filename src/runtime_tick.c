@@ -80,7 +80,7 @@ const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
 // loop budget for other timers (USB, status drain, drain task), and
 // is still 2× faster than realistic TMC2240 step input rates
 // (~250 kHz datasheet max).
-#define SF_RESCHEDULE_FLOOR (runtime_clock_freq / 100000U)  // 10 µs
+#define SF_RESCHEDULE_FLOOR (runtime_clock_freq / 10000U)  // 100 µs
 
 // Empty-poll cadence for the consumer when its ring has no entries.
 // Independent of SF_RESCHEDULE_FLOOR — the consumer's "no work, sleep"
