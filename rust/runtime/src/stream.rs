@@ -62,17 +62,21 @@ unsafe extern "C" {
     /// underlying `timer_read_time` may wrap), but the §8.5 flush window is
     /// bounded to ≤1 ms so a single wrap is the worst case.
     fn runtime_host_now_us() -> u64;
-
-    /// Klipper-widened DWT clock helper (foreground only). Returns the
-    /// current DWT cycle count widened to `u64` via the
-    /// `stats_send_time_high` lookback (same primitive
-    /// `command_get_uptime` uses). The widening rides on Klipper's stats
-    /// task (~5 s cadence) and does NOT depend on the kalico TIM5 ISR
-    /// being live, so the value advances monotonically through Drained /
-    /// Fault windows where TIM5 is disabled. Used by
-    /// `clock_sync_respond` to decouple clock-sync from engine activity.
-    fn runtime_widened_host_clock() -> u64;
 }
+
+// `runtime_widened_host_clock` (C-side helper in `src/runtime_tick.c`) and
+// the local `read_widened_host_clock` wrapper that used to wire
+// `clock_sync_respond` into stats-based widening were removed during the
+// step-emission T12 cleanup pass (2026-05-14). The 2026-05-13 re-fix
+// (see `clock_sync_respond`'s doc comment) reverted clock-sync back to
+// the §11.4 seqlock, so the helper had no caller. The
+// `kalico_runtime_modulated_tick` FFI path declares its own local extern
+// of `runtime_widened_host_clock` for its widening read; that path is
+// independent. The pending architectural cutover for clock-sync (spec
+// §3.9 — stats-based widening, independent of TIM5 state) needs more
+// than a simple symbol re-wire — it has to address the
+// stats_send_time_high wrap lag bench-observed on 2026-05-13 — and is
+// out of T12 scope.
 
 // `runtime_irq_save` / `runtime_irq_restore` are declared in `state.rs` —
 // thin C wrappers around Klipper's `irq_save` / `irq_restore` that survive
@@ -264,26 +268,6 @@ pub fn clock_sync_respond(
 ) -> (i32, u64) {
     let mcu_clock = crate::clock::read_widened_now(shared);
     (KALICO_OK, mcu_clock)
-}
-
-/// Read the Klipper-widened DWT clock (DWT cycles, u64). Foreground-only.
-///
-/// On the real MCU build this resolves to `runtime_widened_host_clock`,
-/// defined in `src/runtime_tick.c`, which widens `timer_read_time()` with
-/// the `stats_send_time_high` lookback — the same widening
-/// `command_get_uptime` uses, independent of TIM5 state.
-///
-/// Host-test builds resolve the same symbol via `#[no_mangle]` stubs in
-/// the integration-test crate, mirroring `runtime_host_now_us` and
-/// `runtime_cyccnt_read` (see `kalico-c-api/tests/init_once.rs`).
-#[inline]
-#[allow(unsafe_code)]
-fn read_widened_host_clock() -> u64 {
-    // SAFETY: stable C ABI; reads two foreground-only `uint32_t`s on the
-    // MCU side and combines them into a `u64`. No preconditions beyond
-    // foreground-call discipline (enforced by Klipper's single-threaded
-    // command dispatch).
-    unsafe { runtime_widened_host_clock() }
 }
 
 // ────────────────────────────── flush ────────────────────────────────────
