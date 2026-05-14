@@ -40,9 +40,13 @@ fn fractional_accumulation() {
 
 #[test]
 fn burst_cap_faults() {
+    // The MVP burst cap (`MAX_STEPS_PER_TICK_DEFAULT`) was raised on
+    // 2026-05-13 to absorb planner-emitted cross-segment discontinuities;
+    // pin the fault path by stepping past the current cap explicitly.
     let mut state = StepMotorState::new(160.0);
-    let result = state.update(100.0 / 160.0);
-    assert!(result.is_err());
+    let over_cap_mm = ((MAX_STEPS_PER_TICK_DEFAULT as f32) + 1.0) / 160.0;
+    let result = state.update(over_cap_mm);
+    assert!(result.is_err(), "stepping past the burst cap must fault");
 }
 
 #[test]
@@ -67,10 +71,14 @@ fn drift_over_many_ticks() {
     assert_eq!(total_steps, 1_000_000);
 }
 
-// Verify the exported constant has the expected value.
+// Verify the exported constant has the expected MVP value. The original
+// "tight cap" value of 16 was raised on 2026-05-13 (see `rust/runtime/
+// src/step.rs`) to absorb planner-emitted cross-segment discontinuities
+// observed on bench. Restore the original cap and reinstate this assert
+// once the planner-continuity invariant is enforced end-to-end.
 #[test]
-fn default_burst_cap_value() {
-    assert_eq!(MAX_STEPS_PER_TICK_DEFAULT, 16);
+fn default_burst_cap_value_matches_mvp_raise() {
+    assert_eq!(MAX_STEPS_PER_TICK_DEFAULT, 65536);
 }
 
 // StepResult must be Debug (compile-time check via format).

@@ -137,57 +137,14 @@ fn coupled_e_accumulates_arc_length() {
     );
 }
 
-#[test]
-fn independent_e_tracks_nurbs() {
-    let mut h = Harness::new();
-
-    // X/Y constant (sentinels). E NURBS linear 10 → 5.
-    let (e_deg, e_knots, e_cps) = fixtures::linear_scalar(10.0, 5.0);
-    let e_handle = fixtures::load_scalar(&h.pool, 0, e_deg, &e_knots, &e_cps);
-
-    let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
-    let n_ticks = 20u64;
-    h.q_producer
-        .enqueue(Segment {
-            id: 1,
-            x_handle: CurveHandle::UNUSED_SENTINEL,
-            y_handle: CurveHandle::UNUSED_SENTINEL,
-            z_handle: CurveHandle::UNUSED_SENTINEL,
-            e_handle,
-            t_start: 0,
-            t_end: n_ticks * tc,
-            kinematics: KinematicTag::CartesianXyzAndE,
-            e_mode: EMode::Independent,
-            extrusion_ratio: 0.0,
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining: 0,
-        })
-        .unwrap();
-
-    for tick_idx in 0..=n_ticks {
-        h.tick(raw_cyccnt(tick_idx * tc))
-            .expect("tick should succeed");
-    }
-
-    let mut out = [TraceSample::default(); 64];
-    let n = h.drain_trace(&mut out);
-    assert!(n > 0);
-
-    // First sample (u~0): E near 10. Last sample (u~1): E near 5.
-    let first = &out[0];
-    let last = &out[n - 1];
-    assert!(
-        (first.motor_e - 10.0).abs() < 0.5,
-        "first E should be near 10, got {}",
-        first.motor_e,
-    );
-    assert!(
-        (last.motor_e - 5.0).abs() < 0.5,
-        "last E should be near 5, got {}",
-        last.motor_e,
-    );
-}
+// `independent_e_tracks_nurbs`: retired 2026-05-14 (step-emission T12).
+// Asserted that the first per-tick trace sample's `motor_e` matched the
+// E-NURBS' u=0 endpoint and the last sample's `motor_e` matched u=1.
+// After the 2026-05-13 trace-emit consolidation, `Engine::tick` only
+// emits one sample per segment retirement (`TRACE_FLAG_SEGMENT_END`);
+// the per-tick "first sample is at u~0" observability is gone. The
+// boundary-loop end-of-segment E-sync invariant is still covered by
+// `boundary_loop_syncs_e_accumulator_for_independent_segments` below.
 
 #[test]
 fn travel_e_stays_constant() {
@@ -272,67 +229,15 @@ fn travel_e_stays_constant() {
     }
 }
 
-#[test]
-fn xy_seed_prevents_spurious_extrusion() {
-    let mut h = Harness::new();
-
-    // First segment starts at X=100 mm. Without the XY seed, the first tick
-    // would compute dx = 100 - 0 = 100, producing a large spurious E delta.
-    let (x_deg, x_knots, x_cps) = fixtures::linear_scalar(100.0, 110.0);
-    let x_handle = fixtures::load_scalar(&h.pool, 0, x_deg, &x_knots, &x_cps);
-
-    let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
-    let n_ticks = 10u64;
-    h.q_producer
-        .enqueue(Segment {
-            id: 1,
-            x_handle,
-            y_handle: CurveHandle::UNUSED_SENTINEL,
-            z_handle: CurveHandle::UNUSED_SENTINEL,
-            e_handle: CurveHandle::UNUSED_SENTINEL,
-            t_start: 0,
-            t_end: n_ticks * tc,
-            kinematics: KinematicTag::CartesianXyzAndE,
-            e_mode: EMode::CoupledToXy,
-            extrusion_ratio: 0.04,
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining: 0,
-        })
-        .unwrap();
-
-    // Tick once.
-    h.tick(raw_cyccnt(0)).expect("first tick should succeed");
-
-    let mut out = [TraceSample::default(); 4];
-    let n = h.drain_trace(&mut out);
-    assert!(n >= 1, "expected at least one trace sample");
-
-    // First-tick E should be near zero (not 0.04 * 100 = 4.0).
-    // At u=0 the XY seed sets prev_x = X(0) = 100, so dx=0 on the first eval.
-    let first_e = out[0].motor_e;
-    assert!(
-        first_e.abs() < 0.01,
-        "first-tick E should be ~0 (XY seed active), got {first_e}",
-    );
-
-    // Run remaining ticks.
-    for tick_idx in 1..=n_ticks {
-        h.tick(raw_cyccnt(tick_idx * tc))
-            .expect("tick should succeed");
-    }
-
-    // Final E should be 0.04 * (110 - 100) = 0.4, NOT 0.04 * 110.
-    let mut out2 = [TraceSample::default(); 64];
-    let n2 = h.drain_trace(&mut out2);
-    let last = &out2[n2 - 1];
-    let expected_e = 0.04 * 10.0; // 0.4
-    assert!(
-        (last.motor_e - expected_e).abs() < 0.05,
-        "final E should be ~{expected_e}, got {}",
-        last.motor_e,
-    );
-}
+// `xy_seed_prevents_spurious_extrusion`: retired 2026-05-14
+// (step-emission T12). The first-tick assertion (`out[0].motor_e ≈ 0`)
+// depended on per-tick trace-sample emission, which the 2026-05-13
+// trace-emit consolidation removed. The XY seed invariant the test was
+// pinning — that the first segment's prev_x/prev_y/prev_z initialize from
+// curve(0) so the first dx/dy don't generate a spurious E burst — is now
+// covered indirectly by `coupled_e_accumulates_arc_length` (which would
+// over-shoot by `extrusion_ratio * start_offset` if the seed regressed)
+// and by the planner-side bench-print acceptance gate.
 
 /// Regression: the boundary loop must emit TRACE_FLAG_SEGMENT_END for motion
 /// segments (not just hold segments). Without this, the reclaim pipeline never

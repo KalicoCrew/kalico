@@ -17,7 +17,7 @@ use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
-use runtime::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample};
+use runtime::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_RING_N, TraceSample};
 
 // Default H723 Klipper Kconfig clock is 520 MHz (src/stm32/Kconfig). Keeping
 // tests parametric here so a future bump to 550 MHz (or different alternate
@@ -97,13 +97,6 @@ impl Harness {
     }
 }
 
-// Helper: t_segment in u32 (engine widens internally). Since we start at
-// raw_cyccnt = 0, no wrap concerns within these tests' tick budgets.
-#[allow(clippy::cast_possible_truncation)]
-fn raw_cyccnt(now: u64) -> u32 {
-    now as u32
-}
-
 #[test]
 fn tick_on_empty_queue_returns_idle() {
     let mut h = Harness::new();
@@ -112,160 +105,17 @@ fn tick_on_empty_queue_returns_idle() {
     assert_eq!(h.engine.status(), RuntimeStatus::Idle);
 }
 
-#[test]
-fn tick_processes_one_segment_to_completion() {
-    let mut h = Harness::new();
-    // Load a linear scalar X curve: 0 → 10 mm.
-    let (deg, knots, cps) = fixtures::linear_scalar(0.0, 10.0);
-    let handle = fixtures::load_scalar(&h.pool, 0, deg, &knots, &cps);
-
-    let tick_cycles = u64::from(one_tick_cycles(CLOCK_FREQ));
-    let n_ticks = 4u64;
-    h.q_producer
-        .enqueue(Segment {
-            id: 1,
-            x_handle: handle,
-            y_handle: CurveHandle::UNUSED_SENTINEL,
-            z_handle: CurveHandle::UNUSED_SENTINEL,
-            e_handle: CurveHandle::UNUSED_SENTINEL,
-            t_start: 0,
-            t_end: n_ticks * tick_cycles,
-            kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::Travel,
-            extrusion_ratio: 0.0,
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining: 0,
-        })
-        .unwrap();
-
-    // Tick repeatedly through the segment.
-    for tick_idx in 0..=n_ticks {
-        let now = tick_idx * tick_cycles;
-        h.tick(raw_cyccnt(now))
-            .expect("tick should succeed in healthy run");
-    }
-
-    // Drain trace and verify samples emitted along the line.
-    let mut out = [TraceSample::default(); 16];
-    let n = h.drain_trace(&mut out);
-    assert!(
-        n >= 4,
-        "expected at least 4 samples along the line, got {n}"
-    );
-
-    // Last sample at u≈1 → motors at endpoint, segment-end flag set.
-    let last = &out[n - 1];
-    assert_eq!(last.flags & TRACE_FLAG_SEGMENT_END, TRACE_FLAG_SEGMENT_END);
-
-    // Verify X component is non-zero in the final trace sample. CoreXY:
-    // motor_a = x + y = x (since y=0). Endpoint is 10 mm.
-    assert!(
-        last.motor_a > 0.0,
-        "motor_a should be positive at segment end: {}",
-        last.motor_a,
-    );
-}
-
-#[test]
-fn sub_tick_boundary_carries_partial_into_next_segment() {
-    let mut h = Harness::new();
-
-    let tc = u64::from(one_tick_cycles(CLOCK_FREQ));
-
-    // Two scalar X curves back-to-back: seg1 X: 0→10, seg2 X: 10→20.
-    // Geometrically continuous at x=10. Both Y/Z/E unused sentinels, Travel mode.
-    let (deg, knots, cps1) = fixtures::linear_scalar(0.0, 10.0);
-    let h0 = fixtures::load_scalar(&h.pool, 0, deg, &knots, &cps1);
-    let (deg2, knots2, cps2) = fixtures::linear_scalar(10.0, 20.0);
-    let h1 = fixtures::load_scalar(&h.pool, 1, deg2, &knots2, &cps2);
-
-    // Sized so that tick 1 lands near u≈1 of seg1 and tick 2 (post-boundary)
-    // lands near u≈0 of seg2.
-    let d1 = tc + 1;
-    let d2 = 1000 * tc;
-    h.q_producer
-        .enqueue(Segment {
-            id: 1,
-            x_handle: h0,
-            y_handle: CurveHandle::UNUSED_SENTINEL,
-            z_handle: CurveHandle::UNUSED_SENTINEL,
-            e_handle: CurveHandle::UNUSED_SENTINEL,
-            t_start: 0,
-            t_end: d1,
-            kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::Travel,
-            extrusion_ratio: 0.0,
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining: 0,
-        })
-        .unwrap();
-    h.q_producer
-        .enqueue(Segment {
-            id: 2,
-            x_handle: h1,
-            y_handle: CurveHandle::UNUSED_SENTINEL,
-            z_handle: CurveHandle::UNUSED_SENTINEL,
-            e_handle: CurveHandle::UNUSED_SENTINEL,
-            t_start: d1,
-            t_end: d1 + d2,
-            kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::Travel,
-            extrusion_ratio: 0.0,
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining: 0,
-        })
-        .unwrap();
-
-    // Tick at t = 0, tc, 2tc, 3tc — third tick straddles the seg1→seg2 boundary.
-    for tick_idx in 0..=3u64 {
-        h.tick(raw_cyccnt(tick_idx * tc))
-            .expect("tick should succeed in healthy run");
-    }
-
-    let mut out = [TraceSample::default(); 16];
-    let n = h.drain_trace(&mut out);
-
-    // Boundary correctness check: the LAST sample of segment 1 and the FIRST
-    // sample of segment 2 must agree on motor_a to within the sub-tick
-    // boundary tolerance. Seg1 ends at x=10, seg2 starts at x=10. CoreXY:
-    // motor_a = x + y = x (y=0).
-    let mut last_seg1: Option<&TraceSample> = None;
-    let mut first_seg2: Option<&TraceSample> = None;
-    for s in out.iter().take(n) {
-        if s.segment_id == 1 {
-            last_seg1 = Some(s);
-        }
-        if s.segment_id == 2 && first_seg2.is_none() {
-            first_seg2 = Some(s);
-        }
-    }
-    let last1 = last_seg1.expect("expected at least one sample from segment 1");
-    let first2 = first_seg2.expect("expected at least one sample from segment 2");
-
-    // Seam tolerance: 25 µm × 2 (start + end of tick) = 50 µm = 0.05 mm.
-    const SEAM_TOL_MM: f32 = 0.05;
-    assert!(
-        (first2.motor_a - last1.motor_a).abs() < SEAM_TOL_MM,
-        "motor_a discontinuous at seam: {} → {}",
-        last1.motor_a,
-        first2.motor_a
-    );
-    assert!(
-        (first2.motor_b - last1.motor_b).abs() < SEAM_TOL_MM,
-        "motor_b discontinuous at seam: {} → {}",
-        last1.motor_b,
-        first2.motor_b
-    );
-    assert!(
-        (first2.motor_e - last1.motor_e).abs() < SEAM_TOL_MM,
-        "motor_e discontinuous at seam: {} → {}",
-        last1.motor_e,
-        first2.motor_e
-    );
-}
+// `tick_processes_one_segment_to_completion` and
+// `sub_tick_boundary_carries_partial_into_next_segment`: retired
+// 2026-05-14 (step-emission T12 cleanup pass). Both tests asserted that
+// `Engine::tick` emits per-tick `TraceSample`s along the curve so the test
+// could observe motor positions sample-by-sample. After the 2026-05-13
+// trace-emit consolidation (commit 5fbd2c6 — `Engine::tick` only enqueues
+// trace samples on `TRACE_FLAG_SEGMENT_END`), per-tick sample emission no
+// longer exists; the boundary-loop trajectory is observed instead through
+// the post-segment SEGMENT_END sample's `motor_*` fields and the
+// `step_rings` ring counters. The new architecture (T7+T10) tests this
+// path via `engine_modulated_tick.rs` + `engine_producer_integration.rs`.
 
 #[test]
 fn invalid_curve_handle_latches_fault() {
