@@ -271,6 +271,20 @@ pub mod exports {
         if prev_seen && id <= prev_accepted {
             return KALICO_ERR_SEGMENT_ID_NON_MONOTONIC;
         }
+        // §3.8 consumer mask. Computed here at construction because the
+        // host-side `Engine::push_segment` Rust API that also computes this
+        // mask has no callers in the production path — the FFI bypasses it
+        // and enqueues directly. Leaving the mask at 0 makes
+        // `seg.consumers_done()` return true on the first `producer_step`
+        // call AFTER motor 0 fills its first batch, retiring the segment
+        // before motor 0 has finished its real work and silently losing
+        // every step past PRODUCER_BATCH_CAP. Reproduces as
+        // "audible clicks but no toolhead motion" / "G1 X1 emits 32 of 80
+        // expected pulses" on the bench. Pin the mask now so retirement
+        // gates on per-motor `SegmentExhausted` reports.
+        let consumers_remaining = Segment::compute_consumers_remaining(
+            kin, x_handle, y_handle, z_handle, e_handle,
+        );
         let seg = Segment {
             id,
             x_handle,
@@ -284,7 +298,7 @@ pub mod exports {
             extrusion_ratio: f32::from_bits(extrusion_ratio_bits),
             flags: 0,
             _pad: [0; 1],
-            consumers_remaining: 0,
+            consumers_remaining,
         };
         if fg.queue_producer.enqueue(seg).is_err() {
             return KALICO_ERR_QUEUE_FULL;
