@@ -29,7 +29,7 @@ use crate::classify;
 use crate::config::{self, parse_required_shaper, PlannerConfig, PlannerLimits};
 use crate::dispatch::{build_push_params, McuAxisConfig, McuCaps, AXIS_X, AXIS_Y, AXIS_Z};
 use crate::homing::HomingState;
-use crate::planner::{PlannerError, PlannerHandle};
+use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::slot_pool::{SlotPool, CURVE_POOL_N};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
@@ -1533,10 +1533,10 @@ impl PyMotionBridge {
             Arc::new(Mutex::new(HashMap::new()));
 
         let dispatch: Arc<
-            dyn Fn(&trajectory::ShapedSegment) -> Result<(), String>
+            dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError>
                 + Send
                 + Sync,
-        > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), String> {
+        > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), DispatchError> {
             log::info!(
                 "[bridge-trace] dispatch closure entered: seg.t_start={} seg.t_end={}",
                 seg.t_start, seg.t_end,
@@ -1584,17 +1584,17 @@ impl PyMotionBridge {
                         || n_knots > caps.max_knot_vector_len
                         || curve.degree > caps.max_degree
                     {
-                        let msg = format!(
-                            "motion-bridge: curve for mcu {} exceeds caps \
-                             (cps {} > {}, knots {} > {}, degree {} > {}); \
-                             logical-move splitting not yet implemented (Task 13 follow-up).",
-                            plan.mcu_id,
-                            n_cps, caps.max_control_points,
-                            n_knots, caps.max_knot_vector_len,
-                            curve.degree, caps.max_degree,
-                        );
-                        log::error!("{msg}");
-                        return Err(msg);
+                        let err = DispatchError::CapsExceeded {
+                            mcu_id: plan.mcu_id,
+                            cps: n_cps,
+                            max_cps: caps.max_control_points,
+                            knots: n_knots,
+                            max_knots: caps.max_knot_vector_len,
+                            degree: curve.degree,
+                            max_degree: caps.max_degree,
+                        };
+                        log::error!("{err}");
+                        return Err(err);
                     }
                 }
             }
@@ -1672,7 +1672,7 @@ impl PyMotionBridge {
                         let r = router_for_cb.lock().unwrap();
                         let n = r
                             .compute_ack_clock(mcu_h)
-                            .map_err(|e| format!("compute_ack_clock: {e}"))?;
+                            .map_err(|e| DispatchError::ComputeAckClock(e.to_string()))?;
                         drop(r);
                         if n > 0 {
                             break n;
@@ -1685,11 +1685,10 @@ impl PyMotionBridge {
                         }
                         wait_iter += 1;
                         if wait_start.elapsed() > Duration::from_secs(5) {
-                            return Err(format!(
-                                "compute_ack_clock returned 0 after 5s — \
-                                 clock-sync didn't establish for mcu {} (mcu_h={:?})",
-                                plan.mcu_id, mcu_h
-                            ));
+                            return Err(DispatchError::ClockSyncTimeout {
+                                mcu_id: plan.mcu_id,
+                                mcu_handle: mcu_h,
+                            });
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     };
@@ -1782,7 +1781,7 @@ impl PyMotionBridge {
                 // to begin + N×chunk + finalize over the wire.
                 let mut allocated_slots: Vec<u16> =
                     Vec::with_capacity(plan.curves_to_load.len());
-                let mut seg_err: Option<String> = None;
+                let mut seg_err: Option<DispatchError> = None;
                 for i in 0..plan.curves_to_load.len() {
                     let axis_idx = plan.curves_to_load[i].0;
                     let curve_params = plan.curves_to_load[i].1.clone();
@@ -1790,12 +1789,10 @@ impl PyMotionBridge {
                         let mut pool = slot_pool.lock().unwrap();
                         let cap = pool.capacity();
                         let in_flight = pool.in_flight_count();
-                        pool.try_alloc().ok_or_else(|| {
-                            format!(
-                                "slot pool exhausted for mcu={} (capacity={cap}, in_flight={in_flight}); \
-                                 awaiting kalico_credit_freed retirement events",
-                                plan.mcu_id,
-                            )
+                        pool.try_alloc().ok_or(DispatchError::SlotPoolExhausted {
+                            mcu_id: plan.mcu_id,
+                            capacity: cap,
+                            in_flight,
                         })
                     };
                     let (slot, slot_gen) = match alloc_result {
@@ -1825,10 +1822,14 @@ impl PyMotionBridge {
                             plan.set_handle(axis_idx, handle);
                         }
                         Err(e) => {
-                            seg_err = Some(format!(
-                                "load_curve mcu={} slot={} seg_id={} axis={} host_gen={}: {e}",
-                                plan.mcu_id, slot, plan.params.id, axis_idx, slot_gen,
-                            ));
+                            seg_err = Some(DispatchError::LoadCurve {
+                                mcu_id: plan.mcu_id,
+                                slot,
+                                seg_id: plan.params.id,
+                                axis: axis_idx,
+                                host_gen: slot_gen,
+                                detail: e.to_string(),
+                            });
                             break;
                         }
                     }
@@ -1910,10 +1911,10 @@ impl PyMotionBridge {
                     for s in &allocated_slots {
                         pool.release(*s);
                     }
-                    return Err(format!(
-                        "push_segment mcu={}: {e}",
-                        plan.mcu_id
-                    ));
+                    return Err(DispatchError::PushSegment {
+                        mcu_id: plan.mcu_id,
+                        detail: e.to_string(),
+                    });
                 }
             }
 
