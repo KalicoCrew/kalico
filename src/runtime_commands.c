@@ -267,26 +267,29 @@ command_runtime_stream_flush(uint32_t *args)
 DECL_COMMAND(command_runtime_stream_flush, "runtime_stream_flush");
 
 // ---- Step-6 §12.1 clock-sync request ----------------------------------
+//
+// Compute the widened MCU clock in C using the same formula as
+// `command_get_uptime` (basecmd.c): `low = timer_read_time(); high =
+// stats_send_time_high + (low < stats_send_time)`. We do NOT call into Rust
+// for this — `runtime::stream::clock_sync_respond` reads a SharedState
+// seqlock populated only by the TIM5 ISR, which stays disabled in the
+// all-StepTime MVP, so the seqlock returns 0 and the host's clock-sync
+// driver filters out every sample as "uninitialised". Bypassing the FFI
+// keeps everything in C and matches the widening Klippy itself uses.
+extern uint32_t stats_send_time;        // basecmd.c
+extern uint32_t stats_send_time_high;   // basecmd.c
 void
 command_runtime_clock_sync_request(uint32_t *args)
 {
-    if (!runtime_handle) {
-        sendf(
-            "kalico_clock_sync_response request_id=%u mcu_clock_lo=%u mcu_clock_hi=%u",
-            0, 0, 0);
-        return;
-    }
     uint32_t request_id = args[0];
-    uint32_t host_send_time_lo = args[1];
-    uint32_t host_send_time_hi = args[2];
-    uint64_t mcu_clock = 0;
-    kalico_runtime_clock_sync_request(
-        runtime_handle, request_id,
-        host_send_time_lo, host_send_time_hi,
-        &mcu_clock);
+    // args[1] / args[2] = host_send_time_{lo,hi} — unused by the current
+    // bridge regression (it derives RTT from wall-clock send/recv timestamps).
+    // Retained on the wire for forward compatibility with §12.1 RTT bounding.
+    uint32_t low = timer_read_time();
+    uint32_t high = stats_send_time_high + (low < stats_send_time);
     sendf(
         "kalico_clock_sync_response request_id=%u mcu_clock_lo=%u mcu_clock_hi=%u",
-        request_id, (uint32_t)mcu_clock, (uint32_t)(mcu_clock >> 32));
+        request_id, low, high);
 }
 DECL_COMMAND(command_runtime_clock_sync_request,
     "runtime_clock_sync_request request_id=%u "
