@@ -25,6 +25,7 @@
 #[cfg(feature = "kalico-sim")]
 extern crate alloc;
 
+pub mod bezier_root;
 pub mod cardano;
 pub mod clock;
 pub mod config;
