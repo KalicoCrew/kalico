@@ -27,6 +27,19 @@ typedef enum {
 
 static demux_state_t state;
 
+// 2026-05-14 PushSegment dispatch investigation. handle_push_segment is
+// never entered despite host write_frame of kalico-native PushSegment.
+// Counters at the demuxer level distinguish "frames reach the demuxer
+// state machine" from "frames pass CRC" from "frames fail CRC silently".
+volatile uint32_t kalico_demux_out_kalico_total
+                __attribute__((used, externally_visible));
+volatile uint32_t kalico_demux_out_error_total
+                __attribute__((used, externally_visible));
+volatile uint32_t kalico_demux_out_klipper_total
+                __attribute__((used, externally_visible));
+volatile uint32_t kalico_demux_crc_mismatch_total
+                __attribute__((used, externally_visible));
+
 static uint8_t klipper_buf[KALICO_DEMUX_KLIPPER_BUF_SIZE];
 static uint16_t klipper_pos;
 static uint16_t klipper_remaining;
@@ -69,6 +82,7 @@ finalize_kalico_frame(void)
                 crc_expected, crc_actual, kalico_pos);
         fflush(stderr);
 #endif
+        kalico_demux_crc_mismatch_total++;
         return KALICO_DEMUX_OUT_ERROR;
     }
     return KALICO_DEMUX_OUT_KALICO;
@@ -212,6 +226,7 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
         case KALICO_DEMUX_OUT_NONE:
             break;
         case KALICO_DEMUX_OUT_KLIPPER: {
+            kalico_demux_out_klipper_total++;
             // Bootloader-request sentinel detection. The 32-byte sentinel
             // begins with 0x20 (= 32 decimal), which falls inside the
             // demuxer's [KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64] range, so
@@ -232,6 +247,7 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             break;
         }
         case KALICO_DEMUX_OUT_KALICO:
+            kalico_demux_out_kalico_total++;
             kalico_dispatch_frame(
                 kalico_demux_kalico_channel(),
                 kalico_demux_kalico_payload(),
@@ -239,6 +255,7 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             kalico_demux_consume();
             break;
         case KALICO_DEMUX_OUT_ERROR:
+            kalico_demux_out_error_total++;
             kalico_demux_consume();
             break;
         }

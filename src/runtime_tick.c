@@ -654,14 +654,17 @@ runtime_status_drain(void)
     extern uint32_t kalico_runtime_primary_resolved_lo(void *rt);
     extern uint32_t kalico_runtime_primary_stale_lo(void *rt);
     extern uint32_t kalico_runtime_primary_unused_lo(void *rt);
+    extern volatile uint32_t kalico_demux_out_kalico_total;
+    extern volatile uint32_t kalico_demux_out_error_total;
+    extern volatile uint32_t kalico_demux_crc_mismatch_total;
     if (last_err == 0 && status_emit_phase == 0) {
         // Wider rotation now — five step_time tags + binding-bug
         // investigation tags (0xB0, 0xB1) + producer-side tags
         // (0xB2, 0xB3, 0xB4, 0xB5) + handler-side tags (0xB6, 0xB7)
-        // + curve-resolve tag (0xB8).
+        // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 13) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 14) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -738,6 +741,26 @@ runtime_status_drain(void)
                 uint32_t ib = handle_push_segment_invalid_body_total & 0xFu;
                 uint32_t nh = handle_push_segment_no_handle_total & 0xFu;
                 fault_detail = 0xB6000000u | (nh << 20) | (ib << 16) | c;
+            }
+            break;
+        case 13:
+            // 0xB9 — demuxer outcome counters. Distinguishes:
+            //   bits  0.. 7: kalico_demux_out_kalico_total & 0xFF
+            //                — frames demuxed and dispatched.
+            //   bits  8..15: kalico_demux_crc_mismatch_total & 0xFF
+            //                — frames silently dropped due to CRC fail.
+            //   bits 16..23: kalico_demux_out_error_total & 0xFF
+            //                — total OUT_ERROR (includes CRC fail and
+            //                  bad-length-field paths).
+            // If out_kalico > 0 → demuxer is delivering frames to dispatch.
+            // If crc_mismatch > 0 while out_kalico stays near zero → frames
+            //   are arriving but CRC is failing (kalico_buf in wrong RAM,
+            //   USB byte loss, framing offset, etc.).
+            {
+                uint32_t ok = kalico_demux_out_kalico_total & 0xFFu;
+                uint32_t crc = kalico_demux_crc_mismatch_total & 0xFFu;
+                uint32_t err = kalico_demux_out_error_total & 0xFFu;
+                fault_detail = 0xB9000000u | (err << 16) | (crc << 8) | ok;
             }
             break;
         case 12:
