@@ -192,7 +192,7 @@ fn spawn_periodic_clock_sync(
                                 static SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
                                 let n = SKIP_COUNT.fetch_add(1, AOrd::Relaxed);
                                 if n < 3 || n % 100 == 0 {
-                                    eprintln!(
+                                    log::debug!(
                                         "[bridge-trace] clock-sync skipping uninit MCU sample #{} mcu_at_response={} (TIM5 likely not yet ticking — pre-first-push)",
                                         n, mcu_at_response,
                                     );
@@ -817,7 +817,7 @@ impl PyMotionBridge {
             std::time::Duration::from_secs(2),
         ) {
             Ok(caps) => {
-                eprintln!(
+                log::debug!(
                     "[caps-trace] attach_serial: runtime caps for {serial_path}: \
                      max_cp={} max_kv={} max_deg={} pool_n={}",
                     caps.max_control_points,
@@ -828,7 +828,7 @@ impl PyMotionBridge {
                 caps
             }
             Err(e) => {
-                eprintln!(
+                log::debug!(
                     "[caps-trace] attach_serial: QueryRuntimeCaps failed for {serial_path} ({e}); \
                      falling back to large-profile defaults",
                 );
@@ -935,7 +935,7 @@ impl PyMotionBridge {
                 ));
             }
         }
-        eprintln!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}");
+        log::debug!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}");
         // belt-and-suspenders: also force stderr flush
         let _ = std::io::stderr().flush();
         let (io, identify_caps) = {
@@ -945,7 +945,7 @@ impl PyMotionBridge {
                     "configure_axes: unknown mcu_handle {mcu_handle}"
                 ))
             })?;
-            eprintln!("[trace-bridge-cax] conn found mcu_handle={mcu_handle} kalico_supported={} host_io_some={}",
+            log::debug!("[trace-bridge-cax] conn found mcu_handle={mcu_handle} kalico_supported={} host_io_some={}",
                 conn.kalico_native_supported, conn.host_io.is_some()
             );
             // Stock-Klipper firmware (no kalico runtime) cannot accept this
@@ -953,7 +953,7 @@ impl PyMotionBridge {
             // board runs stock Klipper still complete _configure_axes_per_mcu
             // for the kalico-runtime board(s).
             if !conn.kalico_native_supported {
-                eprintln!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
+                log::debug!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
                 return Ok(());
             }
             let io = conn.host_io.as_ref().ok_or_else(|| {
@@ -1247,7 +1247,7 @@ impl PyMotionBridge {
         static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);
         let call_n = SET_CLOCK_EST_CALLS.fetch_add(1, AOrd::Relaxed);
         if call_n < 5 || call_n % 100 == 0 {
-            eprintln!(
+            log::debug!(
                 "[bridge-trace] set_clock_est call#{} mcu={} freq={} offset={:.6} last_clock={}",
                 call_n, mcu, freq as u64, offset, last_clock,
             );
@@ -1500,7 +1500,7 @@ impl PyMotionBridge {
             // to allocate slot=4 → F446 rejects with
             // `KALICO_ERR_INVALID_HANDLE`/OutOfBounds.
             let pool_capacity = cfg_mcu.caps.curve_pool_n as usize;
-            eprintln!(
+            log::debug!(
                 "[slot-trace] init_pool mcu={} capacity={}",
                 cfg_mcu.mcu_id, pool_capacity,
             );
@@ -1678,7 +1678,7 @@ impl PyMotionBridge {
                             break n;
                         }
                         if wait_iter == 0 || wait_iter == 50 || wait_iter == 250 || wait_iter == 499 {
-                            eprintln!(
+                            log::debug!(
                                 "[bridge-trace] dispatch-wait iter={} mcu_id={} mcu_h={:?} now_clock=0 freq_from_map={}",
                                 wait_iter, plan.mcu_id, mcu_h, freq as u64,
                             );
@@ -1699,7 +1699,7 @@ impl PyMotionBridge {
                     use std::sync::atomic::{AtomicBool, Ordering as AOrd};
                     static FIRST_DISPATCH_LOGGED: AtomicBool = AtomicBool::new(false);
                     if !FIRST_DISPATCH_LOGGED.swap(true, AOrd::AcqRel) {
-                        eprintln!(
+                        log::debug!(
                             "[bridge-trace] first-dispatch mcu={} freq={} now_clock={} lead_cycles={} seg.t_start={:.6} clock_sync_wait_ms={}",
                             plan.mcu_id, freq as u64, now_clock, lead_cycles, seg.t_start,
                             wait_start.elapsed().as_millis(),
@@ -1806,7 +1806,7 @@ impl PyMotionBridge {
                         let p = slot_pool.lock().unwrap();
                         p.in_flight_count()
                     };
-                    eprintln!(
+                    log::debug!(
                         "[slot-trace] try_alloc mcu={} seg_id={} axis={} slot={} gen={} in_flight={}",
                         plan.mcu_id, plan.params.id, axis_idx, slot, slot_gen,
                         pool_in_flight_after_alloc,
@@ -1840,7 +1840,7 @@ impl PyMotionBridge {
                     // segment before propagating.
                     let mut pool = slot_pool.lock().unwrap();
                     for s in &allocated_slots {
-                        eprintln!(
+                        log::debug!(
                             "[slot-trace] release(on-err) mcu={} seg_id={} slot={}",
                             plan.mcu_id, plan.params.id, s,
                         );
@@ -1855,7 +1855,7 @@ impl PyMotionBridge {
                     let mut pool = slot_pool.lock().unwrap();
                     for slot in &allocated_slots {
                         pool.register_segment(*slot, plan.params.id);
-                        eprintln!(
+                        log::debug!(
                             "[slot-trace] register_segment mcu={} slot={} seg_id={}",
                             plan.mcu_id, slot, plan.params.id,
                         );
@@ -1876,7 +1876,7 @@ impl PyMotionBridge {
                     let curve = &seg.axes[axis];
                     nurbs::eval::eval(curve, u)
                 };
-                eprintln!(
+                log::debug!(
                     "[bridge-trace] seg-dispatch mcu={} seg_id={} branch={} \
                      now_clock={} mcu_base={} t_start_clock={} t_end_clock={} \
                      t_start_s={:.6} t_end_s={:.6} \
@@ -1945,7 +1945,7 @@ impl PyMotionBridge {
         de: f64,
         feedrate: f64,
     ) -> PyResult<()> {
-        eprintln!(
+        log::debug!(
             "[bridge-trace] submit_move enter dx={:.3} dy={:.3} dz={:.3} feed={:.1}",
             dx, dy, dz, feedrate,
         );
@@ -2276,7 +2276,7 @@ impl PyMotionBridge {
             }
             None => (0, 0),
         };
-        eprintln!(
+        log::debug!(
             "[slot-trace] on_credit_freed mcu={} retired_through={} free_slots={} \
              n_released={} in_flight_after={}",
             mcu, retired_through_segment_id, free_slots, n_released, in_flight_after,

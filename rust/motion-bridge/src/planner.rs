@@ -499,7 +499,7 @@ const RECTIFICATION_CAS_MAX_ATTEMPTS: usize = 100;
 ///
 /// Returns `true` if the CAS landed within `RECTIFICATION_CAS_MAX_ATTEMPTS`,
 /// `false` if every attempt was contended (a giveup-with-warning path —
-/// `eprintln!` is emitted). The current-load + add-delta + try-store
+/// `log::debug!` is emitted). The current-load + add-delta + try-store
 /// shape is deliberate: we want the delta applied **on top of** whatever
 /// the caller-side advance currently shows, not against a stale snapshot.
 fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
@@ -513,7 +513,7 @@ fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
             return true;
         }
     }
-    eprintln!(
+    log::debug!(
         "planner: rectification CAS contended for >{} attempts (delta {} s) — \
          giving up on this delta; the atomic will reflect the next \
          caller-side advance only",
@@ -588,7 +588,7 @@ fn run_commit_and_dispatch(
         }
     }
     commit_fire_count.fetch_add(1, Ordering::AcqRel);
-    eprintln!(
+    log::debug!(
         "[planner-trace] commit drained={} dur_s={:.6} commit_us={} t_app={:.6} t_disp_before={:.6} t_disp_after={:.6}",
         drained.len(),
         batch_dur,
@@ -654,7 +654,7 @@ fn run_loop(
 
     {
         let tl = config.limits.to_temporal_limits();
-        eprintln!(
+        log::debug!(
             "[planner-trace] startup limits v_max={:?} a_max={:?} j_max={:?} a_centripetal_max={} shaper={:?}",
             tl.v_max, tl.a_max, tl.j_max, tl.a_centripetal_max, config.shaper,
         );
@@ -704,7 +704,7 @@ fn run_loop(
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
                     PlannerMsg::Shutdown => "Shutdown",
                 };
-                eprintln!("[planner-trace] recv {tag} gap_us={gap_us}");
+                log::debug!("[planner-trace] recv {tag} gap_us={gap_us}");
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -723,7 +723,7 @@ fn run_loop(
                 let since_arm_ms = last_append_time
                     .map(|t| t.elapsed().as_micros() as i64)
                     .unwrap_or(-1);
-                eprintln!("[planner-trace] T_commit fire since_arm_us={since_arm_ms}");
+                log::debug!("[planner-trace] T_commit fire since_arm_us={since_arm_ms}");
                 let _ok = run_commit_and_dispatch(
                     &mut state,
                     &thread_state,
@@ -776,7 +776,7 @@ fn run_loop(
                 };
                 let emit_us = emit_start.elapsed().as_micros();
                 let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-                eprintln!(
+                log::debug!(
                     "[planner-trace] Move dist={:.3}mm feed={:.1} nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} (+{:.6}) t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
                     move_dist,
                     move_feed,
