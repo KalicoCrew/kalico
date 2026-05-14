@@ -21,7 +21,7 @@
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64};
 
 use heapless::spsc::{Consumer, Producer, Queue};
 
@@ -205,6 +205,32 @@ pub struct SharedState {
     /// the driver's internal sequencer, which the direct/phase-stepping
     /// path bypasses). Default `StepTime` (enum value 1).
     pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
+
+    // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
+    // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
+    /// Dedupe flag for producer-timer kicks. Kickers (push_segment + the
+    /// per-motor consumer low-water hook) CAS-set this `false→true`; the
+    /// CAS-winner schedules the producer struct timer. The producer clears
+    /// this on entry. A spurious double-kick is benign (producer runs once
+    /// more with little work to do).
+    pub producer_pending: AtomicBool,
+    /// Number of times `Engine::producer_step` has entered. Replaces the
+    /// pre-emission-rewrite `Engine::tick_counter` diagnostic; host
+    /// telemetry plots this as the producer heartbeat.
+    pub producer_runs_total: AtomicU64,
+    /// Per-motor consumer step-pulse counter. Matches `stepper_counts`
+    /// cumulatively; surfaced as a sanity-check that the consumer is
+    /// firing the entries the producer pushed.
+    pub consumer_pulses_total: [AtomicU64; 4],
+    /// Per-motor consumer underrun count. Bumped when the per-stepper
+    /// consumer timer wakes up to find its ring empty (the poll-cadence
+    /// fallback in spec §3.5). A non-zero value means the producer is
+    /// falling behind for that motor — either insufficient ring depth
+    /// at the natural step rate or a foreground stall hiding kicks.
+    pub consumer_underrun_total: [AtomicU64; 4],
+    /// Per-motor peak `available` ever observed in the StepRing. Surfaces
+    /// how close we are to ring-full back-pressure during steady state.
+    pub ring_high_water: [AtomicU32; 4],
 }
 
 impl SharedState {
@@ -246,6 +272,26 @@ impl SharedState {
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
+            ],
+            producer_pending: AtomicBool::new(false),
+            producer_runs_total: AtomicU64::new(0),
+            consumer_pulses_total: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
+            consumer_underrun_total: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
+            ring_high_water: [
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
             ],
         }
     }
