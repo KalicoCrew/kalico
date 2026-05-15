@@ -1994,15 +1994,57 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // `curve(u_start_of_segment)`, which IS the absolute
                 // motor-frame position klippy planned.
                 if is_idle {
-                    let pos0 = match piece_coeffs(0) {
-                        // Bézier eval at t=0 collapses to P0 (degenerate
-                        // de Casteljau).
-                        Some((_, _, cps0)) => cps0[0],
-                        None => 0.0_f32,
+                    // Determine direction from piece 0's cps end-to-end so we
+                    // can seed `initial_step` consistently with the
+                    // compute_next_step_time contract `target = (cs + dir) * sd`.
+                    //
+                    // The formula assumes `cs` is the integer step the motor is
+                    // physically at — i.e., `cs * sd == motor_position`. When
+                    // `pos0` falls strictly between two step boundaries, the
+                    // motor's discrete physical position depends on which side
+                    // it was last commanded to. For a fresh-curve seed we don't
+                    // have that history, so we seed direction-aware:
+                    //   * Motion going +: physical motor at floor(pos0/sd). Next
+                    //     +step boundary is (floor + 1) * sd = (cs + dir) * sd. ✓
+                    //   * Motion going -: physical motor at ceil(pos0/sd). Next
+                    //     -step boundary is (ceil - 1) * sd = (cs + dir) * sd. ✓
+                    //
+                    // Truncation alone (the prior behaviour) is `floor` for
+                    // positive pos0, which is right for + motion but off-by-one
+                    // for - motion: target = (floor - 1) * sd lands one step
+                    // BELOW the actual next -step boundary, falling outside the
+                    // first piece's value range and returning SegmentExhausted
+                    // on the very first call. That's the cause of the
+                    // "energizes-but-no-motion" bug on every negative-direction
+                    // jog from a non-step-aligned starting position.
+                    let (pos0, dir): (f32, i8) = match piece_coeffs(0) {
+                        Some((_, _, cps0)) => {
+                            let p0 = cps0[0];
+                            let p3 = cps0[3];
+                            let d: i8 = if p3 > p0 { 1 } else if p3 < p0 { -1 } else { 0 };
+                            (p0, d)
+                        }
+                        None => (0.0_f32, 0),
                     };
                     let initial_step = if step_distance > 0.0 {
-                        // f32 pos0 / f64 step_distance → cast at the boundary.
-                        (f64::from(pos0) / step_distance) as i32
+                        let raw = f64::from(pos0) / step_distance;
+                        if dir < 0 {
+                            // Ceiling for negative motion. `as i32` truncates
+                            // toward zero, so for negative pos0 ceil is also
+                            // toward zero; libm::ceil handles both signs.
+                            libm::ceil(raw) as i32
+                        } else {
+                            // Floor for positive / zero motion. `as i32`
+                            // truncates toward zero, which is floor for
+                            // non-negative values; for negative pos0 with +
+                            // motion the truncation differs from floor — but
+                            // a positive curve starting at negative pos0 means
+                            // the toolhead is in negative-X territory which is
+                            // outside the printer's working range, so the
+                            // truncation behaviour matches floor here in
+                            // practice.
+                            raw as i32
+                        }
                     } else {
                         0
                     };

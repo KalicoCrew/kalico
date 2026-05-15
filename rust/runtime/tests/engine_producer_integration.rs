@@ -233,6 +233,104 @@ fn jog_from_nonzero_position_produces_step_pulses() {
 }
 
 #[test]
+fn initial_step_seed_is_direction_aware_for_negative_motion() {
+    // Live-printer regression (2026-05-15 trident-printer reproducer:
+    // 0xB3002424 fault_detail: dequeued=36, retired=36, pushed=0).
+    //
+    // Before this fix `initial_step` was seeded via `(pos0 / step_distance)
+    // as i32` (truncate toward zero == floor for positive pos0). The
+    // producer then computed `target = (initial_step + dir) * step_distance`.
+    //
+    //   * For positive motion: target = (floor + 1) * sd is the next step
+    //     boundary above pos0. Correct.
+    //
+    //   * For negative motion: target = (floor - 1) * sd is the step boundary
+    //     BELOW the actual next negative boundary. When the curve's first
+    //     piece spanned less than 2 * step_distance (typical for shaped
+    //     curves at the start of a move), this target fell below the piece's
+    //     minimum value → SegmentExhausted on the first call → motor finishes
+    //     curve without emitting any step pulses. The MCU dequeued segments,
+    //     retired them, and produced zero motion.
+    //
+    // Fix: seed `initial_step` via ceil() for negative-direction curves so
+    // target = (ceil - 1) * sd = the first downward step boundary.
+    //
+    // This test exercises the seed path directly: a single-piece cubic from
+    // pos0=99.998 down to 99.0 (negative). The stepper_counts atomic captures
+    // the producer's seed value, so we can assert it without relying on
+    // multi-piece curve construction (which is geometry-fragile to inline).
+    let mut h = Harness::cartesian_x();
+    let (deg, knots, cps) = linear_cubic_from_to(99.998, 99.0);
+    let x_handle = h.pool.validate_and_load(0, deg, &knots, &cps).unwrap();
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: 26_000_000,
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    h.engine
+        .push_segment(seg, &mut h.q_producer, &h.shared)
+        .expect("push ok");
+
+    // One producer_step call is enough to fire the seeding path. The seed
+    // is written to stepper_counts before any pulses are pushed.
+    h.engine.producer_step(&h.pool, &mut h.q_consumer, &h.shared);
+
+    // ceil(99.998 / 0.00625) = ceil(15999.68) = 16000.
+    // Pre-fix this was 15999 (floor), which combined with the
+    // `target = (cs + dir) * sd` formula gave first-step target = 99.9875.
+    // Post-fix: 16000 → first-step target = 99.99375 (the actual next
+    // downward step boundary from a motor sitting at the top of step
+    // range [99.99375, 100.0)).
+    let counter = h.shared.stepper_counts[0].load(Ordering::Acquire);
+    assert_eq!(
+        counter, 16000,
+        "stepper_counts[0] should be ceil(99.998/0.00625) = 16000 for negative \
+         motion seed; got {counter} (pre-fix: 15999 = floor)",
+    );
+
+    // Sanity: positive-direction seeding stays at floor. Verifies we didn't
+    // accidentally invert the contract for the regular case.
+    let mut h2 = Harness::cartesian_x();
+    let (deg2, knots2, cps2) = linear_cubic_from_to(99.998, 100.5);
+    let x_handle2 = h2.pool.validate_and_load(0, deg2, &knots2, &cps2).unwrap();
+    let seg2 = Segment {
+        id: 2,
+        x_handle: x_handle2,
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: 26_000_000,
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    h2.engine
+        .push_segment(seg2, &mut h2.q_producer, &h2.shared)
+        .expect("push ok");
+    h2.engine.producer_step(&h2.pool, &mut h2.q_consumer, &h2.shared);
+    let counter2 = h2.shared.stepper_counts[0].load(Ordering::Acquire);
+    assert_eq!(
+        counter2, 15999,
+        "positive motion seed should remain floor(99.998/0.00625) = 15999; \
+         got {counter2}",
+    );
+}
+
+#[test]
 fn long_segment_fills_ring_to_capacity_then_back_pressures() {
     // A segment that produces more steps than the ring capacity (1024).
     // After enough producer_step calls the ring is full and producer
