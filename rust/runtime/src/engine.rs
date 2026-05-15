@@ -1741,32 +1741,45 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         shared.producer_pending.store(false, Ordering::Release);
         shared.producer_runs_total.fetch_add(1, Ordering::AcqRel);
 
-        // We return `WorkPending` only when this call actually made
-        // progress (filled at least one ring entry OR finished a curve).
-        // Returning WorkPending when we did nothing — e.g., because every
-        // motor's ring was full and we filled zero entries — causes the
-        // C-side producer timer to self-reschedule at `now + 1µs`, which
-        // pegs Klipper's timer-dispatch loop at ~333 kHz busy-spinning,
-        // starves other timers, and eventually trips Klipper's
-        // "Rescheduled timer in the past" panic (armcm_timer.c:152
-        // fires when any timer's waketime is >1ms behind `now` while the
-        // dispatch loop has been running tight). The correct contract:
-        // - WorkPending = "I did work, please run me again ASAP."
-        // - AllIdle    = "I'm blocked or done, wait for an external kick
-        //                (push_segment or consumer low-water)."
-        // When the ring is full, the consumer's low-water hook will kick
-        // us back to life after it drains below STEP_RING_LOW_WATER.
-        let mut made_progress = false;
+        // Contract: `WorkPending` iff this call pushed step times to a
+        // ring. `AllIdle` otherwise — including state-only changes like
+        // retiring an empty segment. Violating this with "WorkPending on
+        // state change" causes the C-side producer timer to self-
+        // reschedule at SF_RESCHEDULE_FLOOR (100 µs) for what is in
+        // effect a no-op, and over many segments saturates Klipper's
+        // timer-dispatch loop until one timer drifts >1 ms behind
+        // `timer_read_time()` → `try_shutdown("Rescheduled timer in the
+        // past")` at `src/generic/armcm_timer.c:152`.
+        //   - WorkPending = "I pushed ring entries; expect more work."
+        //   - AllIdle     = "I'm blocked or done; wait for an external
+        //                    kick (push_segment or consumer low-water)."
+        //
+        // Per-motor fill budget is per-call (NOT per-segment). On
+        // segment boundaries we retire the current segment AND continue
+        // filling from the next queued segment within the same call —
+        // see the `'segment_loop` below. Without this, every
+        // segment-to-segment transition cost a zero-fill `WorkPending`
+        // call, and multi-segment jogs (≥ 2.5 mm after shaper
+        // convolution) accumulated enough no-op reschedules to trip the
+        // "Rescheduled timer in the past" shutdown.
+        let mut motor_filled_this_call: [u32; 4] = [0; 4];
+        let mut any_filled = false;
 
         // Single-pass per-motor fill. Spec §3.4 budget: ~30 cycles per
         // Newton solve × PRODUCER_BATCH_CAP=32 entries × 4 motors ≈
-        // 3.8k cycles ≈ 7.4 µs at 520 MHz (H7). Earlier revisions ran
-        // up to 8 outer iterations here, which inflated worst-case ISR
-        // duration to ~59 µs (1024 step times per call) and starved
-        // other ISRs. The producer is event-driven: any motor with
-        // remaining work returns WorkPending, the caller reschedules
-        // promptly, and the next call resumes. Spec §3.4 + §3.8.
-        {
+        // 3.8k cycles ≈ 7.4 µs at 520 MHz (H7). The per-call budget
+        // (`motor_filled_this_call`) preserves this bound across the
+        // segment-loop iterations: a motor that fills 32 entries in
+        // segment N has budget 0 for segments N+1, N+2 in the same
+        // call — capping aggregate Newton work at the original
+        // single-segment number. Earlier revisions ran up to 8 outer
+        // iterations *without* the per-call cap, which inflated
+        // worst-case ISR duration to ~59 µs (1024 step times per call)
+        // and starved other ISRs. Spec §3.4 + §3.8.
+        'segment_loop: loop {
+            let mut iter_any_filled = false;
+            let mut iter_any_progress = false;
+
             // (3) Per-motor work pass.
             for motor_idx in 0..4_usize {
                 let mode = shared
@@ -1785,6 +1798,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     .map(|s| s.step_distance())
                     .unwrap_or(0.0);
                 if step_distance <= 0.0 {
+                    continue;
+                }
+
+                // Per-call budget cap. If this motor has already filled
+                // its share via earlier segments in this call, skip it
+                // until the next call. Bounds aggregate Newton work
+                // even when we span multiple segments per call.
+                if motor_filled_this_call[motor_idx] >= PRODUCER_BATCH_CAP {
                     continue;
                 }
 
@@ -1862,6 +1883,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
                         *cur = cur.wrapping_add(1);
                     }
+                    iter_any_progress = true;
                     continue;
                 }
                 let duration_f64 = duration_cycles as f64;
@@ -1902,7 +1924,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
                         *cur = cur.wrapping_add(1);
                     }
-                    made_progress = true;
+                    iter_any_progress = true;
                     continue;
                 }
 
@@ -1927,7 +1949,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(ps) = self.producer_states.get_mut(motor_idx) {
                         ps.clear();
                     }
-                    made_progress = true;
+                    iter_any_progress = true;
                     continue;
                 }
 
@@ -2003,7 +2025,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 //      piece and retry.
                 //   5. If exhausted all pieces past current: real
                 //      SegmentExhausted, break.
-                let mut filled = 0_u32;
+                let starting_filled = motor_filled_this_call[motor_idx];
+                let mut filled = starting_filled;
                 let ring = match self.step_rings.get_mut(motor_idx) {
                     Some(r) => r,
                     None => continue,
@@ -2072,6 +2095,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     }
                 }
 
+                // Commit this motor's per-call fill total.
+                motor_filled_this_call[motor_idx] = filled;
+
                 // Update ring high-water mark.
                 let avail = ring.available();
                 if let Some(hw) = shared.ring_high_water.get(motor_idx) {
@@ -2099,16 +2125,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     if let Some(cur) = self.motor_curve_cursor.get_mut(motor_idx) {
                         *cur = cur.wrapping_add(1);
                     }
+                    iter_any_progress = true;
                 }
 
-                // Track whether this motor made progress this call. Filling
-                // any ring entries OR finishing a curve both count — both
-                // change the system's state in a way that warrants
-                // self-rescheduling for another batch. Filling zero entries
-                // (because the ring was full or batch budget already
-                // consumed by other motors) is NOT progress.
-                if filled > 0 || motor_finished_curve {
-                    made_progress = true;
+                // Pushing ring entries is the only thing that earns
+                // `WorkPending` (see `any_filled` → return value below).
+                // Finishing a curve is structural progress that earns
+                // another segment-loop iteration but NOT a WorkPending
+                // reschedule by itself — that's the contract fix.
+                if filled > starting_filled {
+                    iter_any_filled = true;
+                    any_filled = true;
+                    iter_any_progress = true;
                 }
             }
 
@@ -2116,6 +2144,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // is clear. The Modulated path (TIM5) writes its own bits in
             // future Task 10; today (StepTime-only) bits clear exclusively
             // through the loop above.
+            let mut retired_this_iter = false;
             if let Some(seg) = self.producer_current {
                 if seg.consumers_done() {
                     // Curve-handle retirement. Sentinels are no-ops in
@@ -2139,16 +2168,44 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         .fetch_add(1, Ordering::AcqRel);
                     crate::stream::check_terminal_on_retire(shared, seg.id);
                     self.producer_current = None;
+                    retired_this_iter = true;
+                    iter_any_progress = true;
                 }
             }
+
+            // Segment-loop continuation. Three break conditions:
+            //   1. Nothing changed this iteration (no fills, no bits
+            //      cleared, no retire) — we're blocked (ring full or
+            //      no segments to process). Return whatever any_filled
+            //      tells us.
+            //   2. The current segment is still in flight (didn't
+            //      retire). Yield so the consumer can drain — kicks
+            //      will re-arm us when work is available.
+            //   3. All motors have hit the per-call PRODUCER_BATCH_CAP.
+            //      No more Newton work this call regardless of how many
+            //      segments wait in the queue.
+            // Otherwise: producer_current is None and we have budget —
+            // loop back so the per-motor pass fetches the next segment.
+            if !iter_any_filled && !iter_any_progress {
+                break 'segment_loop;
+            }
+            if self.producer_current.is_some() {
+                break 'segment_loop;
+            }
+            let all_motors_at_cap = (0..4_usize)
+                .all(|i| motor_filled_this_call[i] >= PRODUCER_BATCH_CAP);
+            if all_motors_at_cap {
+                break 'segment_loop;
+            }
+            // Silence unused-variable lint when the loop continues.
+            let _ = retired_this_iter;
         }
 
-        // Result: WorkPending iff we made progress this call (filled at
-        // least one entry OR finished a curve). See the comment at the
-        // declaration of `made_progress` above for why this is correct
-        // and why the prior `any_pending = (!state.is_idle())` was a
-        // busy-spin bug.
-        if made_progress {
+        // Contract: WorkPending iff at least one ring entry was pushed
+        // this call. Retiring/state-change without a fill is NOT enough
+        // to earn a 100-µs reschedule (see the design comment at the
+        // top of this function).
+        if any_filled {
             ProducerTickResult::WorkPending
         } else {
             ProducerTickResult::AllIdle

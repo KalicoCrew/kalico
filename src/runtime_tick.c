@@ -1160,10 +1160,25 @@ DECL_CTR("_DECL_OUTPUT "
 // can't cross the FFI boundary, so we rely on code review and the comment.
 #define MAX_STEPPER_OIDS_C 8   // must match rust/runtime/src/state.rs::MAX_STEPPER_OIDS
 
-// Low-water threshold: spec §3.4 calls for kicking the producer when the
-// step-ring drains below N/4 of its capacity. With Rust's
-// `StepRing::CAPACITY == 1024` that's 256 entries.
-#define STEP_RING_LOW_WATER 256
+// Low-water threshold: kick the producer when ring drains below this
+// many entries. Sized relative to `PRODUCER_BATCH_CAP` (Rust-side, 32)
+// so that one producer fire refills the ring well past this threshold:
+//
+//   ring_after_fill ≈ low_water + PRODUCER_BATCH_CAP = 48 entries
+//   consumer drain rate ≤ 1/SF_RESCHEDULE_FLOOR = 10 kHz
+//   producer refill latency ≤ SF_RESCHEDULE_FLOOR = 100 µs
+//
+// → producer responds in ~1 consumer-tick worth of drain. Headroom of
+// `PRODUCER_BATCH_CAP / 2 = 16` is comfortable.
+//
+// Why not the spec §3.4 "N/4 of capacity = 256" value: that was sized
+// assuming a producer that could fill 256+ entries per call (the
+// pre-2026-05-13 multi-iteration producer). The current single-pass
+// producer caps at `PRODUCER_BATCH_CAP=32`, so `low_water=256` was
+// unreachable — `ring.available()` was ALWAYS below 256, meaning every
+// `step_time_event` fired a redundant `arm_producer_timer_if_kicked_inline`
+// CAS. Wasted timer-dispatch cycles at the consumer's step rate.
+#define STEP_RING_LOW_WATER 16
 
 // Forward decl: defined in src/stepper.c. -Wimplicit-function-declaration is
 // promoted to error under the sim build's stricter flags, so a header-less
