@@ -36,9 +36,9 @@ _THIRD_PARTY = (
 # Map of third-party plugins → (source path, klippy/extras link target).
 # Klippy discovers extras by walking klippy/extras/, so PYTHONPATH alone is
 # not enough; the plugin must appear as klippy/extras/<name>.py. We
-# install symlinks idempotently at fixture entry and leave them in place
-# (they point at the vendored sources under tools/sim_klippy/printer_real/
-# third_party_repos/, which are checked-in).
+# install symlinks idempotently at fixture entry. Sources live under
+# tools/sim_klippy/printer_real/third_party_repos/, which is gitignored and
+# populated by tools/sim_klippy/fetch_plugins.sh at pinned upstream revs.
 _THIRD_PARTY_PLUGINS = {
     "beacon": _THIRD_PARTY / "beacon_klipper" / "beacon.py",
     "motors_sync": _THIRD_PARTY / "motors-sync" / "motors_sync.py",
@@ -46,12 +46,40 @@ _THIRD_PARTY_PLUGINS = {
     "motor_constants": _THIRD_PARTY / "klipper_tmc_autotune" / "motor_constants.py",
 }
 
+_FETCH_SCRIPT = REPO_ROOT / "tools" / "sim_klippy" / "fetch_plugins.sh"
+
+
+def _ensure_third_party_repos() -> None:
+    """Run fetch_plugins.sh if any required plugin source is missing."""
+    if all(src.exists() for src in _THIRD_PARTY_PLUGINS.values()):
+        return
+    if not _FETCH_SCRIPT.exists():
+        raise RuntimeError(
+            f"Third-party plugin sources missing and fetch script absent: "
+            f"{_FETCH_SCRIPT}"
+        )
+    result = subprocess.run(
+        ["bash", str(_FETCH_SCRIPT)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"fetch_plugins.sh failed (exit {result.returncode}):\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    missing = [str(src) for src in _THIRD_PARTY_PLUGINS.values() if not src.exists()]
+    if missing:
+        raise RuntimeError(
+            "fetch_plugins.sh ran but these plugin sources are still missing: "
+            + ", ".join(missing)
+        )
+
 
 def _install_third_party_plugin_links() -> None:
+    _ensure_third_party_repos()
     extras_dir = REPO_ROOT / "klippy" / "extras"
     for name, src in _THIRD_PARTY_PLUGINS.items():
-        if not src.exists():
-            continue
         link = extras_dir / f"{name}.py"
         if link.is_symlink():
             try:

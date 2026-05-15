@@ -45,3 +45,8 @@ klippy/chelper/*.dylib
 # Sim-only third-party plugin symlinks (created by tools/sim_klippy/conftest.py)
 klippy/extras/beacon.py
 klippy/extras/motors_sync.py
+klippy/extras/autotune_tmc.py
+klippy/extras/motor_constants.py
+
+# Third-party plugin sources (fetched on demand by tools/sim_klippy/fetch_plugins.sh)
+tools/sim_klippy/printer_real/third_party_repos/

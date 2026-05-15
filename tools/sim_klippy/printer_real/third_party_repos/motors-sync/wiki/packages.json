@@ -1,6 +1,0 @@
-{
-    "debian": [
-        "libatlas-base-dev",
-        "libopenblas-dev"
-    ]
-}

@@ -1,4 +1,0 @@
-numpy>=1.26.3
-tqdm>=4.66.1
-plotly>=5.18.0
-matplotlib>=3.8.2
