@@ -14,7 +14,7 @@ use runtime::step_time::{compute_next_step_time, StepTimeQuery, StepTimeResult};
 ///   p1 = c/3 + p0
 ///   p2 = b/3 + 2·p1 − p0
 ///   p3 = a + 3·p2 − 3·p1 + p0
-fn cps_from_monomial(a: f64, b: f64, c: f64, d: f64) -> [f64; 4] {
+fn cps_from_monomial(a: f32, b: f32, c: f32, d: f32) -> [f32; 4] {
     let p0 = d;
     let p1 = c / 3.0 + p0;
     let p2 = b / 3.0 + 2.0 * p1 - p0;
@@ -23,18 +23,18 @@ fn cps_from_monomial(a: f64, b: f64, c: f64, d: f64) -> [f64; 4] {
 }
 
 /// Linear curve: position(u) = velocity·u.
-fn linear_cps(velocity: f64) -> [f64; 4] {
+fn linear_cps(velocity: f32) -> [f32; 4] {
     cps_from_monomial(0.0, 0.0, velocity, 0.0)
 }
 
 /// Cubic curve: position(u) = a·u³ + b·u² + c·u.
-fn cubic_cps(a: f64, b: f64, c: f64) -> [f64; 4] {
+fn cubic_cps(a: f32, b: f32, c: f32) -> [f32; 4] {
     cps_from_monomial(a, b, c, 0.0)
 }
 
 /// De Casteljau evaluation at `t` for the Bezier curve with CPs `cps`.
 /// Used by tests that need to verify the position at a returned root.
-fn eval_at(cps: [f64; 4], t: f64) -> f64 {
+fn eval_at(cps: [f32; 4], t: f32) -> f32 {
     let one_minus_t = 1.0 - t;
     let b00 = one_minus_t * cps[0] + t * cps[1];
     let b01 = one_minus_t * cps[1] + t * cps[2];
@@ -209,7 +209,7 @@ fn no_root_in_short_segment_returns_segment_exhausted() {
 #[test]
 fn motionless_curve_returns_segment_exhausted() {
     // Constant curve x(u) = 5.0 everywhere — control points (5, 5, 5, 5).
-    let cps: [f64; 4] = [5.0, 5.0, 5.0, 5.0];
+    let cps: [f32; 4] = [5.0, 5.0, 5.0, 5.0];
     let q = StepTimeQuery {
         cps,
         step_distance: 0.0025,

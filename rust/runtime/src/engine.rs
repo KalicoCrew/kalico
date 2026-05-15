@@ -1495,15 +1495,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // A = X+Y, B = X−Y; Cartesian = single axis). Missing/UNUSED
         // axes default to all-zero CPs so `solve_monotone_cubic_root`
         // reports no root and the caller treats the motor as motionless.
-        let cps_primary: [f64; 4] = cv_primary
+        // f32 storage matches the solver's working precision. Cubic
+        // piece CPs come from `cv.control_points: &[f32]`, so no cast.
+        let cps_primary: [f32; 4] = cv_primary
             .as_ref()
             .and_then(|cv| cubic_piece(cv, 0).map(|(_, _, cps)| cps))
             .unwrap_or([0.0; 4]);
-        let cps_secondary: [f64; 4] = cv_secondary
+        let cps_secondary: [f32; 4] = cv_secondary
             .as_ref()
             .and_then(|cv| cubic_piece(cv, 0).map(|(_, _, cps)| cps))
             .unwrap_or([0.0; 4]);
-        let cps: [f64; 4] = if is_corexy {
+        let cps: [f32; 4] = if is_corexy {
             if corexy_sign > 0.0 {
                 [
                     cps_primary[0] + cps_secondary[0],
@@ -1525,19 +1527,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         let q = crate::step_time::StepTimeQuery {
             cps,
-            step_distance: step_distance_mm,
+            step_distance: step_distance_mm as f32,
             current_step,
-            t_curr: t_curr_norm,
-            t_segment_end: t_end_norm,
+            t_curr: t_curr_norm as f32,
+            t_segment_end: t_end_norm as f32,
         };
 
         match crate::step_time::compute_next_step_time(&q) {
             crate::step_time::StepTimeResult::NextAt { t: t_norm_next, dir } => {
                 // Convert back to absolute cycles in integer space.
-                // dt_norm is the fractional step over the segment; multiplying
-                // by duration (u64) gives the cycle delta without f32
-                // precision loss from large absolute offsets.
-                let dt_norm = t_norm_next - t_curr_norm;
+                // dt_norm is the fractional step over the segment; promote
+                // to f64 for the multiply with duration so the cycle math
+                // stays exact even for multi-second segments at MHz clocks.
+                let dt_norm = f64::from(t_norm_next) - t_curr_norm;
                 let dt_cycles = (dt_norm * duration as f64) as u64;
                 Some((now_cycles + dt_cycles, dir))
             }
@@ -1959,7 +1961,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // when secondary is UNUSED.
                 let cv_primary_ref = cv_primary.as_ref();
                 let cv_secondary_ref = cv_secondary.as_ref();
-                let piece_coeffs = |pi: usize| -> Option<(f64, f64, [f64; 4])> {
+                let piece_coeffs = |pi: usize| -> Option<(f32, f32, [f32; 4])> {
                     let (u_lo, u_hi, cps_p) = cubic_piece(cv_primary_ref?, pi)?;
                     if is_corexy && !secondary_is_zero {
                         let (_, _, cps_s) = cubic_piece(cv_secondary_ref?, pi)?;
@@ -1996,10 +1998,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         // Bézier eval at t=0 collapses to P0 (degenerate
                         // de Casteljau).
                         Some((_, _, cps0)) => cps0[0],
-                        None => 0.0,
+                        None => 0.0_f32,
                     };
                     let initial_step = if step_distance > 0.0 {
-                        (pos0 / step_distance) as i32
+                        // f32 pos0 / f64 step_distance → cast at the boundary.
+                        (f64::from(pos0) / step_distance) as i32
                     } else {
                         0
                     };
@@ -2036,9 +2039,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     None => continue,
                 };
                 let mut motor_finished_curve = false;
+                // f32 in u-domain throughout — matches the solver's
+                // working precision and the curve pool's storage type.
+                // `ps.t_resume()` returns f64 (preserves the existing
+                // per-curve cursor storage); we down-cast at entry. f32
+                // ulp at u=1 is ~1.2e-7, well below any meaningful step
+                // boundary resolution.
+                let step_distance_f32 = ps.step_distance() as f32;
                 while filled < PRODUCER_BATCH_CAP && ring.space() > 0 {
-                    let t_curr = ps.t_resume().unwrap_or(0.0);
-                    let mut found_root: Option<(f64, i8)> = None;
+                    let t_curr = ps.t_resume().unwrap_or(0.0) as f32;
+                    let mut found_root: Option<(f32, i8)> = None;
                     for pi in 0..n_pieces_primary {
                         let Some((u_lo, u_hi, cps)) = piece_coeffs(pi) else {
                             continue;
@@ -2053,15 +2063,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         // so a `t_curr` exactly at a piece boundary picks
                         // up roots in the next piece.
                         let t_low_local =
-                            if t_curr > u_lo { (t_curr - u_lo) / span } else { 0.0 };
+                            if t_curr > u_lo { (t_curr - u_lo) / span } else { 0.0_f32 };
                         let q = StepTimeQuery {
                             cps,
-                            step_distance: ps.step_distance(),
+                            step_distance: step_distance_f32,
                             current_step: ps
                                 .step_at_curve_start()
                                 .wrapping_add(ps.steps_pushed_this_curve()),
                             t_curr: t_low_local,
-                            t_segment_end: 1.0,
+                            t_segment_end: 1.0_f32,
                         };
                         match compute_next_step_time(&q) {
                             StepTimeResult::NextAt { t, dir } => {
@@ -2074,13 +2084,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     }
                     match found_root {
                         Some((u_global, dir)) => {
-                            let dt_cycles = (u_global * duration_f64) as u64;
+                            // u_global is f32 in [0, 1]; promote to f64
+                            // before multiplying by duration_f64 so the
+                            // cycle math stays exact for multi-second
+                            // segments at MHz clocks.
+                            let dt_cycles = (f64::from(u_global) * duration_f64) as u64;
                             let abs_cycles = t_start_cycles.saturating_add(dt_cycles);
                             ring.push(abs_cycles as u32, dir);
                             shared
                                 .producer_steps_pushed_total
                                 .fetch_add(1, Ordering::AcqRel);
-                            ps.set_t_resume(Some(u_global));
+                            ps.set_t_resume(Some(f64::from(u_global)));
                             ps.bump_steps_pushed(i32::from(dir));
                             filled += 1;
                         }
@@ -2541,7 +2555,7 @@ fn cubic_n_pieces(cv: &CurveView<'_>) -> usize {
 fn cubic_piece(
     cv: &CurveView<'_>,
     piece_idx: usize,
-) -> Option<(f64, f64, [f64; 4])> {
+) -> Option<(f32, f32, [f32; 4])> {
     let n_pieces = cubic_n_pieces(cv);
     if piece_idx >= n_pieces {
         return None;
@@ -2550,17 +2564,18 @@ fn cubic_piece(
     let cp_base = p * piece_idx;
     // Bounds-checked indexing — n_pieces already proved n_cps >= 3N + 1 so
     // cp_base + 3 < n_cps. Use explicit `get` to avoid clippy::indexing_slicing.
-    let p0 = f64::from(*cv.control_points.get(cp_base)?);
-    let p1 = f64::from(*cv.control_points.get(cp_base + 1)?);
-    let p2 = f64::from(*cv.control_points.get(cp_base + 2)?);
-    let p3 = f64::from(*cv.control_points.get(cp_base + 3)?);
+    // f32 throughout: storage is f32, solver is f32, no precision loss.
+    let p0 = *cv.control_points.get(cp_base)?;
+    let p1 = *cv.control_points.get(cp_base + 1)?;
+    let p2 = *cv.control_points.get(cp_base + 2)?;
+    let p3 = *cv.control_points.get(cp_base + 3)?;
     // Knot indexing: `u_start = knots[p + p*i]`, `u_end = knots[p + p*(i+1)]`.
     // Validated against the host's emission layout in
     // `rust/nurbs/src/bezier.rs::bezier_pieces_to_nurbs`.
     let u_start_idx = p + p * piece_idx;
     let u_end_idx = p + p * (piece_idx + 1);
-    let u_start = f64::from(*cv.knots.get(u_start_idx)?);
-    let u_end = f64::from(*cv.knots.get(u_end_idx)?);
+    let u_start = *cv.knots.get(u_start_idx)?;
+    let u_end = *cv.knots.get(u_end_idx)?;
     if !(u_end > u_start) {
         return None;
     }

@@ -13,8 +13,9 @@
 use runtime::step_time::{compute_next_step_time, StepTimeQuery, StepTimeResult};
 
 /// Build the four Bezier CPs of the cubic `a·u³ + b·u² + c·u + d`.
-/// Inverse of the standard Bernstein → monomial expansion.
-fn cps_from_monomial(a: f64, b: f64, c: f64, d: f64) -> [f64; 4] {
+/// Inverse of the standard Bernstein → monomial expansion. `f32` matches
+/// the runtime's MCU precision (see `bezier_root` module docs).
+fn cps_from_monomial(a: f32, b: f32, c: f32, d: f32) -> [f32; 4] {
     let p0 = d;
     let p1 = c / 3.0 + p0;
     let p2 = b / 3.0 + 2.0 * p1 - p0;
@@ -96,7 +97,7 @@ fn reverse_accel_from_rest_negative_direction() {
 #[test]
 fn truly_motionless_curve_exhausts() {
     // Constant curve x(u) = 0 everywhere.
-    let cps: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
+    let cps: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
     let q = StepTimeQuery {
         cps,
         step_distance: 1.0,
@@ -116,7 +117,7 @@ fn decel_to_rest_fires_all_but_last_step() {
     // step_distance = 0.5 → ~200 steps.
     // Monomial: 0·u³ + (-100)·u² + 200·u + 0.
     let cps = cps_from_monomial(0.0, -100.0, 200.0, 0.0);
-    let mut t_curr = 0.0_f64;
+    let mut t_curr = 0.0_f32;
     let mut count = 0_i32;
     loop {
         let q = StepTimeQuery {

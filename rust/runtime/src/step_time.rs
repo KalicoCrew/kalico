@@ -6,37 +6,46 @@
 //! Bernstein control points) — see `bezier_root` module docs for why.
 //!
 //! Spec: docs/superpowers/specs/2026-05-14-bernstein-step-root-design.md
+//!
+//! **Precision**: `f32` throughout, matching `bezier_root`. The MCU's
+//! curve pool stores CPs as `f32`; staying in `f32` cuts producer_step
+//! CPU on the Cortex-M4F by ~10× (no software f64 emulation). See
+//! `bezier_root` module docs for the precision-budget derivation.
 
 use crate::bezier_root::{
     eval_cubic_bernstein, eval_cubic_derivative_bernstein, solve_monotone_cubic_root,
 };
 
 /// Velocity threshold for the direction probe. Below this, fall back to
-/// midpoint-position-delta.
-const EPS_VELOCITY: f64 = 1e-12;
+/// midpoint-position-delta. In `f32` at 100-300 mm scale, derivatives
+/// below 1e-5 mm/Δu are rounding noise — matches `bezier_root::EPS_SLOPE_STALL`.
+const EPS_VELOCITY: f32 = 1e-5;
 
 /// Position-delta threshold for the midpoint-probe fallback. Below this
 /// the segment is genuinely motionless and we report SegmentExhausted.
-const EPS_MOTION: f64 = 1e-12;
+/// Sized for `f32` ulp at 300 mm bed scale (~3.6e-5 mm). At 1e-4 mm
+/// (100 nm) we resolve well below physical step resolution (1.25 µm at
+/// 800 spm) while staying safely above ulp noise.
+const EPS_MOTION: f32 = 1e-4;
 
 /// Query for `compute_next_step_time`.
 #[derive(Debug, Clone, Copy)]
 pub struct StepTimeQuery {
     /// Four Bézier control points of the cubic piece, in motor-frame mm.
-    pub cps: [f64; 4],
-    pub step_distance: f64,
+    pub cps: [f32; 4],
+    pub step_distance: f32,
     pub current_step: i32,
     /// Lower bound (exclusive) of the search interval, in normalized u-domain.
-    pub t_curr: f64,
+    pub t_curr: f32,
     /// Upper bound (inclusive). Always `1.0` in the production path.
-    pub t_segment_end: f64,
+    pub t_segment_end: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepTimeResult {
     /// The next step fires at time `t` in `(t_curr, t_segment_end]`. Same
     /// time domain as the caller's `t_curr`.
-    NextAt { t: f64, dir: i8 },
+    NextAt { t: f32, dir: i8 },
     /// No step exists in the search interval in the determined direction.
     /// Engine retires the motor's contribution to the segment.
     SegmentExhausted,
@@ -55,7 +64,7 @@ pub fn compute_next_step_time(q: &StepTimeQuery) -> StepTimeResult {
     let [p0, p1, p2, p3] = q.cps;
 
     let v0 = eval_cubic_derivative_bernstein(p0, p1, p2, p3, q.t_curr);
-    let dir_i8: i8 = if libm::fabs(v0) > EPS_VELOCITY {
+    let dir_i8: i8 = if libm::fabsf(v0) > EPS_VELOCITY {
         if v0 > 0.0 { 1 } else { -1 }
     } else {
         let span = q.t_segment_end - q.t_curr;
@@ -65,14 +74,13 @@ pub fn compute_next_step_time(q: &StepTimeQuery) -> StepTimeResult {
         let probe = q.t_curr + 0.5 * span;
         let delta = eval_cubic_bernstein(p0, p1, p2, p3, probe)
             - eval_cubic_bernstein(p0, p1, p2, p3, q.t_curr);
-        if libm::fabs(delta) < EPS_MOTION {
+        if libm::fabsf(delta) < EPS_MOTION {
             return StepTimeResult::SegmentExhausted;
         }
         if delta > 0.0 { 1 } else { -1 }
     };
 
-    let target =
-        (f64::from(q.current_step) + f64::from(dir_i8)) * q.step_distance;
+    let target = (q.current_step as f32 + dir_i8 as f32) * q.step_distance;
     match solve_monotone_cubic_root(p0, p1, p2, p3, target, q.t_curr, q.t_segment_end) {
         Some(t) => StepTimeResult::NextAt { t, dir: dir_i8 },
         None => StepTimeResult::SegmentExhausted,

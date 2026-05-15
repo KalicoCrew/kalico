@@ -11,6 +11,17 @@
 //! Algorithm: WebKit `UnitBezier.h::solveCurveX` outer structure
 //! (Newton with slope guard + bisection fallback), inner evaluators
 //! per Mainar & Peña 2004 (de Casteljau on Bernstein CPs).
+//!
+//! **Precision**: `f32` throughout. The MCU's storage type is `f32`
+//! (curve pool CPs and knots are `&[f32]`), the Cortex-M4F on the F446
+//! has hardware FPU for single-precision only (`__aeabi_dmul` software-
+//! emulates `f64` at ~250,000 cycles per producer fire — exceeds
+//! Klipper's 1 ms timer-dispatch tolerance at `armcm_timer.c:152` →
+//! "Rescheduled timer in the past" shutdown). De Casteljau accumulates
+//! ~6 ulp relative error after three rounds; at 300 mm-scale coordinates
+//! that's ~215 nm absolute, well below the 1.25 µm step resolution at
+//! 800 spm. The EPS values below are sized for `f32` ulp at the maximum
+//! 300 mm bed scale; see each constant for the derivation.
 
 #![cfg_attr(not(feature = "host"), no_std)]
 
@@ -21,35 +32,38 @@
 /// middle that consistently converges in host fuzzing.
 const MAX_NEWTON_ITER: u32 = 6;
 
-/// Maximum bisection iterations. f64 mantissa is 52 bits; 54 halvings
+/// Maximum bisection iterations. `f32` mantissa is 23 bits; 25 halvings
 /// is sufficient to refine any interval in `[0, 1]` to subnormal
 /// precision. Bisection is rare in practice (Newton dominates) but the
 /// fallback must terminate cleanly.
-const MAX_BISECTION_ITER: u32 = 54;
+const MAX_BISECTION_ITER: u32 = 25;
 
-/// Newton convergence tolerance in motor-frame mm. Sized to live above
-/// the f32-source noise floor: CPs are stored as f32 on the MCU, cast
-/// to f64 for compute, giving absolute noise ~`|max(P_i)| × ε_f32 ≈
-/// 6 nm` for typical 100 mm-scale toolhead coordinates. Step resolution
-/// at 800 spm is 1250 nm; 10 nm convergence resolves roots to 1/125 of
-/// a step — far below physical detection.
-const EPS_CONVERGENCE: f64 = 1e-5;
+/// Newton convergence tolerance in motor-frame mm. Sized for `f32` ulp
+/// at the maximum 300 mm bed coordinate: ulp_f32(300) ≈ 3.6e-5 mm.
+/// `1e-4 mm` is ~3 ulp at 300 mm scale (loose enough for reliable
+/// convergence) and 100 nm absolute — `1/12` of a step at 800 spm
+/// (1.25 µm/step). Well below physical detection at any print scale.
+const EPS_CONVERGENCE: f32 = 1e-4;
 
 /// Slope-stall threshold for Newton: when `|P'(t)| < EPS_SLOPE_STALL`,
 /// the Newton update direction is unreliable; abort to bisection.
-const EPS_SLOPE_STALL: f64 = 1e-7;
+/// In `f32` at 100-300 mm scale, derivatives below 1e-5 mm/Δu are
+/// rounding noise.
+const EPS_SLOPE_STALL: f32 = 1e-5;
 
 /// Bisection-interval-collapse threshold. Below this the bracket cannot
-/// usefully shrink further.
-const EPS_INTERVAL: f64 = 1e-12;
+/// usefully shrink further. `f32` ulp at t=1 is ~1.2e-7; 1e-6 is ~10
+/// ulp, the bracket can't meaningfully tighten further.
+const EPS_INTERVAL: f32 = 1e-6;
 
 /// Span `P3 - P0` below this implies the linear-interp seed
-/// `(target-P0)/(P3-P0)` would explode; fall back to midpoint.
-const EPS_DEGENERATE_SPAN: f64 = 1e-9;
+/// `(target-P0)/(P3-P0)` would explode; fall back to midpoint. In `f32`
+/// this is well above the ulp at 100-300 mm scale.
+const EPS_DEGENERATE_SPAN: f32 = 1e-5;
 
 /// Tolerance for "target outside [min(v_lo, v_hi), max(v_lo, v_hi)]".
 /// Tracks `EPS_CONVERGENCE`.
-const EPS_OUT_OF_RANGE: f64 = 1e-5;
+const EPS_OUT_OF_RANGE: f32 = 1e-4;
 
 /// Find `t ∈ (t_low, t_high]` such that the cubic Bézier curve with
 /// control points `(p0, p1, p2, p3)` evaluates to `target`.
@@ -64,14 +78,14 @@ const EPS_OUT_OF_RANGE: f64 = 1e-5;
 /// converge (extreme degeneracy), or on non-finite inputs.
 #[must_use]
 pub fn solve_monotone_cubic_root(
-    p0: f64,
-    p1: f64,
-    p2: f64,
-    p3: f64,
-    target: f64,
-    t_low: f64,
-    t_high: f64,
-) -> Option<f64> {
+    p0: f32,
+    p1: f32,
+    p2: f32,
+    p3: f32,
+    target: f32,
+    t_low: f32,
+    t_high: f32,
+) -> Option<f32> {
     // Defensive: reject non-finite and degenerate inputs.
     if !p0.is_finite()
         || !p1.is_finite()
@@ -109,7 +123,7 @@ pub fn solve_monotone_cubic_root(
     // Initial guess: linear interpolation between endpoints. For a near-
     // linear curve this lands within one Newton step of the root. For
     // a curved (real cubic) shape, ~4 Newton iterations.
-    let mut t = if libm::fabs(span) < EPS_DEGENERATE_SPAN {
+    let mut t = if libm::fabsf(span) < EPS_DEGENERATE_SPAN {
         0.5 * (t_low + t_high)
     } else {
         let raw = (target - v_lo) / span * (t_high - t_low) + t_low;
@@ -120,7 +134,7 @@ pub fn solve_monotone_cubic_root(
     let mut f;
     for _ in 0..MAX_NEWTON_ITER {
         f = eval_cubic_bernstein(p0, p1, p2, p3, t) - target;
-        if libm::fabs(f) < EPS_CONVERGENCE {
+        if libm::fabsf(f) < EPS_CONVERGENCE {
             // Spec §3.3: enforce `t ∈ (t_low, t_high]` exclusivity on
             // t_low. A target-equals-v_lo seed converges at t == t_low
             // but the contract excludes that boundary; reject and let
@@ -128,7 +142,7 @@ pub fn solve_monotone_cubic_root(
             return if t > t_low { Some(t.min(t_high)) } else { None };
         }
         let df = eval_cubic_derivative_bernstein(p0, p1, p2, p3, t);
-        if libm::fabs(df) < EPS_SLOPE_STALL {
+        if libm::fabsf(df) < EPS_SLOPE_STALL {
             break; // fall through to bisection
         }
         let t_next = t - f / df;
@@ -152,7 +166,7 @@ pub fn solve_monotone_cubic_root(
         }
         let v_mid = eval_cubic_bernstein(p0, p1, p2, p3, mid);
         let f_mid = v_mid - target;
-        if libm::fabs(f_mid) < EPS_CONVERGENCE {
+        if libm::fabsf(f_mid) < EPS_CONVERGENCE {
             return Some(mid);
         }
         if (f_mid < 0.0) == direction_is_increasing {
@@ -180,7 +194,7 @@ pub fn solve_monotone_cubic_root(
 /// Mainar & Peña 2004, "Evaluation of the derivative of a polynomial
 /// in Bernstein form," App. Math. and Computation 158(1):195-204.
 #[inline]
-pub(crate) fn eval_cubic_bernstein(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+pub(crate) fn eval_cubic_bernstein(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     let one_minus_t = 1.0 - t;
     // Round 1: collapse 4 CPs to 3
     let b00 = one_minus_t * p0 + t * p1;
@@ -199,12 +213,12 @@ pub(crate) fn eval_cubic_bernstein(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -
 /// on those.
 #[inline]
 pub(crate) fn eval_cubic_derivative_bernstein(
-    p0: f64,
-    p1: f64,
-    p2: f64,
-    p3: f64,
-    t: f64,
-) -> f64 {
+    p0: f32,
+    p1: f32,
+    p2: f32,
+    p3: f32,
+    t: f32,
+) -> f32 {
     let one_minus_t = 1.0 - t;
     // Difference control points of the degree-2 derivative curve.
     let d0 = 3.0 * (p1 - p0);
@@ -237,13 +251,15 @@ mod tests {
     }
 
     /// For collinear CPs that interpolate linearly from 0 to 1, eval(t) = t.
+    /// Tolerance in `f32`: ulp at 1.0 ≈ 1.2e-7; 6 lerps × ulp = 7e-7
+    /// worst-case absolute error.
     #[test]
     fn eval_collinear_linear_curve_matches_t() {
         let cps = (0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0);
         for &t in &[0.1, 0.25, 0.5, 0.75, 0.9] {
             let result = eval_cubic_bernstein(cps.0, cps.1, cps.2, cps.3, t);
             assert!(
-                (result - t).abs() < 1e-12,
+                (result - t).abs() < 1e-6,
                 "eval({t}) = {result}, expected {t}"
             );
         }
@@ -254,7 +270,7 @@ mod tests {
     #[test]
     fn eval_s_curve_at_midpoint_is_half() {
         let result = eval_cubic_bernstein(0.0, 0.0, 1.0, 1.0, 0.5);
-        assert!((result - 0.5).abs() < 1e-12);
+        assert!((result - 0.5).abs() < 1e-6);
     }
 
     /// Derivative at t=0 must equal 3·(P1 - P0) by the Bernstein derivative
@@ -273,14 +289,15 @@ mod tests {
     }
 
     /// For a collinear linear curve `0 -> 1/3 -> 2/3 -> 1` (representing
-    /// the line y=t), the derivative is identically 1.
+    /// the line y=t), the derivative is identically 1. `f32` tolerance:
+    /// derivative eval is degree-2 de Casteljau (4 lerps × ulp).
     #[test]
     fn deriv_of_collinear_linear_curve_is_unity() {
         for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
             let result =
                 eval_cubic_derivative_bernstein(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, t);
             assert!(
-                (result - 1.0).abs() < 1e-12,
+                (result - 1.0).abs() < 1e-5,
                 "deriv({t}) = {result}, expected 1.0"
             );
         }
@@ -291,14 +308,15 @@ mod tests {
     fn solve_linear_curve_at_origin_finds_root() {
         let r = solve_monotone_cubic_root(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 0.5, 0.0, 1.0);
         assert!(r.is_some());
-        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+        assert!((r.unwrap() - 0.5).abs() < 1e-4);
     }
 
     /// **Bench-failure-mode regression.** Linear curve from X=100 to
     /// X=101 (10-piece scenario's piece 0 boundary case). Target 100.5.
     /// Pre-fix: Cardano's monomial leading-coefficient cancellation at
     /// these CP magnitudes drove the trig branch into spurious roots.
-    /// Post-fix: de Casteljau / Newton solves cleanly.
+    /// Post-fix: de Casteljau / Newton solves cleanly in `f32` as well
+    /// (eval relative error ~6 ulp = 7.2e-5 mm at 100 mm scale).
     #[test]
     fn solve_linear_curve_at_offset_finds_root() {
         let r = solve_monotone_cubic_root(
@@ -311,7 +329,10 @@ mod tests {
             1.0,
         );
         assert!(r.is_some(), "must find root for offset-100mm linear curve");
-        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+        // `f32` Newton convergence at 100mm scale: target precision is
+        // EPS_CONVERGENCE = 1e-4 mm in P-space; in t-space at slope 1
+        // mm/Δu that's 1e-4 in t. Loosen to 1e-3 for the assertion.
+        assert!((r.unwrap() - 0.5).abs() < 1e-3);
     }
 
     /// Accel-from-rest curve: P0=P1 makes P'(0)=0, so naive Newton seeded
@@ -330,7 +351,7 @@ mod tests {
         // (the only real root of t³ − 3·t² + 1 in [0, 1]). The curve is
         // NOT symmetric: P0=P1=0 but P2≠P3, so B(0.5) = 0.3125 ≠ 0.5.
         assert!(
-            (t - 0.6527036446661392).abs() < 1e-3,
+            (t - 0.6527036).abs() < 5e-3,
             "expected t ≈ 0.6527, got {t}"
         );
     }
@@ -354,7 +375,7 @@ mod tests {
     fn solve_target_at_t_high_is_inclusive() {
         let r = solve_monotone_cubic_root(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 0.0, 1.0);
         assert!(r.is_some());
-        assert!((r.unwrap() - 1.0).abs() < 1e-9);
+        assert!((r.unwrap() - 1.0).abs() < 1e-6);
     }
 
     /// Target exactly at t_low → t_low is exclusive, returns None.
@@ -369,26 +390,33 @@ mod tests {
     fn solve_monotone_decreasing_curve() {
         let r = solve_monotone_cubic_root(1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0, 0.5, 0.0, 1.0);
         assert!(r.is_some());
-        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+        assert!((r.unwrap() - 0.5).abs() < 1e-4);
     }
 
     /// nm-scale curve. Precision at extreme scale is not an issue for
     /// Bernstein de Casteljau — the algorithm is scale-invariant up to
-    /// f64 ULP.
+    /// ULP. At nm scale, EPS_CONVERGENCE=1e-4 is well above the value
+    /// range itself, so the solver returns at the linear-seed guess.
+    /// This test exists to ensure no NaN/inf, not to assert precision.
     #[test]
-    fn solve_nm_scale_curve_precision() {
+    fn solve_nm_scale_curve_does_not_panic() {
         let r = solve_monotone_cubic_root(
             0.0, 1e-9, 2e-9, 3e-9,
             1.5e-9,
             0.0, 1.0,
         );
-        assert!(r.is_some(), "nm-scale curve must still solve");
-        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+        // At this scale EPS_CONVERGENCE swallows everything; returned
+        // root is the linear-seed midpoint. Just assert finite + bounded.
+        assert!(r.is_some(), "nm-scale curve must not panic");
+        let t = r.unwrap();
+        assert!(t.is_finite() && (0.0..=1.0).contains(&t));
     }
 
-    /// Large-offset curve at km scale. Same.
+    /// Large-offset curve at km scale. Same — degraded precision at
+    /// extreme scales is expected (`f32` ulp at 1000 = 1.2e-4 ≈
+    /// EPS_CONVERGENCE), but should still find a plausible root.
     #[test]
-    fn solve_large_offset_curve_precision() {
+    fn solve_large_offset_curve_finds_plausible_root() {
         let r = solve_monotone_cubic_root(
             1000.0,
             1000.0 + 1.0 / 3.0,
@@ -398,7 +426,10 @@ mod tests {
             0.0, 1.0,
         );
         assert!(r.is_some());
-        assert!((r.unwrap() - 0.5).abs() < 1e-5);
+        // `f32` ulp at 1000 mm scale is ~1.2e-4 mm, so Newton at
+        // EPS_CONVERGENCE=1e-4 has roughly one digit of headroom — root
+        // accuracy in t-space ~1e-3.
+        assert!((r.unwrap() - 0.5).abs() < 5e-3);
     }
 
     /// Multi-step walk: successive targets produce monotonically
@@ -406,10 +437,10 @@ mod tests {
     /// at wrong u_global" from the bench wedge.
     #[test]
     fn solve_walk_monotonic_t_across_targets() {
-        let cps = (100.0, 100.0 + 1.0 / 3.0, 100.0 + 2.0 / 3.0, 101.0);
+        let cps = (100.0_f32, 100.0 + 1.0 / 3.0, 100.0 + 2.0 / 3.0, 101.0);
         let mut last_t = 0.0;
         for i in 1..=10 {
-            let target = 100.0 + i as f64 * 0.1;
+            let target = 100.0 + i as f32 * 0.1;
             let r =
                 solve_monotone_cubic_root(cps.0, cps.1, cps.2, cps.3, target, 0.0, 1.0);
             assert!(r.is_some(), "step {i} (target={target}) must solve");
@@ -422,12 +453,12 @@ mod tests {
         }
     }
 
-    /// Noisy CPs: simulate worst-case f32 round-trip by perturbing each
-    /// CP. de Casteljau is well-conditioned; the root should still be
-    /// within EPS_CONVERGENCE of the true value.
+    /// Noisy CPs: simulate f32 round-trip by perturbing each CP. de
+    /// Casteljau is well-conditioned; the root should still be within
+    /// EPS_CONVERGENCE-scaled distance of the true value.
     #[test]
     fn solve_noisy_input_does_not_break_solver() {
-        let perturbation = 1e-5_f64; // ~10× f32 ULP at unit magnitude
+        let perturbation = 1e-5_f32; // ~10× f32 ulp at unit magnitude
         let r = solve_monotone_cubic_root(
             100.0 + perturbation,
             100.0 + 1.0 / 3.0 - perturbation,
@@ -438,8 +469,8 @@ mod tests {
         );
         assert!(r.is_some());
         assert!(
-            (r.unwrap() - 0.5).abs() < 1e-3,
-            "perturbed root should be within 1e-3 of nominal"
+            (r.unwrap() - 0.5).abs() < 5e-3,
+            "perturbed root should be within 5e-3 of nominal (f32 precision band)"
         );
     }
 
@@ -447,7 +478,7 @@ mod tests {
     #[test]
     fn solve_non_finite_returns_none() {
         let r = solve_monotone_cubic_root(
-            f64::NAN, 1.0, 2.0, 3.0,
+            f32::NAN, 1.0, 2.0, 3.0,
             1.5, 0.0, 1.0,
         );
         assert!(r.is_none());
