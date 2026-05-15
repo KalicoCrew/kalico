@@ -627,6 +627,11 @@ runtime_status_drain(void)
     extern volatile uint32_t step_time_event_fires;
     extern volatile uint32_t step_time_producer_kicks;
     extern volatile uint32_t step_time_empty_polls;
+    extern volatile uint32_t producer_step_peak_cycles;
+    extern volatile uint32_t step_time_event_peak_cycles;
+    extern volatile uint32_t producer_step_fires;
+    extern volatile uint32_t producer_step_slow_fires;
+    extern volatile uint32_t producer_step_slow_streak_max;
     extern uint8_t runtime_motor_binding_count(uint8_t motor_idx);
     extern volatile uint32_t runtime_bind_calls_total;
     extern volatile uint8_t runtime_bind_calls_for_motor[4];
@@ -664,7 +669,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 14) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 19) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -911,6 +916,50 @@ runtime_status_drain(void)
                              | (writes << 16)
                              | snap;
             }
+            break;
+        case 14:
+            // 0xE7 — peak producer_step body duration in microseconds (low 24).
+            // Cycles → µs via `runtime_clock_freq / 1_000_000` (e.g. /180 on
+            // F446, /520 on H7). If > 100 µs we exceed SF_RESCHEDULE_FLOOR and
+            // saturate the timer dispatcher.
+            {
+                uint32_t cyc = producer_step_peak_cycles;
+                uint32_t us = (runtime_clock_freq >= 1000000U)
+                    ? (cyc / (runtime_clock_freq / 1000000U))
+                    : cyc;
+                fault_detail = 0xE7000000u | (us & 0x00FFFFFFu);
+            }
+            break;
+        case 15:
+            // 0xE8 — peak step_time_event body duration in microseconds.
+            {
+                uint32_t cyc = step_time_event_peak_cycles;
+                uint32_t us = (runtime_clock_freq >= 1000000U)
+                    ? (cyc / (runtime_clock_freq / 1000000U))
+                    : cyc;
+                fault_detail = 0xE8000000u | (us & 0x00FFFFFFu);
+            }
+            break;
+        case 16:
+            // 0xE9 — producer_step fire count (low 24 bits). Compare against
+            // step_time_producer_kicks (0xE4) — if fires << kicks, the
+            // producer timer is being kicked without entering its body
+            // (sched_add_timer race or `enabled` confusion).
+            fault_detail = 0xE9000000u | (producer_step_fires & 0x00FFFFFFu);
+            break;
+        case 17:
+            // 0xEA — count of producer_step fires whose body exceeded
+            // SF_RESCHEDULE_FLOOR (100 µs). Each one pushes the dispatcher
+            // toward saturation. If this counter grows faster than ~10 Hz,
+            // producer is structurally too slow.
+            fault_detail = 0xEA000000u | (producer_step_slow_fires & 0x00FFFFFFu);
+            break;
+        case 18:
+            // 0xEB — longest consecutive run of slow producer fires.
+            // ~8 consecutive slow fires accumulate >1 ms of dispatcher
+            // lag, the same threshold that trips "Rescheduled timer in the
+            // past". A value of 10+ is a hard saturation signal.
+            fault_detail = 0xEB000000u | (producer_step_slow_streak_max & 0x00FFFFFFu);
             break;
         }
     }
@@ -1218,6 +1267,37 @@ volatile uint32_t step_time_producer_kicks __attribute__((used, externally_visib
 // tag. High counts indicate the producer is failing to keep up.
 volatile uint32_t step_time_empty_polls __attribute__((used, externally_visible));
 
+// Diag: peak `kalico_runtime_producer_step` body duration in DWT cycles,
+// measured around the FFI call in `runtime_producer_event`. Surfaced via
+// 0xE7 in the status-drain rotation. > SF_RESCHEDULE_FLOOR (100 µs of
+// `runtime_clock_freq`) means producer takes longer than its reschedule
+// cadence and the dispatcher saturates — direct path to "Rescheduled
+// timer in the past" when other timers fall >1 ms behind.
+volatile uint32_t producer_step_peak_cycles __attribute__((used, externally_visible));
+
+// Diag: peak `step_time_event` body duration in DWT cycles. Same shape as
+// above but for the consumer path. Surfaced via 0xE8.
+volatile uint32_t step_time_event_peak_cycles __attribute__((used, externally_visible));
+
+// Diag: peak SysTick dispatch-loop wall-clock spent in a single SysTick
+// handler invocation. Surfaced via 0xE9. Measured at top + bottom of
+// `runtime_producer_event`/`step_time_event` against the previous fire.
+// (Approximation: we don't have a hook in `timer_dispatch_many` itself, so
+// these are upper-bounded by what we observe between our timer fires.)
+volatile uint32_t producer_step_fires __attribute__((used, externally_visible));
+
+// Diag: count of producer_step fires whose body exceeded SF_RESCHEDULE_FLOOR.
+// Surfaced via 0xEA. Each such fire pushes the dispatcher loop closer to
+// "Rescheduled timer in the past". > 0 indicates the producer can't keep
+// up with its own reschedule cadence — dispatcher saturation risk.
+volatile uint32_t producer_step_slow_fires __attribute__((used, externally_visible));
+
+// Diag: longest consecutive run of slow (>100 µs) producer fires.
+// Surfaced via 0xEB. > ~8 consecutive slow fires saturates the timer
+// dispatcher for >1ms and trips the shutdown.
+volatile uint32_t producer_step_slow_streak __attribute__((used, externally_visible));
+volatile uint32_t producer_step_slow_streak_max __attribute__((used, externally_visible));
+
 // Defined in src/runtime_commands.c (Task D3). Samples all active endstop
 // GPIO slots for the given stepper index. Called from step_time_event so
 // the step-time ISR path catches trips at step resolution.
@@ -1285,6 +1365,7 @@ arm_producer_timer_if_kicked(void)
 static uint_fast8_t
 step_time_event(struct timer *t)
 {
+    uint32_t _t0 = timer_read_time();
     step_time_event_fires++;
     struct step_timer_ctx *ctx =
         container_of(t, struct step_timer_ctx, timer);
@@ -1310,6 +1391,8 @@ step_time_event(struct timer *t)
         // the next iteration. Anchoring to `timer_read_time()` guarantees
         // the next fire is always 100 µs into the actual future.
         t->waketime = timer_read_time() + EMPTY_POLL_CYCLES;
+        uint32_t _dt = timer_read_time() - _t0;
+        if (_dt > step_time_event_peak_cycles) step_time_event_peak_cycles = _dt;
         return SF_RESCHEDULE;
     }
 
@@ -1323,6 +1406,8 @@ step_time_event(struct timer *t)
         // > now after the irq_save races a few cycles).
         uint32_t floor = now + SF_RESCHEDULE_FLOOR;
         t->waketime = ((int32_t)(t_next - floor) < 0) ? floor : t_next;
+        uint32_t _dt = timer_read_time() - _t0;
+        if (_dt > step_time_event_peak_cycles) step_time_event_peak_cycles = _dt;
         return SF_RESCHEDULE;
     }
 
@@ -1368,6 +1453,8 @@ step_time_event(struct timer *t)
     } else {
         t->waketime = timer_read_time() + EMPTY_POLL_CYCLES;
     }
+    uint32_t _dt = timer_read_time() - _t0;
+    if (_dt > step_time_event_peak_cycles) step_time_event_peak_cycles = _dt;
     return SF_RESCHEDULE;
 }
 
@@ -1379,7 +1466,20 @@ step_time_event(struct timer *t)
 static uint_fast8_t
 runtime_producer_event(struct timer *t)
 {
+    uint32_t _t0 = timer_read_time();
     bool work_pending = kalico_runtime_producer_step(runtime_handle);
+    uint32_t _dt = timer_read_time() - _t0;
+    if (_dt > producer_step_peak_cycles)
+        producer_step_peak_cycles = _dt;
+    producer_step_fires++;
+    if (_dt > SF_RESCHEDULE_FLOOR) {
+        producer_step_slow_fires++;
+        producer_step_slow_streak++;
+        if (producer_step_slow_streak > producer_step_slow_streak_max)
+            producer_step_slow_streak_max = producer_step_slow_streak;
+    } else {
+        producer_step_slow_streak = 0;
+    }
     if (work_pending) {
         // Self-reschedule ASAP for the next batch.
         t->waketime = timer_read_time() + SF_RESCHEDULE_FLOOR;
