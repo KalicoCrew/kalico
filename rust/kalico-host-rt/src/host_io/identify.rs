@@ -97,7 +97,12 @@ pub fn identify_handshake(
     let mut identify_data: Vec<u8> = Vec::new();
 
     let chunk_deadline_per_attempt = Duration::from_millis(200);
-    let max_resync_attempts = 16usize;
+    // With stale-ACK suppression (see wait_for_klipper_frame), the steady
+    // state is 1 attempt per chunk on both silicon and Renode. The cap
+    // exists for genuine seq divergence on reconnect to a running MCU —
+    // each NAK advances mcu_recv_abs by 1 mod 16, so up to ~16 retries
+    // can be needed to converge. 64 is conservative.
+    let max_resync_attempts = 64usize;
 
     'outer: loop {
         // Each iteration of the outer loop tries to advance one identify
@@ -118,12 +123,6 @@ pub fn identify_handshake(
 
             let wire_seq = (next_send_seq_abs as u8) & MESSAGE_SEQ_MASK;
             let frame = build_frame(&payload, wire_seq);
-            eprintln!(
-                "identify: send seq=0x{:02x} offset={} (attempt {})",
-                wire_seq | crate::host_io::wire::MESSAGE_DEST,
-                identify_data.len(),
-                _attempt,
-            );
             io.write_all(&frame)?;
             io.flush()?;
 
@@ -132,16 +131,8 @@ pub fn identify_handshake(
                 io,
                 attempt_deadline,
                 &mut mcu_recv_abs,
+                Some(wire_seq),
             )?;
-            eprintln!(
-                "identify: outcome={} mcu_recv_abs={}",
-                match &outcome {
-                    IdentifyOutcome::Response(_) => "Response",
-                    IdentifyOutcome::Nak => "Nak",
-                    IdentifyOutcome::Timeout => "Timeout",
-                },
-                mcu_recv_abs,
-            );
 
             match outcome {
                 IdentifyOutcome::Response(params) => {
@@ -233,6 +224,7 @@ fn wait_for_klipper_frame(
     io: &mut SerialFrameIo,
     deadline: Instant,
     mcu_recv_abs: &mut u64,
+    sent_seq_nibble: Option<u8>,
 ) -> Result<IdentifyOutcome, TransportError> {
     loop {
         let now = Instant::now();
@@ -252,17 +244,41 @@ fn wait_for_klipper_frame(
                         // responses to in-flight requests) all carry seq
                         // info that we want to absorb so the next host
                         // send matches firmware's expectation (spec §4.2).
-                        *mcu_recv_abs = wire::decode_absolute(
-                            *mcu_recv_abs,
-                            kf.seq_byte() & MESSAGE_SEQ_MASK,
-                        );
+                        let frame_seq_nibble = kf.seq_byte() & MESSAGE_SEQ_MASK;
+                        *mcu_recv_abs =
+                            wire::decode_absolute(*mcu_recv_abs, frame_seq_nibble);
                         if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(IdentifyOutcome::Response(params));
                         }
-                        // No decodable identify_response body — empty frame
-                        // (NAK/ACK) or some other unrecognized payload.
-                        // Treat as a NAK signal: caller will adopt
-                        // mcu_recv_abs as next_send_seq_abs and retry.
+                        // Empty-body Klipper frame. Two cases per
+                        // command.c::command_find_block + command_send_ack:
+                        //
+                        //   * Stale ACK: firmware has not yet processed the
+                        //     request we just sent (this frame is the ACK
+                        //     emitted after dispatching the *previous*
+                        //     chunk's request). Its seq nibble equals what
+                        //     we sent on the wire; mcu_recv_abs is unchanged
+                        //     (delta=0). Returning Nak here would trigger a
+                        //     spurious retransmit, which firmware NAKs (seq
+                        //     advances past us) — that retransmit-storm
+                        //     accumulates ACK/NAK frames in the firmware's
+                        //     320-byte TX buffer until console_sendf
+                        //     silently drops the next identify_response.
+                        //     Keep waiting: the real response (different
+                        //     seq) is right behind this ACK in the pipe.
+                        //
+                        //   * Real NAK: seq differs from what we sent,
+                        //     signaling firmware's `next_sequence` diverged
+                        //     from ours (e.g. host opened the device
+                        //     mid-session). Caller adopts mcu_recv_abs and
+                        //     retries with the corrected seq.
+                        //
+                        // Python's reference identify (tools/kalico_host_io.py::
+                        // _handle_identify_sync_packet) draws the same
+                        // distinction.
+                        if sent_seq_nibble == Some(frame_seq_nibble) {
+                            continue;
+                        }
                         return Ok(IdentifyOutcome::Nak);
                     }
                     // Kalico-native frames that arrive during identify are
