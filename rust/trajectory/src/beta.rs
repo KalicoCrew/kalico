@@ -571,7 +571,38 @@ fn run_one_iteration(
             // All non-Converged statuses (including future non-exhaustive variants)
             // are errors for the shaping pipeline.
             status => {
-                return Err(ShapeError::TemporalJoining(status));
+                use core::fmt::Write;
+                let mut detail = String::new();
+                for (local_idx, profile) in batch_output.profiles.iter().enumerate() {
+                    let is_success = matches!(
+                        profile.status,
+                        temporal::SolveStatus::Solved
+                            | temporal::SolveStatus::SolvedInexact { .. }
+                            | temporal::SolveStatus::SolvedSlp { .. }
+                    );
+                    if is_success {
+                        continue;
+                    }
+                    let global_idx = run.segment_range.start + local_idx;
+                    let seg = &run_segments[local_idx];
+                    let limits = &seg.limits;
+                    let n_cps = seg.curve.control_points().len();
+                    let degree = seg.curve.degree();
+                    let total_time = profile.total_time;
+                    let n_samples = profile.samples.len();
+                    let v_start = profile.samples.first().map(|s| s.v).unwrap_or(f64::NAN);
+                    let v_end = profile.samples.last().map(|s| s.v).unwrap_or(f64::NAN);
+                    let _ = write!(
+                        &mut detail,
+                        " | seg{}: status={:?} v_start={:.4} v_end={:.4} \
+                         n_samples={} total_time={:.4}s degree={} n_cps={} \
+                         limits[v={:?} a={:?} j={:?} a_centripetal={:?}]",
+                        global_idx, profile.status, v_start, v_end,
+                        n_samples, total_time, degree, n_cps,
+                        limits.v_max, limits.a_max, limits.j_max, limits.a_centripetal_max,
+                    );
+                }
+                return Err(ShapeError::TemporalJoining(status, detail));
             }
         }
         last_joining_status = batch_output.joining_status;

@@ -103,9 +103,9 @@ fn homing_300mm_pure_x_at_uniform_jerk_converges() {
                 output.beta_warning
             );
         }
-        Err(ShapeError::TemporalJoining(status)) => {
+        Err(ShapeError::TemporalJoining(status, detail)) => {
             panic!(
-                "regression: 300 mm pure-X at j_max=[6000;3] failed temporal joining: {status:?}"
+                "regression: 300 mm pure-X at j_max=[6000;3] failed temporal joining: {status:?}{detail}"
             );
         }
         Err(err) => panic!("unexpected shape_batch error: {err:?}"),

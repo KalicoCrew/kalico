@@ -42,6 +42,10 @@ pub(crate) fn join_until_converged(
             // unchanged inputs would produce the same non-success status.
             // Bail early via the dedicated StalledOnInfeasibleSegment variant
             // (round-4 split — distinct from MAX_SWEEPS-exhaustion below).
+            // The caller-side `ShapeError::TemporalJoining(status, detail)`
+            // carries per-failing-segment diagnostic info (populated in
+            // `beta.rs` after this returns) so this site doesn't need to
+            // log directly.
             let last_dirty_count = states.iter().filter(|s| s.dirty).count();
             return Ok((
                 sweep,

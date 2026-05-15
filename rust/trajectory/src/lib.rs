@@ -172,9 +172,11 @@ pub enum ShapeError {
     /// Temporal batch planning (Layer 2) failed.
     #[error("temporal batch error: {0}")]
     TemporalBatch(#[from] temporal::multi::BatchError),
-    /// Temporal joining did not converge.
-    #[error("temporal joining: {0:?}")]
-    TemporalJoining(temporal::multi::JoiningStatus),
+    /// Temporal joining did not converge. The second field carries
+    /// per-failing-segment diagnostic info (index, v_start, v_end, solver
+    /// status, total_time, sample_count) populated by the caller in `beta.rs`.
+    #[error("temporal joining: {0:?}{1}")]
+    TemporalJoining(temporal::multi::JoiningStatus, String),
     /// A single segment was unsolvable by the temporal solver.
     #[error("segment {index} unsolvable: {status:?}")]
     SegmentUnsolvable {

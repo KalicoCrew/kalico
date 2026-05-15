@@ -106,7 +106,7 @@ fn run_shape_variant(
             out.segments.len(),
             out.beta_warning
         ),
-        Err(ShapeError::TemporalJoining(s)) => format!("ERR TemporalJoining({:?})", s),
+        Err(ShapeError::TemporalJoining(s, d)) => format!("ERR TemporalJoining({:?}){}", s, d),
         Err(e) => format!("ERR {:?}", e),
     };
     ShapeVariantResult {

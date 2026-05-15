@@ -122,9 +122,9 @@ fn solve_with_boundary_fallback(
         return Ok(initial);
     }
 
-    // The upfront junction cap can exceed what a short segment can reach under
-    // jerk/accel limits. Search the fastest feasible boundary pair along the
-    // current joining ray instead of collapsing immediately to a full stop.
+    // Stage 1: bisect on endpoint velocities. The upfront junction cap can
+    // exceed what a short segment can reach under jerk/accel limits; relaxing
+    // endpoints toward zero opens up feasibility.
     let mut lo = 0.0_f64;
     let mut hi = 1.0_f64;
     let mut best: Option<TopProfile> = None;
@@ -148,9 +148,71 @@ fn solve_with_boundary_fallback(
     }
 
     if let Some(profile) = best {
+        return Ok(profile);
+    }
+
+    // Stage 2: endpoint scaling didn't help. Bisect on v_max instead —
+    // useful when the infeasibility sits at the peak-speed boundary (e.g.,
+    // a feedrate-capped v_max for a rest-to-rest segment where SLP9 lands
+    // exactly on the post-shape-jerk threshold and the SOCP can't converge
+    // precisely). Gated on v_start ≈ v_end ≈ 0 so the more-common
+    // junction-cap-too-high case (handled by stage 1) doesn't trigger an
+    // unnecessary v_max derate that the joining loop would have to chase.
+    const VEL_NEAR_ZERO: f64 = 1e-6;
+    if v_start.abs() > VEL_NEAR_ZERO || v_end.abs() > VEL_NEAR_ZERO {
+        // Endpoint scaling exhausted on a non-rest-to-rest segment — fall
+        // back to the historical zero-zero solve. The joining sweep will
+        // see the achieved zero endpoints and propagate.
+        return schedule_segment_with_tolerance(
+            curve, limits, grid, 0.0, 0.0, ToleranceMode::Auto,
+        );
+    }
+    let base_v_max = limits.v_max;
+    let mut vlo = 0.0_f64;
+    let mut vhi = 1.0_f64;
+    let mut vbest: Option<TopProfile> = None;
+    for _ in 0..24 {
+        let mid = (vlo + vhi) * 0.5;
+        let scaled_v_max = [
+            base_v_max[0] * mid,
+            base_v_max[1] * mid,
+            base_v_max[2] * mid,
+        ];
+        let scaled_limits = crate::Limits::new(
+            scaled_v_max,
+            limits.a_max,
+            limits.j_max,
+            limits.a_centripetal_max,
+        );
+        let candidate = schedule_segment_with_tolerance(
+            curve,
+            &scaled_limits,
+            grid,
+            v_start * mid,
+            v_end * mid,
+            ToleranceMode::Auto,
+        )?;
+        if is_success(candidate.status) {
+            vlo = mid;
+            vbest = Some(candidate);
+        } else {
+            vhi = mid;
+        }
+    }
+
+    if let Some(profile) = vbest {
         Ok(profile)
     } else {
-        schedule_segment_with_tolerance(curve, limits, grid, 0.0, 0.0, ToleranceMode::Auto)
+        // Last resort: rest-to-rest at zero v_max — produces a zero-velocity
+        // profile but never fails the SOCP.
+        let zero_v_max = [0.0, 0.0, 0.0];
+        let scaled_limits = crate::Limits::new(
+            zero_v_max,
+            limits.a_max,
+            limits.j_max,
+            limits.a_centripetal_max,
+        );
+        schedule_segment_with_tolerance(curve, &scaled_limits, grid, 0.0, 0.0, ToleranceMode::Auto)
     }
 }
 
