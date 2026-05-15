@@ -21,7 +21,19 @@ use crate::transport::TransportError;
 /// Default timeout for `LoadCurveResponse` (spec §7.4). The MCU should
 /// reply within microseconds; 100 ms is loose by ~3 orders of magnitude
 /// and only triggers on a host-side stall or a wire fault.
-pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(2000);
+/// LoadCurve is a bulk-data operation — the host ships a full cubic-Bézier
+/// piece (control points + knots, up to ~750 bytes payload) and the MCU has
+/// to deserialize, validate, and slot it into the curve pool before sending
+/// back the response.
+///
+/// On silicon this completes in well under 50 ms. Under Renode's 1 µs
+/// quantum the same dispatch routinely takes 20+ s wall because the
+/// simulation drops to ~0.05× wall-clock under load (the comment in
+/// `tools/sim/h723_sim.resc` advertises 0.2× but heavy `command_task`
+/// activity drives it lower). 30 s gives ~1.5× headroom over the worst
+/// observed sim time, while still surfacing a genuinely hung MCU on
+/// silicon before the slot pool's in-flight occupancy stalls the planner.
+pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(30_000);
 
 /// Default timeout for `PushSegmentResponse`.
 pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);

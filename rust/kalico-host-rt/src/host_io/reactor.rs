@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
@@ -60,6 +60,17 @@ pub struct Reactor {
     /// Per spec §3.11, treat as Closed only if it persists past
     /// `ZERO_BYTE_DEBOUNCE`. Cleared on any non-zero read.
     pub(crate) zero_byte_first_seen: Option<Instant>,
+
+    /// Most recent moment `poll_serial` saw bytes-from-the-wire (Frames
+    /// outcome, with or without complete frames). Used to gate the
+    /// `MAX_RETRY_COUNT`-driven Closed escalation in `write_retransmit`
+    /// — if the MCU is still actively emitting frames (e.g. periodic
+    /// kalico_status at 10 Hz, or responses to other in-flight commands),
+    /// we should not give up on a specific unacked entry just because its
+    /// ACK got dropped by the firmware's 320-byte transmit_buf overflow.
+    /// Closed only fires when retry exhaustion coincides with genuine
+    /// MCU silence past `MCU_SILENCE_FOR_CLOSE`.
+    pub(crate) last_recv_time: Instant,
 
     /// Injected clock seam (spec §2.3). Routes `Instant::now()` so tests
     /// can deterministically advance time via `MockClock`.
@@ -151,6 +162,7 @@ impl Reactor {
             pending_submissions: VecDeque::new(),
             pending_fire_and_forget: VecDeque::new(),
             zero_byte_first_seen: None,
+            last_recv_time: clock.now(),
             clock,
             passthrough_router: None,
             passthrough_notify_map: std::collections::HashMap::new(),
@@ -234,6 +246,21 @@ pub enum RetransmitTrigger {
 const PENDING_SUBMISSION_CEILING: usize = 256;
 pub const PENDING_FIRE_AND_FORGET_CEILING: usize = 256;
 const MAX_RETRY_COUNT: u32 = 8;
+
+/// Minimum wire silence (no Frames/errors batch observed from `poll_serial`)
+/// required, on top of `retry_count >= MAX_RETRY_COUNT`, before declaring
+/// the transport Closed via the retransmit-exhaustion path.
+///
+/// In production, MCU emits `kalico_status` at ~10 Hz, but under Renode (1 µs
+/// quantum, ~0.2× wall) a long-running command like LoadCurve can block
+/// `command_task` from yielding to status emits for 3-5 seconds wall — the
+/// MCU is alive and will eventually respond, it just can't talk while
+/// crunching. 10 seconds is well past the worst sim stall observed
+/// (3.2 s) yet still surfaces a genuinely hung MCU within a reasonable
+/// window. Port-level disconnects (USB unplug, TCP close) bypass this
+/// guard via the `PhantomZero` / `Err(_)` arms of `poll_serial` →
+/// `HostDisconnect` fault.
+const MCU_SILENCE_FOR_CLOSE: Duration = Duration::from_secs(10);
 
 const MAX_SUBMITS_PER_ITER: usize = 4;
 // The reactor has no FD/eventfd wakeup for submissions sent over
@@ -559,10 +586,29 @@ impl Reactor {
         self.retransmit_seq = self.send_seq;
         self.rtt_sample_armed = false;
 
-        // Retry cap: increment all; fault on exhaustion.
+        // Retry cap: increment all; fault only on exhaustion AND silence.
+        //
+        // The retry counter alone is a poor proxy for "MCU is dead": a
+        // single long-running MCU command (LoadCurve takes several
+        // seconds wall under Renode's 1µs quantum) can stall the
+        // command_task long enough for the host's RFC-6298 RTO ladder
+        // (25→50→100→…→3200 ms, sum 6.4 s) to fire 8 times — meanwhile
+        // the MCU is still emitting kalico_status at 10 Hz and the wire
+        // is healthy. The earlier behavior tore the reactor down with
+        // HostRetransmitExhausted in exactly that scenario, blocking
+        // every motion test at LoadCurve #2.
+        //
+        // Real "MCU dead" signature: no frames OR stream errors arrive
+        // for at least `MCU_SILENCE_FOR_CLOSE`. Gate the escalation on
+        // both retry exhaustion AND silence so we still trip when the
+        // wire is truly down (HostDisconnect already handles port-level
+        // EOF / errors via the `PhantomZero` / `Err(_)` arms of
+        // `poll_serial`).
+        let now = self.clock.now();
+        let silence = now.duration_since(self.last_recv_time);
         for entry in self.unacked_window.iter_mut() {
             entry.retry_count += 1;
-            if entry.retry_count >= MAX_RETRY_COUNT {
+            if entry.retry_count >= MAX_RETRY_COUNT && silence >= MCU_SILENCE_FOR_CLOSE {
                 self.state = ReactorState::Closed;
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                     fault_code:   FaultCode::HostRetransmitExhausted.as_u16(),
@@ -742,6 +788,14 @@ impl Reactor {
         match outcome {
             Ok(PollOutcome::Frames { frames, errors }) => {
                 self.zero_byte_first_seen = None;
+                // Any non-empty read counts as MCU activity. Even an
+                // errors-only batch (CRC failures, malformed Klipper
+                // frames) means the wire delivered bytes — the MCU is
+                // alive, just talking imperfectly. Gates the
+                // retry-exhaustion logic in `write_retransmit`.
+                if !frames.is_empty() || !errors.is_empty() {
+                    self.last_recv_time = self.clock.now();
+                }
                 for e in errors {
                     log::warn!("kalico stream error: {e}");
                 }
@@ -1776,19 +1830,21 @@ mod a2_nak_rto {
         // Submit at clock T0.
         submit_one(&mut h, 1);
         h.tick();
-        // Advance 50ms; ack: RTT sample = 50ms.
-        h.advance_clock(Duration::from_millis(50));
+        // Advance 200ms; ack: RTT sample = 200ms (chosen so the resulting
+        // RTO is above the 500ms MIN_RTO floor and the clamp doesn't mask
+        // the SRTT + 4×RTTVAR formula under test).
+        h.advance_clock(Duration::from_millis(200));
         h.feed_rx(&ack(2));
         h.tick();
-        // After one sample of 50ms: SRTT=50, RTTVAR=25; RTO = 50 + max(G, 4*25) = 150ms.
-        assert_eq!(h.reactor.rtt.current_rto(), Duration::from_millis(150));
+        // After one sample of 200ms: SRTT=200, RTTVAR=100; RTO = 200 + max(G, 4*100) = 600ms.
+        assert_eq!(h.reactor.rtt.current_rto(), Duration::from_millis(600));
 
         // Submit frame 2 at current clock; sent_at is "now".
         submit_one(&mut h, 2);
         h.tick();
         let len_before = h.tx_log().len();
-        // Advance 149ms — just shy of RTO.
-        h.advance_clock(Duration::from_millis(149));
+        // Advance 599ms — just shy of RTO.
+        h.advance_clock(Duration::from_millis(599));
         h.tick();
         assert_eq!(h.tx_log().len(), len_before, "RTO not yet expired");
         // Advance 2ms more → past RTO.
