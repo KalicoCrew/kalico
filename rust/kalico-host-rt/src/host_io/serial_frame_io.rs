@@ -12,14 +12,30 @@ use kalico_native_transport::demux::{Demuxer, PollOutcome};
 use crate::transport::TransportError;
 
 pub struct SerialFrameIo {
-    port: Box<dyn SerialPort>,
+    /// `None` once `close_port()` has been called. Done eagerly by the
+    /// reactor on transition to `Closed` so the OS file descriptor is
+    /// released without waiting for the reactor thread to exit. After
+    /// that point, every IO method returns `TransportError::Closed`.
+    /// See spec §3.11 + bench 2026-05-16 (USB-CDC disconnect leaked the
+    /// FD because the reactor thread didn't exit reliably from `run()`
+    /// after `state = Closed`).
+    port: Option<Box<dyn SerialPort>>,
     demuxer: Demuxer,
     scratch: [u8; 1024],
 }
 
 impl SerialFrameIo {
     pub fn new(port: Box<dyn SerialPort>) -> Self {
-        Self { port, demuxer: Demuxer::new(), scratch: [0u8; 1024] }
+        Self { port: Some(port), demuxer: Demuxer::new(), scratch: [0u8; 1024] }
+    }
+
+    /// Drop the underlying serial port, releasing the OS file descriptor.
+    /// Idempotent. After this call, every IO method returns
+    /// `TransportError::Closed`. The reactor calls this at every
+    /// `state = Closed` transition so a re-attach (`attach_serial` via
+    /// `FIRMWARE_RESTART`) doesn't hit `EBUSY` on the dead FD.
+    pub fn close_port(&mut self) {
+        self.port = None;
     }
 
     /// Read one batch of bytes from the port and demux. The deadline bounds
@@ -28,12 +44,15 @@ impl SerialFrameIo {
     pub fn poll_frames_until(&mut self, deadline: Instant)
         -> Result<PollOutcome, TransportError>
     {
+        let Some(port) = self.port.as_mut() else {
+            return Err(TransportError::Closed);
+        };
         let now = Instant::now();
         let remaining = deadline.saturating_duration_since(now);
-        if let Err(e) = self.port.set_timeout(remaining) {
+        if let Err(e) = port.set_timeout(remaining) {
             return Err(TransportError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())));
         }
-        match self.port.read(&mut self.scratch) {
+        match port.read(&mut self.scratch) {
             // USB-CDC TTYs (the production transport for kalico MCUs) return
             // `Ok(0)` during idle gaps as a normal "no bytes available within
             // timeout" signal — NOT a disconnect. The reactor's PhantomZero
@@ -65,19 +84,25 @@ impl SerialFrameIo {
     /// frames (KalicoIdentify::build_*) are pre-built by their encoders and
     /// written verbatim. See spec §3.1.
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.port.write_all(bytes).map_err(TransportError::Io)
+        let Some(port) = self.port.as_mut() else {
+            return Err(TransportError::Closed);
+        };
+        port.write_all(bytes).map_err(TransportError::Io)
     }
 
     pub fn flush(&mut self) -> Result<(), TransportError> {
-        self.port.flush().map_err(TransportError::Io)
+        let Some(port) = self.port.as_mut() else {
+            return Err(TransportError::Closed);
+        };
+        port.flush().map_err(TransportError::Io)
     }
 
     /// Test-only access to the underlying port for fixtures that need to
     /// observe what was written. Gated behind a feature so it doesn't leak
-    /// into production callers.
+    /// into production callers. Returns `None` after `close_port()`.
     #[cfg(any(test, feature = "test-harness"))]
-    pub fn port_mut(&mut self) -> &mut Box<dyn SerialPort> {
-        &mut self.port
+    pub fn port_mut(&mut self) -> Option<&mut Box<dyn SerialPort>> {
+        self.port.as_mut()
     }
 }
 
