@@ -386,7 +386,7 @@ impl Reactor {
                             synthesized:  false,
                         });
                     }
-                    self.transition_to_closed();
+                    self.state = ReactorState::Closed;
                     return;
                 }
             }
@@ -408,7 +408,7 @@ impl Reactor {
                             synthesized:  false,
                         });
                     }
-                    self.transition_to_closed();
+                    self.state = ReactorState::Closed;
                     return;
                 }
                 // Non-I/O errors (e.g. window-full / Backpressure on re-enqueue):
@@ -465,7 +465,7 @@ impl Reactor {
                         synthesized:  false,
                     });
                 }
-                self.transition_to_closed();
+                self.state = ReactorState::Closed;
                 self.passthrough_router = Some(router);
                 return;
             }
@@ -609,12 +609,7 @@ impl Reactor {
         for entry in self.unacked_window.iter_mut() {
             entry.retry_count += 1;
             if entry.retry_count >= MAX_RETRY_COUNT && silence >= MCU_SILENCE_FOR_CLOSE {
-                // Inlined transition_to_closed: the surrounding loop holds
-                // &mut self via unacked_window.iter_mut(), so we can't call
-                // the helper here. Field-disjoint writes keep the borrow
-                // checker happy.
                 self.state = ReactorState::Closed;
-                self.io.close_port();
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                     fault_code:   FaultCode::HostRetransmitExhausted.as_u16(),
                     fault_detail: entry.retry_count,
@@ -836,7 +831,7 @@ impl Reactor {
                         segment_id:   0,
                         synthesized:  false,
                     });
-                    self.transition_to_closed();
+                    self.state = ReactorState::Closed;
                 }
             }
             Err(e) => {
@@ -852,7 +847,7 @@ impl Reactor {
                     segment_id:   0,
                     synthesized:  false,
                 });
-                self.transition_to_closed();
+                self.state = ReactorState::Closed;
             }
         }
     }
@@ -863,20 +858,6 @@ impl Reactor {
 // ---------------------------------------------------------------------------
 
 impl Reactor {
-    /// Set state to Closed AND drop the underlying serial port FD eagerly.
-    /// The port-close step is load-bearing: without it, a subsequent
-    /// `attach_serial` (e.g., from `FIRMWARE_RESTART` after a USB-CDC
-    /// disconnect) hits `EBUSY` on the dead FD because the reactor
-    /// thread's exit-path drop of the port doesn't fire reliably (bench
-    /// 2026-05-16 — H7 USB disconnect + re-enumerate; klippy held the
-    /// dead FD until `systemctl restart klipper`). All `state = Closed`
-    /// transitions in this file route through this helper so the FD is
-    /// released the moment the reactor decides to give up on the wire.
-    fn transition_to_closed(&mut self) {
-        self.state = ReactorState::Closed;
-        self.io.close_port();
-    }
-
     /// Stage HostDisconnect + transition to Closed on a transport-level
     /// Io fault. Idempotent — won't overwrite an existing pending_host_fault.
     /// Used by the immediate-dispatch paths (Submit, FireAndForget,
@@ -897,7 +878,7 @@ impl Reactor {
                 synthesized:  false,
             });
         }
-        self.transition_to_closed();
+        self.state = ReactorState::Closed;
     }
 
     fn handle_command(&mut self, cmd: crate::host_io::ReactorCommand) {
@@ -937,7 +918,7 @@ impl Reactor {
                     self.awaiting_response.len(),
                     self.unacked_window.len(),
                 );
-                self.transition_to_closed();
+                self.state = ReactorState::Closed;
             }
             ReactorCommand::AttachCreditCounter(counter) => {
                 self.event_dispatcher.credit_counter = Some(counter);
@@ -1147,7 +1128,7 @@ impl Reactor {
                         self.awaiting_response.len(),
                         self.unacked_window.len(),
                     );
-                    self.transition_to_closed();
+                    self.state = ReactorState::Closed;
                     break;
                 }
             }
