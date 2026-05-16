@@ -84,11 +84,16 @@ const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
 
 // Empty-poll cadence for the consumer when its ring has no entries.
 // Independent of SF_RESCHEDULE_FLOOR — the consumer's "no work, sleep"
-// path is a safety-net only; the producer→consumer kick (in
-// `runtime_producer_event::kick_consumers_if_filled`) wakes the
-// consumer on the actual head `t_next` when the ring becomes
-// non-empty, so this cadence doesn't affect first-step latency.
-#define EMPTY_POLL_CYCLES (runtime_clock_freq / 1000U)  // 1 ms
+// path runs at 1 kHz, leaving most of the dispatch budget to the
+// producer (which is the actually-loaded timer when the consumer is
+// empty). The producer kicks the consumer indirectly by filling its
+// ring; the consumer notices on its next 1 ms poll. 1 ms of first-
+// step latency after a segment push is invisible at the bench.
+// TEMPORARY DIAGNOSTIC: 100 ms empty-poll cadence. If empty_polls counter
+// rate remains >40 Hz aggregate after this, our t->waketime isn't being
+// respected by Klipper's scheduler and the dispatch-loop saturation has
+// a different root cause than the consumer's reschedule cadence.
+#define EMPTY_POLL_CYCLES (runtime_clock_freq / 10U)  // 100 ms
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
@@ -664,7 +669,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 31) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 19) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -956,135 +961,6 @@ runtime_status_drain(void)
             // past". A value of 10+ is a hard saturation signal.
             fault_detail = 0xEB000000u | (producer_step_slow_streak_max & 0x00FFFFFFu);
             break;
-        case 19: {
-            // 2026-05-15 diagnosis: 0xEC = count of push_segment frames
-            // whose computed consumers_remaining mask was zero (every
-            // handle UNUSED). If this advances during a jog, the bridge is
-            // sending no-handle segments to the MCU.
-            extern uint32_t kalico_runtime_push_seg_all_unused_lo(void *rt);
-            fault_detail = 0xEC000000u
-                | (kalico_runtime_push_seg_all_unused_lo(runtime_handle) & 0x00FFFFFFu);
-            break;
-        }
-        case 20: {
-            // 2026-05-15 diagnosis: 0xED = last x_handle packed slot_idx
-            // (low 16 bits). 0xFFFE = UNUSED_SENTINEL.slot_idx, 0..15 =
-            // a real curve-pool slot.
-            extern uint32_t kalico_runtime_last_push_x_handle(void *rt);
-            fault_detail = 0xED000000u
-                | (kalico_runtime_last_push_x_handle(runtime_handle) & 0x00FFFFFFu);
-            break;
-        }
-        case 21: {
-            // 2026-05-15 diagnosis: 0xEE = last y_handle packed.
-            extern uint32_t kalico_runtime_last_push_y_handle(void *rt);
-            fault_detail = 0xEE000000u
-                | (kalico_runtime_last_push_y_handle(runtime_handle) & 0x00FFFFFFu);
-            break;
-        }
-        case 22: {
-            // 2026-05-15 diagnosis: 0xEF = last consumers_remaining mask
-            // computed in push_segment_impl. Zero → segment retires
-            // instantly on producer dequeue.
-            extern uint32_t kalico_runtime_last_push_consumers_remaining(void *rt);
-            fault_detail = 0xEF000000u
-                | (kalico_runtime_last_push_consumers_remaining(runtime_handle) & 0x00FFFFFFu);
-            break;
-        }
-        case 23: {
-            // 2026-05-15 diagnosis (CP capture): 0xF0 = low 24 bits of
-            // last_resolved_primary_cps_0 (f32 bits, motor 0's X curve
-            // cps[0]). Three bytes only fit the low 24 bits of the f32
-            // mantissa+exponent — pair with 0xF1 (cps_3) to detect "X
-            // curve is zero-displacement" (cps_0 == cps_3).
-            extern uint32_t kalico_runtime_last_resolved_primary_cps_0(void *rt);
-            uint32_t b = kalico_runtime_last_resolved_primary_cps_0(runtime_handle);
-            fault_detail = 0xF0000000u | (b & 0x00FFFFFFu);
-            break;
-        }
-        case 24: {
-            // 0xF1 = low 24 bits of last_resolved_primary_cps_3 (motor
-            // 0's X curve, value at u=1). Compare with 0xF0: equal ⇒
-            // no displacement. For a 0.5mm jog from X=125, cps_0 should
-            // be 0x42FA0000 (low24=0xFA0000) and cps_3 should be
-            // 0x42FB0000 (low24=0xFB0000) — distinguishable in the low
-            // 24 bits.
-            extern uint32_t kalico_runtime_last_resolved_primary_cps_3(void *rt);
-            uint32_t b = kalico_runtime_last_resolved_primary_cps_3(runtime_handle);
-            fault_detail = 0xF1000000u | (b & 0x00FFFFFFu);
-            break;
-        }
-        case 25: {
-            // 0xF2 = low 24 bits of last_combined_motor_a_cps_0 (motor 0
-            // post-CoreXY-combine, value at u=0). For a 0.5mm X jog from
-            // X=125, Y=100, combined = X + Y = 225.0 = 0x43610000
-            // (low24=0x610000).
-            extern uint32_t kalico_runtime_last_combined_motor_a_cps_0(void *rt);
-            uint32_t b = kalico_runtime_last_combined_motor_a_cps_0(runtime_handle);
-            fault_detail = 0xF2000000u | (b & 0x00FFFFFFu);
-            break;
-        }
-        case 26: {
-            // 0xF3 = low 24 bits of last_combined_motor_a_cps_3 (motor 0
-            // post-CoreXY-combine, value at u=1). Compare with 0xF2:
-            // equal ⇒ combined curve has no displacement (kinematic mix
-            // cancels the X jog). For a 0.5mm X jog from X=125, Y=100,
-            // combined = X+Y at u=1 = 225.5 = 0x43618000
-            // (low24=0x618000), distinct from 0xF2's 0x610000.
-            extern uint32_t kalico_runtime_last_combined_motor_a_cps_3(void *rt);
-            uint32_t b = kalico_runtime_last_combined_motor_a_cps_3(runtime_handle);
-            fault_detail = 0xF3000000u | (b & 0x00FFFFFFu);
-            break;
-        }
-        case 27: {
-            // 0xF4 = step_time_emit_max_lateness_cycles (low 24 bits, in µs).
-            // How far behind the planned step time the consumer was when it
-            // finally fired. Small (< 100) → consumer is keeping up. Large
-            // (> 1000 = 1 ms) → producer queued steps long-past, consumer
-            // is rapid-firing to catch up.
-            extern volatile uint32_t step_time_emit_max_lateness_cycles;
-            uint32_t cyc = step_time_emit_max_lateness_cycles;
-            uint32_t us = (runtime_clock_freq >= 1000000U)
-                ? (cyc / (runtime_clock_freq / 1000000U))
-                : cyc;
-            fault_detail = 0xF4000000u | (us & 0x00FFFFFFu);
-            break;
-        }
-        case 28: {
-            // 0xF5 = step_time_emit_min_interval_cycles (low 24 bits, in
-            // cycles — raw, NOT converted to µs, so sub-µs intervals are
-            // visible). 0 = no two emits ever observed yet, OR two emits
-            // arrived within the same DWT tick (sub-ns). Small values
-            // (< ~50 cycles ≈ 100 ns on H7 @ 520 MHz) → consumer firing
-            // back-to-back; STEP pulses too narrow for TMC5160 (min 100 ns).
-            extern volatile uint32_t step_time_emit_min_interval_cycles;
-            uint32_t cyc = step_time_emit_min_interval_cycles;
-            fault_detail = 0xF5000000u | (cyc & 0x00FFFFFFu);
-            break;
-        }
-        case 29: {
-            // 0xF6 = step_time_emit_in_past_total (low 24 bits). Count of
-            // ISR fires where `t_next <= now` at entry → emitted
-            // immediately. Compare with 0xF7. Healthy stream: F7 >> F6
-            // (consumer pre-armed at planned times). Pathological: F6 >> F7
-            // (consumer always catching up; symptom of producer pushing
-            // stale clocks).
-            extern volatile uint32_t step_time_emit_in_past_total;
-            fault_detail = 0xF6000000u
-                | (step_time_emit_in_past_total & 0x00FFFFFFu);
-            break;
-        }
-        case 30: {
-            // 0xF7 = step_time_emit_future_total (low 24 bits). Count of
-            // ISR fires where `t_next > now` at entry → rescheduled, no
-            // emit. Healthy steady state: roughly one of these per emit
-            // (consumer pre-arms one tick early, fires at planned time on
-            // the next pass).
-            extern volatile uint32_t step_time_emit_future_total;
-            fault_detail = 0xF7000000u
-                | (step_time_emit_future_total & 0x00FFFFFFu);
-            break;
-        }
         }
     }
 
@@ -1386,14 +1262,6 @@ volatile uint32_t step_time_event_fires __attribute__((used, externally_visible)
 // Surfaced via the 0xE4 fault_detail tag.
 volatile uint32_t step_time_producer_kicks __attribute__((used, externally_visible));
 
-// Diag counter: number of producer→consumer re-arms in
-// `kick_consumers_if_filled` — when the producer pulled a consumer's
-// waketime forward to the new head's t_next instead of letting it wait
-// for the EMPTY_POLL_CYCLES cadence. Shares the 0xE4 tag slot via
-// (step_time_consumer_kicks - step_time_producer_kicks) inference, OR
-// surfaced under its own tag if added to the rotation.
-volatile uint32_t step_time_consumer_kicks __attribute__((used, externally_visible));
-
 // Diag counter: number of times step_time_event found an empty ring and
 // fell back to a short-poll reschedule. Surfaced via the 0xE5 fault_detail
 // tag. High counts indicate the producer is failing to keep up.
@@ -1410,37 +1278,6 @@ volatile uint32_t producer_step_peak_cycles __attribute__((used, externally_visi
 // Diag: peak `step_time_event` body duration in DWT cycles. Same shape as
 // above but for the consumer path. Surfaced via 0xE8.
 volatile uint32_t step_time_event_peak_cycles __attribute__((used, externally_visible));
-
-// 2026-05-15 step_time clustering diagnostics (tags 0xF4..0xF7).
-//
-// Theory: producer's compute_next_step_time may emit `t_next` clocks that
-// are at-or-past `now`, causing the consumer ISR to fire back-to-back
-// rather than spaced by the planner's intended inter-step interval. With
-// gpio_out_toggle_noirq at ~10-20 ns per call, back-to-back ISR fires
-// produce STEP pulses too narrow for TMC5160 (tCLKH min = 100 ns) to
-// register — exactly the "energizes but doesn't move" symptom.
-//
-// step_time_emit_max_lateness_cycles: max `(now - t_next)` observed when
-// emitting (clamped to 0 on the future branch). Large value → producer
-// queued steps far in the past, consumer is catching up.
-volatile uint32_t step_time_emit_max_lateness_cycles
-    __attribute__((used, externally_visible));
-// step_time_emit_min_interval_cycles: min `(now - prev_emit_now)` observed
-// between two consecutive emit-branch fires (initialized to UINT32_MAX so
-// the first emit doesn't update). Small value (< 1 µs) → consumer firing
-// back-to-back.
-volatile uint32_t step_time_emit_min_interval_cycles
-    __attribute__((used, externally_visible));
-// step_time_emit_in_past_total: count of emits where `t_next <= now` at
-// the moment of ISR entry. Compare with step_time_emit_future_total: if
-// in_past dominates, producer is consistently scheduling in the past.
-volatile uint32_t step_time_emit_in_past_total
-    __attribute__((used, externally_visible));
-// step_time_emit_future_total: count of times the ISR found `t_next > now`
-// at entry and rescheduled (no emit, no advance). This is the healthy
-// path — the consumer pre-armed at exact step time.
-volatile uint32_t step_time_emit_future_total
-    __attribute__((used, externally_visible));
 
 // Diag: peak SysTick dispatch-loop wall-clock spent in a single SysTick
 // handler invocation. Surfaced via 0xE9. Measured at top + bottom of
@@ -1567,7 +1404,6 @@ step_time_event(struct timer *t)
         // entry is only a handful of cycles ahead (Klipper's
         // sched_add_timer-style "Timer too close" check expects strictly
         // > now after the irq_save races a few cycles).
-        step_time_emit_future_total++;
         uint32_t floor = now + SF_RESCHEDULE_FLOOR;
         t->waketime = ((int32_t)(t_next - floor) < 0) ? floor : t_next;
         uint32_t _dt = timer_read_time() - _t0;
@@ -1579,32 +1415,6 @@ step_time_event(struct timer *t)
     // runtime_emit_step_pulses path handles AWD partners (e.g.
     // stepper_z / z1 / z2 for a 3-motor Z), dir-pin updates with the
     // correct polarity, and the dir-setup dwell before the step edge.
-    //
-    // Clustering diagnostics (tags 0xF4..0xF7) — see the volatile globals'
-    // declarations for the theory. All updates are pre-emit so they reflect
-    // the inter-fire arrival pattern, not the emit-loop CPU cost.
-    step_time_emit_in_past_total++;
-    {
-        uint32_t lateness = now - t_next; // unsigned wrap is fine here
-        if (lateness > step_time_emit_max_lateness_cycles) {
-            step_time_emit_max_lateness_cycles = lateness;
-        }
-    }
-    {
-        static uint32_t prev_emit_now;
-        static uint8_t have_prev_emit;
-        if (have_prev_emit) {
-            uint32_t interval = now - prev_emit_now;
-            // Init min to UINT32_MAX on first comparison.
-            if (step_time_emit_min_interval_cycles == 0
-                || interval < step_time_emit_min_interval_cycles) {
-                step_time_emit_min_interval_cycles = interval;
-            }
-        }
-        prev_emit_now = now;
-        have_prev_emit = 1;
-    }
-
     int32_t n_steps = (dir >= 0) ? 1 : -1;
     runtime_emit_step_pulses(motor, n_steps);
 
@@ -1653,51 +1463,6 @@ step_time_event(struct timer *t)
 // then either self-reschedules at `now` (more work pending) or marks
 // itself disabled and exits (every StepTime motor reached AllIdle). The
 // next push_segment / consumer low-water kick will re-arm.
-// Producer → consumer kick. After producer_step fills rings, re-arm any
-// consumer timer whose currently-queued waketime is later than the new
-// head entry's t_next. Without this, the consumer's only wake source is
-// its own EMPTY_POLL_CYCLES self-poll, so segments pushed mid-poll wait
-// up to one cadence before any pulse fires — observed live as
-// step_time_emit_max_lateness_cycles == EMPTY_POLL_CYCLES exactly, with
-// the entire segment's worth of entries drained back-to-back at
-// SF_RESCHEDULE_FLOOR once the consumer finally wakes. Re-arming brings
-// the first-pulse latency down to SF_RESCHEDULE_FLOOR (100 µs).
-//
-// `sched_del_timer` + `sched_add_timer` are both irq-safe (they own
-// `irq_save`/`irq_restore` internally). If the consumer ISR is mid-fire
-// when we del, the timer isn't in the queue so del is a no-op and our
-// add re-inserts at the new waketime; the ISR's SF_RESCHEDULE return
-// then triggers Klipper's own re-insert with the ISR-set waketime,
-// which wins iff later than ours — that's the correct ordering since
-// the ISR's waketime is computed from the entry it just emitted.
-static void
-kick_consumers_if_filled(uint32_t now)
-{
-    if (!runtime_handle) return;
-    for (uint8_t i = 0; i < MAX_STEPPER_OIDS_C; i++) {
-        if (!step_timers[i].enabled) continue;
-        uint32_t t_next = 0;
-        int8_t dir = 1;
-        if (!kalico_runtime_step_ring_peek_head(
-                runtime_handle, i, &t_next, &dir)) {
-            continue; // ring still empty
-        }
-        uint32_t floor = now + SF_RESCHEDULE_FLOOR;
-        uint32_t new_waketime =
-            ((int32_t)(t_next - floor) < 0) ? floor : t_next;
-        // Only re-arm if our new wake is strictly earlier than the
-        // currently-queued one. Same-or-later would be a wasted
-        // del+add (and a window for races against the consumer ISR).
-        if ((int32_t)(new_waketime - step_timers[i].timer.waketime) >= 0) {
-            continue;
-        }
-        sched_del_timer(&step_timers[i].timer);
-        step_timers[i].timer.waketime = new_waketime;
-        sched_add_timer(&step_timers[i].timer);
-        step_time_consumer_kicks++;
-    }
-}
-
 static uint_fast8_t
 runtime_producer_event(struct timer *t)
 {
@@ -1715,11 +1480,6 @@ runtime_producer_event(struct timer *t)
     } else {
         producer_step_slow_streak = 0;
     }
-    // Re-arm any consumer whose newly-filled head is earlier than its
-    // currently-scheduled waketime. Done unconditionally (work_pending
-    // or not) so a producer fire that pushed even one entry still
-    // wakes the consumer ahead of its empty-poll cadence.
-    kick_consumers_if_filled(timer_read_time());
     if (work_pending) {
         // Self-reschedule ASAP for the next batch.
         t->waketime = timer_read_time() + SF_RESCHEDULE_FLOOR;

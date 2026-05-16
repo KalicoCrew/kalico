@@ -441,6 +441,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.step_rings.get(motor_idx)
     }
 
+    /// Read-only accessor for a motor's configured `step_distance`
+    /// (mm per microstep). Returns `None` for out-of-range indices,
+    /// `Some(0.0)` for unconfigured motors, `Some(1/steps_per_mm)` for
+    /// configured ones. Used by the C-side `init_step_time_timers` to
+    /// skip enabling consumer Klipper timers for unconfigured motors
+    /// (the default `StepMode::StepTime` would otherwise trip every
+    /// motor's timer even when only a few are actually wired up).
+    pub fn producer_step_distance(&self, motor_idx: usize) -> Option<f64> {
+        self.producer_states.get(motor_idx).map(|s| s.step_distance())
+    }
+
     /// Seed the engine's logical toolhead position. Used by tests + by
     /// the bridge's `kalico_stream_open` / `SET_KINEMATIC_POSITION` paths
     /// to anchor `prev_x`/`prev_y`/`prev_z` and each motor's
@@ -2110,8 +2121,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         }
                     }
                     // Sort. partial_cmp is safe because all u-values are
-                    // finite reals in [0, 1].
-                    merged_u.sort_by(|a, b| {
+                    // finite reals in [0, 1]. Use the slice's
+                    // sort_unstable_by (works in no_std, no alloc).
+                    merged_u.as_mut_slice().sort_unstable_by(|a, b| {
                         a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
                     });
                     // In-place dedup with epsilon: keep merged piece widths

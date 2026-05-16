@@ -122,6 +122,14 @@ impl SerialPort for TcpSerialPort {
         // resolution race). 5 ms is far below the reactor's polling cadence
         // but generous enough that arriving frames are actually read.
         let effective = timeout.max(Duration::from_millis(5));
+        // 2026-05-16: avoid calling setsockopt(SO_RCVTIMEO) on every poll
+        // iteration. macOS intermittently rejects same-value re-sets with
+        // EINVAL when the syscall rate climbs (each LoadCurve read-wait
+        // re-calls this thousands of times). Skip the syscall when the
+        // requested timeout is unchanged from what we already set.
+        if effective == self.timeout {
+            return Ok(());
+        }
         self.stream
             .set_read_timeout(Some(effective))
             .map_err(|e| serialport::Error::new(

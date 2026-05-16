@@ -2776,4 +2776,40 @@ pub mod exports {
         }
     }
 
+    /// Returns 1 if motor `stepper_idx` is configured (has step_distance > 0
+    /// in its `ProducerState`), 0 otherwise. Used by C-side
+    /// `init_step_time_timers` to avoid enabling consumer Klipper timers
+    /// for unconfigured motors — without this gate every motor with the
+    /// default `StepMode::StepTime` gets a timer regardless of
+    /// configuration, and on Renode (1 µs quantum) the resulting
+    /// scheduler load drowns LoadCurve byte processing in the USART RX
+    /// FIFO.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_motor_is_configured(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+    ) -> u8 {
+        use runtime::state::MAX_STEPPER_OIDS;
+        if rt.is_null() || (stepper_idx as usize) >= MAX_STEPPER_OIDS {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: rt is the published RT_CELL pointer; producer_states are
+        // in the ISR-side state half but we only read step_distance (set
+        // once at Engine::configure() and never mutated thereafter), so a
+        // shared-borrow read is safe.
+        unsafe {
+            let isr_ptr: *const runtime::state::IsrState =
+                core::cell::UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr: &runtime::state::IsrState = &*isr_ptr;
+            let sd = isr
+                .engine
+                .producer_step_distance(stepper_idx as usize)
+                .unwrap_or(0.0);
+            if sd > 0.0 { 1 } else { 0 }
+        }
+    }
 }
