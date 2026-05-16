@@ -740,12 +740,15 @@ class MotionToolhead(ToolHead):
                         else "motor_%d" % i
                     )
                     raise self.printer.config_error(
-                        "Stepper '%s' requests phase_stepping: 1, "
-                        "but its MCU does not advertise the "
-                        "PHASE_STEPPING capability. "
-                        "Phase stepping requires a sufficiently fast MCU "
-                        "(STM32H7 family); the STM32F4 family is not "
-                        "supported." % slot_name
+                        "Stepper '%s' requests phase_stepping: 1, but MCU "
+                        "'%s' did not advertise the PHASE_STEPPING capability "
+                        "in its IdentifyResponse (caps=0x%x). This usually "
+                        "means kalico-native identify timed out, which in "
+                        "turn usually means the MCU's firmware was built "
+                        "without CONFIG_KALICO_RUNTIME=y. Rebuild that MCU "
+                        "with CONFIG_KALICO_RUNTIME=y (and the small or "
+                        "large runtime profile for the chip family) and "
+                        "reflash." % (slot_name, name, mcu_caps)
                     )
             self.bridge.configure_axes(
                 mcu_handle, kin_tag, present_mask, awd_mask,

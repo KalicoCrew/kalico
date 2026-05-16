@@ -210,8 +210,20 @@ handle_identify(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
     body_out[58] = (uint8_t)((epoch >> 8) & 0xFF);
     body_out[59] = (uint8_t)((epoch >> 16) & 0xFF);
     body_out[60] = (uint8_t)((epoch >> 24) & 0xFF);
-    // capabilities: 0 (no caps advertised in MVP).
+    // capabilities: bit 0 = PHASE_STEPPING_CAPABLE. Advertised
+    // unconditionally on any MCU built with CONFIG_KALICO_RUNTIME=y —
+    // H7 runs the modulated tick at 40 kHz (runtime_tick_h7.c); F4 runs
+    // it at 10 kHz (runtime_tick_f4.c). Until Step 10 wires true coil-
+    // current synthesis to TMC5160 XDIRECT, both chips route Modulated
+    // mode through the same `emit_step_pulses` GPIO path; the bit
+    // reflects "this firmware can service a Modulated motor at this
+    // chip's tick cadence", not "this firmware drives coil currents".
+    // An MCU built without CONFIG_KALICO_RUNTIME=y has no kalico-native
+    // dispatch path at all and the host's kalico_identify times out
+    // for it, which leaves identify_caps=0 on the host side and is what
+    // the motion_toolhead gate actually catches.
     memset(&body_out[61], 0, 8);
+    body_out[61] = 0x01;
     // mcu_serial: zero-fill (Phase D wires this).
     memset(&body_out[69], 0, 12);
 
