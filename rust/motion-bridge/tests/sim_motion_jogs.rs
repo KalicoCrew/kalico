@@ -931,12 +931,15 @@ fn first_jog_after_stream_open_runs_on_sim() {
         dispatched, ctx.harness.last_segment_id(),
     );
 
-    // Allow the firmware up to 5 s real-time to process the dispatched curves.
-    // At 250 ms lead + ~0.25 s expected trajectory + status-emit 10 Hz, we
-    // expect to see `current_segment_id >= 1` well within this window.
+    // Allow the firmware up to 90 s wall to process the dispatched curves.
+    // Renode's H7 sim runs ~150-200× slower than real wall clock, and the
+    // 25 mm jog at F=100 produces ~282 ms of trajectory (seg=2 t_end =
+    // 277 M cycles at 520 MHz). So we need at least 50-60 s wall just for
+    // virtual time to reach the segment's end-of-trajectory. 90 s gives
+    // a safety margin; on silicon this completes in well under a second.
     let wait_outcome = ctx
         .harness
-        .wait_for_segment_id(dispatched.max(1) as u32, Duration::from_secs(5));
+        .wait_for_segment_id(dispatched.max(1) as u32, Duration::from_secs(90));
 
     let status = ctx.harness.status();
     eprintln!(

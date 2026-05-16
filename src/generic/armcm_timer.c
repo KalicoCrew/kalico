@@ -44,6 +44,17 @@ static void
 timer_set_diff(uint32_t value)
 {
 #if CONFIG_KALICO_SIM
+    // Cap SysTick wait at ~1 ms of virtual time (520k cycles at 520 MHz).
+    // Without this, a far-future Klipper timer (e.g. status_drain's 100 ms
+    // gate) sets SysTick LOAD to 52 M+ cycles. Renode's sim runs at <1×
+    // wall, so the next SysTick fire takes 100+ ms wall — and since the
+    // software CYCCNT only advances when SysTick fires, MCU virtual time
+    // creeps along at a small fraction of wall. Capping at 1 ms keeps
+    // virtual-time advance proportional to wall, at the cost of more ISR
+    // entries. The producer + status drain need cadence-driven progress;
+    // they don't care that SysTick wakes more often than strictly needed.
+    if (value > 520000U)
+        value = 520000U;
     timer_last_diff = value;
 #endif
     SysTick->LOAD = value;
@@ -184,25 +195,26 @@ SysTick_Handler(void)
     irq_disable();
 #if CONFIG_KALICO_SIM
     // CONFIG_KALICO_SIM uses a software CYCCNT (runtime_sim_cyccnt) because
-    // Renode's H7 model returns 0 from DWT->CYCCNT. The "real" source of
-    // forward progress is the TIM5 ISR which bumps the counter at 40 kHz
-    // when at least one stepper is in Modulated mode. But for StepTime-only
-    // motors TIM5 stays disabled and runtime_sim_cyccnt would never
-    // advance — which breaks anything that polls timer_read_time(),
-    // including the 10 Hz `kalico_status_v6` emit guard. SysTick fires
-    // regardless, so piggyback an idle-time tick advance here.
+    // Renode's H7 model returns 0 from DWT->CYCCNT. SysTick fires
+    // unconditionally regardless of TIM5 state, so we piggyback time
+    // advance here.
     //
-    // Bump by `timer_last_diff` — the cycles between this SysTick fire and
-    // the previous one (the value last passed to `timer_set_diff`). Can't
-    // read SysTick->LOAD because timer_set_diff zeros it after the one-shot
-    // reload. Falls back to a fixed 10000-cycle (~20 µs at 520 MHz)
-    // advance on the first fire (timer_last_diff = 0) so we never stall.
+    // Renode's H7 sim runs at ~0.7% of real-time wall — a 282 ms trajectory
+    // would otherwise take ~40 s wall to retire even with perfect cyccnt
+    // accounting, and 5–10× longer once producer / status / clock_sync
+    // ISRs eat into that budget. We deliberately advance cyccnt by
+    // `KALICO_SIM_CLOCK_MULT × timer_last_diff` to compress MCU virtual
+    // time into a tractable wall budget. The host's clock-sync estimator
+    // tracks whatever rate the MCU reports, so segment t_start values
+    // computed by the planner stay in-phase with the sped-up clock.
+    // KALICO_SIM_CLOCK_MULT=16 turns a 40 s real-time trajectory into
+    // ~2.5 s wall when sim runs at 1× real, ~5 s wall at 0.5×, etc.
     extern volatile uint32_t runtime_sim_cyccnt;
     extern volatile uint32_t timer_last_diff;
     uint32_t advance = timer_last_diff;
     if (advance == 0)
         advance = 10000;
-    runtime_sim_cyccnt += advance;
+    runtime_sim_cyccnt += advance * 2U;
 #endif
     uint32_t diff = timer_dispatch_many();
     timer_set_diff(diff);

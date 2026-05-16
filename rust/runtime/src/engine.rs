@@ -1690,10 +1690,21 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             .fetch_add(1, Ordering::AcqRel);
         if self.producer_current.is_none() {
             self.producer_current = queue.dequeue();
-            if self.producer_current.is_some() {
+            if let Some(seg) = self.producer_current {
                 shared
                     .producer_segment_dequeued_total
                     .fetch_add(1, Ordering::AcqRel);
+                // Publish the active segment id for host-side status frames
+                // and retire-cursor consumers. `Engine::tick` does the same
+                // store at the modulated-tick equivalent dequeue point
+                // (line ~759); StepTime motors don't run tick(), so without
+                // this store `shared.current_segment_id` would stay at 0
+                // forever and the host's `wait_for_segment_id` polling
+                // (kalico_status_v6 `current_segment_id` field) would never
+                // observe the engine advancing through queued segments.
+                shared
+                    .current_segment_id
+                    .store(seg.id, Ordering::Release);
             }
         }
         let seg = self.producer_current?;
