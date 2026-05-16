@@ -30,10 +30,22 @@ timer_is_before(uint32_t time1, uint32_t time2)
     return (int32_t)(time1 - time2) < 0;
 }
 
+#if CONFIG_KALICO_SIM
+// Remember the value last passed to `timer_set_diff` so SysTick_Handler can
+// advance runtime_sim_cyccnt by exactly the cycles that elapsed since the
+// last reload. `timer_set_diff` zeros LOAD after the one-shot reload, so the
+// LOAD register itself can't be read back. Reset to 0 on shutdown via
+// `timer_reset`'s SysTick disable path; reset elsewhere is unnecessary.
+volatile uint32_t timer_last_diff;
+#endif
+
 // Set the next irq time
 static void
 timer_set_diff(uint32_t value)
 {
+#if CONFIG_KALICO_SIM
+    timer_last_diff = value;
+#endif
     SysTick->LOAD = value;
     SysTick->VAL = 0;
     SysTick->LOAD = 0;
@@ -180,11 +192,17 @@ SysTick_Handler(void)
     // including the 10 Hz `kalico_status_v6` emit guard. SysTick fires
     // regardless, so piggyback an idle-time tick advance here.
     //
-    // Bump by SysTick reload (LOAD register) — that's the number of CPU
-    // cycles between SysTick IRQs, which is exactly the wall-clock time
-    // (in cycles) we just spent waiting. Counter stays monotone forward.
+    // Bump by `timer_last_diff` — the cycles between this SysTick fire and
+    // the previous one (the value last passed to `timer_set_diff`). Can't
+    // read SysTick->LOAD because timer_set_diff zeros it after the one-shot
+    // reload. Falls back to a fixed 10000-cycle (~20 µs at 520 MHz)
+    // advance on the first fire (timer_last_diff = 0) so we never stall.
     extern volatile uint32_t runtime_sim_cyccnt;
-    runtime_sim_cyccnt += SysTick->LOAD + 1U;
+    extern volatile uint32_t timer_last_diff;
+    uint32_t advance = timer_last_diff;
+    if (advance == 0)
+        advance = 10000;
+    runtime_sim_cyccnt += advance;
 #endif
     uint32_t diff = timer_dispatch_many();
     timer_set_diff(diff);

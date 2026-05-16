@@ -369,6 +369,9 @@ impl SimHarness {
                                     c.retired_through_segment_id, c.free_slots,
                                 );
                             }
+                            RuntimeEvent::UnknownOutput { msg, .. } => {
+                                eprintln!("[sim-output] {msg}");
+                            }
                             _ => {}
                         }
                     }
