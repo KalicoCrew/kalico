@@ -33,6 +33,7 @@
 #   bash tools/sim/run_sim_motion_jogs.sh first       # test A only
 #   bash tools/sim/run_sim_motion_jogs.sh alternating # test B only
 #   bash tools/sim/run_sim_motion_jogs.sh rapid       # test C only
+#   bash tools/sim/run_sim_motion_jogs.sh phase       # test F only
 
 set -euo pipefail
 
@@ -44,9 +45,12 @@ case "${1:-all}" in
   first|a)      FILTER="first_jog_after_stream_open_runs_on_sim" ;;
   alternating|b) FILTER="ten_alternating_jogs_run_on_sim" ;;
   rapid|c)      FILTER="rapid_short_jogs_burst_no_fault" ;;
+  home|homing|e) FILTER="homing_x_trips_when_pa0_raised_via_monitor" ;;
+  phase|f|phase_stepping)
+                FILTER="phase_stepping_rapid_g1_x25_after_set_position_no_crash" ;;
   all|"")       FILTER="" ;;
   *)
-    echo "Usage: $0 [smoke|first|alternating|rapid|all]" >&2
+    echo "Usage: $0 [smoke|first|alternating|rapid|home|phase|all]" >&2
     exit 2 ;;
 esac
 

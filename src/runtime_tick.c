@@ -1316,6 +1316,17 @@ volatile uint32_t producer_step_slow_streak_max __attribute__((used, externally_
 // the step-time ISR path catches trips at step resolution.
 extern void runtime_endstop_sample_one(uint8_t stepper_idx);
 
+// Step-time trip evaluator. Mirrors what `engine.tick()` calls in the
+// Modulated path (Rust-side: rust/runtime/src/engine.rs:811). For a
+// StepTime-only firmware build, TIM5 stays disabled and `engine.tick`
+// never runs — without this call the per-step GPIO sample updates
+// `PIN_LEVELS` but `endstop::tick` never evaluates whether the asserted
+// pattern fires a trip. `now` is the firmware clock at the call site
+// (32-bit `timer_read_time`, widened to u64 with high=0). Returns 1 if a
+// trip fired, 0 otherwise; the runtime publishes the trip event via the
+// existing snapshot path that `runtime_endstop_drain` polls.
+extern int32_t kalico_endstop_tick_step_time(void *rt, uint64_t now);
+
 // Forward decl for the producer timer; defined below. Used by the consumer
 // low-water hook and by `arm_producer_timer_if_kicked` (called from
 // handle_push_segment in src/kalico_dispatch.c).
@@ -1438,6 +1449,15 @@ step_time_event(struct timer *t)
 
     // Sample endstops armed on this motor's axis at step resolution.
     runtime_endstop_sample_one(motor);
+    // Trip evaluation. Mirrors what `engine.tick()` does at the same
+    // point of the Modulated polled-tick path. Without this call, an
+    // armed endstop's per-step sample updates `PIN_LEVELS` but no trip
+    // ever fires from the step-time path — and a StepTime-only build
+    // (the MVP) has no other entry point that runs `endstop::tick`.
+    // Cheap: returns 0 immediately when no arm is active (the very
+    // first check in `endstop::tick` reads an `AtomicU8` and bails).
+    (void)kalico_endstop_tick_step_time(runtime_handle,
+                                        (uint64_t)timer_read_time());
 
     // Advance the consumer cursor past this entry.
     kalico_runtime_step_ring_advance(runtime_handle, motor, 1);

@@ -27,14 +27,17 @@ if [[ "${1:-}" == "--gui" ]]; then
   GUI_FLAGS=()
 fi
 
-# --console reads stdin for the monitor; if the parent backgrounds us with
-# stdin redirected, the monitor closes and Renode exits. Pipe a long-running
-# /dev/zero into stdin so headless backgrounding keeps the sim alive.
-exec renode --console "${GUI_FLAGS[@]}" \
+# `--port 3335` exposes Renode's command monitor on a TCP socket. Tests use
+# it to drive virtual peripherals at runtime (e.g. flipping an endstop GPIO
+# during a homing move — see `RenodeMonitor` in tests/sim_renode_monitor.rs).
+# Replaces the earlier `--console < /dev/zero` plumbing because `--console`
+# and `--port` are mutually exclusive view modes for the same monitor. The
+# TCP-based monitor stays alive after the test disconnects, so backgrounding
+# is automatic — no /dev/zero trick needed.
+exec renode --port 3335 "${GUI_FLAGS[@]}" \
   -e "include @${REPO_ROOT}/tools/sim/h723_sim.resc" \
   -e 'logLevel 3 sysbus' \
   -e 'logLevel 3 rcc' \
   -e 'logLevel 3 nvic' \
   -e 'logLevel 0 usart2' \
-  -e 'start' \
-  < /dev/zero
+  -e 'start'

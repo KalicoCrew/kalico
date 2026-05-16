@@ -1865,6 +1865,62 @@ pub mod exports {
         }
     }
 
+    /// Step-time trip evaluation. Called from each `step_time_event` ISR
+    /// after the per-step GPIO sample, mirroring what `engine.tick()` does
+    /// for the Modulated path (which dispatches `endstop::tick` via
+    /// `engine::poll_endstop_trip`, see `rust/runtime/src/engine.rs:811`).
+    ///
+    /// In a StepTime-only firmware build (MVP), TIM5 — and therefore
+    /// `engine.tick` and its embedded `endstop::tick` call — never runs.
+    /// Without this entry point an armed endstop's per-step samples update
+    /// `PIN_LEVELS` but trip evaluation never happens, and homing moves
+    /// run forever even when the GPIO asserts.
+    ///
+    /// `now` is the widened MCU clock at the call site (same widening as
+    /// `command_runtime_clock_sync_request` uses). The endstop module
+    /// records this as the `trip_clock` in the published snapshot, and
+    /// gates on `now >= arm_clock`. For `IgnoreUntilMoving` /
+    /// `WaitForClear` policies that need per-axis velocity, the MVP passes
+    /// `[u32::MAX; 3]` — those policies will trip on any matching sample
+    /// once motion starts (the per-step ISR firing IS the motion signal).
+    /// A precise velocity hook is Step 8 work.
+    ///
+    /// Returns 1 if a trip fired this call, 0 otherwise, or a negative
+    /// `KALICO_ERR_*` on misuse.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_endstop_tick_step_time(
+        rt: *mut KalicoRuntime,
+        now: u64,
+    ) -> i32 {
+        use runtime::endstop::TripAction;
+        use runtime::state::MAX_STEPPER_OIDS;
+        if rt.is_null() {
+            return KALICO_ERR_INVALID_HANDLE;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `ctx` points at the published RT_CELL (verified non-null
+        // and INIT_DONE==true above). We only form a `&SharedState`, never
+        // a `&mut RuntimeContext`. SharedState is atomics-only.
+        let shared: &SharedState = unsafe { &*core::ptr::addr_of!((*ctx).shared) };
+        let mut stepper_counts = [0_i32; MAX_STEPPER_OIDS];
+        for (dst, src) in stepper_counts.iter_mut().zip(shared.stepper_counts.iter()) {
+            *dst = src.load(Ordering::Acquire);
+        }
+        // Velocity-gated policies (`IgnoreUntilMoving`, `WaitForClear`) are
+        // configured by `v_min_q16`. Passing `[u32::MAX; 3]` makes any
+        // configured `v_min_q16` (which is u32, so always ≤ u32::MAX)
+        // compare as "moving" — appropriate for the MVP because the
+        // per-step ISR firing already means motion is in progress.
+        let v_per_axis_q16 = [u32::MAX; 3];
+        match runtime::endstop::tick(now, v_per_axis_q16, &stepper_counts) {
+            TripAction::AbortNow => 1,
+            TripAction::Continue => 0,
+        }
+    }
+
     // ---- Step-time scheduling FFI (spec §5) --------------------------------
 
     /// Flip a stepper's `StepMode` at runtime. Spec §10.

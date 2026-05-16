@@ -77,8 +77,13 @@ use std::time::{Duration, Instant};
 
 use kalico_host_rt::clock_sync::ClockSyncEstimator;
 use kalico_host_rt::credit::CreditCounter;
+use kalico_host_rt::endstop::{
+    arm_endstop_with_timeout, ArmPolicy, ArmStatus, SourceKind, SourceSpec,
+};
+use kalico_host_rt::host_io::runtime_events::{
+    EndstopTrippedEvent, RuntimeEvent, StatusEvent,
+};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
-use kalico_host_rt::host_io::runtime_events::{RuntimeEvent, StatusEvent};
 use kalico_host_rt::producer::{self, DEFAULT_LOAD_CURVE_TIMEOUT};
 use kalico_host_rt::transport::Transport;
 use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
@@ -101,6 +106,11 @@ const SIM_CLOCK_FREQ: u32 = 520_000_000;
 /// Renode `CreateServerSocketTerminal` port. Documented in `h723_sim.resc`.
 const SIM_TCP_PORT: u16 = 3334;
 const SIM_TCP_ADDR: &str = "127.0.0.1:3334";
+/// Renode monitor TCP socket — `tools/sim/run_sim.sh` launches Renode with
+/// `--port 3335`, exposing the Monitor as a telnet-style socket. Tests use
+/// it via `RenodeMonitor` to drive virtual peripherals at runtime (e.g.
+/// flipping an endstop GPIO mid-move).
+const SIM_MONITOR_ADDR: &str = "127.0.0.1:3335";
 
 /// Mock MCU handle for the bridge's clock-sync state. The bridge talks to
 /// klippy in terms of opaque u32 handles; in this test we only have one
@@ -244,6 +254,101 @@ fn repo_root() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// RenodeMonitor — TCP client for Renode's command-monitor socket (port 3335).
+// Used to drive virtual peripherals from inside a test: flipping a GPIO,
+// pausing the machine, dumping a register, etc.
+//
+// Protocol notes (Renode 1.16, `--port N` mode):
+//
+//   * Renode banners the connection with version info, ANSI-colored prompts,
+//     and a few telnet IAC bytes. None of it is structured — Renode's
+//     monitor was designed for human interaction at a terminal.
+//   * Commands are sent as plain text terminated by `\n`. Renode echoes the
+//     command and prints any output, followed by a new prompt line (e.g.
+//     `(h723) ` or `(monitor) `).
+//   * There is no acknowledgement framing. Tests that need to observe the
+//     effect of a command should verify it via the firmware-side path
+//     (e.g. drive an endstop pin → observe a trip event from the runtime
+//     event stream), NOT by parsing the monitor's text response.
+//
+// We never parse responses — we send fire-and-forget. The monitor TCP buffer
+// fills slowly enough that occasional non-drained reads don't cause back-
+// pressure within the lifetime of a single test.
+// ---------------------------------------------------------------------------
+
+struct RenodeMonitor {
+    stream: std::net::TcpStream,
+}
+
+impl RenodeMonitor {
+    fn connect_with_timeout(timeout: Duration) -> Result<Self, String> {
+        let addr: std::net::SocketAddr = SIM_MONITOR_ADDR
+            .parse()
+            .map_err(|e| format!("parse SIM_MONITOR_ADDR: {e}"))?;
+        let stream = std::net::TcpStream::connect_timeout(&addr, timeout)
+            .map_err(|e| format!("connect Renode monitor at {SIM_MONITOR_ADDR}: {e}"))?;
+        // Tight read timeout — we never wait long on a read; we only do
+        // best-effort drains so the socket buffer doesn't back up.
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let mut m = Self { stream };
+        m.drain_socket();
+        Ok(m)
+    }
+
+    fn drain_socket(&mut self) {
+        use std::io::Read;
+        let mut buf = [0_u8; 4096];
+        // Read until the kernel buffer is empty or our read-timeout fires.
+        loop {
+            match self.stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn send_command(&mut self, cmd: &str) -> Result<(), String> {
+        use std::io::Write;
+        let line = format!("{cmd}\n");
+        self.stream
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("send monitor cmd `{cmd}`: {e}"))?;
+        self.stream
+            .flush()
+            .map_err(|e| format!("flush monitor cmd `{cmd}`: {e}"))?;
+        // Best-effort drain so the socket buffer doesn't back up. The actual
+        // effect of the command is verified by the test via firmware-side
+        // observation, not by parsing the response text.
+        self.drain_socket();
+        Ok(())
+    }
+
+    /// Drive a GPIO input pin to the given level. Uses the Renode
+    /// `<port> OnGPIO <pin> <bool>` command, which propagates to the
+    /// STM32_GPIOPort model's IDR bit (when the pin is configured as input).
+    ///
+    /// `port` is `'A'..='K'`; `pin` is `0..=15`. STM32 firmware addresses
+    /// the same pin as `GPIO(port, pin) = (port - 'A') * 16 + pin`.
+    fn set_gpio_input(&mut self, port: char, pin: u8, level: bool) -> Result<(), String> {
+        if !port.is_ascii_alphabetic() || port < 'A' || port > 'K' {
+            return Err(format!("invalid GPIO port: '{port}'"));
+        }
+        if pin > 15 {
+            return Err(format!("invalid GPIO pin: {pin}"));
+        }
+        let cmd = format!(
+            "sysbus.gpioPort{} OnGPIO {} {}",
+            port,
+            pin,
+            if level { "True" } else { "False" },
+        );
+        self.send_command(&cmd)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SimHarness — owns the KalicoHostIo + clock-sync thread + status-event
 // subscription, mirroring what `PyMotionBridge::attach_serial` sets up in
 // production.
@@ -280,6 +385,11 @@ struct SimHarness {
     /// payload. Tag encoding documented inline in
     /// `src/runtime_tick.c::runtime_tick`.
     fault_detail_by_tag: Arc<Mutex<HashMap<u8, u32>>>,
+    /// All `RuntimeEvent::EndstopTripped` events observed since harness
+    /// construction, in arrival order. Populated by the watcher thread.
+    /// The homing sim test inspects this to assert that a virtual-GPIO
+    /// trip flowed through to a `kalico_endstop_tripped` output.
+    endstop_trips: Arc<Mutex<Vec<EndstopTrippedEvent>>>,
 }
 
 impl SimHarness {
@@ -326,10 +436,13 @@ impl SimHarness {
         let last_seg_id = Arc::new(AtomicU64::new(0));
         let fault_detail_by_tag: Arc<Mutex<HashMap<u8, u32>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let endstop_trips: Arc<Mutex<Vec<EndstopTrippedEvent>>> =
+            Arc::new(Mutex::new(Vec::new()));
         {
             let status_shared = Arc::clone(&status_shared);
             let last_seg_id = Arc::clone(&last_seg_id);
             let fault_detail_by_tag = Arc::clone(&fault_detail_by_tag);
+            let endstop_trips = Arc::clone(&endstop_trips);
             thread::Builder::new()
                 .name("sim-status-watcher".to_string())
                 .spawn(move || {
@@ -371,6 +484,15 @@ impl SimHarness {
                             }
                             RuntimeEvent::UnknownOutput { msg, .. } => {
                                 eprintln!("[sim-output] {msg}");
+                            }
+                            RuntimeEvent::EndstopTripped(e) => {
+                                eprintln!(
+                                    "[sim-endstop-trip] arm_id={} trip_clock={} \
+                                     src_idx={} fmt={} stepper_count={}",
+                                    e.arm_id, e.trip_clock, e.trip_source_idx,
+                                    e.fmt_version, e.stepper_count,
+                                );
+                                endstop_trips.lock().unwrap().push(e.clone());
                             }
                             _ => {}
                         }
@@ -453,6 +575,7 @@ impl SimHarness {
             clock_sync_handle: Some(clock_sync_handle),
             last_seg_id,
             fault_detail_by_tag,
+            endstop_trips,
         };
 
         // Block until clock-sync has produced at least two regression samples
@@ -534,6 +657,30 @@ impl SimHarness {
             thread::sleep(Duration::from_millis(20));
         }
         Err(self.last_segment_id())
+    }
+
+    /// Block until the watcher records at least one `EndstopTripped` event
+    /// matching `arm_id`, or `timeout` elapses.
+    fn wait_for_endstop_trip(
+        &self,
+        arm_id: u32,
+        timeout: Duration,
+    ) -> Result<EndstopTrippedEvent, Vec<EndstopTrippedEvent>> {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if let Some(e) = self
+                .endstop_trips
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|e| e.arm_id == arm_id)
+                .cloned()
+            {
+                return Ok(e);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        Err(self.endstop_trips.lock().unwrap().clone())
     }
 }
 
@@ -777,17 +924,34 @@ struct PlannerCtx {
 
 impl PlannerCtx {
     fn build() -> Result<Self, String> {
-        Self::build_with_spm([80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32])
+        Self::build_inner([80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32], false)
     }
 
     fn build_with_spm(steps_per_mm: [f32; 4]) -> Result<Self, String> {
+        Self::build_inner(steps_per_mm, false)
+    }
+
+    /// Same as [`Self::build_with_spm`] but configures the firmware with
+    /// phase-stepping enabled (`mcu_caps` bit 0 = 1, step_modes = Modulated
+    /// for motors A+B). Mirrors a Trident `phase_stepping: 1` config —
+    /// runtime_modulated_tick (TIM5 on H7) handles step output instead of
+    /// per-stepper step-time ISRs.
+    fn build_with_phase_stepping(steps_per_mm: [f32; 4]) -> Result<Self, String> {
+        Self::build_inner(steps_per_mm, true)
+    }
+
+    fn build_inner(steps_per_mm: [f32; 4], phase_stepping: bool) -> Result<Self, String> {
         let harness = SimHarness::new()?;
 
         // Configure the firmware's kinematics + steps_per_mm. Default tests
         // use CoreXY @ 80 spm on A+B; the live-mirror test bumps that to
         // 160 spm to match the user's Trident. `configure_axes` is a
         // kalico-native control-channel call (not a runtime command).
-        configure_sim_axes_with_spm(&harness.host_io, steps_per_mm)?;
+        if phase_stepping {
+            configure_sim_axes_phase_stepping(&harness.host_io, steps_per_mm)?;
+        } else {
+            configure_sim_axes_with_spm(&harness.host_io, steps_per_mm)?;
+        }
 
         let host_io = Arc::clone(&harness.host_io);
         let credit = Arc::new(CreditCounter::new(1024));
@@ -863,12 +1027,40 @@ fn configure_sim_axes_with_spm(
     host_io: &KalicoHostIo,
     steps_per_mm: [f32; 4],
 ) -> Result<(), String> {
+    configure_sim_axes_inner(host_io, steps_per_mm, None)
+}
+
+/// Same as `configure_sim_axes_with_spm` but sends the **25-byte extended**
+/// blob with `mcu_caps=0x01` (PHASE_STEPPING_CAPABLE) and `step_modes` =
+/// [Modulated, Modulated, StepTime, StepTime] — A and B run via the TIM5
+/// modulated tick on the H7 sim, mirroring a Trident `phase_stepping: 1`
+/// config on motors A+B.
+fn configure_sim_axes_phase_stepping(
+    host_io: &KalicoHostIo,
+    steps_per_mm: [f32; 4],
+) -> Result<(), String> {
+    // step_mode discriminants are stable wire bytes:
+    //   0 = Modulated   (`runtime::state::StepMode::Modulated`)
+    //   1 = StepTime    (`runtime::state::StepMode::StepTime`)
+    // see rust/runtime/src/state.rs and the configure_axes_blob_step_modes
+    // integration tests.
+    const MOD: u8 = 0; // Modulated
+    const ST: u8 = 1; // StepTime
+    configure_sim_axes_inner(host_io, steps_per_mm, Some((0x01, [MOD, MOD, ST, ST])))
+}
+
+fn configure_sim_axes_inner(
+    host_io: &KalicoHostIo,
+    steps_per_mm: [f32; 4],
+    extended: Option<(u8, [u8; 4])>,
+) -> Result<(), String> {
     let kinematics = 0_u8; // CoreXyAndE
     let present_mask = 0b0011_u8; // A=motor0, B=motor1; Z/E absent
     let awd_mask = 0_u8;
     let invert_mask = 0_u8;
 
-    let mut body = Vec::with_capacity(20);
+    let body_len = if extended.is_some() { 25 } else { 20 };
+    let mut body = Vec::with_capacity(body_len);
     body.push(kinematics);
     body.push(present_mask);
     body.push(awd_mask);
@@ -876,6 +1068,11 @@ fn configure_sim_axes_with_spm(
     for v in &steps_per_mm {
         body.extend_from_slice(&v.to_le_bytes());
     }
+    if let Some((mcu_caps, step_modes)) = extended {
+        body.push(mcu_caps);
+        body.extend_from_slice(&step_modes);
+    }
+    debug_assert_eq!(body.len(), body_len);
 
     let (_kind, resp_body) = host_io
         .kalico_call(
@@ -895,8 +1092,9 @@ fn configure_sim_axes_with_spm(
         return Err(format!("ConfigureAxes returned error code {r}"));
     }
     eprintln!(
-        "[sim] ConfigureAxes ok (CoreXY, steps_per_mm = [{:.1}, {:.1}, {:.1}, {:.1}])",
+        "[sim] ConfigureAxes ok (CoreXY, steps_per_mm = [{:.1}, {:.1}, {:.1}, {:.1}], phase_stepping={})",
         steps_per_mm[0], steps_per_mm[1], steps_per_mm[2], steps_per_mm[3],
+        extended.is_some(),
     );
     Ok(())
 }
@@ -1113,6 +1311,161 @@ fn rapid_short_jogs_burst_no_fault() {
     );
 }
 
+// ===========================================================================
+//
+// Test F — phase-stepping + SET_KINEMATIC_POSITION + rapid relative-mode
+// G1 X+25 burst. Reproduction of a live-bench symptom reported 2026-05-16:
+//
+//     [bench]
+//     M115 / startup
+//     (`phase_stepping: 1` on stepper_x + stepper_y in printer.cfg)
+//     G91                              ; relative mode
+//     SET_KINEMATIC_POSITION X=125 Y=100 Z=10
+//     G1 X25  ; <— 5+ of these issued in rapid succession
+//     G1 X25
+//     G1 X25
+//     ...
+//     → MCU crashes (host loses comm / hangs / latches fault).
+//
+// The bench-side klippy flow lands on the bridge as:
+//   1. `configure_axes` with `mcu_caps=0x01` and `step_modes[0..2]=Modulated`
+//      (the phase-stepping wire wiring; spec §4 C1 extended blob).
+//   2. `set_position(125, 100, 10)` → `kalico_stream_open([125,100,10,0])`
+//      (planner-side `ShaperState::reset`).
+//   3. Five `submit_move(dx=+25, dy=0, dz=0, F=3000)` calls back-to-back.
+//
+// This test mirrors that exact sequence against the sim and flags whichever
+// crash signature actually manifests:
+//   * `submit_move` returns `Err(ChannelClosed)` — planner thread panicked.
+//   * `flush()` returns `Err` — dispatch returned a fatal error mid-flush.
+//   * `last_fault != 0` — runtime latched (e.g. STEP_BURST_EXCEEDED at
+//     `engine.rs::runtime_modulated_tick` line ~2843).
+//   * `current_segment_id` doesn't advance past dispatched count within
+//     90 s wall — MCU hung (hard fault / status stream stopped emitting).
+//   * Dispatch closure captured an error — push_segment / load_curve
+//     failed (the usual visible failure when the MCU latches between
+//     dispatch steps of a subsequent segment).
+//
+// Pass condition: NONE of the above triggered. Bug reproduces ↔ test fails
+// with a verbose panic including the captured tag summary.
+//
+// ===========================================================================
+
+#[test]
+#[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
+fn phase_stepping_rapid_g1_x25_after_set_position_no_crash() {
+    let ctx = PlannerCtx::build_with_phase_stepping([80.0, 80.0, 0.0, 0.0])
+        .expect("build sim harness with phase stepping");
+
+    // Mimic `SET_KINEMATIC_POSITION X=125 Y=100 Z=10`. The bridge wires
+    // klippy's set_position to `kalico_stream_open` (Phase 5 Task 5.1;
+    // planner.rs:360-374 resets `ShaperState` to `home_pos`). The harness
+    // already issued kalico_stream_open at `[0;4]` during `build_inner`;
+    // we re-open at the bench position to mirror "stream open at origin →
+    // SET_KINEMATIC_POSITION at 125,100,10".
+    let start = [125.0_f64, 100.0, 10.0];
+    ctx.planner
+        .kalico_stream_open([start[0], start[1], start[2], 0.0])
+        .expect("re-open stream at SET_KINEMATIC_POSITION");
+
+    // Five `G1 X+25` in relative mode = five absolute moves from the
+    // running position, each dx=+25. `classify_and_build` accepts an
+    // absolute start + relative delta, matching the bridge's `manual_move`
+    // wire shape one-to-one.
+    let n_jogs = 5_usize;
+    let jog_mm = 25.0_f64;
+    // F=3000 mm/min = 50 mm/s. 25 mm at 50 mm/s = 0.5 s trajectory per move.
+    let feedrate_mm_per_min = 3_000.0_f64;
+    let mut pos = start;
+    let mut submit_results: Vec<Result<(), String>> = Vec::with_capacity(n_jogs);
+    for i in 0..n_jogs {
+        let r = ctx.submit_jog(pos, jog_mm, 0.0, 0.0, feedrate_mm_per_min);
+        eprintln!(
+            "[test-phase] jog#{i}: dx=+{jog_mm} pos_after=[{:.1},{:.1},{:.1}] submit={r:?}",
+            pos[0] + jog_mm, pos[1], pos[2],
+        );
+        submit_results.push(r);
+        pos[0] += jog_mm;
+        // No sleep — "G1 X25 in a row quickly" = back-to-back.
+    }
+
+    let flush_result = ctx.flush();
+    eprintln!("[test-phase] flush result: {flush_result:?}");
+
+    let dispatched = ctx.dispatched_segments();
+    let target = dispatched.max(1) as u32;
+    eprintln!(
+        "[test-phase] dispatched_segments={dispatched} target_seg_id={target} \
+         last_seg_id_observed={}",
+        ctx.harness.last_segment_id(),
+    );
+
+    // Allow up to 90 s wall for the burst to retire. The modulated tick on
+    // the H7 sim runs at 40 kHz, so per-segment retirement is gated on
+    // wall-time reaching `t_end_clock` — Renode's virtual-time pacing
+    // sets the real-wall budget.
+    let wait_outcome = ctx
+        .harness
+        .wait_for_segment_id(target, Duration::from_secs(90));
+
+    let status = ctx.harness.status();
+    let summary = ctx.harness.fault_detail_summary();
+    eprintln!(
+        "[test-phase] final status: engine_status={} seg_id={} \
+         last_fault={} fault_detail=0x{:08x}",
+        status.engine_status, status.current_segment_id,
+        status.last_fault, status.fault_detail,
+    );
+    eprintln!("[test-phase] fault_detail tag summary (tag → max payload):");
+    for (tag, payload) in &summary {
+        eprintln!("  0x{:02X} → 0x{:06X} ({})", tag, payload, payload);
+    }
+    if let Some(err) = ctx.last_dispatch_error() {
+        eprintln!("[test-phase] dispatch error captured: {err}");
+    }
+
+    let submit_failures: Vec<(usize, String)> = submit_results
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.as_ref().err().map(|e| (i, e.clone())))
+        .collect();
+    let any_submit_err = !submit_failures.is_empty();
+    let flush_err_str = flush_result.as_ref().err().cloned();
+    let dispatch_err = ctx.last_dispatch_error();
+    let fault_latched = status.last_fault != 0;
+    let seg_id_stalled = wait_outcome.is_err();
+
+    let crashed = any_submit_err
+        || flush_err_str.is_some()
+        || dispatch_err.is_some()
+        || fault_latched
+        || seg_id_stalled;
+
+    if !crashed {
+        eprintln!(
+            "[test-phase] PASS-no-repro: phase-stepping + set_kinematic_position + \
+             rapid G1 X+25×{n_jogs} burst dispatched {dispatched} segments, \
+             seg_id reached {}, no fault, no submit/flush/dispatch errors. \
+             The bench-reported crash did NOT reproduce in the sim.",
+            ctx.harness.last_segment_id(),
+        );
+        return;
+    }
+
+    panic!(
+        "BENCH BUG REPRODUCED IN SIM: phase-stepping + set_kinematic_position + \
+         rapid G1 X+25 burst tripped at least one crash signature.\n\
+         submit_failures={submit_failures:?}\n\
+         flush_err={flush_err_str:?}\n\
+         dispatch_err={dispatch_err:?}\n\
+         last_fault={} fault_detail=0x{:08x}\n\
+         seg_id_target={target} seg_id_observed={} dispatched={dispatched}\n\
+         fault_detail summary: {summary:?}",
+        status.last_fault, status.fault_detail,
+        ctx.harness.last_segment_id(),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Smoke test — confirm the harness can connect, identify, and observe the
 // sim's idle StatusEvent stream without driving any motion. Useful to debug
@@ -1304,5 +1657,159 @@ fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
         dispatched, ctx.harness.last_segment_id(),
         pulses_lo, pushed, ring_high_waters,
     );
+}
+
+// ===========================================================================
+//
+// Test E — homing trip via real virtual GPIO. End-to-end exercise of the
+// homing data path:
+//
+//     bridge::endstop_arm
+//   → runtime_arm_endstop command (USART)
+//   → endstop_pin_table_populate (firmware, runtime_commands.c)
+//     ↓ configures PA0 as input via gpio_in_setup
+//   → motor starts stepping
+//   → per-step runtime_endstop_sample_one (runtime_tick.c)
+//     ↓ calls gpio_in_read(PA0)
+//   → RenodeMonitor flips PA0 high mid-move
+//   → next sampler call sees high → trip fires
+//   → kalico_endstop_tripped output (kalico_dispatch.c)
+//   → RuntimeEvent::EndstopTripped on the host event stream
+//
+// This is the "architecturally honest" homing test — every layer that runs
+// on real hardware also runs here. The earlier in-process homing tests in
+// `sim_motion.rs` validate the trip-event surface but stub the GPIO read,
+// so they cannot catch a regression in `gpio_in_setup` / `gpio_in_read` /
+// the per-step sampler invocation. This test does.
+//
+// Pin choice: PA0 (Klipper gpio id = `GPIO('A', 0)` = 0). It is not used by
+// any other firmware peripheral in the sim configuration, so configuring it
+// as input does not conflict with anything else.
+//
+// Pass condition: a single `EndstopTripped { arm_id == TEST_ARM_ID }` event
+// is observed on the runtime event stream within 90 s wall (Renode's H7
+// sim runs at ~150–200× slower than real wall-clock).
+//
+// ===========================================================================
+
+#[test]
+#[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
+fn homing_x_trips_when_pa0_raised_via_monitor() {
+    const TEST_ARM_ID: u32 = 9001;
+    const PA0_PORT: char = 'A';
+    const PA0_PIN: u8 = 0;
+    // Klipper STM32 pin id for PA0. Mirrors firmware `GPIO('A', 0)`.
+    const PA0_GPIO_ID: u16 = 0;
+
+    let ctx = PlannerCtx::build().expect("build sim harness");
+
+    // Connect to the Renode monitor first, then raise PA0 *before* arming
+    // and *before* submitting the move. With `TripImmediately`, the very
+    // first per-step sampler invocation will read PA0 high and fire the
+    // trip — no mid-motion GPIO-toggle race. Renode's STM32_GPIOPort
+    // latches the input level until the next OnGPIO command, so PA0 stays
+    // high once we set it.
+    let mut monitor =
+        RenodeMonitor::connect_with_timeout(Duration::from_secs(5))
+            .expect("connect Renode monitor on port 3335");
+    monitor
+        .set_gpio_input(PA0_PORT, PA0_PIN, true)
+        .expect("pre-arm: raise PA0");
+
+    // Arm an endstop on PA0. Single source, active-high, sample_n=1 (one
+    // high sample triggers), no velocity gating (`v_min_q16 = 0`,
+    // velocity_axis=0x07 = X|Y|Z), `TripImmediately` so trip fires on the
+    // first matching sample. Per-step sampling means no sample happens
+    // until the motor steps — so this is still "trip mid-motion", just
+    // deterministic about which step triggers (the first).
+    let sources = [SourceSpec {
+        kind: SourceKind::Physical,
+        gpio: PA0_GPIO_ID,
+        active_high: true,
+        policy: ArmPolicy::TripImmediately,
+        sample_n: 1,
+        velocity_axis: 0x07, // X | Y | Z
+        v_min_q16: 0,
+    }];
+    // CoreXY motor 0 = A, motor 1 = B. We hand both OIDs to the runtime so
+    // its per-stepper trip step_count vector is populated for either path.
+    let stepper_oids = [0_u8, 1_u8];
+    let arm_status = arm_endstop_with_timeout(
+        ctx.harness.host_io.as_ref(),
+        TEST_ARM_ID,
+        0, // arm_clock = 0 → effective immediately
+        &sources,
+        &stepper_oids,
+        Duration::from_secs(5),
+    )
+    .expect("arm_endstop_with_timeout");
+    eprintln!("[test-E] arm_endstop returned status={arm_status:?}");
+    assert_eq!(
+        arm_status,
+        ArmStatus::Armed,
+        "MCU did not arm endstop on PA0 — status={arm_status:?}",
+    );
+
+    // Submit a 25 mm pure-X jog at F=100 — same shape as `test A`, which we
+    // already know retires in ~36 s wall with `runtime_emit_calls` reaching
+    // ~460. The motor produces step pulses; the very first per-step sampler
+    // invocation reads PA0 high and fires the trip.
+    ctx.submit_jog([0.0; 3], 25.0, 0.0, 0.0, 100.0)
+        .expect("submit 25mm X jog");
+    ctx.flush().expect("flush after homing jog");
+    eprintln!(
+        "[test-E] post-flush: dispatched={} waiting for trip event …",
+        ctx.dispatched_segments(),
+    );
+
+    // Wait for the trip event. 90 s wall budget — same as test A.
+    let trip_outcome = ctx
+        .harness
+        .wait_for_endstop_trip(TEST_ARM_ID, Duration::from_secs(90));
+
+    let status = ctx.harness.status();
+    let summary = ctx.harness.fault_detail_summary();
+    eprintln!(
+        "[test-E] final status: engine_status={} seg_id={} last_fault={} \
+         fault_detail=0x{:08x}",
+        status.engine_status, status.current_segment_id, status.last_fault,
+        status.fault_detail,
+    );
+    eprintln!("[test-E] fault_detail tag summary (tag → max payload):");
+    for (tag, payload) in &summary {
+        eprintln!("  0x{:02X} → 0x{:06X} ({})", tag, payload, payload);
+    }
+
+    match trip_outcome {
+        Ok(e) => {
+            eprintln!(
+                "[test-E] PASS: trip event arm_id={} trip_clock={} \
+                 src_idx={} stepper_count={}",
+                e.arm_id, e.trip_clock, e.trip_source_idx, e.stepper_count,
+            );
+            assert_eq!(e.arm_id, TEST_ARM_ID);
+            assert_eq!(e.fmt_version, kalico_host_rt::endstop::FMT_VERSION_V1);
+        }
+        Err(seen) => {
+            // Surface enough diagnostics to localize the broken layer:
+            //   * 0xE1 = runtime_emit_calls — did the runtime emit any
+            //     step pulses at all? If 0, motor never moved, so the
+            //     per-step sampler never ran. Suspect dispatch / motor
+            //     config.
+            //   * 0xB2 = ring_high_water — did the producer push step
+            //     entries to any motor's ring? If 0 with emit_calls > 0,
+            //     producer-side breakage. If both > 0 but no trip,
+            //     suspect the GPIO read path (Renode model) or sampler
+            //     wiring.
+            let e1 = ctx.harness.fault_detail_max(0xE1).unwrap_or(0);
+            let b2 = ctx.harness.fault_detail_max(0xB2).unwrap_or(0);
+            panic!(
+                "no EndstopTripped event for arm_id={TEST_ARM_ID} within 90s. \
+                 emit_calls(0xE1) max={e1}, ring_high_water(0xB2)=0x{b2:06X}. \
+                 trips_seen={seen:?}. Last status: {status:?}. \
+                 Tag summary: {summary:?}",
+            );
+        }
+    }
 }
 
