@@ -70,10 +70,11 @@ connector Connect sysbus.usart2 uart_term
 # Tight quantum: 1 us. Renode's USART model latches one byte at a time into
 # RDR and asserts the IRQ; if the CPU doesn't service the IRQ before the next
 # WriteChar (which happens on the host TCP write loop), RX overrun drops the
-# byte. With a 50 us quantum, ~12 bytes go through unread on a fast TCP burst
-# and 60-byte commands silently fail. 1 us gives the CPU enough chances to
-# read RDR between bytes that no overrun occurs in practice for our 250 kbaud
-# protocol; tradeoff is ~5x slower wall-clock simulation, still fast enough.
+# byte. Renode 1.16's USART2 model also ignores the firmware's OVRDIS write
+# (CR3 bit 12) — overrun-driven byte drops remain even with the firmware
+# trying to disable them. 1 us is the only safe value here; bumping to
+# 10 us cuts wall-clock by ~10x but reintroduces the byte-drop pathology
+# on 700+ byte frames like LoadCurve.
 emulation SetGlobalQuantum "0.000001"
 
 # Expose Renode's GDB server (port 3333) for the kalico-sim load_curve hang

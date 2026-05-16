@@ -418,17 +418,30 @@ runtime_drain(void)
     uint8_t fresh_overflow_fault = (reclaim_status >> 16) & 1;
 
     // §10.4: emit one `kalico_credit_freed` async event per drain cycle that
-    // observed at least one SEGMENT_END. The host uses this to bump its
-    // credit counter; it doesn't need one event per retired segment, just
-    // a wake-up to re-read the cursors. `retired_through_segment_id` carries
-    // the cumulative cursor; `free_slots = Q_N - queue_depth` (with Q_N - 1
-    // being the structural cap; saturate at u8 in the Rust accessor).
-    if (saw_segment_end) {
-        uint32_t retired = runtime_handle_retired_through_segment_id(runtime_handle);
+    // either observed at least one SEGMENT_END *or* observed the
+    // `retired_through_segment_id` cursor advance since the last emit. The
+    // cursor-advance trigger covers retirements from `runtime_modulated_tick`
+    // and from the `producer_step` state-machine retirement path
+    // (engine.rs:2555), both of which advance the cursor without writing a
+    // SEGMENT_END trace sample. Without it, pure-Modulated MCUs (F446 with
+    // phase-stepped Z) never emit credit and the host's slot pool deadlocks
+    // at capacity on the first dispatch following any modulated retirement.
+    // The host uses this event to bump its credit counter; it doesn't need
+    // one event per retired segment, just a wake-up to re-read the cursors.
+    // `retired_through_segment_id` carries the cumulative cursor;
+    // `free_slots = Q_N - queue_depth` (with Q_N - 1 being the structural cap;
+    // saturate at u8 in the Rust accessor). Signed-difference comparison is
+    // wraparound-safe for any spans the cursor realistically crosses between
+    // drains (drain runs ~1 kHz; 2^31 segments at any push rate is years).
+    static uint32_t last_emitted_retired_id = 0;
+    uint32_t cur_retired = runtime_handle_retired_through_segment_id(runtime_handle);
+    bool cursor_advanced = (int32_t)(cur_retired - last_emitted_retired_id) > 0;
+    if (saw_segment_end || cursor_advanced) {
         uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
         // Phase C: emit as kalico-native CreditFreed event (channel 1).
-        kalico_native_emit_credit_freed(retired, free_slots);
+        kalico_native_emit_credit_freed(cur_retired, free_slots);
+        last_emitted_retired_id = cur_retired;
     }
 
     // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`

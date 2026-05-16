@@ -1,11 +1,11 @@
 ---
 name: reading-klippy-log
-description: Use when investigating klippy.log on trident.local, asked about recent jog / print / fault / shutdown activity on the bench, when you need to know what the H7 or F4 MCUs have been doing, or whenever raw klippy log content would otherwise enter main-agent context. Dispatches a Haiku subagent that fetches, filters, and analyzes the log; the raw log never enters main-agent context.
+description: Use when investigating klippy.log on trident.local, asked about recent jog / print / fault / shutdown activity on the bench, when you need to know what the H7 or F4 MCUs have been doing, or whenever raw klippy log content would otherwise enter main-agent context. Dispatches an Opus subagent that fetches, filters, and analyzes the log; the raw log never enters main-agent context.
 ---
 
 # Reading klippy.log on trident
 
-This skill answers questions about `~/printer_data/logs/klippy.log` on `trident.local` without flooding main-agent context with raw log content. A Haiku subagent does the fetch + filter + analysis end-to-end and returns a structured, citation-backed answer.
+This skill answers questions about `~/printer_data/logs/klippy.log` on `trident.local` without flooding main-agent context with raw log content. An Opus subagent does the fetch + filter + analysis end-to-end and returns a structured, citation-backed answer.
 
 ## When to use
 
@@ -17,7 +17,7 @@ This skill answers questions about `~/printer_data/logs/klippy.log` on `trident.
 
 ## How to use
 
-Dispatch via the Agent tool with `subagent_type: general-purpose` and `model: "haiku"`. The user-facing inputs (passed through to the prompt template below):
+Dispatch via the Agent tool with `subagent_type: general-purpose` and `model: "opus"`. The user-facing inputs (passed through to the prompt template below):
 
 - **question** (string, optional). Freeform query. Omit / leave empty → default-report mode.
 - **session_override** (one of `latest` | `previous` | `N`, default `latest`). Forces a specific session, bypassing the fresh-restart fallback heuristic.
@@ -84,7 +84,7 @@ The `{QUESTION_OR_DEFAULT_INSTRUCTION}` slot is one of:
 - **Default-report mode** (no question):
   `Produce the default session report. Sections: (a) boot reason & MCUs loaded, (b) faults / errors / shutdowns, (c) motion activity — count G-code lines, list first/last few, summarize segment dispatch, (d) comms anomalies — NAK / transport timeout / reconnect / bridge-async warnings, (e) engine-state timeline — list status & segment_id transitions chronologically. Each section cites L<n>; omit any section with no findings.`
 
-## Verifying Haiku's answers
+## Verifying the subagent's answers
 
 The `EVIDENCE:` block in the response cites `L<n>` references that map directly to line numbers in the source log. To spot-check any quote:
 

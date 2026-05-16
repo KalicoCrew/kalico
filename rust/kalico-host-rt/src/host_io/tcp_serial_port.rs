@@ -80,8 +80,50 @@ impl Read for TcpSerialPort {
 }
 
 impl Write for TcpSerialPort {
+    // Throttled chunk-write. Renode 1.16's STM32F7_USART model accepts bytes
+    // from the TCP terminal connector at TCP arrival rate — no baud-rate gating
+    // — and Kalico's firmware uses non-FIFO USART2 mode (1-byte RDR). When the
+    // host sends a 700+ byte LoadCurve frame in one TCP write, the USART model
+    // calls WriteChar() back-to-back faster than the CPU's USART2_IRQHandler
+    // can drain RDR, raising ORE on every byte after the first. OVRDIS in CR3
+    // would tell the silicon to keep the byte despite ORE, but Renode 1.16
+    // doesn't implement that bit (logs `Unhandled bits: [12]` on CR3 write).
+    //
+    // Tunable via env vars for diagnostic iteration:
+    //   KALICO_TCP_WRITE_CHUNK  = bytes per chunk before the inter-chunk pause
+    //                            (default 1 — most conservative)
+    //   KALICO_TCP_WRITE_DELAY_US = inter-chunk pause in microseconds
+    //                               (default 100 — 7.4 ms per 744 B LoadCurve)
+    // Short frames (< chunk) bypass the pause entirely.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.stream.write(buf)
+        use std::sync::OnceLock;
+        static CHUNK: OnceLock<usize> = OnceLock::new();
+        static DELAY: OnceLock<Duration> = OnceLock::new();
+        let chunk = *CHUNK.get_or_init(|| {
+            std::env::var("KALICO_TCP_WRITE_CHUNK")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(1)
+        });
+        let delay = *DELAY.get_or_init(|| {
+            let us: u64 = std::env::var("KALICO_TCP_WRITE_DELAY_US")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(100);
+            Duration::from_micros(us)
+        });
+
+        if buf.len() <= chunk {
+            return self.stream.write(buf);
+        }
+        for piece in buf.chunks(chunk) {
+            self.stream.write_all(piece)?;
+            if delay > Duration::ZERO {
+                std::thread::sleep(delay);
+            }
+        }
+        Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
         self.stream.flush()
@@ -115,18 +157,16 @@ impl SerialPort for TcpSerialPort {
     fn set_stop_bits(&mut self, _stop_bits: StopBits) -> serialport::Result<()> { Ok(()) }
 
     fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
-        // TcpStream uses `None` to mean "block forever". Treat zero / very
-        // tiny durations as a 5 ms floor — macOS SO_RCVTIMEO with sub-ms
-        // durations sometimes returns immediately with WouldBlock before any
-        // bytes can land in the socket buffer (kernel scheduling vs. timeout
-        // resolution race). 5 ms is far below the reactor's polling cadence
-        // but generous enough that arriving frames are actually read.
-        let effective = timeout.max(Duration::from_millis(5));
-        // 2026-05-16: avoid calling setsockopt(SO_RCVTIMEO) on every poll
-        // iteration. macOS intermittently rejects same-value re-sets with
-        // EINVAL when the syscall rate climbs (each LoadCurve read-wait
-        // re-calls this thousands of times). Skip the syscall when the
-        // requested timeout is unchanged from what we already set.
+        // TcpStream uses `None` to mean "block forever". 100 ms floor:
+        // macOS SO_RCVTIMEO with sub-ms durations sometimes returns
+        // immediately with WouldBlock before any bytes can land in the
+        // socket buffer (kernel scheduling vs. timeout resolution race),
+        // and intermittently rejects sub-10 ms values with EINVAL under
+        // syscall pressure. The reactor's per-poll deadline can drop to
+        // single-millisecond budgets during LoadCurve read-waits; clamp
+        // the OS-visible timeout to 100 ms so we get reliable reads, and
+        // dedupe identical-value re-sets to keep setsockopt rate low.
+        let effective = timeout.max(Duration::from_millis(100));
         if effective == self.timeout {
             return Ok(());
         }

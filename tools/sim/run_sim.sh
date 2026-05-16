@@ -35,6 +35,6 @@ exec renode --console "${GUI_FLAGS[@]}" \
   -e 'logLevel 3 sysbus' \
   -e 'logLevel 3 rcc' \
   -e 'logLevel 3 nvic' \
-  -e 'logLevel 3 usart2' \
+  -e 'logLevel 0 usart2' \
   -e 'start' \
   < /dev/zero

@@ -170,6 +170,22 @@ void __visible __aligned(16) // aligning helps stabilize perf benchmarks
 SysTick_Handler(void)
 {
     irq_disable();
+#if CONFIG_KALICO_SIM
+    // CONFIG_KALICO_SIM uses a software CYCCNT (runtime_sim_cyccnt) because
+    // Renode's H7 model returns 0 from DWT->CYCCNT. The "real" source of
+    // forward progress is the TIM5 ISR which bumps the counter at 40 kHz
+    // when at least one stepper is in Modulated mode. But for StepTime-only
+    // motors TIM5 stays disabled and runtime_sim_cyccnt would never
+    // advance — which breaks anything that polls timer_read_time(),
+    // including the 10 Hz `kalico_status_v6` emit guard. SysTick fires
+    // regardless, so piggyback an idle-time tick advance here.
+    //
+    // Bump by SysTick reload (LOAD register) — that's the number of CPU
+    // cycles between SysTick IRQs, which is exactly the wall-clock time
+    // (in cycles) we just spent waiting. Counter stays monotone forward.
+    extern volatile uint32_t runtime_sim_cyccnt;
+    runtime_sim_cyccnt += SysTick->LOAD + 1U;
+#endif
     uint32_t diff = timer_dispatch_many();
     timer_set_diff(diff);
     irq_enable();
