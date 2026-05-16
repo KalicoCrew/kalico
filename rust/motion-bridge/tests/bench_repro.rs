@@ -446,6 +446,166 @@ fn submit_one_jog(
     Ok(())
 }
 
+/// 2026-05-15 live-bench reproducer: exactly mirrors the user's printer
+/// scenario. CoreXY @ 160 steps/mm (not the 80 used by Test 1). Start
+/// position [125, 100, 10] (not origin). 0.5 mm +X jog at F600 (10 mm/s).
+/// Uses `run_segments_through_engine` with `STEPS_PER_MM` overridden via a
+/// fresh local engine config, NOT the test-global constant.
+fn run_segments_through_corexy_engine_160spm(
+    segs: &[ShapedSegment],
+    home_pos: [f64; 4],
+) -> Option<EngineRunSummary> {
+    if segs.is_empty() { return None; }
+    let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+    let (mut q_prod, mut q_cons) = queue.split();
+    let trace: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
+    let (mut t_prod, _t_cons) = trace.split();
+    let pool = CurvePool::new();
+    let shared = SharedState::new();
+    let mut widen = WidenState::default();
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+    let mcu_cfg = RtMcuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CoreXyAndE,
+    };
+    engine.configure(mcu_cfg);
+    shared.stream_open.store(true, core::sync::atomic::Ordering::Release);
+
+    // Seed stepper_counts via configure_axes/home_pos as the live bridge
+    // does — the runtime needs to know the current motor-frame position
+    // before producer_step can seed initial_step from the curve's pos0.
+    // CoreXY: motor 0 = X+Y, motor 1 = X-Y.
+    let motor_a_seed = home_pos[0] + home_pos[1];
+    let motor_b_seed = home_pos[0] - home_pos[1];
+    shared.stepper_counts[0]
+        .store((motor_a_seed * 160.0) as i32, core::sync::atomic::Ordering::Release);
+    shared.stepper_counts[1]
+        .store((motor_b_seed * 160.0) as i32, core::sync::atomic::Ordering::Release);
+
+    let tick_cycles = u64::from(one_tick_cycles(CLOCK_FREQ));
+    let t_offset = segs[0].t_start;
+    let mut segments_queued = 0usize;
+    let mut slot_counter: u16 = 0;
+    let mut segment_id_counter: u32 = 1;
+    let mut last_t_end_clock: u64 = 0;
+
+    for shaped in segs {
+        let rel_start_s = shaped.t_start - t_offset;
+        let rel_end_s = shaped.t_end - t_offset;
+        let t_start_clock = (rel_start_s * f64::from(CLOCK_FREQ)).round() as u64;
+        let t_end_clock = (rel_end_s * f64::from(CLOCK_FREQ)).round() as u64;
+        last_t_end_clock = last_t_end_clock.max(t_end_clock);
+        // Mirror the LIVE dispatch: send EVERY kinematic axis curve as a
+        // real handle, including constants. This is what the 2026-05-11
+        // bridge fix to dispatch.rs does, so the host engine sees the same
+        // input the MCU does.
+        let mut x_handle = CurveHandle::UNUSED_SENTINEL;
+        let mut y_handle = CurveHandle::UNUSED_SENTINEL;
+        let mut z_handle = CurveHandle::UNUSED_SENTINEL;
+        for (axis_idx, curve) in shaped.axes.iter().enumerate() {
+            let slot = slot_counter;
+            slot_counter += 1;
+            if (slot as usize) >= runtime::curve_pool::CURVE_POOL_N {
+                panic!("pool slot exhausted (segs={segments_queued})");
+            }
+            let handle = load_axis_curve(&pool, slot, curve, shaped.t_start, shaped.t_end)
+                .expect("load_axis_curve");
+            match axis_idx {
+                0 => x_handle = handle,
+                1 => y_handle = handle,
+                2 => z_handle = handle,
+                _ => {}
+            }
+        }
+        let seg = Segment {
+            id: segment_id_counter,
+            x_handle, y_handle, z_handle,
+            e_handle: CurveHandle::UNUSED_SENTINEL,
+            t_start: t_start_clock, t_end: t_end_clock,
+            kinematics: KinematicTag::CoreXyAndE,
+            e_mode: RtEMode::Travel,
+            extrusion_ratio: 0.0,
+            flags: 0, _pad: [0; 1], consumers_remaining: 0,
+        };
+        segment_id_counter += 1;
+        q_prod.enqueue(seg).expect("enqueue");
+        segments_queued += 1;
+    }
+
+    let post_roll_ticks = 5u64;
+    let total_ticks = (last_t_end_clock / tick_cycles) + post_roll_ticks;
+    for tick_idx in 0..=total_ticks {
+        let now = tick_idx * tick_cycles;
+        if now > last_t_end_clock {
+            shared.stream_open.store(false, core::sync::atomic::Ordering::Release);
+        }
+        let raw = now as u32;
+        let r = engine.tick(raw, &mut widen, &pool, &mut q_cons, &mut t_prod, &shared);
+        if r.is_err() { break; }
+    }
+    let mut step_counts = [0i32; 4];
+    for (i, c) in step_counts.iter_mut().enumerate() {
+        *c = shared.stepper_counts[i].load(core::sync::atomic::Ordering::Acquire);
+    }
+    Some(EngineRunSummary {
+        step_counts, final_status: engine.status(),
+        last_error: engine.last_error(),
+        segments_queued, motor_trace: None,
+    })
+}
+
+#[test]
+fn live_corexy_jog_short_distance_with_real_handle_y_emits_step_pulses() {
+    // Exact mirror of live trident-printer scenario observed 2026-05-15:
+    //   * CoreXY at 160 steps/mm (not Test 1's 80)
+    //   * start position [125, 100, 10] (set via SET_KINEMATIC_POSITION)
+    //   * 0.5mm +X jog at F600 (10 mm/s)
+    //   * smooth_mzv@186 X / 122 Y per live_planner_config
+    //   * Y handle is REAL (not UNUSED) — per the 2026-05-11 dispatch fix
+    //
+    // Live MCU evidence (post all known fixes): B3=0x000101
+    // (deq=1, ret=1, pushed=0); B8 resolved=2 (both motors fetched the
+    // curve); EC push_seg_all_unused=0; EF consumers_remaining=0x33
+    // (motors 0/1 have work on X+Y). Yet pushed=0.
+    //
+    // If this host-side test reproduces (motor 0/1 counts stay at the
+    // seed values), the bug is in producer_step's per-piece compute_next_step_time
+    // not finding step roots even when curves are real and seeded right.
+    let (dispatch, recorded) = recording_dispatch();
+    let h = PlannerHandle::spawn(live_planner_config(), dispatch);
+    h.kalico_stream_open([125.0, 100.0, 10.0, 0.0]).expect("kalico_stream_open");
+    submit_one_jog(&h, [125.0, 100.0, 10.0], 0.5, 0.0, 0.0, 10.0).expect("submit 0.5mm X @ F600");
+    h.flush().expect("flush");
+    let segs = recorded.lock().unwrap().clone();
+    drop(h);
+
+    let summary = run_segments_through_corexy_engine_160spm(&segs, [125.0, 100.0, 10.0, 0.0])
+        .expect("non-empty segments");
+    eprintln!(
+        "[live-mirror] segs_queued={} step_counts={:?} status={:?} last_error={}",
+        summary.segments_queued, summary.step_counts, summary.final_status, summary.last_error,
+    );
+    // Pre-jog motor A seed = (125+100)*160 = 36000.
+    // Pre-jog motor B seed = (125-100)*160 =  4000.
+    // Post 0.5mm X jog: A goes to (125.5+100)*160 = 36080, B goes to (125.5-100)*160 = 4080.
+    // Both should advance by ~80 steps.
+    let motor_a_delta = summary.step_counts[0] - 36000;
+    let motor_b_delta = summary.step_counts[1] -  4000;
+    assert!(
+        motor_a_delta.abs() >= 60 && motor_a_delta.abs() <= 100,
+        "motor A delta for 0.5mm X jog should be ~80; got {motor_a_delta}",
+    );
+    assert!(
+        motor_b_delta.abs() >= 60 && motor_b_delta.abs() <= 100,
+        "motor B delta for 0.5mm X jog should be ~80; got {motor_b_delta}",
+    );
+}
+
 // ===========================================================================
 //
 // Test 1 — first_jog_after_stream_open_emits_step_pulses

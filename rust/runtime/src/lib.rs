@@ -17,12 +17,14 @@
 
 // `alloc` is needed by the `sim_fixtures::init_test_runtime` helper, which
 // `Box::leak`s static queues so the split `Producer`/`Consumer` halves carry
-// `'static` lifetimes. Pull it in unconditionally when `kalico-sim` is on so
-// the helper compiles under both the `host` (std) and `no_std`-with-alloc
-// builds. `target_os = "none"` MCU firmware skips the helper via the
-// `#[cfg(not(target_os = "none"))]` gate in `sim_fixtures.rs`, so this
-// `extern crate alloc;` adds no firmware footprint there either.
-#[cfg(feature = "kalico-sim")]
+// `'static` lifetimes. The helper itself is gated `#[cfg(not(target_os =
+// "none"))]` in `sim_fixtures.rs`, so the MCU sim firmware build (target
+// `thumbv7em-none-eabi`, `target_os = "none"`) doesn't compile it — and
+// pulling in `alloc` on that target without supplying a `#[global_allocator]`
+// fails the link with "no global memory allocator found." Gate this `extern
+// crate alloc;` to match the helper's gate so the embedded sim build is
+// allocator-free.
+#[cfg(all(feature = "kalico-sim", not(target_os = "none")))]
 extern crate alloc;
 
 pub mod bezier_root;

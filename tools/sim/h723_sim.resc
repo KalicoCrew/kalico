@@ -88,5 +88,10 @@ machine StartGdbServer 3333 true
 # (`Guessing VectorTableOffset value to be 0x8020000.`).
 sysbus LoadELF @out/klipper.elf
 
+# 2026-05-16 crash diagnosis: log every function call so the last function
+# before the CPU abort is identifiable from the Renode log. Disabled when
+# not actively debugging; produces 100M+ log lines.
+# cpu LogFunctionNames true
+
 echo "Renode kalico-h723-sim ready. UART2 -> tcp localhost:3334"
 echo "Type 'start' to begin emulation, or 'help' for monitor commands."

@@ -11,6 +11,7 @@
 #include "board/gpio.h"           // gpio_in_setup / gpio_in_read
 #include "command.h"              // DECL_COMMAND, sendf, command_decode_ptr
 #include "sched.h"                // DECL_TASK
+#include "board/misc.h"           // timer_read_time
 #include "kalico_runtime.h"       // FFI export prototypes
 #include "kalico_dispatch.h"      // kalico_native_emit_*
 

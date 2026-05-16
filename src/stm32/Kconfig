@@ -274,8 +274,14 @@ config RAM_SIZE
     default 0x10000 if MACH_N32G45x
 
 config STACK_SIZE
-    int
+    int "Main stack size in bytes"
     default 4096
+    help
+      Main MSP stack size. Modulated stepping's TIM5 ISR inlines
+      ~288 bytes on top of foreground command-dispatch state — the
+      default 4096 has minimal headroom and Renode's 0x20000 RAM
+      sim overflows on first LoadCurve. Sim builds raise to 8192
+      via tools/sim/sim.config.
 
 config STM32F103GD_DISABLE_SWD
     bool "Disable SWD at startup (for GigaDevice stm32f103 clones)"

@@ -240,23 +240,42 @@ impl CurvePool {
             return None;
         }
 
-        // Build the LoadedScalarCurve from validated inputs.
-        let mut loaded = LoadedScalarCurve::empty();
-        loaded.control_points[..n_cp].copy_from_slice(cps);
-        loaded.knots[..knots.len()].copy_from_slice(knots);
-        loaded.n_cp = n_cp as u16;
-        loaded.n_knots = knots.len() as u16;
-        loaded.degree = degree;
-
-        // 1. Write the new curve. The predicate above guarantees no
-        //    concurrent ISR access — ISR's lookup checks `current_gen` first
-        //    and would see the previous (matched) gen if it raced with us.
+        // Write the new curve DIRECTLY into the slot — `LoadedScalarCurve`
+        // is ~14.4 KB (1830 cps + 1850 knots, each f32), so stack-allocating
+        // it via `LoadedScalarCurve::empty()` overflows Klipper's main stack
+        // (CONFIG_STACK_SIZE = 4096 on H7 / 512 on sim) and corrupts BSS or
+        // produces a wild PC (Renode aborts with "Trying to execute code
+        // outside RAM or ROM"; bench survives via fortunate DTCM layout
+        // but still corrupts adjacent memory). 2026-05-16 root-caused via
+        // `objdump -d` showing `sub sp, sp, #14720` in try_alloc_and_load.
+        //
+        // The predicate above guarantees no concurrent ISR access — ISR's
+        // lookup checks `current_gen` first and would see the previous
+        // (matched) gen if it raced with us.
+        //
         // SAFETY: foreground is the sole writer of `slot.curve`; no `&mut
         // PoolSlot` ever forms, so the `UnsafeCell::get()` raw pointer is
         // valid for an exclusive write while we hold the `cur == last`
-        // invariant.
+        // invariant. The field-by-field writes touch only the slot's
+        // backing memory; no stack intermediate.
         unsafe {
-            *slot.curve.get() = loaded;
+            let dst: *mut LoadedScalarCurve = slot.curve.get();
+            // Write the populated portion of the arrays. The tail beyond
+            // n_cp / n_knots can carry stale data — `lookup` returns
+            // `&LoadedScalarCurve` but consumers only read up to the
+            // respective `n_*` field.
+            let cps_ptr =
+                core::ptr::addr_of_mut!((*dst).control_points) as *mut f32;
+            core::ptr::copy_nonoverlapping(cps.as_ptr(), cps_ptr, n_cp);
+            let knots_ptr = core::ptr::addr_of_mut!((*dst).knots) as *mut f32;
+            core::ptr::copy_nonoverlapping(
+                knots.as_ptr(),
+                knots_ptr,
+                knots.len(),
+            );
+            core::ptr::addr_of_mut!((*dst).n_cp).write(n_cp as u16);
+            core::ptr::addr_of_mut!((*dst).n_knots).write(knots.len() as u16);
+            core::ptr::addr_of_mut!((*dst).degree).write(degree);
         }
         // 2. Bump generation with Release. Wraps on u16 modulo. The ISR's
         //    Acquire-load synchronizes with this Release store, ensuring

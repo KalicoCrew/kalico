@@ -473,7 +473,7 @@ fn mixed_modulated_steptime_motors_coexist() {
         // `now` crosses `t_end = 26_000_000`, motor 0's consumer bit
         // clears and the segment retires.
         now += now_advance_per_iter;
-        engine.runtime_modulated_tick(now, &pool, &shared);
+        engine.runtime_modulated_tick(now, &mut q_consumer, &pool, &shared);
         if r == ProducerTickResult::AllIdle {
             break;
         }

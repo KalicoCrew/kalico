@@ -67,6 +67,7 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_precision_loss)]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -269,6 +270,16 @@ struct SimHarness {
     /// Tests poll this to assert "segment id advanced past the dispatched
     /// count" (i.e. the MCU retired the work, not just received it).
     last_seg_id: Arc<AtomicU64>,
+    /// Per-tag maximum value observed in `StatusEvent::fault_detail`'s low
+    /// 24 bits. The runtime_tick.c rotation publishes a different tag in
+    /// the high byte each status frame (~14s wall to cycle through all
+    /// 23 inner phases). Tests can read this to diagnose WHERE the
+    /// pipeline broke without reading per-frame raw values.
+    ///
+    /// Key = high-byte tag (0xB0..0xEF). Value = max-seen low-24-bit
+    /// payload. Tag encoding documented inline in
+    /// `src/runtime_tick.c::runtime_tick`.
+    fault_detail_by_tag: Arc<Mutex<HashMap<u8, u32>>>,
 }
 
 impl SimHarness {
@@ -313,9 +324,12 @@ impl SimHarness {
             .map_err(|e| format!("take_runtime_event_subscription: {e:?}"))?;
         let status_shared = Arc::new(Mutex::new(StatusEvent::default()));
         let last_seg_id = Arc::new(AtomicU64::new(0));
+        let fault_detail_by_tag: Arc<Mutex<HashMap<u8, u32>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         {
             let status_shared = Arc::clone(&status_shared);
             let last_seg_id = Arc::clone(&last_seg_id);
+            let fault_detail_by_tag = Arc::clone(&fault_detail_by_tag);
             thread::Builder::new()
                 .name("sim-status-watcher".to_string())
                 .spawn(move || {
@@ -325,6 +339,19 @@ impl SimHarness {
                                 last_seg_id
                                     .store(u64::from(s.current_segment_id), Ordering::Release);
                                 *status_shared.lock().unwrap() = s.clone();
+                                // Decompose fault_detail into (tag, payload)
+                                // and track max-seen payload per tag — this
+                                // is how tests inspect the rotation
+                                // (0xB0..0xEF) without polling.
+                                if s.fault_detail != 0 {
+                                    let tag = (s.fault_detail >> 24) as u8;
+                                    let payload = s.fault_detail & 0x00FF_FFFF;
+                                    let mut map = fault_detail_by_tag.lock().unwrap();
+                                    let entry = map.entry(tag).or_insert(0);
+                                    if payload > *entry {
+                                        *entry = payload;
+                                    }
+                                }
                                 eprintln!(
                                     "[sim-status] engine_status={} seg_id={} last_fault={} fault_detail=0x{:08x}",
                                     s.engine_status, s.current_segment_id, s.last_fault, s.fault_detail,
@@ -422,6 +449,7 @@ impl SimHarness {
             clock_sync_stop,
             clock_sync_handle: Some(clock_sync_handle),
             last_seg_id,
+            fault_detail_by_tag,
         };
 
         // Block until clock-sync has produced at least two regression samples
@@ -460,6 +488,34 @@ impl SimHarness {
 
     fn last_segment_id(&self) -> u32 {
         self.last_seg_id.load(Ordering::Acquire) as u32
+    }
+
+    /// Return the maximum payload (low 24 bits of `fault_detail`) observed
+    /// for the given tag (high byte). Returns `None` if the tag has never
+    /// appeared in a status frame.
+    ///
+    /// Common tags (see `src/runtime_tick.c` for full encoding):
+    ///   - `0xB2` low 16 bits = 4-bit ring_high_water per motor (>0 means
+    ///     producer pushed at least one step for that motor).
+    ///   - `0xB3` bits 16..23 = `producer_steps_pushed_total & 0xFF`.
+    ///   - `0xE1` low 24 bits = `runtime_emit_calls`.
+    ///   - `0xE2` bits 16..23 = `runtime_emit_pulses & 0xFF`.
+    ///   - `0xB8` low 8 bits = `producer_primary_resolved_total & 0xFF`.
+    fn fault_detail_max(&self, tag: u8) -> Option<u32> {
+        self.fault_detail_by_tag
+            .lock()
+            .unwrap()
+            .get(&tag)
+            .copied()
+    }
+
+    /// Snapshot every observed tag/payload pair, sorted by tag for stable
+    /// diagnostic output.
+    fn fault_detail_summary(&self) -> Vec<(u8, u32)> {
+        let map = self.fault_detail_by_tag.lock().unwrap();
+        let mut v: Vec<(u8, u32)> = map.iter().map(|(k, v)| (*k, *v)).collect();
+        v.sort_by_key(|(k, _)| *k);
+        v
     }
 
     /// Block until the MCU's `current_segment_id` reaches at least `target`,
@@ -588,18 +644,28 @@ fn build_dispatch(
             }
 
             eprintln!(
-                "[planner-trace] dispatching seg id={} mcu={} t_start={} t_end={} (rel {:.6}–{:.6} s)",
+                "[planner-trace] dispatching seg id={} mcu={} t_start={} t_end={} (rel {:.6}–{:.6} s) curves_to_load.len={}",
                 plan.params.id, plan.mcu_id, plan.params.t_start, plan.params.t_end,
-                seg.t_start, seg.t_end,
+                seg.t_start, seg.t_end, plan.curves_to_load.len(),
             );
+            for (i, (axis_idx, cp)) in plan.curves_to_load.iter().enumerate() {
+                eprintln!(
+                    "[planner-trace]   curve[{}]: axis={} n_cps={} n_knots={} body_estimate={}",
+                    i, axis_idx, cp.cps_f32.len(), cp.knots_f32.len(),
+                    11 + 4 * (cp.cps_f32.len() + cp.knots_f32.len()),
+                );
+            }
 
             // Load each axis curve, then push the segment. Mirror bridge.rs's
             // partial-failure slot release.
             let mut allocated_slots: Vec<u16> = Vec::with_capacity(plan.curves_to_load.len());
             let mut load_err: Option<DispatchError> = None;
+            eprintln!("[planner-trace] seg={} entering load loop, n_curves={}",
+                plan.params.id, plan.curves_to_load.len());
             for i in 0..plan.curves_to_load.len() {
                 let axis_idx = plan.curves_to_load[i].0;
                 let curve_params = plan.curves_to_load[i].1.clone();
+                eprintln!("[planner-trace] seg={} curve_iter={} axis={} start", plan.params.id, i, axis_idx);
                 let alloc = {
                     let mut pool = slot_pool.lock().unwrap();
                     let cap = pool.capacity();
@@ -614,10 +680,12 @@ fn build_dispatch(
                 let (slot, slot_gen) = match alloc {
                     Ok(v) => v,
                     Err(e) => {
+                        eprintln!("[planner-trace] seg={} curve_iter={} alloc FAILED: {:?}", plan.params.id, i, e);
                         load_err = Some(e);
                         break;
                     }
                 };
+                eprintln!("[planner-trace] seg={} curve_iter={} alloc OK slot={} gen={}", plan.params.id, i, slot, slot_gen);
                 allocated_slots.push(slot);
                 match producer::load_curve(
                     host_io.as_ref(),
@@ -625,8 +693,12 @@ fn build_dispatch(
                     &curve_params,
                     DEFAULT_LOAD_CURVE_TIMEOUT,
                 ) {
-                    Ok(handle) => plan.set_handle(axis_idx, handle),
+                    Ok(handle) => {
+                        eprintln!("[planner-trace] seg={} curve_iter={} load_curve OK handle=0x{:08x}", plan.params.id, i, handle);
+                        plan.set_handle(axis_idx, handle);
+                    }
                     Err(e) => {
+                        eprintln!("[planner-trace] seg={} curve_iter={} load_curve ERR: {:?}", plan.params.id, i, e);
                         load_err = Some(DispatchError::LoadCurve {
                             mcu_id: plan.mcu_id,
                             slot,
@@ -639,6 +711,7 @@ fn build_dispatch(
                     }
                 }
             }
+            eprintln!("[planner-trace] seg={} exited load loop, load_err={:?}", plan.params.id, load_err.as_ref().map(|e| format!("{:?}", e)));
 
             if let Some(err) = load_err {
                 let mut pool = slot_pool.lock().unwrap();
@@ -701,12 +774,17 @@ struct PlannerCtx {
 
 impl PlannerCtx {
     fn build() -> Result<Self, String> {
+        Self::build_with_spm([80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32])
+    }
+
+    fn build_with_spm(steps_per_mm: [f32; 4]) -> Result<Self, String> {
         let harness = SimHarness::new()?;
 
-        // Configure the firmware's kinematics + steps_per_mm. The bench is
-        // CoreXY 80 steps/mm on A+B; sim uses the same. `configure_axes` is a
+        // Configure the firmware's kinematics + steps_per_mm. Default tests
+        // use CoreXY @ 80 spm on A+B; the live-mirror test bumps that to
+        // 160 spm to match the user's Trident. `configure_axes` is a
         // kalico-native control-channel call (not a runtime command).
-        configure_sim_axes(&harness.host_io)?;
+        configure_sim_axes_with_spm(&harness.host_io, steps_per_mm)?;
 
         let host_io = Arc::clone(&harness.host_io);
         let credit = Arc::new(CreditCounter::new(1024));
@@ -774,14 +852,18 @@ impl PlannerCtx {
     }
 }
 
-/// Send `ConfigureAxes` to the sim — CoreXY @ 80 steps/mm on A+B, Z and E
-/// disabled in present_mask. Matches what the live bridge does after attach.
-fn configure_sim_axes(host_io: &KalicoHostIo) -> Result<(), String> {
+/// Send `ConfigureAxes` to the sim — CoreXY with caller-supplied
+/// per-axis steps_per_mm. Present mask hardcoded to motors 0+1 (A+B).
+/// Default 25mm-jog tests pass `[80, 80, 0, 0]`; the live-mirror test
+/// passes `[160, 160, 0, 0]` to match the user's Trident config.
+fn configure_sim_axes_with_spm(
+    host_io: &KalicoHostIo,
+    steps_per_mm: [f32; 4],
+) -> Result<(), String> {
     let kinematics = 0_u8; // CoreXyAndE
     let present_mask = 0b0011_u8; // A=motor0, B=motor1; Z/E absent
     let awd_mask = 0_u8;
     let invert_mask = 0_u8;
-    let steps_per_mm = [80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32];
 
     let mut body = Vec::with_capacity(20);
     body.push(kinematics);
@@ -809,7 +891,10 @@ fn configure_sim_axes(host_io: &KalicoHostIo) -> Result<(), String> {
     if r != 0 {
         return Err(format!("ConfigureAxes returned error code {r}"));
     }
-    eprintln!("[sim] ConfigureAxes ok (CoreXY, 80 steps/mm A+B)");
+    eprintln!(
+        "[sim] ConfigureAxes ok (CoreXY, steps_per_mm = [{:.1}, {:.1}, {:.1}, {:.1}])",
+        steps_per_mm[0], steps_per_mm[1], steps_per_mm[2], steps_per_mm[3],
+    );
     Ok(())
 }
 
@@ -1045,6 +1130,173 @@ fn sim_harness_boots_and_emits_status() {
         "sim boot emitted fault {} (detail=0x{:08x}) before any motion was \
          submitted — firmware is unhealthy",
         status.last_fault, status.fault_detail,
+    );
+}
+
+// ===========================================================================
+//
+// Test D — live Trident reproduction. CoreXY @ 160 steps/mm (vs the 80 spm
+// other tests use), start position [125, 100, 10], 0.5 mm pure-X jog at
+// F=600 mm/min.
+//
+// Live-bench signature: bridge dispatches the segment, push_segment is
+// accepted, motors resolve their primary curves, but the producer's inner
+// loop returns `SegmentExhausted` on every piece — `producer_steps_pushed_total`
+// stays 0, `runtime_emit_pulses` stays 0, ring_high_water stays 0 across
+// every motor. End result on the printer is "steppers energize but
+// toolhead doesn't move."
+//
+// What this test catches that A/B/C don't:
+//   * `25 mm at F=100` (1.67 mm/s) and `5 mm at F=100` (also 1.67 mm/s)
+//     are long, slow moves. The live failure is a 0.5 mm move at 10 mm/s —
+//     much shorter trajectory, much higher peak velocity, ~80 expected
+//     steps per motor instead of thousands. If the producer's
+//     SegmentExhausted bug is dependent on segment duration vs piece
+//     count, A/B/C may quietly pass.
+//   * The host-side bench reproducer
+//     `live_corexy_jog_short_distance_with_real_handle_y_emits_step_pulses`
+//     in `bench_repro.rs` produces step_counts=[79, 79, 0, 0] for these
+//     exact inputs — so the bug must be on the MCU side, isolated to
+//     either wire-level curve corruption OR MCU-runtime-state divergence.
+//
+// Pass condition:
+//   1. Planner emits ≥1 dispatched segment.
+//   2. `current_segment_id` reaches the dispatched count within 10 s.
+//   3. `runtime_emit_pulses` (tag 0xE2, bits 16..23) > 0 — the firmware
+//      actually emitted at least one STEP toggle. This is the assertion
+//      that the live bench fails on; the prior tests only checked
+//      retirement, which can advance without any pulses if the producer
+//      exhausts every piece.
+//
+// If the test fails, the diagnostic summary dumps every observed
+// `fault_detail` tag with its max-seen payload — that's enough to pin
+// where the pipeline broke (handle routing? curve resolution? push
+// path?) without re-flashing.
+//
+// ===========================================================================
+
+#[test]
+#[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
+fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
+    let ctx = PlannerCtx::build_with_spm([160.0, 160.0, 0.0, 0.0])
+        .expect("build sim harness");
+
+    // Mirror the live test exactly: start at [125, 100, 10], jog +0.5mm X
+    // at F=600 (10 mm/s). bench_repro.rs's host runtime test with these
+    // exact inputs returns step_counts = [79, 79, 0, 0] (motor A + motor B,
+    // CoreXY decomposition of a pure-X jog).
+    ctx.submit_jog([125.0, 100.0, 10.0], 0.5, 0.0, 0.0, 600.0)
+        .expect("submit 0.5mm X jog");
+    ctx.flush().expect("flush after 0.5mm jog");
+
+    let dispatched = ctx.dispatched_segments();
+    eprintln!(
+        "[test-D] dispatched_segments={} last_seg_id_observed={}",
+        dispatched, ctx.harness.last_segment_id(),
+    );
+
+    assert!(
+        dispatched > 0,
+        "BENCH BUG (planner-side): 0.5mm X jog at F=600 dispatched zero \
+         segments. Last dispatch error: {:?}",
+        ctx.last_dispatch_error(),
+    );
+
+    // Wait for the MCU to retire the dispatched segment(s). Use a longer
+    // window than tests A/B/C because we also need the fault_detail tag
+    // rotation to cycle through 0xE2 (pulses) at least once. The rotation
+    // period is ~14 s wall (23 inner phases × 6 outer × 100 ms emit, gated
+    // on outer == 0), so 25 s gives us ~1.8 full rotations.
+    let seg_wait = ctx
+        .harness
+        .wait_for_segment_id(dispatched.max(1) as u32, Duration::from_secs(25));
+
+    // Continue observing fault_detail tags for a few more seconds even if
+    // the segment id advanced quickly, so the diagnostic summary is
+    // populated regardless of pass/fail.
+    let observation_extra = if seg_wait.is_ok() {
+        Duration::from_secs(20)
+    } else {
+        Duration::from_secs(5)
+    };
+    thread::sleep(observation_extra);
+
+    let status = ctx.harness.status();
+    let summary = ctx.harness.fault_detail_summary();
+    eprintln!(
+        "[test-D] final status: engine_status={} seg_id={} last_fault={} fault_detail=0x{:08x}",
+        status.engine_status, status.current_segment_id, status.last_fault, status.fault_detail,
+    );
+    eprintln!("[test-D] fault_detail tag summary (tag → max payload):");
+    for (tag, payload) in &summary {
+        eprintln!("  0x{:02X} → 0x{:06X} ({})", tag, payload, payload);
+    }
+    if let Some(err) = ctx.last_dispatch_error() {
+        eprintln!("[test-D] dispatch error captured: {err}");
+    }
+
+    if let Err(observed) = seg_wait {
+        panic!(
+            "BENCH BUG #3 (first-jog no-motion): dispatched {} segments \
+             but MCU `current_segment_id` only reached {} after 25s. \
+             Final status = {:?}. Tag summary = {:?}. Last dispatch \
+             error = {:?}.",
+            dispatched, observed, status, summary, ctx.last_dispatch_error(),
+        );
+    }
+
+    // Tag 0xE2's bits 16..23 carry `runtime_emit_pulses & 0xFF`.
+    // > 0 means the runtime called runtime_emit_step at least once,
+    // which only happens once a step_time_event ISR popped a ring entry
+    // the producer pushed. If this is zero, the producer exhausted every
+    // piece on every motor without emitting a single step — the exact
+    // live-bench signature.
+    let e2 = ctx.harness.fault_detail_max(0xE2);
+    let pulses_lo = e2.map(|p| (p >> 16) & 0xFF).unwrap_or(0);
+
+    // Tag 0xB3 bits 16..23 carry `producer_steps_pushed_total & 0xFF`.
+    let b3 = ctx.harness.fault_detail_max(0xB3);
+    let pushed = b3.map(|p| (p >> 16) & 0xFF).unwrap_or(0);
+
+    // Tag 0xB2 low 16 bits carry 4-bit ring_high_water for motors 0..3.
+    let b2 = ctx.harness.fault_detail_max(0xB2);
+    let ring_high_waters = b2.map(|p| {
+        let hws = p & 0xFFFF;
+        [
+            (hws & 0xF) as u32,
+            ((hws >> 4) & 0xF) as u32,
+            ((hws >> 8) & 0xF) as u32,
+            ((hws >> 12) & 0xF) as u32,
+        ]
+    });
+
+    eprintln!(
+        "[test-D] derived diagnostics: pulses_lo={} pushed={} \
+         ring_high_water={:?}",
+        pulses_lo, pushed, ring_high_waters,
+    );
+
+    assert!(
+        pulses_lo > 0 || pushed > 0
+            || ring_high_waters
+                .map(|hws| hws.iter().any(|h| *h > 0))
+                .unwrap_or(false),
+        "LIVE BUG REPRODUCED IN SIM: 0.5mm X jog at F=600 (CoreXY 160 spm) \
+         dispatched {} segment(s), `current_segment_id` reached {} (retirement \
+         happened), BUT `runtime_emit_pulses = {}`, `producer_steps_pushed_total \
+         = {}`, ring_high_water = {:?}. The producer exhausts every piece \
+         without pushing a single step entry — same signature as the live \
+         hardware bench. Tag summary: {:?}",
+        dispatched, ctx.harness.last_segment_id(),
+        pulses_lo, pushed, ring_high_waters, summary,
+    );
+
+    eprintln!(
+        "[test-D] PASS: 0.5mm X jog dispatched {} segments, seg_id reached \
+         {}, runtime_emit_pulses_lo = {}, producer_steps_pushed_lo = {}, \
+         ring_high_water = {:?}.",
+        dispatched, ctx.harness.last_segment_id(),
+        pulses_lo, pushed, ring_high_waters,
     );
 }
 

@@ -260,7 +260,7 @@ const MAX_RETRY_COUNT: u32 = 8;
 /// window. Port-level disconnects (USB unplug, TCP close) bypass this
 /// guard via the `PhantomZero` / `Err(_)` arms of `poll_serial` →
 /// `HostDisconnect` fault.
-const MCU_SILENCE_FOR_CLOSE: Duration = Duration::from_secs(10);
+const MCU_SILENCE_FOR_CLOSE: Duration = Duration::from_secs(120);
 
 const MAX_SUBMITS_PER_ITER: usize = 4;
 // The reactor has no FD/eventfd wakeup for submissions sent over

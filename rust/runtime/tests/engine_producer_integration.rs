@@ -25,7 +25,7 @@ use runtime::engine::Engine;
 use runtime::queue::Q_N;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
-use runtime::state::SharedState;
+use runtime::state::{SharedState, StepMode};
 use runtime::step_producer::ProducerTickResult;
 
 const CLOCK_FREQ: u32 = 520_000_000;
@@ -327,6 +327,217 @@ fn initial_step_seed_is_direction_aware_for_negative_motion() {
         counter2, 15999,
         "positive motion seed should remain floor(99.998/0.00625) = 15999; \
          got {counter2}",
+    );
+}
+
+#[test]
+fn corexy_xonly_jog_with_real_handle_constant_y_emits_step_pulses() {
+    // Live-printer regression (2026-05-15 trident-printer reproducer:
+    // post-flash 0xB3000505 on H723 / mcu: dequeued=5, retired=5, pushed=0
+    // across an X jog of +25mm then -25mm).
+    //
+    // Root cause: the bridge's 2026-05-11 fix to `dispatch.rs` stopped
+    // filtering trivially-constant curves; the bridge now sends every
+    // kinematic axis curve as a real handle every segment so the runtime
+    // can "hold prev value" semantics. For an X-only jog on CoreXY, that
+    // means:
+    //
+    //   * X handle → real handle to shaped X curve (smooth_mzv ⇒ multi-piece)
+    //   * Y handle → real handle to CONSTANT Y curve (1 piece, all CPs equal)
+    //
+    // The producer's CoreXY-only piece-count-match check (engine.rs:
+    // ~1944-1955) bails when `n_pieces_primary != n_pieces_secondary`
+    // unless secondary is UNUSED. Constant-Y on a real handle has 1 piece
+    // while shaped-X has many, so the check fires for motors 0 and 1, both
+    // motors retire the segment without pushing any step events.
+    //
+    // Bug symptom: every CoreXY jog energizes the steppers but produces
+    // zero physical motion. F446 (Z) is unaffected because Z is single-axis
+    // (no secondary curve), so the check never fires there. Bench
+    // `bench_repro::first_jog_after_stream_open_emits_step_pulses` passes
+    // because the test harness still filters constants the old way and
+    // leaves the Y handle as UNUSED_SENTINEL, which secondary_is_zero=true
+    // hides the bug.
+    //
+    // Expected post-fix behavior: when secondary is trivially constant,
+    // the producer should use its single value as a per-piece offset to
+    // primary's pieces, regardless of piece-count mismatch.
+    let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+    let (mut q_producer, mut q_consumer) = queue.split();
+    let pool = CurvePool::new();
+    let shared = SharedState::new();
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+
+    // CoreXY: motors 0 (A) and 1 (B) configured at 160 steps/mm.
+    engine.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CoreXyAndE,
+    });
+
+    // Multi-piece X cubic: 100 → 101 mm over 2 piecewise-Bezier pieces.
+    // n_cps = 3*N + 1 = 7 for N=2; n_knots = n_cps + degree + 1 = 11.
+    // Knots layout for piecewise-Bezier degree-3, N=2:
+    //   [u0;4][u1;3][u2;4] = [0,0,0,0, 0.5,0.5,0.5, 1,1,1,1].
+    // Within each piece, CPs are collinear along the piece's slope so the
+    // result is the same straight line 100 → 101 as a single-piece would
+    // give, but the runtime sees TWO pieces — mirroring what the smooth_mzv
+    // shaper would produce on real input.
+    let x_knots: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+    let x_cps: Vec<f32> = vec![
+        100.0, 100.166_67, 100.333_336, 100.5, 100.666_67, 100.833_336, 101.0,
+    ];
+    let x_handle = pool
+        .validate_and_load(0, 3, &x_knots, &x_cps)
+        .expect("load X curve");
+
+    // Constant Y cubic: 100 → 100 mm. Single-piece. This is what
+    // `dispatch::CurveLoadParams::from_scalar_nurbs_normalized` emits for
+    // a trivially-constant Y curve on an X-only jog after the 2026-05-11
+    // bridge fix to send every kinematic axis.
+    let y_knots: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let y_cps: Vec<f32> = vec![100.0, 100.0, 100.0, 100.0];
+    let y_handle = pool
+        .validate_and_load(1, 3, &y_knots, &y_cps)
+        .expect("load constant Y curve");
+
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle, // REAL handle, not UNUSED_SENTINEL — matches live behavior.
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: 26_000_000,
+        kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    engine
+        .push_segment(seg, &mut q_producer, &shared)
+        .expect("push ok");
+
+    // Drive producer until idle. For 160 steps with PRODUCER_BATCH_CAP=32,
+    // expect ~5–6 fills with WorkPending then AllIdle.
+    let mut runs = 0_u32;
+    loop {
+        let r = engine.producer_step(&pool, &mut q_consumer, &shared);
+        runs += 1;
+        if r == ProducerTickResult::AllIdle {
+            break;
+        }
+        assert!(runs < 500, "producer_step should converge well within 500 calls");
+    }
+
+    // For a +1 mm X jog with Y constant on CoreXY:
+    //   motor 0 (A = X + Y): position 200 → 201   ⇒ ~160 step pulses
+    //   motor 1 (B = X − Y): position   0 →   1   ⇒ ~160 step pulses
+    let m0 = engine.step_ring(0).expect("motor 0 ring").available();
+    let m1 = engine.step_ring(1).expect("motor 1 ring").available();
+
+    assert!(
+        (140..=180).contains(&m0),
+        "motor 0 should push ~160 step events for 1mm X with constant Y on CoreXY; \
+         got {m0}. If m0==0, the constant-secondary piece-count-mismatch bug is back \
+         (engine.rs piece_coeffs bails on mismatched non-zero piece counts)."
+    );
+    assert!(
+        (140..=180).contains(&m1),
+        "motor 1 should push ~160 step events for 1mm X with constant Y on CoreXY; \
+         got {m1}. If m1==0, the constant-secondary piece-count-mismatch bug is back."
+    );
+}
+
+#[test]
+fn corexy_yonly_jog_with_real_handle_constant_x_emits_step_pulses() {
+    // Symmetric case to `corexy_xonly_jog_with_real_handle_constant_y_*`:
+    // here the SHAPED axis is Y and the CONSTANT axis is X. Without the
+    // 2026-05-15 fix the producer iterates primary's pieces (X has 1, the
+    // constant) and never reaches secondary's (Y has N, the shaped one),
+    // so both CoreXY motors retire the segment without pushing — same bug,
+    // different axis pair.
+    //
+    // Post-fix the iteration is driven by the shaped side regardless of
+    // which axis label it lives under.
+    let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+    let (mut q_producer, mut q_consumer) = queue.split();
+    let pool = CurvePool::new();
+    let shared = SharedState::new();
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+
+    engine.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CoreXyAndE,
+    });
+
+    // Constant X cubic at 100 mm — single piece.
+    let x_knots: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let x_cps: Vec<f32> = vec![100.0, 100.0, 100.0, 100.0];
+    let x_handle = pool
+        .validate_and_load(0, 3, &x_knots, &x_cps)
+        .expect("load constant X");
+
+    // Multi-piece Y cubic: 100 → 101 mm over 2 pieces — same shape as the
+    // X-only test mirrored to Y.
+    let y_knots: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+    let y_cps: Vec<f32> = vec![
+        100.0, 100.166_67, 100.333_336, 100.5, 100.666_67, 100.833_336, 101.0,
+    ];
+    let y_handle = pool
+        .validate_and_load(1, 3, &y_knots, &y_cps)
+        .expect("load Y curve");
+
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: 26_000_000,
+        kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    engine
+        .push_segment(seg, &mut q_producer, &shared)
+        .expect("push ok");
+
+    let mut runs = 0_u32;
+    loop {
+        let r = engine.producer_step(&pool, &mut q_consumer, &shared);
+        runs += 1;
+        if r == ProducerTickResult::AllIdle { break; }
+        assert!(runs < 500, "producer_step should converge well within 500 calls");
+    }
+
+    // For a +1 mm Y jog with X constant on CoreXY:
+    //   motor 0 (A = X + Y): position 200 → 201   ⇒ ~160 step pulses
+    //   motor 1 (B = X − Y): position 0   → -1    ⇒ ~160 step pulses (negative)
+    let m0 = engine.step_ring(0).expect("motor 0 ring").available();
+    let m1 = engine.step_ring(1).expect("motor 1 ring").available();
+    assert!(
+        (140..=180).contains(&m0),
+        "motor 0 should push ~160 step events for 1mm Y with constant X; got {m0}"
+    );
+    assert!(
+        (140..=180).contains(&m1),
+        "motor 1 should push ~160 step events for 1mm Y with constant X; got {m1}"
     );
 }
 
@@ -774,5 +985,367 @@ fn fake_finish_loop_does_not_spin_on_finished_constant_axes() {
         "producer_step converged but took {runs} calls — that's still \
          far more than needed for 160 X-steps + 2 trivial finishes. \
          Suggests the fake-finish guard is leaking some work."
+    );
+}
+
+// CoreXY +1mm X jog with SHAPER-NOISY Y (mimics smooth_mzv on a stationary
+// axis). The Y curve has piece-level oscillations summing to ~zero net
+// displacement, but with per-piece |Δy| ≈ 12 µm — about 2× step_distance
+// at 160 spm. Mirrors what the planner's shaper convolution emits for an
+// "idle" axis during a single-axis jog.
+//
+// Pass = motor A receives a NET +1mm worth of pulses (Σ dir ≈ +160),
+//        not just |total| ≈ 160 with mixed directions.
+//
+// If this fails, step_time's per-piece dir-from-velocity picker is being
+// fooled by shaper noise, producing alternating-dir pulses that cancel
+// the real X motion. Hardware symptom: motor energizes but doesn't move.
+#[test]
+fn corexy_xonly_jog_with_noisy_y_emits_net_directional_pulses() {
+    let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+    let (mut q_producer, mut q_consumer) = queue.split();
+    let pool = CurvePool::new();
+    let shared = SharedState::new();
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+
+    engine.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CoreXyAndE,
+    });
+
+    // X: 100 → 101 mm over 4 pieces (matching Y's piece count below, which
+    // is what the planner emits when both axes go through the same shaper
+    // kernel). Collinear cps within each piece ⇒ straight line.
+    let x_knots: Vec<f32> = vec![
+        0.0, 0.0, 0.0, 0.0,
+        0.25, 0.25, 0.25,
+        0.5, 0.5, 0.5,
+        0.75, 0.75, 0.75,
+        1.0, 1.0, 1.0, 1.0,
+    ];
+    // Shaper-pad style: piece 0 has near-zero X motion (smooth_mzv pad),
+    // pieces 1-3 carry the actual jog. Piece 0 only +1 µm, pieces 1-3
+    // distribute the remaining 0.999 mm. Mirrors what smooth_mzv produces
+    // for the first ~1 ms of a jog (shaper pre-burst).
+    let x_cps: Vec<f32> = vec![
+        // piece 0: 100.000 → 100.001 (1 µm shaper-pad)
+        100.000, 100.0003, 100.0007,
+        // piece 1: 100.001 → 100.334 (0.333 mm)
+        100.001, 100.112, 100.223,
+        // piece 2: 100.334 → 100.667 (0.333 mm)
+        100.334, 100.445, 100.556,
+        // piece 3: 100.667 → 101.000 (0.333 mm)
+        100.667, 100.778, 100.889,
+        101.000,
+    ];
+    let x_handle = pool
+        .validate_and_load(0, 3, &x_knots, &x_cps)
+        .expect("load X curve");
+
+    // Noisy Y: nominally constant 100mm, but with per-piece oscillation.
+    // 4 pieces, each with end-to-start displacement < 1 step_distance, but
+    // some pieces have inner cps shifted ±12 µm (shaper-pad noise). Net
+    // start = end = 100.0.
+    // Knots: [0;4][1/4;3][2/4;3][3/4;3][1;4] for N=4 pieces.
+    let y_knots: Vec<f32> = vec![
+        0.0, 0.0, 0.0, 0.0,
+        0.25, 0.25, 0.25,
+        0.5, 0.5, 0.5,
+        0.75, 0.75, 0.75,
+        1.0, 1.0, 1.0, 1.0,
+    ];
+    // Per-piece cps: [start, inner1, inner2, end]. Inner cps shifted ±12 µm
+    // around each piece's straight line for "shaper-like" noise.
+    let y_cps: Vec<f32> = vec![
+        // piece 0: 100.000 → 100.000 with +12 µm bump in inner CPs
+        100.000, 100.012, 100.012,
+        // piece 1: 100.000 → 100.000 with -12 µm dip
+        100.000, 99.988, 99.988,
+        // piece 2: 100.000 → 100.000 with +12 µm bump
+        100.000, 100.012, 100.012,
+        // piece 3: 100.000 → 100.000 with -12 µm dip
+        100.000, 99.988, 99.988,
+        100.000,
+    ];
+    assert_eq!(y_cps.len(), 13, "N=4 pieces ⇒ 3*4+1 = 13 cps");
+    let y_handle = pool
+        .validate_and_load(1, 3, &y_knots, &y_cps)
+        .expect("load noisy Y curve");
+
+    let seg = Segment {
+        id: 1,
+        x_handle,
+        y_handle,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: 26_000_000,
+        kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    engine.push_segment(seg, &mut q_producer, &shared).expect("push ok");
+
+    let mut runs = 0_u32;
+    loop {
+        let r = engine.producer_step(&pool, &mut q_consumer, &shared);
+        runs += 1;
+        if r == ProducerTickResult::AllIdle {
+            break;
+        }
+        assert!(runs < 500, "producer_step should converge");
+    }
+
+    // Drain motor A's ring, sum directions.
+    let m0_ring = engine.step_ring(0).expect("motor 0 ring");
+    let m0_total = m0_ring.available();
+    let mut m0_net: i32 = 0;
+    let mut m0_pos: u32 = 0;
+    let mut m0_neg: u32 = 0;
+    for _ in 0..m0_total {
+        let (_t, dir) = m0_ring.peek_head().expect("ring not empty");
+        m0_net += dir as i32;
+        if dir > 0 {
+            m0_pos += 1;
+        } else if dir < 0 {
+            m0_neg += 1;
+        }
+        m0_ring.advance(1);
+    }
+
+    eprintln!(
+        "[noisy-y test] motor 0: total={} pos={} neg={} net={}",
+        m0_total, m0_pos, m0_neg, m0_net,
+    );
+
+    // For a +1mm X-only jog on CoreXY: motor A = X+Y net displacement is
+    // +1mm × 160 spm = 160 microsteps. Allow ±30 tolerance for shaper noise
+    // affecting boundary-region steps. The key: NET must be strongly
+    // positive — not balanced (which would mean dir-flip cancellation).
+    assert!(
+        m0_net >= 100,
+        "motor A net direction must be strongly positive (real X motion); \
+         got net={} (pos={} neg={}). If neg ≈ pos, step_time dir-picker is \
+         being fooled by shaper noise on the constant Y axis.",
+        m0_net, m0_pos, m0_neg,
+    );
+}
+
+// Direct side-by-side comparison: feed the SAME segment + curve geometry to
+// `producer_step` (StepTime emission) and `runtime_modulated_tick`
+// (Modulated emission). Count what each emits.
+//
+// Why this matters: on the live bench, modulated mode MOVES the toolhead
+// but step_time mode does not. If both modes are correct, they should emit
+// the SAME total step count with the SAME net direction. Any divergence
+// here pins down where step_time diverges from the working modulated path.
+fn build_corexy_xjog_noisy_y_segment(
+    pool: &CurvePool,
+    x_slot: u16,
+    y_slot: u16,
+    seg_id: u32,
+    t_start: u64,
+    duration: u64,
+) -> Segment {
+    let x_knots: Vec<f32> = vec![
+        0.0, 0.0, 0.0, 0.0,
+        0.25, 0.25, 0.25,
+        0.5, 0.5, 0.5,
+        0.75, 0.75, 0.75,
+        1.0, 1.0, 1.0, 1.0,
+    ];
+    // Start at X=0 (matches engine's default prev_x=0). Shaper-pad piece 0
+    // (1 µm), main motion in pieces 1-3 to reach X=1.0 mm.
+    let x_cps: Vec<f32> = vec![
+        0.000, 0.0003, 0.0007,
+        0.001, 0.112, 0.223,
+        0.334, 0.445, 0.556,
+        0.667, 0.778, 0.889,
+        1.000,
+    ];
+    let x_handle = pool
+        .validate_and_load(x_slot, 3, &x_knots, &x_cps)
+        .expect("load X");
+    let y_knots: Vec<f32> = vec![
+        0.0, 0.0, 0.0, 0.0,
+        0.25, 0.25, 0.25,
+        0.5, 0.5, 0.5,
+        0.75, 0.75, 0.75,
+        1.0, 1.0, 1.0, 1.0,
+    ];
+    // Y oscillates ±12 µm per piece, net zero. Starts at Y=0 to match prev_y.
+    let y_cps: Vec<f32> = vec![
+        0.000, 0.012, 0.012,
+        0.000, -0.012, -0.012,
+        0.000, 0.012, 0.012,
+        0.000, -0.012, -0.012,
+        0.000,
+    ];
+    let y_handle = pool
+        .validate_and_load(y_slot, 3, &y_knots, &y_cps)
+        .expect("load Y");
+    let mut seg = Segment {
+        id: seg_id,
+        x_handle,
+        y_handle,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start,
+        t_end: t_start + duration,
+        kinematics: KinematicTag::CoreXyAndE,
+        e_mode: EMode::Travel,
+        extrusion_ratio: 0.0,
+        flags: 0,
+        _pad: [0; 1],
+        consumers_remaining: 0,
+    };
+    seg.consumers_remaining = Segment::compute_consumers_remaining(
+        seg.kinematics,
+        seg.x_handle,
+        seg.y_handle,
+        seg.z_handle,
+        seg.e_handle,
+    );
+    seg
+}
+
+#[test]
+fn compare_modulated_vs_step_time_for_corexy_xjog_noisy_y() {
+    // --- StepTime side ---
+    let queue: &'static mut Queue<Segment, Q_N> = Box::leak(Box::new(Queue::new()));
+    let (mut q_producer, mut q_consumer) = queue.split();
+    let pool_st = CurvePool::new();
+    let shared_st = SharedState::new();
+    let mut engine_st = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+    engine_st.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CoreXyAndE,
+    });
+    // step_modes default is StepTime — explicit for clarity:
+    shared_st.step_modes[0].store(StepMode::StepTime as u8, Ordering::Release);
+    shared_st.step_modes[1].store(StepMode::StepTime as u8, Ordering::Release);
+
+    const T_START: u64 = 0;
+    const DURATION: u64 = 26_000_000; // 50 ms @ 520 MHz
+    let seg_st =
+        build_corexy_xjog_noisy_y_segment(&pool_st, 0, 1, 1, T_START, DURATION);
+    engine_st.push_segment(seg_st, &mut q_producer, &shared_st).expect("push");
+    loop {
+        if engine_st.producer_step(&pool_st, &mut q_consumer, &shared_st)
+            == ProducerTickResult::AllIdle
+        {
+            break;
+        }
+    }
+    let st_m0_ring = engine_st.step_ring(0).expect("m0 ring");
+    let st_m0_total = st_m0_ring.available();
+    let mut st_m0_net: i32 = 0;
+    let mut st_m0_pos: u32 = 0;
+    let mut st_m0_neg: u32 = 0;
+    for _ in 0..st_m0_total {
+        let (_t, dir) = st_m0_ring.peek_head().expect("entry");
+        st_m0_net += dir as i32;
+        if dir > 0 {
+            st_m0_pos += 1;
+        } else if dir < 0 {
+            st_m0_neg += 1;
+        }
+        st_m0_ring.advance(1);
+    }
+    let st_m1_ring = engine_st.step_ring(1).expect("m1 ring");
+    let st_m1_total = st_m1_ring.available();
+    let mut st_m1_net: i32 = 0;
+    for _ in 0..st_m1_total {
+        let (_t, dir) = st_m1_ring.peek_head().expect("entry");
+        st_m1_net += dir as i32;
+        st_m1_ring.advance(1);
+    }
+
+    // --- Modulated side ---
+    let pool_md = CurvePool::new();
+    let shared_md = SharedState::new();
+    let mut engine_md = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+    engine_md.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig { steps_per_mm: 160.0, is_awd: false, invert_dir: false }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CoreXyAndE,
+    });
+    shared_md.step_modes[0].store(StepMode::Modulated as u8, Ordering::Release);
+    shared_md.step_modes[1].store(StepMode::Modulated as u8, Ordering::Release);
+
+    let seg_md =
+        build_corexy_xjog_noisy_y_segment(&pool_md, 0, 1, 1, T_START, DURATION);
+    // Modulated path reads from producer_current directly; pre-seed and
+    // pass an empty queue Consumer (the lazy-dequeue path is exercised by
+    // engine_modulated_tick.rs's dedicated regression test).
+    engine_md.producer_current = Some(seg_md);
+    let md_queue: &'static mut heapless::spsc::Queue<
+        runtime::segment::Segment,
+        { runtime::queue::Q_N },
+    > = Box::leak(Box::new(heapless::spsc::Queue::new()));
+    let (_md_qp, mut md_qc) = md_queue.split();
+
+    // Tick at 40 kHz across the segment.
+    const TICK_HZ: u64 = 40_000;
+    const TICK_PERIOD_CYCLES: u64 = CLOCK_FREQ as u64 / TICK_HZ; // 13_000
+    let n_ticks = DURATION / TICK_PERIOD_CYCLES + 5; // overshoot t_end to trigger retire
+    for i in 1..=n_ticks {
+        let now = T_START + i * TICK_PERIOD_CYCLES;
+        engine_md.runtime_modulated_tick(now, &mut md_qc, &pool_md, &shared_md);
+    }
+    let md_m0_net = shared_md.stepper_counts[0].load(Ordering::Acquire);
+    let md_m1_net = shared_md.stepper_counts[1].load(Ordering::Acquire);
+
+    eprintln!(
+        "[compare] STEP_TIME   m0: total={} pos={} neg={} net={}, m1: net={}",
+        st_m0_total, st_m0_pos, st_m0_neg, st_m0_net, st_m1_net,
+    );
+    eprintln!(
+        "[compare] MODULATED   m0: net={}, m1: net={} (signed step count via stepper_counts)",
+        md_m0_net, md_m1_net,
+    );
+
+    // Both modes should produce the same NET direction (+160 microsteps on
+    // motor A and motor B for a +1mm X jog with constant-mean Y). If they
+    // diverge, that's the divergence point we need to explain.
+    let st_net = st_m0_net;
+    let md_net = md_m0_net;
+    eprintln!(
+        "[compare] m0 net delta: step_time={} modulated={} diff={}",
+        st_net, md_net, st_net - md_net,
+    );
+    eprintln!(
+        "[compare] m1 net delta: step_time={} modulated={} diff={}",
+        st_m1_net, md_m1_net, st_m1_net - md_m1_net,
+    );
+
+    // The test PURPOSE is observation, not pass/fail: print the diff and
+    // let humans interpret. But assert that BOTH produce non-zero motion in
+    // the correct (positive) direction, since otherwise neither side works.
+    assert!(
+        md_net >= 100,
+        "modulated must emit ≥100 net positive microsteps on motor A (real X motion)",
+    );
+    assert!(
+        st_net >= 100,
+        "step_time must emit ≥100 net positive microsteps on motor A; got {}",
+        st_net,
     );
 }

@@ -285,6 +285,18 @@ pub mod exports {
         let consumers_remaining = Segment::compute_consumers_remaining(
             kin, x_handle, y_handle, z_handle, e_handle,
         );
+        // 2026-05-15 live diagnosis: capture handle packings and the
+        // computed consumers_remaining so the host can read them back via
+        // FFI/diag tags. If `consumers_remaining == 0`, every handle was
+        // UNUSED — the bridge sent a no-op segment to the MCU.
+        shared.last_push_x_handle_packed.store(x_handle.pack(), Ordering::Release);
+        shared.last_push_y_handle_packed.store(y_handle.pack(), Ordering::Release);
+        shared
+            .last_push_consumers_remaining
+            .store(consumers_remaining as u32, Ordering::Release);
+        if consumers_remaining == 0 {
+            shared.push_segment_all_unused_total.fetch_add(1, Ordering::AcqRel);
+        }
         let seg = Segment {
             id,
             x_handle,
@@ -631,16 +643,25 @@ pub mod exports {
             }
             let now: u64 = runtime_widened_host_clock();
 
-            isr.engine.runtime_modulated_tick(now, pool, shared);
+            // Field-disjoint borrow: `engine` and `queue_consumer` are
+            // separate fields, so the borrow checker accepts two non-
+            // overlapping `&mut` borrows out of the single `&mut IsrState`.
+            // Symmetric to `runtime_handle_tick` (StepTime path).
+            let IsrState {
+                engine,
+                queue_consumer,
+                ..
+            } = isr;
+            engine.runtime_modulated_tick(now, queue_consumer, pool, shared);
 
             // Mirror the engine's status into SharedState so the
             // foreground entrypoints see fault latching.
             shared
                 .runtime_status
-                .store(isr.engine.status() as u8, Ordering::Release);
+                .store(engine.status() as u8, Ordering::Release);
             shared
                 .last_error
-                .store(isr.engine.last_error(), Ordering::Release);
+                .store(engine.last_error(), Ordering::Release);
         }
     }
 
@@ -2442,6 +2463,150 @@ pub mod exports {
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
             shared.last_push_segment_result.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis: read the low 32 bits of
+    /// `push_segment_all_unused_total`. If this counter advances during a
+    /// jog, the bridge sent push_segment frames with every handle set to
+    /// the UNUSED sentinel — the segment retires on producer dequeue
+    /// without ever invoking motor processing, which matches the
+    /// "energized but no motion" symptom.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_push_seg_all_unused_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.push_segment_all_unused_total.load(Ordering::Acquire) as u32
+        }
+    }
+
+    /// 2026-05-15 live diagnosis: read the packed last `x_handle` from
+    /// `push_segment_impl`. Layout: `(gen << 16) | slot_idx`. UNUSED
+    /// sentinel = 0xFFFE_FFFE.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_push_x_handle(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_push_x_handle_packed.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis: read the packed last `y_handle` from
+    /// `push_segment_impl`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_push_y_handle(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_push_y_handle_packed.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis: read the last `consumers_remaining`
+    /// mask computed by `push_segment_impl`. Zero means every handle on
+    /// the most recent push_segment was UNUSED.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_push_consumers_remaining(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_push_consumers_remaining.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[0]
+    /// (first control point, position at u=0) of piece 0 of the most
+    /// recently resolved primary X curve. For a 0.5mm pure-X jog
+    /// starting at X=125.0, expect 0x42FA0000 (= 125.0f). Captured only
+    /// for motor 0.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_resolved_primary_cps_0(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_resolved_primary_cps_0.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[3]
+    /// (last control point, position at u=1) of piece 0 of the most
+    /// recently resolved primary X curve. For a 0.5mm pure-X jog from
+    /// X=125.0, expect 0x42FB0000 (= 125.5f). If `cps_0 == cps_3`, the
+    /// curve has zero displacement — `SegmentExhausted` from
+    /// `compute_next_step_time` is then expected, indicating a planner
+    /// bug (or wire-corruption that zeroed the displacement).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_resolved_primary_cps_3(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_resolved_primary_cps_3.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[0]
+    /// of the COMBINED (post-CoreXY-mix) curve for motor 0 (A = X + Y).
+    /// For a 0.5mm pure-X jog from X=125, Y=100 (Y curve constant), the
+    /// combined motor-A position at u=0 is X+Y = 225.0 (0x43610000).
+    /// Compare with the raw primary cps_0: if raw is correct but
+    /// combined is unexpected, the kinematic mix or the Y constant
+    /// value is wrong.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_combined_motor_a_cps_0(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_combined_motor_a_cps_0.load(Ordering::Acquire)
+        }
+    }
+
+    /// 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[3]
+    /// of the COMBINED (post-CoreXY-mix) curve for motor 0. For a 0.5mm
+    /// pure-X jog from X=125, Y=100, expect 225.5 (0x43618000). If
+    /// `combined_cps_0 == combined_cps_3` while raw primary cps_0 !=
+    /// cps_3, the kinematic combination is cancelling the displacement
+    /// (wrong sign in `kine.combine`, or follower curve carrying the
+    /// negative of the driver curve's delta).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_last_combined_motor_a_cps_3(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.last_combined_motor_a_cps_3.load(Ordering::Acquire)
         }
     }
 

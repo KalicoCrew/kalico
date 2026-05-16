@@ -72,11 +72,46 @@ fn diag_eval_record(cycles: u32) {
     }
 }
 
+/// Host-only step-pulse observer. Host builds invoke this hook on each
+/// `emit_step_pulses` call instead of the FFI extern. Production
+/// (`target_os = "none"`) bypasses this entirely — the cfg branches in
+/// `emit_step_pulses` keep `runtime_emit_step_pulses` as the only emission
+/// path on the MCU.
+///
+/// Intended for integration tests + offline simulators: install a closure
+/// that records each `(motor_idx, n_steps)` call (typically with a wall-clock
+/// or simulated timestamp captured by the caller) so test code can diff
+/// step traces between Modulated and StepTime modes for the same input.
+#[cfg(not(target_os = "none"))]
+pub mod step_sink {
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub(crate) static SINK: RefCell<Option<Box<dyn FnMut(u8, i32)>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// Install a step-pulse observer for the current thread. Returns the
+    /// previously-installed observer (if any), so callers can implement a
+    /// scoped/RAII pattern by re-installing the prior sink on drop.
+    pub fn install<F: FnMut(u8, i32) + 'static>(
+        f: F,
+    ) -> Option<Box<dyn FnMut(u8, i32)>> {
+        SINK.with(|s| s.borrow_mut().replace(Box::new(f)))
+    }
+
+    /// Remove and return the current observer.
+    pub fn uninstall() -> Option<Box<dyn FnMut(u8, i32)>> {
+        SINK.with(|s| s.borrow_mut().take())
+    }
+}
+
 /// Emit `n_steps` step pulses on the motor at `motor_idx` (post-kinematic-
 /// transform: `[A, B, Z, E]` for CoreXY, `[X, Y, Z, E]` for cartesian).
 /// Sign carries direction. On hardware this calls into `src/stepper.c`'s
 /// `runtime_emit_step_pulses`, which toggles the step/dir GPIOs configured
-/// by the matching `command_config_runtime_stepper`. Host-sim is a no-op.
+/// by the matching `command_config_runtime_stepper`. Host builds invoke the
+/// `step_sink` observer if installed (defaults to no-op).
 #[inline(always)]
 #[allow(unsafe_code)]
 fn emit_step_pulses(motor_idx: u8, n_steps: i32) {
@@ -91,7 +126,11 @@ fn emit_step_pulses(motor_idx: u8, n_steps: i32) {
     }
     #[cfg(not(target_os = "none"))]
     {
-        let _ = (motor_idx, n_steps);
+        step_sink::SINK.with(|cell| {
+            if let Some(sink) = cell.borrow_mut().as_mut() {
+                sink(motor_idx, n_steps);
+            }
+        });
     }
 }
 
@@ -400,6 +439,37 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// pointer via FFI in Task 6, not through this Rust accessor).
     pub fn step_ring(&self, motor_idx: usize) -> Option<&StepRing> {
         self.step_rings.get(motor_idx)
+    }
+
+    /// Seed the engine's logical toolhead position. Used by tests + by
+    /// the bridge's `kalico_stream_open` / `SET_KINEMATIC_POSITION` paths
+    /// to anchor `prev_x`/`prev_y`/`prev_z` and each motor's
+    /// `StepMotorState` accumulator before the first segment runs.
+    /// Without this, `runtime_modulated_tick` on a non-origin segment
+    /// computes a spurious motor-delta = (segment_start - 0) on its first
+    /// tick and emits thousands of catch-up step pulses.
+    ///
+    /// `xyz` is in trajectory frame (mm), pre-kinematic-transform. The
+    /// per-motor accumulator is seeded from `xyz` through the configured
+    /// kinematic (CoreXY A=X+Y / B=X−Y, or Cartesian X/Y/Z).
+    pub fn seed_position(&mut self, xyz: [f32; 3]) {
+        self.prev_x = xyz[0];
+        self.prev_y = xyz[1];
+        self.prev_z = xyz[2];
+        self.needs_xy_seed = false;
+        let motors = match self.mcu_config.as_ref().map(|c| c.kinematics) {
+            Some(KinematicTag::CoreXyAndE) => {
+                corexy_with_e([xyz[0], xyz[1], xyz[2], 0.0])
+            }
+            _ => cartesian_xyz_with_e([xyz[0], xyz[1], xyz[2], 0.0]),
+        };
+        for i in 0..4 {
+            if let Some(ss) = self.step_state.get_mut(i) {
+                if let Some(&m) = motors.get(i) {
+                    ss.seed(m);
+                }
+            }
+        }
     }
 
     /// Round-2 fix B4: clear the current segment from outside the engine
@@ -1852,6 +1922,32 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                             .producer_primary_stale_total
                             .fetch_add(1, Ordering::AcqRel);
                     }
+                    // 2026-05-15 live diagnosis (CP capture). Only sample
+                    // motor 0 so motor 1's CPs don't overwrite motor 0's
+                    // between status emits. Captures the very-first
+                    // control point (cps[0], curve value at u=0) and the
+                    // very-last (cps[3], curve value at u=1) of piece 0
+                    // of the resolved primary X curve. For a 0.5mm pure-X
+                    // jog from X=125, expect cps_0 = 125.0
+                    // (0x42FA0000) and cps_3 ≈ 125.5 (0x42FB0000).
+                    // Constant-on-constant or identical values indicate
+                    // wire-level curve corruption — the host runtime
+                    // bench reproduces the live inputs successfully, so
+                    // any divergence here pins the bug to the wire.
+                    if motor_idx == 0 {
+                        if let Some(ref cv) = r {
+                            if let Some((_, _, cps0)) = cubic_piece(cv, 0) {
+                                shared.last_resolved_primary_cps_0.store(
+                                    cps0[0].to_bits(),
+                                    Ordering::Release,
+                                );
+                                shared.last_resolved_primary_cps_3.store(
+                                    cps0[3].to_bits(),
+                                    Ordering::Release,
+                                );
+                            }
+                        }
+                    }
                     r
                 };
                 let cv_secondary = secondary.and_then(|h| {
@@ -1933,38 +2029,258 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // CoreXY combines x + y / x − y per motor. If the
                 // secondary curve is UNUSED (Y missing while X is real),
                 // treat it as a zero-curve — motor 0 = X + 0 = X, motor 1
-                // = X − 0 = X. If BOTH are present, piece-counts must
-                // match (the host's per-axis refit produces matching knot
-                // structure when both axes are shaped from a single
-                // trajectory; if it diverges, a piece-merge pass would
-                // be needed, but that's not reachable from any current
-                // host code path). Cartesian (Trident bench) bypasses
-                // this entirely.
+                // = X − 0 = X.
+                //
+                // **Piece-count handling (2026-05-15 fix).** If both
+                // primary and secondary are present, piece counts may
+                // differ when one axis is a single-piece constant curve
+                // (host sends it to anchor `prev_value` per the 2026-05-11
+                // dispatch fix) while the other is multi-piece shaped
+                // (the shaper produced many pieces for the moving axis).
+                // In that case, iterate by the SHAPED side's pieces and
+                // treat the constant side as a per-piece constant offset.
+                // If both are shaped with mismatched piece counts (not
+                // reachable from any current host path, since the host
+                // refits both axes together), skip the motor — the runtime
+                // does not perform piece-merge.
                 let secondary_is_zero = n_pieces_secondary == 0;
-                if is_corexy
+                let cv_primary_ref = cv_primary.as_ref();
+                let cv_secondary_ref = cv_secondary.as_ref();
+                let primary_constant_value =
+                    cv_primary_ref.and_then(curve_constant_value);
+                let secondary_constant_value =
+                    cv_secondary_ref.and_then(curve_constant_value);
+
+                // Both-shaped-mismatched detection (CoreXY only). When both
+                // axis curves are shaped but their piece counts differ
+                // (e.g., smooth_mzv with X@186 Hz and Y@122 Hz produces
+                // different kernel-driven piece subdivisions), the piece
+                // walker can't just pick one as driver — it must visit
+                // the SORTED UNION of both curves' piece boundaries and
+                // slice each curve's piece to the merged sub-range before
+                // combining (see `cubic_subsegment` for the De Casteljau
+                // slicer). Prior to this fix the runtime defensively
+                // skipped the motor in this case, the result was zero
+                // step pulses on every CoreXY jog where the per-axis
+                // shaper frequencies differed — i.e., the entire bench
+                // configuration, since X and Y use different mechanical
+                // resonance frequencies.
+                let both_shaped_mismatched = is_corexy
                     && !secondary_is_zero
-                    && n_pieces_secondary != n_pieces_primary
-                {
-                    if let Some(seg_mut) = self.producer_current.as_mut() {
-                        Self::clear_motor_bits_in_mask(seg_mut, motor_idx as u8);
+                    && n_pieces_primary != n_pieces_secondary
+                    && primary_constant_value.is_none()
+                    && secondary_constant_value.is_none();
+
+                // Build the merged-piece breakpoint list ONLY for the
+                // both-shaped-mismatched case. Other paths use the existing
+                // single-driver logic without this allocation. The merged
+                // breakpoints are the SORTED UNION of primary's and
+                // secondary's piece boundaries.
+                //
+                // Stack-allocated heapless::Vec — MAX_MERGED_BREAKPOINTS sized
+                // to comfortably cover the bench's worst-case shaper output
+                // (~30 pieces per axis on a 50mm jog → ~60 merged breakpoints).
+                const MAX_MERGED_BREAKPOINTS: usize = 256;
+                let mut merged_u: heapless::Vec<f32, MAX_MERGED_BREAKPOINTS> =
+                    heapless::Vec::new();
+                if both_shaped_mismatched {
+                    // Both checked is_some via curve_constant_value.is_none()
+                    // guards above (a None curve_constant_value implies the
+                    // curve resolved to Some(CurveView)).
+                    if let (Some(prim), Some(sec)) = (cv_primary_ref, cv_secondary_ref) {
+                        // Append primary's piece-boundary u-values: each
+                        // piece contributes its u_lo; the last piece also
+                        // contributes u_hi.
+                        for pi in 0..n_pieces_primary {
+                            if let Some((u_lo, u_hi, _)) = cubic_piece(prim, pi) {
+                                let _ = merged_u.push(u_lo);
+                                if pi + 1 == n_pieces_primary {
+                                    let _ = merged_u.push(u_hi);
+                                }
+                            }
+                        }
+                        // Append secondary's piece-boundary u-values.
+                        for pi in 0..n_pieces_secondary {
+                            if let Some((u_lo, u_hi, _)) = cubic_piece(sec, pi) {
+                                let _ = merged_u.push(u_lo);
+                                if pi + 1 == n_pieces_secondary {
+                                    let _ = merged_u.push(u_hi);
+                                }
+                            }
+                        }
                     }
-                    if let Some(ps) = self.producer_states.get_mut(motor_idx) {
-                        ps.clear();
+                    // Sort. partial_cmp is safe because all u-values are
+                    // finite reals in [0, 1].
+                    merged_u.sort_by(|a, b| {
+                        a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+                    });
+                    // In-place dedup with epsilon: keep merged piece widths
+                    // above 1e-7 so we don't generate zero-width pieces from
+                    // coincident boundaries (start-clamped knot multiplicity
+                    // means u=0 appears in both curves' breakpoint sets).
+                    let mut write_idx = 0_usize;
+                    let read_len = merged_u.len();
+                    for read_idx in 0..read_len {
+                        let v_opt = merged_u.get(read_idx).copied();
+                        let prev_opt = if write_idx == 0 {
+                            None
+                        } else {
+                            merged_u.get(write_idx - 1).copied()
+                        };
+                        if let Some(v) = v_opt {
+                            let keep = match prev_opt {
+                                None => true,
+                                Some(p) => (v - p).abs() > 1e-7,
+                            };
+                            if keep {
+                                if let Some(slot) = merged_u.get_mut(write_idx) {
+                                    *slot = v;
+                                }
+                                write_idx += 1;
+                            }
+                        }
                     }
-                    iter_any_progress = true;
-                    continue;
+                    merged_u.truncate(write_idx);
                 }
+
+                // Determine which curve drives iteration (defines u-spans).
+                //   driver_is_primary=true  → iterate primary's pieces
+                //   driver_is_primary=false → iterate secondary's pieces
+                //                              (used when primary is constant
+                //                              and secondary is shaped).
+                //   both_shaped_mismatched   → iterate merged_u sub-pieces
+                let (driver_is_primary, iter_n_pieces) = if both_shaped_mismatched {
+                    (true, merged_u.len().saturating_sub(1))
+                } else if is_corexy
+                    && !secondary_is_zero
+                    && n_pieces_primary != n_pieces_secondary
+                {
+                    match (primary_constant_value, secondary_constant_value) {
+                        (None, Some(_)) => (true, n_pieces_primary),
+                        (Some(_), None) => (false, n_pieces_secondary),
+                        _ => {
+                            // Defensive: both_shaped_mismatched should have
+                            // covered the (None, None) case; (Some, Some) with
+                            // mismatched piece counts is impossible because
+                            // curve_constant_value requires n_pieces == 1.
+                            // If we ever land here, skip the motor cleanly.
+                            if let Some(seg_mut) = self.producer_current.as_mut() {
+                                Self::clear_motor_bits_in_mask(seg_mut, motor_idx as u8);
+                            }
+                            if let Some(ps) = self.producer_states.get_mut(motor_idx) {
+                                ps.clear();
+                            }
+                            iter_any_progress = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    (true, n_pieces_primary)
+                };
 
                 // Build the kinematic-transformed coeffs for piece `pi`.
                 // Cartesian: just the primary's piece-coeffs. CoreXY: add/sub
                 // primary and secondary pieces, or pass through primary alone
-                // when secondary is UNUSED.
-                let cv_primary_ref = cv_primary.as_ref();
-                let cv_secondary_ref = cv_secondary.as_ref();
+                // when secondary is UNUSED, or combine with a constant
+                // follower when one side is a single-piece constant curve.
+                // Both-shaped-mismatched (CoreXY): for each merged sub-piece
+                // (union of breakpoints), De Casteljau-slice each curve to
+                // the sub-range, then combine.
                 let piece_coeffs = |pi: usize| -> Option<(f32, f32, [f32; 4])> {
-                    let (u_lo, u_hi, cps_p) = cubic_piece(cv_primary_ref?, pi)?;
+                    if both_shaped_mismatched {
+                        let u_lo = *merged_u.get(pi)?;
+                        let u_hi = *merged_u.get(pi + 1)?;
+                        if !(u_hi > u_lo) {
+                            return None;
+                        }
+                        let prim = cv_primary_ref?;
+                        let sec = cv_secondary_ref?;
+                        // Find each curve's piece containing `u_lo` (the
+                        // merged sub-piece sits entirely within one
+                        // primary piece AND one secondary piece by
+                        // construction — boundaries are the union).
+                        // Linear scan is fine: piece counts are small (~30).
+                        let mut p_piece: Option<(f32, f32, [f32; 4])> = None;
+                        for ppi in 0..n_pieces_primary {
+                            if let Some((pul, puh, pc)) = cubic_piece(prim, ppi) {
+                                if pul <= u_lo + 1e-9 && u_hi <= puh + 1e-9 {
+                                    p_piece = Some((pul, puh, pc));
+                                    break;
+                                }
+                            }
+                        }
+                        let mut s_piece: Option<(f32, f32, [f32; 4])> = None;
+                        for spi in 0..n_pieces_secondary {
+                            if let Some((sul, suh, sc)) = cubic_piece(sec, spi) {
+                                if sul <= u_lo + 1e-9 && u_hi <= suh + 1e-9 {
+                                    s_piece = Some((sul, suh, sc));
+                                    break;
+                                }
+                            }
+                        }
+                        let (p_ul, p_uh, p_cps) = p_piece?;
+                        let (s_ul, s_uh, s_cps) = s_piece?;
+                        // Slice each curve's piece to [u_lo, u_hi] sub-range.
+                        let p_span = p_uh - p_ul;
+                        let s_span = s_uh - s_ul;
+                        if p_span <= 0.0 || s_span <= 0.0 {
+                            return None;
+                        }
+                        let p_local_s = ((u_lo - p_ul) / p_span).clamp(0.0, 1.0);
+                        let p_local_t = ((u_hi - p_ul) / p_span).clamp(0.0, 1.0);
+                        let s_local_s = ((u_lo - s_ul) / s_span).clamp(0.0, 1.0);
+                        let s_local_t = ((u_hi - s_ul) / s_span).clamp(0.0, 1.0);
+                        let p_sub = cubic_subsegment(p_cps, p_local_s, p_local_t);
+                        let s_sub = cubic_subsegment(s_cps, s_local_s, s_local_t);
+                        // CoreXY combine: motor 0 = primary + secondary,
+                        // motor 1 = primary - secondary (sign captured at
+                        // fetch_segment_for_motor).
+                        let combined = if sign > 0.0 {
+                            [
+                                p_sub[0] + s_sub[0],
+                                p_sub[1] + s_sub[1],
+                                p_sub[2] + s_sub[2],
+                                p_sub[3] + s_sub[3],
+                            ]
+                        } else {
+                            [
+                                p_sub[0] - s_sub[0],
+                                p_sub[1] - s_sub[1],
+                                p_sub[2] - s_sub[2],
+                                p_sub[3] - s_sub[3],
+                            ]
+                        };
+                        return Some((u_lo, u_hi, combined));
+                    }
                     if is_corexy && !secondary_is_zero {
-                        let (_, _, cps_s) = cubic_piece(cv_secondary_ref?, pi)?;
+                        // Read driver piece (u-span + CPs) and synthesize follower CPs
+                        let (u_lo, u_hi, cps_driver) = if driver_is_primary {
+                            cubic_piece(cv_primary_ref?, pi)?
+                        } else {
+                            cubic_piece(cv_secondary_ref?, pi)?
+                        };
+                        let cps_follower: [f32; 4] = if driver_is_primary {
+                            match secondary_constant_value {
+                                Some(c) => [c, c, c, c],
+                                None => {
+                                    let (_, _, cps_s) = cubic_piece(cv_secondary_ref?, pi)?;
+                                    cps_s
+                                }
+                            }
+                        } else {
+                            // Follower is primary, which is necessarily constant
+                            // (we only set driver_is_primary=false in that case).
+                            let c = primary_constant_value?;
+                            [c, c, c, c]
+                        };
+                        // Map driver/follower back to (primary, secondary) so
+                        // the kinematic sign convention `primary ± secondary`
+                        // stays explicit.
+                        let (cps_p, cps_s) = if driver_is_primary {
+                            (cps_driver, cps_follower)
+                        } else {
+                            (cps_follower, cps_driver)
+                        };
                         let combined = if sign > 0.0 {
                             [
                                 cps_p[0] + cps_s[0],
@@ -1982,6 +2298,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         };
                         Some((u_lo, u_hi, combined))
                     } else {
+                        let (u_lo, u_hi, cps_p) = cubic_piece(cv_primary_ref?, pi)?;
                         Some((u_lo, u_hi, cps_p))
                     }
                 };
@@ -2021,6 +2338,28 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         Some((_, _, cps0)) => {
                             let p0 = cps0[0];
                             let p3 = cps0[3];
+                            // 2026-05-15 live diagnosis (CP capture). For
+                            // motor 0, snapshot the COMBINED cps[0] and
+                            // cps[3] returned by piece_coeffs — this is
+                            // what compute_next_step_time actually sees as
+                            // its boundary values. Compare with the raw
+                            // primary captured above: the difference
+                            // reflects how kine.combine mixes X+Y (CoreXY).
+                            // If raw primary cps_0 and cps_3 differ but
+                            // combined cps_0 and cps_3 are equal, the
+                            // kinematic combination is cancelling the
+                            // displacement (e.g. an X jog with Y curve
+                            // accidentally containing the opposite sign).
+                            if motor_idx == 0 {
+                                shared.last_combined_motor_a_cps_0.store(
+                                    p0.to_bits(),
+                                    Ordering::Release,
+                                );
+                                shared.last_combined_motor_a_cps_3.store(
+                                    p3.to_bits(),
+                                    Ordering::Release,
+                                );
+                            }
                             let d: i8 = if p3 > p0 { 1 } else if p3 < p0 { -1 } else { 0 };
                             (p0, d)
                         }
@@ -2091,7 +2430,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 while filled < PRODUCER_BATCH_CAP && ring.space() > 0 {
                     let t_curr = ps.t_resume().unwrap_or(0.0) as f32;
                     let mut found_root: Option<(f32, i8)> = None;
-                    for pi in 0..n_pieces_primary {
+                    for pi in 0..iter_n_pieces {
                         let Some((u_lo, u_hi, cps)) = piece_coeffs(pi) else {
                             continue;
                         };
@@ -2301,12 +2640,45 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// segment and doesn't currently thread the trace ring in. Tightening
     /// this up to mirror the `tick`-path fault path is wired in T11 once
     /// the force_idle / trace-emit topology settles.
-    pub fn runtime_modulated_tick(&mut self, now: u64, pool: &CurvePool, shared: &SharedState) {
+    pub fn runtime_modulated_tick(
+        &mut self,
+        now: u64,
+        queue: &mut Consumer<'_, Segment, Q_N>,
+        pool: &CurvePool,
+        shared: &SharedState,
+    ) {
         // Pull the wall-clock segment. The producer's segment cursor is the
-        // shared cursor under the MVP lockstep regime.
+        // shared cursor under the MVP lockstep regime — under the
+        // co-resident StepTime+Modulated configuration, `producer_step`
+        // populates `producer_current` via `fetch_segment_for_motor`.
+        //
+        // On a pure-Modulated MCU (e.g. F446 with only phase-stepped Z),
+        // `producer_step` short-circuits all four motors on the
+        // `mode != StepTime` check and never reaches the dequeue site,
+        // leaving `producer_current` permanently `None`. Symmetric to
+        // `fetch_segment_for_motor`, we lazily dequeue from the segment
+        // queue here so pushed segments actually reach this path.
+        // Regression: bench 2026-05-16 — F446 Z modulated, no other
+        // steppers; segments piled in queue, no kalico_credit_freed events,
+        // host slot pool exhausted at 4 in-flight, host shut down F446.
+        if self.producer_current.is_none() {
+            shared
+                .producer_fetch_attempts_total
+                .fetch_add(1, Ordering::AcqRel);
+            self.producer_current = queue.dequeue();
+            if let Some(dequeued) = self.producer_current {
+                shared
+                    .producer_segment_dequeued_total
+                    .fetch_add(1, Ordering::AcqRel);
+                shared
+                    .current_segment_id
+                    .store(dequeued.id, Ordering::Release);
+            }
+        }
         let Some(mut seg) = self.producer_current else {
             return;
         };
+
 
         let elapsed = now.saturating_sub(seg.t_start);
         let duration = seg.duration().max(1);
@@ -2564,6 +2936,37 @@ fn scalar_eval_with_derivative(curve: &CurveView<'_>, u: f32) -> Result<(f32, f3
 /// `[u₀;p+1, u₁;p, u₂;p, …, u_N;p+1]` (clamped ends, multiplicity-p interior).
 /// `trajectory/src/refit.rs::refit_to_cubic` always emits this form before
 /// the bridge serializes via `from_scalar_nurbs_normalized`.
+/// Detect a curve that holds a single constant value across its entire
+/// domain — i.e. a degree-3 piecewise-Bezier with exactly one piece whose
+/// four control points are all equal within an f32 ulp budget.
+///
+/// Returns the constant value if the curve is trivially constant, otherwise
+/// `None`. Used by the producer's CoreXY combine path to combine a constant
+/// axis curve (sent by the bridge as a real handle to anchor `prev_value`)
+/// with a multi-piece shaped axis curve without requiring matched piece
+/// counts.
+///
+/// The f32 epsilon (1e-5) is sized for typical printer-coordinate ranges
+/// (0..400 mm). The host bridge emits constants by truncating an f64
+/// `start_pos` to f32 four times, so they're exactly equal in f32 — the
+/// epsilon tolerates any future bridge that emits "approximately constant"
+/// without breaking detection.
+fn curve_constant_value(cv: &CurveView<'_>) -> Option<f32> {
+    if cubic_n_pieces(cv) != 1 {
+        return None;
+    }
+    let cps = cv.control_points;
+    if cps.is_empty() {
+        return None;
+    }
+    let first = cps[0];
+    if cps.iter().all(|&v| libm::fabsf(v - first) < 1e-5) {
+        Some(first)
+    } else {
+        None
+    }
+}
+
 fn cubic_n_pieces(cv: &CurveView<'_>) -> usize {
     if cv.degree != 3 {
         return 0;
@@ -2622,6 +3025,55 @@ fn cubic_piece(
         return None;
     }
     Some((u_start, u_end, [p0, p1, p2, p3]))
+}
+
+/// De Casteljau split of a cubic Bezier (cps on local parameter `[0, 1]`)
+/// at parameter `r`. Returns `(left, right)` cps, each parameterized on
+/// their own local `[0, 1]`. The two halves together represent the
+/// original curve: `left` covers original-`[0, r]`, `right` covers
+/// original-`[r, 1]`.
+#[inline]
+fn cubic_split_at(cps: [f32; 4], r: f32) -> ([f32; 4], [f32; 4]) {
+    let one_minus_r = 1.0 - r;
+    let p01 = one_minus_r * cps[0] + r * cps[1];
+    let p12 = one_minus_r * cps[1] + r * cps[2];
+    let p23 = one_minus_r * cps[2] + r * cps[3];
+    let p012 = one_minus_r * p01 + r * p12;
+    let p123 = one_minus_r * p12 + r * p23;
+    let p0123 = one_minus_r * p012 + r * p123;
+    ([cps[0], p01, p012, p0123], [p0123, p123, p23, cps[3]])
+}
+
+/// Slice a cubic Bezier (cps on local parameter `[0, 1]`) to a sub-range
+/// `[s, t]`. Returns 4 new cps representing the sub-curve as a fresh
+/// cubic Bezier on its own local `[0, 1]`. Used by the producer's
+/// piece-merge walker to combine two CoreXY axis curves whose piece
+/// boundaries don't align (e.g., shaper at 186 Hz on X + 122 Hz on Y
+/// emits 10 X-pieces and 11 Y-pieces with different breakpoints).
+///
+/// Preconditions: `0 ≤ s ≤ t ≤ 1`. `s = 0` and/or `t = 1` are allowed
+/// (degenerate / pass-through cases).
+fn cubic_subsegment(cps: [f32; 4], s: f32, t: f32) -> [f32; 4] {
+    // Fast path: full piece (no slicing needed).
+    if s <= 0.0 && t >= 1.0 {
+        return cps;
+    }
+    // Step 1: split at `s`. The right half is the sub-curve on
+    // original-`[s, 1]`, parameterized on local-`[0, 1]`.
+    let (_, right) = cubic_split_at(cps, s);
+    // Step 2: in the right half, find the local parameter that maps to
+    // original `t`. The right half parameterizes original `s + r*(1-s)`,
+    // so `original_t = s + r*(1-s)` ⇒ `r = (t - s) / (1 - s)`. Guard
+    // against `s ≈ 1` (degenerate slice at the curve's end).
+    let span = 1.0 - s;
+    if span < 1e-9 {
+        // s is essentially 1; return a degenerate point at curve(1).
+        return [cps[3]; 4];
+    }
+    let r = (t - s) / span;
+    let r = r.clamp(0.0, 1.0);
+    let (left, _) = cubic_split_at(right, r);
+    left
 }
 
 /// Scale a `dP/du` (in the segment's normalized `u ∈ [0,1]` parameterization)

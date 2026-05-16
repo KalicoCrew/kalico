@@ -45,6 +45,19 @@ fi
 cp tools/sim/sim.config .config
 make olddefconfig >/dev/null
 
+# CONFIG_STACK_SIZE is declared in Kconfig without a user prompt, so
+# `make olddefconfig` clobbers any override from sim.config back to the
+# 4096 default. Force the value back after olddefconfig, then touch
+# .config and remove generated autoconf headers so the next make picks
+# up the new value.
+if grep -q '^CONFIG_STACK_SIZE=' tools/sim/sim.config; then
+  STACK_OVERRIDE=$(grep '^CONFIG_STACK_SIZE=' tools/sim/sim.config | head -n1)
+  sed -i.bak "s|^CONFIG_STACK_SIZE=.*|${STACK_OVERRIDE}|" .config
+  rm -f .config.bak
+  touch .config
+  rm -f out/autoconf.h
+fi
+
 # Clean rebuild — switching SERIAL/USB orientation invalidates a lot of objects.
 make clean >/dev/null
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"

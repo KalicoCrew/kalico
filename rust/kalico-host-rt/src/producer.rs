@@ -33,7 +33,7 @@ use crate::transport::TransportError;
 /// activity drives it lower). 30 s gives ~1.5× headroom over the worst
 /// observed sim time, while still surfacing a genuinely hung MCU on
 /// silicon before the slot pool's in-flight occupancy stalls the planner.
-pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(30_000);
+pub const DEFAULT_LOAD_CURVE_TIMEOUT: Duration = Duration::from_millis(300_000);
 
 /// Default timeout for `PushSegmentResponse`.
 pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
@@ -256,6 +256,40 @@ pub fn load_curve(
     .encoded_to_vec();
 
     eprintln!("[host] producer::load_curve calling kalico_call (slot={slot}, body_len={})", body.len());
+    // 2026-05-16 diag: dump first ~20 load_curve calls to a file so we can
+    // replay live curve geometry in the Rust integration tests. Set
+    // KALICO_CURVE_DUMP=/path/to/file to enable; first call truncates, then
+    // appends. Each line is JSON: {"slot": N, "degree": d, "cps": [...], "knots": [...]}.
+    if let Ok(path) = std::env::var("KALICO_CURVE_DUMP") {
+        use std::io::Write as _;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNT: AtomicU32 = AtomicU32::new(0);
+        let n = COUNT.fetch_add(1, Ordering::Relaxed);
+        if n < 40 {
+            let truncate = n == 0;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(!truncate)
+                .truncate(truncate)
+                .open(&path)
+            {
+                let cps_str: Vec<String> =
+                    params.cps_f32.iter().map(|v| format!("{:.6}", v)).collect();
+                let knots_str: Vec<String> =
+                    params.knots_f32.iter().map(|v| format!("{:.6}", v)).collect();
+                let _ = writeln!(
+                    f,
+                    "{{\"n\":{},\"slot\":{},\"degree\":{},\"cps\":[{}],\"knots\":[{}]}}",
+                    n,
+                    slot,
+                    params.degree,
+                    cps_str.join(","),
+                    knots_str.join(","),
+                );
+            }
+        }
+    }
     let (kind, resp_body) = io.kalico_call(MessageKind::LoadCurve, body, timeout)?;
     eprintln!("[host] producer::load_curve got response kind=0x{:04x}", kind.as_u16());
     if kind != MessageKind::LoadCurveResponse {

@@ -286,6 +286,41 @@ pub struct SharedState {
     /// Count of times `primary.is_unused_sentinel()` was true. The
     /// natural case for a stationary-axis segment.
     pub producer_primary_unused_total: AtomicU64,
+    /// 2026-05-15 live diagnosis: count of `push_segment_impl` calls
+    /// where the computed `consumers_remaining` mask is zero (i.e. every
+    /// handle was UNUSED). Such segments retire on the producer's very
+    /// first dequeue without ever invoking the motor processing path.
+    /// If this counter advances during a jog, the bridge is sending
+    /// no-handle segments to the MCU.
+    pub push_segment_all_unused_total: AtomicU64,
+    /// Last `x_handle.pack()` value observed by `push_segment_impl`. Used
+    /// only for live diagnosis; not part of any production invariant.
+    pub last_push_x_handle_packed: AtomicU32,
+    /// Last `y_handle.pack()` value observed by `push_segment_impl`.
+    pub last_push_y_handle_packed: AtomicU32,
+    /// Last `consumers_remaining` mask computed by `push_segment_impl`.
+    pub last_push_consumers_remaining: AtomicU32,
+    /// 2026-05-15 live diagnosis (CP capture): cps[0] (start control
+    /// point, mm) of the last resolved primary X curve, raw f32 bits.
+    /// Captured in producer_step right after `pool.resolve(primary)`
+    /// returns Some. For a 0.5 mm X jog starting at X=125.0, this should
+    /// be 125.0 (= 0x42FA0000). If the bits look corrupted or constant,
+    /// the curve_pool's slot contents have been corrupted on the wire.
+    pub last_resolved_primary_cps_0: AtomicU32,
+    /// Last resolved primary X curve's cps[3] (end control point, mm),
+    /// raw f32 bits. For a 0.5 mm X jog starting at X=125.0, this should
+    /// be 125.5 (= 0x42FB0000). Compare with cps_0 — if they match, the
+    /// curve has zero displacement and the producer correctly returns
+    /// `SegmentExhausted` (which would indicate a planner-side bug, not
+    /// MCU corruption).
+    pub last_resolved_primary_cps_3: AtomicU32,
+    /// CoreXY-combined cps[0] after `kine.combine` for motor A
+    /// (A = X + Y). f32 bits. Compare with last_resolved_primary_cps_0
+    /// to detect kinematic-mixing bugs (e.g. Y curve resolves to a
+    /// non-constant when it should be constant for a pure-X jog).
+    pub last_combined_motor_a_cps_0: AtomicU32,
+    /// CoreXY-combined cps[3] after `kine.combine` for motor A. f32 bits.
+    pub last_combined_motor_a_cps_3: AtomicU32,
 }
 
 impl SharedState {
@@ -358,6 +393,14 @@ impl SharedState {
             producer_primary_resolved_total: AtomicU64::new(0),
             producer_primary_stale_total: AtomicU64::new(0),
             producer_primary_unused_total: AtomicU64::new(0),
+            push_segment_all_unused_total: AtomicU64::new(0),
+            last_push_x_handle_packed: AtomicU32::new(0),
+            last_push_y_handle_packed: AtomicU32::new(0),
+            last_push_consumers_remaining: AtomicU32::new(0),
+            last_resolved_primary_cps_0: AtomicU32::new(0),
+            last_resolved_primary_cps_3: AtomicU32::new(0),
+            last_combined_motor_a_cps_0: AtomicU32::new(0),
+            last_combined_motor_a_cps_3: AtomicU32::new(0),
         }
     }
 }
