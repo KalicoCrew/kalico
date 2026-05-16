@@ -747,6 +747,40 @@ impl PyMotionBridge {
         let effective_baud = if baud == 0 { 250_000 } else { baud };
         let config = KalicoHostIoConfig::default();
 
+        // Re-attach support: tear down the existing live IO on this handle
+        // BEFORE attempting the new open. Without this, FIRMWARE_RESTART
+        // (which re-calls attach_serial with the same handle) hits the
+        // open-loop with the old host_io still in `conn.host_io` — the OS
+        // returns EBUSY on the second open of an exclusive-access tty and
+        // we burn the entire 30 s deadline retrying against ourselves.
+        // Bench 2026-05-16: F4 attach_serial timed out with EBUSY on
+        // /dev/ttyACM1 after FIRMWARE_RESTART because the prior session's
+        // host_io still held the FD. Drop order: stop the clock-sync
+        // thread first (it holds an Arc<KalicoHostIo>), then drop the
+        // runtime_rx + host_io; the FD releases when KalicoHostIo::drop
+        // sends Shutdown to the reactor and joins the reactor thread
+        // (or earlier, via the SerialFrameIo::close_port path on a Closed
+        // transition — see kalico-host-rt's host_io::reactor docs).
+        let (old_stop, old_join, _old_rx, _old_host_io) = {
+            let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            match mcus.get_mut(&mcu_handle) {
+                Some(conn) => (
+                    conn.clock_sync_stop.take(),
+                    conn.clock_sync_thread.take(),
+                    conn.runtime_rx.take(),
+                    conn.host_io.take(),
+                ),
+                None => (None, None, None, None),
+            }
+        };
+        if let Some(stop) = old_stop {
+            stop.store(true, Ordering::Release);
+        }
+        if let Some(join) = old_join {
+            let _ = join.join();
+        }
+        // `_old_rx` and `_old_host_io` drop here, releasing the prior FD.
+
         // Determine whether this is a PTY/pipe path (baud=0 signals pipe mode)
         // or a real serial port. Pipe mode uses O_RDWR | O_NOCTTY to open the
         // PTY without configuring baud rate, which serialport::open() would do
