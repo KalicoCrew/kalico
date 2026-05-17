@@ -18,10 +18,17 @@ pub struct FaultEvent {
 
 #[derive(Debug, Clone, Default)]
 pub struct StatusEvent {
-    pub engine_status:       u8,
-    pub current_segment_id:  u32,
-    pub last_fault:          u16,
-    pub fault_detail:        u32,
+    pub engine_status:              u8,
+    pub queue_depth:                u8,
+    pub current_segment_id:         u32,
+    pub last_fault:                 u16,
+    pub fault_detail:               u32,
+    /// v2 (2026-05-17): credit-flow watermark piggybacked on the 10 Hz
+    /// periodic status frame. EventDispatcher synthesizes a `CreditFreed`
+    /// dispatch from each advance so the slot-pool retirement path is
+    /// driven by reliable periodic state rather than fire-and-forget
+    /// events that get dropped under USB-CDC TX congestion.
+    pub retired_through_segment_id: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -74,10 +81,12 @@ impl RuntimeEvent {
                 synthesized:  false,
             }),
             "kalico_status_v6" => Self::Status(StatusEvent {
-                engine_status:      params.get_u32("engine_status") as u8,
-                current_segment_id: params.get_u32("current_segment_id"),
-                last_fault:         params.get_u32("last_fault") as u16,
-                fault_detail:       params.get_u32("fault_detail"),
+                engine_status:              params.get_u32("engine_status") as u8,
+                queue_depth:                params.get_u32("queue_depth") as u8,
+                current_segment_id:         params.get_u32("current_segment_id"),
+                last_fault:                 params.get_u32("last_fault") as u16,
+                fault_detail:               params.get_u32("fault_detail"),
+                retired_through_segment_id: params.get_u32("retired_through_segment_id"),
             }),
             "kalico_trace" => Self::Trace(TraceEvent {
                 count: params.get_u32("count"),

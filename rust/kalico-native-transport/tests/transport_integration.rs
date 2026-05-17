@@ -35,15 +35,17 @@ fn make_identify_response_frame(correlation_id: u32, schema_hash: [u8; 32], rese
 }
 
 fn make_status_event_frame(reset_epoch: u32) -> Vec<u8> {
-    // body: engine_status u8 | queue_depth u8 | current_segment_id u32
-    //     | last_fault i32 | fault_detail u32 | reset_epoch u32 = 18 bytes.
-    let mut body = Vec::with_capacity(18);
+    // v2 body: engine_status u8 | queue_depth u8 | current_segment_id u32
+    //        | last_fault i32 | fault_detail u32 | reset_epoch u32
+    //        | retired_through_segment_id u32 = 22 bytes.
+    let mut body = Vec::with_capacity(22);
     body.push(0); // engine_status
     body.push(0); // queue_depth
     body.extend_from_slice(&0u32.to_le_bytes()); // current_segment_id
     body.extend_from_slice(&0i32.to_le_bytes()); // last_fault
     body.extend_from_slice(&0u32.to_le_bytes()); // fault_detail
     body.extend_from_slice(&reset_epoch.to_le_bytes()); // reset_epoch
+    body.extend_from_slice(&0u32.to_le_bytes()); // retired_through_segment_id
     let mut payload = Vec::new();
     payload.extend_from_slice(&encode_message_header(MessageKind::StatusEvent, 1, 0));
     payload.extend_from_slice(&body);

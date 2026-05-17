@@ -126,7 +126,7 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     SchemaMessage {
         type_tag: 0x0080,
         name: "StatusEvent",
-        version: 1,
+        version: 2,
         channel: "events",
         fields: &[
             SchemaField { name: "engine_status", ty: "u8" },
@@ -135,6 +135,10 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
             SchemaField { name: "last_fault", ty: "i32" },
             SchemaField { name: "fault_detail", ty: "u32" },
             SchemaField { name: "reset_epoch", ty: "u32" },
+            // v2: piggyback retirement watermark on the 10 Hz periodic frame.
+            // Replaces fire-and-forget CreditFreed as the load-bearing credit
+            // signal — CreditFreed becomes a redundant fast-path.
+            SchemaField { name: "retired_through_segment_id", ty: "u32" },
         ],
     },
     SchemaMessage {

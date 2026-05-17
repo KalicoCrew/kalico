@@ -1154,9 +1154,15 @@ impl PyMotionBridge {
             RuntimeEvent::Status(s) => {
                 d.set_item("type", "status")?;
                 d.set_item("engine_status", s.engine_status)?;
+                d.set_item("queue_depth", s.queue_depth)?;
                 d.set_item("current_segment_id", s.current_segment_id)?;
                 d.set_item("last_fault", s.last_fault)?;
                 d.set_item("fault_detail", s.fault_detail)?;
+                // v2: retirement watermark — host EventDispatcher already
+                // synthesizes a CreditFreed from this on watermark advance
+                // (events.rs::handle_status_frame), but expose it to klippy
+                // too for observability.
+                d.set_item("retired_through_segment_id", s.retired_through_segment_id)?;
             }
             RuntimeEvent::CreditFreed(c) => {
                 d.set_item("type", "credit_freed")?;

@@ -8,7 +8,7 @@ use arc_swap::ArcSwap;
 
 use crate::credit::CreditCounter;
 use crate::fault::FaultLatch;
-use crate::host_io::runtime_events::{RuntimeEvent, StatusEvent, TraceEvent};
+use crate::host_io::runtime_events::{CreditFreedEvent, RuntimeEvent, StatusEvent, TraceEvent};
 
 #[derive(Debug, Clone)]
 pub enum HostEvent {
@@ -204,6 +204,13 @@ pub struct EventDispatcher {
     pub status_snapshot:          Arc<ArcSwap<StatusEvent>>,
     pub runtime_event_dispatcher: RuntimeEventDispatcher,
     pub host_event_dispatcher:    HostEventDispatcher,
+    /// Last `retired_through_segment_id` observed on a `StatusEvent`. Drives
+    /// the synthesis of `CreditFreed` from the 10 Hz periodic status frame —
+    /// see [`Self::handle_status_frame`] for the motivation (USB-CDC TX
+    /// congestion can drop fire-and-forget `CreditFreed` frames, but the
+    /// periodic status frame is monotonic state so we can recover credit
+    /// flow from it deterministically).
+    status_retired_watermark:     u32,
 }
 
 impl EventDispatcher {
@@ -225,6 +232,7 @@ impl EventDispatcher {
             status_snapshot,
             runtime_event_dispatcher: RuntimeEventDispatcher::default(),
             host_event_dispatcher: HostEventDispatcher::new(host_rx),
+            status_retired_watermark: 0,
         }
     }
 
@@ -286,12 +294,21 @@ impl EventDispatcher {
                 self.trace_ring.dispatch(e);
             }
             RuntimeEvent::Status(e) => {
-                self.handle_status_frame(&e);
+                let synth_credit = self.handle_status_frame(&e);
                 // Also forward to the general runtime-event channel so callers of
                 // `take_runtime_event_subscription` (e.g. the Python bridge poller)
                 // can observe status heartbeats.  The snapshot and fault-synthesis
                 // paths above are orthogonal and still fire first.
                 self.runtime_event_dispatcher.dispatch(RuntimeEvent::Status(e));
+                // v2 architectural credit-flow: status frames carry the retirement
+                // watermark. On advance, synthesize a CreditFreed and dispatch
+                // through the normal CreditFreed path. This keeps slot-pool
+                // retirement working even when fire-and-forget CreditFreed frames
+                // are dropped under USB-CDC TX congestion (10 Hz periodic Status
+                // is the floor — slot pool catches up within 100 ms regardless).
+                if let Some(c) = synth_credit {
+                    self.dispatch(RuntimeEvent::CreditFreed(c));
+                }
             }
             RuntimeEvent::EndstopTripped(_)
             | RuntimeEvent::UnknownOutput { .. }
@@ -303,7 +320,13 @@ impl EventDispatcher {
 
     /// Per spec §6.5. Update snapshot AND synthesize FaultEvent if engine_status
     /// is FAULT and no fault has been latched on the host.
-    fn handle_status_frame(&mut self, frame: &StatusEvent) {
+    ///
+    /// Returns `Some(CreditFreedEvent)` when the retirement watermark advanced
+    /// past the previously observed value — the caller dispatches that
+    /// synthesized event through the normal `CreditFreed` machinery so the
+    /// slot pool releases retired slots even when the firmware's
+    /// fire-and-forget `CreditFreed` frame was dropped under TX congestion.
+    fn handle_status_frame(&mut self, frame: &StatusEvent) -> Option<CreditFreedEvent> {
         self.status_snapshot.store(Arc::new(frame.clone()));
 
         const ENGINE_STATUS_FAULT: u8 = 3;
@@ -315,6 +338,24 @@ impl EventDispatcher {
                 synthesized:  true,
             };
             self.fault_latch.dispatch(synthesized);
+        }
+
+        // v2 credit-flow synthesis. Use signed-difference comparison so
+        // wraparound (~4 billion segments) doesn't trigger spurious advances
+        // after MCU reset. The firmware encodes free_slots = Q_N-1 -
+        // queue_depth (saturated at 0) — replicate the same computation here.
+        let watermark = frame.retired_through_segment_id;
+        let advanced = (watermark.wrapping_sub(self.status_retired_watermark) as i32) > 0;
+        if advanced {
+            self.status_retired_watermark = watermark;
+            const Q_N_MINUS_1: u8 = 7;
+            let free_slots = Q_N_MINUS_1.saturating_sub(frame.queue_depth);
+            Some(CreditFreedEvent {
+                retired_through_segment_id: watermark,
+                free_slots,
+            })
+        } else {
+            None
         }
     }
 }
@@ -336,9 +377,11 @@ mod dispatch_tests {
     fn fault_status(engine_status: u8, last_fault: u16, segment_id: u32) -> RuntimeEvent {
         RuntimeEvent::Status(StatusEvent {
             engine_status,
+            queue_depth: 0,
             current_segment_id: segment_id,
             last_fault,
             fault_detail: 0,
+            retired_through_segment_id: 0,
         })
     }
 
@@ -383,5 +426,104 @@ mod dispatch_tests {
         let mut d = make_dispatcher();
         d.dispatch(fault_status(1, 0, 0)); // engine_status != 3
         assert!(d.fault_latch.cell.is_none());
+    }
+
+    // Helper for the v2 credit-flow synthesis tests. queue_depth and the
+    // retirement watermark are the only fields that matter for the
+    // synthesized CreditFreed; engine_status is RUNNING and no fault.
+    fn status_with_watermark(queue_depth: u8, retired_through: u32) -> RuntimeEvent {
+        RuntimeEvent::Status(StatusEvent {
+            engine_status: 1,
+            queue_depth,
+            current_segment_id: 0,
+            last_fault: 0,
+            fault_detail: 0,
+            retired_through_segment_id: retired_through,
+        })
+    }
+
+    /// v2: a Status frame whose watermark advances past the previous
+    /// observation must synthesize a CreditFreed dispatched through the
+    /// normal CreditFreed path — that's what releases slot-pool slots when
+    /// the firmware's fire-and-forget CreditFreed frame got dropped.
+    #[test]
+    fn status_watermark_advance_synthesizes_credit_freed() {
+        use std::sync::mpsc::sync_channel;
+        let mut d = make_dispatcher();
+        let counter = Arc::new(CreditCounter::new(7));
+        d.credit_counter = Some(Arc::clone(&counter));
+        // Drain to zero so we can observe on_credit_freed snapping.
+        for _ in 0..7 {
+            counter.try_acquire().unwrap();
+        }
+        assert_eq!(counter.available(), 0);
+
+        // Subscribe to the runtime-event channel so we can observe the
+        // synthesized CreditFreed forwarded to the bridge poller.
+        let (tx, rx) = sync_channel::<RuntimeEvent>(8);
+        d.runtime_event_dispatcher.subscribe(tx).unwrap();
+
+        // First Status with watermark=5 and queue_depth=2 → free_slots=5.
+        d.dispatch(status_with_watermark(2, 5));
+
+        // Counter snapped to 5 (= Q_N-1 - queue_depth = 7 - 2).
+        assert_eq!(counter.available(), 5, "watermark advance must snap credit");
+        assert_eq!(counter.credit_freed_events(), 1);
+
+        // Drain channel — exactly 1 Status and 1 CreditFreed must have
+        // been dispatched, in that order.
+        let evt1 = rx.recv().unwrap();
+        let evt2 = rx.recv().unwrap();
+        assert!(matches!(evt1, RuntimeEvent::Status(_)));
+        match evt2 {
+            RuntimeEvent::CreditFreed(c) => {
+                assert_eq!(c.retired_through_segment_id, 5);
+                assert_eq!(c.free_slots, 5);
+            }
+            other => panic!("expected synthesized CreditFreed, got {:?}", other),
+        }
+        assert!(rx.try_recv().is_err(), "no further events");
+    }
+
+    /// Repeated Status frames with the same watermark must NOT re-synthesize
+    /// CreditFreed — otherwise on_credit_freed would clobber try_acquire's
+    /// decrement on every 100 ms status tick.
+    #[test]
+    fn status_watermark_unchanged_does_not_synthesize() {
+        let mut d = make_dispatcher();
+        let counter = Arc::new(CreditCounter::new(7));
+        d.credit_counter = Some(Arc::clone(&counter));
+
+        // Prime: watermark=5 advances from 0 → 1 synth.
+        d.dispatch(status_with_watermark(0, 5));
+        assert_eq!(counter.credit_freed_events(), 1);
+
+        // Same watermark, decremented available via try_acquire — the
+        // second Status must NOT re-snap available back up.
+        counter.try_acquire().unwrap();
+        let available_before = counter.available();
+        d.dispatch(status_with_watermark(0, 5));
+        assert_eq!(counter.credit_freed_events(), 1, "no new credit event");
+        assert_eq!(
+            counter.available(),
+            available_before,
+            "no resnap when watermark unchanged"
+        );
+    }
+
+    /// Stale Status frames (watermark < last seen, e.g. after reordering on
+    /// the wire) must not synthesize. Wraparound is intentionally allowed —
+    /// signed-difference comparison handles a u32 overflow correctly.
+    #[test]
+    fn status_watermark_regression_does_not_synthesize() {
+        let mut d = make_dispatcher();
+        let counter = Arc::new(CreditCounter::new(7));
+        d.credit_counter = Some(Arc::clone(&counter));
+        d.dispatch(status_with_watermark(0, 10));
+        assert_eq!(counter.credit_freed_events(), 1);
+
+        // Regress to 8 (an out-of-order or stale frame).
+        d.dispatch(status_with_watermark(0, 8));
+        assert_eq!(counter.credit_freed_events(), 1, "regression ignored");
     }
 }

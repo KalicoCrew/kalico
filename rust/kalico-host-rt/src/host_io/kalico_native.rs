@@ -306,9 +306,11 @@ fn lift_event_to_runtime_event(
                 }
                 KalicoDispatchResult::Event(RuntimeEvent::Status(StatusEvent {
                     engine_status: s.engine_status,
+                    queue_depth: s.queue_depth,
                     current_segment_id: s.current_segment_id,
                     last_fault: s.last_fault as u16,
                     fault_detail: s.fault_detail,
+                    retired_through_segment_id: s.retired_through_segment_id,
                 }))
             }
             Err(e) => {

@@ -346,6 +346,14 @@ impl Decode for RuntimeCapsResponse {
 
 // =============================================================================
 // StatusEvent (0x0080) — spec §7.4
+//
+// v2 (2026-05-17): added `retired_through_segment_id` as the last field so the
+// 10 Hz periodic status frame is the load-bearing credit-flow signal. The
+// standalone `CreditFreed` event (0x0081) is no longer required for
+// correctness — the host advances its slot-pool watermark from this field on
+// every status frame. CreditFreed remains in the schema as a redundant
+// fast-path optimization but its loss under USB-TX congestion is no longer
+// catastrophic.
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +364,7 @@ pub struct StatusEvent {
     pub last_fault: i32,
     pub fault_detail: u32,
     pub reset_epoch: u32,
+    pub retired_through_segment_id: u32,
 }
 
 impl Encode for StatusEvent {
@@ -366,6 +375,7 @@ impl Encode for StatusEvent {
         put_i32(out, self.last_fault);
         put_u32(out, self.fault_detail);
         put_u32(out, self.reset_epoch);
+        put_u32(out, self.retired_through_segment_id);
     }
 }
 
@@ -378,6 +388,7 @@ impl Decode for StatusEvent {
             last_fault: get_i32(c)?,
             fault_detail: get_u32(c)?,
             reset_epoch: get_u32(c)?,
+            retired_through_segment_id: get_u32(c)?,
         })
     }
 }
@@ -563,9 +574,11 @@ mod tests {
             last_fault: -42,
             fault_detail: 0xCAFE,
             reset_epoch: 0x1234_5678,
+            retired_through_segment_id: 997,
         };
         assert_eq!(roundtrip(&v), v);
-        assert_eq!(v.encoded_to_vec().len(), 18);
+        // 1+1+4+4+4+4+4 = 22.
+        assert_eq!(v.encoded_to_vec().len(), 22);
     }
 
     #[test]

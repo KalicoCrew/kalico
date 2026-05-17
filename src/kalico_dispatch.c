@@ -558,9 +558,16 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
 void
 kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
                                 uint32_t current_segment_id,
-                                int32_t last_fault, uint32_t fault_detail)
+                                int32_t last_fault, uint32_t fault_detail,
+                                uint32_t retired_through_segment_id)
 {
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 18];
+    // v2 (2026-05-17): body is 22 bytes — added `retired_through_segment_id`
+    // u32 tail field. The 10 Hz periodic status frame is now the load-bearing
+    // credit-flow signal; the host advances its slot-pool watermark from this
+    // field on every status frame so the lossy fire-and-forget
+    // `kalico_native_emit_credit_freed` path is no longer required for
+    // correctness.
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 22];
     encode_message_header(payload, KALICO_MSG_STATUS_EVENT,
                           MESSAGE_VERSION_DEFAULT, 0);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
@@ -583,6 +590,10 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     b[15] = (uint8_t)((epoch >> 8) & 0xFF);
     b[16] = (uint8_t)((epoch >> 16) & 0xFF);
     b[17] = (uint8_t)((epoch >> 24) & 0xFF);
+    b[18] = (uint8_t)(retired_through_segment_id & 0xFF);
+    b[19] = (uint8_t)((retired_through_segment_id >> 8) & 0xFF);
+    b[20] = (uint8_t)((retired_through_segment_id >> 16) & 0xFF);
+    b[21] = (uint8_t)((retired_through_segment_id >> 24) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 

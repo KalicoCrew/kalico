@@ -417,33 +417,22 @@ runtime_drain(void)
                               (uint8_t)((reclaim_status >> 17) & 1);
     uint8_t fresh_overflow_fault = (reclaim_status >> 16) & 1;
 
-    // §10.4: emit one `kalico_credit_freed` async event per drain cycle that
-    // either observed at least one SEGMENT_END *or* observed the
-    // `retired_through_segment_id` cursor advance since the last emit. The
-    // cursor-advance trigger covers retirements from `runtime_modulated_tick`
-    // and from the `producer_step` state-machine retirement path
-    // (engine.rs:2555), both of which advance the cursor without writing a
-    // SEGMENT_END trace sample. Without it, pure-Modulated MCUs (F446 with
-    // phase-stepped Z) never emit credit and the host's slot pool deadlocks
-    // at capacity on the first dispatch following any modulated retirement.
-    // The host uses this event to bump its credit counter; it doesn't need
-    // one event per retired segment, just a wake-up to re-read the cursors.
-    // `retired_through_segment_id` carries the cumulative cursor;
-    // `free_slots = Q_N - queue_depth` (with Q_N - 1 being the structural cap;
-    // saturate at u8 in the Rust accessor). Signed-difference comparison is
-    // wraparound-safe for any spans the cursor realistically crosses between
-    // drains (drain runs ~1 kHz; 2^31 segments at any push rate is years).
+    // Credit-flow signal: fire-and-forget `kalico_credit_freed` as a
+    // low-latency fast path. The load-bearing signal is the
+    // `retired_through_segment_id` field on the 10 Hz periodic StatusEvent
+    // (see kalico_dispatch.c::kalico_native_emit_status_event v2) — so if
+    // this fire-and-forget emit is dropped under USB-CDC TX congestion, the
+    // next status frame catches the host's slot pool up within 100 ms. We
+    // therefore emit unconditionally on cursor advance / SEGMENT_END and
+    // always advance the local tracker, regardless of transmit_buf result.
     static uint32_t last_emitted_retired_id = 0;
     uint32_t cur_retired = runtime_handle_retired_through_segment_id(runtime_handle);
     bool cursor_advanced = (int32_t)(cur_retired - last_emitted_retired_id) > 0;
     if (saw_segment_end || cursor_advanced) {
         uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
-        int emit_result =
-            kalico_native_emit_credit_freed(cur_retired, free_slots);
-        if (emit_result >= 0) {
-            last_emitted_retired_id = cur_retired;
-        }
+        (void)kalico_native_emit_credit_freed(cur_retired, free_slots);
+        last_emitted_retired_id = cur_retired;
     }
 
     // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`
@@ -1194,7 +1183,15 @@ runtime_status_drain(void)
     // Phase C: replace the legacy `kalico_status_v6` Klipper-protocol output
     // with a native StatusEvent on the events channel. The host bridge maps
     // it back into klippy's RuntimeEvent::Status path.
-    kalico_native_emit_status_event(status, depth, cur_seg, last_err, fault_detail);
+    //
+    // v2 (2026-05-17): tail field `retired_through_segment_id` piggybacks the
+    // credit-flow watermark on the periodic status frame. Replaces lossy
+    // fire-and-forget kalico_native_emit_credit_freed for slot-pool retirement
+    // under USB-CDC TX congestion.
+    uint32_t cur_retired_for_status =
+        runtime_handle_retired_through_segment_id(runtime_handle);
+    kalico_native_emit_status_event(status, depth, cur_seg, last_err,
+                                    fault_detail, cur_retired_for_status);
 
     // Diag emit — DISABLED for wedge-isolation test 2026-05-09. The
     // 5-lines-per-100ms rate was overrunning transmit_buf (320 bytes vs
