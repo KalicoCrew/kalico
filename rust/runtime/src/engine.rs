@@ -2893,25 +2893,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             .store(duration as u32, Ordering::Release);
 
         if elapsed >= duration {
+            // 2026-05-17 diag: record that we reached the retirement branch.
+            shared
+                .modulated_retire_attempts
+                .fetch_add(1, Ordering::AcqRel);
             // Wall-clock crossed t_end — the segment is over. Clear bits
             // for EVERY motor in the consumers mask, not just Modulated
-            // ones. 2026-05-17: the original Modulated-only clear left
-            // StepTime motor bits set on segments whose StepTime axes had
-            // UNUSED or constant-only curves (e.g. an X-only jog on
-            // CoreXyAndE leaves E with a constant-anchor curve that emits
-            // zero pulses, so producer_step's per-motor "motor finished
-            // curve" path that normally clears those bits never fires);
-            // consumers_done stays false, retirement deadlocks. Clearing
-            // unconditionally here is safe because t_end has passed — any
-            // pending StepTime work for this segment is by definition
-            // complete (or it was never going to happen, for constant
-            // curves).
+            // ones.
             for motor_idx in 0..4_u8 {
                 Self::clear_motor_bits_in_mask(&mut seg, motor_idx);
             }
             self.producer_current = Some(seg);
 
             if seg.consumers_done() {
+                shared
+                    .modulated_retire_successes
+                    .fetch_add(1, Ordering::AcqRel);
                 // Curve-handle retirement — sentinels are no-ops in
                 // `confirm_retired`, mirroring `producer_step`'s path.
                 pool.confirm_retired(seg.x_handle);

@@ -684,7 +684,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 32) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 33) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1151,6 +1151,23 @@ runtime_status_drain(void)
             uint32_t duration =
                 runtime_handle_last_modulated_duration_lo(runtime_handle);
             fault_detail = 0xFC000000u | (duration & 0x00FFFFFFu);
+            break;
+        }
+        case 32: {
+            // 0xFD — modulated retire attempts (low 12) / successes (low 12).
+            // 2026-05-17 retire-branch instrumentation:
+            //   - attempts=0 → modulated_tick never enters `elapsed >= duration`
+            //     branch; engine clock issue or never-reached.
+            //   - attempts > 0, successes = 0 → branch enters but
+            //     consumers_done returns false (motor bits aren't being
+            //     cleared correctly).
+            //   - attempts ≈ successes → retirement working;
+            //     credit_freed delivery is the bottleneck.
+            uint32_t att = runtime_handle_modulated_retire_attempts(runtime_handle);
+            uint32_t suc = runtime_handle_modulated_retire_successes(runtime_handle);
+            fault_detail = 0xFD000000u
+                         | ((suc & 0xFFFu) << 12)
+                         | (att & 0xFFFu);
             break;
         }
         }

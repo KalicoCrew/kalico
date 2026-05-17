@@ -942,6 +942,44 @@ pub mod exports {
         }
     }
 
+    /// Number of times `runtime_modulated_tick`'s retirement branch was
+    /// entered (`elapsed >= duration` was true). Pair with the success
+    /// counter via `runtime_handle_modulated_retire_successes` to decide
+    /// whether retirement is failing on the `consumers_done` check.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_modulated_retire_attempts(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            (*core::ptr::addr_of!((*ctx).shared))
+                .modulated_retire_attempts
+                .load(Ordering::Acquire)
+        }
+    }
+
+    /// Number of times `runtime_modulated_tick` actually retired a segment
+    /// (`consumers_done` was true after clearing the motor bits). If this
+    /// is less than `runtime_handle_modulated_retire_attempts`, some entries
+    /// to the retirement branch are still leaving consumer bits set.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_modulated_retire_successes(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            (*core::ptr::addr_of!((*ctx).shared))
+                .modulated_retire_successes
+                .load(Ordering::Acquire)
+        }
+    }
+
     /// Read the currently-active segment id (`0` if engine is Idle/Drained
     /// or pre-stream).
     #[unsafe(no_mangle)]

@@ -198,6 +198,17 @@ pub struct SharedState {
     /// Comparing tag 0xFB ≥ tag 0xFC tells us whether the retirement
     /// branch should fire on the next tick.
     pub last_modulated_duration_lo: AtomicU32,
+    /// 2026-05-17 F4 retire-stall diagnostic: increments on every entry
+    /// into `runtime_modulated_tick`'s `elapsed >= duration` branch.
+    /// If this stays 0, retirement isn't being reached (clock not
+    /// advancing past t_start + duration). If > 0 but
+    /// `retired_through_segment_id` stays 0, the retirement branch
+    /// enters but consumers_done returns false (motor bits not cleared).
+    pub modulated_retire_attempts: AtomicU32,
+    /// Increments on every successful retirement (consumers_done == true
+    /// path). Should equal `modulated_retire_attempts` if the consumers
+    /// mask is being cleared correctly.
+    pub modulated_retire_successes: AtomicU32,
     /// §9.2 + §5.3 — last latched fault's encoded `fault_detail` payload.
     /// Set in lockstep with `last_error` whenever a fault latches; read by
     /// the periodic 10 Hz `kalico_status_v6` frame and the async
@@ -351,6 +362,8 @@ impl SharedState {
             current_segment_id: AtomicU32::new(0),
             last_modulated_elapsed_lo: AtomicU32::new(0),
             last_modulated_duration_lo: AtomicU32::new(0),
+            modulated_retire_attempts: AtomicU32::new(0),
+            modulated_retire_successes: AtomicU32::new(0),
             credit_epoch: AtomicU32::new(0),
             accepted_segment_id: AtomicU32::new(0),
             retired_through_segment_id: AtomicU32::new(0),
