@@ -184,12 +184,24 @@ def test_same_direction_jogs_reproduce_slot_pool_exhaustion(sim):
     independent of dx magnitude (1 F4 slot per ShapedSegment regardless
     of geometry).
 
-    Asserted behavior: this test currently REPRODUCES the bug — at least
-    one G1 must fail with the exact error fragment 'slot pool exhausted
-    for mcu=1'. When the underlying bug is fixed, this test will start
-    passing the loop without failure; at that point invert the assertion
-    to lock in the fix (replace ``assert fail_idx`` with
-    ``assert fail_idx is None``).
+    Asserted behavior: with the 2026-05-17 fix in place, all 10 jogs
+    must succeed. The fix has two parts in rust/runtime/src/engine.rs:
+      - Engine::push_segment no longer CASes producer_pending. Previously
+        it raced the C-side `kalico_runtime_kick_producer` CAS; Engine
+        always won, leaving the C-side's `arm_producer_timer_if_kicked`
+        with a failed CAS and no scheduled producer timer. On pure-
+        Modulated MCUs (F4 phase-stepped Z with no StepTime motor to
+        drive step_time_event re-kicks) this left the producer timer
+        un-armed forever.
+      - producer_step unconditionally dequeues at the top so Modulated-
+        only configs see segment cursor advance. The per-motor StepTime
+        loop below `continue`s on every non-StepTime motor, so without
+        the top-of-function dequeue `fetch_segment_for_motor` was never
+        called for pure-Modulated configs and `producer_current` stayed
+        None → `runtime_modulated_tick` no-op'd → segments never retired.
+    Both fixes are required: the first re-arms the timer so producer_step
+    actually runs; the second makes producer_step useful for Modulated-
+    only MCUs.
     """
     _wait_ready(sim)
 
@@ -245,24 +257,13 @@ def test_same_direction_jogs_reproduce_slot_pool_exhaustion(sim):
     if fail_idx is not None:
         print(f"[repro] REPRODUCED on jog {fail_idx}: {fail_msg}")
 
-    assert fail_idx is not None, (
-        "expected one of 10 sequential G1 X-1 F6000 jogs to fail with "
-        "'slot pool exhausted for mcu=1' (the live-printer 2026-05-17 "
-        "jogging crash signature), but all 10 succeeded.\n"
+    assert fail_idx is None, (
+        f"expected all 10 sequential G1 X-1 F6000 jogs to succeed under "
+        f"the post-2026-05-17 fix, but jog {fail_idx} failed: {fail_msg!r}\n"
         f"Responses: {responses!r}\n"
-        "If this is the new baseline, the F4 credit-freed path may have "
-        "started working — invert the assertion to lock in the fix."
-    )
-    assert "mcu=1" in fail_msg, (
-        f"jog #{fail_idx} failed with 'slot pool exhausted' but the "
-        f"per-MCU id is not 1 (F4 'bottom'); got: {fail_msg!r}\n"
-        "If the failure is on mcu=0 (H7), the diagnosis above is wrong."
-    )
-    assert "capacity=4" in fail_msg, (
-        f"jog #{fail_idx} failed with mcu=1 but capacity is not 4; got: "
-        f"{fail_msg!r}\nF4 sim build was supposed to use "
-        "CONFIG_RUNTIME_CURVE_POOL_N=4 (tools/sim_klippy/configs/"
-        "f4-sim.config)."
+        "Regression in producer_step's top-of-function dequeue OR "
+        "Engine::push_segment's removed-CAS may have come back. Check "
+        "rust/runtime/src/engine.rs::push_segment and ::producer_step."
     )
 
 

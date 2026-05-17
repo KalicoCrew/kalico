@@ -1785,7 +1785,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         &mut self,
         mut seg: Segment,
         queue_producer: &mut Producer<'q, Segment, Q_N>,
-        shared: &SharedState,
+        _shared: &SharedState,
     ) -> Result<(), Segment> {
         seg.consumers_remaining = Segment::compute_consumers_remaining(
             seg.kinematics,
@@ -1795,17 +1795,21 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             seg.e_handle,
         );
         queue_producer.enqueue(seg)?;
-        // CAS-set the kick flag false→true. If we win, the caller's wake-
-        // scheduling path (typically `sched_add_timer(producer_timer, now)`
-        // on the C side, Task 8) fires next; if we lose, a pending kick is
-        // already queued — the producer will see our new segment on its
-        // next run regardless.
-        let _ = shared.producer_pending.compare_exchange(
-            false,
-            true,
-            Ordering::Release,
-            Ordering::Acquire,
-        );
+        // 2026-05-17: do NOT CAS-set producer_pending here. The C-side FFI
+        // wrapper (`handle_push_segment` in src/kalico_dispatch.c) calls
+        // `arm_producer_timer_if_kicked` immediately after this returns,
+        // which calls `kalico_runtime_kick_producer` and is the single
+        // owner of the kick→arm transition. If Engine::push_segment also
+        // CASes false→true here, it preempts the C-side: C-side's CAS
+        // fails (false→true on an already-true atomic), early-returns
+        // without scheduling the producer timer, and a pure-Modulated MCU
+        // (F4 with phase-stepped Z, no StepTime motors to drive
+        // step_time_event re-kicks) deadlocks at SlotPoolExhausted because
+        // producer_step never runs → producer_current never populated →
+        // modulated_tick no-ops → segments never retire → no
+        // kalico_credit_freed. Live bench repro: klippy.log L1617041 on
+        // 2026-05-17; sim repro:
+        // tools/sim_klippy/tests/test_bridge_stall_repro.py::test_same_direction_jogs_reproduce_slot_pool_exhaustion.
         Ok(())
     }
 
@@ -1973,6 +1977,40 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // (1) Clear kick-pending flag at start; (2) heartbeat.
         shared.producer_pending.store(false, Ordering::Release);
         shared.producer_runs_total.fetch_add(1, Ordering::AcqRel);
+
+        // 2026-05-17: foreground-owned dequeue for pure-Modulated configs.
+        // The per-motor loop below `continue`s on every non-StepTime motor,
+        // so for an MCU with only Modulated motors (F446 with phase-stepped
+        // Z and no StepTime stepper) `fetch_segment_for_motor` is never
+        // called, `producer_current` stays `None`, and `runtime_modulated_tick`
+        // returns immediately without advancing the queue. Segments queue
+        // forever, retired_through_segment_id never advances, the host's
+        // `kalico_credit_freed` accounting deadlocks at SlotPoolExhausted
+        // (live-bench repro: klippy.log L1617041, 2026-05-17).
+        //
+        // The earlier lazy-dequeue in `runtime_modulated_tick` (introduced
+        // 081ab4a3b, reverted bb88c5d8) raced this same Consumer from the
+        // TIM5 ISR vs. the foreground. Restoring the dequeue here keeps it
+        // foreground-only (single-consumer-site invariant) while still
+        // advancing Modulated-only segment streams: producer_step is the
+        // single foreground task driving the segment cursor.
+        //
+        // Idempotent with the existing lazy dequeue inside
+        // `fetch_segment_for_motor`: when producer_current is already set,
+        // this is a no-op; when not set, this dequeue runs first and
+        // fetch_segment_for_motor's `is_none()` check sees the populated
+        // state.
+        if self.producer_current.is_none() {
+            if let Some(seg) = queue.dequeue() {
+                self.producer_current = Some(seg);
+                shared
+                    .producer_segment_dequeued_total
+                    .fetch_add(1, Ordering::AcqRel);
+                shared
+                    .current_segment_id
+                    .store(seg.id, Ordering::Release);
+            }
+        }
 
         // Contract: `WorkPending` iff this call pushed step times to a
         // ring. `AllIdle` otherwise — including state-only changes like

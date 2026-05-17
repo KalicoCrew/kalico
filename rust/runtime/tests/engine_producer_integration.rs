@@ -598,7 +598,14 @@ fn empty_queue_returns_all_idle() {
 }
 
 #[test]
-fn push_segment_sets_producer_pending() {
+fn push_segment_does_not_touch_producer_pending() {
+    // 2026-05-17: Engine::push_segment no longer CASes producer_pending.
+    // The kick→arm transition is owned by the C-side FFI wrapper
+    // (handle_push_segment → arm_producer_timer_if_kicked →
+    // kalico_runtime_kick_producer), which is the single CAS site. Having
+    // Engine also CAS preempted the C-side and left the producer timer
+    // un-armed on pure-Modulated MCUs (F4 phase-stepped Z deadlock; see
+    // engine.rs::push_segment comment for the full repro).
     let mut h = Harness::cartesian_x();
     assert!(
         !h.shared.producer_pending.load(Ordering::Acquire),
@@ -609,8 +616,10 @@ fn push_segment_sets_producer_pending() {
         .push_segment(seg, &mut h.q_producer, &h.shared)
         .expect("push ok");
     assert!(
-        h.shared.producer_pending.load(Ordering::Acquire),
-        "push_segment must CAS-set producer_pending"
+        !h.shared.producer_pending.load(Ordering::Acquire),
+        "push_segment must NOT touch producer_pending; the C-side FFI \
+         wrapper owns the kick→arm CAS so a single CAS site can reliably \
+         arm the producer timer"
     );
 }
 
