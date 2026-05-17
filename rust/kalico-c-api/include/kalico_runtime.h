@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
+
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -781,6 +781,20 @@ uint32_t kalico_runtime_segments_dequeued_lo(struct KalicoRuntime *rt);
  *                                queue having entries (SPSC consumer bug).
  */
 uint32_t kalico_runtime_observed_none_lo(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-18 wedge diag: live snapshot of `engine.producer_current.is_some()`.
+ * Distinguishes "producer_current is sticky-Some (ISR's clear-to-None
+ * invisible to foreground)" from "producer_current is None but
+ * queue.dequeue() returns None" — the latter is the SPSC-bug
+ * hypothesis; the former is the memory-visibility hypothesis.
+ *
+ * Returns 1 if producer_current is Some, 0 if None.
+ * Reads via the ISR-state projection without locks (best-effort
+ * foreground snapshot). Foreground and ISR don't run concurrently
+ * per §11.1, so the read sees a consistent value.
+ */
+uint8_t kalico_runtime_producer_current_is_some_diag(struct KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells

@@ -2569,6 +2569,34 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-18 wedge diag: live snapshot of `engine.producer_current.is_some()`.
+    /// Distinguishes "producer_current is sticky-Some (ISR's clear-to-None
+    /// invisible to foreground)" from "producer_current is None but
+    /// queue.dequeue() returns None" — the latter is the SPSC-bug
+    /// hypothesis; the former is the memory-visibility hypothesis.
+    ///
+    /// Returns 1 if producer_current is Some, 0 if None.
+    /// Reads via the ISR-state projection without locks (best-effort
+    /// foreground snapshot). Foreground and ISR don't run concurrently
+    /// per §11.1, so the read sees a consistent value.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_producer_current_is_some_diag(
+        rt: *mut KalicoRuntime,
+    ) -> u8 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: §11.1 — foreground and ISR never run concurrently against
+        // IsrState. This call is from the foreground status_drain task; ISR
+        // is gated. We materialise a `&IsrState` (not `&mut`) to read.
+        unsafe {
+            let isr_ptr: *const IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr: &IsrState = &*isr_ptr;
+            if isr.engine.producer_current_is_some_diag() { 1 } else { 0 }
+        }
+    }
+
     /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
     /// how many `Engine::producer_step` invocations have completed since
     /// boot. If `step_time_producer_kicks` (C side) is incrementing but

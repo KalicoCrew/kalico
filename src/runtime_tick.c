@@ -1167,22 +1167,23 @@ runtime_status_drain(void)
         case 35: {
             // 0xCC — 2026-05-18 wedge diag. producer_step entry-state vs dequeue
             // outcome.
-            //   bits 0..11   producer_segment_dequeued_total low 12 bits
-            //   bits 12..23  producer_observed_none_total low 12 bits
-            // If observed_none ≫ dequeued, producer_step is reaching the
-            // dequeue site (producer_current.is_none() = true) but
-            // queue.dequeue() returns None despite the queue having entries —
-            // points at SPSC consumer-side state corruption.
-            // If observed_none ≈ dequeued, producer_step rarely sees None
-            // (producer_current is sticky-Some after retire) — points at
-            // ISR's producer_current = None write not being visible to
-            // foreground.
+            //   bits 0..10    producer_segment_dequeued_total low 11 bits
+            //   bits 11..21   producer_observed_none_total low 11 bits
+            //   bit  22       producer_current.is_some() (1 = sticky-Some)
+            // If observed_none ≫ dequeued AND is_some=0:
+            //   queue.dequeue() returns None despite entries — SPSC bug.
+            // If observed_none ≈ dequeued AND is_some=1:
+            //   producer_current is sticky-Some — ISR's clear-to-None
+            //   invisible to foreground.
             // Both functions declared in kalico_runtime.h (regenerated).
             uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
             uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
+            uint8_t is_some = kalico_runtime_producer_current_is_some_diag(
+                runtime_handle);
             fault_detail = 0xCC000000u
-                         | ((obs & 0xFFFu) << 12)
-                         | (deq & 0xFFFu);
+                         | ((uint32_t)(is_some & 1u) << 22)
+                         | ((obs & 0x7FFu) << 11)
+                         | (deq & 0x7FFu);
             break;
         }
         case 32: {

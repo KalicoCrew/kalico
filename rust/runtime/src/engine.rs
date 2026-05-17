@@ -379,6 +379,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         RuntimeStatus::from_u8(self.status.load(Ordering::Acquire))
     }
 
+    /// 2026-05-18: diagnostic accessor for the wedge investigation.
+    /// `producer_current` is a non-atomic `Option<Segment>` mutated by
+    /// both `producer_step` (foreground) and `runtime_modulated_tick` (ISR);
+    /// reading it through this accessor gives the C-side rotation a way to
+    /// snapshot whether the foreground sees the ISR's retire-time clear or
+    /// not. Not Ordering-correct for cross-thread sync — just diagnostic.
+    pub fn producer_current_is_some_diag(&self) -> bool {
+        self.producer_current.is_some()
+    }
+
     pub fn last_error(&self) -> i32 {
         self.last_error.load(Ordering::Acquire)
     }
