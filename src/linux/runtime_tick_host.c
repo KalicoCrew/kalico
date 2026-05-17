@@ -169,6 +169,20 @@ runtime_tick_enable(void)
         uint64_t baseline = ((uint64_t)high) << 32 | (uint64_t)low;
         runtime_handle_seed_widen(runtime_handle, baseline);
     }
+    // 2026-05-17: mirror the F4/H7 firmware's gating on
+    // count_modulated_steppers > 0. Previously the Linux sim always armed
+    // the 40 kHz host tick regardless of whether any motor was configured
+    // Modulated, which masked F4-specific bugs where TIM5 stays disabled
+    // because the count is observed as 0 at the time of enable. The
+    // sim-vs-hardware divergence let test_bridge_stall_repro pass under
+    // the architectural fix while the real F4 still failed to retire
+    // segments; mirroring the gate here surfaces the same fault path.
+    if (runtime_handle
+        && kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        // No phase-stepped motors — host tick stays disabled, matching the
+        // F4 (and H7) firmware behavior.
+        return;
+    }
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 
