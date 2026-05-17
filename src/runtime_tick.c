@@ -440,8 +440,20 @@ runtime_drain(void)
         uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
         // Phase C: emit as kalico-native CreditFreed event (channel 1).
-        kalico_native_emit_credit_freed(cur_retired, free_slots);
-        last_emitted_retired_id = cur_retired;
+        // 2026-05-17: check the emit return value. If the frame was
+        // dropped at the transmit_buf-full check (returns -1), do NOT
+        // advance `last_emitted_retired_id` — the next drain cycle will
+        // re-evaluate cursor_advanced against the same prior id and
+        // retry the emit. Without this, a dropped credit_freed (which
+        // happens under sustained kalico-frame load on the small F4
+        // 1024-byte TX buffer) is silently lost, and the host's slot
+        // pool deadlocks at SlotPoolExhausted on the next push that
+        // can't allocate.
+        int emit_result =
+            kalico_native_emit_credit_freed(cur_retired, free_slots);
+        if (emit_result >= 0) {
+            last_emitted_retired_id = cur_retired;
+        }
     }
 
     // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`

@@ -15,8 +15,12 @@ void kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
 
 // Build and write a complete kalico frame (sync + len + channel + payload + crc)
 // to the transport's output. `payload` is the per-message header + body.
-void kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
-                                 uint16_t payload_len);
+// Returns the underlying console-write-raw result: frame length on success,
+// -1 on transmit_buf overflow (silent drop). Callers that care about
+// delivery (kalico_native_emit_credit_freed → host slot pool retirement)
+// must check this and retry on drop.
+int kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
+                                uint16_t payload_len);
 
 // Generate a nonzero reset epoch on boot; called from the platform-specific
 // init hook. Stored in a static; the IdentifyResponse handler reads it.
@@ -29,8 +33,12 @@ uint32_t kalico_reset_epoch_get(void);
 void kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
                                      uint32_t current_segment_id,
                                      int32_t last_fault, uint32_t fault_detail);
-void kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
-                                     uint8_t free_slots);
+// Returns the underlying transport result: positive on success, -1 if the
+// frame was dropped due to transmit_buf overflow. The caller (runtime_drain
+// in src/runtime_tick.c) must NOT advance last_emitted_retired_id on drop
+// so the retry on the next drain cycle re-emits the same cursor value.
+int kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
+                                    uint8_t free_slots);
 void kalico_native_emit_fault_event(uint16_t fault_code,
                                     uint32_t fault_detail,
                                     uint32_t segment_id);

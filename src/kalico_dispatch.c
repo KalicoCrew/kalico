@@ -130,7 +130,7 @@ kalico_reset_epoch_get(void)
 // TX path
 // ---------------------------------------------------------------------------
 
-void
+int
 kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
                             uint16_t payload_len)
 {
@@ -138,7 +138,7 @@ kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
     uint32_t len_field = 2u + 1u + (uint32_t)payload_len + 2u;
     uint32_t total = 1u + len_field;
     if (total > KALICO_TX_BUF_SIZE)
-        return;
+        return -1;
     tx_buf[0] = KALICO_FRAME_SYNC;
     tx_buf[1] = (uint8_t)(len_field & 0xFF);
     tx_buf[2] = (uint8_t)((len_field >> 8) & 0xFF);
@@ -148,7 +148,12 @@ kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
     uint16_t crc = crc16_ccitt(&tx_buf[1], (uint32_t)(2 + 1 + payload_len));
     tx_buf[total - 2] = (uint8_t)(crc & 0xFF);
     tx_buf[total - 1] = (uint8_t)((crc >> 8) & 0xFF);
-    kalico_console_write_raw(tx_buf, (uint16_t)total);
+    // 2026-05-17: return the underlying write_raw result so callers that
+    // care about delivery (kalico_native_emit_credit_freed → host slot
+    // pool retirement) can detect transmit_buf overflow drops and retry
+    // on the next drain cycle. transmit_buf overflow returns -1; success
+    // returns the frame length.
+    return kalico_console_write_raw(tx_buf, (uint16_t)total);
 }
 
 // ---------------------------------------------------------------------------
@@ -581,7 +586,7 @@ kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 
-void
+int
 kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
                                 uint8_t free_slots)
 {
@@ -594,7 +599,8 @@ kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
     b[2] = (uint8_t)((retired_through_segment_id >> 16) & 0xFF);
     b[3] = (uint8_t)((retired_through_segment_id >> 24) & 0xFF);
     b[4] = free_slots;
-    kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
+    return kalico_transport_send_frame(
+        KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 
 void
