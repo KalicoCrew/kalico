@@ -286,6 +286,15 @@ pub struct SharedState {
     /// host-side PushSegment count to detect dropped frames between
     /// `runtime_handle_push_segment` and `queue.enqueue`.
     pub producer_segment_dequeued_total: AtomicU64,
+    /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
+    /// `producer_current.is_none()` branch is entered, regardless of whether
+    /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
+    /// with `producer_segment_dequeued_total`:
+    ///   observed_none == dequeued → ISR not setting producer_current=None
+    ///                                after retire (sticky-Some).
+    ///   observed_none >> dequeued → queue.dequeue() returns None despite
+    ///                                queue having entries (SPSC bug).
+    pub producer_observed_none_total: AtomicU64,
     /// Total times `Engine::fetch_segment_for_motor` was called. Bumps
     /// unconditionally at function entry — distinguishes "producer loop
     /// is filtering out all motors at the gates" from "fetch is called
@@ -421,6 +430,7 @@ impl SharedState {
             producer_motor_finished_curve_total: AtomicU64::new(0),
             producer_segment_retired_total: AtomicU64::new(0),
             producer_segment_dequeued_total: AtomicU64::new(0),
+            producer_observed_none_total: AtomicU64::new(0),
             producer_fetch_attempts_total: AtomicU64::new(0),
             producer_enqueue_success_total: AtomicU64::new(0),
             last_push_segment_result: AtomicI32::new(0),

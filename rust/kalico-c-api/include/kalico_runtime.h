@@ -772,6 +772,17 @@ uint32_t kalico_runtime_segments_retired_lo(struct KalicoRuntime *rt);
 uint32_t kalico_runtime_segments_dequeued_lo(struct KalicoRuntime *rt);
 
 /**
+ * 2026-05-18 wedge diag: count of `producer_step` entries that observed
+ * `producer_current.is_none()` — i.e., reached the dequeue site at the
+ * top of the function. Compared against `producer_segment_dequeued_total`:
+ *   - observed_none ≈ dequeued: ISR not setting producer_current=None
+ *                                after retire (producer_current sticky).
+ *   - observed_none ≫ dequeued: queue.dequeue() returns None despite
+ *                                queue having entries (SPSC consumer bug).
+ */
+uint32_t kalico_runtime_observed_none_lo(struct KalicoRuntime *rt);
+
+/**
  * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
  * how many `Engine::producer_step` invocations have completed since
  * boot. If `step_time_producer_kicks` (C side) is incrementing but

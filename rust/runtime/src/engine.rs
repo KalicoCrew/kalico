@@ -2001,6 +2001,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // fetch_segment_for_motor's `is_none()` check sees the populated
         // state.
         if self.producer_current.is_none() {
+            // 2026-05-18 diag: count producer_step entries where producer_current
+            // was observed as None, separately from dequeues that succeeded.
+            // Bench reveals producer_step runs >>>> dequeues — we need to know
+            // whether producer_current is sticky-Some (ISR not setting None
+            // after retire) or queue.dequeue() returns None (SPSC bug).
+            shared
+                .producer_observed_none_total
+                .fetch_add(1, Ordering::AcqRel);
             if let Some(seg) = queue.dequeue() {
                 self.producer_current = Some(seg);
                 shared

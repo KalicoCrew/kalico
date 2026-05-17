@@ -2549,6 +2549,26 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-18 wedge diag: count of `producer_step` entries that observed
+    /// `producer_current.is_none()` — i.e., reached the dequeue site at the
+    /// top of the function. Compared against `producer_segment_dequeued_total`:
+    ///   - observed_none ≈ dequeued: ISR not setting producer_current=None
+    ///                                after retire (producer_current sticky).
+    ///   - observed_none ≫ dequeued: queue.dequeue() returns None despite
+    ///                                queue having entries (SPSC consumer bug).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_observed_none_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_observed_none_total.load(Ordering::Acquire) as u32
+        }
+    }
+
     /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
     /// how many `Engine::producer_step` invocations have completed since
     /// boot. If `step_time_producer_kicks` (C side) is incrementing but

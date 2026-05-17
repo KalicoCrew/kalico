@@ -677,7 +677,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 35) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 36) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1162,6 +1162,27 @@ runtime_status_drain(void)
             uint32_t ret =
                 runtime_handle_retired_through_segment_id(runtime_handle);
             fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
+            break;
+        }
+        case 35: {
+            // 0xCC — 2026-05-18 wedge diag. producer_step entry-state vs dequeue
+            // outcome.
+            //   bits 0..11   producer_segment_dequeued_total low 12 bits
+            //   bits 12..23  producer_observed_none_total low 12 bits
+            // If observed_none ≫ dequeued, producer_step is reaching the
+            // dequeue site (producer_current.is_none() = true) but
+            // queue.dequeue() returns None despite the queue having entries —
+            // points at SPSC consumer-side state corruption.
+            // If observed_none ≈ dequeued, producer_step rarely sees None
+            // (producer_current is sticky-Some after retire) — points at
+            // ISR's producer_current = None write not being visible to
+            // foreground.
+            extern uint32_t kalico_runtime_observed_none_lo(void *rt);
+            uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
+            uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
+            fault_detail = 0xCC000000u
+                         | ((obs & 0xFFFu) << 12)
+                         | (deq & 0xFFFu);
             break;
         }
         case 32: {
