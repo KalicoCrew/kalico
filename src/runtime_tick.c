@@ -658,27 +658,15 @@ runtime_status_drain(void)
     extern volatile uint32_t runtime_bind_reset_calls;
     extern volatile uint32_t runtime_bind_writes_committed;
     extern volatile uint32_t runtime_bind_count_snapshot_packed;
-    // Producer-side diagnostics surfaced via 0xB2:
-    //   - kalico_runtime_ring_high_water(i): max ring fill ever observed
-    //     per motor. > 0 → producer pushed at least once for this motor.
-    //   - kalico_runtime_producer_runs_lo(): how many producer_step calls
-    //     completed total (low 32 bits of producer_runs_total).
-    extern uint32_t kalico_runtime_ring_high_water(void *rt, uint8_t motor_idx);
-    extern uint32_t kalico_runtime_producer_runs_lo(void *rt);
-    extern uint32_t kalico_runtime_steps_pushed_lo(void *rt);
-    extern uint32_t kalico_runtime_motor_finished_lo(void *rt);
-    extern uint32_t kalico_runtime_segments_retired_lo(void *rt);
-    extern uint32_t kalico_runtime_segments_dequeued_lo(void *rt);
-    extern uint32_t kalico_runtime_fetch_attempts_lo(void *rt);
-    extern uint32_t kalico_runtime_enqueue_success_lo(void *rt);
-    extern int32_t kalico_runtime_last_push_segment_result(void *rt);
+    // Producer-side diagnostics surfaced via 0xB2 onwards. The function
+    // signatures are now provided by the regenerated kalico_runtime.h
+    // (struct KalicoRuntime * parameter); the void*-typed externs that
+    // used to live here conflict with that and have been removed. The
+    // runtime_handle (void *) passed at call sites implicitly converts.
     extern volatile uint32_t handle_push_segment_calls_total;
     extern volatile uint32_t handle_push_segment_invalid_body_total;
     extern volatile uint32_t handle_push_segment_no_handle_total;
     extern volatile int32_t handle_push_segment_last_r;
-    extern uint32_t kalico_runtime_primary_resolved_lo(void *rt);
-    extern uint32_t kalico_runtime_primary_stale_lo(void *rt);
-    extern uint32_t kalico_runtime_primary_unused_lo(void *rt);
     extern volatile uint32_t kalico_demux_out_kalico_total;
     extern volatile uint32_t kalico_demux_out_error_total;
     extern volatile uint32_t kalico_demux_crc_mismatch_total;
