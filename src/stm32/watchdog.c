@@ -39,9 +39,16 @@ watchdog_init(void)
 #if CONFIG_KALICO_SIM
     return;  // Don't arm IWDG in sim — see watchdog_reset
 #endif
-    IWDG->KR = 0x5555;
-    IWDG->PR = 0;
-    IWDG->RLR = 0x0FFF; // 410-512ms timeout (depending on stm32 chip)
-    IWDG->KR = 0xCCCC;
+    // 2026-05-17 H7-wedge-after-tmcuart_send diagnostic: leave IWDG
+    // disarmed entirely. Bench observation: H7 USB re-enumerates 30-50 s
+    // after klippy starts, klippy loses its FD to ttyACMx, "klippy
+    // pretends to be up" symptom. Hypothesis: foreground stalls > 512 ms
+    // under TMC autotune load → IWDG fires → MCU resets → USB
+    // disconnect/re-enumerate. If this diagnostic build doesn't wedge
+    // (or wedges much later), IWDG starvation is the cause; the proper
+    // fix is to find/eliminate the foreground stall, not to lengthen
+    // the timeout. NEVER ship this to a real print without IWDG armed
+    // again — silicon-unsafe.
+    (void)0;
 }
 DECL_INIT(watchdog_init);
