@@ -712,14 +712,6 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
     fault_rec.fault_count++;
     fault_rec.magic = FAULT_MAGIC;
 
-    // 2026-05-17 H7 silent-reset trace: record the path that called
-    // NVIC_SystemReset into rt_diag_persistent so the next boot can read
-    // it back. Path 0x01 = fault_capture (HardFault/BusFault/etc).
-    // See `runtime_diag_progress` in src/runtime_tick.c — tag 0xF7 in
-    // the high byte, path in next byte.
-    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
-    runtime_diag_progress(0xF7, 0x01, kind);
-
     // Make sure the record is actually written before we reset.
     __DSB();
 

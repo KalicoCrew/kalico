@@ -33,10 +33,6 @@ dfu_reboot(void)
 {
     if (!CONFIG_STM32_DFU_ROM_ADDRESS || !CONFIG_HAVE_BOOTLOADER_REQUEST)
         return;
-    // 2026-05-17 H7 silent-reset trace: record path 0x02 = dfu_reboot.
-    extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
-                                      uint32_t value);
-    runtime_diag_progress(0xF7, 0x02, 0);
     irq_disable();
     uint64_t *bflag = (void*)USB_BOOT_FLAG_ADDR;
     *bflag = USB_BOOT_FLAG;
