@@ -2013,23 +2013,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         if self.producer_current.is_none() {
             // 2026-05-18 diag: count producer_step entries where producer_current
             // was observed as None, separately from dequeues that succeeded.
-            // Bench reveals producer_step runs >>>> dequeues — we need to know
-            // whether producer_current is sticky-Some (ISR not setting None
-            // after retire) or queue.dequeue() returns None (SPSC bug).
             shared
                 .producer_observed_none_total
                 .fetch_add(1, Ordering::AcqRel);
-            // 2026-05-18 wedge experiment: full SeqCst fence before reading the
-            // SPSC tail. Bench evidence shows queue.dequeue() returning None
-            // when accepted_segment_id (set after enqueue success in
-            // push_segment_impl) says 7 segments are queued. Hypothesis:
-            // the H7's M7 data cache or write-buffer is delaying the Producer's
-            // tail.store(Release) visibility to the Consumer's tail.load(Acquire)
-            // on this single-core CPU. SeqCst fence + DSB instruction forces
-            // all prior memory operations to globally serialize before we read
-            // the queue state.
-            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-            if let Some(seg) = queue.dequeue() {
+            // 2026-05-18 wedge fix: bench evidence (tag 0xCC) shows
+            // `queue.len() = 6` while `queue.dequeue()` returns None — same
+            // SPSC, same call site, immediate consecutive reads. The only
+            // difference is that `len()` uses `tail.load(Relaxed)` while
+            // `dequeue()` uses `tail.load(Acquire)`. On this Cortex-M7
+            // configuration the Acquire load is observably returning a stale
+            // value (likely related to H7 D-cache + AXI bus interaction with
+            // the LDR/DMB sequence the compiler emits). Workaround: gate
+            // dequeue on `len() > 0` (Relaxed-only) and use
+            // `dequeue_unchecked` (head-only, no tail.load(Acquire)) to
+            // perform the actual fetch.
+            if queue.len() > 0 {
+                let seg = unsafe { queue.dequeue_unchecked() };
                 self.producer_current = Some(seg);
                 shared
                     .producer_segment_dequeued_total
