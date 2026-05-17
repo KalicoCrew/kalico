@@ -436,23 +436,33 @@ runtime_drain(void)
     static uint32_t last_emitted_retired_id = 0;
     uint32_t cur_retired = runtime_handle_retired_through_segment_id(runtime_handle);
     bool cursor_advanced = (int32_t)(cur_retired - last_emitted_retired_id) > 0;
-    if (saw_segment_end || cursor_advanced) {
+    // 2026-05-17: heartbeat path — emit credit_freed periodically even when
+    // the cursor hasn't advanced, IF there's a previously-emitted cursor
+    // and the drops counter shows TX drops have happened since the last
+    // successful emit. This is the resilience layer above
+    // kalico_native_emit_credit_freed's return-value check: on F4 under
+    // sustained TMC-autotune + jog load, transmit_buf fills frequently
+    // and the cursor_advanced one-shot emit gets dropped repeatedly even
+    // with the retry — the next drain cycle sees cur_retired unchanged
+    // and won't re-evaluate. By gating heartbeat emit on the tx-drops
+    // counter advancing past `last_emitted_drops`, we re-emit only when
+    // a prior credit_freed actually dropped, not on every idle drain.
+    static uint32_t last_emitted_drops = 0;
+    uint32_t cur_drops = diag_get_tx_drops_kalico();
+    bool drops_increased = cur_drops != last_emitted_drops;
+    bool heartbeat_due = (last_emitted_retired_id > 0) && drops_increased;
+    if (saw_segment_end || cursor_advanced || heartbeat_due) {
         uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
         // Phase C: emit as kalico-native CreditFreed event (channel 1).
-        // 2026-05-17: check the emit return value. If the frame was
-        // dropped at the transmit_buf-full check (returns -1), do NOT
-        // advance `last_emitted_retired_id` — the next drain cycle will
-        // re-evaluate cursor_advanced against the same prior id and
-        // retry the emit. Without this, a dropped credit_freed (which
-        // happens under sustained kalico-frame load on the small F4
-        // 1024-byte TX buffer) is silently lost, and the host's slot
-        // pool deadlocks at SlotPoolExhausted on the next push that
-        // can't allocate.
+        // The emit returns -1 on transmit_buf overflow; only advance the
+        // bookkeeping cursors on successful enqueue so the next drain
+        // re-evaluates.
         int emit_result =
             kalico_native_emit_credit_freed(cur_retired, free_slots);
         if (emit_result >= 0) {
             last_emitted_retired_id = cur_retired;
+            last_emitted_drops = cur_drops;
         }
     }
 
