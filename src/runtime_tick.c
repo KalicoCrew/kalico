@@ -433,37 +433,27 @@ runtime_drain(void)
     // saturate at u8 in the Rust accessor). Signed-difference comparison is
     // wraparound-safe for any spans the cursor realistically crosses between
     // drains (drain runs ~1 kHz; 2^31 segments at any push rate is years).
-    static uint32_t last_emitted_retired_id = 0;
     uint32_t cur_retired = runtime_handle_retired_through_segment_id(runtime_handle);
-    bool cursor_advanced = (int32_t)(cur_retired - last_emitted_retired_id) > 0;
-    // 2026-05-17: heartbeat path — emit credit_freed periodically even when
-    // the cursor hasn't advanced, IF there's a previously-emitted cursor
-    // and the drops counter shows TX drops have happened since the last
-    // successful emit. This is the resilience layer above
-    // kalico_native_emit_credit_freed's return-value check: on F4 under
-    // sustained TMC-autotune + jog load, transmit_buf fills frequently
-    // and the cursor_advanced one-shot emit gets dropped repeatedly even
-    // with the retry — the next drain cycle sees cur_retired unchanged
-    // and won't re-evaluate. By gating heartbeat emit on the tx-drops
-    // counter advancing past `last_emitted_drops`, we re-emit only when
-    // a prior credit_freed actually dropped, not on every idle drain.
-    static uint32_t last_emitted_drops = 0;
-    uint32_t cur_drops = diag_get_tx_drops_kalico();
-    bool drops_increased = cur_drops != last_emitted_drops;
-    bool heartbeat_due = (last_emitted_retired_id > 0) && drops_increased;
-    if (saw_segment_end || cursor_advanced || heartbeat_due) {
+    // 2026-05-17: always-emit-while-non-zero strategy. On real F4 hardware
+    // the transmit_buf is under heavy contention (status frames at 10 Hz,
+    // klipper responses, kalico events, TMC autotune bursts). Even with
+    // the buffer bumped to 1024 B, transient overflows drop credit_freed
+    // emits unpredictably. The earlier cursor_advanced one-shot emit, even
+    // with the drop-aware retry, kept dropping the very first emit (when
+    // cur_retired transitions 0→1) and then bookkeeping was stuck: every
+    // subsequent drain saw cursor_advanced=false because the retired_id
+    // never changed.
+    //
+    // Brute-force resilience: emit credit_freed on EVERY drain iteration
+    // whenever cur_retired > 0. 1 kHz drain × ~12 B/emit ≈ 12 KB/s, well
+    // within USB FS bulk-IN capacity. Some emits drop; the next 1 ms one
+    // re-tries. The host's CreditCounter just snaps to the latest
+    // free_slots so a burst of identical emits is idempotent.
+    if (saw_segment_end || cur_retired > 0) {
         uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
         // Phase C: emit as kalico-native CreditFreed event (channel 1).
-        // The emit returns -1 on transmit_buf overflow; only advance the
-        // bookkeeping cursors on successful enqueue so the next drain
-        // re-evaluates.
-        int emit_result =
-            kalico_native_emit_credit_freed(cur_retired, free_slots);
-        if (emit_result >= 0) {
-            last_emitted_retired_id = cur_retired;
-            last_emitted_drops = cur_drops;
-        }
+        (void)kalico_native_emit_credit_freed(cur_retired, free_slots);
     }
 
     // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`
