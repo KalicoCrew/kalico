@@ -158,8 +158,15 @@ class MotionBridgeWrapper:
             timeout_s,
         )
 
-    def bridge_call(self, mcu_handle, msg, response, timeout_s=5.0):
-        """Send a msgproto command and wait for the named response dict."""
+    def bridge_call(self, mcu_handle, msg, response, timeout_s=15.0):
+        """Send a msgproto command and wait for the named response dict.
+
+        2026-05-17: bumped default 5.0s → 15.0s. With slot-pool retirement
+        now working, TMC autotune's many tmcuart_send / spi_transfer
+        commands race motion-bridge's push_segment traffic on the same
+        USB-CDC pipe — a 5 s timeout was insufficient for the slowest
+        TMC reads under sustained motion load.
+        """
         return self._bridge.bridge_call(mcu_handle, msg, response, timeout_s)
 
     def bridge_send(self, mcu_handle, msg):
