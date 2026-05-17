@@ -295,6 +295,11 @@ pub struct SharedState {
     ///   observed_none >> dequeued → queue.dequeue() returns None despite
     ///                                queue having entries (SPSC bug).
     pub producer_observed_none_total: AtomicU64,
+    /// 2026-05-18 wedge diag: latest `queue.len()` snapshot from producer_step's
+    /// perspective. Compare with `kalico_runtime_queue_len_diag` (called from
+    /// status_drain at a different time / via &IsrState borrow) to detect if
+    /// the SPSC Consumer's view of head/tail diverges between call sites.
+    pub producer_step_last_len_snapshot: AtomicU32,
     /// Total times `Engine::fetch_segment_for_motor` was called. Bumps
     /// unconditionally at function entry — distinguishes "producer loop
     /// is filtering out all motors at the gates" from "fetch is called
@@ -431,6 +436,7 @@ impl SharedState {
             producer_segment_retired_total: AtomicU64::new(0),
             producer_segment_dequeued_total: AtomicU64::new(0),
             producer_observed_none_total: AtomicU64::new(0),
+            producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_fetch_attempts_total: AtomicU64::new(0),
             producer_enqueue_success_total: AtomicU64::new(0),
             last_push_segment_result: AtomicI32::new(0),

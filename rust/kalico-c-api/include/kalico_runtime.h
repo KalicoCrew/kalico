@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
+
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -808,6 +808,16 @@ uint8_t kalico_runtime_producer_current_is_some_diag(struct KalicoRuntime *rt);
  *                                   / cache issue, or queue corrupted).
  */
 uint32_t kalico_runtime_queue_len_diag(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-18 wedge diag: snapshot of `queue_consumer.len()` AS SEEN
+ * FROM PRODUCER_STEP. Compared against `kalico_runtime_queue_len_diag`
+ * (read from status_drain, different call site). If the two disagree,
+ * the SPSC's Consumer head/tail reads return different values
+ * depending on the call site — a compiler / optimization / aliasing
+ * issue rather than a memory-visibility race.
+ */
+uint32_t kalico_runtime_queue_len_from_producer_step_diag(struct KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells

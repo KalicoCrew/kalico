@@ -1166,30 +1166,34 @@ runtime_status_drain(void)
         }
         case 35: {
             // 0xCC — 2026-05-18 wedge diag. producer_step entry-state, dequeue
-            // outcome, and SPSC consumer's queue.len() snapshot.
-            //   bits 0..9   producer_segment_dequeued_total low 10 bits (0..1023)
-            //   bits 10..19 producer_observed_none_total low 10 bits  (0..1023)
-            //   bits 20..22 queue_consumer.len() (0..7)
-            //   bit  23     producer_current.is_some() (1 = sticky-Some)
-            // Cross-check:
-            //   queue.len() > 0 AND obs > deq: SPSC's tail.load(Acquire)
-            //     in dequeue() is reading the wrong tail value — different
-            //     from what queue.len()'s tail.load(Relaxed) returns.
-            //   queue.len() == 0 AND obs > deq: Consumer sees queue as empty.
-            //     accepted_segment_id - retired says queue has entries, but
-            //     the SPSC head==tail. Lost enqueues somewhere.
-            // Both functions declared in kalico_runtime.h (regenerated).
+            // outcome, and SPSC consumer's queue.len() snapshots from BOTH
+            // call sites.
+            //   bits 0..7   producer_segment_dequeued_total low 8 bits (0..255)
+            //   bits 8..15  producer_observed_none_total low 8 bits (0..255)
+            //   bits 16..18 queue_consumer.len() (from status_drain, &IsrState)
+            //   bits 19..21 queue.len() (from producer_step, &mut Consumer)
+            //   bit  22     producer_current.is_some() (1 = sticky-Some)
+            //   bit  23     reserved
+            // Smoking-gun pattern: if the two qlen values disagree, the SPSC
+            // Consumer's head/tail loads return different values depending
+            // on the call site (compiler / aliasing bug). If they agree but
+            // are non-zero while obs > deq, dequeue() returns None despite
+            // qlen > 0 — SPSC internal corruption.
             uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
             uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
             uint8_t is_some = kalico_runtime_producer_current_is_some_diag(
                 runtime_handle);
-            uint32_t qlen = kalico_runtime_queue_len_diag(runtime_handle);
-            if (qlen > 7) qlen = 7;
+            uint32_t qlen_sd = kalico_runtime_queue_len_diag(runtime_handle);
+            uint32_t qlen_ps = kalico_runtime_queue_len_from_producer_step_diag(
+                runtime_handle);
+            if (qlen_sd > 7) qlen_sd = 7;
+            if (qlen_ps > 7) qlen_ps = 7;
             fault_detail = 0xCC000000u
-                         | ((uint32_t)(is_some & 1u) << 23)
-                         | ((qlen & 7u) << 20)
-                         | ((obs & 0x3FFu) << 10)
-                         | (deq & 0x3FFu);
+                         | ((uint32_t)(is_some & 1u) << 22)
+                         | ((qlen_ps & 7u) << 19)
+                         | ((qlen_sd & 7u) << 16)
+                         | ((obs & 0xFFu) << 8)
+                         | (deq & 0xFFu);
             break;
         }
         case 32: {

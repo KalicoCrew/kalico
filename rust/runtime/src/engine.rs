@@ -2031,6 +2031,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // but peek returns Option<&T> via a different code path and
             // resists compiler optimizations that might cache the Relaxed
             // loads across calls.
+            // 2026-05-18 diag: snapshot the queue's view of length AS SEEN
+            // by producer_step. Compare with `kalico_runtime_queue_len_diag`
+            // (read from status_drain at a different time via &IsrState)
+            // to detect if the SPSC Consumer's head/tail reads diverge
+            // between call sites.
+            let qlen_here = queue.len() as u32;
+            shared
+                .producer_step_last_len_snapshot
+                .store(qlen_here, Ordering::Release);
             let peeked_copy = queue.peek().copied();
             if let Some(seg) = peeked_copy {
                 #[allow(unsafe_code)]

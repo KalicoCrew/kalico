@@ -2623,6 +2623,25 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-18 wedge diag: snapshot of `queue_consumer.len()` AS SEEN
+    /// FROM PRODUCER_STEP. Compared against `kalico_runtime_queue_len_diag`
+    /// (read from status_drain, different call site). If the two disagree,
+    /// the SPSC's Consumer head/tail reads return different values
+    /// depending on the call site — a compiler / optimization / aliasing
+    /// issue rather than a memory-visibility race.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_queue_len_from_producer_step_diag(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_step_last_len_snapshot.load(Ordering::Acquire)
+        }
+    }
+
     /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
     /// how many `Engine::producer_step` invocations have completed since
     /// boot. If `step_time_producer_kicks` (C side) is incrementing but
