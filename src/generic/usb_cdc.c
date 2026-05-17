@@ -43,7 +43,7 @@ static struct task_wake usb_bulk_in_wake;
 // The position counter widens to u16. AVR / smaller MCUs without
 // CONFIG_KALICO_RUNTIME keep the original 192-byte buffer with an 8-bit pos.
 #if CONFIG_KALICO_RUNTIME
-static uint8_t transmit_buf[1024];
+static uint8_t transmit_buf[2048];
 static uint16_t transmit_pos;
 typedef uint16_t transmit_pos_t;
 #else
