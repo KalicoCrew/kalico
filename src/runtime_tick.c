@@ -1177,7 +1177,7 @@ runtime_status_drain(void)
             // (producer_current is sticky-Some after retire) — points at
             // ISR's producer_current = None write not being visible to
             // foreground.
-            extern uint32_t kalico_runtime_observed_none_lo(void *rt);
+            // Both functions declared in kalico_runtime.h (regenerated).
             uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
             uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
             fault_detail = 0xCC000000u
