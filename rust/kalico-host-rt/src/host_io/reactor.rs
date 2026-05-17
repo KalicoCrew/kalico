@@ -46,6 +46,17 @@ pub struct Reactor {
 
     pub(crate) state: ReactorState,
 
+    /// 2026-05-17 wedge-detection: distinguishes the "graceful shutdown"
+    /// Closed transition (driven by `ReactorCommand::Shutdown` from
+    /// `KalicoHostIo::drop` on process exit) from the "unexpected IO
+    /// fault" Closed transition (transport_closed_on_io_fault). Set
+    /// `true` only in the Shutdown handler. The thread-exit hook in
+    /// `KalicoHostIo::open_with_port` reads this AFTER `reactor.run()`
+    /// returns; if `false` (we exited due to a fault), it aborts the
+    /// process so klippy crashes cleanly instead of silently
+    /// pretending-to-be-up with a dead MCU FD.
+    pub(crate) closed_via_shutdown: bool,
+
     pub(crate) pending_host_fault: Option<FaultEvent>,
 
     pub(crate) pending_submissions: VecDeque<PendingSubmission>,
@@ -158,6 +169,7 @@ impl Reactor {
             rtt_sample_seq: 0,
             rtt_sample_armed: false,
             state: ReactorState::Active,
+            closed_via_shutdown: false,
             pending_host_fault: None,
             pending_submissions: VecDeque::new(),
             pending_fire_and_forget: VecDeque::new(),
@@ -919,6 +931,7 @@ impl Reactor {
                     self.unacked_window.len(),
                 );
                 self.state = ReactorState::Closed;
+                self.closed_via_shutdown = true;
             }
             ReactorCommand::AttachCreditCounter(counter) => {
                 self.event_dispatcher.credit_counter = Some(counter);
@@ -1103,6 +1116,16 @@ impl Reactor {
         loop {
             if matches!(self.tick_once(), TickOutcome::Closed) { break; }
         }
+    }
+
+    /// True iff the reactor reached `Closed` via the graceful
+    /// `ReactorCommand::Shutdown` path (which `KalicoHostIo::drop` sends on
+    /// process exit). False iff the transition was forced by an unexpected
+    /// IO fault — in that case the caller (the thread spawn site in
+    /// `KalicoHostIo::open_with_port`) aborts the process so klippy fails
+    /// cleanly instead of pretending-to-be-up with a stale FD.
+    pub fn exited_gracefully(&self) -> bool {
+        self.closed_via_shutdown
     }
 
     /// One iteration of the reactor's main loop. Extracted from `run()` so

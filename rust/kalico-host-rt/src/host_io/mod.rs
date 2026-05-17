@@ -333,6 +333,25 @@ impl KalicoHostIo {
                 reactor_config, reactor_clock,
             );
             reactor.run();
+            // 2026-05-17 wedge-detection: if the reactor exited because the
+            // MCU's transport died (USB disconnect, kernel ENODEV, etc.)
+            // instead of because `KalicoHostIo::drop` sent a graceful
+            // Shutdown, abort the process. Without this, klippy keeps
+            // "running" with a dead bridge FD — the operator sees
+            // /proc/<pid>/fd missing the ttyACMx entry and klippy.log
+            // silent. Aborting forces systemd to restart klipper, which is
+            // the recovery action a human would take anyway.
+            if !reactor.exited_gracefully() {
+                eprintln!(
+                    "[reactor-spawn] thread_id={:?} EXIT_ON_FAULT — transport \
+                     closed via IO error; aborting klippy so systemd restarts it",
+                    std::thread::current().id()
+                );
+                // Flush stderr so the message reaches journalctl before we
+                // tear the process down.
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                std::process::abort();
+            }
         });
 
         Ok(Self {
