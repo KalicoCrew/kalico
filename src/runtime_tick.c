@@ -983,38 +983,58 @@ runtime_status_drain(void)
             // 0xF0 — OTG RXFLVL IRQ count (low 24 bits). If this stops
             // advancing during the wedge, OTG IRQ is no longer firing on
             // RX (or RXFLVLM bit was cleared).
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
             extern uint32_t diag_get_otg_rxflvl(void);
             fault_detail = 0xF0000000u | (diag_get_otg_rxflvl() & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF0000000u;
+#endif
             break;
         }
         case 20: {
             // 0xF1 — usb_notify_bulk_out call count (low 24 bits). If
             // this advances but task_invoke (0xF2) stagnates, sched_wake
             // is being suppressed.
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
             extern uint32_t diag_get_notify_bulk_out(void);
             fault_detail = 0xF1000000u | (diag_get_notify_bulk_out() & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF1000000u;
+#endif
             break;
         }
         case 21: {
             // 0xF2 — usb_bulk_out_task entry count (low 24 bits). If
             // this stops while notify_n grows, foreground is starved.
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
             extern uint32_t diag_get_task_invoke(void);
             fault_detail = 0xF2000000u | (diag_get_task_invoke() & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF2000000u;
+#endif
             break;
         }
         case 22: {
             // 0xF3 — bulk-OUT reads that returned data (low 24 bits).
             // If this stops while task_n keeps growing, EP is being
             // drained but returning nothing — RX FIFO empty or NAKed.
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
             extern uint32_t diag_get_read_data(void);
             fault_detail = 0xF3000000u | (diag_get_read_data() & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF3000000u;
+#endif
             break;
         }
         case 23: {
             // 0xF4 — RX endpoint re-arm count (low 24 bits). If this
             // stops, EP never re-armed → host writes pile up unread.
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
             extern uint32_t diag_get_enable_rx_rearm(void);
             fault_detail = 0xF4000000u | (diag_get_enable_rx_rearm() & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF4000000u;
+#endif
             break;
         }
         case 24: {

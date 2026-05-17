@@ -12,6 +12,7 @@ src-y += linux/sensor_ds18b20.c
 # on the host build. Provides the kalico_h7_* symbol surface that the
 # Rust runtime's producer-protocol calls across the FFI boundary.
 src-$(CONFIG_KALICO_RUNTIME) += linux/runtime_tick_host.c
+src-$(CONFIG_KALICO_RUNTIME) += linux/fault_handler_stub.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_commands.c
 
