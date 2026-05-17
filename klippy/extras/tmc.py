@@ -477,8 +477,10 @@ class TMCCommandHelper:
                 )
                 self.printer.lookup_object("toolhead").wait_moves()
                 self._handle_sync_mcu_pos(self.stepper)
-        except self.printer.command_error as e:
-            self.printer.invoke_shutdown(str(e))
+        except (self.printer.command_error, RuntimeError) as e:
+            self.printer.invoke_shutdown(
+                "TMC %s _do_enable failed: %s" % (self.stepper_name, e)
+            )
 
     def _do_disable(self, print_time):
         try:
@@ -487,8 +489,10 @@ class TMCCommandHelper:
                 reg_name = self.fields.lookup_register("toff")
                 self.mcu_tmc.set_register(reg_name, val, print_time)
             self.echeck_helper.stop_checks()
-        except self.printer.command_error as e:
-            self.printer.invoke_shutdown(str(e))
+        except (self.printer.command_error, RuntimeError) as e:
+            self.printer.invoke_shutdown(
+                "TMC %s _do_disable failed: %s" % (self.stepper_name, e)
+            )
 
     def _handle_mcu_identify(self):
         # Lookup stepper object

@@ -987,8 +987,12 @@ fault_handler_report_task(void)
         live_snap.magic = LIVE_MAGIC;
     }
 #endif
-    // Emit every 2 seconds for the first 60 seconds of boot.
-    if (emits_done >= 30)
+    // Emit every 2 seconds for the first 6 seconds of boot. This is enough
+    // for one full pass over the 32-entry diag ring (12 entries per cycle
+    // below) plus modest summary-line redundancy, while leaving the USB
+    // bridge clear during the post-boot TMC autotune window where bridge
+    // saturation correlates with host-side stalls.
+    if (emits_done >= 3)
         return;
     uint32_t elapsed = now - last_emit_tick;
     if (elapsed < timer_from_us(2000000))
@@ -1131,9 +1135,9 @@ fault_handler_report_task(void)
                prior_diag.rt_tick_buckets[12], prior_diag.rt_tick_buckets[13],
                prior_diag.rt_tick_buckets[14], prior_diag.rt_tick_buckets[15]);
         // Walk the ring in stored order (head = next write slot, so the
-        // OLDEST entry is at index `head`). Emit up to 4 per cycle so 30
+        // OLDEST entry is at index `head`). Emit up to 12 per cycle so 3
         // cycles cover all 32 entries with margin.
-        const uint32_t per_cycle = 4;
+        const uint32_t per_cycle = 12;
         uint32_t start = prior_ring_emit_idx;
         uint32_t end = start + per_cycle;
         if (end > DIAG_RING_LEN)

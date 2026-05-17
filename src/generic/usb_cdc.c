@@ -35,12 +35,15 @@
 static struct task_wake usb_bulk_in_wake;
 // Default sizing matches upstream Klipper. When the kalico-native transport
 // is enabled, the same TX buffer is shared with raw kalico frames (up to
-// KALICO_TX_BUF_SIZE = 256 in src/kalico_dispatch.c), so the buffer is sized
-// to hold one kalico frame plus a klipper response, and the position counter
-// widens to u16. AVR / smaller MCUs without CONFIG_KALICO_RUNTIME keep the
-// original 192-byte buffer with an 8-bit pos.
+// KALICO_TX_BUF_SIZE = 256 in src/kalico_dispatch.c), so the buffer holds
+// roughly four such packets — chosen as headroom against transient host-side
+// drain stalls (the previous 320-byte sizing silently dropped both klipper
+// responses and kalico frames whenever bulk-IN drain lagged by even a single
+// frame, surfacing later as bridge_call timeouts and ring_overflow bursts).
+// The position counter widens to u16. AVR / smaller MCUs without
+// CONFIG_KALICO_RUNTIME keep the original 192-byte buffer with an 8-bit pos.
 #if CONFIG_KALICO_RUNTIME
-static uint8_t transmit_buf[320];
+static uint8_t transmit_buf[1024];
 static uint16_t transmit_pos;
 typedef uint16_t transmit_pos_t;
 #else
