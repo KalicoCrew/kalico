@@ -905,6 +905,43 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-17 F4-retire-stall diagnostic: read low 32 bits of the most
+    /// recent `now - seg.t_start` observed inside `runtime_modulated_tick`.
+    /// `0` if no segment has been processed yet OR if the engine clock is
+    /// behind the segment's t_start (saturating_sub clamps to 0).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_last_modulated_elapsed_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            (*core::ptr::addr_of!((*ctx).shared))
+                .last_modulated_elapsed_lo
+                .load(Ordering::Acquire)
+        }
+    }
+
+    /// Companion to `runtime_handle_last_modulated_elapsed_lo`: low 32 bits
+    /// of the active segment's `duration()`. If `elapsed_lo` >= this value,
+    /// the retirement branch should fire on the next tick.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_last_modulated_duration_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            (*core::ptr::addr_of!((*ctx).shared))
+                .last_modulated_duration_lo
+                .load(Ordering::Acquire)
+        }
+    }
+
     /// Read the currently-active segment id (`0` if engine is Idle/Drained
     /// or pre-stream).
     #[unsafe(no_mangle)]

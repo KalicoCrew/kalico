@@ -185,6 +185,19 @@ pub struct SharedState {
     pub credit_epoch: AtomicU32,
     pub accepted_segment_id: AtomicU32,
     pub retired_through_segment_id: AtomicU32,
+    /// 2026-05-17 F4-retire-stall diagnostic: low 32 bits of the most
+    /// recent `now - seg.t_start` value computed inside
+    /// `runtime_modulated_tick`. Exposed via fault_detail tag 0xFB. If
+    /// this stays at 0 while a segment is queued, the engine's clock
+    /// (`now` from `runtime_widened_host_clock`) is stuck or behind
+    /// `seg.t_start`, so the `elapsed >= duration` retirement check
+    /// can never fire.
+    pub last_modulated_elapsed_lo: AtomicU32,
+    /// Companion to `last_modulated_elapsed_lo`: low 32 bits of the
+    /// active segment's `duration()`. Exposed via fault_detail tag 0xFC.
+    /// Comparing tag 0xFB ≥ tag 0xFC tells us whether the retirement
+    /// branch should fire on the next tick.
+    pub last_modulated_duration_lo: AtomicU32,
     /// §9.2 + §5.3 — last latched fault's encoded `fault_detail` payload.
     /// Set in lockstep with `last_error` whenever a fault latches; read by
     /// the periodic 10 Hz `kalico_status_v6` frame and the async
@@ -336,6 +349,8 @@ impl SharedState {
             widened_now_seq: AtomicU32::new(0),
             sample_drop_pending: AtomicBool::new(false),
             current_segment_id: AtomicU32::new(0),
+            last_modulated_elapsed_lo: AtomicU32::new(0),
+            last_modulated_duration_lo: AtomicU32::new(0),
             credit_epoch: AtomicU32::new(0),
             accepted_segment_id: AtomicU32::new(0),
             retired_through_segment_id: AtomicU32::new(0),

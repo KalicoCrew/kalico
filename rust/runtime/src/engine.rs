@@ -2880,6 +2880,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let elapsed = now.saturating_sub(seg.t_start);
         let duration = seg.duration().max(1);
 
+        // 2026-05-17 F4 retire-stall diagnostic: publish elapsed and
+        // duration to SharedState so the host's fault_detail rotation can
+        // expose them. Lets bench debugging confirm whether the engine's
+        // `now` is reaching `seg.t_start + duration` (retirement should
+        // fire) or staying behind (clock-skew bug).
+        shared
+            .last_modulated_elapsed_lo
+            .store(elapsed as u32, Ordering::Release);
+        shared
+            .last_modulated_duration_lo
+            .store(duration as u32, Ordering::Release);
+
         if elapsed >= duration {
             // Wall-clock crossed t_end — clear every Modulated motor's
             // bits in the segment's mask.

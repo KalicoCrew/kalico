@@ -433,35 +433,17 @@ runtime_drain(void)
     // saturate at u8 in the Rust accessor). Signed-difference comparison is
     // wraparound-safe for any spans the cursor realistically crosses between
     // drains (drain runs ~1 kHz; 2^31 segments at any push rate is years).
+    static uint32_t last_emitted_retired_id = 0;
     uint32_t cur_retired = runtime_handle_retired_through_segment_id(runtime_handle);
-    // 2026-05-17: throttled-emit strategy. Initial cursor_advanced one-shot
-    // (with retry-on-drop) dropped the first emit and got stuck. Brute-
-    // force 1 kHz emit flooded the transmit_buf and EVERY emit dropped.
-    //
-    // Sweet spot: emit at ~20 Hz (every 50th drain iteration at 1 kHz).
-    // ~15 B/emit × 20 Hz = 300 B/sec, well under USB drain rate and
-    // doesn't compete with the 10 Hz status frame emits for buffer space.
-    // The cursor reconciliation tolerates a few-ms latency between
-    // retirement and host notification — the host's slot pool just sees
-    // a slight retirement delay rather than a deadlock.
-    static uint32_t drain_iters_since_credit_emit = 0;
-    static uint32_t last_emitted_retired = 0;
-    drain_iters_since_credit_emit++;
-    bool cursor_advanced = cur_retired != last_emitted_retired;
-    bool throttle_due = drain_iters_since_credit_emit >= 50;
-    if (saw_segment_end || (cur_retired > 0 && (cursor_advanced || throttle_due))) {
+    bool cursor_advanced = (int32_t)(cur_retired - last_emitted_retired_id) > 0;
+    if (saw_segment_end || cursor_advanced) {
         uint8_t depth = runtime_handle_queue_depth(runtime_handle);
         uint8_t free_slots = (depth >= 7) ? 0 : (uint8_t)(7 - depth);
-        // Phase C: emit as kalico-native CreditFreed event (channel 1).
         int emit_result =
             kalico_native_emit_credit_freed(cur_retired, free_slots);
         if (emit_result >= 0) {
-            last_emitted_retired = cur_retired;
-            drain_iters_since_credit_emit = 0;
+            last_emitted_retired_id = cur_retired;
         }
-        // On drop (-1), leave the throttle counter advanced so the next
-        // drain re-emits without further delay (effectively bumping
-        // toward 1 kHz retry until one lands).
     }
 
     // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`
@@ -702,7 +684,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 30) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 32) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1147,6 +1129,28 @@ runtime_status_drain(void)
             volatile uint32_t *drain_calls_slot = diag_slot_rt_drain_calls();
             uint32_t drain_calls = drain_calls_slot ? *drain_calls_slot : 0;
             fault_detail = 0xFA000000u | (drain_calls & 0x00FFFFFFu);
+            break;
+        }
+        case 30: {
+            // 0xFB — LIVE last_modulated_elapsed (low 24 bits). 2026-05-17
+            // F4 retire-stall investigation: if 0xF8 shows segments queued
+            // (cur > 0) but retirement never advances (ret stays 0), the
+            // engine's clock and the segment's `t_start` are misaligned —
+            // `runtime_modulated_tick`'s `elapsed = now - t_start` stays
+            // small (or 0 from saturating_sub), so the retirement branch
+            // `elapsed >= duration` can't fire. Compare with 0xFC.
+            uint32_t elapsed =
+                runtime_handle_last_modulated_elapsed_lo(runtime_handle);
+            fault_detail = 0xFB000000u | (elapsed & 0x00FFFFFFu);
+            break;
+        }
+        case 31: {
+            // 0xFC — LIVE last_modulated_duration (low 24 bits). Pair with
+            // 0xFB: if elapsed < duration consistently while cur > 0, the
+            // engine isn't advancing through the segment's wall-clock window.
+            uint32_t duration =
+                runtime_handle_last_modulated_duration_lo(runtime_handle);
+            fault_detail = 0xFC000000u | (duration & 0x00FFFFFFu);
             break;
         }
         }
