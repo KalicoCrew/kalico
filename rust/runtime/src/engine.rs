@@ -2027,14 +2027,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // dequeue on `len() > 0` (Relaxed-only) and use
             // `dequeue_unchecked` (head-only, no tail.load(Acquire)) to
             // perform the actual fetch.
-            if queue.len() > 0 {
+            // Use peek instead of len() — both Relaxed reads of head and tail,
+            // but peek returns Option<&T> via a different code path and
+            // resists compiler optimizations that might cache the Relaxed
+            // loads across calls.
+            let peeked_copy = queue.peek().copied();
+            if let Some(seg) = peeked_copy {
                 #[allow(unsafe_code)]
-                // SAFETY: queue.len() > 0 → queue is not empty; dequeue_unchecked
-                // is sound when the queue has at least one element. The Consumer
-                // is the sole reader (foreground-only by §11.1) so no other
-                // dequeue can race with this between the len() check and the
+                // SAFETY: peek returned Some → queue is not empty;
+                // dequeue_unchecked is sound when the queue has ≥1 element.
+                // The Consumer is the sole reader (foreground-only by §11.1)
+                // so no race can drain the queue between the peek and the
                 // unchecked dequeue.
-                let seg = unsafe { queue.dequeue_unchecked() };
+                let _ = unsafe { queue.dequeue_unchecked() };
                 self.producer_current = Some(seg);
                 shared
                     .producer_segment_dequeued_total
