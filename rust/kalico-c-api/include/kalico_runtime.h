@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
-
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
+
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -795,6 +795,19 @@ uint32_t kalico_runtime_observed_none_lo(struct KalicoRuntime *rt);
  * per §11.1, so the read sees a consistent value.
  */
 uint8_t kalico_runtime_producer_current_is_some_diag(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-18 wedge diag: live snapshot of `queue_consumer.len()` —
+ * the SPSC's view of how many segments are queued and visible to the
+ * Consumer. Cross-check against `accepted_segment_id -
+ * retired_through_segment_id` (host's view of queue depth):
+ *   - queue.len() == queue_depth → SPSC is consistent; bug elsewhere.
+ *   - queue.len() < queue_depth  → SPSC's Consumer can't see all the
+ *                                   Producer's enqueued segments
+ *                                   (memory visibility / write-buffer
+ *                                   / cache issue, or queue corrupted).
+ */
+uint32_t kalico_runtime_queue_len_diag(struct KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells

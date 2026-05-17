@@ -1165,25 +1165,31 @@ runtime_status_drain(void)
             break;
         }
         case 35: {
-            // 0xCC — 2026-05-18 wedge diag. producer_step entry-state vs dequeue
-            // outcome.
-            //   bits 0..10    producer_segment_dequeued_total low 11 bits
-            //   bits 11..21   producer_observed_none_total low 11 bits
-            //   bit  22       producer_current.is_some() (1 = sticky-Some)
-            // If observed_none ≫ dequeued AND is_some=0:
-            //   queue.dequeue() returns None despite entries — SPSC bug.
-            // If observed_none ≈ dequeued AND is_some=1:
-            //   producer_current is sticky-Some — ISR's clear-to-None
-            //   invisible to foreground.
+            // 0xCC — 2026-05-18 wedge diag. producer_step entry-state, dequeue
+            // outcome, and SPSC consumer's queue.len() snapshot.
+            //   bits 0..9   producer_segment_dequeued_total low 10 bits (0..1023)
+            //   bits 10..19 producer_observed_none_total low 10 bits  (0..1023)
+            //   bits 20..22 queue_consumer.len() (0..7)
+            //   bit  23     producer_current.is_some() (1 = sticky-Some)
+            // Cross-check:
+            //   queue.len() > 0 AND obs > deq: SPSC's tail.load(Acquire)
+            //     in dequeue() is reading the wrong tail value — different
+            //     from what queue.len()'s tail.load(Relaxed) returns.
+            //   queue.len() == 0 AND obs > deq: Consumer sees queue as empty.
+            //     accepted_segment_id - retired says queue has entries, but
+            //     the SPSC head==tail. Lost enqueues somewhere.
             // Both functions declared in kalico_runtime.h (regenerated).
             uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
             uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
             uint8_t is_some = kalico_runtime_producer_current_is_some_diag(
                 runtime_handle);
+            uint32_t qlen = kalico_runtime_queue_len_diag(runtime_handle);
+            if (qlen > 7) qlen = 7;
             fault_detail = 0xCC000000u
-                         | ((uint32_t)(is_some & 1u) << 22)
-                         | ((obs & 0x7FFu) << 11)
-                         | (deq & 0x7FFu);
+                         | ((uint32_t)(is_some & 1u) << 23)
+                         | ((qlen & 7u) << 20)
+                         | ((obs & 0x3FFu) << 10)
+                         | (deq & 0x3FFu);
             break;
         }
         case 32: {
