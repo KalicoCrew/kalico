@@ -2903,6 +2903,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             for motor_idx in 0..4_u8 {
                 Self::clear_motor_bits_in_mask(&mut seg, motor_idx);
             }
+            // 2026-05-17 diag: snapshot consumers_remaining after the clear
+            // loop so the host can see which bits the per-motor loop
+            // didn't reach.
+            shared
+                .last_retire_consumers_after_clear
+                .store(seg.consumers_remaining as u32, Ordering::Release);
             self.producer_current = Some(seg);
 
             if seg.consumers_done() {

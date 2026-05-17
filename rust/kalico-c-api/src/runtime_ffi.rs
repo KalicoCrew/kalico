@@ -980,6 +980,25 @@ pub mod exports {
         }
     }
 
+    /// Last snapshot of seg.consumers_remaining AFTER the clear-all-motors
+    /// loop in modulated_tick's retirement branch. If retire_attempts >
+    /// retire_successes and this is non-zero, the bits in this value are
+    /// what the per-motor clear didn't reach.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_last_retire_consumers_after_clear(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            (*core::ptr::addr_of!((*ctx).shared))
+                .last_retire_consumers_after_clear
+                .load(Ordering::Acquire)
+        }
+    }
+
     /// Read the currently-active segment id (`0` if engine is Idle/Drained
     /// or pre-stream).
     #[unsafe(no_mangle)]

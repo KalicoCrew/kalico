@@ -209,6 +209,11 @@ pub struct SharedState {
     /// path). Should equal `modulated_retire_attempts` if the consumers
     /// mask is being cleared correctly.
     pub modulated_retire_successes: AtomicU32,
+    /// 2026-05-17: snapshot of `seg.consumers_remaining` AFTER the
+    /// clear-all-motors loop in modulated_tick's retirement branch.
+    /// If non-zero, the clear loop missed bits that compute_consumers_remaining
+    /// set — the remaining bits tell us which positions need investigation.
+    pub last_retire_consumers_after_clear: AtomicU32,
     /// §9.2 + §5.3 — last latched fault's encoded `fault_detail` payload.
     /// Set in lockstep with `last_error` whenever a fault latches; read by
     /// the periodic 10 Hz `kalico_status_v6` frame and the async
@@ -364,6 +369,7 @@ impl SharedState {
             last_modulated_duration_lo: AtomicU32::new(0),
             modulated_retire_attempts: AtomicU32::new(0),
             modulated_retire_successes: AtomicU32::new(0),
+            last_retire_consumers_after_clear: AtomicU32::new(0),
             credit_epoch: AtomicU32::new(0),
             accepted_segment_id: AtomicU32::new(0),
             retired_through_segment_id: AtomicU32::new(0),

@@ -684,7 +684,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 33) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 34) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1151,6 +1151,15 @@ runtime_status_drain(void)
             uint32_t duration =
                 runtime_handle_last_modulated_duration_lo(runtime_handle);
             fault_detail = 0xFC000000u | (duration & 0x00FFFFFFu);
+            break;
+        }
+        case 33: {
+            // 0xFE — Last seg.consumers_remaining AFTER the clear-all-motors
+            // loop in modulated_tick's retirement branch. If non-zero,
+            // those are the bits the per-motor clear didn't reach.
+            uint32_t cr =
+                runtime_handle_last_retire_consumers_after_clear(runtime_handle);
+            fault_detail = 0xFE000000u | (cr & 0x00FFFFFFu);
             break;
         }
         case 32: {
