@@ -27,6 +27,13 @@ canboot_reset(uint64_t req_signature)
         || *boot_sig != CANBOOT_SIGNATURE
         || req_sig != (void*)ALIGN((size_t)req_sig, 8))
         return;
+    // 2026-05-17 H7 silent-reset trace: record path 0x03 = canboot_reset.
+#if defined(CONFIG_KALICO_RUNTIME) && CONFIG_KALICO_RUNTIME
+    extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
+                                      uint32_t value);
+    runtime_diag_progress(0xF7, 0x03,
+                          (uint32_t)(req_signature & 0xFFFFu));
+#endif
     irq_disable();
     *req_sig = req_signature;
 #if __CORTEX_M == 7
