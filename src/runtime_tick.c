@@ -694,7 +694,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 29) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 30) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1126,6 +1126,19 @@ runtime_status_drain(void)
             fault_detail = 0xF9000000u
                          | ((pdrops & 0xFFFu) << 12)
                          | (kdrops & 0xFFFu);
+            break;
+        }
+        case 29: {
+            // 0xFA — LIVE runtime_drain call count (low 24 bits). 2026-05-17
+            // follow-on: if 0xF8 shows retired_through > 0 (segments retired)
+            // but the host receives ZERO kalico_credit_freed events even
+            // under brute-force 1 kHz re-emit, the runtime_drain task itself
+            // may not be running on this MCU — credit_freed only emits from
+            // runtime_drain. If this stays 0, the DECL_TASK isn't being
+            // scheduled.
+            volatile uint32_t *drain_calls_slot = diag_slot_rt_drain_calls();
+            uint32_t drain_calls = drain_calls_slot ? *drain_calls_slot : 0;
+            fault_detail = 0xFA000000u | (drain_calls & 0x00FFFFFFu);
             break;
         }
         }
