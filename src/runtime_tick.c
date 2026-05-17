@@ -684,7 +684,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 34) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 35) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1160,6 +1160,15 @@ runtime_status_drain(void)
             uint32_t cr =
                 runtime_handle_last_retire_consumers_after_clear(runtime_handle);
             fault_detail = 0xFE000000u | (cr & 0x00FFFFFFu);
+            break;
+        }
+        case 34: {
+            // 0xFF — LIVE retired_through_segment_id low 24 bits. The F8 tag
+            // packs cur+retired into 12 bits each, hiding actual retired_through
+            // when seg IDs exceed 4095. This exposes the full low 24 bits.
+            uint32_t ret =
+                runtime_handle_retired_through_segment_id(runtime_handle);
+            fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
             break;
         }
         case 32: {
