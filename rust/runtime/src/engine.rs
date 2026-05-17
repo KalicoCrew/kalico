@@ -2019,6 +2019,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             shared
                 .producer_observed_none_total
                 .fetch_add(1, Ordering::AcqRel);
+            // 2026-05-18 wedge experiment: full SeqCst fence before reading the
+            // SPSC tail. Bench evidence shows queue.dequeue() returning None
+            // when accepted_segment_id (set after enqueue success in
+            // push_segment_impl) says 7 segments are queued. Hypothesis:
+            // the H7's M7 data cache or write-buffer is delaying the Producer's
+            // tail.store(Release) visibility to the Consumer's tail.load(Acquire)
+            // on this single-core CPU. SeqCst fence + DSB instruction forces
+            // all prior memory operations to globally serialize before we read
+            // the queue state.
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             if let Some(seg) = queue.dequeue() {
                 self.producer_current = Some(seg);
                 shared
