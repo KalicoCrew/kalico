@@ -411,6 +411,26 @@ diag_get_tim5_count(void)
 #endif
 }
 
+uint32_t
+diag_get_tx_drops_kalico(void)
+{
+#if CONFIG_KALICO_RUNTIME
+    return diag.tx_drops_kalico;
+#else
+    return 0;
+#endif
+}
+
+uint32_t
+diag_get_tx_drops_klipper(void)
+{
+#if CONFIG_KALICO_RUNTIME
+    return diag.tx_drops_klipper;
+#else
+    return 0;
+#endif
+}
+
 void
 diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {

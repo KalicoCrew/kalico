@@ -124,6 +124,14 @@ uint32_t diag_get_peek_data(void);
 // cannot retire queued segments.
 uint32_t diag_get_tim5_count(void);
 
+// LIVE counter accessors for TX-side drops — exposed for the 2026-05-17
+// "credit_freed never reaches host" investigation (fault_detail tag 0xF9).
+// kalico_native_emit_credit_freed silently drops the frame when
+// transmit_buf is full; if retired_through_segment_id advanced but the
+// host sees zero kalico_credit_freed events, this is the suspect path.
+uint32_t diag_get_tx_drops_kalico(void);
+uint32_t diag_get_tx_drops_klipper(void);
+
 #ifdef __cplusplus
 }
 #endif

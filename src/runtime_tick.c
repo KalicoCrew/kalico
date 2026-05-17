@@ -682,7 +682,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 28) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 29) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1099,6 +1099,21 @@ runtime_status_drain(void)
             fault_detail = 0xF8000000u
                          | ((ret & 0xFFFu) << 12)
                          | (cur & 0xFFFu);
+            break;
+        }
+        case 28: {
+            // 0xF9 — LIVE TX drop counters. 2026-05-17 follow-on: if 0xF8
+            // shows retired_through_segment_id advancing but the host never
+            // receives kalico_credit_freed events, the F4 emit path is
+            // probably TX-dropping the frame at console_sendf /
+            // kalico_console_write_raw due to a full transmit_buf.
+            //   bits 0..11   tx_drops_kalico  (low 12 bits)
+            //   bits 12..23  tx_drops_klipper (low 12 bits)
+            uint32_t kdrops = diag_get_tx_drops_kalico();
+            uint32_t pdrops = diag_get_tx_drops_klipper();
+            fault_detail = 0xF9000000u
+                         | ((pdrops & 0xFFFu) << 12)
+                         | (kdrops & 0xFFFu);
             break;
         }
         }
