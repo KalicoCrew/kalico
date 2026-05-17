@@ -40,7 +40,14 @@ use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 /// so in practice this seed bounds the in-flight credit budget for the
 /// whole print. Sized generously so motion doesn't stall on credit before
 /// the routing lands.
-const CREDIT_SEED_CAPACITY: i32 = 1024;
+// MCU segment queue is `Q_N - 1 = 7` deep (see `rust/runtime/src/queue.rs::Q_N`).
+// Seeding the host's local credit counter higher than that lets the host fire
+// more segments than the MCU can buffer before the first `kalico_credit_freed`
+// event arrives — overshoot rejects with `KALICO_ERR_QUEUE_FULL = -1` from
+// `push_segment`. Seeding at the same value as the MCU's effective capacity
+// keeps the first burst within budget; the very first `credit_freed` then
+// reconciles to MCU-authoritative free_slots.
+const CREDIT_SEED_CAPACITY: i32 = 7;
 
 // ── Internal types ──────────────────────────────────────────────────────
 
