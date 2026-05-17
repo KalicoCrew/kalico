@@ -266,6 +266,45 @@ uint32_t runtime_handle_accepted_segment_id(struct KalicoRuntime *rt);
 uint32_t runtime_handle_retired_through_segment_id(struct KalicoRuntime *rt);
 
 /**
+ * 2026-05-17 F4-retire-stall diagnostic: read low 32 bits of the most
+ * recent `now - seg.t_start` observed inside `runtime_modulated_tick`.
+ * `0` if no segment has been processed yet OR if the engine clock is
+ * behind the segment's t_start (saturating_sub clamps to 0).
+ */
+uint32_t runtime_handle_last_modulated_elapsed_lo(struct KalicoRuntime *rt);
+
+/**
+ * Companion to `runtime_handle_last_modulated_elapsed_lo`: low 32 bits
+ * of the active segment's `duration()`. If `elapsed_lo` >= this value,
+ * the retirement branch should fire on the next tick.
+ */
+uint32_t runtime_handle_last_modulated_duration_lo(struct KalicoRuntime *rt);
+
+/**
+ * Number of times `runtime_modulated_tick`'s retirement branch was
+ * entered (`elapsed >= duration` was true). Pair with the success
+ * counter via `runtime_handle_modulated_retire_successes` to decide
+ * whether retirement is failing on the `consumers_done` check.
+ */
+uint32_t runtime_handle_modulated_retire_attempts(struct KalicoRuntime *rt);
+
+/**
+ * Number of times `runtime_modulated_tick` actually retired a segment
+ * (`consumers_done` was true after clearing the motor bits). If this
+ * is less than `runtime_handle_modulated_retire_attempts`, some entries
+ * to the retirement branch are still leaving consumer bits set.
+ */
+uint32_t runtime_handle_modulated_retire_successes(struct KalicoRuntime *rt);
+
+/**
+ * Last snapshot of seg.consumers_remaining AFTER the clear-all-motors
+ * loop in modulated_tick's retirement branch. If retire_attempts >
+ * retire_successes and this is non-zero, the bits in this value are
+ * what the per-motor clear didn't reach.
+ */
+uint32_t runtime_handle_last_retire_consumers_after_clear(struct KalicoRuntime *rt);
+
+/**
  * Read the currently-active segment id (`0` if engine is Idle/Drained
  * or pre-stream).
  */
@@ -422,8 +461,25 @@ int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_cred
 
 /**
  * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
- * Phase-6 stub. Out-param receives the MCU local-clock value sampled
- * inside the FFI on success.
+ *
+ * Returns the on-demand widened MCU clock (timer_read_time +
+ * stats_send_time_high), NOT the engine seqlock value. Rationale: the
+ * seqlock published by `Engine::tick` is only updated from the TIM5 ISR,
+ * and TIM5 stays disabled in the all-StepTime MVP (see
+ * `runtime_tick_enable` in `src/stm32/runtime_tick_h7.c` — early-return
+ * when `count_modulated_steppers == 0`). Reading the seqlock in that
+ * configuration returns its default 0, which the bridge's clock-sync
+ * driver filters out as "MCU clock looks uninitialised" — the host's
+ * router clock estimate then never refreshes from its connect-time
+ * anchor, `compute_ack_clock` extrapolates linearly into the future,
+ * segment `t_start` lands tens of seconds ahead of the MCU's actual
+ * clock, and the in-flight credit window deadlocks waiting for
+ * retirements that can't happen.
+ *
+ * The on-demand widening uses Klipper's `stats_send_time_high` (updated
+ * by the stats DECL_TASK at ~0.2 Hz). Its ~5 s lag in the high half is
+ * invisible to the bridge's RTT-aware linear regression — the
+ * regression amortises samples over many ticks.
  */
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
@@ -491,6 +547,39 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
  * the `command_runtime_sim_endstop_set_pin` shim, bypassing real GPIO.
  */
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
+
+/**
+ * Step-time trip evaluation. Called from each `step_time_event` ISR
+ * after the per-step GPIO sample, mirroring what `engine.tick()` does
+ * for the Modulated path (which dispatches `endstop::tick` via
+ * `engine::poll_endstop_trip`, see `rust/runtime/src/engine.rs`).
+ *
+ * In a StepTime-only firmware build (MVP), TIM5 — and therefore
+ * `engine.tick` and its embedded `endstop::tick` call — never runs.
+ * Without this entry point an armed endstop's per-step samples update
+ * `PIN_LEVELS` but trip evaluation never happens, and homing moves
+ * run forever even when the GPIO asserts.
+ *
+ * On `AbortNow` this also calls `Engine::abort_for_step_time_trip`
+ * (the shared `abort_for_homing_trip` helper under the hood), which
+ * retires every in-flight segment's curve-pool slots, publishes the
+ * retire cursor for the host's `kalico_credit_freed` emitter, and
+ * transitions the engine to `Drained`. Without that retirement, the
+ * host's slot pool deadlocks after CURVE_POOL_N / 2 G28 trips
+ * because trip-aborted segments leak their slots — observed in the
+ * `g28_shaped_xy_two_pass_homing_via_renode_monitor` sim test.
+ *
+ * `now` is the widened MCU clock at the call site (same widening as
+ * `command_runtime_clock_sync_request` uses). The endstop module
+ * records this as the `trip_clock` in the published snapshot, and
+ * gates on `now >= arm_clock`. Velocity-gated policies receive
+ * `[u32::MAX; 3]` from this entry — see
+ * `Engine::abort_for_step_time_trip` for the rationale.
+ *
+ * Returns 1 if a trip fired this call, 0 otherwise, or a negative
+ * `KALICO_ERR_*` on misuse.
+ */
+int32_t kalico_endstop_tick_step_time(struct KalicoRuntime *rt, uint64_t now);
 
 /**
  * Flip a stepper's `StepMode` at runtime. Spec §10.
@@ -620,6 +709,194 @@ uint32_t kalico_runtime_step_ring_available(struct KalicoRuntime *rt, uint8_t mo
 bool kalico_runtime_kick_producer(struct KalicoRuntime *rt);
 
 /**
+ * 2026-05-18: ISR-driven "I just retired a segment, please re-fetch the
+ * next one" signal. `runtime_modulated_tick`'s retire branch sets
+ * `producer_pending = true` via `Ordering::Release` store (atomic, no
+ * CAS, ISR-safe). The C-side foreground task (`runtime_drain` at 1 kHz)
+ * reads this through this FFI accessor and arms the producer Klipper
+ * timer when both `pending == true` and the timer is not already on
+ * the scheduler.
+ *
+ * Why a separate accessor instead of reusing `kalico_runtime_kick_producer`:
+ * that function does CAS false→true and reports "did I win the wake?".
+ * If the ISR already set pending=true, the CAS fails and the function
+ * returns `false` ("someone else owns the wake"). The C-side then
+ * assumes the owner armed the timer — but the ISR can't arm the timer
+ * (foreground-only API). This accessor lets foreground observe the
+ * ISR-set pending bit and recover by arming the timer itself.
+ *
+ * Returns the current `producer_pending` value (true = wake pending).
+ */
+bool kalico_runtime_get_producer_pending(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the high-water mark for motor `motor_idx`'s step
+ * ring. Returns the maximum `available()` value observed across the
+ * runtime's lifetime. Used by the C-side fault_detail rotation (tag
+ * 0xB2) to localise whether the producer has actually pushed entries
+ * — `0` means "ring was never written" (Cardano returned no roots, or
+ * `fetch_segment_for_motor` never returned a curve).
+ *
+ * Returns `0` on null `rt`, `motor_idx >= 4`, or before init completes.
+ */
+uint32_t kalico_runtime_ring_high_water(struct KalicoRuntime *rt, uint8_t motor_idx);
+
+/**
+ * Diagnostic: read the low 32 bits of `producer_steps_pushed_total`.
+ * Number of successful `ring.push` calls across all motors.
+ */
+uint32_t kalico_runtime_steps_pushed_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the low 32 bits of
+ * `producer_motor_finished_curve_total`. Number of times Cardano
+ * returned SegmentExhausted in a `producer_step` loop (per motor,
+ * summed). Distinguishes "Cardano can't find roots" from "fetch
+ * returns None".
+ */
+uint32_t kalico_runtime_motor_finished_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the low 32 bits of `producer_segment_retired_total`.
+ * Number of segments fully retired by `producer_step`.
+ */
+uint32_t kalico_runtime_segments_retired_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the low 32 bits of `producer_segment_dequeued_total`.
+ * Number of segments pulled off the queue by `producer_step`.
+ * If host sent N PushSegment but this stays at 0, segments aren't
+ * reaching the engine queue (kalico_dispatch or runtime_handle_push_segment
+ * dropping silently).
+ */
+uint32_t kalico_runtime_segments_dequeued_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
+ * how many `Engine::producer_step` invocations have completed since
+ * boot. If `step_time_producer_kicks` (C side) is incrementing but
+ * `producer_runs_total` stays at 0, the kick path is broken between
+ * the CAS and `sched_add_timer`.
+ *
+ * Returns `0` on null `rt` or before init completes.
+ */
+uint32_t kalico_runtime_producer_runs_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the low 32 bits of `producer_fetch_attempts_total`.
+ * Bumps unconditionally at function entry — if 0 while
+ * `producer_runs_total` is non-zero, the per-motor loop is filtering
+ * every motor at the step_mode / step_distance / is_idle gates.
+ */
+uint32_t kalico_runtime_fetch_attempts_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the low 32 bits of `producer_enqueue_success_total`.
+ * Bumps AFTER `fg.queue_producer.enqueue(seg)` returns Ok in
+ * `push_segment_impl`. If non-zero while
+ * `producer_segment_dequeued_total` is 0, the queue split is broken
+ * (producer and consumer ends not sharing the backing buffer).
+ */
+uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read low 32 bits of `producer_primary_resolved_total`.
+ * Number of times pool.resolve(primary) returned Some in producer_step.
+ */
+uint32_t kalico_runtime_primary_resolved_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: low 32 bits of `producer_primary_stale_total`.
+ * Counted when handle != UNUSED but pool.resolve returned None.
+ */
+uint32_t kalico_runtime_primary_stale_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: low 32 bits of `producer_primary_unused_total`.
+ * Counted when handle is the UNUSED sentinel (stationary axis).
+ */
+uint32_t kalico_runtime_primary_unused_lo(struct KalicoRuntime *rt);
+
+/**
+ * Diagnostic: read the last result code from `push_segment_impl`.
+ * 0 = KALICO_OK, negative = an error code (see error.rs). Updated on
+ * every call regardless of outcome.
+ */
+int32_t kalico_runtime_last_push_segment_result(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis: read the low 32 bits of
+ * `push_segment_all_unused_total`. If this counter advances during a
+ * jog, the bridge sent push_segment frames with every handle set to
+ * the UNUSED sentinel — the segment retires on producer dequeue
+ * without ever invoking motor processing, which matches the
+ * "energized but no motion" symptom.
+ */
+uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis: read the packed last `x_handle` from
+ * `push_segment_impl`. Layout: `(gen << 16) | slot_idx`. UNUSED
+ * sentinel = 0xFFFE_FFFE.
+ */
+uint32_t kalico_runtime_last_push_x_handle(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis: read the packed last `y_handle` from
+ * `push_segment_impl`.
+ */
+uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis: read the last `consumers_remaining`
+ * mask computed by `push_segment_impl`. Zero means every handle on
+ * the most recent push_segment was UNUSED.
+ */
+uint32_t kalico_runtime_last_push_consumers_remaining(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[0]
+ * (first control point, position at u=0) of piece 0 of the most
+ * recently resolved primary X curve. For a 0.5mm pure-X jog
+ * starting at X=125.0, expect 0x42FA0000 (= 125.0f). Captured only
+ * for motor 0.
+ */
+uint32_t kalico_runtime_last_resolved_primary_cps_0(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[3]
+ * (last control point, position at u=1) of piece 0 of the most
+ * recently resolved primary X curve. For a 0.5mm pure-X jog from
+ * X=125.0, expect 0x42FB0000 (= 125.5f). If `cps_0 == cps_3`, the
+ * curve has zero displacement — `SegmentExhausted` from
+ * `compute_next_step_time` is then expected, indicating a planner
+ * bug (or wire-corruption that zeroed the displacement).
+ */
+uint32_t kalico_runtime_last_resolved_primary_cps_3(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[0]
+ * of the COMBINED (post-CoreXY-mix) curve for motor 0 (A = X + Y).
+ * For a 0.5mm pure-X jog from X=125, Y=100 (Y curve constant), the
+ * combined motor-A position at u=0 is X+Y = 225.0 (0x43610000).
+ * Compare with the raw primary cps_0: if raw is correct but
+ * combined is unexpected, the kinematic mix or the Y constant
+ * value is wrong.
+ */
+uint32_t kalico_runtime_last_combined_motor_a_cps_0(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-15 live diagnosis (CP capture). Raw f32 bits of cps[3]
+ * of the COMBINED (post-CoreXY-mix) curve for motor 0. For a 0.5mm
+ * pure-X jog from X=125, Y=100, expect 225.5 (0x43618000). If
+ * `combined_cps_0 == combined_cps_3` while raw primary cps_0 !=
+ * cps_3, the kinematic combination is cancelling the displacement
+ * (wrong sign in `kine.combine`, or follower curve carrying the
+ * negative of the driver curve's delta).
+ */
+uint32_t kalico_runtime_last_combined_motor_a_cps_3(struct KalicoRuntime *rt);
+
+/**
  * Synchronous foreground flush. Spec §3.10 (Task 11).
  *
  * Drains the segment queue, retires every in-flight curve-pool slot,
@@ -689,5 +966,17 @@ uint8_t kalico_runtime_get_step_mode(struct KalicoRuntime *rt, uint8_t stepper_i
  * Returns `0` for a null `rt` or uninitialised runtime.
  */
 uint8_t kalico_runtime_count_modulated_steppers(struct KalicoRuntime *rt);
+
+/**
+ * Returns 1 if motor `stepper_idx` is configured (has step_distance > 0
+ * in its `ProducerState`), 0 otherwise. Used by C-side
+ * `init_step_time_timers` to avoid enabling consumer Klipper timers
+ * for unconfigured motors — without this gate every motor with the
+ * default `StepMode::StepTime` gets a timer regardless of
+ * configuration, and on Renode (1 µs quantum) the resulting
+ * scheduler load drowns LoadCurve byte processing in the USART RX
+ * FIFO.
+ */
+uint8_t kalico_runtime_motor_is_configured(struct KalicoRuntime *rt, uint8_t stepper_idx);
 
 #endif  /* KALICO_RUNTIME_H */

@@ -367,6 +367,22 @@ runtime_drain(void)
                         timer_from_us(50000),
                         0); // no event tag — runtime_drain idle gaps are normal
 
+    // 2026-05-18 wedge fix: pick up ISR-set `producer_pending` from
+    // `runtime_modulated_tick`'s retire branch. Pure-Modulated configs
+    // (F4 Z-only, H7 X/Y when E's step_time_event isn't polling) have no
+    // other path that arms the producer Klipper timer after a segment
+    // retires — without this, the queue stalls at queue_depth=N-1 forever
+    // and the host's credit accounting deadlocks. The existing
+    // `arm_producer_timer_if_kicked` no-ops in this state (its CAS finds
+    // pending already true and assumes the prior setter armed the timer —
+    // but the ISR can't arm timers). `arm_producer_timer_force` (defined
+    // alongside `arm_producer_timer_if_kicked_inline` below) bypasses the
+    // CAS gate and arms the timer when `enabled` is false.
+    extern void arm_producer_timer_force(uint32_t waketime);
+    if (kalico_runtime_get_producer_pending(runtime_handle)) {
+        arm_producer_timer_force(timer_read_time());
+    }
+
     // Phase 11 Task 11.2 §10.4 reclaim drain pipeline. Drains a batch of
     // trace samples for transport to the host, then asks the Rust side to
     // also drain-and-reclaim its own internal cursor for SEGMENT_END events
@@ -1589,6 +1605,32 @@ void
 arm_producer_timer_if_kicked(void)
 {
     arm_producer_timer_if_kicked_inline(timer_read_time());
+}
+
+// 2026-05-18: ISR-set pending recovery path. `runtime_modulated_tick`'s
+// retire branch publishes `shared.producer_pending = true` via
+// `Ordering::Release` store (atomic, no CAS, ISR-safe). `runtime_drain`
+// polls the flag and calls this helper to arm the producer Klipper timer
+// when pending is set. We skip `kalico_runtime_kick_producer`'s CAS gate
+// because it would return false ("someone else won the CAS") and incorrectly
+// assume the prior setter armed the timer — but the ISR cannot arm timers
+// (foreground-only API). Idempotent: if the timer is already enabled, we
+// no-op.
+__attribute__((used, externally_visible))
+void
+arm_producer_timer_force(uint32_t waketime)
+{
+    if (!runtime_handle) return;
+    if (runtime_producer_timer.enabled) {
+        return;
+    }
+    runtime_producer_timer.enabled = 1;
+    step_time_producer_kicks++;
+    uint32_t now_arm = timer_read_time();
+    uint32_t floor_arm = now_arm + SF_RESCHEDULE_FLOOR;
+    runtime_producer_timer.timer.waketime =
+        ((int32_t)(waketime - floor_arm) < 0) ? floor_arm : waketime;
+    sched_add_timer(&runtime_producer_timer.timer);
 }
 
 // Per-stepper consumer ISR. Called by Klipper's scheduler at the

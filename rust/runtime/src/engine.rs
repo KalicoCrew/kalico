@@ -2926,6 +2926,21 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     .store(seg.id, Ordering::Release);
                 crate::stream::check_terminal_on_retire(shared, seg.id);
                 self.producer_current = None;
+                // 2026-05-18 wedge fix: pure-Modulated configs (F4 Z-only,
+                // or H7 X/Y when E's step_time_event isn't polling) have no
+                // path that rearms the producer Klipper timer after the ISR
+                // retires a segment. Without this kick, the next queued
+                // segment sits unfetched forever — TIM5 modulated_tick reads
+                // producer_current = None and early-returns, queue_depth
+                // stays at N-1 (live bench 2026-05-18: H7 + F4 both stall
+                // at queue_depth=6, retired_through=1 after a 4-jog burst).
+                //
+                // Setting producer_pending true from ISR is half the fix —
+                // the C-side foreground task (runtime_drain) needs to
+                // observe it and call arm_producer_timer_if_kicked so the
+                // Klipper scheduler actually fires producer_step. See the
+                // paired change in src/runtime_tick.c::runtime_drain.
+                shared.producer_pending.store(true, Ordering::Release);
             }
             return;
         }

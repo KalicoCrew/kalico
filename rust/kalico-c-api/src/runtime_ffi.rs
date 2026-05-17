@@ -2418,6 +2418,41 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-18: ISR-driven "I just retired a segment, please re-fetch the
+    /// next one" signal. `runtime_modulated_tick`'s retire branch sets
+    /// `producer_pending = true` via `Ordering::Release` store (atomic, no
+    /// CAS, ISR-safe). The C-side foreground task (`runtime_drain` at 1 kHz)
+    /// reads this through this FFI accessor and arms the producer Klipper
+    /// timer when both `pending == true` and the timer is not already on
+    /// the scheduler.
+    ///
+    /// Why a separate accessor instead of reusing `kalico_runtime_kick_producer`:
+    /// that function does CAS false→true and reports "did I win the wake?".
+    /// If the ISR already set pending=true, the CAS fails and the function
+    /// returns `false` ("someone else owns the wake"). The C-side then
+    /// assumes the owner armed the timer — but the ISR can't arm the timer
+    /// (foreground-only API). This accessor lets foreground observe the
+    /// ISR-set pending bit and recover by arming the timer itself.
+    ///
+    /// Returns the current `producer_pending` value (true = wake pending).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_producer_pending(
+        rt: *mut KalicoRuntime,
+    ) -> bool {
+        if rt.is_null() {
+            return false;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return false;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: read-only access to SharedState atomic.
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_pending.load(Ordering::Acquire)
+        }
+    }
+
     /// Diagnostic: read the high-water mark for motor `motor_idx`'s step
     /// ring. Returns the maximum `available()` value observed across the
     /// runtime's lifetime. Used by the C-side fault_detail rotation (tag
