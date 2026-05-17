@@ -682,7 +682,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 26) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 28) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1070,6 +1070,35 @@ runtime_status_drain(void)
 #else
             fault_detail = 0xF6000000u;
 #endif
+            break;
+        }
+        case 26: {
+            // 0xF7 — LIVE diag.tim5_irq_count (low 24 bits). 2026-05-17
+            // diagnostic for "F4 dequeues segments via producer_step but
+            // never retires" investigation: if this stays 0 while
+            // current_segment_id > 0, TIM5 ISR is not firing →
+            // runtime_modulated_tick can never advance retired_through_segment_id
+            // → no kalico_credit_freed → host slot pool deadlocks.
+            // Counter is incremented in diag_tim5_account
+            // (src/generic/fault_handler.c:409) on every ISR entry.
+            uint32_t tim5_n = diag_get_tim5_count();
+            fault_detail = 0xF7000000u | (tim5_n & 0x00FFFFFFu);
+            break;
+        }
+        case 27: {
+            // 0xF8 — LIVE per-segment retire diagnostic. 2026-05-17 follow-on
+            // diagnostic: if 0xF7 shows TIM5 firing but the slot pool still
+            // deadlocks, retirement isn't completing. This tag exposes the
+            // current_segment_id and shared.retired_through_segment_id
+            // simultaneously so they can be compared without a status-frame
+            // round-trip race.
+            //   bits 0..11   current_segment_id (low 12 bits)
+            //   bits 12..23  retired_through_segment_id (low 12 bits)
+            uint32_t cur = runtime_handle_current_segment_id(runtime_handle);
+            uint32_t ret = runtime_handle_retired_through_segment_id(runtime_handle);
+            fault_detail = 0xF8000000u
+                         | ((ret & 0xFFFu) << 12)
+                         | (cur & 0xFFFu);
             break;
         }
         }

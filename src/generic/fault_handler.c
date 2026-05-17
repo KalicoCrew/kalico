@@ -401,6 +401,16 @@ diag_task_heartbeat(volatile uint32_t *calls,
 // threshold based on its expected steady-state duration (TIM5 ~6us @ 520MHz
 // = ~3000 cycles; OTG ~3us = ~1500 cycles).
 // =============================================================================
+uint32_t
+diag_get_tim5_count(void)
+{
+#if CONFIG_KALICO_RUNTIME
+    return diag.tim5_irq_count;
+#else
+    return 0;
+#endif
+}
+
 void
 diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {

@@ -118,6 +118,12 @@ uint32_t diag_get_enable_rx_rearm(void);
 uint32_t diag_get_peek_empty(void);
 uint32_t diag_get_peek_data(void);
 
+// LIVE counter accessor for TIM5 ISR fires — exposed for the 2026-05-17
+// "F4 retire stall" investigation (fault_detail tag 0xF7). If 0 while
+// current_segment_id > 0, TIM5 ISR is not firing → runtime_modulated_tick
+// cannot retire queued segments.
+uint32_t diag_get_tim5_count(void);
+
 #ifdef __cplusplus
 }
 #endif
