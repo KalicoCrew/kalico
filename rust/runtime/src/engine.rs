@@ -2675,29 +2675,26 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // co-resident StepTime+Modulated configuration, `producer_step`
         // populates `producer_current` via `fetch_segment_for_motor`.
         //
-        // On a pure-Modulated MCU (e.g. F446 with only phase-stepped Z),
-        // `producer_step` short-circuits all four motors on the
-        // `mode != StepTime` check and never reaches the dequeue site,
-        // leaving `producer_current` permanently `None`. Symmetric to
-        // `fetch_segment_for_motor`, we lazily dequeue from the segment
-        // queue here so pushed segments actually reach this path.
-        // Regression: bench 2026-05-16 — F446 Z modulated, no other
-        // steppers; segments piled in queue, no kalico_credit_freed events,
-        // host slot pool exhausted at 4 in-flight, host shut down F446.
-        if self.producer_current.is_none() {
-            shared
-                .producer_fetch_attempts_total
-                .fetch_add(1, Ordering::AcqRel);
-            self.producer_current = queue.dequeue();
-            if let Some(dequeued) = self.producer_current {
-                shared
-                    .producer_segment_dequeued_total
-                    .fetch_add(1, Ordering::AcqRel);
-                shared
-                    .current_segment_id
-                    .store(dequeued.id, Ordering::Release);
-            }
-        }
+        // 2026-05-17 wedge fix: the lazy-dequeue logic that previously
+        // lived here (introduced by 081ab4a3b for pure-Modulated MCUs) is
+        // an SPSC consumer-side race. `fetch_segment_for_motor` already
+        // dequeues from this same Consumer on the producer Klipper timer
+        // (foreground path); calling `queue.dequeue()` from this ISR is a
+        // SECOND consumer site. On any MCU with mixed Modulated+StepTime
+        // motors (H7: X/Y Modulated, E StepTime), both sites race the
+        // same `Consumer` and silently corrupt internal SPSC state. The
+        // observable symptom is bench-side USB device disconnect ~7-30 s
+        // after `ConfigureAxes` enables TIM5. Diagnostic confirmed: with
+        // `runtime_tick_enable()` no-op'd the wedge does NOT fire.
+        //
+        // The original problem the lazy dequeue tried to solve — F446
+        // pure-Modulated Z with no StepTime motors never advancing its
+        // segment queue — must be fixed differently (e.g. by having the
+        // producer Klipper timer also fire for Modulated-only configs
+        // so the foreground side keeps owning the Consumer). For now
+        // restore the pre-cluster behavior: ISR observes `producer_current`
+        // only; foreground owns dequeue.
+        let _ = queue;
         let Some(mut seg) = self.producer_current else {
             return;
         };

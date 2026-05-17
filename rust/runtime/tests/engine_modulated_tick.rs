@@ -233,23 +233,34 @@ fn modulated_tick_skips_steptime_motors() {
     );
 }
 
-/// **Regression: F446 pure-Modulated Z, 2026-05-16 bench.**
+/// **Disabled: the lazy-dequeue this test pinned was an SPSC race.**
 ///
-/// On an MCU whose only motor is Modulated (e.g. F446 Z phase-stepping
-/// configuration), `producer_step` short-circuits on the Modulated-skip
-/// check before reaching `fetch_segment_for_motor`, so the segment queue
-/// is never drained into `producer_current`. The modulated tick was
-/// architected to piggy-back on the StepTime producer's dequeue ("the
-/// producer's segment cursor is the shared cursor under the MVP lockstep
-/// regime"), which is fine when an MCU hosts at least one StepTime motor
-/// but breaks the pure-Modulated case: every Z move sits in the queue
-/// forever, no retirement events emit, the host slot pool fills, and
-/// the host kills the MCU.
+/// 2026-05-17 bench root-cause: the lazy `queue.dequeue()` this test
+/// asserted (originally added by 081ab4a3b for F446 pure-Modulated Z)
+/// is a second consumer-side dequeue site on the same `Consumer` half
+/// of the SPSC queue. `fetch_segment_for_motor` (StepTime producer
+/// timer, foreground) is the first; this ISR site is the second. SPSC's
+/// "single consumer" invariant is broken whenever an MCU has ANY mix
+/// of Modulated + StepTime motors (H7's X/Y Modulated + E StepTime
+/// config triggered the wedge ~7–30 s after `ConfigureAxes` enables
+/// TIM5; the corrupted internal state cascades through the firmware
+/// until USB OTG silently disconnects and the kernel drops the device
+/// with `acm_start_wb: usb_submit_urb -19`).
 ///
-/// Fix: `runtime_modulated_tick` accepts the queue consumer and lazily
-/// dequeues into `producer_current` when it's `None` — symmetric with
-/// what `fetch_segment_for_motor` does on the StepTime side.
+/// Diagnostic confirmation: patching `runtime_tick_enable()` to a
+/// no-op (TIM5 never armed) eliminates the wedge entirely — 0 restarts
+/// in 150 s on the same printer config that previously crash-looped
+/// every 7–30 s. So the failure path lives inside the TIM5 ISR; the
+/// only thing the cluster changed in that path is this lazy dequeue.
+///
+/// The original problem the lazy dequeue tried to solve (pure-Modulated
+/// MCU never advancing its queue) needs a different fix that keeps the
+/// foreground side as the sole Consumer — e.g. driving `producer_step`
+/// even when no StepTime motor is present so the foreground always
+/// owns dequeue. Ignored until that lands.
 #[test]
+#[ignore = "lazy-dequeue removed — see comment above; pure-Modulated dequeue fix \
+            must keep foreground as sole SPSC consumer"]
 fn modulated_tick_dequeues_from_queue_when_producer_current_is_none() {
     // F446-like: only motor 2 (Z) is configured, set to Modulated.
     let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
