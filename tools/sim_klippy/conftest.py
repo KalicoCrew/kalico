@@ -202,7 +202,27 @@ def _stage_config_dir(
 
 
 @pytest.fixture
-def sim(tmp_path):
+def sim_extra_overrides(request):
+    """Per-test override hook for the ``sim`` fixture.
+
+    A test can request additional ``apply_overrides``-style ``config_set``
+    injections by parametrizing this fixture indirectly:
+
+        @pytest.mark.parametrize(
+            "sim_extra_overrides",
+            [{"stepper_z.config_set": {"phase_stepping": "1"}}],
+            indirect=True,
+        )
+        def test_something(sim): ...
+
+    The default is an empty dict, which preserves the existing fixture
+    behaviour for every test that doesn't opt in.
+    """
+    return getattr(request, "param", {}) or {}
+
+
+@pytest.fixture
+def sim(tmp_path, sim_extra_overrides):
     _ensure_elfs()
     _install_third_party_plugin_links()
 
@@ -302,6 +322,14 @@ def sim(tmp_path):
             "usb-Klipper_stm32f446xx_*": f4_socket,
             "usb-Beacon_*": beacon_pty,
         }
+
+        # Per-test config_set injections from the ``sim_extra_overrides``
+        # fixture. Merged after pin-overrides.toml so a test can override
+        # individual settings (e.g. ``phase_stepping`` on stepper_z) for
+        # parity with bench configs that the vendored printer.cfg lags.
+        for section, kv in sim_extra_overrides.items():
+            existing = overrides.setdefault(section, {})
+            existing.update(kv)
 
         cfg_text = (_CFG_DIR / "printer.cfg").read_text()
         rendered_cfg_text = apply_overrides(cfg_text, overrides)
