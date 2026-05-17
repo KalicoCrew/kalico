@@ -2905,19 +2905,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
             self.producer_current = Some(seg);
 
-            // 2026-05-17 — bench evidence: even after clear_motor_bits_in_mask
-            // for all 4 motors, seg.consumers_done() returns false 99.6% of
-            // the time on real F4 hardware (tag 0xFD shows att=256, suc=1).
-            // The wall-clock has unambiguously crossed t_end here; any
-            // remaining bits represent motor-axis consumers that didn't
-            // get marked clear by the per-motor loop above (likely due to
-            // an interaction with the post-2026-05-11 "send a curve for
-            // every kinematic axis" architectural decision). Bypass the
-            // check: retire unconditionally when elapsed >= duration. The
-            // segment's curve handles are pool slots; releasing them via
-            // `confirm_retired` is idempotent if a slot was already
-            // released by producer_step's StepTime path.
-            if true /* was: seg.consumers_done() */ {
+            if seg.consumers_done() {
                 shared
                     .modulated_retire_successes
                     .fetch_add(1, Ordering::AcqRel);
