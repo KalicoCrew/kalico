@@ -46,11 +46,12 @@ case "${1:-all}" in
   alternating|b) FILTER="ten_alternating_jogs_run_on_sim" ;;
   rapid|c)      FILTER="rapid_short_jogs_burst_no_fault" ;;
   home|homing|e) FILTER="homing_x_trips_when_pa0_raised_via_monitor" ;;
+  g28|g)        FILTER="g28_shaped_xy_two_pass_homing_via_renode_monitor" ;;
   phase|f|phase_stepping)
                 FILTER="phase_stepping_rapid_g1_x25_after_set_position_no_crash" ;;
   all|"")       FILTER="" ;;
   *)
-    echo "Usage: $0 [smoke|first|alternating|rapid|home|phase|all]" >&2
+    echo "Usage: $0 [smoke|first|alternating|rapid|home|g28|phase|all]" >&2
     exit 2 ;;
 esac
 

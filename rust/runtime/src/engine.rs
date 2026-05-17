@@ -734,7 +734,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let Some(current) = self.current.take() else {
             // Re-check queue with Acquire — race against producer's enqueue.
             if !queue.ready() {
-                if self.poll_endstop_trip(now, [0; 3], trace, shared) {
+                if self.poll_endstop_trip(now, [0; 3], pool, None, trace, shared) {
                     return Err(RuntimeError::HomingTrip);
                 }
                 // §8.2: queue empty + stream_open=true → KALICO_FAULT_UNDERRUN.
@@ -797,10 +797,115 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.tick_with_current(current, now, queue, pool, trace, shared)
     }
 
+    /// Retire every in-flight segment's curve-pool slots and transition
+    /// the engine to the `Drained` state in response to an endstop trip.
+    ///
+    /// **`HomingTrip` is not a runtime fault.** The trip is an expected,
+    /// host-coordinated abort: the runtime publishes the `EndstopTripped`
+    /// event on the events channel, and the host responds by submitting a
+    /// back-off segment (homing.py `home_rails` → `toolhead.move`). Latching
+    /// `RuntimeStatus::Fault` on trip would block that back-off via the
+    /// `FaultLatched` gate at the top of `tick`, forcing a `force_idle`
+    /// recovery round-trip the homing protocol does not perform.
+    /// Transitioning to `Drained` instead leaves the engine ready to accept
+    /// the next dispatched segment without losing the trip in observability:
+    /// `last_error` is set to `KALICO_ERR_HOMING_TRIP` so a status query
+    /// distinguishes "freshly tripped" from "fresh idle," and a
+    /// `TRACE_FLAG_FAULT_MARKER` trace sample marks the trip point for
+    /// plot-side diagnostics. `stream_open` is cleared so the next
+    /// empty-queue tick observed before the host dispatches the back-off
+    /// stays in `Drained` rather than tripping the §8.2 underrun fault.
+    ///
+    /// `active_segment` is the caller's stack-owned segment, if any —
+    /// `tick_with_current` borrows the live segment out of `self.current`
+    /// before calling, so without this parameter the handles would be
+    /// dropped on the Err-return path. `self.producer_current` covers the
+    /// Modulated / per-motor producer pipeline, which holds its own
+    /// segment in a persistent field. Together these are the only places
+    /// a segment can be in flight at trip time; retiring both keeps the
+    /// curve-pool accounting consistent without relying on a downstream
+    /// `runtime_force_idle` to recover the slots.
+    ///
+    /// All `confirm_retired` calls are no-ops on `UNUSED_SENTINEL`
+    /// (hold-segment branches) and on `HOLD_SEGMENT_SENTINEL`, so callers
+    /// from any trip site can share the same path.
+    ///
+    /// Shared between the Modulated trip path (`poll_endstop_trip`, driven
+    /// off `Engine::tick`'s per-tick endstop sample) and the StepTime trip
+    /// path (`abort_for_step_time_trip`, driven off the per-step ISR
+    /// `kalico_endstop_tick_step_time`). Both paths need the same
+    /// retire-cursor + Drained-transition semantics; the only difference is
+    /// the caller's segment ownership.
+    pub(crate) fn abort_for_homing_trip(
+        &mut self,
+        now: u64,
+        pool: &CurvePool,
+        active_segment: Option<&Segment>,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+        shared: &SharedState,
+    ) {
+        let mut retired_max: Option<u32> = None;
+        let mut retire = |seg: &Segment| {
+            pool.confirm_retired(seg.x_handle);
+            pool.confirm_retired(seg.y_handle);
+            pool.confirm_retired(seg.z_handle);
+            pool.confirm_retired(seg.e_handle);
+            retired_max = Some(match retired_max {
+                Some(prev) if prev >= seg.id => prev,
+                _ => seg.id,
+            });
+        };
+        if let Some(seg) = active_segment {
+            retire(seg);
+        }
+        if let Some(seg) = self.producer_current.take() {
+            retire(&seg);
+        }
+        // Advance the retire cursor + retirement counter that the C-side
+        // drain loop (`runtime_tick.c` §10.4) watches to emit
+        // `kalico_credit_freed`. Without these stores, the host's
+        // CreditCounter never observes the trip-released slots — the
+        // host pool deadlocks on the second G28 once an active homing
+        // session's retirements add up to capacity.
+        if let Some(id) = retired_max {
+            shared
+                .retired_through_segment_id
+                .store(id, Ordering::Release);
+            shared
+                .producer_segment_retired_total
+                .fetch_add(1, Ordering::AcqRel);
+            crate::stream::check_terminal_on_retire(shared, id);
+        }
+        self.clear_current();
+        self.last_error.store(
+            i32::from(RuntimeError::HomingTrip),
+            Ordering::Release,
+        );
+        self.status
+            .store(RuntimeStatus::Drained as u8, Ordering::Release);
+        shared.stream_open.store(false, Ordering::Release);
+        let _ = trace.enqueue(TraceSample {
+            tick: now,
+            motor_a: self.last_motors[0],
+            motor_b: self.last_motors[1],
+            motor_z: self.last_motors[2],
+            motor_e: self.last_motors[3],
+            segment_id: 0,
+            curve_handle: CurveHandle::UNUSED_SENTINEL,
+            flags: TRACE_FLAG_FAULT_MARKER,
+            _pad: [0; 7],
+        });
+    }
+
+    /// Modulated-path trip sampler. Called from `Engine::tick` /
+    /// `tick_with_current` — runs the endstop's per-modulation-period
+    /// check and, on `AbortNow`, hands off to `abort_for_homing_trip`.
     fn poll_endstop_trip(
         &mut self,
         now: u64,
         v_per_axis_q16: [u32; 3],
+        pool: &CurvePool,
+        active_segment: Option<&Segment>,
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
     ) -> bool {
@@ -811,16 +916,36 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         if endstop::tick(now, v_per_axis_q16, &stepper_counts) != TripAction::AbortNow {
             return false;
         }
-        self.clear_current();
-        self.latch_fault(
-            RuntimeError::HomingTrip,
-            0,
-            CurveHandle::UNUSED_SENTINEL,
-            now,
-            trace,
-            shared,
-            None,
-        );
+        self.abort_for_homing_trip(now, pool, active_segment, trace, shared);
+        true
+    }
+
+    /// StepTime-path trip evaluator. Called from
+    /// `kalico_endstop_tick_step_time` after each per-step GPIO sample —
+    /// the StepTime ISR has no current segment on the stack (the engine
+    /// owns it via `producer_current`), so `active_segment` is always
+    /// `None`. Returns `true` if a trip fired this call.
+    ///
+    /// Velocity-gated policies (`IgnoreUntilMoving`, `WaitForClear`)
+    /// receive `[u32::MAX; 3]` from this entry: the per-step ISR firing
+    /// itself signals "in motion," and the MVP has no precise per-axis
+    /// velocity hook at step resolution. A precise velocity hook is
+    /// Step 8 work.
+    pub fn abort_for_step_time_trip(
+        &mut self,
+        now: u64,
+        pool: &CurvePool,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+        shared: &SharedState,
+    ) -> bool {
+        let mut stepper_counts = [0_i32; crate::state::MAX_STEPPER_OIDS];
+        for (dst, src) in stepper_counts.iter_mut().zip(shared.stepper_counts.iter()) {
+            *dst = src.load(Ordering::Acquire);
+        }
+        if endstop::tick(now, [u32::MAX; 3], &stepper_counts) != TripAction::AbortNow {
+            return false;
+        }
+        self.abort_for_homing_trip(now, pool, None, trace, shared);
         true
     }
 
@@ -981,7 +1106,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // emitted motor positions; foreground sees the stream stay alive
         // across long Z-idle stretches without underrun.
         if current.flags & SEGMENT_FLAG_HOLD_SEGMENT != 0 {
-            if self.poll_endstop_trip(now, [0; 3], trace, shared) {
+            if self.poll_endstop_trip(
+                now,
+                [0; 3],
+                pool,
+                Some(&current),
+                trace,
+                shared,
+            ) {
                 return Err(RuntimeError::HomingTrip);
             }
             // Optional throttled HOLD_SAMPLE breadcrumb (§6.5). Emits at
@@ -1300,7 +1432,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             velocity_q16_from_dx_du(dx_du_y, duration, self.one_tick_cycles_value),
             velocity_q16_from_dx_du(dx_du_z, duration, self.one_tick_cycles_value),
         ];
-        if self.poll_endstop_trip(now, v_per_axis_q16, trace, shared) {
+        if self.poll_endstop_trip(
+            now,
+            v_per_axis_q16,
+            pool,
+            Some(&current),
+            trace,
+            shared,
+        ) {
             return Err(RuntimeError::HomingTrip);
         }
 
@@ -3233,9 +3372,29 @@ mod tests {
         );
 
         assert_eq!(result, Err(RuntimeError::HomingTrip));
-        assert_eq!(engine.status(), RuntimeStatus::Fault);
+        // HomingTrip is an expected, host-coordinated abort — engine
+        // transitions to Drained, not Fault. The host receives the
+        // EndstopTripped event via the runtime-events channel and
+        // submits a back-off segment, which would be blocked by the
+        // FaultLatched gate if status were Fault. `last_error` still
+        // records the trip so a status query distinguishes "freshly
+        // tripped" from "fresh idle".
+        assert_eq!(engine.status(), RuntimeStatus::Drained);
         assert_eq!(engine.last_error(), crate::error::KALICO_ERR_HOMING_TRIP);
         assert!(engine.current.is_none());
+        // Trip must clear stream_open so a back-off segment dispatched
+        // by the host activates without the engine first underrun-faulting
+        // on the empty queue.
+        assert!(!shared.stream_open.load(Ordering::Acquire));
+        // Trip must return the active segment's curve-pool slots.
+        // Without this, every G28 trip leaked a slot, exhausting the
+        // pool after ~CURVE_POOL_N / 2 trips and breaking subsequent
+        // motion with SlotPoolExhausted. The x_handle returned slot 0;
+        // assert that slot is free again post-trip.
+        assert!(
+            pool.is_slot_free(0),
+            "trip leaked x_handle slot 0 — pool retirement regressed",
+        );
         let trip = endstop::poll_trip().expect("trip event");
         assert_eq!(trip.stepper_count, 1);
         assert_eq!(trip.steppers[0].oid, 0);

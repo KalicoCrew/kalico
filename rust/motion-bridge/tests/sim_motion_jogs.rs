@@ -390,6 +390,15 @@ struct SimHarness {
     /// The homing sim test inspects this to assert that a virtual-GPIO
     /// trip flowed through to a `kalico_endstop_tripped` output.
     endstop_trips: Arc<Mutex<Vec<EndstopTrippedEvent>>>,
+    /// Host-side slot pool the dispatch closure allocates from. Set
+    /// post-construction by `PlannerCtx::build_inner` via
+    /// `register_slot_pool` — production routes `kalico_credit_freed`
+    /// through klippy → `PyMotionBridge::on_credit_freed`, but the
+    /// standalone sim test bypasses klippy, so we wire the same release
+    /// directly off the runtime events channel here. Without this, the
+    /// host pool grows monotonically and exhausts after CURVE_POOL_N / 2
+    /// segments — that's what the test reproduced before this hookup.
+    slot_pool_for_release: Arc<Mutex<Option<Arc<Mutex<SlotPool>>>>>,
 }
 
 impl SimHarness {
@@ -438,11 +447,14 @@ impl SimHarness {
             Arc::new(Mutex::new(HashMap::new()));
         let endstop_trips: Arc<Mutex<Vec<EndstopTrippedEvent>>> =
             Arc::new(Mutex::new(Vec::new()));
+        let slot_pool_for_release: Arc<Mutex<Option<Arc<Mutex<SlotPool>>>>> =
+            Arc::new(Mutex::new(None));
         {
             let status_shared = Arc::clone(&status_shared);
             let last_seg_id = Arc::clone(&last_seg_id);
             let fault_detail_by_tag = Arc::clone(&fault_detail_by_tag);
             let endstop_trips = Arc::clone(&endstop_trips);
+            let slot_pool_for_release = Arc::clone(&slot_pool_for_release);
             thread::Builder::new()
                 .name("sim-status-watcher".to_string())
                 .spawn(move || {
@@ -477,9 +489,19 @@ impl SimHarness {
                                 );
                             }
                             RuntimeEvent::CreditFreed(c) => {
+                                // Mirror what `PyMotionBridge::on_credit_freed`
+                                // does in production: release in-flight slots
+                                // whose registered seg_id ≤ retired_through.
+                                let n_released = match &*slot_pool_for_release.lock().unwrap() {
+                                    Some(pool_arc) => {
+                                        let mut p = pool_arc.lock().unwrap();
+                                        p.retire_through_segment(c.retired_through_segment_id)
+                                    }
+                                    None => 0,
+                                };
                                 eprintln!(
-                                    "[sim-credit] retired_through={} free_slots={}",
-                                    c.retired_through_segment_id, c.free_slots,
+                                    "[sim-credit] retired_through={} free_slots={} n_released={}",
+                                    c.retired_through_segment_id, c.free_slots, n_released,
                                 );
                             }
                             RuntimeEvent::UnknownOutput { msg, .. } => {
@@ -576,6 +598,7 @@ impl SimHarness {
             last_seg_id,
             fault_detail_by_tag,
             endstop_trips,
+            slot_pool_for_release,
         };
 
         // Block until clock-sync has produced at least two regression samples
@@ -681,6 +704,16 @@ impl SimHarness {
             thread::sleep(Duration::from_millis(20));
         }
         Err(self.endstop_trips.lock().unwrap().clone())
+    }
+
+    /// Register the dispatch closure's slot pool so the status-watcher
+    /// thread releases in-flight slots when `kalico_credit_freed` arrives.
+    /// Mirror of klippy's `PyMotionBridge::on_credit_freed` →
+    /// `pool.retire_through_segment` wiring; production routes the event
+    /// through klippy's reactor, but this standalone test owns the pool
+    /// directly and must call the same release path.
+    fn register_slot_pool(&self, pool: Arc<Mutex<SlotPool>>) {
+        *self.slot_pool_for_release.lock().unwrap() = Some(pool);
     }
 }
 
@@ -957,6 +990,9 @@ impl PlannerCtx {
         let credit = Arc::new(CreditCounter::new(1024));
         host_io.attach_credit_counter(Arc::clone(&credit));
         let slot_pool = Arc::new(Mutex::new(SlotPool::new(CURVE_POOL_N)));
+        // Mirror production: hook `kalico_credit_freed` to slot release
+        // so the host pool actually drains as the MCU retires segments.
+        harness.register_slot_pool(Arc::clone(&slot_pool));
         let clock_sync = Arc::clone(&harness.clock_sync);
         let clock_sync_samples = Arc::clone(&harness.clock_sync_samples);
 
@@ -1811,5 +1847,324 @@ fn homing_x_trips_when_pa0_raised_via_monitor() {
             );
         }
     }
+}
+
+// ===========================================================================
+// Test G — G28-shaped multi-axis two-pass homing sequence.
+//
+// Mirrors what klippy's `home_rails()` in `klippy/extras/homing.py` does for
+// each rail: arm → fast-home → trip → disarm → back-off → re-arm →
+// slow-home → trip → disarm. We run that sequence for X (PA0) and then Y
+// (PA1) in a single sim session, exercising:
+//
+//   1. Sequential arm/disarm cycles on the **same** pin (X first + X second).
+//      Tests engine-state cleanup after a trip-induced abort: can the
+//      runtime accept the next `runtime_arm_endstop`, and does the next
+//      motion segment produce step pulses?
+//   2. Arm/disarm on **different** pins back-to-back (X then Y). Tests
+//      that the endstop pin table is rewritten correctly between arms and
+//      the sampler picks up the new pin for the new arm_id.
+//   3. Motion submission **after** a trip-induced abort (the "back-off"
+//      jog). On the printer this is where regular-stepping G28 silently
+//      fails: the motor energizes but produces no actual motion. This test
+//      asserts step pulses are emitted for every move in the sequence.
+//   4. CoreXY motors A+B driving both X-only and Y-only logical moves.
+//      A pure X jog steps both motors in opposite directions; a pure Y
+//      jog steps both in the same direction. The single-axis E test only
+//      covers X.
+//
+// Pin choice: PA0 (gpio id 0) for X, PA1 (gpio id 1) for Y. Neither is used
+// by any sim-firmware peripheral.
+//
+// Pass condition: four `EndstopTripped` events arrive in order (arm_id
+// 9001..=9004), and the inter-trip motion segments each produce step
+// pulses (`runtime_emit_calls` tag 0xE1 advances between trips).
+//
+// ===========================================================================
+
+#[test]
+#[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
+fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
+    const ARM_X_FAST: u32 = 9001;
+    const ARM_X_SLOW: u32 = 9002;
+    const ARM_Y_FAST: u32 = 9003;
+    const ARM_Y_SLOW: u32 = 9004;
+    const PA0: (char, u8, u16) = ('A', 0, 0);     // X endstop
+    const PA1: (char, u8, u16) = ('A', 1, 1);     // Y endstop
+    const STEPPER_OIDS: [u8; 2] = [0, 1];          // CoreXY A + B
+    const VELOCITY_AXIS_ALL: u8 = 0x07;            // X | Y | Z
+
+    let ctx = PlannerCtx::build().expect("build sim harness");
+
+    let mut monitor =
+        RenodeMonitor::connect_with_timeout(Duration::from_secs(5))
+            .expect("connect Renode monitor on port 3335");
+
+    // Helper closure: arm an endstop on (port,pin,gpio_id) with TripImmediately
+    // policy after pre-raising the pin. The first per-step sampler invocation
+    // reads the pin high → trip fires on the first step.
+    let arm_after_raise = |mon: &mut RenodeMonitor,
+                           pin: (char, u8, u16),
+                           arm_id: u32|
+     -> ArmStatus {
+        mon.set_gpio_input(pin.0, pin.1, true)
+            .unwrap_or_else(|e| panic!("pre-raise P{}{}: {e}", pin.0, pin.1));
+        let sources = [SourceSpec {
+            kind: SourceKind::Physical,
+            gpio: pin.2,
+            active_high: true,
+            policy: ArmPolicy::TripImmediately,
+            sample_n: 1,
+            velocity_axis: VELOCITY_AXIS_ALL,
+            v_min_q16: 0,
+        }];
+        arm_endstop_with_timeout(
+            ctx.harness.host_io.as_ref(),
+            arm_id,
+            0,
+            &sources,
+            &STEPPER_OIDS,
+            Duration::from_secs(5),
+        )
+        .unwrap_or_else(|e| panic!("arm_endstop arm_id={arm_id}: {e:?}"))
+    };
+
+    // Helper: lower a pin (used for back-off so the next pre-raise+arm
+    // cycle observes a clean low → high transition).
+    let lower_pin =
+        |mon: &mut RenodeMonitor, pin: (char, u8, u16)| {
+            mon.set_gpio_input(pin.0, pin.1, false)
+                .unwrap_or_else(|e| panic!("lower P{}{}: {e}", pin.0, pin.1));
+        };
+
+    // Per-phase telemetry: dispatched-from-host count + MCU-side retired
+    // segment id. dispatched goes up the moment the bridge writes a frame;
+    // last_segment_id goes up when the MCU retires the segment (in StatusEvent
+    // frames). We need both to localize where work stalls.
+    let snapshot = |ctx: &PlannerCtx, label: &str| -> (u64, u32) {
+        let d = ctx.dispatched_segments();
+        let s = ctx.harness.last_segment_id();
+        eprintln!(
+            "[test-G] {label}: dispatched={d} mcu_seg_id={s}",
+        );
+        (d, s)
+    };
+
+    // -----------------------------------------------------------------
+    // X — pass 1 (fast home: 100 mm/min toward -X over 25 mm)
+    // -----------------------------------------------------------------
+    eprintln!("[test-G] === X fast home (arm_id={ARM_X_FAST}) ===");
+    let s = arm_after_raise(&mut monitor, PA0, ARM_X_FAST);
+    assert_eq!(s, ArmStatus::Armed, "X fast-home arm rejected: {s:?}");
+    ctx.submit_jog([0.0; 3], -25.0, 0.0, 0.0, 100.0)
+        .expect("X fast-home jog submit");
+    ctx.flush().expect("flush X fast-home");
+    let trip_x1 = ctx
+        .harness
+        .wait_for_endstop_trip(ARM_X_FAST, Duration::from_secs(120))
+        .unwrap_or_else(|seen| {
+            panic!(
+                "X fast-home trip not observed; \
+                 emit_calls(0xE1)={:?}, trips_seen={seen:?}, status={:?}",
+                ctx.harness.fault_detail_max(0xE1),
+                ctx.harness.status(),
+            )
+        });
+    eprintln!(
+        "[test-G] X fast-home trip: arm_id={} clock={}",
+        trip_x1.arm_id, trip_x1.trip_clock,
+    );
+    assert_eq!(trip_x1.arm_id, ARM_X_FAST);
+    let after_xfast = snapshot(&ctx, "after X fast-home trip");
+    let disarm_x1 = kalico_host_rt::endstop::disarm_endstop_with_timeout(
+        ctx.harness.host_io.as_ref(),
+        ARM_X_FAST,
+        Duration::from_secs(8),
+    );
+    eprintln!("[test-G] X fast-home disarm: {disarm_x1:?}");
+    lower_pin(&mut monitor, PA0);
+    // Renode runs ~5× slower than wall-clock; give the MCU time to
+    // drain trip-aborted segments before submitting the next phase.
+    thread::sleep(Duration::from_secs(1));
+
+    // -----------------------------------------------------------------
+    // X — back-off (+5 mm at slower speed, no arm). Tests motion
+    // submission after a trip-induced abort.
+    // -----------------------------------------------------------------
+    eprintln!("[test-G] === X back-off ===");
+    ctx.submit_jog([-25.0, 0.0, 0.0], 5.0, 0.0, 0.0, 30.0)
+        .expect("X back-off jog submit");
+    ctx.flush().expect("flush X back-off");
+    // Wait for MCU to retire one more segment than the X fast-home's
+    // last-known retired id. Renode runs ~5× slower than wall-clock; 60 s
+    // is comfortable headroom for a 5 mm jog at 30 mm/min.
+    let xback_target = after_xfast.1.saturating_add(1);
+    let xback_outcome =
+        ctx.harness.wait_for_segment_id(xback_target, Duration::from_secs(60));
+    let after_xback = snapshot(&ctx, "after X back-off");
+    if xback_outcome.is_err() {
+        let status = ctx.harness.status();
+        let summary = ctx.harness.fault_detail_summary();
+        panic!(
+            "X back-off did not retire on MCU within 60 s. \
+             Wanted mcu_seg_id ≥ {xback_target}, got {}. \
+             dispatched={}, status={status:?}, fault_tags={summary:?}",
+            after_xback.1, after_xback.0,
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // X — pass 2 (slow home: 30 mm/min, 25 mm toward -X again)
+    // -----------------------------------------------------------------
+    eprintln!("[test-G] === X slow home (arm_id={ARM_X_SLOW}) ===");
+    // For the slow-home pass, the pin is high at arm time (we pre-raised
+    // it). `TripImmediately` accepts either `Armed` (trip fires on first
+    // post-arm sample) or `AlreadyTripped` (trip event published from the
+    // arm path itself); both produce an `EndstopTripped` event on the
+    // runtime-events channel matching the arm_id, which is what
+    // `wait_for_endstop_trip` blocks on. Treat `Rejected` (status=2) as
+    // failure.
+    let s = arm_after_raise(&mut monitor, PA0, ARM_X_SLOW);
+    assert_ne!(
+        s, ArmStatus::Rejected,
+        "X slow-home arm rejected: {s:?}",
+    );
+    ctx.submit_jog([-20.0, 0.0, 0.0], -25.0, 0.0, 0.0, 30.0)
+        .expect("X slow-home jog submit");
+    ctx.flush().expect("flush X slow-home");
+    let trip_x2 = ctx
+        .harness
+        .wait_for_endstop_trip(ARM_X_SLOW, Duration::from_secs(180))
+        .unwrap_or_else(|seen| {
+            panic!(
+                "X slow-home trip not observed; \
+                 emit_calls(0xE1)={:?}, trips_seen={seen:?}, status={:?}",
+                ctx.harness.fault_detail_max(0xE1),
+                ctx.harness.status(),
+            )
+        });
+    eprintln!(
+        "[test-G] X slow-home trip: arm_id={} clock={}",
+        trip_x2.arm_id, trip_x2.trip_clock,
+    );
+    assert_eq!(trip_x2.arm_id, ARM_X_SLOW);
+    let _after_xslow = snapshot(&ctx, "after X slow-home trip");
+    let disarm_x2 = kalico_host_rt::endstop::disarm_endstop_with_timeout(
+        ctx.harness.host_io.as_ref(),
+        ARM_X_SLOW,
+        Duration::from_secs(8),
+    );
+    eprintln!("[test-G] X slow-home disarm: {disarm_x2:?}");
+    lower_pin(&mut monitor, PA0);
+    thread::sleep(Duration::from_secs(1));
+
+    // -----------------------------------------------------------------
+    // Y — pass 1 (fast home on PA1)
+    // -----------------------------------------------------------------
+    eprintln!("[test-G] === Y fast home (arm_id={ARM_Y_FAST}) ===");
+    let s = arm_after_raise(&mut monitor, PA1, ARM_Y_FAST);
+    assert_eq!(s, ArmStatus::Armed, "Y fast-home arm rejected: {s:?}");
+    ctx.submit_jog([-45.0, 0.0, 0.0], 0.0, -25.0, 0.0, 100.0)
+        .expect("Y fast-home jog submit");
+    ctx.flush().expect("flush Y fast-home");
+    let trip_y1 = ctx
+        .harness
+        .wait_for_endstop_trip(ARM_Y_FAST, Duration::from_secs(120))
+        .unwrap_or_else(|seen| {
+            panic!(
+                "Y fast-home trip not observed; \
+                 emit_calls(0xE1)={:?}, trips_seen={seen:?}, status={:?}",
+                ctx.harness.fault_detail_max(0xE1),
+                ctx.harness.status(),
+            )
+        });
+    eprintln!(
+        "[test-G] Y fast-home trip: arm_id={} clock={}",
+        trip_y1.arm_id, trip_y1.trip_clock,
+    );
+    assert_eq!(trip_y1.arm_id, ARM_Y_FAST);
+    let after_yfast = snapshot(&ctx, "after Y fast-home trip");
+    let disarm_y1 = kalico_host_rt::endstop::disarm_endstop_with_timeout(
+        ctx.harness.host_io.as_ref(),
+        ARM_Y_FAST,
+        Duration::from_secs(8),
+    );
+    eprintln!("[test-G] Y fast-home disarm: {disarm_y1:?}");
+    lower_pin(&mut monitor, PA1);
+    thread::sleep(Duration::from_secs(1));
+
+    // -----------------------------------------------------------------
+    // Y — back-off (+5 mm Y at slow speed)
+    // -----------------------------------------------------------------
+    eprintln!("[test-G] === Y back-off ===");
+    ctx.submit_jog([-45.0, -25.0, 0.0], 0.0, 5.0, 0.0, 30.0)
+        .expect("Y back-off jog submit");
+    ctx.flush().expect("flush Y back-off");
+    thread::sleep(Duration::from_secs(2));
+    let yback_target = after_yfast.1.saturating_add(1);
+    let yback_outcome =
+        ctx.harness.wait_for_segment_id(yback_target, Duration::from_secs(60));
+    let after_yback = snapshot(&ctx, "after Y back-off");
+    if yback_outcome.is_err() {
+        let status = ctx.harness.status();
+        let summary = ctx.harness.fault_detail_summary();
+        panic!(
+            "Y back-off did not retire on MCU within 60 s. \
+             Wanted mcu_seg_id ≥ {yback_target}, got {}. \
+             dispatched={}, status={status:?}, fault_tags={summary:?}",
+            after_yback.1, after_yback.0,
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Y — pass 2 (slow home)
+    // -----------------------------------------------------------------
+    eprintln!("[test-G] === Y slow home (arm_id={ARM_Y_SLOW}) ===");
+    // See X slow-home arm comment: AlreadyTripped is acceptable here too.
+    let s = arm_after_raise(&mut monitor, PA1, ARM_Y_SLOW);
+    assert_ne!(
+        s, ArmStatus::Rejected,
+        "Y slow-home arm rejected: {s:?}",
+    );
+    ctx.submit_jog([-45.0, -20.0, 0.0], 0.0, -25.0, 0.0, 30.0)
+        .expect("Y slow-home jog submit");
+    ctx.flush().expect("flush Y slow-home");
+    let trip_y2 = ctx
+        .harness
+        .wait_for_endstop_trip(ARM_Y_SLOW, Duration::from_secs(180))
+        .unwrap_or_else(|seen| {
+            panic!(
+                "Y slow-home trip not observed; \
+                 emit_calls(0xE1)={:?}, trips_seen={seen:?}, status={:?}",
+                ctx.harness.fault_detail_max(0xE1),
+                ctx.harness.status(),
+            )
+        });
+    eprintln!(
+        "[test-G] Y slow-home trip: arm_id={} clock={}",
+        trip_y2.arm_id, trip_y2.trip_clock,
+    );
+    assert_eq!(trip_y2.arm_id, ARM_Y_SLOW);
+    let _after_yslow = snapshot(&ctx, "after Y slow-home trip");
+    let disarm_y2 = kalico_host_rt::endstop::disarm_endstop_with_timeout(
+        ctx.harness.host_io.as_ref(),
+        ARM_Y_SLOW,
+        Duration::from_secs(8),
+    );
+    eprintln!("[test-G] Y slow-home disarm: {disarm_y2:?}");
+
+    eprintln!(
+        "[test-G] PASS: 4 trips (X fast, X slow, Y fast, Y slow) + 2 \
+         back-off segments completed.",
+    );
+    let status = ctx.harness.status();
+    eprintln!(
+        "[test-G] final status: engine_status={} seg_id={} \
+         last_fault={} fault_detail=0x{:08x}",
+        status.engine_status,
+        status.current_segment_id,
+        status.last_fault,
+        status.fault_detail,
+    );
 }
 

@@ -1868,7 +1868,7 @@ pub mod exports {
     /// Step-time trip evaluation. Called from each `step_time_event` ISR
     /// after the per-step GPIO sample, mirroring what `engine.tick()` does
     /// for the Modulated path (which dispatches `endstop::tick` via
-    /// `engine::poll_endstop_trip`, see `rust/runtime/src/engine.rs:811`).
+    /// `engine::poll_endstop_trip`, see `rust/runtime/src/engine.rs`).
     ///
     /// In a StepTime-only firmware build (MVP), TIM5 — and therefore
     /// `engine.tick` and its embedded `endstop::tick` call — never runs.
@@ -1876,14 +1876,21 @@ pub mod exports {
     /// `PIN_LEVELS` but trip evaluation never happens, and homing moves
     /// run forever even when the GPIO asserts.
     ///
+    /// On `AbortNow` this also calls `Engine::abort_for_step_time_trip`
+    /// (the shared `abort_for_homing_trip` helper under the hood), which
+    /// retires every in-flight segment's curve-pool slots, publishes the
+    /// retire cursor for the host's `kalico_credit_freed` emitter, and
+    /// transitions the engine to `Drained`. Without that retirement, the
+    /// host's slot pool deadlocks after CURVE_POOL_N / 2 G28 trips
+    /// because trip-aborted segments leak their slots — observed in the
+    /// `g28_shaped_xy_two_pass_homing_via_renode_monitor` sim test.
+    ///
     /// `now` is the widened MCU clock at the call site (same widening as
     /// `command_runtime_clock_sync_request` uses). The endstop module
     /// records this as the `trip_clock` in the published snapshot, and
-    /// gates on `now >= arm_clock`. For `IgnoreUntilMoving` /
-    /// `WaitForClear` policies that need per-axis velocity, the MVP passes
-    /// `[u32::MAX; 3]` — those policies will trip on any matching sample
-    /// once motion starts (the per-step ISR firing IS the motion signal).
-    /// A precise velocity hook is Step 8 work.
+    /// gates on `now >= arm_clock`. Velocity-gated policies receive
+    /// `[u32::MAX; 3]` from this entry — see
+    /// `Engine::abort_for_step_time_trip` for the rationale.
     ///
     /// Returns 1 if a trip fired this call, 0 otherwise, or a negative
     /// `KALICO_ERR_*` on misuse.
@@ -1892,8 +1899,6 @@ pub mod exports {
         rt: *mut KalicoRuntime,
         now: u64,
     ) -> i32 {
-        use runtime::endstop::TripAction;
-        use runtime::state::MAX_STEPPER_OIDS;
         if rt.is_null() {
             return KALICO_ERR_INVALID_HANDLE;
         }
@@ -1902,22 +1907,35 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: `ctx` points at the published RT_CELL (verified non-null
-        // and INIT_DONE==true above). We only form a `&SharedState`, never
-        // a `&mut RuntimeContext`. SharedState is atomics-only.
-        let shared: &SharedState = unsafe { &*core::ptr::addr_of!((*ctx).shared) };
-        let mut stepper_counts = [0_i32; MAX_STEPPER_OIDS];
-        for (dst, src) in stepper_counts.iter_mut().zip(shared.stepper_counts.iter()) {
-            *dst = src.load(Ordering::Acquire);
-        }
-        // Velocity-gated policies (`IgnoreUntilMoving`, `WaitForClear`) are
-        // configured by `v_min_q16`. Passing `[u32::MAX; 3]` makes any
-        // configured `v_min_q16` (which is u32, so always ≤ u32::MAX)
-        // compare as "moving" — appropriate for the MVP because the
-        // per-step ISR firing already means motion is in progress.
-        let v_per_axis_q16 = [u32::MAX; 3];
-        match runtime::endstop::tick(now, v_per_axis_q16, &stepper_counts) {
-            TripAction::AbortNow => 1,
-            TripAction::Continue => 0,
+        // and INIT_DONE==true above). The step_time_event ISR is the sole
+        // writer of the per-stepper consumer state and shares the ISR
+        // ownership discipline with kalico_runtime_tick — claiming IsrState
+        // mutably here mirrors what `kalico_runtime_tick` does at the same
+        // priority level.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let isr: &mut IsrState = &mut *isr_ptr;
+            let pool: &CurvePool = &*pool_ptr;
+            let shared: &SharedState = &*shared_ptr;
+            let IsrState {
+                engine,
+                trace_producer,
+                ..
+            } = isr;
+            if engine.abort_for_step_time_trip(now, pool, trace_producer, shared) {
+                shared
+                    .runtime_status
+                    .store(engine.status() as u8, Ordering::Release);
+                shared
+                    .last_error
+                    .store(engine.last_error(), Ordering::Release);
+                1
+            } else {
+                0
+            }
         }
     }
 
