@@ -682,7 +682,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 19) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 26) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -974,6 +974,84 @@ runtime_status_drain(void)
             // past". A value of 10+ is a hard saturation signal.
             fault_detail = 0xEB000000u | (producer_step_slow_streak_max & 0x00FFFFFFu);
             break;
+        // 2026-05-17 H7 USB-OUT wedge investigation. The kalico_status_v6
+        // emit (via bulk-IN) keeps flowing during the wedge, but the host
+        // can no longer write to bulk-OUT. These 7 tags expose the live
+        // OTG IRQ + bulk-OUT task counters so we can pin which stage stops
+        // advancing at the wedge moment. Cheap: single u32 read each.
+        case 19: {
+            // 0xF0 — OTG RXFLVL IRQ count (low 24 bits). If this stops
+            // advancing during the wedge, OTG IRQ is no longer firing on
+            // RX (or RXFLVLM bit was cleared).
+            extern uint32_t diag_get_otg_rxflvl(void);
+            fault_detail = 0xF0000000u | (diag_get_otg_rxflvl() & 0x00FFFFFFu);
+            break;
+        }
+        case 20: {
+            // 0xF1 — usb_notify_bulk_out call count (low 24 bits). If
+            // this advances but task_invoke (0xF2) stagnates, sched_wake
+            // is being suppressed.
+            extern uint32_t diag_get_notify_bulk_out(void);
+            fault_detail = 0xF1000000u | (diag_get_notify_bulk_out() & 0x00FFFFFFu);
+            break;
+        }
+        case 21: {
+            // 0xF2 — usb_bulk_out_task entry count (low 24 bits). If
+            // this stops while notify_n grows, foreground is starved.
+            extern uint32_t diag_get_task_invoke(void);
+            fault_detail = 0xF2000000u | (diag_get_task_invoke() & 0x00FFFFFFu);
+            break;
+        }
+        case 22: {
+            // 0xF3 — bulk-OUT reads that returned data (low 24 bits).
+            // If this stops while task_n keeps growing, EP is being
+            // drained but returning nothing — RX FIFO empty or NAKed.
+            extern uint32_t diag_get_read_data(void);
+            fault_detail = 0xF3000000u | (diag_get_read_data() & 0x00FFFFFFu);
+            break;
+        }
+        case 23: {
+            // 0xF4 — RX endpoint re-arm count (low 24 bits). If this
+            // stops, EP never re-armed → host writes pile up unread.
+            extern uint32_t diag_get_enable_rx_rearm(void);
+            fault_detail = 0xF4000000u | (diag_get_enable_rx_rearm() & 0x00FFFFFFu);
+            break;
+        }
+        case 24: {
+            // 0xF5 — LIVE OUT EP DOEPCTL register (low 24 bits, masked).
+            // Live-read (not cached snapshot) so we observe the actual
+            // hardware state during the wedge. Bits of interest visible
+            // here:
+            //   0x800000 EPENA — EP enabled to receive (bit 31, dropped)
+            //   0x020000 NAKSTS — EP NAKing (sticky)
+            //   0x010000 STALL  — EP stalling
+            //   0x008000 USBAEP — EP active in this configuration
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
+            extern void usb_diag_read_out_ep(uint32_t *, uint32_t *, uint32_t *);
+            uint32_t doepctl = 0, doeptsiz = 0, doepint = 0;
+            usb_diag_read_out_ep(&doepctl, &doeptsiz, &doepint);
+            fault_detail = 0xF5000000u | (doepctl & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF5000000u;
+#endif
+            break;
+        }
+        case 25: {
+            // 0xF6 — LIVE OUT EP DOEPTSIZ register (low 24 bits).
+            //   bits 19..29 PKTCNT — packets remaining to receive
+            //   bits 0..18  XFRSIZ — bytes remaining to receive
+            // If PKTCNT==0 in the wedge state, EP is idle waiting to be
+            // re-armed — confirming the re-arm path didn't fire.
+#if CONFIG_USBSERIAL && (CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4 || CONFIG_MACH_STM32F7)
+            extern void usb_diag_read_out_ep(uint32_t *, uint32_t *, uint32_t *);
+            uint32_t doepctl = 0, doeptsiz = 0, doepint = 0;
+            usb_diag_read_out_ep(&doepctl, &doeptsiz, &doepint);
+            fault_detail = 0xF6000000u | (doeptsiz & 0x00FFFFFFu);
+#else
+            fault_detail = 0xF6000000u;
+#endif
+            break;
+        }
         }
     }
 
