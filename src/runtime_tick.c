@@ -1540,7 +1540,7 @@ extern void runtime_endstop_sample_one(uint8_t stepper_idx);
 // (32-bit `timer_read_time`, widened to u64 with high=0). Returns 1 if a
 // trip fired, 0 otherwise; the runtime publishes the trip event via the
 // existing snapshot path that `runtime_endstop_drain` polls.
-extern int32_t kalico_endstop_tick_step_time(void *rt, uint64_t now);
+// Forward decl is now provided by kalico_runtime.h (with struct KalicoRuntime *).
 
 // Forward decl for the producer timer; defined below. Used by the consumer
 // low-water hook and by `arm_producer_timer_if_kicked` (called from
