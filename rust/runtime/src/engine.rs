@@ -2028,6 +2028,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // `dequeue_unchecked` (head-only, no tail.load(Acquire)) to
             // perform the actual fetch.
             if queue.len() > 0 {
+                #[allow(unsafe_code)]
+                // SAFETY: queue.len() > 0 → queue is not empty; dequeue_unchecked
+                // is sound when the queue has at least one element. The Consumer
+                // is the sole reader (foreground-only by §11.1) so no other
+                // dequeue can race with this between the len() check and the
+                // unchecked dequeue.
                 let seg = unsafe { queue.dequeue_unchecked() };
                 self.producer_current = Some(seg);
                 shared
