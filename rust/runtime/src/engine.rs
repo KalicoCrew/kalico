@@ -20,9 +20,9 @@ use heapless::spsc::Consumer;
 #[cfg(target_os = "none")]
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    pub(crate) static mut kalico_producer_current_present: u8;
-    pub(crate) static mut kalico_producer_current_set_count: u32;
-    pub(crate) static mut kalico_producer_current_cleared_count: u32;
+    pub static mut kalico_producer_current_present: u8;
+    pub static mut kalico_producer_current_set_count: u32;
+    pub static mut kalico_producer_current_cleared_count: u32;
 }
 
 /// Read the C-side gate (MCU build) or the AtomicBool (host build).
