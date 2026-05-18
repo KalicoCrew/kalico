@@ -2,7 +2,14 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
-use heapless::spsc::{Consumer, Producer};
+// Segment queue is C-backed (see crate::c_segment_queue); the trace ring
+// still uses heapless::spsc.
+use crate::c_segment_queue::{Consumer as SegConsumer, Producer as SegProducer};
+use heapless::spsc::Producer;
+// `Consumer` is no longer needed from heapless — the segment queue is the
+// only spsc consumer in this crate. (Trace ring uses Producer only.)
+#[allow(unused_imports)]
+use heapless::spsc::Consumer;
 // `Float` is unused on `host`-feature builds (std provides f32::sqrt) but
 // load-bearing in the MCU `no_std` profile, where it dispatches to libm.
 #[cfg_attr(feature = "host", allow(unused_imports))]
@@ -531,7 +538,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     pub fn runtime_force_idle(
         &mut self,
         pool: &CurvePool,
-        queue: &mut Consumer<'_, Segment, Q_N>,
+        queue: &mut SegConsumer<Segment>,
         shared: &SharedState,
     ) {
         // 1. Disarm producer kicks. Any kick that lands mid-flush
@@ -709,7 +716,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         raw_cyccnt: u32,
         widen_state: &mut WidenState,
         pool: &CurvePool,
-        queue: &mut Consumer<'_, Segment, Q_N>,
+        queue: &mut SegConsumer<Segment>,
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
     ) -> Result<(), RuntimeError> {
@@ -742,8 +749,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // back to Idle on subsequent empty-queue ticks — that would mask the
         // completed-segment state from the host's status query.)
         let Some(current) = self.current.take() else {
-            // Re-check queue with Acquire — race against producer's enqueue.
-            if !queue.ready() {
+            // 2026-05-18: queue is C-backed; use len()>0 instead of the
+            // heapless-specific `ready()`. Equivalent semantics.
+            if queue.is_empty() {
                 if self.poll_endstop_trip(now, [0; 3], pool, None, trace, shared) {
                     return Err(RuntimeError::HomingTrip);
                 }
@@ -964,7 +972,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         &mut self,
         mut current: Segment,
         now: u64,
-        queue: &mut Consumer<'_, Segment, Q_N>,
+        queue: &mut SegConsumer<Segment>,
         pool: &CurvePool,
         trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
@@ -1794,7 +1802,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     pub fn push_segment<'q>(
         &mut self,
         mut seg: Segment,
-        queue_producer: &mut Producer<'q, Segment, Q_N>,
+        queue_producer: &mut SegProducer<Segment>,
         _shared: &SharedState,
     ) -> Result<(), Segment> {
         seg.consumers_remaining = Segment::compute_consumers_remaining(
@@ -1835,7 +1843,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     fn fetch_segment_for_motor(
         &mut self,
         motor_idx: usize,
-        queue: &mut Consumer<'_, Segment, Q_N>,
+        queue: &mut SegConsumer<Segment>,
         shared: &SharedState,
     ) -> Option<(Segment, CurveHandle, Option<CurveHandle>, f64)> {
         shared
@@ -1981,7 +1989,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     pub fn producer_step(
         &mut self,
         pool: &CurvePool,
-        queue: &mut Consumer<'_, Segment, Q_N>,
+        queue: &mut SegConsumer<Segment>,
         shared: &SharedState,
     ) -> ProducerTickResult {
         // (1) Clear kick-pending flag at start; (2) heartbeat.
@@ -2011,44 +2019,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // fetch_segment_for_motor's `is_none()` check sees the populated
         // state.
         if self.producer_current.is_none() {
-            // 2026-05-18 diag: count producer_step entries where producer_current
-            // was observed as None, separately from dequeues that succeeded.
             shared
                 .producer_observed_none_total
                 .fetch_add(1, Ordering::AcqRel);
-            // 2026-05-18 wedge fix: bench evidence (tag 0xCC) shows
-            // `queue.len() = 6` while `queue.dequeue()` returns None — same
-            // SPSC, same call site, immediate consecutive reads. The only
-            // difference is that `len()` uses `tail.load(Relaxed)` while
-            // `dequeue()` uses `tail.load(Acquire)`. On this Cortex-M7
-            // configuration the Acquire load is observably returning a stale
-            // value (likely related to H7 D-cache + AXI bus interaction with
-            // the LDR/DMB sequence the compiler emits). Workaround: gate
-            // dequeue on `len() > 0` (Relaxed-only) and use
-            // `dequeue_unchecked` (head-only, no tail.load(Acquire)) to
-            // perform the actual fetch.
-            // Use peek instead of len() — both Relaxed reads of head and tail,
-            // but peek returns Option<&T> via a different code path and
-            // resists compiler optimizations that might cache the Relaxed
-            // loads across calls.
-            // 2026-05-18 diag: snapshot the queue's view of length AS SEEN
-            // by producer_step. Compare with `kalico_runtime_queue_len_diag`
-            // (read from status_drain at a different time via &IsrState)
-            // to detect if the SPSC Consumer's head/tail reads diverge
-            // between call sites.
+            // 2026-05-18: queue is C-backed (see `crate::c_segment_queue`).
+            // The Rust `heapless::spsc::Consumer` was miscompiled here on
+            // H7 — different call sites observed different `queue.len()`
+            // values on the same Consumer instance. C avoids the
+            // borrow-projection compiler issue.
             let qlen_here = queue.len() as u32;
             shared
                 .producer_step_last_len_snapshot
                 .store(qlen_here, Ordering::Release);
-            let peeked_copy = queue.peek().copied();
-            if let Some(seg) = peeked_copy {
-                #[allow(unsafe_code)]
-                // SAFETY: peek returned Some → queue is not empty;
-                // dequeue_unchecked is sound when the queue has ≥1 element.
-                // The Consumer is the sole reader (foreground-only by §11.1)
-                // so no race can drain the queue between the peek and the
-                // unchecked dequeue.
-                let _ = unsafe { queue.dequeue_unchecked() };
+            if let Some(seg) = queue.dequeue() {
                 self.producer_current = Some(seg);
                 shared
                     .producer_segment_dequeued_total
@@ -2890,7 +2873,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     pub fn runtime_modulated_tick(
         &mut self,
         now: u64,
-        queue: &mut Consumer<'_, Segment, Q_N>,
+        queue: &mut SegConsumer<Segment>,
         pool: &CurvePool,
         shared: &SharedState,
     ) {

@@ -28,6 +28,7 @@
 extern crate alloc;
 
 pub mod bezier_root;
+pub mod c_segment_queue;
 pub mod clock;
 pub mod config;
 pub mod curve_pool;

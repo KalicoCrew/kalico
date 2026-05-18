@@ -110,7 +110,12 @@ unsafe extern "C" {
 /// `kalico_runtime_drain_trace`, …).
 #[allow(missing_debug_implementations)] // Producer/Consumer don't implement Debug.
 pub struct FgState {
-    pub queue_producer: Producer<'static, Segment, Q_N>,
+    /// 2026-05-18: segment SPSC moved to C-backed queue (see
+    /// `crate::c_segment_queue` and `src/kalico_segment_queue.c`). The
+    /// Producer here is a zero-sized marker that routes through C extern
+    /// fns. The heapless::spsc::Producer was previously stored here but is
+    /// miscompiled by LLVM under our borrow-projection pattern.
+    pub queue_producer: crate::c_segment_queue::Producer<Segment>,
     pub trace_consumer: Consumer<'static, TraceSample, TRACE_RING_N>,
     pub stream_state_machine: crate::stream::FgStreamState,
     /// Stream-open identity tracking for §8.5 idempotency (same-`stream_id` rule).
@@ -135,7 +140,9 @@ pub struct FgState {
 /// ISR-only state. Touched exclusively by the TIM5 ISR.
 #[allow(missing_debug_implementations)] // Producer/Consumer don't implement Debug.
 pub struct IsrState {
-    pub queue_consumer: Consumer<'static, Segment, Q_N>,
+    /// 2026-05-18: segment SPSC moved to C-backed queue. See
+    /// `crate::c_segment_queue` for the rationale.
+    pub queue_consumer: crate::c_segment_queue::Consumer<Segment>,
     pub trace_producer: Producer<'static, TraceSample, TRACE_RING_N>,
     pub engine: EngineImpl,
     /// CYCCNT widening lives here from Phase 1 onward (Round-3 fix B-R3-4):
@@ -527,11 +534,17 @@ impl RuntimeContext {
         // exclusively-owned for the duration of init. We only form raw
         // pointers to fields and never a `&mut RuntimeContext`.
         unsafe {
-            // Initialize queue storage and split into producer + consumer.
+            // 2026-05-18: segment queue is now C-backed (see
+            // `c_segment_queue.rs`). queue_storage stays in the struct for
+            // ABI compatibility but is unused — initialize it to Queue::new()
+            // so it has a defined value, then ignore it. Reset the C-side
+            // queue here so a fresh `runtime_handle_create` always starts
+            // with an empty queue.
             let queue_storage_ptr = core::ptr::addr_of_mut!((*rt_ptr).queue_storage);
             queue_storage_ptr.write(UnsafeCell::new(Queue::new()));
-            let queue_ref: &'static mut Queue<Segment, Q_N> = &mut *(*queue_storage_ptr).get();
-            let (q_producer, q_consumer) = queue_ref.split();
+            crate::c_segment_queue::reset();
+            let q_producer = crate::c_segment_queue::Producer::<Segment>::new();
+            let q_consumer = crate::c_segment_queue::Consumer::<Segment>::new();
 
             // Initialize trace storage and split.
             let trace_storage_ptr = core::ptr::addr_of_mut!((*rt_ptr).trace_storage);
