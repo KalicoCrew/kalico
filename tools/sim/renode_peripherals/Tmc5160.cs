@@ -54,6 +54,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             this.registers = new Dictionary<byte, uint>();
             this.frameBuffer = new List<byte>();
             this.xdirectHistory = new List<XDirectRecord>();
+            this.writeHistory = new Dictionary<byte, List<uint>>();
             Reset();
         }
 
@@ -62,6 +63,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
             frameBuffer.Clear();
             registers.Clear();
             xdirectHistory.Clear();
+            writeHistory.Clear();
             csAsserted = false;
             xdirectWriteCount = 0;
             xdirectRejectedCount = 0;
@@ -140,6 +142,24 @@ namespace Antmicro.Renode.Peripherals.Sensors
 
             if (isWrite)
             {
+                // Record every write into the per-register history so host
+                // tests can introspect the full sequence of values that
+                // landed at any address (in particular GCONF.direct_mode=1
+                // bringup writes, IHOLD_IRUN current updates, and the
+                // XDIRECT modulation stream). Keep the per-register list
+                // bounded so a long sim run doesn't grow unbounded; the
+                // accessor surfaces the most-recent N values regardless.
+                if (!writeHistory.TryGetValue(regAddr, out var hist))
+                {
+                    hist = new List<uint>();
+                    writeHistory[regAddr] = hist;
+                }
+                if (hist.Count >= HistoryCapacity)
+                {
+                    hist.RemoveAt(0);
+                }
+                hist.Add(value);
+
                 switch (regAddr)
                 {
                     case RegGconf:
@@ -248,6 +268,45 @@ namespace Antmicro.Renode.Peripherals.Sensors
                 : xdirectHistory[xdirectHistory.Count - 1].CoilB;
         }
 
+        // Returns up to `max` most-recent writes to `regAddr` as a multi-line
+        // string: "0x<value_hex>\n". One row per write. Allows host tests to
+        // assert that specific values landed at any register (e.g. that some
+        // GCONF write had bit 16 (direct_mode) set, that IHOLD_IRUN was
+        // re-issued with a particular IRUN value, etc.). For XDIRECT the
+        // richer `XDirectHistory(int)` method above is preferred since it
+        // also surfaces decoded coil currents and virtual-time timestamps.
+        public string GetWriteHistory(uint regAddr, int max)
+        {
+            if (max <= 0)
+            {
+                return string.Empty;
+            }
+            if (!writeHistory.TryGetValue((byte)(regAddr & 0x7F), out var hist)
+                || hist.Count == 0)
+            {
+                return string.Empty;
+            }
+            int n = Math.Min(max, hist.Count);
+            int start = hist.Count - n;
+            var sb = new StringBuilder();
+            for (int i = start; i < hist.Count; i++)
+            {
+                sb.AppendFormat("0x{0:X8}\n", hist[i]);
+            }
+            return sb.ToString();
+        }
+
+        // Returns the number of writes recorded for `regAddr`. Cheap to query
+        // (no string allocation); use in tight polling loops where the host
+        // is waiting for the first GCONF / XDIRECT / IHOLD_IRUN write to
+        // arrive.
+        public int GetWriteHistoryCount(uint regAddr)
+        {
+            return writeHistory.TryGetValue((byte)(regAddr & 0x7F), out var hist)
+                ? hist.Count
+                : 0;
+        }
+
         // Returns up to `max` most-recent XDIRECT writes as a multi-line
         // string: "<time_us>,<coil_a>,<coil_b>,<raw_hex>\n". One row per write.
         public string XDirectHistory(int max)
@@ -289,6 +348,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
         private readonly Dictionary<byte, uint> registers;
         private readonly List<byte> frameBuffer;
         private readonly List<XDirectRecord> xdirectHistory;
+        private readonly Dictionary<byte, List<uint>> writeHistory;
         private bool csAsserted;
         private uint xdirectWriteCount;
         private uint xdirectRejectedCount;
