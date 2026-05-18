@@ -45,6 +45,14 @@ void sched_get_dispatch_history(uint32_t *idx, uint32_t addrs[SCHED_DISPATCH_HIS
 // First sched_add_timer call that passed a pointer landing inside transmit_buf
 // or batch_buf — captures the caller LR for addr2line decoding.
 void sched_get_bad_add(uint32_t *caller, uint32_t *value);
+
+// Walk the timer chain starting from `periodic_timer` (the link-time-initialized
+// root) until either: (a) hit `sentinel_timer` (chain intact), (b) hit a pointer
+// in known scratch range (chain broken — report predecessor's addr/func), or
+// (c) > max_steps iterations (corrupt loop). On (b)/(c) returns the predecessor's
+// addr, func, and the offending value; on (a) returns zeros.
+void sched_walk_for_corruption(uint32_t *pred_addr, uint32_t *pred_func,
+                               uint32_t *bad_next, uint32_t *steps);
 void sched_timer_reset(void);
 void sched_wake_tasks(void);
 uint8_t sched_check_set_tasks_busy(void);

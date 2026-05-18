@@ -95,6 +95,43 @@ sched_get_bad_add(uint32_t *caller, uint32_t *value)
     *value  = sched_bad_add_value;
 }
 
+void
+sched_walk_for_corruption(uint32_t *pred_addr, uint32_t *pred_func,
+                          uint32_t *bad_next, uint32_t *steps)
+{
+    *pred_addr = 0;
+    *pred_func = 0;
+    *bad_next  = 0;
+    *steps     = 0;
+    struct timer *pos = &periodic_timer;
+    for (uint32_t i = 0; i < 64; i++) {
+        struct timer *nx = pos->next;
+        // Sentinel marks end of chain.
+        if (nx == &sentinel_timer) {
+            *steps = i + 1;
+            return;
+        }
+        // Bogus pointer: in known scratch range, or unaligned, or outside RAM.
+        uint32_t nxu = (uint32_t)nx;
+        if (is_in_known_scratch(nxu)
+            || (nxu & 3) != 0
+            || nxu < 0x20000010u
+            || nxu >= 0x20020000u) {
+            *pred_addr = (uint32_t)pos;
+            *pred_func = (uint32_t)pos->func;
+            *bad_next  = nxu;
+            *steps     = i;
+            return;
+        }
+        pos = nx;
+    }
+    // Ran off — chain is too long or looped.
+    *pred_addr = (uint32_t)pos;
+    *pred_func = (uint32_t)pos->func;
+    *bad_next  = (uint32_t)pos->next;
+    *steps     = 64;
+}
+
 // True if `p` is inside one of the known scratch buffers a real timer should
 // never live in. Conservative — does not catch all corruption, but the two
 // observed corruption-target ranges are transmit_buf (0x20000114..0x20000514)
