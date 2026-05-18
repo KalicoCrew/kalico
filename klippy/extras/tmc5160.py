@@ -436,9 +436,6 @@ class TMC5160:
         ):
             _enable_direct_mode(config, stepper_section, self.fields)
             self._phase_stepping = True
-            self._phase_bus_id, self._phase_cs_pin_id = (
-                self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
-            )
         # Register commands
         current_helper = TMC5160CurrentHelper(
             config, self.mcu_tmc, direct_mode=self._phase_stepping,
@@ -516,13 +513,20 @@ class TMC5160:
         """Return (bus_id, cs_pin_id) for phase-stepping integration.
 
         Raises if this TMC5160 is not configured for phase stepping.
-        Called by motion_toolhead._configure_axes_per_mcu when building
-        the 33-byte configure_axes blob.
+        Resolves the integer IDs lazily on first call (the MCU must
+        have completed identify before this fires, which is guaranteed
+        by motion_toolhead._configure_axes_per_mcu running in a
+        klippy:connect handler).
         """
         if not self._phase_stepping:
             raise self.printer.config_error(
                 "get_phase_config called on a TMC5160 without "
                 "phase_stepping=True on the matching stepper section"
+            )
+        if self._phase_bus_id is None or self._phase_cs_pin_id is None:
+            # Lazy resolution: pull integer IDs from the now-identified MCU.
+            self._phase_bus_id, self._phase_cs_pin_id = (
+                self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
             )
         return (self._phase_bus_id, self._phase_cs_pin_id)
 
