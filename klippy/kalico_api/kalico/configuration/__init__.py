@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import typing
 
 from klippy.configfile import error as ConfigError
@@ -10,7 +11,7 @@ from ..loader import load_context
 if typing.TYPE_CHECKING:
     from configparser import RawConfigParser
 
-    from klippy.configfile import ConfigWrapper
+    from klippy.configfile import ConfigWrapper, PrinterConfig
     from klippy.printer import Printer
 
 from ..types import Decorator, GCodeFunction, validate_gcode_function
@@ -24,6 +25,7 @@ class Configuration:
 
     def __init__(self, config: ConfigWrapper):
         self._printer: Printer = config.get_printer()
+        self._pconfig: PrinterConfig = self._printer.lookup_object("configfile")
         self._config = config.getsection("printer")
         self._fileconfig: RawConfigParser = config.fileconfig
 
@@ -48,6 +50,16 @@ class Configuration:
 
     def has(self, section: str):
         return self._config.has_section(section)
+
+    def include(self, include):
+        # escape hatch to include legacy .cfg files
+        caller_filename = inspect.stack()[1].filename
+        self._pconfig._resolve_include(
+            caller_filename,
+            include,
+            self._fileconfig,
+            visited=set(),
+        )
 
     __getitem__ = get
     __contains__ = has

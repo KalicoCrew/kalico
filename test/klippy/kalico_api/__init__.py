@@ -109,3 +109,5 @@ default: str = 'test'
 default_int: int = 5
 """,
 )
+
+config.include("legacy.cfg")
