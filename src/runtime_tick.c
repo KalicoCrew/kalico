@@ -1915,8 +1915,28 @@ init_step_time_timers(void)
     }
 
     // Set up the producer timer (don't queue it yet — push_segment kicks).
-    runtime_producer_timer.timer.func = runtime_producer_event;
-    runtime_producer_timer.enabled = 0;
+    //
+    // CRITICAL: only reset if it isn't already live. This function is
+    // called from `handle_configure_axes`, and G28 X (homing) triggers a
+    // second `configure_axes` blob to re-arm endstops with the homing
+    // stepper set. By that point the producer timer is already linked
+    // into Klipper's chain from the first run's `push_segment`-driven
+    // arming. Unconditionally writing `enabled = 0` here lets the very
+    // next `arm_producer_timer_if_kicked_inline` (or `_force`) read
+    // enabled=0, set it to 1, and call `sched_add_timer` on a struct
+    // that is ALREADY in the linked list. `insert_timer`'s unconditional
+    // `t->next = pos; prev->next = t` then creates a cycle in the chain;
+    // the dispatcher visits the same node repeatedly, downstream
+    // `struct stepper.time.func` slots get aliased over with whatever
+    // values the corrupted walk writes, and the next `sched_timer_dispatch`
+    // trips "Rescheduled timer in the past". Mirrors the consumer-side
+    // guard at the top of the loop above.
+    //
+    // Credit: parallel rust-engineer fresh-eyes audits #2 and #3
+    // (2026-05-19) independently converged on this exact diagnosis.
+    if (!runtime_producer_timer.enabled) {
+        runtime_producer_timer.timer.func = runtime_producer_event;
+    }
 }
 
 #endif // CONFIG_KALICO_RUNTIME
