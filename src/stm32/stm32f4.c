@@ -277,5 +277,8 @@ armcm_main(void)
 
     clock_setup();
 
+    // Arm MPU protection on .sched_protected. See stm32h7.c for rationale.
+    mpu_protect_init();
+
     sched_main();
 }

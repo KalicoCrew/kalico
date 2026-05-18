@@ -15,13 +15,65 @@
 #include "sched.h" // sched_check_periodic
 #include "stepper.h" // stepper_event
 
-static struct timer periodic_timer, sentinel_timer, deleted_timer;
+// Forward declarations of the timer-event handlers that own each foundation
+// timer in SchedState. Defined below.
+static uint_fast8_t periodic_event(struct timer *t);
+static uint_fast8_t sentinel_event(struct timer *t);
+static uint_fast8_t deleted_event(struct timer *t);
 
+// Forward declaration of the wrap-event handler that drives wrap_timer. The
+// implementation is CPU-specific (it pokes SysTick) and lives in
+// src/generic/armcm_timer.c.
+extern uint_fast8_t timer_wrap_event(struct timer *t);
+
+// All scheduler foundation state lives in a single struct, placed in the
+// MPU-protected `.sched_protected` linker section. New scheduler-foundation
+// state added in future MUST go into this struct — there is no separate
+// per-variable attribute that can be forgotten. mpu_protect_init() marks
+// the section read-only at boot; sched_writable_begin() / sched_writable_end()
+// toggle it RW for the brief window each sched.c writer needs. Any other
+// code (Rust runtime, foreground tasks, IRQs) writing here will fault into
+// MemManage_Handler — that captures the offending PC, so we identify
+// the rogue writer immediately rather than chasing downstream corruption.
+//
+// Status flags (tasks_status / tasks_busy / shutdown_status / shutdown_reason)
+// are deliberately kept OUTSIDE this struct in SchedFlags below. They get
+// written from the hot run_tasks loop at very high frequency, and the
+// observed corruption has only ever hit timer_list / last_insert / the
+// foundation timers — never the flags. Keeping flags unprotected avoids
+// thousands of unnecessary MPU toggles per second.
+static struct sched_protected_state {
+    struct timer periodic_timer;
+    struct timer sentinel_timer;
+    struct timer deleted_timer;
+    struct timer wrap_timer;
+    struct timer *timer_list;
+    struct timer *last_insert;
+} SchedState SCHED_PROTECTED = {
+    .periodic_timer = { .func = periodic_event,
+                        .next = &SchedState.sentinel_timer },
+    .sentinel_timer = { .func = sentinel_event,
+                        .waketime = 0x80000000 },
+    .deleted_timer  = { .func = deleted_event },
+    .wrap_timer     = { .func = timer_wrap_event,
+                        .waketime = 0xffffff },
+    .timer_list  = &SchedState.periodic_timer,
+    .last_insert = &SchedState.periodic_timer,
+};
+
+// Status / shutdown flags — high-frequency writes, no MPU protection.
 static struct {
-    struct timer *timer_list, *last_insert;
     int8_t tasks_status, tasks_busy;
     uint8_t shutdown_status, shutdown_reason;
-} SchedStatus = {.timer_list = &periodic_timer, .last_insert = &periodic_timer};
+} SchedFlags;
+
+// Expose the wrap_timer address to armcm_timer.c::timer_reset, which
+// schedules it when SysTick can't cover a full 100 ms in one shot.
+struct timer *
+sched_get_wrap_timer(void)
+{
+    return &SchedState.wrap_timer;
+}
 
 
 /****************************************************************
@@ -36,16 +88,14 @@ periodic_event(struct timer *t)
 {
     // Make sure the stats task runs periodically
     sched_wake_tasks();
-    // Reschedule timer
-    periodic_timer.waketime += timer_from_us(100000);
-    sentinel_timer.waketime = periodic_timer.waketime + 0x80000000;
+    // Reschedule timer. Writes to MPU-protected SchedState — caller chain
+    // (SysTick_Handler → timer_dispatch_many) opens the protection window
+    // around the dispatch loop, so no per-write toggle here.
+    SchedState.periodic_timer.waketime += timer_from_us(100000);
+    SchedState.sentinel_timer.waketime =
+        SchedState.periodic_timer.waketime + 0x80000000;
     return SF_RESCHEDULE;
 }
-
-static struct timer periodic_timer = {
-    .func = periodic_event,
-    .next = &sentinel_timer,
-};
 
 // The sentinel timer is always the last timer on timer_list - its
 // presence allows the code to avoid checking for NULL while
@@ -57,11 +107,6 @@ sentinel_event(struct timer *t)
 {
     shutdown("sentinel timer called");
 }
-
-static struct timer sentinel_timer = {
-    .func = sentinel_event,
-    .waketime = 0x80000000,
-};
 
 // Find position for a timer in timer_list and insert it
 static void __always_inline
@@ -81,94 +126,30 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
     prev->next = t;
 }
 
-// Diagnostic latch for the first sched_add_timer call that passed a pointer
-// that looks bogus (in a known buffer region). __builtin_return_address(0)
-// captures the LR of the immediate caller so we can decode which function
-// inserted the bad pointer via `addr2line`.
-static volatile uint32_t sched_bad_add_caller;
-static volatile uint32_t sched_bad_add_value;
-
-void
-sched_get_bad_add(uint32_t *caller, uint32_t *value)
-{
-    *caller = sched_bad_add_caller;
-    *value  = sched_bad_add_value;
-}
-
-// True if `p` is inside one of the known scratch buffers a real timer should
-// never live in. Conservative — does not catch all corruption, but the two
-// observed corruption-target ranges are transmit_buf (0x20000114..0x20000514)
-// and batch_buf (0x20000ba4..0x200015a4).
-static inline int
-is_in_known_scratch(uint32_t p)
-{
-    return (p >= 0x20000114u && p < 0x20000514u)
-        || (p >= 0x20000ba4u && p < 0x200015a4u);
-}
-
-void
-sched_walk_for_corruption(uint32_t *pred_addr, uint32_t *pred_func,
-                          uint32_t *bad_next, uint32_t *steps)
-{
-    *pred_addr = 0;
-    *pred_func = 0;
-    *bad_next  = 0;
-    *steps     = 0;
-    struct timer *pos = &periodic_timer;
-    for (uint32_t i = 0; i < 64; i++) {
-        struct timer *nx = pos->next;
-        // Sentinel marks end of chain.
-        if (nx == &sentinel_timer) {
-            *steps = i + 1;
-            return;
-        }
-        // Bogus pointer: in known scratch range, or unaligned, or outside RAM.
-        uint32_t nxu = (uint32_t)nx;
-        if (is_in_known_scratch(nxu)
-            || (nxu & 3) != 0
-            || nxu < 0x20000010u
-            || nxu >= 0x20020000u) {
-            *pred_addr = (uint32_t)pos;
-            *pred_func = (uint32_t)pos->func;
-            *bad_next  = nxu;
-            *steps     = i;
-            return;
-        }
-        pos = nx;
-    }
-    // Ran off — chain is too long or looped.
-    *pred_addr = (uint32_t)pos;
-    *pred_func = (uint32_t)pos->func;
-    *bad_next  = (uint32_t)pos->next;
-    *steps     = 64;
-}
-
 // Schedule a function call at a supplied time.
 void
 sched_add_timer(struct timer *add)
 {
-    if (is_in_known_scratch((uint32_t)add) && !sched_bad_add_caller) {
-        sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
-        sched_bad_add_value  = (uint32_t)add;
-    }
     uint32_t waketime = add->waketime;
     irqstatus_t flag = irq_save();
-    struct timer *tl = SchedStatus.timer_list;
+    sched_writable_begin();
+    struct timer *tl = SchedState.timer_list;
     if (unlikely(timer_is_before(waketime, tl->waketime))) {
         // This timer is before all other scheduled timers
         if (timer_is_before(waketime, timer_read_time()))
             try_shutdown("Timer too close");
-        if (tl == &deleted_timer)
-            add->next = deleted_timer.next;
+        if (tl == &SchedState.deleted_timer)
+            add->next = SchedState.deleted_timer.next;
         else
             add->next = tl;
-        deleted_timer.waketime = waketime;
-        deleted_timer.next = add;
-        SchedStatus.timer_list = &deleted_timer;
+        SchedState.deleted_timer.waketime = waketime;
+        SchedState.deleted_timer.next = add;
+        SchedState.timer_list = &SchedState.deleted_timer;
         timer_kick();
     } else {
         insert_timer(tl, add, waketime);
     }
+    sched_writable_end();
     irq_restore(flag);
 }
 
@@ -179,68 +160,42 @@ deleted_event(struct timer *t)
     return SF_DONE;
 }
 
-static struct timer deleted_timer = {
-    .func = deleted_event,
-};
-
 // Remove a timer that may be live.
 void
 sched_del_timer(struct timer *del)
 {
     irqstatus_t flag = irq_save();
-    if (SchedStatus.timer_list == del) {
+    sched_writable_begin();
+    if (SchedState.timer_list == del) {
         // Deleting the next active timer - replace with deleted_timer
-        deleted_timer.waketime = del->waketime;
-        deleted_timer.next = del->next;
-        SchedStatus.timer_list = &deleted_timer;
+        SchedState.deleted_timer.waketime = del->waketime;
+        SchedState.deleted_timer.next = del->next;
+        SchedState.timer_list = &SchedState.deleted_timer;
     } else {
         // Find and remove from timer list (if present)
         struct timer *pos;
-        for (pos = SchedStatus.timer_list; pos->next; pos = pos->next) {
+        for (pos = SchedState.timer_list; pos->next; pos = pos->next) {
             if (pos->next == del) {
                 pos->next = del->next;
                 break;
             }
         }
     }
-    if (SchedStatus.last_insert == del)
-        SchedStatus.last_insert = &periodic_timer;
+    if (SchedState.last_insert == del)
+        SchedState.last_insert = &SchedState.periodic_timer;
+    sched_writable_end();
     irq_restore(flag);
 }
 
-// Diagnostic ring of the last few dispatched timers. Filled at the entry
-// of sched_timer_dispatch, before t->func runs. Read via
-// sched_get_dispatch_history. See sched.h for semantics.
-static volatile uint32_t sched_dispatch_history_addr[SCHED_DISPATCH_HISTORY_N];
-static volatile uint32_t sched_dispatch_history_func[SCHED_DISPATCH_HISTORY_N];
-static volatile uint32_t sched_dispatch_history_idx;
-
-void
-sched_get_dispatch_history(uint32_t *idx, uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
-                           uint32_t funcs[SCHED_DISPATCH_HISTORY_N])
-{
-    *idx = sched_dispatch_history_idx;
-    for (int i = 0; i < SCHED_DISPATCH_HISTORY_N; i++) {
-        addrs[i] = sched_dispatch_history_addr[i];
-        funcs[i] = sched_dispatch_history_func[i];
-    }
-}
-
 // Invoke the next timer - called from board hardware irq code.
+// Caller (timer_dispatch_many in armcm_timer.c) is responsible for holding
+// the MPU writable window open across the dispatch loop — we do not toggle
+// per-call here to avoid jitter on the hot path.
 unsigned int
 sched_timer_dispatch(void)
 {
     // Invoke timer callback
-    struct timer *t = SchedStatus.timer_list;
-    // Diagnostic: snapshot the head BEFORE invoking its func. This is the
-    // timer whose `.next` (post-dispatch) will become the next head — so
-    // the entry just before a head-corruption transition identifies the
-    // predecessor whose `.next` was clobbered.
-    uint32_t hidx = sched_dispatch_history_idx;
-    sched_dispatch_history_addr[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t;
-    sched_dispatch_history_func[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t->func;
-    sched_dispatch_history_idx = hidx + 1;
-
+    struct timer *t = SchedState.timer_list;
     uint_fast8_t res;
     uint32_t updated_waketime;
     if (CONFIG_INLINE_STEPPER_HACK && likely(!t->func)) {
@@ -255,47 +210,33 @@ sched_timer_dispatch(void)
     unsigned int next_waketime = updated_waketime;
     if (unlikely(res == SF_DONE)) {
         next_waketime = t->next->waketime;
-        SchedStatus.timer_list = t->next;
-        if (SchedStatus.last_insert == t)
-            SchedStatus.last_insert = t->next;
+        SchedState.timer_list = t->next;
+        if (SchedState.last_insert == t)
+            SchedState.last_insert = t->next;
     } else if (!timer_is_before(updated_waketime, t->next->waketime)) {
         next_waketime = t->next->waketime;
-        SchedStatus.timer_list = t->next;
-        struct timer *pos = SchedStatus.last_insert;
+        SchedState.timer_list = t->next;
+        struct timer *pos = SchedState.last_insert;
         if (timer_is_before(updated_waketime, pos->waketime))
-            pos = SchedStatus.timer_list;
+            pos = SchedState.timer_list;
         insert_timer(pos, t, updated_waketime);
-        SchedStatus.last_insert = t;
+        SchedState.last_insert = t;
     }
 
     return next_waketime;
-}
-
-// Return the timer at the head of the dispatch list. Read-only; intended
-// for diagnostics (e.g. identifying which timer's reschedule landed in the
-// past before try_shutdown). Caller is responsible for IRQ context.
-struct timer *
-sched_get_head_timer(void)
-{
-    return SchedStatus.timer_list;
-}
-
-// Return the most-recently-inserted timer (post-SF_RESCHEDULE this is `t`,
-// the timer that was just dispatched and reinserted). Diagnostic use.
-struct timer *
-sched_get_last_insert(void)
-{
-    return SchedStatus.last_insert;
 }
 
 // Remove all user timers
 void
 sched_timer_reset(void)
 {
-    SchedStatus.timer_list = &deleted_timer;
-    deleted_timer.waketime = periodic_timer.waketime;
-    deleted_timer.next = SchedStatus.last_insert = &periodic_timer;
-    periodic_timer.next = &sentinel_timer;
+    sched_writable_begin();
+    SchedState.timer_list = &SchedState.deleted_timer;
+    SchedState.deleted_timer.waketime = SchedState.periodic_timer.waketime;
+    SchedState.deleted_timer.next = SchedState.last_insert
+        = &SchedState.periodic_timer;
+    SchedState.periodic_timer.next = &SchedState.sentinel_timer;
+    sched_writable_end();
     timer_kick();
 }
 
@@ -312,7 +253,7 @@ sched_timer_reset(void)
 void
 sched_wake_tasks(void)
 {
-    SchedStatus.tasks_status = TS_REQUESTED;
+    SchedFlags.tasks_status = TS_REQUESTED;
 }
 
 // Check if tasks busy (called from low-level timer dispatch code)
@@ -320,9 +261,9 @@ uint8_t
 sched_check_set_tasks_busy(void)
 {
     // Return busy if tasks never idle between two consecutive calls
-    if (SchedStatus.tasks_busy >= TS_REQUESTED)
+    if (SchedFlags.tasks_busy >= TS_REQUESTED)
         return 1;
-    SchedStatus.tasks_busy = SchedStatus.tasks_status;
+    SchedFlags.tasks_busy = SchedFlags.tasks_status;
     return 0;
 }
 
@@ -352,20 +293,20 @@ run_tasks(void)
     for (;;) {
         // Check if can sleep
         irq_poll();
-        if (SchedStatus.tasks_status != TS_REQUESTED) {
+        if (SchedFlags.tasks_status != TS_REQUESTED) {
             start -= timer_read_time();
             irq_disable();
-            if (SchedStatus.tasks_status != TS_REQUESTED) {
+            if (SchedFlags.tasks_status != TS_REQUESTED) {
                 // Sleep processor (only run timers) until tasks woken
-                SchedStatus.tasks_status = SchedStatus.tasks_busy = TS_IDLE;
+                SchedFlags.tasks_status = SchedFlags.tasks_busy = TS_IDLE;
                 do {
                     irq_wait();
-                } while (SchedStatus.tasks_status != TS_REQUESTED);
+                } while (SchedFlags.tasks_status != TS_REQUESTED);
             }
             irq_enable();
             start += timer_read_time();
         }
-        SchedStatus.tasks_status = TS_RUNNING;
+        SchedFlags.tasks_status = TS_RUNNING;
 
         // Run all tasks
         extern void ctr_run_taskfuncs(void);
@@ -387,19 +328,19 @@ run_tasks(void)
 uint8_t
 sched_is_shutdown(void)
 {
-    return !!SchedStatus.shutdown_status;
+    return !!SchedFlags.shutdown_status;
 }
 
 // Transition out of shutdown state
 void
 sched_clear_shutdown(void)
 {
-    if (!SchedStatus.shutdown_status)
+    if (!SchedFlags.shutdown_status)
         shutdown("Shutdown cleared when not shutdown");
-    if (SchedStatus.shutdown_status == 2)
+    if (SchedFlags.shutdown_status == 2)
         // Ignore attempt to clear shutdown if still processing shutdown
         return;
-    SchedStatus.shutdown_status = 0;
+    SchedFlags.shutdown_status = 0;
 }
 
 // Invoke all shutdown functions (as declared by DECL_SHUTDOWN)
@@ -408,31 +349,31 @@ run_shutdown(int reason)
 {
     irq_disable();
     uint32_t cur = timer_read_time();
-    if (!SchedStatus.shutdown_status)
-        SchedStatus.shutdown_reason = reason;
-    SchedStatus.shutdown_status = 2;
+    if (!SchedFlags.shutdown_status)
+        SchedFlags.shutdown_reason = reason;
+    SchedFlags.shutdown_status = 2;
     sched_timer_reset();
     extern void ctr_run_shutdownfuncs(void);
     ctr_run_shutdownfuncs();
-    SchedStatus.shutdown_status = 1;
+    SchedFlags.shutdown_status = 1;
     irq_enable();
 
     sendf("shutdown clock=%u static_string_id=%hu", cur
-          , SchedStatus.shutdown_reason);
+          , SchedFlags.shutdown_reason);
 }
 
 // Report the last shutdown reason code
 void
 sched_report_shutdown(void)
 {
-    sendf("is_shutdown static_string_id=%hu", SchedStatus.shutdown_reason);
+    sendf("is_shutdown static_string_id=%hu", SchedFlags.shutdown_reason);
 }
 
 // Shutdown the machine if not already in the process of shutting down
 void __always_inline
 sched_try_shutdown(uint_fast8_t reason)
 {
-    if (!SchedStatus.shutdown_status)
+    if (!SchedFlags.shutdown_status)
         sched_shutdown(reason);
 }
 
@@ -457,14 +398,6 @@ sched_main(void)
 {
     extern void ctr_run_initfuncs(void);
     ctr_run_initfuncs();
-
-    // Diagnostic: emit SchedStatus.timer_list value right after all init
-    // functions ran. If it's already bogus here, the corruption is from
-    // one of the DECL_INIT functions; we can then bisect by adding the
-    // same emit at the top vs bottom of each DECL_INIT.
-    output("post_init tl %u li %u",
-           (uint32_t)SchedStatus.timer_list,
-           (uint32_t)SchedStatus.last_insert);
 
     sendf("starting");
 

@@ -1073,17 +1073,11 @@ fault_handler_report_task(void)
            rt_diag_persistent.last_packed,
            rt_diag_persistent.last_us,
            rt_diag_persistent.fault_count);
-    // DWT-watchpoint state + the live value at &SchedStatus.timer_list.
-    // emits_done counts how many times we've reported, so we can correlate
-    // the value's appearance time with boot.
-    extern volatile uint32_t schedstatus_writer_pc;
-    uint32_t timer_list_now = *(volatile uint32_t *)0x20000038u;
-    output("dwt_status emit %u func0 %u comp0 %u writer_pc %u tl %u",
-           emits_done,
-           DWT->FUNCTION0,
-           DWT->COMP0,
-           schedstatus_writer_pc,
-           timer_list_now);
+    // MPU MemManage violations (writes to .sched_protected from outside
+    // sched.c) are captured by the existing FAULT_TRAMPOLINE path above:
+    // fault_rec.pc holds the writing PC and fault_rec.mmfar holds the
+    // faulting address. The prior_fault / prior_fault_status outputs
+    // emitted earlier in this task already surface them.
 #endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few

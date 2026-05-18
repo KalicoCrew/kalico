@@ -106,93 +106,27 @@ udelay(uint32_t usecs)
         ;
 }
 
-// Dummy timer to avoid scheduling a SysTick irq greater than 0xffffff
-static uint_fast8_t
+// Wrap-event handler. Drives SchedState.wrap_timer on CPUs whose SysTick
+// LOAD register can't cover a full 100 ms period. The struct itself lives
+// in sched.c (inside SchedState, MPU-protected); we just provide the
+// callback. Caller (timer_dispatch_many's dispatch loop) holds the
+// .sched_protected MPU window open, so the waketime write is permitted.
+uint_fast8_t
 timer_wrap_event(struct timer *t)
 {
     t->waketime += 0xffffff;
     return SF_RESCHEDULE;
 }
-static struct timer wrap_timer = {
-    .func = timer_wrap_event,
-    .waketime = 0xffffff,
-};
+
 void
 timer_reset(void)
 {
     if (timer_from_us(100000) <= 0xffffff)
         // Timer in sched.c already ensures SysTick wont overflow
         return;
-    sched_add_timer(&wrap_timer);
+    sched_add_timer(sched_get_wrap_timer());
 }
 DECL_SHUTDOWN(timer_reset);
-
-// Latched PC of the instruction that wrote to the watchpointed address.
-// Captured by DebugMon_Handler on the first hit; the comparator is disabled
-// immediately afterward so we keep only the first writer (later writes from
-// sched.c after corruption would overwrite it otherwise).
-volatile uint32_t schedstatus_writer_pc
-    __attribute__((used, externally_visible));
-
-// DebugMon exception handler. Naked: no prologue, so MSP still points at the
-// exception-stacked {R0,R1,R2,R3,R12,LR,PC,xPSR}. We:
-//   1. Read the just-written value at &SchedStatus.timer_list (0x20000038).
-//   2. If it's NOT in either known scratch buffer (transmit_buf or batch_buf),
-//      this is a legit sched.c write — return without touching the latch.
-//   3. If it IS in scratch range and the latch is empty, snapshot the
-//      stacked PC into schedstatus_writer_pc and disable the comparator.
-//   4. If it IS in scratch range but the latch is already set, leave it.
-__attribute__((naked, used))
-void
-DebugMon_Handler(void)
-{
-    __asm volatile(
-        "ldr r0, =0x20000038\n"
-        "ldr r0, [r0]\n"
-        // Range check: transmit_buf [0x20000114, 0x20000514)
-        "movw r1, #0x0114\n"
-        "movt r1, #0x2000\n"
-        "cmp r0, r1\n"
-        "blt 2f\n"
-        "movw r1, #0x0514\n"
-        "movt r1, #0x2000\n"
-        "cmp r0, r1\n"
-        "blt 3f\n"
-        "2:\n"
-        // Range check: batch_buf [0x20000ba4, 0x200015a4)
-        "movw r1, #0x0ba4\n"
-        "movt r1, #0x2000\n"
-        "cmp r0, r1\n"
-        "blt 4f\n"
-        "movw r1, #0x15a4\n"
-        "movt r1, #0x2000\n"
-        "cmp r0, r1\n"
-        "bge 4f\n"
-        "3:\n"
-        // Bogus value. Latch if empty.
-        "ldr r2, =schedstatus_writer_pc\n"
-        "ldr r3, [r2]\n"
-        "cbnz r3, 4f\n"
-        // Determine PC offset: depends on whether the faulting context had
-        // FP context stacked. EXC_RETURN bit 4 (FType): 1=basic frame only
-        // (PC at MSP+24), 0=basic+FP frame (PC at MSP+24+72=96). EXC_RETURN
-        // is in LR while in handler.
-        "mrs r1, msp\n"
-        "tst lr, #0x10\n"          // FType bit
-        "ite ne\n"
-        "addne r1, r1, #24\n"      // basic frame
-        "addeq r1, r1, #96\n"      // FP-extended frame
-        "ldr r1, [r1]\n"
-        "str r1, [r2]\n"
-        // Disable DWT comparator 0 to silence further hits.
-        "ldr r2, =0xE0001028\n"     // DWT->FUNCTION0
-        "mov r3, #0\n"
-        "str r3, [r2]\n"
-        "4:\n"
-        "bx lr\n"
-    );
-}
-DECL_ARMCM_IRQ(DebugMon_Handler, -4);
 
 void
 timer_init(void)
@@ -201,24 +135,6 @@ timer_init(void)
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     DWT->CYCCNT = 0;
-
-    // Diagnostic watchpoint: trap any write to &SchedStatus.timer_list
-    // (address 0x20000038 in the current build). On hit, DebugMon_Handler
-    // latches the faulting PC into schedstatus_writer_pc and disables the
-    // comparator. The address is verified at runtime via nm against the
-    // ELF; if the layout changes the LR diag below will simply not fire.
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_MON_EN_Msk;
-    DWT->COMP0     = 0x20000038u;
-    DWT->MASK0     = 0u;        // exact-address match, no mask
-    // FUNCTION = 0b0110 = data-address-match on write (ARMv7-M DWT v1+v2).
-    DWT->FUNCTION0 = (6u << 0);
-
-    // Verification: emit the configured DWT state so we can confirm via
-    // klippy.log that the watchpoint is actually armed. If MON_EN didn't
-    // stick (e.g. debug authentication denied it), FUNCTION0 reads back
-    // as 0 and the diag is silent.
-    output("dwt_armed demcr %u func0 %u comp0 %u",
-           CoreDebug->DEMCR, DWT->FUNCTION0, DWT->COMP0);
 
     // Schedule a recurring timer on fast cpus
     timer_reset();
@@ -240,54 +156,41 @@ static uint32_t timer_repeat_until;
 #define TIMER_DEFER_REPEAT_TICKS timer_from_us(5)
 
 // Invoke timers
+//
+// The dispatch loop opens the .sched_protected MPU window once at entry
+// and closes it before each return. sched_timer_dispatch (called inside
+// the loop) and periodic_event / sentinel_event / deleted_event / the
+// wrap_timer callback all write to SchedState inside that single window,
+// avoiding per-call MPU toggle jitter on this hot path.
 static uint32_t
 timer_dispatch_many(void)
 {
     uint32_t tru = timer_repeat_until;
+    sched_writable_begin();
     for (;;) {
         // Run the next software timer
         uint32_t next = sched_timer_dispatch();
 
         uint32_t now = timer_read_time();
         int32_t diff = next - now;
-        if (diff > (int32_t)TIMER_MIN_TRY_TICKS)
+        if (diff > (int32_t)TIMER_MIN_TRY_TICKS) {
             // Schedule next timer normally.
+            sched_writable_end();
             return diff;
+        }
 
         if (unlikely(timer_is_before(tru, now))) {
             // Check if there are too many repeat timers
             if (diff < (int32_t)(-timer_from_us(1000))) {
-                // Diagnostic: capture which timer's reschedule landed in the
-                // past. The head of the dispatch list is whoever owns the
-                // stale waketime; decode `func` via `nm out/klipper.elf`.
-                // Space-separated (no `name=%type`) so the host bridge takes
-                // the free-form decode path and surfaces the formatted msg
-                // through klippy's `#output:` handler — `name=%type` markers
-                // route through the structured path, which drops msg for
-                // unrecognized output names.
-                //
-                // Emit head pointer + head->next + head->next->func too so
-                // we can disambiguate "head's func field was clobbered" from
-                // "head pointer itself is stale" (e.g. list points into a
-                // freed/never-allocated struct).
-                // DWT watchpoint captures the PC that wrote to
-                // &SchedStatus.timer_list. addr2line on writer_pc identifies
-                // the corrupting code path.
-                uint32_t pred_addr, pred_func, bad_next, steps;
-                sched_walk_for_corruption(&pred_addr, &pred_func,
-                                          &bad_next, &steps);
-                struct timer *head = sched_get_head_timer();
-                output("rsched_past head %u hfunc %u writer_pc %u"
-                       " pred %u predf %u bad %u steps %u diff_us %i",
-                       (uint32_t)head,
-                       head ? (uint32_t)head->func : 0u,
-                       schedstatus_writer_pc,
-                       pred_addr, pred_func, bad_next, steps,
-                       (int32_t)(diff / (int32_t)timer_from_us(1)));
+                // Close the writable window before try_shutdown longjmps
+                // out of this scope, so the rest of the shutdown path
+                // doesn't accidentally observe RW protected memory.
+                sched_writable_end();
                 try_shutdown("Rescheduled timer in the past");
             }
             if (sched_check_set_tasks_busy()) {
                 timer_repeat_until = now + TIMER_REPEAT_TICKS;
+                sched_writable_end();
                 return TIMER_DEFER_REPEAT_TICKS;
             }
             timer_repeat_until = tru = now + TIMER_REPEAT_TICKS;

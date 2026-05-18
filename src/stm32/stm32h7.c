@@ -231,5 +231,11 @@ armcm_main(void)
 
     clock_setup();
 
+    // Arm MPU protection on the .sched_protected linker section (SchedState
+    // in sched.c). Must run AFTER .data is copied (handled in armcm_boot.c
+    // before armcm_main) and BEFORE any DECL_INIT can write through the
+    // public scheduler API. mpu_protect.c installs MemManage_Handler too.
+    mpu_protect_init();
+
     sched_main();
 }
