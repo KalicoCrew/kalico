@@ -68,4 +68,13 @@ uint8_t phase_spi_try_acquire(void);
 void    phase_spi_release(void);
 uint32_t phase_spi_get_skip_count(void);
 
+// Bare SPI3 transfer for ISR callers that already hold phase_spi_busy.
+// External callers MUST NOT use this — use spi_transfer instead.
+// Calling this without holding phase_spi_busy races against any
+// concurrent task-context spi_transfer; calling spi_transfer while
+// already holding phase_spi_busy deadlocks on the spin-acquire (see
+// 2026-05-19 fix in stm32h7_spi.c).
+void spi_transfer_locked(struct spi_config config, uint8_t receive_data,
+                         uint8_t len, uint8_t *data);
+
 #endif // phase_stepping_spi.h

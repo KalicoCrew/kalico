@@ -116,7 +116,11 @@ phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
 
     spi_prepare(phase_buses[bus_id].cfg);
     gpio_out_write(phase_buses[bus_id].cs, 0); // CS low (assert)
-    spi_transfer(phase_buses[bus_id].cfg, 0, sizeof(datagram), datagram);
+    // 2026-05-19: call the unlocked variant — we already own
+    // phase_spi_busy via phase_spi_try_acquire() above. Calling the
+    // public spi_transfer here would deadlock the ISR on its own lock.
+    spi_transfer_locked(phase_buses[bus_id].cfg, 0,
+                        sizeof(datagram), datagram);
     gpio_out_write(phase_buses[bus_id].cs, 1); // CS high (deassert)
 
     phase_spi_release();
