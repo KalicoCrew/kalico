@@ -706,24 +706,6 @@ class MCU_endstop:
             int(self._sensorless_velocity_axis),
             int(self._sensorless_v_min_q16),
         )
-        # Step 7-D 2026-05-18: sensorless TMC DIAG sampled at TIM5's 40 kHz
-        # cadence sees a brief chip-side spurious assert on motor start-of-
-        # motion (the XDIRECT-mode current waveform looks "stalled" to the
-        # chip until the host's per-tick commanded currents settle into a
-        # stable phase pattern). 4 samples at 25 µs = 100 µs of consensus
-        # is short enough that the transient trips the second-pass arm
-        # with zero stepper motion ("Endstop x still triggered after
-        # retract"). The firmware caps `sample_n` at 8, so we can't widen
-        # the consensus window enough that way; instead offset the
-        # `arm_clock` so the trip check is suppressed for the first
-        # `_sensorless_arm_delay_s` of the move (defaults to 100 ms — at
-        # 100 mm/s that's 10 mm, well inside `min_home_dist`'s 40 mm
-        # retract budget). Physical endstops (kind=0) keep the caller's
-        # print_time so existing bang-bang behavior is unaffected.
-        if kind == 1:
-            print_time = print_time + getattr(
-                self, "_sensorless_arm_delay_s", 0.1,
-            )
         return self._dispatch.start(print_time, self._mcu)
 
     def home_wait(self, home_end_time):
