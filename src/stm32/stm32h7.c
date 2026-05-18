@@ -231,5 +231,16 @@ armcm_main(void)
 
     clock_setup();
 
+    // Arm DWT watchpoint on &SchedStatus.timer_list = 0x20000038 (verified
+    // via nm on out/klipper.elf). Done here, BEFORE sched_main → ctr_run_initfuncs
+    // so we catch any corrupting write from very-early-init code. DebugMon_Handler
+    // in armcm_timer.c latches the faulting PC if the just-written value is
+    // in transmit_buf/batch_buf ranges.
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_MON_EN_Msk;
+    DWT->COMP0     = 0x20000038u;
+    DWT->MASK0     = 0u;
+    DWT->FUNCTION0 = (6u << 0);
+
     sched_main();
 }
