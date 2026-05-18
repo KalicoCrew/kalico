@@ -134,29 +134,61 @@ DECL_SHUTDOWN(timer_reset);
 volatile uint32_t schedstatus_writer_pc
     __attribute__((used, externally_visible));
 
-// DebugMon exception handler. Stacked frame on entry (MSP):
-//   sp[0..3] = R0,R1,R2,R3
-//   sp[4]   = R12
-//   sp[5]   = LR (return-from-faulting-context)
-//   sp[6]   = PC (instruction AFTER the one that triggered)
-//   sp[7]   = xPSR
-// We capture sp[6] - 4 as a best-guess of the faulting instruction (Thumb-2
-// can be 16 or 32 bit; the host-side decoder can fuzz +/-4 if needed).
+// DebugMon exception handler. Naked: no prologue, so MSP still points at the
+// exception-stacked {R0,R1,R2,R3,R12,LR,PC,xPSR}. We:
+//   1. Read the just-written value at &SchedStatus.timer_list (0x20000038).
+//   2. If it's NOT in either known scratch buffer (transmit_buf or batch_buf),
+//      this is a legit sched.c write — return without touching the latch.
+//   3. If it IS in scratch range and the latch is empty, snapshot the
+//      stacked PC into schedstatus_writer_pc and disable the comparator.
+//   4. If it IS in scratch range but the latch is already set, leave it.
 __attribute__((naked, used))
 void
 DebugMon_Handler(void)
 {
     __asm volatile(
-        "mrs r0, msp\n"
-        "ldr r0, [r0, #24]\n"   // stacked PC
-        "ldr r1, =schedstatus_writer_pc\n"
-        "ldr r2, [r1]\n"
-        "cbnz r2, 1f\n"         // already latched? skip
-        "str r0, [r1]\n"        // first hit: capture PC
-        "1:\n"
-        "ldr r0, =0xE0001020\n" // DWT->FUNCTION0
-        "mov r1, #0\n"
-        "str r1, [r0]\n"        // disable comparator to silence further hits
+        "ldr r0, =0x20000038\n"
+        "ldr r0, [r0]\n"
+        // Range check: transmit_buf [0x20000114, 0x20000514)
+        "movw r1, #0x0114\n"
+        "movt r1, #0x2000\n"
+        "cmp r0, r1\n"
+        "blt 2f\n"
+        "movw r1, #0x0514\n"
+        "movt r1, #0x2000\n"
+        "cmp r0, r1\n"
+        "blt 3f\n"
+        "2:\n"
+        // Range check: batch_buf [0x20000ba4, 0x200015a4)
+        "movw r1, #0x0ba4\n"
+        "movt r1, #0x2000\n"
+        "cmp r0, r1\n"
+        "blt 4f\n"
+        "movw r1, #0x15a4\n"
+        "movt r1, #0x2000\n"
+        "cmp r0, r1\n"
+        "bge 4f\n"
+        "3:\n"
+        // Bogus value. Latch if empty.
+        "ldr r2, =schedstatus_writer_pc\n"
+        "ldr r3, [r2]\n"
+        "cbnz r3, 4f\n"
+        // Determine PC offset: depends on whether the faulting context had
+        // FP context stacked. EXC_RETURN bit 4 (FType): 1=basic frame only
+        // (PC at MSP+24), 0=basic+FP frame (PC at MSP+24+72=96). EXC_RETURN
+        // is in LR while in handler.
+        "mrs r1, msp\n"
+        "tst lr, #0x10\n"          // FType bit
+        "ite ne\n"
+        "addne r1, r1, #24\n"      // basic frame
+        "addeq r1, r1, #96\n"      // FP-extended frame
+        "ldr r1, [r1]\n"
+        "str r1, [r2]\n"
+        // Disable DWT comparator 0 to silence further hits.
+        "ldr r2, =0xE0001028\n"     // DWT->FUNCTION0
+        "mov r3, #0\n"
+        "str r3, [r2]\n"
+        "4:\n"
         "bx lr\n"
     );
 }
