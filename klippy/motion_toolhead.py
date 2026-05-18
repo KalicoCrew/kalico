@@ -717,6 +717,45 @@ class MotionToolhead(ToolHead):
                 for (sname, s) in on_this_mcu:
                     inv = 1 if getattr(s, "_invert_dir", False) else 0
                     bind_list.append((i, sname, s.get_oid(), inv))
+            # 2026-05-18 phase-stepping bridge integration: build the per-motor
+            # (bus_id, cs_pin_id) array for the 33-byte configure_axes blob, and
+            # register each unique SPI bus with the MCU's phase-stepping
+            # subsystem. PHASE_CFG_NONE encodes "no phase config" in firmware-
+            # compatible form (0xFF, 0xFF). Slot stays absent if step_modes != 0.
+            PHASE_CFG_NONE = (0xFF, 0xFF)
+            phase_configs = [PHASE_CFG_NONE] * 4
+            any_phase_stepping = False
+            for i, slot in enumerate(slot_steppers):
+                # step_modes[i] != 0 is the load-bearing guard: it's only set
+                # to 0 inside the on_this_mcu branch above, so for cross-MCU
+                # slots it stays != 0 and we correctly skip them. `not slot`
+                # is defensive belt-and-suspenders.
+                if step_modes[i] != 0 or not slot:
+                    continue
+                primary_name = slot[0][0]
+                tmc_name = "tmc5160 " + primary_name
+                try:
+                    tmc = self.printer.lookup_object(tmc_name)
+                except Exception:
+                    raise self.printer.config_error(
+                        "phase_stepping=True on stepper '%s' requires a [tmc5160 %s] "
+                        "section (current driver type or absence of TMC5160 section "
+                        "is incompatible with phase stepping)" % (primary_name, primary_name)
+                    )
+                if not hasattr(tmc, "get_phase_config"):
+                    raise self.printer.config_error(
+                        "phase_stepping=True on stepper '%s' requires a TMC5160 driver; "
+                        "found driver type with no phase-stepping support"
+                        % primary_name
+                    )
+                # Invariant: stepper config's `phase_stepping` flag and
+                # TMC5160's `_phase_stepping` are read from the same
+                # [stepper_*] section field. If they ever diverge (e.g. via a
+                # refactor), get_phase_config() will raise tmc5160's
+                # less-specific config_error instead of the operator-friendly
+                # message above.
+                phase_configs[i] = tmc.get_phase_config()
+                any_phase_stepping = True
             awd_mask = awd_default & present_mask
             if present_mask == 0:
                 logging.info(
@@ -750,9 +789,21 @@ class MotionToolhead(ToolHead):
                         "large runtime profile for the chip family) and "
                         "reflash." % (slot_name, name, mcu_caps)
                     )
+            if any_phase_stepping:
+                seen_buses = set()
+                for (bus_id, cs_pin_id) in phase_configs:
+                    if bus_id == 0xFF:
+                        continue
+                    if bus_id in seen_buses:
+                        continue
+                    seen_buses.add(bus_id)
+                    self.bridge.register_phase_bus(
+                        mcu_handle, bus_id, cs_pin_id, rate=2_000_000,
+                    )
             self.bridge.configure_axes(
                 mcu_handle, kin_tag, present_mask, awd_mask,
                 invert_mask, steps_per_mm, step_modes,
+                phase_configs=phase_configs if any_phase_stepping else None,
             )
             # Step 7-D: bind every stepper attached to each runtime motor
             # index to the C-side runtime_emit_step_pulses table. config_stepper
@@ -784,10 +835,12 @@ class MotionToolhead(ToolHead):
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "
                 "present=0x%x awd=0x%x invert=0x%x steps_per_mm=%s "
-                "step_modes=%s mcu_caps=0x%x runtime_bindings=%s",
+                "step_modes=%s mcu_caps=0x%x runtime_bindings=%s "
+                "phase_configs=%s any_phase_stepping=%s",
                 name, kin_tag, present_mask, awd_mask, invert_mask,
                 steps_per_mm, step_modes, mcu_caps,
                 [(m, n, o, i) for (m, n, o, i) in bind_list],
+                phase_configs, any_phase_stepping,
             )
 
     def _register_credit_freed_handlers(self, bridge_mcus):
