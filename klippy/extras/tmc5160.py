@@ -364,9 +364,40 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 ######################################################################
 
 
+def _enable_direct_mode(config, stepper_section, fields):
+    """Configure a TMC5160 for phase stepping (direct_mode=1).
+
+    Sets GCONF.direct_mode via the field collector so the value lands in
+    the connect-time SPI burst. Validates that incompatible options
+    (stealthchop_threshold > 0, microsteps != 256) are absent — raises
+    config.error on violation.
+
+    Note: ``stealthchop_threshold`` is read from the ``[tmc5160 *]``
+    section (i.e. ``config``) per existing TMCStealthchopHelper
+    convention. ``microsteps`` is read from the ``[stepper_*]`` section
+    (``stepper_section``) per TMCMicrostepHelper convention.
+    """
+    fields.set_field("direct_mode", 1)
+    sct = config.getfloat("stealthchop_threshold", 0.0, minval=0.0)
+    if sct > 0.0:
+        raise config.error(
+            "phase_stepping=True is incompatible with stealthchop_threshold "
+            "(StealthChop is bypassed in direct mode). Remove "
+            "stealthchop_threshold from [%s] or disable phase_stepping."
+            % config.get_name()
+        )
+    mres = stepper_section.getint("microsteps", 256)
+    if mres != 256:
+        raise config.error(
+            "phase_stepping=True requires microsteps: 256; [%s] has "
+            "microsteps: %d." % (stepper_section.get_name(), mres)
+        )
+
+
 class TMC5160:
     def __init__(self, config):
         # Setup mcu communication
+        self.printer = config.get_printer()
         self.fields = tmc.FieldHelper(Fields, SignedFields, FieldFormatters)
         self.mcu_tmc = tmc2130.MCU_TMC_SPI(
             config, Registers, self.fields, TMC_FREQUENCY
@@ -443,6 +474,41 @@ class TMC5160:
         set_config_field(config, "pwm_lim", 12)
         #   TPOWERDOWN
         set_config_field(config, "tpowerdown", 10)
+        # 2026-05-18 phase-stepping integration: when the matching
+        # [stepper_*] section sets phase_stepping=True, queue
+        # GCONF.direct_mode=1 and validate incompatible options. The TMC
+        # SPI burst at klippy connect time will write the bit before any
+        # motion starts.
+        stepper_name = " ".join(config.get_name().split()[1:])  # "stepper_x"
+        if config.has_section(stepper_name):
+            stepper_section = config.getsection(stepper_name)
+        else:
+            stepper_section = None
+        self._phase_stepping = False
+        self._phase_bus_id = None
+        self._phase_cs_pin_id = None
+        if stepper_section is not None and stepper_section.getboolean(
+            "phase_stepping", False
+        ):
+            _enable_direct_mode(config, stepper_section, self.fields)
+            self._phase_stepping = True
+            self._phase_bus_id, self._phase_cs_pin_id = (
+                self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
+            )
+
+    def get_phase_config(self):
+        """Return (bus_id, cs_pin_id) for phase-stepping integration.
+
+        Raises if this TMC5160 is not configured for phase stepping.
+        Called by motion_toolhead._configure_axes_per_mcu when building
+        the 33-byte configure_axes blob.
+        """
+        if not self._phase_stepping:
+            raise self.printer.config_error(
+                "get_phase_config called on a TMC5160 without "
+                "phase_stepping=True on the matching stepper section"
+            )
+        return (self._phase_bus_id, self._phase_cs_pin_id)
 
 
 def load_config_prefix(config):
