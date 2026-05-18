@@ -1992,6 +1992,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         queue: &mut SegConsumer<Segment>,
         shared: &SharedState,
     ) -> ProducerTickResult {
+        // 2026-05-18 wedge fix: prevent the compiler from caching
+        // `self.producer_current` across calls. Bench evidence (tag 0xCC,
+        // commit 3573b30f8): producer_step's view of
+        // `producer_current.is_some()` returned 1 while status_drain's view
+        // (read via a different `&IsrState` borrow path) returned 0 for the
+        // same field at the same moment. The non-atomic `Option<Segment>`
+        // field is being optimised across function boundaries despite
+        // modulated_tick writing `None` from the ISR borrow path.
+        //
+        // SeqCst fence at the head of producer_step forces all prior memory
+        // operations to globally serialise — the compiler can't reorder a
+        // read of `self.producer_current` to before this fence, and any
+        // write that happened-before this fence (including modulated_tick's
+        // `None` write that ran before producer_step was scheduled) is
+        // visible to subsequent reads.
+        core::sync::atomic::fence(Ordering::SeqCst);
         // (1) Clear kick-pending flag at start; (2) heartbeat.
         shared.producer_pending.store(false, Ordering::Release);
         shared.producer_runs_total.fetch_add(1, Ordering::AcqRel);
