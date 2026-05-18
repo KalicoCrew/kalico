@@ -213,6 +213,13 @@ timer_init(void)
     // FUNCTION = 0b0110 = data-address-match on write (ARMv7-M DWT v1+v2).
     DWT->FUNCTION0 = (6u << 0);
 
+    // Verification: emit the configured DWT state so we can confirm via
+    // klippy.log that the watchpoint is actually armed. If MON_EN didn't
+    // stick (e.g. debug authentication denied it), FUNCTION0 reads back
+    // as 0 and the diag is silent.
+    output("dwt_armed demcr %u func0 %u comp0 %u",
+           CoreDebug->DEMCR, DWT->FUNCTION0, DWT->COMP0);
+
     // Schedule a recurring timer on fast cpus
     timer_reset();
 
