@@ -175,8 +175,13 @@ timer_dispatch_many(void)
                 // Diagnostic: capture which timer's reschedule landed in the
                 // past. The head of the dispatch list is whoever owns the
                 // stale waketime; decode `func` via `nm out/klipper.elf`.
+                // Space-separated (no `name=%type`) so the host bridge takes
+                // the free-form decode path and surfaces the formatted msg
+                // through klippy's `#output:` handler — `name=%type` markers
+                // route through the structured path, which drops msg for
+                // unrecognized output names.
                 struct timer *head = sched_get_head_timer();
-                output("rsched_past func=%u waketime=%u now=%u diff_us=%i",
+                output("rsched_past func %u waketime %u now %u diff_us %i",
                        (uint32_t)head->func,
                        head->waketime,
                        now,
