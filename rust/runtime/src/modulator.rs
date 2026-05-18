@@ -9,6 +9,7 @@
 //! homing snapshots continue to work for phase-stepped axes.
 
 use crate::phase_lut::{self, MOTOR_PERIOD};
+use crate::step::MAX_STEPS_PER_TICK_DEFAULT;
 
 /// Per-tick output from `PhaseDirectModulator::compute`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +64,10 @@ impl PhaseDirectModulator {
             step_accumulator: 0.0,
             last_direction: 0,
             seeded: false,
-            max_steps_per_tick: 192,
+            // Single source of truth — same cap as `StepMotorState`. 192
+            // tripped immediately on the same cross-segment planner
+            // discontinuities that forced step.rs's 2026-05-13 bump.
+            max_steps_per_tick: MAX_STEPS_PER_TICK_DEFAULT,
         }
     }
 
@@ -79,7 +83,16 @@ impl PhaseDirectModulator {
     /// Per-tick computation. Returns the mscount, current setpoints,
     /// direction, and steps delta for the engine to apply to
     /// `stepper_counts`.
-    pub fn compute(&mut self, motor_position_mm: f32) -> PhaseTickResult {
+    ///
+    /// Returns `Err(())` if the burst cap (`max_steps_per_tick`) would be
+    /// exceeded — caller fault-handles (raise `STEP_BURST_EXCEEDED`).
+    /// Matches `StepMotorState::update` semantics: on `Err`, the
+    /// accumulator is NOT advanced, so retrying after the caller resets
+    /// the cap is safe.
+    pub fn compute(
+        &mut self,
+        motor_position_mm: f32,
+    ) -> Result<PhaseTickResult, ()> {
         let new_pos_steps =
             f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
 
@@ -89,16 +102,27 @@ impl PhaseDirectModulator {
             // Seed: report zero delta and direction from rest.
             let mscount = wrap_mscount(new_pos_steps);
             let (i_a, i_b) = phase_lut::lookup(mscount, 0);
-            return PhaseTickResult {
+            return Ok(PhaseTickResult {
                 mscount,
                 i_a,
                 i_b,
                 direction: 0,
                 steps_delta: 0,
-            };
+            });
         }
 
         let delta = new_pos_steps - self.step_accumulator;
+
+        // Integer steps delta: truncate toward zero, residual stays in the
+        // accumulator. Same semantics as `StepMotorState::update`.
+        let steps_delta = delta as i32;
+
+        // Burst cap: bail BEFORE advancing the accumulator or latching a
+        // new direction, so the caller can fault-handle and retry once
+        // the cap is reset. Same Err(()) shape as `StepMotorState::update`.
+        if steps_delta.abs() > self.max_steps_per_tick {
+            return Err(());
+        }
 
         // Direction: update only when the per-tick advance is clearly
         // directional. Otherwise the previous direction sticks. This
@@ -109,9 +133,6 @@ impl PhaseDirectModulator {
             self.last_direction = if delta > 0.0 { 1 } else { -1 };
         }
 
-        // Integer steps delta: truncate toward zero, residual stays in the
-        // accumulator. Same semantics as `StepMotorState::update`.
-        let steps_delta = delta as i32;
         self.step_accumulator += f64::from(steps_delta);
 
         // mscount comes from the *accumulator* (the rounded electrical-
@@ -121,13 +142,13 @@ impl PhaseDirectModulator {
         let mscount = wrap_mscount(self.step_accumulator);
         let (i_a, i_b) = phase_lut::lookup(mscount, self.last_direction);
 
-        PhaseTickResult {
+        Ok(PhaseTickResult {
             mscount,
             i_a,
             i_b,
             direction: self.last_direction,
             steps_delta,
-        }
+        })
     }
 
     /// Reset the fractional residual without dropping `steps_per_mm`.
