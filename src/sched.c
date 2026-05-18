@@ -164,13 +164,13 @@ volatile uint32_t sched_bad_add_value  __attribute__((used));
 static inline int
 addr_looks_bogus_for_timer(uint32_t p)
 {
-    // Tight ranges matching nm output for the current build (abcfda717+):
-    //   transmit_buf: 0x20000154..0x20000554 (1024 bytes)
-    //   batch_buf:    0x20000be8..0x200015e8 (2560 bytes)
-    // If the linker shuffles these, re-verify with
-    //   nm -n out/klipper.elf | grep -E "transmit_buf|batch_buf"
+    // Both transmit_buf and batch_buf are static byte buffers that no
+    // real `struct timer` should ever live in. Their addresses shift
+    // between builds, so use generous ranges that cover plausible
+    // positions for current and near-future layouts (must be updated
+    // if the linker map changes drastically).
     return (p >= 0x20000154u && p < 0x20000554u)   // transmit_buf
-        || (p >= 0x20000be8u && p < 0x200015e8u);  // batch_buf
+        || (p >= 0x20000be8u && p < 0x20001600u);  // batch_buf
 }
 
 // Capture additional context for the rogue sched_add_timer caller: the

@@ -1078,6 +1078,23 @@ fault_handler_report_task(void)
     // fault_rec.pc holds the writing PC and fault_rec.mmfar holds the
     // faulting address. The prior_fault / prior_fault_status outputs
     // emitted earlier in this task already surface them.
+
+    // Bogus-add diagnostic (sched.c::sched_add_timer). Emits even when
+    // klippy never reaches the "Rescheduled timer in past" detection
+    // (e.g. when the chip is reset-cycling before homing can run).
+    extern volatile uint32_t sched_bad_add_caller;
+    extern volatile uint32_t sched_bad_add_value;
+    extern volatile uint32_t sched_bad_add_stack0;
+    extern volatile uint32_t sched_bad_add_stack1;
+    extern volatile uint32_t sched_bad_add_stack2;
+    extern volatile uint32_t sched_bad_add_blocked_count;
+    output("sched_bad_add caller %u value %u blocked %u"
+           " sp0 %u sp1 %u sp2 %u",
+           sched_bad_add_caller, sched_bad_add_value,
+           sched_bad_add_blocked_count,
+           sched_bad_add_stack0,
+           sched_bad_add_stack1,
+           sched_bad_add_stack2);
 #endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few
