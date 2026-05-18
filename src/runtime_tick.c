@@ -1620,6 +1620,19 @@ static uint_fast8_t runtime_producer_event(struct timer *t);
 // the producer Klipper timer is queued. Idempotent — the `enabled` flag
 // guards against double-add. Safe to call from foreground (push_segment)
 // or ISR (step_time_event) contexts.
+//
+// 2026-05-19: the `enabled` check + set + sched_add_timer triple MUST be
+// atomic against the ISR. Previously the gate was a plain read of a
+// non-volatile `uint8_t`, so a foreground call to `arm_producer_timer_force`
+// could read `enabled=0`, be preempted by SysTick which dispatched
+// `step_time_event` → this function → also read `enabled=0`, set it to 1,
+// and call `sched_add_timer` — then foreground resumed with its stale read,
+// set `enabled=1` (already 1), and called `sched_add_timer` again. Klipper's
+// timer list does not tolerate the same `struct timer *` appearing twice;
+// insert_timer's subsequent walks write through aliased nodes and corrupt
+// downstream `struct stepper.time.func` fields (see `oid_next` / `usb_ep0_task`
+// mid-function addresses appearing in dispatched timers' `func` slots).
+// Wrap in irq_save so the check+set+add is a single critical section.
 static void
 arm_producer_timer_if_kicked_inline(uint32_t waketime)
 {
@@ -1631,6 +1644,7 @@ arm_producer_timer_if_kicked_inline(uint32_t waketime)
         return;
     }
     step_time_producer_kicks++;
+    irqstatus_t flag = irq_save();
     if (runtime_producer_timer.enabled) {
         // Race: the timer was queued by an earlier kick whose
         // `runtime_producer_event` hasn't run yet (so `enabled` is still
@@ -1638,6 +1652,7 @@ arm_producer_timer_if_kicked_inline(uint32_t waketime)
         // CAS-set it back to true. The currently-queued run will observe
         // our new pending bit via `runtime_handle.shared` and process
         // accordingly, so no additional schedule is needed.
+        irq_restore(flag);
         return;
     }
     runtime_producer_timer.enabled = 1;
@@ -1651,6 +1666,7 @@ arm_producer_timer_if_kicked_inline(uint32_t waketime)
     runtime_producer_timer.timer.waketime =
         ((int32_t)(waketime - floor_arm) < 0) ? floor_arm : waketime;
     sched_add_timer(&runtime_producer_timer.timer);
+    irq_restore(flag);
 }
 
 // Called from handle_push_segment in src/kalico_dispatch.c after
@@ -1678,7 +1694,12 @@ void
 arm_producer_timer_force(uint32_t waketime)
 {
     if (!runtime_handle) return;
+    // See the comment on arm_producer_timer_if_kicked_inline above —
+    // the check+set+add must be atomic with respect to SysTick so the
+    // two paths can't both queue the producer timer.
+    irqstatus_t flag = irq_save();
     if (runtime_producer_timer.enabled) {
+        irq_restore(flag);
         return;
     }
     runtime_producer_timer.enabled = 1;
@@ -1688,6 +1709,7 @@ arm_producer_timer_force(uint32_t waketime)
     runtime_producer_timer.timer.waketime =
         ((int32_t)(waketime - floor_arm) < 0) ? floor_arm : waketime;
     sched_add_timer(&runtime_producer_timer.timer);
+    irq_restore(flag);
 }
 
 // Per-stepper consumer ISR. Called by Klipper's scheduler at the
