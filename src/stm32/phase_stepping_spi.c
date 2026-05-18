@@ -23,6 +23,15 @@ struct phase_bus_state {
 // Static, zero-initialized (.bss). `configured == 0` means "not registered".
 static struct phase_bus_state phase_buses[MAX_PHASE_BUSES];
 
+// `used + externally_visible`: Klipper's MCU build uses
+// `-flto=auto -fwhole-program`, which DCEs symbols not referenced from
+// any C translation unit. Both helpers are called exclusively from the
+// Rust `runtime` staticlib (via FFI), so without these attributes the
+// LTO inliner drops the function bodies and the final link fails with
+// `undefined reference to phase_stepping_write_xdirect`. Same pattern
+// used by `runtime_emit_step_pulses` in src/stepper.c and
+// `runtime_irq_save` / `runtime_irq_restore` in src/runtime_tick.c.
+__attribute__((used, externally_visible))
 void
 phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg,
                             uint8_t cs_pin)
@@ -34,6 +43,7 @@ phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg,
     phase_buses[bus_id].configured = 1;
 }
 
+__attribute__((used, externally_visible))
 void
 phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
                              int16_t coil_a, int16_t coil_b)
