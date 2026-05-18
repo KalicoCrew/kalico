@@ -578,19 +578,29 @@ class MCU_endstop:
 
     @staticmethod
     def _resolve_bridge_gpio_index(pin_str):
-        # Parse Linux-MCU pin strings of the form "gpiochipN/gpioM" into
-        # the numeric pin index the firmware's `gpio_in_setup()` expects
-        # (matches GPIO(port,num) = port*MAX_GPIO_LINES+num in
-        # src/linux/internal.h, MAX_GPIO_LINES=288). Returns 0 (caller's
-        # default) for unparseable strings — sensorless TMC pins flow
-        # through tmc.py which sets _bridge_gpio_index explicitly.
+        # Parse a pin string into the numeric pin index the firmware's
+        # `gpio_in_setup()` expects. Two namespaces:
+        #   * "gpiochipN/gpioM" (Linux MCU / sim) → port*MAX_GPIO_LINES+num
+        #     with MAX_GPIO_LINES=288 (src/linux/internal.h::GPIO).
+        #   * "P[A-I][0-15]" (STM32 — H7 / F4) → (port-'A')*16 + num
+        #     (src/stm32/internal.h::GPIO). Required for sensorless TMC
+        #     DIAG endstops on real hardware — the host hands the firmware
+        #     the same index `endstop_pin_table_populate` casts back into
+        #     `gpio_in_setup`.
+        # Returns 0 for unparseable strings (matches prior behavior).
         import re
-        m = re.match(r"^gpiochip(\d+)/gpio(\d+)$", pin_str.strip())
-        if not m:
-            return 0
-        port = int(m.group(1))
-        num = int(m.group(2))
-        return port * 288 + num
+        pin = pin_str.strip()
+        m = re.match(r"^gpiochip(\d+)/gpio(\d+)$", pin)
+        if m:
+            port = int(m.group(1))
+            num = int(m.group(2))
+            return port * 288 + num
+        m = re.match(r"^P([A-I])(\d{1,2})$", pin)
+        if m:
+            num = int(m.group(2))
+            if num <= 15:
+                return (ord(m.group(1)) - ord('A')) * 16 + num
+        return 0
 
     def add_stepper(self, stepper):
         self._dispatch.add_stepper(stepper)
