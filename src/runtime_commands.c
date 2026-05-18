@@ -115,10 +115,17 @@ endstop_pin_table_clear(void)
 // Populate the sampler table from the wire-format sources blob. Mirrors
 // rust/kalico-c-api/src/runtime_ffi.rs::kalico_endstop_arm decode (record
 // layout: kind u8, gpio u16 LE, active_high u8, policy u8, sample_n u8,
-// velocity_axis u8, v_min_q16 u32 LE — 11 bytes). Pull configuration is
-// not carried on the wire (DIAG outputs are push-pull; mech limits rely on
-// external pulls per board); pull_up=0 is requested. If a target board
-// requires internal pulls, extend the wire format.
+// velocity_axis u8, v_min_q16 u32 LE — 11 bytes).
+//
+// Pull configuration: TMC DIAG outputs are open-drain by default (TMC5160
+// GCONF.diag1_int_pushpull == 0 at reset); without an internal pullup the
+// pin floats LOW when stallguard is inactive and `^!PG9`-style configs see
+// `asserted=True` at idle, so the post-retract "endstop still triggered"
+// check fires before the motor moves. The host's pullup flag (the `^` in
+// e.g. `^!PG9`) is not carried on the wire yet, so apply the
+// "TmcDiag → pullup, Physical → no pull" convention here. Physical mech
+// limits typically have external pulls per board and the firmware uses
+// `pull_up=0` for them.
 static void
 endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
 {
@@ -130,9 +137,13 @@ endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
         n = KALICO_ENDSTOP_MAX_SOURCES;
     for (uint8_t i = 0; i < n; i++) {
         const uint8_t *r = sources_ptr + (uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN;
+        // r[0] = kind (0 = Physical, 1 = TmcDiag — must match the
+        // SourceKind enum in rust/runtime/src/endstop.rs).
+        uint8_t kind = r[0];
         uint16_t gpio_id = (uint16_t)r[1] | ((uint16_t)r[2] << 8);
+        int32_t pull_up = (kind == 1) ? 1 : 0;
         endstop_pin_table[i].gpio_id = gpio_id;
-        endstop_pin_table[i].pin = gpio_in_setup((uint8_t)gpio_id, 0);
+        endstop_pin_table[i].pin = gpio_in_setup((uint8_t)gpio_id, pull_up);
         endstop_pin_table[i].active = 1;
     }
 }
