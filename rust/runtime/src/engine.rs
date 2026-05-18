@@ -18,6 +18,7 @@ use heapless::spsc::Consumer;
 // The C global + volatile read/write pattern is the most ironclad way to
 // defeat any Rust / LTO compile-time optimization.
 #[cfg(target_os = "none")]
+#[allow(unsafe_code)]
 unsafe extern "C" {
     pub(crate) static mut kalico_producer_current_present: u8;
 }
