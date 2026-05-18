@@ -362,7 +362,14 @@ impl KalicoHostIo {
                 // Flush stderr so the message reaches journalctl before we
                 // tear the process down.
                 let _ = std::io::Write::flush(&mut std::io::stderr());
-                std::process::abort();
+                // Test harnesses (e.g. tools/sim/run_sim_motion_jogs.sh)
+                // need to observe the wedge and continue with assertions,
+                // not get SIGABRT'd. Setting KALICO_NO_EXIT_ON_FAULT=1
+                // suppresses the abort while still emitting the warning.
+                // Production never sets this env var.
+                if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                    std::process::abort();
+                }
             }
         });
 
