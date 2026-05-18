@@ -187,6 +187,14 @@ sched_get_head_timer(void)
     return SchedStatus.timer_list;
 }
 
+// Return the most-recently-inserted timer (post-SF_RESCHEDULE this is `t`,
+// the timer that was just dispatched and reinserted). Diagnostic use.
+struct timer *
+sched_get_last_insert(void)
+{
+    return SchedStatus.last_insert;
+}
+
 // Remove all user timers
 void
 sched_timer_reset(void)
