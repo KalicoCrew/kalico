@@ -465,7 +465,26 @@ class Printer:
         run_result = self.run_result
         try:
             if run_result == "firmware_restart":
-                self.send_event("klippy:firmware_restart")
+                handlers = self.event_handlers.get(
+                    "klippy:firmware_restart", []
+                )
+                logging.info(
+                    "[firmware-restart-trace] sending klippy:firmware_restart"
+                    " to %d handlers", len(handlers),
+                )
+                for cb in handlers:
+                    try:
+                        owner = getattr(getattr(cb, "__self__", None),
+                                        "_name", None) or repr(cb)
+                        logging.info(
+                            "[firmware-restart-trace] invoking handler"
+                            " owner=%s", owner,
+                        )
+                        cb()
+                    except:
+                        logging.exception(
+                            "[firmware-restart-trace] handler raised"
+                        )
             self.send_event("klippy:disconnect")
         except:
             logging.exception("Unhandled exception during post run")
