@@ -46,6 +46,12 @@ class MCU_SPI:
     ):
         self.mcu = mcu
         self.bus = bus
+        # 2026-05-18 phase-stepping integration: stash the resolved CS pin
+        # string (e.g. "PA5", post chip-prefix strip) so callers can map it
+        # to the firmware's integer pin id via the MCU's enumeration tables
+        # without re-running ppins.lookup_pin (which would raise for
+        # share_type=None on the second call).
+        self.cs_pin = pin
         self.speed = speed
         # Config SPI object (set all CS pins high before spi_set_bus commands)
         self.oid = mcu.create_oid()

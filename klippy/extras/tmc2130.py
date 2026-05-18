@@ -284,6 +284,35 @@ class MCU_TMC_SPI_chain:
             config, 3, default_speed=4000000, share_type=share
         )
         self.taken_chain_positions = []
+        # 2026-05-18 phase-stepping integration: resolve the SPI bus name
+        # ("spi3") and CS pin name ("PA5") to the integer IDs the firmware's
+        # spi_setup / gpio_out_setup expect. The msgparser's enumeration
+        # tables were populated at identify time from the MCU's data
+        # dictionary; fill_enumerations() expands tuple ranges so each
+        # enum is always dict[str, int].
+        self._phase_bus_id = None
+        self._phase_cs_pin_id = None
+        bus_str = self.spi.bus
+        pin_str = self.spi.cs_pin
+        if bus_str is not None and pin_str is not None:
+            enums = self.spi.get_mcu().get_msgparser().enumerations
+            self._phase_bus_id = enums.get("spi_bus", {}).get(bus_str)
+            self._phase_cs_pin_id = enums.get("pin", {}).get(pin_str)
+
+    def get_bus_and_cs_ids(self):
+        """Return (bus_id, cs_pin_id) as integers matching the firmware's
+        spi_setup / gpio_out_setup. Raises if either was not resolvable
+        (e.g. software SPI, missing enumeration). Used by the phase-
+        stepping bridge integration (motion_toolhead._configure_axes_per_mcu).
+        """
+        if self._phase_bus_id is None or self._phase_cs_pin_id is None:
+            raise self.printer.config_error(
+                "TMC SPI bus/pin could not be resolved to integer IDs "
+                "(software SPI or missing MCU enumeration?); phase "
+                "stepping requires hardware SPI with enumerated bus and "
+                "pin."
+            )
+        return (self._phase_bus_id, self._phase_cs_pin_id)
 
     def _build_cmd(self, data, chain_pos):
         return (
