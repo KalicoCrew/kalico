@@ -701,29 +701,29 @@ class MCU_endstop:
         # follow-up: full pin-table integration with the bridge MCU.
         gpio = int(getattr(self, "_bridge_gpio_index", 0))
         sample_n = max(1, int(sample_count))
-        # Step 7-D 2026-05-18: sensorless TMC DIAG sampled at TIM5's 40 kHz
-        # cadence is far noisier than the legacy step-time path's per-step
-        # sampling — bench evidence on Trident H7 + TMC5160 + phase-stepping
-        # showed the chip's stallguard line briefly asserting on motor
-        # start-of-motion (XDIRECT mode current waveform looks "stalled"
-        # to the chip until the host's per-tick commanded currents settle).
-        # 4 samples at 25 µs = 100 µs of consensus is short enough that the
-        # transient trips the second-pass arm with zero stepper motion
-        # ("Endstop x still triggered after retract"). Stretch the DIAG
-        # consensus window to ~10 ms (400 samples) so the chip-side
-        # transient is filtered out without measurably affecting trip
-        # latency in the homing-into-rail case (at 100 mm/s, 10 ms = 1 mm
-        # overshoot past the stall point — well inside the
-        # 40 mm `min_home_dist` retract). Physical endstops (kind=0) keep
-        # the caller's sample_n so existing bang-bang behavior is
-        # unaffected.
-        if kind == 1:
-            sample_n = max(sample_n, 400)
         self._dispatch.add_source(
             kind, gpio, active_high, policy, sample_n,
             int(self._sensorless_velocity_axis),
             int(self._sensorless_v_min_q16),
         )
+        # Step 7-D 2026-05-18: sensorless TMC DIAG sampled at TIM5's 40 kHz
+        # cadence sees a brief chip-side spurious assert on motor start-of-
+        # motion (the XDIRECT-mode current waveform looks "stalled" to the
+        # chip until the host's per-tick commanded currents settle into a
+        # stable phase pattern). 4 samples at 25 µs = 100 µs of consensus
+        # is short enough that the transient trips the second-pass arm
+        # with zero stepper motion ("Endstop x still triggered after
+        # retract"). The firmware caps `sample_n` at 8, so we can't widen
+        # the consensus window enough that way; instead offset the
+        # `arm_clock` so the trip check is suppressed for the first
+        # `_sensorless_arm_delay_s` of the move (defaults to 100 ms — at
+        # 100 mm/s that's 10 mm, well inside `min_home_dist`'s 40 mm
+        # retract budget). Physical endstops (kind=0) keep the caller's
+        # print_time so existing bang-bang behavior is unaffected.
+        if kind == 1:
+            print_time = print_time + getattr(
+                self, "_sensorless_arm_delay_s", 0.1,
+            )
         return self._dispatch.start(print_time, self._mcu)
 
     def home_wait(self, home_end_time):
