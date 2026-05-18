@@ -520,8 +520,9 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     // status drain surfaces in fault_detail.
     extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     runtime_diag_progress(0xCB, 1, body_len);
-    // Accept 20-byte (legacy) or 25-byte (extended with StepMode array) blobs.
-    if (body_len != 20 && body_len != 25) {
+    // Accept 20-byte (legacy), 25-byte (extended StepMode array), and 33-byte
+    // (phase-stepping SPI per-motor config) blobs. Spec §4.1 / plan Task 4.
+    if (body_len != 20 && body_len != 25 && body_len != 33) {
         send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
         return;
     }
