@@ -2188,6 +2188,46 @@ pub mod exports {
         }
     }
 
+    /// Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
+    ///
+    /// When enabled, `Engine::producer_step` / `runtime_modulated_tick`
+    /// push one `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
+    /// phase-stepping tick per motor (Task 6 wiring). Default is `false`;
+    /// production builds leave it off so the trace ring isn't burned by
+    /// the 80 kHz per-motor PhaseStep stream when no diagnostic is active.
+    ///
+    /// `enabled`: non-zero → true, zero → false. The store uses `Release`
+    /// ordering; the ISR-side load pairs with `Acquire`.
+    ///
+    /// Returns:
+    /// - `KALICO_OK` on success.
+    /// - `KALICO_ERR_NULL_PTR` if `rt` is null.
+    /// - `KALICO_ERR_NOT_INIT` if the runtime has not been initialised.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_set_phase_trace_enabled(
+        rt: *mut KalicoRuntime,
+        enabled: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState is atomics-only; no `&mut` is formed. The
+        // `phase_trace_enabled` atomic is designed for foreground writes
+        // and ISR reads, same discipline as `step_modes` / `phase_config`.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            shared
+                .phase_trace_enabled
+                .store(enabled != 0, Ordering::Release);
+        }
+        KALICO_OK
+    }
+
     // ---- Step-emission rewrite FFI surface (Task 6) -----------------------
     //
     // The pre-emission `kalico_runtime_arm_step_timer` /

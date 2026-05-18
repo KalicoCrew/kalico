@@ -255,6 +255,15 @@ pub struct SharedState {
     /// (Task 6). See `crate::phase_config` for the helpers.
     pub phase_config: [AtomicU16; MAX_STEPPER_OIDS],
 
+    /// Per-print enable for `TRACE_FLAG_PHASE_STEP` trace pushes. Default
+    /// `false`. Production builds default to off so they don't burn the
+    /// 80 kHz of trace bandwidth that per-tick PhaseStep samples would
+    /// generate; the foreground flips this on through
+    /// `kalico_runtime_set_phase_trace_enabled` when a phase-stepping
+    /// diagnostic trace is requested. Read in `runtime_modulated_tick` /
+    /// `Engine::producer_step` (Task 6).
+    pub phase_trace_enabled: AtomicBool,
+
     // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
     // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
     /// Dedupe flag for producer-timer kicks. Kickers (push_segment + the
@@ -451,6 +460,7 @@ impl SharedState {
                 AtomicU16::new(crate::phase_config::NONE_SENTINEL),
                 AtomicU16::new(crate::phase_config::NONE_SENTINEL),
             ],
+            phase_trace_enabled: AtomicBool::new(false),
             producer_pending: AtomicBool::new(false),
             producer_runs_total: AtomicU64::new(0),
             consumer_pulses_total: [
