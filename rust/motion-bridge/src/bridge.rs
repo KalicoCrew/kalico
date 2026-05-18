@@ -1103,6 +1103,79 @@ impl PyMotionBridge {
         }
     }
 
+    /// Register a phase-stepping SPI bus with the MCU. Must be called once
+    /// per unique `bus_id` BEFORE `configure_axes` for that MCU. Wraps the
+    /// `runtime_register_phase_bus bus_id=%c cs_pin_id=%c rate=%u` wire
+    /// command defined at `src/runtime_commands.c:556`. `cs_pin_id` is the
+    /// firmware's GPIO encoding (port * 16 + pin); the firmware-side
+    /// command handler calls `spi_setup(bus_id, mode=3, rate)` and
+    /// `gpio_out_setup(cs_pin_id, 1 /* idle high */)`.
+    ///
+    /// `cs_pin_id` argument here is "an anchor pin to identify the bus";
+    /// real per-motor CS routing comes from `phase_configs` in the
+    /// `configure_axes` 33-byte body. The firmware caches one CS per bus
+    /// in `phase_buses[bus_id].cs` (see `phase_stepping_spi.c:43`); for
+    /// the v1 single-bus-per-axis case the anchor pin == the per-motor pin.
+    #[pyo3(signature = (mcu_handle, bus_id, cs_pin_id, rate, timeout_s = 5.0))]
+    fn register_phase_bus(
+        &self,
+        py: Python<'_>,
+        mcu_handle: u32,
+        bus_id: u8,
+        cs_pin_id: u8,
+        rate: u32,
+        timeout_s: f64,
+    ) -> PyResult<()> {
+        let io = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "register_phase_bus: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            // Stock-Klipper firmware (no kalico runtime) does not implement
+            // runtime_register_phase_bus. Silently no-op so multi-MCU setups
+            // where one board is stock Klipper (e.g. F446 on Z) still complete
+            // the per-MCU iteration cleanly.
+            if !conn.kalico_native_supported {
+                return Ok(());
+            }
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "register_phase_bus: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        let msg = format!(
+            "runtime_register_phase_bus bus_id={bus_id} cs_pin_id={cs_pin_id} rate={rate}"
+        );
+        let params = py.allow_threads(|| -> PyResult<_> {
+            use kalico_host_rt::transport::Transport;
+            io.call(&msg, "kalico_register_phase_bus_response", timeout)
+                .map_err(|e| PyRuntimeError::new_err(format!(
+                    "register_phase_bus: transport error: {e:?}"
+                )))
+        })?;
+        // Firmware emits `result=%i` (signed i32). `try_get_i32` accepts
+        // either I32 or U32 (parser may surface a non-negative %i value as
+        // U32 when it fits in u31) and returns None on missing/wrong-type,
+        // so a firmware-side schema drift surfaces as an explicit error
+        // instead of being silently coerced to 0.
+        let result = params.try_get_i32("result").ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "register_phase_bus: response missing or non-integer result field",
+            )
+        })?;
+        if result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "register_phase_bus: MCU returned error {result} \
+                 (bus_id={bus_id} cs_pin_id={cs_pin_id})"
+            )));
+        }
+        Ok(())
+    }
+
     /// Return the raw identify bytes (zlib-compressed firmware data-dict)
     /// for the given MCU. `attach_serial` must have been called first.
     ///
