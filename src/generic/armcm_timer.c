@@ -185,23 +185,23 @@ timer_dispatch_many(void)
                 // we can disambiguate "head's func field was clobbered" from
                 // "head pointer itself is stale" (e.g. list points into a
                 // freed/never-allocated struct).
-                // Print head + the just-dispatched timer (last_insert).
-                // last_insert is the timer whose .next was just used to
-                // update SchedStatus.timer_list — so if head is bogus,
-                // last_insert is the predecessor that owned the bad .next.
-                struct timer *head = sched_get_head_timer();
-                struct timer *li   = sched_get_last_insert();
-                output("rsched_past head %u hfunc %u hwake %u"
-                       " li %u lifunc %u liwake %u linext %u"
-                       " now %u diff_us %i",
-                       (uint32_t)head,
-                       head ? (uint32_t)head->func : 0u,
-                       head ? head->waketime : 0u,
-                       (uint32_t)li,
-                       li ? (uint32_t)li->func : 0u,
-                       li ? li->waketime : 0u,
-                       li ? (uint32_t)li->next : 0u,
-                       now,
+                // Emit the last N dispatched timers (addr, func). The chain
+                // shows when valid dispatches transitioned into bogus ones —
+                // the LAST valid entry is the predecessor whose `.next` was
+                // overwritten with a corrupt pointer.
+                uint32_t hidx;
+                uint32_t haddrs[SCHED_DISPATCH_HISTORY_N];
+                uint32_t hfuncs[SCHED_DISPATCH_HISTORY_N];
+                sched_get_dispatch_history(&hidx, haddrs, hfuncs);
+                output("rsched_past idx %u"
+                       " a0 %u f0 %u a1 %u f1 %u"
+                       " a2 %u f2 %u a3 %u f3 %u"
+                       " diff_us %i",
+                       hidx,
+                       haddrs[0], hfuncs[0],
+                       haddrs[1], hfuncs[1],
+                       haddrs[2], hfuncs[2],
+                       haddrs[3], hfuncs[3],
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
                 try_shutdown("Rescheduled timer in the past");
             }

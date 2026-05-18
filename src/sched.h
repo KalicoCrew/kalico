@@ -31,6 +31,16 @@ void sched_del_timer(struct timer *del);
 unsigned int sched_timer_dispatch(void);
 struct timer *sched_get_head_timer(void);
 struct timer *sched_get_last_insert(void);
+
+// Diagnostic ring of the last few dispatched timers. Index returned in
+// `*idx` is the count of dispatches (modulo the ring depth gives the
+// "next slot to write"). Each `addr[i]` holds `&t` and `func[i]` holds
+// `t->func` snapshotted at dispatch entry — before `t->func(t)` ran
+// and BEFORE the post-dispatch reorder. Walking backwards from `idx-1`
+// gives the most-recently dispatched, most-recently-but-one, etc.
+#define SCHED_DISPATCH_HISTORY_N 4
+void sched_get_dispatch_history(uint32_t *idx, uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
+                                uint32_t funcs[SCHED_DISPATCH_HISTORY_N]);
 void sched_timer_reset(void);
 void sched_wake_tasks(void);
 uint8_t sched_check_set_tasks_busy(void);
