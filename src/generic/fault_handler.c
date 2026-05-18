@@ -1073,6 +1073,16 @@ fault_handler_report_task(void)
            rt_diag_persistent.last_packed,
            rt_diag_persistent.last_us,
            rt_diag_persistent.fault_count);
+    // DWT-watchpoint state for &SchedStatus.timer_list. emit_dwt_state once
+    // per fault-report cycle so klippy.log records the writer PC (or 0 if
+    // the comparator never matched, which would mean either no bogus write
+    // happened or MON_EN didn't stick).
+    extern volatile uint32_t schedstatus_writer_pc;
+    output("dwt_status demcr %u func0 %u comp0 %u writer_pc %u",
+           CoreDebug->DEMCR,
+           DWT->FUNCTION0,
+           DWT->COMP0,
+           schedstatus_writer_pc);
 #endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few
