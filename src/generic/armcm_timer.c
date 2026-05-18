@@ -185,23 +185,26 @@ timer_dispatch_many(void)
                 // we can disambiguate "head's func field was clobbered" from
                 // "head pointer itself is stale" (e.g. list points into a
                 // freed/never-allocated struct).
-                // Emit the last N dispatched timers (addr, func). The chain
-                // shows when valid dispatches transitioned into bogus ones —
-                // the LAST valid entry is the predecessor whose `.next` was
-                // overwritten with a corrupt pointer.
+                // Emit dispatch history + the first bogus sched_add_timer
+                // caller LR (if any). The caller LR identifies the function
+                // that passed a struct-timer pointer into transmit_buf or
+                // batch_buf — likely the original corruption source.
                 uint32_t hidx;
                 uint32_t haddrs[SCHED_DISPATCH_HISTORY_N];
                 uint32_t hfuncs[SCHED_DISPATCH_HISTORY_N];
+                uint32_t bad_caller, bad_value;
                 sched_get_dispatch_history(&hidx, haddrs, hfuncs);
+                sched_get_bad_add(&bad_caller, &bad_value);
                 output("rsched_past idx %u"
                        " a0 %u f0 %u a1 %u f1 %u"
                        " a2 %u f2 %u a3 %u f3 %u"
-                       " diff_us %i",
+                       " bad_caller %u bad_value %u diff_us %i",
                        hidx,
                        haddrs[0], hfuncs[0],
                        haddrs[1], hfuncs[1],
                        haddrs[2], hfuncs[2],
                        haddrs[3], hfuncs[3],
+                       bad_caller, bad_value,
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
                 try_shutdown("Rescheduled timer in the past");
             }

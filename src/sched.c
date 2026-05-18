@@ -81,10 +81,39 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
     prev->next = t;
 }
 
+// Diagnostic latch for the first sched_add_timer call that passed a pointer
+// that looks bogus (in a known buffer region). __builtin_return_address(0)
+// captures the LR of the immediate caller so we can decode which function
+// inserted the bad pointer via `addr2line`.
+static volatile uint32_t sched_bad_add_caller;
+static volatile uint32_t sched_bad_add_value;
+
+void
+sched_get_bad_add(uint32_t *caller, uint32_t *value)
+{
+    *caller = sched_bad_add_caller;
+    *value  = sched_bad_add_value;
+}
+
+// True if `p` is inside one of the known scratch buffers a real timer should
+// never live in. Conservative — does not catch all corruption, but the two
+// observed corruption-target ranges are transmit_buf (0x20000114..0x20000514)
+// and batch_buf (0x20000ba4..0x200015a4).
+static inline int
+is_in_known_scratch(uint32_t p)
+{
+    return (p >= 0x20000114u && p < 0x20000514u)
+        || (p >= 0x20000ba4u && p < 0x200015a4u);
+}
+
 // Schedule a function call at a supplied time.
 void
 sched_add_timer(struct timer *add)
 {
+    if (is_in_known_scratch((uint32_t)add) && !sched_bad_add_caller) {
+        sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
+        sched_bad_add_value  = (uint32_t)add;
+    }
     uint32_t waketime = add->waketime;
     irqstatus_t flag = irq_save();
     struct timer *tl = SchedStatus.timer_list;

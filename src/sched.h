@@ -41,6 +41,10 @@ struct timer *sched_get_last_insert(void);
 #define SCHED_DISPATCH_HISTORY_N 4
 void sched_get_dispatch_history(uint32_t *idx, uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
                                 uint32_t funcs[SCHED_DISPATCH_HISTORY_N]);
+
+// First sched_add_timer call that passed a pointer landing inside transmit_buf
+// or batch_buf — captures the caller LR for addr2line decoding.
+void sched_get_bad_add(uint32_t *caller, uint32_t *value);
 void sched_timer_reset(void);
 void sched_wake_tasks(void);
 uint8_t sched_check_set_tasks_busy(void);
