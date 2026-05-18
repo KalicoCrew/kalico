@@ -268,15 +268,24 @@ GLOBALSCALER_ERROR = (
 
 
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
-    def __init__(self, config, mcu_tmc):
+    def __init__(self, config, mcu_tmc, direct_mode=False):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
+
+        # In direct mode (phase stepping) the chip's current scaling is
+        # selected by step pulses (IRUN on a step event, decay to IHOLD
+        # via IHOLDDELAY). With no step pulses ever asserted in phase
+        # stepping, IHOLD is the effective ceiling — set both equal so
+        # the effective current is identical regardless of which the
+        # chip internally selects (protects against unexpected step
+        # events).
+        self._direct_mode = direct_mode
 
         self.cs = config.getint("driver_CS", None, minval=0, maxval=31)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
         self.fields.set_field("globalscaler", gscaler)
-        self.fields.set_field("ihold", ihold)
+        self.fields.set_field("ihold", irun if self._direct_mode else ihold)
         self.fields.set_field("irun", irun)
 
     def _calc_globalscaler(self, current):
@@ -354,7 +363,8 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
-        self.fields.set_field("ihold", ihold)
+        # See __init__ comment: IHOLD = IRUN in direct mode.
+        self.fields.set_field("ihold", irun if self._direct_mode else ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
 
@@ -404,8 +414,35 @@ class TMC5160:
         )
         # Allow virtual pins to be created
         tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        # 2026-05-18 phase-stepping integration: when the matching
+        # [stepper_*] section sets phase_stepping=True, queue
+        # GCONF.direct_mode=1 and validate incompatible options. The TMC
+        # SPI burst at klippy connect time will write the bit before any
+        # motion starts. Detected *before* the current helper is built
+        # so the helper can switch to IHOLD=IRUN mapping (direct mode
+        # uses step pulses to select between IRUN/IHOLD; with no step
+        # pulses ever asserted in phase stepping, the two must be equal
+        # to guarantee deterministic effective current).
+        stepper_name = " ".join(config.get_name().split()[1:])  # "stepper_x"
+        if config.has_section(stepper_name):
+            stepper_section = config.getsection(stepper_name)
+        else:
+            stepper_section = None
+        self._phase_stepping = False
+        self._phase_bus_id = None
+        self._phase_cs_pin_id = None
+        if stepper_section is not None and stepper_section.getboolean(
+            "phase_stepping", False
+        ):
+            _enable_direct_mode(config, stepper_section, self.fields)
+            self._phase_stepping = True
+            self._phase_bus_id, self._phase_cs_pin_id = (
+                self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
+            )
         # Register commands
-        current_helper = TMC5160CurrentHelper(config, self.mcu_tmc)
+        current_helper = TMC5160CurrentHelper(
+            config, self.mcu_tmc, direct_mode=self._phase_stepping,
+        )
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
@@ -474,27 +511,6 @@ class TMC5160:
         set_config_field(config, "pwm_lim", 12)
         #   TPOWERDOWN
         set_config_field(config, "tpowerdown", 10)
-        # 2026-05-18 phase-stepping integration: when the matching
-        # [stepper_*] section sets phase_stepping=True, queue
-        # GCONF.direct_mode=1 and validate incompatible options. The TMC
-        # SPI burst at klippy connect time will write the bit before any
-        # motion starts.
-        stepper_name = " ".join(config.get_name().split()[1:])  # "stepper_x"
-        if config.has_section(stepper_name):
-            stepper_section = config.getsection(stepper_name)
-        else:
-            stepper_section = None
-        self._phase_stepping = False
-        self._phase_bus_id = None
-        self._phase_cs_pin_id = None
-        if stepper_section is not None and stepper_section.getboolean(
-            "phase_stepping", False
-        ):
-            _enable_direct_mode(config, stepper_section, self.fields)
-            self._phase_stepping = True
-            self._phase_bus_id, self._phase_cs_pin_id = (
-                self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
-            )
 
     def get_phase_config(self):
         """Return (bus_id, cs_pin_id) for phase-stepping integration.
