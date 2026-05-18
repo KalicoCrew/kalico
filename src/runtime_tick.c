@@ -292,7 +292,24 @@ static uint_fast8_t
 runtime_drain_event(struct timer *t)
 {
     sched_wake_task(&runtime_drain_wake);
-    t->waketime += timer_from_us(1000);  // 1 kHz
+    // Now-relative reschedule, NOT `+= 1 ms` from the previous waketime.
+    // Same hazard step_time_event documents (this file, around line 1706):
+    // any 1 ms+ of foreground starvation makes the `+=` form's next
+    // reschedule a past clock relative to wall-clock now, and Klipper's
+    // armcm_timer.c dispatcher fires `try_shutdown("Rescheduled timer
+    // in the past")` when the dispatched timer's waketime is > 1 ms
+    // before `timer_read_time()`. This bites on G28 X with the homing
+    // axis in StepTime mode: the per-step ISR pipeline (consumer
+    // step_time_event for stepper_x + stepper_x1 + their AWD partners)
+    // can fire dense back-to-back from PRODUCER_BATCH_CAP-sized ring
+    // fills before this drain timer gets a slice, and the cumulative
+    // delay pushes the `+= 1 ms` reschedule into the past. Anchoring to
+    // `timer_read_time()` keeps the reschedule strictly in the future
+    // regardless of upstream delay; the drain timer's role is sample-
+    // shipping and 10 Hz status emit, neither of which cares about
+    // exact phase-locking — slipping by the starvation duration is
+    // harmless (we drain whatever's accumulated on the next tick).
+    t->waketime = timer_read_time() + timer_from_us(1000);  // 1 kHz
     return SF_RESCHEDULE;
 }
 

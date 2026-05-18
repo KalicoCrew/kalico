@@ -408,6 +408,22 @@ class BridgeTriggerDispatch:
         self._arm_print_time = arm_print_time
         # Convert print_time → MCU clock for arm_clock.
         arm_clock = int(mcu_obj.print_time_to_clock(arm_print_time))
+        # 2026-05-18 second-pass fix: ReactorCompletion is single-shot —
+        # once `complete()` runs on a prior trip, `test()` returns True
+        # forever. homing.py's second-homing pass calls `home_start` →
+        # `dispatch.start` on the same `MCU_endstop` (and therefore the
+        # same `BridgeTriggerDispatch` instance), then `drip_move` checks
+        # `drip_completion.test()` to early-return if the endstop is
+        # already tripped. Without a fresh completion at every arm, the
+        # first pass's completed state is inherited by the second pass:
+        # `drip_move` returns without dispatching any motion, `home_wait`
+        # returns the cached trip clock, and `check_no_movement` reports
+        # `start_pos == trig_pos` → "Endstop x still triggered after
+        # retract". Allocate a fresh completion + reset the per-arm
+        # state (reason, trip_event) so each arm cycle starts clean.
+        self._completion = self._reactor.completion()
+        self._reason = None
+        self._trip_event = None
 
         # The MCU_endstop is constructed during config phase, before the
         # bridge has identified the MCU and assigned `_bridge_handle`.
