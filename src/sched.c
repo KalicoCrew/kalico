@@ -178,6 +178,15 @@ sched_timer_dispatch(void)
     return next_waketime;
 }
 
+// Return the timer at the head of the dispatch list. Read-only; intended
+// for diagnostics (e.g. identifying which timer's reschedule landed in the
+// past before try_shutdown). Caller is responsible for IRQ context.
+struct timer *
+sched_get_head_timer(void)
+{
+    return SchedStatus.timer_list;
+}
+
 // Remove all user timers
 void
 sched_timer_reset(void)

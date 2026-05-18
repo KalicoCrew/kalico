@@ -171,8 +171,18 @@ timer_dispatch_many(void)
 
         if (unlikely(timer_is_before(tru, now))) {
             // Check if there are too many repeat timers
-            if (diff < (int32_t)(-timer_from_us(1000)))
+            if (diff < (int32_t)(-timer_from_us(1000))) {
+                // Diagnostic: capture which timer's reschedule landed in the
+                // past. The head of the dispatch list is whoever owns the
+                // stale waketime; decode `func` via `nm out/klipper.elf`.
+                struct timer *head = sched_get_head_timer();
+                output("rsched_past func=%u waketime=%u now=%u diff_us=%i",
+                       (uint32_t)head->func,
+                       head->waketime,
+                       now,
+                       (int32_t)(diff / (int32_t)timer_from_us(1)));
                 try_shutdown("Rescheduled timer in the past");
+            }
             if (sched_check_set_tasks_busy()) {
                 timer_repeat_until = now + TIMER_REPEAT_TICKS;
                 return TIMER_DEFER_REPEAT_TICKS;
