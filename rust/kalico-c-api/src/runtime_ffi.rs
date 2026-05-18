@@ -650,9 +650,10 @@ pub mod exports {
             let IsrState {
                 engine,
                 queue_consumer,
+                trace_producer,
                 ..
             } = isr;
-            engine.runtime_modulated_tick(now, queue_consumer, pool, shared);
+            engine.runtime_modulated_tick(now, queue_consumer, pool, trace_producer, shared);
 
             // Mirror the engine's status into SharedState so the
             // foreground entrypoints see fault latching.

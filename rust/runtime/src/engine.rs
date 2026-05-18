@@ -2961,6 +2961,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         now: u64,
         queue: &mut SegConsumer<Segment>,
         pool: &CurvePool,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
         shared: &SharedState,
     ) {
         // Pull the wall-clock segment. The producer's segment cursor is the
@@ -3142,6 +3143,31 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             KinematicTag::CoreXyAndE => corexy_with_e(positions),
             KinematicTag::CartesianXyzAndE => cartesian_xyz_with_e(positions),
         };
+
+        // 2026-05-18: drive the endstop ARM state machine from the modulated
+        // path. Without this, sensorless homing on Modulated motors arms the
+        // ARM (host sends `runtime_arm_endstop`, firmware samples the DIAG
+        // pin every TIM5 fire into `PIN_LEVELS`), but the trip-check
+        // (`endstop::tick`) is never invoked — bench 2026-05-18 G28 X moves
+        // ran the full homing distance and skipped against the rail while
+        // PG9 was correctly asserting stallguard. The legacy
+        // `Engine::tick` path called `poll_endstop_trip` after position
+        // eval; the modulated path is now responsible for the same call.
+        //
+        // `v_per_axis_q16 = [u32::MAX; 3]` matches the StepTime path's
+        // convention (`abort_for_step_time_trip`): the IgnoreUntilMoving
+        // policy uses velocity purely to gate the `moved_above_v` latch,
+        // and TIM5 firing already implies the engine is processing
+        // motion. A precise per-axis velocity hook from `dx_du` is a
+        // follow-up once the modulated tick is ready to expose curve
+        // derivatives.
+        if self.poll_endstop_trip(now, [u32::MAX; 3], pool, None, trace, shared) {
+            // `abort_for_homing_trip` already cleared `producer_current`,
+            // retired curve slots, marked `last_error = HOMING_TRIP`, and
+            // transitioned status to `Drained`. Skip step emission for
+            // this tick so no further pulses fire past the trip point.
+            return;
+        }
 
         for motor_idx in 0..4_usize {
             let mode = shared
