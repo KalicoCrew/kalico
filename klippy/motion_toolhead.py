@@ -790,6 +790,47 @@ class MotionToolhead(ToolHead):
                         "reflash." % (slot_name, name, mcu_caps)
                     )
             if any_phase_stepping:
+                # GCONF synchronization barrier: TMC5160's direct_mode bit
+                # was queued by tmc5160.py::_enable_direct_mode during the
+                # connect-time SPI burst. Reading GCONF back via the
+                # canonical synchronous accessor (mcu_tmc.get_register, which
+                # serializes on the SPI mutex and performs a reg_read
+                # round-trip) flushes the MCU's command queue, guaranteeing
+                # the burst's writes have committed before configure_axes_blob
+                # arms the TIM5 XDIRECT ISR. Without this barrier,
+                # printer.cfg section ordering ([motion_toolhead] before
+                # [tmc5160 stepper_*]) can race the burst, and TMC5160
+                # silently discards XDIRECT writes when direct_mode=0,
+                # producing no torque and no error.
+                for i, slot in enumerate(slot_steppers):
+                    if step_modes[i] != 0 or not slot:
+                        continue
+                    primary_name = slot[0][0]
+                    try:
+                        tmc = self.printer.lookup_object(
+                            "tmc5160 " + primary_name
+                        )
+                    except Exception:
+                        # Already validated above; treat as best-effort.
+                        continue
+                    mcu_tmc = getattr(tmc, "mcu_tmc", None)
+                    if mcu_tmc is None or not hasattr(mcu_tmc, "get_register"):
+                        # Different driver type (e.g. UART instead of SPI)
+                        # lacks the synchronous accessor; the barrier is
+                        # best-effort hardening for TMC5160 SPI and must
+                        # not break other paths.
+                        continue
+                    gconf_val = mcu_tmc.get_register("GCONF")
+                    if not (gconf_val & (1 << 16)):
+                        raise self.printer.config_error(
+                            "phase_stepping=True on stepper '%s' but "
+                            "GCONF.direct_mode is 0 after connect "
+                            "(GCONF=0x%x); TMC5160 connect-time burst did "
+                            "not commit. This usually indicates a "
+                            "[motion_toolhead] vs [tmc5160 %s] section "
+                            "ordering race or an SPI failure."
+                            % (primary_name, gconf_val, primary_name)
+                        )
                 seen_buses = set()
                 for (bus_id, cs_pin_id) in phase_configs:
                     if bus_id == 0xFF:

@@ -449,7 +449,12 @@ pub(crate) fn build_configure_axes_body(
         }
     }
     if let Some(pc) = phase_configs {
-        debug_assert!(
+        // Promoted from debug_assert! to assert! so release builds also
+        // enforce this invariant. The PyO3 wrapper checks at the boundary,
+        // but this helper is pub(crate) and could be called from other
+        // in-crate sites; a malformed 33-byte-without-step_modes body must
+        // never silently leave this function.
+        assert!(
             step_modes.is_some(),
             "phase_configs requires step_modes (33-byte format extends 25-byte)"
         );
