@@ -2034,13 +2034,26 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // this is a no-op; when not set, this dequeue runs first and
         // fetch_segment_for_motor's `is_none()` check sees the populated
         // state.
-        // 2026-05-18 wedge diag: capture producer_step's view of
-        // producer_current.is_some() on every call. Compare with
-        // status_drain's view (kalico_runtime_producer_current_is_some_diag,
-        // read via a different borrow path) to detect if the non-atomic
-        // producer_current field is being read inconsistently between call
-        // sites.
-        let cur_is_some_view = self.producer_current.is_some();
+        // 2026-05-18 wedge fix: read `producer_current` via volatile load
+        // to defeat compiler caching. Bench evidence (tag 0xCC, commit
+        // 78999c9fa) showed producer_step's view of
+        // `producer_current.is_some()` = 1 while status_drain's view = 0
+        // for the same field at the same moment, EVEN with a SeqCst fence
+        // at function entry. The non-atomic `Option<Segment>` is being
+        // cached across producer_step's invocations by LTO; only an
+        // explicit volatile read forces a fresh memory access.
+        let cur_volatile: Option<Segment> = {
+            #[allow(unsafe_code)]
+            // SAFETY: &self.producer_current is a valid pointer to an
+            // Option<Segment>. The read is volatile so the compiler
+            // can't elide it. Segment is `Copy`, so the read yields a
+            // value copy with no ownership transfer; the original field
+            // remains intact.
+            unsafe {
+                core::ptr::read_volatile(core::ptr::from_ref(&self.producer_current))
+            }
+        };
+        let cur_is_some_view = cur_volatile.is_some();
         shared
             .producer_step_current_is_some_snapshot
             .store(u8::from(cur_is_some_view), Ordering::Release);
@@ -2976,7 +2989,22 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     .retired_through_segment_id
                     .store(seg.id, Ordering::Release);
                 crate::stream::check_terminal_on_retire(shared, seg.id);
-                self.producer_current = None;
+                // 2026-05-18 wedge fix: volatile write so the compiler can't
+                // dead-store-eliminate this. Pairs with the volatile read at
+                // the top of `producer_step`. Without this, LTO has been
+                // observed to skip the write when it thinks no other
+                // function reads the field (it doesn't realise foreground
+                // producer_step is a separate caller from this ISR path).
+                #[allow(unsafe_code)]
+                // SAFETY: &mut self.producer_current is a valid pointer
+                // (we hold &mut self). Volatile write of None is a plain
+                // memory store; no aliasing or lifetime concerns.
+                unsafe {
+                    core::ptr::write_volatile(
+                        core::ptr::from_mut(&mut self.producer_current),
+                        None,
+                    );
+                }
                 // 2026-05-18 wedge fix: pure-Modulated configs (F4 Z-only,
                 // or H7 X/Y when E's step_time_event isn't polling) have no
                 // path that rearms the producer Klipper timer after the ISR
