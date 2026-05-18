@@ -29,6 +29,22 @@ mach create "h723"
 # read from that address — chosen so Klipper's "spin until ready" loops exit.
 machine LoadPlatformDescription @/opt/homebrew/Cellar/renode/1.16.1/libexec/platforms/cpus/stm32h743.repl
 
+# SPI3 is only an opaque tagged range in the bundled stm32h743.repl
+# (see `Tag <0x40003C00, 0x40003FFF> "SPI3_/_I2S3"` at line 498). The kalico
+# hardware target (BTT Octopus Pro H723) wires TMC5160 phase-stepping drivers
+# to SPI3, so we need a real peripheral model for the firmware's writes to be
+# observable in the sim. Overlay an STM32H7_SPI instance at SPI3's base
+# address; NVIC line 51 is SPI3 global interrupt per CMSIS-Device for the
+# H723/H743 family (`SPI3_IRQn = 51` in lib/stm32h7/include/stm32h723xx.h).
+# The explicit `IRQ ->` name (vs bare `->`) is required because STM32H7_SPI
+# exposes both `IRQ` and `DMARecieve` GPIOs and Renode otherwise errors with
+# "Ambiguous choice of default interrupt." Task 8 attaches a TMC5160 stub
+# peripheral to this SPI3 instance.
+machine LoadPlatformDescriptionFromString """
+spi3: SPI.STM32H7_SPI @ sysbus 0x40003C00
+    IRQ -> nvic@51
+"""
+
 # Enable the Cortex-M7 FPU. The H743 .repl uses cpuType: "cortex-m7" without
 # a `+fpu` flag; without this monitor command, Renode silently drops writes
 # to SCB->CPACR (CP10/CP11 enable bits), so the FPU stays disabled. Any FPU
