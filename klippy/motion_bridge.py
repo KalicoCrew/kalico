@@ -139,6 +139,7 @@ class MotionBridgeWrapper:
         invert_mask,
         steps_per_mm,
         step_modes=None,
+        phase_configs=None,
         timeout_s=2.0,
     ):
         """Send the kalico-native ConfigureAxes message to an attached MCU.
@@ -146,6 +147,11 @@ class MotionBridgeWrapper:
         step_modes: optional list of 4 ints (0=Modulated/phase-stepping,
         1=StepTime/classic). When supplied the bridge emits the 25-byte
         extended format (spec §4 C1). Omit for the legacy 20-byte path.
+
+        phase_configs: optional list of 4 (bus_id, cs_pin_id) tuples. When
+        supplied (alongside step_modes), the bridge emits the 33-byte
+        extended format with bytes 25..32 = per-motor SPI bus + CS pin.
+        Sentinel value (0xFF, 0xFF) means 'no phase config for this slot'.
         """
         return self._bridge.configure_axes(
             mcu_handle,
@@ -155,7 +161,22 @@ class MotionBridgeWrapper:
             invert_mask,
             list(steps_per_mm),
             list(step_modes) if step_modes is not None else None,
+            list(phase_configs) if phase_configs is not None else None,
             timeout_s,
+        )
+
+    def register_phase_bus(
+        self, mcu_handle, bus_id, cs_pin_id, rate, timeout_s=5.0
+    ):
+        """Register an SPI bus with the MCU's phase-stepping subsystem.
+
+        Wraps the runtime_register_phase_bus wire command. Must be called
+        once per unique (bus_id) on each phase-stepping-capable MCU BEFORE
+        configure_axes for that MCU. Stock-Klipper MCUs (no kalico runtime)
+        are no-op via bridge.rs's early-return.
+        """
+        return self._bridge.register_phase_bus(
+            mcu_handle, bus_id, cs_pin_id, rate, timeout_s,
         )
 
     def bridge_call(self, mcu_handle, msg, response, timeout_s=15.0):
