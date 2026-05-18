@@ -127,6 +127,33 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
     prev->next = t;
 }
 
+void
+sched_walk_chain(uint32_t addrs[SCHED_CHAIN_WALK_N],
+                 uint32_t nexts[SCHED_CHAIN_WALK_N],
+                 uint32_t *steps)
+{
+    for (uint32_t i = 0; i < SCHED_CHAIN_WALK_N; i++) {
+        addrs[i] = 0;
+        nexts[i] = 0;
+    }
+    *steps = 0;
+    struct timer *pos = &SchedState.periodic_timer;
+    for (uint32_t i = 0; i < SCHED_CHAIN_WALK_N; i++) {
+        addrs[i] = (uint32_t)pos;
+        struct timer *nx = pos->next;
+        nexts[i] = (uint32_t)nx;
+        *steps = i + 1;
+        if (nx == &SchedState.sentinel_timer)
+            return;
+        // Sanity: stop walking if nx is clearly unusable.
+        uint32_t nu = (uint32_t)nx;
+        if (nu == 0 || (nu & 3u) != 0u
+            || nu < 0x20000010u || nu >= 0x20020000u)
+            return;
+        pos = nx;
+    }
+}
+
 // Diagnostic: latch the first caller of sched_add_timer that passes a
 // pointer into the known scratch buffers (transmit_buf 0x20000088..,
 // batch_buf 0x20000be8..0x200015e8). Real timer structs never live

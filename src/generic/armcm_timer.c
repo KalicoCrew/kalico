@@ -221,6 +221,21 @@ timer_dispatch_many(void)
                        sched_bad_add_stack0,
                        sched_bad_add_stack1,
                        sched_bad_add_stack2);
+                // Walk the chain forward from periodic_timer. First entry
+                // whose `n*` (the .next pointer) is in scratch range
+                // identifies the timer whose .next was corrupted.
+                uint32_t cwa[SCHED_CHAIN_WALK_N];
+                uint32_t cwn[SCHED_CHAIN_WALK_N];
+                uint32_t cws;
+                sched_walk_chain(cwa, cwn, &cws);
+                output("rsched_chain steps %u"
+                       " a0 %u n0 %u a1 %u n1 %u a2 %u n2 %u",
+                       cws, cwa[0], cwn[0], cwa[1], cwn[1],
+                       cwa[2], cwn[2]);
+                output("rsched_chain_more"
+                       " a3 %u n3 %u a4 %u n4 %u a5 %u n5 %u",
+                       cwa[3], cwn[3], cwa[4], cwn[4],
+                       cwa[5], cwn[5]);
                 // Close the writable window before try_shutdown longjmps
                 // out of this scope, so the rest of the shutdown path
                 // doesn't accidentally observe RW protected memory.

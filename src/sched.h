@@ -56,6 +56,17 @@ void sched_get_dispatch_history(uint32_t *idx,
                                 uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
                                 uint32_t funcs[SCHED_DISPATCH_HISTORY_N]);
 
+// Walk the chain forward from periodic_timer (a known-good root since it
+// lives inside the MPU-protected SchedState). Returns up to N (timer addr,
+// next pointer) pairs walking via .next. Stops on sentinel, on N entries,
+// or when .next points outside any plausible RAM region. The first entry
+// where `nx` is in the known scratch ranges (transmit_buf, batch_buf)
+// identifies the timer whose .next was corrupted and the corrupting value.
+#define SCHED_CHAIN_WALK_N 6
+void sched_walk_chain(uint32_t addrs[SCHED_CHAIN_WALK_N],
+                      uint32_t nexts[SCHED_CHAIN_WALK_N],
+                      uint32_t *steps);
+
 enum { SF_DONE=0, SF_RESCHEDULE=1 };
 
 // Task waking struct
