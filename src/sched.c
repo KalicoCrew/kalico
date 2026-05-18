@@ -95,6 +95,17 @@ sched_get_bad_add(uint32_t *caller, uint32_t *value)
     *value  = sched_bad_add_value;
 }
 
+// True if `p` is inside one of the known scratch buffers a real timer should
+// never live in. Conservative — does not catch all corruption, but the two
+// observed corruption-target ranges are transmit_buf (0x20000114..0x20000514)
+// and batch_buf (0x20000ba4..0x200015a4).
+static inline int
+is_in_known_scratch(uint32_t p)
+{
+    return (p >= 0x20000114u && p < 0x20000514u)
+        || (p >= 0x20000ba4u && p < 0x200015a4u);
+}
+
 void
 sched_walk_for_corruption(uint32_t *pred_addr, uint32_t *pred_func,
                           uint32_t *bad_next, uint32_t *steps)
@@ -130,17 +141,6 @@ sched_walk_for_corruption(uint32_t *pred_addr, uint32_t *pred_func,
     *pred_func = (uint32_t)pos->func;
     *bad_next  = (uint32_t)pos->next;
     *steps     = 64;
-}
-
-// True if `p` is inside one of the known scratch buffers a real timer should
-// never live in. Conservative — does not catch all corruption, but the two
-// observed corruption-target ranges are transmit_buf (0x20000114..0x20000514)
-// and batch_buf (0x20000ba4..0x200015a4).
-static inline int
-is_in_known_scratch(uint32_t p)
-{
-    return (p >= 0x20000114u && p < 0x20000514u)
-        || (p >= 0x20000ba4u && p < 0x200015a4u);
 }
 
 // Schedule a function call at a supplied time.
