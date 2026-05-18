@@ -999,7 +999,12 @@ impl PyMotionBridge {
     /// stepping, 1 = StepTime / classic). When supplied the bridge emits the
     /// 25-byte extended format (spec §4 C1); when omitted it emits the
     /// legacy 20-byte format. Firmware accepts both.
-    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, step_modes = None, timeout_s = 2.0))]
+    ///
+    /// `phase_configs`: optional list of 4 `(bus_id, cs_pin_id)` tuples. When
+    /// supplied (and `step_modes` is also Some), the bridge emits the 33-byte
+    /// extended format (bytes 25..32 = per-motor SPI bus + CS pin pairs).
+    /// Sentinel `(0xFF, 0xFF)` indicates "no phase config for this slot".
+    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, step_modes = None, phase_configs = None, timeout_s = 2.0))]
     fn configure_axes(
         &self,
         py: Python<'_>,
@@ -1010,6 +1015,7 @@ impl PyMotionBridge {
         invert_mask: u8,
         steps_per_mm: Vec<f32>,
         step_modes: Option<Vec<u8>>,
+        phase_configs: Option<Vec<(u8, u8)>>,
         timeout_s: f64,
     ) -> PyResult<()> {
         use std::io::Write;
@@ -1025,6 +1031,18 @@ impl PyMotionBridge {
             if sm.len() != 4 {
                 return Err(PyRuntimeError::new_err(
                     "configure_axes: step_modes must be a list of 4 ints (0=Modulated, 1=StepTime)",
+                ));
+            }
+        }
+        if let Some(ref pc) = phase_configs {
+            if pc.len() != 4 {
+                return Err(PyRuntimeError::new_err(
+                    "configure_axes: phase_configs must be a list of 4 (bus_id, cs_pin_id) tuples",
+                ));
+            }
+            if step_modes.is_none() {
+                return Err(PyRuntimeError::new_err(
+                    "configure_axes: phase_configs requires step_modes (33-byte format extends 25-byte)",
                 ));
             }
         }
@@ -1064,6 +1082,7 @@ impl PyMotionBridge {
         let phase_capable: u8 = if identify_caps & 0x1 != 0 { 1 } else { 0 };
         let steps_arr: [f32; 4] = [steps_per_mm[0], steps_per_mm[1], steps_per_mm[2], steps_per_mm[3]];
         let step_modes_arr: Option<[u8; 4]> = step_modes.as_ref().map(|sm| [sm[0], sm[1], sm[2], sm[3]]);
+        let phase_configs_arr: Option<[(u8, u8); 4]> = phase_configs.as_ref().map(|pc| [pc[0], pc[1], pc[2], pc[3]]);
         let body = build_configure_axes_body(
             kinematics,
             present_mask,
@@ -1071,7 +1090,7 @@ impl PyMotionBridge {
             invert_mask,
             &steps_arr,
             step_modes_arr.as_ref(),
-            None,             // Task 4 threads phase_configs here
+            phase_configs_arr.as_ref(),
             phase_capable,
         );
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
