@@ -458,6 +458,14 @@ sched_main(void)
     extern void ctr_run_initfuncs(void);
     ctr_run_initfuncs();
 
+    // Diagnostic: emit SchedStatus.timer_list value right after all init
+    // functions ran. If it's already bogus here, the corruption is from
+    // one of the DECL_INIT functions; we can then bisect by adding the
+    // same emit at the top vs bottom of each DECL_INIT.
+    output("post_init tl %u li %u",
+           (uint32_t)SchedStatus.timer_list,
+           (uint32_t)SchedStatus.last_insert);
+
     sendf("starting");
 
     irq_disable();
