@@ -2018,15 +2018,20 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // this is a no-op; when not set, this dequeue runs first and
         // fetch_segment_for_motor's `is_none()` check sees the populated
         // state.
-        if self.producer_current.is_none() {
+        // 2026-05-18 wedge diag: capture producer_step's view of
+        // producer_current.is_some() on every call. Compare with
+        // status_drain's view (kalico_runtime_producer_current_is_some_diag,
+        // read via a different borrow path) to detect if the non-atomic
+        // producer_current field is being read inconsistently between call
+        // sites.
+        let cur_is_some_view = self.producer_current.is_some();
+        shared
+            .producer_step_current_is_some_snapshot
+            .store(u8::from(cur_is_some_view), Ordering::Release);
+        if !cur_is_some_view {
             shared
                 .producer_observed_none_total
                 .fetch_add(1, Ordering::AcqRel);
-            // 2026-05-18: queue is C-backed (see `crate::c_segment_queue`).
-            // The Rust `heapless::spsc::Consumer` was miscompiled here on
-            // H7 — different call sites observed different `queue.len()`
-            // values on the same Consumer instance. C avoids the
-            // borrow-projection compiler issue.
             let qlen_here = queue.len() as u32;
             shared
                 .producer_step_last_len_snapshot

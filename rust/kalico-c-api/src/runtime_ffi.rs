@@ -2642,6 +2642,26 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-18 wedge diag: producer_step's OWN view of
+    /// `engine.producer_current.is_some()`. Compared against
+    /// `kalico_runtime_producer_current_is_some_diag` (which reads from
+    /// status_drain via &IsrState). If they disagree, producer_current is
+    /// being read inconsistently across function boundaries — the
+    /// non-atomic field is being cached by the compiler despite
+    /// modulated_tick writing it from the ISR-borrow path.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_producer_current_is_some_from_producer_step_diag(
+        rt: *mut KalicoRuntime,
+    ) -> u8 {
+        if rt.is_null() { return 0; }
+        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
+            shared.producer_step_current_is_some_snapshot.load(Ordering::Acquire)
+        }
+    }
+
     /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
     /// how many `Engine::producer_step` invocations have completed since
     /// boot. If `step_time_producer_kicks` (C side) is incrementing but

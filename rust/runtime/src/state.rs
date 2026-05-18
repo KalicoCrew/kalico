@@ -307,6 +307,15 @@ pub struct SharedState {
     /// status_drain at a different time / via &IsrState borrow) to detect if
     /// the SPSC Consumer's view of head/tail diverges between call sites.
     pub producer_step_last_len_snapshot: AtomicU32,
+    /// 2026-05-18 wedge diag: producer_step's OWN view of
+    /// `engine.producer_current.is_some()` (0/1). Written at the entry to
+    /// producer_step on every call. Compare with status_drain's
+    /// kalico_runtime_producer_current_is_some_diag (read via a different
+    /// borrow path). If they disagree, producer_current is being read
+    /// inconsistently between call sites (compiler caching a non-atomic
+    /// field across function boundaries despite the field changing
+    /// in-between).
+    pub producer_step_current_is_some_snapshot: AtomicU8,
     /// Total times `Engine::fetch_segment_for_motor` was called. Bumps
     /// unconditionally at function entry — distinguishes "producer loop
     /// is filtering out all motors at the gates" from "fetch is called
@@ -444,6 +453,7 @@ impl SharedState {
             producer_segment_dequeued_total: AtomicU64::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
+            producer_step_current_is_some_snapshot: AtomicU8::new(0),
             producer_fetch_attempts_total: AtomicU64::new(0),
             producer_enqueue_success_total: AtomicU64::new(0),
             last_push_segment_result: AtomicI32::new(0),

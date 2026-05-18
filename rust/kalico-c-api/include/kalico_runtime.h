@@ -820,6 +820,17 @@ uint32_t kalico_runtime_queue_len_diag(struct KalicoRuntime *rt);
 uint32_t kalico_runtime_queue_len_from_producer_step_diag(struct KalicoRuntime *rt);
 
 /**
+ * 2026-05-18 wedge diag: producer_step's OWN view of
+ * `engine.producer_current.is_some()`. Compared against
+ * `kalico_runtime_producer_current_is_some_diag` (which reads from
+ * status_drain via &IsrState). If they disagree, producer_current is
+ * being read inconsistently across function boundaries — the
+ * non-atomic field is being cached by the compiler despite
+ * modulated_tick writing it from the ISR-borrow path.
+ */
+uint8_t kalico_runtime_producer_current_is_some_from_producer_step_diag(struct KalicoRuntime *rt);
+
+/**
  * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
  * how many `Engine::producer_step` invocations have completed since
  * boot. If `step_time_producer_kicks` (C side) is incrementing but

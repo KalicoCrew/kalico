@@ -1165,23 +1165,26 @@ runtime_status_drain(void)
             break;
         }
         case 35: {
-            // 0xCC — 2026-05-18 wedge diag. producer_step entry-state, dequeue
-            // outcome, and SPSC consumer's queue.len() snapshots from BOTH
-            // call sites.
-            //   bits 0..7   producer_segment_dequeued_total low 8 bits (0..255)
-            //   bits 8..15  producer_observed_none_total low 8 bits (0..255)
-            //   bits 16..18 queue_consumer.len() (from status_drain, &IsrState)
-            //   bits 19..21 queue.len() (from producer_step, &mut Consumer)
-            //   bit  22     producer_current.is_some() (1 = sticky-Some)
-            //   bit  23     reserved
-            // Smoking-gun pattern: if the two qlen values disagree, the SPSC
-            // Consumer's head/tail loads return different values depending
-            // on the call site (compiler / aliasing bug). If they agree but
-            // are non-zero while obs > deq, dequeue() returns None despite
-            // qlen > 0 — SPSC internal corruption.
+            // 0xCC — 2026-05-18 wedge diag. producer_step entry-state vs
+            // status_drain view. Crucial: compares the value of
+            // `producer_current.is_some()` AS SEEN BY each call site.
+            //   bits 0..6   producer_segment_dequeued_total low 7 bits (0..127)
+            //   bits 7..13  producer_observed_none_total low 7 bits (0..127)
+            //   bits 14..16 queue_consumer.len() from status_drain (0..7)
+            //   bits 17..19 queue.len() from producer_step (0..7)
+            //   bit  20     status_drain's view of producer_current.is_some()
+            //   bit  21     producer_step's view of producer_current.is_some()
+            //   bits 22..23 reserved
+            // Diagnostic interpretation:
+            //   is_some bits AGREE: producer_current is consistently readable.
+            //     If qlen values agree too: queue is fine; look elsewhere.
+            //   is_some bits DISAGREE: producer_current is being cached by
+            //     the compiler across call sites — needs atomic semantics.
             uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
             uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
-            uint8_t is_some = kalico_runtime_producer_current_is_some_diag(
+            uint8_t is_some_sd = kalico_runtime_producer_current_is_some_diag(
+                runtime_handle);
+            uint8_t is_some_ps = kalico_runtime_producer_current_is_some_from_producer_step_diag(
                 runtime_handle);
             uint32_t qlen_sd = kalico_runtime_queue_len_diag(runtime_handle);
             uint32_t qlen_ps = kalico_runtime_queue_len_from_producer_step_diag(
@@ -1189,11 +1192,12 @@ runtime_status_drain(void)
             if (qlen_sd > 7) qlen_sd = 7;
             if (qlen_ps > 7) qlen_ps = 7;
             fault_detail = 0xCC000000u
-                         | ((uint32_t)(is_some & 1u) << 22)
-                         | ((qlen_ps & 7u) << 19)
-                         | ((qlen_sd & 7u) << 16)
-                         | ((obs & 0xFFu) << 8)
-                         | (deq & 0xFFu);
+                         | ((uint32_t)(is_some_ps & 1u) << 21)
+                         | ((uint32_t)(is_some_sd & 1u) << 20)
+                         | ((qlen_ps & 7u) << 17)
+                         | ((qlen_sd & 7u) << 14)
+                         | ((obs & 0x7Fu) << 7)
+                         | (deq & 0x7Fu);
             break;
         }
         case 32: {
