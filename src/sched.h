@@ -28,9 +28,17 @@ struct timer {
 #define SCHED_PROTECTED __attribute__((section(".sched_protected")))
 
 // Open / close the MPU writable window over `.sched_protected`. Defined
-// in src/generic/mpu_protect.c. No-op on builds without MPU support.
+// in src/generic/mpu_protect.c. Re-entrancy-safe via depth counter — a
+// nested begin/end pair (e.g. sched_add_timer called from inside a
+// timer callback dispatched by timer_dispatch_many) doesn't close the
+// outer window prematurely.
 void sched_writable_begin(void);
 void sched_writable_end(void);
+
+// Forcibly clamp the protected region back to read-only and zero the
+// depth counter. Called once per shutdown cycle to recover from
+// try_shutdown longjmps that bypass the matching end().
+void sched_writable_reset(void);
 
 // Initialize the MPU protection on `.sched_protected`. Called once from
 // armcm_main after clock_setup, before sched_main.

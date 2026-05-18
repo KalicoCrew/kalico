@@ -47,6 +47,7 @@
 #include "autoconf.h"
 #include "armcm_boot.h" // DECL_ARMCM_IRQ
 #include "board/internal.h" // CMSIS MPU/CoreDebug definitions
+#include "board/irq.h" // irq_save / irq_restore (re-entrant depth counter)
 #include "command.h" // try_shutdown, shutdown macros
 #include "sched.h" // sched_writable_begin/end, mpu_protect_init
 
@@ -93,22 +94,66 @@ mpu_set_region0_ap(uint32_t ap_mask)
     __ISB();
 }
 
+// Re-entrant depth counter for the writable window.
+//
+// `timer_dispatch_many` (armcm_timer.c) opens the window once per SysTick
+// invocation and keeps it open across the whole dispatch loop. The
+// dispatched timer callbacks run inside that window; some of them
+// (e.g. step_time_event in runtime_tick.c — see the
+// arm_producer_timer_if_kicked_inline call sites) reach sched_add_timer,
+// which pairs its own begin/end. Without depth tracking the inner end()
+// unconditionally clamps the region back to RO — the next write from
+// the outer dispatcher then faults into MemManage.
+//
+// volatile because IRQ context (SysTick → timer_dispatch_many) and task
+// context (sched_add_timer from DECL_TASK / DECL_INIT) both update it.
+// Each update is bracketed by irq_save/irq_restore so the
+// read-modify-write of the counter and the paired MPU programming are
+// atomic with respect to any preempting IRQ that might also call
+// begin/end.
+static volatile uint32_t sched_writable_depth;
+
 void
 sched_writable_begin(void)
 {
-    mpu_set_region0_ap(RASR_AP_RW_OPEN);
+    irqstatus_t flag = irq_save();
+    if (sched_writable_depth == 0)
+        mpu_set_region0_ap(RASR_AP_RW_OPEN);
+    sched_writable_depth++;
+    irq_restore(flag);
 }
 
 void
 sched_writable_end(void)
 {
-    mpu_set_region0_ap(RASR_AP_RO);
+    irqstatus_t flag = irq_save();
+    // Underflow guard: end() with no matching begin() should never
+    // happen, but if it does we prefer to leave the region closed
+    // rather than wrap the counter to UINT32_MAX (which would leave
+    // the window stuck open until the next reboot).
+    if (sched_writable_depth > 0) {
+        sched_writable_depth--;
+        if (sched_writable_depth == 0)
+            mpu_set_region0_ap(RASR_AP_RO);
+    }
+    irq_restore(flag);
 }
 
-// Defensive integrity check called at sched_writable_end() time in debug
-// builds — would catch the rare case where a rogue writer hit the region
-// during the open window. Currently a no-op; wire up if we ever see
-// post-fix corruption.
+// Forcibly clamp the region back to read-only and reset the depth
+// counter to 0. Called by sched_main right after its setjmp returns
+// non-zero — a try_shutdown longjmp can bypass the matching end()
+// (e.g. sched_add_timer's "Timer too close" path longjmps with the
+// window still open). Without this, the post-shutdown run_tasks loop
+// would run with a stale non-zero depth and the protection would
+// never re-engage.
+void
+sched_writable_reset(void)
+{
+    irqstatus_t flag = irq_save();
+    sched_writable_depth = 0;
+    mpu_set_region0_ap(RASR_AP_RO);
+    irq_restore(flag);
+}
 
 void
 mpu_protect_init(void)

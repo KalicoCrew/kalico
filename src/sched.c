@@ -403,8 +403,15 @@ sched_main(void)
 
     irq_disable();
     int ret = setjmp(shutdown_jmp);
-    if (ret)
+    if (ret) {
+        // try_shutdown can longjmp from inside a sched_writable_begin()
+        // window (e.g. sched_add_timer's "Timer too close" check), so the
+        // matching end() is skipped and the depth counter is left
+        // non-zero. Reset before running shutdown handlers so the
+        // protection re-engages cleanly.
+        sched_writable_reset();
         run_shutdown(ret);
+    }
     irq_enable();
 
     run_tasks();
