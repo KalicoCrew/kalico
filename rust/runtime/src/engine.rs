@@ -23,25 +23,25 @@ unsafe extern "C" {
     pub static mut kalico_producer_current_present: u8;
     pub static mut kalico_producer_current_set_count: u32;
     pub static mut kalico_producer_current_cleared_count: u32;
+    // 2026-05-18 wedge fix: go through C FFI functions for the gate
+    // read/write instead of touching the volatile global directly from
+    // Rust. The function call is opaque to LLVM — it can't inline or
+    // reorder across it — so the volatile semantics live entirely
+    // inside the C translation unit and reach the Rust caller as
+    // "definitely-happened" memory ops.
+    fn kalico_producer_current_is_present() -> i32;
+    fn kalico_producer_current_set_present(present: i32);
 }
 
 /// Read the C-side gate (MCU build) or the AtomicBool (host build).
 /// Returns true if `engine.producer_current` is Some.
-///
-/// 2026-05-18: marked `#[inline(never)]` to prevent LTO from inlining the
-/// helper and optimizing the volatile read afterwards. Bench evidence has
-/// shown the volatile read returning stale values even when the helper
-/// body looks correct, suggesting post-inlining optimization is at fault.
 #[inline(never)]
 fn read_producer_current_present(shared: &SharedState) -> bool {
     #[cfg(target_os = "none")]
     {
         #[allow(unsafe_code)]
-        // SAFETY: `kalico_producer_current_present` is a `volatile u8` global.
-        // read_volatile emits a real LDR. Single-byte access, no tearing.
-        unsafe {
-            core::ptr::read_volatile(core::ptr::addr_of!(kalico_producer_current_present)) != 0
-        }
+        // SAFETY: pure C function call, no preconditions, no aliasing.
+        unsafe { kalico_producer_current_is_present() != 0 }
     }
     #[cfg(not(target_os = "none"))]
     {
@@ -52,33 +52,15 @@ fn read_producer_current_present(shared: &SharedState) -> bool {
 /// Write the C-side gate (MCU build) and mirror into the AtomicBool (host
 /// build). Single source of truth for `engine.producer_current.is_some()`
 /// visibility across foreground / ISR boundaries.
-///
-/// 2026-05-18: `#[inline(never)]` for the same reason as the read helper.
 #[inline(never)]
 fn write_producer_current_present(shared: &SharedState, present: bool) {
     #[cfg(target_os = "none")]
     {
         #[allow(unsafe_code)]
-        // SAFETY: same as the read; write_volatile emits a real STR.
-        // Also bump the per-direction diag counter so we can verify the
-        // write actually executed (bench evidence so far shows the gate
-        // staying at 1 despite modulated_tick claiming to set it to 0).
-        unsafe {
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!(kalico_producer_current_present),
-                u8::from(present),
-            );
-            let counter_ptr = if present {
-                core::ptr::addr_of_mut!(kalico_producer_current_set_count)
-            } else {
-                core::ptr::addr_of_mut!(kalico_producer_current_cleared_count)
-            };
-            let cur = core::ptr::read_volatile(counter_ptr);
-            core::ptr::write_volatile(counter_ptr, cur.wrapping_add(1));
-        }
+        // SAFETY: pure C function call; the C function performs a volatile
+        // store + counter increment. Opaque to LLVM.
+        unsafe { kalico_producer_current_set_present(if present { 1 } else { 0 }) };
     }
-    // Mirror to the atomic for host builds and for diagnostic accessors that
-    // still read the atomic.
     shared
         .producer_current_present
         .store(present, Ordering::Release);

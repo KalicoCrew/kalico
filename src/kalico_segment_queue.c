@@ -146,3 +146,27 @@ volatile uint32_t kalico_producer_current_set_count
     __attribute__((used, externally_visible));
 volatile uint32_t kalico_producer_current_cleared_count
     __attribute__((used, externally_visible));
+
+// 2026-05-18 wedge fix: C-side accessors for the gate. Calling these as
+// FFI functions instead of touching the volatile variable directly from
+// Rust prevents LLVM from optimizing across the access. Each call is
+// opaque to Rust; the volatile semantics live entirely inside this C
+// translation unit.
+__attribute__((used, externally_visible))
+int
+kalico_producer_current_is_present(void)
+{
+    return kalico_producer_current_present;
+}
+
+__attribute__((used, externally_visible))
+void
+kalico_producer_current_set_present(int present)
+{
+    kalico_producer_current_present = present ? 1 : 0;
+    if (present) {
+        kalico_producer_current_set_count++;
+    } else {
+        kalico_producer_current_cleared_count++;
+    }
+}
