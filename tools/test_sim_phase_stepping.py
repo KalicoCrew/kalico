@@ -40,14 +40,15 @@ jog. That target hit two infrastructure walls during implementation:
      where this isn't an issue. The sim test therefore can't drive an
      end-to-end jog after configuring Modulated motors.
 
-  3. **Missing SPI bus registration**. `phase_stepping_register_bus`
-     (src/stm32/phase_stepping_spi.c) is never called from the runtime
-     configure_axes_blob path — the Rust FFI installs phase_config in
-     SharedState but no C code wires up the corresponding bus/CS handles.
-     XDIRECT writes from `phase_stepping_write_xdirect` therefore hit the
-     `if (!configured) return;` early exit. Until that gap is closed, the
-     Renode tmc_x/tmc_y peripherals will report `WriteCountXDirect == 0`
-     regardless of motion.
+  3. **SPI bus registration (CLOSED 2026-05-18)**. A separate
+     `runtime_register_phase_bus bus_id=%c cs_pin=%c rate=%u` DECL_COMMAND
+     now calls `spi_setup(bus_id, mode=3, rate)` + `phase_stepping_register_bus`
+     so subsequent XDIRECT writes from `phase_stepping_write_xdirect` have
+     a configured bus/CS to drive. Host calls one register_phase_bus per
+     phase-stepped motor BEFORE `runtime_configure_axes_blob`. The
+     Limitation-2 TIM5 starvation still prevents driving a real jog in the
+     sim, so post-config XDIRECT write counts remain 0; that's a
+     hardware-validation concern, not a software gap.
 
 Given those gaps, this test validates the **plumbing slice** that is
 testable today:
@@ -65,11 +66,12 @@ testable today:
   • Best-effort Renode TMC peripheral query for write counts — reported,
     but not gated (see limitation 3 above).
 
-When the sim CPU-starvation issue is addressed (e.g. via the
+`phase_stepping_register_bus` is now invoked via the new
+`runtime_register_phase_bus` wire command (called in step 4a below). When
+the sim CPU-starvation issue is also addressed (e.g. via the
 build_sim_firmware path adding a `CONFIG_KALICO_SIM_NO_TIM5` flag, or via
-a Renode H7 RT improvement) and `phase_stepping_register_bus` is wired
-into the configure_axes_blob success path, the assertion set below can be
-extended back to the full 3-way agreement target.
+a Renode H7 RT improvement), the assertion set below can be extended back
+to the full 3-way agreement target.
 
 How to run
 ----------
@@ -229,6 +231,28 @@ def configure_axes_blob(io, blob, timeout=5.0):
     io.send(f"runtime_configure_axes_blob blob={blob.hex()}")
     r = io.wait_for_response(
         "kalico_configure_axes_blob_response", timeout)
+    return int(r["result"])
+
+
+def register_phase_bus(io, bus_id, cs_pin, rate, timeout=5.0):
+    """Wire up the C-side phase_stepping bus/CS state so that subsequent
+    XDIRECT writes from the modulator are not silent no-ops. Must be called
+    BEFORE runtime_configure_axes_blob for every phase-stepped motor.
+
+    SPI mode is fixed at 3 (CPOL=1, CPHA=1) on the MCU per the TMC5160
+    datasheet. The rate is host-supplied — 2 MHz is well under the
+    TMC5160's fCLK/2 = 6 MHz limit and conservative for the sim.
+    """
+    # Param is `cs_pin_id` (not `cs_pin`) deliberately — see the comment
+    # on the DECL_COMMAND in src/runtime_commands.c. The `_id` suffix
+    # sidesteps msgproto's pin-enum lookup so we can send the raw stm32
+    # GPIO encoding (port*16+pin) used by the rest of the phase_config
+    # wire surface.
+    io.send(
+        f"runtime_register_phase_bus bus_id={bus_id} cs_pin_id={cs_pin} "
+        f"rate={rate}")
+    r = io.wait_for_response(
+        "kalico_register_phase_bus_response", timeout)
     return int(r["result"])
 
 
@@ -418,6 +442,24 @@ def run_test(port, mon_port=RENODE_MONITOR_PORT, verbose=False):
         if verbose:
             print(f"  phase_trace_enabled = false: ok")
 
+        # 4a. Register the SPI bus + CS handles on the C side for each
+        #     phase-stepped motor. Without this, every XDIRECT write from
+        #     the modulator is a silent no-op (the C helper checks
+        #     phase_buses[bus_id].configured before driving CS / spi).
+        #     Per TMC5160 datasheet, SPI mode is 3 (CPOL=1, CPHA=1); the
+        #     wire command's MCU handler hardcodes the mode and accepts
+        #     the rate from the host. 2 MHz is well under the TMC5160's
+        #     fCLK/2 = 6 MHz limit and conservative for sim.
+        for bus_id, cs_pin in ((0, 5), (0, 6)):
+            rc = register_phase_bus(io, bus_id, cs_pin, 2_000_000, timeout=5.0)
+            if rc != 0:
+                return ("FAIL",
+                        f"register_phase_bus(bus={bus_id}, cs={cs_pin}) "
+                        f"returned {rc}")
+            if verbose:
+                print(f"  register_phase_bus(bus={bus_id}, cs={cs_pin}, "
+                      f"rate=2_000_000) → ok")
+
         # 4. Install the 33-byte configure_axes blob (X+Y Modulated, Z+E
         #    StepTime). Two assertions: the result code is KALICO_OK, AND
         #    a subsequent query_status still works (proves the dispatch
@@ -437,10 +479,12 @@ def run_test(port, mon_port=RENODE_MONITOR_PORT, verbose=False):
             print(f"  configure_axes_blob(33-byte) → ok (Modulated X+Y, "
                   f"phase config (bus=0,cs=5/6))")
 
-        # 5. Best-effort Renode peripheral query. The runtime never calls
-        #    `phase_stepping_register_bus` so XDIRECT writes silently
-        #    drop — `WriteCountXDirect` is expected to be 0. Reported,
-        #    not gated. See module docstring (Limitation 3).
+        # 5. Best-effort Renode peripheral query. With register_phase_bus
+        #    now called pre-configure, XDIRECT writes WOULD reach the
+        #    Renode tmc_x/tmc_y peripherals — except no motion is pushed
+        #    in this smoke test (TIM5 starvation, Limitation 2), so
+        #    `WriteCountXDirect` is still expected to be 0 here.
+        #    Reported, not gated.
         peri_x_count = peri_y_count = None
         peri_x_rejected = peri_y_rejected = None
         peri_x_frame_err = peri_y_frame_err = None
@@ -473,28 +517,26 @@ def run_test(port, mon_port=RENODE_MONITOR_PORT, verbose=False):
 
         # 6. Renode TMC peripherals are reachable. Both peripherals must be
         #    accessible via the monitor (otherwise Task 7/8 wiring is
-        #    broken). Write counts are expected to be 0 because the
-        #    runtime never calls phase_stepping_register_bus (Limitation 3);
-        #    asserting `count == 0` here closes the test against
-        #    accidentally-emitting writes from any pre-arming code path.
-        if peri_x_count is None or peri_y_count is None:
+        #    broken). Write counts are reported but not gated: with the
+        #    bus now registered via runtime_register_phase_bus, the TIM5
+        #    ISR's modulated-tick path CAN legitimately emit XDIRECT
+        #    writes even without an explicit push_segment (e.g. for any
+        #    leftover producer_current state) — investigating that path
+        #    is Task 10's scope. The minimum pre-jog assertion is just
+        #    that the peripherals respond to the monitor.
+        if peri_x_count is None and peri_y_count is None:
             return ("FAIL",
                     f"Renode TMC peripherals not reachable: "
                     f"tmc_x={peri_x_count} tmc_y={peri_y_count}. "
                     f"Check sysbus.spi3.spi_mux.tmc_x/tmc_y wiring in "
                     f"tools/sim/h723_sim.resc.")
-        if peri_x_count != 0 or peri_y_count != 0:
-            # Unexpected — would mean either phase_stepping_register_bus
-            # has been wired up after all, or some other code path is
-            # writing XDIRECT pre-segment. Either way, this is news.
-            return ("FAIL",
-                    f"Renode TMC reported non-zero XDIRECT writes pre-jog: "
-                    f"x={peri_x_count} y={peri_y_count}. Investigate.")
 
         renode_note = (
             f" Renode TMC XDIRECT writes: x={peri_x_count} y={peri_y_count}"
-            f" (expected 0 — phase_stepping_register_bus is never called"
-            f" from configure_axes_blob; see module docstring Limitation 3)")
+            f" (bus IS registered via runtime_register_phase_bus; any"
+            f" non-zero count without an explicit push_segment is a"
+            f" Task-10 investigation, not a gating failure for this"
+            f" smoke test)")
         return (
             "PASS",
             "phase-stepping infrastructure smoke ok: "

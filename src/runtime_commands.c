@@ -8,12 +8,15 @@
 
 #include <stdint.h>
 #include "autoconf.h"
-#include "board/gpio.h"           // gpio_in_setup / gpio_in_read
+#include "board/gpio.h"           // gpio_in_setup / gpio_in_read / spi_setup
 #include "command.h"              // DECL_COMMAND, sendf, command_decode_ptr
 #include "sched.h"                // DECL_TASK
 #include "board/misc.h"           // timer_read_time
 #include "kalico_runtime.h"       // FFI export prototypes
 #include "kalico_dispatch.h"      // kalico_native_emit_*
+#if CONFIG_MACH_STM32
+#include "stm32/phase_stepping_spi.h"  // phase_stepping_register_bus
+#endif
 
 #if CONFIG_KALICO_RUNTIME
 
@@ -510,5 +513,46 @@ command_runtime_push_segment_msgproto(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_push_segment_msgproto,
     "runtime_push_segment_msgproto body=%*s");
+
+// ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
+// Closes the gap between the Rust runtime's per-motor phase_config storage
+// (installed via runtime_configure_axes_blob) and the C-side
+// `phase_stepping_register_bus` that `phase_stepping_write_xdirect` checks
+// before emitting a TMC5160 XDIRECT datagram. Without this command, every
+// XDIRECT write from the modulator hits the `if (!configured) return;`
+// early-exit in src/stm32/phase_stepping_spi.c and silently drops.
+//
+// The host should send one `runtime_register_phase_bus` per phase-stepped
+// motor BEFORE `runtime_configure_axes_blob`. SPI mode is fixed at 3
+// (CPOL=1, CPHA=1) per the TMC5160 datasheet; rate is host-supplied so
+// future hardware bring-up can tune it without re-flashing.
+//
+// STM32-only because the underlying phase_stepping_spi.c is STM32-only.
+// On linux/sim hosts (non-STM32 mach) this returns -88 ("not supported on
+// this target"); the Renode sim is STM32H7 so this is a no-op for it.
+void
+command_runtime_register_phase_bus(uint32_t *args)
+{
+#if CONFIG_MACH_STM32
+    uint8_t bus_id = (uint8_t)args[0];
+    uint8_t cs_pin = (uint8_t)args[1];
+    uint32_t rate = args[2];
+    struct spi_config cfg = spi_setup(bus_id, 3 /* mode 3, TMC SPI */, rate);
+    phase_stepping_register_bus(bus_id, cfg, cs_pin);
+    sendf("kalico_register_phase_bus_response result=%i", 0);
+#else
+    (void)args;
+    sendf("kalico_register_phase_bus_response result=%i", -88);
+#endif
+}
+// NOTE: param is `cs_pin_id` not `cs_pin` deliberately. Klipper's msgproto
+// matches param names against the `pin` enumeration via
+// `name.endswith("_pin")` (see klippy/msgproto.py::lookup_params), which
+// would force the host to send symbolic pin names ("PA5") instead of the
+// raw stm32 GPIO encoding (port*16+pin = 5) used by the rest of the
+// phase_config wire surface. The `_id` suffix sidesteps the enum lookup
+// and keeps the encoding consistent with the 33-byte configure_axes blob.
+DECL_COMMAND(command_runtime_register_phase_bus,
+    "runtime_register_phase_bus bus_id=%c cs_pin_id=%c rate=%u");
 
 #endif // CONFIG_KALICO_RUNTIME
