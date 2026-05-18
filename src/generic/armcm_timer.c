@@ -180,10 +180,20 @@ timer_dispatch_many(void)
                 // through klippy's `#output:` handler — `name=%type` markers
                 // route through the structured path, which drops msg for
                 // unrecognized output names.
+                //
+                // Emit head pointer + head->next + head->next->func too so
+                // we can disambiguate "head's func field was clobbered" from
+                // "head pointer itself is stale" (e.g. list points into a
+                // freed/never-allocated struct).
                 struct timer *head = sched_get_head_timer();
-                output("rsched_past func %u waketime %u now %u diff_us %i",
-                       (uint32_t)head->func,
-                       head->waketime,
+                struct timer *next = head ? head->next : 0;
+                output("rsched_past head %u func %u wake %u next %u nextf %u"
+                       " now %u diff_us %i",
+                       (uint32_t)head,
+                       head ? (uint32_t)head->func : 0u,
+                       head ? head->waketime : 0u,
+                       (uint32_t)next,
+                       next ? (uint32_t)next->func : 0u,
                        now,
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
                 try_shutdown("Rescheduled timer in the past");
