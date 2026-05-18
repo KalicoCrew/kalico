@@ -185,18 +185,19 @@ timer_dispatch_many(void)
                 // we can disambiguate "head's func field was clobbered" from
                 // "head pointer itself is stale" (e.g. list points into a
                 // freed/never-allocated struct).
-                // Walk chain from periodic_timer (link-time root) to find the
-                // predecessor of the corruption — pred_addr identifies the
-                // timer whose .next was clobbered, pred_func names it.
+                // Compare SchedStatus.timer_list (the dispatcher head) with
+                // the walked chain from periodic_timer. If the head doesn't
+                // appear in the walked chain, head is detached — direct
+                // memory write to &SchedStatus.timer_list.
                 uint32_t pred_addr, pred_func, bad_next, steps;
                 sched_walk_for_corruption(&pred_addr, &pred_func,
                                           &bad_next, &steps);
-                uint32_t bad_caller, bad_value;
-                sched_get_bad_add(&bad_caller, &bad_value);
-                output("rsched_past pred %u predf %u bad %u steps %u"
-                       " bcaller %u bvalue %u diff_us %i",
+                struct timer *head = sched_get_head_timer();
+                output("rsched_past head %u hfunc %u pred %u predf %u"
+                       " bad %u steps %u diff_us %i",
+                       (uint32_t)head,
+                       head ? (uint32_t)head->func : 0u,
                        pred_addr, pred_func, bad_next, steps,
-                       bad_caller, bad_value,
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
                 try_shutdown("Rescheduled timer in the past");
             }
