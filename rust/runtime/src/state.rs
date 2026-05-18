@@ -21,7 +21,7 @@
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
 // `AtomicU64` comes from `portable-atomic` because thumbv7em-none-eabi[hf]
 // (Cortex-M7) lacks native 64-bit CAS — `core::sync::atomic::AtomicU64` is
 // not provided on that target. `portable-atomic`'s `fallback` feature
@@ -248,6 +248,12 @@ pub struct SharedState {
     /// the driver's internal sequencer, which the direct/phase-stepping
     /// path bypasses). Default `StepTime` (enum value 1).
     pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
+    /// Per-motor phase-stepping SPI config. Packed (`spi_bus_id << 8 |
+    /// cs_pin_id`). `0xFFFF` means "no phase config — use the StepPulse
+    /// output path." Populated by `kalico_runtime_configure_axes_blob`'s
+    /// 33-byte parse branch (Task 4); read by `runtime_modulated_tick`
+    /// (Task 6). See `crate::phase_config` for the helpers.
+    pub phase_config: [AtomicU16; MAX_STEPPER_OIDS],
 
     // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
     // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
@@ -434,6 +440,16 @@ impl SharedState {
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
+            ],
+            phase_config: [
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
             ],
             producer_pending: AtomicBool::new(false),
             producer_runs_total: AtomicU64::new(0),
