@@ -127,6 +127,41 @@ timer_reset(void)
 }
 DECL_SHUTDOWN(timer_reset);
 
+// Latched PC of the instruction that wrote to the watchpointed address.
+// Captured by DebugMon_Handler on the first hit; the comparator is disabled
+// immediately afterward so we keep only the first writer (later writes from
+// sched.c after corruption would overwrite it otherwise).
+volatile uint32_t schedstatus_writer_pc
+    __attribute__((used, externally_visible));
+
+// DebugMon exception handler. Stacked frame on entry (MSP):
+//   sp[0..3] = R0,R1,R2,R3
+//   sp[4]   = R12
+//   sp[5]   = LR (return-from-faulting-context)
+//   sp[6]   = PC (instruction AFTER the one that triggered)
+//   sp[7]   = xPSR
+// We capture sp[6] - 4 as a best-guess of the faulting instruction (Thumb-2
+// can be 16 or 32 bit; the host-side decoder can fuzz +/-4 if needed).
+__attribute__((naked, used))
+void
+DebugMon_Handler(void)
+{
+    __asm volatile(
+        "mrs r0, msp\n"
+        "ldr r0, [r0, #24]\n"   // stacked PC
+        "ldr r1, =schedstatus_writer_pc\n"
+        "ldr r2, [r1]\n"
+        "cbnz r2, 1f\n"         // already latched? skip
+        "str r0, [r1]\n"        // first hit: capture PC
+        "1:\n"
+        "ldr r0, =0xE0001020\n" // DWT->FUNCTION0
+        "mov r1, #0\n"
+        "str r1, [r0]\n"        // disable comparator to silence further hits
+        "bx lr\n"
+    );
+}
+DECL_ARMCM_IRQ(DebugMon_Handler, -4);
+
 void
 timer_init(void)
 {
@@ -134,6 +169,17 @@ timer_init(void)
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     DWT->CYCCNT = 0;
+
+    // Diagnostic watchpoint: trap any write to &SchedStatus.timer_list
+    // (address 0x20000038 in the current build). On hit, DebugMon_Handler
+    // latches the faulting PC into schedstatus_writer_pc and disables the
+    // comparator. The address is verified at runtime via nm against the
+    // ELF; if the layout changes the LR diag below will simply not fire.
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_MON_EN_Msk;
+    DWT->COMP0     = 0x20000038u;
+    DWT->MASK0     = 0u;        // exact-address match, no mask
+    // FUNCTION = 0b0110 = data-address-match on write (ARMv7-M DWT v1+v2).
+    DWT->FUNCTION0 = (6u << 0);
 
     // Schedule a recurring timer on fast cpus
     timer_reset();
@@ -185,18 +231,18 @@ timer_dispatch_many(void)
                 // we can disambiguate "head's func field was clobbered" from
                 // "head pointer itself is stale" (e.g. list points into a
                 // freed/never-allocated struct).
-                // Compare SchedStatus.timer_list (the dispatcher head) with
-                // the walked chain from periodic_timer. If the head doesn't
-                // appear in the walked chain, head is detached — direct
-                // memory write to &SchedStatus.timer_list.
+                // DWT watchpoint captures the PC that wrote to
+                // &SchedStatus.timer_list. addr2line on writer_pc identifies
+                // the corrupting code path.
                 uint32_t pred_addr, pred_func, bad_next, steps;
                 sched_walk_for_corruption(&pred_addr, &pred_func,
                                           &bad_next, &steps);
                 struct timer *head = sched_get_head_timer();
-                output("rsched_past head %u hfunc %u pred %u predf %u"
-                       " bad %u steps %u diff_us %i",
+                output("rsched_past head %u hfunc %u writer_pc %u"
+                       " pred %u predf %u bad %u steps %u diff_us %i",
                        (uint32_t)head,
                        head ? (uint32_t)head->func : 0u,
+                       schedstatus_writer_pc,
                        pred_addr, pred_func, bad_next, steps,
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
                 try_shutdown("Rescheduled timer in the past");
