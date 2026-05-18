@@ -2041,25 +2041,26 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // state.
         // 2026-05-18 wedge fix: gate the dequeue branch on the atomic
         // `producer_current_present` flag instead of `self.producer_current.
-        // is_some()`. The Option<Segment> field is non-atomic and the
-        // compiler caches it across producer_step invocations under LTO,
-        // even with a SeqCst fence and volatile reads — because the
-        // Option-of-Segment is ~57 bytes and read_volatile of a struct
-        // compiles to a memcpy that isn't actually atomic. The
-        // AtomicBool gate is unconditionally fresh.
+        // is_some()`. The Option<Segment> field is non-atomic and gets
+        // cached across producer_step invocations under LTO; the
+        // AtomicBool gate forces a fresh load every call.
         let cur_is_some_view =
             shared.producer_current_present.load(Ordering::Acquire);
         shared
             .producer_step_current_is_some_snapshot
             .store(u8::from(cur_is_some_view), Ordering::Release);
+        // 2026-05-18 wedge diag: snapshot queue.len() on EVERY producer_step
+        // call (not just inside the !is_some branch) so we can compare
+        // producer_step's view of the queue with status_drain's view
+        // even when producer_step is "done" with the current segment.
+        let qlen_here = queue.len() as u32;
+        shared
+            .producer_step_last_len_snapshot
+            .store(qlen_here, Ordering::Release);
         if !cur_is_some_view {
             shared
                 .producer_observed_none_total
                 .fetch_add(1, Ordering::AcqRel);
-            let qlen_here = queue.len() as u32;
-            shared
-                .producer_step_last_len_snapshot
-                .store(qlen_here, Ordering::Release);
             if let Some(seg) = queue.dequeue() {
                 self.producer_current = Some(seg);
                 // Set the atomic gate so the next producer_step call sees
