@@ -1429,6 +1429,22 @@ class MCU:
                 % (self._name, self._shutdown_msg)
             )
         if config_params["is_shutdown"]:
+            # 2026-05-18 wedge recovery: the kalico-host-rt EXIT_ON_FAULT path
+            # aborts klippy on USB-CDC transport drop, leaving the MCUs in a
+            # latched "Command request" shutdown from klippy's own
+            # `_shutdown` emergency_stop. systemd restarts klippy, but the
+            # new session finds the MCUs still shut down and (without this
+            # path) raises here — operator has to manually FIRMWARE_RESTART
+            # or power-cycle. Auto-trigger the firmware restart so the
+            # systemd-managed recovery is a single step: a `reset` command
+            # to each MCU (NVIC_SystemReset) clears `is_shutdown`, and the
+            # in-process klippy restart re-runs config from scratch. Gated
+            # by `_check_restart`'s own check that we haven't already
+            # restarted this session, so a genuinely-stuck MCU still
+            # surfaces an error rather than looping forever.
+            self._check_restart(
+                "MCU '%s' was in shutdown state at config time" % (self._name,)
+            )
             raise error(
                 "Can not update MCU '%s' config as it is shutdown"
                 % (self._name,)
