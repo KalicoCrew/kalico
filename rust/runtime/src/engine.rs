@@ -27,7 +27,12 @@ unsafe extern "C" {
 
 /// Read the C-side gate (MCU build) or the AtomicBool (host build).
 /// Returns true if `engine.producer_current` is Some.
-#[inline(always)]
+///
+/// 2026-05-18: marked `#[inline(never)]` to prevent LTO from inlining the
+/// helper and optimizing the volatile read afterwards. Bench evidence has
+/// shown the volatile read returning stale values even when the helper
+/// body looks correct, suggesting post-inlining optimization is at fault.
+#[inline(never)]
 fn read_producer_current_present(shared: &SharedState) -> bool {
     #[cfg(target_os = "none")]
     {
@@ -47,7 +52,9 @@ fn read_producer_current_present(shared: &SharedState) -> bool {
 /// Write the C-side gate (MCU build) and mirror into the AtomicBool (host
 /// build). Single source of truth for `engine.producer_current.is_some()`
 /// visibility across foreground / ISR boundaries.
-#[inline(always)]
+///
+/// 2026-05-18: `#[inline(never)]` for the same reason as the read helper.
+#[inline(never)]
 fn write_producer_current_present(shared: &SharedState, present: bool) {
     #[cfg(target_os = "none")]
     {
@@ -2054,6 +2061,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// idle (caller waits for a kick).
     ///
     /// Spec §3.4 (`producer_step` pseudocode) + §3.8 (retirement).
+    // 2026-05-18: #[inline(never)] to prevent LTO from inlining producer_step
+    // into the Klipper timer callback. The volatile gate read at the top of
+    // this function was being optimized to a stale value, suggesting the
+    // compiler was caching across loop iterations of the scheduler.
+    #[inline(never)]
     pub fn producer_step(
         &mut self,
         pool: &CurvePool,
