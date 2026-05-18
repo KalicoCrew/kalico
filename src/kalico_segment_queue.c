@@ -47,6 +47,11 @@ static atomic_uint kalico_seg_queue_enqueue_total;
 // Incremented on every successful dequeue.
 static atomic_uint kalico_seg_queue_dequeue_total;
 
+// All entry points marked `used + externally_visible` so LTO doesn't
+// eliminate them — the only callers are inside the Rust staticlib
+// (rust/runtime/src/c_segment_queue.rs), which the C compiler can't see
+// during whole-program LTO of the firmware build.
+__attribute__((used, externally_visible))
 int
 kalico_native_queue_enqueue(const void *seg_bytes)
 {
@@ -66,6 +71,7 @@ kalico_native_queue_enqueue(const void *seg_bytes)
     return 0;
 }
 
+__attribute__((used, externally_visible))
 int
 kalico_native_queue_dequeue(void *out_seg_bytes)
 {
@@ -85,6 +91,7 @@ kalico_native_queue_dequeue(void *out_seg_bytes)
     return 0;
 }
 
+__attribute__((used, externally_visible))
 unsigned
 kalico_native_queue_len(void)
 {
@@ -95,6 +102,7 @@ kalico_native_queue_len(void)
     return (tail - head + KALICO_SEG_QUEUE_N) % KALICO_SEG_QUEUE_N;
 }
 
+__attribute__((used, externally_visible))
 void
 kalico_native_queue_reset(void)
 {
@@ -102,6 +110,7 @@ kalico_native_queue_reset(void)
     atomic_store_explicit(&kalico_seg_queue.tail, 0u, memory_order_release);
 }
 
+__attribute__((used, externally_visible))
 unsigned
 kalico_native_queue_enqueue_total(void)
 {
@@ -109,6 +118,7 @@ kalico_native_queue_enqueue_total(void)
                                 memory_order_relaxed);
 }
 
+__attribute__((used, externally_visible))
 unsigned
 kalico_native_queue_dequeue_total(void)
 {
