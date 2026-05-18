@@ -754,6 +754,37 @@ impl PyMotionBridge {
         let effective_baud = if baud == 0 { 250_000 } else { baud };
         let config = KalicoHostIoConfig::default();
 
+        // 2026-05-18: drop any existing KalicoHostIo for this mcu_handle
+        // BEFORE trying to open the new serial. The Drop impl sends
+        // `ReactorCommand::Shutdown` and joins the reactor thread, which
+        // is what actually releases the kernel FD. Without this the OLD
+        // session's reactor keeps the serial open exclusively and the new
+        // `open_with_config` below times out for 30 s with "Device or
+        // resource busy" — exactly the wedge klippy's in-process
+        // FIRMWARE_RESTART iteration falls into on the F4 (and on the H7
+        // when the bridge-mode reset path didn't get a chance to issue
+        // `MarkExpectedDisconnect`). Also stop the periodic clock-sync
+        // driver so it doesn't keep using the dying io.
+        {
+            let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(conn) = mcus.get_mut(&mcu_handle) {
+                if let Some(stop) = conn.clock_sync_stop.take() {
+                    stop.store(true, std::sync::atomic::Ordering::Release);
+                }
+                if let Some(h) = conn.clock_sync_thread.take() {
+                    let _ = h.join();
+                }
+                conn.runtime_rx = None;
+                // Drop the Arc<KalicoHostIo>. If this was the last ref the
+                // Drop impl sends Shutdown to the reactor and joins it,
+                // releasing the FD. If a clone is held elsewhere (e.g. a
+                // dispatch closure captured a reference) the reactor stays
+                // alive — that path needs its own cleanup; for now the
+                // attach loop below tolerates a short delay.
+                conn.host_io = None;
+            }
+        }
+
         // Determine whether this is a PTY/pipe path (baud=0 signals pipe mode)
         // or a real serial port. Pipe mode uses O_RDWR | O_NOCTTY to open the
         // PTY without configuring baud rate, which serialport::open() would do
