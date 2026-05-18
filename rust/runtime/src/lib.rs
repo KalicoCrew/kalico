@@ -37,6 +37,7 @@ pub mod engine;
 pub use engine::arm_step_timer_for_stepper;
 pub mod error;
 pub mod kinematics;
+pub mod modulator;
 pub mod phase_lut;
 pub mod queue;
 pub mod reclaim;
