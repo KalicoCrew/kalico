@@ -215,9 +215,11 @@ timer_dispatch_many(void)
                 extern volatile uint32_t sched_bad_add_stack0;
                 extern volatile uint32_t sched_bad_add_stack1;
                 extern volatile uint32_t sched_bad_add_stack2;
-                output("rsched_bad_add caller %u value %u"
+                extern volatile uint32_t sched_bad_add_blocked_count;
+                output("rsched_bad_add caller %u value %u blocked %u"
                        " sp0 %u sp1 %u sp2 %u",
                        sched_bad_add_caller, sched_bad_add_value,
+                       sched_bad_add_blocked_count,
                        sched_bad_add_stack0,
                        sched_bad_add_stack1,
                        sched_bad_add_stack2);

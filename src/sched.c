@@ -181,20 +181,29 @@ addr_looks_bogus_for_timer(uint32_t p)
 volatile uint32_t sched_bad_add_stack0 __attribute__((used));
 volatile uint32_t sched_bad_add_stack1 __attribute__((used));
 volatile uint32_t sched_bad_add_stack2 __attribute__((used));
+volatile uint32_t sched_bad_add_blocked_count __attribute__((used));
 
 // Schedule a function call at a supplied time.
 void
 sched_add_timer(struct timer *add)
 {
-    if (addr_looks_bogus_for_timer((uint32_t)add) && !sched_bad_add_caller) {
-        sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
-        sched_bad_add_value  = (uint32_t)add;
-        // Sample stack words near current SP — saved LRs from inlined
-        // callers show up here when LTO has stitched the call site flat.
-        register uint32_t *sp asm("sp");
-        sched_bad_add_stack0 = sp[0];
-        sched_bad_add_stack1 = sp[1];
-        sched_bad_add_stack2 = sp[2];
+    if (addr_looks_bogus_for_timer((uint32_t)add)) {
+        // Block the bogus add — refusing the call leaves the timer chain
+        // intact, so klippy can keep operating long enough for the
+        // diagnostic emit (in armcm_timer.c on a future rsched_past, or
+        // via the periodic fault_handler_report_task) to surface what
+        // we know. Count occurrences too — if a single caller is
+        // repeatedly passing junk we'd see it spike.
+        sched_bad_add_blocked_count++;
+        if (!sched_bad_add_caller) {
+            sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
+            sched_bad_add_value  = (uint32_t)add;
+            register uint32_t *sp asm("sp");
+            sched_bad_add_stack0 = sp[0];
+            sched_bad_add_stack1 = sp[1];
+            sched_bad_add_stack2 = sp[2];
+        }
+        return;
     }
     uint32_t waketime = add->waketime;
     irqstatus_t flag = irq_save();
