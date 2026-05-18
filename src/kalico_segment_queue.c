@@ -125,3 +125,15 @@ kalico_native_queue_dequeue_total(void)
     return atomic_load_explicit(&kalico_seg_queue_dequeue_total,
                                 memory_order_relaxed);
 }
+
+// 2026-05-18 wedge fix: gate flag for `engine.producer_current` visibility
+// across the &mut Engine borrow boundary. Rust's AtomicBool through the
+// `&SharedState` access path was observed to give inconsistent reads
+// (producer_step's atomic load = true while modulated_tick had written
+// false). Use a plain C global that Rust accesses via volatile reads /
+// writes — no Rust abstraction can decide to cache or reorder these.
+//
+// 0 = producer_current is None (empty / retired)
+// 1 = producer_current is Some(seg)
+volatile uint8_t kalico_producer_current_present
+    __attribute__((used, externally_visible));

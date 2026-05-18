@@ -10,6 +10,59 @@ use heapless::spsc::Producer;
 // only spsc consumer in this crate. (Trace ring uses Producer only.)
 #[allow(unused_imports)]
 use heapless::spsc::Consumer;
+
+// 2026-05-18 wedge fix: C-side volatile gate flag for
+// `engine.producer_current`. Rust's `AtomicBool` was observed to give
+// inconsistent reads across the &mut Engine borrow boundary (bench:
+// producer_step's load = true while modulated_tick had written false).
+// The C global + volatile read/write pattern is the most ironclad way to
+// defeat any Rust / LTO compile-time optimization.
+#[cfg(target_os = "none")]
+unsafe extern "C" {
+    pub(crate) static mut kalico_producer_current_present: u8;
+}
+
+/// Read the C-side gate (MCU build) or the AtomicBool (host build).
+/// Returns true if `engine.producer_current` is Some.
+#[inline(always)]
+fn read_producer_current_present(shared: &SharedState) -> bool {
+    #[cfg(target_os = "none")]
+    {
+        #[allow(unsafe_code)]
+        // SAFETY: `kalico_producer_current_present` is a `volatile u8` global.
+        // read_volatile emits a real LDR. Single-byte access, no tearing.
+        unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!(kalico_producer_current_present)) != 0
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        shared.producer_current_present.load(Ordering::Acquire)
+    }
+}
+
+/// Write the C-side gate (MCU build) and mirror into the AtomicBool (host
+/// build). Single source of truth for `engine.producer_current.is_some()`
+/// visibility across foreground / ISR boundaries.
+#[inline(always)]
+fn write_producer_current_present(shared: &SharedState, present: bool) {
+    #[cfg(target_os = "none")]
+    {
+        #[allow(unsafe_code)]
+        // SAFETY: same as the read; write_volatile emits a real STR.
+        unsafe {
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!(kalico_producer_current_present),
+                u8::from(present),
+            );
+        }
+    }
+    // Mirror to the atomic for host builds and for diagnostic accessors that
+    // still read the atomic.
+    shared
+        .producer_current_present
+        .store(present, Ordering::Release);
+}
 // `Float` is unused on `host`-feature builds (std provides f32::sqrt) but
 // load-bearing in the MCU `no_std` profile, where it dispatches to libm.
 #[cfg_attr(feature = "host", allow(unused_imports))]
@@ -1849,14 +1902,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         shared
             .producer_fetch_attempts_total
             .fetch_add(1, Ordering::AcqRel);
-        // 2026-05-18: gate on the atomic flag, not the non-atomic field
-        // (see comment in producer_step for the LTO-caching rationale).
-        if !shared.producer_current_present.load(Ordering::Acquire) {
+        // 2026-05-18: gate via the C-side volatile flag (see helper docs).
+        if !read_producer_current_present(shared) {
             self.producer_current = queue.dequeue();
             if let Some(seg) = self.producer_current {
-                shared
-                    .producer_current_present
-                    .store(true, Ordering::Release);
+                write_producer_current_present(shared, true);
                 shared
                     .producer_segment_dequeued_total
                     .fetch_add(1, Ordering::AcqRel);
@@ -2039,13 +2089,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // this is a no-op; when not set, this dequeue runs first and
         // fetch_segment_for_motor's `is_none()` check sees the populated
         // state.
-        // 2026-05-18 wedge fix: gate the dequeue branch on the atomic
-        // `producer_current_present` flag instead of `self.producer_current.
-        // is_some()`. The Option<Segment> field is non-atomic and gets
-        // cached across producer_step invocations under LTO; the
-        // AtomicBool gate forces a fresh load every call.
-        let cur_is_some_view =
-            shared.producer_current_present.load(Ordering::Acquire);
+        // 2026-05-18 wedge fix: gate via the volatile C-side flag (helper).
+        let cur_is_some_view = read_producer_current_present(shared);
         shared
             .producer_step_current_is_some_snapshot
             .store(u8::from(cur_is_some_view), Ordering::Release);
@@ -2063,12 +2108,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 .fetch_add(1, Ordering::AcqRel);
             if let Some(seg) = queue.dequeue() {
                 self.producer_current = Some(seg);
-                // Set the atomic gate so the next producer_step call sees
-                // the dequeue (and the modulated_tick ISR's None write
-                // becomes the next gate change).
-                shared
-                    .producer_current_present
-                    .store(true, Ordering::Release);
+                // Set the volatile gate so the next producer_step call
+                // sees the dequeue.
+                write_producer_current_present(shared, true);
                 shared
                     .producer_segment_dequeued_total
                     .fetch_add(1, Ordering::AcqRel);
@@ -2829,9 +2871,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         .fetch_add(1, Ordering::AcqRel);
                     crate::stream::check_terminal_on_retire(shared, seg.id);
                     self.producer_current = None;
-                    shared
-                        .producer_current_present
-                        .store(false, Ordering::Release);
+                    write_producer_current_present(shared, false);
                     retired_this_iter = true;
                     iter_any_progress = true;
                 }
@@ -2995,14 +3035,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     .store(seg.id, Ordering::Release);
                 crate::stream::check_terminal_on_retire(shared, seg.id);
                 self.producer_current = None;
-                // 2026-05-18 wedge fix: clear the atomic gate so
+                // 2026-05-18 wedge fix: clear the volatile gate so
                 // producer_step sees the retirement and re-dequeues.
-                // The non-atomic Option<Segment> read in producer_step
-                // was being cached by LTO; the atomic gate is the
-                // load-bearing visibility primitive.
-                shared
-                    .producer_current_present
-                    .store(false, Ordering::Release);
+                write_producer_current_present(shared, false);
                 // 2026-05-18 wedge fix: pure-Modulated configs (F4 Z-only,
                 // or H7 X/Y when E's step_time_event isn't polling) have no
                 // path that rearms the producer Klipper timer after the ISR
