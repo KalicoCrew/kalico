@@ -146,18 +146,28 @@ addr_looks_bogus_for_timer(uint32_t p)
         || (p >= 0x20000be8u && p < 0x200015e8u);  // batch_buf
 }
 
+// Capture additional context for the rogue sched_add_timer caller: the
+// LR via __builtin_return_address(0) (may be scrambled by LTO inlining)
+// PLUS three words near the current SP. The stack words often contain
+// saved LRs from the call chain above sched_add_timer — addr2line on
+// each gives us the inlined call path back through the rogue site.
+volatile uint32_t sched_bad_add_stack0 __attribute__((used));
+volatile uint32_t sched_bad_add_stack1 __attribute__((used));
+volatile uint32_t sched_bad_add_stack2 __attribute__((used));
+
 // Schedule a function call at a supplied time.
-// `noinline` (from compiler.h): with whole-program LTO the linker freely
-// inlines sched_add_timer into its callers, which scrambles
-// __builtin_return_address(0) — it returns the LR of the enclosing
-// frame, not the call site we want to identify. Force it out-of-line
-// while the diagnostic is in place.
-void noinline
+void
 sched_add_timer(struct timer *add)
 {
     if (addr_looks_bogus_for_timer((uint32_t)add) && !sched_bad_add_caller) {
         sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
         sched_bad_add_value  = (uint32_t)add;
+        // Sample stack words near current SP — saved LRs from inlined
+        // callers show up here when LTO has stitched the call site flat.
+        register uint32_t *sp asm("sp");
+        sched_bad_add_stack0 = sp[0];
+        sched_bad_add_stack1 = sp[1];
+        sched_bad_add_stack2 = sp[2];
     }
     uint32_t waketime = add->waketime;
     irqstatus_t flag = irq_save();
