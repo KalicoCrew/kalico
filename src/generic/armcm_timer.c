@@ -205,6 +205,15 @@ timer_dispatch_many(void)
                        haddrs[3], hfuncs[3],
                        haddrs[4], hfuncs[4],
                        haddrs[5], hfuncs[5]);
+                // First sched_add_timer caller that passed a pointer
+                // into the known scratch ranges. Zero if no such call
+                // happened (then the corruption isn't via sched_add_timer's
+                // public API, and we have to look at .next field writes
+                // elsewhere).
+                extern volatile uint32_t sched_bad_add_caller;
+                extern volatile uint32_t sched_bad_add_value;
+                output("rsched_bad_add caller %u value %u",
+                       sched_bad_add_caller, sched_bad_add_value);
                 // Close the writable window before try_shutdown longjmps
                 // out of this scope, so the rest of the shutdown path
                 // doesn't accidentally observe RW protected memory.

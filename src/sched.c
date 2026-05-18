@@ -126,10 +126,33 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
     prev->next = t;
 }
 
+// Diagnostic: latch the first caller of sched_add_timer that passes a
+// pointer into the known scratch buffers (transmit_buf 0x20000088..,
+// batch_buf 0x20000be8..0x200015e8). Real timer structs never live
+// there. Captures the caller LR so addr2line can name the rogue caller.
+volatile uint32_t sched_bad_add_caller __attribute__((used));
+volatile uint32_t sched_bad_add_value  __attribute__((used));
+
+static inline int
+addr_looks_bogus_for_timer(uint32_t p)
+{
+    // transmit_buf and batch_buf are the two scratch ranges we've seen
+    // corrupted SchedState.timer_list lands in. nm shows both shift on
+    // every build, so use generous ranges that cover them under current
+    // layout (5c2c5e600..). If the linker layout changes meaningfully,
+    // re-verify via `nm -n out/klipper.elf`.
+    return (p >= 0x20000080u && p < 0x20000600u)   // transmit_buf area
+        || (p >= 0x20000be8u && p < 0x200015e8u);  // batch_buf
+}
+
 // Schedule a function call at a supplied time.
 void
 sched_add_timer(struct timer *add)
 {
+    if (addr_looks_bogus_for_timer((uint32_t)add) && !sched_bad_add_caller) {
+        sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
+        sched_bad_add_value  = (uint32_t)add;
+    }
     uint32_t waketime = add->waketime;
     irqstatus_t flag = irq_save();
     sched_writable_begin();
