@@ -41,10 +41,18 @@ pub const DEFAULT_PUSH_RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Default timeout for the blocking credit acquire in `push_segment`.
 /// The MCU's segment queue (`Q_N - 1 = 7`) drains as segments retire;
 /// at a typical 40 kHz modulation rate with ~50 ms-per-segment moves,
-/// a single retirement frees credit within ~50 ms. 1 s is loose enough
-/// to ride out a single GC pause / scheduling hiccup but tight enough
-/// to surface a truly stuck MCU before klippy's own watchdogs fire.
-pub const DEFAULT_CREDIT_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(1000);
+/// a single retirement frees credit within ~50 ms.
+///
+/// 2026-05-18: bumped from 1 s to 60 s to ride out the H7 USB-CDC TX
+/// wedge. Bench evidence (commit 83646bbd8): the H7 runtime engine
+/// processes all segments correctly (cur=7 ret=7) but its USB-CDC TX
+/// subsystem stalls for ~60 s after motion start, so the host doesn't
+/// observe `retired_through_segment_id` advancing in time. With the
+/// 1 s timeout the host gives up before the wedge clears; with 60 s
+/// it rides through. The USB-CDC stall is the pre-existing H7 wedge
+/// (project_h7_wedge_pre_existing.md); this is a host-side workaround
+/// until the USB-CDC subsystem fix lands.
+pub const DEFAULT_CREDIT_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(60_000);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PushedSegmentInfo {
