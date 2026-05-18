@@ -2968,26 +2968,32 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // co-resident StepTime+Modulated configuration, `producer_step`
         // populates `producer_current` via `fetch_segment_for_motor`.
         //
-        // 2026-05-17 wedge fix: the lazy-dequeue logic that previously
-        // lived here (introduced by 081ab4a3b for pure-Modulated MCUs) is
-        // an SPSC consumer-side race. `fetch_segment_for_motor` already
-        // dequeues from this same Consumer on the producer Klipper timer
-        // (foreground path); calling `queue.dequeue()` from this ISR is a
-        // SECOND consumer site. On any MCU with mixed Modulated+StepTime
-        // motors (H7: X/Y Modulated, E StepTime), both sites race the
-        // same `Consumer` and silently corrupt internal SPSC state. The
-        // observable symptom is bench-side USB device disconnect ~7-30 s
-        // after `ConfigureAxes` enables TIM5. Diagnostic confirmed: with
-        // `runtime_tick_enable()` no-op'd the wedge does NOT fire.
-        //
-        // The original problem the lazy dequeue tried to solve — F446
-        // pure-Modulated Z with no StepTime motors never advancing its
-        // segment queue — must be fixed differently (e.g. by having the
-        // producer Klipper timer also fire for Modulated-only configs
-        // so the foreground side keeps owning the Consumer). For now
-        // restore the pre-cluster behavior: ISR observes `producer_current`
-        // only; foreground owns dequeue.
-        let _ = queue;
+        // 2026-05-18: lazy-dequeue from ISR. The C-side segment queue
+        // (src/kalico_segment_queue.c) uses proper _Atomic uint head/tail
+        // with Acquire/Release memory ordering, so SPSC concurrent
+        // access from foreground (push_segment) and ISR (this function)
+        // is sound. This replaces the foreground-only dequeue pattern
+        // that was added 2026-05-17 to fix the heapless::spsc race —
+        // but that fix introduced a different wedge where the
+        // non-atomic `producer_current` field was being miscompiled
+        // across the &mut Engine borrow boundary (bench 2026-05-18:
+        // producer_step's view of producer_current.is_some() persistently
+        // disagreed with status_drain's view despite atomic gate +
+        // volatile reads + C FFI accessors). With ISR-side dequeue, the
+        // ISR is the single producer AND consumer of producer_current,
+        // so the cross-function visibility issue can't exist.
+        if self.producer_current.is_none() {
+            if let Some(seg) = queue.dequeue() {
+                self.producer_current = Some(seg);
+                write_producer_current_present(shared, true);
+                shared
+                    .producer_segment_dequeued_total
+                    .fetch_add(1, Ordering::AcqRel);
+                shared
+                    .current_segment_id
+                    .store(seg.id, Ordering::Release);
+            }
+        }
         let Some(mut seg) = self.producer_current else {
             return;
         };
