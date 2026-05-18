@@ -163,7 +163,7 @@ impl PhaseDirectModulator {
 
 #[inline]
 fn wrap_mscount(accumulator_steps: f64) -> u16 {
-    let rounded = accumulator_steps.round() as i64;
+    let rounded = libm::round(accumulator_steps) as i64;
     let modulus = MOTOR_PERIOD as i64;
     let wrapped = ((rounded % modulus) + modulus) % modulus;
     wrapped as u16
