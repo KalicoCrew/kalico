@@ -1849,9 +1849,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         shared
             .producer_fetch_attempts_total
             .fetch_add(1, Ordering::AcqRel);
-        if self.producer_current.is_none() {
+        // 2026-05-18: gate on the atomic flag, not the non-atomic field
+        // (see comment in producer_step for the LTO-caching rationale).
+        if !shared.producer_current_present.load(Ordering::Acquire) {
             self.producer_current = queue.dequeue();
             if let Some(seg) = self.producer_current {
+                shared
+                    .producer_current_present
+                    .store(true, Ordering::Release);
                 shared
                     .producer_segment_dequeued_total
                     .fetch_add(1, Ordering::AcqRel);
@@ -2034,26 +2039,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // this is a no-op; when not set, this dequeue runs first and
         // fetch_segment_for_motor's `is_none()` check sees the populated
         // state.
-        // 2026-05-18 wedge fix: read `producer_current` via volatile load
-        // to defeat compiler caching. Bench evidence (tag 0xCC, commit
-        // 78999c9fa) showed producer_step's view of
-        // `producer_current.is_some()` = 1 while status_drain's view = 0
-        // for the same field at the same moment, EVEN with a SeqCst fence
-        // at function entry. The non-atomic `Option<Segment>` is being
-        // cached across producer_step's invocations by LTO; only an
-        // explicit volatile read forces a fresh memory access.
-        let cur_volatile: Option<Segment> = {
-            #[allow(unsafe_code)]
-            // SAFETY: &self.producer_current is a valid pointer to an
-            // Option<Segment>. The read is volatile so the compiler
-            // can't elide it. Segment is `Copy`, so the read yields a
-            // value copy with no ownership transfer; the original field
-            // remains intact.
-            unsafe {
-                core::ptr::read_volatile(core::ptr::from_ref(&self.producer_current))
-            }
-        };
-        let cur_is_some_view = cur_volatile.is_some();
+        // 2026-05-18 wedge fix: gate the dequeue branch on the atomic
+        // `producer_current_present` flag instead of `self.producer_current.
+        // is_some()`. The Option<Segment> field is non-atomic and the
+        // compiler caches it across producer_step invocations under LTO,
+        // even with a SeqCst fence and volatile reads — because the
+        // Option-of-Segment is ~57 bytes and read_volatile of a struct
+        // compiles to a memcpy that isn't actually atomic. The
+        // AtomicBool gate is unconditionally fresh.
+        let cur_is_some_view =
+            shared.producer_current_present.load(Ordering::Acquire);
         shared
             .producer_step_current_is_some_snapshot
             .store(u8::from(cur_is_some_view), Ordering::Release);
@@ -2067,6 +2062,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 .store(qlen_here, Ordering::Release);
             if let Some(seg) = queue.dequeue() {
                 self.producer_current = Some(seg);
+                // Set the atomic gate so the next producer_step call sees
+                // the dequeue (and the modulated_tick ISR's None write
+                // becomes the next gate change).
+                shared
+                    .producer_current_present
+                    .store(true, Ordering::Release);
                 shared
                     .producer_segment_dequeued_total
                     .fetch_add(1, Ordering::AcqRel);
@@ -2827,6 +2828,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                         .fetch_add(1, Ordering::AcqRel);
                     crate::stream::check_terminal_on_retire(shared, seg.id);
                     self.producer_current = None;
+                    shared
+                        .producer_current_present
+                        .store(false, Ordering::Release);
                     retired_this_iter = true;
                     iter_any_progress = true;
                 }
@@ -2989,22 +2993,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     .retired_through_segment_id
                     .store(seg.id, Ordering::Release);
                 crate::stream::check_terminal_on_retire(shared, seg.id);
-                // 2026-05-18 wedge fix: volatile write so the compiler can't
-                // dead-store-eliminate this. Pairs with the volatile read at
-                // the top of `producer_step`. Without this, LTO has been
-                // observed to skip the write when it thinks no other
-                // function reads the field (it doesn't realise foreground
-                // producer_step is a separate caller from this ISR path).
-                #[allow(unsafe_code)]
-                // SAFETY: &mut self.producer_current is a valid pointer
-                // (we hold &mut self). Volatile write of None is a plain
-                // memory store; no aliasing or lifetime concerns.
-                unsafe {
-                    core::ptr::write_volatile(
-                        core::ptr::from_mut(&mut self.producer_current),
-                        None,
-                    );
-                }
+                self.producer_current = None;
+                // 2026-05-18 wedge fix: clear the atomic gate so
+                // producer_step sees the retirement and re-dequeues.
+                // The non-atomic Option<Segment> read in producer_step
+                // was being cached by LTO; the atomic gate is the
+                // load-bearing visibility primitive.
+                shared
+                    .producer_current_present
+                    .store(false, Ordering::Release);
                 // 2026-05-18 wedge fix: pure-Modulated configs (F4 Z-only,
                 // or H7 X/Y when E's step_time_event isn't polling) have no
                 // path that rearms the producer Klipper timer after the ISR

@@ -316,6 +316,14 @@ pub struct SharedState {
     /// field across function boundaries despite the field changing
     /// in-between).
     pub producer_step_current_is_some_snapshot: AtomicU8,
+    /// 2026-05-18 wedge fix: atomic gate flag for `engine.producer_current`.
+    /// Mirrors `producer_current.is_some()` but is atomic-readable across
+    /// the &mut Engine borrow boundary. The non-atomic Option<Segment>
+    /// field gets cached by the compiler under LTO; reads of THIS atomic
+    /// can't be cached and force a fresh memory access. Used by
+    /// `producer_step` as the gate for "should I dequeue?" instead of
+    /// `self.producer_current.is_none()`.
+    pub producer_current_present: AtomicBool,
     /// Total times `Engine::fetch_segment_for_motor` was called. Bumps
     /// unconditionally at function entry — distinguishes "producer loop
     /// is filtering out all motors at the gates" from "fetch is called
@@ -454,6 +462,7 @@ impl SharedState {
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),
+            producer_current_present: AtomicBool::new(false),
             producer_fetch_attempts_total: AtomicU64::new(0),
             producer_enqueue_success_total: AtomicU64::new(0),
             last_push_segment_result: AtomicI32::new(0),
