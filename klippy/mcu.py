@@ -1251,8 +1251,37 @@ class MCU:
                 self._serial.dump_debug(),
             )
         prefix = "MCU '%s' shutdown: " % (self._name,)
-        if params["#name"] == "is_shutdown":
+        is_latched_shutdown = params["#name"] == "is_shutdown"
+        if is_latched_shutdown:
             prefix = "Previous MCU '%s' shutdown: " % (self._name,)
+            # 2026-05-18 wedge recovery: an `is_shutdown` (vs `shutdown`)
+            # event means the MCU was already in shutdown state when this
+            # klippy session connected — typically because the
+            # kalico-host-rt EXIT_ON_FAULT path aborted the prior klippy
+            # via `std::process::abort()` after a transport drop, while
+            # the MCU stayed alive with the latched
+            # `SchedStatus.shutdown_status = 1` from klippy's `_shutdown()`
+            # emergency_stop. systemd restarts klippy, but without
+            # intervention the new session surfaces the latched state and
+            # the printer parks in shutdown — operator has to manually
+            # FIRMWARE_RESTART or power-cycle.
+            #
+            # Auto-trigger the firmware restart so the systemd-managed
+            # recovery is a single step: a `reset` command to each MCU
+            # (NVIC_SystemReset → SchedStatus zeroed) clears the latched
+            # flag, and the in-process klippy restart re-runs config from
+            # scratch. `_check_restart` raises on first-time attempts (it
+            # also calls `request_exit("firmware_restart")` first, so the
+            # error unwinds the connect path and the main loop picks up
+            # the new start_reason). On second-pass attempts — i.e., we
+            # already restarted via firmware_restart this session and the
+            # MCU is STILL latched — `_check_restart` returns silently,
+            # and we fall through to the normal `invoke_async_shutdown`
+            # below so the operator sees the actual failure.
+            self._check_restart(
+                "MCU '%s' latched in shutdown state at connect"
+                % (self._name,)
+            )
 
         append_msgs = []
         if (
