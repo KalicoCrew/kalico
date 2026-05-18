@@ -136,16 +136,22 @@ volatile uint32_t sched_bad_add_value  __attribute__((used));
 static inline int
 addr_looks_bogus_for_timer(uint32_t p)
 {
-    // transmit_buf and batch_buf are the two scratch ranges we've seen
-    // corrupted SchedState.timer_list lands in. nm shows both shift on
-    // every build, so use generous ranges that cover them under current
-    // layout (5c2c5e600..). If the linker layout changes meaningfully,
-    // re-verify via `nm -n out/klipper.elf`.
-    return (p >= 0x20000080u && p < 0x20000600u)   // transmit_buf area
+    // Tight ranges matching nm output for the current build (abcfda717+):
+    //   transmit_buf: 0x20000154..0x20000554 (1024 bytes)
+    //   batch_buf:    0x20000be8..0x200015e8 (2560 bytes)
+    // If the linker shuffles these, re-verify with
+    //   nm -n out/klipper.elf | grep -E "transmit_buf|batch_buf"
+    return (p >= 0x20000154u && p < 0x20000554u)   // transmit_buf
         || (p >= 0x20000be8u && p < 0x200015e8u);  // batch_buf
 }
 
 // Schedule a function call at a supplied time.
+// __attribute__((noinline)): with whole-program LTO the linker freely
+// inlines sched_add_timer into its callers, which scrambles
+// __builtin_return_address(0) — it returns the LR of the enclosing
+// frame, not the call site we want to identify. Force it out-of-line
+// while the diagnostic is in place.
+__attribute__((noinline))
 void
 sched_add_timer(struct timer *add)
 {
