@@ -2662,6 +2662,41 @@ pub mod exports {
         }
     }
 
+    /// 2026-05-18 wedge diag: counter of how many times the gate has been
+    /// SET (producer_current=Some) and CLEARED (None). Combined 32-bit
+    /// value: low 16 bits = set_count, high 16 bits = cleared_count
+    /// (capped at u16::MAX each). If cleared_count stays at 0 despite
+    /// modulated_tick's retire branch supposedly running, the Rust
+    /// write_producer_current_present helper isn't actually executing
+    /// the write on the retire path.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_producer_current_gate_counters_diag(
+        _rt: *mut KalicoRuntime,
+    ) -> u32 {
+        #[cfg(target_os = "none")]
+        {
+            #[allow(unsafe_code)]
+            // SAFETY: counters are u32 globals declared volatile in C.
+            // read_volatile emits a real LDR per word; no tearing on
+            // 4-byte-aligned access.
+            unsafe {
+                let set_cnt = core::ptr::read_volatile(
+                    core::ptr::addr_of!(runtime::engine::kalico_producer_current_set_count),
+                );
+                let cleared_cnt = core::ptr::read_volatile(
+                    core::ptr::addr_of!(runtime::engine::kalico_producer_current_cleared_count),
+                );
+                let set_lo = (set_cnt & 0xFFFF) as u32;
+                let cleared_lo = (cleared_cnt & 0xFFFF) as u32;
+                set_lo | (cleared_lo << 16)
+            }
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            0
+        }
+    }
+
     /// Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
     /// how many `Engine::producer_step` invocations have completed since
     /// boot. If `step_time_producer_kicks` (C side) is incrementing but

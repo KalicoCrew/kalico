@@ -677,7 +677,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 36) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 37) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1198,6 +1198,22 @@ runtime_status_drain(void)
                          | ((qlen_sd & 7u) << 14)
                          | ((obs & 0x7Fu) << 7)
                          | (deq & 0x7Fu);
+            break;
+        }
+        case 36: {
+            // 0xCB — 2026-05-18 wedge diag: producer_current gate write
+            // counters. low 12 bits = set_count (Some writes), bits 12..23
+            // = cleared_count (None writes). If cleared_count stays at 0
+            // while modulated_tick claims to retire segments, the Rust
+            // write_producer_current_present helper isn't actually
+            // executing the write_volatile call.
+            uint32_t cnts = kalico_runtime_producer_current_gate_counters_diag(
+                runtime_handle);
+            uint32_t set_lo = cnts & 0xFFFu;
+            uint32_t cleared_lo = (cnts >> 16) & 0xFFFu;
+            fault_detail = 0xCB000000u
+                         | (cleared_lo << 12)
+                         | set_lo;
             break;
         }
         case 32: {

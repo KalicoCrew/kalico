@@ -21,6 +21,8 @@ use heapless::spsc::Consumer;
 #[allow(unsafe_code)]
 unsafe extern "C" {
     pub(crate) static mut kalico_producer_current_present: u8;
+    pub(crate) static mut kalico_producer_current_set_count: u32;
+    pub(crate) static mut kalico_producer_current_cleared_count: u32;
 }
 
 /// Read the C-side gate (MCU build) or the AtomicBool (host build).
@@ -51,11 +53,21 @@ fn write_producer_current_present(shared: &SharedState, present: bool) {
     {
         #[allow(unsafe_code)]
         // SAFETY: same as the read; write_volatile emits a real STR.
+        // Also bump the per-direction diag counter so we can verify the
+        // write actually executed (bench evidence so far shows the gate
+        // staying at 1 despite modulated_tick claiming to set it to 0).
         unsafe {
             core::ptr::write_volatile(
                 core::ptr::addr_of_mut!(kalico_producer_current_present),
                 u8::from(present),
             );
+            let counter_ptr = if present {
+                core::ptr::addr_of_mut!(kalico_producer_current_set_count)
+            } else {
+                core::ptr::addr_of_mut!(kalico_producer_current_cleared_count)
+            };
+            let cur = core::ptr::read_volatile(counter_ptr);
+            core::ptr::write_volatile(counter_ptr, cur.wrapping_add(1));
         }
     }
     // Mirror to the atomic for host builds and for diagnostic accessors that

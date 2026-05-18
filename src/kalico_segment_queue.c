@@ -137,3 +137,12 @@ kalico_native_queue_dequeue_total(void)
 // 1 = producer_current is Some(seg)
 volatile uint8_t kalico_producer_current_present
     __attribute__((used, externally_visible));
+
+// 2026-05-18 wedge diag: counters that increment every time Rust writes
+// the gate. If `cleared_count` stays at 0 while modulated_tick's retire
+// branch claims to set producer_current=None, the Rust write helper
+// isn't actually executing.
+volatile uint32_t kalico_producer_current_set_count
+    __attribute__((used, externally_visible));
+volatile uint32_t kalico_producer_current_cleared_count
+    __attribute__((used, externally_visible));

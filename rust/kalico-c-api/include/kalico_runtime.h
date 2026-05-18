@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
-
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
+
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -829,6 +829,17 @@ uint32_t kalico_runtime_queue_len_from_producer_step_diag(struct KalicoRuntime *
  * modulated_tick writing it from the ISR-borrow path.
  */
 uint8_t kalico_runtime_producer_current_is_some_from_producer_step_diag(struct KalicoRuntime *rt);
+
+/**
+ * 2026-05-18 wedge diag: counter of how many times the gate has been
+ * SET (producer_current=Some) and CLEARED (None). Combined 32-bit
+ * value: low 16 bits = set_count, high 16 bits = cleared_count
+ * (capped at u16::MAX each). If cleared_count stays at 0 despite
+ * modulated_tick's retire branch supposedly running, the Rust
+ * write_producer_current_present helper isn't actually executing
+ * the write on the retire path.
+ */
+uint32_t kalico_runtime_producer_current_gate_counters_diag(struct KalicoRuntime *_rt);
 
 /**
  * Diagnostic: read the low 32 bits of `producer_runs_total`. Tells
