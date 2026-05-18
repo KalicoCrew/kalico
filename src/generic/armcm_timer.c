@@ -182,6 +182,25 @@ timer_dispatch_many(void)
         if (unlikely(timer_is_before(tru, now))) {
             // Check if there are too many repeat timers
             if (diff < (int32_t)(-timer_from_us(1000))) {
+                // Emit the last few dispatched timer (addr, func) pairs
+                // so the host log identifies which timer fed the bogus
+                // `.next` into SchedState.timer_list. addr2line on `f*`
+                // names the timer event handler; the `a*` heap address
+                // tells us which struct instance owned the bad pointer.
+                uint32_t hidx;
+                uint32_t haddrs[SCHED_DISPATCH_HISTORY_N];
+                uint32_t hfuncs[SCHED_DISPATCH_HISTORY_N];
+                sched_get_dispatch_history(&hidx, haddrs, hfuncs);
+                output("rsched_past idx %u"
+                       " a0 %u f0 %u a1 %u f1 %u"
+                       " a2 %u f2 %u a3 %u f3 %u"
+                       " diff_us %i",
+                       hidx,
+                       haddrs[0], hfuncs[0],
+                       haddrs[1], hfuncs[1],
+                       haddrs[2], hfuncs[2],
+                       haddrs[3], hfuncs[3],
+                       (int32_t)(diff / (int32_t)timer_from_us(1)));
                 // Close the writable window before try_shutdown longjmps
                 // out of this scope, so the rest of the shutdown path
                 // doesn't accidentally observe RW protected memory.

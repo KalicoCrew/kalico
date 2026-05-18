@@ -44,6 +44,18 @@ void sched_writable_reset(void);
 // armcm_main after clock_setup, before sched_main.
 void mpu_protect_init(void);
 
+// Diagnostic ring buffer of the last N dispatched timers. Each call to
+// sched_timer_dispatch records the head timer's address and func pointer
+// at entry, BEFORE running the callback. Read on a "Rescheduled timer in
+// the past" detection so we know which timer was about to be dispatched
+// (and therefore which timer's `.next` was the source of any bogus head
+// pointer). Currently used only by armcm_timer.c's diagnostic emit; this
+// scaffolding will be removed once the rogue writer is identified.
+#define SCHED_DISPATCH_HISTORY_N 4
+void sched_get_dispatch_history(uint32_t *idx,
+                                uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
+                                uint32_t funcs[SCHED_DISPATCH_HISTORY_N]);
+
 enum { SF_DONE=0, SF_RESCHEDULE=1 };
 
 // Task waking struct

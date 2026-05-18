@@ -187,6 +187,25 @@ sched_del_timer(struct timer *del)
     irq_restore(flag);
 }
 
+// Diagnostic ring of the last few dispatched timers. Filled at the entry
+// of sched_timer_dispatch, before t->func runs. Read via
+// sched_get_dispatch_history. See sched.h for semantics.
+static volatile uint32_t sched_dispatch_history_addr[SCHED_DISPATCH_HISTORY_N];
+static volatile uint32_t sched_dispatch_history_func[SCHED_DISPATCH_HISTORY_N];
+static volatile uint32_t sched_dispatch_history_idx;
+
+void
+sched_get_dispatch_history(uint32_t *idx,
+                           uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
+                           uint32_t funcs[SCHED_DISPATCH_HISTORY_N])
+{
+    *idx = sched_dispatch_history_idx;
+    for (int i = 0; i < SCHED_DISPATCH_HISTORY_N; i++) {
+        addrs[i] = sched_dispatch_history_addr[i];
+        funcs[i] = sched_dispatch_history_func[i];
+    }
+}
+
 // Invoke the next timer - called from board hardware irq code.
 // Caller (timer_dispatch_many in armcm_timer.c) is responsible for holding
 // the MPU writable window open across the dispatch loop — we do not toggle
@@ -196,6 +215,15 @@ sched_timer_dispatch(void)
 {
     // Invoke timer callback
     struct timer *t = SchedState.timer_list;
+    // Diagnostic: ring-buffer the dispatched timer's (addr, func) BEFORE
+    // invoking its callback. On a "Rescheduled timer in past" trigger,
+    // the most-recent entries identify which timer struct fed a bogus
+    // `.next` value into SchedState.timer_list.
+    uint32_t hidx = sched_dispatch_history_idx;
+    sched_dispatch_history_addr[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t;
+    sched_dispatch_history_func[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t->func;
+    sched_dispatch_history_idx = hidx + 1;
+
     uint_fast8_t res;
     uint32_t updated_waketime;
     if (CONFIG_INLINE_STEPPER_HACK && likely(!t->func)) {
