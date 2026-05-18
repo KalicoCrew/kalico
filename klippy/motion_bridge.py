@@ -173,6 +173,19 @@ class MotionBridgeWrapper:
         """Send a fire-and-forget command (no response expected)."""
         return self._bridge.bridge_send(mcu_handle, msg)
 
+    def bridge_mark_expected_disconnect(self, mcu_handle):
+        """Tell the per-MCU reactor a transport drop is imminent and the
+        EXIT_ON_FAULT abort must not fire. Called by klippy's bridge-mode
+        `_restart_via_command` right before sending the firmware `reset`
+        command: the MCU performs NVIC_SystemReset, USB-CDC drops, and the
+        kernel BrokenPipe arrives — without this flag set, the host
+        reactor's EXIT_ON_FAULT guard interprets the drop as a wedge and
+        aborts the whole klippy process. With it, the reactor's
+        `exited_gracefully()` check returns true and klippy can complete
+        its in-process restart and reconnect to the freshly-reset MCU.
+        """
+        return self._bridge.bridge_mark_expected_disconnect(mcu_handle)
+
     def take_runtime_event(self, mcu_handle):
         """Drain one runtime event dict, or None if nothing pending."""
         return self._bridge.take_runtime_event(mcu_handle)

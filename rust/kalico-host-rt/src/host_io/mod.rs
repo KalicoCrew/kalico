@@ -148,6 +148,18 @@ pub enum ReactorCommand {
         deadline: std::time::Instant,
     },
     Shutdown,
+    /// 2026-05-18: marks the reactor's pending close as graceful so a
+    /// subsequent transport drop does NOT trigger the EXIT_ON_FAULT abort
+    /// in the spawn-time guard. Used by klippy's bridge-MCU
+    /// `_restart_via_command` path right before sending the firmware `reset`
+    /// command — the reset triggers `NVIC_SystemReset` on the MCU which
+    /// drops USB-CDC, and without this signal the reactor would interpret
+    /// the kernel BrokenPipe as a wedge and abort the whole klippy
+    /// process. The reactor handles this by setting
+    /// `closed_via_shutdown = true` without transitioning to `Closed` —
+    /// it keeps running until either an actual `Shutdown` command arrives
+    /// or the transport drops.
+    MarkExpectedDisconnect,
 }
 
 pub struct KalicoHostIo {
@@ -519,6 +531,21 @@ impl KalicoHostIo {
     pub fn send_fire_and_forget(&self, cmd: &str) -> Result<(), TransportError> {
         self.submission_tx
             .send(ReactorCommand::FireAndForget { cmd: cmd.to_owned() })
+            .map_err(|_| TransportError::Closed)
+    }
+
+    /// 2026-05-18: tell the reactor that a transport drop is imminent and
+    /// must NOT trigger the EXIT_ON_FAULT abort. Used by klippy's
+    /// bridge-mode `_restart_via_command` path right before sending the
+    /// firmware `reset` command — `NVIC_SystemReset` on the MCU drops
+    /// USB-CDC at the kernel and the reactor's BrokenPipe handler would
+    /// otherwise interpret that as a wedge and abort the whole klippy
+    /// process. The reactor handles `MarkExpectedDisconnect` by setting
+    /// its internal `closed_via_shutdown` flag so the spawn-time
+    /// `!reactor.exited_gracefully()` check sees the close as graceful.
+    pub fn mark_expected_disconnect(&self) -> Result<(), TransportError> {
+        self.submission_tx
+            .send(ReactorCommand::MarkExpectedDisconnect)
             .map_err(|_| TransportError::Closed)
     }
 

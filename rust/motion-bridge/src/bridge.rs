@@ -1242,6 +1242,34 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("bridge_send: {e}")))
     }
 
+    /// 2026-05-18: tell the per-MCU reactor that an imminent transport drop
+    /// is expected and must NOT trigger the EXIT_ON_FAULT abort guard.
+    /// Klippy calls this from `_restart_via_command` right before sending
+    /// the firmware `reset` command — `NVIC_SystemReset` on the MCU drops
+    /// USB-CDC and the host reactor would otherwise interpret BrokenPipe as
+    /// a wedge and abort the whole klippy process, breaking
+    /// FIRMWARE_RESTART recovery on bridge MCUs.
+    fn bridge_mark_expected_disconnect(&self, mcu_handle: u32) -> PyResult<()> {
+        let io = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "bridge_mark_expected_disconnect: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "bridge_mark_expected_disconnect: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+        io.mark_expected_disconnect().map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "bridge_mark_expected_disconnect: {e}"
+            ))
+        })
+    }
+
     /// Update clock estimation parameters for the given MCU.
     #[pyo3(signature = (mcu, freq, offset, last_clock))]
     fn set_clock_est(

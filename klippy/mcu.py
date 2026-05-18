@@ -1866,6 +1866,25 @@ class MCU:
                 "Unable to issue reset command on MCU '%s'", self._name
             )
             return
+        # 2026-05-18 wedge recovery: for bridge MCUs the firmware `reset`
+        # command triggers NVIC_SystemReset → USB-CDC drops at the
+        # kernel — the per-MCU Rust reactor's EXIT_ON_FAULT guard would
+        # interpret that BrokenPipe as a wedge and `std::process::abort()`
+        # the whole klippy process, breaking the in-process firmware_restart
+        # main-loop iteration. Mark the imminent drop as expected so the
+        # reactor reports `exited_gracefully()` when the drop lands. Best-
+        # effort: if the bridge can't be reached (transport already gone),
+        # fall through — we still try to send the reset command.
+        if self._motion_bridge is not None and self._bridge_handle is not None:
+            try:
+                self._motion_bridge.bridge_mark_expected_disconnect(
+                    self._bridge_handle
+                )
+            except Exception:
+                logging.exception(
+                    "MCU '%s' bridge_mark_expected_disconnect failed"
+                    " (continuing with reset)", self._name,
+                )
         if self._reset_cmd is None:
             # Attempt reset via config_reset command
             logging.info("Attempting MCU '%s' config_reset command", self._name)

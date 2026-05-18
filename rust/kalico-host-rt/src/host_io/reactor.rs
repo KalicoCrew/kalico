@@ -933,6 +933,22 @@ impl Reactor {
                 self.state = ReactorState::Closed;
                 self.closed_via_shutdown = true;
             }
+            ReactorCommand::MarkExpectedDisconnect => {
+                // 2026-05-18: klippy's bridge-mode firmware_restart path sent
+                // a `reset` command which is about to drop the MCU's USB-CDC.
+                // Mark the eventual close as graceful so the spawn-time
+                // EXIT_ON_FAULT guard sees `exited_gracefully() == true`
+                // when the BrokenPipe arrives, and klippy can continue its
+                // in-process restart without systemd having to interpose.
+                eprintln!(
+                    "[trace-close] ReactorCommand::MarkExpectedDisconnect \
+                     received kalico_pending={} await_n={} unacked_n={}",
+                    self.kalico_state.pending.len(),
+                    self.awaiting_response.len(),
+                    self.unacked_window.len(),
+                );
+                self.closed_via_shutdown = true;
+            }
             ReactorCommand::AttachCreditCounter(counter) => {
                 self.event_dispatcher.credit_counter = Some(counter);
             }
