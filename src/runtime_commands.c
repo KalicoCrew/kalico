@@ -30,12 +30,24 @@ void
 command_runtime_query_status(uint32_t *args)
 {
     if (!runtime_handle) {
-        sendf("kalico_status status=%c last_err=%i", (uint8_t)255, -7);
+        sendf("kalico_status status=%c last_err=%i phase_spi_skip_count=%u",
+              (uint8_t)255, -7, 0u);
         return;
     }
     uint8_t status = runtime_handle_status(runtime_handle);
     int32_t last_err = runtime_handle_last_error(runtime_handle);
-    sendf("kalico_status status=%c last_err=%i", status, last_err);
+    uint32_t phase_skip = 0;
+#if CONFIG_MACH_STM32
+    // Cooperative SPI3 contention counter, incremented from the TIM5 ISR
+    // when the phase-stepping write loses the busy-flag race vs Klipper's
+    // low-priority TMC SPI register access. Surface on the periodic
+    // status frame so the host (and the bench acceptance gate) can
+    // monitor that contention stays inside the expected envelope
+    // (<100/s sustained per spec §8.4 / Task 13).
+    phase_skip = phase_spi_get_skip_count();
+#endif
+    sendf("kalico_status status=%c last_err=%i phase_spi_skip_count=%u",
+          status, last_err, phase_skip);
 }
 DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 
