@@ -9,6 +9,7 @@
 #include "basecmd.h" // stats_update
 #include "board/io.h" // readb
 #include "board/irq.h" // irq_save
+#include "compiler.h" // noinline
 #include "board/misc.h" // timer_from_us
 #include "board/pgm.h" // READP
 #include "command.h" // shutdown
@@ -146,13 +147,12 @@ addr_looks_bogus_for_timer(uint32_t p)
 }
 
 // Schedule a function call at a supplied time.
-// __attribute__((noinline)): with whole-program LTO the linker freely
+// `noinline` (from compiler.h): with whole-program LTO the linker freely
 // inlines sched_add_timer into its callers, which scrambles
 // __builtin_return_address(0) — it returns the LR of the enclosing
 // frame, not the call site we want to identify. Force it out-of-line
 // while the diagnostic is in place.
-__attribute__((noinline))
-void
+void noinline
 sched_add_timer(struct timer *add)
 {
     if (addr_looks_bogus_for_timer((uint32_t)add) && !sched_bad_add_caller) {
