@@ -38,11 +38,38 @@ machine LoadPlatformDescription @/opt/homebrew/Cellar/renode/1.16.1/libexec/plat
 # H723/H743 family (`SPI3_IRQn = 51` in lib/stm32h7/include/stm32h723xx.h).
 # The explicit `IRQ ->` name (vs bare `->`) is required because STM32H7_SPI
 # exposes both `IRQ` and `DMARecieve` GPIOs and Renode otherwise errors with
-# "Ambiguous choice of default interrupt." Task 8 attaches a TMC5160 stub
-# peripheral to this SPI3 instance.
+# "Ambiguous choice of default interrupt."
 machine LoadPlatformDescriptionFromString """
 spi3: SPI.STM32H7_SPI @ sysbus 0x40003C00
     IRQ -> nvic@51
+"""
+
+# Multiplex two TMC5160 phase-stepping drivers on SPI3 via per-axis CS pins.
+# STM32H7_SPI is a NullRegistrationPointPeripheralContainer (single child),
+# so we interpose Renode's stock SPIMultiplexer: it acts as the SPI3 child,
+# routes Transmit/FinishTransmission to whichever child has its CS line
+# asserted, and forwards CS-deassert as FinishTransmission to the selected
+# child (which our TMC stub uses as the frame boundary). Sample wiring is
+# patterned on tests/peripherals/SPIMultiplexer.robot.
+#
+# CS line numbers below (5, 6) are arbitrary indices into the multiplexer's
+# input-GPIO table; we match them to the gpioPortA pin numbers (PA5 = CS_X,
+# PA6 = CS_Y) below so the host test driver can pick the corresponding
+# Klipper pin IDs in its configure_axes blob. SetActiveLow declares both
+# CS lines active-low to match real TMC5160 behaviour and the firmware's
+# `gpio_out_setup(cs_pin, 1)` idle-high default.
+include @tools/sim/renode_peripherals/Tmc5160.cs
+machine LoadPlatformDescriptionFromString """
+spi_mux: SPI.SPIMultiplexer @ spi3 { init: { SetActiveLow 5; SetActiveLow 6 } }
+"""
+machine LoadPlatformDescriptionFromString """
+tmc_x: Sensors.TMC5160 @ spi_mux 5
+"""
+machine LoadPlatformDescriptionFromString """
+tmc_y: Sensors.TMC5160 @ spi_mux 6
+"""
+machine LoadPlatformDescriptionFromString """
+gpioPortA: { 5 -> spi_mux@5; 6 -> spi_mux@6 }
 """
 
 # Enable the Cortex-M7 FPU. The H743 .repl uses cpuType: "cortex-m7" without
