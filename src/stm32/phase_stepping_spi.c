@@ -11,8 +11,44 @@
 #include "phase_stepping_spi.h"
 #include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
                     // struct gpio_out, gpio_out_setup, gpio_out_write
+#include "board/irq.h" // irq_save, irq_restore, irqstatus_t
 
 #define MAX_PHASE_BUSES 4
+
+// ---------- 2026-05-18 SPI3 contention arbitration ----------------------
+// See phase_stepping_spi.h for the rationale and contract.
+static volatile uint8_t  phase_spi_busy = 0;
+static volatile uint32_t phase_spi_skip_count = 0;
+
+__attribute__((used, externally_visible))
+uint8_t
+phase_spi_try_acquire(void)
+{
+    irqstatus_t flag = irq_save();
+    uint8_t was_busy = phase_spi_busy;
+    if (!was_busy)
+        phase_spi_busy = 1;
+    irq_restore(flag);
+    return !was_busy;
+}
+
+__attribute__((used, externally_visible))
+void
+phase_spi_release(void)
+{
+    // Single-byte volatile write is atomic on M4/M7. No critical
+    // section needed because we are the sole writer of the cleared
+    // state; preemption between read and write of the held state
+    // cannot violate invariants.
+    phase_spi_busy = 0;
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+phase_spi_get_skip_count(void)
+{
+    return phase_spi_skip_count;
+}
 
 struct phase_bus_state {
     struct spi_config cfg;
@@ -56,6 +92,14 @@ phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
     if (bus_id >= MAX_PHASE_BUSES || !phase_buses[bus_id].configured)
         return;
 
+    // ISR-priority: if Klipper's spi_transfer holds the bus, skip this
+    // modulation cycle. One skip = 25 us at 40 kHz, inaudible. The
+    // skip-count telemetry is the canary for SPI3 contention going wild.
+    if (!phase_spi_try_acquire()) {
+        phase_spi_skip_count++;
+        return;
+    }
+
     // Cast through uint16_t before shifting so the sign bit lands in
     // bit 8 of the source word (C right-shift on signed negative values
     // is implementation-defined; uint16_t guarantees a logical shift).
@@ -74,4 +118,6 @@ phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
     gpio_out_write(phase_buses[bus_id].cs, 0); // CS low (assert)
     spi_transfer(phase_buses[bus_id].cfg, 0, sizeof(datagram), datagram);
     gpio_out_write(phase_buses[bus_id].cs, 1); // CS high (deassert)
+
+    phase_spi_release();
 }

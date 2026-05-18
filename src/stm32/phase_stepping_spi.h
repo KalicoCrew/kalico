@@ -47,4 +47,25 @@ void phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg,
 void phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
                                   int16_t coil_a, int16_t coil_b);
 
+// ---------- 2026-05-18 SPI3 contention arbitration ----------------------
+// Cooperative busy-flag mediating SPI3 access between two writers:
+//   - TIM5-rate (40 kHz) phase_stepping_write_xdirect from the ISR
+//   - Lower-priority TMC SPI register access from Klipper task code
+//     (e.g. _do_periodic_check's 1 Hz DRV_STATUS polling)
+//
+// Both paths MUST acquire before initiating an SPI transfer and release
+// after. The flag uses irq_save / irq_restore for mutual exclusion;
+// CMSIS atomic primitives are not required because all writers are
+// single-instruction reads/writes against a uint8_t.
+//
+// Return value of phase_spi_try_acquire(): 1 if acquired, 0 if busy.
+// The TIM5 ISR's phase_stepping_write_xdirect skips its cycle on 0 and
+// increments phase_spi_skip_count for telemetry. Klipper's spi_transfer
+// for the registered phase bus instead spins (or yields, per
+// stm32h7_spi.c convention) until acquire succeeds — that path tolerates
+// the wait latency.
+uint8_t phase_spi_try_acquire(void);
+void    phase_spi_release(void);
+uint32_t phase_spi_get_skip_count(void);
+
 #endif // phase_stepping_spi.h
