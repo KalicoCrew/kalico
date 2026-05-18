@@ -1,0 +1,67 @@
+// Phase-stepping XDIRECT SPI writer for TMC5160 (sim scope).
+// See phase_stepping_spi.h for protocol and datagram layout details.
+//
+// Pattern matches src/spicmds.c::spidev_transfer():
+//   spi_prepare(cfg) -> CS low -> spi_transfer(cfg, 0, len, buf) -> CS high.
+// spi_prepare is required on STM32H7 because each bus's CR1 is rewritten
+// per-transaction in stm32h7_spi.c; omitting it would re-use the previous
+// caller's clock divider / mode. In Renode this is benign, but we follow
+// the canonical pattern so the same .c is correct on real silicon.
+
+#include "phase_stepping_spi.h"
+#include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
+                    // struct gpio_out, gpio_out_setup, gpio_out_write
+
+#define MAX_PHASE_BUSES 4
+
+struct phase_bus_state {
+    struct spi_config cfg;
+    struct gpio_out cs;
+    uint8_t configured;
+};
+
+// Static, zero-initialized (.bss). `configured == 0` means "not registered".
+static struct phase_bus_state phase_buses[MAX_PHASE_BUSES];
+
+void
+phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg,
+                            uint8_t cs_pin)
+{
+    if (bus_id >= MAX_PHASE_BUSES)
+        return;
+    phase_buses[bus_id].cfg = cfg;
+    phase_buses[bus_id].cs = gpio_out_setup(cs_pin, 1); // idle high
+    phase_buses[bus_id].configured = 1;
+}
+
+void
+phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
+                             int16_t coil_a, int16_t coil_b)
+{
+    // cs_pin is informational; the actual CS handle was cached in
+    // phase_stepping_register_bus(). Marked unused to silence the
+    // -Wunused-parameter warning that kalico builds with -Wall.
+    (void)cs_pin;
+
+    if (bus_id >= MAX_PHASE_BUSES || !phase_buses[bus_id].configured)
+        return;
+
+    // Cast through uint16_t before shifting so the sign bit lands in
+    // bit 8 of the source word (C right-shift on signed negative values
+    // is implementation-defined; uint16_t guarantees a logical shift).
+    uint16_t ua = (uint16_t)coil_a;
+    uint16_t ub = (uint16_t)coil_b;
+
+    uint8_t datagram[5] = {
+        0xAD,                                // write | XDIRECT (0x2D)
+        (uint8_t)((ub >> 8) & 0x01),         // coil_B sign bit
+        (uint8_t)(ub & 0xFF),                // coil_B low 8 bits
+        (uint8_t)((ua >> 8) & 0x01),         // coil_A sign bit
+        (uint8_t)(ua & 0xFF),                // coil_A low 8 bits
+    };
+
+    spi_prepare(phase_buses[bus_id].cfg);
+    gpio_out_write(phase_buses[bus_id].cs, 0); // CS low (assert)
+    spi_transfer(phase_buses[bus_id].cfg, 0, sizeof(datagram), datagram);
+    gpio_out_write(phase_buses[bus_id].cs, 1); // CS high (deassert)
+}

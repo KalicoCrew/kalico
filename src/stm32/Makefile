@@ -69,6 +69,9 @@ src-$(CONFIG_MACH_STM32F4) += stm32/runtime_tick_f4.c
 endif
 src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
 src-$(CONFIG_KALICO_RUNTIME) += runtime_commands.c
+# Phase-stepping XDIRECT SPI helper (Step 7-D / phase-stepping sim slice).
+# Called from the Rust modulator via FFI; see src/stm32/phase_stepping_spi.h.
+src-$(CONFIG_KALICO_RUNTIME) += stm32/phase_stepping_spi.c
 # Sim-only: software CYCCNT under CONFIG_KALICO_SIM. Per Step-6 spec §3.1.
 src-$(CONFIG_KALICO_SIM) += stm32/kalico_sim_clock.c
 # Note: runtime_sim_commands.c was retired in 085b4b16f (feat(build): drop
