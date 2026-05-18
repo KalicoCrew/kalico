@@ -51,7 +51,7 @@ void mpu_protect_init(void);
 // (and therefore which timer's `.next` was the source of any bogus head
 // pointer). Currently used only by armcm_timer.c's diagnostic emit; this
 // scaffolding will be removed once the rogue writer is identified.
-#define SCHED_DISPATCH_HISTORY_N 4
+#define SCHED_DISPATCH_HISTORY_N 6
 void sched_get_dispatch_history(uint32_t *idx,
                                 uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
                                 uint32_t funcs[SCHED_DISPATCH_HISTORY_N]);
