@@ -1888,6 +1888,16 @@ class MCU:
         chelper.run_hub_ctrl(1)
 
     def _firmware_restart(self, force=False):
+        logging.info(
+            "[firmware-restart-trace] mcu=%s force=%s _is_mcu_bridge=%s "
+            "non_critical_disconnected=%s _restart_method=%s "
+            "_reset_cmd_present=%s clocksync_active=%s",
+            self._name, force, self._is_mcu_bridge,
+            self.non_critical_disconnected, self._restart_method,
+            self._reset_cmd is not None,
+            self._clocksync.is_active() if self._clocksync is not None
+            else "no-clocksync",
+        )
         if (
             self._is_mcu_bridge and not force
         ) or self.non_critical_disconnected:
