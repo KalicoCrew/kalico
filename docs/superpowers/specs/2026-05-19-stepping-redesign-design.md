@@ -142,6 +142,21 @@ struct TickCaches {
 }
 ```
 
+**Pseudocode identifiers** used throughout the ISR body:
+
+- `now`, `sample_start_cycles` — `timer_read_time()` at ISR entry (u32 cycle
+  counter, wraps every ~8.3 s on H7, ~4 min on F446)
+- `sample_period_cycles` — `runtime_clock_freq / sample_rate_hz`, set at
+  `init_step_time_timers`
+- `cycles_per_second` — `runtime_clock_freq` (CPU clock; 520 MHz H7, 180 MHz F446)
+- `sample_period` — seconds per sample (1 / sample_rate_hz)
+- `t_local_for_axis` — `t_sample_end_global - axis.piece_start_time` in
+  seconds; the parameter passed to the cubic Bezier polynomial evaluator
+- `extrusion_per_xy_mm` — E axis's XY-arc-length-to-filament-length ratio;
+  set via `kalico_configure_axis(E, ...)`
+- `advance_accel`, `advance_decel` — per-extruder pressure-advance
+  coefficients (seconds); see `kalico_configure_pressure_advance` below
+
 ```
 TIM5 ISR fires every (1 / sample_rate) µs:
 
@@ -831,6 +846,16 @@ sub-message per stepper in the axis config.
 
 Per-axis uniform-mode constraint enforced here: rejected if `steppers` carries
 steppers with incompatible drivers for the requested mode.
+
+### `kalico_configure_pressure_advance(advance_accel: f32, advance_decel: f32)`
+
+Sets the asymmetric pressure-advance coefficients for the E axis. Units:
+seconds (the dimensional shape of K in `E_PA = K · |v_xy|`). Can be called
+at any time outside active motion; reads take effect on the next TIM5
+sample. Symmetric PA = both coefficients equal.
+
+If the host doesn't call this, both default to 0 (no pressure advance,
+E follows XY arc length only).
 
 ### `kalico_configure_kinematics(k_xy: f32)`
 
