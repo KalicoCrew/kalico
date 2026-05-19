@@ -59,9 +59,40 @@ pub mod exports {
     // RuntimeContext::init.
     //
     // Spec: docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md.
+    //
+    // On the MCU (target_os = "none") rt_storage is C-declared in
+    // src/runtime_storage.c with a cfg-gated section attribute. On the host
+    // (cargo test, integration test harnesses), nothing links against that
+    // C file — so the same name is provided here as a Rust-side static.
+    // The host static doesn't need section placement; it just exists so
+    // tests and host-build paths find the symbol.
+    #[cfg(target_os = "none")]
     unsafe extern "C" {
         static rt_storage: UnsafeCell<[u8; RT_STORAGE_SIZE]>;
     }
+
+    // Host backing storage. UnsafeCell isn't Sync by default; wrap it in a
+    // transparent newtype with unsafe impl Sync. The cast site in
+    // runtime_handle_create reaches the *mut [u8; N] via `.0.get()` on host
+    // and `.get()` on MCU (UnsafeCell::get directly); a small cfg-split
+    // there keeps the wrapper minimal.
+    //
+    // Same discipline as the pre-refactor RuntimeCell — synchronization is
+    // the INIT_DONE guard + the half-split aliasing pattern, not
+    // type-system Sync.
+    #[cfg(not(target_os = "none"))]
+    #[repr(transparent)]
+    struct HostRtStorage(UnsafeCell<[u8; RT_STORAGE_SIZE]>);
+    // SAFETY: see runtime_handle_create's SAFETY comment.
+    #[cfg(not(target_os = "none"))]
+    unsafe impl Sync for HostRtStorage {}
+    // Lowercase to match the C-side `uint8_t rt_storage[N]` symbol that
+    // the MCU extern declaration above resolves to. The same identifier
+    // must work in both modes.
+    #[cfg(not(target_os = "none"))]
+    #[allow(non_upper_case_globals)]
+    static rt_storage: HostRtStorage =
+        HostRtStorage(UnsafeCell::new([0u8; RT_STORAGE_SIZE]));
 
     // Compile-time size contract: RuntimeContext must fit in rt_storage.
     // Bump CONFIG_RUNTIME_STORAGE_SIZE_LARGE/_SMALL in src/Kconfig if this
@@ -136,7 +167,13 @@ pub mod exports {
         // that provenance (the const_assert above ensures RuntimeContext
         // fits within the buffer).
         unsafe {
+            // On MCU rt_storage is UnsafeCell<[u8; N]> (extern from C);
+            // on host it's HostRtStorage(UnsafeCell<[u8; N]>) (Rust-defined).
+            // .get() vs .0.get() — same underlying *mut [u8; N], same provenance.
+            #[cfg(target_os = "none")]
             let rt_ptr: *mut RuntimeContext = rt_storage.get().cast::<RuntimeContext>();
+            #[cfg(not(target_os = "none"))]
+            let rt_ptr: *mut RuntimeContext = rt_storage.0.get().cast::<RuntimeContext>();
             debug_assert_eq!(
                 (rt_ptr as usize) % core::mem::align_of::<RuntimeContext>(),
                 0,
