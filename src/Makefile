@@ -4,7 +4,7 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 # Kalico-native transport — stream-level demuxer + Layer 4 dispatcher.
 # Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
 src-$(CONFIG_KALICO_RUNTIME) += kalico_demux.c kalico_dispatch.c \
-    kalico_segment_queue.c runtime_storage.c
+    kalico_segment_queue.c runtime_storage.c runtime_panic.c
 src-y += runtime_tick_weak.c
 src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
 src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \

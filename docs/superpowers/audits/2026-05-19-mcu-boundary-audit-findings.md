@@ -83,11 +83,18 @@ Lands in Task 19.
 - Map reachable panics from ISR-called FFI entries (`runtime_handle_tick`, `kalico_runtime_modulated_tick`, kalico_endstop_*).
 - C fault-latch entry point: `fault_handler_report_task` (per recent commits e.g. `2d83c3d6d diag: emit sched_bad_add state via fault_handler_report_task`).
 
-**Result:** TBD — fill in during audit run.
+**Result (2026-05-19):**
 
-**Decision:** If panics reachable in ISR context, route the panic handler through the C fault-latch path rather than the current spin-forever handler.
+- Rust panic handler located at `rust/kalico-c-api/src/lib.rs:34-40` (pre-fix). Pre-fix: `loop { spin_loop(); }`.
+- Panic sites reachable from ISR-called FFI entries:
+  - `rust/runtime/src/engine.rs:2287` — `.expect("producer_current set")` inside an Engine method that runs from `runtime_handle_tick` (TIM5 ISR). If `producer_current` is None when expected, this panics.
+  - Other `.expect(...)` calls in engine.rs at lines >3500 are inside `#[cfg(test)]` blocks (not production paths).
+  - No `panic!` or `.unwrap()` found in `step_producer.rs`, `step_ring.rs`, `step_time.rs`, `step.rs`, `clock.rs`, `kinematics.rs`, `curve_pool.rs` (production code paths).
+- The `expect` at engine.rs:2287 is the load-bearing ISR-reachable panic site.
 
-Lands in Task 18.
+**Decision:** **Route the panic handler through a C fault-latch.** New `src/runtime_panic.c` defines `rust_panic_latch(void) __noreturn` which calls Klipper's `shutdown("Rust panic")` macro. Rust panic handler updated to call this function instead of spinning.
+
+**Action:** Landed in this commit (Task 18). The engine.rs:2287 expect is left in place — it's an invariant check, not a recoverable error. The fix is that when it does fire (during dev / debugging), the panic now produces a klippy-visible shutdown frame instead of a frozen MCU.
 
 ## A6 — FPU / CPACR consistency
 
