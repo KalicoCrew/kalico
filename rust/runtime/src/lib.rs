@@ -50,6 +50,7 @@ pub mod segment;
 #[cfg(feature = "kalico-sim")]
 pub mod sim_fixtures;
 pub mod slot;
+pub mod spi_queue;
 pub mod state;
 pub use state::{set_step_mode, SetStepModeError, StepMode};
 pub mod step;

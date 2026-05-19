@@ -2022,3 +2022,44 @@ init_per_axis_step_timers(void)
         sched_add_timer(&per_axis_timers[i]);
     }
 }
+
+// === Task 14: SPI queue foreground drain (stub) ===
+//
+// The TIM5 ISR pushes SpiWrite entries into spi_queues[bus_idx] from
+// dispatch_phase. A foreground struct timer firing at ~10 kHz should
+// pop from each bus's queue and dispatch through Klipper's spidev /
+// bus.c. For now: stub timer that clears the queue without writing to
+// hardware — keeps the SPSC contract live without committing to a
+// specific bus driver. Bench bring-up (Stage 5) wires real SPI.
+//
+// `init_spi_drain_timer` is publicly exposed but has no production
+// caller yet; Task 14's scope is the queue + ISR push only. Once the
+// real SPI bring-up lands, this hook will be invoked alongside
+// `init_per_axis_step_timers` from `command_kalico_configure_axis`.
+
+#include "spi_queue.h"
+
+static struct timer spi_drain_timer;
+
+static uint_fast8_t
+spi_drain_event(struct timer *t)
+{
+    for (int bus = 0; bus < N_SPI_BUSES; bus++) {
+        SpiQueue *q = &spi_queues[bus];
+        while (q->head != q->tail) {
+            // Stub: drop the entry without dispatching to hardware.
+            // Bench Stage 5 replaces this with: spidev_write(...).
+            q->head = (uint16_t)(q->head + 1);
+        }
+    }
+    t->waketime = timer_read_time() + timer_from_us(100);  // 10 kHz
+    return SF_RESCHEDULE;
+}
+
+void
+init_spi_drain_timer(void)
+{
+    spi_drain_timer.func = spi_drain_event;
+    spi_drain_timer.waketime = timer_read_time() + timer_from_us(1000);
+    sched_add_timer(&spi_drain_timer);
+}
