@@ -600,8 +600,21 @@ fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
     // remain strict — those are never used for clocks and a wrong value there
     // is always a real bug.
     let in_range = match ty {
-        FieldType::Byte => (0..=255).contains(&v),
+        // Klipper's reference msgproto (klippy/msgproto.py PT_byte) inherits
+        // PT_uint32's encoder and allows signed values: the host sends a
+        // VLQ-encoded i64, the MCU parses it, and per-handler C code casts
+        // args[i] to either `uint8_t` or `int_fast8_t` depending on the
+        // intended interpretation. config_stepper's invert_step=-1 from the
+        // bridge path (klippy/stepper.py::_build_config_bridge after commit
+        // 8649861c9) is the live example — the F4/H7 firmware reads it as
+        // int_fast8_t and treats <0 as SF_SINGLE_SCHED.
+        // Accept the union of signed [-128..=127] and unsigned [0..=255]
+        // byte ranges.
+        FieldType::Byte => (-128..=255).contains(&v),
         FieldType::U16  => (0..=65535).contains(&v),
+        // PT_int16 is also VLQ-extended in reference msgproto; the host can
+        // legitimately send the full -0x8000..=0x7FFF range and the firmware
+        // truncates to int16 on read.
         FieldType::I16  => (-32768..=32767).contains(&v),
         FieldType::U32 | FieldType::I32 => return Ok(()),
         _ => return Ok(()),
@@ -1199,6 +1212,44 @@ mod encode_field_tests {
         let mut buf = Vec::new();
         encode_field_value(&mut buf, FieldType::Byte, &FieldValue::Byte(0xFF)).unwrap();
         assert_eq!(buf, vec![0x81, 0x7F]);
+    }
+
+    #[test]
+    fn byte_field_accepts_signed_negative() {
+        // Klipper's reference msgproto (PT_byte → PT_uint32 VLQ) accepts
+        // signed values for %c. The bridge path's config_stepper emits
+        // invert_step=-1 (commit 8649861c9); rejecting it here breaks every
+        // config_stepper on every bridge-mode MCU. Regression guard.
+        use indexmap::IndexMap;
+        let enums: IndexMap<String, EnumTable> = IndexMap::new();
+        for v in &["-1", "-128", "0", "127", "255"] {
+            let mut buf = Vec::new();
+            encode_field_str(
+                &mut buf,
+                &WrappedField::Plain(FieldType::Byte),
+                v,
+                &enums,
+            ).unwrap_or_else(|e| panic!("Byte should accept {v:?}: {e:?}"));
+            assert!(!buf.is_empty(), "encoded payload non-empty for {v:?}");
+        }
+    }
+
+    #[test]
+    fn byte_field_still_rejects_truly_out_of_range() {
+        use indexmap::IndexMap;
+        let enums: IndexMap<String, EnumTable> = IndexMap::new();
+        // -129 and 256 are outside the signed+unsigned byte envelope.
+        for v in &["-129", "256", "1000", "-1000"] {
+            let mut buf = Vec::new();
+            let r = encode_field_str(
+                &mut buf,
+                &WrappedField::Plain(FieldType::Byte),
+                v,
+                &enums,
+            );
+            assert!(matches!(r, Err(ParseError::OutOfRange { .. })),
+                "Byte should reject {v:?}, got {r:?}");
+        }
     }
 
     #[test]
