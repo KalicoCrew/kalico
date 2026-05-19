@@ -426,6 +426,72 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// field at all.
     #[cfg(any(test, feature = "test-injection"))]
     pub(crate) injected_iter_start: u32,
+
+    // ─── Stepping-redesign Task 11 — unified per-axis configuration ──────
+    //
+    // Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
+    //
+    // Populated by `kalico_configure_axis` / `kalico_configure_kinematics` /
+    // `kalico_configure_pressure_advance` (Task 11 FFI). Consumed by the
+    // unified sample-ISR tick path (Task 8) that replaces the legacy
+    // `tick()` / `producer_step()` split.
+    //
+    // These fields coexist with the legacy step-emission state above
+    // (`step_rings`, `producer_states`, `producer_current`) until Task 16
+    // deletes the legacy path. The unified tick reads only the fields below;
+    // the legacy tick reads only the legacy fields. No overlap or
+    // synchronization required.
+
+    /// Per-logical-axis configuration: active Bezier piece, cached scalars,
+    /// stepper bindings. Indexed `[X=0, Y=1, Z=2, E=3]` in logical-axis
+    /// space (the unified engine performs the kinematic transform at piece
+    /// activation time, not per-sample).
+    pub stepping_axes:
+        [crate::stepping_state::AxisConfig; crate::stepping_state::N_AXES],
+
+    /// Kinematic scale factor relating logical-XY velocity to physical
+    /// motor-coordinate velocity magnitude. `1.0` for Cartesian (XY motor
+    /// positions equal logical XY); `1.0 / sqrt(2)` for CoreXY (each motor
+    /// moves at √2 times the per-axis logical speed at 45° diagonals).
+    /// Consumed by the XY-arc-length integrator that feeds the E-follows-XY
+    /// and pressure-advance paths. Spec §3.4.
+    pub k_xy: f32,
+
+    /// Linear pressure-advance coefficient during the toolhead's accelerating
+    /// phase (s). The unified tick adds `+ advance_accel * ratio_per_xy_mm
+    /// * |v_xy|` to the integrated extrusion while `v̇_xy > 0`. `0.0`
+    /// disables PA on acceleration. Spec §3.5.
+    pub advance_accel: f32,
+
+    /// Linear pressure-advance coefficient during the toolhead's decelerating
+    /// phase (s). Mirror of `advance_accel`; allows asymmetric K_accel /
+    /// K_decel (Kalico bleeding-edge Step 9). `0.0` disables PA on
+    /// deceleration. Spec §3.5.
+    pub advance_decel: f32,
+
+    /// Sample-rate period in seconds. Equal to `1.0 / sample_rate_hz`
+    /// (typically 25 µs at 40 kHz). Consumed by sub-sample timing for
+    /// secant-slope velocity recovery. Published once at
+    /// `configure_kinematics` time; recomputed if the timer cadence changes.
+    pub sample_period_sec: f32,
+
+    /// Sample-rate period in MCU clock cycles. Equal to
+    /// `cycles_per_second * sample_period_sec` rounded to the nearest u32.
+    /// Mirrors the host-published `SharedState::sample_period_cycles`
+    /// scheduler tunable but lives on the engine so the hot path doesn't
+    /// reload from `SharedState` every tick.
+    pub sample_period_cycles: u32,
+
+    /// MCU clock frequency (Hz). Cached from the C-side
+    /// `runtime_clock_freq` constant at `Engine::new` time so the unified
+    /// tick can convert cycles ↔ seconds without a foreign read per sample.
+    pub cycles_per_second: f32,
+
+    /// ISR-local scratch carried across consecutive sample ticks. Never
+    /// observed by anything outside the sample ISR — plain values, no
+    /// atomics. Used by secant-slope sub-sample timing and the
+    /// E-follows-XY arc-length accumulator.
+    pub tick_caches: crate::stepping_state::TickCaches,
 }
 
 impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
@@ -469,6 +535,27 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             producer_current: None,
             #[cfg(any(test, feature = "test-injection"))]
             injected_iter_start: 0,
+            // Task 11 unified per-axis configuration. All fields default
+            // to "unconfigured" until configure_axis / configure_kinematics
+            // / configure_pressure_advance publish real values.
+            stepping_axes: [
+                crate::stepping_state::AxisConfig::new_unconfigured(),
+                crate::stepping_state::AxisConfig::new_unconfigured(),
+                crate::stepping_state::AxisConfig::new_unconfigured(),
+                crate::stepping_state::AxisConfig::new_unconfigured(),
+            ],
+            // Default to Cartesian k_xy=1.0 so the unified-tick XY
+            // arc-length integration produces sane numbers even if the
+            // host never sends configure_kinematics (a misconfiguration,
+            // but better than NaN propagation). CoreXY hosts overwrite
+            // this with 1.0/sqrt(2).
+            k_xy: 1.0,
+            advance_accel: 0.0,
+            advance_decel: 0.0,
+            sample_period_sec: 0.0,
+            sample_period_cycles: 0,
+            cycles_per_second: clock_freq as f32,
+            tick_caches: crate::stepping_state::TickCaches::new(),
         }
     }
 
@@ -478,6 +565,113 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
     /// is threaded through here.
     pub fn new_production(clock_freq: u32) -> Self {
         Self::new(clock_freq)
+    }
+}
+
+// ─── Stepping-redesign Task 11 — configuration entry points ───────────────
+//
+// Foreground command handlers reach these through the FFI shims in
+// `kalico-c-api::runtime_ffi` (`kalico_runtime_configure_axis`,
+// `kalico_runtime_configure_kinematics`,
+// `kalico_runtime_configure_pressure_advance`). All three are
+// foreground-only and never racing with the ISR — Klipper sends these
+// commands from the single-threaded command dispatcher before / between
+// segments, not while the TIM5 ISR is mid-tick on the same axis state.
+//
+// Return convention: `0` = success, negative = host-visible error. The
+// negative values are kept abstract here (`-1`) rather than reaching for
+// the KALICO_ERR_* constants in `runtime::error` because the C handlers
+// merely log "rejected" — host-side surfacing of the precise error code
+// is not part of Task 11's surface area.
+impl<P: PaSlot, I: IsSlot> Engine<P, I> {
+    /// Publish new per-axis configuration for a single logical axis.
+    ///
+    /// `axis_idx` is `0..N_AXES` (X=0, Y=1, Z=2, E=3). `mode` selects the
+    /// per-stepper output path (Pulse or Phase). `microstep_distance` is
+    /// the per-step distance in mm-equivalent units (must be finite,
+    /// positive). `extrusion_per_xy_mm` is the linear extruder ratio that
+    /// the E-follows-XY integrator multiplies arc-length-traveled by;
+    /// meaningful only on the E axis but accepted on every axis as a
+    /// pure scalar (validated finite, sign-agnostic — a slicer might pass
+    /// 0 for non-extruding moves).
+    ///
+    /// `stepper_count` is accepted for ABI compatibility but currently
+    /// unused — physical stepper bindings are still wired by
+    /// `config_runtime_stepper` until Task 16 unifies that path.
+    ///
+    /// On success the new configuration is published with `Release`
+    /// ordering so the ISR's next `mode.load(Acquire)` observes the new
+    /// mode together with the new scalar fields (the ISR re-reads
+    /// `microstep_distance` / `extrusion_per_xy_mm` whenever it samples
+    /// a fresh piece, so plain-store ordering relative to the atomic
+    /// mode-publish is sufficient).
+    pub fn configure_axis(
+        &mut self,
+        axis_idx: u8,
+        mode: crate::stepping_state::StepMode,
+        microstep_distance: f32,
+        extrusion_per_xy_mm: f32,
+        stepper_count: u8,
+    ) -> i32 {
+        if (axis_idx as usize) >= crate::stepping_state::N_AXES {
+            return -1;
+        }
+        if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
+            return -1;
+        }
+        if !extrusion_per_xy_mm.is_finite() {
+            return -1;
+        }
+        // stepper_count is accepted but ignored — physical stepper bindings
+        // remain on `config_runtime_stepper` until Task 16.
+        let _ = stepper_count;
+        let axis = &mut self.stepping_axes[axis_idx as usize];
+        axis.microstep_distance = microstep_distance;
+        axis.extrusion_per_xy_mm = extrusion_per_xy_mm;
+        // Clear any prior piece so the next segment-arrival path re-seeds
+        // from scratch with the new microstep_distance / mode.
+        axis.piece = None;
+        axis.piece_start_time_cycles = 0;
+        axis.last_step_count = 0;
+        // Atomic publish of the mode last — ISR's Acquire load on `mode`
+        // synchronizes against the plain stores above.
+        axis.mode
+            .store(mode as u8, core::sync::atomic::Ordering::Release);
+        0
+    }
+
+    /// Publish kinematic scale factor relating logical-XY velocity to
+    /// physical motor-coordinate velocity. `1.0` for Cartesian, `1/√2`
+    /// (≈0.7071) for CoreXY. Validated finite + strictly positive — a
+    /// zero / negative `k_xy` would silently zero out the XY arc-length
+    /// integrator that feeds E-follows-XY and pressure-advance.
+    pub fn configure_kinematics(&mut self, k_xy: f32) -> i32 {
+        if !k_xy.is_finite() || k_xy <= 0.0 {
+            return -1;
+        }
+        self.k_xy = k_xy;
+        0
+    }
+
+    /// Publish asymmetric pressure-advance coefficients. `advance_accel`
+    /// applies while `v̇_xy > 0`, `advance_decel` while `v̇_xy < 0`. Both
+    /// in seconds; `0.0` on either side disables PA in that phase. Reject
+    /// non-finite or negative values — negative PA would invert the
+    /// filament-pressure-correction sense, which is never physical.
+    pub fn configure_pressure_advance(
+        &mut self,
+        advance_accel: f32,
+        advance_decel: f32,
+    ) -> i32 {
+        if !advance_accel.is_finite() || !advance_decel.is_finite() {
+            return -1;
+        }
+        if advance_accel < 0.0 || advance_decel < 0.0 {
+            return -1;
+        }
+        self.advance_accel = advance_accel;
+        self.advance_decel = advance_decel;
+        0
     }
 }
 

@@ -440,6 +440,52 @@ int32_t kalico_runtime_seed_position(struct KalicoRuntime *rt,
                                      int32_t z_q16);
 
 /**
+ * Stepping-redesign Task 11. Publish per-axis stepping configuration.
+ *
+ * `axis_idx`: 0=X, 1=Y, 2=Z, 3=E (N_AXES = 4).
+ * `mode`: 0=Pulse (classic STEP/DIR), 1=Phase (TMC5160 SPI coil-current).
+ * `microstep_distance_f32_bits` and `extrusion_per_xy_mm_f32_bits` are
+ *   `f32::to_bits()` of the scalars (Klipper-protocol u32-as-f32 convention).
+ * `stepper_count`: reserved for the Task-16 unified stepper-binding path;
+ *   currently accepted but ignored.
+ *
+ * Returns 0 on success; negative on validation failure (out-of-range
+ * axis, non-finite / non-positive microstep_distance, invalid mode).
+ * Foreground-only.
+ */
+int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
+                                      uint8_t axis_idx,
+                                      uint8_t mode,
+                                      uint32_t microstep_distance_f32_bits,
+                                      uint32_t extrusion_per_xy_mm_f32_bits,
+                                      uint8_t stepper_count);
+
+/**
+ * Stepping-redesign Task 11. Publish kinematic scale factor `k_xy`
+ * (relates logical-XY velocity to physical motor-coordinate velocity:
+ * 1.0 for Cartesian, 1/sqrt(2) for CoreXY).
+ *
+ * `k_xy_f32_bits` is `f32::to_bits()` of the scalar. Returns 0 on
+ * success; negative if not finite or not strictly positive.
+ * Foreground-only.
+ */
+int32_t kalico_runtime_configure_kinematics(struct KalicoRuntime *rt,
+                                            uint32_t k_xy_f32_bits);
+
+/**
+ * Stepping-redesign Task 11. Publish asymmetric pressure-advance
+ * coefficients (`advance_accel` applies while toolhead is accelerating;
+ * `advance_decel` while decelerating). Both in seconds.
+ *
+ * Returns 0 on success; negative if either coefficient is non-finite or
+ * negative. Foreground-only.
+ */
+int32_t kalico_runtime_configure_pressure_advance(
+    struct KalicoRuntime *rt,
+    uint32_t advance_accel_f32_bits,
+    uint32_t advance_decel_f32_bits);
+
+/**
  * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
  * `limit` trace samples from the ring, calls `pool.confirm_retired`
  * for each `SEGMENT_END` observed, and returns a 32-bit packed

@@ -3530,6 +3530,123 @@ pub mod exports {
         }
     }
 
+    // ─── Stepping-redesign Task 11 ──────────────────────────────────────
+    //
+    // Three foreground configuration entry points. Each unpacks f32 bits
+    // from the wire (Klipper protocol carries floats as u32-bits), forms
+    // `&mut IsrState.engine` under the §11.2 raw-pointer projection
+    // discipline, and delegates validation + state-publish to the engine
+    // method. Foreground-only — these handlers run from the
+    // single-threaded command dispatcher between segments, never during
+    // a TIM5 ISR tick on the same axis state, so projecting `&mut
+    // IsrState` here is sound under the same precondition that
+    // `kalico_runtime_seed_position` and `kalico_runtime_configure_axes_blob`
+    // rely on.
+
+    /// Stepping-redesign Task 11. Publish per-axis configuration: stepping
+    /// mode (Pulse / Phase), microstep distance, extrusion ratio,
+    /// stepper-count slot reservation. `microstep_distance_f32_bits` and
+    /// `extrusion_per_xy_mm_f32_bits` are `f32::to_bits` of the underlying
+    /// scalars (Klipper carries f32 as u32 on the wire). `mode` is `0` for
+    /// Pulse, `1` for Phase; other values are rejected. Returns `0` on
+    /// success, negative on validation failure. The C handler treats any
+    /// non-zero return as a hard error and shuts the MCU down.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_configure_axis(
+        rt: *mut KalicoRuntime,
+        axis_idx: u8,
+        mode: u8,
+        microstep_distance_f32_bits: u32,
+        extrusion_per_xy_mm_f32_bits: u32,
+        stepper_count: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let mode_enum = match mode {
+            0 => runtime::stepping_state::StepMode::Pulse,
+            1 => runtime::stepping_state::StepMode::Phase,
+            _ => return KALICO_ERR_INVALID_ARG,
+        };
+        let mstep_dist = f32::from_bits(microstep_distance_f32_bits);
+        let extrusion = f32::from_bits(extrusion_per_xy_mm_f32_bits);
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only entry; spec §11.2 raw-pointer projection.
+        // Engine state is on `IsrState`; foreground may form `&mut
+        // IsrState` here under the precondition that TIM5 is not concurrently
+        // ticking the same per-axis state (Klipper command dispatch is
+        // single-threaded and serialised against the modulated tick by
+        // priority arbitration during configuration windows).
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.configure_axis(
+                axis_idx,
+                mode_enum,
+                mstep_dist,
+                extrusion,
+                stepper_count,
+            )
+        }
+    }
+
+    /// Stepping-redesign Task 11. Publish the kinematic scale factor
+    /// relating logical-XY velocity to physical motor-coordinate velocity
+    /// (`1.0` Cartesian, `1/√2` CoreXY). `k_xy_f32_bits` is `f32::to_bits`
+    /// of the scalar. Rejected if not finite or not strictly positive.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_configure_kinematics(
+        rt: *mut KalicoRuntime,
+        k_xy_f32_bits: u32,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let k_xy = f32::from_bits(k_xy_f32_bits);
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: see `kalico_runtime_configure_axis` SAFETY note.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.configure_kinematics(k_xy)
+        }
+    }
+
+    /// Stepping-redesign Task 11. Publish asymmetric pressure-advance
+    /// coefficients (seconds). `0.0` on either side disables PA in that
+    /// phase. Negative values are rejected (PA is never physically
+    /// negative).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_configure_pressure_advance(
+        rt: *mut KalicoRuntime,
+        advance_accel_f32_bits: u32,
+        advance_decel_f32_bits: u32,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let advance_accel = f32::from_bits(advance_accel_f32_bits);
+        let advance_decel = f32::from_bits(advance_decel_f32_bits);
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: see `kalico_runtime_configure_axis` SAFETY note.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr)
+                .engine
+                .configure_pressure_advance(advance_accel, advance_decel)
+        }
+    }
+
     /// Returns 1 if motor `stepper_idx` is configured (has step_distance > 0
     /// in its `ProducerState`), 0 otherwise. Used by C-side
     /// `init_step_time_timers` to avoid enabling consumer Klipper timers

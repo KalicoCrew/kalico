@@ -279,6 +279,89 @@ command_config_runtime_stepper(uint32_t *args)
 DECL_COMMAND(command_config_runtime_stepper,
              "config_runtime_stepper motor_idx=%c stepper_oid=%c invert_dir=%c");
 
+// ─── Stepping-redesign Task 11 — kalico_configure_* command handlers ─────
+//
+// Three foreground commands that publish per-axis configuration, the
+// kinematic scale factor, and pressure-advance coefficients into the Rust
+// runtime. Each handler is a thin shim: unpack the Klipper-protocol
+// `uint32_t *args`, forward to the Rust FFI, and `shutdown(...)` on any
+// non-zero return so configuration errors are loud rather than silent.
+//
+// `runtime_handle` is the global published by `runtime_handle_create()`
+// in src/runtime_tick.c. The legacy `command_config_runtime_stepper`
+// above does NOT use it because it manipulates C-side stepper-binding
+// arrays directly; these new commands DO call into Rust and therefore
+// need the handle. Both code paths coexist until Task 16 deletes the
+// legacy command.
+//
+// Wire-format note: Klipper carries f32 fields as `u32` containing
+// `f32::to_bits()` (the host packs, the MCU forwards the raw bits, and
+// `f32::from_bits` reconstructs on the Rust side). `%u` matches u32.
+
+extern void *runtime_handle; // defined in src/runtime_tick.c
+
+extern int32_t kalico_runtime_configure_axis(
+    void *handle, uint8_t axis_idx, uint8_t mode,
+    uint32_t microstep_distance_f32_bits,
+    uint32_t extrusion_per_xy_mm_f32_bits,
+    uint8_t stepper_count);
+
+extern int32_t kalico_runtime_configure_kinematics(
+    void *handle, uint32_t k_xy_f32_bits);
+
+extern int32_t kalico_runtime_configure_pressure_advance(
+    void *handle, uint32_t advance_accel_f32_bits,
+    uint32_t advance_decel_f32_bits);
+
+void
+command_kalico_configure_axis(uint32_t *args)
+{
+    uint8_t axis_idx = args[0];
+    uint8_t mode = args[1];
+    uint32_t mstep_bits = args[2];
+    uint32_t extrusion_bits = args[3];
+    uint8_t stepper_count = args[4];
+    if (!runtime_handle)
+        shutdown("kalico_configure_axis before runtime init");
+    int32_t rc = kalico_runtime_configure_axis(runtime_handle, axis_idx, mode,
+                                                mstep_bits, extrusion_bits,
+                                                stepper_count);
+    if (rc != 0)
+        shutdown("kalico_configure_axis rejected by runtime");
+}
+DECL_COMMAND(command_kalico_configure_axis,
+             "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
+             " extrusion_per_xy_mm=%u stepper_count=%c");
+
+void
+command_kalico_configure_kinematics(uint32_t *args)
+{
+    uint32_t k_xy_bits = args[0];
+    if (!runtime_handle)
+        shutdown("kalico_configure_kinematics before runtime init");
+    int32_t rc = kalico_runtime_configure_kinematics(runtime_handle, k_xy_bits);
+    if (rc != 0)
+        shutdown("kalico_configure_kinematics rejected by runtime");
+}
+DECL_COMMAND(command_kalico_configure_kinematics,
+             "kalico_configure_kinematics k_xy=%u");
+
+void
+command_kalico_configure_pressure_advance(uint32_t *args)
+{
+    uint32_t aa = args[0];
+    uint32_t ad = args[1];
+    if (!runtime_handle)
+        shutdown("kalico_configure_pressure_advance before runtime init");
+    int32_t rc = kalico_runtime_configure_pressure_advance(runtime_handle,
+                                                            aa, ad);
+    if (rc != 0)
+        shutdown("kalico_configure_pressure_advance rejected by runtime");
+}
+DECL_COMMAND(command_kalico_configure_pressure_advance,
+             "kalico_configure_pressure_advance advance_accel=%u"
+             " advance_decel=%u");
+
 // Called from the TIM5 ISR (priority 3 on H7) after `runtime_handle_tick`
 // produces this tick's step delta. Emits |n_steps| edges on every stepper
 // bound to this motor index (primary + AWD partners — e.g. Voron 2.4-style

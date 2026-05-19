@@ -75,6 +75,28 @@ pub struct AxisConfig {
     pub extrusion_per_xy_mm: f32,
 }
 
+impl AxisConfig {
+    /// Construct a default (unconfigured) `AxisConfig`. `mode` defaults to
+    /// `StepMode::Pulse`, the stepper-bindings list is empty, and no
+    /// Bezier piece is active. All scalar fields are zero — the unified
+    /// tick treats `microstep_distance == 0.0` as "axis is not yet
+    /// configured" and skips step generation for that axis.
+    ///
+    /// `const fn` so it can be used in array literals during static /
+    /// non-static struct construction (`Engine::new`).
+    pub const fn new_unconfigured() -> Self {
+        Self {
+            mode: AtomicU8::new(StepMode::Pulse as u8),
+            steppers: Vec::new(),
+            piece: None,
+            piece_start_time_cycles: 0,
+            last_step_count: 0,
+            microstep_distance: 0.0,
+            extrusion_per_xy_mm: 0.0,
+        }
+    }
+}
+
 /// ISR-local scratch state carried across consecutive sample ticks.
 ///
 /// All fields are tick-private — never observed by anything outside the
